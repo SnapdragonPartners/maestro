@@ -22,17 +22,35 @@ func TestGracefulShutdown(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.json")
 	testConfig := `{
   "models": {
-    "claude": {
+    "claude_sonnet4": {
       "max_tokens_per_minute": 1000,
       "max_budget_per_day_usd": 25.0,
-      "max_agents": 3,
-      "api_key": "test-key"
+      "cpm_tokens_in": 0.003,
+      "cpm_tokens_out": 0.015,
+      "api_key": "test-key",
+      "agents": [
+        {
+          "name": "claude-shutdown",
+          "id": "001",
+          "type": "coder",
+          "workdir": "./work/claude-shutdown"
+        }
+      ]
     },
-    "architect": {
+    "openai_o3": {
       "max_tokens_per_minute": 500,
       "max_budget_per_day_usd": 10.0,
-      "max_agents": 2,
-      "api_key": "test-key"
+      "cpm_tokens_in": 0.004,
+      "cpm_tokens_out": 0.016,
+      "api_key": "test-key",
+      "agents": [
+        {
+          "name": "architect-shutdown",
+          "id": "001",
+          "type": "architect",
+          "workdir": "./work/architect-shutdown"
+        }
+      ]
     }
   },
   "graceful_shutdown_timeout_sec": 5,
@@ -118,10 +136,10 @@ This is a test story for shutdown testing.
 		t.Fatal("Status directory was not created")
 	}
 
-	// Expected status files
+	// Expected status files (using the actual config from the test config file)
 	expectedFiles := []string{
-		"architect-STATUS.md",
-		"claude-STATUS.md",
+		"claude_sonnet4:001-STATUS.md",   // claude agent from test config
+		"openai_o3:001-STATUS.md",        // architect agent from test config
 		"orchestrator-STATUS.md",
 	}
 
@@ -180,11 +198,15 @@ This is a test story for shutdown testing.
 func TestOrchestratorCreation(t *testing.T) {
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
-			"claude": {
+			"claude_sonnet4": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 25.0,
-				MaxAgents:          3,
+				CpmTokensIn:        0.003,
+				CpmTokensOut:       0.015,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "claude-test", ID: "001", Type: "coder", WorkDir: "./work/claude-test"},
+				},
 			},
 		},
 		GracefulShutdownTimeoutSec: 30,
@@ -231,11 +253,15 @@ func TestStatusGeneration(t *testing.T) {
 
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
-			"claude": {
+			"claude_sonnet4": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 25.0,
-				MaxAgents:          3,
+				CpmTokensIn:        0.003,
+				CpmTokensOut:       0.015,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "claude-status", ID: "001", Type: "coder", WorkDir: "./work/claude-status"},
+				},
 			},
 		},
 		GracefulShutdownTimeoutSec: 5,
@@ -267,8 +293,7 @@ func TestStatusGeneration(t *testing.T) {
 
 	// Verify status files were created
 	statusFiles := []string{
-		"status/architect-STATUS.md",
-		"status/claude-STATUS.md",
+		"status/claude_sonnet4:001-STATUS.md",
 		"status/orchestrator-STATUS.md",
 	}
 

@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewClaudeAgent(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 
 	if agent.GetID() != "claude" {
 		t.Errorf("Expected agent ID 'claude', got %s", agent.GetID())
@@ -17,7 +17,7 @@ func TestNewClaudeAgent(t *testing.T) {
 }
 
 func TestClaudeAgent_ProcessMessage_UnsupportedType(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Test unsupported message type
@@ -34,7 +34,7 @@ func TestClaudeAgent_ProcessMessage_UnsupportedType(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleTaskMessage_HealthEndpoint(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create task message for health endpoint
@@ -151,7 +151,7 @@ func TestClaudeAgent_HandleTaskMessage_HealthEndpoint(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleTaskMessage_APIImplementation(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create task message for API implementation
@@ -189,7 +189,7 @@ func TestClaudeAgent_HandleTaskMessage_APIImplementation(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleTaskMessage_DatabaseImplementation(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create task message for database implementation
@@ -227,7 +227,7 @@ func TestClaudeAgent_HandleTaskMessage_DatabaseImplementation(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleTaskMessage_DefaultImplementation(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create task message for unknown task type
@@ -264,7 +264,7 @@ func TestClaudeAgent_HandleTaskMessage_DefaultImplementation(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleTaskMessage_MissingContent(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create task message without content
@@ -281,7 +281,7 @@ func TestClaudeAgent_HandleTaskMessage_MissingContent(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleTaskMessage_InvalidContentType(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create task message with invalid content type
@@ -299,7 +299,7 @@ func TestClaudeAgent_HandleTaskMessage_InvalidContentType(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleQuestionMessage(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create question message
@@ -357,7 +357,7 @@ func TestClaudeAgent_HandleQuestionMessage(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleQuestionMessage_MissingQuestion(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create question message without question
@@ -374,7 +374,7 @@ func TestClaudeAgent_HandleQuestionMessage_MissingQuestion(t *testing.T) {
 }
 
 func TestClaudeAgent_HandleShutdownMessage(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Create shutdown message
@@ -414,7 +414,7 @@ func TestClaudeAgent_HandleShutdownMessage(t *testing.T) {
 }
 
 func TestClaudeAgent_GenerateHealthEndpointCode(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 
 	code := agent.generateHealthEndpointCode()
 
@@ -439,7 +439,7 @@ func TestClaudeAgent_GenerateHealthEndpointCode(t *testing.T) {
 }
 
 func TestClaudeAgent_GenerateHealthEndpointTests(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 
 	tests := agent.generateHealthEndpointTests()
 
@@ -464,7 +464,7 @@ func TestClaudeAgent_GenerateHealthEndpointTests(t *testing.T) {
 }
 
 func TestClaudeAgent_FormatRequirements(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 
 	// Test with requirements
 	requirements := []string{
@@ -489,7 +489,7 @@ func TestClaudeAgent_FormatRequirements(t *testing.T) {
 }
 
 func TestClaudeAgent_GetCreatedFiles(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 
 	testCases := []struct {
 		content       string
@@ -530,7 +530,7 @@ func TestClaudeAgent_GetCreatedFiles(t *testing.T) {
 }
 
 func TestClaudeAgent_Shutdown(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	err := agent.Shutdown(ctx)

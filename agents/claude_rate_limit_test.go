@@ -23,7 +23,7 @@ func TestClaudeAgentRateLimit(t *testing.T) {
 			"claude": {
 				MaxTokensPerMinute: 300,  // Allow 3 requests (100 tokens each)
 				MaxBudgetPerDayUSD: 10.0, // Generous budget
-				MaxAgents:          2,    // Allow 2 concurrent agents
+				// MaxAgents:          2,    // Allow 2 concurrent agents (removed field)
 				APIKey:             "test-key",
 			},
 		},
@@ -54,7 +54,7 @@ func TestClaudeAgentRateLimit(t *testing.T) {
 	defer dispatcher.Stop(ctx)
 
 	// Create and register Claude agent
-	claudeAgent := NewClaudeAgent("claude")
+	claudeAgent := NewClaudeAgent("claude", "test-claude", "work")
 	err = dispatcher.RegisterAgent(claudeAgent)
 	if err != nil {
 		t.Fatalf("Failed to register Claude agent: %v", err)
@@ -261,7 +261,7 @@ func TestClaudeAgentRateLimit(t *testing.T) {
 
 // TestClaudeAgentDirectProcessing tests the agent without dispatcher overhead
 func TestClaudeAgentDirectProcessing(t *testing.T) {
-	agent := NewClaudeAgent("claude")
+	agent := NewClaudeAgent("claude", "test-claude", "work")
 	ctx := context.Background()
 
 	// Test direct message processing

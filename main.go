@@ -188,24 +188,61 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 }
 
 func (o *Orchestrator) createAgents() error {
-	// Create architect agent
-	architect := agents.NewArchitectAgent("architect", "stories")
-	architect.SetDispatcher(o.dispatcher)
-
-	if err := o.dispatcher.RegisterAgent(architect); err != nil {
-		return fmt.Errorf("failed to register architect agent: %w", err)
+	// Create agents from configuration
+	allAgents := o.config.GetAllAgents()
+	
+	// First pass: find the coder agent ID for architects to target
+	var coderAgentID string
+	for _, agentWithModel := range allAgents {
+		if agentWithModel.Agent.Type == "coder" {
+			coderAgentID = agentWithModel.Agent.GetLogID(agentWithModel.ModelName)
+			break
+		}
 	}
-	o.agents["architect"] = &StatusAgentWrapper{Agent: architect}
-
-	// Create Claude coding agent
-	claude := agents.NewClaudeAgent("claude")
-
-	if err := o.dispatcher.RegisterAgent(claude); err != nil {
-		return fmt.Errorf("failed to register claude agent: %w", err)
+	
+	if coderAgentID == "" {
+		return fmt.Errorf("no coder agent found in configuration")
 	}
-	o.agents["claude"] = &StatusAgentWrapper{Agent: claude}
+	
+	for _, agentWithModel := range allAgents {
+		agent := agentWithModel.Agent
+		modelName := agentWithModel.ModelName
+		
+		// Generate log ID for this agent
+		logID := agent.GetLogID(modelName)
+		
+		var registeredAgent dispatch.Agent
+		
+		switch agent.Type {
+		case "architect":
+			architectAgent := agents.NewArchitectAgent(logID, agent.Name, "stories", agent.WorkDir, coderAgentID)
+			architectAgent.SetDispatcher(o.dispatcher)
+			registeredAgent = architectAgent
+			
+		case "coder":
+			// Check if we should use live API calls (feature flag)
+			useLiveAPI := os.Getenv("CLAUDE_LIVE_API") == "true"
+			if useLiveAPI {
+				liveAgent := agents.NewLiveClaudeAgent(logID, agent.Name, agent.WorkDir, agentWithModel.Model.APIKey, true)
+				registeredAgent = liveAgent
+			} else {
+				claudeAgent := agents.NewClaudeAgent(logID, agent.Name, agent.WorkDir)
+				registeredAgent = claudeAgent
+			}
+			
+		default:
+			return fmt.Errorf("unknown agent type: %s", agent.Type)
+		}
+		
+		if err := o.dispatcher.RegisterAgent(registeredAgent); err != nil {
+			return fmt.Errorf("failed to register agent %s: %w", logID, err)
+		}
+		
+		o.agents[logID] = &StatusAgentWrapper{Agent: registeredAgent}
+		o.logger.Info("Created and registered agent: %s (%s) using model %s", logID, agent.Type, modelName)
+	}
 
-	o.logger.Info("Created and registered %d agents", len(o.agents))
+	o.logger.Info("Created and registered %d agents total", len(o.agents))
 	return nil
 }
 

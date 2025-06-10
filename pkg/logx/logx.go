@@ -24,7 +24,7 @@ const (
 func NewLogger(agentID string) *Logger {
 	return &Logger{
 		agentID: agentID,
-		logger:  log.New(os.Stdout, "", 0), // No default prefix/flags, we handle formatting
+		logger:  log.New(os.Stderr, "", 0), // Log to stderr for CLI compatibility
 	}
 }
 

@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"orchestrator/pkg/logx"
@@ -11,15 +12,25 @@ import (
 
 // ClaudeAgent implements the Agent interface for code generation tasks
 type ClaudeAgent struct {
-	id     string
-	logger *logx.Logger
+	id      string
+	name    string
+	workDir string
+	logger  *logx.Logger
 }
 
 // NewClaudeAgent creates a new Claude coding agent
-func NewClaudeAgent(id string) *ClaudeAgent {
+func NewClaudeAgent(id, name, workDir string) *ClaudeAgent {
+	// Create workspace directory if it doesn't exist
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		// Log error but don't fail - let it fail later with better context
+		fmt.Printf("Warning: failed to create workspace directory %s: %v\n", workDir, err)
+	}
+
 	return &ClaudeAgent{
-		id:     id,
-		logger: logx.NewLogger(id),
+		id:      id,
+		name:    name,
+		workDir: workDir,
+		logger:  logx.NewLogger(id),
 	}
 }
 

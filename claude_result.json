@@ -1,0 +1,15 @@
+{
+  "id": "msg_1749589784403169000_1",
+  "type": "ERROR",
+  "from_agent": "agentctl-claude",
+  "to_agent": "agentctl",
+  "timestamp": "2025-06-10T21:09:44.40317Z",
+  "payload": {
+    "error": "Tests failed: go fmt failed: exit status 1\nOutput: health.go:1:1: expected 'package', found ``\n",
+    "original_message_id": "msg_test_001"
+  },
+  "metadata": {
+    "error_type": "processing_error"
+  },
+  "parent_msg_id": "msg_test_001"
+}

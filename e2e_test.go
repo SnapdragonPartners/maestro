@@ -87,17 +87,25 @@ The system needs a simple health check endpoint that external monitoring systems
 	// Create test config with generous limits to avoid rate/budget errors
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
-			"claude": {
+			"claude_sonnet4": {
 				MaxTokensPerMinute: 10000,  // High limit
 				MaxBudgetPerDayUSD: 100.0,  // High budget
-				MaxAgents:          5,      // Plenty of concurrent agents
+				CpmTokensIn:        0.003,
+				CpmTokensOut:       0.015,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "claude-test", ID: "001", Type: "coder", WorkDir: "./work/claude-test"},
+				},
 			},
-			"architect": {
+			"openai_o3": {
 				MaxTokensPerMinute: 5000,
 				MaxBudgetPerDayUSD: 50.0,
-				MaxAgents:          3,
+				CpmTokensIn:        0.004,
+				CpmTokensOut:       0.016,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "architect-test", ID: "001", Type: "architect", WorkDir: "./work/architect-test"},
+				},
 			},
 		},
 		GracefulShutdownTimeoutSec: 10,
@@ -133,7 +141,7 @@ The system needs a simple health check endpoint that external monitoring systems
 	// Step 1: Send story processing request to architect (simulating orchestrator request)
 	t.Log("📋 Step 1: Sending health story to architect agent")
 	
-	storyTaskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "architect")
+	storyTaskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "openai_o3:001")
 	storyTaskMsg.SetPayload("story_id", "001")
 	storyTaskMsg.SetMetadata("test_type", "e2e_smoke_test")
 	storyTaskMsg.SetMetadata("story_name", "health_endpoint")
@@ -177,17 +185,17 @@ The system needs a simple health check endpoint that external monitoring systems
 
 		// Track the expected message flow
 		switch {
-		case msg.Type == proto.MsgTypeTASK && msg.FromAgent == "orchestrator" && msg.ToAgent == "architect":
+		case msg.Type == proto.MsgTypeTASK && msg.FromAgent == "orchestrator" && msg.ToAgent == "openai_o3:001":
 			foundStoryTask = true
-			t.Log("  ✓ Found story task: orchestrator → architect")
+			t.Log("  ✓ Found story task: orchestrator → openai_o3:001")
 
-		case msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "architect" && msg.ToAgent == "orchestrator":
+		case msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "openai_o3:001" && msg.ToAgent == "orchestrator":
 			foundArchitectResult = true
-			t.Log("  ✓ Found architect result: architect → orchestrator")
+			t.Log("  ✓ Found architect result: openai_o3:001 → orchestrator")
 
-		case msg.Type == proto.MsgTypeTASK && msg.FromAgent == "architect" && msg.ToAgent == "claude":
+		case msg.Type == proto.MsgTypeTASK && msg.FromAgent == "openai_o3:001" && msg.ToAgent == "claude_sonnet4:001":
 			foundClaudeTask = true
-			t.Log("  ✓ Found coding task: architect → claude")
+			t.Log("  ✓ Found coding task: openai_o3:001 → claude_sonnet4:001")
 			
 			// Verify task contains expected content
 			if content, exists := msg.GetPayload("content"); exists {
@@ -198,9 +206,9 @@ The system needs a simple health check endpoint that external monitoring systems
 				}
 			}
 
-		case msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "claude" && msg.ToAgent == "architect":
+		case msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "claude_sonnet4:001" && msg.ToAgent == "openai_o3:001":
 			foundClaudeResult = true
-			t.Log("  ✓ Found claude result: claude → architect")
+			t.Log("  ✓ Found claude result: claude_sonnet4:001 → openai_o3:001")
 			
 			// Verify result contains expected fields
 			if status, exists := msg.GetPayload("status"); exists {
@@ -237,16 +245,16 @@ The system needs a simple health check endpoint that external monitoring systems
 
 	// Verify complete TASK → RESULT cycle
 	if !foundStoryTask {
-		t.Error("Missing: orchestrator → architect TASK message")
+		t.Error("Missing: orchestrator → openai_o3:001 TASK message")
 	}
 	if !foundArchitectResult {
-		t.Error("Missing: architect → orchestrator RESULT message")
+		t.Error("Missing: openai_o3:001 → orchestrator RESULT message")
 	}
 	if !foundClaudeTask {
-		t.Error("Missing: architect → claude TASK message")
+		t.Error("Missing: openai_o3:001 → claude_sonnet4:001 TASK message")
 	}
 	if !foundClaudeResult {
-		t.Error("Missing: claude → architect RESULT message")
+		t.Error("Missing: claude_sonnet4:001 → openai_o3:001 RESULT message")
 	}
 
 	// Verify no rate or budget errors
@@ -334,17 +342,25 @@ Database connection and queries.
 	// Create test config
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
-			"claude": {
+			"claude_sonnet4": {
 				MaxTokensPerMinute: 5000,
 				MaxBudgetPerDayUSD: 50.0,
-				MaxAgents:          3,
+				CpmTokensIn:        0.003,
+				CpmTokensOut:       0.015,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "claude-multi", ID: "001", Type: "coder", WorkDir: "./work/claude-multi"},
+				},
 			},
-			"architect": {
+			"openai_o3": {
 				MaxTokensPerMinute: 2000,
 				MaxBudgetPerDayUSD: 20.0,
-				MaxAgents:          2,
+				CpmTokensIn:        0.004,
+				CpmTokensOut:       0.016,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "architect-multi", ID: "001", Type: "architect", WorkDir: "./work/architect-multi"},
+				},
 			},
 		},
 		GracefulShutdownTimeoutSec: 10,

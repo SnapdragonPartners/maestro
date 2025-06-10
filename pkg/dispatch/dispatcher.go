@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -201,9 +202,15 @@ func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, 
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Extract model name from agent logID (format: "model:id")
+		modelName := msg.ToAgent
+		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
+			modelName = parts[0]
+		}
+		
 		// Check rate limiting before each attempt
-		if err := d.checkRateLimit(msg.ToAgent); err != nil {
-			d.logger.Warn("Rate limit exceeded for %s: %v", msg.ToAgent, err)
+		if err := d.checkRateLimit(modelName); err != nil {
+			d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
 			return &DispatchResult{Error: err}
 		}
 
@@ -217,7 +224,7 @@ func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, 
 		response, err := agent.ProcessMessage(ctx, retryMsg)
 
 		// Release agent slot after processing attempt
-		d.rateLimiter.ReleaseAgent(msg.ToAgent)
+		d.rateLimiter.ReleaseAgent(modelName)
 
 		if err == nil {
 			// Success

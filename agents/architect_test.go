@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewArchitectAgent(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 
 	if agent.GetID() != "architect" {
 		t.Errorf("Expected agent ID 'architect', got %s", agent.GetID())
@@ -22,7 +22,7 @@ func TestNewArchitectAgent(t *testing.T) {
 }
 
 func TestArchitectAgent_ProcessMessage_UnsupportedType(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	// Test unsupported message type
@@ -63,7 +63,7 @@ This story implements a basic health check endpoint.
 		t.Fatalf("Failed to create test story file: %v", err)
 	}
 
-	agent := NewArchitectAgent("architect", tmpDir)
+	agent := NewArchitectAgent("architect", "test-agent", tmpDir, "work", "claude")
 	// Set a mock dispatcher for testing
 	mockDispatcher := &MockDispatcher{}
 	agent.SetDispatcher(mockDispatcher)
@@ -127,7 +127,7 @@ This story implements a basic health check endpoint.
 }
 
 func TestArchitectAgent_HandleTaskMessage_MissingStoryID(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	// Create task message without story ID
@@ -144,7 +144,7 @@ func TestArchitectAgent_HandleTaskMessage_MissingStoryID(t *testing.T) {
 }
 
 func TestArchitectAgent_HandleTaskMessage_InvalidStoryID(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	// Create task message with invalid story ID type
@@ -163,7 +163,7 @@ func TestArchitectAgent_HandleTaskMessage_InvalidStoryID(t *testing.T) {
 
 func TestArchitectAgent_HandleTaskMessage_MissingStoryFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	agent := NewArchitectAgent("architect", tmpDir)
+	agent := NewArchitectAgent("architect", "test-agent", tmpDir, "work", "claude")
 	ctx := context.Background()
 
 	// Create task message with non-existent story
@@ -181,7 +181,7 @@ func TestArchitectAgent_HandleTaskMessage_MissingStoryFile(t *testing.T) {
 }
 
 func TestArchitectAgent_HandleQuestionMessage(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	// Create question message
@@ -224,7 +224,7 @@ func TestArchitectAgent_HandleQuestionMessage(t *testing.T) {
 }
 
 func TestArchitectAgent_HandleQuestionMessage_MissingQuestion(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	// Create question message without question
@@ -241,7 +241,7 @@ func TestArchitectAgent_HandleQuestionMessage_MissingQuestion(t *testing.T) {
 }
 
 func TestArchitectAgent_HandleShutdownMessage(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	// Create shutdown message
@@ -272,7 +272,7 @@ func TestArchitectAgent_HandleShutdownMessage(t *testing.T) {
 }
 
 func TestArchitectAgent_GenerateTaskFromStory(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 
 	story := `# Health Endpoint
 	
@@ -299,7 +299,7 @@ Basic health check implementation.
 }
 
 func TestArchitectAgent_ExtractRequirements(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 
 	story := `# Test Story
 
@@ -338,7 +338,7 @@ Some other content.
 }
 
 func TestArchitectAgent_GenerateAnswer(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 
 	testCases := []struct {
 		question string
@@ -394,7 +394,7 @@ func TestArchitectAgent_GenerateAnswer(t *testing.T) {
 }
 
 func TestArchitectAgent_Shutdown(t *testing.T) {
-	agent := NewArchitectAgent("architect", "stories")
+	agent := NewArchitectAgent("architect", "test-agent", "stories", "work", "claude")
 	ctx := context.Background()
 
 	err := agent.Shutdown(ctx)

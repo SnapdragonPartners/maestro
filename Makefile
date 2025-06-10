@@ -1,8 +1,16 @@
-.PHONY: build test lint run clean
+.PHONY: build test lint run clean agentctl replayer
 
 # Build the orchestrator binary
 build:
 	go build -o bin/orchestrator .
+
+# Build the agentctl CLI tool
+agentctl:
+	go build -o bin/agentctl ./cmd/agentctl
+
+# Build the replayer tool
+replayer:
+	go build -o bin/replayer ./cmd/replayer
 
 # Run all tests
 test:

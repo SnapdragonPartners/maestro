@@ -13,10 +13,13 @@ import (
 
 // ArchitectAgent implements the Agent interface for processing development stories
 type ArchitectAgent struct {
-	id         string
-	logger     *logx.Logger
-	storiesDir string
-	dispatcher TaskDispatcher
+	id               string
+	name             string
+	logger           *logx.Logger
+	storiesDir       string
+	workDir          string
+	dispatcher       TaskDispatcher
+	targetCoderAgent string // The LogID of the coder agent to send tasks to
 }
 
 // TaskDispatcher interface for sending tasks to other agents
@@ -25,11 +28,20 @@ type TaskDispatcher interface {
 }
 
 // NewArchitectAgent creates a new architect agent
-func NewArchitectAgent(id, storiesDir string) *ArchitectAgent {
+func NewArchitectAgent(id, name, storiesDir, workDir, targetCoderAgent string) *ArchitectAgent {
+	// Create workspace directory if it doesn't exist
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		// Log error but don't fail - let it fail later with better context
+		fmt.Printf("Warning: failed to create workspace directory %s: %v\n", workDir, err)
+	}
+
 	return &ArchitectAgent{
-		id:         id,
-		logger:     logx.NewLogger(id),
-		storiesDir: storiesDir,
+		id:               id,
+		name:             name,
+		logger:           logx.NewLogger(id),
+		storiesDir:       storiesDir,
+		workDir:          workDir,
+		targetCoderAgent: targetCoderAgent,
 	}
 }
 
@@ -90,7 +102,7 @@ func (a *ArchitectAgent) handleTaskMessage(ctx context.Context, msg *proto.Agent
 	taskContent := a.generateTaskFromStory(story)
 
 	// Create task message for coding agent
-	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, a.id, "claude")
+	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, a.id, a.targetCoderAgent)
 	taskMsg.ParentMsgID = msg.ID
 	taskMsg.SetPayload("story_id", storyIDStr)
 	taskMsg.SetPayload("content", taskContent)

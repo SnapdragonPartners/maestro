@@ -75,7 +75,8 @@ Implement a health check endpoint.
 	defer dispatcher.Stop(ctx)
 
 	// Create architect agent
-	architect := NewArchitectAgent("architect", storiesDir)
+	workDir := filepath.Join(tmpDir, "work")
+	architect := NewArchitectAgent("architect", "smoke-test", storiesDir, workDir, "claude")
 	architect.SetDispatcher(dispatcher)
 
 	// Register architect with dispatcher
@@ -235,13 +236,13 @@ func createSmokeTestConfig() *config.Config {
 			"architect": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 10.0,
-				MaxAgents:          2,
+				// MaxAgents:          2, // Removed field
 				APIKey:             "test-key",
 			},
 			"claude": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 25.0,
-				MaxAgents:          3,
+				// MaxAgents:          3, // Removed field
 				APIKey:             "test-key",
 			},
 		},
