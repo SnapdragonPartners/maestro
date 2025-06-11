@@ -1,8 +1,10 @@
 .PHONY: build test lint run clean agentctl replayer
 
-# Build the orchestrator binary
+# Build all binaries
 build:
 	go build -o bin/orchestrator .
+	go build -o bin/agentctl ./cmd/agentctl
+	go build -o bin/replayer ./cmd/replayer
 
 # Build the agentctl CLI tool
 agentctl:

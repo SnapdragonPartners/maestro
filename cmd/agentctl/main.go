@@ -168,8 +168,12 @@ func (ctl *AgentCtl) runArchitect(ctx context.Context) error {
 	var cleanupWorkDir bool
 	
 	if ctl.workdir != "" {
-		// Use specified workdir
-		workDir = ctl.workdir
+		// Use specified workdir and convert to absolute path
+		absWorkDir, err := filepath.Abs(ctl.workdir)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute path for workdir %s: %w", ctl.workdir, err)
+		}
+		workDir = absWorkDir
 		// Create the directory if it doesn't exist
 		if err := os.MkdirAll(workDir, 0755); err != nil {
 			return fmt.Errorf("failed to create work directory %s: %w", workDir, err)
@@ -249,8 +253,12 @@ func (ctl *AgentCtl) runClaude(ctx context.Context) error {
 	var cleanupWorkDir bool
 	
 	if ctl.workdir != "" {
-		// Use specified workdir
-		workDir = ctl.workdir
+		// Use specified workdir and convert to absolute path
+		absWorkDir, err := filepath.Abs(ctl.workdir)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute path for workdir %s: %w", ctl.workdir, err)
+		}
+		workDir = absWorkDir
 		// Create the directory if it doesn't exist
 		if err := os.MkdirAll(workDir, 0755); err != nil {
 			return fmt.Errorf("failed to create work directory %s: %w", workDir, err)

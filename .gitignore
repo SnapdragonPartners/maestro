@@ -3,7 +3,10 @@ config
 logs
 status
 stories
+work
 
 # Binaries
 
 agentctl
+orchestrator
+replayer

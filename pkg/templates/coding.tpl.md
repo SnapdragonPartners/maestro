@@ -26,26 +26,14 @@ You are a coding agent in the CODING state. Your objective is to implement the p
 - `<tool name="get_help">{"question": "your question"}` - Ask for guidance on implementation details
 
 ## Expected Response Format
-Provide your implementation with clear file organization:
+You MUST use the shell tool to create files. Do NOT return JSON with file contents.
 
-```json
-{
-  "implementation": {
-    "files": {
-      "path/to/file.go": "complete file content",
-      "another/file.go": "complete file content"
-    },
-    "description": "Brief description of what you implemented"
-  },
-  "modifications": {
-    "existing_file.go": {
-      "changes": "Description of changes made",
-      "content": "updated file content"
-    }
-  },
-  "next_action": "TESTING",
-  "notes": "Any implementation notes or decisions made"
-}
-```
+**REQUIRED: Use shell commands to write files:**
 
-Begin implementation now.
+<tool name="shell">{"cmd": "cat > main.go << 'EOF'\npackage main\n\nimport \"fmt\"\n\nfunc main() {\n    fmt.Println(\"Hello World\")\n}\nEOF", "cwd": "{{.WorkDir}}"}</tool>
+
+<tool name="shell">{"cmd": "cat > go.mod << 'EOF'\nmodule hello-server\ngo 1.21\nEOF", "cwd": "{{.WorkDir}}"}</tool>
+
+After creating files, provide a brief summary of what you implemented.
+
+Begin implementation now - USE THE SHELL TOOL TO CREATE FILES.

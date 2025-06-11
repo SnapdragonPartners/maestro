@@ -43,6 +43,7 @@ type Driver struct {
 	stateData      map[string]interface{}
 	llmClient      LLMClient              // Optional LLM for live mode
 	renderer       *templates.Renderer    // Template renderer for prompts
+	workDir        string                 // Workspace directory for MCP tool calls
 }
 
 // NewDriver creates a new agent driver instance
@@ -60,7 +61,7 @@ func NewDriver(agentID string, stateStore *state.Store) *Driver {
 }
 
 // NewDriverWithModel creates a new agent driver with model configuration
-func NewDriverWithModel(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg) *Driver {
+func NewDriverWithModel(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, workDir string) *Driver {
 	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
 	return &Driver{
 		agentID:        agentID,
@@ -70,11 +71,12 @@ func NewDriverWithModel(agentID string, stateStore *state.Store, modelConfig *co
 		stateData:      make(map[string]interface{}),
 		llmClient:      nil, // No LLM - mock mode
 		renderer:       renderer,
+		workDir:        workDir,
 	}
 }
 
 // NewDriverWithLLM creates a new agent driver with LLM integration for live mode
-func NewDriverWithLLM(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient) *Driver {
+func NewDriverWithLLM(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, workDir string) *Driver {
 	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
 	return &Driver{
 		agentID:        agentID,
@@ -84,6 +86,7 @@ func NewDriverWithLLM(agentID string, stateStore *state.Store, modelConfig *conf
 		stateData:      make(map[string]interface{}),
 		llmClient:      llmClient, // Live LLM mode
 		renderer:       renderer,
+		workDir:        workDir,
 	}
 }
 
@@ -321,6 +324,83 @@ func (d *Driver) handleToolInvocationState(ctx context.Context) (State, error) {
 func (d *Driver) handleCodingState(ctx context.Context) (State, error) {
 	d.contextManager.AddMessage("assistant", "Coding phase: implementing solution")
 	
+	if d.llmClient != nil {
+		// Use LLM for code generation
+		return d.handleCodingWithLLM(ctx)
+	} else {
+		// Fallback to mock mode
+		return d.handleCodingMock(ctx)
+	}
+}
+
+// handleCodingWithLLM uses the LLM to generate actual code
+func (d *Driver) handleCodingWithLLM(ctx context.Context) (State, error) {
+	taskContent, _ := d.stateData["task_content"].(string)
+	plan, _ := d.stateData["plan"].(string)
+	contextStr := d.formatContextAsString()
+	
+	// Get tool results if available
+	previousToolResults := ""
+	if toolRes, exists := d.stateData["tool_results"]; exists {
+		if toolMap, ok := toolRes.(map[string]interface{}); ok {
+			if stdout, ok := toolMap["stdout"].(string); ok {
+				previousToolResults = stdout
+			}
+		}
+	}
+	
+	// Render the coding template
+	templateData := &templates.TemplateData{
+		TaskContent: taskContent,
+		Context:     contextStr,
+		Plan:        plan,
+		ToolResults: previousToolResults,
+		WorkDir:     d.workDir,
+	}
+	
+	prompt, err := d.renderer.Render(templates.CodingTemplate, templateData)
+	if err != nil {
+		return StateError, fmt.Errorf("failed to render coding template: %w", err)
+	}
+	
+	
+	// Get LLM response
+	response, err := d.llmClient.GenerateResponse(ctx, prompt)
+	if err != nil {
+		return StateError, fmt.Errorf("failed to get LLM response for coding: %w", err)
+	}
+	
+	
+	// Add LLM response to context
+	d.contextManager.AddMessage("assistant", response)
+	
+	// Parse and execute any MCP tool calls in the response
+	toolCalls, err := tools.ParseToolCalls(response)
+	if err != nil {
+		return StateError, fmt.Errorf("failed to parse tool calls from coding response: %w", err)
+	}
+	
+	
+	// Execute the tool calls
+	var toolResults []map[string]interface{}
+	for _, call := range toolCalls {
+		result, err := d.executeToolCall(ctx, call)
+		if err != nil {
+			return StateError, fmt.Errorf("failed to execute tool call %s: %w", call.Name, err)
+		}
+		toolResults = append(toolResults, result)
+	}
+	
+	d.stateData["code_generated"] = true
+	d.stateData["implementation"] = response
+	d.stateData["tool_calls_executed"] = len(toolCalls)
+	d.stateData["coding_completed_at"] = time.Now().UTC()
+	
+	return StateTesting, nil
+}
+
+// handleCodingMock provides the original mock coding behavior
+func (d *Driver) handleCodingMock(ctx context.Context) (State, error) {
 	// Simulate code generation
 	d.stateData["code_generated"] = true
 	d.stateData["coding_completed_at"] = time.Now().UTC()
@@ -663,4 +743,34 @@ func (d *Driver) parsePlanningResponse(response string) (plan string, nextAction
 	}
 	
 	return plan, nextAction
+}
+
+// executeToolCall executes a single MCP tool call
+func (d *Driver) executeToolCall(ctx context.Context, call tools.ToolCall) (map[string]interface{}, error) {
+	// Get the tool from the registry
+	tool, err := tools.Get(call.Name)
+	if err != nil {
+		return nil, fmt.Errorf("tool %s not found in registry: %w", call.Name, err)
+	}
+	
+	// Execute the tool with the parsed arguments
+	result, err := tool.Exec(ctx, call.Args)
+	if err != nil {
+		return nil, fmt.Errorf("tool %s execution failed: %w", call.Name, err)
+	}
+	
+	// Log execution for tracing
+	if stdout, ok := result["stdout"].(string); ok && len(stdout) > 0 {
+		fmt.Printf("DEBUG: Tool %s output: %s\n", call.Name, truncateString(stdout, 100))
+	}
+	
+	return result, nil
+}
+
+// truncateString truncates a string to maxLen characters for logging
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

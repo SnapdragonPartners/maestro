@@ -23,7 +23,7 @@ type DriverBasedAgent struct {
 // NewDriverBasedAgent creates a new agent using the Phase 3 state machine driver
 func NewDriverBasedAgent(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg) *DriverBasedAgent {
 	logger := logx.NewLogger(id)
-	driver := agent.NewDriverWithModel(id, stateStore, modelConfig)
+	driver := agent.NewDriverWithModel(id, stateStore, modelConfig, workDir)
 	
 	return &DriverBasedAgent{
 		id:      id,
@@ -42,7 +42,7 @@ func NewLiveDriverBasedAgent(id, name, workDir string, stateStore *state.Store, 
 	llmClient := agent.NewClaudeClient(apiKey)
 	
 	// Create driver with LLM integration
-	driver := agent.NewDriverWithLLM(id, stateStore, modelConfig, llmClient)
+	driver := agent.NewDriverWithLLM(id, stateStore, modelConfig, llmClient, workDir)
 	
 	return &DriverBasedAgent{
 		id:      id,

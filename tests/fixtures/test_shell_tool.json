@@ -1,0 +1,10 @@
+{
+    "id": "shell-demo-001",
+    "type": "TASK",
+    "from_agent": "user",
+    "to_agent": "claude",
+    "timestamp": "2025-06-11T01:20:00Z",
+    "payload": {
+      "content": "Use the shell tool to show me the current directory and list only .md files."
+    }
+  }

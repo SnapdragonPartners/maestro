@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -60,14 +61,25 @@ func (p *MCPParser) ParseToolCalls(text string) ([]ToolCall, error) {
 	return toolCalls, nil
 }
 
-// parseBasicArgs performs simple key=value argument parsing
+// parseBasicArgs performs JSON or simple key=value argument parsing
 func (p *MCPParser) parseBasicArgs(rawArgs string, args map[string]any) error {
 	if rawArgs == "" {
 		return nil
 	}
 	
-	// For now, just treat the entire raw args as the "cmd" argument
-	// More sophisticated parsing can be added later
+	// Try to parse as JSON first
+	if strings.HasPrefix(strings.TrimSpace(rawArgs), "{") {
+		var jsonArgs map[string]any
+		if err := json.Unmarshal([]byte(rawArgs), &jsonArgs); err == nil {
+			// Successfully parsed as JSON
+			for k, v := range jsonArgs {
+				args[k] = v
+			}
+			return nil
+		}
+	}
+	
+	// Fallback: treat the entire raw args as the "cmd" argument for backward compatibility
 	args["cmd"] = rawArgs
 	
 	return nil

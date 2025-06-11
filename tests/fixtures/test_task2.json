@@ -1,0 +1,20 @@
+{
+  "id": "msg_test_001",
+  "type": "TASK",
+  "from_agent": "test",
+  "to_agent": "claude_sonnet4:001",
+  "timestamp": "2025-06-10T20:00:00.000000Z",
+  "payload": {
+    "content": "Create a simple HTTP server with a hello world homepage app in Go",
+    "requirements": [
+      "GET / endpoint",
+      "Return html response with hello world message",
+      "Use port 8080",
+      "Include proper error handling"
+    ],
+    "story_id": "test_001"
+  },
+  "metadata": {
+    "test_type": "live_api_test"
+  }
+}
