@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"sync"
 )
 
@@ -39,6 +42,7 @@ func Get(name string) (ToolChannel, error) {
 func GetAll() map[string]ToolChannel {
 	return globalRegistry.GetAll()
 }
+
 
 // Register adds a tool to this registry
 func (r *Registry) Register(tool ToolChannel) error {
@@ -104,9 +108,9 @@ func (s *ShellTool) Name() string {
 	return "shell"
 }
 
-// Exec executes a shell command (minimal implementation for now)
+// Exec executes a shell command with proper validation
 func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]any, error) {
-	// Minimal implementation - just validate args exist
+	// Validate required cmd argument
 	cmd, hasCmd := args["cmd"]
 	if !hasCmd {
 		return nil, fmt.Errorf("missing required argument: cmd")
@@ -117,6 +121,10 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]a
 		return nil, fmt.Errorf("cmd argument must be a string")
 	}
 	
+	if cmdStr == "" {
+		return nil, fmt.Errorf("cmd argument cannot be empty")
+	}
+	
 	// Extract optional cwd
 	cwd := ""
 	if cwdVal, hasCwd := args["cwd"]; hasCwd {
@@ -125,12 +133,47 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]a
 		}
 	}
 	
-	// For now, return mock output
-	// TODO: Implement actual shell execution in Story 032
+	// Execute shell command
+	return s.executeShellCommand(ctx, cmdStr, cwd)
+}
+
+
+// executeShellCommand performs actual shell command execution
+func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (map[string]any, error) {
+	// Create command with context for cancellation
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	
+	// Set working directory if specified
+	if cwd != "" {
+		// Validate that the directory exists
+		if _, err := os.Stat(cwd); os.IsNotExist(err) {
+			return nil, fmt.Errorf("working directory does not exist: %s", cwd)
+		}
+		cmd.Dir = cwd
+	}
+	
+	// Capture stdout and stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	
+	// Execute the command
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		// Extract exit code from error
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			// Command failed to start or other error
+			return nil, fmt.Errorf("failed to execute command: %w", err)
+		}
+	}
+	
 	return map[string]any{
-		"stdout":    fmt.Sprintf("Mock execution of: %s", cmdStr),
-		"stderr":    "",
-		"exit_code": 0,
+		"stdout":    stdout.String(),
+		"stderr":    stderr.String(),
+		"exit_code": exitCode,
 		"cwd":       cwd,
 	}, nil
 }
@@ -138,4 +181,15 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]a
 // NewShellTool creates a new shell tool instance
 func NewShellTool() *ShellTool {
 	return &ShellTool{}
+}
+
+// init registers the shell tool globally
+func init() {
+	// Register the shell tool on package initialization
+	// This ensures it's available whenever the tools package is imported
+	if err := Register(NewShellTool()); err != nil {
+		// Since this is in init(), we can't return the error
+		// In a real application, you might want to panic or log this
+		panic(fmt.Sprintf("Failed to register shell tool: %v", err))
+	}
 }

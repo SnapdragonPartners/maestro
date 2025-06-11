@@ -288,14 +288,27 @@ func (ctl *AgentCtl) runClaude(ctx context.Context) error {
 
 	switch ctl.mode {
 	case ModeLive:
-		// Use live API (requires ANTHROPIC_API_KEY)
+		// Use Phase 3 state machine with live LLM integration
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		if apiKey == "" {
 			return fmt.Errorf("ANTHROPIC_API_KEY environment variable required for live mode")
 		}
-		claudeAgent = agents.NewLiveClaudeAgent(agentID, "standalone-claude", workDir, apiKey, true)
+		
+		stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
+		if err != nil {
+			return fmt.Errorf("failed to create state store: %w", err)
+		}
+		
+		// Create model config for live mode
+		liveModelConfig := &config.ModelCfg{
+			MaxContextTokens: 32000,  // Claude 3 Sonnet context limit
+			MaxReplyTokens:   4096,   // Conservative default
+			CompactionBuffer: 1000,   // Default buffer
+		}
+		
+		claudeAgent = agents.NewLiveDriverBasedAgent(agentID, "standalone-claude", workDir, stateStore, liveModelConfig, apiKey)
 	case ModeMock:
-		// Use Phase 3 state machine driver for mock mode
+		// Use Phase 3 state machine driver for mock mode (mocks LLM, not tools)
 		stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
 		if err != nil {
 			return fmt.Errorf("failed to create state store: %w", err)

@@ -34,6 +34,25 @@ func NewDriverBasedAgent(id, name, workDir string, stateStore *state.Store, mode
 	}
 }
 
+// NewLiveDriverBasedAgent creates a new agent using the Phase 3 state machine with LLM integration
+func NewLiveDriverBasedAgent(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string) *DriverBasedAgent {
+	logger := logx.NewLogger(id)
+	
+	// Create LLM client
+	llmClient := agent.NewClaudeClient(apiKey)
+	
+	// Create driver with LLM integration
+	driver := agent.NewDriverWithLLM(id, stateStore, modelConfig, llmClient)
+	
+	return &DriverBasedAgent{
+		id:      id,
+		name:    name,
+		workDir: workDir,
+		logger:  logger,
+		driver:  driver,
+	}
+}
+
 // GetID returns the agent's identifier
 func (a *DriverBasedAgent) GetID() string {
 	return a.id
@@ -90,6 +109,47 @@ func (a *DriverBasedAgent) handleTaskMessage(ctx context.Context, msg *proto.Age
 		response.SetPayload("original_message_id", msg.ID)
 		response.SetMetadata("error_type", "processing_error")
 		return response, nil
+	}
+
+	// Check if there's a pending question for the architect (Story 033)
+	if hasPending, questionContent, questionReason := a.driver.GetPendingQuestion(); hasPending {
+		a.logger.Info("Sending QUESTION message to architect: %s", questionReason)
+		
+		// Create QUESTION message for architect
+		questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, a.id, "architect")
+		questionMsg.ParentMsgID = msg.ID
+		questionMsg.SetPayload("question", questionContent)
+		questionMsg.SetPayload("reason", questionReason)
+		questionMsg.SetPayload("current_state", string(a.driver.GetCurrentState()))
+		questionMsg.SetMetadata("original_sender", msg.FromAgent)
+		questionMsg.SetMetadata("question_type", "state_machine_help")
+		
+		// Mark question as processed
+		a.driver.ClearPendingQuestion()
+		
+		// Return the question message instead of a result
+		return questionMsg, nil
+	}
+
+	// Check if there's a pending approval request for the architect (Story 034)
+	if hasPending, requestContent, requestReason := a.driver.GetPendingApprovalRequest(); hasPending {
+		a.logger.Info("Sending QUESTION message to architect for approval: %s", requestReason)
+		
+		// Create QUESTION message for architect approval
+		approvalMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, a.id, "architect")
+		approvalMsg.ParentMsgID = msg.ID
+		approvalMsg.SetPayload("question", requestContent)
+		approvalMsg.SetPayload("reason", requestReason)
+		approvalMsg.SetPayload("current_state", string(a.driver.GetCurrentState()))
+		approvalMsg.SetPayload("request_type", "approval")
+		approvalMsg.SetMetadata("original_sender", msg.FromAgent)
+		approvalMsg.SetMetadata("question_type", "approval_request")
+		
+		// Mark approval request as processed
+		a.driver.ClearPendingApprovalRequest()
+		
+		// Return the approval request message instead of a result
+		return approvalMsg, nil
 	}
 
 	// Create successful result response
