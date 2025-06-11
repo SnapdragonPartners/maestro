@@ -287,9 +287,28 @@ The MVP orchestrator can successfully:
 
 **ITEMS NEEDED FOR PRODUCTION WORK:**
 See production backlog todo for detailed requirements to make this system production-ready.
+
+**PHASE 3 STATE MACHINE (IMPLEMENTED):**
+The system has been enhanced with a Phase 3 state machine driver that provides structured workflows for coding agents:
+
+- **State Machine States**: PLANNING → CODING → TESTING → AWAIT_APPROVAL → DONE
+- **Template System**: Prompt templates for each state in `pkg/templates/`
+- **MCP Tool Integration**: Model Context Protocol tools for file operations (`pkg/tools/`)
+- **Live LLM Integration**: Real Claude API integration with structured prompts
+- **Workspace Management**: Proper file creation in agent workspaces with absolute paths
+- **JSON Tool Arguments**: Support for structured tool calls with JSON parameters
+
+The Phase 3 implementation enables:
+- Real code generation with file creation in agent workspaces
+- Structured workflow progression through defined states
+- Template-driven prompts for consistent LLM interactions
+- Tool-based file operations using MCP protocol
+- Live API integration with fallback to mock mode for testing
+
+Current testing shows successful end-to-end code generation with proper file creation in workspace directories.
 ```
 
 ---
 
-> **Generated:** 2025‑06‑09
+> **Updated:** 2025‑06‑11
 

@@ -87,7 +87,7 @@ export OPENAI_API_KEY="your-openai-api-key"
 
 #### Sample Task JSON Format
 
-For testing the Claude agent, create a task JSON file:
+For testing the Claude agent, create a task JSON file in the `tests/fixtures/` directory:
 
 ```json
 {
@@ -116,12 +116,20 @@ For testing the Claude agent, create a task JSON file:
 - **Rate Limiting** (`pkg/limiter/`) - Token bucket per-model rate limiting with budget enforcement
 - **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl`
 - **Configuration** (`pkg/config/`) - JSON config with environment variable overrides
+- **State Machine Driver** (`pkg/agent/`) - Phase 3 state machine for coding workflows
+- **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
+- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools for file operations
 
 ### Agent Flow
 
 1. Architect agent reads development stories and creates TASK messages
 2. Dispatcher routes tasks to appropriate coding agents with rate limiting
-3. Coding agents process tasks and return RESULT/ERROR/QUESTION messages
+3. **Phase 3 State Machine**: Coding agents follow structured workflow:
+   - **PLANNING**: Analyze requirements and create implementation plan
+   - **CODING**: Generate code using MCP tools to create files in workspace
+   - **TESTING**: Validate code with formatting, building, and tests
+   - **AWAIT_APPROVAL**: Request review and approval
+   - **DONE**: Complete the task
 4. System maintains event logs and handles graceful shutdown
 
 ## Configuration
@@ -169,9 +177,12 @@ go test ./...
 # Run end-to-end smoke test
 go test -v . -run TestE2ESmokeTest
 
-# Test individual agents
+# Test individual agents (using files in tests/fixtures/)
 ./bin/agentctl run architect --input stories/001.md --mock
-./bin/agentctl run claude --input test_task.json --mock
+./bin/agentctl run claude --input tests/fixtures/test_task.json --mock
+
+# Test live mode with workspace
+./bin/agentctl run claude --input tests/fixtures/test_task.json --mode live --workdir ./work/tmp
 ```
 
 ## Directory Structure
@@ -182,16 +193,24 @@ orchestrator/
 ├── cmd/agentctl/    # Standalone agent runner CLI
 ├── config/          # Configuration files
 ├── docs/            # Documentation and style guide
-├── logs/            # Runtime event logs
+├── logs/            # Runtime event logs (generated)
 ├── pkg/             # Core packages
+│   ├── agent/       # Phase 3 state machine driver
 │   ├── config/      # Configuration loader
+│   ├── contextmgr/  # Context management for LLM conversations
 │   ├── dispatch/    # Message routing and retry logic
 │   ├── eventlog/    # Event logging system
 │   ├── limiter/     # Rate limiting and budget tracking
 │   ├── logx/        # Structured logging
-│   └── proto/       # Message protocol definitions
+│   ├── proto/       # Message protocol definitions
+│   ├── state/       # State persistence for agents
+│   ├── templates/   # Prompt templates for workflow states
+│   ├── testkit/     # Testing utilities
+│   └── tools/       # MCP tool implementations
 ├── status/          # Agent status reports (generated)
 ├── stories/         # Development story definitions
+├── tests/           # Test files and fixtures
+│   └── fixtures/    # Test input files (JSON, MD)
 └── work/            # Agent workspaces (generated)
 ```
 

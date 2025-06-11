@@ -28,7 +28,7 @@ make agentctl  # Build the agent control CLI
 
 ### 1. Create a Task File
 
-The task file tells Claude what to implement:
+Create your task file in the `tests/fixtures/` directory. The task file tells Claude what to implement:
 
 ```json
 {
@@ -57,24 +57,23 @@ The task file tells Claude what to implement:
 
 ```bash
 # Mock mode (fast, predictable)
-./bin/agentctl run claude --input test_task.json --mode mock
+./bin/agentctl run claude --input tests/fixtures/test_task.json --mode mock
 
 # Live mode with temporary workspace (files cleaned up)
-./bin/agentctl run claude --input test_task.json --mode live
+./bin/agentctl run claude --input tests/fixtures/test_task.json --mode live
 
 # Live mode with persistent workspace (files kept for inspection)
-mkdir -p ./claude-workspace
 ./bin/agentctl run claude \
-  --input test_task.json \
+  --input tests/fixtures/test_task.json \
   --mode live \
-  --workdir ./claude-workspace
+  --workdir ./work/tmp
 
 # Live mode with workspace and result file
 ./bin/agentctl run claude \
-  --input test_task.json \
+  --input tests/fixtures/test_task.json \
   --mode live \
-  --workdir ./claude-workspace \
-  --output claude_result.json
+  --workdir ./work/tmp \
+  --output tests/fixtures/claude_result.json
 ```
 
 ### 3. Inspect Generated Code
@@ -83,15 +82,18 @@ When using `--workdir`, you can examine what Claude generated:
 
 ```bash
 # List generated files
-ls -la ./claude-workspace/
+ls -la ./work/tmp/
 
 # View the generated Go code
-cat ./claude-workspace/*.go
+cat ./work/tmp/*.go
 
 # Check if there were compilation errors
-cd ./claude-workspace
+cd ./work/tmp
 go fmt .
 go build .
+
+# Note: Claude may also generate go.mod files depending on the task
+cat ./work/tmp/go.mod
 ```
 
 ## Testing Architect Agent (Design Agent)

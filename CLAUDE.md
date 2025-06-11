@@ -13,11 +13,19 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
 - **Rate Limiting** (`pkg/limiter/`) - Token bucket per-model rate limiting with daily budget enforcement
 - **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl` with daily rotation
 - **Configuration** (`pkg/config/`) - JSON config loader with environment variable overrides
+- **State Machine Driver** (`pkg/agent/`) - Phase 3 state machine for structured coding workflows
+- **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
+- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools for file operations in workspaces
 
 ### Agent Flow
 1. Architect agent reads development stories and creates TASK messages
 2. Dispatcher routes tasks to appropriate coding agents with rate limiting
-3. Coding agents process tasks and return RESULT/ERROR/QUESTION messages
+3. **Phase 3 State Machine**: Coding agents execute structured workflow:
+   - **PLANNING**: Analyze task and create implementation plan
+   - **CODING**: Generate code using MCP tools to create files in workspace
+   - **TESTING**: Run formatting, building, and tests on generated code
+   - **AWAIT_APPROVAL**: Request review and approval from architect
+   - **DONE**: Mark task as completed
 4. System maintains event logs and handles graceful shutdown with STATUS.md dumps
 
 ## Development Commands
@@ -36,9 +44,19 @@ make run      # Run the orchestrator with banner output
 The codebase follows this structure:
 - `agents/` - Agent implementations (architect, coding)
 - `config/` - Configuration files (config.json)
-- `pkg/` - Core packages (dispatch, proto, limiter, eventlog, config, logx)
+- `pkg/` - Core packages:
+  - `agent/` - Phase 3 state machine driver
+  - `dispatch/` - Message routing and retry logic
+  - `proto/` - Message protocol definitions
+  - `limiter/` - Rate limiting and budget tracking
+  - `eventlog/` - Event logging system
+  - `config/` - Configuration loader
+  - `templates/` - Prompt templates for workflow states
+  - `tools/` - MCP tool implementations
+  - `logx/` - Structured logging
 - `logs/` - Runtime event logs
 - `stories/` - Development story definitions
+- `tests/fixtures/` - Test input files and examples
 - `docs/` - Documentation and STYLE.md
 
 ## Story-Driven Development
