@@ -13,14 +13,20 @@ func createTestConfig() *config.Config {
 			"claude": {
 				MaxTokensPerMinute: 100,
 				MaxBudgetPerDayUSD: 10.0,
-				MaxAgents:          3,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "test-claude-1", ID: "001", Type: "coder", WorkDir: "./work/test1"},
+					{Name: "test-claude-2", ID: "002", Type: "coder", WorkDir: "./work/test2"},
+					{Name: "test-claude-3", ID: "003", Type: "coder", WorkDir: "./work/test3"},
+				},
 			},
 			"o3": {
 				MaxTokensPerMinute: 50,
 				MaxBudgetPerDayUSD: 20.0,
-				MaxAgents:          1,
 				APIKey:             "test-key-2",
+				Agents: []config.Agent{
+					{Name: "test-o3-1", ID: "001", Type: "architect", WorkDir: "./work/o3test"},
+				},
 			},
 		},
 	}
@@ -140,7 +146,10 @@ func TestTokenRefill(t *testing.T) {
 			"test": {
 				MaxTokensPerMinute: 60, // 1 token per second for easy testing
 				MaxBudgetPerDayUSD: 10.0,
-				MaxAgents:          2,
+				Agents: []config.Agent{
+					{Name: "test-agent-1", ID: "001", Type: "coder", WorkDir: "./work/test1"},
+					{Name: "test-agent-2", ID: "002", Type: "coder", WorkDir: "./work/test2"},
+				},
 				APIKey:             "test-key",
 			},
 		},

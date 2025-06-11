@@ -141,7 +141,7 @@ The system needs a simple health check endpoint that external monitoring systems
 	// Step 1: Send story processing request to architect (simulating orchestrator request)
 	t.Log("📋 Step 1: Sending health story to architect agent")
 	
-	storyTaskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "openai_o3:001")
+	storyTaskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "architect")
 	storyTaskMsg.SetPayload("story_id", "001")
 	storyTaskMsg.SetMetadata("test_type", "e2e_smoke_test")
 	storyTaskMsg.SetMetadata("story_name", "health_endpoint")
@@ -274,7 +274,7 @@ The system needs a simple health check endpoint that external monitoring systems
 	}
 
 	agents := stats["agents"].([]string)
-	expectedAgents := []string{"architect", "claude"}
+	expectedAgents := []string{"openai_o3:001", "claude_sonnet4:001"}
 	if len(agents) != len(expectedAgents) {
 		t.Errorf("Expected %d agents, got %d", len(expectedAgents), len(agents))
 	}
@@ -424,7 +424,7 @@ Database connection and queries.
 	// Count RESULT messages from claude (one per story)
 	claudeResults := 0
 	for _, msg := range messages {
-		if msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "claude" {
+		if msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "claude_sonnet4:001" {
 			claudeResults++
 		}
 	}

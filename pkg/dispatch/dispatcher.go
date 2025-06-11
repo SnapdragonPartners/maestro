@@ -139,11 +139,8 @@ func (d *Dispatcher) DispatchMessage(msg *proto.AgentMsg) error {
 		return fmt.Errorf("dispatcher is not running")
 	}
 
-	// Log incoming message
-	if err := d.eventLog.WriteMessage(msg); err != nil {
-		d.logger.Error("Failed to log incoming message: %v", err)
-		// Continue processing even if logging fails
-	}
+	// Note: Event logging will happen after name resolution in processMessage
+	// to ensure the logged message reflects the actual target agent
 
 	select {
 	case d.inputChan <- msg:
@@ -173,6 +170,19 @@ func (d *Dispatcher) messageProcessor(ctx context.Context) {
 
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Debug("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
+
+	// Resolve logical agent name to actual agent ID
+	resolvedToAgent := d.resolveAgentName(msg.ToAgent)
+	if resolvedToAgent != msg.ToAgent {
+		d.logger.Debug("Resolved logical name %s to %s", msg.ToAgent, resolvedToAgent)
+		msg.ToAgent = resolvedToAgent
+	}
+
+	// Log message with resolved agent name
+	if err := d.eventLog.WriteMessage(msg); err != nil {
+		d.logger.Error("Failed to log incoming message: %v", err)
+		// Continue processing even if logging fails
+	}
 
 	// Find target agent
 	d.mu.RLock()
@@ -295,6 +305,46 @@ func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) {
 	if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil {
 		d.logger.Error("Failed to log error message: %v", logErr)
 	}
+}
+
+// resolveAgentName resolves logical agent names to actual agent IDs
+func (d *Dispatcher) resolveAgentName(logicalName string) string {
+	// If already an exact agent ID, return as-is
+	d.mu.RLock()
+	if _, exists := d.agents[logicalName]; exists {
+		d.mu.RUnlock()
+		return logicalName
+	}
+	d.mu.RUnlock()
+
+	// Map logical names to agent types
+	targetType := ""
+	switch logicalName {
+	case "architect":
+		targetType = "architect"
+	case "coder":
+		targetType = "coder"
+	default:
+		// Not a logical name, return as-is
+		return logicalName
+	}
+
+	// Find first agent of the target type
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	
+	allAgents := d.config.GetAllAgents()
+	for _, agentWithModel := range allAgents {
+		if agentWithModel.Agent.Type == targetType {
+			agentID := agentWithModel.Agent.GetLogID(agentWithModel.ModelName)
+			if _, exists := d.agents[agentID]; exists {
+				return agentID
+			}
+		}
+	}
+
+	// No agent found for this type, return original name (will cause "not found" error)
+	return logicalName
 }
 
 func (d *Dispatcher) GetStats() map[string]interface{} {

@@ -18,6 +18,7 @@ import (
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/state"
 )
 
 // Orchestrator manages the multi-agent system
@@ -29,6 +30,7 @@ type Orchestrator struct {
 	logger       *logx.Logger
 	agents       map[string]StatusAgent
 	shutdownTime time.Duration
+	stateStore   *state.Store // Phase 3: Global state store for agent state machines
 }
 
 // StatusAgent interface for agents that can generate status reports
@@ -112,6 +114,12 @@ func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
 		return nil, fmt.Errorf("failed to create event log: %w", err)
 	}
 
+	// Create global state store for Phase 3 state machines
+	stateStore, err := state.NewStore("state")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create state store: %w", err)
+	}
+
 	// Create dispatcher
 	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
 	if err != nil {
@@ -132,6 +140,7 @@ func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
 		logger:       logger,
 		agents:       make(map[string]StatusAgent),
 		shutdownTime: shutdownTime,
+		stateStore:   stateStore,
 	}, nil
 }
 
@@ -226,8 +235,9 @@ func (o *Orchestrator) createAgents() error {
 				liveAgent := agents.NewLiveClaudeAgent(logID, agent.Name, agent.WorkDir, agentWithModel.Model.APIKey, true)
 				registeredAgent = liveAgent
 			} else {
-				claudeAgent := agents.NewClaudeAgent(logID, agent.Name, agent.WorkDir)
-				registeredAgent = claudeAgent
+				// Use Phase 3 state machine driver with model-aware context management
+				driverAgent := agents.NewDriverBasedAgent(logID, agent.Name, agent.WorkDir, o.stateStore, &agentWithModel.Model)
+				registeredAgent = driverAgent
 			}
 			
 		default:

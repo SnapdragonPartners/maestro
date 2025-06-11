@@ -110,8 +110,12 @@ func createTestConfig() *config.Config {
 			"claude": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 25.0,
-				MaxAgents:          3,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "test-claude-1", ID: "001", Type: "coder", WorkDir: "./work/test1"},
+					{Name: "test-claude-2", ID: "002", Type: "coder", WorkDir: "./work/test2"},
+					{Name: "test-claude-3", ID: "003", Type: "coder", WorkDir: "./work/test3"},
+				},
 			},
 		},
 		MaxRetryAttempts:       3,

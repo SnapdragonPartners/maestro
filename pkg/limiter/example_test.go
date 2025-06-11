@@ -14,14 +14,20 @@ func ExampleLimiter_usage() {
 			"claude": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 25.0,
-				MaxAgents:          3,
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "claude-1", ID: "001", Type: "coder", WorkDir: "./work/claude1"},
+					{Name: "claude-2", ID: "002", Type: "coder", WorkDir: "./work/claude2"},
+					{Name: "claude-3", ID: "003", Type: "coder", WorkDir: "./work/claude3"},
+				},
 			},
 			"o3": {
 				MaxTokensPerMinute: 500,
 				MaxBudgetPerDayUSD: 50.0,
-				MaxAgents:          1,
 				APIKey:             "test-key-2",
+				Agents: []config.Agent{
+					{Name: "architect-1", ID: "001", Type: "architect", WorkDir: "./work/arch1"},
+				},
 			},
 		},
 	}

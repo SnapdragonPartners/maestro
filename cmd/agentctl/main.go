@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 
 	"orchestrator/agents"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/state"
 )
 
 // AgentMode represents the execution mode
@@ -293,13 +295,20 @@ func (ctl *AgentCtl) runClaude(ctx context.Context) error {
 		}
 		claudeAgent = agents.NewLiveClaudeAgent(agentID, "standalone-claude", workDir, apiKey, true)
 	case ModeMock:
-		// Use mock implementation
-		if liveClaudeAgent := agents.NewLiveClaudeAgent(agentID, "standalone-claude", workDir, "fake-key", false); liveClaudeAgent != nil {
-			claudeAgent = liveClaudeAgent
-		} else {
-			// Fallback to original mock agent if LiveClaudeAgent doesn't support mock mode
-			claudeAgent = agents.NewClaudeAgent(agentID, "standalone-claude", workDir)
+		// Use Phase 3 state machine driver for mock mode
+		stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
+		if err != nil {
+			return fmt.Errorf("failed to create state store: %w", err)
 		}
+		
+		// Create a mock model config for standalone testing
+		mockModelConfig := &config.ModelCfg{
+			MaxContextTokens: 32000,  // Reasonable default
+			MaxReplyTokens:   4096,   // Conservative default
+			CompactionBuffer: 1000,   // Default buffer
+		}
+		
+		claudeAgent = agents.NewDriverBasedAgent(agentID, "standalone-claude", workDir, stateStore, mockModelConfig)
 	}
 
 	// Update the message routing for standalone mode

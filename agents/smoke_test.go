@@ -74,9 +74,9 @@ Implement a health check endpoint.
 	}
 	defer dispatcher.Stop(ctx)
 
-	// Create architect agent
+	// Create architect agent using proper model:id format
 	workDir := filepath.Join(tmpDir, "work")
-	architect := NewArchitectAgent("architect", "smoke-test", storiesDir, workDir, "claude")
+	architect := NewArchitectAgent("architect:001", "smoke-test", storiesDir, workDir, "claude:001")
 	architect.SetDispatcher(dispatcher)
 
 	// Register architect with dispatcher
@@ -86,14 +86,14 @@ Implement a health check endpoint.
 	}
 
 	// Create mock coding agent for testing
-	mockClaude := NewMockCodingAgent("claude")
+	mockClaude := NewMockCodingAgent("claude:001")
 	err = dispatcher.RegisterAgent(mockClaude)
 	if err != nil {
 		t.Fatalf("Failed to register mock coding agent: %v", err)
 	}
 
 	// Step 1: Send story processing request to architect
-	orchestratorMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "architect")
+	orchestratorMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "architect:001")
 	orchestratorMsg.SetPayload("story_id", "001")
 	orchestratorMsg.SetMetadata("test_case", "smoke_test")
 
@@ -120,8 +120,8 @@ Implement a health check endpoint.
 		t.Errorf("Expected TASK message, got %s", receivedMessage.Type)
 	}
 
-	if receivedMessage.FromAgent != "architect" {
-		t.Errorf("Expected message from architect, got from %s", receivedMessage.FromAgent)
+	if receivedMessage.FromAgent != "architect:001" {
+		t.Errorf("Expected message from architect:001, got from %s", receivedMessage.FromAgent)
 	}
 
 	t.Logf("Step 2: ✓ Architect sent TASK to claude")
@@ -140,14 +140,14 @@ Implement a health check endpoint.
 	// Look for task message in logs
 	var foundTask bool
 	for _, msg := range messages {
-		if msg.Type == proto.MsgTypeTASK && msg.FromAgent == "architect" && msg.ToAgent == "claude" {
+		if msg.Type == proto.MsgTypeTASK && msg.FromAgent == "architect:001" && msg.ToAgent == "claude:001" {
 			foundTask = true
 			break
 		}
 	}
 
 	if !foundTask {
-		t.Error("Expected to find TASK message from architect to claude in event log")
+		t.Error("Expected to find TASK message from architect:001 to claude:001 in event log")
 	}
 
 	t.Logf("Step 3: ✓ Task message logged successfully")
@@ -156,7 +156,7 @@ Implement a health check endpoint.
 	stats := dispatcher.GetStats()
 	agents := stats["agents"].([]string)
 
-	expectedAgents := []string{"architect", "claude"}
+	expectedAgents := []string{"architect:001", "claude:001"}
 	if len(agents) != len(expectedAgents) {
 		t.Errorf("Expected %d agents, got %d", len(expectedAgents), len(agents))
 	}
@@ -236,14 +236,18 @@ func createSmokeTestConfig() *config.Config {
 			"architect": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 10.0,
-				// MaxAgents:          2, // Removed field
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "smoke-architect", ID: "001", Type: "architect", WorkDir: "./work/architect"},
+				},
 			},
 			"claude": {
 				MaxTokensPerMinute: 1000,
 				MaxBudgetPerDayUSD: 25.0,
-				// MaxAgents:          3, // Removed field
 				APIKey:             "test-key",
+				Agents: []config.Agent{
+					{Name: "smoke-claude", ID: "001", Type: "coder", WorkDir: "./work/claude"},
+				},
 			},
 		},
 		MaxRetryAttempts:       3,

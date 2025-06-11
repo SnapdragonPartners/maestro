@@ -107,9 +107,16 @@ func (c *LiveClaudeAgent) processTask(ctx context.Context, msg *proto.AgentMsg) 
 	}
 
 	// Write code to workspace
-	if err := c.writeCodeToWorkspace(implementation, taskContent); err != nil {
-		c.logger.Error("Failed to write code to workspace: %v", err)
-		// Continue anyway - this is not a fatal error
+	if c.useLiveAPI {
+		if err := c.writeCodeToWorkspace(implementation, taskContent); err != nil {
+			c.logger.Error("Failed to write code to workspace: %v", err)
+			// Continue anyway - this is not a fatal error
+		}
+	} else {
+		if err := c.writeMockCodeToWorkspace(implementation, taskContent); err != nil {
+			c.logger.Error("Failed to write mock code to workspace: %v", err)
+			// Continue anyway - this is not a fatal error
+		}
 	}
 
 	// Run tests and linting
@@ -456,6 +463,29 @@ func (c *LiveClaudeAgent) writeCodeToWorkspace(implementation, taskContent strin
 		c.logger.Info("Wrote generated code to %s (%d lines)", filePath, strings.Count(block.Content, "\n")+1)
 	}
 
+	return nil
+}
+
+// writeMockCodeToWorkspace writes mock-generated code directly to workspace without extraction
+func (c *LiveClaudeAgent) writeMockCodeToWorkspace(implementation, taskContent string) error {
+	// Determine filename based on task content
+	filename := "main.go"
+	if strings.Contains(strings.ToLower(taskContent), "health") {
+		filename = "health.go"
+	} else if strings.Contains(strings.ToLower(taskContent), "user") {
+		filename = "user.go"
+	} else if strings.Contains(strings.ToLower(taskContent), "database") {
+		filename = "database.go"
+	}
+
+	filePath := filepath.Join(c.workDir, filename)
+	
+	// Write the code content directly to file
+	if err := os.WriteFile(filePath, []byte(implementation), 0644); err != nil {
+		return fmt.Errorf("failed to write mock code to %s: %w", filePath, err)
+	}
+
+	c.logger.Info("Wrote generated code to %s (%d lines)", filePath, strings.Count(implementation, "\n")+1)
 	return nil
 }
 
