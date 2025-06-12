@@ -43,7 +43,7 @@ func NewLimiter(cfg *config.Config) *Limiter {
 			name:               name,
 			maxTokensPerMinute: modelCfg.MaxTokensPerMinute,
 			maxBudgetPerDayUSD: modelCfg.MaxBudgetPerDayUSD,
-			maxAgents:          len(modelCfg.Agents), // Use number of configured agents
+			maxAgents:          len(modelCfg.Agents),        // Use number of configured agents
 			currentTokens:      modelCfg.MaxTokensPerMinute, // Start with full bucket
 			currentBudgetUSD:   0,                           // Start with no spend
 			currentAgents:      0,                           // Start with no active agents

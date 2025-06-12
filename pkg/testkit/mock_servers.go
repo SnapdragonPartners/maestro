@@ -24,8 +24,8 @@ func MockAnthropicServer() *httptest.Server {
 
 		// Parse the request to understand what's being asked
 		var request struct {
-			Model       string `json:"model"`
-			Messages    []struct {
+			Model    string `json:"model"`
+			Messages []struct {
 				Role    string `json:"role"`
 				Content []struct {
 					Type string `json:"type"`
@@ -52,10 +52,10 @@ func MockAnthropicServer() *httptest.Server {
 
 		// Create mock Anthropic response
 		response := map[string]interface{}{
-			"id":      "msg_mock_12345",
-			"type":    "message",
-			"role":    "assistant",
-			"model":   request.Model,
+			"id":    "msg_mock_12345",
+			"type":  "message",
+			"role":  "assistant",
+			"model": request.Model,
 			"content": []map[string]interface{}{
 				{
 					"type": "text",
@@ -145,7 +145,7 @@ func MockOpenAIServer() *httptest.Server {
 
 func generateMockCode(prompt string) string {
 	promptLower := strings.ToLower(prompt)
-	
+
 	if strings.Contains(promptLower, "health") {
 		return `package main
 
@@ -219,7 +219,7 @@ func main() {
 
 func generateMockTask(prompt string) string {
 	promptLower := strings.ToLower(prompt)
-	
+
 	if strings.Contains(promptLower, "health") {
 		return `Implement a health check endpoint with the following requirements:
 - Create GET /health endpoint

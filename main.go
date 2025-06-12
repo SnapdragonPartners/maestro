@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"orchestrator/agents"
+	"orchestrator/pkg/agent"
+	"orchestrator/pkg/architect"
+	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/eventlog"
@@ -30,7 +34,11 @@ type Orchestrator struct {
 	logger       *logx.Logger
 	agents       map[string]StatusAgent
 	shutdownTime time.Duration
-	stateStore   *state.Store // Phase 3: Global state store for agent state machines
+	architect    *architect.Driver // Phase 4: Architect driver for spec processing
+
+	// Pull-based polling control
+	pollingCancel context.CancelFunc
+	pollingWg     sync.WaitGroup
 }
 
 // StatusAgent interface for agents that can generate status reports
@@ -39,11 +47,43 @@ type StatusAgent interface {
 	GenerateStatus() (string, error)
 }
 
+// ArchitectMessageAdapter allows the architect driver to receive messages while running workflows
+type ArchitectMessageAdapter struct {
+	driver *architect.Driver
+	id     string
+}
+
+// GetID implements dispatch.Agent
+func (a *ArchitectMessageAdapter) GetID() string {
+	return a.id
+}
+
+// ProcessMessage implements dispatch.Agent - forwards messages to architect's question/review handlers
+func (a *ArchitectMessageAdapter) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	switch msg.Type {
+	case proto.MsgTypeQUESTION:
+		// Forward to question handler
+		return a.driver.HandleQuestion(ctx, msg)
+	case proto.MsgTypeRESULT:
+		// Forward to review evaluator
+		return a.driver.HandleResult(ctx, msg)
+	default:
+		return nil, fmt.Errorf("architect cannot process message type: %s", msg.Type)
+	}
+}
+
+// Shutdown implements dispatch.Agent
+func (a *ArchitectMessageAdapter) Shutdown(ctx context.Context) error {
+	return nil // Architect driver doesn't need special shutdown for messages
+}
+
 func main() {
 	fmt.Println("orchestrator boot")
 
 	var configPath string
+	var specPath string
 	flag.StringVar(&configPath, "config", "", "Path to config file")
+	flag.StringVar(&specPath, "spec", "", "Path to specification file (markdown)")
 	flag.Parse()
 
 	// Use CONFIG_PATH env var if flag not provided
@@ -61,13 +101,8 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Pretty print the config
-	configJSON, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		log.Fatalf("Failed to marshal config: %v", err)
-	}
-
-	fmt.Printf("Loaded configuration:\n%s\n", configJSON)
+	// Config loaded successfully (no need to print it)
+	_ = cfg
 
 	// Create orchestrator
 	orchestrator, err := NewOrchestrator(cfg)
@@ -79,6 +114,13 @@ func main() {
 	ctx := context.Background()
 	if err := orchestrator.Start(ctx); err != nil {
 		log.Fatalf("Failed to start orchestrator: %v", err)
+	}
+
+	// If spec file provided, initiate architect workflow
+	if specPath != "" {
+		if err := orchestrator.ProcessSpecification(ctx, specPath); err != nil {
+			log.Fatalf("Failed to process specification: %v", err)
+		}
 	}
 
 	// Setup signal handling for graceful shutdown
@@ -114,11 +156,7 @@ func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
 		return nil, fmt.Errorf("failed to create event log: %w", err)
 	}
 
-	// Create global state store for Phase 3 state machines
-	stateStore, err := state.NewStore("state")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create state store: %w", err)
-	}
+	// No global state store - each agent manages its own state
 
 	// Create dispatcher
 	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
@@ -140,7 +178,7 @@ func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
 		logger:       logger,
 		agents:       make(map[string]StatusAgent),
 		shutdownTime: shutdownTime,
-		stateStore:   stateStore,
+		architect:    nil, // Will be set during agent creation
 	}, nil
 }
 
@@ -158,6 +196,11 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create agents: %w", err)
 	}
 
+	// Start polling workers for pull-based architecture
+	if err := o.startPollingWorkers(ctx); err != nil {
+		return fmt.Errorf("failed to start polling workers: %w", err)
+	}
+
 	o.logger.Info("Orchestrator started successfully")
 	return nil
 }
@@ -166,26 +209,34 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	o.logger.Info("Starting graceful shutdown")
 
-	// Step 1: Broadcast SHUTDOWN message to all agents
+	// Step 1: Stop polling workers
+	if o.pollingCancel != nil {
+		o.pollingCancel()
+		o.logger.Info("Waiting for polling workers to stop...")
+		o.pollingWg.Wait()
+		o.logger.Info("Polling workers stopped")
+	}
+
+	// Step 2: Broadcast SHUTDOWN message to all agents
 	if err := o.broadcastShutdown(); err != nil {
 		o.logger.Error("Failed to broadcast shutdown: %v", err)
 	}
 
-	// Step 2: Wait for agents to complete current work
+	// Step 3: Wait for agents to complete current work
 	o.logger.Info("Waiting %v for agents to complete work", o.shutdownTime)
 	time.Sleep(o.shutdownTime / 4) // Give agents time to process shutdown
 
-	// Step 3: Collect status from all agents and generate STATUS.md files
+	// Step 4: Collect status from all agents and generate STATUS.md files
 	if err := o.collectAgentStatus(); err != nil {
 		o.logger.Error("Failed to collect agent status: %v", err)
 	}
 
-	// Step 4: Stop dispatcher
+	// Step 5: Stop dispatcher
 	if err := o.dispatcher.Stop(ctx); err != nil {
 		o.logger.Error("Failed to stop dispatcher: %v", err)
 	}
 
-	// Step 5: Close other resources
+	// Step 6: Close other resources
 	o.rateLimiter.Close()
 
 	if err := o.eventLog.Close(); err != nil {
@@ -196,10 +247,36 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// ProcessSpecification runs the complete architect workflow for a specification file
+func (o *Orchestrator) ProcessSpecification(ctx context.Context, specFile string) error {
+	if o.architect == nil {
+		return fmt.Errorf("no architect configured - check config file has architect agent")
+	}
+
+	o.logger.Info("Processing specification file: %s", specFile)
+	fmt.Printf("🚀 Starting architect workflow...\n")
+
+	// Initialize architect driver
+	fmt.Printf("📋 Initializing architect driver...\n")
+	if err := o.architect.Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize architect: %w", err)
+	}
+	fmt.Printf("✅ Architect driver initialized\n")
+
+	// Process the complete workflow from spec to dispatched tasks
+	fmt.Printf("📝 Processing workflow from spec...\n")
+	if err := o.architect.ProcessWorkflow(ctx, specFile); err != nil {
+		return fmt.Errorf("workflow processing failed: %w", err)
+	}
+
+	fmt.Printf("🎉 Architect workflow completed successfully!\n")
+	return nil
+}
+
 func (o *Orchestrator) createAgents() error {
 	// Create agents from configuration
 	allAgents := o.config.GetAllAgents()
-	
+
 	// First pass: find the coder agent ID for architects to target
 	var coderAgentID string
 	for _, agentWithModel := range allAgents {
@@ -208,46 +285,69 @@ func (o *Orchestrator) createAgents() error {
 			break
 		}
 	}
-	
+
 	if coderAgentID == "" {
 		return fmt.Errorf("no coder agent found in configuration")
 	}
-	
+
 	for _, agentWithModel := range allAgents {
 		agent := agentWithModel.Agent
 		modelName := agentWithModel.ModelName
-		
+
 		// Generate log ID for this agent
 		logID := agent.GetLogID(modelName)
-		
+
 		var registeredAgent dispatch.Agent
-		
+
 		switch agent.Type {
 		case "architect":
-			architectAgent := agents.NewArchitectAgent(logID, agent.Name, "stories", agent.WorkDir, coderAgentID)
-			architectAgent.SetDispatcher(o.dispatcher)
+			// Store architect driver for spec processing with live O3 LLM
+			// The architect runs workflows AND receives messages from coding agents
+
+			// Create architect's own state store in its workdir (not global state)
+			architectStateStore, err := state.NewStore(filepath.Join(agent.WorkDir, "state"))
+			if err != nil {
+				return fmt.Errorf("failed to create architect state store: %w", err)
+			}
+
+			llmClient := agent.NewO3ClientWithModel(agentWithModel.Model.APIKey, "o3-mini")
+			o.architect = architect.NewDriverWithDispatcher(logID, architectStateStore, &agentWithModel.Model, llmClient, o.dispatcher, agent.WorkDir, filepath.Join(agent.WorkDir, "stories"))
+
+			// Create an adapter that allows the architect to receive messages
+			architectAgent := &ArchitectMessageAdapter{
+				driver: o.architect,
+				id:     logID,
+			}
 			registeredAgent = architectAgent
-			
+			o.logger.Info("Created architect driver with live O3 LLM: %s", logID)
+
 		case "coder":
+			// Create individual state store for this agent in its work directory
+			agentStateStore, err := state.NewStore(filepath.Join(agent.WorkDir, "state"))
+			if err != nil {
+				return fmt.Errorf("failed to create state store for agent %s: %w", logID, err)
+			}
+
 			// Check if we should use live API calls (feature flag)
 			useLiveAPI := os.Getenv("CLAUDE_LIVE_API") == "true"
 			if useLiveAPI {
-				liveAgent := agents.NewLiveClaudeAgent(logID, agent.Name, agent.WorkDir, agentWithModel.Model.APIKey, true)
+				// Use unified coder with Claude LLM integration
+				liveAgent := coder.NewCoderWithClaude(logID, agent.Name, agent.WorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
 				registeredAgent = liveAgent
 			} else {
-				// Use Phase 3 state machine driver with model-aware context management
-				driverAgent := agents.NewDriverBasedAgent(logID, agent.Name, agent.WorkDir, o.stateStore, &agentWithModel.Model)
+				// Use unified coder with core state machine (mock mode)
+				driverAgent := coder.NewCoder(logID, agent.Name, agent.WorkDir, agentStateStore, &agentWithModel.Model)
 				registeredAgent = driverAgent
 			}
-			
+
 		default:
 			return fmt.Errorf("unknown agent type: %s", agent.Type)
 		}
-		
+
 		if err := o.dispatcher.RegisterAgent(registeredAgent); err != nil {
 			return fmt.Errorf("failed to register agent %s: %w", logID, err)
 		}
-		
+
 		o.agents[logID] = &StatusAgentWrapper{Agent: registeredAgent}
 		o.logger.Info("Created and registered agent: %s (%s) using model %s", logID, agent.Type, modelName)
 	}
@@ -404,5 +504,156 @@ func getAgentType(agentID string) string {
 		return "Code Generation & Implementation"
 	default:
 		return "Unknown"
+	}
+}
+
+// startPollingWorkers starts the pull-based polling workers for agents
+func (o *Orchestrator) startPollingWorkers(ctx context.Context) error {
+	// Create a cancellable context for polling workers
+	pollingCtx, cancel := context.WithCancel(ctx)
+	o.pollingCancel = cancel
+
+	// Note: Architect handles its own polling internally through the driver
+
+	// Start coder polling workers for each coder agent
+	for agentID, agent := range o.agents {
+		if o.isCoderAgent(agentID) {
+			o.pollingWg.Add(1)
+			go o.coderPollingWorker(pollingCtx, agentID, agent)
+			o.logger.Info("Started coder polling worker for agent: %s", agentID)
+		}
+	}
+
+	return nil
+}
+
+// isCoderAgent checks if an agent ID represents a coder agent
+func (o *Orchestrator) isCoderAgent(agentID string) bool {
+	// Coder agents have IDs like "claude_sonnet4:001"
+	return !strings.Contains(agentID, "openai_o3") && agentID != "architect"
+}
+
+// architectPollingWorker polls for questions that need architect attention
+func (o *Orchestrator) architectPollingWorker(ctx context.Context) {
+	defer o.pollingWg.Done()
+
+	ticker := time.NewTicker(500 * time.Millisecond) // Poll every 500ms
+	defer ticker.Stop()
+
+	o.logger.Debug("Architect polling worker started")
+
+	// Get the architect adapter from registered agents
+	var architectAgent dispatch.Agent
+	for agentID, agent := range o.agents {
+		if strings.Contains(agentID, "openai_o3") {
+			if statusAgent, ok := agent.(*StatusAgentWrapper); ok {
+				architectAgent = statusAgent.Agent
+			} else {
+				architectAgent = agent
+			}
+			break
+		}
+	}
+
+	if architectAgent == nil {
+		o.logger.Error("No architect agent found for polling worker")
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			o.logger.Debug("Architect polling worker stopped")
+			return
+		case <-ticker.C:
+			// Pull questions from the architect queue
+			if question := o.dispatcher.PullArchitectWork(); question != nil {
+				o.logger.Debug("Architect polling worker processing question: %s", question.ID)
+
+				// Process the question through the architect agent
+				if response, err := architectAgent.ProcessMessage(ctx, question); err != nil {
+					o.logger.Error("Architect failed to process question %s: %v", question.ID, err)
+					// Send error response
+					errorMsg := proto.NewAgentMsg(proto.MsgTypeERROR, "architect", question.FromAgent)
+					errorMsg.ParentMsgID = question.ID
+					errorMsg.SetPayload("error", err.Error())
+					if dispatchErr := o.dispatcher.DispatchMessage(errorMsg); dispatchErr != nil {
+						o.logger.Error("Failed to dispatch error response: %v", dispatchErr)
+					}
+				} else if response != nil {
+					// Send the architect's response back through the dispatcher
+					if err := o.dispatcher.DispatchMessage(response); err != nil {
+						o.logger.Error("Failed to dispatch architect response: %v", err)
+					}
+				}
+			}
+		}
+	}
+}
+
+// coderPollingWorker polls for work and feedback for a specific coder agent
+func (o *Orchestrator) coderPollingWorker(ctx context.Context, agentID string, agent StatusAgent) {
+	defer o.pollingWg.Done()
+
+	ticker := time.NewTicker(1 * time.Second) // Poll every 1 second for coders
+	defer ticker.Stop()
+
+	o.logger.Debug("Coder polling worker started for agent: %s", agentID)
+
+	// Track agent state - assume READY initially
+	agentState := "READY"
+
+	for {
+		select {
+		case <-ctx.Done():
+			o.logger.Debug("Coder polling worker stopped for agent: %s", agentID)
+			return
+		case <-ticker.C:
+			switch agentState {
+			case "READY":
+				// When READY, poll for new tasks from shared work queue
+				if task := o.dispatcher.PullSharedWork(); task != nil {
+					o.logger.Debug("Coder %s polling worker processing task: %s", agentID, task.ID)
+					agentState = "WORKING"
+
+					// Process the task
+					go func() {
+						if response, err := agent.ProcessMessage(ctx, task); err != nil {
+							o.logger.Error("Coder %s failed to process task %s: %v", agentID, task.ID, err)
+							agentState = "READY" // Reset to ready on error
+						} else if response != nil {
+							// Task completed, send response and look for feedback
+							if err := o.dispatcher.DispatchMessage(response); err != nil {
+								o.logger.Error("Failed to dispatch coder response: %v", err)
+							}
+							// Agent is now waiting for feedback, state remains WORKING
+						} else {
+							// No response, task completed
+							agentState = "READY"
+						}
+					}()
+				}
+
+			case "WORKING":
+				// When WORKING, poll for feedback from architect
+				if feedback := o.dispatcher.PullCoderFeedback(agentID); feedback != nil {
+					o.logger.Debug("Coder %s polling worker processing feedback: %s", agentID, feedback.ID)
+
+					// Process the feedback
+					go func() {
+						if response, err := agent.ProcessMessage(ctx, feedback); err != nil {
+							o.logger.Error("Coder %s failed to process feedback %s: %v", agentID, feedback.ID, err)
+						} else if response != nil {
+							// Send response back to architect
+							if err := o.dispatcher.DispatchMessage(response); err != nil {
+								o.logger.Error("Failed to dispatch coder feedback response: %v", err)
+							}
+						}
+						// After processing feedback, agent is ready for new work
+						agentState = "READY"
+					}()
+				}
+			}
+		}
 	}
 }

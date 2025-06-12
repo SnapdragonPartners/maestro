@@ -61,17 +61,17 @@ func (cm *ContextManager) CompactIfNeeded() error {
 		// No model config available, use legacy threshold-based approach
 		return cm.compactIfNeededLegacy(10000) // Default threshold
 	}
-	
+
 	currentTokens := cm.CountTokens()
 	maxContext := cm.modelConfig.MaxContextTokens
 	maxReply := cm.modelConfig.MaxReplyTokens
 	buffer := cm.modelConfig.CompactionBuffer
-	
+
 	// Check if current + max reply + buffer > max context
-	if currentTokens + maxReply + buffer > maxContext {
+	if currentTokens+maxReply+buffer > maxContext {
 		return cm.performCompaction(maxContext - maxReply - buffer)
 	}
-	
+
 	return nil
 }
 
@@ -97,7 +97,7 @@ func (cm *ContextManager) performCompaction(targetTokens int) error {
 		// Can't compact if we have 1 or fewer messages
 		return nil
 	}
-	
+
 	// Simple strategy: remove oldest messages until we're under target
 	for cm.CountTokens() > targetTokens && len(cm.messages) > 1 {
 		// Keep the first message (usually system prompt) and remove the second
@@ -108,7 +108,7 @@ func (cm *ContextManager) performCompaction(targetTokens int) error {
 			cm.messages = cm.messages[1:]
 		}
 	}
-	
+
 	return nil
 }
 
@@ -134,23 +134,23 @@ func (cm *ContextManager) GetMessageCount() int {
 func (cm *ContextManager) GetContextSummary() string {
 	messageCount := len(cm.messages)
 	tokenCount := cm.CountTokens()
-	
+
 	if messageCount == 0 {
 		return "Empty context"
 	}
-	
+
 	var roleBreakdown []string
 	roleCounts := make(map[string]int)
-	
+
 	for _, message := range cm.messages {
 		roleCounts[message.Role]++
 	}
-	
+
 	for role, count := range roleCounts {
 		roleBreakdown = append(roleBreakdown, fmt.Sprintf("%s: %d", role, count))
 	}
-	
-	return fmt.Sprintf("%d messages (%d tokens) - %s", 
+
+	return fmt.Sprintf("%d messages (%d tokens) - %s",
 		messageCount, tokenCount, strings.Join(roleBreakdown, ", "))
 }
 
@@ -175,37 +175,37 @@ func (cm *ContextManager) ShouldCompact() bool {
 	if cm.modelConfig == nil {
 		return cm.CountTokens() > 10000 // Legacy threshold
 	}
-	
+
 	currentTokens := cm.CountTokens()
 	maxContext := cm.modelConfig.MaxContextTokens
 	maxReply := cm.modelConfig.MaxReplyTokens
 	buffer := cm.modelConfig.CompactionBuffer
-	
-	return currentTokens + maxReply + buffer > maxContext
+
+	return currentTokens+maxReply+buffer > maxContext
 }
 
 // GetCompactionInfo returns information about context state and compaction thresholds
 func (cm *ContextManager) GetCompactionInfo() map[string]interface{} {
 	info := map[string]interface{}{
-		"current_tokens":  cm.CountTokens(),
-		"message_count":   len(cm.messages),
-		"should_compact":  cm.ShouldCompact(),
+		"current_tokens": cm.CountTokens(),
+		"message_count":  len(cm.messages),
+		"should_compact": cm.ShouldCompact(),
 	}
-	
+
 	if cm.modelConfig != nil {
 		info["max_context_tokens"] = cm.modelConfig.MaxContextTokens
 		info["max_reply_tokens"] = cm.modelConfig.MaxReplyTokens
 		info["compaction_buffer"] = cm.modelConfig.CompactionBuffer
-		
+
 		currentTokens := cm.CountTokens()
 		maxContext := cm.modelConfig.MaxContextTokens
 		maxReply := cm.modelConfig.MaxReplyTokens
 		buffer := cm.modelConfig.CompactionBuffer
-		
+
 		info["available_for_reply"] = maxContext - currentTokens
 		info["compaction_threshold"] = maxContext - maxReply - buffer
 		info["tokens_over_threshold"] = currentTokens - (maxContext - maxReply - buffer)
 	}
-	
+
 	return info
 }

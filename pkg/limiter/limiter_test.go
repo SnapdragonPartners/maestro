@@ -150,7 +150,7 @@ func TestTokenRefill(t *testing.T) {
 					{Name: "test-agent-1", ID: "001", Type: "coder", WorkDir: "./work/test1"},
 					{Name: "test-agent-2", ID: "002", Type: "coder", WorkDir: "./work/test2"},
 				},
-				APIKey:             "test-key",
+				APIKey: "test-key",
 			},
 		},
 	}

@@ -47,11 +47,31 @@ The `agentctl` tool allows you to run individual agents in isolation for testing
 ./bin/agentctl run claude --input task.json --mock --output result.json
 ```
 
+#### Architect Commands
+
+The architect agent provides additional commands for managing escalations and monitoring:
+
+```bash
+# List all escalations requiring human intervention
+./bin/agentctl architect list-escalations
+
+# Filter escalations by status
+./bin/agentctl architect list-escalations --status pending
+./bin/agentctl architect list-escalations --status resolved
+
+# Output in JSON format for programmatic use
+./bin/agentctl architect list-escalations --format json
+
+# Specify custom work directory
+./bin/agentctl architect list-escalations --workdir /path/to/project/logs
+```
+
 #### Agent Types
 
 - **architect** - Process development stories and generate task messages
   - Input: Markdown story files (`.md`)
   - Output: TASK JSON messages with requirements and implementation details
+  - Additional Commands: `list-escalations` for monitoring business questions and review failures
 
 - **claude** - Process coding tasks and generate implementations
   - Input: TASK JSON messages
@@ -83,6 +103,10 @@ export OPENAI_API_KEY="your-openai-api-key"
 
 # Use live API with output file
 ./bin/agentctl run claude --input task.json --live --output implementation.json
+
+# Monitor architect escalations (business questions, review failures)
+./bin/agentctl architect list-escalations --status pending
+./bin/agentctl architect list-escalations --format json --workdir ./project/logs
 ```
 
 #### Sample Task JSON Format
@@ -130,7 +154,16 @@ For testing the Claude agent, create a task JSON file in the `tests/fixtures/` d
    - **TESTING**: Validate code with formatting, building, and tests
    - **AWAIT_APPROVAL**: Request review and approval
    - **DONE**: Complete the task
-4. System maintains event logs and handles graceful shutdown
+4. **Phase 4 Architect Workflow**: Architect agents manage end-to-end story processing:
+   - **SPEC_PARSING**: Parse specifications and extract requirements
+   - **STORY_GENERATION**: Generate story files with dependencies
+   - **QUEUE_MANAGEMENT**: Manage story queue and dependency resolution
+   - **DISPATCHING**: Assign stories to available coding agents
+   - **ANSWERING**: Handle technical questions from coding agents
+   - **REVIEWING**: Automated code review with quality checks
+   - **AWAIT_HUMAN_FEEDBACK**: Escalate business questions and review failures
+   - **COMPLETED**: Mark workflow as finished
+5. System maintains event logs, escalation tracking, and handles graceful shutdown
 
 ## Configuration
 
@@ -164,9 +197,12 @@ The system uses JSON configuration with environment variable overrides:
 The system follows story-driven development with ordered implementation stories:
 
 - **Stories 001-012**: MVP implementation (completed)
-- **Stories 013-019**: Phase 2 - Real LLM integrations and standalone testing tools
+- **Stories 013-019**: Phase 2 - Real LLM integrations and standalone testing tools (completed)
+- **Stories 040-046**: Phase 4 - Architect Agent Core Workflow (completed)
+  - Story 046: Business escalation & AWAIT_HUMAN_FEEDBACK with CLI support
+- **Story 047**: Phase 4 final - Architect CLI harness & queue persistence (next)
 
-See `PROJECT.md` and `PHASE2.md` for detailed story specifications.
+See `PROJECT.md`, `PHASE2.md`, and `PHASE4.md` for detailed story specifications.
 
 ## Testing
 
@@ -183,6 +219,10 @@ go test -v . -run TestE2ESmokeTest
 
 # Test live mode with workspace
 ./bin/agentctl run claude --input tests/fixtures/test_task.json --mode live --workdir ./work/tmp
+
+# Test architect escalation commands
+./bin/agentctl architect list-escalations
+./bin/agentctl architect list-escalations --status pending --format json
 ```
 
 ## Directory Structure
@@ -196,6 +236,7 @@ orchestrator/
 ├── logs/            # Runtime event logs (generated)
 ├── pkg/             # Core packages
 │   ├── agent/       # Phase 3 state machine driver
+│   ├── architect/   # Phase 4 architect agent components
 │   ├── config/      # Configuration loader
 │   ├── contextmgr/  # Context management for LLM conversations
 │   ├── dispatch/    # Message routing and retry logic

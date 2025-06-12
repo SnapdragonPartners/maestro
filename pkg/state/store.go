@@ -27,7 +27,7 @@ func NewStore(baseDir string) (*Store, error) {
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create state directory %s: %w", baseDir, err)
 	}
-	
+
 	return &Store{
 		baseDir: baseDir,
 	}, nil
@@ -38,35 +38,84 @@ func (s *Store) SaveState(agentID, state string, data map[string]interface{}) er
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
 	}
-	
+
 	if state == "" {
 		return fmt.Errorf("state cannot be empty")
 	}
-	
+
 	agentState := AgentState{
 		State:           state,
 		LastTimestamp:   time.Now().UTC(),
 		ContextSnapshot: make(map[string]interface{}),
 		Data:            data,
 	}
-	
+
 	// Add some basic context information
 	agentState.ContextSnapshot["agent_id"] = agentID
 	agentState.ContextSnapshot["saved_at"] = agentState.LastTimestamp
 	agentState.ContextSnapshot["state"] = state
-	
+
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(agentState, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state for agent %s: %w", agentID, err)
 	}
-	
+
 	// Write to file
 	filename := s.getStateFilename(agentID)
 	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
 		return fmt.Errorf("failed to write state file for agent %s: %w", agentID, err)
 	}
-	
+
+	return nil
+}
+
+// Load retrieves a value by ID into the provided destination
+func (s *Store) Load(id string, dest any) error {
+	if id == "" {
+		return fmt.Errorf("id cannot be empty")
+	}
+
+	filename := s.getStateFilename(id)
+
+	// Check if file exists
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		// Return empty state if file doesn't exist
+		return nil
+	}
+
+	// Read file
+	fileData, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("failed to read state file for id %s: %w", id, err)
+	}
+
+	// Unmarshal JSON into destination
+	if err := json.Unmarshal(fileData, dest); err != nil {
+		return fmt.Errorf("failed to unmarshal state for id %s: %w", id, err)
+	}
+
+	return nil
+}
+
+// Save persists a value with the given ID
+func (s *Store) Save(id string, value any) error {
+	if id == "" {
+		return fmt.Errorf("id cannot be empty")
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal state for id %s: %w", id, err)
+	}
+
+	// Write to file
+	filename := s.getStateFilename(id)
+	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write state file for id %s: %w", id, err)
+	}
+
 	return nil
 }
 
@@ -75,33 +124,33 @@ func (s *Store) LoadState(agentID string) (string, map[string]interface{}, error
 	if agentID == "" {
 		return "", nil, fmt.Errorf("agentID cannot be empty")
 	}
-	
+
 	filename := s.getStateFilename(agentID)
-	
+
 	// Check if file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		// Return empty state if file doesn't exist
 		return "", make(map[string]interface{}), nil
 	}
-	
+
 	// Read file
 	fileData, err := os.ReadFile(filename)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to read state file for agent %s: %w", agentID, err)
 	}
-	
+
 	// Unmarshal JSON
 	var agentState AgentState
 	if err := json.Unmarshal(fileData, &agentState); err != nil {
 		return "", nil, fmt.Errorf("failed to unmarshal state for agent %s: %w", agentID, err)
 	}
-	
+
 	// Return state and data
 	data := agentState.Data
 	if data == nil {
 		data = make(map[string]interface{})
 	}
-	
+
 	return agentState.State, data, nil
 }
 
@@ -110,26 +159,26 @@ func (s *Store) GetStateInfo(agentID string) (*AgentState, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
-	
+
 	filename := s.getStateFilename(agentID)
-	
+
 	// Check if file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no state file found for agent %s", agentID)
 	}
-	
+
 	// Read file
 	fileData, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read state file for agent %s: %w", agentID, err)
 	}
-	
+
 	// Unmarshal JSON
 	var agentState AgentState
 	if err := json.Unmarshal(fileData, &agentState); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal state for agent %s: %w", agentID, err)
 	}
-	
+
 	return &agentState, nil
 }
 
@@ -138,20 +187,20 @@ func (s *Store) DeleteState(agentID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
 	}
-	
+
 	filename := s.getStateFilename(agentID)
-	
+
 	// Check if file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		// File doesn't exist, nothing to delete
 		return nil
 	}
-	
+
 	// Remove file
 	if err := os.Remove(filename); err != nil {
 		return fmt.Errorf("failed to delete state file for agent %s: %w", agentID, err)
 	}
-	
+
 	return nil
 }
 
@@ -162,13 +211,13 @@ func (s *Store) ListAgents() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read state directory: %w", err)
 	}
-	
+
 	var agentIDs []string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		
+
 		name := entry.Name()
 		// Check if it matches our filename pattern: STATUS_<agentID>.json
 		if len(name) > 12 && name[:7] == "STATUS_" && name[len(name)-5:] == ".json" {
@@ -176,7 +225,7 @@ func (s *Store) ListAgents() ([]string, error) {
 			agentIDs = append(agentIDs, agentID)
 		}
 	}
-	
+
 	return agentIDs, nil
 }
 

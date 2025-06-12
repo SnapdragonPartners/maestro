@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,391 +13,427 @@ import (
 	"orchestrator/pkg/state"
 )
 
-func TestNewDriver(t *testing.T) {
-	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	
-	if driver == nil {
-		t.Error("Expected non-nil driver")
-	}
-	
-	if driver.agentID != "test-agent" {
-		t.Errorf("Expected agentID 'test-agent', got '%s'", driver.agentID)
-	}
-	
-	if driver.currentState != StatePlanning {
-		t.Errorf("Expected initial state PLANNING, got %s", driver.currentState)
-	}
-	
-	if driver.stateStore != stateStore {
-		t.Error("Expected state store to be set")
-	}
-	
-	if driver.contextManager == nil {
-		t.Error("Expected context manager to be initialized")
-	}
-	
-	if driver.stateData == nil {
-		t.Error("Expected state data to be initialized")
-	}
-}
+func setupTestDriver(t *testing.T) (*BaseDriver, *AgentContext) {
+	t.Helper()
 
-func TestDriver_Initialize(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
+	store, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	ctx := context.Background()
-	
-	// Test initialization with no existing state
-	if err := driver.Initialize(ctx); err != nil {
-		t.Errorf("Expected no error initializing driver, got %v", err)
-	}
-	
-	// State should remain at default
-	if driver.currentState != StatePlanning {
-		t.Errorf("Expected state PLANNING after init with no saved state, got %s", driver.currentState)
-	}
-	
-	// Save some state first
-	testData := map[string]interface{}{"test": "data"}
-	if err := stateStore.SaveState("test-agent", "CODING", testData); err != nil {
-		t.Fatalf("Failed to save test state: %v", err)
-	}
-	
-	// Create new driver and initialize
-	driver2 := NewDriver("test-agent", stateStore)
-	if err := driver2.Initialize(ctx); err != nil {
-		t.Errorf("Expected no error initializing driver with saved state, got %v", err)
-	}
-	
-	// Should restore saved state
-	if driver2.currentState != StateCoding {
-		t.Errorf("Expected state CODING after init with saved state, got %s", driver2.currentState)
-	}
-	
-	if driver2.stateData["test"] != "data" {
-		t.Errorf("Expected restored state data, got %v", driver2.stateData["test"])
-	}
-}
 
-func TestDriver_ProcessTask_SimpleFlow(t *testing.T) {
-	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
+	ctx := &AgentContext{
+		Context:  context.Background(),
+		Logger:   log.New(os.Stdout, "", log.LstdFlags),
+		WorkDir:  tempDir,
+		Store:    store,
 	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	ctx := context.Background()
-	
-	if err := driver.Initialize(ctx); err != nil {
+
+	cfg := &AgentConfig{
+		ID:      "test-agent",
+		Type:    "test",
+		Context: *ctx,
+	}
+
+	driver, err := NewBaseDriver(cfg, StatePlanning)
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+
+	if err := driver.Initialize(context.Background()); err != nil {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
-	
-	// Process a simple task (should go through the full flow)
-	taskContent := "Create a simple hello world program"
-	
-	if err := driver.ProcessTask(ctx, taskContent); err != nil {
-		t.Errorf("Expected no error processing task, got %v", err)
-	}
-	
-	// Should end in DONE state
-	if driver.currentState != StateDone {
-		t.Errorf("Expected final state DONE, got %s", driver.currentState)
-	}
-	
-	// Check that task content was stored
-	if driver.stateData["task_content"] != taskContent {
-		t.Errorf("Expected task content to be stored, got %v", driver.stateData["task_content"])
-	}
-	
-	// Check that we have some completion timestamps
-	if _, exists := driver.stateData["coding_completed_at"]; !exists {
-		t.Error("Expected coding_completed_at timestamp")
-	}
-	
-	if _, exists := driver.stateData["testing_completed_at"]; !exists {
-		t.Error("Expected testing_completed_at timestamp")
-	}
+
+	return driver, ctx
 }
 
-func TestDriver_ProcessTask_WithTools(t *testing.T) {
-	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	ctx := context.Background()
-	
-	if err := driver.Initialize(ctx); err != nil {
-		t.Fatalf("Failed to initialize driver: %v", err)
-	}
-	
-	// Process a task that should trigger tool invocation
-	taskContent := "Run shell command to list files"
-	
-	if err := driver.ProcessTask(ctx, taskContent); err != nil {
-		t.Errorf("Expected no error processing task with tools, got %v", err)
-	}
-	
-	// Should still end in DONE state
-	if driver.currentState != StateDone {
-		t.Errorf("Expected final state DONE, got %s", driver.currentState)
-	}
-	
-	// Check that tool results were stored
-	if _, exists := driver.stateData["tool_results"]; !exists {
-		t.Error("Expected tool_results in state data")
-	}
-	
-	if _, exists := driver.stateData["tool_invocation_completed_at"]; !exists {
-		t.Error("Expected tool_invocation_completed_at timestamp")
-	}
-}
+func TestBaseDriver(t *testing.T) {
+	driver, _ := setupTestDriver(t)
 
-func TestDriver_StateTransitions(t *testing.T) {
-	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	ctx := context.Background()
-	
-	// Test manual state transitions
-	initialState := driver.GetCurrentState()
-	if initialState != StatePlanning {
-		t.Errorf("Expected initial state PLANNING, got %s", initialState)
-	}
-	
-	// Transition to coding
-	if err := driver.transitionTo(ctx, StateCoding, map[string]interface{}{"test": "data"}); err != nil {
-		t.Errorf("Expected no error transitioning to CODING, got %v", err)
-	}
-	
-	if driver.GetCurrentState() != StateCoding {
-		t.Errorf("Expected current state CODING, got %s", driver.GetCurrentState())
-	}
-	
-	// Check that additional data was stored
-	stateData := driver.GetStateData()
-	if stateData["test"] != "data" {
-		t.Errorf("Expected additional data to be stored, got %v", stateData["test"])
-	}
-	
-	// Check transition metadata
-	if stateData["previous_state"] != "PLANNING" {
-		t.Errorf("Expected previous_state PLANNING, got %v", stateData["previous_state"])
-	}
-	
-	if stateData["current_state"] != "CODING" {
-		t.Errorf("Expected current_state CODING, got %v", stateData["current_state"])
-	}
-	
-	// Check that state was persisted
-	savedState, savedData, err := stateStore.LoadState("test-agent")
-	if err != nil {
-		t.Errorf("Expected no error loading saved state, got %v", err)
-	}
-	
-	if savedState != "CODING" {
-		t.Errorf("Expected saved state CODING, got %s", savedState)
-	}
-	
-	if savedData["test"] != "data" {
-		t.Errorf("Expected saved data to include test value, got %v", savedData["test"])
-	}
-}
-
-func TestDriver_GetMethods(t *testing.T) {
-	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	
-	// Test GetCurrentState
 	if driver.GetCurrentState() != StatePlanning {
-		t.Errorf("Expected current state PLANNING, got %s", driver.GetCurrentState())
+		t.Errorf("Expected initial state PLANNING, got %v", driver.GetCurrentState())
 	}
-	
-	// Add some state data
-	driver.stateData["key1"] = "value1"
-	driver.stateData["key2"] = 42
-	
-	// Test GetStateData returns a copy
-	stateData := driver.GetStateData()
-	if stateData["key1"] != "value1" {
-		t.Errorf("Expected key1 value1, got %v", stateData["key1"])
+
+	// Test state transition with metadata
+	metadata := map[string]interface{}{
+		"test": "data",
 	}
-	
-	// Modify returned data - should not affect original
-	stateData["key1"] = "modified"
-	if driver.stateData["key1"] == "modified" {
-		t.Error("GetStateData should return a copy, not the original")
+
+	if err := driver.TransitionTo(context.Background(), StateCoding, metadata); err != nil {
+		t.Errorf("Failed to transition state: %v", err)
 	}
-	
-	// Test GetContextSummary
-	summary := driver.GetContextSummary()
-	if summary == "" {
-		t.Error("Expected non-empty context summary")
+
+	// Verify state changed
+	if driver.GetCurrentState() != StateCoding {
+		t.Errorf("Expected state CODING, got %v", driver.GetCurrentState())
+	}
+
+	// Verify metadata stored
+	data := driver.StateMachine.(*BaseStateMachine).GetStateData()
+	if data["test"] != "data" {
+		t.Errorf("Expected test data to be stored, got %v", data["test"])
 	}
 }
 
-func TestContainsKeyword(t *testing.T) {
-	// Test basic keyword matching
-	if !containsKeyword("hello world", "hello") {
-		t.Error("Expected to find 'hello' in 'hello world'")
-	}
-	
-	if !containsKeyword("hello world", "world") {
-		t.Error("Expected to find 'world' in 'hello world'")
-	}
-	
-	// Test case insensitive
-	if !containsKeyword("Hello World", "hello") {
-		t.Error("Expected case insensitive match for 'hello'")
-	}
-	
-	if !containsKeyword("hello world", "WORLD") {
-		t.Error("Expected case insensitive match for 'WORLD'")
-	}
-	
-	// Test non-matches
-	if containsKeyword("hello world", "foo") {
-		t.Error("Expected not to find 'foo' in 'hello world'")
-	}
-	
-	// Test word boundaries (this is a simple implementation)
-	if !containsKeyword("run shell command", "shell") {
-		t.Error("Expected to find 'shell' in 'run shell command'")
-	}
-}
-
-func TestDriver_ContextTimeout(t *testing.T) {
+func TestBaseDriverWithModelConfig(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
+	store, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
-	
-	driver := NewDriver("test-agent", stateStore)
-	
-	// Create a context with immediate timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-	
-	// Wait a bit to ensure timeout
-	time.Sleep(1 * time.Millisecond)
-	
-	if err := driver.Initialize(ctx); err != nil {
-		t.Fatalf("Failed to initialize driver: %v", err)
-	}
-	
-	// Process task should return context error
-	err = driver.ProcessTask(ctx, "test task")
-	if err == nil {
-		t.Error("Expected context timeout error")
-	}
-	
-	if err != context.DeadlineExceeded {
-		t.Errorf("Expected context.DeadlineExceeded, got %v", err)
-	}
-}
 
-func TestNewDriverWithModel(t *testing.T) {
-	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-	
 	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 50000,
-		MaxReplyTokens:   4000,
+		MaxContextTokens: 8192, // Updated to match new limits
+		MaxReplyTokens:   4096,
 		CompactionBuffer: 1000,
 	}
-	
-	driver := NewDriverWithModel("test-agent", stateStore, modelConfig)
-	
-	if driver == nil {
-		t.Error("Expected non-nil driver")
+
+	ctx := &AgentContext{
+		Context:  context.Background(),
+		Logger:   log.New(os.Stdout, "", log.LstdFlags),
+		WorkDir:  tempDir,
+		Store:    store,
 	}
-	
-	if driver.agentID != "test-agent" {
-		t.Errorf("Expected agentID 'test-agent', got '%s'", driver.agentID)
+
+	cfg := &AgentConfig{
+		ID:      "test-agent",
+		Type:    "test",
+		Context: *ctx,
+		LLMConfig: &LLMConfig{
+			MaxContextTokens: modelConfig.MaxContextTokens,
+			MaxOutputTokens:  modelConfig.MaxReplyTokens,
+			CompactIfOver:   modelConfig.CompactionBuffer,
+		},
 	}
-	
-	// Test that context manager has model configuration
-	if driver.contextManager.GetMaxContextTokens() != 50000 {
-		t.Errorf("Expected max context tokens 50000, got %d", driver.contextManager.GetMaxContextTokens())
+
+	driver, err := NewBaseDriver(cfg, StatePlanning)
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
 	}
-	
-	if driver.contextManager.GetMaxReplyTokens() != 4000 {
-		t.Errorf("Expected max reply tokens 4000, got %d", driver.contextManager.GetMaxReplyTokens())
+
+	if err := driver.Initialize(context.Background()); err != nil {
+		t.Fatalf("Failed to initialize driver: %v", err)
+	}
+
+	if driver.GetCurrentState() != StatePlanning {
+		t.Errorf("Expected initial state PLANNING, got %v", driver.GetCurrentState())
 	}
 }
 
-func TestDriverWithModelCompaction(t *testing.T) {
+func TestBaseDriverStateCompaction(t *testing.T) {
+	driver, _ := setupTestDriver(t)
+
+	// Add several state transitions to trigger compaction
+	states := []State{StateCoding, StateTesting, StateDone, StatePlanning}
+	for _, state := range states {
+		err := driver.TransitionTo(context.Background(), state, map[string]interface{}{
+			"timestamp": time.Now(),
+			"data":      "test data",
+		})
+		if err != nil {
+			t.Errorf("Failed to transition to state %v: %v", state, err)
+		}
+	}
+
+	// Force compaction
+	if err := driver.CompactIfNeeded(); err != nil {
+		t.Errorf("Failed to compact state data: %v", err)
+	}
+
+	// Verify state is still accessible
+	if driver.GetCurrentState() != StatePlanning {
+		t.Errorf("Expected state PLANNING after compaction, got %v", driver.GetCurrentState())
+	}
+}
+
+func TestBaseDriverContextCancellation(t *testing.T) {
+	driver, _ := setupTestDriver(t)
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Create new driver in a cancelled context
+	newCfg := &AgentConfig{
+		ID:      "test-agent",
+		Type:    "test",
+		Context: AgentContext{
+			Context: ctx,
+			Store:   driver.StateMachine.(*BaseStateMachine).store,
+		},
+	}
+
+	driver, err := NewBaseDriver(newCfg, StatePlanning)
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+
+	// Attempt state transition with cancelled context
+	err = driver.TransitionTo(ctx, StateCoding, nil)
+	if err != context.Canceled {
+		t.Errorf("Expected context.Canceled error, got %v", err)
+	}
+
+	// Verify state unchanged
+	if driver.GetCurrentState() != StatePlanning {
+		t.Errorf("Expected state to remain PLANNING, got %v", driver.GetCurrentState())
+	}
+}
+
+func TestBaseDriverPersistence(t *testing.T) {
+	driver, _ := setupTestDriver(t)
+
+	// Add state data
+	err := driver.TransitionTo(context.Background(), StateCoding, map[string]interface{}{
+		"test": "data",
+	})
+	if err != nil {
+		t.Errorf("Failed to transition state: %v", err)
+	}
+
+	// Save state
+	if err := driver.Persist(); err != nil {
+		t.Errorf("Failed to persist state: %v", err)
+	}
+
+	// Create new driver and load state
+	newCfg := &AgentConfig{
+		ID:      "test-agent",
+		Type:    "test",
+		Context: AgentContext{
+			Context: context.Background(),
+			Store:   driver.StateMachine.(*BaseStateMachine).store,
+		},
+	}
+
+	driver, err = NewBaseDriver(newCfg, StatePlanning)
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+
+	if err := driver.Initialize(context.Background()); err != nil {
+		t.Errorf("Failed to initialize new driver: %v", err)
+	}
+
+	// Verify state restored
+	data := driver.StateMachine.(*BaseStateMachine).GetStateData()
+	if data["test"] != "data" {
+		t.Errorf("Expected test data to be restored, got %v", data["test"])
+	}
+}
+
+func TestBaseDriverWithMockLLM(t *testing.T) {
+	// Initialize mock mode
+	resetModeForTest()
+	InitMode(ModeMock)
+
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
+	store, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
-	
-	// Use small limits to test compaction
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 200,
-		MaxReplyTokens:   50,
-		CompactionBuffer: 20,
+
+	// Create mock LLM responses for a complete workflow
+	mockResponses := []CompletionResponse{
+		{Content: "Planning phase complete"},
+		{Content: "Code implementation ready"},
+		{Content: "Testing completed successfully"},
 	}
-	
-	driver := NewDriverWithModel("test-agent", stateStore, modelConfig)
-	ctx := context.Background()
-	
-	if err := driver.Initialize(ctx); err != nil {
+
+	mockClient := NewMockLLMClient(mockResponses, nil)
+
+	ctx := &AgentContext{
+		Context: context.Background(),
+		Logger:  log.New(os.Stdout, "", log.LstdFlags),
+		WorkDir: tempDir,
+		Store:   store,
+	}
+
+	cfg := &AgentConfig{
+		ID:      "test-agent-mock",
+		Type:    "mock-test",
+		Context: *ctx,
+		LLMConfig: &LLMConfig{
+			MaxContextTokens: 8192,
+			MaxOutputTokens:  4096,
+			CompactIfOver:   1000,
+		},
+	}
+
+	driver, err := NewBaseDriver(cfg, StatePlanning)
+	if err != nil {
+		t.Fatalf("Failed to create driver: %v", err)
+	}
+
+	// Store mock client in driver state for testing
+	driver.StateMachine.(*BaseStateMachine).SetStateData("llm_client", mockClient)
+
+	// Test initialization
+	if err := driver.Initialize(context.Background()); err != nil {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
-	
-	// Add many messages to trigger compaction
-	for i := 0; i < 10; i++ {
-		driver.contextManager.AddMessage("user", "This is a test message that helps us reach the compaction threshold by adding many tokens to the context")
-	}
-	
-	initialTokens := driver.contextManager.CountTokens()
-	t.Logf("Initial token count: %d", initialTokens)
-	
-	// Force compaction check
-	if err := driver.contextManager.CompactIfNeeded(); err != nil {
-		t.Errorf("Expected no error during compaction, got %v", err)
-	}
-	
-	finalTokens := driver.contextManager.CountTokens()
-	t.Logf("Final token count: %d", finalTokens)
-	
-	// Get compaction info
-	info := driver.contextManager.GetCompactionInfo()
-	t.Logf("Compaction info: %+v", info)
-	
-	// Should have compacted if we exceeded threshold
-	compactionThreshold := 200 - 50 - 20 // 130
-	if initialTokens > compactionThreshold {
-		if finalTokens >= initialTokens {
-			t.Errorf("Expected compaction to reduce token count from %d, but got %d", initialTokens, finalTokens)
+
+	// Test using mock LLM client
+	if client, exists := driver.StateMachine.(*BaseStateMachine).GetStateValue("llm_client"); exists {
+		if llmClient, ok := client.(LLMClient); ok {
+			req := CompletionRequest{
+				Messages: []CompletionMessage{{Role: RoleUser, Content: "Test planning request"}},
+			}
+			resp, err := llmClient.Complete(context.Background(), req)
+			if err != nil {
+				t.Errorf("Mock LLM client failed: %v", err)
+			}
+			if resp.Content != "Planning phase complete" {
+				t.Errorf("Expected 'Planning phase complete', got %v", resp.Content)
+			}
 		}
 	}
+
+	// Test state transitions with LLM integration
+	err = driver.TransitionTo(context.Background(), StateCoding, map[string]interface{}{
+		"llm_response": "Planning phase complete",
+		"mock_mode":    true,
+	})
+	if err != nil {
+		t.Errorf("Failed to transition with mock LLM: %v", err)
+	}
+
+	if driver.GetCurrentState() != StateCoding {
+		t.Errorf("Expected state CODING, got %v", driver.GetCurrentState())
+	}
+}
+
+func TestBaseDriverTimeout(t *testing.T) {
+	driver, _ := setupTestDriver(t)
+
+	// Test StepWithTimeout with very short timeout
+	ctx := context.Background()
+	done, err := driver.StepWithTimeout(ctx, 1*time.Nanosecond)
+	
+	// This might timeout or complete quickly depending on timing
+	// We mainly want to verify the method exists and doesn't panic
+	if err != nil && err.Error() != "ProcessState not implemented" {
+		// If it's not the expected "not implemented" error, check if it's a timeout
+		if !strings.Contains(err.Error(), "timed out") {
+			t.Errorf("Unexpected error from StepWithTimeout: %v", err)
+		}
+	}
+	
+	// Test with reasonable timeout
+	done, err = driver.StepWithTimeout(ctx, 1*time.Second)
+	if err != nil && err.Error() != "ProcessState not implemented" {
+		t.Errorf("StepWithTimeout failed with reasonable timeout: %v", err)
+	}
+	
+	// Since BaseDriver doesn't implement ProcessState, done should be false
+	if done {
+		t.Error("Expected done=false from BaseDriver with unimplemented ProcessState")
+	}
+}
+
+func TestBaseDriverRunWithTimeout(t *testing.T) {
+	driver, _ := setupTestDriver(t)
+
+	// Test RunWithTimeout with custom config
+	cfg := TimeoutConfig{
+		StateTimeout:    100 * time.Millisecond,
+		GlobalTimeout:   500 * time.Millisecond,
+		ShutdownTimeout: 50 * time.Millisecond,
+	}
+
+	ctx := context.Background()
+	err := driver.RunWithTimeout(ctx, cfg)
+	
+	// Should fail because ProcessState is not implemented
+	if err == nil {
+		t.Error("Expected error from RunWithTimeout with unimplemented ProcessState")
+	}
+	
+	if err.Error() != "ProcessState not implemented" {
+		t.Errorf("Expected 'ProcessState not implemented', got %v", err)
+	}
+}
+
+func TestBaseDriverShutdown(t *testing.T) {
+	driver, _ := setupTestDriver(t)
+
+	// Add some state data
+	driver.StateMachine.(*BaseStateMachine).SetStateData("test_data", "should_persist")
+
+	// Test graceful shutdown
+	ctx := context.Background()
+	err := driver.Shutdown(ctx)
+	if err != nil {
+		t.Errorf("Shutdown failed: %v", err)
+	}
+
+	// Verify state was persisted during shutdown
+	newDriver, err := NewBaseDriver(&AgentConfig{
+		ID:      "test-agent",
+		Type:    "test",
+		Context: AgentContext{
+			Context: context.Background(),
+			Store:   driver.StateMachine.(*BaseStateMachine).store,
+		},
+	}, StatePlanning)
+	if err != nil {
+		t.Fatalf("Failed to create new driver: %v", err)
+	}
+
+	if err := newDriver.Initialize(context.Background()); err != nil {
+		t.Fatalf("Failed to initialize new driver: %v", err)
+	}
+
+	data := newDriver.StateMachine.(*BaseStateMachine).GetStateData()
+	if data["test_data"] != "should_persist" {
+		t.Errorf("Expected data to persist after shutdown, got %v", data["test_data"])
+	}
+}
+
+func TestBaseDriverErrorHandling(t *testing.T) {
+	// Test driver creation with invalid config
+	invalidCfg := &AgentConfig{
+		ID:   "", // Invalid: empty ID
+		Type: "test",
+		Context: AgentContext{
+			Context: context.Background(),
+		},
+	}
+
+	_, err := NewBaseDriver(invalidCfg, StatePlanning)
+	if err == nil {
+		t.Error("Expected error when creating driver with invalid config")
+	}
+
+	// Test driver with valid config but failed step
+	driver, _ := setupTestDriver(t)
+
+	// Mock a state machine that will fail
+	originalSM := driver.StateMachine
+	driver.StateMachine = &failingStateMachine{originalSM}
+
+	ctx := context.Background()
+	done, err := driver.Step(ctx)
+	if err == nil {
+		t.Error("Expected error from failing state machine")
+	}
+	if done {
+		t.Error("Expected done=false when step fails")
+	}
+
+	// Verify error state transition was attempted
+	// (failingStateMachine will also fail the transition, but we check the attempt was made)
+}
+
+// Helper struct for testing error handling
+type failingStateMachine struct {
+	StateMachine
+}
+
+func (f *failingStateMachine) ProcessState(ctx context.Context) (State, bool, error) {
+	return StateError, false, fmt.Errorf("simulated processing failure")
+}
+
+func (f *failingStateMachine) TransitionTo(ctx context.Context, newState State, metadata map[string]interface{}) error {
+	return fmt.Errorf("simulated transition failure")
 }

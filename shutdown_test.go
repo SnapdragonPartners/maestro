@@ -138,8 +138,8 @@ This is a test story for shutdown testing.
 
 	// Expected status files (using the actual config from the test config file)
 	expectedFiles := []string{
-		"claude_sonnet4:001-STATUS.md",   // claude agent from test config
-		"openai_o3:001-STATUS.md",        // architect agent from test config
+		"claude_sonnet4:001-STATUS.md", // claude agent from test config
+		"openai_o3:001-STATUS.md",      // architect agent from test config
 		"orchestrator-STATUS.md",
 	}
 

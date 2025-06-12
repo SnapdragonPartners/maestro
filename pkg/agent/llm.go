@@ -1,0 +1,109 @@
+package agent
+
+import (
+	"context"
+	"io"
+)
+
+// CompletionRole represents the role of a message in a conversation
+type CompletionRole string
+
+const (
+	RoleSystem    CompletionRole = "system"
+	RoleUser      CompletionRole = "user"
+	RoleAssistant CompletionRole = "assistant"
+)
+
+// CompletionMessage represents a message in a completion request
+type CompletionMessage struct {
+	Role    CompletionRole
+	Content string
+}
+
+// CompletionRequest represents a request to generate a completion
+type CompletionRequest struct {
+	Messages    []CompletionMessage
+	MaxTokens   int
+	Temperature float32
+}
+
+// CompletionResponse represents a response from a completion request
+type CompletionResponse struct {
+	Content string
+}
+
+// StreamChunk represents a chunk of streamed completion response
+type StreamChunk struct {
+	Content string
+	Done    bool
+	Error   error
+}
+
+// LLMClient defines the interface for language model interactions
+type LLMClient interface {
+	// Complete generates a completion synchronously
+	Complete(ctx context.Context, in CompletionRequest) (CompletionResponse, error)
+
+	// Stream generates a completion as a stream of chunks
+	Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error)
+}
+
+// LLMConfig represents configuration for an LLM client
+type LLMConfig struct {
+	APIKey           string
+	ModelName        string
+	MaxTokens        int
+	Temperature      float32
+	MaxContextTokens int
+	MaxOutputTokens  int
+	CompactIfOver    int
+}
+
+// NewCompletionRequest creates a new completion request with default values
+func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
+	return CompletionRequest{
+		Messages:    messages,
+		MaxTokens:   4096,    // Default to 4k tokens
+		Temperature: 0.7,     // Default temperature
+	}
+}
+
+// NewSystemMessage creates a new system message
+func NewSystemMessage(content string) CompletionMessage {
+	return CompletionMessage{
+		Role:    RoleSystem,
+		Content: content,
+	}
+}
+
+// NewUserMessage creates a new user message
+func NewUserMessage(content string) CompletionMessage {
+	return CompletionMessage{
+		Role:    RoleUser,
+		Content: content,
+	}
+}
+
+// StreamToReader converts a stream channel to an io.Reader
+func StreamToReader(stream <-chan StreamChunk) io.Reader {
+	pr, pw := io.Pipe()
+	
+	go func() {
+		defer pw.Close()
+		for chunk := range stream {
+			if chunk.Error != nil {
+				pw.CloseWithError(chunk.Error)
+				return
+			}
+			if _, err := pw.Write([]byte(chunk.Content)); err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+			if chunk.Done {
+				return
+			}
+		}
+	}()
+	
+	return pr
+}

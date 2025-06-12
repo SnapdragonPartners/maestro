@@ -32,6 +32,12 @@ type Dispatcher struct {
 	wg          sync.WaitGroup
 	mu          sync.RWMutex
 	running     bool
+
+	// Pull-based queues
+	architectQueue  []*proto.AgentMsg // Questions for architect
+	coderQueue      []*proto.AgentMsg // Answers/feedback for coders
+	sharedWorkQueue []*proto.AgentMsg // Ready stories for any coder
+	queueMutex      sync.RWMutex      // Protects all queues
 }
 
 type DispatchResult struct {
@@ -171,37 +177,74 @@ func (d *Dispatcher) messageProcessor(ctx context.Context) {
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Debug("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
-	// Resolve logical agent name to actual agent ID
-	resolvedToAgent := d.resolveAgentName(msg.ToAgent)
-	if resolvedToAgent != msg.ToAgent {
-		d.logger.Debug("Resolved logical name %s to %s", msg.ToAgent, resolvedToAgent)
-		msg.ToAgent = resolvedToAgent
-	}
-
-	// Log message with resolved agent name
+	// Log message
 	if err := d.eventLog.WriteMessage(msg); err != nil {
 		d.logger.Error("Failed to log incoming message: %v", err)
 		// Continue processing even if logging fails
 	}
 
-	// Find target agent
-	d.mu.RLock()
-	targetAgent, exists := d.agents[msg.ToAgent]
-	d.mu.RUnlock()
+	// Route messages to appropriate queues based on type
+	d.queueMutex.Lock()
+	defer d.queueMutex.Unlock()
 
-	if !exists {
-		d.sendErrorResponse(msg, fmt.Errorf("target agent %s not found", msg.ToAgent))
-		return
-	}
+	switch msg.Type {
+	case proto.MsgTypeTASK:
+		// TASK messages go to shared work queue for coders to pull
+		d.sharedWorkQueue = append(d.sharedWorkQueue, msg)
+		d.logger.Debug("Queued TASK %s to shared work queue (queue size: %d)", msg.ID, len(d.sharedWorkQueue))
 
-	// Process with retry logic
-	response := d.processWithRetry(ctx, msg, targetAgent)
+	case proto.MsgTypeQUESTION:
+		// QUESTION messages go to architect queue for architect to pull
+		d.architectQueue = append(d.architectQueue, msg)
+		d.logger.Debug("Queued QUESTION %s to architect queue (queue size: %d)", msg.ID, len(d.architectQueue))
 
-	// If there's a response, send it back
-	if response.Message != nil {
-		d.sendResponse(response.Message)
-	} else if response.Error != nil {
-		d.sendErrorResponse(msg, response.Error)
+	case proto.MsgTypeREQUEST:
+		// REQUEST messages (approval requests) go to architect queue for architect to pull
+		d.architectQueue = append(d.architectQueue, msg)
+		d.logger.Debug("Queued REQUEST %s to architect queue (queue size: %d)", msg.ID, len(d.architectQueue))
+
+	case proto.MsgTypeRESULT:
+		// RESULT messages go to coder queue for specific coder to pull
+		d.coderQueue = append(d.coderQueue, msg)
+		d.logger.Debug("Queued RESULT %s to coder queue (queue size: %d)", msg.ID, len(d.coderQueue))
+
+	case proto.MsgTypeANSWER:
+		// ANSWER messages (information responses) go to coder queue for specific coder to pull
+		d.coderQueue = append(d.coderQueue, msg)
+		d.logger.Debug("Queued ANSWER %s to coder queue (queue size: %d)", msg.ID, len(d.coderQueue))
+
+	default:
+		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately
+		d.queueMutex.Unlock() // Unlock early for immediate processing
+
+		// Resolve logical agent name to actual agent ID
+		resolvedToAgent := d.resolveAgentName(msg.ToAgent)
+		if resolvedToAgent != msg.ToAgent {
+			d.logger.Debug("Resolved logical name %s to %s", msg.ToAgent, resolvedToAgent)
+			msg.ToAgent = resolvedToAgent
+		}
+
+		// Find target agent
+		d.mu.RLock()
+		targetAgent, exists := d.agents[msg.ToAgent]
+		d.mu.RUnlock()
+
+		if !exists {
+			d.sendErrorResponse(msg, fmt.Errorf("target agent %s not found", msg.ToAgent))
+			return
+		}
+
+		// Process immediately for non-TASK messages
+		response := d.processWithRetry(ctx, msg, targetAgent)
+
+		// If there's a response, route it to appropriate queue
+		if response.Message != nil {
+			d.sendResponse(response.Message)
+		} else if response.Error != nil {
+			d.sendErrorResponse(msg, response.Error)
+		}
+
+		d.queueMutex.Lock() // Re-lock for defer unlock
 	}
 }
 
@@ -217,7 +260,7 @@ func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, 
 		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
 			modelName = parts[0]
 		}
-		
+
 		// Check rate limiting before each attempt
 		if err := d.checkRateLimit(modelName); err != nil {
 			d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
@@ -284,12 +327,47 @@ func (d *Dispatcher) checkRateLimit(agentModel string) error {
 }
 
 func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
-	// In a full implementation, this would route the response back to the original sender
-	// For now, we just log it and write to event log
-	d.logger.Info("Received response %s: %s → %s (%s)", response.ID, response.FromAgent, response.ToAgent, response.Type)
+	// Route response to appropriate queue based on message type
+	d.logger.Info("Routing response %s: %s → %s (%s)", response.ID, response.FromAgent, response.ToAgent, response.Type)
 
 	if err := d.eventLog.WriteMessage(response); err != nil {
 		d.logger.Error("Failed to log response message: %v", err)
+	}
+
+	// Resolve logical agent name to actual agent ID
+	resolvedToAgent := d.resolveAgentName(response.ToAgent)
+	if resolvedToAgent != response.ToAgent {
+		d.logger.Debug("Resolved logical name %s to %s", response.ToAgent, resolvedToAgent)
+		response.ToAgent = resolvedToAgent
+	}
+
+	d.queueMutex.Lock()
+	defer d.queueMutex.Unlock()
+
+	switch response.Type {
+	case proto.MsgTypeQUESTION:
+		// Questions go to architect queue
+		d.architectQueue = append(d.architectQueue, response)
+		d.logger.Debug("Queued QUESTION %s for architect (queue size: %d)", response.ID, len(d.architectQueue))
+
+	case proto.MsgTypeREQUEST:
+		// Approval requests go to architect queue
+		d.architectQueue = append(d.architectQueue, response)
+		d.logger.Debug("Queued REQUEST %s for architect (queue size: %d)", response.ID, len(d.architectQueue))
+
+	case proto.MsgTypeRESULT:
+		// Approval responses go to coder queue
+		d.coderQueue = append(d.coderQueue, response)
+		d.logger.Debug("Queued RESULT %s for coders (queue size: %d)", response.ID, len(d.coderQueue))
+
+	case proto.MsgTypeANSWER:
+		// Information responses go to coder queue
+		d.coderQueue = append(d.coderQueue, response)
+		d.logger.Debug("Queued ANSWER %s for coders (queue size: %d)", response.ID, len(d.coderQueue))
+
+	default:
+		// Other types logged only
+		d.logger.Debug("Response message %s of type %s logged only", response.ID, response.Type)
 	}
 }
 
@@ -332,7 +410,7 @@ func (d *Dispatcher) resolveAgentName(logicalName string) string {
 	// Find first agent of the target type
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	allAgents := d.config.GetAllAgents()
 	for _, agentWithModel := range allAgents {
 		if agentWithModel.Agent.Type == targetType {
@@ -356,10 +434,68 @@ func (d *Dispatcher) GetStats() map[string]interface{} {
 		agentList = append(agentList, agentID)
 	}
 
+	d.queueMutex.RLock()
+	defer d.queueMutex.RUnlock()
+
 	return map[string]interface{}{
-		"running":        d.running,
-		"agents":         agentList,
-		"queue_length":   len(d.inputChan),
-		"queue_capacity": cap(d.inputChan),
+		"running":                d.running,
+		"agents":                 agentList,
+		"queue_length":           len(d.inputChan),
+		"queue_capacity":         cap(d.inputChan),
+		"architect_queue_size":   len(d.architectQueue),
+		"coder_queue_size":       len(d.coderQueue),
+		"shared_work_queue_size": len(d.sharedWorkQueue),
 	}
+}
+
+// PullArchitectWork retrieves the next question for the architect to process
+func (d *Dispatcher) PullArchitectWork() *proto.AgentMsg {
+	d.queueMutex.Lock()
+	defer d.queueMutex.Unlock()
+
+	if len(d.architectQueue) == 0 {
+		return nil
+	}
+
+	// Get first message from architect queue (FIFO)
+	msg := d.architectQueue[0]
+	d.architectQueue = d.architectQueue[1:]
+
+	d.logger.Debug("Pulled QUESTION %s from architect queue (remaining: %d)", msg.ID, len(d.architectQueue))
+	return msg
+}
+
+// PullCoderFeedback retrieves the next answer/feedback for a specific coder
+func (d *Dispatcher) PullCoderFeedback(agentID string) *proto.AgentMsg {
+	d.queueMutex.Lock()
+	defer d.queueMutex.Unlock()
+
+	// Look for messages targeted to this specific coder
+	for i, msg := range d.coderQueue {
+		if msg.ToAgent == agentID {
+			// Remove message from queue
+			d.coderQueue = append(d.coderQueue[:i], d.coderQueue[i+1:]...)
+			d.logger.Debug("Pulled RESULT %s for coder %s (remaining: %d)", msg.ID, agentID, len(d.coderQueue))
+			return msg
+		}
+	}
+
+	return nil
+}
+
+// PullSharedWork retrieves the next available task from the shared work queue
+func (d *Dispatcher) PullSharedWork() *proto.AgentMsg {
+	d.queueMutex.Lock()
+	defer d.queueMutex.Unlock()
+
+	if len(d.sharedWorkQueue) == 0 {
+		return nil
+	}
+
+	// Get first message from shared work queue (FIFO)
+	msg := d.sharedWorkQueue[0]
+	d.sharedWorkQueue = d.sharedWorkQueue[1:]
+
+	d.logger.Debug("Pulled TASK %s from shared work queue (remaining: %d)", msg.ID, len(d.sharedWorkQueue))
+	return msg
 }

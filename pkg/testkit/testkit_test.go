@@ -220,8 +220,8 @@ import (
 	"time"
 )
 type HealthResponse struct {
-	Status    string    ` + "`json:\"status\"`" + `
-	Timestamp time.Time ` + "`json:\"timestamp\"`" + `
+	Status    string    `+"`json:\"status\"`"+`
+	Timestamp time.Time `+"`json:\"timestamp\"`"+`
 }
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	response := HealthResponse{Status: "healthy", Timestamp: time.Now()}

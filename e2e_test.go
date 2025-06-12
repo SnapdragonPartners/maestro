@@ -14,14 +14,14 @@ import (
 
 // TestE2ESmokeTest verifies the acceptance criteria:
 // "All logs show TASK → RESULT cycle. No budget or rate errors."
-// 
+//
 // This test runs the full message pipeline:
 // orchestrator → architect → claude → orchestrator
 // Using the health endpoint story from stories/001.md
 func TestE2ESmokeTest(t *testing.T) {
 	// Setup test environment
 	tmpDir := t.TempDir()
-	
+
 	// Create stories directory and copy health story
 	storiesDir := filepath.Join(tmpDir, "stories")
 	err := os.MkdirAll(storiesDir, 0755)
@@ -88,8 +88,8 @@ The system needs a simple health check endpoint that external monitoring systems
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
 			"claude_sonnet4": {
-				MaxTokensPerMinute: 10000,  // High limit
-				MaxBudgetPerDayUSD: 100.0,  // High budget
+				MaxTokensPerMinute: 10000, // High limit
+				MaxBudgetPerDayUSD: 100.0, // High budget
 				CpmTokensIn:        0.003,
 				CpmTokensOut:       0.015,
 				APIKey:             "test-key",
@@ -140,7 +140,7 @@ The system needs a simple health check endpoint that external monitoring systems
 
 	// Step 1: Send story processing request to architect (simulating orchestrator request)
 	t.Log("📋 Step 1: Sending health story to architect agent")
-	
+
 	storyTaskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "orchestrator", "architect")
 	storyTaskMsg.SetPayload("story_id", "001")
 	storyTaskMsg.SetMetadata("test_type", "e2e_smoke_test")
@@ -153,10 +153,10 @@ The system needs a simple health check endpoint that external monitoring systems
 
 	// Step 2: Wait for the full pipeline to complete
 	t.Log("⏳ Step 2: Waiting for architect → claude → result pipeline")
-	
+
 	// Give enough time for:
 	// 1. Architect to process story and send TASK to Claude
-	// 2. Claude to process TASK and return RESULT to architect  
+	// 2. Claude to process TASK and return RESULT to architect
 	// 3. All messages to be logged
 	time.Sleep(2 * time.Second)
 
@@ -180,7 +180,7 @@ The system needs a simple health check endpoint that external monitoring systems
 	var rateErrors, budgetErrors int
 
 	for i, msg := range messages {
-		t.Logf("Message %d: %s → %s (%s) at %s", 
+		t.Logf("Message %d: %s → %s (%s) at %s",
 			i+1, msg.FromAgent, msg.ToAgent, msg.Type, msg.Timestamp.Format("15:04:05"))
 
 		// Track the expected message flow
@@ -196,7 +196,7 @@ The system needs a simple health check endpoint that external monitoring systems
 		case msg.Type == proto.MsgTypeTASK && msg.FromAgent == "openai_o3:001" && msg.ToAgent == "claude_sonnet4:001":
 			foundClaudeTask = true
 			t.Log("  ✓ Found coding task: openai_o3:001 → claude_sonnet4:001")
-			
+
 			// Verify task contains expected content
 			if content, exists := msg.GetPayload("content"); exists {
 				if contentStr, ok := content.(string); ok {
@@ -209,14 +209,14 @@ The system needs a simple health check endpoint that external monitoring systems
 		case msg.Type == proto.MsgTypeRESULT && msg.FromAgent == "claude_sonnet4:001" && msg.ToAgent == "openai_o3:001":
 			foundClaudeResult = true
 			t.Log("  ✓ Found claude result: claude_sonnet4:001 → openai_o3:001")
-			
+
 			// Verify result contains expected fields
 			if status, exists := msg.GetPayload("status"); exists {
 				if status != "completed" {
 					t.Errorf("Expected claude result status 'completed', got %s", status)
 				}
 			}
-			
+
 			if impl, exists := msg.GetPayload("implementation"); exists {
 				if implStr, ok := impl.(string); ok {
 					if !contains(implStr, "health") {
@@ -285,14 +285,14 @@ The system needs a simple health check endpoint that external monitoring systems
 		if err != nil {
 			t.Errorf("Failed to get rate limiter status for %s: %v", model, err)
 		} else {
-			t.Logf("Rate limiter status for %s: %d tokens, $%.2f budget, %d agents", 
+			t.Logf("Rate limiter status for %s: %d tokens, $%.2f budget, %d agents",
 				model, tokens, budget, agentCount)
 		}
 	}
 
 	// Final validation
-	if foundStoryTask && foundArchitectResult && foundClaudeTask && foundClaudeResult && 
-	   rateErrors == 0 && budgetErrors == 0 {
+	if foundStoryTask && foundArchitectResult && foundClaudeTask && foundClaudeResult &&
+		rateErrors == 0 && budgetErrors == 0 {
 		t.Log("🎉 E2E smoke test PASSED!")
 		t.Log("   ✓ Complete TASK → RESULT cycle verified")
 		t.Log("   ✓ No rate limit errors")
@@ -320,12 +320,12 @@ func TestE2EMultipleStories(t *testing.T) {
 Basic health check implementation.
 - GET /health endpoint
 - Return JSON response`,
-		
+
 		"002.md": `# User API
 User management endpoints.
 - CRUD operations
 - Authentication required`,
-		
+
 		"003.md": `# Database Layer
 Database connection and queries.
 - PostgreSQL connection

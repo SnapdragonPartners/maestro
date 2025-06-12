@@ -43,25 +43,24 @@ func GetAll() map[string]ToolChannel {
 	return globalRegistry.GetAll()
 }
 
-
 // Register adds a tool to this registry
 func (r *Registry) Register(tool ToolChannel) error {
 	if tool == nil {
 		return fmt.Errorf("tool cannot be nil")
 	}
-	
+
 	name := tool.Name()
 	if name == "" {
 		return fmt.Errorf("tool name cannot be empty")
 	}
-	
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	
+
 	if _, exists := r.tools[name]; exists {
 		return fmt.Errorf("tool %s already registered", name)
 	}
-	
+
 	r.tools[name] = tool
 	return nil
 }
@@ -70,12 +69,12 @@ func (r *Registry) Register(tool ToolChannel) error {
 func (r *Registry) Get(name string) (ToolChannel, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	tool, exists := r.tools[name]
 	if !exists {
 		return nil, fmt.Errorf("tool %s not found", name)
 	}
-	
+
 	return tool, nil
 }
 
@@ -83,12 +82,12 @@ func (r *Registry) Get(name string) (ToolChannel, error) {
 func (r *Registry) GetAll() map[string]ToolChannel {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	
+
 	result := make(map[string]ToolChannel)
 	for name, tool := range r.tools {
 		result[name] = tool
 	}
-	
+
 	return result
 }
 
@@ -96,7 +95,7 @@ func (r *Registry) GetAll() map[string]ToolChannel {
 func (r *Registry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	
+
 	r.tools = make(map[string]ToolChannel)
 }
 
@@ -115,16 +114,16 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]a
 	if !hasCmd {
 		return nil, fmt.Errorf("missing required argument: cmd")
 	}
-	
+
 	cmdStr, ok := cmd.(string)
 	if !ok {
 		return nil, fmt.Errorf("cmd argument must be a string")
 	}
-	
+
 	if cmdStr == "" {
 		return nil, fmt.Errorf("cmd argument cannot be empty")
 	}
-	
+
 	// Extract optional cwd
 	cwd := ""
 	if cwdVal, hasCwd := args["cwd"]; hasCwd {
@@ -132,17 +131,16 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]a
 			cwd = cwdStr
 		}
 	}
-	
+
 	// Execute shell command
 	return s.executeShellCommand(ctx, cmdStr, cwd)
 }
-
 
 // executeShellCommand performs actual shell command execution
 func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (map[string]any, error) {
 	// Create command with context for cancellation
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
-	
+
 	// Set working directory if specified
 	if cwd != "" {
 		// Validate that the directory exists
@@ -151,12 +149,12 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 		}
 		cmd.Dir = cwd
 	}
-	
+
 	// Capture stdout and stderr
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	// Execute the command
 	err := cmd.Run()
 	exitCode := 0
@@ -169,7 +167,7 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 			return nil, fmt.Errorf("failed to execute command: %w", err)
 		}
 	}
-	
+
 	return map[string]any{
 		"stdout":    stdout.String(),
 		"stderr":    stderr.String(),

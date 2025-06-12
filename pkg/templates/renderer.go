@@ -12,25 +12,32 @@ var templateFS embed.FS
 
 // TemplateData holds the data for template rendering
 type TemplateData struct {
-	TaskContent   string                 `json:"task_content"`
-	Context       string                 `json:"context"`
-	Plan          string                 `json:"plan,omitempty"`
-	ToolResults   string                 `json:"tool_results,omitempty"`
-	Implementation string                `json:"implementation,omitempty"`
-	TestResults   string                 `json:"test_results,omitempty"`
-	WorkDir       string                 `json:"work_dir,omitempty"`
-	Extra         map[string]interface{} `json:"extra,omitempty"`
+	TaskContent    string                 `json:"task_content"`
+	Context        string                 `json:"context"`
+	Plan           string                 `json:"plan,omitempty"`
+	ToolResults    string                 `json:"tool_results,omitempty"`
+	Implementation string                 `json:"implementation,omitempty"`
+	TestResults    string                 `json:"test_results,omitempty"`
+	WorkDir        string                 `json:"work_dir,omitempty"`
+	Extra          map[string]interface{} `json:"extra,omitempty"`
 }
 
 // StateTemplate represents a workflow state template
 type StateTemplate string
 
 const (
-	PlanningTemplate     StateTemplate = "planning.tpl.md"
+	// Coding agent templates
+	PlanningTemplate       StateTemplate = "planning.tpl.md"
 	ToolInvocationTemplate StateTemplate = "tool_invocation.tpl.md"
-	CodingTemplate       StateTemplate = "coding.tpl.md"
-	TestingTemplate      StateTemplate = "testing.tpl.md"
-	ApprovalTemplate     StateTemplate = "approval.tpl.md"
+	CodingTemplate         StateTemplate = "coding.tpl.md"
+	TestingTemplate        StateTemplate = "testing.tpl.md"
+	ApprovalTemplate       StateTemplate = "approval.tpl.md"
+
+	// Architect agent templates
+	SpecAnalysisTemplate    StateTemplate = "spec_analysis.tpl.md"
+	StoryGenerationTemplate StateTemplate = "story_generation.tpl.md"
+	TechnicalQATemplate     StateTemplate = "technical_qa.tpl.md"
+	CodeReviewTemplate      StateTemplate = "code_review.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states
@@ -46,11 +53,17 @@ func NewRenderer() (*Renderer, error) {
 
 	// Load all templates
 	templateNames := []StateTemplate{
+		// Coding agent templates
 		PlanningTemplate,
 		ToolInvocationTemplate,
 		CodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
+		// Architect agent templates
+		SpecAnalysisTemplate,
+		StoryGenerationTemplate,
+		TechnicalQATemplate,
+		CodeReviewTemplate,
 	}
 
 	for _, name := range templateNames {

@@ -11,9 +11,11 @@ type MsgType string
 
 const (
 	MsgTypeTASK     MsgType = "TASK"
-	MsgTypeRESULT   MsgType = "RESULT"
+	MsgTypeQUESTION MsgType = "QUESTION" // Information request: "How should I approach this?"
+	MsgTypeANSWER   MsgType = "ANSWER"   // Information response: "Here's the guidance..."
+	MsgTypeREQUEST  MsgType = "REQUEST"  // Approval request: "Please review this code"
+	MsgTypeRESULT   MsgType = "RESULT"   // Approval response: "APPROVED/REJECTED/NEEDS_CHANGES"
 	MsgTypeERROR    MsgType = "ERROR"
-	MsgTypeQUESTION MsgType = "QUESTION"
 	MsgTypeSHUTDOWN MsgType = "SHUTDOWN"
 )
 
@@ -136,7 +138,7 @@ func (msg *AgentMsg) Validate() error {
 
 	// Validate message type
 	switch msg.Type {
-	case MsgTypeTASK, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeSHUTDOWN:
+	case MsgTypeTASK, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeSHUTDOWN:
 		// Valid types
 	default:
 		return fmt.Errorf("invalid message type: %s", msg.Type)

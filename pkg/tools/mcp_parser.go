@@ -24,7 +24,7 @@ func NewMCPParser() *MCPParser {
 	// Regex to match <tool name="toolname">...</tool> patterns
 	// Use (?s) flag to make . match newlines
 	toolTagRegex := regexp.MustCompile(`(?s)<tool\s+name="([^"]+)"[^>]*>(.*?)</tool>`)
-	
+
 	return &MCPParser{
 		toolTagRegex: toolTagRegex,
 	}
@@ -33,31 +33,31 @@ func NewMCPParser() *MCPParser {
 // ParseToolCalls extracts tool calls from text containing MCP tags
 func (p *MCPParser) ParseToolCalls(text string) ([]ToolCall, error) {
 	matches := p.toolTagRegex.FindAllStringSubmatch(text, -1)
-	
+
 	var toolCalls []ToolCall
 	for _, match := range matches {
 		if len(match) < 3 {
 			continue
 		}
-		
+
 		toolName := match[1]
 		rawArgs := strings.TrimSpace(match[2])
-		
+
 		// For now, just store the raw args - more sophisticated parsing can be added later
 		toolCall := ToolCall{
 			Name:    toolName,
 			Args:    make(map[string]any),
 			RawArgs: rawArgs,
 		}
-		
+
 		// Basic argument parsing - try to parse simple key=value pairs
 		if err := p.parseBasicArgs(rawArgs, toolCall.Args); err != nil {
 			return nil, fmt.Errorf("failed to parse args for tool %s: %w", toolName, err)
 		}
-		
+
 		toolCalls = append(toolCalls, toolCall)
 	}
-	
+
 	return toolCalls, nil
 }
 
@@ -66,7 +66,7 @@ func (p *MCPParser) parseBasicArgs(rawArgs string, args map[string]any) error {
 	if rawArgs == "" {
 		return nil
 	}
-	
+
 	// Try to parse as JSON first
 	if strings.HasPrefix(strings.TrimSpace(rawArgs), "{") {
 		var jsonArgs map[string]any
@@ -78,10 +78,10 @@ func (p *MCPParser) parseBasicArgs(rawArgs string, args map[string]any) error {
 			return nil
 		}
 	}
-	
+
 	// Fallback: treat the entire raw args as the "cmd" argument for backward compatibility
 	args["cmd"] = rawArgs
-	
+
 	return nil
 }
 
@@ -93,14 +93,14 @@ func (p *MCPParser) HasToolCalls(text string) bool {
 // ExtractToolNames returns just the tool names found in the text
 func (p *MCPParser) ExtractToolNames(text string) []string {
 	matches := p.toolTagRegex.FindAllStringSubmatch(text, -1)
-	
+
 	var names []string
 	for _, match := range matches {
 		if len(match) >= 2 {
 			names = append(names, match[1])
 		}
 	}
-	
+
 	return names
 }
 

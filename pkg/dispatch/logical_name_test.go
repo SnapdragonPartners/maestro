@@ -50,12 +50,12 @@ func TestLogicalNameResolution(t *testing.T) {
 	// Register mock agents to simulate real system
 	architectAgent := &MockAgent{id: "openai_o3:001"}
 	coderAgent := &MockAgent{id: "claude_sonnet4:001"}
-	
+
 	err = dispatcher.RegisterAgent(architectAgent)
 	if err != nil {
 		t.Fatalf("Failed to register architect agent: %v", err)
 	}
-	
+
 	err = dispatcher.RegisterAgent(coderAgent)
 	if err != nil {
 		t.Fatalf("Failed to register coder agent: %v", err)

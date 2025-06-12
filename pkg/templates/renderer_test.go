@@ -17,11 +17,17 @@ func TestNewRenderer(t *testing.T) {
 
 	// Check that all expected templates are loaded
 	expectedTemplates := []StateTemplate{
+		// Coding agent templates
 		PlanningTemplate,
 		ToolInvocationTemplate,
 		CodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
+		// Architect agent templates
+		SpecAnalysisTemplate,
+		StoryGenerationTemplate,
+		TechnicalQATemplate,
+		CodeReviewTemplate,
 	}
 
 	availableTemplates := renderer.GetAvailableTemplates()
@@ -299,7 +305,7 @@ func TestTemplateValidPromptStructure(t *testing.T) {
 
 	// Test each template produces a valid prompt structure
 	testCases := []struct {
-		template     StateTemplate
+		template      StateTemplate
 		shouldContain []string
 	}{
 		{

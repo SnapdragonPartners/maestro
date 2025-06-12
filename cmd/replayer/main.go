@@ -17,11 +17,11 @@ import (
 
 // ReplayConfig holds configuration for the replayer
 type ReplayConfig struct {
-	LogFile       string
-	AgentCtlPath  string
-	OutputDir     string
-	Verbose       bool
-	ExitOnFirst   bool
+	LogFile      string
+	AgentCtlPath string
+	OutputDir    string
+	Verbose      bool
+	ExitOnFirst  bool
 }
 
 // TaskResultPair represents a TASK message and its corresponding RESULT
@@ -225,7 +225,7 @@ func determineAgentType(agentID string) string {
 
 func replayTask(config ReplayConfig, pair TaskResultPair, taskNum int) ComparisonResult {
 	agentType := determineAgentType(pair.Task.ToAgent)
-	
+
 	result := ComparisonResult{
 		TaskID:    pair.Task.ID,
 		AgentType: agentType,
@@ -348,7 +348,7 @@ func compareResults(original, new *proto.AgentMsg) []string {
 			origLen := len(origStr)
 			newLen := len(newStr)
 			lenDiff := abs(origLen - newLen)
-			
+
 			// Allow some variance in implementation length
 			if lenDiff > origLen/4 { // More than 25% difference
 				differences = append(differences, fmt.Sprintf("Implementation length: %d → %d (variance: %d)", origLen, newLen, lenDiff))
@@ -402,7 +402,7 @@ func abs(x int) int {
 
 func generateSummaryReport(config ReplayConfig, results []ComparisonResult) error {
 	reportFile := filepath.Join(config.OutputDir, "regression_report.txt")
-	
+
 	file, err := os.Create(reportFile)
 	if err != nil {
 		return err
@@ -445,7 +445,7 @@ func generateSummaryReport(config ReplayConfig, results []ComparisonResult) erro
 
 	for i, result := range results {
 		fmt.Fprintf(writer, "Task %d: %s (%s)\n", i+1, result.TaskID, result.AgentType)
-		
+
 		if result.Error != nil {
 			fmt.Fprintf(writer, "  🚨 ERROR: %v\n", result.Error)
 		} else if result.Matched {

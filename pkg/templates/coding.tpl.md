@@ -34,6 +34,6 @@ You MUST use the shell tool to create files. Do NOT return JSON with file conten
 
 <tool name="shell">{"cmd": "cat > go.mod << 'EOF'\nmodule hello-server\ngo 1.21\nEOF", "cwd": "{{.WorkDir}}"}</tool>
 
-After creating files, provide a brief summary of what you implemented.
+After creating files, provide a brief summary of your "implementation" including the "files" you created.
 
 Begin implementation now - USE THE SHELL TOOL TO CREATE FILES.

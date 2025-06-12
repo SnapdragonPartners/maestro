@@ -126,12 +126,12 @@ func AssertTestResults(t *testing.T, msg *proto.AgentMsg, expectedSuccess bool) 
 		t.Error("Expected test_results payload to exist")
 		return
 	}
-	
+
 	var success bool
-	
+
 	// Handle both map and struct types using reflection
 	val := reflect.ValueOf(testResults)
-	
+
 	if val.Kind() == reflect.Map {
 		// Map format (original)
 		successValue := val.MapIndex(reflect.ValueOf("success"))
@@ -139,12 +139,12 @@ func AssertTestResults(t *testing.T, msg *proto.AgentMsg, expectedSuccess bool) 
 			t.Error("Expected test_results.success to exist")
 			return
 		}
-		
+
 		if successValue.Interface() == nil {
 			t.Error("Expected test_results.success to be non-nil")
 			return
 		}
-		
+
 		successBool, ok := successValue.Interface().(bool)
 		if !ok {
 			t.Errorf("Expected test_results.success to be a bool, got %T", successValue.Interface())
@@ -158,18 +158,18 @@ func AssertTestResults(t *testing.T, msg *proto.AgentMsg, expectedSuccess bool) 
 			t.Error("Expected struct to have Success field")
 			return
 		}
-		
+
 		if successField.Kind() != reflect.Bool {
 			t.Errorf("Expected Success field to be bool, got %s", successField.Kind())
 			return
 		}
-		
+
 		success = successField.Bool()
 	} else {
 		t.Errorf("Expected test_results to be a map or struct, got %T", testResults)
 		return
 	}
-	
+
 	if success != expectedSuccess {
 		t.Errorf("Expected test_results.success to be %t, got %t", expectedSuccess, success)
 	}
@@ -183,18 +183,18 @@ func AssertCodeCompiles(t *testing.T, msg *proto.AgentMsg) {
 		t.Error("Expected implementation payload to exist")
 		return
 	}
-	
+
 	implStr, ok := impl.(string)
 	if !ok {
 		t.Errorf("Expected implementation to be a string, got %T", impl)
 		return
 	}
-	
+
 	// Basic checks for Go code structure
 	if !strings.Contains(implStr, "package ") {
 		t.Error("Implementation should contain package declaration")
 	}
-	
+
 	if !strings.Contains(implStr, "func ") {
 		t.Error("Implementation should contain at least one function")
 	}
@@ -204,10 +204,10 @@ func AssertCodeCompiles(t *testing.T, msg *proto.AgentMsg) {
 func AssertHealthEndpointCode(t *testing.T, msg *proto.AgentMsg) {
 	t.Helper()
 	AssertCodeCompiles(t, msg)
-	
+
 	impl, _ := msg.GetPayload("implementation")
 	implStr := impl.(string)
-	
+
 	expectedPatterns := []string{
 		"HealthResponse",
 		"/health",
@@ -215,7 +215,7 @@ func AssertHealthEndpointCode(t *testing.T, msg *proto.AgentMsg) {
 		"time.Now()",
 		"http.StatusOK",
 	}
-	
+
 	for _, pattern := range expectedPatterns {
 		if !strings.Contains(implStr, pattern) {
 			t.Errorf("Expected implementation to contain '%s'", pattern)
@@ -236,7 +236,7 @@ func AssertNoAPICallsMade(t *testing.T, msg *proto.AgentMsg) {
 			// Check for overly sophisticated patterns that mock wouldn't generate
 			sophisticatedPatterns := []string{
 				"context.Context",
-				"sync.Mutex", 
+				"sync.Mutex",
 				"error wrapping",
 				"detailed logging",
 			}
@@ -256,7 +256,7 @@ func AssertValidMessageFlow(t *testing.T, messages []*proto.AgentMsg, expectedFl
 		t.Errorf("Expected %d messages in flow, got %d", len(expectedFlow), len(messages))
 		return
 	}
-	
+
 	for i, msg := range messages {
 		expectedType := expectedFlow[i]
 		if msg.Type != expectedType {
@@ -274,7 +274,7 @@ type LintTestConditions struct {
 // AssertLintTestConditions verifies lint/test pass/fail conditions
 func AssertLintTestConditions(t *testing.T, msg *proto.AgentMsg, conditions LintTestConditions) {
 	t.Helper()
-	
+
 	if conditions.ShouldPass {
 		// Verify it's a RESULT, not ERROR
 		AssertMessageType(t, msg, proto.MsgTypeRESULT)
@@ -284,7 +284,7 @@ func AssertLintTestConditions(t *testing.T, msg *proto.AgentMsg, conditions Lint
 		// Verify it's an ERROR message
 		AssertMessageType(t, msg, proto.MsgTypeERROR)
 		AssertPayloadExists(t, msg, "error")
-		
+
 		if conditions.ErrorText != "" {
 			AssertPayloadContains(t, msg, "error", conditions.ErrorText)
 		}
