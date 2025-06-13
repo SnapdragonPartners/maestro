@@ -41,8 +41,9 @@ type QueuedStory struct {
 
 // Queue manages the architect's story queue with dependency resolution
 type Queue struct {
-	stories    map[string]*QueuedStory
-	storiesDir string
+	stories      map[string]*QueuedStory
+	storiesDir   string
+	readyStoryCh chan<- string // Channel to notify when stories become ready
 }
 
 // NewQueue creates a new queue manager
@@ -50,7 +51,13 @@ func NewQueue(storiesDir string) *Queue {
 	return &Queue{
 		stories:    make(map[string]*QueuedStory),
 		storiesDir: storiesDir,
+		// readyStoryCh will be set by SetReadyChannel
 	}
+}
+
+// SetReadyChannel sets the channel for ready story notifications
+func (q *Queue) SetReadyChannel(ch chan<- string) {
+	q.readyStoryCh = ch
 }
 
 // LoadFromDirectory scans the stories directory and loads all story files
@@ -87,6 +94,9 @@ func (q *Queue) LoadFromDirectory() error {
 			existing.LastUpdated = time.Now().UTC()
 		}
 	}
+
+	// After loading all stories, check for initially ready ones
+	q.checkAndNotifyReady()
 
 	return nil
 }
@@ -311,7 +321,29 @@ func (q *Queue) MarkCompleted(storyID string) error {
 	story.CompletedAt = &now
 	story.LastUpdated = now
 
+	// Check if any pending stories became ready due to this completion
+	q.checkAndNotifyReady()
+
 	return nil
+}
+
+// checkAndNotifyReady checks for stories that became ready and notifies via channel
+func (q *Queue) checkAndNotifyReady() {
+	if q.readyStoryCh == nil {
+		return // Channel not set, skip notifications
+	}
+
+	for _, story := range q.stories {
+		if story.Status == StatusPending && q.areDependenciesMet(story) {
+			// Try to notify (non-blocking)
+			select {
+			case q.readyStoryCh <- story.ID:
+				fmt.Printf("📥 Queue: notified that story %s is ready\n", story.ID)
+			default:
+				// Channel full, that's OK - the dispatcher will check again
+			}
+		}
+	}
 }
 
 // MarkBlocked marks a story as blocked

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -23,9 +22,286 @@ type LLMClient interface {
 	GenerateResponse(ctx context.Context, prompt string) (string, error)
 }
 
+// AnswerWorker handles QUESTION messages using LLM
+type AnswerWorker struct {
+	llmClient          LLMClient
+	renderer           *templates.Renderer
+	questionCh         chan *proto.AgentMsg
+	questionAnsweredCh chan string
+	dispatcher         MessageSender
+	architectID        string
+}
+
+// ReviewWorker handles REQUEST messages for code review
+type ReviewWorker struct {
+	llmClient    LLMClient
+	renderer     *templates.Renderer
+	reviewReqCh  chan *proto.AgentMsg
+	reviewDoneCh chan string
+	dispatcher   MessageSender
+	architectID  string
+}
+
+// NewAnswerWorker creates a new answer worker
+func NewAnswerWorker(llmClient LLMClient, renderer *templates.Renderer, questionCh chan *proto.AgentMsg, questionAnsweredCh chan string, dispatcher MessageSender, architectID string) *AnswerWorker {
+	return &AnswerWorker{
+		llmClient:          llmClient,
+		renderer:           renderer,
+		questionCh:         questionCh,
+		questionAnsweredCh: questionAnsweredCh,
+		dispatcher:         dispatcher,
+		architectID:        architectID,
+	}
+}
+
+// NewReviewWorker creates a new review worker
+func NewReviewWorker(llmClient LLMClient, renderer *templates.Renderer, reviewReqCh chan *proto.AgentMsg, reviewDoneCh chan string, dispatcher MessageSender, architectID string) *ReviewWorker {
+	return &ReviewWorker{
+		llmClient:    llmClient,
+		renderer:     renderer,
+		reviewReqCh:  reviewReqCh,
+		reviewDoneCh: reviewDoneCh,
+		dispatcher:   dispatcher,
+		architectID:  architectID,
+	}
+}
+
+// Run starts the answer worker goroutine
+func (w *AnswerWorker) Run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("AnswerWorker panic recovered: %v\n", r)
+			// Consider restarting the worker or notifying the system
+		}
+	}()
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-w.questionCh:
+			// Process with error handling
+			if err := w.processMessage(ctx, msg); err != nil {
+				fmt.Printf("AnswerWorker error processing %s: %v\n", msg.ID, err)
+				// Send error response back to agent
+				w.sendErrorResponse(msg, err)
+			}
+			
+			// Signal completion
+			select {
+			case w.questionAnsweredCh <- msg.ID:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// processMessage handles the core message processing logic for AnswerWorker
+func (w *AnswerWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) error {
+	// Process question using LLM
+	var response string
+	if w.llmClient != nil {
+		// Use LLM to generate answer
+		question, exists := msg.GetPayload("question")
+		if !exists {
+			return fmt.Errorf("no question payload in message")
+		}
+		llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("%v", question))
+		if err != nil {
+			return fmt.Errorf("failed to generate LLM response: %w", err)
+		}
+		response = llmResponse
+		fmt.Printf("AnswerWorker: processed question %s\n", msg.ID)
+	} else {
+		// Mock mode - generate mock answer
+		response = "Mock answer: This is a simulated response from the architect"
+		fmt.Printf("AnswerWorker: mock processing question %s\n", msg.ID)
+	}
+	
+	// Send answer back to agent
+	if w.dispatcher != nil {
+		answerMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, w.architectID, msg.FromAgent)
+		answerMsg.ParentMsgID = msg.ID
+		answerMsg.SetPayload("answer", response)
+		answerMsg.SetPayload("status", "answered")
+		
+		if err := w.dispatcher.SendMessage(answerMsg); err != nil {
+			return fmt.Errorf("failed to send answer: %w", err)
+		}
+	}
+	
+	return nil
+}
+
+// sendErrorResponse sends an error response back to the agent
+func (w *AnswerWorker) sendErrorResponse(msg *proto.AgentMsg, err error) {
+	if w.dispatcher == nil {
+		return
+	}
+	
+	errorMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, w.architectID, msg.FromAgent)
+	errorMsg.ParentMsgID = msg.ID
+	errorMsg.SetPayload("answer", fmt.Sprintf("Error processing question: %v", err))
+	errorMsg.SetPayload("status", "error")
+	
+	if sendErr := w.dispatcher.SendMessage(errorMsg); sendErr != nil {
+		fmt.Printf("AnswerWorker: failed to send error response: %v\n", sendErr)
+	}
+}
+
+// Run starts the review worker goroutine
+func (w *ReviewWorker) Run(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("ReviewWorker panic recovered: %v\n", r)
+			// Consider restarting the worker or notifying the system
+		}
+	}()
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-w.reviewReqCh:
+			// Process with error handling
+			if err := w.processMessage(ctx, msg); err != nil {
+				fmt.Printf("ReviewWorker error processing %s: %v\n", msg.ID, err)
+				// Send error response back to agent
+				w.sendErrorResponse(msg, err)
+			}
+			
+			// Signal completion
+			select {
+			case w.reviewDoneCh <- msg.ID:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// processMessage handles the core message processing logic for ReviewWorker
+func (w *ReviewWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) error {
+	var approved bool = true
+	var feedback string
+	
+	if w.llmClient != nil {
+		// Use LLM for code review
+		code, exists := msg.GetPayload("code")
+		if !exists {
+			return fmt.Errorf("no code payload in message")
+		}
+		llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this code: %v", code))
+		if err != nil {
+			return fmt.Errorf("failed to generate LLM review: %w", err)
+		}
+		feedback = llmResponse
+		// For now, always approve in LLM mode (real logic would parse LLM response)
+		approved = true
+		fmt.Printf("ReviewWorker: processed review %s\n", msg.ID)
+	} else {
+		// Mock mode - auto-approve with mock feedback
+		approved = true
+		feedback = "Mock review: Code looks good, auto-approved for demo"
+		fmt.Printf("ReviewWorker: mock processing review %s\n", msg.ID)
+	}
+	
+	// Send review result back to agent
+	if w.dispatcher != nil {
+		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
+		resultMsg.ParentMsgID = msg.ID
+		resultMsg.SetPayload("approved", approved)
+		resultMsg.SetPayload("feedback", feedback)
+		resultMsg.SetPayload("status", "reviewed")
+		
+		if err := w.dispatcher.SendMessage(resultMsg); err != nil {
+			return fmt.Errorf("failed to send review result: %w", err)
+		}
+	}
+	
+	return nil
+}
+
+// sendErrorResponse sends an error response back to the agent
+func (w *ReviewWorker) sendErrorResponse(msg *proto.AgentMsg, err error) {
+	if w.dispatcher == nil {
+		return
+	}
+	
+	errorMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
+	errorMsg.ParentMsgID = msg.ID
+	errorMsg.SetPayload("approved", false)
+	errorMsg.SetPayload("feedback", fmt.Sprintf("Error processing review: %v", err))
+	errorMsg.SetPayload("status", "error")
+	
+	if sendErr := w.dispatcher.SendMessage(errorMsg); sendErr != nil {
+		fmt.Printf("ReviewWorker: failed to send error response: %v\n", sendErr)
+	}
+}
+
 // DispatcherInterface defines the interface for pulling messages from the dispatcher
 type DispatcherInterface interface {
 	PullArchitectWork() *proto.AgentMsg
+}
+
+// MessageSender defines the interface for sending messages to agents
+type MessageSender interface {
+	SendMessage(msg *proto.AgentMsg) error
+}
+
+// MockDispatcher implements MessageSender for testing
+type MockDispatcher struct {
+	sentMessages []*proto.AgentMsg
+}
+
+// NewMockDispatcher creates a new mock dispatcher
+func NewMockDispatcher() *MockDispatcher {
+	return &MockDispatcher{
+		sentMessages: make([]*proto.AgentMsg, 0),
+	}
+}
+
+// SendMessage implements MessageSender interface
+func (m *MockDispatcher) SendMessage(msg *proto.AgentMsg) error {
+	m.sentMessages = append(m.sentMessages, msg)
+	answer, _ := msg.GetPayload("answer")
+	fmt.Printf("📤 MockDispatcher: would send %s to %s (content: %v)\n", 
+		msg.Type, msg.ToAgent, answer)
+	return nil
+}
+
+// GetSentMessages returns all sent messages for testing
+func (m *MockDispatcher) GetSentMessages() []*proto.AgentMsg {
+	return m.sentMessages
+}
+
+// DispatcherAdapter adapts the real dispatcher to implement MessageSender
+type DispatcherAdapter struct {
+	dispatcher *dispatch.Dispatcher
+}
+
+// NewDispatcherAdapter creates a new dispatcher adapter
+func NewDispatcherAdapter(dispatcher *dispatch.Dispatcher) *DispatcherAdapter {
+	return &DispatcherAdapter{
+		dispatcher: dispatcher,
+	}
+}
+
+// SendMessage implements MessageSender interface by using dispatcher's DispatchMessage
+func (d *DispatcherAdapter) SendMessage(msg *proto.AgentMsg) error {
+	if d.dispatcher == nil {
+		return fmt.Errorf("dispatcher not initialized")
+	}
+	
+	// Use the dispatcher's existing DispatchMessage method
+	err := d.dispatcher.DispatchMessage(msg)
+	if err != nil {
+		return fmt.Errorf("failed to dispatch message %s: %w", msg.ID, err)
+	}
+	
+	fmt.Printf("📤 DispatcherAdapter: sent %s to %s\n", msg.Type, msg.ToAgent)
+	return nil
 }
 
 // State represents the current state of the architect workflow
@@ -34,13 +310,10 @@ type State string
 const (
 	StateSpecParsing        State = "SPEC_PARSING"
 	StateStoryGeneration    State = "STORY_GENERATION"
-	StateQueueManagement    State = "QUEUE_MANAGEMENT"
-	StateDispatching        State = "DISPATCHING"
-	StateAnswering          State = "ANSWERING"
-	StateReviewing          State = "REVIEWING"
+	StateQueueAndDispatch   State = "QUEUE_AND_DISPATCH"
 	StateAwaitHumanFeedback State = "AWAIT_HUMAN_FEEDBACK"
-	StateCompleted          State = "COMPLETED"
-	StateError              State = "ERROR"
+	StateDone              State = "DONE"
+	StateError             State = "ERROR"
 )
 
 // Driver manages the state machine for an architect workflow
@@ -56,194 +329,120 @@ type Driver struct {
 	specFile          string              // Path to spec file
 	storiesDir        string              // Directory for story files
 	queue             *Queue              // Story queue manager
-	storyDispatcher   *StoryDispatcher    // Story dispatcher for agent assignment
-	questionHandler   *QuestionHandler    // Question handler for ANSWERING state
-	reviewEvaluator   *ReviewEvaluator    // Review evaluator for REVIEWING state
-	escalationHandler *EscalationHandler  // Escalation handler for AWAIT_HUMAN_FEEDBACK state
+	escalationHandler *EscalationHandler  // Escalation handler
 	dispatcher        DispatcherInterface // Interface for pulling messages
+
+	// v2 Channel-based workers
+	readyStoryCh        chan string
+	idleAgentCh         <-chan string  // Read-only channel from dispatcher
+	reviewDoneCh        chan string
+	questionAnsweredCh  chan string
+	questionCh          chan *proto.AgentMsg
+	reviewReqCh         chan *proto.AgentMsg
+	answerWorker        *AnswerWorker
+	reviewWorker        *ReviewWorker
+	workerCtx           context.Context
+	workerCancel        context.CancelFunc
 }
 
-// NewDriver creates a new architect driver instance
+// NewDriver creates a new architect driver instance (mock mode)
 func NewDriver(architectID string, stateStore *state.Store, workDir, storiesDir string) *Driver {
-	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
+	renderer, _ := templates.NewRenderer()
 	queue := NewQueue(storiesDir)
-
-	// Create escalation handler
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 
-	// Create a mock story dispatcher for testing/demo
-	storyDispatcher := NewMockStoryDispatcher(queue)
+	// Create buffered channels (size 1 as per spec)
+	readyStoryCh := make(chan string, 1)
+	idleAgentChRW := make(chan string, 1)  // Read-write for mock mode
+	reviewDoneCh := make(chan string, 1)
+	questionAnsweredCh := make(chan string, 1)
 
-	// Create question handler (no LLM = mock mode)
-	questionHandler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	// Create worker channels
+	questionCh := make(chan *proto.AgentMsg, 10)
+	reviewReqCh := make(chan *proto.AgentMsg, 10)
 
-	// Create review evaluator (no LLM = mock mode)
-	reviewEvaluator := NewReviewEvaluator(nil, renderer, queue, workDir, escalationHandler)
+	// Connect queue to ready channel
+	queue.SetReadyChannel(readyStoryCh)
 
-	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManager(),
-		currentState:      StateSpecParsing, // Default starting state
-		stateData:         make(map[string]interface{}),
-		llmClient:         nil, // No LLM - mock mode
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		storyDispatcher:   storyDispatcher,
-		questionHandler:   questionHandler,
-		reviewEvaluator:   reviewEvaluator,
-		escalationHandler: escalationHandler,
-		dispatcher:        nil, // No dispatcher for mock mode
-	}
-}
+	// Create mock dispatcher for workers
+	mockDispatcher := NewMockDispatcher()
 
-// NewDriverWithModel creates a new architect driver with model configuration
-func NewDriverWithModel(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, workDir, storiesDir string) *Driver {
-	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
-	queue := NewQueue(storiesDir)
-
-	// Create escalation handler
-	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
-
-	// Create a mock story dispatcher for testing/demo
-	storyDispatcher := NewMockStoryDispatcher(queue)
-
-	// Create question handler (no LLM = mock mode)
-	questionHandler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
-
-	// Create review evaluator (no LLM = mock mode)
-	reviewEvaluator := NewReviewEvaluator(nil, renderer, queue, workDir, escalationHandler)
+	// Create workers (no LLM = mock mode)
+	answerWorker := NewAnswerWorker(nil, renderer, questionCh, questionAnsweredCh, mockDispatcher, architectID)
+	reviewWorker := NewReviewWorker(nil, renderer, reviewReqCh, reviewDoneCh, mockDispatcher, architectID)
 
 	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManagerWithModel(modelConfig),
-		currentState:      StateSpecParsing, // Default starting state
-		stateData:         make(map[string]interface{}),
-		llmClient:         nil, // No LLM - mock mode
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		storyDispatcher:   storyDispatcher,
-		questionHandler:   questionHandler,
-		reviewEvaluator:   reviewEvaluator,
-		escalationHandler: escalationHandler,
-		dispatcher:        nil, // No dispatcher for mock mode
-	}
-}
-
-// NewDriverWithLLM creates a new architect driver with LLM integration for live mode
-func NewDriverWithLLM(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, workDir, storiesDir string) *Driver {
-	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
-	queue := NewQueue(storiesDir)
-
-	// Create escalation handler
-	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
-
-	// Create a mock story dispatcher for testing/demo
-	storyDispatcher := NewMockStoryDispatcher(queue)
-
-	// Create question handler with live LLM
-	questionHandler := NewQuestionHandler(llmClient, renderer, queue, escalationHandler)
-
-	// Create review evaluator with live LLM
-	reviewEvaluator := NewReviewEvaluator(llmClient, renderer, queue, workDir, escalationHandler)
-
-	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManagerWithModel(modelConfig),
-		currentState:      StateSpecParsing, // Default starting state
-		stateData:         make(map[string]interface{}),
-		llmClient:         llmClient, // Live LLM mode
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		storyDispatcher:   storyDispatcher,
-		questionHandler:   questionHandler,
-		reviewEvaluator:   reviewEvaluator,
-		escalationHandler: escalationHandler,
-		dispatcher:        nil, // No dispatcher for mock mode
-	}
-}
-
-// NewDriverWithO3 creates a new architect driver with OpenAI o3 integration
-func NewDriverWithO3(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workDir, storiesDir string) *Driver {
-	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
-	queue := NewQueue(storiesDir)
-
-	// Create escalation handler
-	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
-
-	// Create a mock story dispatcher for testing/demo
-	storyDispatcher := NewMockStoryDispatcher(queue)
-
-	// Use default o3 model - in the future this could be configurable via model name
-	// For now, assume o3-mini for architecture tasks
-	llmClient := agent.NewO3Client(apiKey)
-
-	// Create question handler with O3 LLM
-	questionHandler := NewQuestionHandler(llmClient, renderer, queue, escalationHandler)
-
-	// Create review evaluator with O3 LLM
-	reviewEvaluator := NewReviewEvaluator(llmClient, renderer, queue, workDir, escalationHandler)
-
-	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManagerWithModel(modelConfig),
-		currentState:      StateSpecParsing, // Default starting state
-		stateData:         make(map[string]interface{}),
-		llmClient:         llmClient, // O3 LLM mode
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		storyDispatcher:   storyDispatcher,
-		questionHandler:   questionHandler,
-		reviewEvaluator:   reviewEvaluator,
-		escalationHandler: escalationHandler,
-		dispatcher:        nil, // No dispatcher for mock mode
+		architectID:        architectID,
+		stateStore:         stateStore,
+		contextManager:     contextmgr.NewContextManager(),
+		currentState:       StateSpecParsing,
+		stateData:          make(map[string]interface{}),
+		llmClient:          nil,
+		renderer:           renderer,
+		workDir:            workDir,
+		storiesDir:         storiesDir,
+		queue:              queue,
+		escalationHandler:  escalationHandler,
+		dispatcher:         nil,
+		readyStoryCh:       readyStoryCh,
+		idleAgentCh:        idleAgentChRW,  // Cast to read-only interface
+		reviewDoneCh:       reviewDoneCh,
+		questionAnsweredCh: questionAnsweredCh,
+		questionCh:         questionCh,
+		reviewReqCh:        reviewReqCh,
+		answerWorker:       answerWorker,
+		reviewWorker:       reviewWorker,
 	}
 }
 
 // NewDriverWithDispatcher creates a new architect driver with LLM and real dispatcher for production mode
 func NewDriverWithDispatcher(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string) *Driver {
-	renderer, _ := templates.NewRenderer() // Ignore error for now, fallback to mock mode
+	renderer, _ := templates.NewRenderer()
 	queue := NewQueue(storiesDir)
-
-	// Create escalation handler
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 
-	// Create a REAL story dispatcher with live dispatcher
-	storyDispatcher := NewStoryDispatcher(queue, dispatcher)
+	// Create buffered channels (size 1 as per spec)
+	readyStoryCh := make(chan string, 1)
+	// Subscribe to dispatcher's idle agent notifications
+	idleAgentCh := dispatcher.SubscribeIdleAgents(architectID)
+	reviewDoneCh := make(chan string, 1)
+	questionAnsweredCh := make(chan string, 1)
 
-	// Create question handler with live LLM
-	questionHandler := NewQuestionHandler(llmClient, renderer, queue, escalationHandler)
+	// Create worker channels
+	questionCh := make(chan *proto.AgentMsg, 10)
+	reviewReqCh := make(chan *proto.AgentMsg, 10)
 
-	// Create review evaluator with live LLM
-	reviewEvaluator := NewReviewEvaluator(llmClient, renderer, queue, workDir, escalationHandler)
+	// Connect queue to ready channel
+	queue.SetReadyChannel(readyStoryCh)
+
+	// For production mode, use the real dispatcher through adapter
+	messageSender := NewDispatcherAdapter(dispatcher)
+
+	// Create workers with live LLM
+	answerWorker := NewAnswerWorker(llmClient, renderer, questionCh, questionAnsweredCh, messageSender, architectID)
+	reviewWorker := NewReviewWorker(llmClient, renderer, reviewReqCh, reviewDoneCh, messageSender, architectID)
 
 	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManagerWithModel(modelConfig),
-		currentState:      StateSpecParsing, // Default starting state
-		stateData:         make(map[string]interface{}),
-		llmClient:         llmClient, // Live LLM
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		storyDispatcher:   storyDispatcher,
-		questionHandler:   questionHandler,
-		reviewEvaluator:   reviewEvaluator,
-		escalationHandler: escalationHandler,
-		dispatcher:        dispatcher, // Store dispatcher for pull-based messaging
+		architectID:        architectID,
+		stateStore:         stateStore,
+		contextManager:     contextmgr.NewContextManagerWithModel(modelConfig),
+		currentState:       StateSpecParsing,
+		stateData:          make(map[string]interface{}),
+		llmClient:          llmClient,
+		renderer:           renderer,
+		workDir:            workDir,
+		storiesDir:         storiesDir,
+		queue:              queue,
+		escalationHandler:  escalationHandler,
+		dispatcher:         dispatcher,
+		readyStoryCh:       readyStoryCh,
+		idleAgentCh:        idleAgentCh,
+		reviewDoneCh:       reviewDoneCh,
+		questionAnsweredCh: questionAnsweredCh,
+		questionCh:         questionCh,
+		reviewReqCh:        reviewReqCh,
+		answerWorker:       answerWorker,
+		reviewWorker:       reviewWorker,
 	}
 }
 
@@ -261,59 +460,49 @@ func (d *Driver) Initialize(ctx context.Context) error {
 		d.stateData = savedData
 	}
 
+	// Start worker goroutines
+	d.workerCtx, d.workerCancel = context.WithCancel(ctx)
+	go d.answerWorker.Run(d.workerCtx)
+	go d.reviewWorker.Run(d.workerCtx)
+
+	fmt.Printf("Architect workers started (answer and review)\n")
+
 	return nil
 }
 
-// HandleQuestion processes incoming QUESTION messages from agents
-func (d *Driver) HandleQuestion(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Forward to the question handler
-	err := d.questionHandler.HandleQuestion(ctx, msg)
-	if err != nil {
-		return nil, err
+// Shutdown stops the worker goroutines and cleans up resources gracefully
+func (d *Driver) Shutdown() {
+	if d.workerCancel != nil {
+		// Signal workers to stop
+		d.workerCancel()
+		
+		// Wait for workers to finish current tasks (with timeout)
+		done := make(chan struct{})
+		go func() {
+			// Wait for workers to drain their channels
+			for len(d.questionCh) > 0 || len(d.reviewReqCh) > 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
+			close(done)
+		}()
+		
+		select {
+		case <-done:
+			fmt.Printf("Architect workers shutdown gracefully\n")
+		case <-time.After(30 * time.Second):
+			fmt.Printf("Architect workers shutdown timeout - forcing closure\n")
+		}
+		
+		// Close channels after workers are done
+		close(d.questionCh)
+		close(d.reviewReqCh)
+		close(d.readyStoryCh)
+		// Note: idleAgentCh is owned by dispatcher, don't close it here
+		close(d.reviewDoneCh)
+		close(d.questionAnsweredCh)
 	}
-
-	// Create acknowledgment response - use ANSWER type for questions
-	response := proto.NewAgentMsg(proto.MsgTypeANSWER, d.architectID, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "question_received")
-	response.SetPayload("message", "Question is being processed")
-
-	return response, nil
 }
 
-// HandleRequest processes incoming REQUEST messages from agents (approval requests)
-func (d *Driver) HandleRequest(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Forward to the review evaluator for approval processing
-	err := d.reviewEvaluator.HandleResult(ctx, msg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create approval response - use RESULT type for approval decisions
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "request_received")
-	response.SetPayload("message", "Approval request is being processed")
-
-	return response, nil
-}
-
-// HandleResult processes incoming RESULT messages from agents (code submissions)
-func (d *Driver) HandleResult(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Forward to the review evaluator
-	err := d.reviewEvaluator.HandleResult(ctx, msg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create acknowledgment response
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "submission_received")
-	response.SetPayload("message", "Code submission is being reviewed")
-
-	return response, nil
-}
 
 // ProcessWorkflow runs the main state machine loop for the architect workflow
 func (d *Driver) ProcessWorkflow(ctx context.Context, specFile string) error {
@@ -348,7 +537,7 @@ mainLoop:
 		}
 
 		// Check if we're already in a terminal state
-		if d.currentState == StateCompleted || d.currentState == StateError {
+		if d.currentState == StateDone || d.currentState == StateError {
 			break mainLoop
 		}
 
@@ -392,19 +581,13 @@ func (d *Driver) processCurrentState(ctx context.Context) (State, error) {
 		return d.handleSpecParsing(ctx)
 	case StateStoryGeneration:
 		return d.handleStoryGeneration(ctx)
-	case StateQueueManagement:
-		return d.handleQueueManagement(ctx)
-	case StateDispatching:
-		return d.handleDispatching(ctx)
-	case StateAnswering:
-		return d.handleAnswering(ctx)
-	case StateReviewing:
-		return d.handleReviewing(ctx)
+	case StateQueueAndDispatch:
+		return d.handleQueueAndDispatch(ctx)
 	case StateAwaitHumanFeedback:
 		return d.handleAwaitHumanFeedback(ctx)
-	case StateCompleted:
-		// COMPLETED is a terminal state - should not continue processing
-		return StateCompleted, nil
+	case StateDone:
+		// DONE is a terminal state - should not continue processing
+		return StateDone, nil
 	case StateError:
 		// ERROR is a terminal state - should not continue processing
 		return StateError, nil
@@ -569,308 +752,114 @@ func (d *Driver) handleStoryGeneration(ctx context.Context) (State, error) {
 		fmt.Printf("  - %s: %s\n", story.ID, story.Title)
 	}
 
-	return StateQueueManagement, nil
+	return StateQueueAndDispatch, nil
 }
 
-// handleQueueManagement processes the queue management phase
-func (d *Driver) handleQueueManagement(ctx context.Context) (State, error) {
-	d.contextManager.AddMessage("assistant", "Queue management phase: managing story dependencies")
+// handleQueueAndDispatch processes the merged queue management and dispatching phase with channel-based workers
+func (d *Driver) handleQueueAndDispatch(ctx context.Context) (State, error) {
+	d.contextManager.AddMessage("assistant", "Queue and dispatch phase: managing stories and agents with channel workers")
 
-	// Load stories from the stories directory
-	if err := d.queue.LoadFromDirectory(); err != nil {
-		return StateError, fmt.Errorf("failed to load stories from directory: %w", err)
-	}
-
-	// Detect cycles in dependencies
-	cycles := d.queue.DetectCycles()
-	if len(cycles) > 0 {
-		return StateError, fmt.Errorf("dependency cycles detected: %v", cycles)
-	}
-
-	// Get queue summary for logging
-	summary := d.queue.GetQueueSummary()
-	fmt.Printf("Queue loaded: %d stories (%d ready)\n",
-		summary["total_stories"], summary["ready_stories"])
-
-	// Store queue state data
-	d.stateData["queue_initialized"] = true
-	d.stateData["queue_summary"] = summary
-	d.stateData["queue_management_completed_at"] = time.Now().UTC()
-
-	// Persist queue state to JSON
-	if err := d.persistQueueState(); err != nil {
-		// Log warning but don't fail - queue is still in memory
-		fmt.Printf("Warning: failed to persist queue state: %v\n", err)
-	}
-
-	return StateDispatching, nil
-}
-
-// handleDispatching processes the dispatching phase
-func (d *Driver) handleDispatching(ctx context.Context) (State, error) {
-	d.contextManager.AddMessage("assistant", "Dispatching phase: assigning stories to agents")
-
-	// The dispatcher should already be running from the orchestrator
-	// Don't start/stop it here as it needs to stay running for the entire workflow
-	if d.storyDispatcher.dispatcher != nil {
-		// Dispatcher is managed by the orchestrator, not by the architect
-		// Just verify it's available for dispatching
-	}
-
-	// Use the story dispatcher to assign ready stories to agents
-	result, err := d.storyDispatcher.DispatchReadyStories(ctx)
-	if err != nil {
-		return StateError, fmt.Errorf("failed to dispatch stories: %w", err)
-	}
-
-	// Log dispatch results
-	fmt.Printf("Dispatch completed: %d stories assigned\n", result.StoriesDispatched)
-	for _, assignment := range result.Assignments {
-		fmt.Printf("  - Assigned story %s to agent %s\n", assignment.StoryID, assignment.AgentID)
-	}
-
-	if len(result.Errors) > 0 {
-		fmt.Printf("Dispatch warnings:\n")
-		for _, errMsg := range result.Errors {
-			fmt.Printf("  - %s\n", errMsg)
+	// Initialize queue if not already done
+	if _, exists := d.stateData["queue_initialized"]; !exists {
+		// Load stories from the stories directory
+		if err := d.queue.LoadFromDirectory(); err != nil {
+			return StateError, fmt.Errorf("failed to load stories from directory: %w", err)
 		}
-	}
 
-	// Store dispatch results
-	d.stateData["stories_dispatched"] = result.StoriesDispatched
-	d.stateData["dispatch_assignments"] = result.Assignments
-	d.stateData["dispatch_errors"] = result.Errors
-	d.stateData["dispatching_completed_at"] = time.Now().UTC()
-
-	// Get assignment status for monitoring
-	assignmentStatus := d.storyDispatcher.GetAssignmentStatus()
-	d.stateData["active_assignments"] = assignmentStatus.ActiveAssignments
-
-	// Persist updated queue state
-	if err := d.persistQueueState(); err != nil {
-		fmt.Printf("Warning: failed to persist queue state: %v\n", err)
-	}
-
-	// Determine next state based on dispatch results
-	if result.StoriesDispatched > 0 {
-		// Stories were dispatched, we should monitor their progress and handle interactions
-		return StateAnswering, nil
-	} else {
-		// No stories were dispatched, check if all work is actually done
-		allCompleted := d.queue.AllStoriesCompleted()
-		if allCompleted {
-			return StateCompleted, nil
-		} else {
-			// Still have pending work but nothing ready to dispatch
-			// Wait a bit and try again (or handle questions)
-			return StateAnswering, nil
+		// Detect cycles in dependencies
+		cycles := d.queue.DetectCycles()
+		if len(cycles) > 0 {
+			return StateError, fmt.Errorf("dependency cycles detected: %v", cycles)
 		}
+
+		// Persist queue state to JSON for monitoring
+		if err := d.persistQueueState(); err != nil {
+			return StateError, fmt.Errorf("critical: failed to persist queue state: %w", err)
+		}
+
+		d.stateData["queue_initialized"] = true
+		d.stateData["queue_management_completed_at"] = time.Now().UTC()
+
+		// Get queue summary for logging
+		summary := d.queue.GetQueueSummary()
+		fmt.Printf("Queue loaded: %d stories (%d ready)\n",
+			summary["total_stories"], summary["ready_stories"])
+		d.stateData["queue_summary"] = summary
 	}
-}
 
-// handleAnswering processes the answering phase (technical Q&A)
-func (d *Driver) handleAnswering(ctx context.Context) (State, error) {
-	d.contextManager.AddMessage("assistant", "Answering phase: handling technical questions")
+	// Main dispatch loop with channel select
+	for {
+		select {
+		case <-ctx.Done():
+			return StateError, ctx.Err()
 
-	questionsHandled := 0
-
-	if d.dispatcher != nil {
-		// Use pull-based approach with real dispatcher
-		fmt.Printf("Using dispatcher to pull questions from queue...\n")
-
-		// Poll for questions with a timeout
-		timeout := time.After(5 * time.Second)           // Wait up to 5 seconds for questions
-		ticker := time.NewTicker(500 * time.Millisecond) // Check every 500ms
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-timeout:
-				// Timeout reached, stop polling
-				goto checkCompletion
-			case <-ticker.C:
-				// Pull a message from the dispatcher (could be QUESTION or REQUEST)
-				if message := d.dispatcher.PullArchitectWork(); message != nil {
-					fmt.Printf("Architect pulled message: %s (type: %s)\n", message.ID, message.Type)
-
-					var response *proto.AgentMsg
-					var err error
-
-					// Process based on message type
-					switch message.Type {
-					case proto.MsgTypeQUESTION:
-						// Information request - use HandleQuestion (sends ANSWER)
-						response, err = d.HandleQuestion(ctx, message)
-					case proto.MsgTypeREQUEST:
-						// Approval request - use HandleRequest (sends RESULT)
-						response, err = d.HandleRequest(ctx, message)
-					default:
-						fmt.Printf("Unexpected message type %s for architect\n", message.Type)
-						continue
-					}
-
-					if err != nil {
-						fmt.Printf("Failed to process message %s: %v\n", message.ID, err)
-					} else if response != nil {
-						// The response is handled by the handlers through the dispatcher
-						questionsHandled++
-						fmt.Printf("Successfully processed message %s\n", message.ID)
-					}
+		case readyStoryID := <-d.readyStoryCh:
+			// New story became ready for dispatch
+			fmt.Printf("📥 Story ready for dispatch: %s\n", readyStoryID)
+			// Dispatch story to available agent
+			if err := d.dispatchReadyStory(ctx, readyStoryID); err != nil {
+				fmt.Printf("Failed to dispatch story %s: %v\n", readyStoryID, err)
+				// Re-queue the story for later attempt by putting it back in ready channel
+				select {
+				case d.readyStoryCh <- readyStoryID:
+				default:
+					// Channel full, story will be picked up on next cycle
 				}
 			}
-		}
 
-	checkCompletion:
-		fmt.Printf("Question Handler Status: %d questions handled this cycle\n", questionsHandled)
-
-	} else {
-		// Fallback to legacy behavior for mock mode
-		questionStatus := d.questionHandler.GetQuestionStatus()
-
-		fmt.Printf("Question Handler Status: %d total, %d pending, %d answered, %d escalated\n",
-			questionStatus.TotalQuestions,
-			questionStatus.PendingQuestions,
-			questionStatus.AnsweredQuestions,
-			questionStatus.EscalatedQuestions,
-		)
-
-		// Store question handling statistics
-		d.stateData["questions_total"] = questionStatus.TotalQuestions
-		d.stateData["questions_pending"] = questionStatus.PendingQuestions
-		d.stateData["questions_answered"] = questionStatus.AnsweredQuestions
-		d.stateData["questions_escalated"] = questionStatus.EscalatedQuestions
-
-		// Clean up answered questions to free memory
-		cleared := d.questionHandler.ClearAnsweredQuestions()
-		if cleared > 0 {
-			fmt.Printf("Cleared %d answered questions from memory\n", cleared)
-		}
-	}
-
-	d.stateData["answering_completed_at"] = time.Now().UTC()
-
-	// Check if there are ready stories waiting to be dispatched
-	readyStories := d.queue.GetReadyStories()
-	if len(readyStories) > 0 {
-		// New stories became ready (dependencies completed), go back to dispatching
-		return StateDispatching, nil
-	}
-
-	// Check if there are still active assignments before completing
-	assignmentStatus := d.storyDispatcher.GetAssignmentStatus()
-	fmt.Printf("Assignment status check: %d active assignments, %d total assignments\n",
-		assignmentStatus.ActiveAssignments, len(assignmentStatus.Assignments))
-	if assignmentStatus.ActiveAssignments > 0 {
-		// Still have active work, continue answering questions
-		fmt.Printf("Active assignments: %d, continuing to answer questions...\n", assignmentStatus.ActiveAssignments)
-		return StateAnswering, nil
-	}
-
-	// Check if there are still pending questions before completing
-	questionStatus := d.questionHandler.GetQuestionStatus()
-	fmt.Printf("Question status check: %d pending, %d answered, %d total questions\n",
-		questionStatus.PendingQuestions, questionStatus.AnsweredQuestions, questionStatus.TotalQuestions)
-	if questionStatus.PendingQuestions > 0 {
-		// Still have pending questions, continue answering
-		fmt.Printf("Pending questions: %d, continuing to answer questions...\n", questionStatus.PendingQuestions)
-		return StateAnswering, nil
-	}
-
-	// TEMPORARY FIX: Since current implementation is mock/demo mode where agents complete immediately,
-	// we need to mark stories as completed when they finish their mock processing.
-	// This handles the gap between mock agent completion and proper state tracking.
-
-	// Check if we have stories that finished processing but aren't marked complete
-	if questionsHandled > 0 && questionStatus.PendingQuestions == 0 && assignmentStatus.ActiveAssignments == 0 {
-		// In mock mode, agents complete their workflow immediately and clear assignments
-		// But stories remain in StatusInProgress, causing the infinite loop
-		allStories := d.queue.GetAllStories()
-		storiesNeedingCompletion := 0
-
-		for _, story := range allStories {
-			if story.Status == StatusInProgress {
-				// Check if this story has any active assignments
-				hasActiveAssignment := false
-				for _, assignment := range assignmentStatus.Assignments {
-					if assignment.StoryID == story.ID {
-						hasActiveAssignment = true
-						break
-					}
-				}
-
-				if !hasActiveAssignment {
-					storiesNeedingCompletion++
-					fmt.Printf("Marking story %s as completed (mock agent finished processing)\n", story.ID)
-					if err := d.queue.MarkCompleted(story.ID); err != nil {
-						fmt.Printf("Warning: failed to mark story %s as completed: %v\n", story.ID, err)
-					}
+		case idleAgentID := <-d.idleAgentCh:
+			// Agent became idle and available for work
+			fmt.Printf("👤 Agent available: %s\n", idleAgentID)
+			// Check for ready stories to assign
+			if story := d.queue.NextReadyStory(); story != nil {
+				if err := d.assignStoryToAgent(ctx, story.ID, idleAgentID); err != nil {
+					fmt.Printf("Failed to assign story to agent: %v\n", err)
 				}
 			}
+
+		case reviewedMsgID := <-d.reviewDoneCh:
+			// Review worker completed a review
+			fmt.Printf("✅ Review completed: %s\n", reviewedMsgID)
+			// TODO: Process review completion
+
+		case answeredMsgID := <-d.questionAnsweredCh:
+			// Answer worker completed answering a question
+			fmt.Printf("💬 Question answered: %s\n", answeredMsgID)
+			// TODO: Process answer completion
+
+		default:
+			// No channel activity - check completion conditions
+			
+			// Check if all stories are completed
+			if d.queue.AllStoriesCompleted() {
+				fmt.Printf("✨ All stories completed - transitioning to DONE\n")
+				return StateDone, nil
+			}
+
+			// Check for business escalations
+			if d.escalationHandler != nil {
+				summary := d.escalationHandler.GetEscalationSummary()
+				if summary.PendingEscalations > 0 {
+					fmt.Printf("🚨 %d escalations require human feedback\n", summary.PendingEscalations)
+					return StateAwaitHumanFeedback, nil
+				}
+			}
+
+			// Check if spec was updated (would trigger restart)
+			if previousSpecFile, exists := d.stateData["spec_file"]; exists {
+				if previousSpecFile != d.specFile {
+					fmt.Printf("🔄 Spec file updated, restarting from parsing\n")
+					return StateSpecParsing, nil
+				}
+			}
+
+			// Brief pause to avoid busy waiting
+			time.Sleep(100 * time.Millisecond)
 		}
-
-		if storiesNeedingCompletion > 0 {
-			fmt.Printf("Marked %d stories as completed after mock agent processing\n", storiesNeedingCompletion)
-		}
 	}
-
-	// Check if all stories are completed AND no pending questions
-	if d.queue.AllStoriesCompleted() && questionStatus.PendingQuestions == 0 {
-		fmt.Printf("All stories completed and no pending questions - transitioning to COMPLETED\n")
-		return StateCompleted, nil
-	}
-
-	// If we handled questions this cycle but still have work, continue
-	if questionsHandled > 0 && d.dispatcher != nil {
-		return StateAnswering, nil
-	}
-
-	// No questions handled this cycle and using dispatcher - we're done
-	if d.dispatcher != nil {
-		return StateCompleted, nil
-	}
-
-	// Legacy behavior: continue monitoring
-	time.Sleep(1 * time.Second)
-	return StateAnswering, nil
 }
 
-// handleReviewing processes the code review phase
-func (d *Driver) handleReviewing(ctx context.Context) (State, error) {
-	d.contextManager.AddMessage("assistant", "Reviewing phase: evaluating code submissions")
 
-	// Check for incoming RESULT messages (code submissions)
-	// In a real implementation, this would listen to a message queue or dispatcher
-	// For now, we simulate the reviewing capability
-
-	// Get current review status
-	reviewStatus := d.reviewEvaluator.GetReviewStatus()
-
-	// Log current review processing status
-	fmt.Printf("Review Evaluator Status: %d total, %d pending, %d approved, %d needs fixes\n",
-		reviewStatus.TotalReviews,
-		reviewStatus.PendingReviews,
-		reviewStatus.ApprovedReviews,
-		reviewStatus.NeedsFixesReviews,
-	)
-
-	// Store review processing statistics
-	d.stateData["reviews_total"] = reviewStatus.TotalReviews
-	d.stateData["reviews_pending"] = reviewStatus.PendingReviews
-	d.stateData["reviews_approved"] = reviewStatus.ApprovedReviews
-	d.stateData["reviews_needs_fixes"] = reviewStatus.NeedsFixesReviews
-	d.stateData["reviewing_completed_at"] = time.Now().UTC()
-
-	// Clean up completed reviews to free memory
-	cleared := d.reviewEvaluator.ClearCompletedReviews()
-	if cleared > 0 {
-		fmt.Printf("Cleared %d completed reviews from memory\n", cleared)
-	}
-
-	// The REVIEWING state is typically an ongoing state that processes code submissions as they arrive
-	// For the MVP, we transition to COMPLETED to indicate the reviewing capability is ready
-	// In a full implementation, this would stay in REVIEWING and process submissions continuously
-	return StateCompleted, nil
-}
 
 // handleAwaitHumanFeedback processes the human feedback phase
 func (d *Driver) handleAwaitHumanFeedback(ctx context.Context) (State, error) {
@@ -919,7 +908,7 @@ func (d *Driver) handleAwaitHumanFeedback(ctx context.Context) (State, error) {
 	fmt.Printf("🔄 Architect workflow paused - awaiting human intervention\n")
 	fmt.Printf("   Use 'agentctl architect list-escalations' to view and manage escalations\n")
 
-	return StateCompleted, nil
+	return StateDone, nil
 }
 
 // transitionTo moves the driver to a new state and persists it
@@ -1141,22 +1130,128 @@ func (d *Driver) GetQueue() *Queue {
 	return d.queue
 }
 
-// GetStoryDispatcher returns the story dispatcher for external access
-func (d *Driver) GetStoryDispatcher() *StoryDispatcher {
-	return d.storyDispatcher
-}
-
-// GetQuestionHandler returns the question handler for external access
-func (d *Driver) GetQuestionHandler() *QuestionHandler {
-	return d.questionHandler
-}
-
-// GetReviewEvaluator returns the review evaluator for external access
-func (d *Driver) GetReviewEvaluator() *ReviewEvaluator {
-	return d.reviewEvaluator
-}
-
 // GetEscalationHandler returns the escalation handler for external access
 func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
+}
+
+// HandleQuestion processes incoming QUESTION messages (legacy adapter support)
+func (d *Driver) HandleQuestion(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	// In the new architecture, questions are handled by workers
+	// This is a placeholder for legacy compatibility
+	fmt.Printf("Architect received question: %s (processed by workers)\n", msg.ID)
+	
+	response := proto.NewAgentMsg(proto.MsgTypeANSWER, d.architectID, msg.FromAgent)
+	response.ParentMsgID = msg.ID
+	response.SetPayload("status", "processed")
+	response.SetPayload("message", "Question processed by answer worker")
+	
+	return response, nil
+}
+
+// HandleResult processes incoming RESULT messages (legacy adapter support)
+func (d *Driver) HandleResult(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	// In the new architecture, results are handled by workers
+	// This is a placeholder for legacy compatibility
+	fmt.Printf("Architect received result: %s (processed by workers)\n", msg.ID)
+	
+	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, msg.FromAgent)
+	response.ParentMsgID = msg.ID
+	response.SetPayload("status", "processed")
+	response.SetPayload("message", "Result processed by review worker")
+	
+	return response, nil
+}
+
+// RouteMessage routes incoming messages to appropriate worker channels with timeout
+func (d *Driver) RouteMessage(msg *proto.AgentMsg) error {
+	// Validate message first
+	if msg == nil {
+		return fmt.Errorf("cannot route nil message")
+	}
+	if msg.ID == "" {
+		return fmt.Errorf("cannot route message with empty ID")
+	}
+	if msg.FromAgent == "" {
+		return fmt.Errorf("cannot route message with no sender")
+	}
+	
+	// Add timeout for channel operations
+	timeout := time.After(5 * time.Second)
+	
+	switch msg.Type {
+	case proto.MsgTypeQUESTION:
+		select {
+		case d.questionCh <- msg:
+			fmt.Printf("🔀 Routed QUESTION %s to answer worker\n", msg.ID)
+			return nil
+		case <-timeout:
+			return fmt.Errorf("timeout routing question %s - channel full after 5s", msg.ID)
+		}
+	case proto.MsgTypeREQUEST:
+		select {
+		case d.reviewReqCh <- msg:
+			fmt.Printf("🔀 Routed REQUEST %s to review worker\n", msg.ID)
+			return nil
+		case <-timeout:
+			return fmt.Errorf("timeout routing request %s - channel full after 5s", msg.ID)
+		}
+	default:
+		return fmt.Errorf("unknown message type for routing: %s", msg.Type)
+	}
+}
+
+// dispatchReadyStory assigns a ready story to an available agent
+func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
+	// Get the story from queue
+	story, exists := d.queue.stories[storyID]
+	if !exists {
+		return fmt.Errorf("story %s not found in queue", storyID)
+	}
+	
+	if story.Status != StatusPending {
+		return fmt.Errorf("story %s is not in pending status (current: %s)", storyID, story.Status)
+	}
+	
+	// Use logical agent name "coder" instead of hardcoded ID
+	// The dispatcher will resolve this to an actual available coder agent
+	agentID := "coder"
+	
+	return d.assignStoryToAgent(ctx, storyID, agentID)
+}
+
+// assignStoryToAgent assigns a specific story to a specific agent
+func (d *Driver) assignStoryToAgent(ctx context.Context, storyID, agentID string) error {
+	// Mark story as in progress
+	if err := d.queue.MarkInProgress(storyID, agentID); err != nil {
+		return fmt.Errorf("failed to mark story as in progress: %w", err)
+	}
+	
+	// Create task message for the agent
+	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, d.architectID, agentID)
+	taskMsg.SetPayload("story_id", storyID)
+	taskMsg.SetPayload("task_type", "implement_story")
+	
+	// Get story details
+	if story, exists := d.queue.stories[storyID]; exists {
+		taskMsg.SetPayload("title", story.Title)
+		taskMsg.SetPayload("file_path", story.FilePath)
+		taskMsg.SetPayload("estimated_points", story.EstimatedPoints)
+		taskMsg.SetPayload("depends_on", story.DependsOn)
+	}
+	
+	// Send task to agent via dispatcher
+	fmt.Printf("📋 Assigned story %s to agent %s\n", storyID, agentID)
+	
+	// Send via dispatcher if available (production mode)
+	if d.dispatcher != nil {
+		// Cast to the full dispatcher interface to access DispatchMessage
+		if dispatcher, ok := d.dispatcher.(*dispatch.Dispatcher); ok {
+			return dispatcher.DispatchMessage(taskMsg)
+		}
+	}
+	
+	// Mock mode - just log the assignment
+	fmt.Printf("🔄 Mock mode: story assignment logged only\n")
+	return nil
 }

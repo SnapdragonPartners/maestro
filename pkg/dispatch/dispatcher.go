@@ -38,6 +38,13 @@ type Dispatcher struct {
 	coderQueue      []*proto.AgentMsg // Answers/feedback for coders
 	sharedWorkQueue []*proto.AgentMsg // Ready stories for any coder
 	queueMutex      sync.RWMutex      // Protects all queues
+
+	// Channel-based notifications for architect
+	idleAgentCh    chan string // Notifies architect when agents become idle
+	architectID    string      // ID of the architect to notify
+	notificationMu sync.RWMutex // Protects notification channels
+	busyAgents     map[string]bool // Track which agents are processing work
+	busyMu         sync.RWMutex    // Protects busy agents map
 }
 
 type DispatchResult struct {
@@ -55,6 +62,8 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		inputChan:   make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:    make(chan struct{}),
 		running:     false,
+		idleAgentCh: make(chan string, 10), // Buffered channel for idle agent notifications
+		busyAgents:  make(map[string]bool), // Initialize busy agents map
 	}, nil
 }
 
@@ -119,6 +128,9 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(d.shutdown)
 
+
+	// Close idle agent channel for graceful shutdown
+	d.CloseIdleChannel()
 	// Wait for workers to finish
 	done := make(chan struct{})
 	go func() {
@@ -204,6 +216,8 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		d.logger.Debug("Queued REQUEST %s to architect queue (queue size: %d)", msg.ID, len(d.architectQueue))
 
 	case proto.MsgTypeRESULT:
+		// Check for idle agent notifications before queuing
+		d.NotifyArchitectOnResult(msg)
 		// RESULT messages go to coder queue for specific coder to pull
 		d.coderQueue = append(d.coderQueue, msg)
 		d.logger.Debug("Queued RESULT %s to coder queue (queue size: %d)", msg.ID, len(d.coderQueue))
@@ -334,6 +348,9 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 		d.logger.Error("Failed to log response message: %v", err)
 	}
 
+
+	// Check for architect notifications before routing
+	d.NotifyArchitectOnResult(response)
 	// Resolve logical agent name to actual agent ID
 	resolvedToAgent := d.resolveAgentName(response.ToAgent)
 	if resolvedToAgent != response.ToAgent {
@@ -496,6 +513,93 @@ func (d *Dispatcher) PullSharedWork() *proto.AgentMsg {
 	msg := d.sharedWorkQueue[0]
 	d.sharedWorkQueue = d.sharedWorkQueue[1:]
 
-	d.logger.Debug("Pulled TASK %s from shared work queue (remaining: %d)", msg.ID, len(d.sharedWorkQueue))
+	// Mark agent as busy when pulling work
+	d.busyMu.Lock()
+	d.busyAgents[msg.ToAgent] = true
+	d.busyMu.Unlock()
+
+	d.logger.Debug("Pulled TASK %s from shared work queue (remaining: %d), marked agent %s as busy", msg.ID, len(d.sharedWorkQueue), msg.ToAgent)
 	return msg
 }
+
+// SubscribeIdleAgents allows the architect to subscribe to idle agent notifications
+func (d *Dispatcher) SubscribeIdleAgents(architectID string) <-chan string {
+	d.notificationMu.Lock()
+	defer d.notificationMu.Unlock()
+	
+	d.architectID = architectID
+	d.logger.Info("Architect %s subscribed to idle agent notifications", architectID)
+	return d.idleAgentCh
+}
+
+// NotifyIdleAgent sends a notification when an agent becomes idle
+func (d *Dispatcher) NotifyIdleAgent(agentID string) {
+	d.notificationMu.RLock()
+	defer d.notificationMu.RUnlock()
+	
+	if d.architectID == "" {
+		// No architect subscribed
+		return
+	}
+	
+	select {
+	case d.idleAgentCh <- agentID:
+		d.logger.Debug("Notified architect %s that agent %s is idle", d.architectID, agentID)
+	default:
+		// Channel full, drop notification
+		d.logger.Warn("Idle agent notification dropped - channel full")
+	}
+}
+
+// NotifyArchitectOnResult notifies the architect when a coding agent finishes work
+// isCompletionStatus checks if a status indicates task completion
+func (d *Dispatcher) isCompletionStatus(status interface{}) bool {
+	statusStr, ok := status.(string)
+	if !ok {
+		return false
+	}
+	switch statusStr {
+	case "completed", "done", "error", "failed", "timeout", "cancelled", "aborted":
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *Dispatcher) NotifyArchitectOnResult(msg *proto.AgentMsg) {
+	// Check if this is a RESULT from a coding agent completion
+	if msg.Type == proto.MsgTypeRESULT {
+		if status, exists := msg.GetPayload("status"); exists {
+			d.logger.Debug("Checking RESULT message status: %v from agent %s", status, msg.FromAgent)
+			if d.isCompletionStatus(status) {
+				// Check if agent was actually busy before sending idle notification
+				d.busyMu.Lock()
+				wasBusy := d.busyAgents[msg.FromAgent]
+				if wasBusy {
+					// Remove from busy agents map
+					delete(d.busyAgents, msg.FromAgent)
+					d.busyMu.Unlock()
+					
+					// Coding agent finished work - notify they are idle
+					d.NotifyIdleAgent(msg.FromAgent)
+					d.logger.Debug("Agent %s marked as idle after completion", msg.FromAgent)
+				} else {
+					d.busyMu.Unlock()
+					d.logger.Debug("Agent %s was not marked as busy, skipping idle notification", msg.FromAgent)
+				}
+			}
+		}
+	}
+}
+
+// CloseIdleChannel closes the idle agent notification channel for graceful shutdown
+func (d *Dispatcher) CloseIdleChannel() {
+	d.notificationMu.Lock()
+	defer d.notificationMu.Unlock()
+	
+	if d.idleAgentCh != nil {
+		close(d.idleAgentCh)
+		d.logger.Info("Closed idle agent notification channel")
+	}
+}
+

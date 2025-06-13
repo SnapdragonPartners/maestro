@@ -58,9 +58,8 @@ func TestStateTransitions(t *testing.T) {
 		toState   State
 	}{
 		{StateSpecParsing, StateStoryGeneration},
-		{StateStoryGeneration, StateQueueManagement},
-		{StateQueueManagement, StateDispatching},
-		{StateDispatching, StateCompleted},
+		{StateStoryGeneration, StateQueueAndDispatch},
+		{StateQueueAndDispatch, StateDone},
 	}
 
 	for _, tc := range testCases {
@@ -111,8 +110,8 @@ func TestProcessWorkflowMockMode(t *testing.T) {
 	}
 
 	// Verify final state
-	if driver.currentState != StateCompleted {
-		t.Errorf("Expected final state %s, got %s", StateCompleted, driver.currentState)
+	if driver.currentState != StateDone {
+		t.Errorf("Expected final state %s, got %s", StateDone, driver.currentState)
 	}
 
 	// Verify state data
@@ -183,12 +182,9 @@ func TestStateEnumConstants(t *testing.T) {
 	expectedStates := []State{
 		StateSpecParsing,
 		StateStoryGeneration,
-		StateQueueManagement,
-		StateDispatching,
-		StateAnswering,
-		StateReviewing,
+		StateQueueAndDispatch,
 		StateAwaitHumanFeedback,
-		StateCompleted,
+		StateDone,
 		StateError,
 	}
 
@@ -352,13 +348,13 @@ Story that depends on 001.`,
 	}
 
 	// Test queue management state
-	driver.currentState = StateQueueManagement
-	nextState, err := driver.handleQueueManagement(ctx)
+	driver.currentState = StateQueueAndDispatch
+	nextState, err := driver.handleQueueAndDispatch(ctx)
 	if err != nil {
-		t.Fatalf("Queue management failed: %v", err)
+		t.Fatalf("Queue and dispatch failed: %v", err)
 	}
 
-	if nextState != StateDispatching {
+	if nextState != StateDone {
 		t.Errorf("Expected next state DISPATCHING, got %s", nextState)
 	}
 
@@ -528,13 +524,15 @@ func TestReviewEvaluatorIntegration(t *testing.T) {
 	}
 
 	// Test driver's reviewing state handler
-	driver.currentState = StateReviewing
-	nextState, err := driver.handleReviewing(ctx)
+	driver.currentState = StateQueueAndDispatch
+	// The handleReviewing method no longer exists in v2 architecture
+	// Reviewing is now handled by ReviewWorker goroutines
+	nextState, err := driver.handleQueueAndDispatch(ctx)
 	if err != nil {
-		t.Fatalf("Failed to handle reviewing state: %v", err)
+		t.Fatalf("Failed to handle queue and dispatch state: %v", err)
 	}
 
-	if nextState != StateCompleted {
+	if nextState != StateDone {
 		t.Errorf("Expected next state COMPLETED, got %s", nextState)
 	}
 

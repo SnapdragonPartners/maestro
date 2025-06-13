@@ -313,10 +313,10 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 		},
 	}
 
-	// Render tool invocation prompt template
-	prompt, err := re.renderer.Render(templates.ToolInvocationTemplate, templateData)
+	// Use code review template for automated checks
+	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
 	if err != nil {
-		return false, fmt.Errorf("failed to render tool invocation template: %w", err)
+		return false, fmt.Errorf("failed to render code review template: %w", err)
 	}
 
 	// Get LLM response with tool commands

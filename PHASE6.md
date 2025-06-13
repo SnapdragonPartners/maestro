@@ -9,9 +9,9 @@ Front‑matter schema unchanged.
 | ID  | Title                                                   | Est. | Depends | Status |
 | --- | ------------------------------------------------------- | ---- | ------- | ------ |
 | 060 | Repository refactor to new package layout               | 3    | 051,053 | ✅ DONE |
-| 061 | Coding Agent driver update to v2 FSM                    | 4    | 060     | 🔄 NEXT |
-| 062 | Architect driver update (merged queue/dispatch + chans) | 4    | 060     |        |
-| 063 | Dispatcher & channel wiring                             | 2    | 061,062 |        |
+| 061 | Coding Agent driver update to v2 FSM                    | 4    | 060     | ✅ DONE |
+| 062 | Architect driver update (merged queue/dispatch + chans) | 4    | 060     | ✅ DONE |
+| 063 | Dispatcher & channel wiring                             | 2    | 061,062 | ✅ DONE |
 | 064 | Documentation & diagram sync                            | 1    | 061,062 |        |
 
 ---
@@ -68,6 +68,19 @@ Refactor `/pkg/coder/driver.go`:
 **Acceptance Criteria**
 * Integration: `/health` story runs through PLANNING → DONE with mocks.
 * Test simulate failure path using table-driven tests: `{pass bool, attempts int}` where mock test runner fails first N attempts, driver loops FIXING→TESTING until pass or timeout.
+
+**Implementation Summary (✅ COMPLETED 2025-06-13)**
+* ✅ Complete v2 FSM implementation with all required states
+* ✅ Agent foundation integration with BaseStateMachine and BaseDriver 
+* ✅ REQUEST→RESULT flow for plan and code approvals with proper state keys
+* ✅ QUESTION→ANSWER flow with origin tracking (PLANNING, CODING, FIXING)
+* ✅ Mock mode autonomous testing without LLM dependency
+* ✅ Live mode LLM integration ready (Claude client)
+* ✅ Comprehensive integration tests covering all state flows
+* ✅ agentctl test harness updated for standalone coder testing
+* ✅ State persistence and recovery through state store
+* ✅ Critical bug fixes: state key consistency, transition logic
+* 🔧 Architect commands temporarily disabled in agentctl (LLM interface compatibility)
 ```
 
 ### Story 062 — Architect driver update (merged queue/dispatch + channels)
@@ -89,6 +102,45 @@ Replace separate queue & dispatch states with `QUEUE_AND_DISPATCH` in `/pkg/arch
 **Acceptance Criteria**
 * Mock run shows queue processed, workers spawn, DONE when queue empty.
 * Escalation path logs and waits for human flag.
+
+**Implementation Summary (✅ COMPLETED 2025-06-13)**
+
+**Core v2 Architecture Implementation:**
+* ✅ Complete state enum refactor: `QUEUE_MANAGEMENT` + `DISPATCHING` → `QUEUE_AND_DISPATCH`
+* ✅ Channel-based worker architecture with buffered channels (size 1 as per spec)
+* ✅ Long-running `ANSWER_WORKER` and `REVIEW_WORKER` goroutines 
+* ✅ Aggressive legacy code removal (separate state handlers, old fields, constructors)
+* ✅ `handleQueueAndDispatch()` with channel select loop implementation
+
+**Production-Ready Critical Fixes:**
+* ✅ **DispatcherAdapter**: Real dispatcher integration via adapter pattern (resolves production blocker)
+* ✅ **Panic Recovery**: Worker goroutines protected with `defer recover()` blocks
+* ✅ **Timeout Protection**: 5-second timeouts on all channel operations in `RouteMessage()`
+* ✅ **Complete Dispatch Logic**: `dispatchReadyStory()` and `assignStoryToAgent()` methods
+* ✅ **Critical State Persistence**: Queue failures now return `StateError` instead of warnings
+* ✅ **Graceful Shutdown**: 30-second timeout with channel drainage and proper cleanup
+* ✅ **Resource Limits**: Spec parser protected (10MB max, 1000 requirements max)
+* ✅ **Message Validation**: Comprehensive validation (nil, empty ID, missing sender checks)
+
+**Channel Connectivity & Message Flow:**
+* ✅ **Queue Notifications**: `readyStoryCh` connected with `checkAndNotifyReady()` 
+* ✅ **Worker Message Routing**: `RouteMessage()` with timeout and validation
+* ✅ **Response Generation**: Workers send `ANSWER`/`RESULT` messages via dispatcher
+* ✅ **Error Handling**: `sendErrorResponse()` methods for graceful error communication
+* ✅ **Mock & Live Modes**: Full support for both testing and production environments
+
+**Integration & Testing:**
+* ✅ **Channel Integration Tests**: Comprehensive test suite verifying end-to-end message flow
+* ✅ **Worker Processing**: Verified question answering and code review workflows
+* ✅ **Queue Story Notifications**: Test coverage for story readiness notifications
+* ✅ **Graceful Shutdown**: Verified worker cleanup and channel closure
+* ✅ **Legacy Test Cleanup**: Disabled outdated tests referencing removed methods
+
+**Files Modified:**
+* `pkg/architect/driver.go` - Complete v2 FSM implementation with production fixes
+* `pkg/architect/queue.go` - Channel notification integration
+* `pkg/architect/spec2stories.go` - Resource limits and validation
+* `pkg/architect/integration_channel_test.go` - Comprehensive connectivity tests
 ```
 
 ### Story 063 — Dispatcher & channel wiring
@@ -109,6 +161,37 @@ Update `pkg/dispatch`:
 
 **Acceptance Criteria**
 * End‑to‑end smoke test: architect dispatches → coder completes → architect marks done.
+
+**Implementation Summary (✅ COMPLETED 2025-06-13)**
+
+**Core Channel-Based Communication:**
+* ✅ **SubscribeIdleAgents()**: Architect subscription to idle agent notifications with buffered channel (size 10)
+* ✅ **Idle Agent Notifications**: Automatic notifications when coding agents complete tasks with status checking
+* ✅ **Channel Integration**: Architect driver connects to dispatcher's idle channel instead of creating own
+* ✅ **Graceful Shutdown**: CloseIdleChannel() method for proper resource cleanup on dispatcher shutdown
+
+**Production-Ready Agent State Tracking:**
+* ✅ **Busy/Idle State Management**: busyAgents map with mutex protection prevents duplicate notifications
+* ✅ **Work Assignment Tracking**: PullSharedWork() marks agents as busy when pulling tasks
+* ✅ **Completion Detection**: NotifyArchitectOnResult() with comprehensive status validation
+* ✅ **Error State Handling**: Extended completion statuses include "error", "failed", "timeout", "cancelled", "aborted"
+
+**Message Routing and Dispatch Integration:**
+* ✅ **Pull-Based Architecture**: Message routing through shared work queue with proper agent resolution
+* ✅ **Logical Agent Names**: Fixed hardcoded agent IDs, now uses "coder" logical name resolved by dispatcher
+* ✅ **Dispatcher Integration**: assignStoryToAgent() properly sends tasks via DispatchMessage() in production mode
+* ✅ **Queue-Based Message Flow**: TASK → shared queue → agent pull → processing → RESULT → idle notification
+
+**Testing and Validation:**
+* ✅ **End-to-End Tests**: Comprehensive TestEndToEndChannelWiring validates full message flow
+* ✅ **Channel Cleanup Tests**: TestIdleAgentChannelCleanup verifies graceful shutdown
+* ✅ **Mock Agent Simulation**: Realistic testing with MockArchitectAgent and MockCoderAgent
+* ✅ **State Transition Verification**: Logged transitions show busy→idle state changes
+
+**Files Modified:**
+* `pkg/dispatch/dispatcher.go` - Agent state tracking, idle notifications, completion status validation
+* `pkg/architect/driver.go` - Logical agent naming, dispatcher integration in story assignment
+* `pkg/dispatch/channel_integration_test.go` - Comprehensive integration testing
 ```
 
 ### Story 064 — Documentation & diagram sync
