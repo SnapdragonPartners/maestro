@@ -6,13 +6,13 @@ Front‑matter schema unchanged.
 
 ## Table of Contents
 
-| ID  | Title                                                   | Est. | Depends |
-| --- | ------------------------------------------------------- | ---- | ------- |
-| 060 | Repository refactor to new package layout               | 3    | 051,053 |
-| 061 | Coding Agent driver update to v2 FSM                    | 4    | 060     |
-| 062 | Architect driver update (merged queue/dispatch + chans) | 4    | 060     |
-| 063 | Dispatcher & channel wiring                             | 2    | 061,062 |
-| 064 | Documentation & diagram sync                            | 1    | 061,062 |
+| ID  | Title                                                   | Est. | Depends | Status |
+| --- | ------------------------------------------------------- | ---- | ------- | ------ |
+| 060 | Repository refactor to new package layout               | 3    | 051,053 | ✅ DONE |
+| 061 | Coding Agent driver update to v2 FSM                    | 4    | 060     | 🔄 NEXT |
+| 062 | Architect driver update (merged queue/dispatch + chans) | 4    | 060     |        |
+| 063 | Dispatcher & channel wiring                             | 2    | 061,062 |        |
+| 064 | Documentation & diagram sync                            | 1    | 061,062 |        |
 
 ---
 

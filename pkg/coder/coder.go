@@ -17,13 +17,16 @@ type Coder struct {
 	name    string
 	workDir string
 	logger  *logx.Logger
-	driver  *Driver
+	driver  *CoderDriver
 }
 
 // NewCoder creates a new coder agent using the core state machine (mock mode)
-func NewCoder(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg) *Coder {
+func NewCoder(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg) (*Coder, error) {
 	logger := logx.NewLogger(id)
-	driver := NewDriverWithModel(id, stateStore, modelConfig, workDir)
+	driver, err := NewCoderDriver(id, stateStore, modelConfig, nil, workDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create coder driver: %w", err)
+	}
 
 	return &Coder{
 		id:      id,
@@ -31,13 +34,16 @@ func NewCoder(id, name, workDir string, stateStore *state.Store, modelConfig *co
 		workDir: workDir,
 		logger:  logger,
 		driver:  driver,
-	}
+	}, nil
 }
 
 // NewCoderWithLLM creates a new coder agent with LLM integration
-func NewCoderWithLLM(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient) *Coder {
+func NewCoderWithLLM(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient) (*Coder, error) {
 	logger := logx.NewLogger(id)
-	driver := NewDriverWithLLM(id, stateStore, modelConfig, llmClient, workDir)
+	driver, err := NewCoderDriver(id, stateStore, modelConfig, llmClient, workDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create coder driver: %w", err)
+	}
 
 	return &Coder{
 		id:      id,
@@ -45,18 +51,21 @@ func NewCoderWithLLM(id, name, workDir string, stateStore *state.Store, modelCon
 		workDir: workDir,
 		logger:  logger,
 		driver:  driver,
-	}
+	}, nil
 }
 
 // NewCoderWithClaude creates a new coder agent with Claude LLM integration
-func NewCoderWithClaude(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string) *Coder {
+func NewCoderWithClaude(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string) (*Coder, error) {
 	logger := logx.NewLogger(id)
 
 	// Create Claude LLM client
 	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create driver with LLM integration
-	driver := NewDriverWithLLM(id, stateStore, modelConfig, llmClient, workDir)
+	driver, err := NewCoderDriver(id, stateStore, modelConfig, llmClient, workDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create coder driver: %w", err)
+	}
 
 	return &Coder{
 		id:      id,
@@ -64,7 +73,7 @@ func NewCoderWithClaude(id, name, workDir string, stateStore *state.Store, model
 		workDir: workDir,
 		logger:  logger,
 		driver:  driver,
-	}
+	}, nil
 }
 
 // GetID returns the coder's identifier
@@ -155,6 +164,12 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 	if hasPending, requestContent, requestReason := c.driver.GetPendingApprovalRequest(); hasPending {
 		c.logger.Info("Sending REQUEST message to architect for approval: %s", requestReason)
 
+		// Determine approval type based on current state
+		approvalType := "plan"
+		if c.driver.GetCurrentState() == agent.StateCodeReview {
+			approvalType = "code"
+		}
+
 		// Create REQUEST message for architect approval
 		approvalMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.id, "architect")
 		approvalMsg.ParentMsgID = msg.ID
@@ -162,6 +177,7 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 		approvalMsg.SetPayload("reason", requestReason)
 		approvalMsg.SetPayload("current_state", string(c.driver.GetCurrentState()))
 		approvalMsg.SetPayload("request_type", "approval")
+		approvalMsg.SetPayload("approval_type", approvalType)
 		approvalMsg.SetMetadata("original_sender", msg.FromAgent)
 		approvalMsg.SetMetadata("request_type", "approval_request")
 
@@ -236,13 +252,20 @@ func (c *Coder) handleAnswerMessage(ctx context.Context, msg *proto.AgentMsg) (*
 
 	c.logger.Info("Received answer from architect: %s", answerStr)
 
-	// Store the answer in the driver's state data for the coding process to use
+	// Initialize driver if needed
 	if err := c.driver.Initialize(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize driver: %w", err)
 	}
 
-	// The answer will be available to the state machine when it continues processing
-	// No need to explicitly call ProcessTask here - the state machine handles its own flow
+	// Process the answer using the driver
+	if err := c.driver.ProcessAnswer(answerStr); err != nil {
+		return nil, fmt.Errorf("failed to process answer: %w", err)
+	}
+
+	// Continue processing the state machine
+	if err := c.driver.Run(ctx); err != nil {
+		c.logger.Error("Failed to continue state machine processing: %v", err)
+	}
 
 	// Return acknowledgment
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, c.id, msg.FromAgent)
@@ -294,14 +317,35 @@ func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*
 		return nil, fmt.Errorf("failed to initialize driver: %w", err)
 	}
 
-	// The approval result will be available to the state machine when it continues processing
-	// Different status values (APPROVED/REJECTED/NEEDS_CHANGES) guide the next steps
+	// Determine if this is an approval result or answer
+	if requestType, exists := msg.GetPayload("request_type"); exists {
+		if requestType == "approval" {
+			// Handle approval result
+			approvalType, _ := msg.GetPayload("approval_type")
+			approvalTypeStr, _ := approvalType.(string)
+			
+			if err := c.driver.ProcessApprovalResult(statusStr, approvalTypeStr); err != nil {
+				return nil, fmt.Errorf("failed to process approval result: %w", err)
+			}
+		}
+	} else if answer, exists := msg.GetPayload("answer"); exists {
+		// Handle answer to question
+		answerStr, _ := answer.(string)
+		if err := c.driver.ProcessAnswer(answerStr); err != nil {
+			return nil, fmt.Errorf("failed to process answer: %w", err)
+		}
+	}
+
+	// Continue processing the state machine
+	if err := c.driver.Run(ctx); err != nil {
+		c.logger.Error("Failed to continue state machine processing: %v", err)
+	}
 
 	// Return acknowledgment
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, c.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "approval_result_received")
-	response.SetPayload("approval_status", statusStr)
+	response.SetPayload("status", "result_processed")
+	response.SetPayload("original_status", statusStr)
 	return response, nil
 }
 

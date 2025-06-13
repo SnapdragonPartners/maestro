@@ -12,11 +12,19 @@ import (
 type State string
 
 const (
+	// Basic states
 	StatePlanning State = "PLANNING"
 	StateCoding   State = "CODING"
 	StateTesting  State = "TESTING"
 	StateDone     State = "DONE"
 	StateError    State = "ERROR"
+	
+	// Extended v2 FSM states for coder workflow
+	StateWaiting     State = "WAITING"
+	StatePlanReview  State = "PLAN_REVIEW"
+	StateFixing      State = "FIXING"
+	StateCodeReview  State = "CODE_REVIEW"
+	StateQuestion    State = "QUESTION"
 )
 
 func (s State) String() string {

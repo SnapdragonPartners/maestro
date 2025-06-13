@@ -28,7 +28,6 @@ type StateTemplate string
 const (
 	// Coding agent templates
 	PlanningTemplate       StateTemplate = "planning.tpl.md"
-	ToolInvocationTemplate StateTemplate = "tool_invocation.tpl.md"
 	CodingTemplate         StateTemplate = "coding.tpl.md"
 	TestingTemplate        StateTemplate = "testing.tpl.md"
 	ApprovalTemplate       StateTemplate = "approval.tpl.md"
@@ -55,7 +54,6 @@ func NewRenderer() (*Renderer, error) {
 	templateNames := []StateTemplate{
 		// Coding agent templates
 		PlanningTemplate,
-		ToolInvocationTemplate,
 		CodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
