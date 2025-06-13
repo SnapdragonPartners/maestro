@@ -74,5 +74,5 @@ The main driver **selects** on these channels while in `QUEUE_AND_DISPATCH`. Wor
 
 ---
 
-> **Last updated:** 2025‑06‑11
+> **Last updated:** 2025‑06‑13 (Phase 6 completion)
 

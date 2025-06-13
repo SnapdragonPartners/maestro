@@ -47,6 +47,28 @@ type StatusAgent interface {
 	GenerateStatus() (string, error)
 }
 
+// LLMClientAdapter adapts agent.LLMClient to architect.LLMClient interface
+type LLMClientAdapter struct {
+	client agent.LLMClient
+}
+
+func (a *LLMClientAdapter) GenerateResponse(ctx context.Context, prompt string) (string, error) {
+	req := agent.CompletionRequest{
+		Messages: []agent.CompletionMessage{
+			{Role: agent.RoleUser, Content: prompt},
+		},
+		MaxTokens:   2000,
+		Temperature: 0.7,
+	}
+	
+	resp, err := a.client.Complete(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	
+	return resp.Content, nil
+}
+
 // ArchitectMessageAdapter allows the architect driver to receive messages while running workflows
 type ArchitectMessageAdapter struct {
 	driver *architect.Driver
@@ -291,27 +313,28 @@ func (o *Orchestrator) createAgents() error {
 	}
 
 	for _, agentWithModel := range allAgents {
-		agent := agentWithModel.Agent
+		agentConfig := agentWithModel.Agent
 		modelName := agentWithModel.ModelName
 
 		// Generate log ID for this agent
-		logID := agent.GetLogID(modelName)
+		logID := agentConfig.GetLogID(modelName)
 
 		var registeredAgent dispatch.Agent
 
-		switch agent.Type {
+		switch agentConfig.Type {
 		case "architect":
 			// Store architect driver for spec processing with live O3 LLM
 			// The architect runs workflows AND receives messages from coding agents
 
 			// Create architect's own state store in its workdir (not global state)
-			architectStateStore, err := state.NewStore(filepath.Join(agent.WorkDir, "state"))
+			architectStateStore, err := state.NewStore(filepath.Join(agentConfig.WorkDir, "state"))
 			if err != nil {
 				return fmt.Errorf("failed to create architect state store: %w", err)
 			}
 
-			llmClient := agent.NewO3ClientWithModel(agentWithModel.Model.APIKey, "o3-mini")
-			o.architect = architect.NewDriverWithDispatcher(logID, architectStateStore, &agentWithModel.Model, llmClient, o.dispatcher, agent.WorkDir, filepath.Join(agent.WorkDir, "stories"))
+			baseLLMClient := agent.NewO3ClientWithModel(agentWithModel.Model.APIKey, "o3-mini")
+			llmClient := &LLMClientAdapter{client: baseLLMClient}
+			o.architect = architect.NewDriverWithDispatcher(logID, architectStateStore, &agentWithModel.Model, llmClient, o.dispatcher, agentConfig.WorkDir, filepath.Join(agentConfig.WorkDir, "stories"))
 
 			// Create an adapter that allows the architect to receive messages
 			architectAgent := &ArchitectMessageAdapter{
@@ -323,7 +346,7 @@ func (o *Orchestrator) createAgents() error {
 
 		case "coder":
 			// Create individual state store for this agent in its work directory
-			agentStateStore, err := state.NewStore(filepath.Join(agent.WorkDir, "state"))
+			agentStateStore, err := state.NewStore(filepath.Join(agentConfig.WorkDir, "state"))
 			if err != nil {
 				return fmt.Errorf("failed to create state store for agent %s: %w", logID, err)
 			}
@@ -332,16 +355,22 @@ func (o *Orchestrator) createAgents() error {
 			useLiveAPI := os.Getenv("CLAUDE_LIVE_API") == "true"
 			if useLiveAPI {
 				// Use unified coder with Claude LLM integration
-				liveAgent := coder.NewCoderWithClaude(logID, agent.Name, agent.WorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
+				liveAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentConfig.WorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
+				if err != nil {
+					return fmt.Errorf("failed to create live coder agent %s: %w", logID, err)
+				}
 				registeredAgent = liveAgent
 			} else {
 				// Use unified coder with core state machine (mock mode)
-				driverAgent := coder.NewCoder(logID, agent.Name, agent.WorkDir, agentStateStore, &agentWithModel.Model)
+				driverAgent, err := coder.NewCoder(logID, agentConfig.Name, agentConfig.WorkDir, agentStateStore, &agentWithModel.Model)
+				if err != nil {
+					return fmt.Errorf("failed to create coder agent %s: %w", logID, err)
+				}
 				registeredAgent = driverAgent
 			}
 
 		default:
-			return fmt.Errorf("unknown agent type: %s", agent.Type)
+			return fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 		}
 
 		if err := o.dispatcher.RegisterAgent(registeredAgent); err != nil {
@@ -349,7 +378,7 @@ func (o *Orchestrator) createAgents() error {
 		}
 
 		o.agents[logID] = &StatusAgentWrapper{Agent: registeredAgent}
-		o.logger.Info("Created and registered agent: %s (%s) using model %s", logID, agent.Type, modelName)
+		o.logger.Info("Created and registered agent: %s (%s) using model %s", logID, agentConfig.Type, modelName)
 	}
 
 	o.logger.Info("Created and registered %d agents total", len(o.agents))

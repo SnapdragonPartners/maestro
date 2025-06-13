@@ -135,35 +135,70 @@ For testing the Claude agent, create a task JSON file in the `tests/fixtures/` d
 
 ### Core Components
 
-- **Task Dispatcher** (`pkg/dispatch/`) - Routes messages between agents with rate limiting
-- **Agent Message Protocol** (`pkg/proto/`) - Structured communication via `AgentMsg`
-- **Rate Limiting** (`pkg/limiter/`) - Token bucket per-model rate limiting with budget enforcement
-- **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl`
-- **Configuration** (`pkg/config/`) - JSON config with environment variable overrides
-- **State Machine Driver** (`pkg/agent/`) - Phase 3 state machine for coding workflows
+- **Task Dispatcher** (`pkg/dispatch/`) - Routes messages between agents with rate limiting and channel-based notifications
+- **Agent Message Protocol** (`pkg/proto/`) - Structured communication via `AgentMsg` with types: TASK, RESULT, ERROR, QUESTION, ANSWER, REQUEST, SHUTDOWN
+- **Rate Limiting** (`pkg/limiter/`) - Token bucket per-model rate limiting with daily budget enforcement
+- **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl` with daily rotation
+- **Configuration** (`pkg/config/`) - JSON config loader with environment variable overrides
+- **Agent Foundation** (`pkg/agent/`) - Core LLM abstractions, state machine interfaces, and foundational components
+- **Coder State Machine** (`pkg/coder/`) - Coder-specific state machine for structured coding workflows  
+- **Architect State Machine** (`pkg/architect/`) - Architect-specific state machine for spec processing and coordination
 - **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
-- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools for file operations
+- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools for file operations in workspaces
 
-### Agent Flow
+### Channel-Based Architecture (Phase 6)
 
-1. Architect agent reads development stories and creates TASK messages
-2. Dispatcher routes tasks to appropriate coding agents with rate limiting
-3. **Phase 3 State Machine**: Coding agents follow structured workflow:
-   - **PLANNING**: Analyze requirements and create implementation plan
+The system uses a sophisticated channel-based communication pattern for real-time coordination:
+
+**Dispatcher Channels:**
+- `SubscribeIdleAgents()` - Architect subscription to real-time idle agent notifications
+- Pull-based message queues (shared work, architect work, coder feedback)
+- Agent state tracking with busy/idle transitions
+- Graceful shutdown with proper channel cleanup
+
+**Architect Worker Channels:**
+- `readyStoryCh` - Queue notifications when stories become ready (buffered, size 1)
+- `idleAgentCh` - Dispatcher notifications when agents become available (buffered, size 10) 
+- `reviewDoneCh` - Review worker completion signals (buffered, size 1)
+- `questionAnsweredCh` - Answer worker completion signals (buffered, size 1)
+
+**Message Flow:**
+1. **Task Assignment**: `TASK` → shared work queue → agent pull → mark busy
+2. **Completion Notification**: `RESULT` with completion status → mark idle → notify architect
+3. **Question/Answer**: `QUESTION` → architect queue → answer worker → `ANSWER` → coder queue
+4. **Review Process**: `REQUEST` → architect queue → review worker → `RESULT` → coder queue
+
+### Agent Flow (Phase 6 Architecture)
+
+1. **Architect Workflow** - Processes development specifications through state machine:
+   - **SPEC_PARSING**: Parse specification files into requirements using LLM or deterministic parser
+   - **STORY_GENERATION**: Generate story files from requirements with dependency tracking
+   - **QUEUE_AND_DISPATCH**: Merged state that manages story queue and dispatches ready stories:
+     - Load stories and detect dependency cycles
+     - Listen on channels for ready stories (`readyStoryCh`) and idle agents (`idleAgentCh`)
+     - Assign stories to available coding agents through dispatcher
+     - Handle completion via channel notifications
+   - **AWAIT_HUMAN_FEEDBACK**: Handle business escalations requiring human intervention
+   - **DONE**: Workflow completed successfully
+
+2. **Coder Workflow** - Implements stories through v2 FSM:
+   - **WAITING**: Idle state, waiting for task assignment
+   - **PLANNING**: Analyze task requirements and create implementation plan
+   - **PLAN_REVIEW**: Request architect approval of implementation plan (REQUEST→RESULT flow)
    - **CODING**: Generate code using MCP tools to create files in workspace
-   - **TESTING**: Validate code with formatting, building, and tests
-   - **AWAIT_APPROVAL**: Request review and approval
-   - **DONE**: Complete the task
-4. **Phase 4 Architect Workflow**: Architect agents manage end-to-end story processing:
-   - **SPEC_PARSING**: Parse specifications and extract requirements
-   - **STORY_GENERATION**: Generate story files with dependencies
-   - **QUEUE_MANAGEMENT**: Manage story queue and dependency resolution
-   - **DISPATCHING**: Assign stories to available coding agents
-   - **ANSWERING**: Handle technical questions from coding agents
-   - **REVIEWING**: Automated code review with quality checks
-   - **AWAIT_HUMAN_FEEDBACK**: Escalate business questions and review failures
-   - **COMPLETED**: Mark workflow as finished
-5. System maintains event logs, escalation tracking, and handles graceful shutdown
+   - **TESTING**: Run formatting, building, and tests on generated code
+   - **FIXING**: Apply fixes when tests fail, return to TESTING
+   - **CODE_REVIEW**: Request architect approval of code implementation (REQUEST→RESULT flow)
+   - **QUESTION**: Ask architect technical questions with origin tracking (QUESTION→ANSWER flow)
+   - **DONE**: Task completed successfully
+
+3. **Channel-Based Coordination**:
+   - **Answer Worker**: Long-running goroutine handles QUESTION messages using LLM
+   - **Review Worker**: Long-running goroutine performs automated code review with quality checks
+   - **Real-time Notifications**: Dispatcher immediately notifies architect when agents become idle
+   - **Pull-based Queues**: Agents actively pull work from dispatcher queues
+
+4. **System Features**: Event logging, escalation tracking, agent state persistence, graceful shutdown
 
 ## Configuration
 
@@ -197,12 +232,16 @@ The system uses JSON configuration with environment variable overrides:
 The system follows story-driven development with ordered implementation stories:
 
 - **Stories 001-012**: MVP implementation (completed)
-- **Stories 013-019**: Phase 2 - Real LLM integrations and standalone testing tools (completed)
+- **Stories 013-019**: Phase 2 - Real LLM integrations and standalone testing tools (completed)  
 - **Stories 040-046**: Phase 4 - Architect Agent Core Workflow (completed)
-  - Story 046: Business escalation & AWAIT_HUMAN_FEEDBACK with CLI support
-- **Story 047**: Phase 4 final - Architect CLI harness & queue persistence (next)
+- **Stories 060-064**: Phase 6 - Refactor & State-Machine Alignment (completed)
+  - Story 060: Repository refactor to new package layout
+  - Story 061: Coding Agent driver update to v2 FSM  
+  - Story 062: Architect driver update (merged queue/dispatch + channels)
+  - Story 063: Dispatcher & channel wiring with production-ready agent state tracking
+  - Story 064: Documentation & diagram sync
 
-See `PROJECT.md`, `PHASE2.md`, and `PHASE4.md` for detailed story specifications.
+See `PROJECT.md`, `PHASE2.md`, `PHASE4.md`, and `PHASE6.md` for detailed story specifications.
 
 ## Testing
 
@@ -229,30 +268,32 @@ go test -v . -run TestE2ESmokeTest
 
 ```
 orchestrator/
-├── agents/          # Agent implementations
-├── cmd/agentctl/    # Standalone agent runner CLI
+├── cmd/             # Command-line tools
+│   ├── agentctl/    # Standalone agent runner CLI
+│   └── replayer/    # Event log replay tool
 ├── config/          # Configuration files
-├── docs/            # Documentation and style guide
+├── docs/            # Documentation and style guides
 ├── logs/            # Runtime event logs (generated)
-├── pkg/             # Core packages
-│   ├── agent/       # Phase 3 state machine driver
-│   ├── architect/   # Phase 4 architect agent components
-│   ├── config/      # Configuration loader
+├── pkg/             # Core packages (Phase 6 clean architecture)
+│   ├── agent/       # Foundational abstractions: LLM clients, state machine building blocks
+│   ├── architect/   # Architect agent: spec processing, story generation, coordination state machine
+│   ├── coder/       # Coder agent: implementation workflows, coding state machine
+│   ├── config/      # Configuration: JSON loader with environment variable overrides
 │   ├── contextmgr/  # Context management for LLM conversations
-│   ├── dispatch/    # Message routing and retry logic
-│   ├── eventlog/    # Event logging system
-│   ├── limiter/     # Rate limiting and budget tracking
-│   ├── logx/        # Structured logging
-│   ├── proto/       # Message protocol definitions
-│   ├── state/       # State persistence for agents
-│   ├── templates/   # Prompt templates for workflow states
-│   ├── testkit/     # Testing utilities
-│   └── tools/       # MCP tool implementations
+│   ├── dispatch/    # Message routing: queue management, rate limiting, channel notifications
+│   ├── eventlog/    # Structured logging to logs/events.jsonl with daily rotation
+│   ├── limiter/     # Token bucket rate limiting with daily budget enforcement
+│   ├── logx/        # Structured logging utilities
+│   ├── proto/       # Message protocol: AgentMsg definitions and validation
+│   ├── state/       # Agent state storage and recovery
+│   ├── templates/   # Prompt templates: reusable LLM prompt templates
+│   ├── testkit/     # Testing utilities and helpers
+│   └── tools/       # MCP integration: Model Context Protocol tool implementations
 ├── status/          # Agent status reports (generated)
-├── stories/         # Development story definitions
+├── stories/         # Generated story files from specifications
 ├── tests/           # Test files and fixtures
 │   └── fixtures/    # Test input files (JSON, MD)
-└── work/            # Agent workspaces (generated)
+└── work/            # Agent workspace directories with isolated state
 ```
 
 ## License

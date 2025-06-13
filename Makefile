@@ -23,6 +23,17 @@ lint:
 	go fmt ./...
 	staticcheck ./...
 
+# Lint documentation (markdown files)
+lint-docs:
+	@echo "Linting documentation files..."
+	@find . -name "*.md" -not -path "./work/*" -not -path "./status/*" -not -path "./logs/*" | while read file; do \
+		echo "Checking $$file"; \
+		if ! grep -q "^# " "$$file"; then \
+			echo "Warning: $$file may be missing a top-level heading"; \
+		fi; \
+	done
+	@echo "Documentation lint completed"
+
 # Run the orchestrator with banner
 run: build
 	./bin/orchestrator
