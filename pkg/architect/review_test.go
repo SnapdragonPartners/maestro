@@ -273,7 +273,7 @@ func TestFormatReviewContext(t *testing.T) {
 			"format": true,
 			"test":   false,
 		},
-		Context: map[string]interface{}{
+		Context: map[string]any{
 			"implementation_notes": "Added user authentication",
 			"files_changed":        3,
 		},

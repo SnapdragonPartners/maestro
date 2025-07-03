@@ -12,19 +12,17 @@ import (
 type State string
 
 const (
-	// Basic states
-	StatePlanning State = "PLANNING"
-	StateCoding   State = "CODING"
-	StateTesting  State = "TESTING"
-	StateDone     State = "DONE"
-	StateError    State = "ERROR"
-	
-	// Extended v2 FSM states for coder workflow
-	StateWaiting     State = "WAITING"
-	StatePlanReview  State = "PLAN_REVIEW"
-	StateFixing      State = "FIXING"
-	StateCodeReview  State = "CODE_REVIEW"
-	StateQuestion    State = "QUESTION"
+	StatePlanning     State = "PLANNING"
+	StateCoding       State = "CODING"
+	StateTesting      State = "TESTING"
+	StateDone         State = "DONE"
+	StateError        State = "ERROR"
+	StateWaiting      State = "WAITING"
+	StatePlanReview   State = "PLAN_REVIEW"
+	StateFixing       State = "FIXING"
+	StateCodeReview   State = "CODE_REVIEW"
+	StateQuestion     State = "QUESTION"
+	DefaultMaxRetries       = 3
 )
 
 func (s State) String() string {
@@ -36,21 +34,21 @@ type StateTransition struct {
 	FromState State
 	ToState   State
 	Timestamp time.Time
-	Metadata  map[string]interface{}
+	Metadata  map[string]any
 }
 
 // StateMachine defines the interface for state machine implementations
 type StateMachine interface {
 	// GetCurrentState returns the current state
 	GetCurrentState() State
-	
+
 	// ProcessState handles the logic for the current state
 	// Returns next state and whether processing is complete
 	ProcessState(ctx context.Context) (next State, done bool, err error)
-	
+
 	// TransitionTo moves to a new state
-	TransitionTo(ctx context.Context, newState State, metadata map[string]interface{}) error
-	
+	TransitionTo(ctx context.Context, newState State, metadata map[string]any) error
+
 	// Initialize sets up the state machine
 	Initialize(ctx context.Context) error
 
@@ -62,7 +60,7 @@ type StateMachine interface {
 }
 
 // StateData represents generic state storage
-type StateData map[string]interface{}
+type StateData map[string]any
 
 // StateStore defines the interface for state persistence
 type StateStore interface {
@@ -74,14 +72,14 @@ type StateStore interface {
 
 // BaseStateMachine provides common state machine functionality
 type BaseStateMachine struct {
-	agentID     string
+	agentID      string
 	currentState State
-	stateData   StateData
-	transitions []StateTransition
-	store       StateStore          // State persistence
-	mu          sync.Mutex         // Protects state changes
-	retryCount  int               // Tracks retry attempts
-	maxRetries  int               // Maximum retries before failing
+	stateData    StateData
+	transitions  []StateTransition
+	store        StateStore // State persistence
+	mu           sync.Mutex // Protects state changes
+	retryCount   int        // Tracks retry attempts
+	maxRetries   int        // Maximum retries before failing
 }
 
 // NewBaseStateMachine creates a new base state machine
@@ -92,7 +90,7 @@ func NewBaseStateMachine(agentID string, initialState State, store StateStore) *
 		stateData:    make(StateData),
 		transitions:  make([]StateTransition, 0),
 		store:        store,
-		maxRetries:   3, // Default max retries
+		maxRetries:   DefaultMaxRetries,
 	}
 }
 
@@ -107,7 +105,7 @@ func (sm *BaseStateMachine) GetCurrentState() State {
 func (sm *BaseStateMachine) GetStateData() StateData {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	result := make(StateData)
 	for k, v := range sm.stateData {
 		result[k] = v
@@ -116,14 +114,14 @@ func (sm *BaseStateMachine) GetStateData() StateData {
 }
 
 // SetStateData sets a value in the state data
-func (sm *BaseStateMachine) SetStateData(key string, value interface{}) {
+func (sm *BaseStateMachine) SetStateData(key string, value any) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.stateData[key] = value
 }
 
 // GetStateValue gets a value from the state data
-func (sm *BaseStateMachine) GetStateValue(key string) (interface{}, bool) {
+func (sm *BaseStateMachine) GetStateValue(key string) (any, bool) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	value, exists := sm.stateData[key]
@@ -131,7 +129,7 @@ func (sm *BaseStateMachine) GetStateValue(key string) (interface{}, bool) {
 }
 
 // TransitionTo moves to a new state and records the transition
-func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, metadata map[string]interface{}) error {
+func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, metadata map[string]any) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -147,7 +145,7 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, me
 	if !sm.IsValidTransition(oldState, newState) {
 		return fmt.Errorf("%w: cannot transition from %s to %s", ErrInvalidTransition, oldState, newState)
 	}
-	
+
 	// Record the transition
 	transition := StateTransition{
 		FromState: oldState,
@@ -156,32 +154,32 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, me
 		Metadata:  metadata,
 	}
 	sm.transitions = append(sm.transitions, transition)
-	
+
 	// Update current state
 	sm.currentState = newState
-	
+
 	// Update state data with transition metadata
 	sm.stateData["previous_state"] = oldState.String()
 	sm.stateData["current_state"] = newState.String()
 	sm.stateData["transition_at"] = transition.Timestamp
-	
+
 	// Reset retry count on state change
 	if oldState != newState {
 		sm.retryCount = 0
 	}
-	
+
 	// Merge additional metadata if provided
 	if metadata != nil {
 		for k, v := range metadata {
 			sm.stateData[k] = v
 		}
 	}
-	
+
 	// Persist state changes
 	if err := sm.Persist(); err != nil {
 		return fmt.Errorf("failed to persist state transition: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -204,7 +202,7 @@ func (sm *BaseStateMachine) Persist() error {
 	}
 
 	// Save current state and data
-	state := map[string]interface{}{
+	state := map[string]any{
 		"current_state": sm.currentState.String(),
 		"state_data":    sm.stateData,
 		"transitions":   sm.transitions,
@@ -256,7 +254,7 @@ func (sm *BaseStateMachine) ProcessState(ctx context.Context) (State, bool, erro
 func (sm *BaseStateMachine) Initialize(ctx context.Context) error {
 	// Load previous state if available
 	if sm.store != nil {
-		var state map[string]interface{}
+		var state map[string]any
 		if err := sm.store.Load(sm.agentID, &state); err != nil {
 			// No state found is OK - this is first run
 			if errors.Is(err, ErrStateNotFound) {
@@ -275,10 +273,10 @@ func (sm *BaseStateMachine) Initialize(ctx context.Context) error {
 		defer sm.mu.Unlock()
 
 		// Restore transitions
-		if transitionsAny, ok := state["transitions"].([]interface{}); ok {
+		if transitionsAny, ok := state["transitions"].([]any); ok {
 			transitions := make([]StateTransition, 0, len(transitionsAny))
 			for _, t := range transitionsAny {
-				if tMap, ok := t.(map[string]interface{}); ok {
+				if tMap, ok := t.(map[string]any); ok {
 					transition := StateTransition{}
 
 					// Safely extract from_state
@@ -299,7 +297,7 @@ func (sm *BaseStateMachine) Initialize(ctx context.Context) error {
 					}
 
 					// Safely extract metadata
-					if meta, ok := tMap["metadata"].(map[string]interface{}); ok {
+					if meta, ok := tMap["metadata"].(map[string]any); ok {
 						transition.Metadata = meta
 					}
 
@@ -310,7 +308,7 @@ func (sm *BaseStateMachine) Initialize(ctx context.Context) error {
 		}
 
 		// Restore state data
-		if stateData, ok := state["state_data"].(map[string]interface{}); ok {
+		if stateData, ok := state["state_data"].(map[string]any); ok {
 			sm.stateData = make(StateData)
 			for k, v := range stateData {
 				sm.stateData[k] = v

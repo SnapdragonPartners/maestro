@@ -41,7 +41,7 @@ func AssertPayloadExists(t *testing.T, msg *proto.AgentMsg, key string) {
 }
 
 // AssertPayloadValue verifies a payload field has expected value
-func AssertPayloadValue(t *testing.T, msg *proto.AgentMsg, key string, expectedValue interface{}) {
+func AssertPayloadValue(t *testing.T, msg *proto.AgentMsg, key string, expectedValue any) {
 	t.Helper()
 	value, exists := msg.GetPayload(key)
 	if !exists {

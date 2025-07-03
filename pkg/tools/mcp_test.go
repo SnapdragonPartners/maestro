@@ -99,12 +99,51 @@ func TestGlobalRegistry(t *testing.T) {
 	if len(all) != 1 {
 		t.Errorf("Expected 1 tool in global registry, got %d", len(all))
 	}
+	
+	// Test GetToolDefinitions
+	defs := GetToolDefinitions()
+	if len(defs) != 1 {
+		t.Errorf("Expected 1 tool definition, got %d", len(defs))
+	}
+	
+	if defs[0].Name != "shell" {
+		t.Errorf("Expected tool definition name 'shell', got '%s'", defs[0].Name)
+	}
 }
 
 func TestShellTool_Name(t *testing.T) {
 	tool := NewShellTool()
 	if tool.Name() != "shell" {
 		t.Errorf("Expected tool name 'shell', got '%s'", tool.Name())
+	}
+}
+
+func TestShellTool_Definition(t *testing.T) {
+	tool := NewShellTool()
+	def := tool.Definition()
+	
+	if def.Name != "shell" {
+		t.Errorf("Expected definition name 'shell', got '%s'", def.Name)
+	}
+	
+	if def.Description == "" {
+		t.Error("Expected non-empty description")
+	}
+	
+	if def.InputSchema.Type != "object" {
+		t.Errorf("Expected input schema type 'object', got '%s'", def.InputSchema.Type)
+	}
+	
+	if len(def.InputSchema.Required) == 0 || def.InputSchema.Required[0] != "cmd" {
+		t.Error("Expected 'cmd' to be a required property")
+	}
+	
+	if _, ok := def.InputSchema.Properties["cmd"]; !ok {
+		t.Error("Expected 'cmd' property in schema")
+	}
+	
+	if _, ok := def.InputSchema.Properties["cwd"]; !ok {
+		t.Error("Expected 'cwd' property in schema")
 	}
 }
 
@@ -132,7 +171,12 @@ func TestShellTool_Exec(t *testing.T) {
 	}
 
 	// Check result structure
-	if stdout, ok := result["stdout"]; !ok {
+	resultMap, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected result to be map[string]any, got %T", result)
+	}
+
+	if stdout, ok := resultMap["stdout"]; !ok {
 		t.Error("Expected stdout in result")
 	} else if stdoutStr, ok := stdout.(string); !ok {
 		t.Error("Expected stdout to be string")
@@ -140,11 +184,11 @@ func TestShellTool_Exec(t *testing.T) {
 		t.Error("Expected non-empty stdout")
 	}
 
-	if _, ok := result["stderr"]; !ok {
+	if _, ok := resultMap["stderr"]; !ok {
 		t.Error("Expected stderr in result")
 	}
 
-	if exitCode, ok := result["exit_code"]; !ok {
+	if exitCode, ok := resultMap["exit_code"]; !ok {
 		t.Error("Expected exit_code in result")
 	} else if code, ok := exitCode.(int); !ok {
 		t.Error("Expected exit_code to be int")
@@ -162,7 +206,12 @@ func TestShellTool_Exec(t *testing.T) {
 		t.Errorf("Expected no error with cwd arg, got %v", err)
 	}
 
-	if cwd, ok := result["cwd"]; !ok {
+	resultMap, ok = result.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected result to be map[string]any, got %T", result)
+	}
+
+	if cwd, ok := resultMap["cwd"]; !ok {
 		t.Error("Expected cwd in result")
 	} else if cwdStr, ok := cwd.(string); !ok {
 		t.Error("Expected cwd to be string")

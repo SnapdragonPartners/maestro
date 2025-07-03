@@ -40,7 +40,7 @@ func NewShutdownManager() *ShutdownManager {
 func (sm *ShutdownManager) Register(component ShutdownComponent, timeout time.Duration) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	sm.components = append(sm.components, component)
 	sm.timeouts[component.Name()] = timeout
 }
@@ -48,13 +48,13 @@ func (sm *ShutdownManager) Register(component ShutdownComponent, timeout time.Du
 // Shutdown performs graceful shutdown of all registered components
 func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 	var shutdownErr error
-	
+
 	sm.once.Do(func() {
 		defer close(sm.done)
-		
+
 		// Signal all components to start shutdown
 		sm.shutdownFn()
-		
+
 		sm.mu.RLock()
 		components := make([]ShutdownComponent, len(sm.components))
 		copy(components, sm.components)
@@ -63,7 +63,7 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 			timeouts[k] = v
 		}
 		sm.mu.RUnlock()
-		
+
 		// Shutdown components in reverse order (LIFO)
 		var errors []error
 		for i := len(components) - 1; i >= 0; i-- {
@@ -72,23 +72,23 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 			if timeout == 0 {
 				timeout = DefaultTimeoutConfig.ShutdownTimeout
 			}
-			
+
 			// Create timeout context for this component
 			componentCtx, cancel := context.WithTimeout(ctx, timeout)
-			
+
 			if err := component.Shutdown(componentCtx); err != nil {
 				errors = append(errors, fmt.Errorf("failed to shutdown %s: %w", component.Name(), err))
 			}
-			
+
 			cancel()
 		}
-		
+
 		// Combine errors if any
 		if len(errors) > 0 {
 			shutdownErr = fmt.Errorf("shutdown errors: %v", errors)
 		}
 	})
-	
+
 	// Wait for shutdown completion
 	select {
 	case <-sm.done:
@@ -131,18 +131,18 @@ func NewShutdownableDriver(config *AgentConfig, initialState State, shutdownMgr 
 	if err != nil {
 		return nil, err
 	}
-	
+
 	driver := &ShutdownableDriver{
 		BaseDriver:  baseDriver,
 		shutdownMgr: shutdownMgr,
 		name:        fmt.Sprintf("driver-%s", config.ID),
 	}
-	
+
 	// Register with shutdown manager
 	if shutdownMgr != nil {
 		shutdownMgr.Register(driver, DefaultTimeoutConfig.ShutdownTimeout)
 	}
-	
+
 	return driver, nil
 }
 
@@ -159,7 +159,7 @@ func (d *ShutdownableDriver) Run(ctx context.Context) error {
 		shutdownCtx := d.shutdownMgr.ShutdownContext()
 		combinedCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		
+
 		go func() {
 			select {
 			case <-shutdownCtx.Done():
@@ -170,15 +170,15 @@ func (d *ShutdownableDriver) Run(ctx context.Context) error {
 				return
 			}
 		}()
-		
+
 		ctx = combinedCtx
 	}
-	
+
 	// Initialize if not already done
 	if err := d.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize driver: %w", err)
 	}
-	
+
 	// Run the state machine loop with shutdown awareness
 	for {
 		select {
@@ -205,19 +205,19 @@ func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
 		if err := d.Persist(); err != nil {
 			d.config.Context.Logger.Printf("Warning: failed to persist state during shutdown: %v", err)
 		}
-		
+
 		// Mark state as interrupted for later resume
-		metadata := map[string]interface{}{
+		metadata := map[string]any{
 			"shutdown_reason": "graceful_shutdown",
 			"shutdown_time":   time.Now().UTC(),
 			"can_resume":      true,
 		}
-		
+
 		if err := d.TransitionTo(ctx, StateError, metadata); err != nil {
 			d.config.Context.Logger.Printf("Warning: failed to transition to error state during shutdown: %v", err)
 		}
 	}
-	
+
 	return ctx.Err()
 }
 
@@ -227,30 +227,30 @@ func (d *ShutdownableDriver) Shutdown(ctx context.Context) error {
 	if err := d.Persist(); err != nil {
 		return fmt.Errorf("failed to persist final state: %w", err)
 	}
-	
+
 	// Mark as cleanly shutdown
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"shutdown_clean": true,
 		"shutdown_time":  time.Now().UTC(),
 	}
-	
+
 	if err := d.TransitionTo(ctx, StateDone, metadata); err != nil {
 		// Don't fail shutdown for transition errors
 		d.config.Context.Logger.Printf("Warning: failed to mark clean shutdown: %v", err)
 	}
-	
+
 	return nil
 }
 
 // CanResume checks if the driver can resume from its current state
 func (d *ShutdownableDriver) CanResume() bool {
 	data := d.StateMachine.(*BaseStateMachine).GetStateData()
-	
+
 	// Check if marked as resumable
 	if canResume, ok := data["can_resume"].(bool); ok && canResume {
 		return true
 	}
-	
+
 	// Check if in a resumable state
 	state := d.GetCurrentState()
 	return state == StatePlanning || state == StateCoding || state == StateTesting
@@ -261,12 +261,12 @@ func (d *ShutdownableDriver) Resume(ctx context.Context) error {
 	if !d.CanResume() {
 		return fmt.Errorf("driver cannot be resumed from current state")
 	}
-	
+
 	// Clear shutdown markers
 	sm := d.StateMachine.(*BaseStateMachine)
 	sm.SetStateData("shutdown_reason", nil)
 	sm.SetStateData("can_resume", false)
-	
+
 	// Persist the clean state
 	return d.Persist()
 }

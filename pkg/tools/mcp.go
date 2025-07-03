@@ -9,12 +9,51 @@ import (
 	"sync"
 )
 
+// ToolDefinition represents an Anthropic Claude tool definition
+type ToolDefinition struct {
+	// Name is the tool's identifier
+	Name string `json:"name"`
+	// Description explains what the tool does
+	Description string `json:"description"`
+	// InputSchema defines the JSON schema for tool inputs
+	InputSchema InputSchema `json:"input_schema"`
+}
+
+// InputSchema defines the expected input format for a tool
+type InputSchema struct {
+	Type       string                 `json:"type"`
+	Properties map[string]Property    `json:"properties"`
+	Required   []string               `json:"required,omitempty"`
+}
+
+// Property defines a single property in the input schema
+type Property struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+}
+
+// ToolUse represents a Claude tool use request
+type ToolUse struct {
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Input map[string]any `json:"input"`
+}
+
+// ToolResult represents a result from executing a tool
+type ToolResult struct {
+	ToolUseID string `json:"tool_use_id"`
+	Content   any    `json:"content"`
+}
+
 // ToolChannel defines the interface for MCP tool implementations
 type ToolChannel interface {
+	// Definition returns the tool's definition
+	Definition() ToolDefinition
 	// Name returns the tool's identifier
 	Name() string
 	// Exec executes the tool with the given arguments
-	Exec(ctx context.Context, args map[string]any) (map[string]any, error)
+	Exec(ctx context.Context, args map[string]any) (any, error)
 }
 
 // Registry manages registered MCP tools
@@ -102,13 +141,35 @@ func (r *Registry) Clear() {
 // ShellTool implements ToolChannel for shell command execution
 type ShellTool struct{}
 
+// Definition returns the tool's definition in Claude API format
+func (s *ShellTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "shell",
+		Description: "Execute a shell command and return the output",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"cmd": {
+					Type:        "string",
+					Description: "The shell command to execute",
+				},
+				"cwd": {
+					Type:        "string",
+					Description: "Optional working directory for the command",
+				},
+			},
+			Required: []string{"cmd"},
+		},
+	}
+}
+
 // Name returns the tool identifier
 func (s *ShellTool) Name() string {
 	return "shell"
 }
 
 // Exec executes a shell command with proper validation
-func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]any, error) {
+func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Validate required cmd argument
 	cmd, hasCmd := args["cmd"]
 	if !hasCmd {
@@ -137,7 +198,7 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (map[string]a
 }
 
 // executeShellCommand performs actual shell command execution
-func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (map[string]any, error) {
+func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (any, error) {
 	// Create command with context for cancellation
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 
@@ -168,6 +229,7 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 		}
 	}
 
+	// Return result in a format consistent with Claude API
 	return map[string]any{
 		"stdout":    stdout.String(),
 		"stderr":    stderr.String(),
@@ -179,6 +241,18 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 // NewShellTool creates a new shell tool instance
 func NewShellTool() *ShellTool {
 	return &ShellTool{}
+}
+
+// GetToolDefinitions returns all registered tool definitions in Claude API format
+func GetToolDefinitions() []ToolDefinition {
+	tools := GetAll()
+	definitions := make([]ToolDefinition, 0, len(tools))
+	
+	for _, tool := range tools {
+		definitions = append(definitions, tool.Definition())
+	}
+	
+	return definitions
 }
 
 // init registers the shell tool globally

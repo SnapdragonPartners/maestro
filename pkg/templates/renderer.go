@@ -12,14 +12,14 @@ var templateFS embed.FS
 
 // TemplateData holds the data for template rendering
 type TemplateData struct {
-	TaskContent    string                 `json:"task_content"`
-	Context        string                 `json:"context"`
-	Plan           string                 `json:"plan,omitempty"`
-	ToolResults    string                 `json:"tool_results,omitempty"`
-	Implementation string                 `json:"implementation,omitempty"`
-	TestResults    string                 `json:"test_results,omitempty"`
-	WorkDir        string                 `json:"work_dir,omitempty"`
-	Extra          map[string]interface{} `json:"extra,omitempty"`
+	TaskContent    string         `json:"task_content"`
+	Context        string         `json:"context"`
+	Plan           string         `json:"plan,omitempty"`
+	ToolResults    string         `json:"tool_results,omitempty"`
+	Implementation string         `json:"implementation,omitempty"`
+	TestResults    string         `json:"test_results,omitempty"`
+	WorkDir        string         `json:"work_dir,omitempty"`
+	Extra          map[string]any `json:"extra,omitempty"`
 }
 
 // StateTemplate represents a workflow state template
@@ -27,10 +27,10 @@ type StateTemplate string
 
 const (
 	// Coding agent templates
-	PlanningTemplate       StateTemplate = "planning.tpl.md"
-	CodingTemplate         StateTemplate = "coding.tpl.md"
-	TestingTemplate        StateTemplate = "testing.tpl.md"
-	ApprovalTemplate       StateTemplate = "approval.tpl.md"
+	PlanningTemplate StateTemplate = "planning.tpl.md"
+	CodingTemplate   StateTemplate = "coding.tpl.md"
+	TestingTemplate  StateTemplate = "testing.tpl.md"
+	ApprovalTemplate StateTemplate = "approval.tpl.md"
 
 	// Architect agent templates
 	SpecAnalysisTemplate    StateTemplate = "spec_analysis.tpl.md"

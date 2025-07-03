@@ -49,7 +49,7 @@ func TestEscalateBusinessQuestion(t *testing.T) {
 		StoryID:  "001",
 		AgentID:  "test-agent",
 		Question: "What are the business requirements for authentication?",
-		Context:  map[string]interface{}{},
+		Context:  map[string]any{},
 		AskedAt:  time.Now().UTC(),
 		Status:   "pending",
 	}
@@ -171,7 +171,7 @@ func TestDeterminePriority(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		priority := handler.determinePriority(tc.question, map[string]interface{}{})
+		priority := handler.determinePriority(tc.question, map[string]any{})
 		if priority != tc.expectedPriority {
 			t.Errorf("Question: %s - Expected priority %s, got %s",
 				tc.question, tc.expectedPriority, priority)
@@ -400,7 +400,7 @@ Test story for escalation integration.`
 		StoryID:  "001",
 		AgentID:  "test-agent",
 		Question: "What are the critical business requirements?",
-		Context:  map[string]interface{}{},
+		Context:  map[string]any{},
 		AskedAt:  time.Now().UTC(),
 		Status:   "pending",
 	}

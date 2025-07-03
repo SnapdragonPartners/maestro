@@ -40,9 +40,9 @@ type Dispatcher struct {
 	queueMutex      sync.RWMutex      // Protects all queues
 
 	// Channel-based notifications for architect
-	idleAgentCh    chan string // Notifies architect when agents become idle
-	architectID    string      // ID of the architect to notify
-	notificationMu sync.RWMutex // Protects notification channels
+	idleAgentCh    chan string     // Notifies architect when agents become idle
+	architectID    string          // ID of the architect to notify
+	notificationMu sync.RWMutex    // Protects notification channels
 	busyAgents     map[string]bool // Track which agents are processing work
 	busyMu         sync.RWMutex    // Protects busy agents map
 }
@@ -127,7 +127,6 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 
 	// Signal shutdown
 	close(d.shutdown)
-
 
 	// Close idle agent channel for graceful shutdown
 	d.CloseIdleChannel()
@@ -348,7 +347,6 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 		d.logger.Error("Failed to log response message: %v", err)
 	}
 
-
 	// Check for architect notifications before routing
 	d.NotifyArchitectOnResult(response)
 	// Resolve logical agent name to actual agent ID
@@ -442,7 +440,7 @@ func (d *Dispatcher) resolveAgentName(logicalName string) string {
 	return logicalName
 }
 
-func (d *Dispatcher) GetStats() map[string]interface{} {
+func (d *Dispatcher) GetStats() map[string]any {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -454,7 +452,7 @@ func (d *Dispatcher) GetStats() map[string]interface{} {
 	d.queueMutex.RLock()
 	defer d.queueMutex.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"running":                d.running,
 		"agents":                 agentList,
 		"queue_length":           len(d.inputChan),
@@ -526,7 +524,7 @@ func (d *Dispatcher) PullSharedWork() *proto.AgentMsg {
 func (d *Dispatcher) SubscribeIdleAgents(architectID string) <-chan string {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
-	
+
 	d.architectID = architectID
 	d.logger.Info("Architect %s subscribed to idle agent notifications", architectID)
 	return d.idleAgentCh
@@ -536,12 +534,12 @@ func (d *Dispatcher) SubscribeIdleAgents(architectID string) <-chan string {
 func (d *Dispatcher) NotifyIdleAgent(agentID string) {
 	d.notificationMu.RLock()
 	defer d.notificationMu.RUnlock()
-	
+
 	if d.architectID == "" {
 		// No architect subscribed
 		return
 	}
-	
+
 	select {
 	case d.idleAgentCh <- agentID:
 		d.logger.Debug("Notified architect %s that agent %s is idle", d.architectID, agentID)
@@ -553,7 +551,7 @@ func (d *Dispatcher) NotifyIdleAgent(agentID string) {
 
 // NotifyArchitectOnResult notifies the architect when a coding agent finishes work
 // isCompletionStatus checks if a status indicates task completion
-func (d *Dispatcher) isCompletionStatus(status interface{}) bool {
+func (d *Dispatcher) isCompletionStatus(status any) bool {
 	statusStr, ok := status.(string)
 	if !ok {
 		return false
@@ -579,7 +577,7 @@ func (d *Dispatcher) NotifyArchitectOnResult(msg *proto.AgentMsg) {
 					// Remove from busy agents map
 					delete(d.busyAgents, msg.FromAgent)
 					d.busyMu.Unlock()
-					
+
 					// Coding agent finished work - notify they are idle
 					d.NotifyIdleAgent(msg.FromAgent)
 					d.logger.Debug("Agent %s marked as idle after completion", msg.FromAgent)
@@ -596,10 +594,9 @@ func (d *Dispatcher) NotifyArchitectOnResult(msg *proto.AgentMsg) {
 func (d *Dispatcher) CloseIdleChannel() {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
-	
+
 	if d.idleAgentCh != nil {
 		close(d.idleAgentCh)
 		d.logger.Info("Closed idle agent notification channel")
 	}
 }
-

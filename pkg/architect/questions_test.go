@@ -149,7 +149,7 @@ func TestIsBusinessQuestion(t *testing.T) {
 	}
 
 	for _, question := range technicalQuestions {
-		if handler.isBusinessQuestion(question, map[string]interface{}{}) {
+		if handler.isBusinessQuestion(question, map[string]any{}) {
 			t.Errorf("Technical question incorrectly identified as business: %s", question)
 		}
 	}
@@ -163,13 +163,13 @@ func TestIsBusinessQuestion(t *testing.T) {
 	}
 
 	for _, question := range businessQuestions {
-		if !handler.isBusinessQuestion(question, map[string]interface{}{}) {
+		if !handler.isBusinessQuestion(question, map[string]any{}) {
 			t.Errorf("Business question not identified correctly: %s", question)
 		}
 	}
 
 	// Test explicit business flag
-	context := map[string]interface{}{
+	context := map[string]any{
 		"is_business_question": true,
 	}
 
@@ -344,7 +344,7 @@ func TestFormatQuestionContext(t *testing.T) {
 		AgentID:  "test-agent",
 		Question: "How do I implement this?",
 		AskedAt:  time.Now(),
-		Context: map[string]interface{}{
+		Context: map[string]any{
 			"code_snippet": "func test() {}",
 			"file_path":    "/src/main.go",
 		},

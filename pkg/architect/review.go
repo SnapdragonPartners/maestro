@@ -25,20 +25,20 @@ type ReviewEvaluator struct {
 
 // PendingReview represents a code submission awaiting review
 type PendingReview struct {
-	ID             string                 `json:"id"`
-	StoryID        string                 `json:"story_id"`
-	AgentID        string                 `json:"agent_id"`
-	CodePath       string                 `json:"code_path"`
-	CodeContent    string                 `json:"code_content"`
-	Context        map[string]interface{} `json:"context"`
-	SubmittedAt    time.Time              `json:"submitted_at"`
-	Status         string                 `json:"status"` // "pending", "approved", "rejected", "needs_fixes", "escalated"
-	ReviewNotes    string                 `json:"review_notes,omitempty"`
-	ReviewedAt     *time.Time             `json:"reviewed_at,omitempty"`
-	ChecksRun      []string               `json:"checks_run,omitempty"`
-	CheckResults   map[string]bool        `json:"check_results,omitempty"`
-	RejectionCount int                    `json:"rejection_count"`          // Track number of rejections for 3-strikes rule
-	ReviewHistory  []ReviewAttempt        `json:"review_history,omitempty"` // Track all review attempts
+	ID             string          `json:"id"`
+	StoryID        string          `json:"story_id"`
+	AgentID        string          `json:"agent_id"`
+	CodePath       string          `json:"code_path"`
+	CodeContent    string          `json:"code_content"`
+	Context        map[string]any  `json:"context"`
+	SubmittedAt    time.Time       `json:"submitted_at"`
+	Status         string          `json:"status"` // "pending", "approved", "rejected", "needs_fixes", "escalated"
+	ReviewNotes    string          `json:"review_notes,omitempty"`
+	ReviewedAt     *time.Time      `json:"reviewed_at,omitempty"`
+	ChecksRun      []string        `json:"checks_run,omitempty"`
+	CheckResults   map[string]bool `json:"check_results,omitempty"`
+	RejectionCount int             `json:"rejection_count"`          // Track number of rejections for 3-strikes rule
+	ReviewHistory  []ReviewAttempt `json:"review_history,omitempty"` // Track all review attempts
 }
 
 // ReviewAttempt represents a single review attempt
@@ -80,7 +80,7 @@ func (re *ReviewEvaluator) HandleResult(ctx context.Context, msg *proto.AgentMsg
 		AgentID:      msg.FromAgent,
 		CodePath:     codePath,
 		CodeContent:  codeContent,
-		Context:      make(map[string]interface{}),
+		Context:      make(map[string]any),
 		SubmittedAt:  time.Now().UTC(),
 		Status:       "pending",
 		ChecksRun:    []string{},
@@ -305,7 +305,7 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 	templateData := &templates.TemplateData{
 		TaskContent: fmt.Sprintf("Execute %s check for story %s", checkType, story.ID),
 		Context:     re.formatToolInvocationContext(workDir, checkType, story),
-		Extra: map[string]interface{}{
+		Extra: map[string]any{
 			"check_type":    checkType,
 			"workspace_dir": workDir,
 			"story_id":      story.ID,
@@ -445,7 +445,7 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 	templateData := &templates.TemplateData{
 		TaskContent: pendingReview.CodeContent,
 		Context:     re.formatReviewContext(pendingReview, story),
-		Extra: map[string]interface{}{
+		Extra: map[string]any{
 			"story_id":           pendingReview.StoryID,
 			"story_title":        story.Title,
 			"agent_id":           pendingReview.AgentID,

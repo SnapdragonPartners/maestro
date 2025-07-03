@@ -23,15 +23,15 @@ type QuestionHandler struct {
 
 // PendingQuestion represents a question awaiting response
 type PendingQuestion struct {
-	ID         string                 `json:"id"`
-	StoryID    string                 `json:"story_id"`
-	AgentID    string                 `json:"agent_id"`
-	Question   string                 `json:"question"`
-	Context    map[string]interface{} `json:"context"`
-	AskedAt    time.Time              `json:"asked_at"`
-	Status     string                 `json:"status"` // "pending", "answered", "escalated"
-	Answer     string                 `json:"answer,omitempty"`
-	AnsweredAt *time.Time             `json:"answered_at,omitempty"`
+	ID         string         `json:"id"`
+	StoryID    string         `json:"story_id"`
+	AgentID    string         `json:"agent_id"`
+	Question   string         `json:"question"`
+	Context    map[string]any `json:"context"`
+	AskedAt    time.Time      `json:"asked_at"`
+	Status     string         `json:"status"` // "pending", "answered", "escalated"
+	Answer     string         `json:"answer,omitempty"`
+	AnsweredAt *time.Time     `json:"answered_at,omitempty"`
 }
 
 // NewQuestionHandler creates a new question handler
@@ -85,7 +85,7 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 		StoryID:  storyID,
 		AgentID:  msg.FromAgent,
 		Question: question,
-		Context:  make(map[string]interface{}),
+		Context:  make(map[string]any),
 		AskedAt:  time.Now().UTC(),
 		Status:   "pending",
 	}
@@ -126,7 +126,7 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 	templateData := &templates.TemplateData{
 		TaskContent: pendingQ.Question,
 		Context:     qh.formatQuestionContext(pendingQ, story),
-		Extra: map[string]interface{}{
+		Extra: map[string]any{
 			"story_id":         pendingQ.StoryID,
 			"story_title":      story.Title,
 			"story_file_path":  story.FilePath,
@@ -207,7 +207,7 @@ func (qh *QuestionHandler) sendAnswerToAgent(ctx context.Context, pendingQ *Pend
 }
 
 // isBusinessQuestion determines if a question requires business-level escalation
-func (qh *QuestionHandler) isBusinessQuestion(question string, context map[string]interface{}) bool {
+func (qh *QuestionHandler) isBusinessQuestion(question string, context map[string]any) bool {
 	// Check for business-related keywords or flags
 	businessKeywords := []string{
 		"business", "requirement", "stakeholder", "customer",

@@ -3,7 +3,7 @@ module orchestrator
 go 1.24.3
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.4.0
+	github.com/anthropics/anthropic-sdk-go v1.5.0
 	github.com/sashabaranov/go-openai v1.40.1
 )
 

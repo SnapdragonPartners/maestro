@@ -18,10 +18,10 @@ type Driver interface {
 	Step(ctx context.Context) (bool, error)
 
 	// GetCurrentState returns the current state of the driver
-	GetCurrentState() interface{}
+	GetCurrentState() any
 
 	// GetStateData returns a copy of the current state data
-	GetStateData() map[string]interface{}
+	GetStateData() map[string]any
 
 	// Shutdown performs cleanup when the driver is stopping
 	Shutdown(ctx context.Context) error
@@ -38,9 +38,9 @@ type AgentContext struct {
 
 // AgentConfig represents configuration for an agent
 type AgentConfig struct {
-	ID       string
-	Type     string
-	Context  AgentContext
+	ID        string
+	Type      string
+	Context   AgentContext
 	LLMConfig *LLMConfig // Optional LLM configuration
 }
 

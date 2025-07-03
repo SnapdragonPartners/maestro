@@ -484,8 +484,8 @@ func (q *Queue) FromJSON(data []byte) error {
 }
 
 // GetQueueSummary returns a summary of the queue state
-func (q *Queue) GetQueueSummary() map[string]interface{} {
-	summary := make(map[string]interface{})
+func (q *Queue) GetQueueSummary() map[string]any {
+	summary := make(map[string]any)
 
 	statusCounts := make(map[StoryStatus]int)
 	totalPoints := 0

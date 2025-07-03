@@ -63,7 +63,7 @@ func (d *BaseDriver) Step(ctx context.Context) (bool, error) {
 	nextState, done, err := d.ProcessState(ctx)
 	if err != nil {
 		// Transition to error state
-		if transErr := d.TransitionTo(ctx, nextState, map[string]interface{}{
+		if transErr := d.TransitionTo(ctx, nextState, map[string]any{
 			"error":        err.Error(),
 			"failed_state": d.GetCurrentState().String(),
 		}); transErr != nil {

@@ -20,16 +20,32 @@ type CompletionMessage struct {
 	Content string
 }
 
+// Tool represents a tool/function that can be called by the LLM
+type Tool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+// ToolCall represents a tool call made by the LLM
+type ToolCall struct {
+	ID         string         `json:"id"`
+	Name       string         `json:"name"`
+	Parameters map[string]any `json:"parameters"`
+}
+
 // CompletionRequest represents a request to generate a completion
 type CompletionRequest struct {
 	Messages    []CompletionMessage
 	MaxTokens   int
 	Temperature float32
+	Tools       []Tool
 }
 
 // CompletionResponse represents a response from a completion request
 type CompletionResponse struct {
-	Content string
+	Content   string
+	ToolCalls []ToolCall
 }
 
 // StreamChunk represents a chunk of streamed completion response
@@ -63,8 +79,8 @@ type LLMConfig struct {
 func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
 	return CompletionRequest{
 		Messages:    messages,
-		MaxTokens:   4096,    // Default to 4k tokens
-		Temperature: 0.7,     // Default temperature
+		MaxTokens:   4096, // Default to 4k tokens
+		Temperature: 0.7,  // Default temperature
 	}
 }
 
@@ -87,7 +103,7 @@ func NewUserMessage(content string) CompletionMessage {
 // StreamToReader converts a stream channel to an io.Reader
 func StreamToReader(stream <-chan StreamChunk) io.Reader {
 	pr, pw := io.Pipe()
-	
+
 	go func() {
 		defer pw.Close()
 		for chunk := range stream {
@@ -104,6 +120,6 @@ func StreamToReader(stream <-chan StreamChunk) io.Reader {
 			}
 		}
 	}()
-	
+
 	return pr
 }

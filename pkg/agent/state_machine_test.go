@@ -32,7 +32,7 @@ func TestBaseStateMachine(t *testing.T) {
 	}
 
 	// Test valid state transition
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"transition_reason": "testing",
 	}
 	err = sm.TransitionTo(context.Background(), StateCoding, metadata)
@@ -76,7 +76,7 @@ func TestBaseStateMachineValidation(t *testing.T) {
 	}
 
 	// Test transition to error state (should always be allowed)
-	err = sm.TransitionTo(context.Background(), StateError, map[string]interface{}{
+	err = sm.TransitionTo(context.Background(), StateError, map[string]any{
 		"error": "test error",
 	})
 	if err != nil {
@@ -98,8 +98,8 @@ func TestBaseStateMachinePersistence(t *testing.T) {
 	// Create and configure first state machine
 	sm1 := NewBaseStateMachine("test-agent", StatePlanning, store)
 	sm1.SetStateData("persistent_data", "should_survive")
-	
-	err = sm1.TransitionTo(context.Background(), StateCoding, map[string]interface{}{
+
+	err = sm1.TransitionTo(context.Background(), StateCoding, map[string]any{
 		"test": "metadata",
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestBaseStateMachineRetries(t *testing.T) {
 	// Test retry reset on state transition
 	sm.SetMaxRetries(5) // Reset for clean test
 	sm.IncrementRetry()
-	
+
 	err = sm.TransitionTo(context.Background(), StateCoding, nil)
 	if err != nil {
 		t.Fatalf("Failed to transition: %v", err)
@@ -190,7 +190,7 @@ func TestBaseStateMachineCompaction(t *testing.T) {
 	states := []State{StateCoding, StateTesting, StateDone, StatePlanning}
 	for i := 0; i < 150; i++ { // More than the 100 transition limit
 		state := states[i%len(states)]
-		err = sm.TransitionTo(context.Background(), state, map[string]interface{}{
+		err = sm.TransitionTo(context.Background(), state, map[string]any{
 			"iteration": i,
 		})
 		if err != nil {
@@ -288,7 +288,7 @@ func TestBaseStateMachineWithMockLLM(t *testing.T) {
 	}
 
 	// Test state transition with LLM data
-	err = sm.TransitionTo(context.Background(), StateCoding, map[string]interface{}{
+	err = sm.TransitionTo(context.Background(), StateCoding, map[string]any{
 		"llm_response": "Planning complete",
 	})
 	if err != nil {

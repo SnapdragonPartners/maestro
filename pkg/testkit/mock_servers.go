@@ -51,12 +51,12 @@ func MockAnthropicServer() *httptest.Server {
 		}
 
 		// Create mock Anthropic response
-		response := map[string]interface{}{
+		response := map[string]any{
 			"id":    "msg_mock_12345",
 			"type":  "message",
 			"role":  "assistant",
 			"model": request.Model,
-			"content": []map[string]interface{}{
+			"content": []map[string]any{
 				{
 					"type": "text",
 					"text": generatedText,
@@ -64,7 +64,7 @@ func MockAnthropicServer() *httptest.Server {
 			},
 			"stop_reason":   "end_turn",
 			"stop_sequence": nil,
-			"usage": map[string]interface{}{
+			"usage": map[string]any{
 				"input_tokens":  100,
 				"output_tokens": 200,
 			},
@@ -116,22 +116,22 @@ func MockOpenAIServer() *httptest.Server {
 		}
 
 		// Create mock OpenAI response
-		response := map[string]interface{}{
+		response := map[string]any{
 			"id":      "chatcmpl-mock12345",
 			"object":  "chat.completion",
 			"created": 1699999999,
 			"model":   request.Model,
-			"choices": []map[string]interface{}{
+			"choices": []map[string]any{
 				{
 					"index": 0,
-					"message": map[string]interface{}{
+					"message": map[string]any{
 						"role":    "assistant",
 						"content": generatedContent,
 					},
 					"finish_reason": "stop",
 				},
 			},
-			"usage": map[string]interface{}{
+			"usage": map[string]any{
 				"prompt_tokens":     50,
 				"completion_tokens": 100,
 				"total_tokens":      150,
@@ -165,7 +165,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		Status:    "healthy",
 		Timestamp: time.Now(),
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -193,7 +193,7 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 	var user User
 	json.NewDecoder(r.Body).Decode(&user)
 	user.ID = 1
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
 }

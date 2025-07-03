@@ -28,26 +28,26 @@ func NewLogger(agentID string) *Logger {
 	}
 }
 
-func (l *Logger) log(level Level, format string, args ...interface{}) {
+func (l *Logger) log(level Level, format string, args ...any) {
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	message := fmt.Sprintf(format, args...)
 	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, l.agentID, level, message)
 	l.logger.Println(logLine)
 }
 
-func (l *Logger) Debug(format string, args ...interface{}) {
+func (l *Logger) Debug(format string, args ...any) {
 	l.log(LevelDebug, format, args...)
 }
 
-func (l *Logger) Info(format string, args ...interface{}) {
+func (l *Logger) Info(format string, args ...any) {
 	l.log(LevelInfo, format, args...)
 }
 
-func (l *Logger) Warn(format string, args ...interface{}) {
+func (l *Logger) Warn(format string, args ...any) {
 	l.log(LevelWarn, format, args...)
 }
 
-func (l *Logger) Error(format string, args ...interface{}) {
+func (l *Logger) Error(format string, args ...any) {
 	l.log(LevelError, format, args...)
 }
 

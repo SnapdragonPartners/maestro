@@ -46,7 +46,7 @@ func TestMockAnthropicServer(t *testing.T) {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	var response map[string]interface{}
+	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatalf("Failed to parse JSON response: %v", err)
 	}
@@ -56,12 +56,12 @@ func TestMockAnthropicServer(t *testing.T) {
 		t.Errorf("Expected type 'message', got %v", response["type"])
 	}
 
-	content, ok := response["content"].([]interface{})
+	content, ok := response["content"].([]any)
 	if !ok || len(content) == 0 {
 		t.Error("Expected content array")
 	}
 
-	firstContent, ok := content[0].(map[string]interface{})
+	firstContent, ok := content[0].(map[string]any)
 	if !ok {
 		t.Error("Expected content[0] to be a map")
 	}
@@ -106,7 +106,7 @@ func TestMockOpenAIServer(t *testing.T) {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	var response map[string]interface{}
+	var response map[string]any
 	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatalf("Failed to parse JSON response: %v", err)
 	}
@@ -116,17 +116,17 @@ func TestMockOpenAIServer(t *testing.T) {
 		t.Errorf("Expected object 'chat.completion', got %v", response["object"])
 	}
 
-	choices, ok := response["choices"].([]interface{})
+	choices, ok := response["choices"].([]any)
 	if !ok || len(choices) == 0 {
 		t.Error("Expected choices array")
 	}
 
-	firstChoice, ok := choices[0].(map[string]interface{})
+	firstChoice, ok := choices[0].(map[string]any)
 	if !ok {
 		t.Error("Expected choices[0] to be a map")
 	}
 
-	message, ok := firstChoice["message"].(map[string]interface{})
+	message, ok := firstChoice["message"].(map[string]any)
 	if !ok {
 		t.Error("Expected message field")
 	}

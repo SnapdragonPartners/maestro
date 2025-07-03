@@ -39,15 +39,12 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 	if call.Name != "shell" {
 		t.Errorf("Expected tool name 'shell', got '%s'", call.Name)
 	}
-	if call.RawArgs != "ls -la" {
-		t.Errorf("Expected raw args 'ls -la', got '%s'", call.RawArgs)
-	}
 	if cmd, ok := call.Args["cmd"]; !ok {
 		t.Error("Expected 'cmd' in args")
 	} else if cmdStr, ok := cmd.(string); !ok {
 		t.Error("Expected 'cmd' to be string")
 	} else if cmdStr != "ls -la" {
-		t.Errorf("Expected cmd 'ls -la', got '%s'", cmdStr)
+		t.Errorf("Expected raw args 'ls -la', got '%s'", cmdStr)
 	}
 
 	// Test multiple tool calls
@@ -80,7 +77,7 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 	}
 
 	// The raw args should be trimmed
-	if calls[0].RawArgs == "" {
+	if calls[0].Args["cmd"] == "" {
 		t.Error("Expected non-empty raw args after trimming")
 	}
 }

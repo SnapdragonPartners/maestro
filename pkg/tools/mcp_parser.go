@@ -2,106 +2,203 @@ package tools
 
 import (
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strings"
 )
 
-// ToolCall represents a parsed MCP tool invocation
+// ToolCall represents a parsed MCP tool invocation in Claude API format
 type ToolCall struct {
-	Name    string
-	Args    map[string]any
-	RawArgs string
+	ID    string         // Unique identifier for the tool call
+	Name  string         // Tool name
+	Args  map[string]any // Parsed arguments
+	Input map[string]any // Raw input in Claude format
 }
 
-// MCPParser handles parsing of MCP tool invocation tags
+// AnthropicToolUse represents a tool_use block from Claude responses
+type AnthropicToolUse struct {
+	Type  string         `json:"type"`
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Input map[string]any `json:"input"`
+}
+
+// ContentBlock represents a single content block in Claude responses
+type ContentBlock struct {
+	Type     string           `json:"type"`
+	Text     string           `json:"text,omitempty"`
+	ToolUse  *AnthropicToolUse `json:"tool_use,omitempty"`
+}
+
+// MCPParser handles parsing of Claude API tool use formats
 type MCPParser struct {
-	toolTagRegex *regexp.Regexp
+	// Regex to match thinking blocks which may contain tool reasoning
+	thinkingRegex *regexp.Regexp
+	// Tool blocks can also be represented in JSON format for compatibility
+	jsonToolRegex *regexp.Regexp
 }
 
 // NewMCPParser creates a new MCP parser instance
 func NewMCPParser() *MCPParser {
-	// Regex to match <tool name="toolname">...</tool> patterns
-	// Use (?s) flag to make . match newlines
-	toolTagRegex := regexp.MustCompile(`(?s)<tool\s+name="([^"]+)"[^>]*>(.*?)</tool>`)
+	// Regex to match <thinking>...</thinking> patterns for CoT
+	thinkingRegex := regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
+	
+	// Regex to match JSON tool use blocks: {"type":"tool_use",...}
+	jsonToolRegex := regexp.MustCompile(`(?s)\{[\s\n]*"type"[\s\n]*:[\s\n]*"tool_use".*?\}`)
 
 	return &MCPParser{
-		toolTagRegex: toolTagRegex,
+		thinkingRegex: thinkingRegex,
+		jsonToolRegex: jsonToolRegex,
 	}
 }
 
-// ParseToolCalls extracts tool calls from text containing MCP tags
+// ParseToolCalls extracts tool calls from text containing Claude API tool_use blocks
 func (p *MCPParser) ParseToolCalls(text string) ([]ToolCall, error) {
-	matches := p.toolTagRegex.FindAllStringSubmatch(text, -1)
-
 	var toolCalls []ToolCall
-	for _, match := range matches {
-		if len(match) < 3 {
-			continue
+
+	// Extract JSON tool use blocks
+	jsonMatches := p.jsonToolRegex.FindAllString(text, -1)
+	for _, jsonStr := range jsonMatches {
+		var contentBlock ContentBlock
+		if err := json.Unmarshal([]byte(jsonStr), &contentBlock); err == nil {
+			if contentBlock.Type == "tool_use" && contentBlock.ToolUse != nil {
+				toolCall := ToolCall{
+					ID:    contentBlock.ToolUse.ID,
+					Name:  contentBlock.ToolUse.Name,
+					Args:  contentBlock.ToolUse.Input, // For compatibility
+					Input: contentBlock.ToolUse.Input,
+				}
+				toolCalls = append(toolCalls, toolCall)
+			}
 		}
+	}
 
-		toolName := match[1]
-		rawArgs := strings.TrimSpace(match[2])
-
-		// For now, just store the raw args - more sophisticated parsing can be added later
-		toolCall := ToolCall{
-			Name:    toolName,
-			Args:    make(map[string]any),
-			RawArgs: rawArgs,
+	// If no JSON tool blocks found, try a more forgiving approach to extract potential tool calls
+	if len(toolCalls) == 0 {
+		// Try to find content blocks in a more liberal format
+		blocks := parseContentBlocks(text)
+		for _, block := range blocks {
+			if block.Type == "tool_use" && block.ToolUse != nil {
+				toolCall := ToolCall{
+					ID:    block.ToolUse.ID,
+					Name:  block.ToolUse.Name,
+					Args:  block.ToolUse.Input,
+					Input: block.ToolUse.Input,
+				}
+				toolCalls = append(toolCalls, toolCall)
+			}
 		}
-
-		// Basic argument parsing - try to parse simple key=value pairs
-		if err := p.parseBasicArgs(rawArgs, toolCall.Args); err != nil {
-			return nil, fmt.Errorf("failed to parse args for tool %s: %w", toolName, err)
-		}
-
-		toolCalls = append(toolCalls, toolCall)
 	}
 
 	return toolCalls, nil
 }
 
-// parseBasicArgs performs JSON or simple key=value argument parsing
-func (p *MCPParser) parseBasicArgs(rawArgs string, args map[string]any) error {
-	if rawArgs == "" {
-		return nil
-	}
+// parseContentBlocks attempts to extract content blocks from text
+// This is a more flexible parser that can handle various formats
+func parseContentBlocks(text string) []ContentBlock {
+	var blocks []ContentBlock
 
-	// Try to parse as JSON first
-	if strings.HasPrefix(strings.TrimSpace(rawArgs), "{") {
-		var jsonArgs map[string]any
-		if err := json.Unmarshal([]byte(rawArgs), &jsonArgs); err == nil {
-			// Successfully parsed as JSON
-			for k, v := range jsonArgs {
-				args[k] = v
-			}
-			return nil
+	// Try to parse the entire text as a JSON array of content blocks
+	var jsonBlocks []ContentBlock
+	if strings.HasPrefix(strings.TrimSpace(text), "[") && 
+	   strings.HasSuffix(strings.TrimSpace(text), "]") {
+		trimmed := strings.TrimSpace(text)
+		if err := json.Unmarshal([]byte(trimmed), &jsonBlocks); err == nil {
+			return jsonBlocks
 		}
 	}
 
-	// Fallback: treat the entire raw args as the "cmd" argument for backward compatibility
-	args["cmd"] = rawArgs
+	// Look for tool_use sections in a more flexible way
+	toolUseRegex := regexp.MustCompile(`(?s)(tool_use|"type"\s*:\s*"tool_use").*?(\{.*?\})`)
+	matches := toolUseRegex.FindAllStringSubmatch(text, -1)
+	
+	for _, match := range matches {
+		if len(match) >= 3 {
+			jsonStr := match[2]
+			var toolUse AnthropicToolUse
+			
+			// Try to parse as a complete tool_use object
+			if err := json.Unmarshal([]byte(jsonStr), &toolUse); err == nil {
+				blocks = append(blocks, ContentBlock{
+					Type:    "tool_use",
+					ToolUse: &toolUse,
+				})
+				continue
+			}
+			
+			// Try to extract just the input part
+			inputRegex := regexp.MustCompile(`"input"\s*:\s*(\{.*?\})`)
+			inputMatch := inputRegex.FindStringSubmatch(jsonStr)
+			if len(inputMatch) >= 2 {
+				var input map[string]any
+				if err := json.Unmarshal([]byte(inputMatch[1]), &input); err == nil {
+					// Try to extract name
+					nameRegex := regexp.MustCompile(`"name"\s*:\s*"([^"]+)"`)
+					nameMatch := nameRegex.FindStringSubmatch(jsonStr)
+					name := ""
+					if len(nameMatch) >= 2 {
+						name = nameMatch[1]
+					}
+					
+					// Try to extract ID
+					idRegex := regexp.MustCompile(`"id"\s*:\s*"([^"]+)"`)
+					idMatch := idRegex.FindStringSubmatch(jsonStr)
+					id := ""
+					if len(idMatch) >= 2 {
+						id = idMatch[1]
+					}
+					
+					blocks = append(blocks, ContentBlock{
+						Type: "tool_use",
+						ToolUse: &AnthropicToolUse{
+							Type:  "tool_use",
+							ID:    id,
+							Name:  name,
+							Input: input,
+						},
+					})
+				}
+			}
+		}
+	}
 
-	return nil
+	return blocks
 }
 
-// HasToolCalls checks if the text contains any tool invocation tags
+// HasToolCalls checks if the text contains any tool calls
 func (p *MCPParser) HasToolCalls(text string) bool {
-	return p.toolTagRegex.MatchString(text)
+	// Check for JSON tool use blocks
+	if p.jsonToolRegex.MatchString(text) {
+		return true
+	}
+	
+	// Check for tool_use keyword
+	return strings.Contains(text, "tool_use") || 
+	       strings.Contains(text, "\"type\": \"tool_use\"") ||
+	       strings.Contains(text, "\"type\":\"tool_use\"")
 }
 
 // ExtractToolNames returns just the tool names found in the text
 func (p *MCPParser) ExtractToolNames(text string) []string {
-	matches := p.toolTagRegex.FindAllStringSubmatch(text, -1)
-
-	var names []string
-	for _, match := range matches {
-		if len(match) >= 2 {
-			names = append(names, match[1])
-		}
+	toolCalls, err := p.ParseToolCalls(text)
+	if err != nil {
+		return nil
 	}
-
+	
+	var names []string
+	for _, call := range toolCalls {
+		names = append(names, call.Name)
+	}
+	
 	return names
+}
+
+// FormatToolResult creates a properly formatted tool result for Claude
+func FormatToolResult(toolUseID string, content any) (map[string]any, error) {
+	return map[string]any{
+		"type":        "tool_result",
+		"tool_use_id": toolUseID,
+		"content":     content,
+	}, nil
 }
 
 // Global parser instance
@@ -120,4 +217,9 @@ func HasToolCalls(text string) bool {
 // ExtractToolNames is a convenience function using the global parser
 func ExtractToolNames(text string) []string {
 	return globalParser.ExtractToolNames(text)
+}
+
+// FormatToolResultGlobal is a convenience function to format tool results
+func FormatToolResultGlobal(toolUseID string, content any) (map[string]any, error) {
+	return FormatToolResult(toolUseID, content)
 }

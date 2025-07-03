@@ -73,7 +73,7 @@ func (mb *MessageBuilder) WithImplementation(implementation string) *MessageBuil
 
 // WithTestResults sets the test_results payload
 func (mb *MessageBuilder) WithTestResults(success bool, output string) *MessageBuilder {
-	testResults := map[string]interface{}{
+	testResults := map[string]any{
 		"success": success,
 		"output":  output,
 		"elapsed": "100ms",

@@ -47,7 +47,7 @@ func TestStore_SaveState(t *testing.T) {
 	}
 
 	// Test valid save
-	data := map[string]interface{}{
+	data := map[string]any{
 		"key1": "value1",
 		"key2": 42,
 	}
@@ -101,7 +101,7 @@ func TestStore_LoadState(t *testing.T) {
 	}
 
 	// Save state first
-	originalData := map[string]interface{}{
+	originalData := map[string]any{
 		"key1": "value1",
 		"key2": 42,
 		"key3": []string{"a", "b", "c"},
@@ -149,7 +149,7 @@ func TestStore_GetStateInfo(t *testing.T) {
 	}
 
 	// Save state first
-	data := map[string]interface{}{"test": "data"}
+	data := map[string]any{"test": "data"}
 	if err := store.SaveState("agent1", "TESTING", data); err != nil {
 		t.Fatalf("Failed to save state: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestGlobalStoreFunctions(t *testing.T) {
 	}
 
 	// Test global store functions
-	data := map[string]interface{}{"global": "test"}
+	data := map[string]any{"global": "test"}
 
 	if err := SaveState("global-agent", "TESTING", data); err != nil {
 		t.Errorf("Expected no error with global SaveState, got %v", err)

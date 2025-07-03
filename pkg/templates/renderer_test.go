@@ -162,7 +162,7 @@ func TestRenderArchitectTemplates(t *testing.T) {
 		if err != nil {
 			t.Errorf("Failed to render architect template %s: %v", templateName, err)
 		}
-		
+
 		// Basic verification that template was processed
 		if strings.Contains(result, "{{.TaskContent}}") {
 			t.Errorf("Template %s still contains unprocessed placeholder", templateName)
@@ -185,7 +185,7 @@ func TestRenderWithCompleteData(t *testing.T) {
 		Implementation: "Complete REST API with CRUD operations",
 		TestResults:    "All tests passed: 15/15",
 		WorkDir:        "/workspace/api-service",
-		Extra: map[string]interface{}{
+		Extra: map[string]any{
 			"custom_field": "custom_value",
 		},
 	}
@@ -203,7 +203,7 @@ func TestRenderWithCompleteData(t *testing.T) {
 		if err != nil {
 			t.Errorf("Template %s failed with complete data: %v", templateName, err)
 		}
-		
+
 		// Verify no unprocessed placeholders remain
 		if strings.Contains(result, "{{.") {
 			t.Errorf("Template %s contains unprocessed placeholders", templateName)

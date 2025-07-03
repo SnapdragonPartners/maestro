@@ -185,8 +185,8 @@ func (cm *ContextManager) ShouldCompact() bool {
 }
 
 // GetCompactionInfo returns information about context state and compaction thresholds
-func (cm *ContextManager) GetCompactionInfo() map[string]interface{} {
-	info := map[string]interface{}{
+func (cm *ContextManager) GetCompactionInfo() map[string]any {
+	info := map[string]any{
 		"current_tokens": cm.CountTokens(),
 		"message_count":  len(cm.messages),
 		"should_compact": cm.ShouldCompact(),

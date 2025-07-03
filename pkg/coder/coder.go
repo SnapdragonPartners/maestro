@@ -110,6 +110,11 @@ func (c *Coder) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// GetDriver returns the coder driver for direct access (used by agentctl)
+func (c *Coder) GetDriver() *CoderDriver {
+	return c.driver
+}
+
 func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// Initialize driver if needed
 	if err := c.driver.Initialize(ctx); err != nil {

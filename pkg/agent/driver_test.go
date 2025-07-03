@@ -23,10 +23,10 @@ func setupTestDriver(t *testing.T) (*BaseDriver, *AgentContext) {
 	}
 
 	ctx := &AgentContext{
-		Context:  context.Background(),
-		Logger:   log.New(os.Stdout, "", log.LstdFlags),
-		WorkDir:  tempDir,
-		Store:    store,
+		Context: context.Background(),
+		Logger:  log.New(os.Stdout, "", log.LstdFlags),
+		WorkDir: tempDir,
+		Store:   store,
 	}
 
 	cfg := &AgentConfig{
@@ -55,7 +55,7 @@ func TestBaseDriver(t *testing.T) {
 	}
 
 	// Test state transition with metadata
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"test": "data",
 	}
 
@@ -89,10 +89,10 @@ func TestBaseDriverWithModelConfig(t *testing.T) {
 	}
 
 	ctx := &AgentContext{
-		Context:  context.Background(),
-		Logger:   log.New(os.Stdout, "", log.LstdFlags),
-		WorkDir:  tempDir,
-		Store:    store,
+		Context: context.Background(),
+		Logger:  log.New(os.Stdout, "", log.LstdFlags),
+		WorkDir: tempDir,
+		Store:   store,
 	}
 
 	cfg := &AgentConfig{
@@ -102,7 +102,7 @@ func TestBaseDriverWithModelConfig(t *testing.T) {
 		LLMConfig: &LLMConfig{
 			MaxContextTokens: modelConfig.MaxContextTokens,
 			MaxOutputTokens:  modelConfig.MaxReplyTokens,
-			CompactIfOver:   modelConfig.CompactionBuffer,
+			CompactIfOver:    modelConfig.CompactionBuffer,
 		},
 	}
 
@@ -126,7 +126,7 @@ func TestBaseDriverStateCompaction(t *testing.T) {
 	// Add several state transitions to trigger compaction
 	states := []State{StateCoding, StateTesting, StateDone, StatePlanning}
 	for _, state := range states {
-		err := driver.TransitionTo(context.Background(), state, map[string]interface{}{
+		err := driver.TransitionTo(context.Background(), state, map[string]any{
 			"timestamp": time.Now(),
 			"data":      "test data",
 		})
@@ -155,8 +155,8 @@ func TestBaseDriverContextCancellation(t *testing.T) {
 
 	// Create new driver in a cancelled context
 	newCfg := &AgentConfig{
-		ID:      "test-agent",
-		Type:    "test",
+		ID:   "test-agent",
+		Type: "test",
 		Context: AgentContext{
 			Context: ctx,
 			Store:   driver.StateMachine.(*BaseStateMachine).store,
@@ -184,7 +184,7 @@ func TestBaseDriverPersistence(t *testing.T) {
 	driver, _ := setupTestDriver(t)
 
 	// Add state data
-	err := driver.TransitionTo(context.Background(), StateCoding, map[string]interface{}{
+	err := driver.TransitionTo(context.Background(), StateCoding, map[string]any{
 		"test": "data",
 	})
 	if err != nil {
@@ -198,8 +198,8 @@ func TestBaseDriverPersistence(t *testing.T) {
 
 	// Create new driver and load state
 	newCfg := &AgentConfig{
-		ID:      "test-agent",
-		Type:    "test",
+		ID:   "test-agent",
+		Type: "test",
 		Context: AgentContext{
 			Context: context.Background(),
 			Store:   driver.StateMachine.(*BaseStateMachine).store,
@@ -256,7 +256,7 @@ func TestBaseDriverWithMockLLM(t *testing.T) {
 		LLMConfig: &LLMConfig{
 			MaxContextTokens: 8192,
 			MaxOutputTokens:  4096,
-			CompactIfOver:   1000,
+			CompactIfOver:    1000,
 		},
 	}
 
@@ -290,7 +290,7 @@ func TestBaseDriverWithMockLLM(t *testing.T) {
 	}
 
 	// Test state transitions with LLM integration
-	err = driver.TransitionTo(context.Background(), StateCoding, map[string]interface{}{
+	err = driver.TransitionTo(context.Background(), StateCoding, map[string]any{
 		"llm_response": "Planning phase complete",
 		"mock_mode":    true,
 	})
@@ -309,7 +309,7 @@ func TestBaseDriverTimeout(t *testing.T) {
 	// Test StepWithTimeout with very short timeout
 	ctx := context.Background()
 	done, err := driver.StepWithTimeout(ctx, 1*time.Nanosecond)
-	
+
 	// This might timeout or complete quickly depending on timing
 	// We mainly want to verify the method exists and doesn't panic
 	if err != nil && err.Error() != "ProcessState not implemented" {
@@ -318,13 +318,13 @@ func TestBaseDriverTimeout(t *testing.T) {
 			t.Errorf("Unexpected error from StepWithTimeout: %v", err)
 		}
 	}
-	
+
 	// Test with reasonable timeout
 	done, err = driver.StepWithTimeout(ctx, 1*time.Second)
 	if err != nil && err.Error() != "ProcessState not implemented" {
 		t.Errorf("StepWithTimeout failed with reasonable timeout: %v", err)
 	}
-	
+
 	// Since BaseDriver doesn't implement ProcessState, done should be false
 	if done {
 		t.Error("Expected done=false from BaseDriver with unimplemented ProcessState")
@@ -343,12 +343,12 @@ func TestBaseDriverRunWithTimeout(t *testing.T) {
 
 	ctx := context.Background()
 	err := driver.RunWithTimeout(ctx, cfg)
-	
+
 	// Should fail because ProcessState is not implemented
 	if err == nil {
 		t.Error("Expected error from RunWithTimeout with unimplemented ProcessState")
 	}
-	
+
 	if err.Error() != "ProcessState not implemented" {
 		t.Errorf("Expected 'ProcessState not implemented', got %v", err)
 	}
@@ -369,8 +369,8 @@ func TestBaseDriverShutdown(t *testing.T) {
 
 	// Verify state was persisted during shutdown
 	newDriver, err := NewBaseDriver(&AgentConfig{
-		ID:      "test-agent",
-		Type:    "test",
+		ID:   "test-agent",
+		Type: "test",
 		Context: AgentContext{
 			Context: context.Background(),
 			Store:   driver.StateMachine.(*BaseStateMachine).store,
@@ -434,6 +434,6 @@ func (f *failingStateMachine) ProcessState(ctx context.Context) (State, bool, er
 	return StateError, false, fmt.Errorf("simulated processing failure")
 }
 
-func (f *failingStateMachine) TransitionTo(ctx context.Context, newState State, metadata map[string]interface{}) error {
+func (f *failingStateMachine) TransitionTo(ctx context.Context, newState State, metadata map[string]any) error {
 	return fmt.Errorf("simulated transition failure")
 }

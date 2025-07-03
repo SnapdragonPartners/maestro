@@ -10,10 +10,10 @@ import (
 
 // AgentState represents the current state of an agent
 type AgentState struct {
-	State           string                 `json:"state"`
-	LastTimestamp   time.Time              `json:"last_timestamp"`
-	ContextSnapshot map[string]interface{} `json:"context_snapshot"`
-	Data            map[string]interface{} `json:"data,omitempty"`
+	State           string         `json:"state"`
+	LastTimestamp   time.Time      `json:"last_timestamp"`
+	ContextSnapshot map[string]any `json:"context_snapshot"`
+	Data            map[string]any `json:"data,omitempty"`
 }
 
 // Store manages persistent state storage for agents
@@ -34,7 +34,7 @@ func NewStore(baseDir string) (*Store, error) {
 }
 
 // SaveState persists the current state for the given agent
-func (s *Store) SaveState(agentID, state string, data map[string]interface{}) error {
+func (s *Store) SaveState(agentID, state string, data map[string]any) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
 	}
@@ -46,7 +46,7 @@ func (s *Store) SaveState(agentID, state string, data map[string]interface{}) er
 	agentState := AgentState{
 		State:           state,
 		LastTimestamp:   time.Now().UTC(),
-		ContextSnapshot: make(map[string]interface{}),
+		ContextSnapshot: make(map[string]any),
 		Data:            data,
 	}
 
@@ -120,7 +120,7 @@ func (s *Store) Save(id string, value any) error {
 }
 
 // LoadState retrieves the persisted state for the given agent
-func (s *Store) LoadState(agentID string) (string, map[string]interface{}, error) {
+func (s *Store) LoadState(agentID string) (string, map[string]any, error) {
 	if agentID == "" {
 		return "", nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -130,7 +130,7 @@ func (s *Store) LoadState(agentID string) (string, map[string]interface{}, error
 	// Check if file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		// Return empty state if file doesn't exist
-		return "", make(map[string]interface{}), nil
+		return "", make(map[string]any), nil
 	}
 
 	// Read file
@@ -148,7 +148,7 @@ func (s *Store) LoadState(agentID string) (string, map[string]interface{}, error
 	// Return state and data
 	data := agentState.Data
 	if data == nil {
-		data = make(map[string]interface{})
+		data = make(map[string]any)
 	}
 
 	return agentState.State, data, nil
@@ -253,7 +253,7 @@ func GetGlobalStore() *Store {
 }
 
 // SaveState is a convenience function using the global store
-func SaveState(agentID, state string, data map[string]interface{}) error {
+func SaveState(agentID, state string, data map[string]any) error {
 	if globalStore == nil {
 		return fmt.Errorf("global store not initialized")
 	}
@@ -261,7 +261,7 @@ func SaveState(agentID, state string, data map[string]interface{}) error {
 }
 
 // LoadState is a convenience function using the global store
-func LoadState(agentID string) (string, map[string]interface{}, error) {
+func LoadState(agentID string) (string, map[string]any, error) {
 	if globalStore == nil {
 		return "", nil, fmt.Errorf("global store not initialized")
 	}

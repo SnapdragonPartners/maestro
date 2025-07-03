@@ -56,7 +56,7 @@ func TestLogLevels(t *testing.T) {
 
 	tests := []struct {
 		level    Level
-		logFunc  func(string, ...interface{})
+		logFunc  func(string, ...any)
 		expected string
 	}{
 		{LevelDebug, logger.Debug, "DEBUG"},

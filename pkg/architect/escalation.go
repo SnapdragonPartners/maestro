@@ -20,18 +20,18 @@ type EscalationHandler struct {
 
 // EscalationEntry represents an escalated business question requiring human intervention
 type EscalationEntry struct {
-	ID            string                 `json:"id"`
-	StoryID       string                 `json:"story_id"`
-	AgentID       string                 `json:"agent_id"`
-	Type          string                 `json:"type"` // "business_question", "review_failure", "system_error"
-	Question      string                 `json:"question,omitempty"`
-	Context       map[string]interface{} `json:"context"`
-	EscalatedAt   time.Time              `json:"escalated_at"`
-	Status        string                 `json:"status"`   // "pending", "acknowledged", "resolved"
-	Priority      string                 `json:"priority"` // "low", "medium", "high", "critical"
-	ResolvedAt    *time.Time             `json:"resolved_at,omitempty"`
-	Resolution    string                 `json:"resolution,omitempty"`
-	HumanOperator string                 `json:"human_operator,omitempty"`
+	ID            string         `json:"id"`
+	StoryID       string         `json:"story_id"`
+	AgentID       string         `json:"agent_id"`
+	Type          string         `json:"type"` // "business_question", "review_failure", "system_error"
+	Question      string         `json:"question,omitempty"`
+	Context       map[string]any `json:"context"`
+	EscalatedAt   time.Time      `json:"escalated_at"`
+	Status        string         `json:"status"`   // "pending", "acknowledged", "resolved"
+	Priority      string         `json:"priority"` // "low", "medium", "high", "critical"
+	ResolvedAt    *time.Time     `json:"resolved_at,omitempty"`
+	Resolution    string         `json:"resolution,omitempty"`
+	HumanOperator string         `json:"human_operator,omitempty"`
 }
 
 // EscalationSummary provides an overview of escalation status
@@ -105,7 +105,7 @@ func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID,
 		AgentID:  agentID,
 		Type:     "review_failure",
 		Question: fmt.Sprintf("Code review failed %d times for story %s", failureCount, storyID),
-		Context: map[string]interface{}{
+		Context: map[string]any{
 			"failure_count": failureCount,
 			"last_review":   lastReview,
 			"reason":        "3_strikes_rule",
@@ -135,7 +135,7 @@ func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID,
 }
 
 // EscalateSystemError escalates system errors that require human intervention
-func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, agentID, errorMsg string, errorContext map[string]interface{}) error {
+func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, agentID, errorMsg string, errorContext map[string]any) error {
 	// Create escalation entry for system error
 	escalation := &EscalationEntry{
 		ID:          fmt.Sprintf("esc_error_%s_%d", storyID, time.Now().Unix()),
@@ -233,7 +233,7 @@ func (eh *EscalationHandler) loadEscalations() error {
 }
 
 // determinePriority determines the priority of a business question
-func (eh *EscalationHandler) determinePriority(question string, context map[string]interface{}) string {
+func (eh *EscalationHandler) determinePriority(question string, context map[string]any) string {
 	questionLower := strings.ToLower(question)
 
 	// Critical priority keywords
