@@ -17,6 +17,62 @@ import (
 	"orchestrator/pkg/tools"
 )
 
+// CoderState represents a state in the coder state machine
+type CoderState string
+
+const (
+	StatePlanning   CoderState = "PLANNING"
+	StateCoding     CoderState = "CODING"
+	StateTesting    CoderState = "TESTING"
+	StateFixing     CoderState = "FIXING"
+	StatePlanReview CoderState = "PLAN_REVIEW"
+	StateCodeReview CoderState = "CODE_REVIEW"
+	StateQuestion   CoderState = "QUESTION"
+)
+
+func (s CoderState) String() string {
+	return string(s)
+}
+
+// ToAgentState converts CoderState to agent.State
+func (s CoderState) ToAgentState() agent.State {
+	return agent.State(s)
+}
+
+// FromAgentState converts agent.State to CoderState
+func FromAgentState(s agent.State) CoderState {
+	return CoderState(s)
+}
+
+// ValidCoderTransitions defines allowed state transitions for coder states
+var ValidCoderTransitions = map[CoderState][]CoderState{
+	StatePlanning:   {StateCoding, StatePlanReview, StateQuestion},
+	StateCoding:     {StateTesting, StatePlanning, StateQuestion},
+	StateTesting:    {StateCoding, StateFixing, StateCodeReview},
+	StatePlanReview: {StateCoding, StatePlanning},              // Approve→CODING, Reject→PLANNING
+	StateFixing:     {StateCoding, StateTesting},               // Fix→CODING or retry TESTING
+	StateCodeReview: {StateFixing},                             // Approve→DONE (handled by base), Reject→FIXING
+	StateQuestion:   {StatePlanning, StateCoding, StateFixing}, // Return to origin state
+}
+
+// IsValidCoderTransition checks if a coder state transition is allowed
+func (d *CoderDriver) IsValidCoderTransition(from, to CoderState) bool {
+	// Get allowed transitions for current state
+	allowed, ok := ValidCoderTransitions[from]
+	if !ok {
+		return false
+	}
+
+	// Check if requested state is in allowed list
+	for _, s := range allowed {
+		if s == to {
+			return true
+		}
+	}
+
+	return false
+}
+
 // State data keys - using constants to prevent key mismatch bugs
 const (
 	keyPlanApprovalResult = "plan_approval_result"
@@ -105,19 +161,19 @@ func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, erro
 	switch d.GetCurrentState() {
 	case agent.StateWaiting:
 		return d.handleWaiting(ctx, sm)
-	case agent.StatePlanning:
+	case StatePlanning.ToAgentState():
 		return d.handlePlanning(ctx, sm)
-	case agent.StatePlanReview:
+	case StatePlanReview.ToAgentState():
 		return d.handlePlanReview(ctx, sm)
-	case agent.StateCoding:
+	case StateCoding.ToAgentState():
 		return d.handleCoding(ctx, sm)
-	case agent.StateTesting:
+	case StateTesting.ToAgentState():
 		return d.handleTesting(ctx, sm)
-	case agent.StateFixing:
+	case StateFixing.ToAgentState():
 		return d.handleFixing(ctx, sm)
-	case agent.StateCodeReview:
+	case StateCodeReview.ToAgentState():
 		return d.handleCodeReview(ctx, sm)
-	case agent.StateQuestion:
+	case StateQuestion.ToAgentState():
 		return d.handleQuestion(ctx, sm)
 	case agent.StateDone:
 		return agent.StateDone, true, nil
@@ -125,6 +181,90 @@ func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, erro
 		return agent.StateError, true, nil
 	default:
 		return agent.StateError, false, fmt.Errorf("unknown state: %s", d.GetCurrentState())
+	}
+}
+
+// TransitionTo overrides the base state machine to add coder-specific validation
+func (d *CoderDriver) TransitionTo(ctx context.Context, newState agent.State, metadata map[string]any) error {
+	currentState := d.GetCurrentState()
+	
+	// Handle coder-specific transition validation
+	isCurrentCoderState := d.isCoderState(currentState)
+	isNewCoderState := d.isCoderState(newState)
+	
+	// Allow transitions from WAITING to any coder state
+	if currentState == agent.StateWaiting && isNewCoderState {
+		// Valid transition - perform it directly
+		return d.performTransition(ctx, newState, metadata)
+	}
+	
+	// Check coder-specific transitions if both states are coder states
+	if isCurrentCoderState && isNewCoderState {
+		currentCoderState := FromAgentState(currentState)
+		newCoderState := FromAgentState(newState)
+		
+		if !d.IsValidCoderTransition(currentCoderState, newCoderState) {
+			return fmt.Errorf("invalid coder transition from %s to %s", currentCoderState, newCoderState)
+		}
+		// Valid transition - perform it directly
+		return d.performTransition(ctx, newState, metadata)
+	}
+	
+	// Allow transitions to generic agent states (DONE, ERROR, WAITING)
+	if newState == agent.StateDone || newState == agent.StateError || newState == agent.StateWaiting {
+		return d.performTransition(ctx, newState, metadata)
+	}
+	
+	// Use base state machine for other transitions
+	return d.BaseStateMachine.TransitionTo(ctx, newState, metadata)
+}
+
+// performTransition performs the actual state transition bypassing validation
+// This is a simplified version that directly manipulates the base state machine
+func (d *CoderDriver) performTransition(ctx context.Context, newState agent.State, metadata map[string]any) error {
+	// Since we can't access private fields directly, we need a different approach
+	// For now, let's use reflection to modify the private fields or find another way
+	
+	// Actually, let's use a simpler approach - modify the generic ValidTransitions temporarily
+	// Store current state to know what transition we're making
+	currentState := d.GetCurrentState()
+	
+	// Temporarily add the transition to ValidTransitions
+	oldTransitions := agent.ValidTransitions[currentState]
+	if agent.ValidTransitions[currentState] == nil {
+		agent.ValidTransitions[currentState] = []agent.State{newState}
+	} else {
+		// Check if transition already exists
+		found := false
+		for _, state := range agent.ValidTransitions[currentState] {
+			if state == newState {
+				found = true
+				break
+			}
+		}
+		if !found {
+			agent.ValidTransitions[currentState] = append(agent.ValidTransitions[currentState], newState)
+		}
+	}
+	
+	// Perform the transition using base state machine
+	err := d.BaseStateMachine.TransitionTo(ctx, newState, metadata)
+	
+	// Restore original transitions
+	agent.ValidTransitions[currentState] = oldTransitions
+	
+	return err
+}
+
+// isCoderState checks if a state is a coder-specific state
+func (d *CoderDriver) isCoderState(state agent.State) bool {
+	switch state {
+	case StatePlanning.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(),
+		 StateFixing.ToAgentState(), StatePlanReview.ToAgentState(), StateCodeReview.ToAgentState(),
+		 StateQuestion.ToAgentState():
+		return true
+	default:
+		return false
 	}
 }
 
@@ -176,7 +316,7 @@ func (d *CoderDriver) handleWaiting(ctx context.Context, sm *agent.BaseStateMach
 
 	taskContent, exists := sm.GetStateValue(keyTaskContent)
 	if exists && taskContent != "" {
-		return agent.StatePlanning, false, nil
+		return StatePlanning.ToAgentState(), false, nil
 	}
 
 	return agent.StateWaiting, false, nil
@@ -194,7 +334,7 @@ func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMac
 		sm.SetStateData("question_reason", "Help requested during planning")
 		sm.SetStateData("question_content", taskStr)
 		sm.SetStateData("question_origin", "PLANNING")
-		return agent.StateQuestion, false, nil
+		return StateQuestion.ToAgentState(), false, nil
 	}
 
 	// Generate plan
@@ -205,7 +345,7 @@ func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMac
 	// Mock mode
 	sm.SetStateData("plan", "Mock plan: Analyzed requirements, ready to proceed")
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
-	return agent.StatePlanReview, false, nil
+	return StatePlanReview.ToAgentState(), false, nil
 }
 
 // handlePlanningWithLLM generates plan using LLM
@@ -239,7 +379,7 @@ func (d *CoderDriver) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseS
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
 	d.contextManager.AddMessage("assistant", resp.Content)
 
-	return agent.StatePlanReview, false, nil
+	return StatePlanReview.ToAgentState(), false, nil
 }
 
 // handlePlanReview processes the PLAN_REVIEW state using REQUEST→RESULT flow
@@ -253,9 +393,9 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 
 			switch result.Status {
 			case "APPROVED":
-				return agent.StateCoding, false, nil
+				return StateCoding.ToAgentState(), false, nil
 			case "REJECTED", "NEEDS_CHANGES":
-				return agent.StatePlanning, false, nil
+				return StatePlanning.ToAgentState(), false, nil
 			default:
 				return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 			}
@@ -281,9 +421,9 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 		sm.SetStateData("plan_review_completed_at", time.Now().UTC())
 
 		if approved {
-			return agent.StateCoding, false, nil
+			return StateCoding.ToAgentState(), false, nil
 		}
-		return agent.StatePlanning, false, nil
+		return StatePlanning.ToAgentState(), false, nil
 	}
 
 	// Create approval request for architect (LLM mode)
@@ -297,7 +437,7 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 	}
 
 	// Stay in PLAN_REVIEW until we get approval result
-	return agent.StatePlanReview, false, nil
+	return StatePlanReview.ToAgentState(), false, nil
 }
 
 // handleCoding processes the CODING state
@@ -317,7 +457,7 @@ func (d *CoderDriver) handleCoding(ctx context.Context, sm *agent.BaseStateMachi
 	sm.SetStateData("code_generated", true)
 	sm.SetStateData("coding_completed_at", time.Now().UTC())
 
-	return agent.StateTesting, false, nil
+	return StateTesting.ToAgentState(), false, nil
 }
 
 // handleCodingWithLLM generates actual code using LLM
@@ -444,7 +584,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	// Check if implementation seems complete
 	if d.isImplementationComplete(resp.Content, filesCreated, sm) {
 		sm.SetStateData("coding_completed_at", time.Now().UTC())
-		return agent.StateTesting, false, nil
+		return StateTesting.ToAgentState(), false, nil
 	}
 
 	// Check iteration limit to prevent infinite loops
@@ -460,7 +600,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	if iterationCount >= 8 {
 		log.Printf("Reached maximum coding iterations (%d), proceeding to testing", iterationCount)
 		sm.SetStateData("coding_completed_at", time.Now().UTC())
-		return agent.StateTesting, false, nil
+		return StateTesting.ToAgentState(), false, nil
 	}
 
 	// Add context about what's been done so far for next iteration
@@ -469,7 +609,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 
 	// Continue coding if implementation is not complete
 	log.Printf("Implementation appears incomplete (iteration %d/8), continuing in CODING state", iterationCount)
-	return agent.StateCoding, false, nil
+	return StateCoding.ToAgentState(), false, nil
 }
 
 // executeMCPToolCalls executes tool calls using the MCP tool system
@@ -817,10 +957,10 @@ func (d *CoderDriver) handleTesting(ctx context.Context, sm *agent.BaseStateMach
 	sm.SetStateData("testing_completed_at", time.Now().UTC())
 
 	if !testsPassed {
-		return agent.StateFixing, false, nil
+		return StateFixing.ToAgentState(), false, nil
 	}
 
-	return agent.StateCodeReview, false, nil
+	return StateCodeReview.ToAgentState(), false, nil
 }
 
 // handleFixing processes the FIXING state
@@ -830,7 +970,7 @@ func (d *CoderDriver) handleFixing(ctx context.Context, sm *agent.BaseStateMachi
 	sm.SetStateData("fixes_applied", true)
 	sm.SetStateData("fixing_completed_at", time.Now().UTC())
 
-	return agent.StateCoding, false, nil
+	return StateCoding.ToAgentState(), false, nil
 }
 
 // handleCodeReview processes the CODE_REVIEW state using REQUEST→RESULT flow
@@ -846,7 +986,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 			case "APPROVED":
 				return agent.StateDone, true, nil
 			case "REJECTED", "NEEDS_CHANGES":
-				return agent.StateFixing, false, nil
+				return StateFixing.ToAgentState(), false, nil
 			default:
 				return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 			}
@@ -874,7 +1014,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 		if approved {
 			return agent.StateDone, true, nil
 		}
-		return agent.StateFixing, false, nil
+		return StateFixing.ToAgentState(), false, nil
 	}
 
 	// Create approval request for architect (LLM mode)
@@ -888,7 +1028,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 	}
 
 	// Stay in CODE_REVIEW until we get approval result
-	return agent.StateCodeReview, false, nil
+	return StateCodeReview.ToAgentState(), false, nil
 }
 
 // handleQuestion processes the QUESTION state with origin tracking
@@ -911,13 +1051,13 @@ func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMac
 
 		switch originStr {
 		case "PLANNING":
-			return agent.StatePlanning, false, nil
+			return StatePlanning.ToAgentState(), false, nil
 		case "CODING":
-			return agent.StateCoding, false, nil
+			return StateCoding.ToAgentState(), false, nil
 		case "FIXING":
-			return agent.StateFixing, false, nil
+			return StateFixing.ToAgentState(), false, nil
 		default:
-			return agent.StatePlanning, false, nil
+			return StatePlanning.ToAgentState(), false, nil
 		}
 	}
 
@@ -935,7 +1075,7 @@ func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMac
 	}
 
 	// Stay in QUESTION state until we get an answer
-	return agent.StateQuestion, false, nil
+	return StateQuestion.ToAgentState(), false, nil
 }
 
 // Helper methods

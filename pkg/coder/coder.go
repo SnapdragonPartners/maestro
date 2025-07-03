@@ -171,7 +171,7 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 
 		// Determine approval type based on current state
 		approvalType := "plan"
-		if c.driver.GetCurrentState() == agent.StateCodeReview {
+		if c.driver.GetCurrentState() == StateCodeReview.ToAgentState() {
 			approvalType = "code"
 		}
 

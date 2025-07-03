@@ -12,16 +12,9 @@ import (
 type State string
 
 const (
-	StatePlanning     State = "PLANNING"
-	StateCoding       State = "CODING"
-	StateTesting      State = "TESTING"
 	StateDone         State = "DONE"
 	StateError        State = "ERROR"
 	StateWaiting      State = "WAITING"
-	StatePlanReview   State = "PLAN_REVIEW"
-	StateFixing       State = "FIXING"
-	StateCodeReview   State = "CODE_REVIEW"
-	StateQuestion     State = "QUESTION"
 	DefaultMaxRetries       = 3
 )
 

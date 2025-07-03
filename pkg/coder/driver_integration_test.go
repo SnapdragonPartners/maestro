@@ -127,7 +127,7 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 
 	// Should be in QUESTION state
 	currentState := driver.GetCurrentState()
-	if currentState != agent.StateQuestion {
+	if currentState != StateQuestion.ToAgentState() {
 		t.Errorf("Expected state to be QUESTION, got %s", currentState)
 	}
 
@@ -149,7 +149,7 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 
 	// Should have returned to PLANNING and then progressed
 	finalState := driver.GetCurrentState()
-	if finalState == agent.StateQuestion {
+	if finalState == StateQuestion.ToAgentState() {
 		t.Error("Should have moved out of QUESTION state after receiving answer")
 	}
 }
@@ -187,7 +187,7 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 	// Manually set state to PLAN_REVIEW to test approval flow
 	driver.SetStateData("task_content", "Create API endpoint")
 	driver.SetStateData("plan", "Mock plan: Create REST API with proper error handling")
-	if err := driver.TransitionTo(ctx, agent.StatePlanReview, nil); err != nil {
+	if err := driver.TransitionTo(ctx, StatePlanReview.ToAgentState(), nil); err != nil {
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 
 	// Should have moved to CODING state
 	currentState := driver.GetCurrentState()
-	if currentState != agent.StateCoding {
+	if currentState != StateCoding.ToAgentState() {
 		t.Errorf("Expected state to be CODING after plan approval, got %s", currentState)
 	}
 }
@@ -239,12 +239,12 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 		{
 			name:        "Test failure and fix cycle",
 			taskContent: "Create endpoint that should test fail initially",
-			expectFlow:  []agent.State{agent.StatePlanning, agent.StatePlanReview, agent.StateCoding, agent.StateTesting, agent.StateFixing, agent.StateCoding, agent.StateTesting, agent.StateCodeReview, agent.StateDone},
+			expectFlow:  []agent.State{StatePlanning.ToAgentState(), StatePlanReview.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(), StateFixing.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(), StateCodeReview.ToAgentState(), agent.StateDone},
 		},
 		{
 			name:        "Normal successful flow",
 			taskContent: "Create simple endpoint that works",
-			expectFlow:  []agent.State{agent.StatePlanning, agent.StatePlanReview, agent.StateCoding, agent.StateTesting, agent.StateCodeReview, agent.StateDone},
+			expectFlow:  []agent.State{StatePlanning.ToAgentState(), StatePlanReview.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(), StateCodeReview.ToAgentState(), agent.StateDone},
 		},
 	}
 

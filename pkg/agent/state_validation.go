@@ -1,18 +1,11 @@
 package agent
 
-// ValidTransitions defines allowed state transitions for each state
+// ValidTransitions defines allowed state transitions for generic agent states
+// Note: Specialized agents (like coder) can override transition validation
 var ValidTransitions = map[State][]State{
-	// Basic FSM transitions
-	StatePlanning:   {StateCoding, StateError, StatePlanReview, StateQuestion},
-	StateCoding:     {StateTesting, StateError, StatePlanning, StateQuestion},
-	StateTesting:    {StateDone, StateCoding, StateError, StateFixing, StateCodeReview},
-	StateDone:       {StatePlanning, StateWaiting}, // Can start over from done
-	StateError:      {StatePlanning, StateWaiting}, // Can retry from error
-	StateWaiting:    {StatePlanning, StateError},
-	StatePlanReview: {StateCoding, StatePlanning, StateError},              // Approve→CODING, Reject→PLANNING
-	StateFixing:     {StateCoding, StateTesting, StateError},               // Fix→CODING or retry TESTING
-	StateCodeReview: {StateDone, StateFixing, StateError},                  // Approve→DONE, Reject→FIXING
-	StateQuestion:   {StatePlanning, StateCoding, StateFixing, StateError}, // Return to origin state
+	StateDone:    {StateWaiting}, // Can start over from done
+	StateError:   {StateWaiting}, // Can retry from error
+	StateWaiting: {},             // Empty - derived agents should define valid transitions from WAITING
 }
 
 // IsValidTransition checks if a state transition is allowed

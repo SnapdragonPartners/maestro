@@ -251,9 +251,9 @@ func (d *ShutdownableDriver) CanResume() bool {
 		return true
 	}
 
-	// Check if in a resumable state
+	// Check if in a resumable state (generic agent states only)
 	state := d.GetCurrentState()
-	return state == StatePlanning || state == StateCoding || state == StateTesting
+	return state == StateWaiting // Only generic states are resumable at the agent level
 }
 
 // Resume attempts to resume operations from a previous state
