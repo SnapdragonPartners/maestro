@@ -65,8 +65,8 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 	resp, err := o.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:              o.model,
 		Messages:          messages,
-		MaxTokens: in.MaxTokens,
-		Temperature:       in.Temperature,
+		MaxCompletionTokens: in.MaxTokens,
+		// Note: O3 models have beta limitations - temperature is fixed at 1
 	})
 
 	if err != nil {
@@ -102,9 +102,9 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 	stream, err := o.client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:              o.model,
 		Messages:          messages,
-		MaxTokens: in.MaxTokens,
-		Temperature:       in.Temperature,
+		MaxCompletionTokens: in.MaxTokens,
 		Stream:           true,
+		// Note: O3 models have beta limitations - temperature is fixed at 1
 	})
 
 	if err != nil {
