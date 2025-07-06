@@ -3,6 +3,7 @@ package proto
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -18,6 +19,94 @@ const (
 	MsgTypeERROR    MsgType = "ERROR"
 	MsgTypeSHUTDOWN MsgType = "SHUTDOWN"
 )
+
+// RequestType represents the type of request being made
+type RequestType string
+
+const (
+	// RequestApproval indicates an approval request
+	RequestApproval RequestType = "approval"
+	
+	// RequestApprovalReview indicates an approval request review
+	RequestApprovalReview RequestType = "approval_request"
+	
+	// RequestQuestion indicates a question request
+	RequestQuestion RequestType = "question"
+)
+
+// Common payload and metadata keys used in agent messages
+const (
+	// Payload keys
+	KeyRequestType   = "request_type"
+	KeyApprovalType  = "approval_type"
+	KeyAnswer        = "answer"
+	KeyReason        = "reason"
+	KeyQuestion      = "question"
+	KeyContent       = "content"
+	KeyStatus        = "status"
+	KeyFeedback      = "feedback"
+	KeyCurrentState  = "current_state"
+	KeyRequest       = "request"
+	
+	// Task-related keys
+	KeyTaskType      = "task_type"
+	KeyStoryID       = "story_id"
+	KeyTitle         = "title"
+	KeyRequirements  = "requirements"
+	KeyDependsOn     = "depends_on"
+	KeyEstimatedPoints = "estimated_points"
+	KeyFilePath      = "file_path"
+)
+
+// ApprovalStatus represents the status of an approval request
+type ApprovalStatus string
+
+const (
+	// ApprovalStatusApproved indicates the request was approved
+	ApprovalStatusApproved ApprovalStatus = "APPROVED"
+	
+	// ApprovalStatusRejected indicates the request was rejected
+	ApprovalStatusRejected ApprovalStatus = "REJECTED"
+	
+	// ApprovalStatusNeedsChanges indicates the request needs changes
+	ApprovalStatusNeedsChanges ApprovalStatus = "NEEDS_CHANGES"
+	
+	// ApprovalStatusPending indicates the request is pending review
+	ApprovalStatusPending ApprovalStatus = "PENDING"
+)
+
+// ApprovalType represents the type of approval being requested
+type ApprovalType string
+
+const (
+	// ApprovalTypePlan indicates a plan approval request
+	ApprovalTypePlan ApprovalType = "plan"
+	
+	// ApprovalTypeCode indicates a code approval request  
+	ApprovalTypeCode ApprovalType = "code"
+)
+
+// ApprovalRequest represents a request for approval (plan or code)
+type ApprovalRequest struct {
+	ID          string       `json:"id"`
+	Type        ApprovalType `json:"type"`        // "plan" or "code"
+	Content     string       `json:"content"`     // The plan or code content
+	Context     string       `json:"context"`     // Additional context
+	Reason      string       `json:"reason"`      // Why approval is needed
+	RequestedBy string       `json:"requested_by"` // Agent requesting approval
+	RequestedAt time.Time    `json:"requested_at"`
+}
+
+// ApprovalResult represents the result of an approval request
+type ApprovalResult struct {
+	ID          string         `json:"id"`
+	RequestID   string         `json:"request_id"`   // References the original request
+	Type        ApprovalType   `json:"type"`         // "plan" or "code"
+	Status      ApprovalStatus `json:"status"`       // "APPROVED", "REJECTED", "NEEDS_CHANGES"
+	Feedback    string         `json:"feedback"`     // Review feedback/comments
+	ReviewedBy  string         `json:"reviewed_by"`  // Agent that reviewed
+	ReviewedAt  time.Time      `json:"reviewed_at"`
+}
 
 type AgentMsg struct {
 	ID          string            `json:"id"`
@@ -160,4 +249,120 @@ func generateID() string {
 
 	idCounter++
 	return fmt.Sprintf("msg_%d_%d", time.Now().UnixNano(), idCounter)
+}
+
+// RequestType helper methods
+
+// ParseRequestType parses a string into a RequestType with validation
+func ParseRequestType(s string) (RequestType, error) {
+	// Normalize to lowercase for comparison
+	normalizedType := strings.ToLower(s)
+	
+	switch normalizedType {
+	case "approval":
+		return RequestApproval, nil
+	case "approval_request":
+		return RequestApprovalReview, nil
+	case "question":
+		return RequestQuestion, nil
+	default:
+		// Check if it's already in the correct format
+		switch RequestType(s) {
+		case RequestApproval, RequestApprovalReview, RequestQuestion:
+			return RequestType(s), nil
+		default:
+			return "", fmt.Errorf("unknown request type: %s", s)
+		}
+	}
+}
+
+// String returns the string representation of RequestType
+func (rt RequestType) String() string {
+	return string(rt)
+}
+
+// NormaliseApprovalType normalizes and validates approval type strings
+func NormaliseApprovalType(s string) (ApprovalType, error) {
+	// Normalize to lowercase for comparison
+	normalizedType := strings.ToLower(s)
+	
+	switch normalizedType {
+	case "plan":
+		return ApprovalTypePlan, nil
+	case "code":
+		return ApprovalTypeCode, nil
+	default:
+		return "", fmt.Errorf("unknown approval type: %s", s)
+	}
+}
+
+// Approval helper methods
+
+// IsApproved returns true if the status indicates approval
+func (r *ApprovalResult) IsApproved() bool {
+	return r.Status == ApprovalStatusApproved
+}
+
+// IsRejected returns true if the status indicates rejection or needs changes
+func (r *ApprovalResult) IsRejected() bool {
+	return r.Status == ApprovalStatusRejected || r.Status == ApprovalStatusNeedsChanges
+}
+
+// IsPending returns true if the status indicates pending review
+func (r *ApprovalResult) IsPending() bool {
+	return r.Status == ApprovalStatusPending
+}
+
+// String returns the string representation of ApprovalStatus
+func (s ApprovalStatus) String() string {
+	return string(s)
+}
+
+// String returns the string representation of ApprovalType
+func (t ApprovalType) String() string {
+	return string(t)
+}
+
+// ValidateApprovalStatus validates if a string is a valid approval status
+func ValidateApprovalStatus(status string) (ApprovalStatus, bool) {
+	switch ApprovalStatus(status) {
+	case ApprovalStatusApproved, ApprovalStatusRejected, ApprovalStatusNeedsChanges, ApprovalStatusPending:
+		return ApprovalStatus(status), true
+	default:
+		return "", false
+	}
+}
+
+// ValidateApprovalType validates if a string is a valid approval type
+func ValidateApprovalType(approvalType string) (ApprovalType, bool) {
+	switch ApprovalType(approvalType) {
+	case ApprovalTypePlan, ApprovalTypeCode:
+		return ApprovalType(approvalType), true
+	default:
+		return "", false
+	}
+}
+
+// ConvertLegacyStatus converts legacy status strings to new constants
+func ConvertLegacyStatus(legacyStatus string) ApprovalStatus {
+	// Normalize to lowercase for comparison
+	normalizedStatus := strings.ToLower(legacyStatus)
+	
+	switch normalizedStatus {
+	case "approved":
+		return ApprovalStatusApproved
+	case "rejected":
+		return ApprovalStatusRejected
+	case "needs_fixes", "needs_changes":
+		return ApprovalStatusNeedsChanges
+	case "pending":
+		return ApprovalStatusPending
+	default:
+		// Check if it's already in the correct format
+		if status, valid := ValidateApprovalStatus(legacyStatus); valid {
+			return status
+		}
+		// Default to rejected for unknown statuses
+		return ApprovalStatusRejected
+	}
 }

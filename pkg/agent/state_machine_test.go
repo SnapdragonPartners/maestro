@@ -14,7 +14,7 @@ func TestBaseStateMachine(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 
 	// Test initial state
 	if sm.GetCurrentState() != StatePlanning {
@@ -67,7 +67,7 @@ func TestBaseStateMachineValidation(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 
 	// Test invalid transition
 	err = sm.TransitionTo(context.Background(), StateTesting, nil)
@@ -96,7 +96,7 @@ func TestBaseStateMachinePersistence(t *testing.T) {
 	}
 
 	// Create and configure first state machine
-	sm1 := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm1 := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 	sm1.SetStateData("persistent_data", "should_survive")
 
 	err = sm1.TransitionTo(context.Background(), StateCoding, map[string]any{
@@ -113,7 +113,7 @@ func TestBaseStateMachinePersistence(t *testing.T) {
 	}
 
 	// Create new state machine and load state
-	sm2 := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm2 := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 	err = sm2.Initialize(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to initialize second state machine: %v", err)
@@ -147,7 +147,7 @@ func TestBaseStateMachineRetries(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 	sm.SetMaxRetries(2)
 
 	// Test retry counting
@@ -184,7 +184,7 @@ func TestBaseStateMachineCompaction(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 
 	// Add many transitions to trigger compaction
 	states := []State{StateCoding, StateTesting, StateDone, StatePlanning}
@@ -231,7 +231,7 @@ func TestBaseStateMachineContextCancellation(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -268,7 +268,7 @@ func TestBaseStateMachineWithMockLLM(t *testing.T) {
 	mockClient := NewMockLLMClient(mockResponses, nil)
 
 	// Test that mock client works with state machine
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store)
+	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
 	sm.SetStateData("llm_client", mockClient)
 
 	// Simulate using LLM client during state processing

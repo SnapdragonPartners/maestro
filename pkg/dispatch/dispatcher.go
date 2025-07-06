@@ -194,6 +194,13 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		// Continue processing even if logging fails
 	}
 
+	// Resolve logical agent name to actual agent ID for all messages
+	resolvedToAgent := d.resolveAgentName(msg.ToAgent)
+	if resolvedToAgent != msg.ToAgent {
+		d.logger.Debug("Resolved logical name %s to %s", msg.ToAgent, resolvedToAgent)
+		msg.ToAgent = resolvedToAgent
+	}
+
 	// Route messages to appropriate queues based on type
 	d.queueMutex.Lock()
 	defer d.queueMutex.Unlock()
@@ -229,13 +236,6 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	default:
 		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately
 		d.queueMutex.Unlock() // Unlock early for immediate processing
-
-		// Resolve logical agent name to actual agent ID
-		resolvedToAgent := d.resolveAgentName(msg.ToAgent)
-		if resolvedToAgent != msg.ToAgent {
-			d.logger.Debug("Resolved logical name %s to %s", msg.ToAgent, resolvedToAgent)
-			msg.ToAgent = resolvedToAgent
-		}
 
 		// Find target agent
 		d.mu.RLock()
@@ -485,6 +485,12 @@ func (d *Dispatcher) PullCoderFeedback(agentID string) *proto.AgentMsg {
 	d.queueMutex.Lock()
 	defer d.queueMutex.Unlock()
 
+	// Debug: Log queue contents
+	logx.DebugToFile(context.Background(), "dispatch", "queue_debug.log", "PullCoderFeedback for %s, queue size: %d", agentID, len(d.coderQueue))
+	for _, msg := range d.coderQueue {
+		d.logger.Debug("Queue msg: %s -> %s (type: %s)", msg.FromAgent, msg.ToAgent, msg.Type)
+	}
+
 	// Look for messages targeted to this specific coder
 	for i, msg := range d.coderQueue {
 		if msg.ToAgent == agentID {
@@ -502,6 +508,13 @@ func (d *Dispatcher) PullCoderFeedback(agentID string) *proto.AgentMsg {
 func (d *Dispatcher) PullSharedWork() *proto.AgentMsg {
 	d.queueMutex.Lock()
 	defer d.queueMutex.Unlock()
+
+	// Debug: Log queue state
+	logx.DebugToFile(context.Background(), "dispatch", "pull_shared_debug.log", "PullSharedWork called, queue size: %d", len(d.sharedWorkQueue))
+	if len(d.sharedWorkQueue) > 0 {
+		msg := d.sharedWorkQueue[0]
+		d.logger.Debug("Available task: %s -> %s (type: %s)", msg.FromAgent, msg.ToAgent, msg.Type)
+	}
 
 	if len(d.sharedWorkQueue) == 0 {
 		return nil

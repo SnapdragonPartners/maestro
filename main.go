@@ -89,6 +89,13 @@ func (a *ArchitectMessageAdapter) ProcessMessage(ctx context.Context, msg *proto
 	case proto.MsgTypeRESULT:
 		// Forward to review evaluator
 		return a.driver.HandleResult(ctx, msg)
+	case proto.MsgTypeREQUEST:
+		// Route to appropriate worker (review worker for approval requests)
+		if err := a.driver.RouteMessage(msg); err != nil {
+			return nil, fmt.Errorf("failed to route request message: %w", err)
+		}
+		// REQUEST messages are handled asynchronously by workers, no immediate response
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("architect cannot process message type: %s", msg.Type)
 	}
@@ -104,8 +111,10 @@ func main() {
 
 	var configPath string
 	var specPath string
+	var liveMode bool
 	flag.StringVar(&configPath, "config", "", "Path to config file")
 	flag.StringVar(&specPath, "spec", "", "Path to specification file (markdown)")
+	flag.BoolVar(&liveMode, "live", false, "Use live API calls instead of mock mode")
 	flag.Parse()
 
 	// Use CONFIG_PATH env var if flag not provided
@@ -134,7 +143,7 @@ func main() {
 
 	// Start orchestrator
 	ctx := context.Background()
-	if err := orchestrator.Start(ctx); err != nil {
+	if err := orchestrator.Start(ctx, liveMode); err != nil {
 		log.Fatalf("Failed to start orchestrator: %v", err)
 	}
 
@@ -205,7 +214,7 @@ func NewOrchestrator(cfg *config.Config) (*Orchestrator, error) {
 }
 
 // Start initializes and starts the orchestrator
-func (o *Orchestrator) Start(ctx context.Context) error {
+func (o *Orchestrator) Start(ctx context.Context, liveMode bool) error {
 	o.logger.Info("Starting orchestrator")
 
 	// Start dispatcher
@@ -214,7 +223,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	}
 
 	// Create and register agents
-	if err := o.createAgents(); err != nil {
+	if err := o.createAgents(liveMode); err != nil {
 		return fmt.Errorf("failed to create agents: %w", err)
 	}
 
@@ -295,7 +304,7 @@ func (o *Orchestrator) ProcessSpecification(ctx context.Context, specFile string
 	return nil
 }
 
-func (o *Orchestrator) createAgents() error {
+func (o *Orchestrator) createAgents(liveMode bool) error {
 	// Create agents from configuration
 	allAgents := o.config.GetAllAgents()
 
@@ -351,9 +360,8 @@ func (o *Orchestrator) createAgents() error {
 				return fmt.Errorf("failed to create state store for agent %s: %w", logID, err)
 			}
 
-			// Check if we should use live API calls (feature flag)
-			useLiveAPI := os.Getenv("CLAUDE_LIVE_API") == "true"
-			if useLiveAPI {
+			// Check if we should use live API calls (command line flag)
+			if liveMode {
 				// Use unified coder with Claude LLM integration
 				liveAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentConfig.WorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
 				if err != nil {
@@ -542,7 +550,10 @@ func (o *Orchestrator) startPollingWorkers(ctx context.Context) error {
 	pollingCtx, cancel := context.WithCancel(ctx)
 	o.pollingCancel = cancel
 
-	// Note: Architect handles its own polling internally through the driver
+	// Start architect polling worker for REQUEST messages from coders
+	o.pollingWg.Add(1)
+	go o.architectPollingWorker(pollingCtx)
+	o.logger.Info("Started architect polling worker")
 
 	// Start coder polling workers for each coder agent
 	for agentID, agent := range o.agents {
@@ -638,6 +649,13 @@ func (o *Orchestrator) coderPollingWorker(ctx context.Context, agentID string, a
 			o.logger.Debug("Coder polling worker stopped for agent: %s", agentID)
 			return
 		case <-ticker.C:
+			// Debug: Log agent state and ID (append mode)
+			debugMsg := fmt.Sprintf("DEBUG: Polling agent %s in state %s\n", agentID, agentState)
+			if f, err := os.OpenFile("polling_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+				f.WriteString(debugMsg)
+				f.Close()
+			}
+			
 			switch agentState {
 			case "READY":
 				// When READY, poll for new tasks from shared work queue
@@ -667,6 +685,10 @@ func (o *Orchestrator) coderPollingWorker(ctx context.Context, agentID string, a
 				// When WORKING, poll for feedback from architect
 				if feedback := o.dispatcher.PullCoderFeedback(agentID); feedback != nil {
 					o.logger.Debug("Coder %s polling worker processing feedback: %s", agentID, feedback.ID)
+					
+					// Debug: Write to file to confirm feedback is being pulled
+					debugMsg := fmt.Sprintf("DEBUG: Pulled feedback for %s - type=%s, id=%s\n", agentID, feedback.Type, feedback.ID)
+					os.WriteFile("feedback_debug.log", []byte(debugMsg), 0644)
 
 					// Process the feedback
 					go func() {

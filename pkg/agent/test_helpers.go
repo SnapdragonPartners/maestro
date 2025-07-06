@@ -109,7 +109,7 @@ func (h *TestHelper) CreateMockLLMClient(responses []string, errors []error) LLM
 func (h *TestHelper) CreateStateMachine(id string, initialState State) *BaseStateMachine {
 	h.t.Helper()
 
-	sm := NewBaseStateMachine(id, initialState, h.store)
+	sm := NewBaseStateMachine(id, initialState, h.store, nil)
 	if err := sm.Initialize(context.Background()); err != nil {
 		h.t.Fatalf("Failed to initialize test state machine: %v", err)
 	}

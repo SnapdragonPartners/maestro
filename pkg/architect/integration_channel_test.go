@@ -36,7 +36,7 @@ func TestChannelConnectivity(t *testing.T) {
 	t.Run("RouteMessage to workers", func(t *testing.T) {
 		// Test routing a QUESTION message
 		questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, "test-coder", "test-architect")
-		questionMsg.SetPayload("question", "How do I implement feature X?")
+		questionMsg.SetPayload(proto.KeyQuestion, "How do I implement feature X?")
 
 		err := driver.RouteMessage(questionMsg)
 		if err != nil {

@@ -21,7 +21,7 @@ func NewBaseDriver(config *AgentConfig, initialState State) (*BaseDriver, error)
 	}
 
 	// Initialize state machine
-	sm := NewBaseStateMachine(config.ID, initialState, config.Context.Store)
+	sm := NewBaseStateMachine(config.ID, initialState, config.Context.Store, nil)
 
 	return &BaseDriver{
 		StateMachine: sm,

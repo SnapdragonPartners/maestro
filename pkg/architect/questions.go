@@ -54,19 +54,19 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 	if id, ok := msg.Payload["story_id"].(string); ok {
 		storyID = id
 	}
-	if q, ok := msg.Payload["question"].(string); ok {
+	if q, ok := msg.Payload[proto.KeyQuestion].(string); ok {
 		question = q
 	}
 
 	// If that didn't work, try the format that Claude agents actually send
 	if storyID == "" || question == "" {
 		// Claude agents send the full task content as "question"
-		if taskContent, ok := msg.Payload["question"].(string); ok {
+		if taskContent, ok := msg.Payload[proto.KeyQuestion].(string); ok {
 			// Extract story ID from the task content (front matter)
 			if extractedID := qh.extractStoryIDFromContent(taskContent); extractedID != "" {
 				storyID = extractedID
 				// Use the reason as the actual question
-				if reason, ok := msg.Payload["reason"].(string); ok {
+				if reason, ok := msg.Payload[proto.KeyReason].(string); ok {
 					question = reason
 				} else {
 					question = "Technical assistance requested during development"
@@ -92,7 +92,7 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 
 	// Copy relevant context from message payload
 	for key, value := range msg.Payload {
-		if key != "story_id" && key != "question" {
+		if key != proto.KeyStoryID && key != proto.KeyQuestion {
 			pendingQ.Context[key] = value
 		}
 	}
@@ -187,7 +187,7 @@ func (qh *QuestionHandler) sendAnswerToAgent(ctx context.Context, pendingQ *Pend
 	// Set answer payload
 	resultMsg.Payload["question_id"] = pendingQ.ID
 	resultMsg.Payload["story_id"] = pendingQ.StoryID
-	resultMsg.Payload["answer"] = pendingQ.Answer
+	resultMsg.Payload[proto.KeyAnswer] = pendingQ.Answer
 	resultMsg.Payload["answered_at"] = pendingQ.AnsweredAt.Format(time.RFC3339)
 
 	// Add metadata

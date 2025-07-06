@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
+	"orchestrator/pkg/logx"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -55,6 +58,68 @@ var ValidCoderTransitions = map[CoderState][]CoderState{
 	StateQuestion:   {StatePlanning, StateCoding, StateFixing}, // Return to origin state
 }
 
+// GetAllCoderStates dynamically derives the complete set of coder states
+// from the ValidCoderTransitions map, eliminating manual maintenance
+func GetAllCoderStates() []CoderState {
+	stateSet := make(map[CoderState]bool)
+	
+	// Collect all states that appear as keys (source states)
+	for fromState := range ValidCoderTransitions {
+		stateSet[fromState] = true
+	}
+	
+	// Collect all states that appear as values (target states)
+	for _, transitions := range ValidCoderTransitions {
+		for _, toState := range transitions {
+			stateSet[toState] = true
+		}
+	}
+	
+	// Convert set to sorted slice for deterministic results
+	states := make([]CoderState, 0, len(stateSet))
+	for state := range stateSet {
+		states = append(states, state)
+	}
+	
+	// Sort states alphabetically for consistency
+	for i := 0; i < len(states)-1; i++ {
+		for j := i + 1; j < len(states); j++ {
+			if string(states[i]) > string(states[j]) {
+				states[i], states[j] = states[j], states[i]
+			}
+		}
+	}
+	
+	return states
+}
+
+// IsCoderState checks if a given state string is a valid coder state
+func IsCoderState(stateStr string) bool {
+	state := CoderState(stateStr)
+	allStates := GetAllCoderStates()
+	
+	for _, validState := range allStates {
+		if validState == state {
+			return true
+		}
+	}
+	return false
+}
+
+// GetCoderStateConstants returns a map of state names to CoderState values
+// for dynamic state access
+func GetCoderStateConstants() map[string]CoderState {
+	constants := make(map[string]CoderState)
+	allStates := GetAllCoderStates()
+	
+	for _, state := range allStates {
+		constants[string(state)] = state
+	}
+	
+	return constants
+}
+
+
 // IsValidCoderTransition checks if a coder state transition is allowed
 func (d *CoderDriver) IsValidCoderTransition(from, to CoderState) bool {
 	// Get allowed transitions for current state
@@ -82,6 +147,12 @@ const (
 	keyStartedAt          = "started_at"
 )
 
+// File creation constants
+const (
+	defaultFilename    = "code.txt" // Standard filename for unfenced code blocks
+	maxPlainBlockSize  = 50         // Maximum lines for plain content before saving as file
+)
+
 // CoderDriver implements the v2 FSM using agent foundation
 type CoderDriver struct {
 	*agent.BaseStateMachine // Directly embed state machine
@@ -90,24 +161,19 @@ type CoderDriver struct {
 	llmClient               agent.LLMClient
 	renderer                *templates.Renderer
 	workDir                 string
+	logger                  *logx.Logger
 
 	// REQUEST→RESULT flow state
 	pendingApprovalRequest *ApprovalRequest
 	pendingQuestion        *Question
+	
 }
 
 // ApprovalRequest represents a pending approval request
 type ApprovalRequest struct {
 	Content string
 	Reason  string
-	Type    string // "plan" or "code"
-}
-
-// ApprovalResult represents the result of an approval request
-type ApprovalResult struct {
-	Type   string    `json:"type"`   // "plan" or "code"
-	Status string    `json:"status"` // "APPROVED", "REJECTED", "NEEDS_CHANGES"
-	Time   time.Time `json:"time"`
+	Type    proto.ApprovalType
 }
 
 // Question represents a pending question
@@ -115,6 +181,33 @@ type Question struct {
 	Content string
 	Reason  string
 	Origin  string
+}
+
+// convertApprovalData converts approval data from various formats to *proto.ApprovalResult
+// Handles both direct struct pointers and map[string]interface{} from JSON deserialization
+func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
+	// If it's already the correct type, return it
+	if result, ok := data.(*proto.ApprovalResult); ok {
+		return result, nil
+	}
+
+	// If it's a map (from JSON deserialization), convert it
+	if dataMap, ok := data.(map[string]interface{}); ok {
+		// Convert map to JSON and then to struct
+		jsonData, err := json.Marshal(dataMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal approval data: %w", err)
+		}
+
+		var result proto.ApprovalResult
+		if err := json.Unmarshal(jsonData, &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal approval data: %w", err)
+		}
+
+		return &result, nil
+	}
+
+	return nil, fmt.Errorf("unsupported approval data type: %T", data)
 }
 
 // NewCoderDriver creates a new coder driver using agent foundation
@@ -141,18 +234,51 @@ func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config
 		},
 	}
 
-	// Create base state machine directly
-	sm := agent.NewBaseStateMachine(agentID, agent.StateWaiting, stateStore)
+	// Create a custom transition table for the coder that includes all coder-specific transitions
+	coderTable := agent.CloneTransitionTable(agent.ValidTransitions) // Copy global base
+	
+	// Add coder-specific transitions to the table
+	coderTable[agent.StateWaiting] = []agent.State{StatePlanning.ToAgentState()}
+	coderTable[StatePlanning.ToAgentState()] = []agent.State{
+		StateCoding.ToAgentState(), StatePlanReview.ToAgentState(), StateQuestion.ToAgentState(),
+	}
+	coderTable[StatePlanReview.ToAgentState()] = []agent.State{
+		StateCoding.ToAgentState(), StatePlanning.ToAgentState(), // approved or needs changes
+	}
+	coderTable[StateCoding.ToAgentState()] = []agent.State{
+		StateTesting.ToAgentState(), StateCodeReview.ToAgentState(), StateQuestion.ToAgentState(),
+	}
+	coderTable[StateTesting.ToAgentState()] = []agent.State{
+		StateFixing.ToAgentState(), StateCodeReview.ToAgentState(), agent.StateDone,
+	}
+	coderTable[StateFixing.ToAgentState()] = []agent.State{
+		StateTesting.ToAgentState(), StateCodeReview.ToAgentState(),
+	}
+	coderTable[StateCodeReview.ToAgentState()] = []agent.State{
+		agent.StateDone, StateFixing.ToAgentState(),
+	}
+	coderTable[StateQuestion.ToAgentState()] = []agent.State{
+		StatePlanning.ToAgentState(), StateCoding.ToAgentState(), // Can return to previous state after answer
+	}
+	
+	// Create base state machine with coder transition table
+	sm := agent.NewBaseStateMachine(agentID, agent.StateWaiting, stateStore, coderTable)
 
-	return &CoderDriver{
+	driver := &CoderDriver{
 		BaseStateMachine: sm,
 		config:           agentConfig,
 		contextManager:   contextmgr.NewContextManagerWithModel(modelConfig),
 		llmClient:        llmClient,
 		renderer:         renderer,
 		workDir:          workDir,
-	}, nil
+		logger:           logx.NewLogger(agentID),
+	}
+	
+	
+	return driver, nil
 }
+
+
 
 // ProcessState implements the v2 FSM state machine logic
 func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, error) {
@@ -184,92 +310,20 @@ func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, erro
 	}
 }
 
-// TransitionTo overrides the base state machine to add coder-specific validation
-func (d *CoderDriver) TransitionTo(ctx context.Context, newState agent.State, metadata map[string]any) error {
-	currentState := d.GetCurrentState()
-	
-	// Handle coder-specific transition validation
-	isCurrentCoderState := d.isCoderState(currentState)
-	isNewCoderState := d.isCoderState(newState)
-	
-	// Allow transitions from WAITING to any coder state
-	if currentState == agent.StateWaiting && isNewCoderState {
-		// Valid transition - perform it directly
-		return d.performTransition(ctx, newState, metadata)
-	}
-	
-	// Check coder-specific transitions if both states are coder states
-	if isCurrentCoderState && isNewCoderState {
-		currentCoderState := FromAgentState(currentState)
-		newCoderState := FromAgentState(newState)
-		
-		if !d.IsValidCoderTransition(currentCoderState, newCoderState) {
-			return fmt.Errorf("invalid coder transition from %s to %s", currentCoderState, newCoderState)
-		}
-		// Valid transition - perform it directly
-		return d.performTransition(ctx, newState, metadata)
-	}
-	
-	// Allow transitions to generic agent states (DONE, ERROR, WAITING)
-	if newState == agent.StateDone || newState == agent.StateError || newState == agent.StateWaiting {
-		return d.performTransition(ctx, newState, metadata)
-	}
-	
-	// Use base state machine for other transitions
-	return d.BaseStateMachine.TransitionTo(ctx, newState, metadata)
-}
 
-// performTransition performs the actual state transition bypassing validation
-// This is a simplified version that directly manipulates the base state machine
-func (d *CoderDriver) performTransition(ctx context.Context, newState agent.State, metadata map[string]any) error {
-	// Since we can't access private fields directly, we need a different approach
-	// For now, let's use reflection to modify the private fields or find another way
-	
-	// Actually, let's use a simpler approach - modify the generic ValidTransitions temporarily
-	// Store current state to know what transition we're making
-	currentState := d.GetCurrentState()
-	
-	// Temporarily add the transition to ValidTransitions
-	oldTransitions := agent.ValidTransitions[currentState]
-	if agent.ValidTransitions[currentState] == nil {
-		agent.ValidTransitions[currentState] = []agent.State{newState}
-	} else {
-		// Check if transition already exists
-		found := false
-		for _, state := range agent.ValidTransitions[currentState] {
-			if state == newState {
-				found = true
-				break
-			}
-		}
-		if !found {
-			agent.ValidTransitions[currentState] = append(agent.ValidTransitions[currentState], newState)
-		}
-	}
-	
-	// Perform the transition using base state machine
-	err := d.BaseStateMachine.TransitionTo(ctx, newState, metadata)
-	
-	// Restore original transitions
-	agent.ValidTransitions[currentState] = oldTransitions
-	
-	return err
-}
 
-// isCoderState checks if a state is a coder-specific state
+// isCoderState checks if a state is a coder-specific state using dynamic derivation
 func (d *CoderDriver) isCoderState(state agent.State) bool {
-	switch state {
-	case StatePlanning.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(),
-		 StateFixing.ToAgentState(), StatePlanReview.ToAgentState(), StateCodeReview.ToAgentState(),
-		 StateQuestion.ToAgentState():
-		return true
-	default:
-		return false
-	}
+	return IsCoderState(string(state))
 }
 
 // ProcessTask initiates task processing with the new agent foundation
 func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error {
+	// Add agent ID to context for debug logging
+	ctx = context.WithValue(ctx, "agent_id", d.config.ID)
+	
+	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
+	
 	// Reset for new task
 	d.BaseStateMachine.SetStateData(keyTaskContent, taskContent)
 	d.BaseStateMachine.SetStateData(keyStartedAt, time.Now().UTC())
@@ -282,27 +336,21 @@ func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
 
-	// Run the state machine loop
+	// Run the state machine loop using Step() for atomic processing
 	for {
-		nextState, done, err := d.ProcessState(ctx)
+		done, err := d.Step(ctx)
 		if err != nil {
 			return err
 		}
 
-		// Transition to next state if different (even if done=true)
-		currentState := d.GetCurrentState()
-		if nextState != currentState {
-			if err := d.TransitionTo(ctx, nextState, nil); err != nil {
-				return fmt.Errorf("failed to transition to state %s: %w", nextState, err)
-			}
-		}
-
 		if done {
+			logx.DebugFlow(ctx, "coder", "task-processing", "completed", "state machine finished")
 			break
 		}
 
 		// Break out if we have pending approvals or questions to let external handler deal with them
 		if d.pendingApprovalRequest != nil || d.pendingQuestion != nil {
+			logx.DebugFlow(ctx, "coder", "task-processing", "paused", "pending external response")
 			break
 		}
 	}
@@ -312,10 +360,12 @@ func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error
 
 // handleWaiting processes the WAITING state
 func (d *CoderDriver) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	logx.DebugState(ctx, "coder", "enter", "WAITING")
 	d.contextManager.AddMessage("assistant", "Waiting for task assignment")
 
 	taskContent, exists := sm.GetStateValue(keyTaskContent)
 	if exists && taskContent != "" {
+		logx.DebugState(ctx, "coder", "transition", "WAITING -> PLANNING", "task content available")
 		return StatePlanning.ToAgentState(), false, nil
 	}
 
@@ -324,6 +374,7 @@ func (d *CoderDriver) handleWaiting(ctx context.Context, sm *agent.BaseStateMach
 
 // handlePlanning processes the PLANNING state
 func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	logx.DebugState(ctx, "coder", "enter", "PLANNING")
 	d.contextManager.AddMessage("assistant", "Planning phase: analyzing requirements")
 
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
@@ -388,17 +439,20 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 
 	// Check if we already have approval result
 	if approvalData, exists := sm.GetStateValue(keyPlanApprovalResult); exists {
-		if result, ok := approvalData.(*ApprovalResult); ok {
-			sm.SetStateData("plan_review_completed_at", time.Now().UTC())
+		result, err := convertApprovalData(approvalData)
+		if err != nil {
+			return agent.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
+		}
 
-			switch result.Status {
-			case "APPROVED":
-				return StateCoding.ToAgentState(), false, nil
-			case "REJECTED", "NEEDS_CHANGES":
-				return StatePlanning.ToAgentState(), false, nil
-			default:
-				return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
-			}
+		sm.SetStateData("plan_review_completed_at", time.Now().UTC())
+
+		switch result.Status {
+		case proto.ApprovalStatusApproved:
+			return StateCoding.ToAgentState(), false, nil
+		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
+			return StatePlanning.ToAgentState(), false, nil
+		default:
+			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
 	}
 
@@ -407,14 +461,14 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 		taskContent, _ := sm.GetStateValue(keyTaskContent)
 		taskStr, _ := taskContent.(string)
 
-		approved := d.simulateApproval(taskStr, "plan")
-		result := &ApprovalResult{
-			Type:   "plan",
-			Status: "APPROVED",
-			Time:   time.Now().UTC(),
+		approved := d.simulateApproval(taskStr, proto.ApprovalTypePlan.String())
+		result := &proto.ApprovalResult{
+			Type:       proto.ApprovalTypePlan,
+			Status:     proto.ApprovalStatusApproved,
+			ReviewedAt: time.Now().UTC(),
 		}
 		if !approved {
-			result.Status = "REJECTED"
+			result.Status = proto.ApprovalStatusRejected
 		}
 
 		sm.SetStateData(keyPlanApprovalResult, result)
@@ -433,7 +487,7 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 	d.pendingApprovalRequest = &ApprovalRequest{
 		Content: planStr,
 		Reason:  "Plan requires architect approval before proceeding to coding",
-		Type:    "plan",
+		Type:    proto.ApprovalTypePlan,
 	}
 
 	// Stay in PLAN_REVIEW until we get approval result
@@ -798,7 +852,141 @@ func (d *CoderDriver) getWorkingDirectoryContents() string {
 	return strings.Join(items, ", ")
 }
 
+// isFilenameHeader checks if a line contains a filename header
+func (d *CoderDriver) isFilenameHeader(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "###") ||
+		strings.HasPrefix(trimmed, "File:") ||
+		strings.HasPrefix(trimmed, "**") ||
+		strings.HasPrefix(trimmed, "=== ") ||
+		strings.HasPrefix(trimmed, "--- ")
+}
+
+// looksLikeCode uses heuristics to determine if a line looks like code
+func (d *CoderDriver) looksLikeCode(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	
+	// Empty lines are neutral
+	if trimmed == "" {
+		return false
+	}
+	
+	// Comments and documentation are code
+	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") || 
+	   strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "<!--") {
+		return true
+	}
+	
+	// Programming language keywords and patterns
+	codeKeywords := []string{
+		"func ", "function ", "def ", "class ", "interface ", "struct ",
+		"import ", "from ", "package ", "using ", "include ",
+		"if (", "if(", "for (", "for(", "while (", "while(",
+		"return ", "var ", "let ", "const ", "type ",
+		"public ", "private ", "protected ", "static ",
+		"async ", "await ", "yield ", "defer ",
+		"console.", "fmt.", "print(", "println(", "printf(",
+		".test(", ".call(", ".apply(", ".bind(",
+	}
+	
+	for _, keyword := range codeKeywords {
+		if strings.Contains(trimmed, keyword) {
+			return true
+		}
+	}
+	
+	// Code-like patterns and symbols
+	if strings.Contains(trimmed, "{") || strings.Contains(trimmed, "}") ||
+	   strings.Contains(trimmed, "[]") || strings.Contains(trimmed, "();") ||
+	   strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "->") ||
+	   strings.Contains(trimmed, "=>") || strings.Contains(trimmed, "<-") ||
+	   strings.Contains(trimmed, "()") || strings.Contains(trimmed, "[]") ||
+	   trimmed == ")" || trimmed == "(" || trimmed == "}" || trimmed == "{" ||
+	   strings.Contains(trimmed, " = ") || strings.Contains(trimmed, "==") ||
+	   strings.Contains(trimmed, "!=") || strings.Contains(trimmed, ">=") ||
+	   strings.Contains(trimmed, "<=") || strings.Contains(trimmed, "&&") ||
+	   strings.Contains(trimmed, "||") {
+		return true
+	}
+	
+	// Function calls, method calls (contains dots and parentheses)
+	if strings.Contains(trimmed, ".") && strings.Contains(trimmed, "(") {
+		return true
+	}
+	
+	// String literals and numeric literals
+	if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "'") ||
+	   strings.HasPrefix(trimmed, "`") {
+		return true
+	}
+	
+	// Indentation suggests code structure
+	if len(line) > len(trimmed) && (len(line)-len(trimmed)) >= 2 {
+		return true
+	}
+	
+	// Natural language patterns that are definitely NOT code
+	nonCodePatterns := []string{
+		"Here's", "This creates", "The following", "Now let's", "Next,", 
+		"Finally,", "In this", "We will", "You can", "Let me",
+		"This is", "This will", "The code", "The solution", "As you can see",
+	}
+	
+	for _, pattern := range nonCodePatterns {
+		if strings.HasPrefix(trimmed, pattern) {
+			return false
+		}
+	}
+	
+	return false
+}
+
+// guessFilenameFromContent tries to guess filename from a line of code
+func (d *CoderDriver) guessFilenameFromContent(line string) string {
+	trimmed := strings.TrimSpace(line)
+	
+	// Go patterns
+	if strings.HasPrefix(trimmed, "package ") || strings.Contains(trimmed, "func ") ||
+	   strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "fmt.") {
+		return "main.go"
+	}
+	
+	// Python patterns
+	if strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "class ") ||
+	   strings.Contains(trimmed, "import ") || strings.Contains(trimmed, "print(") {
+		return "main.py"
+	}
+	
+	// JavaScript patterns
+	if strings.Contains(trimmed, "function ") || strings.Contains(trimmed, "const ") ||
+	   strings.Contains(trimmed, "let ") || strings.Contains(trimmed, "console.") ||
+	   strings.Contains(trimmed, "var ") || strings.Contains(trimmed, ".test(") ||
+	   strings.Contains(trimmed, "return ") && strings.Contains(trimmed, ".") {
+		return "main.js"
+	}
+	
+	// Java patterns
+	if strings.Contains(trimmed, "public class ") || strings.Contains(trimmed, "public static") {
+		return "Main.java"
+	}
+	
+	// Default
+	return defaultFilename
+}
+
+// guessFilenameFromContext looks ahead in lines to guess appropriate filename
+func (d *CoderDriver) guessFilenameFromContext(lines []string, startIdx int) string {
+	// Look at next few lines for language clues
+	for i := startIdx; i < startIdx+10 && i < len(lines); i++ {
+		if filename := d.guessFilenameFromContent(lines[i]); filename != defaultFilename {
+			return filename
+		}
+	}
+	return defaultFilename
+}
+
 // parseAndCreateFiles extracts code blocks from LLM response and creates files
+// Supports fenced code blocks (```), plain code blocks, and content detection
 func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 	filesCreated := 0
 	lines := strings.Split(content, "\n")
@@ -806,13 +994,11 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 	var currentFile string
 	var currentContent []string
 	inCodeBlock := false
+	inPlainContent := false // Track when we're collecting plain content that looks like code
 
-	for _, line := range lines {
+	for i, line := range lines {
 		// Look for filename patterns like "### filename.py" or "File: filename.py"
-		if strings.HasPrefix(strings.TrimSpace(line), "###") ||
-			strings.HasPrefix(strings.TrimSpace(line), "File:") ||
-			strings.HasPrefix(strings.TrimSpace(line), "**") {
-
+		if d.isFilenameHeader(line) {
 			// Save previous file if exists
 			if currentFile != "" && len(currentContent) > 0 {
 				if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
@@ -825,30 +1011,102 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 			currentFile = d.extractFilename(line)
 			currentContent = []string{}
 			inCodeBlock = false
+			inPlainContent = false
 			continue
 		}
 
-		// Handle code blocks
+		// Handle fenced code blocks (``` with or without language)
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
 			if inCodeBlock {
-				// End of code block
+				// End of code block - save current file if it exists
+				if currentFile != "" && len(currentContent) > 0 {
+					if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
+						return filesCreated, err
+					}
+					filesCreated++
+				}
+				// Reset state for next potential file
 				inCodeBlock = false
+				inPlainContent = false
+				currentFile = ""
+				currentContent = []string{}
 			} else {
 				// Start of code block
 				inCodeBlock = true
-				// If no current file, try to extract from code block language
+				inPlainContent = false
+				// If no current file, try to extract from code block language or guess
 				if currentFile == "" {
 					if filename := d.extractFilenameFromCodeBlock(line); filename != "" {
 						currentFile = filename
+					} else {
+						// Plain code block without language - try to guess from upcoming content
+						currentFile = d.guessFilenameFromContext(lines, i+1)
 					}
 				}
 			}
 			continue
 		}
 
-		// Collect content if we're in a code block or have a current file
-		if (inCodeBlock || currentFile != "") && currentFile != "" {
+		// If we're not in a code block and have no current file, check if this looks like code
+		if !inCodeBlock && !inPlainContent && currentFile == "" {
+			if d.looksLikeCode(line) {
+				// Start collecting plain content that looks like code
+				inPlainContent = true
+				currentFile = d.guessFilenameFromContent(line)
+				currentContent = []string{}
+			}
+		}
+
+		// Stop collecting plain content if we hit non-code-like lines (but allow empty lines)
+		if inPlainContent && !inCodeBlock && !d.looksLikeCode(line) && strings.TrimSpace(line) != "" {
+			// Check if this line looks like natural language (definitely not code)
+			trimmed := strings.TrimSpace(line)
+			isNaturalLanguage := false
+			
+			// Natural language patterns that end code blocks
+			endPatterns := []string{
+				"This creates", "This will", "This is", "Here's", "The following",
+				"Now let's", "Next,", "Finally,", "As you can see", "Note that",
+				"Remember to", "Don't forget", "Make sure", "Be careful",
+			}
+			
+			for _, pattern := range endPatterns {
+				if strings.HasPrefix(trimmed, pattern) {
+					isNaturalLanguage = true
+					break
+				}
+			}
+			
+			// Only stop if it's clearly natural language
+			if isNaturalLanguage {
+				// If we have collected some content, save it
+				if currentFile != "" && len(currentContent) > 0 {
+					if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
+						return filesCreated, err
+					}
+					filesCreated++
+				}
+				currentFile = ""
+				currentContent = []string{}
+				inPlainContent = false
+			}
+		}
+
+		// Collect content if we're in a code block, have a current file, or collecting plain content
+		if (inCodeBlock || inPlainContent || currentFile != "") && currentFile != "" {
 			currentContent = append(currentContent, line)
+			
+			// Check if we've exceeded the maximum plain block size
+			if inPlainContent && len(currentContent) > maxPlainBlockSize {
+				// Force save as default filename and reset
+				if err := d.writeFile(defaultFilename, strings.Join(currentContent, "\n")); err != nil {
+					return filesCreated, err
+				}
+				filesCreated++
+				currentFile = ""
+				currentContent = []string{}
+				inPlainContent = false
+			}
 		}
 	}
 
@@ -979,17 +1237,20 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 
 	// Check if we already have approval result
 	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
-		if result, ok := approvalData.(*ApprovalResult); ok {
-			sm.SetStateData("code_review_completed_at", time.Now().UTC())
+		result, err := convertApprovalData(approvalData)
+		if err != nil {
+			return agent.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
+		}
 
-			switch result.Status {
-			case "APPROVED":
-				return agent.StateDone, true, nil
-			case "REJECTED", "NEEDS_CHANGES":
-				return StateFixing.ToAgentState(), false, nil
-			default:
-				return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
-			}
+		sm.SetStateData("code_review_completed_at", time.Now().UTC())
+
+		switch result.Status {
+		case proto.ApprovalStatusApproved:
+			return agent.StateDone, true, nil
+		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
+			return StateFixing.ToAgentState(), false, nil
+		default:
+			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
 	}
 
@@ -998,14 +1259,14 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 		taskContent, _ := sm.GetStateValue(keyTaskContent)
 		taskStr, _ := taskContent.(string)
 
-		approved := d.simulateApproval(taskStr, "code")
-		result := &ApprovalResult{
-			Type:   "code",
-			Status: "APPROVED",
-			Time:   time.Now().UTC(),
+		approved := d.simulateApproval(taskStr, proto.ApprovalTypeCode.String())
+		result := &proto.ApprovalResult{
+			Type:       proto.ApprovalTypeCode,
+			Status:     proto.ApprovalStatusApproved,
+			ReviewedAt: time.Now().UTC(),
 		}
 		if !approved {
-			result.Status = "REJECTED"
+			result.Status = proto.ApprovalStatusRejected
 		}
 
 		sm.SetStateData(keyCodeApprovalResult, result)
@@ -1024,7 +1285,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 	d.pendingApprovalRequest = &ApprovalRequest{
 		Content: codeStr,
 		Reason:  "Code requires architect approval before completion",
-		Type:    "code",
+		Type:    proto.ApprovalTypeCode,
 	}
 
 	// Stay in CODE_REVIEW until we get approval result
@@ -1148,22 +1409,39 @@ func (d *CoderDriver) ClearPendingQuestion() {
 
 // ProcessApprovalResult processes approval result from architect
 func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType string) error {
-	result := &ApprovalResult{
-		Type:   approvalType,
-		Status: approvalStatus,
-		Time:   time.Now().UTC(),
+	// Convert legacy status to standardized format
+	standardStatus := proto.ConvertLegacyStatus(approvalStatus)
+	
+	// Validate approval type
+	stdApprovalType, valid := proto.ValidateApprovalType(approvalType)
+	if !valid {
+		return fmt.Errorf("invalid approval type: %s", approvalType)
+	}
+
+	result := &proto.ApprovalResult{
+		Type:       stdApprovalType,
+		Status:     standardStatus,
+		ReviewedAt: time.Now().UTC(),
 	}
 
 	// Store using the correct key based on type
-	switch approvalType {
-	case "plan":
+	switch stdApprovalType {
+	case proto.ApprovalTypePlan:
 		d.BaseStateMachine.SetStateData(keyPlanApprovalResult, result)
-	case "code":
+	case proto.ApprovalTypeCode:
 		d.BaseStateMachine.SetStateData(keyCodeApprovalResult, result)
 	default:
 		return fmt.Errorf("unknown approval type: %s", approvalType)
 	}
 
+	// Persist state to ensure approval result is saved
+	if err := d.BaseStateMachine.Persist(); err != nil {
+		return fmt.Errorf("failed to persist approval result: %w", err)
+	}
+	
+	// Debug logging for approval processing
+	logx.DebugToFile(context.Background(), "coder", "approval_debug.log", "ProcessApprovalResult called - status=%s->%s, type=%s", approvalStatus, standardStatus, approvalType)
+	
 	return nil
 }
 
@@ -1197,31 +1475,16 @@ func (d *CoderDriver) GetStateData() map[string]any {
 
 // Run executes the driver's main loop (required for Driver interface)
 func (d *CoderDriver) Run(ctx context.Context) error {
-	// Initialize if needed
-	if err := d.Initialize(ctx); err != nil {
-		return fmt.Errorf("failed to initialize: %w", err)
-	}
-
-	// Run the state machine loop
+	// Run the state machine loop using Step()
 	for {
-		nextState, done, err := d.ProcessState(ctx)
+		done, err := d.Step(ctx)
 		if err != nil {
 			return err
 		}
-
-		// Transition to next state if different (even if done=true)
-		currentState := d.GetCurrentState()
-		if nextState != currentState {
-			if err := d.TransitionTo(ctx, nextState, nil); err != nil {
-				return fmt.Errorf("failed to transition to state %s: %w", nextState, err)
-			}
-		}
-
 		if done {
 			break
 		}
 	}
-
 	return nil
 }
 
@@ -1232,11 +1495,7 @@ func (d *CoderDriver) Step(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	if done {
-		return true, nil
-	}
-
-	// Transition to next state if different
+	// Transition to next state if different, even when done
 	currentState := d.GetCurrentState()
 	if nextState != currentState {
 		if err := d.TransitionTo(ctx, nextState, nil); err != nil {
@@ -1244,7 +1503,7 @@ func (d *CoderDriver) Step(ctx context.Context) (bool, error) {
 		}
 	}
 
-	return false, nil
+	return done, nil
 }
 
 // Shutdown performs cleanup (required for Driver interface)

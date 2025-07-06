@@ -68,6 +68,13 @@ func TestLogLevels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.level), func(t *testing.T) {
 			buf.Reset()
+			
+			// Enable debug for DEBUG level test
+			if tt.level == LevelDebug {
+				SetDebugConfig(true, false, ".")
+				defer SetDebugConfig(false, false, ".")
+			}
+			
 			tt.logFunc("test message")
 
 			output := buf.String()

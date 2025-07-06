@@ -103,7 +103,7 @@ func (w *AnswerWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) 
 	var response string
 	if w.llmClient != nil {
 		// Use LLM to generate answer
-		question, exists := msg.GetPayload("question")
+		question, exists := msg.GetPayload(proto.KeyQuestion)
 		if !exists {
 			return fmt.Errorf("no question payload in message")
 		}
@@ -123,8 +123,8 @@ func (w *AnswerWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) 
 	if w.dispatcher != nil {
 		answerMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, w.architectID, msg.FromAgent)
 		answerMsg.ParentMsgID = msg.ID
-		answerMsg.SetPayload("answer", response)
-		answerMsg.SetPayload("status", "answered")
+		answerMsg.SetPayload(proto.KeyAnswer, response)
+		answerMsg.SetPayload(proto.KeyStatus, "answered")
 
 		if err := w.dispatcher.SendMessage(answerMsg); err != nil {
 			return fmt.Errorf("failed to send answer: %w", err)
@@ -142,8 +142,8 @@ func (w *AnswerWorker) sendErrorResponse(msg *proto.AgentMsg, err error) {
 
 	errorMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, w.architectID, msg.FromAgent)
 	errorMsg.ParentMsgID = msg.ID
-	errorMsg.SetPayload("answer", fmt.Sprintf("Error processing question: %v", err))
-	errorMsg.SetPayload("status", "error")
+	errorMsg.SetPayload(proto.KeyAnswer, fmt.Sprintf("Error processing question: %v", err))
+	errorMsg.SetPayload(proto.KeyStatus, "error")
 
 	if sendErr := w.dispatcher.SendMessage(errorMsg); sendErr != nil {
 		fmt.Printf("AnswerWorker: failed to send error response: %v\n", sendErr)
@@ -186,25 +186,55 @@ func (w *ReviewWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) 
 	var approved bool = true
 	var feedback string
 
-	if w.llmClient != nil {
-		// Use LLM for code review
+	// Check if this is a plan approval or code approval request
+	approvalType, _ := msg.GetPayload(proto.KeyApprovalType)
+	
+	if approvalType == "plan" {
+		// Handle plan approval request
+		planRequest, exists := msg.GetPayload(proto.KeyRequest)
+		if !exists {
+			return fmt.Errorf("no plan request payload in message")
+		}
+		
+		if w.llmClient != nil {
+			// Use LLM for plan review
+			llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this implementation plan: %v", planRequest))
+			if err != nil {
+				return fmt.Errorf("failed to generate LLM plan review: %w", err)
+			}
+			feedback = llmResponse
+			// For now, always approve in LLM mode (real logic would parse LLM response)
+			approved = true
+			fmt.Printf("ReviewWorker: processed plan review %s\n", msg.ID)
+		} else {
+			// Mock mode - auto-approve with mock feedback
+			approved = true
+			feedback = "Mock plan review: Plan looks good, auto-approved for demo"
+			fmt.Printf("ReviewWorker: mock processing plan review %s\n", msg.ID)
+		}
+	} else {
+		// Handle code approval request (original behavior)
 		code, exists := msg.GetPayload("code")
 		if !exists {
 			return fmt.Errorf("no code payload in message")
 		}
-		llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this code: %v", code))
-		if err != nil {
-			return fmt.Errorf("failed to generate LLM review: %w", err)
+		
+		if w.llmClient != nil {
+			// Use LLM for code review
+			llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this code: %v", code))
+			if err != nil {
+				return fmt.Errorf("failed to generate LLM review: %w", err)
+			}
+			feedback = llmResponse
+			// For now, always approve in LLM mode (real logic would parse LLM response)
+			approved = true
+			fmt.Printf("ReviewWorker: processed code review %s\n", msg.ID)
+		} else {
+			// Mock mode - auto-approve with mock feedback
+			approved = true
+			feedback = "Mock review: Code looks good, auto-approved for demo"
+			fmt.Printf("ReviewWorker: mock processing code review %s\n", msg.ID)
 		}
-		feedback = llmResponse
-		// For now, always approve in LLM mode (real logic would parse LLM response)
-		approved = true
-		fmt.Printf("ReviewWorker: processed review %s\n", msg.ID)
-	} else {
-		// Mock mode - auto-approve with mock feedback
-		approved = true
-		feedback = "Mock review: Code looks good, auto-approved for demo"
-		fmt.Printf("ReviewWorker: mock processing review %s\n", msg.ID)
 	}
 
 	// Send review result back to agent
@@ -212,8 +242,22 @@ func (w *ReviewWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) 
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
 		resultMsg.ParentMsgID = msg.ID
 		resultMsg.SetPayload("approved", approved)
-		resultMsg.SetPayload("feedback", feedback)
-		resultMsg.SetPayload("status", "reviewed")
+		resultMsg.SetPayload(proto.KeyFeedback, feedback)
+		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
+		
+		// Set approval type based on the original request
+		if approvalType == string(proto.ApprovalTypePlan) {
+			resultMsg.SetPayload(proto.KeyApprovalType, string(proto.ApprovalTypePlan))
+		} else {
+			resultMsg.SetPayload(proto.KeyApprovalType, string(proto.ApprovalTypeCode))
+		}
+		
+		// Set status based on approval result using shared constants
+		if approved {
+			resultMsg.SetPayload(proto.KeyStatus, string(proto.ApprovalStatusApproved))
+		} else {
+			resultMsg.SetPayload(proto.KeyStatus, string(proto.ApprovalStatusRejected))
+		}
 
 		if err := w.dispatcher.SendMessage(resultMsg); err != nil {
 			return fmt.Errorf("failed to send review result: %w", err)
@@ -232,8 +276,8 @@ func (w *ReviewWorker) sendErrorResponse(msg *proto.AgentMsg, err error) {
 	errorMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
 	errorMsg.ParentMsgID = msg.ID
 	errorMsg.SetPayload("approved", false)
-	errorMsg.SetPayload("feedback", fmt.Sprintf("Error processing review: %v", err))
-	errorMsg.SetPayload("status", "error")
+	errorMsg.SetPayload(proto.KeyFeedback, fmt.Sprintf("Error processing review: %v", err))
+	errorMsg.SetPayload(proto.KeyStatus, "error")
 
 	if sendErr := w.dispatcher.SendMessage(errorMsg); sendErr != nil {
 		fmt.Printf("ReviewWorker: failed to send error response: %v\n", sendErr)
@@ -265,7 +309,7 @@ func NewMockDispatcher() *MockDispatcher {
 // SendMessage implements MessageSender interface
 func (m *MockDispatcher) SendMessage(msg *proto.AgentMsg) error {
 	m.sentMessages = append(m.sentMessages, msg)
-	answer, _ := msg.GetPayload("answer")
+	answer, _ := msg.GetPayload(proto.KeyAnswer)
 	fmt.Printf("📤 MockDispatcher: would send %s to %s (content: %v)\n",
 		msg.Type, msg.ToAgent, answer)
 	return nil
@@ -1140,7 +1184,7 @@ func (d *Driver) HandleQuestion(ctx context.Context, msg *proto.AgentMsg) (*prot
 
 	response := proto.NewAgentMsg(proto.MsgTypeANSWER, d.architectID, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "processed")
+	response.SetPayload(proto.KeyStatus, "processed")
 	response.SetPayload("message", "Question processed by answer worker")
 
 	return response, nil
@@ -1154,7 +1198,7 @@ func (d *Driver) HandleResult(ctx context.Context, msg *proto.AgentMsg) (*proto.
 
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "processed")
+	response.SetPayload(proto.KeyStatus, "processed")
 	response.SetPayload("message", "Result processed by review worker")
 
 	return response, nil
@@ -1226,15 +1270,25 @@ func (d *Driver) assignStoryToAgent(ctx context.Context, storyID, agentID string
 
 	// Create task message for the agent
 	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, d.architectID, agentID)
-	taskMsg.SetPayload("story_id", storyID)
-	taskMsg.SetPayload("task_type", "implement_story")
+	taskMsg.SetPayload(proto.KeyStoryID, storyID)
+	taskMsg.SetPayload(proto.KeyTaskType, "implement_story")
 
 	// Get story details
 	if story, exists := d.queue.stories[storyID]; exists {
-		taskMsg.SetPayload("title", story.Title)
-		taskMsg.SetPayload("file_path", story.FilePath)
-		taskMsg.SetPayload("estimated_points", story.EstimatedPoints)
-		taskMsg.SetPayload("depends_on", story.DependsOn)
+		taskMsg.SetPayload(proto.KeyTitle, story.Title)
+		taskMsg.SetPayload(proto.KeyFilePath, story.FilePath)
+		taskMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
+		taskMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
+		
+		// Read and parse story content for the coder
+		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
+			taskMsg.SetPayload(proto.KeyContent, content)
+			taskMsg.SetPayload(proto.KeyRequirements, requirements)
+		} else {
+			// Fallback to title if content parsing fails
+			taskMsg.SetPayload(proto.KeyContent, story.Title)
+			taskMsg.SetPayload(proto.KeyRequirements, []string{})
+		}
 	}
 
 	// Send task to agent via dispatcher
@@ -1251,4 +1305,73 @@ func (d *Driver) assignStoryToAgent(ctx context.Context, storyID, agentID string
 	// Mock mode - just log the assignment
 	fmt.Printf("🔄 Mock mode: story assignment logged only\n")
 	return nil
+}
+
+// parseStoryContent reads a story file and extracts content and requirements for the coder
+func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
+	// Read the story file
+	fileBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read story file %s: %w", filePath, err)
+	}
+	
+	content := string(fileBytes)
+	
+	// Skip YAML frontmatter (everything before the second ---)
+	lines := strings.Split(content, "\n")
+	contentStart := 0
+	dashCount := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			dashCount++
+			if dashCount == 2 {
+				contentStart = i + 1
+				break
+			}
+		}
+	}
+	
+	if contentStart >= len(lines) {
+		return "", nil, fmt.Errorf("no content found after YAML frontmatter in %s", filePath)
+	}
+	
+	// Get content after frontmatter
+	contentLines := lines[contentStart:]
+	storyContent := strings.Join(contentLines, "\n")
+	
+	// Extract Task description (everything after **Task** until **Acceptance Criteria**)
+	taskStart := strings.Index(storyContent, "**Task**")
+	criteriaStart := strings.Index(storyContent, "**Acceptance Criteria**")
+	
+	var taskDescription string
+	if taskStart != -1 && criteriaStart != -1 {
+		taskDescription = strings.TrimSpace(storyContent[taskStart+8:criteriaStart])
+	} else if taskStart != -1 {
+		taskDescription = strings.TrimSpace(storyContent[taskStart+8:])
+	} else {
+		// Fallback: use first paragraph
+		paragraphs := strings.Split(strings.TrimSpace(storyContent), "\n\n")
+		if len(paragraphs) > 0 {
+			taskDescription = strings.TrimSpace(paragraphs[0])
+		}
+	}
+	
+	// Extract requirements from Acceptance Criteria bullets
+	var requirements []string
+	if criteriaStart != -1 {
+		criteriaSection := storyContent[criteriaStart+23:] // Skip "**Acceptance Criteria**"
+		lines := strings.Split(criteriaSection, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "*") || strings.HasPrefix(line, "-") {
+				// Remove bullet point marker and clean up
+				requirement := strings.TrimSpace(line[1:])
+				if requirement != "" {
+					requirements = append(requirements, requirement)
+				}
+			}
+		}
+	}
+	
+	return taskDescription, requirements, nil
 }

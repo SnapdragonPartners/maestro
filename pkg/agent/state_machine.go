@@ -55,6 +55,9 @@ type StateMachine interface {
 // StateData represents generic state storage
 type StateData map[string]any
 
+// TransitionTable represents valid state transitions for an agent instance
+type TransitionTable map[State][]State
+
 // StateStore defines the interface for state persistence
 type StateStore interface {
 	// Save persists a value with the given ID
@@ -69,20 +72,27 @@ type BaseStateMachine struct {
 	currentState State
 	stateData    StateData
 	transitions  []StateTransition
-	store        StateStore // State persistence
-	mu           sync.Mutex // Protects state changes
-	retryCount   int        // Tracks retry attempts
-	maxRetries   int        // Maximum retries before failing
+	store        StateStore      // State persistence
+	table        TransitionTable // Instance-local transition table
+	mu           sync.Mutex      // Protects state changes
+	retryCount   int             // Tracks retry attempts
+	maxRetries   int             // Maximum retries before failing
 }
 
-// NewBaseStateMachine creates a new base state machine
-func NewBaseStateMachine(agentID string, initialState State, store StateStore) *BaseStateMachine {
+// NewBaseStateMachine creates a new base state machine with an optional transition table
+func NewBaseStateMachine(agentID string, initialState State, store StateStore, table TransitionTable) *BaseStateMachine {
+	// Use global ValidTransitions as fallback to preserve existing behavior
+	if table == nil {
+		table = ValidTransitions
+	}
+	
 	return &BaseStateMachine{
 		agentID:      agentID,
 		currentState: initialState,
 		stateData:    make(StateData),
 		transitions:  make([]StateTransition, 0),
 		store:        store,
+		table:        table,
 		maxRetries:   DefaultMaxRetries,
 	}
 }

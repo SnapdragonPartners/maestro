@@ -122,7 +122,7 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 	}
 
 	// Extract task content
-	content, exists := msg.GetPayload("content")
+	content, exists := msg.GetPayload(proto.KeyContent)
 	if !exists {
 		return nil, fmt.Errorf("missing content in task message")
 	}
@@ -152,9 +152,9 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 		// Create QUESTION message for architect
 		questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, c.id, "architect")
 		questionMsg.ParentMsgID = msg.ID
-		questionMsg.SetPayload("question", questionContent)
-		questionMsg.SetPayload("reason", questionReason)
-		questionMsg.SetPayload("current_state", string(c.driver.GetCurrentState()))
+		questionMsg.SetPayload(proto.KeyQuestion, questionContent)
+		questionMsg.SetPayload(proto.KeyReason, questionReason)
+		questionMsg.SetPayload(proto.KeyCurrentState, string(c.driver.GetCurrentState()))
 		questionMsg.SetMetadata("original_sender", msg.FromAgent)
 		questionMsg.SetMetadata("question_type", "state_machine_help")
 
@@ -170,21 +170,21 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 		c.logger.Info("Sending REQUEST message to architect for approval: %s", requestReason)
 
 		// Determine approval type based on current state
-		approvalType := "plan"
+		approvalType := proto.ApprovalTypePlan
 		if c.driver.GetCurrentState() == StateCodeReview.ToAgentState() {
-			approvalType = "code"
+			approvalType = proto.ApprovalTypeCode
 		}
 
 		// Create REQUEST message for architect approval
 		approvalMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.id, "architect")
 		approvalMsg.ParentMsgID = msg.ID
-		approvalMsg.SetPayload("request", requestContent)
-		approvalMsg.SetPayload("reason", requestReason)
-		approvalMsg.SetPayload("current_state", string(c.driver.GetCurrentState()))
-		approvalMsg.SetPayload("request_type", "approval")
-		approvalMsg.SetPayload("approval_type", approvalType)
+		approvalMsg.SetPayload(proto.KeyRequest, requestContent)
+		approvalMsg.SetPayload(proto.KeyReason, requestReason)
+		approvalMsg.SetPayload(proto.KeyCurrentState, string(c.driver.GetCurrentState()))
+		approvalMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
+		approvalMsg.SetPayload(proto.KeyApprovalType, approvalType.String())
 		approvalMsg.SetMetadata("original_sender", msg.FromAgent)
-		approvalMsg.SetMetadata("request_type", "approval_request")
+		approvalMsg.SetMetadata("message_type", "approval_request")
 
 		// Mark approval request as processed
 		c.driver.ClearPendingApprovalRequest()
@@ -196,7 +196,7 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 	// Create successful result response
 	result := proto.NewAgentMsg(proto.MsgTypeRESULT, c.id, msg.FromAgent)
 	result.ParentMsgID = msg.ID
-	result.SetPayload("status", "completed")
+	result.SetPayload(proto.KeyStatus, "completed")
 	result.SetPayload("final_state", string(c.driver.GetCurrentState()))
 
 	// Add state machine context info
@@ -221,7 +221,7 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 }
 
 func (c *Coder) handleQuestionMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	question, exists := msg.GetPayload("question")
+	question, exists := msg.GetPayload(proto.KeyQuestion)
 	if !exists {
 		return nil, fmt.Errorf("missing question in message")
 	}
@@ -236,16 +236,16 @@ func (c *Coder) handleQuestionMessage(ctx context.Context, msg *proto.AgentMsg) 
 	// Forward question to architect for guidance
 	response := proto.NewAgentMsg(proto.MsgTypeQUESTION, c.id, "architect")
 	response.ParentMsgID = msg.ID
-	response.SetPayload("question", questionStr)
+	response.SetPayload(proto.KeyQuestion, questionStr)
 	response.SetPayload("context", "State machine driver question")
-	response.SetPayload("current_state", string(c.driver.GetCurrentState()))
+	response.SetPayload(proto.KeyCurrentState, string(c.driver.GetCurrentState()))
 	response.SetMetadata("original_sender", msg.FromAgent)
 
 	return response, nil
 }
 
 func (c *Coder) handleAnswerMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	answer, exists := msg.GetPayload("answer")
+	answer, exists := msg.GetPayload(proto.KeyAnswer)
 	if !exists {
 		return nil, fmt.Errorf("missing answer in message")
 	}
@@ -267,21 +267,21 @@ func (c *Coder) handleAnswerMessage(ctx context.Context, msg *proto.AgentMsg) (*
 		return nil, fmt.Errorf("failed to process answer: %w", err)
 	}
 
-	// Continue processing the state machine
-	if err := c.driver.Run(ctx); err != nil {
+	// Continue processing the state machine with single step
+	if _, err := c.driver.Step(ctx); err != nil {
 		c.logger.Error("Failed to continue state machine processing: %v", err)
 	}
 
 	// Return acknowledgment
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, c.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "answer_received")
-	response.SetPayload("answer", answerStr)
+	response.SetPayload(proto.KeyStatus, "answer_received")
+	response.SetPayload(proto.KeyAnswer, answerStr)
 	return response, nil
 }
 
 func (c *Coder) handleRequestMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	request, exists := msg.GetPayload("request")
+	request, exists := msg.GetPayload(proto.KeyRequest)
 	if !exists {
 		return nil, fmt.Errorf("missing request in message")
 	}
@@ -296,16 +296,16 @@ func (c *Coder) handleRequestMessage(ctx context.Context, msg *proto.AgentMsg) (
 	// Forward request to architect for approval
 	response := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.id, "architect")
 	response.ParentMsgID = msg.ID
-	response.SetPayload("request", requestStr)
+	response.SetPayload(proto.KeyRequest, requestStr)
 	response.SetPayload("context", "Code approval request")
-	response.SetPayload("current_state", string(c.driver.GetCurrentState()))
+	response.SetPayload(proto.KeyCurrentState, string(c.driver.GetCurrentState()))
 	response.SetMetadata("original_sender", msg.FromAgent)
 
 	return response, nil
 }
 
 func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	status, exists := msg.GetPayload("status")
+	status, exists := msg.GetPayload(proto.KeyStatus)
 	if !exists {
 		return nil, fmt.Errorf("missing status in result message")
 	}
@@ -316,6 +316,9 @@ func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*
 	}
 
 	c.logger.Info("Received approval result with status: %s", statusStr)
+	
+	// Debug logging for message handling
+	logx.DebugToFile(ctx, "coder", "handle_result_debug.log", "handleResultMessage called - status=%s", statusStr)
 
 	// Initialize driver if needed
 	if err := c.driver.Initialize(ctx); err != nil {
@@ -323,17 +326,40 @@ func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*
 	}
 
 	// Determine if this is an approval result or answer
-	if requestType, exists := msg.GetPayload("request_type"); exists {
-		if requestType == "approval" {
-			// Handle approval result
-			approvalType, _ := msg.GetPayload("approval_type")
-			approvalTypeStr, _ := approvalType.(string)
+	// Try payload first, then metadata for request_type
+	requestTypeStr := c.getStringFromPayloadOrMetadata(msg, proto.KeyRequestType)
+	if requestTypeStr != "" {
+		c.logger.Info("Found request_type: %v", requestTypeStr)
+		
+		// Parse and validate request type
+		requestType, err := proto.ParseRequestType(requestTypeStr)
+		if err != nil {
+			c.logger.Error("Invalid request type '%s': %v", requestTypeStr, err)
+			return nil, fmt.Errorf("invalid request type '%s': %w", requestTypeStr, err)
+		}
+		
+		if requestType == proto.RequestApproval {
+			// Handle approval result - try payload first, then metadata for approval_type
+			approvalTypeRaw := c.getStringFromPayloadOrMetadata(msg, proto.KeyApprovalType)
+			if approvalTypeRaw == "" {
+				return nil, fmt.Errorf("missing approval_type in approval result message")
+			}
 			
-			if err := c.driver.ProcessApprovalResult(statusStr, approvalTypeStr); err != nil {
+			// Normalize and validate approval type
+			approvalType, err := proto.NormaliseApprovalType(approvalTypeRaw)
+			if err != nil {
+				c.logger.Error("Invalid approval type '%s': %v", approvalTypeRaw, err)
+				return nil, fmt.Errorf("invalid approval type '%s': %w", approvalTypeRaw, err)
+			}
+			
+			c.logger.Info("Processing approval result: status=%s, type=%s", statusStr, approvalType)
+			
+			if err := c.driver.ProcessApprovalResult(statusStr, approvalType.String()); err != nil {
 				return nil, fmt.Errorf("failed to process approval result: %w", err)
 			}
+			c.logger.Info("Successfully processed approval result")
 		}
-	} else if answer, exists := msg.GetPayload("answer"); exists {
+	} else if answer, exists := msg.GetPayload(proto.KeyAnswer); exists {
 		// Handle answer to question
 		answerStr, _ := answer.(string)
 		if err := c.driver.ProcessAnswer(answerStr); err != nil {
@@ -341,15 +367,15 @@ func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*
 		}
 	}
 
-	// Continue processing the state machine
-	if err := c.driver.Run(ctx); err != nil {
+	// Continue processing the state machine with single step
+	if _, err := c.driver.Step(ctx); err != nil {
 		c.logger.Error("Failed to continue state machine processing: %v", err)
 	}
 
 	// Return acknowledgment
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, c.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "result_processed")
+	response.SetPayload(proto.KeyStatus, "result_processed")
 	response.SetPayload("original_status", statusStr)
 	return response, nil
 }
@@ -359,9 +385,26 @@ func (c *Coder) handleShutdownMessage(ctx context.Context, msg *proto.AgentMsg) 
 
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, c.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("status", "shutdown_acknowledged")
+	response.SetPayload(proto.KeyStatus, "shutdown_acknowledged")
 	response.SetPayload("final_state", string(c.driver.GetCurrentState()))
 	response.SetMetadata("agent_type", "coder")
 
 	return response, nil
+}
+
+// getStringFromPayloadOrMetadata tries to get a string value from payload first, then metadata
+func (c *Coder) getStringFromPayloadOrMetadata(msg *proto.AgentMsg, key string) string {
+	// Try payload first
+	if value, exists := msg.GetPayload(key); exists {
+		if strValue, ok := value.(string); ok {
+			return strValue
+		}
+	}
+	
+	// Try metadata
+	if value, exists := msg.GetMetadata(key); exists {
+		return value
+	}
+	
+	return ""
 }

@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -349,14 +350,14 @@ func TestCoderDriverStateManagement(t *testing.T) {
 	// Verify approval result is stored correctly
 	stateData := driver.GetStateData()
 	if approvalData, exists := stateData["plan_approval_result"]; exists {
-		if result, ok := approvalData.(*ApprovalResult); ok {
-			if result.Type != "plan" {
+		if result, ok := approvalData.(*proto.ApprovalResult); ok {
+			if result.Type != proto.ApprovalTypePlan {
 				t.Errorf("Expected approval type 'plan', got %s", result.Type)
 			}
-			if result.Status != "APPROVED" {
+			if result.Status != proto.ApprovalStatusApproved {
 				t.Errorf("Expected approval status 'APPROVED', got %s", result.Status)
 			}
-			if result.Time.IsZero() {
+			if result.ReviewedAt.IsZero() {
 				t.Error("Approval result should have a timestamp")
 			}
 		} else {

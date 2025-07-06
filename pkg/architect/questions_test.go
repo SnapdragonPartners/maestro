@@ -60,7 +60,7 @@ func TestHandleQuestion(t *testing.T) {
 		"architect",
 	)
 	questionMsg.Payload["story_id"] = "001"
-	questionMsg.Payload["question"] = "How should I implement the user authentication?"
+	questionMsg.Payload[proto.KeyQuestion] = "How should I implement the user authentication?"
 	questionMsg.Payload["context"] = "Working on login functionality"
 
 	ctx := context.Background()
@@ -112,7 +112,7 @@ func TestHandleQuestionInvalid(t *testing.T) {
 		"test-agent",
 		"architect",
 	)
-	questionMsg.Payload["question"] = "How should I implement this?"
+	questionMsg.Payload[proto.KeyQuestion] = "How should I implement this?"
 
 	ctx := context.Background()
 	err := handler.HandleQuestion(ctx, questionMsg)
@@ -198,7 +198,7 @@ func TestBusinessQuestionEscalation(t *testing.T) {
 		"architect",
 	)
 	questionMsg.Payload["story_id"] = "001"
-	questionMsg.Payload["question"] = "What are the business requirements for this feature?"
+	questionMsg.Payload[proto.KeyQuestion] = "What are the business requirements for this feature?"
 
 	ctx := context.Background()
 	err := handler.HandleQuestion(ctx, questionMsg)
