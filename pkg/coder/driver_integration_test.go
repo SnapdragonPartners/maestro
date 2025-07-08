@@ -35,7 +35,7 @@ func TestCoderDriverHealthStoryIntegration(t *testing.T) {
 	}
 
 	// Create driver in mock mode (no LLM client)  
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 		CompactionBuffer:  512,
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 
 	// Should be in QUESTION state
 	currentState := driver.GetCurrentState()
-	if currentState != StateQuestion.ToAgentState() {
+	if currentState != StateQuestion {
 		t.Errorf("Expected state to be QUESTION, got %s", currentState)
 	}
 
@@ -150,7 +150,7 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 
 	// Should have returned to PLANNING and then progressed
 	finalState := driver.GetCurrentState()
-	if finalState == StateQuestion.ToAgentState() {
+	if finalState == StateQuestion {
 		t.Error("Should have moved out of QUESTION state after receiving answer")
 	}
 }
@@ -174,7 +174,7 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 		CompactionBuffer:  512,
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 	// Manually set state to PLAN_REVIEW to test approval flow
 	driver.SetStateData("task_content", "Create API endpoint")
 	driver.SetStateData("plan", "Mock plan: Create REST API with proper error handling")
-	if err := driver.TransitionTo(ctx, StatePlanReview.ToAgentState(), nil); err != nil {
+	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
@@ -199,12 +199,18 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 	}
 
 	// Check that pending approval request exists
-	hasPending, content, reason := driver.GetPendingApprovalRequest()
+	hasPending, approvalID, content, reason, approvalType := driver.GetPendingApprovalRequest()
 	if !hasPending {
 		t.Error("Expected pending approval request")
 	}
 	if content == "" || reason == "" {
 		t.Error("Expected approval request to have content and reason")
+	}
+	if approvalID == "" {
+		t.Error("Expected approval request to have correlation ID")
+	}
+	if approvalType != proto.ApprovalTypePlan {
+		t.Errorf("Expected plan approval, got %s", approvalType)
 	}
 
 	// Simulate architect approval
@@ -219,7 +225,7 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 
 	// Should have moved to CODING state
 	currentState := driver.GetCurrentState()
-	if currentState != StateCoding.ToAgentState() {
+	if currentState != StateCoding {
 		t.Errorf("Expected state to be CODING after plan approval, got %s", currentState)
 	}
 }
@@ -240,12 +246,12 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 		{
 			name:        "Test failure and fix cycle",
 			taskContent: "Create endpoint that should test fail initially",
-			expectFlow:  []agent.State{StatePlanning.ToAgentState(), StatePlanReview.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(), StateFixing.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(), StateCodeReview.ToAgentState(), agent.StateDone},
+			expectFlow:  []agent.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateFixing, StateCoding, StateTesting, StateCodeReview, agent.StateDone},
 		},
 		{
 			name:        "Normal successful flow",
 			taskContent: "Create simple endpoint that works",
-			expectFlow:  []agent.State{StatePlanning.ToAgentState(), StatePlanReview.ToAgentState(), StateCoding.ToAgentState(), StateTesting.ToAgentState(), StateCodeReview.ToAgentState(), agent.StateDone},
+			expectFlow:  []agent.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateCodeReview, agent.StateDone},
 		},
 	}
 
@@ -262,7 +268,7 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 				t.Fatalf("Failed to create state store: %v", err)
 			}
 			
-			driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir)
+			driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 			if err != nil {
 				t.Fatalf("Failed to create driver: %v", err)
 			}
@@ -331,7 +337,7 @@ func TestCoderDriverStateManagement(t *testing.T) {
 		CompactionBuffer:  512,
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}

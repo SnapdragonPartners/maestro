@@ -405,3 +405,147 @@ func TestGenerateID(t *testing.T) {
 		t.Errorf("Expected ID to start with 'msg_', got %s", id1)
 	}
 }
+
+// TestAutoAction tests the AUTO_CHECKIN command types for inter-agent communication
+func TestAutoAction(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expected    AutoAction
+		expectError bool
+	}{
+		{"valid CONTINUE", "CONTINUE", AutoContinue, false},
+		{"valid PIVOT", "PIVOT", AutoPivot, false},
+		{"valid ESCALATE", "ESCALATE", AutoEscalate, false},
+		{"valid ABANDON", "ABANDON", AutoAbandon, false},
+		{"invalid command", "INVALID", "", true},
+		{"empty string", "", "", true},
+		{"lowercase", "continue", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ParseAutoAction(tt.input)
+			
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error for input %q but got none", tt.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error for input %q: %v", tt.input, err)
+				}
+				if result != tt.expected {
+					t.Errorf("Expected %q but got %q", tt.expected, result)
+				}
+				if result.String() != string(tt.expected) {
+					t.Errorf("String() method failed: expected %q but got %q", tt.expected, result.String())
+				}
+			}
+		})
+	}
+}
+
+// TestQuestionReasonAutoCheckin tests the AUTO_CHECKIN question reason constant
+func TestQuestionReasonAutoCheckin(t *testing.T) {
+	if QuestionReasonAutoCheckin != "AUTO_CHECKIN" {
+		t.Errorf("Expected QuestionReasonAutoCheckin to be 'AUTO_CHECKIN', got %q", QuestionReasonAutoCheckin)
+	}
+}
+
+// TestCorrelationIDGeneration tests the correlation ID generation functions
+func TestCorrelationIDGeneration(t *testing.T) {
+	// Test that all generators produce unique, non-empty IDs
+	questionID1 := GenerateQuestionID()
+	questionID2 := GenerateQuestionID()
+	approvalID1 := GenerateApprovalID()
+	approvalID2 := GenerateApprovalID()
+	correlationID1 := GenerateCorrelationID()
+	correlationID2 := GenerateCorrelationID()
+
+	// Check all IDs are non-empty
+	ids := []string{questionID1, questionID2, approvalID1, approvalID2, correlationID1, correlationID2}
+	for i, id := range ids {
+		if id == "" {
+			t.Errorf("ID %d is empty", i)
+		}
+	}
+
+	// Check all IDs are unique
+	seen := make(map[string]bool)
+	for i, id := range ids {
+		if seen[id] {
+			t.Errorf("Duplicate ID found at index %d: %s", i, id)
+		}
+		seen[id] = true
+	}
+
+	// Check ID prefixes
+	if !strings.HasPrefix(questionID1, "q_") {
+		t.Errorf("Question ID should start with 'q_', got %s", questionID1)
+	}
+	if !strings.HasPrefix(approvalID1, "a_") {
+		t.Errorf("Approval ID should start with 'a_', got %s", approvalID1)
+	}
+	if !strings.HasPrefix(correlationID1, "c_") {
+		t.Errorf("Correlation ID should start with 'c_', got %s", correlationID1)
+	}
+}
+
+// TestCorrelationHelpers tests the correlation helper methods on AgentMsg
+func TestCorrelationHelpers(t *testing.T) {
+	msg := NewAgentMsg(MsgTypeQUESTION, "coder", "architect")
+
+	// Test question correlation
+	questionID := GenerateQuestionID()
+	msg.SetQuestionCorrelation(questionID)
+
+	retrievedQuestionID, exists := msg.GetQuestionID()
+	if !exists {
+		t.Error("Question ID should exist after setting")
+	}
+	if retrievedQuestionID != questionID {
+		t.Errorf("Expected question ID %s, got %s", questionID, retrievedQuestionID)
+	}
+
+	retrievedCorrelationID, exists := msg.GetCorrelationID()
+	if !exists {
+		t.Error("Correlation ID should exist after setting question correlation")
+	}
+	if retrievedCorrelationID != questionID {
+		t.Errorf("Expected correlation ID to match question ID %s, got %s", questionID, retrievedCorrelationID)
+	}
+
+	// Test approval correlation
+	msg2 := NewAgentMsg(MsgTypeREQUEST, "coder", "architect")
+	approvalID := GenerateApprovalID()
+	msg2.SetApprovalCorrelation(approvalID)
+
+	retrievedApprovalID, exists := msg2.GetApprovalID()
+	if !exists {
+		t.Error("Approval ID should exist after setting")
+	}
+	if retrievedApprovalID != approvalID {
+		t.Errorf("Expected approval ID %s, got %s", approvalID, retrievedApprovalID)
+	}
+
+	retrievedCorrelationID2, exists := msg2.GetCorrelationID()
+	if !exists {
+		t.Error("Correlation ID should exist after setting approval correlation")
+	}
+	if retrievedCorrelationID2 != approvalID {
+		t.Errorf("Expected correlation ID to match approval ID %s, got %s", approvalID, retrievedCorrelationID2)
+	}
+
+	// Test missing IDs
+	msg3 := NewAgentMsg(MsgTypeTASK, "architect", "coder")
+	if _, exists := msg3.GetQuestionID(); exists {
+		t.Error("Should not have question ID when none set")
+	}
+	if _, exists := msg3.GetApprovalID(); exists {
+		t.Error("Should not have approval ID when none set")
+	}
+	if _, exists := msg3.GetCorrelationID(); exists {
+		t.Error("Should not have correlation ID when none set")
+	}
+}

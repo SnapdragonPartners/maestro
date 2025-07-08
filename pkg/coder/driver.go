@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,123 +21,12 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// CoderState represents a state in the coder state machine
-type CoderState string
-
-const (
-	StatePlanning   CoderState = "PLANNING"
-	StateCoding     CoderState = "CODING"
-	StateTesting    CoderState = "TESTING"
-	StateFixing     CoderState = "FIXING"
-	StatePlanReview CoderState = "PLAN_REVIEW"
-	StateCodeReview CoderState = "CODE_REVIEW"
-	StateQuestion   CoderState = "QUESTION"
-)
-
-func (s CoderState) String() string {
-	return string(s)
-}
-
-// ToAgentState converts CoderState to agent.State
-func (s CoderState) ToAgentState() agent.State {
-	return agent.State(s)
-}
-
-// FromAgentState converts agent.State to CoderState
-func FromAgentState(s agent.State) CoderState {
-	return CoderState(s)
-}
-
-// ValidCoderTransitions defines allowed state transitions for coder states
-var ValidCoderTransitions = map[CoderState][]CoderState{
-	StatePlanning:   {StateCoding, StatePlanReview, StateQuestion},
-	StateCoding:     {StateTesting, StatePlanning, StateQuestion},
-	StateTesting:    {StateCoding, StateFixing, StateCodeReview},
-	StatePlanReview: {StateCoding, StatePlanning},              // Approve→CODING, Reject→PLANNING
-	StateFixing:     {StateCoding, StateTesting},               // Fix→CODING or retry TESTING
-	StateCodeReview: {StateFixing},                             // Approve→DONE (handled by base), Reject→FIXING
-	StateQuestion:   {StatePlanning, StateCoding, StateFixing}, // Return to origin state
-}
-
-// GetAllCoderStates dynamically derives the complete set of coder states
-// from the ValidCoderTransitions map, eliminating manual maintenance
-func GetAllCoderStates() []CoderState {
-	stateSet := make(map[CoderState]bool)
-	
-	// Collect all states that appear as keys (source states)
-	for fromState := range ValidCoderTransitions {
-		stateSet[fromState] = true
-	}
-	
-	// Collect all states that appear as values (target states)
-	for _, transitions := range ValidCoderTransitions {
-		for _, toState := range transitions {
-			stateSet[toState] = true
-		}
-	}
-	
-	// Convert set to sorted slice for deterministic results
-	states := make([]CoderState, 0, len(stateSet))
-	for state := range stateSet {
-		states = append(states, state)
-	}
-	
-	// Sort states alphabetically for consistency
-	for i := 0; i < len(states)-1; i++ {
-		for j := i + 1; j < len(states); j++ {
-			if string(states[i]) > string(states[j]) {
-				states[i], states[j] = states[j], states[i]
-			}
-		}
-	}
-	
-	return states
-}
-
-// IsCoderState checks if a given state string is a valid coder state
-func IsCoderState(stateStr string) bool {
-	state := CoderState(stateStr)
-	allStates := GetAllCoderStates()
-	
-	for _, validState := range allStates {
-		if validState == state {
-			return true
-		}
-	}
-	return false
-}
-
-// GetCoderStateConstants returns a map of state names to CoderState values
-// for dynamic state access
-func GetCoderStateConstants() map[string]CoderState {
-	constants := make(map[string]CoderState)
-	allStates := GetAllCoderStates()
-	
-	for _, state := range allStates {
-		constants[string(state)] = state
-	}
-	
-	return constants
-}
 
 
-// IsValidCoderTransition checks if a coder state transition is allowed
-func (d *CoderDriver) IsValidCoderTransition(from, to CoderState) bool {
-	// Get allowed transitions for current state
-	allowed, ok := ValidCoderTransitions[from]
-	if !ok {
-		return false
-	}
 
-	// Check if requested state is in allowed list
-	for _, s := range allowed {
-		if s == to {
-			return true
-		}
-	}
 
-	return false
-}
+
+
 
 // State data keys - using constants to prevent key mismatch bugs
 const (
@@ -145,6 +35,19 @@ const (
 	keyArchitectAnswer    = "architect_answer"
 	keyTaskContent        = "task_content"
 	keyStartedAt          = "started_at"
+	keyCodingIterations   = "coding_iterations"
+	keyFixingIterations   = "fixing_iterations"
+	
+	// AUTO_CHECKIN question state keys
+	keyQuestionReason     = "question_reason"
+	keyQuestionOrigin     = "question_origin"
+	keyQuestionContent    = "question_content"
+	keyAutoCheckinAction  = "auto_checkin_action"
+	keyErrorMessage       = "error_msg"
+	keyLoops              = "loops"
+	keyMaxLoops           = "max_loops"
+	keyQuestionAnswered   = "question_answered"
+	keyQuestionCompletedAt = "question_completed_at"
 )
 
 // File creation constants
@@ -156,12 +59,17 @@ const (
 // CoderDriver implements the v2 FSM using agent foundation
 type CoderDriver struct {
 	*agent.BaseStateMachine // Directly embed state machine
-	config                  *agent.AgentConfig
+	agentConfig             *agent.AgentConfig
+	configAgent             *config.Agent
 	contextManager          *contextmgr.ContextManager
 	llmClient               agent.LLMClient
 	renderer                *templates.Renderer
 	workDir                 string
 	logger                  *logx.Logger
+
+	// Iteration budgets
+	codingBudget int
+	fixingBudget int
 
 	// REQUEST→RESULT flow state
 	pendingApprovalRequest *ApprovalRequest
@@ -171,6 +79,7 @@ type CoderDriver struct {
 
 // ApprovalRequest represents a pending approval request
 type ApprovalRequest struct {
+	ID      string             // Correlation ID for tracking responses
 	Content string
 	Reason  string
 	Type    proto.ApprovalType
@@ -178,6 +87,7 @@ type ApprovalRequest struct {
 
 // Question represents a pending question
 type Question struct {
+	ID      string // Correlation ID for tracking responses  
 	Content string
 	Reason  string
 	Origin  string
@@ -211,7 +121,7 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 }
 
 // NewCoderDriver creates a new coder driver using agent foundation
-func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string) (*CoderDriver, error) {
+func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*CoderDriver, error) {
 	renderer, _ := templates.NewRenderer()
 
 	// Create agent context with logger
@@ -223,7 +133,7 @@ func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config
 	}
 
 	// Create agent config
-	agentConfig := &agent.AgentConfig{
+	agentCfg := &agent.AgentConfig{
 		ID:      agentID,
 		Type:    "coder",
 		Context: *agentCtx,
@@ -234,51 +144,68 @@ func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config
 		},
 	}
 
-	// Create a custom transition table for the coder that includes all coder-specific transitions
-	coderTable := agent.CloneTransitionTable(agent.ValidTransitions) // Copy global base
-	
-	// Add coder-specific transitions to the table
-	coderTable[agent.StateWaiting] = []agent.State{StatePlanning.ToAgentState()}
-	coderTable[StatePlanning.ToAgentState()] = []agent.State{
-		StateCoding.ToAgentState(), StatePlanReview.ToAgentState(), StateQuestion.ToAgentState(),
+	// Use canonical transition table from fsm package - single source of truth
+	// This ensures driver behavior exactly matches STATES.md specification
+	sm := agent.NewBaseStateMachine(agentID, agent.StateWaiting, stateStore, CoderTransitions)
+
+	// Set iteration budgets from agent config, with fallback to defaults
+	codingBudget := config.DefaultCodingBudget
+	fixingBudget := config.DefaultFixingBudget
+	if agentConfig != nil {
+		if agentConfig.IterationBudgets.CodingBudget > 0 {
+			codingBudget = agentConfig.IterationBudgets.CodingBudget
+		}
+		if agentConfig.IterationBudgets.FixingBudget > 0 {
+			fixingBudget = agentConfig.IterationBudgets.FixingBudget
+		}
 	}
-	coderTable[StatePlanReview.ToAgentState()] = []agent.State{
-		StateCoding.ToAgentState(), StatePlanning.ToAgentState(), // approved or needs changes
-	}
-	coderTable[StateCoding.ToAgentState()] = []agent.State{
-		StateTesting.ToAgentState(), StateCodeReview.ToAgentState(), StateQuestion.ToAgentState(),
-	}
-	coderTable[StateTesting.ToAgentState()] = []agent.State{
-		StateFixing.ToAgentState(), StateCodeReview.ToAgentState(), agent.StateDone,
-	}
-	coderTable[StateFixing.ToAgentState()] = []agent.State{
-		StateTesting.ToAgentState(), StateCodeReview.ToAgentState(),
-	}
-	coderTable[StateCodeReview.ToAgentState()] = []agent.State{
-		agent.StateDone, StateFixing.ToAgentState(),
-	}
-	coderTable[StateQuestion.ToAgentState()] = []agent.State{
-		StatePlanning.ToAgentState(), StateCoding.ToAgentState(), // Can return to previous state after answer
-	}
-	
-	// Create base state machine with coder transition table
-	sm := agent.NewBaseStateMachine(agentID, agent.StateWaiting, stateStore, coderTable)
 
 	driver := &CoderDriver{
 		BaseStateMachine: sm,
-		config:           agentConfig,
+		agentConfig:      agentCfg,
+		configAgent:      agentConfig,
 		contextManager:   contextmgr.NewContextManagerWithModel(modelConfig),
 		llmClient:        llmClient,
 		renderer:         renderer,
 		workDir:          workDir,
 		logger:           logx.NewLogger(agentID),
+		codingBudget:     codingBudget,
+		fixingBudget:     fixingBudget,
 	}
 	
 	
 	return driver, nil
 }
 
-
+// checkLoopBudget tracks loop counts and triggers AUTO_CHECKIN when budget is exceeded
+// Returns true if budget exceeded and AUTO_CHECKIN should be triggered
+func (d *CoderDriver) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin agent.State) bool {
+	// Get current iteration count
+	var iterationCount int
+	if val, exists := sm.GetStateValue(key); exists {
+		if count, ok := val.(int); ok {
+			iterationCount = count
+		}
+	}
+	
+	// Increment counter
+	iterationCount++
+	sm.SetStateData(key, iterationCount)
+	
+	// Check if budget exceeded
+	if iterationCount >= budget {
+		// Populate QUESTION fields for AUTO_CHECKIN
+		sm.SetStateData(keyQuestionReason, QuestionReasonAutoCheckin)
+		sm.SetStateData(keyQuestionOrigin, string(origin))
+		sm.SetStateData(keyQuestionContent, fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget))
+		sm.SetStateData(keyLoops, iterationCount)
+		sm.SetStateData(keyMaxLoops, budget)
+		
+		return true
+	}
+	
+	return false
+}
 
 // ProcessState implements the v2 FSM state machine logic
 func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, error) {
@@ -287,19 +214,19 @@ func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, erro
 	switch d.GetCurrentState() {
 	case agent.StateWaiting:
 		return d.handleWaiting(ctx, sm)
-	case StatePlanning.ToAgentState():
+	case StatePlanning:
 		return d.handlePlanning(ctx, sm)
-	case StatePlanReview.ToAgentState():
+	case StatePlanReview:
 		return d.handlePlanReview(ctx, sm)
-	case StateCoding.ToAgentState():
+	case StateCoding:
 		return d.handleCoding(ctx, sm)
-	case StateTesting.ToAgentState():
+	case StateTesting:
 		return d.handleTesting(ctx, sm)
-	case StateFixing.ToAgentState():
+	case StateFixing:
 		return d.handleFixing(ctx, sm)
-	case StateCodeReview.ToAgentState():
+	case StateCodeReview:
 		return d.handleCodeReview(ctx, sm)
-	case StateQuestion.ToAgentState():
+	case StateQuestion:
 		return d.handleQuestion(ctx, sm)
 	case agent.StateDone:
 		return agent.StateDone, true, nil
@@ -312,15 +239,15 @@ func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, erro
 
 
 
-// isCoderState checks if a state is a coder-specific state using dynamic derivation
+// isCoderState checks if a state is a coder-specific state using canonical derivation
 func (d *CoderDriver) isCoderState(state agent.State) bool {
-	return IsCoderState(string(state))
+	return IsCoderState(state)
 }
 
 // ProcessTask initiates task processing with the new agent foundation
 func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error {
 	// Add agent ID to context for debug logging
-	ctx = context.WithValue(ctx, "agent_id", d.config.ID)
+	ctx = context.WithValue(ctx, "agent_id", d.agentConfig.ID)
 	
 	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
 	
@@ -366,7 +293,7 @@ func (d *CoderDriver) handleWaiting(ctx context.Context, sm *agent.BaseStateMach
 	taskContent, exists := sm.GetStateValue(keyTaskContent)
 	if exists && taskContent != "" {
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> PLANNING", "task content available")
-		return StatePlanning.ToAgentState(), false, nil
+		return StatePlanning, false, nil
 	}
 
 	return agent.StateWaiting, false, nil
@@ -382,10 +309,10 @@ func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMac
 
 	// Check for help requests
 	if d.detectHelpRequest(taskStr) {
-		sm.SetStateData("question_reason", "Help requested during planning")
-		sm.SetStateData("question_content", taskStr)
-		sm.SetStateData("question_origin", "PLANNING")
-		return StateQuestion.ToAgentState(), false, nil
+		sm.SetStateData(keyQuestionReason, "Help requested during planning")
+		sm.SetStateData(keyQuestionContent, taskStr)
+		sm.SetStateData(keyQuestionOrigin, string(StatePlanning))
+		return StateQuestion, false, nil
 	}
 
 	// Generate plan
@@ -396,7 +323,7 @@ func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMac
 	// Mock mode
 	sm.SetStateData("plan", "Mock plan: Analyzed requirements, ready to proceed")
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
-	return StatePlanReview.ToAgentState(), false, nil
+	return StatePlanReview, false, nil
 }
 
 // handlePlanningWithLLM generates plan using LLM
@@ -430,7 +357,7 @@ func (d *CoderDriver) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseS
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
 	d.contextManager.AddMessage("assistant", resp.Content)
 
-	return StatePlanReview.ToAgentState(), false, nil
+	return StatePlanReview, false, nil
 }
 
 // handlePlanReview processes the PLAN_REVIEW state using REQUEST→RESULT flow
@@ -448,9 +375,9 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
-			return StateCoding.ToAgentState(), false, nil
+			return StateCoding, false, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
-			return StatePlanning.ToAgentState(), false, nil
+			return StatePlanning, false, nil
 		default:
 			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
@@ -475,9 +402,9 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 		sm.SetStateData("plan_review_completed_at", time.Now().UTC())
 
 		if approved {
-			return StateCoding.ToAgentState(), false, nil
+			return StateCoding, false, nil
 		}
-		return StatePlanning.ToAgentState(), false, nil
+		return StatePlanning, false, nil
 	}
 
 	// Create approval request for architect (LLM mode)
@@ -485,13 +412,14 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 	planStr, _ := plan.(string)
 
 	d.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
 		Content: planStr,
 		Reason:  "Plan requires architect approval before proceeding to coding",
 		Type:    proto.ApprovalTypePlan,
 	}
 
 	// Stay in PLAN_REVIEW until we get approval result
-	return StatePlanReview.ToAgentState(), false, nil
+	return StatePlanReview, false, nil
 }
 
 // handleCoding processes the CODING state
@@ -511,7 +439,7 @@ func (d *CoderDriver) handleCoding(ctx context.Context, sm *agent.BaseStateMachi
 	sm.SetStateData("code_generated", true)
 	sm.SetStateData("coding_completed_at", time.Now().UTC())
 
-	return StateTesting.ToAgentState(), false, nil
+	return StateTesting, false, nil
 }
 
 // handleCodingWithLLM generates actual code using LLM
@@ -638,23 +566,13 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	// Check if implementation seems complete
 	if d.isImplementationComplete(resp.Content, filesCreated, sm) {
 		sm.SetStateData("coding_completed_at", time.Now().UTC())
-		return StateTesting.ToAgentState(), false, nil
+		return StateTesting, false, nil
 	}
 
-	// Check iteration limit to prevent infinite loops
-	var iterationCount int
-	if val, exists := sm.GetStateValue("coding_iterations"); exists {
-		if count, ok := val.(int); ok {
-			iterationCount = count
-		}
-	}
-	iterationCount++
-	sm.SetStateData("coding_iterations", iterationCount)
-	
-	if iterationCount >= 8 {
-		log.Printf("Reached maximum coding iterations (%d), proceeding to testing", iterationCount)
-		sm.SetStateData("coding_completed_at", time.Now().UTC())
-		return StateTesting.ToAgentState(), false, nil
+	// Check iteration limit using AUTO_CHECKIN mechanism
+	if d.checkLoopBudget(sm, keyCodingIterations, d.codingBudget, StateCoding) {
+		log.Printf("Coding budget exceeded, triggering AUTO_CHECKIN")
+		return StateQuestion, false, nil
 	}
 
 	// Add context about what's been done so far for next iteration
@@ -662,8 +580,12 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	d.contextManager.AddMessage("system", fmt.Sprintf("Previous iteration created %d files/directories. Current workspace contains: %s. The implementation is not yet complete. Please continue with the next steps to create the actual source code files (like main.go, handlers, etc).", filesCreated, fileList))
 
 	// Continue coding if implementation is not complete
-	log.Printf("Implementation appears incomplete (iteration %d/8), continuing in CODING state", iterationCount)
-	return StateCoding.ToAgentState(), false, nil
+	currentIterations, _ := sm.GetStateValue(keyCodingIterations)
+	iterCount, _ := currentIterations.(int)
+	log.Printf("Implementation appears incomplete (iteration %d/%d), continuing in CODING state", iterCount, d.codingBudget)
+	
+	// Note: Looping back to CODING is allowed via self-loops; not listed in CoderTransitions by design
+	return StateCoding, false, nil
 }
 
 // executeMCPToolCalls executes tool calls using the MCP tool system
@@ -1215,20 +1137,27 @@ func (d *CoderDriver) handleTesting(ctx context.Context, sm *agent.BaseStateMach
 	sm.SetStateData("testing_completed_at", time.Now().UTC())
 
 	if !testsPassed {
-		return StateFixing.ToAgentState(), false, nil
+		return StateFixing, false, nil
 	}
 
-	return StateCodeReview.ToAgentState(), false, nil
+	return StateCodeReview, false, nil
 }
 
 // handleFixing processes the FIXING state
 func (d *CoderDriver) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	d.contextManager.AddMessage("assistant", "Fixing phase: addressing issues")
 
+	// Check iteration limit using AUTO_CHECKIN mechanism
+	if d.checkLoopBudget(sm, keyFixingIterations, d.fixingBudget, StateFixing) {
+		log.Printf("Fixing budget exceeded, triggering AUTO_CHECKIN")
+		return StateQuestion, false, nil
+	}
+
 	sm.SetStateData("fixes_applied", true)
 	sm.SetStateData("fixing_completed_at", time.Now().UTC())
 
-	return StateCoding.ToAgentState(), false, nil
+	// According to canonical FSM, FIXING should transition to TESTING, not CODING
+	return StateTesting, false, nil
 }
 
 // handleCodeReview processes the CODE_REVIEW state using REQUEST→RESULT flow
@@ -1248,7 +1177,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 		case proto.ApprovalStatusApproved:
 			return agent.StateDone, true, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
-			return StateFixing.ToAgentState(), false, nil
+			return StateFixing, false, nil
 		default:
 			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
@@ -1275,7 +1204,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 		if approved {
 			return agent.StateDone, true, nil
 		}
-		return StateFixing.ToAgentState(), false, nil
+		return StateFixing, false, nil
 	}
 
 	// Create approval request for architect (LLM mode)
@@ -1283,13 +1212,14 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 	codeStr := fmt.Sprintf("Code implementation completed: %v", codeGenerated)
 
 	d.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
 		Content: codeStr,
 		Reason:  "Code requires architect approval before completion",
 		Type:    proto.ApprovalTypeCode,
 	}
 
 	// Stay in CODE_REVIEW until we get approval result
-	return StateCodeReview.ToAgentState(), false, nil
+	return StateCodeReview, false, nil
 }
 
 // handleQuestion processes the QUESTION state with origin tracking
@@ -1299,44 +1229,76 @@ func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMac
 	// Check if we have an answer
 	if answer, exists := sm.GetStateValue(keyArchitectAnswer); exists {
 		answerStr, _ := answer.(string)
-		sm.SetStateData("question_answered", true)
+		sm.SetStateData(keyQuestionAnswered, true)
 		sm.SetStateData("architect_response", answerStr)
-		sm.SetStateData("question_completed_at", time.Now().UTC())
+		sm.SetStateData(keyQuestionCompletedAt, time.Now().UTC())
 
 		// Clear the answer so we don't loop
 		sm.SetStateData(keyArchitectAnswer, "")
 
+		// Check for AUTO_CHECKIN action flags first
+		if action, exists := sm.GetStateValue(keyAutoCheckinAction); exists {
+			actionStr, _ := action.(string)
+			// Parse the stored action string back to typed enum
+			if parsedAction, err := ParseAutoAction(actionStr); err == nil {
+				switch parsedAction {
+				case AutoEscalate:
+					return StateCodeReview, false, nil
+				case AutoAbandon:
+					return agent.StateError, false, fmt.Errorf("task abandoned by architect")
+				}
+			}
+		}
+
 		// Return to origin state using metadata
-		origin, _ := sm.GetStateValue("question_origin")
+		origin, _ := sm.GetStateValue(keyQuestionOrigin)
 		originStr, _ := origin.(string)
 
 		switch originStr {
-		case "PLANNING":
-			return StatePlanning.ToAgentState(), false, nil
-		case "CODING":
-			return StateCoding.ToAgentState(), false, nil
-		case "FIXING":
-			return StateFixing.ToAgentState(), false, nil
+		case string(StatePlanning):
+			return StatePlanning, false, nil
+		case string(StateCoding):
+			return StateCoding, false, nil
+		case string(StateFixing):
+			return StateFixing, false, nil
+		// QUESTION can also transition to PLAN_REVIEW per canonical FSM
+		case string(StatePlanReview):
+			return StatePlanReview, false, nil
 		default:
-			return StatePlanning.ToAgentState(), false, nil
+			return StatePlanning, false, nil
 		}
 	}
 
 	// Create question for architect if we don't have one pending
 	if d.pendingQuestion == nil {
-		questionContent, _ := sm.GetStateValue("question_content")
-		questionReason, _ := sm.GetStateValue("question_reason")
-		questionOrigin, _ := sm.GetStateValue("question_origin")
+		questionContent, _ := sm.GetStateValue(keyQuestionContent)
+		questionReason, _ := sm.GetStateValue(keyQuestionReason)
+		questionOrigin, _ := sm.GetStateValue(keyQuestionOrigin)
+		errorMsg, _ := sm.GetStateValue(keyErrorMessage)
+
+		// Include error message in content if present
+		content := ""
+		if questionContent != nil {
+			content = questionContent.(string)
+		}
+		if errorMsg != nil && errorMsg.(string) != "" {
+			if content != "" {
+				content += "\n\nError: " + errorMsg.(string)
+			} else {
+				content = "Error: " + errorMsg.(string)
+			}
+		}
 
 		d.pendingQuestion = &Question{
-			Content: questionContent.(string),
+			ID:      proto.GenerateQuestionID(),
+			Content: content,
 			Reason:  questionReason.(string),
 			Origin:  questionOrigin.(string),
 		}
 	}
 
 	// Stay in QUESTION state until we get an answer
-	return StateQuestion.ToAgentState(), false, nil
+	return StateQuestion, false, nil
 }
 
 // Helper methods
@@ -1382,11 +1344,11 @@ func (d *CoderDriver) formatContextAsString() string {
 }
 
 // GetPendingApprovalRequest returns pending approval request if any
-func (d *CoderDriver) GetPendingApprovalRequest() (bool, string, string) {
+func (d *CoderDriver) GetPendingApprovalRequest() (bool, string, string, string, proto.ApprovalType) {
 	if d.pendingApprovalRequest == nil {
-		return false, "", ""
+		return false, "", "", "", ""
 	}
-	return true, d.pendingApprovalRequest.Content, d.pendingApprovalRequest.Reason
+	return true, d.pendingApprovalRequest.ID, d.pendingApprovalRequest.Content, d.pendingApprovalRequest.Reason, d.pendingApprovalRequest.Type
 }
 
 // ClearPendingApprovalRequest clears the pending approval request
@@ -1394,12 +1356,12 @@ func (d *CoderDriver) ClearPendingApprovalRequest() {
 	d.pendingApprovalRequest = nil
 }
 
-// GetPendingQuestion returns pending question if any
-func (d *CoderDriver) GetPendingQuestion() (bool, string, string) {
+// GetPendingQuestion returns pending question if any  
+func (d *CoderDriver) GetPendingQuestion() (bool, string, string, string) {
 	if d.pendingQuestion == nil {
-		return false, "", ""
+		return false, "", "", ""
 	}
-	return true, d.pendingQuestion.Content, d.pendingQuestion.Reason
+	return true, d.pendingQuestion.ID, d.pendingQuestion.Content, d.pendingQuestion.Reason
 }
 
 // ClearPendingQuestion clears the pending question
@@ -1447,8 +1409,127 @@ func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType 
 
 // ProcessAnswer processes answer from architect
 func (d *CoderDriver) ProcessAnswer(answer string) error {
+	sm := d.BaseStateMachine
+	
+	// Check if this is an AUTO_CHECKIN response
+	if reason, exists := sm.GetStateValue(keyQuestionReason); exists {
+		if reasonStr, ok := reason.(string); ok && reasonStr == QuestionReasonAutoCheckin {
+			return d.processAutoCheckinAnswer(answer)
+		}
+	}
+	
+	// Regular answer processing
 	d.BaseStateMachine.SetStateData(keyArchitectAnswer, answer)
 	return nil
+}
+
+// processAutoCheckinAnswer handles architect replies to AUTO_CHECKIN questions
+func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
+	sm := d.BaseStateMachine
+	answer = strings.TrimSpace(answer)
+	
+	// Get the origin state
+	origin, exists := sm.GetStateValue(keyQuestionOrigin)
+	if !exists {
+		return fmt.Errorf("missing question_origin for AUTO_CHECKIN")
+	}
+	originStr, ok := origin.(string)
+	if !ok {
+		return fmt.Errorf("invalid question_origin type")
+	}
+	
+	// Parse the command
+	parts := strings.Fields(strings.ToUpper(answer))
+	if len(parts) == 0 {
+		return d.sendAutoCheckinError(fmt.Sprintf("Empty AUTO_CHECKIN command. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON."))
+	}
+	
+	// Validate command using typed enum
+	commandStr := parts[0]
+	command, err := ParseAutoAction(commandStr)
+	if err != nil {
+		return d.sendAutoCheckinError(err.Error())
+	}
+	
+	switch command {
+	case AutoContinue:
+		// Parse the number parameter
+		var increase int = 0
+		if len(parts) > 1 {
+			if n, err := strconv.Atoi(parts[1]); err == nil {
+				increase = n
+			} else {
+				return d.sendAutoCheckinError(fmt.Sprintf("Invalid number in CONTINUE command: %s", parts[1]))
+			}
+		}
+		
+		// Increase budget and reset counter
+		switch originStr {
+		case string(StateCoding):
+			d.codingBudget += increase
+			sm.SetStateData(keyCodingIterations, 0)
+		case string(StateFixing):
+			d.fixingBudget += increase
+			sm.SetStateData(keyFixingIterations, 0)
+		default:
+			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
+		}
+		
+		// Clear question state and set answer
+		d.clearQuestionState()
+		sm.SetStateData(keyArchitectAnswer, fmt.Sprintf("Budget increased by %d, counter reset", increase))
+		
+	case AutoPivot:
+		// Reset counter, stay in current state
+		switch originStr {
+		case string(StateCoding):
+			sm.SetStateData(keyCodingIterations, 0)
+		case string(StateFixing):
+			sm.SetStateData(keyFixingIterations, 0)
+		default:
+			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
+		}
+		
+		// Clear question state and set answer
+		d.clearQuestionState()
+		sm.SetStateData(keyArchitectAnswer, "Counter reset, continuing with pivot approach")
+		
+	case AutoEscalate:
+		// Set explicit flag for escalation
+		d.clearQuestionState()
+		sm.SetStateData(keyAutoCheckinAction, AutoEscalate.String())
+		sm.SetStateData(keyArchitectAnswer, "Escalating to code review")
+		
+	case AutoAbandon:
+		// Set explicit flag for abandonment
+		d.clearQuestionState()
+		sm.SetStateData(keyAutoCheckinAction, AutoAbandon.String())
+		sm.SetStateData(keyArchitectAnswer, "Task abandoned")
+		
+	default:
+		return d.sendAutoCheckinError(fmt.Sprintf("Unrecognised AUTO_CHECKIN command: %q. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON.", command))
+	}
+	
+	return nil
+}
+
+// sendAutoCheckinError sends an error message back to architect for invalid commands
+func (d *CoderDriver) sendAutoCheckinError(errorMsg string) error {
+	// Stay in QUESTION state by not clearing question state
+	// Preserve original question context and add error message separately
+	d.BaseStateMachine.SetStateData(keyErrorMessage, errorMsg)
+	return fmt.Errorf("invalid AUTO_CHECKIN command, staying in QUESTION state")
+}
+
+// clearQuestionState clears AUTO_CHECKIN question state
+func (d *CoderDriver) clearQuestionState() {
+	sm := d.BaseStateMachine
+	sm.SetStateData(keyQuestionReason, "")
+	sm.SetStateData(keyQuestionOrigin, "")
+	sm.SetStateData(keyQuestionContent, "")
+	sm.SetStateData(keyErrorMessage, "")
+	sm.SetStateData(keyAutoCheckinAction, "")
+	// Note: Intentionally not clearing loops/max_loops for audit purposes
 }
 
 // GetContextSummary returns a summary of the current context
@@ -1498,6 +1579,8 @@ func (d *CoderDriver) Step(ctx context.Context) (bool, error) {
 	// Transition to next state if different, even when done
 	currentState := d.GetCurrentState()
 	if nextState != currentState {
+		// Transition validation is handled by base state machine
+		
 		if err := d.TransitionTo(ctx, nextState, nil); err != nil {
 			return false, fmt.Errorf("failed to transition to state %s: %w", nextState, err)
 		}

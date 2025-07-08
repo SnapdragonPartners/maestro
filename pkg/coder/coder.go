@@ -23,7 +23,7 @@ type Coder struct {
 // NewCoder creates a new coder agent using the core state machine (mock mode)
 func NewCoder(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg) (*Coder, error) {
 	logger := logx.NewLogger(id)
-	driver, err := NewCoderDriver(id, stateStore, modelConfig, nil, workDir)
+	driver, err := NewCoderDriver(id, stateStore, modelConfig, nil, workDir, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder driver: %w", err)
 	}
@@ -40,7 +40,7 @@ func NewCoder(id, name, workDir string, stateStore *state.Store, modelConfig *co
 // NewCoderWithLLM creates a new coder agent with LLM integration
 func NewCoderWithLLM(id, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient) (*Coder, error) {
 	logger := logx.NewLogger(id)
-	driver, err := NewCoderDriver(id, stateStore, modelConfig, llmClient, workDir)
+	driver, err := NewCoderDriver(id, stateStore, modelConfig, llmClient, workDir, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder driver: %w", err)
 	}
@@ -62,7 +62,7 @@ func NewCoderWithClaude(id, name, workDir string, stateStore *state.Store, model
 	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create driver with LLM integration
-	driver, err := NewCoderDriver(id, stateStore, modelConfig, llmClient, workDir)
+	driver, err := NewCoderDriver(id, stateStore, modelConfig, llmClient, workDir, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder driver: %w", err)
 	}
@@ -146,12 +146,13 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 	}
 
 	// Check if there's a pending question for the architect
-	if hasPending, questionContent, questionReason := c.driver.GetPendingQuestion(); hasPending {
-		c.logger.Info("Sending QUESTION message to architect: %s", questionReason)
+	if hasPending, questionID, questionContent, questionReason := c.driver.GetPendingQuestion(); hasPending {
+		c.logger.Info("Sending QUESTION message to architect: %s (ID: %s)", questionReason, questionID)
 
 		// Create QUESTION message for architect
 		questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, c.id, "architect")
 		questionMsg.ParentMsgID = msg.ID
+		questionMsg.SetQuestionCorrelation(questionID) // Set correlation ID
 		questionMsg.SetPayload(proto.KeyQuestion, questionContent)
 		questionMsg.SetPayload(proto.KeyReason, questionReason)
 		questionMsg.SetPayload(proto.KeyCurrentState, string(c.driver.GetCurrentState()))
@@ -166,23 +167,18 @@ func (c *Coder) handleTaskMessage(ctx context.Context, msg *proto.AgentMsg) (*pr
 	}
 
 	// Check if there's a pending approval request for the architect
-	if hasPending, requestContent, requestReason := c.driver.GetPendingApprovalRequest(); hasPending {
-		c.logger.Info("Sending REQUEST message to architect for approval: %s", requestReason)
-
-		// Determine approval type based on current state
-		approvalType := proto.ApprovalTypePlan
-		if c.driver.GetCurrentState() == StateCodeReview.ToAgentState() {
-			approvalType = proto.ApprovalTypeCode
-		}
+	if hasPending, approvalID, requestContent, requestReason, approvalType := c.driver.GetPendingApprovalRequest(); hasPending {
+		c.logger.Info("Sending REQUEST message to architect for approval: %s (ID: %s)", requestReason, approvalID)
 
 		// Create REQUEST message for architect approval
 		approvalMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.id, "architect")
 		approvalMsg.ParentMsgID = msg.ID
+		approvalMsg.SetApprovalCorrelation(approvalID) // Set correlation ID
 		approvalMsg.SetPayload(proto.KeyRequest, requestContent)
 		approvalMsg.SetPayload(proto.KeyReason, requestReason)
 		approvalMsg.SetPayload(proto.KeyCurrentState, string(c.driver.GetCurrentState()))
 		approvalMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-		approvalMsg.SetPayload(proto.KeyApprovalType, approvalType.String())
+		approvalMsg.SetPayload(proto.KeyApprovalType, approvalType.String()) // Use explicit type from request
 		approvalMsg.SetMetadata("original_sender", msg.FromAgent)
 		approvalMsg.SetMetadata("message_type", "approval_request")
 

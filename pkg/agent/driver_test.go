@@ -35,9 +35,24 @@ func setupTestDriver(t *testing.T) (*BaseDriver, *AgentContext) {
 		Context: *ctx,
 	}
 
-	driver, err := NewBaseDriver(cfg, StatePlanning)
+	driver, err := NewBaseDriver(cfg, State("PLANNING"))
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
+	}
+
+	// Update the state machine to use test transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {State("TESTING"), StateDone, StateError},
+		State("TESTING"):  {StateDone, State("PLANNING"), StateError},
+		StateDone:         {State("PLANNING")},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+	
+	// Replace state machine with one that has proper transitions
+	if baseSM, ok := driver.StateMachine.(*BaseStateMachine); ok {
+		baseSM.table = testTransitions
 	}
 
 	if err := driver.Initialize(context.Background()); err != nil {
@@ -50,7 +65,7 @@ func setupTestDriver(t *testing.T) (*BaseDriver, *AgentContext) {
 func TestBaseDriver(t *testing.T) {
 	driver, _ := setupTestDriver(t)
 
-	if driver.GetCurrentState() != StatePlanning {
+	if driver.GetCurrentState() != State("PLANNING") {
 		t.Errorf("Expected initial state PLANNING, got %v", driver.GetCurrentState())
 	}
 
@@ -59,12 +74,12 @@ func TestBaseDriver(t *testing.T) {
 		"test": "data",
 	}
 
-	if err := driver.TransitionTo(context.Background(), StateCoding, metadata); err != nil {
+	if err := driver.TransitionTo(context.Background(), State("CODING"), metadata); err != nil {
 		t.Errorf("Failed to transition state: %v", err)
 	}
 
 	// Verify state changed
-	if driver.GetCurrentState() != StateCoding {
+	if driver.GetCurrentState() != State("CODING") {
 		t.Errorf("Expected state CODING, got %v", driver.GetCurrentState())
 	}
 
@@ -106,7 +121,7 @@ func TestBaseDriverWithModelConfig(t *testing.T) {
 		},
 	}
 
-	driver, err := NewBaseDriver(cfg, StatePlanning)
+	driver, err := NewBaseDriver(cfg, State("PLANNING"))
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -115,7 +130,7 @@ func TestBaseDriverWithModelConfig(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	if driver.GetCurrentState() != StatePlanning {
+	if driver.GetCurrentState() != State("PLANNING") {
 		t.Errorf("Expected initial state PLANNING, got %v", driver.GetCurrentState())
 	}
 }
@@ -124,7 +139,7 @@ func TestBaseDriverStateCompaction(t *testing.T) {
 	driver, _ := setupTestDriver(t)
 
 	// Add several state transitions to trigger compaction
-	states := []State{StateCoding, StateTesting, StateDone, StatePlanning}
+	states := []State{State("CODING"), State("TESTING"), StateDone, State("PLANNING")}
 	for _, state := range states {
 		err := driver.TransitionTo(context.Background(), state, map[string]any{
 			"timestamp": time.Now(),
@@ -141,7 +156,7 @@ func TestBaseDriverStateCompaction(t *testing.T) {
 	}
 
 	// Verify state is still accessible
-	if driver.GetCurrentState() != StatePlanning {
+	if driver.GetCurrentState() != State("PLANNING") {
 		t.Errorf("Expected state PLANNING after compaction, got %v", driver.GetCurrentState())
 	}
 }
@@ -163,19 +178,19 @@ func TestBaseDriverContextCancellation(t *testing.T) {
 		},
 	}
 
-	driver, err := NewBaseDriver(newCfg, StatePlanning)
+	driver, err := NewBaseDriver(newCfg, State("PLANNING"))
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
 
 	// Attempt state transition with cancelled context
-	err = driver.TransitionTo(ctx, StateCoding, nil)
+	err = driver.TransitionTo(ctx, State("CODING"), nil)
 	if err != context.Canceled {
 		t.Errorf("Expected context.Canceled error, got %v", err)
 	}
 
 	// Verify state unchanged
-	if driver.GetCurrentState() != StatePlanning {
+	if driver.GetCurrentState() != State("PLANNING") {
 		t.Errorf("Expected state to remain PLANNING, got %v", driver.GetCurrentState())
 	}
 }
@@ -184,7 +199,7 @@ func TestBaseDriverPersistence(t *testing.T) {
 	driver, _ := setupTestDriver(t)
 
 	// Add state data
-	err := driver.TransitionTo(context.Background(), StateCoding, map[string]any{
+	err := driver.TransitionTo(context.Background(), State("CODING"), map[string]any{
 		"test": "data",
 	})
 	if err != nil {
@@ -206,7 +221,7 @@ func TestBaseDriverPersistence(t *testing.T) {
 		},
 	}
 
-	driver, err = NewBaseDriver(newCfg, StatePlanning)
+	driver, err = NewBaseDriver(newCfg, State("PLANNING"))
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -260,7 +275,7 @@ func TestBaseDriverWithMockLLM(t *testing.T) {
 		},
 	}
 
-	driver, err := NewBaseDriver(cfg, StatePlanning)
+	driver, err := NewBaseDriver(cfg, State("PLANNING"))
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -290,7 +305,7 @@ func TestBaseDriverWithMockLLM(t *testing.T) {
 	}
 
 	// Test state transitions with LLM integration
-	err = driver.TransitionTo(context.Background(), StateCoding, map[string]any{
+	err = driver.TransitionTo(context.Background(), State("CODING"), map[string]any{
 		"llm_response": "Planning phase complete",
 		"mock_mode":    true,
 	})
@@ -298,7 +313,7 @@ func TestBaseDriverWithMockLLM(t *testing.T) {
 		t.Errorf("Failed to transition with mock LLM: %v", err)
 	}
 
-	if driver.GetCurrentState() != StateCoding {
+	if driver.GetCurrentState() != State("CODING") {
 		t.Errorf("Expected state CODING, got %v", driver.GetCurrentState())
 	}
 }
@@ -375,7 +390,7 @@ func TestBaseDriverShutdown(t *testing.T) {
 			Context: context.Background(),
 			Store:   driver.StateMachine.(*BaseStateMachine).store,
 		},
-	}, StatePlanning)
+	}, State("PLANNING"))
 	if err != nil {
 		t.Fatalf("Failed to create new driver: %v", err)
 	}
@@ -400,7 +415,7 @@ func TestBaseDriverErrorHandling(t *testing.T) {
 		},
 	}
 
-	_, err := NewBaseDriver(invalidCfg, StatePlanning)
+	_, err := NewBaseDriver(invalidCfg, State("PLANNING"))
 	if err == nil {
 		t.Error("Expected error when creating driver with invalid config")
 	}

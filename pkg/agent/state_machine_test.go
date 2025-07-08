@@ -14,10 +14,19 @@ func TestBaseStateMachine(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	// Create a test transition table with valid transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {StateDone, StateError},
+		StateDone:         {},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
+	sm := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 
 	// Test initial state
-	if sm.GetCurrentState() != StatePlanning {
+	if sm.GetCurrentState() != State("PLANNING") {
 		t.Errorf("Expected initial state PLANNING, got %v", sm.GetCurrentState())
 	}
 
@@ -35,12 +44,12 @@ func TestBaseStateMachine(t *testing.T) {
 	metadata := map[string]any{
 		"transition_reason": "testing",
 	}
-	err = sm.TransitionTo(context.Background(), StateCoding, metadata)
+	err = sm.TransitionTo(context.Background(), State("CODING"), metadata)
 	if err != nil {
 		t.Errorf("Failed to transition to CODING: %v", err)
 	}
 
-	if sm.GetCurrentState() != StateCoding {
+	if sm.GetCurrentState() != State("CODING") {
 		t.Errorf("Expected state CODING, got %v", sm.GetCurrentState())
 	}
 
@@ -55,7 +64,7 @@ func TestBaseStateMachine(t *testing.T) {
 	if len(transitions) != 1 {
 		t.Errorf("Expected 1 transition, got %d", len(transitions))
 	}
-	if transitions[0].FromState != StatePlanning || transitions[0].ToState != StateCoding {
+	if transitions[0].FromState != State("PLANNING") || transitions[0].ToState != State("CODING") {
 		t.Errorf("Unexpected transition: %v -> %v", transitions[0].FromState, transitions[0].ToState)
 	}
 }
@@ -67,10 +76,19 @@ func TestBaseStateMachineValidation(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	// Create a test transition table with valid transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {StateDone, StateError},
+		StateDone:         {},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
+	sm := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 
 	// Test invalid transition
-	err = sm.TransitionTo(context.Background(), StateTesting, nil)
+	err = sm.TransitionTo(context.Background(), State("TESTING"), nil)
 	if err == nil {
 		t.Error("Expected error for invalid transition PLANNING -> TESTING")
 	}
@@ -95,11 +113,20 @@ func TestBaseStateMachinePersistence(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
+	// Create a test transition table with valid transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {StateDone, StateError},
+		StateDone:         {},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
 	// Create and configure first state machine
-	sm1 := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	sm1 := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 	sm1.SetStateData("persistent_data", "should_survive")
 
-	err = sm1.TransitionTo(context.Background(), StateCoding, map[string]any{
+	err = sm1.TransitionTo(context.Background(), State("CODING"), map[string]any{
 		"test": "metadata",
 	})
 	if err != nil {
@@ -113,14 +140,14 @@ func TestBaseStateMachinePersistence(t *testing.T) {
 	}
 
 	// Create new state machine and load state
-	sm2 := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	sm2 := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 	err = sm2.Initialize(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to initialize second state machine: %v", err)
 	}
 
 	// Verify state was restored
-	if sm2.GetCurrentState() != StateCoding {
+	if sm2.GetCurrentState() != State("CODING") {
 		t.Errorf("Expected restored state CODING, got %v", sm2.GetCurrentState())
 	}
 
@@ -147,7 +174,16 @@ func TestBaseStateMachineRetries(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	// Create a test transition table with valid transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {StateDone, StateError},
+		StateDone:         {},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
+	sm := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 	sm.SetMaxRetries(2)
 
 	// Test retry counting
@@ -165,7 +201,7 @@ func TestBaseStateMachineRetries(t *testing.T) {
 	sm.SetMaxRetries(5) // Reset for clean test
 	sm.IncrementRetry()
 
-	err = sm.TransitionTo(context.Background(), StateCoding, nil)
+	err = sm.TransitionTo(context.Background(), State("CODING"), nil)
 	if err != nil {
 		t.Fatalf("Failed to transition: %v", err)
 	}
@@ -184,10 +220,20 @@ func TestBaseStateMachineCompaction(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	// Create a test transition table with valid circular transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {State("TESTING"), StateDone, StateError},
+		State("TESTING"):  {StateDone, State("PLANNING"), StateError},
+		StateDone:         {State("PLANNING")},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
+	sm := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 
 	// Add many transitions to trigger compaction
-	states := []State{StateCoding, StateTesting, StateDone, StatePlanning}
+	states := []State{State("CODING"), State("TESTING"), StateDone, State("PLANNING")}
 	for i := 0; i < 150; i++ { // More than the 100 transition limit
 		state := states[i%len(states)]
 		err = sm.TransitionTo(context.Background(), state, map[string]any{
@@ -217,7 +263,7 @@ func TestBaseStateMachineCompaction(t *testing.T) {
 	}
 
 	// State should still be accessible
-	// The final state after 150 transitions should be states[149%4] = states[1] = StateTesting
+	// The final state after 150 transitions should be states[149%4] = states[1] = State("TESTING")
 	expectedFinalState := states[(150-1)%len(states)]
 	if sm.GetCurrentState() != expectedFinalState {
 		t.Errorf("Expected current state %v to be preserved after compaction, got %v", expectedFinalState, sm.GetCurrentState())
@@ -231,20 +277,29 @@ func TestBaseStateMachineContextCancellation(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	// Create a test transition table with valid transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {StateDone, StateError},
+		StateDone:         {},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
+	sm := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	// Attempt transition with cancelled context
-	err = sm.TransitionTo(ctx, StateCoding, nil)
+	err = sm.TransitionTo(ctx, State("CODING"), nil)
 	if err != context.Canceled {
 		t.Errorf("Expected context.Canceled error, got %v", err)
 	}
 
 	// State should remain unchanged
-	if sm.GetCurrentState() != StatePlanning {
+	if sm.GetCurrentState() != State("PLANNING") {
 		t.Errorf("Expected state to remain PLANNING after cancelled transition")
 	}
 }
@@ -267,8 +322,17 @@ func TestBaseStateMachineWithMockLLM(t *testing.T) {
 	}
 	mockClient := NewMockLLMClient(mockResponses, nil)
 
+	// Create a test transition table with valid transitions
+	testTransitions := TransitionTable{
+		State("PLANNING"): {State("CODING"), StateError},
+		State("CODING"):   {StateDone, StateError},
+		StateDone:         {},
+		StateError:        {StateWaiting},
+		StateWaiting:      {State("PLANNING")},
+	}
+
 	// Test that mock client works with state machine
-	sm := NewBaseStateMachine("test-agent", StatePlanning, store, nil)
+	sm := NewBaseStateMachine("test-agent", State("PLANNING"), store, testTransitions)
 	sm.SetStateData("llm_client", mockClient)
 
 	// Simulate using LLM client during state processing
@@ -288,7 +352,7 @@ func TestBaseStateMachineWithMockLLM(t *testing.T) {
 	}
 
 	// Test state transition with LLM data
-	err = sm.TransitionTo(context.Background(), StateCoding, map[string]any{
+	err = sm.TransitionTo(context.Background(), State("CODING"), map[string]any{
 		"llm_response": "Planning complete",
 	})
 	if err != nil {

@@ -32,7 +32,7 @@ func TestConcurrentCoders(t *testing.T) {
 			}
 			
 			// Create coder - this will initialize local transitions
-			_, err = NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+			_, err = NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 			if err != nil {
 				mu.Lock()
 				errors = append(errors, err)
@@ -71,7 +71,7 @@ func TestConcurrentTransitions(t *testing.T) {
 				return
 			}
 			
-			driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+			driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 			if err != nil {
 				mu.Lock()
 				errors = append(errors, err)
@@ -80,7 +80,7 @@ func TestConcurrentTransitions(t *testing.T) {
 			}
 			
 			// Test a simple state transition
-			err = driver.performTransition(context.Background(), StatePlanning.ToAgentState(), map[string]any{"test": "data"})
+			err = driver.TransitionTo(context.Background(), StatePlanning, map[string]any{"test": "data"})
 			if err != nil {
 				mu.Lock()
 				errors = append(errors, err)

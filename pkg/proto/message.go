@@ -48,6 +48,11 @@ const (
 	KeyCurrentState  = "current_state"
 	KeyRequest       = "request"
 	
+	// Correlation keys for QUESTION/ANSWER and REQUEST/RESULT pairs
+	KeyQuestionID    = "question_id"    // Unique ID for each question
+	KeyApprovalID    = "approval_id"    // Unique ID for each approval request
+	KeyCorrelationID = "correlation_id" // Generic correlation ID for any request/response pair
+	
 	// Task-related keys
 	KeyTaskType      = "task_type"
 	KeyStoryID       = "story_id"
@@ -365,4 +370,101 @@ func ConvertLegacyStatus(legacyStatus string) ApprovalStatus {
 		// Default to rejected for unknown statuses
 		return ApprovalStatusRejected
 	}
+}
+
+// AutoAction represents AUTO_CHECKIN command types for inter-agent communication
+type AutoAction string
+
+const (
+	AutoContinue AutoAction = "CONTINUE"
+	AutoPivot    AutoAction = "PIVOT"
+	AutoEscalate AutoAction = "ESCALATE"
+	AutoAbandon  AutoAction = "ABANDON"
+)
+
+// Question reason constants
+const (
+	QuestionReasonAutoCheckin = "AUTO_CHECKIN"
+)
+
+// ParseAutoAction validates and converts a string to AutoAction
+func ParseAutoAction(s string) (AutoAction, error) {
+	switch AutoAction(s) {
+	case AutoContinue, AutoPivot, AutoEscalate, AutoAbandon:
+		return AutoAction(s), nil
+	default:
+		return "", fmt.Errorf("invalid AUTO_CHECKIN command: %q. Valid: CONTINUE, PIVOT, ESCALATE, ABANDON", s)
+	}
+}
+
+// String returns the string representation of AutoAction
+func (a AutoAction) String() string {
+	return string(a)
+}
+
+// Correlation ID helpers for QUESTION/ANSWER and REQUEST/RESULT pairs
+
+// GenerateQuestionID creates a unique ID for a question
+func GenerateQuestionID() string {
+	return fmt.Sprintf("q_%d_%d", time.Now().UnixNano(), generateUniqueCounter())
+}
+
+// GenerateApprovalID creates a unique ID for an approval request
+func GenerateApprovalID() string {
+	return fmt.Sprintf("a_%d_%d", time.Now().UnixNano(), generateUniqueCounter())
+}
+
+// GenerateCorrelationID creates a unique ID for any request/response pair
+func GenerateCorrelationID() string {
+	return fmt.Sprintf("c_%d_%d", time.Now().UnixNano(), generateUniqueCounter())
+}
+
+// Helper for generating unique counters (reuses existing ID generation logic)
+func generateUniqueCounter() int64 {
+	idMutex.Lock()
+	defer idMutex.Unlock()
+	idCounter++
+	return idCounter
+}
+
+// SetQuestionCorrelation sets question correlation fields on a message
+func (msg *AgentMsg) SetQuestionCorrelation(questionID string) {
+	msg.SetPayload(KeyQuestionID, questionID)
+	msg.SetPayload(KeyCorrelationID, questionID)
+}
+
+// SetApprovalCorrelation sets approval correlation fields on a message
+func (msg *AgentMsg) SetApprovalCorrelation(approvalID string) {
+	msg.SetPayload(KeyApprovalID, approvalID)
+	msg.SetPayload(KeyCorrelationID, approvalID)
+}
+
+// GetQuestionID extracts the question ID from a message
+func (msg *AgentMsg) GetQuestionID() (string, bool) {
+	if id, exists := msg.GetPayload(KeyQuestionID); exists {
+		if idStr, ok := id.(string); ok {
+			return idStr, true
+		}
+	}
+	return "", false
+}
+
+// GetApprovalID extracts the approval ID from a message
+func (msg *AgentMsg) GetApprovalID() (string, bool) {
+	if id, exists := msg.GetPayload(KeyApprovalID); exists {
+		if idStr, ok := id.(string); ok {
+			return idStr, true
+		}
+	}
+	return "", false
+}
+
+// GetCorrelationID extracts the correlation ID from a message
+func (msg *AgentMsg) GetCorrelationID() (string, bool) {
+	if id, exists := msg.GetPayload(KeyCorrelationID); exists {
+		if idStr, ok := id.(string); ok {
+			return idStr, true
+		}
+	}
+	return "", false
 }

@@ -29,23 +29,33 @@ make run
 
 ### Running Individual Agents with AgentCtl
 
-The `agentctl` tool allows you to run individual agents in isolation for testing and development:
+The `agentctl` tool allows you to run individual agents in isolation for testing and development.
 
-#### Basic Usage
+#### Canonical Usage
 
 ```bash
-# Run architect agent with a story file
-./bin/agentctl run architect --input stories/001.md --mock
+# Canonical format (defaults to coder agent and live mode with API key fallback)
+./bin/agentctl run [coder|architect] --input <file.json> [--workdir <dir>] [--mode <mock|live|debug>] [--cleanup]
 
-# Run claude agent with a task JSON
-./bin/agentctl run claude --input task.json --mock
-
-# Use live API calls (requires API keys)
-./bin/agentctl run claude --input task.json --live
-
-# Save output to file
-./bin/agentctl run claude --input task.json --mock --output result.json
+# Simple examples
+./bin/agentctl run --input tests/fixtures/test_task.json                    # Default: coder, auto-detect mode
+./bin/agentctl run coder --input tests/fixtures/test_task.json             # Explicit coder agent
+./bin/agentctl run architect --input stories/001.md --mode mock            # Architect in mock mode
+./bin/agentctl run coder --input task.json --workdir ./work/tmp --cleanup  # Custom workdir with cleanup
 ```
+
+#### Mode Auto-Detection
+
+The tool automatically detects the best mode based on available API keys:
+- **live mode**: Used if `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variables are set
+- **mock mode**: Fallback when no API keys are available (shows informational message)
+- **debug mode**: Explicit debugging mode (specify with `--mode debug`)
+
+#### Workspace Management
+
+- **Default behavior**: Working directories are preserved after execution for inspection
+- **Cleanup**: Use `--cleanup` flag to remove temporary directories after execution
+- **Auto-generated**: If `--workdir` is not specified, creates temporary directories automatically
 
 #### Architect Commands
 
@@ -68,41 +78,57 @@ The architect agent provides additional commands for managing escalations and mo
 
 #### Agent Types
 
+- **coder** (default) - Process coding tasks and generate implementations
+  - Input: TASK JSON messages
+  - Output: RESULT JSON with generated code and test results
+  - Modes: mock, live (with `ANTHROPIC_API_KEY`)
+
 - **architect** - Process development stories and generate task messages
   - Input: Markdown story files (`.md`)
   - Output: TASK JSON messages with requirements and implementation details
+  - Modes: mock (live mode not yet implemented)
   - Additional Commands: `list-escalations` for monitoring business questions and review failures
-
-- **claude** - Process coding tasks and generate implementations
-  - Input: TASK JSON messages
-  - Output: RESULT JSON with generated code and test results
 
 #### Modes
 
-- **--mock** - Use mock implementations (default, fast, no API calls)
-- **--live** - Use real API calls (requires environment variables)
+- **auto-detect** - Automatically choose live or mock based on API key presence (default)
+- **mock** - Use mock implementations (fast, no API calls)
+- **live** - Use real API calls (requires environment variables)
+- **debug** - Enhanced debugging mode with additional logging
 
 #### Environment Variables for Live Mode
 
 ```bash
-# For Claude agent live mode
+# For coder agent live mode
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 
 # For architect agent live mode (when implemented)
 export OPENAI_API_KEY="your-openai-api-key"
+
+# Auto-detection works with either key present
+# Tool will inform you when falling back to mock mode
 ```
 
 #### Examples
 
 ```bash
-# Generate a task from a health endpoint story
-./bin/agentctl run architect --input stories/001.md --mock
+# Basic coder usage (auto-detects mode, preserves workdir)
+./bin/agentctl run --input tests/fixtures/test_task.json
 
-# Process a coding task and generate implementation
-./bin/agentctl run claude --input task.json --mock
+# Explicit coder with custom workdir and cleanup
+./bin/agentctl run coder --input tests/fixtures/test_task.json --workdir ./work/tmp --cleanup
 
-# Use live API with output file
-./bin/agentctl run claude --input task.json --live --output implementation.json
+# Architect in mock mode (live mode not yet implemented)
+./bin/agentctl run architect --input stories/001.md --mode mock
+
+# Force mock mode even with API keys present
+./bin/agentctl run coder --input task.json --mode mock
+
+# Debug mode with enhanced logging
+./bin/agentctl run coder --input task.json --mode debug
+
+# Run full orchestrator flow with all agents using test spec
+./bin/orchestrator --spec tests/fixtures/test_spec.md
 
 # Monitor architect escalations (business questions, review failures)
 ./bin/agentctl architect list-escalations --status pending
@@ -111,14 +137,14 @@ export OPENAI_API_KEY="your-openai-api-key"
 
 #### Sample Task JSON Format
 
-For testing the Claude agent, create a task JSON file in the `tests/fixtures/` directory:
+For testing the coder agent, create a task JSON file in the `tests/fixtures/` directory:
 
 ```json
 {
   "id": "test_msg_001",
   "type": "TASK", 
   "from_agent": "architect",
-  "to_agent": "claude",
+  "to_agent": "coder",
   "timestamp": "2025-06-10T19:00:00Z",
   "payload": {
     "content": "Create a simple health endpoint that returns JSON with status and timestamp",
@@ -253,11 +279,11 @@ go test ./...
 go test -v . -run TestE2ESmokeTest
 
 # Test individual agents (using files in tests/fixtures/)
-./bin/agentctl run architect --input stories/001.md --mock
-./bin/agentctl run claude --input tests/fixtures/test_task.json --mock
+./bin/agentctl run architect --input stories/001.md --mode mock
+./bin/agentctl run coder --input tests/fixtures/test_task.json --mode mock
 
-# Test live mode with workspace
-./bin/agentctl run claude --input tests/fixtures/test_task.json --mode live --workdir ./work/tmp
+# Test live mode with workspace (auto-detects mode)
+./bin/agentctl run coder --input tests/fixtures/test_task.json --workdir ./work/tmp
 
 # Test architect escalation commands
 ./bin/agentctl architect list-escalations

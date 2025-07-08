@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"orchestrator/pkg/architect"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
@@ -79,17 +80,14 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 		
 		// In standalone mode, check for pending approvals and auto-approve them
 		if isLiveMode {
-			if hasPending, content, reason := agent.GetDriver().GetPendingApprovalRequest(); hasPending {
+			if hasPending, _, content, reason, approvalType := agent.GetDriver().GetPendingApprovalRequest(); hasPending {
 				fmt.Fprintf(os.Stderr, "[Auto-approving] %s: %s\n", reason, content[:min(100, len(content))])
 				
-				// Determine approval type based on reason
-				approvalType := "plan"
-				if contains(reason, "code") || contains(reason, "Code") {
-					approvalType = "code"
-				}
+				// Use the approval type from the pending request
+				approvalTypeStr := string(approvalType)
 				
 				// Auto-approve
-				if err := agent.GetDriver().ProcessApprovalResult("APPROVED", approvalType); err != nil {
+				if err := agent.GetDriver().ProcessApprovalResult("APPROVED", approvalTypeStr); err != nil {
 					return nil, fmt.Errorf("failed to process approval: %w", err)
 				}
 				
@@ -99,13 +97,13 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 				// Continue processing with a dummy continue message
 				continueMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "agentctl", agent.GetID())
 				continueMsg.SetPayload("approval_status", "APPROVED")
-				continueMsg.SetPayload("approval_type", approvalType)
+				continueMsg.SetPayload("approval_type", approvalTypeStr)
 				msg = continueMsg
 				continue
 			}
 			
 			// Check for pending questions and auto-answer them
-			if hasPending, content, reason := agent.GetDriver().GetPendingQuestion(); hasPending {
+			if hasPending, _, content, reason := agent.GetDriver().GetPendingQuestion(); hasPending {
 				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:min(100, len(content))])
 				
 				// Provide a generic helpful answer
@@ -145,18 +143,33 @@ func contains(s, substr string) bool {
 }
 
 func main() {
-	if len(os.Args) < 3 || os.Args[1] != "run" || os.Args[2] != "claude" {
-		fmt.Fprintf(os.Stderr, "Usage: %s run claude --input <file.json> [--workdir <dir>] [--mode <mock|live>] [--preserve-workdir]\n", os.Args[0])
+	// Parse agent type - default to coder if not specified
+	agentType := "coder"
+	if len(os.Args) >= 3 && os.Args[1] == "run" {
+		if os.Args[2] == "coder" || os.Args[2] == "architect" {
+			agentType = os.Args[2]
+		} else if os.Args[2] != "--input" {
+			fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--mode <mock|live|debug>] [--cleanup]\n", os.Args[0])
+			os.Exit(1)
+		}
+	} else if len(os.Args) < 2 || os.Args[1] != "run" {
+		fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--mode <mock|live|debug>] [--cleanup]\n", os.Args[0])
 		os.Exit(1)
 	}
 
 	var inputFile string
 	var workDir string
-	var mode string = "mock"
-	var preserveWorkDir bool = false
+	var mode string = "" // Will be auto-detected
+	var cleanup bool = false
+
+	// Determine starting index for flag parsing
+	startIdx := 2
+	if len(os.Args) >= 3 && (os.Args[2] == "coder" || os.Args[2] == "architect") {
+		startIdx = 3
+	}
 
 	// Simple flag parsing
-	for i := 3; i < len(os.Args); i++ {
+	for i := startIdx; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--input":
 			if i+1 < len(os.Args) {
@@ -173,8 +186,8 @@ func main() {
 				mode = os.Args[i+1]
 				i++
 			}
-		case "--preserve-workdir":
-			preserveWorkDir = true
+		case "--cleanup":
+			cleanup = true
 		}
 	}
 
@@ -183,15 +196,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Auto-detect mode if not specified
+	if mode == "" {
+		if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
+			mode = "live"
+		} else {
+			mode = "mock"
+			fmt.Fprintf(os.Stderr, "No API keys found, defaulting to mock mode\n")
+		}
+	}
+
 	// Set up workspace
 	if workDir == "" {
-		tmpDir, err := os.MkdirTemp("", "agentctl-claude-*")
+		tmpDir, err := os.MkdirTemp("", "agentctl-*")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to create temp directory: %v\n", err)
 			os.Exit(1)
 		}
 		workDir = tmpDir
-		if !preserveWorkDir {
+		if cleanup {
 			defer os.RemoveAll(workDir)
 		} else {
 			fmt.Fprintf(os.Stderr, "Working directory preserved at: %s\n", workDir)
@@ -224,41 +247,65 @@ func main() {
 		CompactionBuffer: 1000,
 	}
 
-	var claudeAgent *coder.Coder
-	switch mode {
-	case "mock":
-		claudeAgent, err = coder.NewCoder("agentctl-claude", "standalone-claude", workDir, stateStore, modelConfig)
-	case "live":
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey == "" {
-			fmt.Fprintf(os.Stderr, "ANTHROPIC_API_KEY environment variable required for live mode\n")
+	// Create agent based on type
+	switch agentType {
+	case "coder":
+		var claudeAgent *coder.Coder
+		switch mode {
+		case "mock":
+			claudeAgent, err = coder.NewCoder("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig)
+		case "live":
+			apiKey := os.Getenv("ANTHROPIC_API_KEY")
+			if apiKey == "" {
+				fmt.Fprintf(os.Stderr, "ANTHROPIC_API_KEY environment variable required for live mode\n")
+				os.Exit(1)
+			}
+			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey)
+		default:
+			fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock', 'live', or 'debug'\n", mode)
 			os.Exit(1)
 		}
-		claudeAgent, err = coder.NewCoderWithClaude("agentctl-claude", "standalone-claude", workDir, stateStore, modelConfig, apiKey)
+		
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create coder: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Process message with approval handling for standalone mode
+		ctx := context.Background()
+		result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, mode == "live")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to process message: %v\n", err)
+			os.Exit(1)
+		}
+		
+		// Output result
+		jsonData, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to marshal result: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(jsonData))
+		
+	case "architect":
+		switch mode {
+		case "mock":
+			_ = architect.NewDriver("agentctl-architect", stateStore, workDir, filepath.Join(workDir, "stories"))
+		case "live":
+			// TODO: Implement live architect mode - requires dispatcher and LLM client setup
+			fmt.Fprintf(os.Stderr, "Live mode for architect not yet implemented\n")
+			os.Exit(1)
+		default:
+			fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock', 'live', or 'debug'\n", mode)
+			os.Exit(1)
+		}
+		
+		// TODO: Implement architect processing workflow
+		fmt.Fprintf(os.Stderr, "Architect processing not yet implemented\n")
+		os.Exit(1)
+		
 	default:
-		fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock' or 'live'\n", mode)
+		fmt.Fprintf(os.Stderr, "Invalid agent type '%s', must be 'coder' or 'architect'\n", agentType)
 		os.Exit(1)
 	}
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create coder: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Process message with approval handling for standalone mode
-	ctx := context.Background()
-	result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, mode == "live")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to process message: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Output result
-	jsonData, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to marshal result: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println(string(jsonData))
 }

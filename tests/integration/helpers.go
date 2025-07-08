@@ -111,13 +111,50 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.CoderDriver {
 	mockLLM := &MockLLMClient{}
 	
 	// Create coder driver
-	driver, err := coder.NewCoderDriver(coderID, stateStore, modelCfg, mockLLM, tempDir)
+	driver, err := coder.NewCoderDriver(coderID, stateStore, modelCfg, mockLLM, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
 	
 	// Initialize the driver
 	if err := driver.Initialize(context.Background()); err != nil {
+		t.Fatalf("Failed to initialize coder driver %s: %v", coderID, err)
+	}
+	
+	return driver
+}
+
+// CreateTestCoderWithAgent creates a coder driver with specific agent configuration for testing
+func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.Agent) *coder.CoderDriver {
+	t.Helper()
+	
+	// Create temporary directory for this coder
+	tempDir := t.TempDir()
+	
+	// Create state store
+	stateStore, err := state.NewStore(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
+	}
+	
+	// Create minimal model config
+	modelCfg := &config.ModelCfg{
+		MaxContextTokens: 8192,
+		MaxReplyTokens:   4096,
+	}
+	
+	// Create a simple mock LLM client for testing
+	mockLLM := &MockLLMClient{}
+	
+	// Create coder driver with agent configuration
+	driver, err := coder.NewCoderDriver(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig)
+	if err != nil {
+		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
+	}
+	
+	// Initialize the driver
+	err = driver.Initialize(context.Background())
+	if err != nil {
 		t.Fatalf("Failed to initialize coder driver %s: %v", coderID, err)
 	}
 	

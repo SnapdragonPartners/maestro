@@ -17,7 +17,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestIdleCPUUsage(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestNoNestedLoops(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestNoNestedLoops(t *testing.T) {
 		}
 
 		// Check if we have pending approval (which would normally trigger external message)
-		if hasPending, _, _ := driver.GetPendingApprovalRequest(); hasPending {
+		if hasPending, _, _, _, _ := driver.GetPendingApprovalRequest(); hasPending {
 			// Simulate external approval result processing
 			err := driver.ProcessApprovalResult("approved", "plan")
 			if err != nil {

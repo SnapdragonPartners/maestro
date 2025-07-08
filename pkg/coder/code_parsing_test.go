@@ -18,7 +18,7 @@ func TestParseAndCreateFiles_FencedCodeBlocks(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestParseAndCreateFiles_PlainCodeBlocks(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestParseAndCreateFiles_UnfencedCode(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestLooksLikeCode(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestGuessFilenameFromContent(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestMixedContent(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir)
+	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}

@@ -14,8 +14,18 @@ var ValidTransitions = map[State][]State{
 // ValidTransitionsMux protects ValidTransitions map from concurrent access
 var ValidTransitionsMux sync.RWMutex
 
+// allowSelfLoop permits staying in the same state (for long-running states)
+func allowSelfLoop(from, to State) bool { 
+	return from == to 
+}
+
 // IsValidTransition checks if a state transition is allowed using the instance table
 func (sm *BaseStateMachine) IsValidTransition(from, to State) bool {
+	// Allow self-loops for long-running states (shared by coder and architect)
+	if allowSelfLoop(from, to) {
+		return true
+	}
+	
 	// Allow any transition to error state
 	if to == StateError {
 		return true
