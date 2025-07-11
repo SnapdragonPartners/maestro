@@ -18,19 +18,19 @@ import (
 // processWithApprovals handles the full workflow including auto-approvals in standalone mode
 func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.AgentMsg, isLiveMode bool) (*proto.AgentMsg, error) {
 	maxIterations := 10 // Prevent infinite loops
-	
+
 	for i := 0; i < maxIterations; i++ {
 		fmt.Fprintf(os.Stderr, "[DEBUG] Iteration %d, processing message type: %s\n", i, msg.Type)
 		fmt.Fprintf(os.Stderr, "[DEBUG] Current agent state: %s\n", agent.GetDriver().GetCurrentState())
-		
+
 		// Process the message
 		result, err := agent.ProcessMessage(ctx, msg)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		fmt.Fprintf(os.Stderr, "[DEBUG] Got result type: %s, new state: %s\n", result.Type, agent.GetDriver().GetCurrentState())
-		
+
 		// Check if this is a completion message (RESULT with status completed)
 		if result.Type == proto.MsgTypeRESULT {
 			if status, exists := result.GetPayload("status"); exists {
@@ -39,7 +39,7 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 				}
 			}
 		}
-		
+
 		// Handle REQUEST messages (approval requests) in standalone mode
 		if result.Type == proto.MsgTypeREQUEST && isLiveMode {
 			if requestType, exists := result.GetPayload("request_type"); exists {
@@ -47,23 +47,23 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 					// Auto-approve using the internal approval system
 					approvalType, _ := result.GetPayload("approval_type")
 					approvalTypeStr, _ := approvalType.(string)
-					
+
 					fmt.Fprintf(os.Stderr, "[Auto-approving] %s request\n", approvalTypeStr)
-					
+
 					// Process approval directly through the driver
 					if err := agent.GetDriver().ProcessApprovalResult("APPROVED", approvalTypeStr); err != nil {
 						return nil, fmt.Errorf("failed to process approval: %w", err)
 					}
-					
+
 					// Clear the pending request
 					agent.GetDriver().ClearPendingApprovalRequest()
-					
+
 					// Now step the state machine to continue processing
 					done, err := agent.GetDriver().Step(ctx)
 					if err != nil {
 						return nil, fmt.Errorf("failed to step state machine: %w", err)
 					}
-					
+
 					if done {
 						// Create final result message
 						finalResult := proto.NewAgentMsg(proto.MsgTypeRESULT, agent.GetID(), "agentctl")
@@ -71,29 +71,29 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 						finalResult.SetPayload("current_state", string(agent.GetDriver().GetCurrentState()))
 						return finalResult, nil
 					}
-					
+
 					// Continue with next iteration without changing the message
 					continue
 				}
 			}
 		}
-		
+
 		// In standalone mode, check for pending approvals and auto-approve them
 		if isLiveMode {
 			if hasPending, _, content, reason, approvalType := agent.GetDriver().GetPendingApprovalRequest(); hasPending {
 				fmt.Fprintf(os.Stderr, "[Auto-approving] %s: %s\n", reason, content[:min(100, len(content))])
-				
+
 				// Use the approval type from the pending request
 				approvalTypeStr := string(approvalType)
-				
+
 				// Auto-approve
 				if err := agent.GetDriver().ProcessApprovalResult("APPROVED", approvalTypeStr); err != nil {
 					return nil, fmt.Errorf("failed to process approval: %w", err)
 				}
-				
+
 				// Clear the pending request
 				agent.GetDriver().ClearPendingApprovalRequest()
-				
+
 				// Continue processing with a dummy continue message
 				continueMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "agentctl", agent.GetID())
 				continueMsg.SetPayload("approval_status", "APPROVED")
@@ -101,20 +101,20 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 				msg = continueMsg
 				continue
 			}
-			
+
 			// Check for pending questions and auto-answer them
 			if hasPending, _, content, reason := agent.GetDriver().GetPendingQuestion(); hasPending {
 				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:min(100, len(content))])
-				
+
 				// Provide a generic helpful answer
 				answer := "Please proceed with your best judgment. Focus on clean, well-documented code that follows best practices."
 				if err := agent.GetDriver().ProcessAnswer(answer); err != nil {
 					return nil, fmt.Errorf("failed to process answer: %w", err)
 				}
-				
+
 				// Clear the pending question
 				agent.GetDriver().ClearPendingQuestion()
-				
+
 				// Continue processing with a dummy continue message
 				continueMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, "agentctl", agent.GetID())
 				continueMsg.SetPayload("answer", answer)
@@ -122,11 +122,11 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 				continue
 			}
 		}
-		
+
 		// If we get here with no pending items, return the result
 		return result, nil
 	}
-	
+
 	return nil, fmt.Errorf("exceeded maximum iterations (%d), possible infinite loop", maxIterations)
 }
 
@@ -265,12 +265,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock', 'live', or 'debug'\n", mode)
 			os.Exit(1)
 		}
-		
+
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to create coder: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		// Process message with approval handling for standalone mode
 		ctx := context.Background()
 		result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, mode == "live")
@@ -278,7 +278,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Failed to process message: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		// Output result
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -286,7 +286,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println(string(jsonData))
-		
+
 	case "architect":
 		switch mode {
 		case "mock":
@@ -299,11 +299,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock', 'live', or 'debug'\n", mode)
 			os.Exit(1)
 		}
-		
+
 		// TODO: Implement architect processing workflow
 		fmt.Fprintf(os.Stderr, "Architect processing not yet implemented\n")
 		os.Exit(1)
-		
+
 	default:
 		fmt.Fprintf(os.Stderr, "Invalid agent type '%s', must be 'coder' or 'architect'\n", agentType)
 		os.Exit(1)

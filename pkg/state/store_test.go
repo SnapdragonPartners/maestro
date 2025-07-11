@@ -328,3 +328,132 @@ func TestGlobalStoreFunctions(t *testing.T) {
 		t.Error("Expected non-nil global store")
 	}
 }
+
+func TestAgentState_NewFields(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := NewStore(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	// Create AgentState with new fields
+	plan := "Test implementation plan"
+	taskContent := "Implement feature X with Y"
+
+	// Test saving state with new fields
+	if err := store.SaveState("test-agent", "PLANNING", nil); err != nil {
+		t.Fatalf("Failed to save initial state: %v", err)
+	}
+
+	// Load and modify the state
+	info, err := store.GetStateInfo("test-agent")
+	if err != nil {
+		t.Fatalf("Failed to get state info: %v", err)
+	}
+
+	// Test version field
+	if info.Version != "v1" {
+		t.Errorf("Expected version 'v1', got '%s'", info.Version)
+	}
+
+	// Add plan and task content
+	info.Plan = &plan
+	info.TaskContent = &taskContent
+
+	// Test AppendTransition method
+	info.AppendTransition("WAITING", "PLANNING")
+	info.AppendTransition("PLANNING", "CODING")
+
+	// Save updated state
+	if err := store.Save("test-agent", info); err != nil {
+		t.Fatalf("Failed to save updated state: %v", err)
+	}
+
+	// Load again and verify
+	reloaded, err := store.GetStateInfo("test-agent")
+	if err != nil {
+		t.Fatalf("Failed to reload state: %v", err)
+	}
+
+	// Verify plan field
+	if reloaded.Plan == nil {
+		t.Error("Expected non-nil plan")
+	} else if *reloaded.Plan != plan {
+		t.Errorf("Expected plan '%s', got '%s'", plan, *reloaded.Plan)
+	}
+
+	// Verify task content field
+	if reloaded.TaskContent == nil {
+		t.Error("Expected non-nil task content")
+	} else if *reloaded.TaskContent != taskContent {
+		t.Errorf("Expected task content '%s', got '%s'", taskContent, *reloaded.TaskContent)
+	}
+
+	// Verify transitions
+	if len(reloaded.Transitions) != 2 {
+		t.Errorf("Expected 2 transitions, got %d", len(reloaded.Transitions))
+	}
+
+	if len(reloaded.Transitions) >= 1 {
+		tr1 := reloaded.Transitions[0]
+		if tr1.From != "WAITING" || tr1.To != "PLANNING" {
+			t.Errorf("Expected transition WAITING->PLANNING, got %s->%s", tr1.From, tr1.To)
+		}
+		if tr1.TS.IsZero() {
+			t.Error("Expected non-zero timestamp for first transition")
+		}
+	}
+
+	if len(reloaded.Transitions) >= 2 {
+		tr2 := reloaded.Transitions[1]
+		if tr2.From != "PLANNING" || tr2.To != "CODING" {
+			t.Errorf("Expected transition PLANNING->CODING, got %s->%s", tr2.From, tr2.To)
+		}
+		if tr2.TS.IsZero() {
+			t.Error("Expected non-zero timestamp for second transition")
+		}
+	}
+}
+
+func TestAgentState_AppendTransition(t *testing.T) {
+	// Test multiple calls to AppendTransition
+	state := &AgentState{}
+
+	// Initially no transitions
+	if len(state.Transitions) != 0 {
+		t.Errorf("Expected 0 initial transitions, got %d", len(state.Transitions))
+	}
+
+	// Add first transition
+	state.AppendTransition("IDLE", "WORKING")
+	if len(state.Transitions) != 1 {
+		t.Errorf("Expected 1 transition after first append, got %d", len(state.Transitions))
+	}
+
+	// Add second transition
+	state.AppendTransition("WORKING", "DONE")
+	if len(state.Transitions) != 2 {
+		t.Errorf("Expected 2 transitions after second append, got %d", len(state.Transitions))
+	}
+
+	// Verify order and content
+	if state.Transitions[0].From != "IDLE" || state.Transitions[0].To != "WORKING" {
+		t.Errorf("Expected first transition IDLE->WORKING, got %s->%s",
+			state.Transitions[0].From, state.Transitions[0].To)
+	}
+
+	if state.Transitions[1].From != "WORKING" || state.Transitions[1].To != "DONE" {
+		t.Errorf("Expected second transition WORKING->DONE, got %s->%s",
+			state.Transitions[1].From, state.Transitions[1].To)
+	}
+
+	// Verify timestamps are set and reasonable
+	for i, tr := range state.Transitions {
+		if tr.TS.IsZero() {
+			t.Errorf("Expected non-zero timestamp for transition %d", i)
+		}
+		if time.Since(tr.TS) > time.Minute {
+			t.Errorf("Expected recent timestamp for transition %d", i)
+		}
+	}
+}

@@ -99,13 +99,13 @@ func TestGlobalRegistry(t *testing.T) {
 	if len(all) != 1 {
 		t.Errorf("Expected 1 tool in global registry, got %d", len(all))
 	}
-	
+
 	// Test GetToolDefinitions
 	defs := GetToolDefinitions()
 	if len(defs) != 1 {
 		t.Errorf("Expected 1 tool definition, got %d", len(defs))
 	}
-	
+
 	if defs[0].Name != "shell" {
 		t.Errorf("Expected tool definition name 'shell', got '%s'", defs[0].Name)
 	}
@@ -121,27 +121,27 @@ func TestShellTool_Name(t *testing.T) {
 func TestShellTool_Definition(t *testing.T) {
 	tool := NewShellTool()
 	def := tool.Definition()
-	
+
 	if def.Name != "shell" {
 		t.Errorf("Expected definition name 'shell', got '%s'", def.Name)
 	}
-	
+
 	if def.Description == "" {
 		t.Error("Expected non-empty description")
 	}
-	
+
 	if def.InputSchema.Type != "object" {
 		t.Errorf("Expected input schema type 'object', got '%s'", def.InputSchema.Type)
 	}
-	
+
 	if len(def.InputSchema.Required) == 0 || def.InputSchema.Required[0] != "cmd" {
 		t.Error("Expected 'cmd' to be a required property")
 	}
-	
+
 	if _, ok := def.InputSchema.Properties["cmd"]; !ok {
 		t.Error("Expected 'cmd' property in schema")
 	}
-	
+
 	if _, ok := def.InputSchema.Properties["cwd"]; !ok {
 		t.Error("Expected 'cwd' property in schema")
 	}

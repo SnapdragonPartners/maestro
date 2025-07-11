@@ -287,7 +287,7 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 			result := isValidStateTransition(tc.from, tc.to)
 
 			if result != tc.expected {
-				t.Errorf("Transition %s -> %s: expected %v, got %v", 
+				t.Errorf("Transition %s -> %s: expected %v, got %v",
 					tc.from, tc.to, tc.expected, result)
 			}
 		})
@@ -364,7 +364,7 @@ func TestStory7MessageTypeValidation(t *testing.T) {
 			str := string(tc.msgType)
 			if tc.isValid {
 				if str == "" {
-					t.Errorf("Valid message type %v should have proper string representation, got: %s", 
+					t.Errorf("Valid message type %v should have proper string representation, got: %s",
 						tc.msgType, str)
 				}
 			}
@@ -373,7 +373,7 @@ func TestStory7MessageTypeValidation(t *testing.T) {
 			if tc.isValid {
 				msg := proto.NewAgentMsg(tc.msgType, "test-from", "test-to")
 				if msg.Type != tc.msgType {
-					t.Errorf("Created message type mismatch: expected %v, got %v", 
+					t.Errorf("Created message type mismatch: expected %v, got %v",
 						tc.msgType, msg.Type)
 				}
 			}
@@ -432,7 +432,7 @@ func TestStory7EdgeCaseHandling(t *testing.T) {
 
 // Helper function to check if string contains substring
 func containsString(s, substr string) bool {
-	return len(substr) <= len(s) && (substr == "" || 
+	return len(substr) <= len(s) && (substr == "" ||
 		func() bool {
 			for i := 0; i <= len(s)-len(substr); i++ {
 				if s[i:i+len(substr)] == substr {
@@ -448,11 +448,11 @@ func containsString(s, substr string) bool {
 func isValidStateTransition(from, to agent.State) bool {
 	// Define valid transitions based on the coder FSM
 	validTransitions := map[agent.State][]agent.State{
-		agent.StateWaiting:                  {coder.StatePlanning.ToAgentState(), agent.StateError},
-		coder.StatePlanning.ToAgentState():  {coder.StateCoding.ToAgentState(), agent.StateError},
-		coder.StateCoding.ToAgentState():    {agent.StateDone, agent.StateError},
-		agent.StateDone:                     {}, // Terminal state
-		agent.StateError:                    {}, // Terminal state
+		agent.StateWaiting:                 {coder.StatePlanning.ToAgentState(), agent.StateError},
+		coder.StatePlanning.ToAgentState(): {coder.StateCoding.ToAgentState(), agent.StateError},
+		coder.StateCoding.ToAgentState():   {agent.StateDone, agent.StateError},
+		agent.StateDone:                    {}, // Terminal state
+		agent.StateError:                   {}, // Terminal state
 	}
 
 	// Check if transition is in the valid list

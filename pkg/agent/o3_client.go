@@ -24,7 +24,7 @@ func NewO3Client(apiKey string) LLMClient {
 		client: openai.NewClient(apiKey),
 		model:  "o3-mini", // Default o3 model
 	}
-	
+
 	// Wrap with both circuit breaker and retry logic
 	return NewResilientClient(baseClient)
 }
@@ -38,7 +38,7 @@ func NewO3ClientWithModel(apiKey string, model string) LLMClient {
 		client: openai.NewClient(apiKey),
 		model:  model,
 	}
-	
+
 	// Wrap with both circuit breaker and retry logic
 	return NewResilientClient(baseClient)
 }
@@ -63,8 +63,8 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 
 	// Make API request
 	resp, err := o.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:              o.model,
-		Messages:          messages,
+		Model:               o.model,
+		Messages:            messages,
 		MaxCompletionTokens: in.MaxTokens,
 		// Note: O3 models have beta limitations - temperature is fixed at 1
 	})
@@ -100,10 +100,10 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 
 	// Create streaming request
 	stream, err := o.client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-		Model:              o.model,
-		Messages:          messages,
+		Model:               o.model,
+		Messages:            messages,
 		MaxCompletionTokens: in.MaxTokens,
-		Stream:           true,
+		Stream:              true,
 		// Note: O3 models have beta limitations - temperature is fixed at 1
 	})
 

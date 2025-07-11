@@ -11,7 +11,8 @@ import (
 type MsgType string
 
 const (
-	MsgTypeTASK     MsgType = "TASK"
+	MsgTypeTASK     MsgType = "TASK"     // Work items for coders (stories to implement)
+	MsgTypeSPEC     MsgType = "SPEC"     // Specifications for architects to process
 	MsgTypeQUESTION MsgType = "QUESTION" // Information request: "How should I approach this?"
 	MsgTypeANSWER   MsgType = "ANSWER"   // Information response: "Here's the guidance..."
 	MsgTypeREQUEST  MsgType = "REQUEST"  // Approval request: "Please review this code"
@@ -26,41 +27,49 @@ type RequestType string
 const (
 	// RequestApproval indicates an approval request
 	RequestApproval RequestType = "approval"
-	
+
 	// RequestApprovalReview indicates an approval request review
 	RequestApprovalReview RequestType = "approval_request"
-	
+
 	// RequestQuestion indicates a question request
 	RequestQuestion RequestType = "question"
+
+	// RequestResource indicates a resource request
+	RequestResource RequestType = "resource"
 )
 
 // Common payload and metadata keys used in agent messages
 const (
 	// Payload keys
-	KeyRequestType   = "request_type"
-	KeyApprovalType  = "approval_type"
-	KeyAnswer        = "answer"
-	KeyReason        = "reason"
-	KeyQuestion      = "question"
-	KeyContent       = "content"
-	KeyStatus        = "status"
-	KeyFeedback      = "feedback"
-	KeyCurrentState  = "current_state"
-	KeyRequest       = "request"
-	
+	KeyRequestType  = "request_type"
+	KeyApprovalType = "approval_type"
+	KeyAnswer       = "answer"
+	KeyReason       = "reason"
+	KeyQuestion     = "question"
+	KeyContent      = "content"
+	KeyStatus       = "status"
+	KeyFeedback     = "feedback"
+	KeyCurrentState = "current_state"
+	KeyRequest      = "request"
+
 	// Correlation keys for QUESTION/ANSWER and REQUEST/RESULT pairs
 	KeyQuestionID    = "question_id"    // Unique ID for each question
 	KeyApprovalID    = "approval_id"    // Unique ID for each approval request
 	KeyCorrelationID = "correlation_id" // Generic correlation ID for any request/response pair
-	
+
 	// Task-related keys
-	KeyTaskType      = "task_type"
-	KeyStoryID       = "story_id"
-	KeyTitle         = "title"
-	KeyRequirements  = "requirements"
-	KeyDependsOn     = "depends_on"
+	KeyTaskType        = "task_type"
+	KeyStoryID         = "story_id"
+	KeyTitle           = "title"
+	KeyRequirements    = "requirements"
+	KeyDependsOn       = "depends_on"
 	KeyEstimatedPoints = "estimated_points"
-	KeyFilePath      = "file_path"
+	KeyFilePath        = "file_path"
+
+	// Resource request keys
+	KeyRequestedTokens     = "requestedTokens"
+	KeyRequestedIterations = "requestedIterations"
+	KeyJustification       = "justification"
 )
 
 // ApprovalStatus represents the status of an approval request
@@ -69,13 +78,13 @@ type ApprovalStatus string
 const (
 	// ApprovalStatusApproved indicates the request was approved
 	ApprovalStatusApproved ApprovalStatus = "APPROVED"
-	
+
 	// ApprovalStatusRejected indicates the request was rejected
 	ApprovalStatusRejected ApprovalStatus = "REJECTED"
-	
+
 	// ApprovalStatusNeedsChanges indicates the request needs changes
 	ApprovalStatusNeedsChanges ApprovalStatus = "NEEDS_CHANGES"
-	
+
 	// ApprovalStatusPending indicates the request is pending review
 	ApprovalStatusPending ApprovalStatus = "PENDING"
 )
@@ -86,31 +95,54 @@ type ApprovalType string
 const (
 	// ApprovalTypePlan indicates a plan approval request
 	ApprovalTypePlan ApprovalType = "plan"
-	
-	// ApprovalTypeCode indicates a code approval request  
+
+	// ApprovalTypeCode indicates a code approval request
 	ApprovalTypeCode ApprovalType = "code"
 )
 
 // ApprovalRequest represents a request for approval (plan or code)
 type ApprovalRequest struct {
 	ID          string       `json:"id"`
-	Type        ApprovalType `json:"type"`        // "plan" or "code"
-	Content     string       `json:"content"`     // The plan or code content
-	Context     string       `json:"context"`     // Additional context
-	Reason      string       `json:"reason"`      // Why approval is needed
+	Type        ApprovalType `json:"type"`         // "plan" or "code"
+	Content     string       `json:"content"`      // The plan or code content
+	Context     string       `json:"context"`      // Additional context
+	Reason      string       `json:"reason"`       // Why approval is needed
 	RequestedBy string       `json:"requested_by"` // Agent requesting approval
 	RequestedAt time.Time    `json:"requested_at"`
 }
 
 // ApprovalResult represents the result of an approval request
 type ApprovalResult struct {
-	ID          string         `json:"id"`
-	RequestID   string         `json:"request_id"`   // References the original request
-	Type        ApprovalType   `json:"type"`         // "plan" or "code"
-	Status      ApprovalStatus `json:"status"`       // "APPROVED", "REJECTED", "NEEDS_CHANGES"
-	Feedback    string         `json:"feedback"`     // Review feedback/comments
-	ReviewedBy  string         `json:"reviewed_by"`  // Agent that reviewed
-	ReviewedAt  time.Time      `json:"reviewed_at"`
+	ID         string         `json:"id"`
+	RequestID  string         `json:"request_id"`  // References the original request
+	Type       ApprovalType   `json:"type"`        // "plan" or "code"
+	Status     ApprovalStatus `json:"status"`      // "APPROVED", "REJECTED", "NEEDS_CHANGES"
+	Feedback   string         `json:"feedback"`    // Review feedback/comments
+	ReviewedBy string         `json:"reviewed_by"` // Agent that reviewed
+	ReviewedAt time.Time      `json:"reviewed_at"`
+}
+
+// ResourceRequest represents a request for additional resources (tokens, iterations, etc.)
+type ResourceRequest struct {
+	ID                  string    `json:"id"`
+	RequestedTokens     int       `json:"requestedTokens"`
+	RequestedIterations int       `json:"requestedIterations"`
+	Justification       string    `json:"justification"`
+	RequestedBy         string    `json:"requested_by"`
+	RequestedAt         time.Time `json:"requested_at"`
+	StoryID             string    `json:"story_id,omitempty"`
+}
+
+// ResourceResult represents the result of a resource request
+type ResourceResult struct {
+	ID                 string         `json:"id"`
+	RequestID          string         `json:"request_id"` // References the original request
+	Status             ApprovalStatus `json:"status"`     // "APPROVED", "REJECTED", "NEEDS_CHANGES"
+	ApprovedTokens     int            `json:"approved_tokens,omitempty"`
+	ApprovedIterations int            `json:"approved_iterations,omitempty"`
+	Feedback           string         `json:"feedback"`    // Review feedback/comments
+	ReviewedBy         string         `json:"reviewed_by"` // Agent that reviewed
+	ReviewedAt         time.Time      `json:"reviewed_at"`
 }
 
 type AgentMsg struct {
@@ -232,7 +264,7 @@ func (msg *AgentMsg) Validate() error {
 
 	// Validate message type
 	switch msg.Type {
-	case MsgTypeTASK, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeSHUTDOWN:
+	case MsgTypeTASK, MsgTypeSPEC, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeSHUTDOWN:
 		// Valid types
 	default:
 		return fmt.Errorf("invalid message type: %s", msg.Type)
@@ -262,7 +294,7 @@ func generateID() string {
 func ParseRequestType(s string) (RequestType, error) {
 	// Normalize to lowercase for comparison
 	normalizedType := strings.ToLower(s)
-	
+
 	switch normalizedType {
 	case "approval":
 		return RequestApproval, nil
@@ -290,7 +322,7 @@ func (rt RequestType) String() string {
 func NormaliseApprovalType(s string) (ApprovalType, error) {
 	// Normalize to lowercase for comparison
 	normalizedType := strings.ToLower(s)
-	
+
 	switch normalizedType {
 	case "plan":
 		return ApprovalTypePlan, nil
@@ -352,7 +384,7 @@ func ValidateApprovalType(approvalType string) (ApprovalType, bool) {
 func ConvertLegacyStatus(legacyStatus string) ApprovalStatus {
 	// Normalize to lowercase for comparison
 	normalizedStatus := strings.ToLower(legacyStatus)
-	
+
 	switch normalizedStatus {
 	case "approved":
 		return ApprovalStatusApproved

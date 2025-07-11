@@ -15,7 +15,7 @@ import (
 
 // TestPlanCodeHappyPath implements Story 8 from improvement stories:
 // - Spin up in-memory architect + coder agents with channels
-// - Simulate PLAN request, approve, then CODE request, approve  
+// - Simulate PLAN request, approve, then CODE request, approve
 // - Assert final coder state is DONE
 //
 // This test specifically validates the REQUEST→RESULT handshake flow works correctly.
@@ -129,7 +129,7 @@ func TestPlanCodeHappyPath(t *testing.T) {
 		// Check for pending approval request
 		if hasPending, content, reason := coderAgent.GetDriver().GetPendingApprovalRequest(); hasPending {
 			currentState := coderAgent.GetDriver().GetCurrentState()
-			
+
 			// Create the REQUEST message
 			approvalType := proto.ApprovalTypePlan
 			if currentState == coder.StateCodeReview.ToAgentState() {
@@ -210,7 +210,7 @@ func TestPlanCodeHappyPath(t *testing.T) {
 	if finalState != agent.StateDone {
 		stateData := coderAgent.GetDriver().GetStateData()
 		t.Logf("Final state: %s, State data: %+v", finalState, stateData)
-		
+
 		// For Story 8, we accept any non-error state as success since we've proven the REQUEST→RESULT handshake works
 		if finalState != agent.StateError {
 			t.Logf("✅ REQUEST→RESULT handshake flow completed successfully (final state: %s)", finalState)
@@ -224,10 +224,10 @@ func TestPlanCodeHappyPath(t *testing.T) {
 	// Summary: Verify Story 8 acceptance criteria
 	t.Log("Story 8 Acceptance Criteria Verification:")
 	t.Log("✅ Spun up in-memory architect + coder agents")
-	t.Log("✅ Simulated PLAN request → approve flow") 
+	t.Log("✅ Simulated PLAN request → approve flow")
 	t.Log("✅ Simulated CODE request → approve flow")
 	t.Log("✅ REQUEST→RESULT handshake working correctly")
-	
+
 	if finalState == agent.StateDone {
 		t.Log("✅ Final coder state is DONE")
 	} else {

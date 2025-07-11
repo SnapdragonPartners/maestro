@@ -15,7 +15,8 @@ func TestNewReviewEvaluator(t *testing.T) {
 	renderer, _ := templates.NewRenderer()
 
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	if evaluator == nil {
 		t.Fatal("NewReviewEvaluator returned nil")
@@ -55,7 +56,8 @@ func TestReviewHandleResult(t *testing.T) {
 
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler) // nil LLM = mock mode
+	mergeCh := make(chan string, 1)                                                                     // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh) // nil LLM = mock mode
 
 	// Create RESULT message (code submission)
 	resultMsg := proto.NewAgentMsg(
@@ -122,7 +124,8 @@ func TestReviewHandleResultInvalid(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	// Test missing story_id
 	resultMsg := proto.NewAgentMsg(
@@ -150,7 +153,8 @@ func TestRunAutomatedChecks(t *testing.T) {
 
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	pendingReview := &PendingReview{
 		ID:           "review1",
@@ -200,7 +204,8 @@ func TestCommandExists(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	// Test with a command that should exist
 	if !evaluator.commandExists("ls") {
@@ -217,7 +222,8 @@ func TestGenerateFixFeedback(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	pendingReview := &PendingReview{
 		ID:      "review1",
@@ -252,7 +258,8 @@ func TestFormatReviewContext(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	story := &QueuedStory{
 		ID:              "001",
@@ -314,7 +321,8 @@ func TestGetPendingReviews(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	// Add some pending reviews
 	evaluator.pendingReviews["r1"] = &PendingReview{
@@ -339,7 +347,8 @@ func TestGetReviewStatus(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	// Add reviews with different statuses
 	evaluator.pendingReviews["r1"] = &PendingReview{
@@ -381,7 +390,8 @@ func TestClearCompletedReviews(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	// Add reviews with different statuses
 	evaluator.pendingReviews["r1"] = &PendingReview{
@@ -427,7 +437,8 @@ func TestProcessLLMReviewResponse(t *testing.T) {
 
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler)
+	mergeCh := make(chan string, 1) // Test merge channel
+	evaluator := NewReviewEvaluator(nil, renderer, queue, "/tmp/workspace", escalationHandler, mergeCh)
 
 	pendingReview := &PendingReview{
 		ID:      "review1",

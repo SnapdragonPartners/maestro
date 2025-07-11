@@ -344,9 +344,9 @@ And finally, a plain code block:
 	for i, entry := range entries {
 		fileNames[i] = entry.Name()
 	}
-	
+
 	var hasGo, hasPy, hasJs bool
-	
+
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasSuffix(name, ".go") {

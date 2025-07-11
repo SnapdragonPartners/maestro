@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
-// EscalationHandler manages business question escalations and AWAIT_HUMAN_FEEDBACK state
+// EscalationHandler manages business question escalations and ESCALATED state
 type EscalationHandler struct {
 	logsDir         string
 	escalationsFile string
@@ -89,9 +91,9 @@ func (eh *EscalationHandler) EscalateBusinessQuestion(ctx context.Context, pendi
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 
-	fmt.Printf("🚨 Escalated business question %s for story %s (priority: %s)\n",
+	logx.Infof("escalated business question %s for story %s (priority: %s)",
 		escalation.ID, escalation.StoryID, escalation.Priority)
-	fmt.Printf("   Question: %s\n", truncateString(escalation.Question, 100))
+	logx.Infof("   Question: %s", truncateString(escalation.Question, 100))
 
 	return nil
 }
@@ -128,7 +130,7 @@ func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID,
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 
-	fmt.Printf("🚨 Escalated review failure %s for story %s after %d failures\n",
+	logx.Infof("escalated review failure %s for story %s after %d failures",
 		escalation.ID, escalation.StoryID, failureCount)
 
 	return nil
@@ -162,7 +164,7 @@ func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, a
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 
-	fmt.Printf("🚨 Escalated system error %s for story %s (priority: critical)\n",
+	logx.Errorf("escalated system error %s for story %s (priority: critical)",
 		escalation.ID, escalation.StoryID)
 
 	return nil
@@ -222,7 +224,7 @@ func (eh *EscalationHandler) loadEscalations() error {
 		if line := strings.TrimSpace(line); line != "" {
 			var escalation EscalationEntry
 			if err := json.Unmarshal([]byte(line), &escalation); err != nil {
-				fmt.Printf("Warning: failed to parse escalation line %d: %v\n", i+1, err)
+				logx.Warnf("failed to parse escalation line %d: %v", i+1, err)
 				continue
 			}
 			eh.escalations[escalation.ID] = &escalation
@@ -347,7 +349,7 @@ func (eh *EscalationHandler) ResolveEscalation(escalationID, resolution, humanOp
 		return fmt.Errorf("failed to log escalation resolution: %w", err)
 	}
 
-	fmt.Printf("✅ Resolved escalation %s by %s\n", escalationID, humanOperator)
+	logx.Infof("resolved escalation %s by %s", escalationID, humanOperator)
 
 	return nil
 }
@@ -368,7 +370,39 @@ func (eh *EscalationHandler) AcknowledgeEscalation(escalationID, humanOperator s
 		return fmt.Errorf("failed to log escalation acknowledgment: %w", err)
 	}
 
-	fmt.Printf("👀 Acknowledged escalation %s by %s\n", escalationID, humanOperator)
+	logx.Infof("acknowledged escalation %s by %s", escalationID, humanOperator)
+
+	return nil
+}
+
+// LogTimeout logs when an escalation times out (used by the timeout guard)
+func (eh *EscalationHandler) LogTimeout(escalatedAt time.Time, duration time.Duration) error {
+	// Create a special timeout escalation entry for logging purposes
+	resolvedTime := time.Now().UTC()
+	timeoutEscalation := &EscalationEntry{
+		ID:       fmt.Sprintf("timeout_%d", time.Now().Unix()),
+		Type:     "escalation_timeout",
+		Question: fmt.Sprintf("Escalation timeout: No human response after %v", duration.Truncate(time.Minute)),
+		Context: map[string]any{
+			"escalated_at":  escalatedAt,
+			"timeout_after": duration.String(),
+			"timeout_limit": EscalationTimeout.String(),
+			"event_type":    "timeout",
+		},
+		EscalatedAt:   escalatedAt,
+		Status:        "timeout",
+		Priority:      "critical",
+		HumanOperator: "system",
+		Resolution:    "Automatic timeout after no human intervention",
+		ResolvedAt:    &resolvedTime,
+	}
+
+	// Log the timeout event
+	if err := eh.logEscalation(timeoutEscalation); err != nil {
+		return fmt.Errorf("failed to log escalation timeout: %w", err)
+	}
+
+	logx.Warnf("logged escalation timeout: %v duration", duration.Truncate(time.Minute))
 
 	return nil
 }

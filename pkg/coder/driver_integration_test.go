@@ -29,12 +29,12 @@ func TestCoderDriverHealthStoryIntegration(t *testing.T) {
 
 	// Create test config
 	modelConfig := &config.ModelCfg{
-		MaxContextTokens:  4096,
-		MaxReplyTokens:    1024,
-		CompactionBuffer:  512,
+		MaxContextTokens: 4096,
+		MaxReplyTokens:   1024,
+		CompactionBuffer: 512,
 	}
 
-	// Create driver in mock mode (no LLM client)  
+	// Create driver in mock mode (no LLM client)
 	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
@@ -63,7 +63,7 @@ func TestCoderDriverHealthStoryIntegration(t *testing.T) {
 
 	// Verify state data contains expected values
 	stateData := driver.GetStateData()
-	
+
 	// Check that planning was completed
 	if _, exists := stateData["planning_completed_at"]; !exists {
 		t.Error("Expected planning_completed_at to be set")
@@ -102,11 +102,11 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
-	
+
 	modelConfig := &config.ModelCfg{
-		MaxContextTokens:  4096,
-		MaxReplyTokens:    1024,
-		CompactionBuffer:  512,
+		MaxContextTokens: 4096,
+		MaxReplyTokens:   1024,
+		CompactionBuffer: 512,
 	}
 
 	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
@@ -167,11 +167,11 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
-	
+
 	modelConfig := &config.ModelCfg{
-		MaxContextTokens:  4096,
-		MaxReplyTokens:    1024,
-		CompactionBuffer:  512,
+		MaxContextTokens: 4096,
+		MaxReplyTokens:   1024,
+		CompactionBuffer: 512,
 	}
 
 	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
@@ -233,9 +233,9 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 // TestCoderDriverFailureAndRetry tests failure scenarios and retry logic
 func TestCoderDriverFailureAndRetry(t *testing.T) {
 	modelConfig := &config.ModelCfg{
-		MaxContextTokens:  4096,
-		MaxReplyTokens:    1024,
-		CompactionBuffer:  512,
+		MaxContextTokens: 4096,
+		MaxReplyTokens:   1024,
+		CompactionBuffer: 512,
 	}
 
 	testCases := []struct {
@@ -262,12 +262,12 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 				t.Fatalf("Failed to create temp dir: %v", err)
 			}
 			defer os.RemoveAll(tempDir)
-			
+
 			stateStore, err := state.NewStore(tempDir)
 			if err != nil {
 				t.Fatalf("Failed to create state store: %v", err)
 			}
-			
+
 			driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 			if err != nil {
 				t.Fatalf("Failed to create driver: %v", err)
@@ -300,7 +300,7 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 					if len(stateTrace) == 0 || stateTrace[len(stateTrace)-1] != currentState {
 						stateTrace = append(stateTrace, currentState)
 					}
-					
+
 					if currentState == agent.StateDone || currentState == agent.StateError {
 						goto testComplete
 					}
@@ -330,11 +330,11 @@ func TestCoderDriverStateManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
-	
+
 	modelConfig := &config.ModelCfg{
-		MaxContextTokens:  4096,
-		MaxReplyTokens:    1024,
-		CompactionBuffer:  512,
+		MaxContextTokens: 4096,
+		MaxReplyTokens:   1024,
+		CompactionBuffer: 512,
 	}
 
 	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)

@@ -15,28 +15,28 @@ import (
 // TestHarness manages multi-agent integration test scenarios
 type TestHarness struct {
 	t *testing.T
-	
+
 	// Agent management
 	architect ArchitectAgent
 	coders    map[string]*CoderAgent
-	
+
 	// Communication channels - per-coder to prevent head-of-line blocking
 	archToCoderChannels map[string]chan *proto.AgentMsg // architect -> specific coder
 	coderToArchChannels map[string]chan *proto.AgentMsg // specific coder -> architect
-	
+
 	// Test configuration
 	timeouts TestTimeouts
-	
+
 	// Synchronization
 	mu sync.RWMutex
 }
 
 // TestTimeouts configures various test timeout durations
 type TestTimeouts struct {
-	Plan       time.Duration // How long to wait for plan approval
-	Global     time.Duration // Overall test timeout
-	Pump       time.Duration // Message pump interval
-	CoderStep  time.Duration // Individual coder step timeout
+	Plan      time.Duration // How long to wait for plan approval
+	Global    time.Duration // Overall test timeout
+	Pump      time.Duration // Message pump interval
+	CoderStep time.Duration // Individual coder step timeout
 }
 
 // DefaultTimeouts returns sensible defaults for testing
@@ -53,7 +53,7 @@ func DefaultTimeouts() TestTimeouts {
 type CoderAgent struct {
 	ID     string
 	Driver *coder.CoderDriver
-	
+
 	// Message channels for this specific coder
 	FromArch chan *proto.AgentMsg
 	ToArch   chan *proto.AgentMsg
@@ -63,7 +63,7 @@ type CoderAgent struct {
 type ArchitectAgent interface {
 	// ProcessMessage handles incoming messages and returns responses
 	ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error)
-	
+
 	// GetID returns the architect's identifier
 	GetID() string
 }
@@ -100,18 +100,18 @@ func (h *TestHarness) SetArchitect(architect ArchitectAgent) {
 func (h *TestHarness) AddCoder(coderID string, driver *coder.CoderDriver) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	// Create dedicated channels for this coder
 	fromArch := make(chan *proto.AgentMsg, 100)
 	toArch := make(chan *proto.AgentMsg, 100)
-	
+
 	coderAgent := &CoderAgent{
 		ID:       coderID,
 		Driver:   driver,
 		FromArch: fromArch,
 		ToArch:   toArch,
 	}
-	
+
 	h.coders[coderID] = coderAgent
 	h.archToCoderChannels[coderID] = fromArch
 	h.coderToArchChannels[coderID] = toArch
@@ -121,7 +121,7 @@ func (h *TestHarness) AddCoder(coderID string, driver *coder.CoderDriver) {
 func (h *TestHarness) GetCoderState(coderID string) agent.State {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	if coderAgent, exists := h.coders[coderID]; exists {
 		return coderAgent.Driver.GetCurrentState()
 	}
@@ -132,7 +132,7 @@ func (h *TestHarness) GetCoderState(coderID string) agent.State {
 func (h *TestHarness) GetAllCoderStates() map[string]agent.State {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	states := make(map[string]agent.State)
 	for id, coderAgent := range h.coders {
 		states[id] = coderAgent.Driver.GetCurrentState()
@@ -156,20 +156,20 @@ func (h *TestHarness) Run(ctx context.Context, stopWhen StopCondition) error {
 	if stopWhen == nil {
 		stopWhen = DefaultStopCondition
 	}
-	
+
 	// Create context with global timeout
 	h.mu.RLock()
 	globalTimeout := h.timeouts.Global
 	pumpInterval := h.timeouts.Pump
 	h.mu.RUnlock()
-	
+
 	runCtx, cancel := context.WithTimeout(ctx, globalTimeout)
 	defer cancel()
-	
+
 	// Start message pumping
 	ticker := time.NewTicker(pumpInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-runCtx.Done():
@@ -179,7 +179,7 @@ func (h *TestHarness) Run(ctx context.Context, stopWhen StopCondition) error {
 			if stopWhen(h) {
 				return nil
 			}
-			
+
 			// Pump messages
 			if err := h.pumpMessages(runCtx); err != nil {
 				return fmt.Errorf("message pump error: %w", err)
@@ -193,18 +193,18 @@ func (h *TestHarness) Wait(ctx context.Context, coderID string, wantState agent.
 	h.mu.RLock()
 	globalTimeout := h.timeouts.Global
 	h.mu.RUnlock()
-	
+
 	waitCtx, cancel := context.WithTimeout(ctx, globalTimeout)
 	defer cancel()
-	
+
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-waitCtx.Done():
 			currentState := h.GetCoderState(coderID)
-			return fmt.Errorf("timeout waiting for coder %s to reach %s (current: %s)", 
+			return fmt.Errorf("timeout waiting for coder %s to reach %s (current: %s)",
 				coderID, wantState, currentState)
 		case <-ticker.C:
 			if h.GetCoderState(coderID) == wantState {
@@ -218,7 +218,7 @@ func (h *TestHarness) Wait(ctx context.Context, coderID string, wantState agent.
 func (h *TestHarness) pumpMessages(ctx context.Context) error {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
+
 	// Process messages from coders to architect
 	for coderID, toArchCh := range h.coderToArchChannels {
 		select {
@@ -229,7 +229,7 @@ func (h *TestHarness) pumpMessages(ctx context.Context) error {
 				h.t.Logf("Architect error processing message from %s: %v", coderID, err)
 				continue
 			}
-			
+
 			// Send response back to originating coder if we got one
 			if response != nil && response.ToAgent == coderID {
 				fromArchCh := h.archToCoderChannels[coderID]
@@ -244,14 +244,14 @@ func (h *TestHarness) pumpMessages(ctx context.Context) error {
 			// No message waiting
 		}
 	}
-	
+
 	// Process coder steps (let each coder process incoming messages and advance)
 	for coderID, coderAgent := range h.coders {
 		if err := h.stepCoder(ctx, coderID, coderAgent); err != nil {
 			h.t.Logf("Coder %s step error: %v", coderID, err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -276,13 +276,13 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 		// No incoming message, just step the coder's state machine
 		stepCtx, cancel := context.WithTimeout(ctx, h.timeouts.CoderStep)
 		defer cancel()
-		
+
 		// Let the coder advance its state machine
 		if _, err := coderAgent.Driver.Step(stepCtx); err != nil {
 			// Note: Some errors (like invalid transitions) are expected during testing
 			h.t.Logf("Coder %s step resulted in: %v", coderID, err)
 		}
-		
+
 		// Check for pending approval requests and send them to architect
 		if hasPending, content, reason := coderAgent.Driver.GetPendingApprovalRequest(); hasPending {
 			requestMsg := h.createApprovalRequestMessage(coderID, content, reason)
@@ -295,7 +295,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 				h.t.Logf("Warning: Could not send approval request from coder %s (channel full)", coderID)
 			}
 		}
-		
+
 		// Check for pending questions and send them to architect
 		if hasPending, content, reason := coderAgent.Driver.GetPendingQuestion(); hasPending {
 			questionMsg := h.createQuestionMessage(coderID, content, reason)
@@ -309,7 +309,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 			}
 		}
 	}
-	
+
 	return nil
 }
 
@@ -317,21 +317,21 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 func (h *TestHarness) processCoderMessage(ctx context.Context, coderAgent *CoderAgent, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// This is where we'd normally call the coder's ProcessMessage method
 	// For now, we'll implement a simplified version based on message type
-	
+
 	switch msg.Type {
 	case proto.MsgTypeRESULT:
 		// This is an approval result from the architect
 		if err := h.processApprovalResult(ctx, coderAgent, msg); err != nil {
 			return nil, err
 		}
-		
+
 		// Step the coder to let it process the approval
 		if _, err := coderAgent.Driver.Step(ctx); err != nil {
 			h.t.Logf("Coder step after approval: %v", err)
 		}
-		
+
 		return nil, nil
-		
+
 	case proto.MsgTypeANSWER:
 		// This is an answer to a question from the architect
 		if answer, exists := msg.GetPayload(proto.KeyAnswer); exists {
@@ -342,7 +342,7 @@ func (h *TestHarness) processCoderMessage(ctx context.Context, coderAgent *Coder
 			}
 		}
 		return nil, nil
-		
+
 	default:
 		h.t.Logf("Unexpected message type for coder: %s", msg.Type)
 		return nil, nil
@@ -356,23 +356,23 @@ func (h *TestHarness) processApprovalResult(ctx context.Context, coderAgent *Cod
 	if !exists {
 		return fmt.Errorf("missing status in approval result")
 	}
-	
+
 	statusStr, ok := status.(string)
 	if !ok {
 		return fmt.Errorf("status must be a string")
 	}
-	
+
 	// Extract approval type
 	approvalTypeRaw, exists := msg.GetPayload(proto.KeyApprovalType)
 	if !exists {
 		return fmt.Errorf("missing approval_type in approval result")
 	}
-	
+
 	approvalTypeStr, ok := approvalTypeRaw.(string)
 	if !ok {
 		return fmt.Errorf("approval_type must be a string")
 	}
-	
+
 	// Process the approval result
 	return coderAgent.Driver.ProcessApprovalResult(statusStr, approvalTypeStr)
 }
@@ -381,7 +381,7 @@ func (h *TestHarness) processApprovalResult(ctx context.Context, coderAgent *Cod
 func (h *TestHarness) createApprovalRequestMessage(coderID, content, reason string) *proto.AgentMsg {
 	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, coderID, h.architect.GetID())
 	msg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-	
+
 	// Determine approval type based on coder state or reason
 	approvalType := "plan" // Default
 	if h.coders[coderID] != nil {
@@ -390,7 +390,7 @@ func (h *TestHarness) createApprovalRequestMessage(coderID, content, reason stri
 			approvalType = "code"
 		}
 	}
-	
+
 	msg.SetPayload(proto.KeyApprovalType, approvalType)
 	msg.SetPayload(proto.KeyContent, content)
 	msg.SetPayload(proto.KeyReason, reason)

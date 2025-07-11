@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
 // StoryStatus represents the status of a story in the queue
@@ -76,7 +78,7 @@ func (q *Queue) LoadFromDirectory() error {
 		story, err := q.parseStoryFile(file)
 		if err != nil {
 			// Log warning but continue with other files
-			fmt.Printf("Warning: failed to parse story file %s: %v\n", file, err)
+			logx.Warnf("failed to parse story file %s: %v", file, err)
 			continue
 		}
 
@@ -338,7 +340,7 @@ func (q *Queue) checkAndNotifyReady() {
 			// Try to notify (non-blocking)
 			select {
 			case q.readyStoryCh <- story.ID:
-				fmt.Printf("📥 Queue: notified that story %s is ready\n", story.ID)
+				logx.Infof("queue: notified that story %s is ready", story.ID)
 			default:
 				// Channel full, that's OK - the dispatcher will check again
 			}

@@ -56,7 +56,7 @@ func TestStateDataThreadSafety(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		key := fmt.Sprintf("key_%d", i)
 		expectedValue := i*1000 + (operationsPerGoroutine - 1) // Last value written
-		
+
 		if actualValue, exists := stateData[key]; exists {
 			if actualValue != expectedValue {
 				t.Errorf("Final check: goroutine %d key %s expected %v, got %v", i, key, expectedValue, actualValue)
@@ -107,7 +107,7 @@ func TestConcurrentReadersAndWriters(t *testing.T) {
 				// These operations should not panic or cause data races
 				_ = sm.GetStateData()
 				_ = sm.GetCurrentState()
-				
+
 				// Try to read some keys that might exist
 				for writerID := 0; writerID < numWriters; writerID++ {
 					key := fmt.Sprintf("writer_%d_key_%d", writerID, j%10)

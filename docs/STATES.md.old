@@ -1,0 +1,104 @@
+# Master State Diagrams (v3)
+
+Below are the **canonical finite‑state machines** for both the *coding agent* and the *architect/dispatcher*.  
+Version 3 introduces **AUTO_CHECKIN** loops to prevent agents from spinning indefinitely in **CODING** or **FIXING**.  
+When an iteration budget is exhausted, the agent automatically raises a question to the architect instead of throwing an error.
+
+---
+
+## Coding Agent FSM
+
+```mermaid
+stateDiagram-v2
+    %% ─── Top‑level flow ───────────────────────────────────────────
+    [*] --> WAITING
+    WAITING --> PLANNING: receive TASK
+    PLANNING --> QUESTION: needs clarification
+    QUESTION --> PLANNING: answer received
+    PLANNING --> PLAN_REVIEW: draft plan ready
+    PLAN_REVIEW --> PLANNING: architect requests change
+    PLAN_REVIEW --> CODING: plan approved
+
+    %% ─── Coding phase ────────────────────────────────────────────
+    CODING --> QUESTION: tech question
+    CODING --> QUESTION: AUTO_CHECKIN
+        note right of CODING: Triggered when\nloops ≥ coding_budget
+    CODING --> TESTING: code generated
+
+    %% ─── Testing & fixing ────────────────────────────────────────
+    TESTING --> CODE_REVIEW: tests pass
+    TESTING --> FIXING: tests fail
+    FIXING --> QUESTION: AUTO_CHECKIN
+        note right of FIXING: Triggered when\nloops ≥ fixing_budget
+    FIXING --> CODING: fixes applied
+
+    %% ─── Review & done ───────────────────────────────────────────
+    CODE_REVIEW --> FIXING: architect requests change
+    CODE_REVIEW --> DONE: architect approves
+    DONE --> [*]
+
+    %% ─── Composite QUESTION state (unchanged) ───────────────────
+    state QUESTION {
+        [*] --> WAITING_ANSWER
+        WAITING_ANSWER --> ANSWER_RECEIVED
+        note right: origin metadata (CODING/FIXING)\ncontrols the return transition
+    }
+```
+
+### AUTO_CHECKIN semantics
+* **Loop counters** are tracked separately for CODING (`coding_iterations`) and FIXING (`fixing_iterations`).
+* **Configuration**: Per-agent iteration budgets are configurable via `IterationBudgets` in agent config:
+  * `coding_budget` (default: 8) - Maximum loops in CODING state
+  * `fixing_budget` (default: 3) - Maximum loops in FIXING state
+* When a counter reaches its configurable budget, the `checkLoopBudget` helper populates:
+  * `question_reason = "AUTO_CHECKIN"`
+  * `question_origin = CODING | FIXING`
+  * `question_content` = descriptive message with current/max loops
+  * `loops`, `max_loops` metadata  
+  and transitions into `QUESTION.WAITING_ANSWER`.
+* The architect replies with one of:
+  * **CONTINUE _n_** — increase budget by _n_, reset counter, resume work.
+  * **PIVOT** — reset counter, stay in current phase with new approach.
+  * **ESCALATE** — force `CODE_REVIEW` (manual triage).
+  * **ABANDON** — transition to ERROR state (task failed).
+  * **Invalid command** — sends error message back, stays in QUESTION state.
+* Upon **ANSWER_RECEIVED**, the origin metadata and command type determine the next transition:
+  * CONTINUE/PIVOT → return to origin state (CODING or FIXING)
+  * ESCALATE → transition to CODE_REVIEW
+  * ABANDON → transition to ERROR state
+
+### AUTO_CHECKIN sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant Coder
+    participant StateMachine as State Machine
+    participant Architect
+    
+    Note over Coder: In CODING state
+    loop Until implementation complete or budget exceeded
+        Coder->>StateMachine: Step() - generate code
+        StateMachine->>StateMachine: Increment coding_iterations
+        alt Budget exceeded
+            StateMachine->>StateMachine: checkLoopBudget() returns true
+            StateMachine->>StateMachine: Set question_reason="AUTO_CHECKIN"
+            StateMachine->>StateMachine: Transition to QUESTION state
+            StateMachine->>Architect: Send QUESTION message
+            Architect->>StateMachine: Send ANSWER ("CONTINUE 2")
+            StateMachine->>StateMachine: ProcessAnswer() - increase budget, reset counter
+            StateMachine->>StateMachine: Transition back to CODING
+        else Implementation complete
+            StateMachine->>StateMachine: Transition to TESTING
+        end
+    end
+```
+
+---
+
+## Architect / Dispatcher FSM
+
+*No changes from v2.*  The dispatcher already routes QUESTION messages and can interpret `question_reason: AUTO_CHECKIN`.
+
+---
+
+> **Last updated:** 2025‑07‑06 (Phase 7 – AUTO_CHECKIN)

@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom components */
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-md font-medium focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors;
+  }
+  
+  .btn-primary {
+    @apply bg-maestro-blue text-white hover:bg-blue-700 focus:ring-blue-500;
+  }
+  
+  .btn-secondary {
+    @apply bg-gray-200 text-gray-900 hover:bg-gray-300 focus:ring-gray-500;
+  }
+  
+  .btn-danger {
+    @apply bg-maestro-red text-white hover:bg-red-700 focus:ring-red-500;
+  }
+  
+  .btn-success {
+    @apply bg-maestro-green text-white hover:bg-green-700 focus:ring-green-500;
+  }
+  
+  .agent-card {
+    @apply bg-white border border-gray-200 rounded-lg shadow-sm p-4 hover:shadow-md transition-shadow;
+  }
+  
+  .state-waiting {
+    @apply bg-blue-100 text-blue-800 border-blue-200;
+  }
+  
+  .state-working {
+    @apply bg-yellow-100 text-yellow-800 border-yellow-200;
+  }
+  
+  .state-done {
+    @apply bg-green-100 text-green-800 border-green-200;
+  }
+  
+  .state-error {
+    @apply bg-red-100 text-red-800 border-red-200;
+  }
+  
+  .state-escalated {
+    @apply bg-purple-100 text-purple-800 border-purple-200;
+  }
+}

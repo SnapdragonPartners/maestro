@@ -11,9 +11,9 @@ import (
 type CircuitState int
 
 const (
-	CircuitClosed CircuitState = iota // Normal operation
-	CircuitOpen                       // Failing, reject requests
-	CircuitHalfOpen                   // Testing if service recovered
+	CircuitClosed   CircuitState = iota // Normal operation
+	CircuitOpen                         // Failing, reject requests
+	CircuitHalfOpen                     // Testing if service recovered
 )
 
 func (s CircuitState) String() string {
@@ -33,7 +33,7 @@ func (s CircuitState) String() string {
 type CircuitBreakerConfig struct {
 	FailureThreshold   int           // Number of failures before opening circuit
 	SuccessThreshold   int           // Number of successes to close circuit from half-open
-	Timeout           time.Duration // Time to wait before trying half-open
+	Timeout            time.Duration // Time to wait before trying half-open
 	MaxConcurrentCalls int           // Maximum concurrent calls in half-open state
 }
 
@@ -41,7 +41,7 @@ type CircuitBreakerConfig struct {
 var DefaultCircuitBreakerConfig = CircuitBreakerConfig{
 	FailureThreshold:   5,
 	SuccessThreshold:   3,
-	Timeout:           30 * time.Second,
+	Timeout:            30 * time.Second,
 	MaxConcurrentCalls: 3,
 }
 
@@ -58,13 +58,13 @@ func (e *CircuitBreakerError) Error() string {
 type CircuitBreakerClient struct {
 	client LLMClient
 	config CircuitBreakerConfig
-	
-	mu                  sync.RWMutex
-	state              CircuitState
-	failureCount       int
-	successCount       int
-	lastFailureTime    time.Time
-	halfOpenCalls      int
+
+	mu              sync.RWMutex
+	state           CircuitState
+	failureCount    int
+	successCount    int
+	lastFailureTime time.Time
+	halfOpenCalls   int
 }
 
 // NewCircuitBreakerClient creates a new circuit breaker LLM client
@@ -82,13 +82,13 @@ func (cb *CircuitBreakerClient) Complete(ctx context.Context, req CompletionRequ
 	if err := cb.allowRequest(); err != nil {
 		return CompletionResponse{}, err
 	}
-	
+
 	// Execute the request
 	resp, err := cb.client.Complete(ctx, req)
-	
+
 	// Record the result
 	cb.recordResult(err == nil)
-	
+
 	return resp, err
 }
 
@@ -98,14 +98,14 @@ func (cb *CircuitBreakerClient) Stream(ctx context.Context, req CompletionReques
 	if err := cb.allowRequest(); err != nil {
 		return nil, err
 	}
-	
+
 	// Execute the request
 	ch, err := cb.client.Stream(ctx, req)
-	
+
 	// For streaming, we consider the initial establishment as success/failure
 	// Individual chunks are not tracked for circuit breaker state
 	cb.recordResult(err == nil)
-	
+
 	return ch, err
 }
 
@@ -127,7 +127,7 @@ func (cb *CircuitBreakerClient) GetFailureCount() int {
 func (cb *CircuitBreakerClient) Reset() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	cb.state = CircuitClosed
 	cb.failureCount = 0
 	cb.successCount = 0
@@ -138,11 +138,11 @@ func (cb *CircuitBreakerClient) Reset() {
 func (cb *CircuitBreakerClient) allowRequest() error {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	switch cb.state {
 	case CircuitClosed:
 		return nil
-		
+
 	case CircuitOpen:
 		// Check if timeout has passed
 		if time.Since(cb.lastFailureTime) >= cb.config.Timeout {
@@ -152,7 +152,7 @@ func (cb *CircuitBreakerClient) allowRequest() error {
 			return nil
 		}
 		return &CircuitBreakerError{State: CircuitOpen}
-		
+
 	case CircuitHalfOpen:
 		// Allow limited concurrent calls
 		if cb.halfOpenCalls >= cb.config.MaxConcurrentCalls {
@@ -160,7 +160,7 @@ func (cb *CircuitBreakerClient) allowRequest() error {
 		}
 		cb.halfOpenCalls++
 		return nil
-		
+
 	default:
 		return &CircuitBreakerError{State: cb.state}
 	}
@@ -170,11 +170,11 @@ func (cb *CircuitBreakerClient) allowRequest() error {
 func (cb *CircuitBreakerClient) recordResult(success bool) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	if cb.state == CircuitHalfOpen {
 		cb.halfOpenCalls--
 	}
-	
+
 	if success {
 		cb.onSuccess()
 	} else {
@@ -188,7 +188,7 @@ func (cb *CircuitBreakerClient) onSuccess() {
 	case CircuitClosed:
 		// Reset failure count on success
 		cb.failureCount = 0
-		
+
 	case CircuitHalfOpen:
 		cb.successCount++
 		if cb.successCount >= cb.config.SuccessThreshold {
@@ -204,13 +204,13 @@ func (cb *CircuitBreakerClient) onSuccess() {
 func (cb *CircuitBreakerClient) onFailure() {
 	cb.failureCount++
 	cb.lastFailureTime = time.Now()
-	
+
 	switch cb.state {
 	case CircuitClosed:
 		if cb.failureCount >= cb.config.FailureThreshold {
 			cb.state = CircuitOpen
 		}
-		
+
 	case CircuitHalfOpen:
 		// Any failure in half-open immediately opens the circuit
 		cb.state = CircuitOpen
@@ -220,7 +220,7 @@ func (cb *CircuitBreakerClient) onFailure() {
 
 // CircuitBreakerStats provides statistics about circuit breaker state
 type CircuitBreakerStats struct {
-	State        CircuitState  `json:"state"`
+	State        CircuitState `json:"state"`
 	FailureCount int          `json:"failure_count"`
 	SuccessCount int          `json:"success_count"`
 	LastFailure  *time.Time   `json:"last_failure,omitempty"`
@@ -231,21 +231,21 @@ type CircuitBreakerStats struct {
 func (cb *CircuitBreakerClient) GetStats() CircuitBreakerStats {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
-	
+
 	stats := CircuitBreakerStats{
 		State:        cb.state,
 		FailureCount: cb.failureCount,
 		SuccessCount: cb.successCount,
 	}
-	
+
 	if !cb.lastFailureTime.IsZero() {
 		stats.LastFailure = &cb.lastFailureTime
 	}
-	
+
 	if cb.state == CircuitOpen {
 		stats.OpenSince = &cb.lastFailureTime
 	}
-	
+
 	return stats
 }
 
@@ -258,11 +258,11 @@ type ResilientClient struct {
 func NewResilientClient(baseClient LLMClient) LLMClient {
 	// First wrap with circuit breaker (inner layer)
 	cbClient := NewCircuitBreakerClient(baseClient, DefaultCircuitBreakerConfig)
-	
+
 	// Then wrap with retry logic (outer layer)
 	// This way, circuit breaker failures won't be retried
 	retryConfig := DefaultRetryConfig
 	retryConfig.MaxRetries = 2 // Reduce retries when using circuit breaker
-	
+
 	return NewRetryableClient(cbClient, retryConfig)
 }

@@ -23,6 +23,9 @@ type Driver interface {
 	// GetStateData returns a copy of the current state data
 	GetStateData() map[string]any
 
+	// GetAgentType returns the type of the agent (architect, coder, etc.)
+	GetAgentType() AgentType
+
 	// Shutdown performs cleanup when the driver is stopping
 	Shutdown(ctx context.Context) error
 }

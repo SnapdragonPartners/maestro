@@ -21,13 +21,6 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-
-
-
-
-
-
-
 // State data keys - using constants to prevent key mismatch bugs
 const (
 	keyPlanApprovalResult = "plan_approval_result"
@@ -37,23 +30,23 @@ const (
 	keyStartedAt          = "started_at"
 	keyCodingIterations   = "coding_iterations"
 	keyFixingIterations   = "fixing_iterations"
-	
+
 	// AUTO_CHECKIN question state keys
-	keyQuestionReason     = "question_reason"
-	keyQuestionOrigin     = "question_origin"
-	keyQuestionContent    = "question_content"
-	keyAutoCheckinAction  = "auto_checkin_action"
-	keyErrorMessage       = "error_msg"
-	keyLoops              = "loops"
-	keyMaxLoops           = "max_loops"
-	keyQuestionAnswered   = "question_answered"
+	keyQuestionReason      = "question_reason"
+	keyQuestionOrigin      = "question_origin"
+	keyQuestionContent     = "question_content"
+	keyAutoCheckinAction   = "auto_checkin_action"
+	keyErrorMessage        = "error_msg"
+	keyLoops               = "loops"
+	keyMaxLoops            = "max_loops"
+	keyQuestionAnswered    = "question_answered"
 	keyQuestionCompletedAt = "question_completed_at"
 )
 
 // File creation constants
 const (
-	defaultFilename    = "code.txt" // Standard filename for unfenced code blocks
-	maxPlainBlockSize  = 50         // Maximum lines for plain content before saving as file
+	defaultFilename   = "code.txt" // Standard filename for unfenced code blocks
+	maxPlainBlockSize = 50         // Maximum lines for plain content before saving as file
 )
 
 // CoderDriver implements the v2 FSM using agent foundation
@@ -74,12 +67,11 @@ type CoderDriver struct {
 	// REQUEST→RESULT flow state
 	pendingApprovalRequest *ApprovalRequest
 	pendingQuestion        *Question
-	
 }
 
 // ApprovalRequest represents a pending approval request
 type ApprovalRequest struct {
-	ID      string             // Correlation ID for tracking responses
+	ID      string // Correlation ID for tracking responses
 	Content string
 	Reason  string
 	Type    proto.ApprovalType
@@ -87,7 +79,7 @@ type ApprovalRequest struct {
 
 // Question represents a pending question
 type Question struct {
-	ID      string // Correlation ID for tracking responses  
+	ID      string // Correlation ID for tracking responses
 	Content string
 	Reason  string
 	Origin  string
@@ -172,8 +164,7 @@ func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config
 		codingBudget:     codingBudget,
 		fixingBudget:     fixingBudget,
 	}
-	
-	
+
 	return driver, nil
 }
 
@@ -187,11 +178,11 @@ func (d *CoderDriver) checkLoopBudget(sm *agent.BaseStateMachine, key string, bu
 			iterationCount = count
 		}
 	}
-	
+
 	// Increment counter
 	iterationCount++
 	sm.SetStateData(key, iterationCount)
-	
+
 	// Check if budget exceeded
 	if iterationCount >= budget {
 		// Populate QUESTION fields for AUTO_CHECKIN
@@ -200,10 +191,10 @@ func (d *CoderDriver) checkLoopBudget(sm *agent.BaseStateMachine, key string, bu
 		sm.SetStateData(keyQuestionContent, fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget))
 		sm.SetStateData(keyLoops, iterationCount)
 		sm.SetStateData(keyMaxLoops, budget)
-		
+
 		return true
 	}
-	
+
 	return false
 }
 
@@ -237,8 +228,6 @@ func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, erro
 	}
 }
 
-
-
 // isCoderState checks if a state is a coder-specific state using canonical derivation
 func (d *CoderDriver) isCoderState(state agent.State) bool {
 	return IsCoderState(state)
@@ -248,9 +237,9 @@ func (d *CoderDriver) isCoderState(state agent.State) bool {
 func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error {
 	// Add agent ID to context for debug logging
 	ctx = context.WithValue(ctx, "agent_id", d.agentConfig.ID)
-	
+
 	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
-	
+
 	// Reset for new task
 	d.BaseStateMachine.SetStateData(keyTaskContent, taskContent)
 	d.BaseStateMachine.SetStateData(keyStartedAt, time.Now().UTC())
@@ -460,10 +449,10 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	// Get LLM response for code generation with shell tool
 	// Build messages including conversation context
 	messages := []agent.CompletionMessage{}
-	
+
 	// Add the initial prompt
 	messages = append(messages, agent.CompletionMessage{Role: agent.RoleUser, Content: prompt})
-	
+
 	// Add conversation history from context manager
 	contextMessages := d.contextManager.GetMessages()
 	for _, msg := range contextMessages {
@@ -476,9 +465,9 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 			Content: fmt.Sprintf("[%s] %s", msg.Role, msg.Content),
 		})
 	}
-	
+
 	req := agent.CompletionRequest{
-		Messages: messages,
+		Messages:  messages,
 		MaxTokens: 4096,
 		Tools: []agent.Tool{
 			{
@@ -532,12 +521,12 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 			return agent.StateError, false, fmt.Errorf("failed to execute tool calls: %w", err)
 		}
 		log.Printf("MCP tool execution created %d files", filesCreated)
-		
+
 		// Reset no-tool-calls counter since we had tool calls
 		sm.SetStateData("no_tool_calls_count", 0)
 	} else {
 		log.Printf("No tool calls found, falling back to text parsing")
-		
+
 		// Track consecutive iterations without tool calls
 		noToolCallsCount := 0
 		if val, exists := sm.GetStateValue("no_tool_calls_count"); exists {
@@ -547,9 +536,9 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 		}
 		noToolCallsCount++
 		sm.SetStateData("no_tool_calls_count", noToolCallsCount)
-		
+
 		log.Printf("No tool calls for %d consecutive iterations", noToolCallsCount)
-		
+
 		// Parse the response to extract files and create them
 		filesCreated, err = d.parseAndCreateFiles(resp.Content)
 		if err != nil {
@@ -583,7 +572,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	currentIterations, _ := sm.GetStateValue(keyCodingIterations)
 	iterCount, _ := currentIterations.(int)
 	log.Printf("Implementation appears incomplete (iteration %d/%d), continuing in CODING state", iterCount, d.codingBudget)
-	
+
 	// Note: Looping back to CODING is allowed via self-loops; not listed in CoderTransitions by design
 	return StateCoding, false, nil
 }
@@ -611,7 +600,7 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 
 	for i, toolCall := range toolCalls {
 		log.Printf("Processing tool call %d: name=%s, id=%s", i+1, toolCall.Name, toolCall.ID)
-		
+
 		if toolCall.Name == "mark_complete" {
 			// Claude signaled completion
 			if reason, ok := toolCall.Parameters["reason"].(string); ok {
@@ -622,7 +611,7 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 			}
 			continue
 		}
-		
+
 		if toolCall.Name == "shell" {
 			// Get the shell tool from registry
 			tool, err := tools.Get("shell")
@@ -651,16 +640,16 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 				d.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
 
 				// Count file creation commands - expanded patterns
-				if strings.Contains(cmd, "cat >") || 
-				   strings.Contains(cmd, "echo >") || 
-				   strings.Contains(cmd, "tee ") ||
-				   strings.Contains(cmd, "go mod init") ||
-				   strings.Contains(cmd, "touch ") ||
-				   strings.Contains(cmd, "cp ") ||
-				   strings.Contains(cmd, "mv ") ||
-				   strings.Contains(cmd, "mkdir") ||
-				   strings.Contains(cmd, " > ") ||
-				   strings.Contains(cmd, " >> ") {
+				if strings.Contains(cmd, "cat >") ||
+					strings.Contains(cmd, "echo >") ||
+					strings.Contains(cmd, "tee ") ||
+					strings.Contains(cmd, "go mod init") ||
+					strings.Contains(cmd, "touch ") ||
+					strings.Contains(cmd, "cp ") ||
+					strings.Contains(cmd, "mv ") ||
+					strings.Contains(cmd, "mkdir") ||
+					strings.Contains(cmd, " > ") ||
+					strings.Contains(cmd, " >> ") {
 					log.Printf("Detected file creation command, incrementing count")
 					filesCreated++
 				}
@@ -698,7 +687,7 @@ func (d *CoderDriver) isImplementationComplete(responseContent string, filesCrea
 		log.Printf("Completion detected: Claude used mark_complete tool")
 		return true
 	}
-	
+
 	// Method 2: No tool calls pattern - if Claude stops making tool calls for 2+ consecutive iterations
 	noToolCallsCount := 0
 	if val, exists := sm.GetStateValue("no_tool_calls_count"); exists {
@@ -706,12 +695,12 @@ func (d *CoderDriver) isImplementationComplete(responseContent string, filesCrea
 			noToolCallsCount = count
 		}
 	}
-	
+
 	if noToolCallsCount >= 2 && filesCreated >= 1 {
 		log.Printf("Completion detected: No tool calls for %d consecutive iterations with %d files created", noToolCallsCount, filesCreated)
 		return true
 	}
-	
+
 	// Method 3: Natural language completion indicators
 	completionIndicators := []string{
 		"implementation is complete",
@@ -725,7 +714,7 @@ func (d *CoderDriver) isImplementationComplete(responseContent string, filesCrea
 		"ready to test",
 		"completed successfully",
 	}
-	
+
 	responseLower := strings.ToLower(responseContent)
 	for _, indicator := range completionIndicators {
 		if strings.Contains(responseLower, indicator) {
@@ -733,17 +722,17 @@ func (d *CoderDriver) isImplementationComplete(responseContent string, filesCrea
 			return true
 		}
 	}
-	
+
 	// If no files were created, definitely not complete
 	if filesCreated == 0 {
 		return false
 	}
-	
+
 	// If only directories were created (like mkdir), not complete unless it's been many iterations
 	if filesCreated <= 2 && (strings.Contains(responseContent, "mkdir") || strings.Contains(responseContent, "go mod init")) {
 		return false
 	}
-	
+
 	// Default to incomplete to encourage more work
 	return false
 }
@@ -754,7 +743,7 @@ func (d *CoderDriver) getWorkingDirectoryContents() string {
 	if err != nil {
 		return "error reading directory"
 	}
-	
+
 	var items []string
 	for _, entry := range entries {
 		if entry.Name() == "state" {
@@ -766,11 +755,11 @@ func (d *CoderDriver) getWorkingDirectoryContents() string {
 			items = append(items, entry.Name())
 		}
 	}
-	
+
 	if len(items) == 0 {
 		return "empty directory"
 	}
-	
+
 	return strings.Join(items, ", ")
 }
 
@@ -787,18 +776,18 @@ func (d *CoderDriver) isFilenameHeader(line string) bool {
 // looksLikeCode uses heuristics to determine if a line looks like code
 func (d *CoderDriver) looksLikeCode(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	
+
 	// Empty lines are neutral
 	if trimmed == "" {
 		return false
 	}
-	
+
 	// Comments and documentation are code
-	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") || 
-	   strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "<!--") {
+	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
+		strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "<!--") {
 		return true
 	}
-	
+
 	// Programming language keywords and patterns
 	codeKeywords := []string{
 		"func ", "function ", "def ", "class ", "interface ", "struct ",
@@ -810,88 +799,88 @@ func (d *CoderDriver) looksLikeCode(line string) bool {
 		"console.", "fmt.", "print(", "println(", "printf(",
 		".test(", ".call(", ".apply(", ".bind(",
 	}
-	
+
 	for _, keyword := range codeKeywords {
 		if strings.Contains(trimmed, keyword) {
 			return true
 		}
 	}
-	
+
 	// Code-like patterns and symbols
 	if strings.Contains(trimmed, "{") || strings.Contains(trimmed, "}") ||
-	   strings.Contains(trimmed, "[]") || strings.Contains(trimmed, "();") ||
-	   strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "->") ||
-	   strings.Contains(trimmed, "=>") || strings.Contains(trimmed, "<-") ||
-	   strings.Contains(trimmed, "()") || strings.Contains(trimmed, "[]") ||
-	   trimmed == ")" || trimmed == "(" || trimmed == "}" || trimmed == "{" ||
-	   strings.Contains(trimmed, " = ") || strings.Contains(trimmed, "==") ||
-	   strings.Contains(trimmed, "!=") || strings.Contains(trimmed, ">=") ||
-	   strings.Contains(trimmed, "<=") || strings.Contains(trimmed, "&&") ||
-	   strings.Contains(trimmed, "||") {
+		strings.Contains(trimmed, "[]") || strings.Contains(trimmed, "();") ||
+		strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "->") ||
+		strings.Contains(trimmed, "=>") || strings.Contains(trimmed, "<-") ||
+		strings.Contains(trimmed, "()") || strings.Contains(trimmed, "[]") ||
+		trimmed == ")" || trimmed == "(" || trimmed == "}" || trimmed == "{" ||
+		strings.Contains(trimmed, " = ") || strings.Contains(trimmed, "==") ||
+		strings.Contains(trimmed, "!=") || strings.Contains(trimmed, ">=") ||
+		strings.Contains(trimmed, "<=") || strings.Contains(trimmed, "&&") ||
+		strings.Contains(trimmed, "||") {
 		return true
 	}
-	
+
 	// Function calls, method calls (contains dots and parentheses)
 	if strings.Contains(trimmed, ".") && strings.Contains(trimmed, "(") {
 		return true
 	}
-	
+
 	// String literals and numeric literals
 	if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "'") ||
-	   strings.HasPrefix(trimmed, "`") {
+		strings.HasPrefix(trimmed, "`") {
 		return true
 	}
-	
+
 	// Indentation suggests code structure
 	if len(line) > len(trimmed) && (len(line)-len(trimmed)) >= 2 {
 		return true
 	}
-	
+
 	// Natural language patterns that are definitely NOT code
 	nonCodePatterns := []string{
-		"Here's", "This creates", "The following", "Now let's", "Next,", 
+		"Here's", "This creates", "The following", "Now let's", "Next,",
 		"Finally,", "In this", "We will", "You can", "Let me",
 		"This is", "This will", "The code", "The solution", "As you can see",
 	}
-	
+
 	for _, pattern := range nonCodePatterns {
 		if strings.HasPrefix(trimmed, pattern) {
 			return false
 		}
 	}
-	
+
 	return false
 }
 
 // guessFilenameFromContent tries to guess filename from a line of code
 func (d *CoderDriver) guessFilenameFromContent(line string) string {
 	trimmed := strings.TrimSpace(line)
-	
+
 	// Go patterns
 	if strings.HasPrefix(trimmed, "package ") || strings.Contains(trimmed, "func ") ||
-	   strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "fmt.") {
+		strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "fmt.") {
 		return "main.go"
 	}
-	
+
 	// Python patterns
 	if strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "class ") ||
-	   strings.Contains(trimmed, "import ") || strings.Contains(trimmed, "print(") {
+		strings.Contains(trimmed, "import ") || strings.Contains(trimmed, "print(") {
 		return "main.py"
 	}
-	
+
 	// JavaScript patterns
 	if strings.Contains(trimmed, "function ") || strings.Contains(trimmed, "const ") ||
-	   strings.Contains(trimmed, "let ") || strings.Contains(trimmed, "console.") ||
-	   strings.Contains(trimmed, "var ") || strings.Contains(trimmed, ".test(") ||
-	   strings.Contains(trimmed, "return ") && strings.Contains(trimmed, ".") {
+		strings.Contains(trimmed, "let ") || strings.Contains(trimmed, "console.") ||
+		strings.Contains(trimmed, "var ") || strings.Contains(trimmed, ".test(") ||
+		strings.Contains(trimmed, "return ") && strings.Contains(trimmed, ".") {
 		return "main.js"
 	}
-	
+
 	// Java patterns
 	if strings.Contains(trimmed, "public class ") || strings.Contains(trimmed, "public static") {
 		return "Main.java"
 	}
-	
+
 	// Default
 	return defaultFilename
 }
@@ -984,21 +973,21 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 			// Check if this line looks like natural language (definitely not code)
 			trimmed := strings.TrimSpace(line)
 			isNaturalLanguage := false
-			
+
 			// Natural language patterns that end code blocks
 			endPatterns := []string{
 				"This creates", "This will", "This is", "Here's", "The following",
 				"Now let's", "Next,", "Finally,", "As you can see", "Note that",
 				"Remember to", "Don't forget", "Make sure", "Be careful",
 			}
-			
+
 			for _, pattern := range endPatterns {
 				if strings.HasPrefix(trimmed, pattern) {
 					isNaturalLanguage = true
 					break
 				}
 			}
-			
+
 			// Only stop if it's clearly natural language
 			if isNaturalLanguage {
 				// If we have collected some content, save it
@@ -1017,7 +1006,7 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 		// Collect content if we're in a code block, have a current file, or collecting plain content
 		if (inCodeBlock || inPlainContent || currentFile != "") && currentFile != "" {
 			currentContent = append(currentContent, line)
-			
+
 			// Check if we've exceeded the maximum plain block size
 			if inPlainContent && len(currentContent) > maxPlainBlockSize {
 				// Force save as default filename and reset
@@ -1356,7 +1345,7 @@ func (d *CoderDriver) ClearPendingApprovalRequest() {
 	d.pendingApprovalRequest = nil
 }
 
-// GetPendingQuestion returns pending question if any  
+// GetPendingQuestion returns pending question if any
 func (d *CoderDriver) GetPendingQuestion() (bool, string, string, string) {
 	if d.pendingQuestion == nil {
 		return false, "", "", ""
@@ -1373,7 +1362,7 @@ func (d *CoderDriver) ClearPendingQuestion() {
 func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType string) error {
 	// Convert legacy status to standardized format
 	standardStatus := proto.ConvertLegacyStatus(approvalStatus)
-	
+
 	// Validate approval type
 	stdApprovalType, valid := proto.ValidateApprovalType(approvalType)
 	if !valid {
@@ -1400,24 +1389,24 @@ func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType 
 	if err := d.BaseStateMachine.Persist(); err != nil {
 		return fmt.Errorf("failed to persist approval result: %w", err)
 	}
-	
+
 	// Debug logging for approval processing
 	logx.DebugToFile(context.Background(), "coder", "approval_debug.log", "ProcessApprovalResult called - status=%s->%s, type=%s", approvalStatus, standardStatus, approvalType)
-	
+
 	return nil
 }
 
 // ProcessAnswer processes answer from architect
 func (d *CoderDriver) ProcessAnswer(answer string) error {
 	sm := d.BaseStateMachine
-	
+
 	// Check if this is an AUTO_CHECKIN response
 	if reason, exists := sm.GetStateValue(keyQuestionReason); exists {
 		if reasonStr, ok := reason.(string); ok && reasonStr == QuestionReasonAutoCheckin {
 			return d.processAutoCheckinAnswer(answer)
 		}
 	}
-	
+
 	// Regular answer processing
 	d.BaseStateMachine.SetStateData(keyArchitectAnswer, answer)
 	return nil
@@ -1427,7 +1416,7 @@ func (d *CoderDriver) ProcessAnswer(answer string) error {
 func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 	sm := d.BaseStateMachine
 	answer = strings.TrimSpace(answer)
-	
+
 	// Get the origin state
 	origin, exists := sm.GetStateValue(keyQuestionOrigin)
 	if !exists {
@@ -1437,20 +1426,20 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 	if !ok {
 		return fmt.Errorf("invalid question_origin type")
 	}
-	
+
 	// Parse the command
 	parts := strings.Fields(strings.ToUpper(answer))
 	if len(parts) == 0 {
 		return d.sendAutoCheckinError(fmt.Sprintf("Empty AUTO_CHECKIN command. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON."))
 	}
-	
+
 	// Validate command using typed enum
 	commandStr := parts[0]
 	command, err := ParseAutoAction(commandStr)
 	if err != nil {
 		return d.sendAutoCheckinError(err.Error())
 	}
-	
+
 	switch command {
 	case AutoContinue:
 		// Parse the number parameter
@@ -1462,7 +1451,7 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 				return d.sendAutoCheckinError(fmt.Sprintf("Invalid number in CONTINUE command: %s", parts[1]))
 			}
 		}
-		
+
 		// Increase budget and reset counter
 		switch originStr {
 		case string(StateCoding):
@@ -1474,11 +1463,11 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 		default:
 			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
 		}
-		
+
 		// Clear question state and set answer
 		d.clearQuestionState()
 		sm.SetStateData(keyArchitectAnswer, fmt.Sprintf("Budget increased by %d, counter reset", increase))
-		
+
 	case AutoPivot:
 		// Reset counter, stay in current state
 		switch originStr {
@@ -1489,27 +1478,27 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 		default:
 			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
 		}
-		
+
 		// Clear question state and set answer
 		d.clearQuestionState()
 		sm.SetStateData(keyArchitectAnswer, "Counter reset, continuing with pivot approach")
-		
+
 	case AutoEscalate:
 		// Set explicit flag for escalation
 		d.clearQuestionState()
 		sm.SetStateData(keyAutoCheckinAction, AutoEscalate.String())
 		sm.SetStateData(keyArchitectAnswer, "Escalating to code review")
-		
+
 	case AutoAbandon:
 		// Set explicit flag for abandonment
 		d.clearQuestionState()
 		sm.SetStateData(keyAutoCheckinAction, AutoAbandon.String())
 		sm.SetStateData(keyArchitectAnswer, "Task abandoned")
-		
+
 	default:
 		return d.sendAutoCheckinError(fmt.Sprintf("Unrecognised AUTO_CHECKIN command: %q. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON.", command))
 	}
-	
+
 	return nil
 }
 
@@ -1554,6 +1543,11 @@ func (d *CoderDriver) GetStateData() map[string]any {
 	return d.BaseStateMachine.GetStateData()
 }
 
+// GetAgentType returns the type of the agent
+func (d *CoderDriver) GetAgentType() agent.AgentType {
+	return agent.AgentTypeCoder
+}
+
 // Run executes the driver's main loop (required for Driver interface)
 func (d *CoderDriver) Run(ctx context.Context) error {
 	// Run the state machine loop using Step()
@@ -1580,7 +1574,7 @@ func (d *CoderDriver) Step(ctx context.Context) (bool, error) {
 	currentState := d.GetCurrentState()
 	if nextState != currentState {
 		// Transition validation is handled by base state machine
-		
+
 		if err := d.TransitionTo(ctx, nextState, nil); err != nil {
 			return false, fmt.Errorf("failed to transition to state %s: %w", nextState, err)
 		}

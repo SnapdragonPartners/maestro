@@ -49,7 +49,7 @@ func setupTestDriver(t *testing.T) (*BaseDriver, *AgentContext) {
 		StateError:        {StateWaiting},
 		StateWaiting:      {State("PLANNING")},
 	}
-	
+
 	// Replace state machine with one that has proper transitions
 	if baseSM, ok := driver.StateMachine.(*BaseStateMachine); ok {
 		baseSM.table = testTransitions

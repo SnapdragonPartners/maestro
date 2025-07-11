@@ -4,9 +4,9 @@ package agent
 type Mode int
 
 const (
-	ModeLive Mode = iota // Production: Real LLM, minimal logging
-	ModeDebug           // Development: Real LLM, verbose logging
-	ModeMock            // Testing: Mock LLM, controlled responses
+	ModeLive  Mode = iota // Production: Real LLM, minimal logging
+	ModeDebug             // Development: Real LLM, verbose logging
+	ModeMock              // Testing: Mock LLM, controlled responses
 )
 
 // SystemMode is the global system operation mode, set once at startup

@@ -24,9 +24,9 @@ type AnthropicToolUse struct {
 
 // ContentBlock represents a single content block in Claude responses
 type ContentBlock struct {
-	Type     string           `json:"type"`
-	Text     string           `json:"text,omitempty"`
-	ToolUse  *AnthropicToolUse `json:"tool_use,omitempty"`
+	Type    string            `json:"type"`
+	Text    string            `json:"text,omitempty"`
+	ToolUse *AnthropicToolUse `json:"tool_use,omitempty"`
 }
 
 // MCPParser handles parsing of Claude API tool use formats
@@ -41,7 +41,7 @@ type MCPParser struct {
 func NewMCPParser() *MCPParser {
 	// Regex to match <thinking>...</thinking> patterns for CoT
 	thinkingRegex := regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
-	
+
 	// Regex to match JSON tool use blocks: {"type":"tool_use",...}
 	jsonToolRegex := regexp.MustCompile(`(?s)\{[\s\n]*"type"[\s\n]*:[\s\n]*"tool_use".*?\}`)
 
@@ -99,8 +99,8 @@ func parseContentBlocks(text string) []ContentBlock {
 
 	// Try to parse the entire text as a JSON array of content blocks
 	var jsonBlocks []ContentBlock
-	if strings.HasPrefix(strings.TrimSpace(text), "[") && 
-	   strings.HasSuffix(strings.TrimSpace(text), "]") {
+	if strings.HasPrefix(strings.TrimSpace(text), "[") &&
+		strings.HasSuffix(strings.TrimSpace(text), "]") {
 		trimmed := strings.TrimSpace(text)
 		if err := json.Unmarshal([]byte(trimmed), &jsonBlocks); err == nil {
 			return jsonBlocks
@@ -110,12 +110,12 @@ func parseContentBlocks(text string) []ContentBlock {
 	// Look for tool_use sections in a more flexible way
 	toolUseRegex := regexp.MustCompile(`(?s)(tool_use|"type"\s*:\s*"tool_use").*?(\{.*?\})`)
 	matches := toolUseRegex.FindAllStringSubmatch(text, -1)
-	
+
 	for _, match := range matches {
 		if len(match) >= 3 {
 			jsonStr := match[2]
 			var toolUse AnthropicToolUse
-			
+
 			// Try to parse as a complete tool_use object
 			if err := json.Unmarshal([]byte(jsonStr), &toolUse); err == nil {
 				blocks = append(blocks, ContentBlock{
@@ -124,7 +124,7 @@ func parseContentBlocks(text string) []ContentBlock {
 				})
 				continue
 			}
-			
+
 			// Try to extract just the input part
 			inputRegex := regexp.MustCompile(`"input"\s*:\s*(\{.*?\})`)
 			inputMatch := inputRegex.FindStringSubmatch(jsonStr)
@@ -138,7 +138,7 @@ func parseContentBlocks(text string) []ContentBlock {
 					if len(nameMatch) >= 2 {
 						name = nameMatch[1]
 					}
-					
+
 					// Try to extract ID
 					idRegex := regexp.MustCompile(`"id"\s*:\s*"([^"]+)"`)
 					idMatch := idRegex.FindStringSubmatch(jsonStr)
@@ -146,7 +146,7 @@ func parseContentBlocks(text string) []ContentBlock {
 					if len(idMatch) >= 2 {
 						id = idMatch[1]
 					}
-					
+
 					blocks = append(blocks, ContentBlock{
 						Type: "tool_use",
 						ToolUse: &AnthropicToolUse{
@@ -170,11 +170,11 @@ func (p *MCPParser) HasToolCalls(text string) bool {
 	if p.jsonToolRegex.MatchString(text) {
 		return true
 	}
-	
+
 	// Check for tool_use keyword
-	return strings.Contains(text, "tool_use") || 
-	       strings.Contains(text, "\"type\": \"tool_use\"") ||
-	       strings.Contains(text, "\"type\":\"tool_use\"")
+	return strings.Contains(text, "tool_use") ||
+		strings.Contains(text, "\"type\": \"tool_use\"") ||
+		strings.Contains(text, "\"type\":\"tool_use\"")
 }
 
 // ExtractToolNames returns just the tool names found in the text
@@ -183,12 +183,12 @@ func (p *MCPParser) ExtractToolNames(text string) []string {
 	if err != nil {
 		return nil
 	}
-	
+
 	var names []string
 	for _, call := range toolCalls {
 		names = append(names, call.Name)
 	}
-	
+
 	return names
 }
 

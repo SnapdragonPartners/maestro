@@ -15,8 +15,8 @@ var ValidTransitions = map[State][]State{
 var ValidTransitionsMux sync.RWMutex
 
 // allowSelfLoop permits staying in the same state (for long-running states)
-func allowSelfLoop(from, to State) bool { 
-	return from == to 
+func allowSelfLoop(from, to State) bool {
+	return from == to
 }
 
 // IsValidTransition checks if a state transition is allowed using the instance table
@@ -25,7 +25,7 @@ func (sm *BaseStateMachine) IsValidTransition(from, to State) bool {
 	if allowSelfLoop(from, to) {
 		return true
 	}
-	
+
 	// Allow any transition to error state
 	if to == StateError {
 		return true

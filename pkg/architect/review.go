@@ -18,6 +18,7 @@ type ReviewEvaluator struct {
 	queue             *Queue
 	workspaceDir      string
 	escalationHandler *EscalationHandler
+	mergeCh           chan<- string // Channel to signal completed merges
 
 	// Track pending reviews
 	pendingReviews map[string]*PendingReview // reviewID -> PendingReview
@@ -51,13 +52,14 @@ type ReviewAttempt struct {
 }
 
 // NewReviewEvaluator creates a new review evaluator
-func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler) *ReviewEvaluator {
+func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string) *ReviewEvaluator {
 	return &ReviewEvaluator{
 		llmClient:         llmClient,
 		renderer:          renderer,
 		queue:             queue,
 		workspaceDir:      workspaceDir,
 		escalationHandler: escalationHandler,
+		mergeCh:           mergeCh,
 		pendingReviews:    make(map[string]*PendingReview),
 	}
 }
@@ -643,6 +645,17 @@ func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview 
 	err := re.queue.MarkCompleted(pendingReview.StoryID)
 	if err != nil {
 		return fmt.Errorf("failed to mark story %s as completed: %w", pendingReview.StoryID, err)
+	}
+
+	// Signal merge channel for completed story
+	if re.mergeCh != nil {
+		select {
+		case re.mergeCh <- pendingReview.StoryID:
+			// Successfully signaled merge
+		default:
+			// Channel full, log warning but don't fail
+			fmt.Printf("⚠️ Warning: merge channel full for story %s\n", pendingReview.StoryID)
+		}
 	}
 
 	// Send approval message back to agent

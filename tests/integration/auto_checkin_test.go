@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/coder"
+	"orchestrator/pkg/config"
 )
 
 // TestAutoCheckinCoding tests AUTO_CHECKIN behavior in CODING state
@@ -134,7 +134,7 @@ func TestContinueResetsCounter(t *testing.T) {
 
 	// Create coder with budget
 	agentConfig := &config.Agent{
-		ID:   "test-coder", 
+		ID:   "test-coder",
 		Type: "coder",
 		Name: "Test Coder",
 		IterationBudgets: config.IterationBudgets{
@@ -172,7 +172,7 @@ func TestPivotResetsCounter(t *testing.T) {
 
 	agentConfig := &config.Agent{
 		ID:   "test-coder",
-		Type: "coder", 
+		Type: "coder",
 		Name: "Test Coder",
 		IterationBudgets: config.IterationBudgets{
 			CodingBudget: 3,
@@ -210,7 +210,7 @@ func TestInvalidAutoCheckinCommand(t *testing.T) {
 	agentConfig := &config.Agent{
 		ID:   "test-coder",
 		Type: "coder",
-		Name: "Test Coder", 
+		Name: "Test Coder",
 		IterationBudgets: config.IterationBudgets{
 			CodingBudget: 3,
 			FixingBudget: 2,
@@ -220,7 +220,7 @@ func TestInvalidAutoCheckinCommand(t *testing.T) {
 	driver := CreateTestCoderWithAgent(t, "test-coder", agentConfig)
 
 	// Set up AUTO_CHECKIN state
-	driver.SetStateData("question_reason", "AUTO_CHECKIN") 
+	driver.SetStateData("question_reason", "AUTO_CHECKIN")
 	driver.SetStateData("question_origin", "CODING")
 
 	// Process invalid command

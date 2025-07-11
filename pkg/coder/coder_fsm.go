@@ -22,10 +22,10 @@ const (
 type AutoAction = proto.AutoAction
 
 const (
-	AutoContinue             = proto.AutoContinue
-	AutoPivot                = proto.AutoPivot
-	AutoEscalate             = proto.AutoEscalate
-	AutoAbandon              = proto.AutoAbandon
+	AutoContinue              = proto.AutoContinue
+	AutoPivot                 = proto.AutoPivot
+	AutoEscalate              = proto.AutoEscalate
+	AutoAbandon               = proto.AutoAbandon
 	QuestionReasonAutoCheckin = proto.QuestionReasonAutoCheckin
 )
 

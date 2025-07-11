@@ -103,7 +103,7 @@ func TestIdleCPUUsage(t *testing.T) {
 	}
 
 	duration := time.Since(startTime)
-	
+
 	// All steps should complete very quickly since they're no-ops
 	if duration > 100*time.Millisecond {
 		t.Errorf("Idle steps took too long: %v (expected < 100ms)", duration)

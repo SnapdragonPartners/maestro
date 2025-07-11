@@ -16,7 +16,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		tempDir := t.TempDir()
 		stateStore, _ := state.NewStore(tempDir)
 		coder, _ := NewCoder("test-coder", "test-coder", tempDir, stateStore, &config.ModelCfg{})
-		
+
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
 		resultMsg.SetPayload(proto.KeyStatus, "APPROVED")
 		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
@@ -36,7 +36,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		tempDir := t.TempDir()
 		stateStore, _ := state.NewStore(tempDir)
 		coder, _ := NewCoder("test-coder", "test-coder", tempDir, stateStore, &config.ModelCfg{})
-		
+
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
 		resultMsg.SetPayload(proto.KeyStatus, "APPROVED")
 		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
@@ -72,7 +72,7 @@ func TestNormaliseApprovalType(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
 			result, err := proto.NormaliseApprovalType(tc.input)
-			
+
 			if tc.hasError {
 				if err == nil {
 					t.Errorf("Expected error for input '%s', got none", tc.input)
@@ -96,25 +96,25 @@ func TestGetStringFromPayloadOrMetadata(t *testing.T) {
 	coder, _ := NewCoder("test", "test", tempDir, stateStore, &config.ModelCfg{})
 
 	msg := proto.NewAgentMsg(proto.MsgTypeTASK, "sender", "receiver")
-	
+
 	// Test payload preference over metadata
 	msg.SetPayload("test_key", "payload_value")
 	msg.SetMetadata("test_key", "metadata_value")
-	
+
 	result := coder.getStringFromPayloadOrMetadata(msg, "test_key")
 	if result != "payload_value" {
 		t.Errorf("Expected payload value, got %s", result)
 	}
-	
+
 	// Test metadata fallback
 	msg2 := proto.NewAgentMsg(proto.MsgTypeTASK, "sender", "receiver")
 	msg2.SetMetadata("test_key", "metadata_value")
-	
+
 	result2 := coder.getStringFromPayloadOrMetadata(msg2, "test_key")
 	if result2 != "metadata_value" {
 		t.Errorf("Expected metadata value, got %s", result2)
 	}
-	
+
 	// Test missing key
 	result3 := coder.getStringFromPayloadOrMetadata(msg2, "missing_key")
 	if result3 != "" {

@@ -426,7 +426,7 @@ func TestAutoAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := ParseAutoAction(tt.input)
-			
+
 			if tt.expectError {
 				if err == nil {
 					t.Errorf("Expected error for input %q but got none", tt.input)

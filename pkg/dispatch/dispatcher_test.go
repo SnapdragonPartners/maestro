@@ -505,3 +505,116 @@ func TestDispatcherStats(t *testing.T) {
 		t.Errorf("Expected one agent 'claude', got %v", agents)
 	}
 }
+
+func TestDispatcher_DumpHeads(t *testing.T) {
+	// Create dispatcher with test configuration
+	cfg := createTestConfig()
+	rateLimiter := limiter.NewLimiter(cfg)
+	defer rateLimiter.Close()
+
+	tmpDir := t.TempDir()
+	eventLog, _ := eventlog.NewWriter(tmpDir, 24)
+	defer eventLog.Close()
+
+	dispatcher, err := NewDispatcher(cfg, rateLimiter, eventLog)
+	if err != nil {
+		t.Fatalf("Failed to create dispatcher: %v", err)
+	}
+
+	// Add some test messages to queues
+	architectMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, "coder:001", "architect")
+	architectMsg.SetPayload("question", "How should I implement this?")
+
+	coderMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "coder:001")
+	coderMsg.SetPayload("status", "approved")
+
+	sharedMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "architect", "coder")
+	sharedMsg.SetPayload("story_id", "story-001")
+
+	// Manually add to queues (simulating processed messages)
+	dispatcher.queueMutex.Lock()
+	dispatcher.architectQueue = append(dispatcher.architectQueue, architectMsg)
+	dispatcher.coderQueue = append(dispatcher.coderQueue, coderMsg)
+	dispatcher.sharedWorkQueue = append(dispatcher.sharedWorkQueue, sharedMsg)
+	dispatcher.queueMutex.Unlock()
+
+	// Test DumpHeads
+	result := dispatcher.DumpHeads(10)
+
+	// Verify structure
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// Check architect queue
+	architectInfo, ok := result["architect"]
+	if !ok {
+		t.Fatal("Expected architect queue info")
+	}
+
+	architectQueue, ok := architectInfo.(QueueInfo)
+	if !ok {
+		t.Fatal("Expected QueueInfo type for architect")
+	}
+
+	if architectQueue.Length != 1 {
+		t.Errorf("Expected architect queue length 1, got %d", architectQueue.Length)
+	}
+
+	if len(architectQueue.Heads) != 1 {
+		t.Errorf("Expected 1 architect head, got %d", len(architectQueue.Heads))
+	}
+
+	if architectQueue.Heads[0].Type != string(proto.MsgTypeQUESTION) {
+		t.Errorf("Expected QUESTION type, got %s", architectQueue.Heads[0].Type)
+	}
+
+	// Check coder queue
+	coderInfo, ok := result["coder"]
+	if !ok {
+		t.Fatal("Expected coder queue info")
+	}
+
+	coderQueue, ok := coderInfo.(QueueInfo)
+	if !ok {
+		t.Fatal("Expected QueueInfo type for coder")
+	}
+
+	if coderQueue.Length != 1 {
+		t.Errorf("Expected coder queue length 1, got %d", coderQueue.Length)
+	}
+
+	// Check shared queue
+	sharedInfo, ok := result["shared"]
+	if !ok {
+		t.Fatal("Expected shared queue info")
+	}
+
+	sharedQueue, ok := sharedInfo.(QueueInfo)
+	if !ok {
+		t.Fatal("Expected QueueInfo type for shared")
+	}
+
+	if sharedQueue.Length != 1 {
+		t.Errorf("Expected shared queue length 1, got %d", sharedQueue.Length)
+	}
+
+	// Check input channel info
+	inputInfo, ok := result["input_channel"]
+	if !ok {
+		t.Fatal("Expected input_channel info")
+	}
+
+	inputMap, ok := inputInfo.(map[string]any)
+	if !ok {
+		t.Fatal("Expected map[string]any for input_channel")
+	}
+
+	if inputMap["capacity"] != 100 {
+		t.Errorf("Expected capacity 100, got %v", inputMap["capacity"])
+	}
+
+	if inputMap["blocked"] != false {
+		t.Errorf("Expected blocked false, got %v", inputMap["blocked"])
+	}
+}

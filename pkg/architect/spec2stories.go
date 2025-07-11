@@ -56,13 +56,13 @@ func (sp *SpecParser) parseSpecContent(content string) ([]Requirement, error) {
 	if strings.TrimSpace(content) == "" {
 		return nil, fmt.Errorf("empty spec content")
 	}
-	
+
 	// Add reasonable limits
 	const maxRequirements = 1000
 	const maxContentSize = 10 * 1024 * 1024 // 10MB
-	
+
 	if len(content) > maxContentSize {
-		return nil, fmt.Errorf("spec content too large: %d bytes (max %d)", 
+		return nil, fmt.Errorf("spec content too large: %d bytes (max %d)",
 			len(content), maxContentSize)
 	}
 	var requirements []Requirement
@@ -162,7 +162,7 @@ func (sp *SpecParser) parseSpecContent(content string) ([]Requirement, error) {
 
 	// Check if we have too many requirements
 	if len(requirements) > maxRequirements {
-		return nil, fmt.Errorf("too many requirements: %d (max %d)", 
+		return nil, fmt.Errorf("too many requirements: %d (max %d)",
 			len(requirements), maxRequirements)
 	}
 

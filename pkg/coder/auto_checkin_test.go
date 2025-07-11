@@ -34,7 +34,7 @@ func TestCheckLoopBudget(t *testing.T) {
 			FixingBudget: 2,
 		},
 	}
-	
+
 	driver := &CoderDriver{
 		BaseStateMachine: sm,
 		codingBudget:     agentConfig.IterationBudgets.CodingBudget,
@@ -42,49 +42,49 @@ func TestCheckLoopBudget(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		key            string
-		budget         int
-		origin         agent.State
-		iterations     int
-		expectTrigger  bool
-		expectedLoops  int
+		name          string
+		key           string
+		budget        int
+		origin        agent.State
+		iterations    int
+		expectTrigger bool
+		expectedLoops int
 	}{
 		{
-			name:           "coding under budget",
-			key:            keyCodingIterations,
-			budget:         3,
-			origin:         StateCoding,
-			iterations:     2,
-			expectTrigger:  false,
-			expectedLoops:  2,
+			name:          "coding under budget",
+			key:           keyCodingIterations,
+			budget:        3,
+			origin:        StateCoding,
+			iterations:    2,
+			expectTrigger: false,
+			expectedLoops: 2,
 		},
 		{
-			name:           "coding at budget",
-			key:            keyCodingIterations,
-			budget:         3,
-			origin:         StateCoding,
-			iterations:     3,
-			expectTrigger:  true,
-			expectedLoops:  3,
+			name:          "coding at budget",
+			key:           keyCodingIterations,
+			budget:        3,
+			origin:        StateCoding,
+			iterations:    3,
+			expectTrigger: true,
+			expectedLoops: 3,
 		},
 		{
-			name:           "fixing under budget",
-			key:            keyFixingIterations,
-			budget:         2,
-			origin:         StateFixing,
-			iterations:     1,
-			expectTrigger:  false,
-			expectedLoops:  1,
+			name:          "fixing under budget",
+			key:           keyFixingIterations,
+			budget:        2,
+			origin:        StateFixing,
+			iterations:    1,
+			expectTrigger: false,
+			expectedLoops: 1,
 		},
 		{
-			name:           "fixing at budget",
-			key:            keyFixingIterations,
-			budget:         2,
-			origin:         StateFixing,
-			iterations:     2,
-			expectTrigger:  true,
-			expectedLoops:  2,
+			name:          "fixing at budget",
+			key:           keyFixingIterations,
+			budget:        2,
+			origin:        StateFixing,
+			iterations:    2,
+			expectTrigger: true,
+			expectedLoops: 2,
 		},
 	}
 

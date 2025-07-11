@@ -2,6 +2,8 @@ package architect
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,30 +61,23 @@ func TestChannelConnectivity(t *testing.T) {
 	t.Run("Worker completion signals", func(t *testing.T) {
 		// Wait for worker completion signals
 		timeout := time.After(1 * time.Second)
-		questionsAnswered := 0
-		reviewsCompleted := 0
 
 		// Collect completion signals
-		for questionsAnswered < 1 || reviewsCompleted < 1 {
+		requestsCompleted := 0
+		for requestsCompleted < 2 { // Both question and review should complete
 			select {
-			case msgID := <-driver.questionAnsweredCh:
-				t.Logf("Question answered: %s", msgID)
-				questionsAnswered++
-			case msgID := <-driver.reviewDoneCh:
-				t.Logf("Review completed: %s", msgID)
-				reviewsCompleted++
+			case msgID := <-driver.requestDoneCh:
+				t.Logf("Request completed: %s", msgID)
+				requestsCompleted++
 			case <-timeout:
-				t.Errorf("Timeout waiting for worker completion signals. Questions: %d, Reviews: %d", 
-					questionsAnswered, reviewsCompleted)
+				t.Errorf("Timeout waiting for worker completion signals. Requests: %d",
+					requestsCompleted)
 				return
 			}
 		}
 
-		if questionsAnswered != 1 {
-			t.Errorf("Expected 1 question answered, got %d", questionsAnswered)
-		}
-		if reviewsCompleted != 1 {
-			t.Errorf("Expected 1 review completed, got %d", reviewsCompleted)
+		if requestsCompleted != 2 {
+			t.Errorf("Expected 2 requests completed, got %d", requestsCompleted)
 		}
 	})
 
@@ -117,7 +112,7 @@ func TestChannelIntegrationWithStories(t *testing.T) {
 			DependsOn:       []string{}, // No dependencies, should be ready
 			EstimatedPoints: 1,
 		}
-		
+
 		driver.queue.stories[testStory.ID] = testStory
 
 		// Trigger notification check
@@ -133,5 +128,59 @@ func TestChannelIntegrationWithStories(t *testing.T) {
 		case <-time.After(1 * time.Second):
 			t.Error("Timeout waiting for ready story notification")
 		}
+	})
+}
+
+func TestChannelConfigurationScaling(t *testing.T) {
+	// Create custom channel configuration with larger buffer sizes
+	customConfig := &ChannelConfig{
+		ReadyStoryChSize:  5,
+		IdleAgentChSize:   3,
+		RequestDoneChSize: 10,
+		MergeChSize:       2,
+		RequestChSize:     20,
+	}
+
+	// Create driver with custom channel configuration
+	stateStore, _ := state.NewStore("test_data")
+	driver := NewDriverWithChannelConfig("test-architect", stateStore, "test_work", "test_stories", customConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := driver.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize driver: %v", err)
+	}
+	defer driver.Shutdown()
+
+	t.Run("Large buffer channels handle multiple messages", func(t *testing.T) {
+		// Send multiple messages concurrently to test buffer capacity
+		var wg sync.WaitGroup
+		messageCount := 15
+
+		for i := 0; i < messageCount; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+
+				msg := proto.NewAgentMsg(proto.MsgTypeQUESTION, fmt.Sprintf("test-coder-%d", i), "test-architect")
+				msg.SetPayload(proto.KeyQuestion, fmt.Sprintf("Test question %d", i))
+				msg.SetPayload(proto.KeyStoryID, "test-story")
+
+				err := driver.RouteMessage(msg)
+				if err != nil {
+					t.Errorf("Failed to route message %d: %v", i, err)
+				}
+			}(i)
+		}
+
+		// Wait for all messages to be sent
+		wg.Wait()
+
+		// Allow some time for processing
+		time.Sleep(100 * time.Millisecond)
+
+		t.Logf("Successfully handled %d concurrent messages with custom channel configuration", messageCount)
 	})
 }

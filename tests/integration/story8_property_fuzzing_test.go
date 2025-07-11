@@ -16,13 +16,13 @@ import (
 
 // FuzzInput represents randomized input for property-based testing
 type FuzzInput struct {
-	ResponseType    string
-	Status          string
-	ApprovalType    string
-	Feedback        string
-	DelayMs         int
-	ShouldTimeout   bool
-	ResponseCount   int
+	ResponseType  string
+	Status        string
+	ApprovalType  string
+	Feedback      string
+	DelayMs       int
+	ShouldTimeout bool
+	ResponseCount int
 }
 
 // Generate implements quick.Generator for FuzzInput
@@ -44,9 +44,9 @@ func (f FuzzInput) Generate(rand *rand.Rand, size int) reflect.Value {
 		Status:        statuses[rand.Intn(len(statuses))],
 		ApprovalType:  approvalTypes[rand.Intn(len(approvalTypes))],
 		Feedback:      feedbacks[rand.Intn(len(feedbacks))],
-		DelayMs:       rand.Intn(200), // 0-200ms delay
+		DelayMs:       rand.Intn(200),       // 0-200ms delay
 		ShouldTimeout: rand.Float32() < 0.2, // 20% chance of timeout
-		ResponseCount: rand.Intn(3) + 1, // 1-3 responses
+		ResponseCount: rand.Intn(3) + 1,     // 1-3 responses
 	}
 
 	return reflect.ValueOf(input)
@@ -370,7 +370,7 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 
 	// Check final state is reasonable
 	finalState := harness.GetCoderState(coderID)
-	
+
 	// The coder should handle the sequence gracefully
 	if finalState == agent.State("") {
 		t.Logf("Message sequence test failed: invalid final state for sequence %v", sequence)

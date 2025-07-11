@@ -27,6 +27,87 @@ make lint
 make run
 ```
 
+### Web UI
+
+The orchestrator includes a built-in web UI for monitoring and managing multi-agent workflows in real-time.
+
+#### Starting the Web UI
+
+```bash
+# Start with web UI on port 8080
+./bin/orchestrator -ui
+
+# Start with custom working directory
+./bin/orchestrator -ui -workdir=/path/to/workspace
+
+# Development mode with temporary workspace
+make ui-dev
+```
+
+The web UI will be available at `http://localhost:8080` and automatically opens in your browser.
+
+#### Web UI Features
+
+**Agent Monitoring:**
+- Real-time agent status grid showing ID, role, state, and last update time
+- Click on any agent card to view detailed information including:
+  - Current implementation plan
+  - Task content being processed
+  - State transition history
+- Color-coded states: WAITING (blue), WORKING (yellow), DONE (green), ERROR (red), ESCALATED (purple)
+
+**Queue Management:**
+- Expandable queue viewer for architect, coder, and shared work queues
+- Real-time message counts and queue status
+- Message inspection showing ID, type, from/to agents, and timestamps
+- Automatic polling when queues are expanded
+
+**Specification Upload:**
+- Drag-and-drop or click to upload `.md` specification files
+- File validation (max 100KB, markdown files only)
+- Automatic routing to architect agent when in WAITING state
+- Upload status feedback and error handling
+
+**System Logs:**
+- Real-time log streaming with domain filtering (architect, coder, dispatch)
+- Auto-scroll option for continuous monitoring
+- Log level color coding (ERROR: red, WARN: yellow, INFO: blue, DEBUG: gray)
+- Clear logs functionality
+
+**Escalation Management:**
+- Banner notification when agents require human intervention
+- Modal view for reviewing escalated questions and providing answers
+- Integration with architect escalation system
+
+**System Controls:**
+- Graceful shutdown via web interface
+- Real-time connection status indicator
+- Last updated timestamp
+- Offline detection with retry mechanism
+
+#### Web UI Architecture
+
+- **Backend**: Go HTTP server integrated into orchestrator binary
+- **Frontend**: Vanilla JavaScript with Tailwind CSS
+- **Polling**: 1-second intervals for real-time updates
+- **Static Assets**: CSS and JS served from `/static/` route
+- **Templates**: Go html/template system for server-side rendering
+
+#### Development
+
+```bash
+# Build CSS from Tailwind source
+make build-css
+
+# Start in development mode with temporary workspace
+make ui-dev
+
+# Rebuild and restart
+make build ui-dev
+```
+
+The web UI provides a comprehensive dashboard for monitoring multi-agent workflows, making it easy to track progress, debug issues, and manage the system without command-line interaction.
+
 ### Running Individual Agents with AgentCtl
 
 The `agentctl` tool allows you to run individual agents in isolation for testing and development.
@@ -314,11 +395,17 @@ orchestrator/
 │   ├── state/       # Agent state storage and recovery
 │   ├── templates/   # Prompt templates: reusable LLM prompt templates
 │   ├── testkit/     # Testing utilities and helpers
-│   └── tools/       # MCP integration: Model Context Protocol tool implementations
+│   ├── tools/       # MCP integration: Model Context Protocol tool implementations
+│   └── webui/       # Web UI server: HTTP API and dashboard for monitoring agents
 ├── status/          # Agent status reports (generated)
 ├── stories/         # Generated story files from specifications
 ├── tests/           # Test files and fixtures
 │   └── fixtures/    # Test input files (JSON, MD)
+├── web/             # Web UI frontend assets
+│   ├── static/      # Static assets (CSS, JavaScript)
+│   │   ├── css/     # Compiled Tailwind CSS
+│   │   └── js/      # Frontend JavaScript
+│   └── templates/   # Go HTML templates
 └── work/            # Agent workspace directories with isolated state
 ```
 

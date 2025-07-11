@@ -1,7 +1,8 @@
-.PHONY: build test lint run clean agentctl replayer
+.PHONY: build test lint run clean agentctl replayer ui-dev build-css
 
 # Build all binaries
 build:
+	go generate ./...
 	go build -o bin/orchestrator .
 	go build -o bin/agentctl ./cmd/agentctl
 	go build -o bin/replayer ./cmd/replayer
@@ -21,7 +22,7 @@ test:
 # Run linting tools
 lint:
 	go fix ./...
-	go fmt -s -w ./...
+	gofmt -s -w .
 	staticcheck ./...
 
 # Lint documentation (markdown files)
@@ -39,6 +40,19 @@ lint-docs:
 run: build
 	./bin/orchestrator
 
+# Build Tailwind CSS
+build-css:
+	@echo "🎨 Building Tailwind CSS..."
+	@tailwindcss -i ./web/static/css/input.css -o ./web/static/css/tailwind.css --minify
+	@echo "✅ Tailwind CSS built successfully"
+
+# Start web UI in development mode
+ui-dev: build build-css
+	@echo "🚀 Starting Maestro Web UI in development mode..."
+	@TEMP_DIR=$$(mktemp -d) && echo "📁 Using temporary workdir: $$TEMP_DIR" && \
+	./bin/orchestrator -ui -workdir=$$TEMP_DIR
+
 # Clean build artifacts
 clean:
 	rm -rf bin/
+	rm -f web/static/css/tailwind.css

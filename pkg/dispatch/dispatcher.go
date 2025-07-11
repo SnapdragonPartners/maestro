@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
@@ -34,15 +35,16 @@ type Dispatcher struct {
 	running     bool
 
 	// Pull-based queues
-	architectQueue  []*proto.AgentMsg // Questions for architect
-	coderQueue      []*proto.AgentMsg // Answers/feedback for coders
-	sharedWorkQueue []*proto.AgentMsg // Ready stories for any coder
+	architectRequestQueue []*proto.AgentMsg // Questions/requests for architect
+	coderQueue            []*proto.AgentMsg // Answers/feedback for coders
+	sharedWorkQueue       []*proto.AgentMsg // Ready stories for any coder
 	queueMutex      sync.RWMutex      // Protects all queues
 
 	// Channel-based notifications for architect
-	idleAgentCh    chan string     // Notifies architect when agents become idle
-	architectID    string          // ID of the architect to notify
-	notificationMu sync.RWMutex    // Protects notification channels
+	idleAgentCh    chan string          // Notifies architect when agents become idle
+	specCh         chan *proto.AgentMsg // Delivers spec messages to architect
+	architectID    string               // ID of the architect to notify
+	notificationMu sync.RWMutex         // Protects notification channels
 	busyAgents     map[string]bool // Track which agents are processing work
 	busyMu         sync.RWMutex    // Protects busy agents map
 }
@@ -62,8 +64,9 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		inputChan:   make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:    make(chan struct{}),
 		running:     false,
-		idleAgentCh: make(chan string, 10), // Buffered channel for idle agent notifications
-		busyAgents:  make(map[string]bool), // Initialize busy agents map
+		idleAgentCh: make(chan string, 10),          // Buffered channel for idle agent notifications
+		specCh:      make(chan *proto.AgentMsg, 10), // Buffered channel for spec messages
+		busyAgents:  make(map[string]bool),          // Initialize busy agents map
 	}, nil
 }
 
@@ -186,7 +189,7 @@ func (d *Dispatcher) messageProcessor(ctx context.Context) {
 }
 
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
-	d.logger.Debug("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
+	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
 	// Log message
 	if err := d.eventLog.WriteMessage(msg); err != nil {
@@ -209,17 +212,27 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	case proto.MsgTypeTASK:
 		// TASK messages go to shared work queue for coders to pull
 		d.sharedWorkQueue = append(d.sharedWorkQueue, msg)
-		d.logger.Debug("Queued TASK %s to shared work queue (queue size: %d)", msg.ID, len(d.sharedWorkQueue))
+		d.logger.Info("🔄 Queued TASK %s to shared work queue (queue size: %d)", msg.ID, len(d.sharedWorkQueue))
+
+	case proto.MsgTypeSPEC:
+		// SPEC messages go to architect via spec channel
+		d.logger.Info("🔄 Dispatcher sending SPEC %s to architect via spec channel %p", msg.ID, d.specCh)
+		select {
+		case d.specCh <- msg:
+			d.logger.Info("✅ SPEC %s delivered to architect spec channel", msg.ID)
+		default:
+			d.logger.Warn("❌ Architect spec channel full, dropping SPEC %s", msg.ID)
+		}
 
 	case proto.MsgTypeQUESTION:
-		// QUESTION messages go to architect queue for architect to pull
-		d.architectQueue = append(d.architectQueue, msg)
-		d.logger.Debug("Queued QUESTION %s to architect queue (queue size: %d)", msg.ID, len(d.architectQueue))
+		// QUESTION messages go to architect request queue for architect to pull
+		d.architectRequestQueue = append(d.architectRequestQueue, msg)
+		d.logger.Debug("Queued QUESTION %s to architect request queue (queue size: %d)", msg.ID, len(d.architectRequestQueue))
 
 	case proto.MsgTypeREQUEST:
-		// REQUEST messages (approval requests) go to architect queue for architect to pull
-		d.architectQueue = append(d.architectQueue, msg)
-		d.logger.Debug("Queued REQUEST %s to architect queue (queue size: %d)", msg.ID, len(d.architectQueue))
+		// REQUEST messages (approval requests) go to architect request queue for architect to pull
+		d.architectRequestQueue = append(d.architectRequestQueue, msg)
+		d.logger.Debug("Queued REQUEST %s to architect request queue (queue size: %d)", msg.ID, len(d.architectRequestQueue))
 
 	case proto.MsgTypeRESULT:
 		// Check for idle agent notifications before queuing
@@ -235,6 +248,7 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 
 	default:
 		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately
+		d.logger.Info("Processing message type %s immediately (not queued)", msg.Type)
 		d.queueMutex.Unlock() // Unlock early for immediate processing
 
 		// Find target agent
@@ -362,13 +376,13 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 	switch response.Type {
 	case proto.MsgTypeQUESTION:
 		// Questions go to architect queue
-		d.architectQueue = append(d.architectQueue, response)
-		d.logger.Debug("Queued QUESTION %s for architect (queue size: %d)", response.ID, len(d.architectQueue))
+		d.architectRequestQueue = append(d.architectRequestQueue, response)
+		d.logger.Debug("Queued QUESTION %s for architect (queue size: %d)", response.ID, len(d.architectRequestQueue))
 
 	case proto.MsgTypeREQUEST:
 		// Approval requests go to architect queue
-		d.architectQueue = append(d.architectQueue, response)
-		d.logger.Debug("Queued REQUEST %s for architect (queue size: %d)", response.ID, len(d.architectQueue))
+		d.architectRequestQueue = append(d.architectRequestQueue, response)
+		d.logger.Debug("Queued REQUEST %s for architect (queue size: %d)", response.ID, len(d.architectRequestQueue))
 
 	case proto.MsgTypeRESULT:
 		// Approval responses go to coder queue
@@ -398,6 +412,23 @@ func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) {
 	if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil {
 		d.logger.Error("Failed to log error message: %v", logErr)
 	}
+}
+
+// isArchitectAgent checks if an agent ID represents an architect agent
+func (d *Dispatcher) isArchitectAgent(agentID string) bool {
+	// Check if this agent is an architect type
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	
+	// Look up agent info to check type
+	for _, agentWithModel := range d.config.GetAllAgents() {
+		if agentWithModel.Agent.GetLogID(agentWithModel.ModelName) == agentID {
+			return agentWithModel.Agent.Type == "architect"
+		}
+	}
+	
+	// Fallback: check if ID contains architect indicators
+	return strings.Contains(strings.ToLower(agentID), "architect") || strings.Contains(strings.ToLower(agentID), "o3")
 }
 
 // resolveAgentName resolves logical agent names to actual agent IDs
@@ -457,7 +488,7 @@ func (d *Dispatcher) GetStats() map[string]any {
 		"agents":                 agentList,
 		"queue_length":           len(d.inputChan),
 		"queue_capacity":         cap(d.inputChan),
-		"architect_queue_size":   len(d.architectQueue),
+		"architect_request_queue_size": len(d.architectRequestQueue),
 		"coder_queue_size":       len(d.coderQueue),
 		"shared_work_queue_size": len(d.sharedWorkQueue),
 	}
@@ -468,15 +499,15 @@ func (d *Dispatcher) PullArchitectWork() *proto.AgentMsg {
 	d.queueMutex.Lock()
 	defer d.queueMutex.Unlock()
 
-	if len(d.architectQueue) == 0 {
+	if len(d.architectRequestQueue) == 0 {
 		return nil
 	}
 
-	// Get first message from architect queue (FIFO)
-	msg := d.architectQueue[0]
-	d.architectQueue = d.architectQueue[1:]
+	// Get first message from architect request queue (FIFO)
+	msg := d.architectRequestQueue[0]
+	d.architectRequestQueue = d.architectRequestQueue[1:]
 
-	d.logger.Debug("Pulled QUESTION %s from architect queue (remaining: %d)", msg.ID, len(d.architectQueue))
+	d.logger.Debug("Pulled %s %s from architect request queue (remaining: %d)", msg.Type, msg.ID, len(d.architectRequestQueue))
 	return msg
 }
 
@@ -533,14 +564,26 @@ func (d *Dispatcher) PullSharedWork() *proto.AgentMsg {
 	return msg
 }
 
-// SubscribeIdleAgents allows the architect to subscribe to idle agent notifications
-func (d *Dispatcher) SubscribeIdleAgents(architectID string) <-chan string {
+
+// ArchitectChannels contains all channels for architect notifications
+type ArchitectChannels struct {
+	IdleAgents <-chan string          // Notifies when agents become idle
+	Specs      <-chan *proto.AgentMsg // Delivers spec messages
+}
+
+// SubscribeArchitect allows the architect to subscribe to all architect notifications
+func (d *Dispatcher) SubscribeArchitect(architectID string) ArchitectChannels {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
 
 	d.architectID = architectID
-	d.logger.Info("Architect %s subscribed to idle agent notifications", architectID)
-	return d.idleAgentCh
+	d.logger.Info("🔔 Architect %s subscribed to all notifications", architectID)
+	d.logger.Info("🔔 Spec channel %p provided to architect %s", d.specCh, architectID)
+	
+	return ArchitectChannels{
+		IdleAgents: d.idleAgentCh,
+		Specs:      d.specCh,
+	}
 }
 
 // NotifyIdleAgent sends a notification when an agent becomes idle
@@ -612,4 +655,118 @@ func (d *Dispatcher) CloseIdleChannel() {
 		close(d.idleAgentCh)
 		d.logger.Info("Closed idle agent notification channel")
 	}
+
+	if d.specCh != nil {
+		close(d.specCh)
+		d.logger.Info("Closed spec channel")
+	}
+}
+
+// QueueHead represents a message head in a queue
+type QueueHead struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	From string `json:"from"`
+	To   string `json:"to"`
+	TS   string `json:"ts"`
+}
+
+// QueueInfo represents queue information
+type QueueInfo struct {
+	Name   string      `json:"name"`
+	Length int         `json:"length"`
+	Heads  []QueueHead `json:"heads"`
+}
+
+// DumpHeads returns queue information with up to n message heads from each queue
+func (d *Dispatcher) DumpHeads(n int) map[string]any {
+	d.queueMutex.RLock()
+	defer d.queueMutex.RUnlock()
+
+	// Helper function to format message heads
+	formatHeads := func(messages []*proto.AgentMsg, limit int) []QueueHead {
+		var heads []QueueHead
+		count := len(messages)
+		if limit < count {
+			count = limit
+		}
+
+		for i := 0; i < count; i++ {
+			msg := messages[i]
+			heads = append(heads, QueueHead{
+				ID:   msg.ID,
+				Type: string(msg.Type),
+				From: msg.FromAgent,
+				To:   msg.ToAgent,
+				TS:   msg.Timestamp.Format("2006-01-02T15:04:05Z"),
+			})
+		}
+		return heads
+	}
+
+	return map[string]any{
+		"architect": QueueInfo{
+			Name:   "architect",
+			Length: len(d.architectRequestQueue),
+			Heads:  formatHeads(d.architectRequestQueue, n),
+		},
+		"coder": QueueInfo{
+			Name:   "coder",
+			Length: len(d.coderQueue),
+			Heads:  formatHeads(d.coderQueue, n),
+		},
+		"shared": QueueInfo{
+			Name:   "shared",
+			Length: len(d.sharedWorkQueue),
+			Heads:  formatHeads(d.sharedWorkQueue, n),
+		},
+		"input_channel": map[string]any{
+			"length":   len(d.inputChan),
+			"capacity": cap(d.inputChan),
+			"blocked":  len(d.inputChan) >= cap(d.inputChan),
+		},
+	}
+}
+
+// AgentInfo represents information about a registered agent
+type AgentInfo struct {
+	ID     string
+	Type   agent.AgentType
+	State  string
+	Driver agent.Driver
+}
+
+// GetRegisteredAgents returns information about all registered agents
+func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	
+	var agentInfos []AgentInfo
+	for id, agentInterface := range d.agents {
+		// Try to cast to Driver interface to get more information
+		if driver, ok := agentInterface.(agent.Driver); ok {
+			agentInfos = append(agentInfos, AgentInfo{
+				ID:     id,
+				Type:   driver.GetAgentType(),
+				State:  fmt.Sprintf("%v", driver.GetCurrentState()),
+				Driver: driver,
+			})
+		} else {
+			// Fallback for agents that don't implement Driver interface
+			// Extract type from ID (format: "model:id")
+			agentType := agent.AgentTypeCoder // Default fallback
+			if strings.Contains(strings.ToLower(id), "architect") || strings.Contains(strings.ToLower(id), "o3") {
+				agentType = agent.AgentTypeArchitect
+			}
+			
+			agentInfos = append(agentInfos, AgentInfo{
+				ID:     id,
+				Type:   agentType,
+				State:  "UNKNOWN",
+				Driver: nil,
+			})
+		}
+	}
+	
+	return agentInfos
 }

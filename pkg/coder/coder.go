@@ -28,13 +28,16 @@ func NewCoder(id, name, workDir string, stateStore *state.Store, modelConfig *co
 		return nil, fmt.Errorf("failed to create coder driver: %w", err)
 	}
 
-	return &Coder{
+	coder := &Coder{
 		id:      id,
 		name:    name,
 		workDir: workDir,
 		logger:  logger,
 		driver:  driver,
-	}, nil
+	}
+
+
+	return coder, nil
 }
 
 // NewCoderWithLLM creates a new coder agent with LLM integration
@@ -45,13 +48,16 @@ func NewCoderWithLLM(id, name, workDir string, stateStore *state.Store, modelCon
 		return nil, fmt.Errorf("failed to create coder driver: %w", err)
 	}
 
-	return &Coder{
+	coder := &Coder{
 		id:      id,
 		name:    name,
 		workDir: workDir,
 		logger:  logger,
 		driver:  driver,
-	}, nil
+	}
+
+
+	return coder, nil
 }
 
 // NewCoderWithClaude creates a new coder agent with Claude LLM integration
@@ -67,13 +73,16 @@ func NewCoderWithClaude(id, name, workDir string, stateStore *state.Store, model
 		return nil, fmt.Errorf("failed to create coder driver: %w", err)
 	}
 
-	return &Coder{
+	coder := &Coder{
 		id:      id,
 		name:    name,
 		workDir: workDir,
 		logger:  logger,
 		driver:  driver,
-	}, nil
+	}
+
+
+	return coder, nil
 }
 
 // GetID returns the coder's identifier
@@ -83,7 +92,7 @@ func (c *Coder) GetID() string {
 
 // ProcessMessage processes incoming messages using the core state machine
 func (c *Coder) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	c.logger.Info("Processing message %s from %s", msg.ID, msg.FromAgent)
+	c.logger.Info("🧑‍💻 Coder %s processing message %s from %s (type: %s)", c.id, msg.ID, msg.FromAgent, msg.Type)
 
 	switch msg.Type {
 	case proto.MsgTypeTASK:
@@ -312,7 +321,7 @@ func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*
 	}
 
 	c.logger.Info("Received approval result with status: %s", statusStr)
-	
+
 	// Debug logging for message handling
 	logx.DebugToFile(ctx, "coder", "handle_result_debug.log", "handleResultMessage called - status=%s", statusStr)
 
@@ -326,30 +335,30 @@ func (c *Coder) handleResultMessage(ctx context.Context, msg *proto.AgentMsg) (*
 	requestTypeStr := c.getStringFromPayloadOrMetadata(msg, proto.KeyRequestType)
 	if requestTypeStr != "" {
 		c.logger.Info("Found request_type: %v", requestTypeStr)
-		
+
 		// Parse and validate request type
 		requestType, err := proto.ParseRequestType(requestTypeStr)
 		if err != nil {
 			c.logger.Error("Invalid request type '%s': %v", requestTypeStr, err)
 			return nil, fmt.Errorf("invalid request type '%s': %w", requestTypeStr, err)
 		}
-		
+
 		if requestType == proto.RequestApproval {
 			// Handle approval result - try payload first, then metadata for approval_type
 			approvalTypeRaw := c.getStringFromPayloadOrMetadata(msg, proto.KeyApprovalType)
 			if approvalTypeRaw == "" {
 				return nil, fmt.Errorf("missing approval_type in approval result message")
 			}
-			
+
 			// Normalize and validate approval type
 			approvalType, err := proto.NormaliseApprovalType(approvalTypeRaw)
 			if err != nil {
 				c.logger.Error("Invalid approval type '%s': %v", approvalTypeRaw, err)
 				return nil, fmt.Errorf("invalid approval type '%s': %w", approvalTypeRaw, err)
 			}
-			
+
 			c.logger.Info("Processing approval result: status=%s, type=%s", statusStr, approvalType)
-			
+
 			if err := c.driver.ProcessApprovalResult(statusStr, approvalType.String()); err != nil {
 				return nil, fmt.Errorf("failed to process approval result: %w", err)
 			}
@@ -396,11 +405,11 @@ func (c *Coder) getStringFromPayloadOrMetadata(msg *proto.AgentMsg, key string) 
 			return strValue
 		}
 	}
-	
+
 	// Try metadata
 	if value, exists := msg.GetMetadata(key); exists {
 		return value
 	}
-	
+
 	return ""
 }

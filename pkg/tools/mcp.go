@@ -21,9 +21,9 @@ type ToolDefinition struct {
 
 // InputSchema defines the expected input format for a tool
 type InputSchema struct {
-	Type       string                 `json:"type"`
-	Properties map[string]Property    `json:"properties"`
-	Required   []string               `json:"required,omitempty"`
+	Type       string              `json:"type"`
+	Properties map[string]Property `json:"properties"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 // Property defines a single property in the input schema
@@ -247,11 +247,11 @@ func NewShellTool() *ShellTool {
 func GetToolDefinitions() []ToolDefinition {
 	tools := GetAll()
 	definitions := make([]ToolDefinition, 0, len(tools))
-	
+
 	for _, tool := range tools {
 		definitions = append(definitions, tool.Definition())
 	}
-	
+
 	return definitions
 }
 

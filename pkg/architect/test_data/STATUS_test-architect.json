@@ -1,0 +1,15 @@
+{
+  "state": "Monitoring",
+  "last_timestamp": "2025-07-09T15:07:46.126842Z",
+  "context_snapshot": {
+    "agent_id": "test-architect",
+    "saved_at": "2025-07-09T15:07:46.126842Z",
+    "state": "Monitoring"
+  },
+  "data": {
+    "current_state": "Monitoring",
+    "previous_state": "Escalated",
+    "reason": "test_non_escalated",
+    "transition_at": "2025-07-09T15:03:49.407748Z"
+  }
+}

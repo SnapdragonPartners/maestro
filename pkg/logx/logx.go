@@ -33,7 +33,23 @@ type DebugConfig struct {
 	Domains     map[string]bool // Which domains to enable debug for (nil = all)
 }
 
-// Global debug configuration
+// LogEntry represents a structured log entry for web UI
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	AgentID   string `json:"agent_id"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Domain    string `json:"domain,omitempty"`
+}
+
+// InMemoryLogBuffer stores recent log entries for web UI
+type InMemoryLogBuffer struct {
+	entries []LogEntry
+	mutex   sync.RWMutex
+	maxSize int
+}
+
+// Global debug configuration and log buffer
 var (
 	debugConfig = &DebugConfig{
 		Enabled:     false,
@@ -42,6 +58,12 @@ var (
 		Domains:     nil,
 	}
 	debugMutex sync.RWMutex
+	
+	// Global in-memory log buffer for web UI
+	logBuffer = &InMemoryLogBuffer{
+		entries: make([]LogEntry, 0),
+		maxSize: 1000, // Keep last 1000 log entries
+	}
 )
 
 // getProjectRoot finds the project root directory by looking for go.mod
@@ -51,13 +73,13 @@ func getProjectRoot() string {
 	if err != nil {
 		return "." // Fallback to current directory
 	}
-	
+
 	// Walk up the directory tree looking for go.mod
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir
 		}
-		
+
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			// Reached filesystem root without finding go.mod
@@ -65,7 +87,7 @@ func getProjectRoot() string {
 		}
 		dir = parent
 	}
-	
+
 	// If no go.mod found, return current working directory
 	if cwd, err := os.Getwd(); err == nil {
 		return cwd
@@ -88,29 +110,29 @@ func init() {
 func initDebugFromEnv() {
 	debugMutex.Lock()
 	defer debugMutex.Unlock()
-	
+
 	// Set default log directory to project root + "/logs"
 	if debugConfig.LogDir == "" {
 		debugConfig.LogDir = getDefaultLogDir()
 	}
-	
+
 	// Check if debug is enabled via DEBUG=1 or DEBUG=true
 	if debug := os.Getenv("DEBUG"); debug == "1" || strings.ToLower(debug) == "true" {
 		debugConfig.Enabled = true
 	}
-	
+
 	// Check for file logging via DEBUG_FILE=1 or DEBUG_FILE=true
 	if debugFile := os.Getenv("DEBUG_FILE"); debugFile == "1" || strings.ToLower(debugFile) == "true" {
 		debugConfig.FileLogging = true
 	}
-	
+
 	// Set log directory from DEBUG_LOG_DIR or DEBUG_DIR (overrides default)
 	if debugLogDir := os.Getenv("DEBUG_LOG_DIR"); debugLogDir != "" {
 		debugConfig.LogDir = debugLogDir
 	} else if debugDir := os.Getenv("DEBUG_DIR"); debugDir != "" {
 		debugConfig.LogDir = debugDir
 	}
-	
+
 	// Parse domain filtering from DEBUG_DOMAINS=coder,architect,dispatch
 	if domains := os.Getenv("DEBUG_DOMAINS"); domains != "" {
 		debugConfig.Domains = make(map[string]bool)
@@ -131,17 +153,17 @@ func NewLogger(agentID string) *Logger {
 func SetDebugConfig(enabled, fileLogging bool, logDir string) {
 	debugMutex.Lock()
 	defer debugMutex.Unlock()
-	
+
 	debugConfig.Enabled = enabled
 	debugConfig.FileLogging = fileLogging
-	
+
 	// If no logDir specified, use default
 	if logDir == "" {
 		debugConfig.LogDir = getDefaultLogDir()
 	} else {
 		debugConfig.LogDir = logDir
 	}
-	
+
 	// Create log directory if needed
 	if fileLogging && debugConfig.LogDir != "" {
 		os.MkdirAll(debugConfig.LogDir, 0755)
@@ -152,7 +174,7 @@ func SetDebugConfig(enabled, fileLogging bool, logDir string) {
 func SetDebugDomains(domains []string) {
 	debugMutex.Lock()
 	defer debugMutex.Unlock()
-	
+
 	if len(domains) == 0 {
 		debugConfig.Domains = nil // Enable all domains
 	} else {
@@ -174,18 +196,63 @@ func IsDebugEnabled() bool {
 func IsDebugEnabledForDomain(domain string) bool {
 	debugMutex.RLock()
 	defer debugMutex.RUnlock()
-	
+
 	if !debugConfig.Enabled {
 		return false
 	}
-	
+
 	// If no domain filtering is configured, enable all domains
 	if debugConfig.Domains == nil {
 		return true
 	}
-	
+
 	// Check if this specific domain is enabled
 	return debugConfig.Domains[domain]
+}
+
+// AddLogEntry adds a log entry to the in-memory buffer
+func (b *InMemoryLogBuffer) AddLogEntry(entry LogEntry) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	
+	// Add the entry
+	b.entries = append(b.entries, entry)
+	
+	// Keep only the last maxSize entries
+	if len(b.entries) > b.maxSize {
+		b.entries = b.entries[len(b.entries)-b.maxSize:]
+	}
+}
+
+// GetLogEntries returns a copy of current log entries, optionally filtered
+func (b *InMemoryLogBuffer) GetLogEntries(domain string, since time.Time) []LogEntry {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+	
+	var filtered []LogEntry
+	for _, entry := range b.entries {
+		// Filter by domain if specified
+		if domain != "" && entry.Domain != "" && !strings.EqualFold(entry.Domain, domain) {
+			continue
+		}
+		
+		// Filter by timestamp if specified
+		if !since.IsZero() {
+			entryTime, err := time.Parse("2006-01-02T15:04:05.000Z", entry.Timestamp)
+			if err != nil || entryTime.Before(since) {
+				continue
+			}
+		}
+		
+		filtered = append(filtered, entry)
+	}
+	
+	return filtered
+}
+
+// GetRecentLogEntries returns recent log entries for web UI
+func GetRecentLogEntries(domain string, since time.Time) []LogEntry {
+	return logBuffer.GetLogEntries(domain, since)
 }
 
 func (l *Logger) log(level Level, format string, args ...any) {
@@ -193,6 +260,16 @@ func (l *Logger) log(level Level, format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, l.agentID, level, message)
 	l.logger.Println(logLine)
+	
+	// Also capture in memory buffer for web UI
+	entry := LogEntry{
+		Timestamp: timestamp,
+		AgentID:   l.agentID,
+		Level:     string(level),
+		Message:   message,
+		Domain:    "", // Will be set by domain-specific functions
+	}
+	logBuffer.AddLogEntry(entry)
 }
 
 func (l *Logger) Debug(format string, args ...any) {
@@ -200,11 +277,11 @@ func (l *Logger) Debug(format string, args ...any) {
 	debugMutex.RLock()
 	enabled := debugConfig.Enabled
 	debugMutex.RUnlock()
-	
+
 	if !enabled {
 		return
 	}
-	
+
 	l.log(LevelDebug, format, args...)
 }
 
@@ -212,21 +289,23 @@ func (l *Logger) Debug(format string, args ...any) {
 // This is the new primary debug function recommended for all new code
 //
 // Usage examples:
-//   logx.Debug(ctx, "coder", "Task started: %s", taskID)
-//   logx.Debug(ctx, "architect", "Story validation: %d requirements", count)
-//   logx.Debug(ctx, "dispatch", "Routing %s -> %s", from, to)
+//
+//	logx.Debug(ctx, "coder", "Task started: %s", taskID)
+//	logx.Debug(ctx, "architect", "Story validation: %d requirements", count)
+//	logx.Debug(ctx, "dispatch", "Routing %s -> %s", from, to)
 //
 // Environment variable control:
-//   DEBUG=1                           # Enable debug for all domains
-//   DEBUG=1 DEBUG_DOMAINS=coder       # Enable debug only for coder domain
-//   DEBUG=1 DEBUG_DOMAINS=coder,arch  # Enable debug for multiple domains
-//   DEBUG=1 DEBUG_FILE=1              # Enable file logging
-//   DEBUG=1 DEBUG_LOG_DIR=/tmp/logs   # Set log directory (default: {project_root}/logs)
+//
+//	DEBUG=1                           # Enable debug for all domains
+//	DEBUG=1 DEBUG_DOMAINS=coder       # Enable debug only for coder domain
+//	DEBUG=1 DEBUG_DOMAINS=coder,arch  # Enable debug for multiple domains
+//	DEBUG=1 DEBUG_FILE=1              # Enable file logging
+//	DEBUG=1 DEBUG_LOG_DIR=/tmp/logs   # Set log directory (default: {project_root}/logs)
 func Debug(ctx context.Context, domain, format string, args ...any) {
 	if !IsDebugEnabledForDomain(domain) {
 		return
 	}
-	
+
 	// Get agent ID from context if available
 	agentID := "unknown"
 	if ctx != nil {
@@ -236,11 +315,25 @@ func Debug(ctx context.Context, domain, format string, args ...any) {
 			}
 		}
 	}
-	
+
 	// Create temporary logger for this debug call
 	logger := NewLogger(agentID)
 	message := fmt.Sprintf("[%s] %s", domain, fmt.Sprintf(format, args...))
-	logger.log(LevelDebug, "%s", message)
+	
+	// Log normally
+	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, agentID, LevelDebug, message)
+	logger.logger.Println(logLine)
+	
+	// Also capture in memory buffer with domain info
+	entry := LogEntry{
+		Timestamp: timestamp,
+		AgentID:   agentID,
+		Level:     string(LevelDebug),
+		Message:   fmt.Sprintf(format, args...),
+		Domain:    domain,
+	}
+	logBuffer.AddLogEntry(entry)
 }
 
 func (l *Logger) Info(format string, args ...any) {
@@ -262,26 +355,26 @@ func (l *Logger) DebugToFile(filename, format string, args ...any) {
 	fileLogging := debugConfig.FileLogging
 	logDir := debugConfig.LogDir
 	debugMutex.RUnlock()
-	
+
 	if !enabled {
 		return
 	}
-	
+
 	// Always log to console debug
 	l.Debug(format, args...)
-	
+
 	// Optionally log to file
 	if fileLogging {
 		timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 		message := fmt.Sprintf(format, args...)
 		debugMsg := fmt.Sprintf("[%s] [%s] DEBUG: %s\n", timestamp, l.agentID, message)
-		
+
 		// Ensure log directory exists
 		if err := os.MkdirAll(logDir, 0755); err != nil {
 			// If we can't create the directory, just skip file logging
 			return
 		}
-		
+
 		filePath := filepath.Join(logDir, filename)
 		os.WriteFile(filePath, []byte(debugMsg), 0644)
 	}
@@ -293,16 +386,16 @@ func DebugToFile(ctx context.Context, domain, filename, format string, args ...a
 	if !IsDebugEnabledForDomain(domain) {
 		return
 	}
-	
+
 	// Always do console debug logging
 	Debug(ctx, domain, format, args...)
-	
+
 	// Optionally write to file if file logging is enabled
 	debugMutex.RLock()
 	fileLogging := debugConfig.FileLogging
 	logDir := debugConfig.LogDir
 	debugMutex.RUnlock()
-	
+
 	if fileLogging && filename != "" {
 		// Get agent ID from context if available
 		agentID := "unknown"
@@ -313,17 +406,17 @@ func DebugToFile(ctx context.Context, domain, filename, format string, args ...a
 				}
 			}
 		}
-		
+
 		timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 		message := fmt.Sprintf(format, args...)
 		debugMsg := fmt.Sprintf("[%s] [%s] [%s] DEBUG: %s\n", timestamp, agentID, domain, message)
-		
+
 		// Ensure log directory exists
 		if err := os.MkdirAll(logDir, 0755); err != nil {
 			// If we can't create the directory, just skip file logging
 			return
 		}
-		
+
 		filePath := filepath.Join(logDir, filename)
 		os.WriteFile(filePath, []byte(debugMsg), 0644)
 	}
@@ -377,4 +470,23 @@ func (l *Logger) WithAgentID(agentID string) *Logger {
 		agentID: agentID,
 		logger:  l.logger,
 	}
+}
+
+// Global logging functions for convenience
+var defaultLogger = NewLogger("system")
+
+func Debugf(format string, args ...any) {
+	defaultLogger.Debug(format, args...)
+}
+
+func Infof(format string, args ...any) {
+	defaultLogger.Info(format, args...)
+}
+
+func Warnf(format string, args ...any) {
+	defaultLogger.Warn(format, args...)
+}
+
+func Errorf(format string, args ...any) {
+	defaultLogger.Error(format, args...)
 }

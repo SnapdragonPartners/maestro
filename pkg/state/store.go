@@ -8,12 +8,35 @@ import (
 	"time"
 )
 
+// Transition represents a state transition event
+type Transition struct {
+	From string    `json:"from"`
+	To   string    `json:"to"`
+	TS   time.Time `json:"ts"`
+}
+
 // AgentState represents the current state of an agent
 type AgentState struct {
+	Version         string         `json:"version"`
 	State           string         `json:"state"`
 	LastTimestamp   time.Time      `json:"last_timestamp"`
 	ContextSnapshot map[string]any `json:"context_snapshot"`
 	Data            map[string]any `json:"data,omitempty"`
+
+	// UI-specific fields
+	Plan        *string      `json:"plan,omitempty"`
+	TaskContent *string      `json:"task_content,omitempty"`
+	Transitions []Transition `json:"transitions,omitempty"`
+}
+
+// AppendTransition adds a new state transition to the agent state
+func (as *AgentState) AppendTransition(from, to string) {
+	transition := Transition{
+		From: from,
+		To:   to,
+		TS:   time.Now().UTC(),
+	}
+	as.Transitions = append(as.Transitions, transition)
 }
 
 // Store manages persistent state storage for agents
@@ -44,6 +67,7 @@ func (s *Store) SaveState(agentID, state string, data map[string]any) error {
 	}
 
 	agentState := AgentState{
+		Version:         "v1",
 		State:           state,
 		LastTimestamp:   time.Now().UTC(),
 		ContextSnapshot: make(map[string]any),

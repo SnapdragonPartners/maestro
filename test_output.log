@@ -1,0 +1,45 @@
+orchestrator boot
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Starting orchestrator
+[2025-07-09T22:05:28.697Z] [dispatcher] INFO: Starting dispatcher
+[2025-07-09T22:05:28.697Z] [dispatcher] INFO: Registered agent: claude_sonnet4:001
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Created and registered agent: claude_sonnet4:001 (coder) using model claude_sonnet4
+[2025-07-09T22:05:28.697Z] [dispatcher] INFO: Architect openai_o3:001 subscribed to all notifications
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Created architect driver with live O3 LLM: openai_o3:001
+[2025-07-09T22:05:28.697Z] [dispatcher] INFO: Registered agent: openai_o3:001
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Created and registered agent: openai_o3:001 (architect) using model openai_o3
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Created and registered 2 agents total
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Started architect polling worker
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Started coder polling worker for agent: claude_sonnet4:001
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Orchestrator started successfully
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Starting web UI server on port 8080
+[2025-07-09T22:05:28.697Z] [orchestrator] INFO: Web UI server started successfully
+[2025-07-09T22:05:28.697Z] [webui] INFO: Starting web UI server on port 8080
+[2025-07-09T22:05:38.422Z] [orchestrator] INFO: Received signal terminated, initiating graceful shutdown
+[2025-07-09T22:05:38.422Z] [orchestrator] INFO: Starting graceful shutdown
+[2025-07-09T22:05:38.422Z] [orchestrator] INFO: Waiting for polling workers to stop...
+[2025-07-09T22:05:38.422Z] [orchestrator] INFO: Polling workers stopped
+[2025-07-09T22:05:38.422Z] [orchestrator] INFO: Broadcasting SHUTDOWN message to all agents
+[2025-07-09T22:05:38.422Z] [orchestrator] INFO: Waiting 30s for agents to complete work
+[2025-07-09T22:05:38.422Z] [dispatcher] INFO: Processing message msg_1752098738422534000_1: orchestrator → claude_sonnet4:001 (SHUTDOWN)
+[2025-07-09T22:05:38.429Z] [dispatcher] INFO: Processing message type SHUTDOWN immediately (not queued)
+[2025-07-09T22:05:38.429Z] [claude_sonnet4:001] INFO: Processing message msg_1752098738422534000_1 from orchestrator
+[2025-07-09T22:05:38.429Z] [claude_sonnet4:001] INFO: Received shutdown request
+[2025-07-09T22:05:38.429Z] [dispatcher] INFO: Routing response msg_1752098738429791000_3: claude_sonnet4:001 → orchestrator (RESULT)
+[2025-07-09T22:05:38.433Z] [dispatcher] INFO: Processing message msg_1752098738422556000_2: orchestrator → openai_o3:001 (SHUTDOWN)
+[2025-07-09T22:05:38.438Z] [dispatcher] INFO: Processing message type SHUTDOWN immediately (not queued)
+[2025-07-09T22:05:38.439Z] [dispatcher] WARN: Attempt 1 failed for message msg_1752098738422556000_2: architect cannot process message type: SHUTDOWN
+[2025-07-09T22:05:39.441Z] [dispatcher] WARN: Attempt 2 failed for message msg_1752098738422556000_2: architect cannot process message type: SHUTDOWN
+[2025-07-09T22:05:41.443Z] [dispatcher] WARN: Attempt 3 failed for message msg_1752098738422556000_2: architect cannot process message type: SHUTDOWN
+[2025-07-09T22:05:45.443Z] [dispatcher] WARN: Attempt 4 failed for message msg_1752098738422556000_2: architect cannot process message type: SHUTDOWN
+[2025-07-09T22:05:45.444Z] [dispatcher] ERROR: All retry attempts failed for message msg_1752098738422556000_2: architect cannot process message type: SHUTDOWN
+[2025-07-09T22:05:45.444Z] [dispatcher] ERROR: Sending error response for message msg_1752098738422556000_2: failed after 4 attempts: architect cannot process message type: SHUTDOWN
+[2025-07-09T22:05:45.923Z] [orchestrator] INFO: Collecting status from all agents
+[2025-07-09T22:05:45.924Z] [orchestrator] INFO: Generated status file: status/claude_sonnet4:001-STATUS.md
+[2025-07-09T22:05:45.924Z] [orchestrator] INFO: Generated status file: status/openai_o3:001-STATUS.md
+[2025-07-09T22:05:45.925Z] [dispatcher] INFO: Stopping dispatcher
+[2025-07-09T22:05:45.925Z] [dispatcher] INFO: Closed idle agent notification channel
+[2025-07-09T22:05:45.925Z] [dispatcher] INFO: Message processor stopped by shutdown signal
+[2025-07-09T22:05:45.925Z] [dispatcher] INFO: Closed spec channel
+[2025-07-09T22:05:45.925Z] [dispatcher] INFO: Dispatcher stopped successfully
+[2025-07-09T22:05:45.925Z] [orchestrator] INFO: Graceful shutdown completed
+[2025-07-09T22:05:45.925Z] [orchestrator] INFO: Orchestrator shutdown completed successfully

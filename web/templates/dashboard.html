@@ -1,0 +1,189 @@
+{{define "content"}}
+<div class="space-y-6">
+    <!-- Control Panel -->
+    <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-semibold text-gray-900">Control Panel</h2>
+            <div class="flex space-x-3">
+                <button id="cancel-run" class="btn btn-danger">
+                    <span id="cancel-text">Cancel Run</span>
+                    <span id="cancel-spinner" class="ml-2 hidden">
+                        <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </span>
+                </button>
+                <button id="refresh-data" class="btn btn-secondary">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+        </div>
+        
+        <!-- Spec Upload -->
+        <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700 mb-2">Upload Specification</label>
+            <div id="upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
+                <input type="file" id="spec-file" accept=".md" class="hidden">
+                <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                    <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <p class="mt-2 text-sm text-gray-600">
+                    <span class="font-medium text-maestro-blue cursor-pointer">Click to upload</span> or drag and drop
+                </p>
+                <p class="text-xs text-gray-500">Markdown files only, max 100KB</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Escalation Banner -->
+    <div id="escalation-banner" class="bg-purple-100 border border-purple-200 rounded-lg p-4 hidden">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center">
+                <svg class="h-5 w-5 text-purple-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                </svg>
+                <span class="text-purple-800 font-medium">
+                    <span id="escalation-count">0</span> question(s) need your attention
+                </span>
+            </div>
+            <button id="show-escalations" class="btn btn-primary">
+                Review Questions
+            </button>
+        </div>
+    </div>
+
+    <!-- Agent Grid -->
+    <div class="bg-white rounded-lg shadow-sm p-6">
+        <h2 class="text-xl font-semibold text-gray-900 mb-4">Agent Status</h2>
+        <div id="agent-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <!-- Dynamic agent cards will be loaded here -->
+        </div>
+    </div>
+
+    <!-- Queue Viewer -->
+    <div class="bg-white rounded-lg shadow-sm p-6">
+        <h2 class="text-xl font-semibold text-gray-900 mb-4">Message Queues</h2>
+        <div class="space-y-4">
+            <!-- Architect Queue -->
+            <div class="border border-gray-200 rounded-lg">
+                <button class="w-full px-4 py-3 text-left flex items-center justify-between hover:bg-gray-50" onclick="toggleQueue('architect')">
+                    <span class="font-medium">Architect Queue</span>
+                    <div class="flex items-center space-x-2">
+                        <span id="architect-count" class="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">0</span>
+                        <svg id="architect-chevron" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
+                </button>
+                <div id="architect-content" class="hidden px-4 pb-4">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="architect-queue-body" class="bg-white divide-y divide-gray-200">
+                                <!-- Dynamic queue items -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Coder Queue -->
+            <div class="border border-gray-200 rounded-lg">
+                <button class="w-full px-4 py-3 text-left flex items-center justify-between hover:bg-gray-50" onclick="toggleQueue('coder')">
+                    <span class="font-medium">Coder Queue</span>
+                    <div class="flex items-center space-x-2">
+                        <span id="coder-count" class="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">0</span>
+                        <svg id="coder-chevron" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
+                </button>
+                <div id="coder-content" class="hidden px-4 pb-4">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="coder-queue-body" class="bg-white divide-y divide-gray-200">
+                                <!-- Dynamic queue items -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Shared Queue -->
+            <div class="border border-gray-200 rounded-lg">
+                <button class="w-full px-4 py-3 text-left flex items-center justify-between hover:bg-gray-50" onclick="toggleQueue('shared')">
+                    <span class="font-medium">Shared Work Queue</span>
+                    <div class="flex items-center space-x-2">
+                        <span id="shared-count" class="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">0</span>
+                        <svg id="shared-chevron" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
+                </button>
+                <div id="shared-content" class="hidden px-4 pb-4">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
+                                    <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="shared-queue-body" class="bg-white divide-y divide-gray-200">
+                                <!-- Dynamic queue items -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logs Panel -->
+    <div class="bg-white rounded-lg shadow-sm p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-semibold text-gray-900">System Logs</h2>
+            <div class="flex items-center space-x-4">
+                <select id="log-domain" class="border border-gray-300 rounded-md px-3 py-1 text-sm">
+                    <option value="">All Domains</option>
+                    <option value="architect">Architect</option>
+                    <option value="coder">Coder</option>
+                    <option value="dispatch">Dispatch</option>
+                </select>
+                <label class="flex items-center">
+                    <input type="checkbox" id="autoscroll" checked class="mr-2">
+                    <span class="text-sm text-gray-700">Auto-scroll</span>
+                </label>
+                <button id="clear-logs" class="btn btn-secondary text-sm">Clear</button>
+            </div>
+        </div>
+        <div id="logs-container" class="bg-gray-900 text-green-400 font-mono text-sm p-4 rounded-lg h-64 overflow-y-auto">
+            <!-- Dynamic log entries will be loaded here -->
+        </div>
+    </div>
+</div>
+{{end}}

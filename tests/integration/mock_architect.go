@@ -11,9 +11,9 @@ import (
 
 // ApprovalResponse defines how the mock architect should respond to approval requests
 type ApprovalResponse struct {
-	Status       string // "approved" or "changes_requested"
-	ApprovalType string // "plan" or "code"
-	Feedback     string // Optional feedback message
+	Status       string        // "approved" or "changes_requested"
+	ApprovalType string        // "plan" or "code"
+	Feedback     string        // Optional feedback message
 	Delay        time.Duration // Optional delay before responding
 }
 
@@ -54,19 +54,19 @@ func (m *AlwaysApprovalMockArchitect) GetID() string {
 func (m *AlwaysApprovalMockArchitect) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Record the message
 	m.messages = append(m.messages, ReceivedMessage{
 		Timestamp: time.Now(),
 		Message:   msg,
 		FromCoder: msg.FromAgent,
 	})
-	
+
 	// Add delay if specified
 	if m.response.Delay > 0 {
 		time.Sleep(m.response.Delay)
 	}
-	
+
 	switch msg.Type {
 	case proto.MsgTypeREQUEST:
 		return m.handleApprovalRequest(msg)
@@ -89,7 +89,7 @@ func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg)
 			approvalType = approvalTypeStr
 		}
 	}
-	
+
 	// Create approval response
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
@@ -97,7 +97,7 @@ func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg)
 	response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 	response.SetPayload(proto.KeyApprovalType, approvalType)
 	response.SetPayload(proto.KeyFeedback, m.response.Feedback)
-	
+
 	return response, nil
 }
 
@@ -107,7 +107,7 @@ func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*prot
 	response := proto.NewAgentMsg(proto.MsgTypeANSWER, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyAnswer, "Please continue with your current approach. It looks good.")
-	
+
 	return response, nil
 }
 
@@ -123,7 +123,7 @@ func (m *AlwaysApprovalMockArchitect) createAcknowledgment(msg *proto.AgentMsg) 
 func (m *AlwaysApprovalMockArchitect) GetReceivedMessages() []ReceivedMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Return a copy to prevent race conditions
 	messages := make([]ReceivedMessage, len(m.messages))
 	copy(messages, m.messages)
@@ -134,7 +134,7 @@ func (m *AlwaysApprovalMockArchitect) GetReceivedMessages() []ReceivedMessage {
 func (m *AlwaysApprovalMockArchitect) CountMessagesByType(msgType proto.MsgType) int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	count := 0
 	for _, msg := range m.messages {
 		if msg.Message.Type == msgType {
@@ -180,14 +180,14 @@ func (m *ChangesRequestedMockArchitect) GetID() string {
 func (m *ChangesRequestedMockArchitect) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Record the message
 	m.messages = append(m.messages, ReceivedMessage{
 		Timestamp: time.Now(),
 		Message:   msg,
 		FromCoder: msg.FromAgent,
 	})
-	
+
 	switch msg.Type {
 	case proto.MsgTypeREQUEST:
 		return m.handleApprovalRequest(msg)
@@ -209,17 +209,17 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 			approvalType = approvalTypeStr
 		}
 	}
-	
+
 	// Determine status based on rejection count
 	status := "approved"
 	feedback := "Plan looks good!"
-	
+
 	if m.currentRejections < m.rejectCount {
 		status = "changes_requested"
 		feedback = m.feedback
 		m.currentRejections++
 	}
-	
+
 	// Create response
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
@@ -227,7 +227,7 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 	response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 	response.SetPayload(proto.KeyApprovalType, approvalType)
 	response.SetPayload(proto.KeyFeedback, feedback)
-	
+
 	return response, nil
 }
 
@@ -236,7 +236,7 @@ func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*pr
 	response := proto.NewAgentMsg(proto.MsgTypeANSWER, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyAnswer, "Please revise based on the feedback provided.")
-	
+
 	return response, nil
 }
 
@@ -252,7 +252,7 @@ func (m *ChangesRequestedMockArchitect) createAcknowledgment(msg *proto.AgentMsg
 func (m *ChangesRequestedMockArchitect) GetReceivedMessages() []ReceivedMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	messages := make([]ReceivedMessage, len(m.messages))
 	copy(messages, m.messages)
 	return messages
@@ -284,19 +284,19 @@ func (m *MalformedResponseMockArchitect) GetID() string {
 func (m *MalformedResponseMockArchitect) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	// Record the message
 	m.messages = append(m.messages, ReceivedMessage{
 		Timestamp: time.Now(),
 		Message:   msg,
 		FromCoder: msg.FromAgent,
 	})
-	
+
 	// Use custom response function
 	if m.response != nil {
 		return m.response(msg), nil
 	}
-	
+
 	// Default malformed response
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
@@ -308,7 +308,7 @@ func (m *MalformedResponseMockArchitect) ProcessMessage(ctx context.Context, msg
 func (m *MalformedResponseMockArchitect) GetReceivedMessages() []ReceivedMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	messages := make([]ReceivedMessage, len(m.messages))
 	copy(messages, m.messages)
 	return messages

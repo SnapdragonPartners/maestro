@@ -85,7 +85,7 @@ func NewBaseStateMachine(agentID string, initialState State, store StateStore, t
 	if table == nil {
 		table = ValidTransitions
 	}
-	
+
 	return &BaseStateMachine{
 		agentID:      agentID,
 		currentState: initialState,

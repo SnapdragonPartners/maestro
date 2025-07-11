@@ -1,0 +1,2 @@
+{"id":"msg_1752011909752536000_1","type":"TASK","from_agent":"architect-001","to_agent":"coder-001","timestamp":"2025-07-08T21:58:29.752536Z","payload":{"story_id":"test-story-001","task_type":"implement_story","title":"Test Story Implementation"}}
+{"id":"msg_1752011909953728000_3","type":"RESULT","from_agent":"coder-001","to_agent":"architect","timestamp":"2025-07-08T21:58:29.953769Z","payload":{"message":"Story implementation completed","status":"completed","story_id":"test-story-001"},"parent_msg_id":"msg_1752011909752536000_1"}

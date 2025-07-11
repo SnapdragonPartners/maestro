@@ -7,24 +7,24 @@ import (
 
 // AnthropicMessageContent represents a content block in an Anthropic message
 type AnthropicMessageContent struct {
-	Type       string           `json:"type"`
-	Text       string           `json:"text,omitempty"`
+	Type       string            `json:"type"`
+	Text       string            `json:"text,omitempty"`
 	ToolUse    *AnthropicToolUse `json:"tool_use,omitempty"`
-	ToolResult *ToolResult      `json:"tool_result,omitempty"`
+	ToolResult *ToolResult       `json:"tool_result,omitempty"`
 }
 
 // AnthropicMessage represents a message in the Anthropic API format
 type AnthropicMessage struct {
-	Role    string                   `json:"role"`
+	Role    string                    `json:"role"`
 	Content []AnthropicMessageContent `json:"content"`
 }
 
 // AnthropicToolResponse represents a Claude response with tool_use
 type AnthropicToolResponse struct {
-	ID         string                   `json:"id"`
-	Model      string                   `json:"model"`
-	StopReason string                   `json:"stop_reason"`
-	Role       string                   `json:"role"`
+	ID         string                    `json:"id"`
+	Model      string                    `json:"model"`
+	StopReason string                    `json:"stop_reason"`
+	Role       string                    `json:"role"`
 	Content    []AnthropicMessageContent `json:"content"`
 }
 
@@ -33,7 +33,7 @@ func AnthropicToolRequest(tools []ToolDefinition, prompt string) (map[string]int
 	// Base request structure
 	request := map[string]interface{}{
 		"model":      "claude-3-opus-20240229", // Default model, can be made configurable
-		"max_tokens": 4000,                    // Default max tokens
+		"max_tokens": 4000,                     // Default max tokens
 		"tools":      tools,
 		"messages": []map[string]interface{}{
 			{
@@ -63,17 +63,17 @@ func ParseAnthropicResponse(responseJSON string) (*AnthropicToolResponse, error)
 // ExtractToolUses extracts any tool_use blocks from an Anthropic response
 func ExtractToolUses(response *AnthropicToolResponse) []AnthropicToolUse {
 	var toolUses []AnthropicToolUse
-	
+
 	if response == nil || len(response.Content) == 0 {
 		return toolUses
 	}
-	
+
 	for _, content := range response.Content {
 		if content.Type == "tool_use" && content.ToolUse != nil {
 			toolUses = append(toolUses, *content.ToolUse)
 		}
 	}
-	
+
 	return toolUses
 }
 
@@ -88,13 +88,13 @@ func FormatToolResults(toolResults []ToolResult) (map[string]interface{}, error)
 			"content":     result.Content,
 		}
 	}
-	
+
 	// Create the user message with tool results
 	message := map[string]interface{}{
 		"role":    "user",
 		"content": contentBlocks,
 	}
-	
+
 	return message, nil
 }
 
@@ -105,17 +105,17 @@ func FormatContinuationRequest(tools []ToolDefinition, messages []interface{}, t
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Append the tool results message to the conversation
 	updatedMessages := append(messages, toolResultsMessage)
-	
+
 	// Create the continuation request
 	request := map[string]interface{}{
 		"model":      "claude-3-opus-20240229", // Default model, can be made configurable
-		"max_tokens": 4000,                    // Default max tokens
+		"max_tokens": 4000,                     // Default max tokens
 		"tools":      tools,
 		"messages":   updatedMessages,
 	}
-	
+
 	return request, nil
 }

@@ -69,21 +69,21 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		states := []State{StateWaiting, StateDone, StateError}
-		
+
 		for i := 0; i < operationsPerGoroutine; i++ {
 			targetState := states[i%len(states)]
 			ctx := context.Background()
-			
+
 			// Perform state transition
 			err := sm.TransitionTo(ctx, targetState, map[string]any{
 				"transition_id": i,
-				"timestamp": time.Now(),
+				"timestamp":     time.Now(),
 			})
-			
+
 			if err != nil {
 				t.Logf("Transition error: %v", err)
 			}
-			
+
 			time.Sleep(time.Microsecond)
 		}
 	}()
@@ -97,7 +97,7 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 		t.Error("Expected state data to be present after concurrent operations")
 	}
 
-	t.Logf("Race test completed successfully with %d goroutines and %d operations each", 
+	t.Logf("Race test completed successfully with %d goroutines and %d operations each",
 		numGoroutines, operationsPerGoroutine)
 }
 
