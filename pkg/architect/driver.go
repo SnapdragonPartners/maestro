@@ -566,7 +566,7 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 		return nil, fmt.Errorf("no question payload in message")
 	}
 
-	d.logger.Info("🏗️ Processing question: %v", question)
+	d.logger.Info("🏗️ Processing question from %s", questionMsg.FromAgent)
 
 	// For now, provide simple auto-response until LLM integration
 	answer := "Auto-response: Question received and acknowledged. Please proceed with your implementation."
@@ -652,7 +652,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	response.ParentMsgID = requestMsg.ID
 	response.SetPayload("approval_result", approvalResult)
 
-	d.logger.Info("🏗️ Sending approval result: status=%s, feedback=%s", approvalResult.Status, approvalResult.Feedback)
+	d.logger.Info("🏗️ Sending approval result: status=%s", approvalResult.Status)
 
 	return response, nil
 }

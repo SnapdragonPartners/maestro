@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -301,6 +302,9 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 
 		// Generate log ID for this agent
 		logID := agentConfig.GetLogID(modelName)
+		
+		// Create filesystem-safe directory name by replacing problematic characters
+		fsafeID := strings.ReplaceAll(logID, ":", "-")
 
 		var registeredAgent dispatch.Agent
 
@@ -310,7 +314,7 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 			// The architect runs workflows AND receives messages from coding agents
 
 			// Use command-line workDir instead of config workdir for agent isolation
-			agentWorkDir := filepath.Join(o.workDir, logID)
+			agentWorkDir := filepath.Join(o.workDir, fsafeID)
 			architectStatePath := filepath.Join(agentWorkDir, "state")
 			o.logger.Info("Creating architect state store at: %s", architectStatePath)
 			architectStateStore, err := state.NewStore(architectStatePath)
@@ -334,7 +338,7 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 
 		case "coder":
 			// Use command-line workDir instead of config workdir for agent isolation
-			agentWorkDir := filepath.Join(o.workDir, logID)
+			agentWorkDir := filepath.Join(o.workDir, fsafeID)
 			agentStatePath := filepath.Join(agentWorkDir, "state")
 			o.logger.Info("Creating coder state store at: %s", agentStatePath)
 			agentStateStore, err := state.NewStore(agentStatePath)
