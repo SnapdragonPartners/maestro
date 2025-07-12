@@ -251,7 +251,7 @@ func (cb *CircuitBreakerClient) GetStats() CircuitBreakerStats {
 
 // Combined client that includes both retry logic and circuit breaker
 type ResilientClient struct {
-	client LLMClient
+	// No fields needed - this is a factory type
 }
 
 // NewResilientClient creates a client with both retry and circuit breaker patterns

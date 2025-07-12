@@ -1,12 +1,48 @@
 package dispatch
 
 import (
+	"context"
 	"testing"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
+	"orchestrator/pkg/proto"
 )
+
+// MockDriverAgent implements both Agent and Driver interfaces for testing
+type MockDriverAgent struct {
+	id        string
+	agentType agent.AgentType
+}
+
+func NewMockDriverAgent(id string, agentType agent.AgentType) *MockDriverAgent {
+	return &MockDriverAgent{
+		id:        id,
+		agentType: agentType,
+	}
+}
+
+func (a *MockDriverAgent) GetID() string {
+	return a.id
+}
+
+func (a *MockDriverAgent) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	return nil, nil
+}
+
+func (a *MockDriverAgent) Shutdown(ctx context.Context) error {
+	return nil
+}
+
+func (a *MockDriverAgent) GetAgentType() agent.AgentType {
+	return a.agentType
+}
+
+func (a *MockDriverAgent) GetCurrentState() agent.State {
+	return agent.StateWaiting
+}
 
 func TestLogicalNameResolution(t *testing.T) {
 	// Create test config with realistic agent types
@@ -47,19 +83,12 @@ func TestLogicalNameResolution(t *testing.T) {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 
-	// Register mock agents to simulate real system
-	architectAgent := &MockAgent{id: "openai_o3:001"}
-	coderAgent := &MockAgent{id: "claude_sonnet4:001"}
+	// Attach mock agents to simulate real system
+	architectAgent := NewMockDriverAgent("openai_o3:001", agent.AgentTypeArchitect)
+	coderAgent := NewMockDriverAgent("claude_sonnet4:001", agent.AgentTypeCoder)
 
-	err = dispatcher.RegisterAgent(architectAgent)
-	if err != nil {
-		t.Fatalf("Failed to register architect agent: %v", err)
-	}
-
-	err = dispatcher.RegisterAgent(coderAgent)
-	if err != nil {
-		t.Fatalf("Failed to register coder agent: %v", err)
-	}
+	dispatcher.Attach(architectAgent)
+	dispatcher.Attach(coderAgent)
 
 	testCases := []struct {
 		input    string

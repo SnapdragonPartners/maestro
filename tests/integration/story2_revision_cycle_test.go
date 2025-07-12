@@ -41,7 +41,7 @@ Requirements:
 	StartCoderWithTask(t, harness, coderID, taskContent)
 
 	// Verify initial state
-	RequireState(t, harness, coderID, coder.StatePlanning.ToAgentState())
+	RequireState(t, harness, coderID, coder.StatePlanning)
 
 	// Run the harness until completion
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -201,7 +201,7 @@ func TestStory2RevisionStateTransitions(t *testing.T) {
 
 	// Verify we saw the expected state transitions for a revision cycle
 	expectedStates := []agent.State{
-		coder.StatePlanning.ToAgentState(),
+		coder.StatePlanning,
 		// Note: Other states depend on actual coder implementation
 	}
 

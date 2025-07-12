@@ -1,6 +1,8 @@
 package coder
 
 import (
+	"fmt"
+
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/proto"
 )
@@ -28,6 +30,25 @@ const (
 	AutoAbandon               = proto.AutoAbandon
 	QuestionReasonAutoCheckin = proto.QuestionReasonAutoCheckin
 )
+
+// ValidateState checks if a state is valid for coder agents
+func ValidateState(state agent.State) error {
+	validStates := GetValidStates()
+	for _, validState := range validStates {
+		if state == validState {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid coder state: %s", state)
+}
+
+// GetValidStates returns all valid states for coder agents
+func GetValidStates() []agent.State {
+	return []agent.State{
+		agent.StateWaiting, StatePlanning, StateCoding, StateTesting, StateFixing,
+		StatePlanReview, StateCodeReview, StateQuestion, agent.StateDone, agent.StateError,
+	}
+}
 
 // CoderTransitions defines the canonical state transition map for coder agents.
 // This is the single source of truth, derived directly from STATES.md.

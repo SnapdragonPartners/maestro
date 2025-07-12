@@ -88,7 +88,7 @@ func ExpectMessage(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duratio
 }
 
 // CreateTestCoder creates a coder driver for testing
-func CreateTestCoder(t *testing.T, coderID string) *coder.CoderDriver {
+func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	t.Helper()
 
 	// Create temporary directory for this coder
@@ -111,7 +111,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.CoderDriver {
 	mockLLM := &MockLLMClient{}
 
 	// Create coder driver
-	driver, err := coder.NewCoderDriver(coderID, stateStore, modelCfg, mockLLM, tempDir, nil)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -125,7 +125,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.CoderDriver {
 }
 
 // CreateTestCoderWithAgent creates a coder driver with specific agent configuration for testing
-func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.Agent) *coder.CoderDriver {
+func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.Agent) *coder.Coder {
 	t.Helper()
 
 	// Create temporary directory for this coder
@@ -147,7 +147,7 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 	mockLLM := &MockLLMClient{}
 
 	// Create coder driver with agent configuration
-	driver, err := coder.NewCoderDriver(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -292,7 +292,7 @@ func StartCoderWithTask(t *testing.T, harness *TestHarness, coderID, taskContent
 	}
 
 	// Transition to PLANNING state to start the workflow
-	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StatePlanning.ToAgentState(), nil); err != nil {
+	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StatePlanning, nil); err != nil {
 		t.Fatalf("Failed to transition coder %s to PLANNING: %v", coderID, err)
 	}
 }

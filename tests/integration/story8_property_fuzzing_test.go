@@ -112,8 +112,8 @@ func testCoderStability(t *testing.T, input FuzzInput) bool {
 		agent.StateDone,
 		agent.StateError,
 		agent.StateWaiting,
-		coder.StatePlanning.ToAgentState(),
-		coder.StateCoding.ToAgentState(),
+		coder.StatePlanning,
+		coder.StateCoding,
 	}
 
 	stateIsValid := false

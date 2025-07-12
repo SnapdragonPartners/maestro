@@ -219,24 +219,24 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 		{
 			name:     "waiting_to_planning",
 			from:     agent.StateWaiting,
-			to:       coder.StatePlanning.ToAgentState(),
+			to:       coder.StatePlanning,
 			expected: true,
 		},
 		{
 			name:     "planning_to_coding",
-			from:     coder.StatePlanning.ToAgentState(),
-			to:       coder.StateCoding.ToAgentState(),
+			from:     coder.StatePlanning,
+			to:       coder.StateCoding,
 			expected: true,
 		},
 		{
 			name:     "coding_to_done",
-			from:     coder.StateCoding.ToAgentState(),
+			from:     coder.StateCoding,
 			to:       agent.StateDone,
 			expected: true,
 		},
 		{
 			name:     "any_to_error",
-			from:     coder.StatePlanning.ToAgentState(),
+			from:     coder.StatePlanning,
 			to:       agent.StateError,
 			expected: true,
 		},
@@ -244,25 +244,25 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 		{
 			name:     "waiting_to_coding_invalid",
 			from:     agent.StateWaiting,
-			to:       coder.StateCoding.ToAgentState(),
+			to:       coder.StateCoding,
 			expected: false,
 		},
 		{
 			name:     "done_to_planning_invalid",
 			from:     agent.StateDone,
-			to:       coder.StatePlanning.ToAgentState(),
+			to:       coder.StatePlanning,
 			expected: false,
 		},
 		{
 			name:     "coding_to_waiting_invalid",
-			from:     coder.StateCoding.ToAgentState(),
+			from:     coder.StateCoding,
 			to:       agent.StateWaiting,
 			expected: false,
 		},
 		{
 			name:     "error_to_planning_invalid",
 			from:     agent.StateError,
-			to:       coder.StatePlanning.ToAgentState(),
+			to:       coder.StatePlanning,
 			expected: false,
 		},
 		// Same state transitions
@@ -303,10 +303,10 @@ func TestStory7MessageTypeValidation(t *testing.T) {
 		description string
 	}{
 		{
-			name:        "valid_task",
-			msgType:     proto.MsgTypeTASK,
+			name:        "valid_story",
+			msgType:     proto.MsgTypeSTORY,
 			isValid:     true,
-			description: "Task assignment message",
+			description: "Story assignment message",
 		},
 		{
 			name:        "valid_request",
@@ -448,11 +448,11 @@ func containsString(s, substr string) bool {
 func isValidStateTransition(from, to agent.State) bool {
 	// Define valid transitions based on the coder FSM
 	validTransitions := map[agent.State][]agent.State{
-		agent.StateWaiting:                 {coder.StatePlanning.ToAgentState(), agent.StateError},
-		coder.StatePlanning.ToAgentState(): {coder.StateCoding.ToAgentState(), agent.StateError},
-		coder.StateCoding.ToAgentState():   {agent.StateDone, agent.StateError},
-		agent.StateDone:                    {}, // Terminal state
-		agent.StateError:                   {}, // Terminal state
+		agent.StateWaiting:  {coder.StatePlanning, agent.StateError},
+		coder.StatePlanning: {coder.StateCoding, agent.StateError},
+		coder.StateCoding:   {agent.StateDone, agent.StateError},
+		agent.StateDone:     {}, // Terminal state
+		agent.StateError:    {}, // Terminal state
 	}
 
 	// Check if transition is in the valid list

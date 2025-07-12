@@ -1,0 +1,27 @@
+{
+  "version": "v1",
+  "state": "Waiting",
+  "last_timestamp": "2025-07-11T19:57:56.475371Z",
+  "context_snapshot": {
+    "agent_id": "test-architect",
+    "saved_at": "2025-07-11T19:57:56.475371Z",
+    "state": "Waiting"
+  },
+  "data": {
+    "current_request": {
+      "id": "msg_1752263869475379000_1",
+      "type": "QUESTION",
+      "from_agent": "test-coder",
+      "to_agent": "architect",
+      "timestamp": "2025-07-11T19:57:49.475502Z",
+      "payload": {
+        "question": "How should I implement this feature?",
+        "reason": "Need guidance on architecture"
+      }
+    },
+    "current_state": "Waiting",
+    "previous_state": "Waiting",
+    "started_at": "2025-07-11T19:57:48.474519Z",
+    "transition_at": "2025-07-11T19:57:49.484705Z"
+  }
+}

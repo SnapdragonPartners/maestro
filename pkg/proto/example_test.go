@@ -6,26 +6,26 @@ import (
 )
 
 func ExampleAgentMsg_usage() {
-	// Create a TASK message from architect to claude
-	taskMsg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
-	taskMsg.SetPayload("story_id", "001")
-	taskMsg.SetPayload("content", "Implement health endpoint")
-	taskMsg.SetPayload("requirements", []string{"GET /health", "return 200 OK", "JSON response"})
-	taskMsg.SetMetadata("priority", "high")
-	taskMsg.SetMetadata("estimated_points", "1")
+	// Create a STORY message from architect to claude
+	storyMsg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
+	storyMsg.SetPayload("story_id", "001")
+	storyMsg.SetPayload("content", "Implement health endpoint")
+	storyMsg.SetPayload("requirements", []string{"GET /health", "return 200 OK", "JSON response"})
+	storyMsg.SetMetadata("priority", "high")
+	storyMsg.SetMetadata("estimated_points", "1")
 
 	// Convert to JSON for transmission
-	jsonData, err := taskMsg.ToJSON()
+	jsonData, err := storyMsg.ToJSON()
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	fmt.Printf("TASK Message JSON:\n%s\n\n", jsonData)
+	fmt.Printf("STORY Message JSON:\n%s\n\n", jsonData)
 
-	// Claude receives and processes the task, then creates a RESULT message
+	// Claude receives and processes the story, then creates a RESULT message
 	resultMsg := NewAgentMsg(MsgTypeRESULT, "claude", "architect")
-	resultMsg.ParentMsgID = taskMsg.ID
+	resultMsg.ParentMsgID = storyMsg.ID
 	resultMsg.SetPayload("status", "completed")
 	resultMsg.SetPayload("implementation", `
 package main

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
 // State represents a state in a state machine
@@ -77,6 +79,7 @@ type BaseStateMachine struct {
 	mu           sync.Mutex      // Protects state changes
 	retryCount   int             // Tracks retry attempts
 	maxRetries   int             // Maximum retries before failing
+	logger       *logx.Logger    // Agent-specific logger
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table
@@ -94,6 +97,7 @@ func NewBaseStateMachine(agentID string, initialState State, store StateStore, t
 		store:        store,
 		table:        table,
 		maxRetries:   DefaultMaxRetries,
+		logger:       logx.NewLogger(agentID),
 	}
 }
 

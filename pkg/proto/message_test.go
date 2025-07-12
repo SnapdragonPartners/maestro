@@ -8,10 +8,10 @@ import (
 )
 
 func TestNewAgentMsg(t *testing.T) {
-	msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+	msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 
-	if msg.Type != MsgTypeTASK {
-		t.Errorf("Expected type TASK, got %s", msg.Type)
+	if msg.Type != MsgTypeSTORY {
+		t.Errorf("Expected type STORY, got %s", msg.Type)
 	}
 	if msg.FromAgent != "architect" {
 		t.Errorf("Expected from_agent 'architect', got %s", msg.FromAgent)
@@ -34,7 +34,7 @@ func TestNewAgentMsg(t *testing.T) {
 }
 
 func TestAgentMsg_ToJSON_FromJSON(t *testing.T) {
-	original := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+	original := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 	original.SetPayload("story_id", "001")
 	original.SetPayload("content", "Implement health endpoint")
 	original.SetMetadata("priority", "high")
@@ -133,7 +133,7 @@ func TestFromJSON(t *testing.T) {
 }
 
 func TestAgentMsg_SetGetPayload(t *testing.T) {
-	msg := NewAgentMsg(MsgTypeTASK, "test", "test")
+	msg := NewAgentMsg(MsgTypeSTORY, "test", "test")
 
 	// Test setting and getting payload
 	msg.SetPayload("key1", "value1")
@@ -163,7 +163,7 @@ func TestAgentMsg_SetGetPayload(t *testing.T) {
 }
 
 func TestAgentMsg_SetGetMetadata(t *testing.T) {
-	msg := NewAgentMsg(MsgTypeTASK, "test", "test")
+	msg := NewAgentMsg(MsgTypeSTORY, "test", "test")
 
 	// Test setting and getting metadata
 	msg.SetMetadata("env", "production")
@@ -187,7 +187,7 @@ func TestAgentMsg_SetGetMetadata(t *testing.T) {
 }
 
 func TestAgentMsg_Clone(t *testing.T) {
-	original := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+	original := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 	original.SetPayload("key", "value")
 	original.SetMetadata("meta", "data")
 	original.RetryCount = 2
@@ -238,14 +238,14 @@ func TestAgentMsg_Validate(t *testing.T) {
 		{
 			name: "valid message",
 			setupMsg: func() *AgentMsg {
-				return NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				return NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 			},
 			wantError: false,
 		},
 		{
 			name: "missing ID",
 			setupMsg: func() *AgentMsg {
-				msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 				msg.ID = ""
 				return msg
 			},
@@ -254,7 +254,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 		{
 			name: "missing type",
 			setupMsg: func() *AgentMsg {
-				msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 				msg.Type = ""
 				return msg
 			},
@@ -263,7 +263,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 		{
 			name: "missing from_agent",
 			setupMsg: func() *AgentMsg {
-				msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 				msg.FromAgent = ""
 				return msg
 			},
@@ -272,7 +272,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 		{
 			name: "missing to_agent",
 			setupMsg: func() *AgentMsg {
-				msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 				msg.ToAgent = ""
 				return msg
 			},
@@ -281,7 +281,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 		{
 			name: "zero timestamp",
 			setupMsg: func() *AgentMsg {
-				msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 				msg.Timestamp = time.Time{}
 				return msg
 			},
@@ -290,7 +290,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 		{
 			name: "invalid message type",
 			setupMsg: func() *AgentMsg {
-				msg := NewAgentMsg(MsgTypeTASK, "architect", "claude")
+				msg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 				msg.Type = "INVALID"
 				return msg
 			},
@@ -316,7 +316,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 func TestMsgType_Constants(t *testing.T) {
 	// Test that all message types are defined correctly
 	expectedTypes := []MsgType{
-		MsgTypeTASK,
+		MsgTypeSTORY,
 		MsgTypeRESULT,
 		MsgTypeERROR,
 		MsgTypeQUESTION,
@@ -324,7 +324,7 @@ func TestMsgType_Constants(t *testing.T) {
 	}
 
 	expectedValues := []string{
-		"TASK",
+		"STORY",
 		"RESULT",
 		"ERROR",
 		"QUESTION",
@@ -341,7 +341,7 @@ func TestMsgType_Constants(t *testing.T) {
 func TestAgentMsg_JSONRoundTrip(t *testing.T) {
 	// Test all message types
 	msgTypes := []MsgType{
-		MsgTypeTASK,
+		MsgTypeSTORY,
 		MsgTypeRESULT,
 		MsgTypeERROR,
 		MsgTypeQUESTION,
@@ -538,7 +538,7 @@ func TestCorrelationHelpers(t *testing.T) {
 	}
 
 	// Test missing IDs
-	msg3 := NewAgentMsg(MsgTypeTASK, "architect", "coder")
+	msg3 := NewAgentMsg(MsgTypeSTORY, "architect", "coder")
 	if _, exists := msg3.GetQuestionID(); exists {
 		t.Error("Should not have question ID when none set")
 	}

@@ -60,7 +60,6 @@ stateDiagram-v2
 
 ```text
 readyStoryCh        ← queue marks story ready (buffered 1)
-idleAgentCh         ← dispatcher notes agent free (buffered 1)
 reviewDoneCh        ← review worker finished (buffered 1)
 questionAnsweredCh  ← answer worker finished (buffered 1)
 ```

@@ -127,12 +127,12 @@ func TestPlanCodeHappyPath(t *testing.T) {
 		}
 
 		// Check for pending approval request
-		if hasPending, content, reason := coderAgent.GetDriver().GetPendingApprovalRequest(); hasPending {
+		if hasPending, _, content, reason, _ := coderAgent.GetDriver().GetPendingApprovalRequest(); hasPending {
 			currentState := coderAgent.GetDriver().GetCurrentState()
 
 			// Create the REQUEST message
 			approvalType := proto.ApprovalTypePlan
-			if currentState == coder.StateCodeReview.ToAgentState() {
+			if currentState == coder.StateCodeReview {
 				approvalType = proto.ApprovalTypeCode
 			}
 

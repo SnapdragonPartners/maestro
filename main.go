@@ -70,48 +70,7 @@ func (a *LLMClientAdapter) GenerateResponse(ctx context.Context, prompt string) 
 	return resp.Content, nil
 }
 
-// ArchitectMessageAdapter allows the architect driver to receive messages while running workflows
-type ArchitectMessageAdapter struct {
-	driver *architect.Driver
-	id     string
-}
-
-// GetID implements dispatch.Agent
-func (a *ArchitectMessageAdapter) GetID() string {
-	return a.id
-}
-
-// ProcessMessage implements dispatch.Agent - forwards messages to architect's question/review handlers
-func (a *ArchitectMessageAdapter) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	switch msg.Type {
-	case proto.MsgTypeTASK:
-		// Handle other architect tasks
-		return a.driver.HandleTask(ctx, msg)
-	case proto.MsgTypeSPEC:
-		// Handle spec uploads
-		return a.driver.HandleTask(ctx, msg)
-	case proto.MsgTypeQUESTION:
-		// Forward to question handler
-		return a.driver.HandleQuestion(ctx, msg)
-	case proto.MsgTypeRESULT:
-		// Forward to review evaluator
-		return a.driver.HandleResult(ctx, msg)
-	case proto.MsgTypeREQUEST:
-		// Route to appropriate worker (review worker for approval requests)
-		if err := a.driver.RouteMessage(msg); err != nil {
-			return nil, fmt.Errorf("failed to route request message: %w", err)
-		}
-		// REQUEST messages are handled asynchronously by workers, no immediate response
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("architect cannot process message type: %s", msg.Type)
-	}
-}
-
-// Shutdown implements dispatch.Agent
-func (a *ArchitectMessageAdapter) Shutdown(ctx context.Context) error {
-	return nil // Architect driver doesn't need special shutdown for messages
-}
+// ArchitectMessageAdapter removed - architect driver is now registered directly with dispatcher
 
 func main() {
 	fmt.Println("orchestrator boot")
@@ -350,39 +309,35 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 			// Store architect driver for spec processing with live O3 LLM
 			// The architect runs workflows AND receives messages from coding agents
 
-			// Create architect's own state store in its workdir (not global state)
-			architectStateStore, err := state.NewStore(filepath.Join(agentConfig.WorkDir, "state"))
+			// Use command-line workDir instead of config workdir for agent isolation
+			agentWorkDir := filepath.Join(o.workDir, logID)
+			architectStatePath := filepath.Join(agentWorkDir, "state")
+			o.logger.Info("Creating architect state store at: %s", architectStatePath)
+			architectStateStore, err := state.NewStore(architectStatePath)
 			if err != nil {
 				return fmt.Errorf("failed to create architect state store: %w", err)
 			}
 
 			baseLLMClient := agent.NewO3ClientWithModel(agentWithModel.Model.APIKey, "o3-mini")
 			llmClient := &LLMClientAdapter{client: baseLLMClient}
-			o.architect = architect.NewDriverWithDispatcher(logID, architectStateStore, &agentWithModel.Model, llmClient, o.dispatcher, agentConfig.WorkDir, filepath.Join(agentConfig.WorkDir, "stories"))
+			o.architect = architect.NewDriver(logID, architectStateStore, &agentWithModel.Model, llmClient, o.dispatcher, agentWorkDir, filepath.Join(agentWorkDir, "stories"))
 
 			// Initialize the architect driver
 			if err := o.architect.Initialize(context.Background()); err != nil {
 				return fmt.Errorf("failed to initialize architect: %w", err)
 			}
 
-			// Start the architect's state machine in WAITING state
-			go func() {
-				if err := o.architect.RunStateMachine(context.Background()); err != nil {
-					o.logger.Error("Architect state machine error: %v", err)
-				}
-			}()
-
-			// Create an adapter that allows the architect to receive messages
-			architectAgent := &ArchitectMessageAdapter{
-				driver: o.architect,
-				id:     logID,
-			}
-			registeredAgent = architectAgent
+			// Register the architect driver directly with dispatcher
+			// Note: Run() will be started after dispatcher.Attach() sets up channels
+			registeredAgent = o.architect
 			o.logger.Info("Created architect driver with live O3 LLM: %s", logID)
 
 		case "coder":
-			// Create individual state store for this agent in its work directory
-			agentStateStore, err := state.NewStore(filepath.Join(agentConfig.WorkDir, "state"))
+			// Use command-line workDir instead of config workdir for agent isolation
+			agentWorkDir := filepath.Join(o.workDir, logID)
+			agentStatePath := filepath.Join(agentWorkDir, "state")
+			o.logger.Info("Creating coder state store at: %s", agentStatePath)
+			agentStateStore, err := state.NewStore(agentStatePath)
 			if err != nil {
 				return fmt.Errorf("failed to create state store for agent %s: %w", logID, err)
 			}
@@ -390,17 +345,41 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 			// Check if we should use live API calls (command line flag)
 			if liveMode {
 				// Use unified coder with Claude LLM integration
-				liveAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentConfig.WorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
+				liveAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
 				if err != nil {
 					return fmt.Errorf("failed to create live coder agent %s: %w", logID, err)
 				}
+
+				// Initialize and start the coder's state machine
+				if err := liveAgent.Initialize(context.Background()); err != nil {
+					return fmt.Errorf("failed to initialize coder %s: %w", logID, err)
+				}
+
+				go func() {
+					if err := liveAgent.Run(context.Background()); err != nil {
+						o.logger.Error("Coder %s state machine error: %v", logID, err)
+					}
+				}()
+
 				registeredAgent = liveAgent
 			} else {
 				// Use unified coder with core state machine (mock mode)
-				driverAgent, err := coder.NewCoder(logID, agentConfig.Name, agentConfig.WorkDir, agentStateStore, &agentWithModel.Model)
+				driverAgent, err := coder.NewCoder(logID, agentStateStore, &agentWithModel.Model, nil, agentWorkDir, &agentConfig)
 				if err != nil {
 					return fmt.Errorf("failed to create coder agent %s: %w", logID, err)
 				}
+
+				// Initialize and start the coder's state machine
+				if err := driverAgent.Initialize(context.Background()); err != nil {
+					return fmt.Errorf("failed to initialize coder %s: %w", logID, err)
+				}
+
+				go func() {
+					if err := driverAgent.Run(context.Background()); err != nil {
+						o.logger.Error("Coder %s state machine error: %v", logID, err)
+					}
+				}()
+
 				registeredAgent = driverAgent
 			}
 
@@ -408,8 +387,16 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 			return fmt.Errorf("unknown agent type: %s", agentConfig.Type)
 		}
 
-		if err := o.dispatcher.RegisterAgent(registeredAgent); err != nil {
-			return fmt.Errorf("failed to register agent %s: %w", logID, err)
+		// Attach agent to dispatcher using new channel-based API
+		o.dispatcher.Attach(registeredAgent)
+
+		// Start architect's state machine after channels are set up
+		if agentConfig.Type == "architect" {
+			go func() {
+				if err := registeredAgent.(*architect.Driver).Run(context.Background()); err != nil {
+					o.logger.Error("Architect state machine error: %v", err)
+				}
+			}()
 		}
 
 		o.agents[logID] = &StatusAgentWrapper{Agent: registeredAgent}
@@ -614,4 +601,3 @@ func getAgentType(agentID string) string {
 		return "Unknown"
 	}
 }
-

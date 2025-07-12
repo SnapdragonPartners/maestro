@@ -58,7 +58,7 @@ var (
 		Domains:     nil,
 	}
 	debugMutex sync.RWMutex
-	
+
 	// Global in-memory log buffer for web UI
 	logBuffer = &InMemoryLogBuffer{
 		entries: make([]LogEntry, 0),
@@ -214,10 +214,10 @@ func IsDebugEnabledForDomain(domain string) bool {
 func (b *InMemoryLogBuffer) AddLogEntry(entry LogEntry) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
-	
+
 	// Add the entry
 	b.entries = append(b.entries, entry)
-	
+
 	// Keep only the last maxSize entries
 	if len(b.entries) > b.maxSize {
 		b.entries = b.entries[len(b.entries)-b.maxSize:]
@@ -228,14 +228,14 @@ func (b *InMemoryLogBuffer) AddLogEntry(entry LogEntry) {
 func (b *InMemoryLogBuffer) GetLogEntries(domain string, since time.Time) []LogEntry {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()
-	
+
 	var filtered []LogEntry
 	for _, entry := range b.entries {
 		// Filter by domain if specified
 		if domain != "" && entry.Domain != "" && !strings.EqualFold(entry.Domain, domain) {
 			continue
 		}
-		
+
 		// Filter by timestamp if specified
 		if !since.IsZero() {
 			entryTime, err := time.Parse("2006-01-02T15:04:05.000Z", entry.Timestamp)
@@ -243,10 +243,10 @@ func (b *InMemoryLogBuffer) GetLogEntries(domain string, since time.Time) []LogE
 				continue
 			}
 		}
-		
+
 		filtered = append(filtered, entry)
 	}
-	
+
 	return filtered
 }
 
@@ -260,7 +260,7 @@ func (l *Logger) log(level Level, format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, l.agentID, level, message)
 	l.logger.Println(logLine)
-	
+
 	// Also capture in memory buffer for web UI
 	entry := LogEntry{
 		Timestamp: timestamp,
@@ -319,12 +319,12 @@ func Debug(ctx context.Context, domain, format string, args ...any) {
 	// Create temporary logger for this debug call
 	logger := NewLogger(agentID)
 	message := fmt.Sprintf("[%s] %s", domain, fmt.Sprintf(format, args...))
-	
+
 	// Log normally
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, agentID, LevelDebug, message)
 	logger.logger.Println(logLine)
-	
+
 	// Also capture in memory buffer with domain info
 	entry := LogEntry{
 		Timestamp: timestamp,

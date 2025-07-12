@@ -58,7 +58,7 @@ func TestStory4HighConcurrency(t *testing.T) {
 
 	// Verify all coders start in planning state (after task setup)
 	for _, coderID := range coderIDs {
-		RequireState(t, harness, coderID, coder.StatePlanning.ToAgentState())
+		RequireState(t, harness, coderID, coder.StatePlanning)
 	}
 
 	// Run until all coders complete

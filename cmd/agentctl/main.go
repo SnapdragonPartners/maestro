@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"orchestrator/pkg/architect"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
@@ -290,7 +289,9 @@ func main() {
 	case "architect":
 		switch mode {
 		case "mock":
-			_ = architect.NewDriver("agentctl-architect", stateStore, workDir, filepath.Join(workDir, "stories"))
+			// TODO: Mock mode removed - need to update agentctl for new architect architecture
+			fmt.Fprintf(os.Stderr, "Mock mode for architect no longer supported - requires full dispatcher setup\n")
+			os.Exit(1)
 		case "live":
 			// TODO: Implement live architect mode - requires dispatcher and LLM client setup
 			fmt.Fprintf(os.Stderr, "Live mode for architect not yet implemented\n")

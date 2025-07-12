@@ -49,8 +49,8 @@ const (
 	maxPlainBlockSize = 50         // Maximum lines for plain content before saving as file
 )
 
-// CoderDriver implements the v2 FSM using agent foundation
-type CoderDriver struct {
+// Coder implements the v2 FSM using agent foundation
+type Coder struct {
 	*agent.BaseStateMachine // Directly embed state machine
 	agentConfig             *agent.AgentConfig
 	configAgent             *config.Agent
@@ -67,6 +67,10 @@ type CoderDriver struct {
 	// REQUEST→RESULT flow state
 	pendingApprovalRequest *ApprovalRequest
 	pendingQuestion        *Question
+	
+	// Channels for dispatcher communication
+	storyCh <-chan *proto.AgentMsg // Channel to receive story messages
+	replyCh <-chan *proto.AgentMsg // Channel to receive replies (for future use)
 }
 
 // ApprovalRequest represents a pending approval request
@@ -83,6 +87,18 @@ type Question struct {
 	Content string
 	Reason  string
 	Origin  string
+}
+
+// GetID implements the dispatch.Agent interface
+func (c *Coder) GetID() string {
+	return c.agentConfig.ID
+}
+
+// SetChannels implements the ChannelReceiver interface for dispatcher attachment
+func (c *Coder) SetChannels(storyCh <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
+	c.storyCh = storyCh
+	c.replyCh = replyCh
+	c.logger.Info("🧑‍💻 Coder %s channels set: story=%p reply=%p", c.GetID(), storyCh, replyCh)
 }
 
 // convertApprovalData converts approval data from various formats to *proto.ApprovalResult
@@ -112,8 +128,8 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 	return nil, fmt.Errorf("unsupported approval data type: %T", data)
 }
 
-// NewCoderDriver creates a new coder driver using agent foundation
-func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*CoderDriver, error) {
+// NewCoder creates a new coder using agent foundation  
+func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*Coder, error) {
 	renderer, _ := templates.NewRenderer()
 
 	// Create agent context with logger
@@ -152,7 +168,7 @@ func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config
 		}
 	}
 
-	driver := &CoderDriver{
+	coder := &Coder{
 		BaseStateMachine: sm,
 		agentConfig:      agentCfg,
 		configAgent:      agentConfig,
@@ -165,12 +181,26 @@ func NewCoderDriver(agentID string, stateStore *state.Store, modelConfig *config
 		fixingBudget:     fixingBudget,
 	}
 
-	return driver, nil
+	return coder, nil
+}
+
+// NewCoderWithLLM creates a new coder with LLM integration (for live mode)
+func NewCoderWithLLM(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*Coder, error) {
+	return NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, agentConfig)
+}
+
+// NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode)
+func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string) (*Coder, error) {
+	// Create Claude LLM client
+	llmClient := agent.NewClaudeClient(apiKey)
+	
+	// Create coder with LLM integration
+	return NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil)
 }
 
 // checkLoopBudget tracks loop counts and triggers AUTO_CHECKIN when budget is exceeded
 // Returns true if budget exceeded and AUTO_CHECKIN should be triggered
-func (d *CoderDriver) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin agent.State) bool {
+func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin agent.State) bool {
 	// Get current iteration count
 	var iterationCount int
 	if val, exists := sm.GetStateValue(key); exists {
@@ -199,62 +229,62 @@ func (d *CoderDriver) checkLoopBudget(sm *agent.BaseStateMachine, key string, bu
 }
 
 // ProcessState implements the v2 FSM state machine logic
-func (d *CoderDriver) ProcessState(ctx context.Context) (agent.State, bool, error) {
-	sm := d.BaseStateMachine
+func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
+	sm := c.BaseStateMachine
 
-	switch d.GetCurrentState() {
+	switch c.GetCurrentState() {
 	case agent.StateWaiting:
-		return d.handleWaiting(ctx, sm)
+		return c.handleWaiting(ctx, sm)
 	case StatePlanning:
-		return d.handlePlanning(ctx, sm)
+		return c.handlePlanning(ctx, sm)
 	case StatePlanReview:
-		return d.handlePlanReview(ctx, sm)
+		return c.handlePlanReview(ctx, sm)
 	case StateCoding:
-		return d.handleCoding(ctx, sm)
+		return c.handleCoding(ctx, sm)
 	case StateTesting:
-		return d.handleTesting(ctx, sm)
+		return c.handleTesting(ctx, sm)
 	case StateFixing:
-		return d.handleFixing(ctx, sm)
+		return c.handleFixing(ctx, sm)
 	case StateCodeReview:
-		return d.handleCodeReview(ctx, sm)
+		return c.handleCodeReview(ctx, sm)
 	case StateQuestion:
-		return d.handleQuestion(ctx, sm)
+		return c.handleQuestion(ctx, sm)
 	case agent.StateDone:
 		return agent.StateDone, true, nil
 	case agent.StateError:
 		return agent.StateError, true, nil
 	default:
-		return agent.StateError, false, fmt.Errorf("unknown state: %s", d.GetCurrentState())
+		return agent.StateError, false, fmt.Errorf("unknown state: %s", c.GetCurrentState())
 	}
 }
 
 // isCoderState checks if a state is a coder-specific state using canonical derivation
-func (d *CoderDriver) isCoderState(state agent.State) bool {
+func (c *Coder) isCoderState(state agent.State) bool {
 	return IsCoderState(state)
 }
 
 // ProcessTask initiates task processing with the new agent foundation
-func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error {
+func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 	// Add agent ID to context for debug logging
-	ctx = context.WithValue(ctx, "agent_id", d.agentConfig.ID)
+	ctx = context.WithValue(ctx, "agent_id", c.agentConfig.ID)
 
 	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
 
 	// Reset for new task
-	d.BaseStateMachine.SetStateData(keyTaskContent, taskContent)
-	d.BaseStateMachine.SetStateData(keyStartedAt, time.Now().UTC())
+	c.BaseStateMachine.SetStateData(keyTaskContent, taskContent)
+	c.BaseStateMachine.SetStateData(keyStartedAt, time.Now().UTC())
 
 	// Add to context manager
-	d.contextManager.AddMessage("user", taskContent)
+	c.contextManager.AddMessage("user", taskContent)
 
 	// Initialize if needed
-	if err := d.Initialize(ctx); err != nil {
+	if err := c.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
 
 	// Run the state machine loop using Step() for atomic processing
 	for {
-		done, err := d.Step(ctx)
+		done, err := c.Step(ctx)
 		if err != nil {
 			return err
 		}
@@ -265,7 +295,7 @@ func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error
 		}
 
 		// Break out if we have pending approvals or questions to let external handler deal with them
-		if d.pendingApprovalRequest != nil || d.pendingQuestion != nil {
+		if c.pendingApprovalRequest != nil || c.pendingQuestion != nil {
 			logx.DebugFlow(ctx, "coder", "task-processing", "paused", "pending external response")
 			break
 		}
@@ -275,29 +305,67 @@ func (d *CoderDriver) ProcessTask(ctx context.Context, taskContent string) error
 }
 
 // handleWaiting processes the WAITING state
-func (d *CoderDriver) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "WAITING")
-	d.contextManager.AddMessage("assistant", "Waiting for task assignment")
+	c.contextManager.AddMessage("assistant", "Waiting for task assignment")
 
+	// First check if we already have a task from previous processing
 	taskContent, exists := sm.GetStateValue(keyTaskContent)
 	if exists && taskContent != "" {
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> PLANNING", "task content available")
 		return StatePlanning, false, nil
 	}
 
-	return agent.StateWaiting, false, nil
+	// If no story channel is set, stay in WAITING (shouldn't happen in normal operation)
+	if c.storyCh == nil {
+		logx.Warnf("🧑‍💻 Coder in WAITING state but no story channel set")
+		return agent.StateWaiting, false, nil
+	}
+
+	// Block waiting for a story message
+	logx.Infof("🧑‍💻 Coder waiting for story message...")
+	select {
+	case <-ctx.Done():
+		return agent.StateError, false, ctx.Err()
+	case storyMsg := <-c.storyCh:
+		if storyMsg == nil {
+			logx.Warnf("🧑‍💻 Received nil story message")
+			return agent.StateWaiting, false, nil
+		}
+		
+		logx.Infof("🧑‍💻 Received story message %s, transitioning to PLANNING", storyMsg.ID)
+		
+		// Extract story content and store it in state data
+		content, exists := storyMsg.GetPayload(proto.KeyContent)
+		if !exists {
+			return agent.StateError, false, fmt.Errorf("story message missing content")
+		}
+		
+		contentStr, ok := content.(string)
+		if !ok {
+			return agent.StateError, false, fmt.Errorf("story content must be a string")
+		}
+		
+		// Store the task content for the PLANNING state
+		sm.SetStateData(keyTaskContent, contentStr)
+		sm.SetStateData("story_message_id", storyMsg.ID)
+		sm.SetStateData(keyStartedAt, time.Now().UTC())
+		
+		logx.DebugState(ctx, "coder", "transition", "WAITING -> PLANNING", "received story message")
+		return StatePlanning, false, nil
+	}
 }
 
 // handlePlanning processes the PLANNING state
-func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "PLANNING")
-	d.contextManager.AddMessage("assistant", "Planning phase: analyzing requirements")
+	c.contextManager.AddMessage("assistant", "Planning phase: analyzing requirements")
 
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
 	taskStr, _ := taskContent.(string)
 
 	// Check for help requests
-	if d.detectHelpRequest(taskStr) {
+	if c.detectHelpRequest(taskStr) {
 		sm.SetStateData(keyQuestionReason, "Help requested during planning")
 		sm.SetStateData(keyQuestionContent, taskStr)
 		sm.SetStateData(keyQuestionOrigin, string(StatePlanning))
@@ -305,8 +373,8 @@ func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMac
 	}
 
 	// Generate plan
-	if d.llmClient != nil {
-		return d.handlePlanningWithLLM(ctx, sm, taskStr)
+	if c.llmClient != nil {
+		return c.handlePlanningWithLLM(ctx, sm, taskStr)
 	}
 
 	// Mock mode
@@ -316,14 +384,14 @@ func (d *CoderDriver) handlePlanning(ctx context.Context, sm *agent.BaseStateMac
 }
 
 // handlePlanningWithLLM generates plan using LLM
-func (d *CoderDriver) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (agent.State, bool, error) {
+func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (agent.State, bool, error) {
 	// Create planning prompt
 	templateData := &templates.TemplateData{
 		TaskContent: taskContent,
-		Context:     d.formatContextAsString(),
+		Context:     c.formatContextAsString(),
 	}
 
-	prompt, err := d.renderer.Render(templates.PlanningTemplate, templateData)
+	prompt, err := c.renderer.Render(templates.PlanningTemplate, templateData)
 	if err != nil {
 		return agent.StateError, false, fmt.Errorf("failed to render planning template: %w", err)
 	}
@@ -336,7 +404,7 @@ func (d *CoderDriver) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseS
 		MaxTokens: 4096,
 	}
 
-	resp, err := d.llmClient.Complete(ctx, req)
+	resp, err := c.llmClient.Complete(ctx, req)
 	if err != nil {
 		return agent.StateError, false, fmt.Errorf("failed to get LLM planning response: %w", err)
 	}
@@ -344,14 +412,14 @@ func (d *CoderDriver) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseS
 	// Store plan
 	sm.SetStateData("plan", resp.Content)
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
-	d.contextManager.AddMessage("assistant", resp.Content)
+	c.contextManager.AddMessage("assistant", resp.Content)
 
 	return StatePlanReview, false, nil
 }
 
 // handlePlanReview processes the PLAN_REVIEW state using REQUEST→RESULT flow
-func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	d.contextManager.AddMessage("assistant", "Plan review phase: requesting architect approval")
+func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Plan review phase: requesting architect approval")
 
 	// Check if we already have approval result
 	if approvalData, exists := sm.GetStateValue(keyPlanApprovalResult); exists {
@@ -373,11 +441,11 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 	}
 
 	// In mock mode (no LLM client), auto-approve
-	if d.llmClient == nil {
+	if c.llmClient == nil {
 		taskContent, _ := sm.GetStateValue(keyTaskContent)
 		taskStr, _ := taskContent.(string)
 
-		approved := d.simulateApproval(taskStr, proto.ApprovalTypePlan.String())
+		approved := c.simulateApproval(taskStr, proto.ApprovalTypePlan.String())
 		result := &proto.ApprovalResult{
 			Type:       proto.ApprovalTypePlan,
 			Status:     proto.ApprovalStatusApproved,
@@ -400,7 +468,7 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 	plan, _ := sm.GetStateValue("plan")
 	planStr, _ := plan.(string)
 
-	d.pendingApprovalRequest = &ApprovalRequest{
+	c.pendingApprovalRequest = &ApprovalRequest{
 		ID:      proto.GenerateApprovalID(),
 		Content: planStr,
 		Reason:  "Plan requires architect approval before proceeding to coding",
@@ -412,16 +480,16 @@ func (d *CoderDriver) handlePlanReview(ctx context.Context, sm *agent.BaseStateM
 }
 
 // handleCoding processes the CODING state
-func (d *CoderDriver) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	d.contextManager.AddMessage("assistant", "Coding phase: implementing solution")
+func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Coding phase: implementing solution")
 
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
 	taskStr, _ := taskContent.(string)
 	plan, _ := sm.GetStateValue("plan")
 	planStr, _ := plan.(string)
 
-	if d.llmClient != nil {
-		return d.handleCodingWithLLM(ctx, sm, taskStr, planStr)
+	if c.llmClient != nil {
+		return c.handleCodingWithLLM(ctx, sm, taskStr, planStr)
 	}
 
 	// Mock implementation for no LLM
@@ -432,16 +500,16 @@ func (d *CoderDriver) handleCoding(ctx context.Context, sm *agent.BaseStateMachi
 }
 
 // handleCodingWithLLM generates actual code using LLM
-func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent, plan string) (agent.State, bool, error) {
+func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent, plan string) (agent.State, bool, error) {
 	// Create coding prompt
 	templateData := &templates.TemplateData{
 		TaskContent: taskContent,
 		Plan:        plan,
-		Context:     d.formatContextAsString(),
-		WorkDir:     d.workDir,
+		Context:     c.formatContextAsString(),
+		WorkDir:     c.workDir,
 	}
 
-	prompt, err := d.renderer.Render(templates.CodingTemplate, templateData)
+	prompt, err := c.renderer.Render(templates.CodingTemplate, templateData)
 	if err != nil {
 		return agent.StateError, false, fmt.Errorf("failed to render coding template: %w", err)
 	}
@@ -454,7 +522,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	messages = append(messages, agent.CompletionMessage{Role: agent.RoleUser, Content: prompt})
 
 	// Add conversation history from context manager
-	contextMessages := d.contextManager.GetMessages()
+	contextMessages := c.contextManager.GetMessages()
 	for _, msg := range contextMessages {
 		role := agent.RoleAssistant
 		if msg.Role == "user" || msg.Role == "system" {
@@ -505,7 +573,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 		},
 	}
 
-	resp, err := d.llmClient.Complete(ctx, req)
+	resp, err := c.llmClient.Complete(ctx, req)
 	if err != nil {
 		return agent.StateError, false, fmt.Errorf("failed to get LLM coding response: %w", err)
 	}
@@ -515,8 +583,8 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	var filesCreated int
 
 	if len(resp.ToolCalls) > 0 {
-		log.Printf("Executing %d tool calls via MCP in working directory: %s", len(resp.ToolCalls), d.workDir)
-		filesCreated, err = d.executeMCPToolCalls(ctx, resp.ToolCalls)
+		log.Printf("Executing %d tool calls via MCP in working directory: %s", len(resp.ToolCalls), c.workDir)
+		filesCreated, err = c.executeMCPToolCalls(ctx, resp.ToolCalls)
 		if err != nil {
 			return agent.StateError, false, fmt.Errorf("failed to execute tool calls: %w", err)
 		}
@@ -540,7 +608,7 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 		log.Printf("No tool calls for %d consecutive iterations", noToolCallsCount)
 
 		// Parse the response to extract files and create them
-		filesCreated, err = d.parseAndCreateFiles(resp.Content)
+		filesCreated, err = c.parseAndCreateFiles(resp.Content)
 		if err != nil {
 			return agent.StateError, false, fmt.Errorf("failed to create files: %w", err)
 		}
@@ -550,41 +618,41 @@ func (d *CoderDriver) handleCodingWithLLM(ctx context.Context, sm *agent.BaseSta
 	// Store results
 	sm.SetStateData("code_generated", filesCreated > 0)
 	sm.SetStateData("files_created", filesCreated)
-	d.contextManager.AddMessage("assistant", resp.Content)
+	c.contextManager.AddMessage("assistant", resp.Content)
 
 	// Check if implementation seems complete
-	if d.isImplementationComplete(resp.Content, filesCreated, sm) {
+	if c.isImplementationComplete(resp.Content, filesCreated, sm) {
 		sm.SetStateData("coding_completed_at", time.Now().UTC())
 		return StateTesting, false, nil
 	}
 
 	// Check iteration limit using AUTO_CHECKIN mechanism
-	if d.checkLoopBudget(sm, keyCodingIterations, d.codingBudget, StateCoding) {
+	if c.checkLoopBudget(sm, keyCodingIterations, c.codingBudget, StateCoding) {
 		log.Printf("Coding budget exceeded, triggering AUTO_CHECKIN")
 		return StateQuestion, false, nil
 	}
 
 	// Add context about what's been done so far for next iteration
-	fileList := d.getWorkingDirectoryContents()
-	d.contextManager.AddMessage("system", fmt.Sprintf("Previous iteration created %d files/directories. Current workspace contains: %s. The implementation is not yet complete. Please continue with the next steps to create the actual source code files (like main.go, handlers, etc).", filesCreated, fileList))
+	fileList := c.getWorkingDirectoryContents()
+	c.contextManager.AddMessage("system", fmt.Sprintf("Previous iteration created %d files/directories. Current workspace contains: %s. The implementation is not yet complete. Please continue with the next steps to create the actual source code files (like main.go, handlers, etc).", filesCreated, fileList))
 
 	// Continue coding if implementation is not complete
 	currentIterations, _ := sm.GetStateValue(keyCodingIterations)
 	iterCount, _ := currentIterations.(int)
-	log.Printf("Implementation appears incomplete (iteration %d/%d), continuing in CODING state", iterCount, d.codingBudget)
+	log.Printf("Implementation appears incomplete (iteration %d/%d), continuing in CODING state", iterCount, c.codingBudget)
 
 	// Note: Looping back to CODING is allowed via self-loops; not listed in CoderTransitions by design
 	return StateCoding, false, nil
 }
 
 // executeMCPToolCalls executes tool calls using the MCP tool system
-func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolCall) (int, error) {
+func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolCall) (int, error) {
 	// Check working directory permissions
-	if stat, err := os.Stat(d.workDir); err != nil {
-		log.Printf("Error accessing working directory %s: %v", d.workDir, err)
-		return 0, fmt.Errorf("cannot access working directory %s: %w", d.workDir, err)
+	if stat, err := os.Stat(c.workDir); err != nil {
+		log.Printf("Error accessing working directory %s: %v", c.workDir, err)
+		return 0, fmt.Errorf("cannot access working directory %s: %w", c.workDir, err)
 	} else {
-		log.Printf("Working directory %s exists, mode: %v", d.workDir, stat.Mode())
+		log.Printf("Working directory %s exists, mode: %v", c.workDir, stat.Mode())
 	}
 
 	// Ensure shell tool is registered
@@ -605,7 +673,7 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 			// Claude signaled completion
 			if reason, ok := toolCall.Parameters["reason"].(string); ok {
 				log.Printf("Claude marked implementation complete: %s", reason)
-				d.contextManager.AddMessage("tool", fmt.Sprintf("Implementation marked complete: %s", reason))
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Implementation marked complete: %s", reason))
 				// Return high file count to signal completion
 				return 99, nil
 			}
@@ -625,7 +693,7 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 				args[k] = v
 			}
 			if _, hasCwd := args["cwd"]; !hasCwd {
-				args["cwd"] = d.workDir
+				args["cwd"] = c.workDir
 			}
 
 			// Execute the tool
@@ -637,7 +705,7 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 			// Log tool execution
 			if cmd, ok := args["cmd"].(string); ok {
 				log.Printf("Executing shell command: %s", cmd)
-				d.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
 
 				// Count file creation commands - expanded patterns
 				if strings.Contains(cmd, "cat >") ||
@@ -661,15 +729,15 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 			if resultMap, ok := result.(map[string]any); ok {
 				if output, ok := resultMap["stdout"].(string); ok && output != "" {
 					log.Printf("Command stdout: %s", output)
-					d.contextManager.AddMessage("tool", fmt.Sprintf("Output: %s", output))
+					c.contextManager.AddMessage("tool", fmt.Sprintf("Output: %s", output))
 				}
 				if stderr, ok := resultMap["stderr"].(string); ok && stderr != "" {
 					log.Printf("Command stderr: %s", stderr)
-					d.contextManager.AddMessage("tool", fmt.Sprintf("Error: %s", stderr))
+					c.contextManager.AddMessage("tool", fmt.Sprintf("Error: %s", stderr))
 				}
 				if exitCode, ok := resultMap["exit_code"].(int); ok && exitCode != 0 {
 					log.Printf("Command exited with code: %d", exitCode)
-					d.contextManager.AddMessage("tool", fmt.Sprintf("Command failed with exit code: %d", exitCode))
+					c.contextManager.AddMessage("tool", fmt.Sprintf("Command failed with exit code: %d", exitCode))
 				}
 			} else {
 				log.Printf("Warning: could not parse tool execution result")
@@ -681,7 +749,7 @@ func (d *CoderDriver) executeMCPToolCalls(ctx context.Context, toolCalls []agent
 }
 
 // isImplementationComplete checks if the current implementation appears complete
-func (d *CoderDriver) isImplementationComplete(responseContent string, filesCreated int, sm *agent.BaseStateMachine) bool {
+func (c *Coder) isImplementationComplete(responseContent string, filesCreated int, sm *agent.BaseStateMachine) bool {
 	// Method 1: Explicit completion signal via mark_complete tool
 	if filesCreated == 99 {
 		log.Printf("Completion detected: Claude used mark_complete tool")
@@ -738,8 +806,8 @@ func (d *CoderDriver) isImplementationComplete(responseContent string, filesCrea
 }
 
 // getWorkingDirectoryContents returns a summary of what's in the working directory
-func (d *CoderDriver) getWorkingDirectoryContents() string {
-	entries, err := os.ReadDir(d.workDir)
+func (c *Coder) getWorkingDirectoryContents() string {
+	entries, err := os.ReadDir(c.workDir)
 	if err != nil {
 		return "error reading directory"
 	}
@@ -764,7 +832,7 @@ func (d *CoderDriver) getWorkingDirectoryContents() string {
 }
 
 // isFilenameHeader checks if a line contains a filename header
-func (d *CoderDriver) isFilenameHeader(line string) bool {
+func (c *Coder) isFilenameHeader(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	return strings.HasPrefix(trimmed, "###") ||
 		strings.HasPrefix(trimmed, "File:") ||
@@ -774,7 +842,7 @@ func (d *CoderDriver) isFilenameHeader(line string) bool {
 }
 
 // looksLikeCode uses heuristics to determine if a line looks like code
-func (d *CoderDriver) looksLikeCode(line string) bool {
+func (c *Coder) looksLikeCode(line string) bool {
 	trimmed := strings.TrimSpace(line)
 
 	// Empty lines are neutral
@@ -853,7 +921,7 @@ func (d *CoderDriver) looksLikeCode(line string) bool {
 }
 
 // guessFilenameFromContent tries to guess filename from a line of code
-func (d *CoderDriver) guessFilenameFromContent(line string) string {
+func (c *Coder) guessFilenameFromContent(line string) string {
 	trimmed := strings.TrimSpace(line)
 
 	// Go patterns
@@ -886,10 +954,10 @@ func (d *CoderDriver) guessFilenameFromContent(line string) string {
 }
 
 // guessFilenameFromContext looks ahead in lines to guess appropriate filename
-func (d *CoderDriver) guessFilenameFromContext(lines []string, startIdx int) string {
+func (c *Coder) guessFilenameFromContext(lines []string, startIdx int) string {
 	// Look at next few lines for language clues
 	for i := startIdx; i < startIdx+10 && i < len(lines); i++ {
-		if filename := d.guessFilenameFromContent(lines[i]); filename != defaultFilename {
+		if filename := c.guessFilenameFromContent(lines[i]); filename != defaultFilename {
 			return filename
 		}
 	}
@@ -898,7 +966,7 @@ func (d *CoderDriver) guessFilenameFromContext(lines []string, startIdx int) str
 
 // parseAndCreateFiles extracts code blocks from LLM response and creates files
 // Supports fenced code blocks (```), plain code blocks, and content detection
-func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
+func (c *Coder) parseAndCreateFiles(content string) (int, error) {
 	filesCreated := 0
 	lines := strings.Split(content, "\n")
 
@@ -909,17 +977,17 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 
 	for i, line := range lines {
 		// Look for filename patterns like "### filename.py" or "File: filename.py"
-		if d.isFilenameHeader(line) {
+		if c.isFilenameHeader(line) {
 			// Save previous file if exists
 			if currentFile != "" && len(currentContent) > 0 {
-				if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
+				if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
 					return filesCreated, err
 				}
 				filesCreated++
 			}
 
 			// Extract filename
-			currentFile = d.extractFilename(line)
+			currentFile = c.extractFilename(line)
 			currentContent = []string{}
 			inCodeBlock = false
 			inPlainContent = false
@@ -931,7 +999,7 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 			if inCodeBlock {
 				// End of code block - save current file if it exists
 				if currentFile != "" && len(currentContent) > 0 {
-					if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
+					if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
 						return filesCreated, err
 					}
 					filesCreated++
@@ -947,11 +1015,11 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 				inPlainContent = false
 				// If no current file, try to extract from code block language or guess
 				if currentFile == "" {
-					if filename := d.extractFilenameFromCodeBlock(line); filename != "" {
+					if filename := c.extractFilenameFromCodeBlock(line); filename != "" {
 						currentFile = filename
 					} else {
 						// Plain code block without language - try to guess from upcoming content
-						currentFile = d.guessFilenameFromContext(lines, i+1)
+						currentFile = c.guessFilenameFromContext(lines, i+1)
 					}
 				}
 			}
@@ -960,16 +1028,16 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 
 		// If we're not in a code block and have no current file, check if this looks like code
 		if !inCodeBlock && !inPlainContent && currentFile == "" {
-			if d.looksLikeCode(line) {
+			if c.looksLikeCode(line) {
 				// Start collecting plain content that looks like code
 				inPlainContent = true
-				currentFile = d.guessFilenameFromContent(line)
+				currentFile = c.guessFilenameFromContent(line)
 				currentContent = []string{}
 			}
 		}
 
 		// Stop collecting plain content if we hit non-code-like lines (but allow empty lines)
-		if inPlainContent && !inCodeBlock && !d.looksLikeCode(line) && strings.TrimSpace(line) != "" {
+		if inPlainContent && !inCodeBlock && !c.looksLikeCode(line) && strings.TrimSpace(line) != "" {
 			// Check if this line looks like natural language (definitely not code)
 			trimmed := strings.TrimSpace(line)
 			isNaturalLanguage := false
@@ -992,7 +1060,7 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 			if isNaturalLanguage {
 				// If we have collected some content, save it
 				if currentFile != "" && len(currentContent) > 0 {
-					if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
+					if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
 						return filesCreated, err
 					}
 					filesCreated++
@@ -1010,7 +1078,7 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 			// Check if we've exceeded the maximum plain block size
 			if inPlainContent && len(currentContent) > maxPlainBlockSize {
 				// Force save as default filename and reset
-				if err := d.writeFile(defaultFilename, strings.Join(currentContent, "\n")); err != nil {
+				if err := c.writeFile(defaultFilename, strings.Join(currentContent, "\n")); err != nil {
 					return filesCreated, err
 				}
 				filesCreated++
@@ -1023,7 +1091,7 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 
 	// Save final file if exists
 	if currentFile != "" && len(currentContent) > 0 {
-		if err := d.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
+		if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
 			return filesCreated, err
 		}
 		filesCreated++
@@ -1033,7 +1101,7 @@ func (d *CoderDriver) parseAndCreateFiles(content string) (int, error) {
 }
 
 // extractFilename extracts filename from header lines
-func (d *CoderDriver) extractFilename(line string) string {
+func (c *Coder) extractFilename(line string) string {
 	line = strings.TrimSpace(line)
 
 	// Remove markdown headers and prefixes
@@ -1057,7 +1125,7 @@ func (d *CoderDriver) extractFilename(line string) string {
 }
 
 // extractFilenameFromCodeBlock tries to extract filename from code block language
-func (d *CoderDriver) extractFilenameFromCodeBlock(line string) string {
+func (c *Coder) extractFilenameFromCodeBlock(line string) string {
 	line = strings.TrimSpace(line)
 	if strings.HasPrefix(line, "```") {
 		lang := strings.TrimPrefix(line, "```")
@@ -1083,14 +1151,14 @@ func (d *CoderDriver) extractFilenameFromCodeBlock(line string) string {
 }
 
 // writeFile writes content to a file in the workspace
-func (d *CoderDriver) writeFile(filename, content string) error {
+func (c *Coder) writeFile(filename, content string) error {
 	// Clean the filename
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
 		return fmt.Errorf("empty filename")
 	}
 
-	filePath := filepath.Join(d.workDir, filename)
+	filePath := filepath.Join(c.workDir, filename)
 
 	// Create directory if needed
 	dir := filepath.Dir(filePath)
@@ -1103,13 +1171,13 @@ func (d *CoderDriver) writeFile(filename, content string) error {
 		return fmt.Errorf("failed to write file %s: %w", filename, err)
 	}
 
-	d.contextManager.AddMessage("tool", fmt.Sprintf("Created file: %s", filename))
+	c.contextManager.AddMessage("tool", fmt.Sprintf("Created file: %s", filename))
 	return nil
 }
 
 // handleTesting processes the TESTING state
-func (d *CoderDriver) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	d.contextManager.AddMessage("assistant", "Testing phase: running tests")
+func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Testing phase: running tests")
 
 	// Check for deliberate test failures
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
@@ -1133,11 +1201,11 @@ func (d *CoderDriver) handleTesting(ctx context.Context, sm *agent.BaseStateMach
 }
 
 // handleFixing processes the FIXING state
-func (d *CoderDriver) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	d.contextManager.AddMessage("assistant", "Fixing phase: addressing issues")
+func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Fixing phase: addressing issues")
 
 	// Check iteration limit using AUTO_CHECKIN mechanism
-	if d.checkLoopBudget(sm, keyFixingIterations, d.fixingBudget, StateFixing) {
+	if c.checkLoopBudget(sm, keyFixingIterations, c.fixingBudget, StateFixing) {
 		log.Printf("Fixing budget exceeded, triggering AUTO_CHECKIN")
 		return StateQuestion, false, nil
 	}
@@ -1150,8 +1218,8 @@ func (d *CoderDriver) handleFixing(ctx context.Context, sm *agent.BaseStateMachi
 }
 
 // handleCodeReview processes the CODE_REVIEW state using REQUEST→RESULT flow
-func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	d.contextManager.AddMessage("assistant", "Code review phase: requesting architect approval")
+func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Code review phase: requesting architect approval")
 
 	// Check if we already have approval result
 	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
@@ -1173,11 +1241,11 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 	}
 
 	// In mock mode (no LLM client), auto-approve
-	if d.llmClient == nil {
+	if c.llmClient == nil {
 		taskContent, _ := sm.GetStateValue(keyTaskContent)
 		taskStr, _ := taskContent.(string)
 
-		approved := d.simulateApproval(taskStr, proto.ApprovalTypeCode.String())
+		approved := c.simulateApproval(taskStr, proto.ApprovalTypeCode.String())
 		result := &proto.ApprovalResult{
 			Type:       proto.ApprovalTypeCode,
 			Status:     proto.ApprovalStatusApproved,
@@ -1200,7 +1268,7 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 	codeGenerated, _ := sm.GetStateValue("code_generated")
 	codeStr := fmt.Sprintf("Code implementation completed: %v", codeGenerated)
 
-	d.pendingApprovalRequest = &ApprovalRequest{
+	c.pendingApprovalRequest = &ApprovalRequest{
 		ID:      proto.GenerateApprovalID(),
 		Content: codeStr,
 		Reason:  "Code requires architect approval before completion",
@@ -1212,8 +1280,8 @@ func (d *CoderDriver) handleCodeReview(ctx context.Context, sm *agent.BaseStateM
 }
 
 // handleQuestion processes the QUESTION state with origin tracking
-func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	d.contextManager.AddMessage("assistant", "Question phase: awaiting clarification")
+func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Question phase: awaiting clarification")
 
 	// Check if we have an answer
 	if answer, exists := sm.GetStateValue(keyArchitectAnswer); exists {
@@ -1259,7 +1327,7 @@ func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMac
 	}
 
 	// Create question for architect if we don't have one pending
-	if d.pendingQuestion == nil {
+	if c.pendingQuestion == nil {
 		questionContent, _ := sm.GetStateValue(keyQuestionContent)
 		questionReason, _ := sm.GetStateValue(keyQuestionReason)
 		questionOrigin, _ := sm.GetStateValue(keyQuestionOrigin)
@@ -1278,7 +1346,7 @@ func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMac
 			}
 		}
 
-		d.pendingQuestion = &Question{
+		c.pendingQuestion = &Question{
 			ID:      proto.GenerateQuestionID(),
 			Content: content,
 			Reason:  questionReason.(string),
@@ -1292,7 +1360,7 @@ func (d *CoderDriver) handleQuestion(ctx context.Context, sm *agent.BaseStateMac
 
 // Helper methods
 
-func (d *CoderDriver) detectHelpRequest(taskContent string) bool {
+func (c *Coder) detectHelpRequest(taskContent string) bool {
 	lower := strings.ToLower(taskContent)
 	helpKeywords := []string{"help", "question", "clarify", "guidance", "not sure", "unclear"}
 
@@ -1304,7 +1372,7 @@ func (d *CoderDriver) detectHelpRequest(taskContent string) bool {
 	return false
 }
 
-func (d *CoderDriver) simulateApproval(taskContent, reviewType string) bool {
+func (c *Coder) simulateApproval(taskContent, reviewType string) bool {
 	lower := strings.ToLower(taskContent)
 
 	if strings.Contains(lower, "approve") || strings.Contains(lower, "looks good") {
@@ -1318,8 +1386,8 @@ func (d *CoderDriver) simulateApproval(taskContent, reviewType string) bool {
 	return true
 }
 
-func (d *CoderDriver) formatContextAsString() string {
-	messages := d.contextManager.GetMessages()
+func (c *Coder) formatContextAsString() string {
+	messages := c.contextManager.GetMessages()
 	if len(messages) == 0 {
 		return "No previous context"
 	}
@@ -1333,33 +1401,33 @@ func (d *CoderDriver) formatContextAsString() string {
 }
 
 // GetPendingApprovalRequest returns pending approval request if any
-func (d *CoderDriver) GetPendingApprovalRequest() (bool, string, string, string, proto.ApprovalType) {
-	if d.pendingApprovalRequest == nil {
+func (c *Coder) GetPendingApprovalRequest() (bool, string, string, string, proto.ApprovalType) {
+	if c.pendingApprovalRequest == nil {
 		return false, "", "", "", ""
 	}
-	return true, d.pendingApprovalRequest.ID, d.pendingApprovalRequest.Content, d.pendingApprovalRequest.Reason, d.pendingApprovalRequest.Type
+	return true, c.pendingApprovalRequest.ID, c.pendingApprovalRequest.Content, c.pendingApprovalRequest.Reason, c.pendingApprovalRequest.Type
 }
 
 // ClearPendingApprovalRequest clears the pending approval request
-func (d *CoderDriver) ClearPendingApprovalRequest() {
-	d.pendingApprovalRequest = nil
+func (c *Coder) ClearPendingApprovalRequest() {
+	c.pendingApprovalRequest = nil
 }
 
 // GetPendingQuestion returns pending question if any
-func (d *CoderDriver) GetPendingQuestion() (bool, string, string, string) {
-	if d.pendingQuestion == nil {
+func (c *Coder) GetPendingQuestion() (bool, string, string, string) {
+	if c.pendingQuestion == nil {
 		return false, "", "", ""
 	}
-	return true, d.pendingQuestion.ID, d.pendingQuestion.Content, d.pendingQuestion.Reason
+	return true, c.pendingQuestion.ID, c.pendingQuestion.Content, c.pendingQuestion.Reason
 }
 
 // ClearPendingQuestion clears the pending question
-func (d *CoderDriver) ClearPendingQuestion() {
-	d.pendingQuestion = nil
+func (c *Coder) ClearPendingQuestion() {
+	c.pendingQuestion = nil
 }
 
 // ProcessApprovalResult processes approval result from architect
-func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType string) error {
+func (c *Coder) ProcessApprovalResult(approvalStatus string, approvalType string) error {
 	// Convert legacy status to standardized format
 	standardStatus := proto.ConvertLegacyStatus(approvalStatus)
 
@@ -1378,15 +1446,15 @@ func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType 
 	// Store using the correct key based on type
 	switch stdApprovalType {
 	case proto.ApprovalTypePlan:
-		d.BaseStateMachine.SetStateData(keyPlanApprovalResult, result)
+		c.BaseStateMachine.SetStateData(keyPlanApprovalResult, result)
 	case proto.ApprovalTypeCode:
-		d.BaseStateMachine.SetStateData(keyCodeApprovalResult, result)
+		c.BaseStateMachine.SetStateData(keyCodeApprovalResult, result)
 	default:
 		return fmt.Errorf("unknown approval type: %s", approvalType)
 	}
 
 	// Persist state to ensure approval result is saved
-	if err := d.BaseStateMachine.Persist(); err != nil {
+	if err := c.BaseStateMachine.Persist(); err != nil {
 		return fmt.Errorf("failed to persist approval result: %w", err)
 	}
 
@@ -1397,24 +1465,24 @@ func (d *CoderDriver) ProcessApprovalResult(approvalStatus string, approvalType 
 }
 
 // ProcessAnswer processes answer from architect
-func (d *CoderDriver) ProcessAnswer(answer string) error {
-	sm := d.BaseStateMachine
+func (c *Coder) ProcessAnswer(answer string) error {
+	sm := c.BaseStateMachine
 
 	// Check if this is an AUTO_CHECKIN response
 	if reason, exists := sm.GetStateValue(keyQuestionReason); exists {
 		if reasonStr, ok := reason.(string); ok && reasonStr == QuestionReasonAutoCheckin {
-			return d.processAutoCheckinAnswer(answer)
+			return c.processAutoCheckinAnswer(answer)
 		}
 	}
 
 	// Regular answer processing
-	d.BaseStateMachine.SetStateData(keyArchitectAnswer, answer)
+	c.BaseStateMachine.SetStateData(keyArchitectAnswer, answer)
 	return nil
 }
 
 // processAutoCheckinAnswer handles architect replies to AUTO_CHECKIN questions
-func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
-	sm := d.BaseStateMachine
+func (c *Coder) processAutoCheckinAnswer(answer string) error {
+	sm := c.BaseStateMachine
 	answer = strings.TrimSpace(answer)
 
 	// Get the origin state
@@ -1430,14 +1498,14 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 	// Parse the command
 	parts := strings.Fields(strings.ToUpper(answer))
 	if len(parts) == 0 {
-		return d.sendAutoCheckinError(fmt.Sprintf("Empty AUTO_CHECKIN command. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON."))
+		return c.sendAutoCheckinError(fmt.Sprintf("Empty AUTO_CHECKIN command. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON."))
 	}
 
 	// Validate command using typed enum
 	commandStr := parts[0]
 	command, err := ParseAutoAction(commandStr)
 	if err != nil {
-		return d.sendAutoCheckinError(err.Error())
+		return c.sendAutoCheckinError(err.Error())
 	}
 
 	switch command {
@@ -1448,24 +1516,24 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 			if n, err := strconv.Atoi(parts[1]); err == nil {
 				increase = n
 			} else {
-				return d.sendAutoCheckinError(fmt.Sprintf("Invalid number in CONTINUE command: %s", parts[1]))
+				return c.sendAutoCheckinError(fmt.Sprintf("Invalid number in CONTINUE command: %s", parts[1]))
 			}
 		}
 
 		// Increase budget and reset counter
 		switch originStr {
 		case string(StateCoding):
-			d.codingBudget += increase
+			c.codingBudget += increase
 			sm.SetStateData(keyCodingIterations, 0)
 		case string(StateFixing):
-			d.fixingBudget += increase
+			c.fixingBudget += increase
 			sm.SetStateData(keyFixingIterations, 0)
 		default:
 			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
 		}
 
 		// Clear question state and set answer
-		d.clearQuestionState()
+		c.clearQuestionState()
 		sm.SetStateData(keyArchitectAnswer, fmt.Sprintf("Budget increased by %d, counter reset", increase))
 
 	case AutoPivot:
@@ -1480,39 +1548,39 @@ func (d *CoderDriver) processAutoCheckinAnswer(answer string) error {
 		}
 
 		// Clear question state and set answer
-		d.clearQuestionState()
+		c.clearQuestionState()
 		sm.SetStateData(keyArchitectAnswer, "Counter reset, continuing with pivot approach")
 
 	case AutoEscalate:
 		// Set explicit flag for escalation
-		d.clearQuestionState()
+		c.clearQuestionState()
 		sm.SetStateData(keyAutoCheckinAction, AutoEscalate.String())
 		sm.SetStateData(keyArchitectAnswer, "Escalating to code review")
 
 	case AutoAbandon:
 		// Set explicit flag for abandonment
-		d.clearQuestionState()
+		c.clearQuestionState()
 		sm.SetStateData(keyAutoCheckinAction, AutoAbandon.String())
 		sm.SetStateData(keyArchitectAnswer, "Task abandoned")
 
 	default:
-		return d.sendAutoCheckinError(fmt.Sprintf("Unrecognised AUTO_CHECKIN command: %q. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON.", command))
+		return c.sendAutoCheckinError(fmt.Sprintf("Unrecognised AUTO_CHECKIN command: %q. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON.", command))
 	}
 
 	return nil
 }
 
 // sendAutoCheckinError sends an error message back to architect for invalid commands
-func (d *CoderDriver) sendAutoCheckinError(errorMsg string) error {
+func (c *Coder) sendAutoCheckinError(errorMsg string) error {
 	// Stay in QUESTION state by not clearing question state
 	// Preserve original question context and add error message separately
-	d.BaseStateMachine.SetStateData(keyErrorMessage, errorMsg)
+	c.BaseStateMachine.SetStateData(keyErrorMessage, errorMsg)
 	return fmt.Errorf("invalid AUTO_CHECKIN command, staying in QUESTION state")
 }
 
 // clearQuestionState clears AUTO_CHECKIN question state
-func (d *CoderDriver) clearQuestionState() {
-	sm := d.BaseStateMachine
+func (c *Coder) clearQuestionState() {
+	sm := c.BaseStateMachine
 	sm.SetStateData(keyQuestionReason, "")
 	sm.SetStateData(keyQuestionOrigin, "")
 	sm.SetStateData(keyQuestionContent, "")
@@ -1522,8 +1590,8 @@ func (d *CoderDriver) clearQuestionState() {
 }
 
 // GetContextSummary returns a summary of the current context
-func (d *CoderDriver) GetContextSummary() string {
-	messages := d.contextManager.GetMessages()
+func (c *Coder) GetContextSummary() string {
+	messages := c.contextManager.GetMessages()
 	if len(messages) == 0 {
 		return "No context available"
 	}
@@ -1539,24 +1607,40 @@ func (d *CoderDriver) GetContextSummary() string {
 }
 
 // GetStateData returns the current state data
-func (d *CoderDriver) GetStateData() map[string]any {
-	return d.BaseStateMachine.GetStateData()
+func (c *Coder) GetStateData() map[string]any {
+	return c.BaseStateMachine.GetStateData()
 }
 
 // GetAgentType returns the type of the agent
-func (d *CoderDriver) GetAgentType() agent.AgentType {
+func (c *Coder) GetAgentType() agent.AgentType {
 	return agent.AgentTypeCoder
 }
 
+// ValidateState checks if a state is valid for this coder agent
+func (c *Coder) ValidateState(state agent.State) error {
+	return ValidateState(state)
+}
+
+// GetValidStates returns all valid states for this coder agent
+func (c *Coder) GetValidStates() []agent.State {
+	return GetValidStates()
+}
+
 // Run executes the driver's main loop (required for Driver interface)
-func (d *CoderDriver) Run(ctx context.Context) error {
+func (c *Coder) Run(ctx context.Context) error {
+	c.logger.Info("🧑‍💻 Coder starting state machine in %s", c.GetCurrentState())
+
 	// Run the state machine loop using Step()
 	for {
-		done, err := d.Step(ctx)
+		c.logger.Debug("🧑‍💻 Coder processing state: %s", c.GetCurrentState())
+
+		done, err := c.Step(ctx)
 		if err != nil {
+			c.logger.Error("🧑‍💻 Coder state machine error: %v", err)
 			return err
 		}
 		if done {
+			c.logger.Info("🧑‍💻 Coder state machine completed")
 			break
 		}
 	}
@@ -1564,18 +1648,18 @@ func (d *CoderDriver) Run(ctx context.Context) error {
 }
 
 // Step executes a single step (required for Driver interface)
-func (d *CoderDriver) Step(ctx context.Context) (bool, error) {
-	nextState, done, err := d.ProcessState(ctx)
+func (c *Coder) Step(ctx context.Context) (bool, error) {
+	nextState, done, err := c.ProcessState(ctx)
 	if err != nil {
 		return false, err
 	}
 
 	// Transition to next state if different, even when done
-	currentState := d.GetCurrentState()
+	currentState := c.GetCurrentState()
 	if nextState != currentState {
 		// Transition validation is handled by base state machine
 
-		if err := d.TransitionTo(ctx, nextState, nil); err != nil {
+		if err := c.TransitionTo(ctx, nextState, nil); err != nil {
 			return false, fmt.Errorf("failed to transition to state %s: %w", nextState, err)
 		}
 	}
@@ -1584,6 +1668,11 @@ func (d *CoderDriver) Step(ctx context.Context) (bool, error) {
 }
 
 // Shutdown performs cleanup (required for Driver interface)
-func (d *CoderDriver) Shutdown(ctx context.Context) error {
-	return d.Persist()
+func (c *Coder) Shutdown(ctx context.Context) error {
+	return c.Persist()
+}
+
+// Initialize sets up the coder and loads any existing state (required for Driver interface)
+func (c *Coder) Initialize(ctx context.Context) error {
+	return c.BaseStateMachine.Initialize(ctx)
 }

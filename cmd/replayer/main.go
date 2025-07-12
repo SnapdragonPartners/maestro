@@ -24,15 +24,15 @@ type ReplayConfig struct {
 	ExitOnFirst  bool
 }
 
-// TaskResultPair represents a TASK message and its corresponding RESULT
-type TaskResultPair struct {
-	Task   *proto.AgentMsg
+// StoryResultPair represents a STORY message and its corresponding RESULT
+type StoryResultPair struct {
+	Story  *proto.AgentMsg
 	Result *proto.AgentMsg
 }
 
 // ComparisonResult represents the result of comparing two RESULT messages
 type ComparisonResult struct {
-	TaskID      string
+	StoryID     string
 	AgentType   string
 	Matched     bool
 	Differences []string
@@ -56,7 +56,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage:\n")
 		fmt.Fprintf(os.Stderr, "  %s -log <events.jsonl> [options]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Description:\n")
-		fmt.Fprintf(os.Stderr, "  Reads historical event logs, replays TASK messages through agents,\n")
+		fmt.Fprintf(os.Stderr, "  Reads historical event logs, replays STORY messages through agents,\n")
 		fmt.Fprintf(os.Stderr, "  and compares new RESULT messages to historical ones for regression testing.\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  %s -log logs/events-2025-06-10.jsonl\n", os.Args[0])
@@ -129,10 +129,10 @@ func runReplayer(config ReplayConfig) (int, error) {
 
 	for i, pair := range pairs {
 		if config.Verbose {
-			fmt.Printf("🔄 Replaying task %d/%d: %s → %s\n", i+1, len(pairs), pair.Task.FromAgent, pair.Task.ToAgent)
+			fmt.Printf("🔄 Replaying story %d/%d: %s → %s\n", i+1, len(pairs), pair.Story.FromAgent, pair.Story.ToAgent)
 		}
 
-		result := replayTask(config, pair, i+1)
+		result := replayStory(config, pair, i+1)
 		results = append(results, result)
 
 		if !result.Matched {
@@ -175,7 +175,7 @@ func runReplayer(config ReplayConfig) (int, error) {
 	}
 }
 
-func parseEventLog(logFile string) ([]TaskResultPair, error) {
+func parseEventLog(logFile string) ([]StoryResultPair, error) {
 	// Read messages from the event log
 	messages, err := eventlog.ReadMessages(logFile)
 	if err != nil {
@@ -183,24 +183,24 @@ func parseEventLog(logFile string) ([]TaskResultPair, error) {
 	}
 
 	// Build a map of TASK messages and their corresponding RESULT messages
-	var pairs []TaskResultPair
-	taskMap := make(map[string]*proto.AgentMsg)
+	var pairs []StoryResultPair
+	storyMap := make(map[string]*proto.AgentMsg)
 
 	for _, msg := range messages {
 		switch msg.Type {
-		case proto.MsgTypeTASK:
-			// Store TASK messages by their ID
-			taskMap[msg.ID] = msg
+		case proto.MsgTypeSTORY:
+			// Store STORY messages by their ID
+			storyMap[msg.ID] = msg
 
 		case proto.MsgTypeRESULT:
-			// Find the corresponding TASK for this RESULT
+			// Find the corresponding STORY for this RESULT
 			if msg.ParentMsgID != "" {
-				if task, exists := taskMap[msg.ParentMsgID]; exists {
+				if story, exists := storyMap[msg.ParentMsgID]; exists {
 					// Only include pairs where we can replay the agent
-					agentType := determineAgentType(task.ToAgent)
+					agentType := determineAgentType(story.ToAgent)
 					if agentType == "architect" || agentType == "claude" {
-						pairs = append(pairs, TaskResultPair{
-							Task:   task,
+						pairs = append(pairs, StoryResultPair{
+							Story:  story,
 							Result: msg,
 						})
 					}
@@ -223,24 +223,24 @@ func determineAgentType(agentID string) string {
 	return "unknown"
 }
 
-func replayTask(config ReplayConfig, pair TaskResultPair, taskNum int) ComparisonResult {
-	agentType := determineAgentType(pair.Task.ToAgent)
+func replayStory(config ReplayConfig, pair StoryResultPair, storyNum int) ComparisonResult {
+	agentType := determineAgentType(pair.Story.ToAgent)
 
 	result := ComparisonResult{
-		TaskID:    pair.Task.ID,
+		StoryID:   pair.Story.ID,
 		AgentType: agentType,
 		Matched:   false,
 	}
 
-	// Create input file for the task
-	inputFile := filepath.Join(config.OutputDir, fmt.Sprintf("task_%d_input.json", taskNum))
-	taskJSON, err := json.MarshalIndent(pair.Task, "", "  ")
+	// Create input file for the story
+	inputFile := filepath.Join(config.OutputDir, fmt.Sprintf("story_%d_input.json", storyNum))
+	storyJSON, err := json.MarshalIndent(pair.Story, "", "  ")
 	if err != nil {
-		result.Error = fmt.Errorf("failed to marshal task: %w", err)
+		result.Error = fmt.Errorf("failed to marshal story: %w", err)
 		return result
 	}
 
-	err = os.WriteFile(inputFile, taskJSON, 0644)
+	err = os.WriteFile(inputFile, storyJSON, 0644)
 	if err != nil {
 		result.Error = fmt.Errorf("failed to write input file: %w", err)
 		return result
@@ -248,11 +248,11 @@ func replayTask(config ReplayConfig, pair TaskResultPair, taskNum int) Compariso
 
 	// Prepare agentctl command
 	var cmd *exec.Cmd
-	outputFile := filepath.Join(config.OutputDir, fmt.Sprintf("task_%d_output.json", taskNum))
+	outputFile := filepath.Join(config.OutputDir, fmt.Sprintf("story_%d_output.json", storyNum))
 
 	if agentType == "architect" {
 		// For architect, we need to create a story file instead of using JSON input
-		storyFile, err := createStoryFileFromTask(config.OutputDir, pair.Task, taskNum)
+		storyFile, err := createStoryFileFromStory(config.OutputDir, pair.Story, storyNum)
 		if err != nil {
 			result.Error = fmt.Errorf("failed to create story file: %w", err)
 			return result
@@ -293,12 +293,12 @@ func replayTask(config ReplayConfig, pair TaskResultPair, taskNum int) Compariso
 	return result
 }
 
-func createStoryFileFromTask(outputDir string, task *proto.AgentMsg, taskNum int) (string, error) {
-	// Extract story content from the task
-	storyID, _ := task.GetPayload("story_id")
-	content, _ := task.GetPayload("content")
+func createStoryFileFromStory(outputDir string, story *proto.AgentMsg, storyNum int) (string, error) {
+	// Extract story content from the story message
+	storyID, _ := story.GetPayload("story_id")
+	content, _ := story.GetPayload("content")
 
-	storyContent := fmt.Sprintf("# Story Replay %d\n\n", taskNum)
+	storyContent := fmt.Sprintf("# Story Replay %d\n\n", storyNum)
 	if content != nil {
 		storyContent += fmt.Sprintf("%s\n", content)
 	} else {
@@ -306,7 +306,7 @@ func createStoryFileFromTask(outputDir string, task *proto.AgentMsg, taskNum int
 	}
 
 	// Create story file
-	storyFile := filepath.Join(outputDir, fmt.Sprintf("story_%d.md", taskNum))
+	storyFile := filepath.Join(outputDir, fmt.Sprintf("story_%d.md", storyNum))
 	if storyID != nil {
 		storyFile = filepath.Join(outputDir, fmt.Sprintf("%s.md", storyID))
 	}
@@ -444,7 +444,7 @@ func generateSummaryReport(config ReplayConfig, results []ComparisonResult) erro
 	fmt.Fprintf(writer, "=================\n\n")
 
 	for i, result := range results {
-		fmt.Fprintf(writer, "Task %d: %s (%s)\n", i+1, result.TaskID, result.AgentType)
+		fmt.Fprintf(writer, "Story %d: %s (%s)\n", i+1, result.StoryID, result.AgentType)
 
 		if result.Error != nil {
 			fmt.Fprintf(writer, "  🚨 ERROR: %v\n", result.Error)

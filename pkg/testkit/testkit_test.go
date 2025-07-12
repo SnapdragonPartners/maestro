@@ -142,20 +142,20 @@ func TestMockOpenAIServer(t *testing.T) {
 }
 
 func TestMessageHelpers(t *testing.T) {
-	// Test task message creation
-	taskMsg := NewTaskMessage("architect", "claude").
+	// Test story message creation
+	storyMsg := NewStoryMessage("architect", "claude").
 		WithContent("Create a health endpoint").
 		WithStoryID("001").
 		WithRequirements([]string{"GET /health", "JSON response"}).
 		WithMetadata("story_type", "health").
 		Build()
 
-	AssertMessageType(t, taskMsg, proto.MsgTypeTASK)
-	AssertMessageFromAgent(t, taskMsg, "architect")
-	AssertMessageToAgent(t, taskMsg, "claude")
-	AssertPayloadString(t, taskMsg, "content", "Create a health endpoint")
-	AssertPayloadString(t, taskMsg, "story_id", "001")
-	AssertMetadataValue(t, taskMsg, "story_type", "health")
+	AssertMessageType(t, storyMsg, proto.MsgTypeSTORY)
+	AssertMessageFromAgent(t, storyMsg, "architect")
+	AssertMessageToAgent(t, storyMsg, "claude")
+	AssertPayloadString(t, storyMsg, "content", "Create a health endpoint")
+	AssertPayloadString(t, storyMsg, "story_id", "001")
+	AssertMetadataValue(t, storyMsg, "story_type", "health")
 
 	// Test result message creation
 	resultMsg := NewResultMessage("claude", "architect").
@@ -181,11 +181,11 @@ func TestMessageHelpers(t *testing.T) {
 }
 
 func TestPredefinedMessages(t *testing.T) {
-	// Test health endpoint task
-	healthTask := HealthEndpointTask("architect", "claude")
-	AssertMessageType(t, healthTask, proto.MsgTypeTASK)
-	AssertPayloadContains(t, healthTask, "content", "health")
-	AssertPayloadExists(t, healthTask, "requirements")
+	// Test health endpoint story
+	healthStory := HealthEndpointTask("architect", "claude")
+	AssertMessageType(t, healthStory, proto.MsgTypeSTORY)
+	AssertPayloadContains(t, healthStory, "content", "health")
+	AssertPayloadExists(t, healthStory, "requirements")
 
 	// Test successful code result
 	implementation := `package main
@@ -254,14 +254,14 @@ func main() {
 
 func TestMessageFlow(t *testing.T) {
 	// Create a sequence of messages
-	task := HealthEndpointTask("architect", "claude")
+	story := HealthEndpointTask("architect", "claude")
 	result := SuccessfulCodeResult("claude", "architect", "mock implementation")
 	shutdown := NewShutdownMessage("orchestrator", "claude").Build()
 	ack := ShutdownAcknowledgment("claude", "orchestrator")
 
-	messages := []*proto.AgentMsg{task, result, shutdown, ack}
+	messages := []*proto.AgentMsg{story, result, shutdown, ack}
 	expectedFlow := []proto.MsgType{
-		proto.MsgTypeTASK,
+		proto.MsgTypeSTORY,
 		proto.MsgTypeRESULT,
 		proto.MsgTypeSHUTDOWN,
 		proto.MsgTypeRESULT,

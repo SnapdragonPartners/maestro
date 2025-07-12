@@ -3,7 +3,6 @@ package dispatch
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -16,10 +15,31 @@ import (
 	"orchestrator/pkg/proto"
 )
 
+// Severity represents the severity level of agent errors
+type Severity int
+
+const (
+	Warn Severity = iota
+	Fatal
+)
+
+// AgentError represents an error reported by an agent
+type AgentError struct {
+	ID  string
+	Err error
+	Sev Severity
+}
+
+// AttachChannels removed - channels are now set directly via ChannelReceiver interface
+
 type Agent interface {
-	ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error)
 	GetID() string
 	Shutdown(ctx context.Context) error
+}
+
+// ChannelReceiver is an optional interface for agents that need direct channel access
+type ChannelReceiver interface {
+	SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
 }
 
 type Dispatcher struct {
@@ -34,19 +54,24 @@ type Dispatcher struct {
 	mu          sync.RWMutex
 	running     bool
 
-	// Pull-based queues
-	architectRequestQueue []*proto.AgentMsg // Questions/requests for architect
-	coderQueue            []*proto.AgentMsg // Answers/feedback for coders
-	sharedWorkQueue       []*proto.AgentMsg // Ready stories for any coder
-	queueMutex      sync.RWMutex      // Protects all queues
+	// Phase 1: Channel-based queues
+	storyCh     chan *proto.AgentMsg // Ready stories for any coder (replaces sharedWorkQueue)
+	questionsCh chan *proto.AgentMsg // Questions/requests for architect (replaces architectRequestQueue)
+
+	// Phase 2: Per-agent reply channels
+	replyChannels map[string]chan *proto.AgentMsg // Per-agent reply channels for ANSWER/RESULT messages
 
 	// Channel-based notifications for architect
-	idleAgentCh    chan string          // Notifies architect when agents become idle
 	specCh         chan *proto.AgentMsg // Delivers spec messages to architect
 	architectID    string               // ID of the architect to notify
 	notificationMu sync.RWMutex         // Protects notification channels
-	busyAgents     map[string]bool // Track which agents are processing work
-	busyMu         sync.RWMutex    // Protects busy agents map
+
+	// S-5: Metrics monitoring
+	highUtilizationStart time.Time    // Track when high utilization started
+	highUtilizationMu    sync.RWMutex // Protects high utilization tracking
+
+	// Supervisor pattern for error handling
+	errCh chan AgentError // Channel for agent error reporting
 }
 
 type DispatchResult struct {
@@ -56,47 +81,120 @@ type DispatchResult struct {
 
 func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *eventlog.Writer) (*Dispatcher, error) {
 	return &Dispatcher{
-		agents:      make(map[string]Agent),
-		rateLimiter: rateLimiter,
-		eventLog:    eventLog,
-		logger:      logx.NewLogger("dispatcher"),
-		config:      cfg,
-		inputChan:   make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
-		shutdown:    make(chan struct{}),
-		running:     false,
-		idleAgentCh: make(chan string, 10),          // Buffered channel for idle agent notifications
-		specCh:      make(chan *proto.AgentMsg, 10), // Buffered channel for spec messages
-		busyAgents:  make(map[string]bool),          // Initialize busy agents map
+		agents:        make(map[string]Agent),
+		rateLimiter:   rateLimiter,
+		eventLog:      eventLog,
+		logger:        logx.NewLogger("dispatcher"),
+		config:        cfg,
+		inputChan:     make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
+		shutdown:      make(chan struct{}),
+		running:       false,
+		specCh:        make(chan *proto.AgentMsg, 10),                                       // Buffered channel for spec messages
+		storyCh:       make(chan *proto.AgentMsg, cfg.StoryChannelFactor*cfg.CountCoders()), // S-5: Buffer size = factor × numCoders
+		questionsCh:   make(chan *proto.AgentMsg, cfg.QuestionsChannelSize),                 // Buffer size from config
+		replyChannels: make(map[string]chan *proto.AgentMsg),                                // Per-agent reply channels
+		errCh:         make(chan AgentError, 10),                                            // Buffered channel for error reporting
 	}, nil
 }
 
+// RegisterAgent is deprecated - use Attach() instead
 func (d *Dispatcher) RegisterAgent(agent Agent) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	agentID := agent.GetID()
-	if _, exists := d.agents[agentID]; exists {
-		return fmt.Errorf("agent %s already registered", agentID)
-	}
-
-	d.agents[agentID] = agent
-	d.logger.Info("Registered agent: %s", agentID)
-
+	d.logger.Warn("RegisterAgent is deprecated, use Attach() instead for agent %s", agent.GetID())
+	d.Attach(agent)
 	return nil
 }
 
-func (d *Dispatcher) UnregisterAgent(agentID string) error {
+// Attach provides channels for agent communication based on agent type
+func (d *Dispatcher) Attach(ag Agent) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if _, exists := d.agents[agentID]; !exists {
-		return fmt.Errorf("agent %s not found", agentID)
+	agentID := ag.GetID()
+
+	// Store agent in map
+	d.agents[agentID] = ag
+
+	// Create reply channel for this agent (buffer size = 1)
+	replyCh := make(chan *proto.AgentMsg, 1)
+	d.replyChannels[agentID] = replyCh
+
+	// Set up channels for agents that implement ChannelReceiver interface
+	if channelReceiver, ok := ag.(ChannelReceiver); ok {
+		// Determine agent type to provide appropriate channels
+		if agentDriver, ok := ag.(agent.Driver); ok {
+			switch agentDriver.GetAgentType() {
+			case agent.AgentTypeArchitect:
+				d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
+				channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
+				return
+			case agent.AgentTypeCoder:
+				d.logger.Info("Attached coder agent: %s with direct channel setup", agentID)
+				// Coders receive story messages via storyCh
+				channelReceiver.SetChannels(d.storyCh, nil, replyCh)
+				return
+			}
+		}
 	}
 
-	delete(d.agents, agentID)
-	d.logger.Info("Unregistered agent: %s", agentID)
+	// For other agents, log the attachment
+	if agentDriver, ok := ag.(agent.Driver); ok {
+		switch agentDriver.GetAgentType() {
+		case agent.AgentTypeArchitect:
+			d.logger.Info("Attached architect agent: %s", agentID)
+		case agent.AgentTypeCoder:
+			d.logger.Info("Attached coder agent: %s", agentID)
+		}
+	} else {
+		d.logger.Warn("Agent %s does not implement Driver interface", agentID)
+	}
+}
 
+// detach removes an agent and cleans up its channels
+func (d *Dispatcher) detach(agentID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Remove from agents map
+	delete(d.agents, agentID)
+
+	// Close and remove reply channel
+	if replyCh, exists := d.replyChannels[agentID]; exists {
+		close(replyCh)
+		delete(d.replyChannels, agentID)
+		d.logger.Info("Detached agent: %s and closed reply channel", agentID)
+	}
+}
+
+// UnregisterAgent is deprecated - agents should use defer d.detach() after Attach()
+func (d *Dispatcher) UnregisterAgent(agentID string) error {
+	d.logger.Warn("UnregisterAgent is deprecated, use defer detach() instead for agent %s", agentID)
+	d.detach(agentID)
 	return nil
+}
+
+// routeToReplyCh routes ANSWER/RESULT messages to the appropriate coder's reply channel
+func (d *Dispatcher) routeToReplyCh(msg *proto.AgentMsg, msgTypeStr string) {
+	targetAgent := msg.ToAgent
+
+	d.logger.Info("🔄 Routing %s %s to agent %s reply channel", msgTypeStr, msg.ID, targetAgent)
+
+	// Find the reply channel for this agent
+	d.mu.RLock()
+	replyCh, exists := d.replyChannels[targetAgent]
+	d.mu.RUnlock()
+
+	if !exists {
+		d.logger.Warn("❌ No reply channel found for agent %s (message %s dropped)", targetAgent, msg.ID)
+		return
+	}
+
+	// Send to reply channel (non-blocking with buffer size 1)
+	select {
+	case replyCh <- msg:
+		d.logger.Info("✅ %s %s delivered to agent %s reply channel", msgTypeStr, msg.ID, targetAgent)
+	default:
+		d.logger.Warn("❌ Reply channel full for agent %s, dropping %s %s", targetAgent, msgTypeStr, msg.ID)
+	}
 }
 
 func (d *Dispatcher) Start(ctx context.Context) error {
@@ -113,6 +211,16 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	// Start message processing worker
 	d.wg.Add(1)
 	go d.messageProcessor(ctx)
+
+	// Channel readers removed - stories are delivered directly via Attach() channels
+
+	// S-5: Start metrics monitoring worker
+	d.wg.Add(1)
+	go d.metricsMonitor(ctx)
+
+	// Start supervisor goroutine for error handling
+	d.wg.Add(1)
+	go d.supervisor(ctx)
 
 	return nil
 }
@@ -131,8 +239,8 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	// Signal shutdown
 	close(d.shutdown)
 
-	// Close idle agent channel for graceful shutdown
-	d.CloseIdleChannel()
+	// Close all channels for graceful shutdown
+	d.closeAllChannels()
 	// Wait for workers to finish
 	done := make(chan struct{})
 	go func() {
@@ -188,6 +296,121 @@ func (d *Dispatcher) messageProcessor(ctx context.Context) {
 	}
 }
 
+// metricsMonitor checks storyCh utilization and logs warnings for sustained high utilization
+func (d *Dispatcher) metricsMonitor(ctx context.Context) {
+	defer d.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			d.logger.Info("Metrics monitor stopped by context")
+			return
+		case <-d.shutdown:
+			d.logger.Info("Metrics monitor stopped by shutdown signal")
+			return
+		case <-ticker.C:
+			// Check storyCh utilization
+			if cap(d.storyCh) == 0 {
+				continue // Avoid division by zero
+			}
+
+			utilization := float64(len(d.storyCh)) / float64(cap(d.storyCh))
+
+			d.highUtilizationMu.Lock()
+			if utilization > 0.8 {
+				// High utilization detected
+				if d.highUtilizationStart.IsZero() {
+					// First time detecting high utilization
+					d.highUtilizationStart = time.Now()
+					d.logger.Debug("High storyCh utilization detected: %.2f%% - monitoring started", utilization*100)
+				} else {
+					// Check if sustained for more than 30 seconds
+					duration := time.Since(d.highUtilizationStart)
+					if duration > 30*time.Second {
+						d.logger.Warn("⚠️  SUSTAINED HIGH storyCh utilization: %.2f%% for %v (capacity: %d)", utilization*100, duration, cap(d.storyCh))
+					}
+				}
+			} else {
+				// Normal utilization, reset tracking
+				if !d.highUtilizationStart.IsZero() {
+					d.logger.Debug("storyCh utilization back to normal: %.2f%%", utilization*100)
+					d.highUtilizationStart = time.Time{}
+				}
+			}
+			d.highUtilizationMu.Unlock()
+		}
+	}
+}
+
+// supervisor handles agent error reporting and fatal error cleanup
+func (d *Dispatcher) supervisor(ctx context.Context) {
+	defer d.wg.Done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			d.logger.Info("Supervisor stopped by context")
+			return
+		case <-d.shutdown:
+			d.logger.Info("Supervisor stopped by shutdown signal")
+			return
+		case agentErr := <-d.errCh:
+			// Log every error
+			d.logger.Warn("Agent error reported - ID: %s, Error: %s, Severity: %v",
+				agentErr.ID, agentErr.Err.Error(), agentErr.Sev)
+
+			// Handle fatal errors by detaching the agent
+			if agentErr.Sev == Fatal {
+				d.logger.Error("Fatal error from agent %s, detaching", agentErr.ID)
+				d.detach(agentErr.ID)
+
+				// Check for zero-agent conditions
+				d.checkZeroAgentCondition()
+			}
+		}
+	}
+}
+
+// checkZeroAgentCondition warns if there are no agents of a certain type
+func (d *Dispatcher) checkZeroAgentCondition() {
+	d.mu.RLock()
+	architectCount := 0
+	coderCount := 0
+
+	for _, ag := range d.agents {
+		if agentDriver, ok := ag.(agent.Driver); ok {
+			switch agentDriver.GetAgentType() {
+			case agent.AgentTypeArchitect:
+				architectCount++
+			case agent.AgentTypeCoder:
+				coderCount++
+			}
+		}
+	}
+	d.mu.RUnlock()
+
+	if architectCount == 0 {
+		d.logger.Warn("Zero-agent condition: no architect agents remaining")
+	}
+	if coderCount == 0 {
+		d.logger.Warn("Zero-agent condition: no coder agents remaining")
+	}
+}
+
+// ReportError allows agents to report errors to the supervisor
+func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
+	select {
+	case d.errCh <- AgentError{ID: agentID, Err: err, Sev: severity}:
+		// Error reported successfully
+	default:
+		// Error channel full, log directly
+		d.logger.Error("Error channel full, dropping error report from agent %s: %v", agentID, err)
+	}
+}
+
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
@@ -205,14 +428,14 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	}
 
 	// Route messages to appropriate queues based on type
-	d.queueMutex.Lock()
-	defer d.queueMutex.Unlock()
-
 	switch msg.Type {
-	case proto.MsgTypeTASK:
-		// TASK messages go to shared work queue for coders to pull
-		d.sharedWorkQueue = append(d.sharedWorkQueue, msg)
-		d.logger.Info("🔄 Queued TASK %s to shared work queue (queue size: %d)", msg.ID, len(d.sharedWorkQueue))
+	case proto.MsgTypeSTORY:
+		// STORY messages go to storyCh for coders to receive
+		d.logger.Info("🔄 Sending STORY %s to storyCh", msg.ID)
+
+		// Send to storyCh (blocking send - buffer should prevent blocking)
+		d.storyCh <- msg
+		d.logger.Info("✅ STORY %s delivered to storyCh", msg.ID)
 
 	case proto.MsgTypeSPEC:
 		// SPEC messages go to architect via spec channel
@@ -225,31 +448,32 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		}
 
 	case proto.MsgTypeQUESTION:
-		// QUESTION messages go to architect request queue for architect to pull
-		d.architectRequestQueue = append(d.architectRequestQueue, msg)
-		d.logger.Debug("Queued QUESTION %s to architect request queue (queue size: %d)", msg.ID, len(d.architectRequestQueue))
+		// QUESTION messages go to questionsCh for architect to receive
+		d.logger.Info("🔄 Sending QUESTION %s to questionsCh", msg.ID)
+
+		// Send to questionsCh (blocking)
+		d.questionsCh <- msg
+		d.logger.Info("✅ QUESTION %s delivered to questionsCh", msg.ID)
 
 	case proto.MsgTypeREQUEST:
-		// REQUEST messages (approval requests) go to architect request queue for architect to pull
-		d.architectRequestQueue = append(d.architectRequestQueue, msg)
-		d.logger.Debug("Queued REQUEST %s to architect request queue (queue size: %d)", msg.ID, len(d.architectRequestQueue))
+		// REQUEST messages go to questionsCh for architect to receive
+		d.logger.Info("🔄 Sending REQUEST %s to questionsCh", msg.ID)
+
+		// Send to questionsCh (blocking)
+		d.questionsCh <- msg
+		d.logger.Info("✅ REQUEST %s delivered to questionsCh", msg.ID)
 
 	case proto.MsgTypeRESULT:
-		// Check for idle agent notifications before queuing
-		d.NotifyArchitectOnResult(msg)
-		// RESULT messages go to coder queue for specific coder to pull
-		d.coderQueue = append(d.coderQueue, msg)
-		d.logger.Debug("Queued RESULT %s to coder queue (queue size: %d)", msg.ID, len(d.coderQueue))
+		// RESULT messages go to specific coder's reply channel
+		d.routeToReplyCh(msg, "RESULT")
 
 	case proto.MsgTypeANSWER:
-		// ANSWER messages (information responses) go to coder queue for specific coder to pull
-		d.coderQueue = append(d.coderQueue, msg)
-		d.logger.Debug("Queued ANSWER %s to coder queue (queue size: %d)", msg.ID, len(d.coderQueue))
+		// ANSWER messages go to specific coder's reply channel
+		d.routeToReplyCh(msg, "ANSWER")
 
 	default:
 		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately
 		d.logger.Info("Processing message type %s immediately (not queued)", msg.Type)
-		d.queueMutex.Unlock() // Unlock early for immediate processing
 
 		// Find target agent
 		d.mu.RLock()
@@ -261,7 +485,7 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			return
 		}
 
-		// Process immediately for non-TASK messages
+		// Process immediately for non-STORY messages
 		response := d.processWithRetry(ctx, msg, targetAgent)
 
 		// If there's a response, route it to appropriate queue
@@ -270,14 +494,11 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		} else if response.Error != nil {
 			d.sendErrorResponse(msg, response.Error)
 		}
-
-		d.queueMutex.Lock() // Re-lock for defer unlock
 	}
 }
 
 func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, agent Agent) *DispatchResult {
 	maxRetries := d.config.MaxRetryAttempts
-	backoffMultiplier := d.config.RetryBackoffMultiplier
 
 	var lastErr error
 
@@ -298,36 +519,15 @@ func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, 
 		retryMsg := msg.Clone()
 		retryMsg.RetryCount = attempt
 
-		// Process message
+		// Process message - NOTE: ProcessMessage removed from Agent interface
+		// Agents now receive messages via channels exclusively
 		d.logger.Debug("Attempt %d/%d for message %s", attempt+1, maxRetries+1, msg.ID)
-
-		response, err := agent.ProcessMessage(ctx, retryMsg)
 
 		// Release agent slot after processing attempt
 		d.rateLimiter.ReleaseAgent(modelName)
 
-		if err == nil {
-			// Success
-			d.logger.Debug("Message %s processed successfully on attempt %d", msg.ID, attempt+1)
-
-			return &DispatchResult{Message: response}
-		}
-
-		lastErr = err
-		d.logger.Warn("Attempt %d failed for message %s: %v", attempt+1, msg.ID, err)
-
-		// Don't wait after the last attempt
-		if attempt < maxRetries {
-			backoffDuration := time.Duration(math.Pow(backoffMultiplier, float64(attempt))) * time.Second
-			d.logger.Debug("Waiting %v before retry", backoffDuration)
-
-			select {
-			case <-ctx.Done():
-				return &DispatchResult{Error: ctx.Err()}
-			case <-time.After(backoffDuration):
-				// Continue to next attempt
-			}
-		}
+		// No direct message processing - messages flow through channels
+		return &DispatchResult{Message: nil}
 	}
 
 	d.logger.Error("All retry attempts failed for message %s: %v", msg.ID, lastErr)
@@ -361,8 +561,6 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 		d.logger.Error("Failed to log response message: %v", err)
 	}
 
-	// Check for architect notifications before routing
-	d.NotifyArchitectOnResult(response)
 	// Resolve logical agent name to actual agent ID
 	resolvedToAgent := d.resolveAgentName(response.ToAgent)
 	if resolvedToAgent != response.ToAgent {
@@ -370,29 +568,32 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 		response.ToAgent = resolvedToAgent
 	}
 
-	d.queueMutex.Lock()
-	defer d.queueMutex.Unlock()
-
 	switch response.Type {
 	case proto.MsgTypeQUESTION:
-		// Questions go to architect queue
-		d.architectRequestQueue = append(d.architectRequestQueue, response)
-		d.logger.Debug("Queued QUESTION %s for architect (queue size: %d)", response.ID, len(d.architectRequestQueue))
+		// Questions go to questionsCh
+		select {
+		case d.questionsCh <- response:
+			d.logger.Debug("Queued QUESTION %s for architect", response.ID)
+		default:
+			d.logger.Warn("Questions channel full, dropping QUESTION %s", response.ID)
+		}
 
 	case proto.MsgTypeREQUEST:
-		// Approval requests go to architect queue
-		d.architectRequestQueue = append(d.architectRequestQueue, response)
-		d.logger.Debug("Queued REQUEST %s for architect (queue size: %d)", response.ID, len(d.architectRequestQueue))
+		// Approval requests go to questionsCh
+		select {
+		case d.questionsCh <- response:
+			d.logger.Debug("Queued REQUEST %s for architect", response.ID)
+		default:
+			d.logger.Warn("Questions channel full, dropping REQUEST %s", response.ID)
+		}
 
 	case proto.MsgTypeRESULT:
-		// Approval responses go to coder queue
-		d.coderQueue = append(d.coderQueue, response)
-		d.logger.Debug("Queued RESULT %s for coders (queue size: %d)", response.ID, len(d.coderQueue))
+		// Approval responses go to coder reply channel
+		d.routeToReplyCh(response, "RESULT")
 
 	case proto.MsgTypeANSWER:
-		// Information responses go to coder queue
-		d.coderQueue = append(d.coderQueue, response)
-		d.logger.Debug("Queued ANSWER %s for coders (queue size: %d)", response.ID, len(d.coderQueue))
+		// Information responses go to coder reply channel
+		d.routeToReplyCh(response, "ANSWER")
 
 	default:
 		// Other types logged only
@@ -412,23 +613,6 @@ func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) {
 	if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil {
 		d.logger.Error("Failed to log error message: %v", logErr)
 	}
-}
-
-// isArchitectAgent checks if an agent ID represents an architect agent
-func (d *Dispatcher) isArchitectAgent(agentID string) bool {
-	// Check if this agent is an architect type
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	
-	// Look up agent info to check type
-	for _, agentWithModel := range d.config.GetAllAgents() {
-		if agentWithModel.Agent.GetLogID(agentWithModel.ModelName) == agentID {
-			return agentWithModel.Agent.Type == "architect"
-		}
-	}
-	
-	// Fallback: check if ID contains architect indicators
-	return strings.Contains(strings.ToLower(agentID), "architect") || strings.Contains(strings.ToLower(agentID), "o3")
 }
 
 // resolveAgentName resolves logical agent names to actual agent IDs
@@ -480,185 +664,104 @@ func (d *Dispatcher) GetStats() map[string]any {
 		agentList = append(agentList, agentID)
 	}
 
-	d.queueMutex.RLock()
-	defer d.queueMutex.RUnlock()
+	storyChUtilization := float64(len(d.storyCh)) / float64(cap(d.storyCh))
+
+	// S-5: WARN if storyCh utilization > 0.8 (this should be logged separately for monitoring)
+	if storyChUtilization > 0.8 {
+		d.logger.Warn("⚠️  storyCh utilization high: %.2f%% (%d/%d)", storyChUtilization*100, len(d.storyCh), cap(d.storyCh))
+	}
 
 	return map[string]any{
-		"running":                d.running,
-		"agents":                 agentList,
-		"queue_length":           len(d.inputChan),
-		"queue_capacity":         cap(d.inputChan),
-		"architect_request_queue_size": len(d.architectRequestQueue),
-		"coder_queue_size":       len(d.coderQueue),
-		"shared_work_queue_size": len(d.sharedWorkQueue),
+		"running":                      d.running,
+		"agents":                       agentList,
+		"queue_length":                 len(d.inputChan),
+		"queue_capacity":               cap(d.inputChan),
+		"architect_request_queue_size": 0, // Legacy field, now always 0
+		"story_ch_length":              len(d.storyCh),
+		"story_ch_capacity":            cap(d.storyCh),
+		"story_ch_utilization":         storyChUtilization,
+		"questions_ch_length":          len(d.questionsCh),
+		"questions_ch_capacity":        cap(d.questionsCh),
 	}
 }
 
-// PullArchitectWork retrieves the next question for the architect to process
-func (d *Dispatcher) PullArchitectWork() *proto.AgentMsg {
-	d.queueMutex.Lock()
-	defer d.queueMutex.Unlock()
-
-	if len(d.architectRequestQueue) == 0 {
-		return nil
-	}
-
-	// Get first message from architect request queue (FIFO)
-	msg := d.architectRequestQueue[0]
-	d.architectRequestQueue = d.architectRequestQueue[1:]
-
-	d.logger.Debug("Pulled %s %s from architect request queue (remaining: %d)", msg.Type, msg.ID, len(d.architectRequestQueue))
-	return msg
+// GetQuestionsCh returns the questions channel for architect to receive from
+func (d *Dispatcher) GetQuestionsCh() <-chan *proto.AgentMsg {
+	return d.questionsCh
 }
 
-// PullCoderFeedback retrieves the next answer/feedback for a specific coder
-func (d *Dispatcher) PullCoderFeedback(agentID string) *proto.AgentMsg {
-	d.queueMutex.Lock()
-	defer d.queueMutex.Unlock()
+// GetReplyCh returns the reply channel for a specific coder agent
+func (d *Dispatcher) GetReplyCh(agentID string) <-chan *proto.AgentMsg {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
-	// Debug: Log queue contents
-	logx.DebugToFile(context.Background(), "dispatch", "queue_debug.log", "PullCoderFeedback for %s, queue size: %d", agentID, len(d.coderQueue))
-	for _, msg := range d.coderQueue {
-		d.logger.Debug("Queue msg: %s -> %s (type: %s)", msg.FromAgent, msg.ToAgent, msg.Type)
+	if replyCh, exists := d.replyChannels[agentID]; exists {
+		return replyCh
 	}
-
-	// Look for messages targeted to this specific coder
-	for i, msg := range d.coderQueue {
-		if msg.ToAgent == agentID {
-			// Remove message from queue
-			d.coderQueue = append(d.coderQueue[:i], d.coderQueue[i+1:]...)
-			d.logger.Debug("Pulled RESULT %s for coder %s (remaining: %d)", msg.ID, agentID, len(d.coderQueue))
-			return msg
-		}
-	}
-
 	return nil
 }
 
-// PullSharedWork retrieves the next available task from the shared work queue
-func (d *Dispatcher) PullSharedWork() *proto.AgentMsg {
-	d.queueMutex.Lock()
-	defer d.queueMutex.Unlock()
-
-	// Debug: Log queue state
-	logx.DebugToFile(context.Background(), "dispatch", "pull_shared_debug.log", "PullSharedWork called, queue size: %d", len(d.sharedWorkQueue))
-	if len(d.sharedWorkQueue) > 0 {
-		msg := d.sharedWorkQueue[0]
-		d.logger.Debug("Available task: %s -> %s (type: %s)", msg.FromAgent, msg.ToAgent, msg.Type)
-	}
-
-	if len(d.sharedWorkQueue) == 0 {
-		return nil
-	}
-
-	// Get first message from shared work queue (FIFO)
-	msg := d.sharedWorkQueue[0]
-	d.sharedWorkQueue = d.sharedWorkQueue[1:]
-
-	// Mark agent as busy when pulling work
-	d.busyMu.Lock()
-	d.busyAgents[msg.ToAgent] = true
-	d.busyMu.Unlock()
-
-	d.logger.Debug("Pulled TASK %s from shared work queue (remaining: %d), marked agent %s as busy", msg.ID, len(d.sharedWorkQueue), msg.ToAgent)
-	return msg
+// GetStoryCh returns the story channel for coders to receive from
+func (d *Dispatcher) GetStoryCh() <-chan *proto.AgentMsg {
+	return d.storyCh
 }
 
-
-// ArchitectChannels contains all channels for architect notifications
+// ArchitectChannels contains the channels returned to architects
 type ArchitectChannels struct {
-	IdleAgents <-chan string          // Notifies when agents become idle
-	Specs      <-chan *proto.AgentMsg // Delivers spec messages
+	Specs <-chan *proto.AgentMsg // Delivers spec messages
 }
 
-// SubscribeArchitect allows the architect to subscribe to all architect notifications
+// SubscribeArchitect allows the architect to get the spec channel
 func (d *Dispatcher) SubscribeArchitect(architectID string) ArchitectChannels {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
 
 	d.architectID = architectID
-	d.logger.Info("🔔 Architect %s subscribed to all notifications", architectID)
+	d.logger.Info("🔔 Architect %s subscribed to spec notifications", architectID)
 	d.logger.Info("🔔 Spec channel %p provided to architect %s", d.specCh, architectID)
-	
+
 	return ArchitectChannels{
-		IdleAgents: d.idleAgentCh,
-		Specs:      d.specCh,
+		Specs: d.specCh,
 	}
 }
 
-// NotifyIdleAgent sends a notification when an agent becomes idle
-func (d *Dispatcher) NotifyIdleAgent(agentID string) {
-	d.notificationMu.RLock()
-	defer d.notificationMu.RUnlock()
-
-	if d.architectID == "" {
-		// No architect subscribed
-		return
-	}
-
-	select {
-	case d.idleAgentCh <- agentID:
-		d.logger.Debug("Notified architect %s that agent %s is idle", d.architectID, agentID)
-	default:
-		// Channel full, drop notification
-		d.logger.Warn("Idle agent notification dropped - channel full")
-	}
-}
-
-// NotifyArchitectOnResult notifies the architect when a coding agent finishes work
-// isCompletionStatus checks if a status indicates task completion
-func (d *Dispatcher) isCompletionStatus(status any) bool {
-	statusStr, ok := status.(string)
-	if !ok {
-		return false
-	}
-	switch statusStr {
-	case "completed", "done", "error", "failed", "timeout", "cancelled", "aborted":
-		return true
-	default:
-		return false
-	}
-}
-
-func (d *Dispatcher) NotifyArchitectOnResult(msg *proto.AgentMsg) {
-	// Check if this is a RESULT from a coding agent completion
-	if msg.Type == proto.MsgTypeRESULT {
-		if status, exists := msg.GetPayload("status"); exists {
-			d.logger.Debug("Checking RESULT message status: %v from agent %s", status, msg.FromAgent)
-			if d.isCompletionStatus(status) {
-				// Check if agent was actually busy before sending idle notification
-				d.busyMu.Lock()
-				wasBusy := d.busyAgents[msg.FromAgent]
-				if wasBusy {
-					// Remove from busy agents map
-					delete(d.busyAgents, msg.FromAgent)
-					d.busyMu.Unlock()
-
-					// Coding agent finished work - notify they are idle
-					d.NotifyIdleAgent(msg.FromAgent)
-					d.logger.Debug("Agent %s marked as idle after completion", msg.FromAgent)
-				} else {
-					d.busyMu.Unlock()
-					d.logger.Debug("Agent %s was not marked as busy, skipping idle notification", msg.FromAgent)
-				}
-			}
-		}
-	}
-}
-
-// CloseIdleChannel closes the idle agent notification channel for graceful shutdown
-func (d *Dispatcher) CloseIdleChannel() {
+// closeAllChannels closes all dispatcher-owned channels for graceful shutdown
+func (d *Dispatcher) closeAllChannels() {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
 
-	if d.idleAgentCh != nil {
-		close(d.idleAgentCh)
-		d.logger.Info("Closed idle agent notification channel")
-	}
-
+	// Close specCh
 	if d.specCh != nil {
 		close(d.specCh)
 		d.logger.Info("Closed spec channel")
+	}
+
+	// Close storyCh
+	if d.storyCh != nil {
+		close(d.storyCh)
+		d.logger.Info("Closed story channel")
+	}
+
+	// Close questionsCh
+	if d.questionsCh != nil {
+		close(d.questionsCh)
+		d.logger.Info("Closed questions channel")
+	}
+
+	// Close all reply channels
+	d.mu.Lock()
+	for agentID, replyCh := range d.replyChannels {
+		close(replyCh)
+		d.logger.Info("Closed reply channel for agent: %s", agentID)
+	}
+	// Clear the map
+	d.replyChannels = make(map[string]chan *proto.AgentMsg)
+	d.mu.Unlock()
+
+	// Close error reporting channel
+	if d.errCh != nil {
+		close(d.errCh)
+		d.logger.Info("Closed error reporting channel")
 	}
 }
 
@@ -680,45 +783,24 @@ type QueueInfo struct {
 
 // DumpHeads returns queue information with up to n message heads from each queue
 func (d *Dispatcher) DumpHeads(n int) map[string]any {
-	d.queueMutex.RLock()
-	defer d.queueMutex.RUnlock()
-
-	// Helper function to format message heads
-	formatHeads := func(messages []*proto.AgentMsg, limit int) []QueueHead {
-		var heads []QueueHead
-		count := len(messages)
-		if limit < count {
-			count = limit
-		}
-
-		for i := 0; i < count; i++ {
-			msg := messages[i]
-			heads = append(heads, QueueHead{
-				ID:   msg.ID,
-				Type: string(msg.Type),
-				From: msg.FromAgent,
-				To:   msg.ToAgent,
-				TS:   msg.Timestamp.Format("2006-01-02T15:04:05Z"),
-			})
-		}
-		return heads
-	}
-
 	return map[string]any{
-		"architect": QueueInfo{
-			Name:   "architect",
-			Length: len(d.architectRequestQueue),
-			Heads:  formatHeads(d.architectRequestQueue, n),
+		"architect_legacy": QueueInfo{
+			Name:   "architect_legacy",
+			Length: 0,             // Legacy queue removed
+			Heads:  []QueueHead{}, // Empty
 		},
-		"coder": QueueInfo{
-			Name:   "coder",
-			Length: len(d.coderQueue),
-			Heads:  formatHeads(d.coderQueue, n),
+		"questions_ch": map[string]any{
+			"length":   len(d.questionsCh),
+			"capacity": cap(d.questionsCh),
+			"blocked":  len(d.questionsCh) >= cap(d.questionsCh),
 		},
-		"shared": QueueInfo{
-			Name:   "shared",
-			Length: len(d.sharedWorkQueue),
-			Heads:  formatHeads(d.sharedWorkQueue, n),
+		"reply_channels": map[string]any{
+			"count": len(d.replyChannels),
+		},
+		"story_ch": map[string]any{
+			"length":   len(d.storyCh),
+			"capacity": cap(d.storyCh),
+			"blocked":  len(d.storyCh) >= cap(d.storyCh),
 		},
 		"input_channel": map[string]any{
 			"length":   len(d.inputChan),
@@ -740,7 +822,7 @@ type AgentInfo struct {
 func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	var agentInfos []AgentInfo
 	for id, agentInterface := range d.agents {
 		// Try to cast to Driver interface to get more information
@@ -753,20 +835,15 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 			})
 		} else {
 			// Fallback for agents that don't implement Driver interface
-			// Extract type from ID (format: "model:id")
-			agentType := agent.AgentTypeCoder // Default fallback
-			if strings.Contains(strings.ToLower(id), "architect") || strings.Contains(strings.ToLower(id), "o3") {
-				agentType = agent.AgentTypeArchitect
-			}
-			
+			// Default to coder type (all new agents should implement Driver interface)
 			agentInfos = append(agentInfos, AgentInfo{
 				ID:     id,
-				Type:   agentType,
+				Type:   agent.AgentTypeCoder, // Default fallback
 				State:  "UNKNOWN",
 				Driver: nil,
 			})
 		}
 	}
-	
+
 	return agentInfos
 }

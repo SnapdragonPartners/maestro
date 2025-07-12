@@ -11,11 +11,12 @@ type MessageBuilder struct {
 	msg *proto.AgentMsg
 }
 
-// NewTaskMessage creates a new TASK message builder
-func NewTaskMessage(fromAgent, toAgent string) *MessageBuilder {
-	msg := proto.NewAgentMsg(proto.MsgTypeTASK, fromAgent, toAgent)
+// NewStoryMessage creates a new STORY message builder
+func NewStoryMessage(fromAgent, toAgent string) *MessageBuilder {
+	msg := proto.NewAgentMsg(proto.MsgTypeSTORY, fromAgent, toAgent)
 	return &MessageBuilder{msg: msg}
 }
+
 
 // NewResultMessage creates a new RESULT message builder
 func NewResultMessage(fromAgent, toAgent string) *MessageBuilder {
@@ -41,7 +42,7 @@ func NewShutdownMessage(fromAgent, toAgent string) *MessageBuilder {
 	return &MessageBuilder{msg: msg}
 }
 
-// WithContent sets the content payload (common for TASK messages)
+// WithContent sets the content payload (common for STORY messages)
 func (mb *MessageBuilder) WithContent(content string) *MessageBuilder {
 	mb.msg.SetPayload("content", content)
 	return mb
@@ -125,9 +126,9 @@ func (mb *MessageBuilder) Build() *proto.AgentMsg {
 
 // Predefined message factories for common test scenarios
 
-// HealthEndpointTask creates a standard health endpoint task
+// HealthEndpointTask creates a standard health endpoint story
 func HealthEndpointTask(fromAgent, toAgent string) *proto.AgentMsg {
-	return NewTaskMessage(fromAgent, toAgent).
+	return NewStoryMessage(fromAgent, toAgent).
 		WithContent("Create a health endpoint that returns JSON with status and timestamp").
 		WithRequirements([]string{
 			"GET /health endpoint",

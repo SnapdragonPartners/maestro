@@ -52,7 +52,7 @@ func DefaultTimeouts() TestTimeouts {
 // CoderAgent wraps a coder driver with channel communication
 type CoderAgent struct {
 	ID     string
-	Driver *coder.CoderDriver
+	Driver *coder.Coder
 
 	// Message channels for this specific coder
 	FromArch chan *proto.AgentMsg
@@ -97,7 +97,7 @@ func (h *TestHarness) SetArchitect(architect ArchitectAgent) {
 }
 
 // AddCoder adds a coder agent to the test harness
-func (h *TestHarness) AddCoder(coderID string, driver *coder.CoderDriver) {
+func (h *TestHarness) AddCoder(coderID string, driver *coder.Coder) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -284,7 +284,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 		}
 
 		// Check for pending approval requests and send them to architect
-		if hasPending, content, reason := coderAgent.Driver.GetPendingApprovalRequest(); hasPending {
+		if hasPending, _, content, reason, _ := coderAgent.Driver.GetPendingApprovalRequest(); hasPending {
 			requestMsg := h.createApprovalRequestMessage(coderID, content, reason)
 			select {
 			case coderAgent.ToArch <- requestMsg:
@@ -297,7 +297,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 		}
 
 		// Check for pending questions and send them to architect
-		if hasPending, content, reason := coderAgent.Driver.GetPendingQuestion(); hasPending {
+		if hasPending, _, content, reason := coderAgent.Driver.GetPendingQuestion(); hasPending {
 			questionMsg := h.createQuestionMessage(coderID, content, reason)
 			select {
 			case coderAgent.ToArch <- questionMsg:
@@ -386,7 +386,7 @@ func (h *TestHarness) createApprovalRequestMessage(coderID, content, reason stri
 	approvalType := "plan" // Default
 	if h.coders[coderID] != nil {
 		currentState := h.coders[coderID].Driver.GetCurrentState()
-		if currentState == coder.StateCodeReview.ToAgentState() {
+		if currentState == coder.StateCodeReview {
 			approvalType = "code"
 		}
 	}

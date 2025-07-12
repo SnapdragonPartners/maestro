@@ -39,7 +39,7 @@ Requirements:
 	StartCoderWithTask(t, harness, coderID, taskContent)
 
 	// Verify initial state (after task setup, coder should be in PLANNING)
-	RequireState(t, harness, coderID, coder.StatePlanning.ToAgentState())
+	RequireState(t, harness, coderID, coder.StatePlanning)
 
 	// Run the harness until completion
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -125,7 +125,7 @@ func TestStory1MultipleCodersIndependent(t *testing.T) {
 
 	// Verify all coders start in planning state (after task setup)
 	for _, coderID := range coderIDs {
-		RequireState(t, harness, coderID, coder.StatePlanning.ToAgentState())
+		RequireState(t, harness, coderID, coder.StatePlanning)
 	}
 
 	// Run until all coders complete

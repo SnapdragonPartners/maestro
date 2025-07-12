@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -88,15 +87,15 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 
 	// Build response list
 	agents := make([]AgentListItem, 0)
-	
+
 	// Get agent info from dispatcher
 	if s.dispatcher != nil {
 		registeredAgents := s.dispatcher.GetRegisteredAgents()
-		
+
 		for _, agentInfo := range registeredAgents {
 			var currentState string
 			var lastTS time.Time
-			
+
 			if agentInfo.Driver != nil {
 				// Use driver's current state
 				currentState = agentInfo.State
@@ -262,24 +261,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if architect is in WAITING state
-	architectState, err := s.findArchitectState()
-	if err != nil {
-		s.logger.Error("Failed to find architect state: %v", err)
-		http.Error(w, "Failed to check architect state", http.StatusInternalServerError)
-		return
-	}
-
-	if architectState == nil || architectState.State != "WAITING" {
-		s.logger.Warn("Architect not in WAITING state (current: %s)", func() string {
-			if architectState == nil {
-				return "not found"
-			}
-			return architectState.State
-		}())
-		http.Error(w, "Architect is busy", http.StatusConflict)
-		return
-	}
+	// No need to check architect state - let the dispatcher handle routing
 
 	// Create stories directory if it doesn't exist
 	storiesDir := filepath.Join(s.workDir, "stories")
@@ -305,31 +287,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the architect agent ID
-	architectID := ""
-	registeredAgents := s.dispatcher.GetRegisteredAgents()
-	for _, agentInfo := range registeredAgents {
-		if agentInfo.Type == agent.AgentTypeArchitect {
-			architectID = agentInfo.ID
-			break
-		}
-	}
-	
-	if architectID == "" {
-		s.logger.Error("No architect agent found")
-		http.Error(w, "No architect agent available", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Create and inject SPEC message to architect
-	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, "web-ui", architectID)
+	// Create and send SPEC message to architect (use logical name "architect")
+	// The dispatcher will resolve this to the actual architect agent
+	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, "web-ui", "architect")
 	msg.SetPayload("type", "spec_upload")
 	msg.SetPayload("filename", header.Filename)
 	msg.SetPayload("filepath", filePath)
 	msg.SetPayload("size", header.Size)
 	msg.SetPayload("content", string(content)) // Add the actual file content
 
-	s.logger.Info("Dispatching SPEC message %s to architect %s", msg.ID, architectID)
+	s.logger.Info("Dispatching SPEC message %s to architect", msg.ID)
 	if err := s.dispatcher.DispatchMessage(msg); err != nil {
 		s.logger.Error("Failed to dispatch upload message: %v", err)
 		// Don't delete the file, but return error
@@ -350,35 +317,6 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("Successfully uploaded file: %s (%d bytes)", header.Filename, header.Size)
-}
-
-// findArchitectState finds the first architect agent's state
-func (s *Server) findArchitectState() (*state.AgentState, error) {
-	if s.dispatcher == nil {
-		return nil, fmt.Errorf("dispatcher not available")
-	}
-	
-	// Find architect agent from dispatcher
-	registeredAgents := s.dispatcher.GetRegisteredAgents()
-	for _, agentInfo := range registeredAgents {
-		if agentInfo.Type == agent.AgentTypeArchitect {
-			// Try to get state from store first
-			agentState, err := s.store.GetStateInfo(agentInfo.ID)
-			if err != nil {
-				// No state file yet - this is normal for newly started agents
-				// Return a default "WAITING" state
-				return &state.AgentState{
-					Version:       "v1",
-					State:         "WAITING",
-					LastTimestamp: time.Now(),
-				}, nil
-			}
-			
-			return agentState, nil
-		}
-	}
-	
-	return nil, fmt.Errorf("no architect agent found in dispatcher")
 }
 
 // handleDashboard serves the main dashboard page
@@ -447,7 +385,6 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Shutdown request accepted")
 }
 
-
 // handleLogs implements GET /api/logs
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -478,7 +415,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if len(logs) == 0 {
 		logs = s.readLogFiles(domain, since)
 	}
-	
+
 	// If still no logs, create some sample logs to show the UI is working
 	if len(logs) == 0 {
 		logs = []logx.LogEntry{
@@ -506,14 +443,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Debug("Served %d log entries (domain=%s, since=%s)", len(logs), domain, sinceStr)
-}
-
-// readCurrentLogs attempts to read current application logs
-// For now, this returns empty since we need a proper log capture mechanism
-func (s *Server) readCurrentLogs(domain string, since time.Time) []logx.LogEntry {
-	// This would require implementing a log capture mechanism
-	// For MVP, we'll rely on file-based logs
-	return nil
 }
 
 // readLogFiles reads logs from the debug log files

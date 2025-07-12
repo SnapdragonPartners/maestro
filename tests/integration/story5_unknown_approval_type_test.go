@@ -63,7 +63,7 @@ Requirements:
 	StartCoderWithTask(t, harness, coderID, taskContent)
 
 	// Verify initial state
-	RequireState(t, harness, coderID, coder.StatePlanning.ToAgentState())
+	RequireState(t, harness, coderID, coder.StatePlanning)
 
 	// Run until completion
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

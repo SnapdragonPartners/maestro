@@ -24,607 +24,33 @@ type LLMClient interface {
 	GenerateResponse(ctx context.Context, prompt string) (string, error)
 }
 
-// RequestWorker handles all agent requests (questions, code reviews, resource requests)
-type RequestWorker struct {
-	llmClient     LLMClient
-	renderer      *templates.Renderer
-	requestCh     chan *proto.AgentMsg
-	requestDoneCh chan string
-	dispatcher    MessageSender
-	architectID   string
-	queue         *Queue
-	mergeCh       chan<- string
-}
-
-// NewRequestWorker creates a new unified request worker
-func NewRequestWorker(llmClient LLMClient, renderer *templates.Renderer, requestCh chan *proto.AgentMsg, requestDoneCh chan string, dispatcher MessageSender, architectID string, queue *Queue, mergeCh chan<- string) *RequestWorker {
-	return &RequestWorker{
-		llmClient:     llmClient,
-		renderer:      renderer,
-		requestCh:     requestCh,
-		requestDoneCh: requestDoneCh,
-		dispatcher:    dispatcher,
-		architectID:   architectID,
-		queue:         queue,
-		mergeCh:       mergeCh,
-	}
-}
-
-// Run starts the unified request worker goroutine
-func (w *RequestWorker) Run(ctx context.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			logx.Errorf("RequestWorker panic recovered: %v", r)
-			// Consider restarting the worker or notifying the system
-		}
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-w.requestCh:
-			// Process with error handling
-			if err := w.processMessage(ctx, msg); err != nil {
-				logx.Errorf("RequestWorker error processing %s: %v", msg.ID, err)
-				// Send error response back to agent
-				w.sendErrorResponse(msg, err)
-			}
-
-			// Signal completion
-			select {
-			case w.requestDoneCh <- msg.ID:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
-}
-
-// processMessage handles all request types: question, plan, code, resource
-func (w *RequestWorker) processMessage(ctx context.Context, msg *proto.AgentMsg) error {
-	switch msg.Type {
-	case proto.MsgTypeQUESTION:
-		return w.handleQuestion(ctx, msg)
-	case proto.MsgTypeREQUEST:
-		return w.handleRequest(ctx, msg)
-	default:
-		return fmt.Errorf("unsupported message type: %s", msg.Type)
-	}
-}
-
-// handleQuestion processes QUESTION messages
-func (w *RequestWorker) handleQuestion(ctx context.Context, msg *proto.AgentMsg) error {
-	// Process question using LLM
-	var response string
-	if w.llmClient != nil {
-		// Use LLM to generate answer
-		question, exists := msg.GetPayload(proto.KeyQuestion)
-		if !exists {
-			return fmt.Errorf("no question payload in message")
-		}
-		llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("%v", question))
-		if err != nil {
-			return fmt.Errorf("failed to generate LLM response: %w", err)
-		}
-		response = llmResponse
-		logx.Infof("RequestWorker: processed question %s", msg.ID)
-	} else {
-		// Mock mode - generate mock answer
-		response = "Mock answer: This is a simulated response from the architect"
-		logx.Infof("RequestWorker: mock processing question %s", msg.ID)
-	}
-
-	// Send answer back to agent
-	if w.dispatcher != nil {
-		answerMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, w.architectID, msg.FromAgent)
-		answerMsg.ParentMsgID = msg.ID
-		answerMsg.SetPayload(proto.KeyAnswer, response)
-		answerMsg.SetPayload(proto.KeyStatus, "answered")
-
-		if err := w.dispatcher.SendMessage(answerMsg); err != nil {
-			return fmt.Errorf("failed to send answer: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// handleRequest processes REQUEST messages with subtypes: plan, code, resource, question
-func (w *RequestWorker) handleRequest(ctx context.Context, msg *proto.AgentMsg) error {
-	// Get request subtype
-	requestType, _ := msg.GetPayload(proto.KeyRequestType)
-	approvalType, _ := msg.GetPayload(proto.KeyApprovalType)
-
-	// Determine the specific request type
-	var requestSubtype string
-	if requestType != nil {
-		requestSubtype = fmt.Sprintf("%v", requestType)
-	} else if approvalType != nil {
-		requestSubtype = fmt.Sprintf("%v", approvalType)
-	} else {
-		// Default to code review for backward compatibility
-		requestSubtype = "code"
-	}
-
-	switch requestSubtype {
-	case "plan":
-		return w.handlePlanApproval(ctx, msg)
-	case "code":
-		return w.handleCodeApproval(ctx, msg)
-	case "resource":
-		return w.handleResourceRequest(ctx, msg)
-	case "question":
-		return w.handleQuestionRequest(ctx, msg)
-	default:
-		return fmt.Errorf("unsupported request subtype: %s", requestSubtype)
-	}
-}
-
-// handlePlanApproval processes plan approval requests
-func (w *RequestWorker) handlePlanApproval(ctx context.Context, msg *proto.AgentMsg) error {
-	var approved bool = true
-	var feedback string
-
-	planRequest, exists := msg.GetPayload(proto.KeyRequest)
-	if !exists {
-		return fmt.Errorf("no plan request payload in message")
-	}
-
-	if w.llmClient != nil {
-		// Use LLM for plan review
-		llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this implementation plan: %v", planRequest))
-		if err != nil {
-			return fmt.Errorf("failed to generate LLM plan review: %w", err)
-		}
-		feedback = llmResponse
-		// For now, always approve in LLM mode (real logic would parse LLM response)
-		approved = true
-		logx.Infof("RequestWorker: processed plan review %s", msg.ID)
-	} else {
-		// Mock mode - auto-approve with mock feedback
-		approved = true
-		feedback = "Mock plan review: Plan looks good, auto-approved for demo"
-		logx.Infof("RequestWorker: mock processing plan review %s", msg.ID)
-	}
-
-	return w.sendApprovalResult(ctx, msg, approved, feedback, string(proto.ApprovalTypePlan))
-}
-
-// handleCodeApproval processes code approval requests
-func (w *RequestWorker) handleCodeApproval(ctx context.Context, msg *proto.AgentMsg) error {
-	var approved bool = true
-	var feedback string
-
-	code, exists := msg.GetPayload("code")
-	if !exists {
-		return fmt.Errorf("no code payload in message")
-	}
-
-	if w.llmClient != nil {
-		// Use LLM for code review
-		llmResponse, err := w.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this code: %v", code))
-		if err != nil {
-			return fmt.Errorf("failed to generate LLM review: %w", err)
-		}
-		feedback = llmResponse
-		// For now, always approve in LLM mode (real logic would parse LLM response)
-		approved = true
-		logx.Infof("RequestWorker: processed code review %s", msg.ID)
-	} else {
-		// Mock mode - auto-approve with mock feedback
-		approved = true
-		feedback = "Mock review: Code looks good, auto-approved for demo"
-		logx.Infof("RequestWorker: mock processing code review %s", msg.ID)
-	}
-
-	// For code approvals, mark story as completed and signal merge if approved
-	if approved {
-		if storyID, exists := msg.GetPayload("story_id"); exists {
-			if storyIDStr, ok := storyID.(string); ok && w.queue != nil {
-				// Mark story as completed in queue
-				if err := w.queue.MarkCompleted(storyIDStr); err != nil {
-					logx.Warnf("failed to mark story %s as completed: %v", storyIDStr, err)
-				} else {
-					logx.Infof("marked story %s as completed after code approval", storyIDStr)
-
-					// Signal merge channel
-					if w.mergeCh != nil {
-						select {
-						case w.mergeCh <- storyIDStr:
-							logx.Infof("signaled merge for story %s", storyIDStr)
-						default:
-							logx.Warnf("merge channel full for story %s", storyIDStr)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return w.sendApprovalResult(ctx, msg, approved, feedback, string(proto.ApprovalTypeCode))
-}
-
-// handleResourceRequest processes resource approval requests
-func (w *RequestWorker) handleResourceRequest(ctx context.Context, msg *proto.AgentMsg) error {
-	// Extract resource request fields
-	requestedTokens, _ := msg.GetPayload(proto.KeyRequestedTokens)
-	requestedIterations, _ := msg.GetPayload(proto.KeyRequestedIterations)
-	justification, _ := msg.GetPayload(proto.KeyJustification)
-	storyID, _ := msg.GetPayload(proto.KeyStoryID)
-
-	// Convert to int if needed
-	tokens := 0
-	iterations := 0
-	if tokensFloat, ok := requestedTokens.(float64); ok {
-		tokens = int(tokensFloat)
-	} else if tokensInt, ok := requestedTokens.(int); ok {
-		tokens = tokensInt
-	}
-	if iterFloat, ok := requestedIterations.(float64); ok {
-		iterations = int(iterFloat)
-	} else if iterInt, ok := requestedIterations.(int); ok {
-		iterations = iterInt
-	}
-
-	justificationStr := ""
-	if j, ok := justification.(string); ok {
-		justificationStr = j
-	}
-
-	logx.Infof("RequestWorker: processing resource request %s for %d tokens, %d iterations", msg.ID, tokens, iterations)
-	logx.Infof("  Justification: %s", justificationStr)
-
-	// Resource approval logic (for now, approve reasonable requests)
-	approved := true
-	feedback := "Resource request approved"
-	approvedTokens := tokens
-	approvedIterations := iterations
-
-	// Apply resource limits and business logic
-	if tokens > 10000 {
-		approved = false
-		feedback = "Requested tokens exceed maximum limit (10,000)"
-	} else if iterations > 50 {
-		approved = false
-		feedback = "Requested iterations exceed maximum limit (50)"
-	} else if justificationStr == "" {
-		approved = false
-		feedback = "Resource requests must include justification"
-	}
-
-	if approved {
-		logx.Infof("approved resource request: %d tokens, %d iterations", approvedTokens, approvedIterations)
-	} else {
-		logx.Warnf("rejected resource request: %s", feedback)
-		approvedTokens = 0
-		approvedIterations = 0
-	}
-
-	// Send structured ResourceApproval message
-	return w.sendResourceApproval(ctx, msg, approved, approvedTokens, approvedIterations, feedback, storyID)
-}
-
-// handleQuestionRequest processes question-type requests
-func (w *RequestWorker) handleQuestionRequest(ctx context.Context, msg *proto.AgentMsg) error {
-	// Question requests are similar to QUESTION messages but come through REQUEST channel
-	return w.handleQuestion(ctx, msg)
-}
-
-// sendApprovalResult sends approval result back to agent
-func (w *RequestWorker) sendApprovalResult(ctx context.Context, msg *proto.AgentMsg, approved bool, feedback string, approvalType string) error {
-	if w.dispatcher == nil {
-		return nil
-	}
-
-	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
-	resultMsg.ParentMsgID = msg.ID
-	resultMsg.SetPayload("approved", approved)
-	resultMsg.SetPayload(proto.KeyFeedback, feedback)
-	resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-	resultMsg.SetPayload(proto.KeyApprovalType, approvalType)
-
-	// Set status based on approval result
-	if approved {
-		resultMsg.SetPayload(proto.KeyStatus, string(proto.ApprovalStatusApproved))
-	} else {
-		resultMsg.SetPayload(proto.KeyStatus, string(proto.ApprovalStatusRejected))
-	}
-
-	return w.dispatcher.SendMessage(resultMsg)
-}
-
-// sendResourceApproval sends a structured resource approval message back to the coder
-func (w *RequestWorker) sendResourceApproval(ctx context.Context, msg *proto.AgentMsg, approved bool, approvedTokens, approvedIterations int, feedback string, storyID any) error {
-	if w.dispatcher == nil {
-		return nil
-	}
-
-	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
-	resultMsg.ParentMsgID = msg.ID
-
-	// Set standard approval fields
-	resultMsg.SetPayload("approved", approved)
-	resultMsg.SetPayload(proto.KeyFeedback, feedback)
-	resultMsg.SetPayload(proto.KeyRequestType, string(proto.RequestResource))
-
-	// Set resource-specific fields using the new protocol keys
-	resultMsg.SetPayload("approved_tokens", approvedTokens)
-	resultMsg.SetPayload("approved_iterations", approvedIterations)
-
-	// Include story ID if provided
-	if storyID != nil {
-		resultMsg.SetPayload(proto.KeyStoryID, storyID)
-	}
-
-	// Set status based on approval result
-	if approved {
-		resultMsg.SetPayload(proto.KeyStatus, string(proto.ApprovalStatusApproved))
-	} else {
-		resultMsg.SetPayload(proto.KeyStatus, string(proto.ApprovalStatusRejected))
-	}
-
-	// Add metadata to identify this as a resource approval
-	resultMsg.SetMetadata("approval_type", "resource")
-	resultMsg.SetMetadata("message_type", "resource_approval")
-
-	logx.Infof("sending ResourceApproval to %s: %s (%d tokens, %d iterations)",
-		msg.FromAgent,
-		resultMsg.Payload[proto.KeyStatus],
-		approvedTokens,
-		approvedIterations)
-
-	return w.dispatcher.SendMessage(resultMsg)
-}
-
-// sendErrorResponse sends an error response back to the agent
-func (w *RequestWorker) sendErrorResponse(msg *proto.AgentMsg, err error) {
-	if w.dispatcher == nil {
-		return
-	}
-
-	var errorMsg *proto.AgentMsg
-	if msg.Type == proto.MsgTypeQUESTION {
-		errorMsg = proto.NewAgentMsg(proto.MsgTypeANSWER, w.architectID, msg.FromAgent)
-		errorMsg.SetPayload(proto.KeyAnswer, fmt.Sprintf("Error processing question: %v", err))
-	} else {
-		errorMsg = proto.NewAgentMsg(proto.MsgTypeRESULT, w.architectID, msg.FromAgent)
-		errorMsg.SetPayload("approved", false)
-		errorMsg.SetPayload(proto.KeyFeedback, fmt.Sprintf("Error processing request: %v", err))
-	}
-
-	errorMsg.ParentMsgID = msg.ID
-	errorMsg.SetPayload(proto.KeyStatus, "error")
-
-	if sendErr := w.dispatcher.SendMessage(errorMsg); sendErr != nil {
-		logx.Errorf("RequestWorker: failed to send error response: %v", sendErr)
-	}
-}
-
-// DispatcherInterface defines the interface for pulling messages from the dispatcher
-type DispatcherInterface interface {
-	PullArchitectWork() *proto.AgentMsg
-}
-
-// MessageSender defines the interface for sending messages to agents
-type MessageSender interface {
-	SendMessage(msg *proto.AgentMsg) error
-	SendMessageWithContext(ctx context.Context, msg *proto.AgentMsg) error
-}
-
-// MockDispatcher implements MessageSender for testing
-type MockDispatcher struct {
-	sentMessages []*proto.AgentMsg
-}
-
-// NewMockDispatcher creates a new mock dispatcher
-func NewMockDispatcher() *MockDispatcher {
-	return &MockDispatcher{
-		sentMessages: make([]*proto.AgentMsg, 0),
-	}
-}
-
-// SendMessage implements MessageSender interface
-func (m *MockDispatcher) SendMessage(msg *proto.AgentMsg) error {
-	return m.SendMessageWithContext(context.Background(), msg)
-}
-
-// SendMessageWithContext implements MessageSender interface with context support
-func (m *MockDispatcher) SendMessageWithContext(ctx context.Context, msg *proto.AgentMsg) error {
-	m.sentMessages = append(m.sentMessages, msg)
-	answer, _ := msg.GetPayload(proto.KeyAnswer)
-	logx.Infof("MockDispatcher: would send %s to %s (content: %v)",
-		msg.Type, msg.ToAgent, answer)
-	return nil
-}
-
-// GetSentMessages returns all sent messages for testing
-func (m *MockDispatcher) GetSentMessages() []*proto.AgentMsg {
-	return m.sentMessages
-}
-
-// DispatcherAdapter adapts the real dispatcher to implement MessageSender
-type DispatcherAdapter struct {
-	dispatcher *dispatch.Dispatcher
-}
-
-// NewDispatcherAdapter creates a new dispatcher adapter
-func NewDispatcherAdapter(dispatcher *dispatch.Dispatcher) *DispatcherAdapter {
-	return &DispatcherAdapter{
-		dispatcher: dispatcher,
-	}
-}
-
-// SendMessage implements MessageSender interface by using dispatcher's DispatchMessage
-func (d *DispatcherAdapter) SendMessage(msg *proto.AgentMsg) error {
-	return d.SendMessageWithContext(context.Background(), msg)
-}
-
-// SendMessageWithContext implements MessageSender interface with context support
-func (d *DispatcherAdapter) SendMessageWithContext(ctx context.Context, msg *proto.AgentMsg) error {
-	if d.dispatcher == nil {
-		return fmt.Errorf("dispatcher not initialized")
-	}
-
-	// Add timeout protection for dispatcher send operations
-	done := make(chan error, 1)
-
-	go func() {
-		// Use the dispatcher's existing DispatchMessage method
-		err := d.dispatcher.DispatchMessage(msg)
-		if err != nil {
-			done <- fmt.Errorf("failed to dispatch message %s: %w", msg.ID, err)
-		} else {
-			done <- nil
-		}
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			return err
-		}
-		logx.Infof("DispatcherAdapter: sent %s to %s", msg.Type, msg.ToAgent)
-		return nil
-	case <-time.After(DispatcherSendTimeout):
-		logx.Warnf("DispatcherAdapter: send timeout after %v for message %s", DispatcherSendTimeout, msg.ID)
-		return fmt.Errorf("dispatch send timeout after %v", DispatcherSendTimeout)
-	case <-ctx.Done():
-		logx.Warnf("DispatcherAdapter: context cancelled for message %s", msg.ID)
-		return ctx.Err()
-	}
-}
-
 // Driver manages the state machine for an architect workflow
 type Driver struct {
 	architectID       string
 	stateStore        *state.Store
 	contextManager    *contextmgr.ContextManager
-	currentState      ArchitectState
+	currentState      agent.State
 	stateData         map[string]any
-	llmClient         LLMClient           // Optional LLM for live mode
-	renderer          *templates.Renderer // Template renderer for prompts
-	workDir           string              // Workspace directory
-	specFile          string              // Path to spec file
-	storiesDir        string              // Directory for story files
-	queue             *Queue              // Story queue manager
-	escalationHandler *EscalationHandler  // Escalation handler
-	dispatcher        DispatcherInterface // Interface for pulling messages
+	llmClient         LLMClient            // LLM for intelligent responses
+	renderer          *templates.Renderer  // Template renderer for prompts
+	workDir           string               // Workspace directory
+	storiesDir        string               // Directory for story files
+	queue             *Queue               // Story queue manager
+	escalationHandler *EscalationHandler   // Escalation handler
+	dispatcher        *dispatch.Dispatcher // Dispatcher for sending messages
+	logger            *logx.Logger         // Logger with proper agent prefixing
 
-	// v3 Unified worker architecture
-	readyStoryCh  chan string
-	idleAgentCh   <-chan string          // Read-only channel from dispatcher
-	specCh        <-chan *proto.AgentMsg // Read-only channel for spec messages
-	requestDoneCh chan string            // Unified completion channel
-	requestCh     chan *proto.AgentMsg // Unified request channel
-	mergeCh       chan string          // Signal when code is approved and ready to merge
-	requestWorker *RequestWorker
-	workerCtx     context.Context
-	workerCancel  context.CancelFunc
+	// Channel-based architecture - channels provided by dispatcher.Attach()
+	specCh      <-chan *proto.AgentMsg // Read-only channel for spec messages
+	questionsCh chan *proto.AgentMsg   // Bi-directional channel for questions/requests
+	replyCh     <-chan *proto.AgentMsg // Read-only channel for replies
 }
 
-// ChannelConfig holds configuration for architect channels
-type ChannelConfig struct {
-	ReadyStoryChSize  int
-	IdleAgentChSize   int
-	RequestDoneChSize int
-	MergeChSize       int
-	RequestChSize     int
-}
-
-// DefaultChannelConfig returns default channel sizes
-func DefaultChannelConfig() *ChannelConfig {
-	return &ChannelConfig{
-		ReadyStoryChSize:  1,
-		IdleAgentChSize:   1,
-		RequestDoneChSize: 1,
-		MergeChSize:       1,
-		RequestChSize:     10,
-	}
-}
-
-// NewDriver creates a new architect driver instance (mock mode)
-func NewDriver(architectID string, stateStore *state.Store, workDir, storiesDir string) *Driver {
-	return NewDriverWithChannelConfig(architectID, stateStore, workDir, storiesDir, DefaultChannelConfig())
-}
-
-// NewDriverWithChannelConfig creates a new architect driver with configurable channel sizes
-func NewDriverWithChannelConfig(architectID string, stateStore *state.Store, workDir, storiesDir string, channelConfig *ChannelConfig) *Driver {
+// NewDriver creates a new architect driver instance
+func NewDriver(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string) *Driver {
 	renderer, _ := templates.NewRenderer()
 	queue := NewQueue(storiesDir)
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
-
-	// Create buffered channels with configurable sizes
-	readyStoryCh := make(chan string, channelConfig.ReadyStoryChSize)
-	idleAgentChRW := make(chan string, channelConfig.IdleAgentChSize) // Read-write for mock mode
-	requestDoneCh := make(chan string, channelConfig.RequestDoneChSize)
-	mergeCh := make(chan string, channelConfig.MergeChSize)
-
-	// Create unified request channel
-	requestCh := make(chan *proto.AgentMsg, channelConfig.RequestChSize)
-
-	// Connect queue to ready channel
-	queue.SetReadyChannel(readyStoryCh)
-
-	// Create mock dispatcher for workers
-	mockDispatcher := NewMockDispatcher()
-
-	// Create unified request worker (no LLM = mock mode)
-	requestWorker := NewRequestWorker(nil, renderer, requestCh, requestDoneCh, mockDispatcher, architectID, queue, mergeCh)
-
-	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManager(),
-		currentState:      StateScoping,
-		stateData:         make(map[string]any),
-		llmClient:         nil,
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		escalationHandler: escalationHandler,
-		dispatcher:        nil,
-		readyStoryCh:      readyStoryCh,
-		idleAgentCh:       idleAgentChRW, // Cast to read-only interface
-		requestDoneCh:     requestDoneCh,
-		requestCh:         requestCh,
-		mergeCh:           mergeCh,
-		requestWorker:     requestWorker,
-	}
-}
-
-// NewDriverWithDispatcher creates a new architect driver with LLM and real dispatcher for production mode
-func NewDriverWithDispatcher(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string) *Driver {
-	return NewDriverWithDispatcherAndChannelConfig(architectID, stateStore, modelConfig, llmClient, dispatcher, workDir, storiesDir, DefaultChannelConfig())
-}
-
-// NewDriverWithDispatcherAndChannelConfig creates a new architect driver with configurable channels for production mode
-func NewDriverWithDispatcherAndChannelConfig(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string, channelConfig *ChannelConfig) *Driver {
-	renderer, _ := templates.NewRenderer()
-	queue := NewQueue(storiesDir)
-	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
-
-	// Create buffered channels with configurable sizes
-	readyStoryCh := make(chan string, channelConfig.ReadyStoryChSize)
-	// Subscribe to all architect notifications
-	architectChannels := dispatcher.SubscribeArchitect(architectID)
-	idleAgentCh := architectChannels.IdleAgents
-	specCh := architectChannels.Specs
-	requestDoneCh := make(chan string, channelConfig.RequestDoneChSize)
-	mergeCh := make(chan string, channelConfig.MergeChSize)
-
-	// Create unified request channel
-	requestCh := make(chan *proto.AgentMsg, channelConfig.RequestChSize)
-
-	// Connect queue to ready channel
-	queue.SetReadyChannel(readyStoryCh)
-
-	// For production mode, use the real dispatcher through adapter
-	messageSender := NewDispatcherAdapter(dispatcher)
-
-	// Create unified request worker with live LLM
-	requestWorker := NewRequestWorker(llmClient, renderer, requestCh, requestDoneCh, messageSender, architectID, queue, mergeCh)
 
 	return &Driver{
 		architectID:       architectID,
@@ -639,183 +65,156 @@ func NewDriverWithDispatcherAndChannelConfig(architectID string, stateStore *sta
 		queue:             queue,
 		escalationHandler: escalationHandler,
 		dispatcher:        dispatcher,
-		readyStoryCh:      readyStoryCh,
-		idleAgentCh:       idleAgentCh,
-		specCh:            specCh,
-		requestDoneCh:     requestDoneCh,
-		requestCh:         requestCh,
-		mergeCh:           mergeCh,
-		requestWorker:     requestWorker,
+		logger:            logx.NewLogger(architectID),
+		// Channels will be set during Attach()
+		specCh:      nil,
+		questionsCh: nil,
+		replyCh:     nil,
 	}
+}
+
+// SetChannels sets the communication channels from the dispatcher
+func (d *Driver) SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
+	d.specCh = specCh
+	d.questionsCh = questionsCh
+	d.replyCh = replyCh
+
+	d.logger.Info("🏗️ Architect %s channels set: spec=%p questions=%p reply=%p", d.architectID, specCh, questionsCh, replyCh)
 }
 
 // Initialize sets up the driver and loads any existing state
 func (d *Driver) Initialize(ctx context.Context) error {
 	// Load existing state if available
+	d.logger.Info("Loading architect state for ID: %s", d.architectID)
 	savedState, savedData, err := d.stateStore.LoadState(d.architectID)
 	if err != nil {
+		d.logger.Info("No previous state found for architect %s: %v", d.architectID, err)
 		return fmt.Errorf("failed to load state for architect %s: %w", d.architectID, err)
 	}
 
 	// If we have saved state, restore it
 	if savedState != "" {
-		// Convert string state to ArchitectState using the auto-generated constants
-		loadedState := d.stringToArchitectState(savedState)
+		d.logger.Info("Found saved state: %s, restoring...", savedState)
+		// Convert string state to agent.State
+		loadedState := d.stringToState(savedState)
 		if loadedState == StateError && savedState != "Error" {
-			logx.Warnf("loaded unknown state '%s', setting to ERROR", savedState)
+			d.logger.Warn("loaded unknown state '%s', setting to ERROR", savedState)
 		}
 		d.currentState = loadedState
 		d.stateData = savedData
+		d.logger.Info("Restored architect to state: %s", d.currentState)
+	} else {
+		d.logger.Info("No saved state found, starting fresh")
 	}
 
-	// Start unified worker goroutine
-	d.workerCtx, d.workerCancel = context.WithCancel(ctx)
-	go d.requestWorker.Run(d.workerCtx)
-
-	logx.Infof("Architect unified request worker started")
+	d.logger.Info("Architect initialized")
 
 	return nil
 }
 
-// stringToArchitectState converts a string state to ArchitectState using auto-generated String() values
+// stringToState converts a string state to agent.State
 // Returns StateError for unknown states
-func (d *Driver) stringToArchitectState(stateStr string) ArchitectState {
-	// Use the auto-generated String() values from stringer
-	for _, state := range GetAllArchitectStates() {
-		if state.String() == stateStr {
-			return state
-		}
+func (d *Driver) stringToState(stateStr string) agent.State {
+	// Direct string to agent.State conversion since we're using string constants
+	state := agent.State(stateStr)
+	if err := ValidateState(state); err != nil {
+		return StateError
 	}
-	return StateError
+	return state
 }
 
-// Shutdown stops the worker goroutines and cleans up resources gracefully
-func (d *Driver) Shutdown() {
-	if d.workerCancel != nil {
-		// Signal workers to stop
-		d.workerCancel()
-
-		// Wait for workers to finish current tasks (with timeout)
-		done := make(chan struct{})
-		go func() {
-			// Wait for workers to drain their channels
-			for len(d.requestCh) > 0 {
-				time.Sleep(100 * time.Millisecond)
-			}
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			logx.Infof("Architect workers shutdown gracefully")
-		case <-time.After(30 * time.Second):
-			logx.Warnf("Architect workers shutdown timeout - forcing closure")
-		}
-
-		// Persist current state to disk before shutting down
-		if err := d.stateStore.SaveState(d.architectID, d.currentState.String(), d.stateData); err != nil {
-			logx.Errorf("failed to persist state during shutdown: %v", err)
-		} else {
-			logx.Infof("state persisted successfully during shutdown")
-		}
-
-		// Close channels after workers are done
-		close(d.requestCh)
-		close(d.readyStoryCh)
-		// Note: idleAgentCh is owned by dispatcher, don't close it here
-		close(d.requestDoneCh)
-	}
+// GetID returns the architect ID (implements Agent interface)
+func (d *Driver) GetID() string {
+	return d.architectID
 }
 
-// ProcessWorkflow runs the main state machine loop for the architect workflow
-func (d *Driver) ProcessWorkflow(ctx context.Context, specFile string) error {
-	// Check if this is a different spec file than what was previously processed
-	if previousSpecFile, exists := d.stateData["spec_file"]; exists {
-		if previousSpecFile != specFile {
-			// Different spec file - restart the workflow from the beginning
-			logx.Infof("new spec file detected, restarting workflow...")
-			d.currentState = StateScoping
-			d.stateData = make(map[string]any)
-		}
-	}
-
-	// Store spec file path
-	d.specFile = specFile
-	d.stateData["spec_file"] = specFile
-	d.stateData["started_at"] = time.Now().UTC()
-
-	// Run the state machine loop with heartbeat
-	for {
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		// Check if we're already in a terminal state
-		if d.currentState == StateDone || d.currentState == StateError {
-			break
-		}
-
-		// Process current state
-		nextState, err := d.processCurrentState(ctx)
-		if err != nil {
-			// Transition to error state
-			d.transitionTo(ctx, StateError, map[string]any{
-				"error":        err.Error(),
-				"failed_state": d.currentState.String(),
-			})
-			return err
-		}
-
-		// Transition to next state (always call transitionTo - let it handle self-transitions)
-		if err := d.transitionTo(ctx, nextState, nil); err != nil {
-			return fmt.Errorf("failed to transition to state %s: %w", nextState, err)
-		}
-
-		// Compact context if needed
-		if err := d.contextManager.CompactIfNeeded(); err != nil {
-			// Log warning but don't fail
-			logx.Warnf("context compaction failed: %v", err)
-		}
-	}
-
+// Shutdown implements Agent interface with context
+func (d *Driver) Shutdown(ctx context.Context) error {
+	// Call the original shutdown method
+	d.shutdown()
 	return nil
 }
 
-// RunStateMachine starts the architect's state machine loop in WAITING state
-func (d *Driver) RunStateMachine(ctx context.Context) error {
+// shutdown is the internal shutdown method
+func (d *Driver) shutdown() {
+	// Persist current state to disk before shutting down
+	if err := d.stateStore.SaveState(d.architectID, d.currentState.String(), d.stateData); err != nil {
+		d.logger.Error("failed to persist state during shutdown: %v", err)
+	} else {
+		d.logger.Info("state persisted successfully during shutdown")
+	}
+
+	// Channels are owned by dispatcher, no cleanup needed here
+	d.logger.Info("🏗️ Architect %s shutdown completed", d.architectID)
+}
+
+// Step implements agent.Driver interface - executes one state transition
+func (d *Driver) Step(ctx context.Context) (bool, error) {
+	// Ensure channels are attached
+	if d.specCh == nil || d.questionsCh == nil {
+		return false, fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
+	}
+
+	// Process current state to get next state
+	nextState, err := d.processCurrentState(ctx)
+	if err != nil {
+		return false, fmt.Errorf("state processing error in %s: %w", d.currentState, err)
+	}
+
+	// Check if we're done (reached terminal state)
+	if nextState == agent.StateDone || nextState == agent.StateError {
+		return true, nil
+	}
+
+	// Transition to next state
+	if err := d.transitionTo(ctx, nextState, nil); err != nil {
+		return false, fmt.Errorf("state transition error %s -> %s: %w", d.currentState, nextState, err)
+	}
+
+	return false, nil
+}
+
+// Run starts the architect's state machine loop in WAITING state
+func (d *Driver) Run(ctx context.Context) error {
+	d.logger.Info("🏗️ Architect %s starting state machine", d.architectID)
+	
+	// Ensure channels are attached
+	if d.specCh == nil || d.questionsCh == nil {
+		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
+	}
+	
 	// Start in WAITING state, ready to receive specs
 	d.currentState = StateWaiting
 	d.stateData = make(map[string]any)
 	d.stateData["started_at"] = time.Now().UTC()
-	
-	logx.Infof("🏗️ Architect state machine starting in WAITING state")
-	
-	// Run the state machine loop with heartbeat
+
+	d.logger.Info("🏗️ Architect ready in WAITING state")
+
+	// Run the state machine loop
 	for {
 		// Check context cancellation
 		select {
 		case <-ctx.Done():
-			logx.Infof("🏗️ Architect state machine context cancelled")
+			d.logger.Info("🏗️ Architect state machine context cancelled")
 			return ctx.Err()
 		default:
 		}
 
 		// Check if we're already in a terminal state
 		if d.currentState == StateDone || d.currentState == StateError {
-			logx.Infof("🏗️ Architect state machine reached terminal state: %s", d.currentState)
+			d.logger.Info("🏗️ Architect state machine reached terminal state: %s", d.currentState)
 			break
 		}
 
-		// Log current state processing
-		logx.Infof("🏗️ Architect processing state: %s", d.currentState)
+		// Log state processing (only for non-waiting states to reduce noise)
+		if d.currentState != StateWaiting {
+			d.logger.Info("🏗️ Architect processing state: %s", d.currentState)
+		}
 
 		// Process current state
 		nextState, err := d.processCurrentState(ctx)
 		if err != nil {
-			logx.Errorf("🏗️ Architect state processing error in %s: %v", d.currentState, err)
+			d.logger.Error("🏗️ Architect state processing error in %s: %v", d.currentState, err)
 			// Transition to error state
 			d.transitionTo(ctx, StateError, map[string]any{
 				"error":        err.Error(),
@@ -826,42 +225,63 @@ func (d *Driver) RunStateMachine(ctx context.Context) error {
 
 		// Transition to next state (always call transitionTo - let it handle self-transitions)
 		if err := d.transitionTo(ctx, nextState, nil); err != nil {
-			logx.Errorf("🏗️ Architect state transition failed: %s -> %s: %v", d.currentState, nextState, err)
+			d.logger.Error("🏗️ Architect state transition failed: %s -> %s: %v", d.currentState, nextState, err)
 			return fmt.Errorf("failed to transition to state %s: %w", nextState, err)
 		}
 
 		// Compact context if needed
 		if err := d.contextManager.CompactIfNeeded(); err != nil {
 			// Log warning but don't fail
-			logx.Warnf("context compaction failed: %v", err)
+			d.logger.Warn("context compaction failed: %v", err)
 		}
 	}
 
-	logx.Infof("🏗️ Architect state machine completed")
+	d.logger.Info("🏗️ Architect state machine completed")
 	return nil
 }
 
-// handleWaiting blocks until a spec message is received
-func (d *Driver) handleWaiting(ctx context.Context) (ArchitectState, error) {
-	logx.Infof("🏗️ Architect entering WAITING state, waiting for spec...")
-	logx.Infof("🏗️ Architect spec channel info: %p (waiting to receive)", d.specCh)
-	
+// handleWaiting blocks until a spec message or question is received
+func (d *Driver) handleWaiting(ctx context.Context) (agent.State, error) {
+	d.logger.Info("🏗️ Architect waiting for spec or question...")
+
 	select {
 	case <-ctx.Done():
-		logx.Infof("🏗️ Architect WAITING state context cancelled")
+		d.logger.Info("🏗️ Architect WAITING state context cancelled")
 		return StateError, ctx.Err()
 	case specMsg := <-d.specCh:
-		logx.Infof("🏗️ Architect received spec message %s, transitioning to SCOPING", specMsg.ID)
-		
+		d.logger.Info("🏗️ Architect received spec message %s, transitioning to SCOPING", specMsg.ID)
+
 		// Store the spec message for processing in SCOPING state
 		d.stateData["spec_message"] = specMsg
-		
+
 		return StateScoping, nil
+	case questionMsg := <-d.questionsCh:
+		d.logger.Info("🏗️ Architect received question message %s in WAITING state, transitioning to REQUEST", questionMsg.ID)
+
+		// Store the question for processing in REQUEST state
+		d.stateData["current_request"] = questionMsg
+
+		return StateRequest, nil
 	}
 }
 
+// ownsSpec checks if the architect currently owns a spec
+func (d *Driver) ownsSpec() bool {
+	// Check if we have a spec message in state data
+	if _, hasSpec := d.stateData["spec_message"]; hasSpec {
+		return true
+	}
+
+	// Check if we have stories in the queue (indicating we're working on a spec)
+	if d.queue != nil && len(d.queue.GetAllStories()) > 0 {
+		return true
+	}
+
+	return false
+}
+
 // processCurrentState handles the logic for the current state
-func (d *Driver) processCurrentState(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) processCurrentState(ctx context.Context) (agent.State, error) {
 	switch d.currentState {
 	case StateWaiting:
 		// WAITING state - block until spec received
@@ -890,80 +310,49 @@ func (d *Driver) processCurrentState(ctx context.Context) (ArchitectState, error
 }
 
 // handleScoping processes the scoping phase (spec analysis and story generation)
-func (d *Driver) handleScoping(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) handleScoping(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Scoping phase: analyzing specification and generating stories")
 
-	if d.llmClient != nil {
-		// Use LLM for spec parsing
-		return d.handleScopingWithLLM(ctx)
-	} else {
-		// Fallback to mock mode
-		return d.handleScopingMock(ctx)
-	}
-}
-
-// handleScopingWithLLM uses the LLM to analyze the specification
-func (d *Driver) handleScopingWithLLM(ctx context.Context) (ArchitectState, error) {
 	// Extract spec file path from the SPEC message
 	specFile := d.getSpecFileFromMessage()
 	if specFile == "" {
 		return StateError, fmt.Errorf("no spec file path found in SPEC message")
 	}
-	
-	logx.Infof("🏗️ Architect reading spec file: %s", specFile)
-	
+
+	d.logger.Info("🏗️ Architect reading spec file: %s", specFile)
+
 	// Read raw spec file content
 	rawSpecContent, err := os.ReadFile(specFile)
 	if err != nil {
 		return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
 	}
 
-	// LLM-first approach: send raw content directly to LLM
-	templateData := &templates.TemplateData{
-		TaskContent: string(rawSpecContent),
-		Context:     d.formatContextAsString(),
-		Extra: map[string]any{
-			"spec_file_path": specFile,
-			"mode":           "llm_analysis",
-		},
-	}
-
-	prompt, err := d.renderer.Render(templates.SpecAnalysisTemplate, templateData)
-	if err != nil {
-		return StateError, fmt.Errorf("failed to render spec analysis template: %w", err)
-	}
-
-	// Get LLM response
-	response, err := d.llmClient.GenerateResponse(ctx, prompt)
-	if err != nil {
-		return StateError, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
-	}
-
-	// Parse LLM response to extract requirements
-	requirements, parseErr := d.parseSpecAnalysisJSON(response)
-	if parseErr != nil {
-		// Graceful fallback: try deterministic parsing if LLM response fails
-		logx.Warnf("LLM response parsing failed (%v), falling back to deterministic parser", parseErr)
-
-		specParser := NewSpecParser(d.storiesDir)
-		fallbackRequirements, fallbackErr := specParser.ParseSpecFile(specFile)
-		if fallbackErr != nil {
-			return StateError, fmt.Errorf("both LLM parsing and deterministic fallback failed. LLM error: %v, Fallback error: %v", parseErr, fallbackErr)
+	// Use LLM for spec analysis if available
+	var requirements []Requirement
+	if d.llmClient != nil {
+		requirements, err = d.parseSpecWithLLM(ctx, string(rawSpecContent), specFile)
+		if err != nil {
+			// Graceful fallback to deterministic parsing
+			d.logger.Warn("LLM parsing failed (%v), falling back to deterministic parser", err)
+			requirements, err = d.parseSpecDeterministic(specFile)
+			if err != nil {
+				return StateError, fmt.Errorf("both LLM and deterministic parsing failed: %w", err)
+			}
+			d.stateData["parsing_method"] = "deterministic_fallback"
+		} else {
+			d.stateData["parsing_method"] = "llm_primary"
 		}
-
-		requirements = fallbackRequirements
-		d.stateData["parsing_method"] = "deterministic_fallback"
-		d.stateData["llm_parse_error"] = parseErr.Error()
 	} else {
-		d.stateData["parsing_method"] = "llm_primary"
+		// Use deterministic parsing only
+		requirements, err = d.parseSpecDeterministic(specFile)
+		if err != nil {
+			return StateError, fmt.Errorf("deterministic parsing failed: %w", err)
+		}
+		d.stateData["parsing_method"] = "deterministic_only"
 	}
 
-	// Add LLM response to context
-	d.contextManager.AddMessage("assistant", response)
-
-	// Store parsed requirements and LLM analysis
+	// Store parsed requirements
 	d.stateData["requirements"] = requirements
-	d.stateData["llm_analysis"] = response
 	d.stateData["raw_spec_content"] = string(rawSpecContent)
 	d.stateData["spec_parsing_completed_at"] = time.Now().UTC()
 
@@ -978,71 +367,51 @@ func (d *Driver) handleScopingWithLLM(ctx context.Context) (ArchitectState, erro
 	d.stateData["stories_generated"] = true
 	d.stateData["stories_count"] = len(storyFiles)
 
-	logx.Infof("scoping completed using %s method, extracted %d requirements and generated %d stories",
+	d.logger.Info("scoping completed using %s method, extracted %d requirements and generated %d stories",
 		d.stateData["parsing_method"], len(requirements), len(storyFiles))
 
 	return StateDispatching, nil
 }
 
-// handleScopingMock provides mock scoping behavior
-func (d *Driver) handleScopingMock(ctx context.Context) (ArchitectState, error) {
-	// Use real spec parser even in mock mode
-	specParser := NewSpecParser(d.storiesDir)
-
-	// Check if spec file exists, if not create mock requirements
-	var requirements []Requirement
-	var err error
-
-	if d.specFile != "" {
-		requirements, err = specParser.ParseSpecFile(d.specFile)
-		if err != nil {
-			// Fall back to mock requirements if file doesn't exist or can't be parsed
-			requirements = []Requirement{
-				{
-					Title:              "Sample requirement 1",
-					Description:        "Mock requirement description",
-					AcceptanceCriteria: []string{"Criterion 1", "Criterion 2"},
-					EstimatedPoints:    2,
-				},
-				{
-					Title:              "Sample requirement 2",
-					Description:        "Another mock requirement",
-					AcceptanceCriteria: []string{"Criterion A", "Criterion B"},
-					EstimatedPoints:    1,
-				},
-			}
-		}
-	} else {
-		// Create mock requirements when no spec file provided
-		requirements = []Requirement{
-			{
-				Title:              "Mock Health Endpoint",
-				Description:        "Create a simple health check endpoint",
-				AcceptanceCriteria: []string{"GET /health returns 200", "Response includes timestamp"},
-				EstimatedPoints:    1,
-			},
-		}
+// parseSpecWithLLM uses the LLM to analyze the specification
+func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile string) ([]Requirement, error) {
+	// LLM-first approach: send raw content directly to LLM
+	templateData := &templates.TemplateData{
+		TaskContent: rawSpecContent,
+		Context:     d.formatContextAsString(),
+		Extra: map[string]any{
+			"spec_file_path": specFile,
+			"mode":           "llm_analysis",
+		},
 	}
 
-	// Generate story files immediately in the scoping phase
-	storyFiles, err := specParser.GenerateStoryFiles(requirements)
+	prompt, err := d.renderer.Render(templates.SpecAnalysisTemplate, templateData)
 	if err != nil {
-		return StateError, fmt.Errorf("failed to generate story files: %w", err)
+		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
 	}
 
-	d.stateData["requirements"] = requirements
-	d.stateData["story_files"] = storyFiles
-	d.stateData["stories_generated"] = true
-	d.stateData["stories_count"] = len(storyFiles)
-	d.stateData["spec_parsing_completed_at"] = time.Now().UTC()
+	// Get LLM response
+	response, err := d.llmClient.GenerateResponse(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
+	}
 
-	logx.Infof("mock scoping completed, generated %d stories", len(storyFiles))
+	// Add LLM response to context
+	d.contextManager.AddMessage("assistant", response)
+	d.stateData["llm_analysis"] = response
 
-	return StateDispatching, nil
+	// Parse LLM response to extract requirements
+	return d.parseSpecAnalysisJSON(response)
+}
+
+// parseSpecDeterministic uses the deterministic parser
+func (d *Driver) parseSpecDeterministic(specFile string) ([]Requirement, error) {
+	specParser := NewSpecParser(d.storiesDir)
+	return specParser.ParseSpecFile(specFile)
 }
 
 // handleDispatching processes the dispatching phase (queue management and story assignment)
-func (d *Driver) handleDispatching(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) handleDispatching(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Dispatching phase: managing queue and assigning stories")
 
 	// Initialize queue if not already done
@@ -1068,7 +437,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (ArchitectState, error) 
 
 		// Get queue summary for logging
 		summary := d.queue.GetQueueSummary()
-		logx.Infof("queue loaded: %d stories (%d ready)",
+		d.logger.Info("queue loaded: %d stories (%d ready)",
 			summary["total_stories"], summary["ready_stories"])
 		d.stateData["queue_summary"] = summary
 	}
@@ -1081,7 +450,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (ArchitectState, error) 
 
 	// If no stories are ready and all are completed, we're done
 	if d.queue.AllStoriesCompleted() {
-		logx.Infof("all stories completed - transitioning to DONE")
+		d.logger.Info("all stories completed - transitioning to DONE")
 		return StateDone, nil
 	}
 
@@ -1090,16 +459,16 @@ func (d *Driver) handleDispatching(ctx context.Context) (ArchitectState, error) 
 }
 
 // handleMonitoring processes the monitoring phase (waiting for coder requests)
-func (d *Driver) handleMonitoring(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) handleMonitoring(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Monitoring phase: waiting for coder requests and review completions")
 
 	// First, check if we need to dispatch any ready stories
 	if story := d.queue.NextReadyStory(); story != nil {
-		logx.Infof("🏗️ Found ready story %s, dispatching to coder", story.ID)
+		d.logger.Info("🏗️ Found ready story %s, dispatching to coder", story.ID)
 		if err := d.dispatchReadyStory(ctx, story.ID); err != nil {
-			logx.Errorf("🏗️ Failed to dispatch story %s: %v", story.ID, err)
+			d.logger.Error("🏗️ Failed to dispatch story %s: %v", story.ID, err)
 		} else {
-			logx.Infof("🏗️ Successfully dispatched story %s", story.ID)
+			d.logger.Info("🏗️ Successfully dispatched story %s", story.ID)
 		}
 		// Stay in monitoring to handle more stories or wait for responses
 		return StateMonitoring, nil
@@ -1107,34 +476,23 @@ func (d *Driver) handleMonitoring(ctx context.Context) (ArchitectState, error) {
 
 	// Check if all stories are completed
 	if d.queue.AllStoriesCompleted() {
-		logx.Infof("🏗️ All stories completed, transitioning to DONE")
+		d.logger.Info("🏗️ All stories completed, transitioning to DONE")
 		return StateDone, nil
 	}
 
 	// In monitoring state, we wait for either:
-	// 1. Coder requests (transition to REQUEST)
-	// 2. Approved code reviews (transition to MERGING)
-	// 3. Heartbeat to check for new ready stories
+	// 1. Coder questions/requests (transition to REQUEST)
+	// 2. Heartbeat to check for new ready stories
 	select {
-	case requestID := <-d.requestDoneCh:
-		logx.Infof("🏗️ Request completed: %s, checking if merge needed", requestID)
-		// Check if there are pending merges
-		select {
-		case <-d.mergeCh:
-			// There's a merge signal, transition to merging
-			return StateMerging, nil
-		default:
-			// No merge signal, stay in monitoring
-			return StateMonitoring, nil
-		}
-
-	case <-d.mergeCh:
-		// There's a merge signal, transition to merging
-		return StateMerging, nil
+	case questionMsg := <-d.questionsCh:
+		d.logger.Info("🏗️ Architect received question in MONITORING state, transitioning to REQUEST")
+		// Store the question for processing in REQUEST state
+		d.stateData["current_request"] = questionMsg
+		return StateRequest, nil
 
 	case <-time.After(HeartbeatInterval):
 		// Heartbeat debug logging
-		logx.Debugf("🏗️ Monitoring heartbeat: checking for ready stories")
+		d.logger.Debug("🏗️ Monitoring heartbeat: checking for ready stories")
 		return StateMonitoring, nil
 
 	case <-ctx.Done():
@@ -1143,23 +501,134 @@ func (d *Driver) handleMonitoring(ctx context.Context) (ArchitectState, error) {
 }
 
 // handleRequest processes the request phase (handling coder requests)
-func (d *Driver) handleRequest(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) handleRequest(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Request phase: processing coder request")
 
-	// Request handling is done by the RequestWorker (to be implemented in ARCH-005)
-	// For now, approve all requests and return to monitoring
-	return StateMonitoring, nil
+	// Get the current request from state data
+	requestMsg, exists := d.stateData["current_request"].(*proto.AgentMsg)
+	if !exists {
+		d.logger.Error("🏗️ No current request found in state data")
+		return StateError, fmt.Errorf("no current request found")
+	}
+
+	d.logger.Info("🏗️ Processing %s request %s from %s", requestMsg.Type, requestMsg.ID, requestMsg.FromAgent)
+
+	// Process the request based on type
+	var response *proto.AgentMsg
+	var err error
+
+	switch requestMsg.Type {
+	case proto.MsgTypeQUESTION:
+		response, err = d.handleQuestionRequest(ctx, requestMsg)
+	case proto.MsgTypeREQUEST:
+		response, err = d.handleApprovalRequest(ctx, requestMsg)
+	default:
+		d.logger.Error("🏗️ Unknown request type: %s", requestMsg.Type)
+		return StateError, fmt.Errorf("unknown request type: %s", requestMsg.Type)
+	}
+
+	if err != nil {
+		d.logger.Error("🏗️ Failed to process request %s: %v", requestMsg.ID, err)
+		return StateError, err
+	}
+
+	// Send response back through dispatcher
+	if response != nil {
+		if err := d.dispatcher.DispatchMessage(response); err != nil {
+			d.logger.Error("🏗️ Failed to send response %s: %v", response.ID, err)
+			return StateError, err
+		}
+		d.logger.Info("🏗️ Sent %s response %s to %s", response.Type, response.ID, response.ToAgent)
+	}
+
+	// Clear the processed request and return to monitoring
+	delete(d.stateData, "current_request")
+
+	// Determine next state based on whether architect owns a spec
+	if d.ownsSpec() {
+		return StateMonitoring, nil
+	} else {
+		return StateWaiting, nil
+	}
+}
+
+// handleQuestionRequest processes a QUESTION message and returns an ANSWER
+func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	question, exists := questionMsg.GetPayload("question")
+	if !exists {
+		return nil, fmt.Errorf("no question payload in message")
+	}
+
+	d.logger.Info("🏗️ Processing question: %v", question)
+
+	// For now, provide simple auto-response until LLM integration
+	answer := "Auto-response: Question received and acknowledged. Please proceed with your implementation."
+
+	// If we have LLM client, use it for more intelligent responses
+	if d.llmClient != nil {
+		llmResponse, err := d.llmClient.GenerateResponse(ctx, fmt.Sprintf("Answer this coding question: %v", question))
+		if err != nil {
+			d.logger.Warn("🏗️ LLM failed, using fallback answer: %v", err)
+		} else {
+			answer = llmResponse
+		}
+	}
+
+	// Create ANSWER response
+	response := proto.NewAgentMsg(proto.MsgTypeANSWER, d.architectID, questionMsg.FromAgent)
+	response.ParentMsgID = questionMsg.ID
+	response.SetPayload("answer", answer)
+	response.SetPayload("status", "answered")
+
+	return response, nil
+}
+
+// handleApprovalRequest processes a REQUEST message and returns a RESULT
+func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	requestType, _ := requestMsg.GetPayload("request_type")
+	content, _ := requestMsg.GetPayload("content")
+
+	d.logger.Info("🏗️ Processing approval request: type=%v, content=%v", requestType, content)
+
+	// For now, auto-approve all requests until LLM integration
+	approved := true
+	feedback := "Auto-approved: Request looks good, please proceed."
+
+	// If we have LLM client, use it for more intelligent review
+	if d.llmClient != nil {
+		llmResponse, err := d.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this request: %v", content))
+		if err != nil {
+			d.logger.Warn("🏗️ LLM failed, using fallback approval: %v", err)
+		} else {
+			feedback = llmResponse
+			// For now, always approve in LLM mode (real logic would parse LLM response)
+		}
+	}
+
+	// Create RESULT response
+	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+	response.SetPayload("approved", approved)
+	response.SetPayload("feedback", feedback)
+
+	if approved {
+		response.SetPayload("status", "approved")
+	} else {
+		response.SetPayload("status", "rejected")
+	}
+
+	return response, nil
 }
 
 // handleEscalated processes the escalated phase (waiting for human intervention)
-func (d *Driver) handleEscalated(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) handleEscalated(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Escalated phase: waiting for human intervention")
 
 	// Check escalation timeout (2 hours)
 	if escalatedAt, exists := d.stateData["escalated_at"].(time.Time); exists {
 		timeSinceEscalation := time.Since(escalatedAt)
 		if timeSinceEscalation > EscalationTimeout {
-			logx.Warnf("escalation timeout exceeded (%v > %v), sending ABANDON review and re-queuing",
+			d.logger.Warn("escalation timeout exceeded (%v > %v), sending ABANDON review and re-queuing",
 				timeSinceEscalation.Truncate(time.Minute), EscalationTimeout)
 
 			// Log timeout event for monitoring
@@ -1169,7 +638,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (ArchitectState, error) {
 
 			// Send ABANDON review and re-queue story
 			if err := d.sendAbandonAndRequeue(ctx); err != nil {
-				logx.Errorf("failed to send ABANDON review and re-queue: %v", err)
+				d.logger.Error("failed to send ABANDON review and re-queue: %v", err)
 				return StateError, fmt.Errorf("failed to handle escalation timeout: %w", err)
 			}
 
@@ -1178,11 +647,11 @@ func (d *Driver) handleEscalated(ctx context.Context) (ArchitectState, error) {
 
 		// Log remaining time periodically (every hour in actual usage, but for demo we'll be more verbose)
 		timeRemaining := EscalationTimeout - timeSinceEscalation
-		logx.Debugf("escalation timeout: %v remaining (escalated %v ago)",
+		d.logger.Debug("escalation timeout: %v remaining (escalated %v ago)",
 			timeRemaining.Truncate(time.Minute), timeSinceEscalation.Truncate(time.Minute))
 	} else {
 		// If we don't have an escalation timestamp, this is an error - we should always record when we escalate
-		logx.Warnf("in ESCALATED state but no escalation timestamp found")
+		d.logger.Warn("in ESCALATED state but no escalation timestamp found")
 		return StateError, fmt.Errorf("invalid escalated state: no escalation timestamp")
 	}
 
@@ -1202,30 +671,17 @@ func (d *Driver) handleEscalated(ctx context.Context) (ArchitectState, error) {
 }
 
 // handleMerging processes the merging phase (merging approved code)
-func (d *Driver) handleMerging(ctx context.Context) (ArchitectState, error) {
+func (d *Driver) handleMerging(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Merging phase: processing completed stories")
 
-	// Wait for merge signal with heartbeat
-	select {
-	case storyID := <-d.mergeCh:
-		logx.Infof("processing merge completion for story %s", storyID)
-
-		// Story has been marked completed in queue by review process
-		// Now check if there are newly ready stories to dispatch
-		return StateDispatching, nil
-
-	case <-time.After(HeartbeatInterval):
-		// Heartbeat debug logging
-		logx.Debugf("heartbeat: %s", d.currentState)
-		return StateMerging, nil
-
-	case <-ctx.Done():
-		return StateError, ctx.Err()
-	}
+	// TODO: Implement proper merging logic without RequestWorker
+	// For now, immediately return to dispatching to check for new ready stories
+	d.logger.Info("🏗️ Merging completed, returning to dispatching")
+	return StateDispatching, nil
 }
 
 // transitionTo moves the driver to a new state and persists it
-func (d *Driver) transitionTo(ctx context.Context, newState ArchitectState, additionalData map[string]any) error {
+func (d *Driver) transitionTo(ctx context.Context, newState agent.State, additionalData map[string]any) error {
 	oldState := d.currentState
 	d.currentState = newState
 
@@ -1237,7 +693,7 @@ func (d *Driver) transitionTo(ctx context.Context, newState ArchitectState, addi
 	// Special handling for ESCALATED state - record escalation timestamp for timeout guard
 	if newState == StateEscalated {
 		d.stateData["escalated_at"] = time.Now().UTC()
-		logx.Infof("entered ESCALATED state - timeout guard set for %v", EscalationTimeout)
+		d.logger.Info("entered ESCALATED state - timeout guard set for %v", EscalationTimeout)
 	}
 
 	// Merge additional data if provided
@@ -1254,16 +710,16 @@ func (d *Driver) transitionTo(ctx context.Context, newState ArchitectState, addi
 
 	// Enhanced logging for debugging
 	if oldState != newState {
-		logx.Infof("🏗️ Architect state transition: %s → %s", oldState, newState)
+		d.logger.Info("🏗️ Architect state transition: %s → %s", oldState, newState)
 	} else {
-		logx.Infof("🏗️ Architect staying in state: %s", oldState)
+		d.logger.Info("🏗️ Architect staying in state: %s", oldState)
 	}
 
 	return nil
 }
 
 // GetCurrentState returns the current state of the driver
-func (d *Driver) GetCurrentState() ArchitectState {
+func (d *Driver) GetCurrentState() agent.State {
 	return d.currentState
 }
 
@@ -1279,6 +735,16 @@ func (d *Driver) GetStateData() map[string]any {
 // GetAgentType returns the type of the agent
 func (d *Driver) GetAgentType() agent.AgentType {
 	return agent.AgentTypeArchitect
+}
+
+// ValidateState checks if a state is valid for this architect agent
+func (d *Driver) ValidateState(state agent.State) error {
+	return ValidateState(state)
+}
+
+// GetValidStates returns all valid states for this architect agent
+func (d *Driver) GetValidStates() []agent.State {
+	return GetValidStates()
 }
 
 // GetContextSummary returns a summary of the current context
@@ -1463,115 +929,10 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
-// HandleTask processes incoming TASK messages (spec uploads, etc.)
-func (d *Driver) HandleTask(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	logx.Infof("architect received task: %s", msg.ID)
-	
-	// Check task type
-	taskType, exists := msg.GetPayload("type")
-	if !exists {
-		return nil, fmt.Errorf("missing task type in payload")
-	}
-	
-	switch taskType {
-	case "spec_upload":
-		return d.handleSpecUpload(ctx, msg)
-	default:
-		return nil, fmt.Errorf("unsupported task type: %v", taskType)
-	}
-}
-
-// handleSpecUpload processes specification file uploads
-func (d *Driver) handleSpecUpload(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract spec information from message
-	filename, _ := msg.GetPayload("filename")
-	filepath, _ := msg.GetPayload("filepath") 
-	size, _ := msg.GetPayload("size")
-	
-	logx.Infof("processing spec upload: %v (%v bytes)", filename, size)
-	
-	// Start the workflow processing with the uploaded spec
-	if filepath != nil {
-		d.specFile = fmt.Sprintf("%v", filepath)
-		// Trigger spec parsing workflow
-		go func() {
-			if err := d.ProcessWorkflow(ctx, d.specFile); err != nil {
-				logx.Errorf("failed to process uploaded spec workflow: %v", err)
-			}
-		}()
-	}
-	
-	// Send immediate response to web UI
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, "processing")
-	response.SetPayload("message", fmt.Sprintf("Spec upload %v accepted and processing started", filename))
-	
-	return response, nil
-}
-
-// HandleQuestion processes incoming QUESTION messages (legacy adapter support)
-func (d *Driver) HandleQuestion(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// In the new architecture, questions are handled by workers
-	// This is a placeholder for legacy compatibility
-	logx.Infof("architect received question: %s (processed by workers)", msg.ID)
-
-	response := proto.NewAgentMsg(proto.MsgTypeANSWER, d.architectID, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, "processed")
-	response.SetPayload("message", "Question processed by answer worker")
-
-	return response, nil
-}
-
-// HandleResult processes incoming RESULT messages (legacy adapter support)
-func (d *Driver) HandleResult(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// In the new architecture, results are handled by workers
-	// This is a placeholder for legacy compatibility
-	logx.Infof("architect received result: %s (processed by workers)", msg.ID)
-
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, "processed")
-	response.SetPayload("message", "Result processed by review worker")
-
-	return response, nil
-}
-
-// RouteMessage routes incoming messages to appropriate worker channels with timeout
-func (d *Driver) RouteMessage(msg *proto.AgentMsg) error {
-	// Validate message first
-	if msg == nil {
-		return fmt.Errorf("cannot route nil message")
-	}
-	if msg.ID == "" {
-		return fmt.Errorf("cannot route message with empty ID")
-	}
-	if msg.FromAgent == "" {
-		return fmt.Errorf("cannot route message with no sender")
-	}
-
-	// Add timeout for channel operations
-	timeout := time.After(5 * time.Second)
-
-	switch msg.Type {
-	case proto.MsgTypeQUESTION, proto.MsgTypeREQUEST:
-		select {
-		case d.requestCh <- msg:
-			logx.Infof("routed %s %s to unified request worker", msg.Type, msg.ID)
-			return nil
-		case <-timeout:
-			return fmt.Errorf("timeout routing %s %s - channel full after 5s", msg.Type, msg.ID)
-		}
-	default:
-		return fmt.Errorf("unknown message type for routing: %s", msg.Type)
-	}
-}
-
 // dispatchReadyStory assigns a ready story to an available agent
 func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
-	logx.Infof("🏗️ Dispatching ready story %s", storyID)
-	
+	d.logger.Info("🏗️ Dispatching ready story %s", storyID)
+
 	// Get the story from queue
 	story, exists := d.queue.stories[storyID]
 	if !exists {
@@ -1582,119 +943,55 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 		return fmt.Errorf("story %s is not in pending status (current: %s)", storyID, story.Status)
 	}
 
-	// Send to shared work queue via dispatcher - don't assign to specific agent
-	logx.Infof("🏗️ Sending story %s to shared work queue", storyID)
+	// Send to dispatcher via story message
+	d.logger.Info("🏗️ Sending story %s to dispatcher", storyID)
 
-	return d.sendStoryToSharedQueue(ctx, storyID)
+	return d.sendStoryToDispatcher(ctx, storyID)
 }
 
-// sendStoryToSharedQueue sends a story to the dispatcher's shared work queue
-func (d *Driver) sendStoryToSharedQueue(ctx context.Context, storyID string) error {
-	logx.Infof("🏗️ Sending story %s to shared work queue", storyID)
-	
+// sendStoryToDispatcher sends a story to the dispatcher
+func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) error {
+	d.logger.Info("🏗️ Sending story %s to dispatcher", storyID)
+
 	// Mark story as dispatched (no specific agent yet)
-	if err := d.queue.MarkInProgress(storyID, "shared_queue"); err != nil {
+	if err := d.queue.MarkInProgress(storyID, "dispatcher"); err != nil {
 		return fmt.Errorf("failed to mark story as dispatched: %w", err)
 	}
-	
-	// Create task message for the shared work queue (no specific agent)
-	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, d.architectID, "coder") // Generic "coder" target
-	taskMsg.SetPayload(proto.KeyStoryID, storyID)
-	taskMsg.SetPayload(proto.KeyTaskType, "implement_story")
-	
-	logx.Infof("🏗️ Created TASK message %s for story %s -> shared queue", taskMsg.ID, storyID)
+
+	// Create story message for the dispatcher ("coder" targets any available coder)
+	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
+	storyMsg.SetPayload(proto.KeyStoryID, storyID)
+	storyMsg.SetPayload("story_type", "implement_story")
+
+	d.logger.Info("🏗️ Created STORY message %s for story %s -> dispatcher", storyMsg.ID, storyID)
 
 	// Get story details
 	if story, exists := d.queue.stories[storyID]; exists {
-		taskMsg.SetPayload(proto.KeyTitle, story.Title)
-		taskMsg.SetPayload(proto.KeyFilePath, story.FilePath)
-		taskMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
-		taskMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
+		storyMsg.SetPayload(proto.KeyTitle, story.Title)
+		storyMsg.SetPayload(proto.KeyFilePath, story.FilePath)
+		storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
+		storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
 
 		// Read and parse story content for the coder
 		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
-			taskMsg.SetPayload(proto.KeyContent, content)
-			taskMsg.SetPayload(proto.KeyRequirements, requirements)
+			storyMsg.SetPayload(proto.KeyContent, content)
+			storyMsg.SetPayload(proto.KeyRequirements, requirements)
 		} else {
 			// Fallback to title if content parsing fails
-			taskMsg.SetPayload(proto.KeyContent, story.Title)
-			taskMsg.SetPayload(proto.KeyRequirements, []string{})
+			storyMsg.SetPayload(proto.KeyContent, story.Title)
+			storyMsg.SetPayload(proto.KeyRequirements, []string{})
 		}
 	}
 
-	// Send task to dispatcher shared queue
-	logx.Infof("🏗️ Sending TASK message %s to dispatcher shared queue", taskMsg.ID)
+	// Send story to dispatcher
+	d.logger.Info("🏗️ Sending STORY message %s to dispatcher", storyMsg.ID)
 
-	// Send via dispatcher if available (production mode)
-	if d.dispatcher != nil {
-		// Cast to the full dispatcher interface to access DispatchMessage
-		if dispatcher, ok := d.dispatcher.(*dispatch.Dispatcher); ok {
-			if err := dispatcher.DispatchMessage(taskMsg); err != nil {
-				logx.Errorf("🏗️ Failed to dispatch TASK message %s: %v", taskMsg.ID, err)
-				return err
-			}
-			logx.Infof("🏗️ Successfully dispatched TASK message %s to shared queue", taskMsg.ID)
-			return nil
-		}
+	if err := d.dispatcher.DispatchMessage(storyMsg); err != nil {
+		d.logger.Error("🏗️ Failed to dispatch STORY message %s: %v", storyMsg.ID, err)
+		return err
 	}
 
-	// Mock mode - just log the assignment
-	logx.Infof("🏗️ Mock mode: story sent to shared queue (logged only)")
-	return nil
-}
-
-// assignStoryToAgent assigns a specific story to a specific agent (for direct responses)
-func (d *Driver) assignStoryToAgent(ctx context.Context, storyID, agentID string) error {
-	logx.Infof("🏗️ Assigning story %s to specific agent %s", storyID, agentID)
-	
-	// Mark story as in progress
-	if err := d.queue.MarkInProgress(storyID, agentID); err != nil {
-		return fmt.Errorf("failed to mark story as in progress: %w", err)
-	}
-
-	// Create task message for the specific agent
-	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, d.architectID, agentID)
-	taskMsg.SetPayload(proto.KeyStoryID, storyID)
-	taskMsg.SetPayload(proto.KeyTaskType, "implement_story")
-	
-	logx.Infof("🏗️ Created TASK message %s for story %s -> agent %s", taskMsg.ID, storyID, agentID)
-
-	// Get story details
-	if story, exists := d.queue.stories[storyID]; exists {
-		taskMsg.SetPayload(proto.KeyTitle, story.Title)
-		taskMsg.SetPayload(proto.KeyFilePath, story.FilePath)
-		taskMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
-		taskMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
-
-		// Read and parse story content for the coder
-		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
-			taskMsg.SetPayload(proto.KeyContent, content)
-			taskMsg.SetPayload(proto.KeyRequirements, requirements)
-		} else {
-			// Fallback to title if content parsing fails
-			taskMsg.SetPayload(proto.KeyContent, story.Title)
-			taskMsg.SetPayload(proto.KeyRequirements, []string{})
-		}
-	}
-
-	// Send task to agent via dispatcher
-	logx.Infof("🏗️ Sending TASK message %s to dispatcher for agent %s", taskMsg.ID, agentID)
-
-	// Send via dispatcher if available (production mode)
-	if d.dispatcher != nil {
-		// Cast to the full dispatcher interface to access DispatchMessage
-		if dispatcher, ok := d.dispatcher.(*dispatch.Dispatcher); ok {
-			if err := dispatcher.DispatchMessage(taskMsg); err != nil {
-				logx.Errorf("🏗️ Failed to dispatch TASK message %s: %v", taskMsg.ID, err)
-				return err
-			}
-			logx.Infof("🏗️ Successfully dispatched TASK message %s", taskMsg.ID)
-			return nil
-		}
-	}
-
-	// Mock mode - just log the assignment
-	logx.Infof("🏗️ Mock mode: story assignment logged only")
+	d.logger.Info("🏗️ Successfully dispatched STORY message %s to dispatcher", storyMsg.ID)
 	return nil
 }
 
@@ -1728,21 +1025,16 @@ func (d *Driver) sendAbandonAndRequeue(ctx context.Context) error {
 	agentID := latestEscalation.AgentID
 
 	// Create ABANDON review message
-	if d.dispatcher != nil {
-		abandonMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, agentID)
-		abandonMsg.SetPayload("story_id", storyID)
-		abandonMsg.SetPayload("review_result", "ABANDON")
-		abandonMsg.SetPayload("review_notes", "Escalation timeout exceeded - abandoning current submission")
-		abandonMsg.SetPayload("reviewed_at", time.Now().UTC().Format(time.RFC3339))
-		abandonMsg.SetPayload("timeout_reason", "escalation_timeout")
+	abandonMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, agentID)
+	abandonMsg.SetPayload("story_id", storyID)
+	abandonMsg.SetPayload("review_result", "ABANDON")
+	abandonMsg.SetPayload("review_notes", "Escalation timeout exceeded - abandoning current submission")
+	abandonMsg.SetPayload("reviewed_at", time.Now().UTC().Format(time.RFC3339))
+	abandonMsg.SetPayload("timeout_reason", "escalation_timeout")
 
-		// Send via dispatcher adapter
-		if adapter, ok := d.dispatcher.(*dispatch.Dispatcher); ok {
-			dispatcherAdapter := NewDispatcherAdapter(adapter)
-			if err := dispatcherAdapter.SendMessage(abandonMsg); err != nil {
-				return fmt.Errorf("failed to send ABANDON message: %w", err)
-			}
-		}
+	// Send via dispatcher
+	if err := d.dispatcher.DispatchMessage(abandonMsg); err != nil {
+		return fmt.Errorf("failed to send ABANDON message: %w", err)
 	}
 
 	// Re-queue the story by resetting it to pending status
@@ -1761,7 +1053,7 @@ func (d *Driver) sendAbandonAndRequeue(ctx context.Context) error {
 	// Trigger ready notification if dependencies are met
 	d.queue.checkAndNotifyReady()
 
-	logx.Infof("abandoned story %s due to escalation timeout and re-queued", storyID)
+	d.logger.Info("abandoned story %s due to escalation timeout and re-queued", storyID)
 	return nil
 }
 
@@ -1797,20 +1089,20 @@ func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
 	contentLines := lines[contentStart:]
 	storyContent := strings.Join(contentLines, "\n")
 
-	// Extract Task description (everything after **Task** until **Acceptance Criteria**)
-	taskStart := strings.Index(storyContent, "**Task**")
+	// Extract Story description (everything after **Story** until **Acceptance Criteria**)
+	storyStart := strings.Index(storyContent, "**Story**")
 	criteriaStart := strings.Index(storyContent, "**Acceptance Criteria**")
 
-	var taskDescription string
-	if taskStart != -1 && criteriaStart != -1 {
-		taskDescription = strings.TrimSpace(storyContent[taskStart+8 : criteriaStart])
-	} else if taskStart != -1 {
-		taskDescription = strings.TrimSpace(storyContent[taskStart+8:])
+	var storyDescription string
+	if storyStart != -1 && criteriaStart != -1 {
+		storyDescription = strings.TrimSpace(storyContent[storyStart+9 : criteriaStart])
+	} else if storyStart != -1 {
+		storyDescription = strings.TrimSpace(storyContent[storyStart+9:])
 	} else {
 		// Fallback: use first paragraph
 		paragraphs := strings.Split(strings.TrimSpace(storyContent), "\n\n")
 		if len(paragraphs) > 0 {
-			taskDescription = strings.TrimSpace(paragraphs[0])
+			storyDescription = strings.TrimSpace(paragraphs[0])
 		}
 	}
 
@@ -1831,7 +1123,7 @@ func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
 		}
 	}
 
-	return taskDescription, requirements, nil
+	return storyDescription, requirements, nil
 }
 
 // getSpecFileFromMessage extracts the spec file path from the stored SPEC message
@@ -1839,24 +1131,24 @@ func (d *Driver) getSpecFileFromMessage() string {
 	// Get the stored spec message
 	specMsgData, exists := d.stateData["spec_message"]
 	if !exists {
-		logx.Errorf("🏗️ No spec_message found in state data")
+		d.logger.Error("🏗️ No spec_message found in state data")
 		return ""
 	}
-	
+
 	// Cast to AgentMsg
 	specMsg, ok := specMsgData.(*proto.AgentMsg)
 	if !ok {
-		logx.Errorf("🏗️ spec_message is not an AgentMsg: %T", specMsgData)
+		d.logger.Error("🏗️ spec_message is not an AgentMsg: %T", specMsgData)
 		return ""
 	}
-	
+
 	// Debug: log all payload keys
 	payloadKeys := make([]string, 0)
 	for key := range specMsg.Payload {
 		payloadKeys = append(payloadKeys, key)
 	}
-	logx.Infof("🏗️ SPEC message payload keys: %v", payloadKeys)
-	
+	d.logger.Info("🏗️ SPEC message payload keys: %v", payloadKeys)
+
 	// Extract spec file path from payload - try different keys
 	specFile, exists := specMsg.GetPayload("spec_file")
 	if !exists {
@@ -1865,18 +1157,18 @@ func (d *Driver) getSpecFileFromMessage() string {
 		if !exists {
 			specFile, exists = specMsg.GetPayload("filepath")
 			if !exists {
-				logx.Errorf("🏗️ No spec file path found in payload with keys: %v", payloadKeys)
+				d.logger.Error("🏗️ No spec file path found in payload with keys: %v", payloadKeys)
 				return ""
 			}
 		}
 	}
-	
+
 	// Convert to string
 	if specFileStr, ok := specFile.(string); ok {
-		logx.Infof("🏗️ Found spec file path: %s", specFileStr)
+		d.logger.Info("🏗️ Found spec file path: %s", specFileStr)
 		return specFileStr
 	}
-	
-	logx.Errorf("🏗️ Spec file path is not a string: %T = %v", specFile, specFile)
+
+	d.logger.Error("🏗️ Spec file path is not a string: %T = %v", specFile, specFile)
 	return ""
 }

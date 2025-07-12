@@ -26,7 +26,7 @@ func TestAutoCheckinCoding(t *testing.T) {
 	driver := CreateTestCoderWithAgent(t, "test-coder", agentConfig)
 
 	// Force driver into CODING state
-	err := driver.TransitionTo(context.Background(), coder.StateCoding.ToAgentState(), nil)
+	err := driver.TransitionTo(context.Background(), coder.StateCoding, nil)
 	if err != nil {
 		t.Fatalf("Failed to transition to CODING: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestAutoCheckinFixing(t *testing.T) {
 	driver := CreateTestCoderWithAgent(t, "test-coder", agentConfig)
 
 	// Transition to FIXING state manually for this test
-	err := driver.TransitionTo(context.Background(), coder.StateFixing.ToAgentState(), nil)
+	err := driver.TransitionTo(context.Background(), coder.StateFixing, nil)
 	if err != nil {
 		t.Fatalf("Failed to transition to FIXING: %v", err)
 	}

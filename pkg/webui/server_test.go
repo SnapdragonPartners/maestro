@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/state"
 )
 
@@ -487,7 +488,7 @@ func TestHandleLogs(t *testing.T) {
 	}
 
 	// Parse response
-	var logs []LogEntry
+	var logs []logx.LogEntry
 	if err := json.NewDecoder(w.Body).Decode(&logs); err != nil {
 		t.Fatalf("Failed to decode logs response: %v", err)
 	}
@@ -506,7 +507,7 @@ func TestHandleLogs(t *testing.T) {
 		t.Errorf("Expected status 200 for domain filter, got %d", w.Code)
 	}
 
-	logs = []LogEntry{}
+	logs = []logx.LogEntry{}
 	if err := json.NewDecoder(w.Body).Decode(&logs); err != nil {
 		t.Fatalf("Failed to decode filtered logs: %v", err)
 	}
@@ -527,7 +528,7 @@ func TestHandleLogs(t *testing.T) {
 		t.Errorf("Expected status 200 for since filter, got %d", w.Code)
 	}
 
-	logs = []LogEntry{}
+	logs = []logx.LogEntry{}
 	if err := json.NewDecoder(w.Body).Decode(&logs); err != nil {
 		t.Fatalf("Failed to decode since-filtered logs: %v", err)
 	}

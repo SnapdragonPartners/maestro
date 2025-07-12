@@ -11,7 +11,7 @@ import (
 type MsgType string
 
 const (
-	MsgTypeTASK     MsgType = "TASK"     // Work items for coders (stories to implement)
+	MsgTypeSTORY    MsgType = "STORY"    // Work items for coders (stories to implement)
 	MsgTypeSPEC     MsgType = "SPEC"     // Specifications for architects to process
 	MsgTypeQUESTION MsgType = "QUESTION" // Information request: "How should I approach this?"
 	MsgTypeANSWER   MsgType = "ANSWER"   // Information response: "Here's the guidance..."
@@ -57,8 +57,8 @@ const (
 	KeyApprovalID    = "approval_id"    // Unique ID for each approval request
 	KeyCorrelationID = "correlation_id" // Generic correlation ID for any request/response pair
 
-	// Task-related keys
-	KeyTaskType        = "task_type"
+	// Story-related keys
+	KeyStoryType       = "story_type"
 	KeyStoryID         = "story_id"
 	KeyTitle           = "title"
 	KeyRequirements    = "requirements"
@@ -264,7 +264,7 @@ func (msg *AgentMsg) Validate() error {
 
 	// Validate message type
 	switch msg.Type {
-	case MsgTypeTASK, MsgTypeSPEC, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeSHUTDOWN:
+	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeSHUTDOWN:
 		// Valid types
 	default:
 		return fmt.Errorf("invalid message type: %s", msg.Type)
