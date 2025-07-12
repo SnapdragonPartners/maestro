@@ -342,46 +342,24 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 				return fmt.Errorf("failed to create state store for agent %s: %w", logID, err)
 			}
 
-			// Check if we should use live API calls (command line flag)
-			if liveMode {
-				// Use unified coder with Claude LLM integration
-				liveAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
-				if err != nil {
-					return fmt.Errorf("failed to create live coder agent %s: %w", logID, err)
-				}
-
-				// Initialize and start the coder's state machine
-				if err := liveAgent.Initialize(context.Background()); err != nil {
-					return fmt.Errorf("failed to initialize coder %s: %w", logID, err)
-				}
-
-				go func() {
-					if err := liveAgent.Run(context.Background()); err != nil {
-						o.logger.Error("Coder %s state machine error: %v", logID, err)
-					}
-				}()
-
-				registeredAgent = liveAgent
-			} else {
-				// Use unified coder with core state machine (mock mode)
-				driverAgent, err := coder.NewCoder(logID, agentStateStore, &agentWithModel.Model, nil, agentWorkDir, &agentConfig)
-				if err != nil {
-					return fmt.Errorf("failed to create coder agent %s: %w", logID, err)
-				}
-
-				// Initialize and start the coder's state machine
-				if err := driverAgent.Initialize(context.Background()); err != nil {
-					return fmt.Errorf("failed to initialize coder %s: %w", logID, err)
-				}
-
-				go func() {
-					if err := driverAgent.Run(context.Background()); err != nil {
-						o.logger.Error("Coder %s state machine error: %v", logID, err)
-					}
-				}()
-
-				registeredAgent = driverAgent
+			// Create coder with Claude LLM integration (always live mode now)
+			coderAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
+			if err != nil {
+				return fmt.Errorf("failed to create coder agent %s: %w", logID, err)
 			}
+
+			// Initialize and start the coder's state machine
+			if err := coderAgent.Initialize(context.Background()); err != nil {
+				return fmt.Errorf("failed to initialize coder %s: %w", logID, err)
+			}
+
+			go func() {
+				if err := coderAgent.Run(context.Background()); err != nil {
+					o.logger.Error("Coder %s state machine error: %v", logID, err)
+				}
+			}()
+
+			registeredAgent = coderAgent
 
 		default:
 			return fmt.Errorf("unknown agent type: %s", agentConfig.Type)

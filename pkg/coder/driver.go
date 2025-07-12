@@ -14,6 +14,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
+	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
@@ -59,6 +60,7 @@ type Coder struct {
 	renderer                *templates.Renderer
 	workDir                 string
 	logger                  *logx.Logger
+	dispatcher              *dispatch.Dispatcher // Dispatcher for sending messages
 
 	// Iteration budgets
 	codingBudget int
@@ -101,6 +103,12 @@ func (c *Coder) SetChannels(storyCh <-chan *proto.AgentMsg, _ chan *proto.AgentM
 	c.logger.Info("🧑‍💻 Coder %s channels set: story=%p reply=%p", c.GetID(), storyCh, replyCh)
 }
 
+// SetDispatcher implements the ChannelReceiver interface for dispatcher attachment
+func (c *Coder) SetDispatcher(dispatcher *dispatch.Dispatcher) {
+	c.dispatcher = dispatcher
+	c.logger.Info("🧑‍💻 Coder %s dispatcher set: %p", c.GetID(), dispatcher)
+}
+
 // convertApprovalData converts approval data from various formats to *proto.ApprovalResult
 // Handles both direct struct pointers and map[string]interface{} from JSON deserialization
 func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
@@ -130,6 +138,9 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 
 // NewCoder creates a new coder using agent foundation  
 func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*Coder, error) {
+	if llmClient == nil {
+		return nil, fmt.Errorf("LLM client is required")
+	}
 	renderer, _ := templates.NewRenderer()
 
 	// Create agent context with logger
@@ -177,6 +188,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 		renderer:         renderer,
 		workDir:          workDir,
 		logger:           logx.NewLogger(agentID),
+		dispatcher:       nil, // Will be set during Attach()
 		codingBudget:     codingBudget,
 		fixingBudget:     fixingBudget,
 	}
@@ -184,10 +196,6 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 	return coder, nil
 }
 
-// NewCoderWithLLM creates a new coder with LLM integration (for live mode)
-func NewCoderWithLLM(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*Coder, error) {
-	return NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, agentConfig)
-}
 
 // NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode)
 func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string) (*Coder, error) {
@@ -372,15 +380,8 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return StateQuestion, false, nil
 	}
 
-	// Generate plan
-	if c.llmClient != nil {
-		return c.handlePlanningWithLLM(ctx, sm, taskStr)
-	}
-
-	// Mock mode
-	sm.SetStateData("plan", "Mock plan: Analyzed requirements, ready to proceed")
-	sm.SetStateData("planning_completed_at", time.Now().UTC())
-	return StatePlanReview, false, nil
+	// Generate plan using LLM (always required)
+	return c.handlePlanningWithLLM(ctx, sm, taskStr)
 }
 
 // handlePlanningWithLLM generates plan using LLM
@@ -414,14 +415,39 @@ func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMa
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
 	c.contextManager.AddMessage("assistant", resp.Content)
 
+	// Send REQUEST message to architect for plan approval as part of transition to PLAN_REVIEW
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: resp.Content,
+		Reason:  "Plan requires architect approval before proceeding to coding",
+		Type:    proto.ApprovalTypePlan,
+	}
+
+	if c.dispatcher != nil {
+		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+		requestMsg.SetPayload("request_type", "approval")
+		requestMsg.SetPayload("approval_type", proto.ApprovalTypePlan.String())
+		requestMsg.SetPayload("content", resp.Content)
+		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
+		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+		
+		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+			return agent.StateError, false, fmt.Errorf("failed to send plan approval request: %w", err)
+		}
+		
+		c.logger.Info("🧑‍💻 Sent plan approval request %s to architect during PLANNING->PLAN_REVIEW transition", c.pendingApprovalRequest.ID)
+	} else {
+		return agent.StateError, false, fmt.Errorf("dispatcher not set")
+	}
+
 	return StatePlanReview, false, nil
 }
 
-// handlePlanReview processes the PLAN_REVIEW state using REQUEST→RESULT flow
+// handlePlanReview processes the PLAN_REVIEW state - blocks waiting for architect's RESULT response
 func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Plan review phase: requesting architect approval")
+	c.contextManager.AddMessage("assistant", "Plan review phase: waiting for architect approval")
 
-	// Check if we already have approval result
+	// Check if we already have approval result from previous processing
 	if approvalData, exists := sm.GetStateValue(keyPlanApprovalResult); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
@@ -429,54 +455,49 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		}
 
 		sm.SetStateData("plan_review_completed_at", time.Now().UTC())
+		c.pendingApprovalRequest = nil // Clear since we have the result
 
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
+			c.logger.Info("🧑‍💻 Plan approved, transitioning to CODING")
 			return StateCoding, false, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
+			c.logger.Info("🧑‍💻 Plan rejected/needs changes, transitioning back to PLANNING")
 			return StatePlanning, false, nil
 		default:
 			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
 	}
 
-	// In mock mode (no LLM client), auto-approve
-	if c.llmClient == nil {
-		taskContent, _ := sm.GetStateValue(keyTaskContent)
-		taskStr, _ := taskContent.(string)
-
-		approved := c.simulateApproval(taskStr, proto.ApprovalTypePlan.String())
-		result := &proto.ApprovalResult{
-			Type:       proto.ApprovalTypePlan,
-			Status:     proto.ApprovalStatusApproved,
-			ReviewedAt: time.Now().UTC(),
+	// Block waiting for RESULT message from architect
+	c.logger.Debug("🧑‍💻 Blocking in PLAN_REVIEW, waiting for architect RESULT...")
+	select {
+	case <-ctx.Done():
+		return agent.StateError, false, ctx.Err()
+	case resultMsg := <-c.replyCh:
+		if resultMsg == nil {
+			c.logger.Warn("🧑‍💻 Received nil RESULT message")
+			return StatePlanReview, false, nil
 		}
-		if !approved {
-			result.Status = proto.ApprovalStatusRejected
+		
+		if resultMsg.Type == proto.MsgTypeRESULT {
+			c.logger.Info("🧑‍💻 Received RESULT message %s for plan approval", resultMsg.ID)
+			
+			// Extract approval result and store it
+			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
+				sm.SetStateData(keyPlanApprovalResult, approvalData)
+				c.logger.Info("🧑‍💻 Plan approval result received and stored")
+				// Return same state to re-process with the new approval data
+				return StatePlanReview, false, nil
+			} else {
+				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
+				return agent.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+			}
+		} else {
+			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
+			return StatePlanReview, false, nil
 		}
-
-		sm.SetStateData(keyPlanApprovalResult, result)
-		sm.SetStateData("plan_review_completed_at", time.Now().UTC())
-
-		if approved {
-			return StateCoding, false, nil
-		}
-		return StatePlanning, false, nil
 	}
-
-	// Create approval request for architect (LLM mode)
-	plan, _ := sm.GetStateValue("plan")
-	planStr, _ := plan.(string)
-
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: planStr,
-		Reason:  "Plan requires architect approval before proceeding to coding",
-		Type:    proto.ApprovalTypePlan,
-	}
-
-	// Stay in PLAN_REVIEW until we get approval result
-	return StatePlanReview, false, nil
 }
 
 // handleCoding processes the CODING state
@@ -488,15 +509,8 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (a
 	plan, _ := sm.GetStateValue("plan")
 	planStr, _ := plan.(string)
 
-	if c.llmClient != nil {
-		return c.handleCodingWithLLM(ctx, sm, taskStr, planStr)
-	}
-
-	// Mock implementation for no LLM
-	sm.SetStateData("code_generated", true)
-	sm.SetStateData("coding_completed_at", time.Now().UTC())
-
-	return StateTesting, false, nil
+	// Generate code using LLM (always required)
+	return c.handleCodingWithLLM(ctx, sm, taskStr, planStr)
 }
 
 // handleCodingWithLLM generates actual code using LLM
@@ -1197,6 +1211,34 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		return StateFixing, false, nil
 	}
 
+	// Tests passed, send REQUEST message to architect for code approval as part of transition to CODE_REVIEW
+	filesCreated, _ := sm.GetStateValue("files_created")
+	codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed", filesCreated)
+	
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: codeContent,
+		Reason:  "Code requires architect approval before completion",
+		Type:    proto.ApprovalTypeCode,
+	}
+
+	if c.dispatcher != nil {
+		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+		requestMsg.SetPayload("request_type", "approval")
+		requestMsg.SetPayload("approval_type", proto.ApprovalTypeCode.String())
+		requestMsg.SetPayload("content", codeContent)
+		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
+		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+		
+		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+			return agent.StateError, false, fmt.Errorf("failed to send code approval request: %w", err)
+		}
+		
+		c.logger.Info("🧑‍💻 Sent code approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.ID)
+	} else {
+		return agent.StateError, false, fmt.Errorf("dispatcher not set")
+	}
+
 	return StateCodeReview, false, nil
 }
 
@@ -1217,11 +1259,11 @@ func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (a
 	return StateTesting, false, nil
 }
 
-// handleCodeReview processes the CODE_REVIEW state using REQUEST→RESULT flow
+// handleCodeReview processes the CODE_REVIEW state - blocks waiting for architect's RESULT response
 func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Code review phase: requesting architect approval")
+	c.contextManager.AddMessage("assistant", "Code review phase: waiting for architect approval")
 
-	// Check if we already have approval result
+	// Check if we already have approval result from previous processing
 	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
@@ -1229,54 +1271,49 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		}
 
 		sm.SetStateData("code_review_completed_at", time.Now().UTC())
+		c.pendingApprovalRequest = nil // Clear since we have the result
 
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
+			c.logger.Info("🧑‍💻 Code approved, task completed successfully")
 			return agent.StateDone, true, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
+			c.logger.Info("🧑‍💻 Code rejected/needs changes, transitioning to FIXING")
 			return StateFixing, false, nil
 		default:
 			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
 	}
 
-	// In mock mode (no LLM client), auto-approve
-	if c.llmClient == nil {
-		taskContent, _ := sm.GetStateValue(keyTaskContent)
-		taskStr, _ := taskContent.(string)
-
-		approved := c.simulateApproval(taskStr, proto.ApprovalTypeCode.String())
-		result := &proto.ApprovalResult{
-			Type:       proto.ApprovalTypeCode,
-			Status:     proto.ApprovalStatusApproved,
-			ReviewedAt: time.Now().UTC(),
+	// Block waiting for RESULT message from architect
+	c.logger.Debug("🧑‍💻 Blocking in CODE_REVIEW, waiting for architect RESULT...")
+	select {
+	case <-ctx.Done():
+		return agent.StateError, false, ctx.Err()
+	case resultMsg := <-c.replyCh:
+		if resultMsg == nil {
+			c.logger.Warn("🧑‍💻 Received nil RESULT message")
+			return StateCodeReview, false, nil
 		}
-		if !approved {
-			result.Status = proto.ApprovalStatusRejected
+		
+		if resultMsg.Type == proto.MsgTypeRESULT {
+			c.logger.Info("🧑‍💻 Received RESULT message %s for code approval", resultMsg.ID)
+			
+			// Extract approval result and store it
+			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
+				sm.SetStateData(keyCodeApprovalResult, approvalData)
+				c.logger.Info("🧑‍💻 Code approval result received and stored")
+				// Return same state to re-process with the new approval data
+				return StateCodeReview, false, nil
+			} else {
+				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
+				return agent.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+			}
+		} else {
+			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
+			return StateCodeReview, false, nil
 		}
-
-		sm.SetStateData(keyCodeApprovalResult, result)
-		sm.SetStateData("code_review_completed_at", time.Now().UTC())
-
-		if approved {
-			return agent.StateDone, true, nil
-		}
-		return StateFixing, false, nil
 	}
-
-	// Create approval request for architect (LLM mode)
-	codeGenerated, _ := sm.GetStateValue("code_generated")
-	codeStr := fmt.Sprintf("Code implementation completed: %v", codeGenerated)
-
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: codeStr,
-		Reason:  "Code requires architect approval before completion",
-		Type:    proto.ApprovalTypeCode,
-	}
-
-	// Stay in CODE_REVIEW until we get approval result
-	return StateCodeReview, false, nil
 }
 
 // handleQuestion processes the QUESTION state with origin tracking
@@ -1372,19 +1409,6 @@ func (c *Coder) detectHelpRequest(taskContent string) bool {
 	return false
 }
 
-func (c *Coder) simulateApproval(taskContent, reviewType string) bool {
-	lower := strings.ToLower(taskContent)
-
-	if strings.Contains(lower, "approve") || strings.Contains(lower, "looks good") {
-		return true
-	}
-	if strings.Contains(lower, "change") || strings.Contains(lower, "fix") || strings.Contains(lower, "modify") {
-		return false
-	}
-
-	// Default approval
-	return true
-}
 
 func (c *Coder) formatContextAsString() string {
 	messages := c.contextManager.GetMessages()

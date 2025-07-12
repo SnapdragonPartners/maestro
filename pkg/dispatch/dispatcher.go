@@ -40,6 +40,7 @@ type Agent interface {
 // ChannelReceiver is an optional interface for agents that need direct channel access
 type ChannelReceiver interface {
 	SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
+	SetDispatcher(dispatcher *Dispatcher)
 }
 
 type Dispatcher struct {
@@ -126,11 +127,13 @@ func (d *Dispatcher) Attach(ag Agent) {
 			case agent.AgentTypeArchitect:
 				d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
 				channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
+				channelReceiver.SetDispatcher(d)
 				return
 			case agent.AgentTypeCoder:
 				d.logger.Info("Attached coder agent: %s with direct channel setup", agentID)
 				// Coders receive story messages via storyCh
 				channelReceiver.SetChannels(d.storyCh, nil, replyCh)
+				channelReceiver.SetDispatcher(d)
 				return
 			}
 		}

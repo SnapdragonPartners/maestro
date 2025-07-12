@@ -82,6 +82,13 @@ func (d *Driver) SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *pr
 	d.logger.Info("🏗️ Architect %s channels set: spec=%p questions=%p reply=%p", d.architectID, specCh, questionsCh, replyCh)
 }
 
+// SetDispatcher sets the dispatcher reference (already set in constructor, but required for interface)
+func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
+	// Architect already has dispatcher from constructor, but update it for consistency
+	d.dispatcher = dispatcher
+	d.logger.Info("🏗️ Architect %s dispatcher set: %p", d.architectID, dispatcher)
+}
+
 // Initialize sets up the driver and loads any existing state
 func (d *Driver) Initialize(ctx context.Context) error {
 	// Load existing state if available
@@ -587,8 +594,28 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	requestType, _ := requestMsg.GetPayload("request_type")
 	content, _ := requestMsg.GetPayload("content")
+	approvalTypeStr, _ := requestMsg.GetPayload("approval_type")
+	approvalID, _ := requestMsg.GetPayload("approval_id")
 
-	d.logger.Info("🏗️ Processing approval request: type=%v, content=%v", requestType, content)
+	// Convert interface{} to string with type assertion
+	approvalTypeString := ""
+	if approvalTypeStr != nil {
+		approvalTypeString, _ = approvalTypeStr.(string)
+	}
+	
+	approvalIDString := ""
+	if approvalID != nil {
+		approvalIDString, _ = approvalID.(string)
+	}
+
+	d.logger.Info("🏗️ Processing approval request: type=%v, approval_type=%v", requestType, approvalTypeString)
+
+	// Parse approval type from request
+	approvalType, err := proto.NormaliseApprovalType(approvalTypeString)
+	if err != nil {
+		d.logger.Warn("🏗️ Invalid approval type %s, defaulting to plan", approvalTypeString)
+		approvalType = proto.ApprovalTypePlan
+	}
 
 	// For now, auto-approve all requests until LLM integration
 	approved := true
@@ -605,17 +632,27 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		}
 	}
 
-	// Create RESULT response
+	// Create proper ApprovalResult structure
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  approvalIDString,
+		Type:       approvalType,
+		Status:     proto.ApprovalStatusApproved,
+		Feedback:   feedback,
+		ReviewedBy: d.architectID,
+		ReviewedAt: time.Now().UTC(),
+	}
+
+	if !approved {
+		approvalResult.Status = proto.ApprovalStatusRejected
+	}
+
+	// Create RESULT response with proper approval_result payload
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
-	response.SetPayload("approved", approved)
-	response.SetPayload("feedback", feedback)
+	response.SetPayload("approval_result", approvalResult)
 
-	if approved {
-		response.SetPayload("status", "approved")
-	} else {
-		response.SetPayload("status", "rejected")
-	}
+	d.logger.Info("🏗️ Sending approval result: status=%s, feedback=%s", approvalResult.Status, approvalResult.Feedback)
 
 	return response, nil
 }
