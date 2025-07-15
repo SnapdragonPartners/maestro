@@ -60,3 +60,67 @@ func TestSetupStateIsCoderState(t *testing.T) {
 		t.Error("SETUP should be recognized as a coder state")
 	}
 }
+
+func TestBudgetReviewStateTransitions(t *testing.T) {
+	// Test CODING → BUDGET_REVIEW
+	if !IsValidCoderTransition(StateCoding, StateBudgetReview) {
+		t.Error("CODING → BUDGET_REVIEW should be valid")
+	}
+
+	// Test FIXING → BUDGET_REVIEW
+	if !IsValidCoderTransition(StateFixing, StateBudgetReview) {
+		t.Error("FIXING → BUDGET_REVIEW should be valid")
+	}
+
+	// Test BUDGET_REVIEW → CODING
+	if !IsValidCoderTransition(StateBudgetReview, StateCoding) {
+		t.Error("BUDGET_REVIEW → CODING should be valid")
+	}
+
+	// Test BUDGET_REVIEW → FIXING
+	if !IsValidCoderTransition(StateBudgetReview, StateFixing) {
+		t.Error("BUDGET_REVIEW → FIXING should be valid")
+	}
+
+	// Test BUDGET_REVIEW → CODE_REVIEW
+	if !IsValidCoderTransition(StateBudgetReview, StateCodeReview) {
+		t.Error("BUDGET_REVIEW → CODE_REVIEW should be valid")
+	}
+
+	// Test BUDGET_REVIEW → ERROR
+	if !IsValidCoderTransition(StateBudgetReview, agent.StateError) {
+		t.Error("BUDGET_REVIEW → ERROR should be valid")
+	}
+
+	// Test invalid transitions
+	if IsValidCoderTransition(StateBudgetReview, StatePlanning) {
+		t.Error("BUDGET_REVIEW → PLANNING should not be valid")
+	}
+	
+	if IsValidCoderTransition(StateBudgetReview, StateTesting) {
+		t.Error("BUDGET_REVIEW → TESTING should not be valid")
+	}
+}
+
+func TestBudgetReviewStateInValidStates(t *testing.T) {
+	validStates := GetValidStates()
+	
+	// Check that BUDGET_REVIEW is included
+	found := false
+	for _, state := range validStates {
+		if state == StateBudgetReview {
+			found = true
+			break
+		}
+	}
+	
+	if !found {
+		t.Error("BUDGET_REVIEW state should be in valid states list")
+	}
+}
+
+func TestBudgetReviewStateIsCoderState(t *testing.T) {
+	if !IsCoderState(StateBudgetReview) {
+		t.Error("BUDGET_REVIEW should be recognized as a coder state")
+	}
+}

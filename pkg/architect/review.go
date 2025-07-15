@@ -656,7 +656,7 @@ func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview 
 	}
 
 	// Send approval message back to agent
-	err := re.sendReviewResult(ctx, pendingReview, "APPROVED")
+	err := re.sendReviewResult(ctx, pendingReview, proto.ApprovalStatusApproved.String())
 	if err != nil {
 		return fmt.Errorf("failed to send approval message: %w", err)
 	}

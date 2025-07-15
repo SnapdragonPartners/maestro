@@ -214,7 +214,7 @@ func TestCoderApprovalFlow(t *testing.T) {
 	}
 
 	// Simulate architect approval
-	if err := driver.ProcessApprovalResult("APPROVED", "plan"); err != nil {
+	if err := driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String()); err != nil {
 		t.Fatalf("Failed to process approval result: %v", err)
 	}
 
@@ -348,7 +348,7 @@ func TestCoderStateManagement(t *testing.T) {
 	}
 
 	// Test approval result processing
-	err = driver.ProcessApprovalResult("APPROVED", "plan")
+	err = driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String())
 	if err != nil {
 		t.Fatalf("Failed to process approval result: %v", err)
 	}

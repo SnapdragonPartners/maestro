@@ -18,7 +18,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		coder, _ := NewCoder("test-coder", "test-coder", tempDir, stateStore, &config.ModelCfg{})
 
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
-		resultMsg.SetPayload(proto.KeyStatus, "APPROVED")
+		resultMsg.SetPayload(proto.KeyStatus, proto.ApprovalStatusApproved.String())
 		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 		resultMsg.SetPayload(proto.KeyApprovalType, "unknown")
 
@@ -38,7 +38,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		coder, _ := NewCoder("test-coder", "test-coder", tempDir, stateStore, &config.ModelCfg{})
 
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
-		resultMsg.SetPayload(proto.KeyStatus, "APPROVED")
+		resultMsg.SetPayload(proto.KeyStatus, proto.ApprovalStatusApproved.String())
 		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 		// No approval_type set
 

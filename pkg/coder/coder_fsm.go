@@ -11,15 +11,16 @@ import (
 // We inherit three states, WAITING (the entry state), DONE and ERROR from the base agent.
 // DONE and ERROR are no longer terminal - they can transition to SETUP for the next story.
 const (
-	StateSetup      agent.State = "SETUP"
-	StatePlanning   agent.State = "PLANNING"
-	StateCoding     agent.State = "CODING"
-	StateTesting    agent.State = "TESTING"
-	StateFixing     agent.State = "FIXING"
-	StatePlanReview agent.State = "PLAN_REVIEW"
-	StateCodeReview agent.State = "CODE_REVIEW"
-	StateAwaitMerge agent.State = "AWAIT_MERGE"
-	StateQuestion   agent.State = "QUESTION"
+	StateSetup       agent.State = "SETUP"
+	StatePlanning    agent.State = "PLANNING"
+	StateCoding      agent.State = "CODING"
+	StateTesting     agent.State = "TESTING"
+	StateFixing      agent.State = "FIXING"
+	StatePlanReview  agent.State = "PLAN_REVIEW"
+	StateCodeReview  agent.State = "CODE_REVIEW"
+	StateBudgetReview agent.State = "BUDGET_REVIEW"
+	StateAwaitMerge  agent.State = "AWAIT_MERGE"
+	StateQuestion    agent.State = "QUESTION"
 )
 
 // Import AUTO_CHECKIN types from proto package for inter-agent communication
@@ -30,7 +31,7 @@ const (
 	AutoPivot                 = proto.AutoPivot
 	AutoEscalate              = proto.AutoEscalate
 	AutoAbandon               = proto.AutoAbandon
-	QuestionReasonAutoCheckin = proto.QuestionReasonAutoCheckin
+	QuestionReasonBudgetReview = proto.QuestionReasonBudgetReview
 )
 
 // ValidateState checks if a state is valid for coder agents
@@ -48,7 +49,7 @@ func ValidateState(state agent.State) error {
 func GetValidStates() []agent.State {
 	return []agent.State{
 		agent.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting, StateFixing,
-		StatePlanReview, StateCodeReview, StateAwaitMerge, StateQuestion, agent.StateDone, agent.StateError,
+		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion, agent.StateDone, agent.StateError,
 	}
 }
 
@@ -68,26 +69,26 @@ var CoderTransitions = map[agent.State][]agent.State{
 	// PLAN_REVIEW can approve (→CODING), request changes (→PLANNING), or abandon (→ERROR)
 	StatePlanReview: {StatePlanning, StateCoding, agent.StateError},
 
-	// CODING can complete (→TESTING), ask questions, or hit unrecoverable error
-	StateCoding: {StateTesting, StateQuestion, agent.StateError},
+	// CODING can complete (→TESTING), ask questions, exceed budget (→BUDGET_REVIEW), or hit unrecoverable error
+	StateCoding: {StateTesting, StateQuestion, StateBudgetReview, agent.StateError},
 
 	// TESTING can pass (→CODE_REVIEW) or fail (→FIXING)
 	StateTesting: {StateFixing, StateCodeReview},
 
-	// FIXING can fix and retest, ask questions, or hit unrecoverable error
-	StateFixing: {StateTesting, StateQuestion, agent.StateError},
+	// FIXING can fix and retest, ask questions, exceed budget (→BUDGET_REVIEW), or hit unrecoverable error
+	StateFixing: {StateTesting, StateQuestion, StateBudgetReview, agent.StateError},
 
 	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→FIXING), or abandon (→ERROR)
 	StateCodeReview: {StateAwaitMerge, StateFixing, agent.StateError},
 
+	// BUDGET_REVIEW can continue/pivot (→CODING/FIXING), escalate (→CODE_REVIEW), or abandon (→ERROR)
+	StateBudgetReview: {StateCoding, StateFixing, StateCodeReview, agent.StateError},
+
 	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→FIXING)
 	StateAwaitMerge: {agent.StateDone, StateFixing},
 
-	// QUESTION can return to any non-terminal state based on answer type
-	StateQuestion: {
-		StatePlanReview, StatePlanning, StateCoding,
-		StateFixing, StateCodeReview, agent.StateError,
-	},
+	// QUESTION can return to origin state or escalate to error based on answer type
+	StateQuestion: {StatePlanning, StateCoding, StateFixing, agent.StateError},
 
 	// DONE and ERROR are no longer terminal - they can restart via SETUP
 	agent.StateDone:  {StateSetup},

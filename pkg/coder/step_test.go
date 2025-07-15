@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -147,7 +148,7 @@ func TestNoNestedLoops(t *testing.T) {
 		// Check if we have pending approval (which would normally trigger external message)
 		if hasPending, _, _, _, _ := driver.GetPendingApprovalRequest(); hasPending {
 			// Simulate external approval result processing
-			err := driver.ProcessApprovalResult("approved", "plan")
+			err := driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String())
 			if err != nil {
 				t.Fatalf("Failed to process approval result: %v", err)
 			}

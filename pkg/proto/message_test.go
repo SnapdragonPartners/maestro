@@ -406,7 +406,7 @@ func TestGenerateID(t *testing.T) {
 	}
 }
 
-// TestAutoAction tests the AUTO_CHECKIN command types for inter-agent communication
+// TestAutoAction tests the BUDGET_REVIEW command types for inter-agent communication
 func TestAutoAction(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -446,10 +446,133 @@ func TestAutoAction(t *testing.T) {
 	}
 }
 
-// TestQuestionReasonAutoCheckin tests the AUTO_CHECKIN question reason constant
-func TestQuestionReasonAutoCheckin(t *testing.T) {
-	if QuestionReasonAutoCheckin != "AUTO_CHECKIN" {
-		t.Errorf("Expected QuestionReasonAutoCheckin to be 'AUTO_CHECKIN', got %q", QuestionReasonAutoCheckin)
+// TestQuestionReasonBudgetReview tests the BUDGET_REVIEW question reason constant
+func TestQuestionReasonBudgetReview(t *testing.T) {
+	if QuestionReasonBudgetReview != "BUDGET_REVIEW" {
+		t.Errorf("Expected QuestionReasonBudgetReview to be 'BUDGET_REVIEW', got %q", QuestionReasonBudgetReview)
+	}
+}
+
+// TestEnumParsing tests the new enum parsing functions
+func TestEnumParsing(t *testing.T) {
+	// Test ParseMsgType
+	t.Run("ParseMsgType", func(t *testing.T) {
+		tests := []struct {
+			input    string
+			expected MsgType
+			hasError bool
+		}{
+			{"story", MsgTypeSTORY, false},
+			{"STORY", MsgTypeSTORY, false},
+			{"request", MsgTypeREQUEST, false},
+			{"invalid", "", true},
+		}
+		
+		for _, tt := range tests {
+			result, err := ParseMsgType(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ParseMsgType(%q) expected error but got none", tt.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ParseMsgType(%q) unexpected error: %v", tt.input, err)
+				}
+				if result != tt.expected {
+					t.Errorf("ParseMsgType(%q) = %q, expected %q", tt.input, result, tt.expected)
+				}
+			}
+		}
+	})
+	
+	// Test ParseApprovalStatus
+	t.Run("ParseApprovalStatus", func(t *testing.T) {
+		tests := []struct {
+			input    string
+			expected ApprovalStatus
+			hasError bool
+		}{
+			{"approved", ApprovalStatusApproved, false},
+			{"APPROVED", ApprovalStatusApproved, false},
+			{"needs_changes", ApprovalStatusNeedsChanges, false},
+			{"NEEDS_FIXES", ApprovalStatusNeedsChanges, false},
+			{"invalid", "", true},
+		}
+		
+		for _, tt := range tests {
+			result, err := ParseApprovalStatus(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ParseApprovalStatus(%q) expected error but got none", tt.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ParseApprovalStatus(%q) unexpected error: %v", tt.input, err)
+				}
+				if result != tt.expected {
+					t.Errorf("ParseApprovalStatus(%q) = %q, expected %q", tt.input, result, tt.expected)
+				}
+			}
+		}
+	})
+	
+	// Test ParseApprovalType
+	t.Run("ParseApprovalType", func(t *testing.T) {
+		tests := []struct {
+			input    string
+			expected ApprovalType
+			hasError bool
+		}{
+			{"plan", ApprovalTypePlan, false},
+			{"PLAN", ApprovalTypePlan, false},
+			{"code", ApprovalTypeCode, false},
+			{"budget_review", ApprovalTypeBudgetReview, false},
+			{"invalid", "", true},
+		}
+		
+		for _, tt := range tests {
+			result, err := ParseApprovalType(tt.input)
+			if tt.hasError {
+				if err == nil {
+					t.Errorf("ParseApprovalType(%q) expected error but got none", tt.input)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ParseApprovalType(%q) unexpected error: %v", tt.input, err)
+				}
+				if result != tt.expected {
+					t.Errorf("ParseApprovalType(%q) = %q, expected %q", tt.input, result, tt.expected)
+				}
+			}
+		}
+	})
+}
+
+// TestSafeExtractFromPayload tests the generic enum extraction utility
+func TestSafeExtractFromPayload(t *testing.T) {
+	msg := NewAgentMsg(MsgTypeREQUEST, "test", "test")
+	
+	// Test successful extraction
+	msg.SetPayload("approval_type", "plan")
+	result, err := SafeExtractFromPayload(msg, "approval_type", ParseApprovalType)
+	if err != nil {
+		t.Errorf("SafeExtractFromPayload unexpected error: %v", err)
+	}
+	if result != ApprovalTypePlan {
+		t.Errorf("SafeExtractFromPayload = %q, expected %q", result, ApprovalTypePlan)
+	}
+	
+	// Test missing key
+	_, err = SafeExtractFromPayload(msg, "missing_key", ParseApprovalType)
+	if err == nil {
+		t.Error("SafeExtractFromPayload should fail for missing key")
+	}
+	
+	// Test invalid value
+	msg.SetPayload("invalid_type", "invalid")
+	_, err = SafeExtractFromPayload(msg, "invalid_type", ParseApprovalType)
+	if err == nil {
+		t.Error("SafeExtractFromPayload should fail for invalid enum value")
 	}
 }
 

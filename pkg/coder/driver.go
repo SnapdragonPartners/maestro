@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,11 +32,11 @@ const (
 	keyCodingIterations   = "coding_iterations"
 	keyFixingIterations   = "fixing_iterations"
 
-	// AUTO_CHECKIN question state keys
+	// BUDGET_REVIEW state keys
 	keyQuestionReason      = "question_reason"
 	keyQuestionOrigin      = "question_origin"
 	keyQuestionContent     = "question_content"
-	keyAutoCheckinAction   = "auto_checkin_action"
+	keyBudgetReviewAction  = "budget_review_action"
 	keyErrorMessage        = "error_msg"
 	keyLoops               = "loops"
 	keyMaxLoops            = "max_loops"
@@ -217,8 +216,8 @@ func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, 
 	return coder, nil
 }
 
-// checkLoopBudget tracks loop counts and triggers AUTO_CHECKIN when budget is exceeded
-// Returns true if budget exceeded and AUTO_CHECKIN should be triggered
+// checkLoopBudget tracks loop counts and triggers BUDGET_REVIEW when budget is exceeded
+// Returns true if budget exceeded and BUDGET_REVIEW should be triggered
 func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin agent.State) bool {
 	// Get current iteration count
 	var iterationCount int
@@ -234,12 +233,36 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 
 	// Check if budget exceeded
 	if iterationCount >= budget {
-		// Populate QUESTION fields for AUTO_CHECKIN
-		sm.SetStateData(keyQuestionReason, QuestionReasonAutoCheckin)
-		sm.SetStateData(keyQuestionOrigin, string(origin))
-		sm.SetStateData(keyQuestionContent, fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget))
-		sm.SetStateData(keyLoops, iterationCount)
-		sm.SetStateData(keyMaxLoops, budget)
+		// Send REQUEST message for BUDGET_REVIEW approval
+		content := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
+		
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: content,
+			Reason:  "BUDGET_REVIEW: Loop budget exceeded, requesting guidance",
+			Type:    proto.ApprovalTypeBudgetReview,
+		}
+
+		// Store origin state for later use
+		sm.SetStateData("origin", string(origin))
+
+		if c.dispatcher != nil {
+			requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+			requestMsg.SetPayload("request_type", proto.RequestApproval.String())
+			requestMsg.SetPayload("approval_type", proto.ApprovalTypeBudgetReview.String())
+			requestMsg.SetPayload("content", content)
+			requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
+			requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+			requestMsg.SetPayload("origin", string(origin))
+			requestMsg.SetPayload("loops", iterationCount)
+			requestMsg.SetPayload("max_loops", budget)
+			
+			if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+				c.logger.Error("🧑‍💻 Failed to send BUDGET_REVIEW request: %v", err)
+			} else {
+				c.logger.Info("🧑‍💻 Sent BUDGET_REVIEW request %s to architect for %s state", c.pendingApprovalRequest.ID, origin)
+			}
+		}
 
 		return true
 	}
@@ -268,6 +291,8 @@ func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
 		return c.handleFixing(ctx, sm)
 	case StateCodeReview:
 		return c.handleCodeReview(ctx, sm)
+	case StateBudgetReview:
+		return c.handleBudgetReview(ctx, sm)
 	case StateAwaitMerge:
 		return c.handleAwaitMerge(ctx, sm)
 	case StateQuestion:
@@ -452,7 +477,7 @@ func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMa
 
 	if c.dispatcher != nil {
 		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
-		requestMsg.SetPayload("request_type", "approval")
+		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
 		requestMsg.SetPayload("approval_type", proto.ApprovalTypePlan.String())
 		requestMsg.SetPayload("content", resp.Content)
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
@@ -667,10 +692,10 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 		return StateTesting, false, nil
 	}
 
-	// Check iteration limit using AUTO_CHECKIN mechanism
+	// Check iteration limit using BUDGET_REVIEW mechanism
 	if c.checkLoopBudget(sm, keyCodingIterations, c.codingBudget, StateCoding) {
-		log.Printf("Coding budget exceeded, triggering AUTO_CHECKIN")
-		return StateQuestion, false, nil
+		log.Printf("Coding budget exceeded, triggering BUDGET_REVIEW")
+		return StateBudgetReview, false, nil
 	}
 
 	// Add context about what's been done so far for next iteration
@@ -1263,10 +1288,10 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Fixing phase: addressing issues")
 
-	// Check iteration limit using AUTO_CHECKIN mechanism
+	// Check iteration limit using BUDGET_REVIEW mechanism
 	if c.checkLoopBudget(sm, keyFixingIterations, c.fixingBudget, StateFixing) {
-		log.Printf("Fixing budget exceeded, triggering AUTO_CHECKIN")
-		return StateQuestion, false, nil
+		log.Printf("Fixing budget exceeded, triggering BUDGET_REVIEW")
+		return StateBudgetReview, false, nil
 	}
 
 	// Check what triggered FIXING
@@ -1344,6 +1369,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		sm.SetStateData("code_review_completed_at", time.Now().UTC())
 		c.pendingApprovalRequest = nil // Clear since we have the result
 
+		// Regular code approval logic
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
 			c.logger.Info("🧑‍💻 Code approved, pushing branch and creating PR")
@@ -1507,10 +1533,94 @@ func convertMergeData(data interface{}) (*MergeResult, error) {
 	return result, nil
 }
 
+// handleBudgetReview processes the BUDGET_REVIEW state - blocks waiting for architect's RESULT response
+func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	c.contextManager.AddMessage("assistant", "Budget review phase: waiting for architect guidance")
+
+	// Check if we already have approval result from previous processing
+	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
+		result, err := convertApprovalData(approvalData)
+		if err != nil {
+			return agent.StateError, false, fmt.Errorf("failed to convert budget review approval data: %w", err)
+		}
+
+		sm.SetStateData("budget_review_completed_at", time.Now().UTC())
+		c.pendingApprovalRequest = nil // Clear since we have the result
+		
+		// Get origin state from stored data
+		origin, _ := sm.GetStateValue("origin")
+		originStr, _ := origin.(string)
+
+		switch result.Status {
+		case proto.ApprovalStatusApproved:
+			// ESCALATE - move to CODE_REVIEW
+			c.logger.Info("🧑‍💻 Budget review approved, escalating to CODE_REVIEW")
+			return StateCodeReview, false, nil
+		case proto.ApprovalStatusNeedsChanges:
+			// CONTINUE/PIVOT - return to origin state and reset counter
+			c.logger.Info("🧑‍💻 Budget review needs changes, returning to origin state: %s", originStr)
+			
+			// Reset the iteration counter for the origin state
+			switch originStr {
+			case string(StateCoding):
+				sm.SetStateData(keyCodingIterations, 0)
+				return StateCoding, false, nil
+			case string(StateFixing):
+				sm.SetStateData(keyFixingIterations, 0)
+				return StateFixing, false, nil
+			default:
+				return StateCoding, false, nil // default fallback
+			}
+		case proto.ApprovalStatusRejected:
+			// ABANDON - move to ERROR
+			c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
+			return agent.StateError, false, fmt.Errorf("task abandoned by architect after budget review")
+		default:
+			return agent.StateError, false, fmt.Errorf("unknown budget review approval status: %s", result.Status)
+		}
+	}
+
+	// Block waiting for RESULT message from architect
+	c.logger.Debug("🧑‍💻 Blocking in BUDGET_REVIEW, waiting for architect RESULT...")
+	select {
+	case <-ctx.Done():
+		return agent.StateError, false, ctx.Err()
+	case resultMsg := <-c.replyCh:
+		if resultMsg == nil {
+			c.logger.Warn("🧑‍💻 Received nil RESULT message")
+			return StateBudgetReview, false, nil
+		}
+		
+		if resultMsg.Type == proto.MsgTypeRESULT {
+			c.logger.Info("🧑‍💻 Received RESULT message %s for budget review", resultMsg.ID)
+			
+			// Extract approval result and store it
+			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
+				sm.SetStateData(keyCodeApprovalResult, approvalData)
+				c.logger.Info("🧑‍💻 Budget review approval result received and stored")
+				// Return same state to re-process with the new approval data
+				return StateBudgetReview, false, nil
+			} else {
+				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
+				return agent.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+			}
+		} else {
+			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
+			return StateBudgetReview, false, nil
+		}
+	}
+}
+
 // handleQuestion processes the QUESTION state with origin tracking
 func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Question phase: awaiting clarification")
 
+	// Regular QUESTION→ANSWER flow (no more budget review logic)
+	return c.handleRegularQuestion(ctx, sm)
+}
+
+// handleRegularQuestion handles regular QUESTION→ANSWER flow
+func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	// Check if we have an answer
 	if answer, exists := sm.GetStateValue(keyArchitectAnswer); exists {
 		answerStr, _ := answer.(string)
@@ -1520,20 +1630,6 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 
 		// Clear the answer so we don't loop
 		sm.SetStateData(keyArchitectAnswer, "")
-
-		// Check for AUTO_CHECKIN action flags first
-		if action, exists := sm.GetStateValue(keyAutoCheckinAction); exists {
-			actionStr, _ := action.(string)
-			// Parse the stored action string back to typed enum
-			if parsedAction, err := ParseAutoAction(actionStr); err == nil {
-				switch parsedAction {
-				case AutoEscalate:
-					return StateCodeReview, false, nil
-				case AutoAbandon:
-					return agent.StateError, false, fmt.Errorf("task abandoned by architect")
-				}
-			}
-		}
 
 		// Return to origin state using metadata
 		origin, _ := sm.GetStateValue(keyQuestionOrigin)
@@ -1579,6 +1675,21 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 			Content: content,
 			Reason:  questionReason.(string),
 			Origin:  questionOrigin.(string),
+		}
+
+		// Send QUESTION message to architect
+		if c.dispatcher != nil {
+			questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, c.GetID(), "architect")
+			questionMsg.SetPayload(proto.KeyQuestion, content)
+			questionMsg.SetPayload(proto.KeyReason, questionReason.(string))
+			questionMsg.SetPayload(proto.KeyQuestionID, c.pendingQuestion.ID)
+			questionMsg.SetPayload("origin", questionOrigin.(string))
+			
+			if err := c.dispatcher.DispatchMessage(questionMsg); err != nil {
+				c.logger.Error("🧑‍💻 Failed to send QUESTION message to architect: %v", err)
+			} else {
+				c.logger.Info("🧑‍💻 Sent QUESTION message %s to architect from %s state", c.pendingQuestion.ID, questionOrigin.(string))
+			}
 		}
 	}
 
@@ -1681,127 +1792,10 @@ func (c *Coder) ProcessApprovalResult(approvalStatus string, approvalType string
 
 // ProcessAnswer processes answer from architect
 func (c *Coder) ProcessAnswer(answer string) error {
-	sm := c.BaseStateMachine
-
-	// Check if this is an AUTO_CHECKIN response
-	if reason, exists := sm.GetStateValue(keyQuestionReason); exists {
-		if reasonStr, ok := reason.(string); ok && reasonStr == QuestionReasonAutoCheckin {
-			return c.processAutoCheckinAnswer(answer)
-		}
-	}
-
-	// Regular answer processing
+	// Only handle regular QUESTION→ANSWER flow
+	// Budget review now uses REQUEST→RESULT flow
 	c.BaseStateMachine.SetStateData(keyArchitectAnswer, answer)
 	return nil
-}
-
-// processAutoCheckinAnswer handles architect replies to AUTO_CHECKIN questions
-func (c *Coder) processAutoCheckinAnswer(answer string) error {
-	sm := c.BaseStateMachine
-	answer = strings.TrimSpace(answer)
-
-	// Get the origin state
-	origin, exists := sm.GetStateValue(keyQuestionOrigin)
-	if !exists {
-		return fmt.Errorf("missing question_origin for AUTO_CHECKIN")
-	}
-	originStr, ok := origin.(string)
-	if !ok {
-		return fmt.Errorf("invalid question_origin type")
-	}
-
-	// Parse the command
-	parts := strings.Fields(strings.ToUpper(answer))
-	if len(parts) == 0 {
-		return c.sendAutoCheckinError(fmt.Sprintf("Empty AUTO_CHECKIN command. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON."))
-	}
-
-	// Validate command using typed enum
-	commandStr := parts[0]
-	command, err := ParseAutoAction(commandStr)
-	if err != nil {
-		return c.sendAutoCheckinError(err.Error())
-	}
-
-	switch command {
-	case AutoContinue:
-		// Parse the number parameter
-		var increase int = 0
-		if len(parts) > 1 {
-			if n, err := strconv.Atoi(parts[1]); err == nil {
-				increase = n
-			} else {
-				return c.sendAutoCheckinError(fmt.Sprintf("Invalid number in CONTINUE command: %s", parts[1]))
-			}
-		}
-
-		// Increase budget and reset counter
-		switch originStr {
-		case string(StateCoding):
-			c.codingBudget += increase
-			sm.SetStateData(keyCodingIterations, 0)
-		case string(StateFixing):
-			c.fixingBudget += increase
-			sm.SetStateData(keyFixingIterations, 0)
-		default:
-			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
-		}
-
-		// Clear question state and set answer
-		c.clearQuestionState()
-		sm.SetStateData(keyArchitectAnswer, fmt.Sprintf("Budget increased by %d, counter reset", increase))
-
-	case AutoPivot:
-		// Reset counter, stay in current state
-		switch originStr {
-		case string(StateCoding):
-			sm.SetStateData(keyCodingIterations, 0)
-		case string(StateFixing):
-			sm.SetStateData(keyFixingIterations, 0)
-		default:
-			return fmt.Errorf("unknown origin state for AUTO_CHECKIN: %s", originStr)
-		}
-
-		// Clear question state and set answer
-		c.clearQuestionState()
-		sm.SetStateData(keyArchitectAnswer, "Counter reset, continuing with pivot approach")
-
-	case AutoEscalate:
-		// Set explicit flag for escalation
-		c.clearQuestionState()
-		sm.SetStateData(keyAutoCheckinAction, AutoEscalate.String())
-		sm.SetStateData(keyArchitectAnswer, "Escalating to code review")
-
-	case AutoAbandon:
-		// Set explicit flag for abandonment
-		c.clearQuestionState()
-		sm.SetStateData(keyAutoCheckinAction, AutoAbandon.String())
-		sm.SetStateData(keyArchitectAnswer, "Task abandoned")
-
-	default:
-		return c.sendAutoCheckinError(fmt.Sprintf("Unrecognised AUTO_CHECKIN command: %q. Valid: CONTINUE <n>, PIVOT, ESCALATE, ABANDON.", command))
-	}
-
-	return nil
-}
-
-// sendAutoCheckinError sends an error message back to architect for invalid commands
-func (c *Coder) sendAutoCheckinError(errorMsg string) error {
-	// Stay in QUESTION state by not clearing question state
-	// Preserve original question context and add error message separately
-	c.BaseStateMachine.SetStateData(keyErrorMessage, errorMsg)
-	return fmt.Errorf("invalid AUTO_CHECKIN command, staying in QUESTION state")
-}
-
-// clearQuestionState clears AUTO_CHECKIN question state
-func (c *Coder) clearQuestionState() {
-	sm := c.BaseStateMachine
-	sm.SetStateData(keyQuestionReason, "")
-	sm.SetStateData(keyQuestionOrigin, "")
-	sm.SetStateData(keyQuestionContent, "")
-	sm.SetStateData(keyErrorMessage, "")
-	sm.SetStateData(keyAutoCheckinAction, "")
-	// Note: Intentionally not clearing loops/max_loops for audit purposes
 }
 
 // GetContextSummary returns a summary of the current context
@@ -2076,7 +2070,7 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 
 	if c.dispatcher != nil {
 		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
-		requestMsg.SetPayload("request_type", "approval")
+		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
 		requestMsg.SetPayload("approval_type", proto.ApprovalTypeCode.String())
 		requestMsg.SetPayload("content", codeContent)
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)

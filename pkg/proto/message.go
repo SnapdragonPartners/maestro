@@ -98,6 +98,9 @@ const (
 
 	// ApprovalTypeCode indicates a code approval request
 	ApprovalTypeCode ApprovalType = "code"
+	
+	// ApprovalTypeBudgetReview indicates a budget review approval request
+	ApprovalTypeBudgetReview ApprovalType = "budget_review"
 )
 
 // ApprovalRequest represents a request for approval (plan or code)
@@ -262,11 +265,8 @@ func (msg *AgentMsg) Validate() error {
 		return fmt.Errorf("timestamp is required")
 	}
 
-	// Validate message type
-	switch msg.Type {
-	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeRESULT, MsgTypeERROR, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeSHUTDOWN:
-		// Valid types
-	default:
+	// Validate message type using the validation function
+	if _, valid := ValidateMsgType(string(msg.Type)); !valid {
 		return fmt.Errorf("invalid message type: %s", msg.Type)
 	}
 
@@ -288,7 +288,65 @@ func generateID() string {
 	return fmt.Sprintf("msg_%d_%d", time.Now().UnixNano(), idCounter)
 }
 
+// MsgType helper methods
+
+// ValidateMsgType validates if a string is a valid message type
+func ValidateMsgType(msgType string) (MsgType, bool) {
+	switch MsgType(msgType) {
+	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeRESULT, MsgTypeERROR, MsgTypeSHUTDOWN:
+		return MsgType(msgType), true
+	default:
+		return "", false
+	}
+}
+
+// ParseMsgType parses a string into a MsgType with validation
+func ParseMsgType(s string) (MsgType, error) {
+	// Normalize to uppercase for comparison
+	normalizedType := strings.ToUpper(s)
+	
+	switch normalizedType {
+	case "STORY":
+		return MsgTypeSTORY, nil
+	case "SPEC":
+		return MsgTypeSPEC, nil
+	case "QUESTION":
+		return MsgTypeQUESTION, nil
+	case "ANSWER":
+		return MsgTypeANSWER, nil
+	case "REQUEST":
+		return MsgTypeREQUEST, nil
+	case "RESULT":
+		return MsgTypeRESULT, nil
+	case "ERROR":
+		return MsgTypeERROR, nil
+	case "SHUTDOWN":
+		return MsgTypeSHUTDOWN, nil
+	default:
+		// Check if it's already in the correct format
+		if msgType, valid := ValidateMsgType(s); valid {
+			return msgType, nil
+		}
+		return "", fmt.Errorf("unknown message type: %s", s)
+	}
+}
+
+// String returns the string representation of MsgType
+func (mt MsgType) String() string {
+	return string(mt)
+}
+
 // RequestType helper methods
+
+// ValidateRequestType validates if a string is a valid request type
+func ValidateRequestType(requestType string) (RequestType, bool) {
+	switch RequestType(requestType) {
+	case RequestApproval, RequestApprovalReview, RequestQuestion, RequestResource:
+		return RequestType(requestType), true
+	default:
+		return "", false
+	}
+}
 
 // ParseRequestType parses a string into a RequestType with validation
 func ParseRequestType(s string) (RequestType, error) {
@@ -302,14 +360,14 @@ func ParseRequestType(s string) (RequestType, error) {
 		return RequestApprovalReview, nil
 	case "question":
 		return RequestQuestion, nil
+	case "resource":
+		return RequestResource, nil
 	default:
 		// Check if it's already in the correct format
-		switch RequestType(s) {
-		case RequestApproval, RequestApprovalReview, RequestQuestion:
-			return RequestType(s), nil
-		default:
-			return "", fmt.Errorf("unknown request type: %s", s)
+		if requestType, valid := ValidateRequestType(s); valid {
+			return requestType, nil
 		}
+		return "", fmt.Errorf("unknown request type: %s", s)
 	}
 }
 
@@ -318,19 +376,10 @@ func (rt RequestType) String() string {
 	return string(rt)
 }
 
+// Deprecated: Use ParseApprovalType instead
 // NormaliseApprovalType normalizes and validates approval type strings
 func NormaliseApprovalType(s string) (ApprovalType, error) {
-	// Normalize to lowercase for comparison
-	normalizedType := strings.ToLower(s)
-
-	switch normalizedType {
-	case "plan":
-		return ApprovalTypePlan, nil
-	case "code":
-		return ApprovalTypeCode, nil
-	default:
-		return "", fmt.Errorf("unknown approval type: %s", s)
-	}
+	return ParseApprovalType(s)
 }
 
 // Approval helper methods
@@ -373,7 +422,7 @@ func ValidateApprovalStatus(status string) (ApprovalStatus, bool) {
 // ValidateApprovalType validates if a string is a valid approval type
 func ValidateApprovalType(approvalType string) (ApprovalType, bool) {
 	switch ApprovalType(approvalType) {
-	case ApprovalTypePlan, ApprovalTypeCode:
+	case ApprovalTypePlan, ApprovalTypeCode, ApprovalTypeBudgetReview:
 		return ApprovalType(approvalType), true
 	default:
 		return "", false
@@ -404,7 +453,7 @@ func ConvertLegacyStatus(legacyStatus string) ApprovalStatus {
 	}
 }
 
-// AutoAction represents AUTO_CHECKIN command types for inter-agent communication
+// AutoAction represents BUDGET_REVIEW command types for inter-agent communication
 type AutoAction string
 
 const (
@@ -416,7 +465,7 @@ const (
 
 // Question reason constants
 const (
-	QuestionReasonAutoCheckin = "AUTO_CHECKIN"
+	QuestionReasonBudgetReview = "BUDGET_REVIEW"
 )
 
 // ParseAutoAction validates and converts a string to AutoAction
@@ -425,7 +474,7 @@ func ParseAutoAction(s string) (AutoAction, error) {
 	case AutoContinue, AutoPivot, AutoEscalate, AutoAbandon:
 		return AutoAction(s), nil
 	default:
-		return "", fmt.Errorf("invalid AUTO_CHECKIN command: %q. Valid: CONTINUE, PIVOT, ESCALATE, ABANDON", s)
+		return "", fmt.Errorf("invalid BUDGET_REVIEW command: %q. Valid: CONTINUE, PIVOT, ESCALATE, ABANDON", s)
 	}
 }
 
@@ -499,4 +548,77 @@ func (msg *AgentMsg) GetCorrelationID() (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Centralized Enum Parsing Utilities
+// These functions provide safe string-to-enum conversion with validation
+
+// ParseApprovalStatus parses a string into an ApprovalStatus with validation
+func ParseApprovalStatus(s string) (ApprovalStatus, error) {
+	// Normalize to uppercase for comparison
+	normalizedStatus := strings.ToUpper(s)
+	
+	switch normalizedStatus {
+	case "APPROVED":
+		return ApprovalStatusApproved, nil
+	case "REJECTED":
+		return ApprovalStatusRejected, nil
+	case "NEEDS_CHANGES", "NEEDS_FIXES":
+		return ApprovalStatusNeedsChanges, nil
+	case "PENDING":
+		return ApprovalStatusPending, nil
+	default:
+		// Check if it's already in the correct format
+		if status, valid := ValidateApprovalStatus(s); valid {
+			return status, nil
+		}
+		return "", fmt.Errorf("unknown approval status: %s", s)
+	}
+}
+
+// ParseApprovalType parses a string into an ApprovalType with validation
+func ParseApprovalType(s string) (ApprovalType, error) {
+	// Normalize to lowercase for comparison
+	normalizedType := strings.ToLower(s)
+	
+	switch normalizedType {
+	case "plan":
+		return ApprovalTypePlan, nil
+	case "code":
+		return ApprovalTypeCode, nil
+	case "budget_review":
+		return ApprovalTypeBudgetReview, nil
+	default:
+		// Check if it's already in the correct format
+		if approvalType, valid := ValidateApprovalType(s); valid {
+			return approvalType, nil
+		}
+		return "", fmt.Errorf("unknown approval type: %s", s)
+	}
+}
+
+// SafeExtractEnum provides a generic way to safely extract and validate enum values from payloads
+type EnumExtractor[T any] func(string) (T, error)
+
+// SafeExtractFromPayload extracts and validates an enum value from a message payload
+func SafeExtractFromPayload[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
+	var zero T
+	
+	if rawValue, exists := msg.GetPayload(key); exists {
+		if strValue, ok := rawValue.(string); ok {
+			return parser(strValue)
+		}
+		return zero, fmt.Errorf("payload key %s is not a string", key)
+	}
+	return zero, fmt.Errorf("payload key %s not found", key)
+}
+
+// SafeExtractFromMetadata extracts and validates an enum value from a message metadata
+func SafeExtractFromMetadata[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
+	var zero T
+	
+	if strValue, exists := msg.GetMetadata(key); exists {
+		return parser(strValue)
+	}
+	return zero, fmt.Errorf("metadata key %s not found", key)
 }
