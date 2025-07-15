@@ -20,113 +20,78 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 
 	for i := 0; i < maxIterations; i++ {
 		fmt.Fprintf(os.Stderr, "[DEBUG] Iteration %d, processing message type: %s\n", i, msg.Type)
-		fmt.Fprintf(os.Stderr, "[DEBUG] Current agent state: %s\n", agent.GetDriver().GetCurrentState())
+		fmt.Fprintf(os.Stderr, "[DEBUG] Current agent state: %s\n", agent.GetCurrentState())
 
-		// Process the message
-		result, err := agent.ProcessMessage(ctx, msg)
+		// Process the story (for STORY messages) or step the state machine
+		if msg.Type == proto.MsgTypeSTORY {
+			taskContent, _ := msg.GetPayload("content")
+			if taskContentStr, ok := taskContent.(string); ok {
+				err := agent.ProcessTask(ctx, taskContentStr)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+
+		// Step the state machine
+		completed, err := agent.Step(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		fmt.Fprintf(os.Stderr, "[DEBUG] Got result type: %s, new state: %s\n", result.Type, agent.GetDriver().GetCurrentState())
+		fmt.Fprintf(os.Stderr, "[DEBUG] After step, new state: %s, completed: %v\n", agent.GetCurrentState(), completed)
 
-		// Check if this is a completion message (RESULT with status completed)
-		if result.Type == proto.MsgTypeRESULT {
-			if status, exists := result.GetPayload("status"); exists {
-				if statusStr, ok := status.(string); ok && statusStr == "completed" {
-					return result, nil // Task completed successfully
-				}
-			}
+		// Check if agent is done or completed
+		if completed || agent.GetCurrentState() == "DONE" {
+			// Create a synthetic RESULT message for completion
+			result := proto.NewAgentMsg(proto.MsgTypeRESULT, agent.GetID(), "agentctl")
+			result.SetPayload("status", "completed")
+			return result, nil
 		}
 
-		// Handle REQUEST messages (approval requests) in standalone mode
-		if result.Type == proto.MsgTypeREQUEST && isLiveMode {
-			if requestType, exists := result.GetPayload("request_type"); exists {
-				if requestTypeStr, ok := requestType.(string); ok && requestTypeStr == "approval" {
-					// Auto-approve using the internal approval system
-					approvalType, _ := result.GetPayload("approval_type")
-					approvalTypeStr, _ := approvalType.(string)
-
-					fmt.Fprintf(os.Stderr, "[Auto-approving] %s request\n", approvalTypeStr)
-
-					// Process approval directly through the driver
-					if err := agent.GetDriver().ProcessApprovalResult("APPROVED", approvalTypeStr); err != nil {
-						return nil, fmt.Errorf("failed to process approval: %w", err)
-					}
-
-					// Clear the pending request
-					agent.GetDriver().ClearPendingApprovalRequest()
-
-					// Now step the state machine to continue processing
-					done, err := agent.GetDriver().Step(ctx)
-					if err != nil {
-						return nil, fmt.Errorf("failed to step state machine: %w", err)
-					}
-
-					if done {
-						// Create final result message
-						finalResult := proto.NewAgentMsg(proto.MsgTypeRESULT, agent.GetID(), "agentctl")
-						finalResult.SetPayload("status", "completed")
-						finalResult.SetPayload("current_state", string(agent.GetDriver().GetCurrentState()))
-						return finalResult, nil
-					}
-
-					// Continue with next iteration without changing the message
-					continue
-				}
-			}
-		}
-
-		// In standalone mode, check for pending approvals and auto-approve them
+		// Handle pending approval requests in standalone mode
 		if isLiveMode {
-			if hasPending, _, content, reason, approvalType := agent.GetDriver().GetPendingApprovalRequest(); hasPending {
-				fmt.Fprintf(os.Stderr, "[Auto-approving] %s: %s\n", reason, content[:min(100, len(content))])
+			if hasPending, _, _, _, approvalType := agent.GetPendingApprovalRequest(); hasPending {
+				fmt.Fprintf(os.Stderr, "[Auto-approving] %s request\n", approvalType)
 
-				// Use the approval type from the pending request
-				approvalTypeStr := string(approvalType)
-
-				// Auto-approve
-				if err := agent.GetDriver().ProcessApprovalResult("APPROVED", approvalTypeStr); err != nil {
+				// Process approval directly
+				if err := agent.ProcessApprovalResult("APPROVED", string(approvalType)); err != nil {
 					return nil, fmt.Errorf("failed to process approval: %w", err)
 				}
 
 				// Clear the pending request
-				agent.GetDriver().ClearPendingApprovalRequest()
-
-				// Continue processing with a dummy continue message
-				continueMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "agentctl", agent.GetID())
-				continueMsg.SetPayload("approval_status", "APPROVED")
-				continueMsg.SetPayload("approval_type", approvalTypeStr)
-				msg = continueMsg
-				continue
-			}
-
-			// Check for pending questions and auto-answer them
-			if hasPending, _, content, reason := agent.GetDriver().GetPendingQuestion(); hasPending {
-				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:min(100, len(content))])
-
-				// Provide a generic helpful answer
-				answer := "Please proceed with your best judgment. Focus on clean, well-documented code that follows best practices."
-				if err := agent.GetDriver().ProcessAnswer(answer); err != nil {
-					return nil, fmt.Errorf("failed to process answer: %w", err)
-				}
-
-				// Clear the pending question
-				agent.GetDriver().ClearPendingQuestion()
-
-				// Continue processing with a dummy continue message
-				continueMsg := proto.NewAgentMsg(proto.MsgTypeANSWER, "agentctl", agent.GetID())
-				continueMsg.SetPayload("answer", answer)
-				msg = continueMsg
+				agent.ClearPendingApprovalRequest()
+				
+				// Continue with next iteration to process the approval
 				continue
 			}
 		}
 
-		// If we get here with no pending items, return the result
-		return result, nil
+		// Check for pending questions and auto-answer them
+		if isLiveMode {
+			if hasPending, _, content, reason := agent.GetPendingQuestion(); hasPending {
+				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:min(100, len(content))])
+
+				// Provide a generic helpful answer
+				answer := "Please proceed with your best judgment. Focus on clean, well-documented code that follows best practices."
+				if err := agent.ProcessAnswer(answer); err != nil {
+					return nil, fmt.Errorf("failed to process answer: %w", err)
+				}
+
+				// Clear the pending question
+				agent.ClearPendingQuestion()
+
+				// Continue with next iteration
+				continue
+			}
+		}
+
+		// If we reach here without completion, continue the loop
+		// unless we've exceeded our iteration limit
 	}
 
-	return nil, fmt.Errorf("exceeded maximum iterations (%d), possible infinite loop", maxIterations)
+	// If we've reached the maximum iterations, return an error
+	return nil, fmt.Errorf("exceeded maximum iterations (%d) without completion", maxIterations)
 }
 
 // Helper functions
@@ -148,17 +113,16 @@ func main() {
 		if os.Args[2] == "coder" || os.Args[2] == "architect" {
 			agentType = os.Args[2]
 		} else if os.Args[2] != "--input" {
-			fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--mode <mock|live|debug>] [--cleanup]\n", os.Args[0])
+			fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--cleanup]\n", os.Args[0])
 			os.Exit(1)
 		}
 	} else if len(os.Args) < 2 || os.Args[1] != "run" {
-		fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--mode <mock|live|debug>] [--cleanup]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--cleanup]\n", os.Args[0])
 		os.Exit(1)
 	}
 
 	var inputFile string
 	var workDir string
-	var mode string = "" // Will be auto-detected
 	var cleanup bool = false
 
 	// Determine starting index for flag parsing
@@ -180,11 +144,6 @@ func main() {
 				workDir = os.Args[i+1]
 				i++
 			}
-		case "--mode":
-			if i+1 < len(os.Args) {
-				mode = os.Args[i+1]
-				i++
-			}
 		case "--cleanup":
 			cleanup = true
 		}
@@ -195,15 +154,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Auto-detect mode if not specified
-	if mode == "" {
-		if os.Getenv("ANTHROPIC_API_KEY") != "" || os.Getenv("OPENAI_API_KEY") != "" {
-			mode = "live"
-		} else {
-			mode = "mock"
-			fmt.Fprintf(os.Stderr, "No API keys found, defaulting to mock mode\n")
-		}
-	}
+	// Mode auto-detection removed - always require API keys
 
 	// Set up workspace
 	if workDir == "" {
@@ -246,22 +197,32 @@ func main() {
 		CompactionBuffer: 1000,
 	}
 
-	// Create agent based on type
+	// Create agent based on type with auto-detection
 	switch agentType {
 	case "coder":
 		var claudeAgent *coder.Coder
-		switch mode {
-		case "mock":
-			claudeAgent, err = coder.NewCoder("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig)
-		case "live":
-			apiKey := os.Getenv("ANTHROPIC_API_KEY")
-			if apiKey == "" {
-				fmt.Fprintf(os.Stderr, "ANTHROPIC_API_KEY environment variable required for live mode\n")
-				os.Exit(1)
-			}
-			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey)
-		default:
-			fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock', 'live', or 'debug'\n", mode)
+		
+		// Auto-detect mode based on API key availability
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey != "" {
+			fmt.Fprintf(os.Stderr, "ANTHROPIC_API_KEY detected, using live mode\n")
+			
+			// Create a minimal WorkspaceManager for agentctl (testing only)
+			gitRunner := coder.NewDefaultGitRunner()
+			workspaceManager := coder.NewWorkspaceManager(
+				gitRunner,
+				workDir,
+				"", // No repo URL - agentctl runs standalone
+				"main",
+				".mirrors",
+				"story-{STORY_ID}",
+				"agentctl/{STORY_ID}",
+			)
+			
+			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager)
+		} else {
+			fmt.Fprintf(os.Stderr, "No ANTHROPIC_API_KEY found, would use mock mode (but mocks removed)\n")
+			fmt.Fprintf(os.Stderr, "Please set ANTHROPIC_API_KEY environment variable\n")
 			os.Exit(1)
 		}
 
@@ -272,7 +233,7 @@ func main() {
 
 		// Process message with approval handling for standalone mode
 		ctx := context.Background()
-		result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, mode == "live")
+		result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, true) // Always live mode now
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to process message: %v\n", err)
 			os.Exit(1)
@@ -287,22 +248,8 @@ func main() {
 		fmt.Println(string(jsonData))
 
 	case "architect":
-		switch mode {
-		case "mock":
-			// TODO: Mock mode removed - need to update agentctl for new architect architecture
-			fmt.Fprintf(os.Stderr, "Mock mode for architect no longer supported - requires full dispatcher setup\n")
-			os.Exit(1)
-		case "live":
-			// TODO: Implement live architect mode - requires dispatcher and LLM client setup
-			fmt.Fprintf(os.Stderr, "Live mode for architect not yet implemented\n")
-			os.Exit(1)
-		default:
-			fmt.Fprintf(os.Stderr, "Invalid mode '%s', must be 'mock', 'live', or 'debug'\n", mode)
-			os.Exit(1)
-		}
-
-		// TODO: Implement architect processing workflow
-		fmt.Fprintf(os.Stderr, "Architect processing not yet implemented\n")
+		// TODO: Implement architect processing workflow - requires dispatcher and full setup
+		fmt.Fprintf(os.Stderr, "Architect standalone mode not yet implemented\n")
 		os.Exit(1)
 
 	default:

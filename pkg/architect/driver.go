@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -593,6 +594,13 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 // handleApprovalRequest processes a REQUEST message and returns a RESULT
 func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	requestType, _ := requestMsg.GetPayload("request_type")
+	
+	// Check if this is a merge request
+	if requestTypeStr, ok := requestType.(string); ok && requestTypeStr == "merge" {
+		return d.handleMergeRequest(ctx, requestMsg)
+	}
+	
+	// Handle regular approval requests
 	content, _ := requestMsg.GetPayload("content")
 	approvalTypeStr, _ := requestMsg.GetPayload("approval_type")
 	approvalID, _ := requestMsg.GetPayload("approval_id")
@@ -655,6 +663,92 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	d.logger.Info("🏗️ Sending approval result: status=%s", approvalResult.Status)
 
 	return response, nil
+}
+
+// handleMergeRequest processes a merge REQUEST message and returns a RESULT
+func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg) (*proto.AgentMsg, error) {
+	prURL, _ := request.GetPayload("pr_url")
+	branchName, _ := request.GetPayload("branch_name") 
+	storyID, _ := request.GetPayload("story_id")
+	
+	// Convert to strings safely
+	prURLStr, _ := prURL.(string)
+	branchNameStr, _ := branchName.(string)
+	storyIDStr, _ := storyID.(string)
+	
+	d.logger.Info("🏗️ Processing merge request for story %s, PR: %s, branch: %s", storyIDStr, prURLStr, branchNameStr)
+	
+	// Attempt merge using GitHub CLI
+	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, storyIDStr)
+	
+	// Create RESULT response
+	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, request.FromAgent)
+	resultMsg.ParentMsgID = request.ID
+	
+	if err != nil || mergeResult.HasConflicts {
+		d.logger.Info("🏗️ Merge failed with conflicts for story %s", storyIDStr)
+		resultMsg.SetPayload("status", "merge_conflict")
+		resultMsg.SetPayload("conflict_details", mergeResult.ConflictInfo)
+	} else {
+		d.logger.Info("🏗️ Merge successful for story %s, commit: %s", storyIDStr, mergeResult.CommitSHA)
+		resultMsg.SetPayload("status", "merged")
+		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
+		
+		// Mark story as completed in queue
+		if d.queue != nil {
+			if err := d.queue.MarkCompleted(storyIDStr); err != nil {
+				d.logger.Warn("🏗️ Failed to mark story %s as completed: %v", storyIDStr, err)
+			}
+		}
+	}
+	
+	return resultMsg, nil
+}
+
+// MergeAttemptResult represents the result of a merge attempt
+type MergeAttemptResult struct {
+	HasConflicts bool
+	ConflictInfo string
+	CommitSHA    string
+}
+
+// attemptPRMerge attempts to merge a PR using GitHub CLI
+func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*MergeAttemptResult, error) {
+	d.logger.Info("🏗️ Attempting to merge PR: %s", prURL)
+	
+	// Use gh CLI to merge PR with squash strategy and branch deletion
+	// gh pr merge <pr-url> --squash --delete-branch
+	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	
+	cmd := exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
+	output, err := cmd.CombinedOutput()
+	
+	result := &MergeAttemptResult{}
+	
+	if err != nil {
+		// Check if error is due to merge conflicts
+		outputStr := strings.ToLower(string(output))
+		if strings.Contains(outputStr, "conflict") || strings.Contains(outputStr, "merge conflict") {
+			d.logger.Info("🏗️ Merge conflicts detected for PR %s", prURL)
+			result.HasConflicts = true
+			result.ConflictInfo = string(output)
+			return result, nil // Not an error, just conflicts
+		}
+		
+		// Other error (permissions, network, etc.)
+		d.logger.Error("🏗️ Failed to merge PR %s: %v\nOutput: %s", prURL, err, string(output))
+		return nil, fmt.Errorf("gh pr merge failed: %w\nOutput: %s", err, string(output))
+	}
+	
+	// Success - extract commit SHA from output if available
+	outputStr := string(output)
+	d.logger.Info("🏗️ Merge successful for PR %s\nOutput: %s", prURL, outputStr)
+	
+	// TODO: Parse commit SHA from gh output if needed
+	result.CommitSHA = "merged" // Placeholder until we parse actual SHA
+	
+	return result, nil
 }
 
 // handleEscalated processes the escalated phase (waiting for human intervention)

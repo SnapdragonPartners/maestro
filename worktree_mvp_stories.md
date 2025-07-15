@@ -1,115 +1,120 @@
 ---
 title: "Worktree MVP Stories"
-version: "1.0"
-date: "2025-07-12"
-authors: ["Architect Bot"]
-description: "Architect‑level stories needed to add Git worktree support, the new SETUP state, and supporting infrastructure to the multi‑agent orchestration framework."
+version: "1.1"
+date: "2025-07-13"
+authors: ["Architect Bot", "Human"]
+description: "Architect-level stories needed to add Git worktree support, the new SETUP state, and supporting infrastructure to the multi-agent orchestration framework."
 ---
 
 # Overview
 
 This document enumerates the minimum viable set of stories required to let **coder agents** work on multiple stories in sequence through
-light‑weight Git *worktrees*.  
-The scope deliberately excludes containerisation, database name‑spacing, and parallel test execution; those will arrive in a later milestone.
+light-weight Git *worktrees*.  
+The scope deliberately excludes containerisation, database name-spacing, and parallel test execution; those will arrive in a later milestone.
 
 ## Core Assumptions
 
 | Setting | Value / Default |
 |---------|-----------------|
-| **Git repo URL** | Provided in JSON config as `repo_url`; SSH push (keys pre‑installed). |
+| **Git repo URL** | Provided in top-level JSON config as `repo_url`; SSH push (keys pre-installed). |
 | **Base branch** | `main` |
-| **Mirror clone dir** | Config key `mirror_dir` &nbsp;→ default **`$WORKDIR/.mirrors`** |
+| **Mirror clone dir** | Config key `mirror_dir` -> default **`$WORKDIR/.mirrors`** (relative to WORKDIR) |
 | **Worktree path** | `{$WORKDIR}/{AGENT_ID}/{STORY_ID}` |
-| **Branch pattern** | `story-{STORY_ID}` |
+| **Branch pattern** | `story-{STORY_ID}` where STORY_ID = story filename without .md extension |
+| **Story ID** | Canonical story ID derived from filename (e.g., `050.md` -> `050`) |
 | **Test command** | `make test` (repo must implement the `test` target) |
 | **Parallel test runners** | 1 (serial) |
-| **PR authentication** | Push via SSH. PR opened with GitHub CLI (`gh`) if `GITHUB_TOKEN` is set; otherwise skip auto‑PR creation and rely on manual merge. |
+| **PR authentication** | Push via SSH. PR opened with GitHub CLI (`gh`) if `GITHUB_TOKEN` is set; otherwise skip auto-PR creation and rely on manual merge. |
 
 ---
 
 # Stories
 
-> Story IDs use the **AR‑1xx** namespace (Architect Roadmap, sprint 1).
+> Story IDs use the **AR-1xx** namespace (Architect Roadmap, sprint 1).
 
 ---
 
-## **AR‑101 — Add `SETUP` State and Transitions**
+## **AR-101 — Add `SETUP` State and Transitions**
 
 **Goal** – Make `SETUP` the entry point for workspace preparation and allow recovery from `ERROR`.
 
 ### Tasks
-1. Add `SETUP` to the coder‑agent FSM enum.
+1. Add `SETUP` to the coder-agent FSM enum.
 2. Define transitions  
-   * `WAITING → SETUP` : `story-assigned`  
-   * `DONE → SETUP` : `cleanup-complete`  
-   * `ERROR → SETUP` : `retry`
-3. Update Mermaid diagrams and the compile‑time transition validation table.
-4. Emit a state‑transition metric (`agent_state`) for observability.
+   * `WAITING -> SETUP` : when story assigned via channel-based dispatcher  
+   * `DONE -> SETUP` : after successful cleanup for next story (fresh start)  
+   * `ERROR -> SETUP` : on retry (fresh start, no state preservation)
+3. Update Mermaid diagrams and the compile-time transition validation table.
+4. Use existing channel-based approach in pkg/dispatcher for state transitions (no new event emission needed).
 
-### Acceptance Criteria
+### Acceptance Criteria
 * Unit tests verify all new transitions succeed and invalid ones fail.  
 * DONE and ERROR are no longer terminal.
 
 ---
 
-## **AR‑102 — Workspace Initialisation in `SETUP`**
+## **AR-102 — Workspace Initialisation in `SETUP`**
 
-**Goal** – Create (or reuse) a mirror clone, then add a story‑specific worktree and branch.
+**Goal** – Create (or reuse) a mirror clone, then add a story-specific worktree and branch.
 
 ### Tasks
 1. **Mirror clone**  
-   * If `<mirror_dir>/<repo>.git` is absent →  
+   * If `<mirror_dir>/<repo>.git` is absent ->  
      `git clone --mirror {repo_url} {mirror_path}`  
    * Always run `git -C {mirror_path} fetch origin {base_branch}`.
-2. **Worktree path** = `${WORKDIR}/${AGENT_ID}/${STORY_ID}`.  
+2. **Worktree path** = `${WORKDIR}/${AGENT_ID}/${STORY_ID}`.  
    * Ensure parent dirs exist.  
    * `git -C {mirror_path} worktree add --detach {worktree_path} origin/{base_branch}`.
 3. **Branch checkout**  
    * `git -C {worktree_path} switch -c story-{STORY_ID}`.
 4. Export `WORKTREE_PATH` env var for subsequent steps.
-5. On any error → transition to `ERROR` with diagnostic message.
+5. On any error -> transition to `ERROR` with diagnostic message.
 
-### Acceptance Criteria
-* Functional test proves a clean worktree is created in <300 ms on a warm cache.  
-* Mirror used by two agents shares object dir (verify via hard‑link count).
+### Test Strategy
+* **Unit tests**: Use `GitRunner` interface with mocked implementation for pure logic testing.
+* **Functional tests**: Use `t.TempDir()` with real local Git repo (no network) to test actual Git operations.
+
+### Acceptance Criteria
+* Functional test proves a clean worktree is created in <300 ms on a warm cache.  
+* Mirror used by two agents shares object dir (verify via hard-link count).
 
 ---
 
-## **AR‑103 — Run `make test` inside Worktree**
+## **AR-103 — Run `make test` inside Worktree**
 
-**Goal** – Execute project‑defined tests and surface failures before PR.
+**Goal** – Execute project-defined tests and surface failures before PR.
 
 ### Tasks
 1. In **CODING** state exit hook, run:  
    `pushd $WORKTREE_PATH && make test && popd`.
 2. Capture stdout/stderr; attach summary to PR body (next story) or to the `ERROR` message.
-3. If `make test` exits non‑zero → transition to `ERROR`.
+3. If `make test` exits non-zero -> transition to `ERROR`.
 
-### Acceptance Criteria
+### Acceptance Criteria
 * Repository with a deliberately failing test leaves agent in `ERROR`.  
 * Successful run produces log file `test-report.txt` inside the PR artifacts dir.
 
 ---
 
-## **AR‑104 — Push Branch & Open Pull Request**
+## **AR-104 — Push Branch & Open Pull Request**
 
 **Goal** – Surface code for architectural review.
 
 ### Tasks
 1. Push branch via SSH:  
    `git -C $WORKTREE_PATH push -u origin story-{STORY_ID}`.
-2. If `GITHUB_TOKEN` present → call  
+2. If `GITHUB_TOKEN` present -> call  
    `gh pr create --fill --base {base_branch} --head story-{STORY_ID} --label "agent-story"`
-   * Title template: **“Story #{STORY_ID}: generated by agent {AGENT_ID}”**
+   * Title template: **"Story #{STORY_ID}: generated by agent {AGENT_ID}"**
 3. Post PR URL (or commit SHA) back to the architect agent.
 
-### Acceptance Criteria
+### Acceptance Criteria
 * Branch is visible on GitHub with expected name.  
-* PR auto‑created when token exists; skipped otherwise without failure.
+* PR auto-created when token exists; skipped otherwise without failure.
 
 ---
 
-## **AR‑105 — Cleanup Worktree after Merge or Abort**
+## **AR-105 — Cleanup Worktree after Merge or Abort**
 
 **Goal** – Free disk and prepare agent for next story.
 
@@ -117,53 +122,54 @@ The scope deliberately excludes containerisation, database name‑spacing, and p
 1. In **DONE** state entry hook, call  
    `git -C {mirror_path} worktree remove {worktree_path}`  
    then `git -C {mirror_path} worktree prune`.
-2. Remove agent‑level temp dir if empty.  
-3. Emit `cleanup-complete` event → FSM transition to `SETUP`.
+2. Remove agent-level temp dir if empty.  
+3. Use channel-based dispatcher to transition back to `SETUP` for next story.
 
-### Acceptance Criteria
+### Acceptance Criteria
 * `du -sh {worktree_path}` fails after cleanup (path gone).  
 * Mirror no longer lists the worktree (`git worktree list`).
 
 ---
 
-## **AR‑106 — JSON Config Loader**
+## **AR-106 — JSON Config Loader**
 
 **Goal** – Centralise repo & path settings.
 
 ### Tasks
-1. Define struct `type RepoConfig struct { RepoURL string; BaseBranch string; MirrorDir string; WorktreePattern string; BranchPattern string }`
+1. Add Git settings to top-level Config struct: `RepoURL`, `BaseBranch`, `MirrorDir`, `WorktreePattern`, `BranchPattern`
 2. Add CLI flag `--config /path/to/config.json`.
 3. Validate & hydrate defaults when keys missing.
 
-### Acceptance Criteria
-* Missing mandatory field causes orchestrator start‑up error.  
+### Acceptance Criteria
+* Missing mandatory field causes orchestrator start-up error.  
 * `go vet ./...` and `go test ./...` stay green.
 
 ---
 
-## **AR‑107 — FSM & Workspace Unit‑Test Suite**
+## **AR-107 — FSM & Workspace Unit-Test Suite**
 
 **Goal** – Guard against regressions.
 
 ### Tasks
-1. Table‑driven tests for all new transitions.  
-2. Use `t.TempDir()` to fake mirror & worktree; inject dummy `git` by PATH override.
+1. Table-driven tests for all new transitions.  
+2. **Unit tests**: Use `GitRunner` interface with mocked implementation for pure logic testing.
+3. **Functional tests**: Use `t.TempDir()` with real local Git repo (no network) to test actual Git operations.
 
-### Acceptance Criteria
-* `go test ./...` passes in <2 s on CI.
+### Acceptance Criteria
+* `go test ./...` passes in <2 s on CI.
 
 ---
 
-## **AR‑108 — Documentation & Example**
+## **AR-108 — Documentation & Example**
 
 **Goal** – Help contributors spin up the system.
 
 ### Tasks
-1. Update `README.md` with diagram, config file example, and quick‑start commands.  
+1. Update `README.md` with diagram, config file example, and quick-start commands.  
 2. Add Mermaid diagram of revised FSM.
 
-### Acceptance Criteria
-* New developer can follow README to process a dummy story end‑to‑end.
+### Acceptance Criteria
+* New developer can follow README to process a dummy story end-to-end.
 
 ---
 

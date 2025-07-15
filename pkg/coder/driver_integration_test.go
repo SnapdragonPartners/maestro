@@ -12,8 +12,8 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestCoderDriverHealthStoryIntegration tests the complete flow from PLANNING to DONE
-func TestCoderDriverHealthStoryIntegration(t *testing.T) {
+// TestCoderHealthStoryIntegration tests the complete flow from PLANNING to DONE
+func TestCoderHealthStoryIntegration(t *testing.T) {
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "coder-test")
 	if err != nil {
@@ -35,7 +35,7 @@ func TestCoderDriverHealthStoryIntegration(t *testing.T) {
 	}
 
 	// Create driver in mock mode (no LLM client)
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -90,8 +90,8 @@ func TestCoderDriverHealthStoryIntegration(t *testing.T) {
 	}
 }
 
-// TestCoderDriverQuestionFlow tests the QUESTION state with origin tracking
-func TestCoderDriverQuestionFlow(t *testing.T) {
+// TestCoderQuestionFlow tests the QUESTION state with origin tracking
+func TestCoderQuestionFlow(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "coder-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -109,7 +109,7 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -155,8 +155,8 @@ func TestCoderDriverQuestionFlow(t *testing.T) {
 	}
 }
 
-// TestCoderDriverApprovalFlow tests the REQUEST→RESULT flow for approvals
-func TestCoderDriverApprovalFlow(t *testing.T) {
+// TestCoderApprovalFlow tests the REQUEST→RESULT flow for approvals
+func TestCoderApprovalFlow(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "coder-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -174,7 +174,7 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -230,8 +230,8 @@ func TestCoderDriverApprovalFlow(t *testing.T) {
 	}
 }
 
-// TestCoderDriverFailureAndRetry tests failure scenarios and retry logic
-func TestCoderDriverFailureAndRetry(t *testing.T) {
+// TestCoderFailureAndRetry tests failure scenarios and retry logic
+func TestCoderFailureAndRetry(t *testing.T) {
 	modelConfig := &config.ModelCfg{
 		MaxContextTokens: 4096,
 		MaxReplyTokens:   1024,
@@ -268,7 +268,7 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 				t.Fatalf("Failed to create state store: %v", err)
 			}
 
-			driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
+			driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 			if err != nil {
 				t.Fatalf("Failed to create driver: %v", err)
 			}
@@ -318,8 +318,8 @@ func TestCoderDriverFailureAndRetry(t *testing.T) {
 	}
 }
 
-// TestCoderDriverStateManagement tests the unified approval result management
-func TestCoderDriverStateManagement(t *testing.T) {
+// TestCoderStateManagement tests the unified approval result management
+func TestCoderStateManagement(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "coder-state-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -337,7 +337,7 @@ func TestCoderDriverStateManagement(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, modelConfig, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}

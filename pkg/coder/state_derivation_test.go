@@ -100,7 +100,7 @@ func TestIsCoderState(t *testing.T) {
 
 // TestDriverIsCoderState verifies the driver's isCoderState method uses dynamic derivation
 func TestDriverIsCoderState(t *testing.T) {
-	driver := &CoderDriver{}
+	driver := &Coder{}
 
 	// Test all dynamically derived states
 	derivedStates := GetAllCoderStates()

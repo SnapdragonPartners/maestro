@@ -35,7 +35,7 @@ func TestCheckLoopBudget(t *testing.T) {
 		},
 	}
 
-	driver := &CoderDriver{
+	driver := &Coder{
 		BaseStateMachine: sm,
 		codingBudget:     agentConfig.IterationBudgets.CodingBudget,
 		fixingBudget:     agentConfig.IterationBudgets.FixingBudget,
@@ -155,7 +155,7 @@ func TestProcessAutoCheckinAnswer(t *testing.T) {
 	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, nil)
 
 	// Create test driver
-	driver := &CoderDriver{
+	driver := &Coder{
 		BaseStateMachine: sm,
 		codingBudget:     5,
 		fixingBudget:     3,

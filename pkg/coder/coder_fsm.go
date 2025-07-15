@@ -8,15 +8,17 @@ import (
 )
 
 // State constants - single source of truth for state names
-// We inherit three states, WAITING (the entry state), DONE and ERROR
-// (the exit states) from the base agent.
+// We inherit three states, WAITING (the entry state), DONE and ERROR from the base agent.
+// DONE and ERROR are no longer terminal - they can transition to SETUP for the next story.
 const (
+	StateSetup      agent.State = "SETUP"
 	StatePlanning   agent.State = "PLANNING"
 	StateCoding     agent.State = "CODING"
 	StateTesting    agent.State = "TESTING"
 	StateFixing     agent.State = "FIXING"
 	StatePlanReview agent.State = "PLAN_REVIEW"
 	StateCodeReview agent.State = "CODE_REVIEW"
+	StateAwaitMerge agent.State = "AWAIT_MERGE"
 	StateQuestion   agent.State = "QUESTION"
 )
 
@@ -45,17 +47,20 @@ func ValidateState(state agent.State) error {
 // GetValidStates returns all valid states for coder agents
 func GetValidStates() []agent.State {
 	return []agent.State{
-		agent.StateWaiting, StatePlanning, StateCoding, StateTesting, StateFixing,
-		StatePlanReview, StateCodeReview, StateQuestion, agent.StateDone, agent.StateError,
+		agent.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting, StateFixing,
+		StatePlanReview, StateCodeReview, StateAwaitMerge, StateQuestion, agent.StateDone, agent.StateError,
 	}
 }
 
 // CoderTransitions defines the canonical state transition map for coder agents.
-// This is the single source of truth, derived directly from STATES.md.
+// This is the single source of truth, derived directly from STATES.md and worktree MVP stories.
 // Any code, tests, or diagrams must match this specification exactly.
 var CoderTransitions = map[agent.State][]agent.State{
-	// WAITING can only transition to PLANNING when receiving task
-	agent.StateWaiting: {StatePlanning},
+	// WAITING can transition to SETUP when receiving task assignment
+	agent.StateWaiting: {StateSetup},
+
+	// SETUP prepares workspace (mirror clone, worktree, branch) then goes to PLANNING
+	StateSetup: {StatePlanning, agent.StateError},
 
 	// PLANNING can submit plan for review or ask questions
 	StatePlanning: {StatePlanReview, StateQuestion},
@@ -72,8 +77,11 @@ var CoderTransitions = map[agent.State][]agent.State{
 	// FIXING can fix and retest, ask questions, or hit unrecoverable error
 	StateFixing: {StateTesting, StateQuestion, agent.StateError},
 
-	// CODE_REVIEW can approve (→DONE), request changes (→FIXING), or abandon (→ERROR)
-	StateCodeReview: {agent.StateDone, StateFixing, agent.StateError},
+	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→FIXING), or abandon (→ERROR)
+	StateCodeReview: {StateAwaitMerge, StateFixing, agent.StateError},
+
+	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→FIXING)
+	StateAwaitMerge: {agent.StateDone, StateFixing},
 
 	// QUESTION can return to any non-terminal state based on answer type
 	StateQuestion: {
@@ -81,9 +89,9 @@ var CoderTransitions = map[agent.State][]agent.State{
 		StateFixing, StateCodeReview, agent.StateError,
 	},
 
-	// Terminal states have no outgoing transitions
-	agent.StateDone:  {},
-	agent.StateError: {},
+	// DONE and ERROR are no longer terminal - they can restart via SETUP
+	agent.StateDone:  {StateSetup},
+	agent.StateError: {StateSetup},
 }
 
 // IsValidCoderTransition checks if a transition between two states is allowed

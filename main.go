@@ -346,8 +346,26 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 				return fmt.Errorf("failed to create state store for agent %s: %w", logID, err)
 			}
 
+			// Create workspace manager for Git worktree support
+			var workspaceManager *coder.WorkspaceManager
+			if o.config.RepoURL != "" {
+				gitRunner := coder.NewDefaultGitRunner()
+				workspaceManager = coder.NewWorkspaceManager(
+					gitRunner,
+					o.workDir, // Use project workdir, not agent workdir, for shared mirror
+					o.config.RepoURL,
+					o.config.BaseBranch,
+					o.config.MirrorDir,
+					o.config.BranchPattern,
+					o.config.WorktreePattern,
+				)
+				o.logger.Info("Created workspace manager for coder %s with repo %s", logID, o.config.RepoURL)
+			} else {
+				return fmt.Errorf("no Git repository URL configured - WorkspaceManager is required for coder agents")
+			}
+
 			// Create coder with Claude LLM integration (always live mode now)
-			coderAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey)
+			coderAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey, workspaceManager)
 			if err != nil {
 				return fmt.Errorf("failed to create coder agent %s: %w", logID, err)
 			}

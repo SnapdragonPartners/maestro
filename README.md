@@ -319,7 +319,7 @@ The system uses JSON configuration with environment variable overrides:
       "max_budget_per_day_usd": 50.0,
       "api_key": "${ANTHROPIC_API_KEY}",
       "agents": [
-        {"name": "claude-coder", "id": "001", "type": "coder", "work_dir": "./work/claude"}
+        {"name": "claude-coder", "id": "001", "type": "coder", "workdir": "./work/claude"}
       ]
     },
     "openai_o3": {
@@ -327,12 +327,45 @@ The system uses JSON configuration with environment variable overrides:
       "max_budget_per_day_usd": 20.0, 
       "api_key": "${OPENAI_API_KEY}",
       "agents": [
-        {"name": "architect", "id": "001", "type": "architect", "work_dir": "./work/architect"}
+        {"name": "architect", "id": "001", "type": "architect", "workdir": "./work/architect"}
       ]
     }
-  }
+  },
+  "repo_url": "git@github.com:user/repo.git",
+  "base_branch": "main",
+  "mirror_dir": ".mirrors",
+  "worktree_pattern": "{AGENT_ID}/{STORY_ID}",
+  "branch_pattern": "story-{STORY_ID}"
 }
 ```
+
+### Git Worktree Support (Worktree MVP)
+
+The system supports Git worktrees for isolated agent workspaces, enabling multiple concurrent story development:
+
+**Story File Naming Constraint**: Story files MUST follow the pattern `{ID}.md` (e.g., `050.md`, `123.md`). The filename becomes the canonical story identifier and Git branch name. Invalid examples: `R-12345_login.md` → unclear story ID extraction.
+
+**Startup Sequence**:
+1. **Parse configuration** from `CONFIG_PATH` or `--config` flag
+2. **Create WORKDIR** if missing (from config or CLI argument)  
+3. **Initialize Git mirrors** lazily in `{WORKDIR}/.mirrors/` subdirectory
+4. **Start agents** with workspace managers configured
+
+**Git Configuration**:
+- `repo_url`: SSH repository URL for clone/push operations
+- `base_branch`: Base branch for worktree creation (default: `main`)
+- `mirror_dir`: Mirror repository location relative to WORKDIR (default: `.mirrors`)
+- `worktree_pattern`: Workspace path template (default: `{AGENT_ID}/{STORY_ID}`)
+- `branch_pattern`: Git branch naming (default: `story-{STORY_ID}`)
+
+**Workspace Flow**:
+1. **SETUP**: Create mirror clone (if needed), add worktree, create story branch
+2. **Code Development**: Generate code in isolated workspace
+3. **TESTING**: Run `make test` in worktree directory  
+4. **Branch Push**: Push story branch for review (if `GITHUB_TOKEN` available)
+5. **Cleanup**: Remove worktree after completion, prepare for next story
+
+This enables agents to work on multiple stories sequentially with proper isolation and cleanup.
 
 ## Development Stories
 
