@@ -1,0 +1,45 @@
+{
+  "models": {
+    "claude_sonnet4": {
+      "max_tokens_per_minute": 10000,
+      "max_budget_per_day_usd": 25.0,
+      "cpm_tokens_in": 0.003,
+      "cpm_tokens_out": 0.015,
+      "api_key": "test",
+      "agents": [
+        {
+          "name": "claude-main",
+          "id": "001",
+          "type": "coder",
+          "workdir": "./work/claude-main"
+        }
+      ]
+    },
+    "openai_o3": {
+      "max_tokens_per_minute": 500,
+      "max_budget_per_day_usd": 50.0,
+      "cpm_tokens_in": 0.004,
+      "cpm_tokens_out": 0.016,
+      "api_key": "test",
+      "agents": [
+        {
+          "name": "architect-main",
+          "id": "001",
+          "type": "architect",
+          "workdir": "./work/architect-main"
+        }
+      ]
+    }
+  },
+  "repo_url": "git@github.com:dratner/maestro-demo.git",
+  "base_branch": "main",
+  "mirror_dir": ".mirrors",
+  "worktree_pattern": "{STORY_ID}",
+  "branch_pattern": "story-{STORY_ID}",
+  "graceful_shutdown_timeout_sec": 30,
+  "event_log_rotation_hours": 24,
+  "max_retry_attempts": 3,
+  "retry_backoff_multiplier": 2.0,
+  "story_channel_factor": 8,
+  "questions_channel_size": 1
+}

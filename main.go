@@ -16,9 +16,11 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
+	"orchestrator/pkg/bootstrap"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
@@ -36,9 +38,10 @@ type Orchestrator struct {
 	logger       *logx.Logger
 	agents       map[string]StatusAgent
 	shutdownTime time.Duration
-	architect    *architect.Driver // Phase 4: Architect driver for spec processing
-	webServer    *webui.Server     // Web UI server
-	workDir      string            // Working directory for this run
+	architect    *architect.Driver         // Phase 4: Architect driver for spec processing
+	webServer    *webui.Server             // Web UI server
+	buildService *build.BuildService   // Build execution service for MCP tools
+	workDir      string                    // Working directory for this run
 
 	// Agents handle their own state machines
 }
@@ -73,6 +76,48 @@ func (a *LLMClientAdapter) GenerateResponse(ctx context.Context, prompt string) 
 
 // ArchitectMessageAdapter removed - architect driver is now registered directly with dispatcher
 
+// checkDependencies verifies that all required external dependencies are available
+func checkDependencies(cfg *config.Config) error {
+	var errors []string
+	
+	// Check for git
+	if _, err := exec.LookPath("git"); err != nil {
+		errors = append(errors, "git is not installed or not in PATH")
+	}
+	
+	// Check for gh (GitHub CLI)
+	if _, err := exec.LookPath("gh"); err != nil {
+		errors = append(errors, "gh (GitHub CLI) is not installed or not in PATH")
+	}
+	
+	// Check for GITHUB_TOKEN
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
+		errors = append(errors, "GITHUB_TOKEN not found in environment variables")
+	}
+	
+	// Validate GITHUB_TOKEN format if present
+	if githubToken != "" {
+		if !strings.HasPrefix(githubToken, "ghp_") && !strings.HasPrefix(githubToken, "github_pat_") {
+			errors = append(errors, "GITHUB_TOKEN format appears invalid (should start with 'ghp_' or 'github_pat_')")
+		}
+		if len(githubToken) < 20 {
+			errors = append(errors, "GITHUB_TOKEN appears too short to be valid")
+		}
+	}
+	
+	if len(errors) > 0 {
+		return fmt.Errorf("dependency check failed:\n  - %s", strings.Join(errors, "\n  - "))
+	}
+	
+	fmt.Println("✅ All required dependencies are available:")
+	fmt.Println("  - git: available")
+	fmt.Println("  - gh (GitHub CLI): available")
+	fmt.Println("  - GITHUB_TOKEN: configured")
+	
+	return nil
+}
+
 func main() {
 	fmt.Println("orchestrator boot")
 
@@ -106,6 +151,11 @@ func main() {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Check required dependencies before proceeding
+	if err := checkDependencies(cfg); err != nil {
+		log.Fatalf("Missing required dependencies: %v", err)
 	}
 
 	// Config loaded successfully (no need to print it)
@@ -176,6 +226,9 @@ func NewOrchestrator(cfg *config.Config, workDir string) (*Orchestrator, error) 
 		return nil, fmt.Errorf("failed to create event log: %w", err)
 	}
 
+	// Create build service
+	buildService := build.NewBuildService()
+
 	// No global state store - each agent manages its own state
 
 	// Create dispatcher
@@ -199,6 +252,7 @@ func NewOrchestrator(cfg *config.Config, workDir string) (*Orchestrator, error) 
 		agents:       make(map[string]StatusAgent),
 		shutdownTime: shutdownTime,
 		architect:    nil, // Will be set during agent creation
+		buildService: buildService,
 		workDir:      workDir,
 	}, nil
 }
@@ -206,6 +260,11 @@ func NewOrchestrator(cfg *config.Config, workDir string) (*Orchestrator, error) 
 // Start initializes and starts the orchestrator
 func (o *Orchestrator) Start(ctx context.Context, liveMode bool) error {
 	o.logger.Info("Starting orchestrator")
+
+	// Phase 1: PROJECT_BOOTSTRAP (blocking phase)
+	if err := o.runBootstrapPhase(ctx); err != nil {
+		return fmt.Errorf("bootstrap phase failed: %w", err)
+	}
 
 	// Start dispatcher
 	if err := o.dispatcher.Start(ctx); err != nil {
@@ -220,6 +279,51 @@ func (o *Orchestrator) Start(ctx context.Context, liveMode bool) error {
 	// Agents will handle their own polling and state machines
 
 	o.logger.Info("Orchestrator started successfully")
+	return nil
+}
+
+// runBootstrapPhase executes the PROJECT_BOOTSTRAP phase before starting agents
+func (o *Orchestrator) runBootstrapPhase(ctx context.Context) error {
+	o.logger.Info("Starting PROJECT_BOOTSTRAP phase")
+	
+	// Create bootstrap configuration from orchestrator config
+	bootstrapConfig := &bootstrap.Config{
+		Enabled:             true,
+		ForceBackend:        "", // Auto-detect by default
+		SkipMakefile:        false,
+		AdditionalArtifacts: []string{}, // Basic artifacts only
+		TemplateOverrides:   make(map[string]string),
+		BranchName:          "bootstrap-init",
+		AutoMerge:           true,
+		BaseBranch:          "main",
+	}
+	
+	// Create bootstrap phase
+	phase := bootstrap.NewPhase(o.workDir, bootstrapConfig)
+	
+	// Execute bootstrap phase
+	result, err := phase.Execute(ctx)
+	if err != nil {
+		return fmt.Errorf("bootstrap phase execution failed: %w", err)
+	}
+	
+	// Log bootstrap results
+	if result.Success {
+		o.logger.Info("PROJECT_BOOTSTRAP phase completed successfully")
+		o.logger.Info("Backend detected: %s", result.Backend)
+		o.logger.Info("Generated %d files in %v", len(result.GeneratedFiles), result.Duration)
+		
+		if result.BranchCreated != "" {
+			o.logger.Info("Created bootstrap branch: %s", result.BranchCreated)
+		}
+		
+		if result.MergeCompleted {
+			o.logger.Info("Bootstrap artifacts merged to main branch")
+		}
+	} else {
+		return fmt.Errorf("bootstrap phase failed: %s", result.Error)
+	}
+	
 	return nil
 }
 
@@ -365,7 +469,7 @@ func (o *Orchestrator) createAgents(liveMode bool) error {
 			}
 
 			// Create coder with Claude LLM integration (always live mode now)
-			coderAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey, workspaceManager)
+			coderAgent, err := coder.NewCoderWithClaude(logID, agentConfig.Name, agentWorkDir, agentStateStore, &agentWithModel.Model, agentWithModel.Model.APIKey, workspaceManager, o.buildService)
 			if err != nil {
 				return fmt.Errorf("failed to create coder agent %s: %w", logID, err)
 			}

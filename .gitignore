@@ -23,3 +23,14 @@ Thumbs.db
 *.test
 *.out
 go.work
+
+# Binaries
+orchestrator
+agentctl
+
+#Directories
+work
+logs
+bin
+config/config.json
+

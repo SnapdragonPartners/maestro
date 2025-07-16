@@ -685,10 +685,16 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, request.FromAgent)
 	resultMsg.ParentMsgID = request.ID
 	
-	if err != nil || mergeResult.HasConflicts {
-		d.logger.Info("🏗️ Merge failed with conflicts for story %s", storyIDStr)
-		resultMsg.SetPayload("status", "merge_conflict")
-		resultMsg.SetPayload("conflict_details", mergeResult.ConflictInfo)
+	if err != nil || (mergeResult != nil && mergeResult.HasConflicts) {
+		if err != nil {
+			d.logger.Info("🏗️ Merge failed with error for story %s: %v", storyIDStr, err)
+			resultMsg.SetPayload("status", "merge_error")
+			resultMsg.SetPayload("error_details", err.Error())
+		} else {
+			d.logger.Info("🏗️ Merge failed with conflicts for story %s", storyIDStr)
+			resultMsg.SetPayload("status", "merge_conflict")
+			resultMsg.SetPayload("conflict_details", mergeResult.ConflictInfo)
+		}
 	} else {
 		d.logger.Info("🏗️ Merge successful for story %s, commit: %s", storyIDStr, mergeResult.CommitSHA)
 		resultMsg.SetPayload("status", "merged")
@@ -720,6 +726,11 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*Me
 	// gh pr merge <pr-url> --squash --delete-branch
 	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	
+	// Check if gh is available
+	if _, err := exec.LookPath("gh"); err != nil {
+		return nil, fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
+	}
 	
 	cmd := exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
 	output, err := cmd.CombinedOutput()
@@ -1107,10 +1118,20 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
 			storyMsg.SetPayload(proto.KeyContent, content)
 			storyMsg.SetPayload(proto.KeyRequirements, requirements)
+			
+			// Detect backend from story content and requirements
+			backend := d.detectBackend(storyID, content, requirements)
+			storyMsg.SetPayload(proto.KeyBackend, backend)
+			d.logger.Info("🏗️ Detected backend '%s' for story %s", backend, storyID)
 		} else {
 			// Fallback to title if content parsing fails
 			storyMsg.SetPayload(proto.KeyContent, story.Title)
 			storyMsg.SetPayload(proto.KeyRequirements, []string{})
+			
+			// Default backend detection from title
+			backend := d.detectBackend(storyID, story.Title, []string{})
+			storyMsg.SetPayload(proto.KeyBackend, backend)
+			d.logger.Info("🏗️ Detected backend '%s' for story %s (from title)", backend, storyID)
 		}
 	}
 
@@ -1255,6 +1276,87 @@ func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
 	}
 
 	return storyDescription, requirements, nil
+}
+
+// detectBackend analyzes story content and requirements to determine the appropriate backend
+func (d *Driver) detectBackend(storyID, content string, requirements []string) string {
+	// Convert content to lowercase for case-insensitive matching
+	contentLower := strings.ToLower(content)
+	
+	// Convert requirements to lowercase for case-insensitive matching
+	requirementsLower := make([]string, len(requirements))
+	for i, req := range requirements {
+		requirementsLower[i] = strings.ToLower(req)
+	}
+	
+	// Check content for backend indicators
+	if containsBackendKeywords(contentLower, []string{
+		"go", "golang", "go.mod", "go.sum", "main.go", "package main",
+		"func main", "import \"", "go build", "go test", "go run",
+	}) {
+		return "go"
+	}
+	
+	if containsBackendKeywords(contentLower, []string{
+		"python", "pip", "requirements.txt", "setup.py", "pyproject.toml",
+		"def ", "import ", "from ", "python3", "venv", "virtualenv", "uv",
+	}) {
+		return "python"
+	}
+	
+	if containsBackendKeywords(contentLower, []string{
+		"javascript", "typescript", "node", "npm", "package.json", "yarn",
+		"pnpm", "bun", "const ", "let ", "var ", "function", "=>", "nodejs",
+	}) {
+		return "node"
+	}
+	
+	if containsBackendKeywords(contentLower, []string{
+		"makefile", "gcc", "clang", "c++", "cpp",
+	}) || strings.Contains(contentLower, " make ") || strings.HasPrefix(contentLower, "make ") || strings.HasSuffix(contentLower, " make") || strings.Contains(contentLower, " c ") {
+		return "make"
+	}
+	
+	// Check requirements for backend indicators
+	for _, req := range requirementsLower {
+		if containsBackendKeywords(req, []string{
+			"go", "golang", "go.mod", "go.sum", "main.go", "package main",
+		}) {
+			return "go"
+		}
+		
+		if containsBackendKeywords(req, []string{
+			"python", "pip", "requirements.txt", "setup.py", "pyproject.toml",
+		}) {
+			return "python"
+		}
+		
+		if containsBackendKeywords(req, []string{
+			"javascript", "typescript", "node", "npm", "package.json", "yarn",
+		}) {
+			return "node"
+		}
+		
+		if containsBackendKeywords(req, []string{
+			"makefile", "gcc", "clang",
+		}) || strings.Contains(req, " make ") || strings.HasPrefix(req, "make ") || strings.HasSuffix(req, " make") {
+			return "make"
+		}
+	}
+	
+	// Default to null backend if no specific backend detected
+	d.logger.Info("🏗️ No specific backend detected for story %s, using null backend", storyID)
+	return "null"
+}
+
+// containsBackendKeywords checks if text contains any of the given keywords
+func containsBackendKeywords(text string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 // getSpecFileFromMessage extracts the spec file path from the stored SPEC message

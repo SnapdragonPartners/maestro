@@ -24,8 +24,8 @@ func TestSetupStateHandler(t *testing.T) {
 			storyID: "050",
 			setupMock: func(mock *MockGitRunner) {
 				// Mock successful Git operations
-				mock.SetCommand("", []byte("mock output"), "clone", "--mirror")
-				mock.SetCommand("", []byte("mock output"), "fetch", "origin", "main")
+				mock.SetCommand("", []byte("mock output"), "clone", "--bare")
+				mock.SetCommand("", []byte("mock output"), "remote", "update", "--prune")
 				mock.SetCommand("", []byte("mock output"), "worktree", "add", "--detach")
 				mock.SetCommand("", []byte("mock output"), "switch", "-c", "story-050")
 			},
@@ -46,7 +46,7 @@ func TestSetupStateHandler(t *testing.T) {
 			storyID: "050",
 			setupMock: func(mock *MockGitRunner) {
 				// Mock failed Git operation
-				mock.SetError("", fmt.Errorf("git clone failed"), "clone", "--mirror")
+				mock.SetError("", fmt.Errorf("git clone failed"), "clone", "--bare")
 			},
 			expectedState: agent.StateError,
 			expectedError: true,

@@ -65,6 +65,7 @@ const (
 	KeyDependsOn       = "depends_on"
 	KeyEstimatedPoints = "estimated_points"
 	KeyFilePath        = "file_path"
+	KeyBackend         = "backend"
 
 	// Resource request keys
 	KeyRequestedTokens     = "requestedTokens"

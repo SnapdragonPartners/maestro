@@ -10,6 +10,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
@@ -110,8 +111,11 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	// This allows coders to follow the full REQUEST→RESULT communication pattern
 	mockLLM := &MockLLMClient{}
 
+	// Create BuildService for MCP tools
+	buildService := build.NewBuildService()
+	
 	// Create coder driver
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -146,8 +150,11 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 	// Create a simple mock LLM client for testing
 	mockLLM := &MockLLMClient{}
 
+	// Create BuildService for MCP tools
+	buildService := build.NewBuildService()
+	
 	// Create coder driver with agent configuration
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}

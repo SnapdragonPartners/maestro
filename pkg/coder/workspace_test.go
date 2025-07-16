@@ -28,8 +28,8 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 			agentID:    "agent-1",
 			storyID:    "050",
 			mockCommands: map[string][]byte{
-				"|clone --mirror git@github.com:user/repo.git": []byte("Cloning..."),
-				"|fetch origin main":                           []byte("Fetching..."),
+				"|clone --bare git@github.com:user/repo.git": []byte("Cloning..."),
+				"|remote update --prune":                           []byte("Fetching..."),
 				"|worktree add --detach":                       []byte("Adding worktree..."),
 				"|switch -c story-050":                         []byte("Switched to branch"),
 			},
@@ -42,7 +42,7 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 			agentID:    "agent-1",
 			storyID:    "050",
 			mockErrors: map[string]error{
-				"|clone --mirror git@github.com:user/repo.git": fmt.Errorf("clone failed"),
+				"|clone --bare git@github.com:user/repo.git": fmt.Errorf("clone failed"),
 			},
 			expectedError: true,
 		},
@@ -53,8 +53,8 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 			agentID:    "agent-1",
 			storyID:    "050",
 			mockCommands: map[string][]byte{
-				"|clone --mirror git@github.com:user/repo.git": []byte("Cloning..."),
-				"|fetch origin main":                           []byte("Fetching..."),
+				"|clone --bare git@github.com:user/repo.git": []byte("Cloning..."),
+				"|remote update --prune":                           []byte("Fetching..."),
 			},
 			mockErrors: map[string]error{
 				"|worktree add --detach": fmt.Errorf("worktree add failed"),

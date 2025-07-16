@@ -10,6 +10,7 @@ import (
 
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
@@ -219,7 +220,10 @@ func main() {
 				"agentctl/{STORY_ID}",
 			)
 			
-			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager)
+			// Create BuildService for MCP tools
+			buildService := build.NewBuildService()
+			
+			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager, buildService)
 		} else {
 			fmt.Fprintf(os.Stderr, "No ANTHROPIC_API_KEY found, would use mock mode (but mocks removed)\n")
 			fmt.Fprintf(os.Stderr, "Please set ANTHROPIC_API_KEY environment variable\n")

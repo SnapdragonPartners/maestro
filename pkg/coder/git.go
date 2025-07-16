@@ -104,6 +104,13 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 		return "", fmt.Errorf("failed to setup mirror clone: %w", err)
 	}
 	w.logger.Debug("Mirror path: %s", mirrorPath)
+	
+	// Step 1.5: Occasionally clean up old worktrees (housekeeping)
+	// Run cleanup every 10th story to avoid overhead
+	if strings.HasSuffix(storyID, "0") {
+		w.logger.Debug("Running worktree cleanup for story %s", storyID)
+		w.cleanupWorktrees(ctx, mirrorPath)
+	}
 
 	// Step 2: Create story work directory path
 	storyWorkDir := w.BuildStoryWorkDir(agentID, storyID, agentWorkDir)
@@ -169,20 +176,41 @@ func (w *WorkspaceManager) ensureMirrorClone(ctx context.Context) (string, error
 			return "", fmt.Errorf("failed to create mirror directory: %w", err)
 		}
 
-		// Clone mirror
-		_, err := w.gitRunner.Run(ctx, "", "clone", "--mirror", w.repoURL, mirrorPath)
+		// Clone bare repository (not mirror to avoid push conflicts)
+		_, err := w.gitRunner.Run(ctx, "", "clone", "--bare", w.repoURL, mirrorPath)
 		if err != nil {
 			return "", fmt.Errorf("failed to clone mirror from %s to %s: %w", w.repoURL, mirrorPath, err)
 		}
 	} else {
-		// Update existing mirror
-		_, err := w.gitRunner.Run(ctx, mirrorPath, "fetch", "origin", w.baseBranch)
+		// Update existing mirror - fetch all branches and tags with pruning
+		_, err := w.gitRunner.Run(ctx, mirrorPath, "remote", "update", "--prune")
 		if err != nil {
-			return "", fmt.Errorf("failed to fetch mirror %s from origin %s: %w", mirrorPath, w.baseBranch, err)
+			return "", fmt.Errorf("failed to update mirror %s: %w", mirrorPath, err)
 		}
 	}
 
 	return mirrorPath, nil
+}
+
+// cleanupWorktrees prunes obsolete worktrees and runs garbage collection
+func (w *WorkspaceManager) cleanupWorktrees(ctx context.Context, mirrorPath string) error {
+	w.logger.Debug("Cleaning up worktrees in mirror: %s", mirrorPath)
+	
+	// Prune worktrees that are no longer needed
+	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "prune", "--expire", "1.day.ago")
+	if err != nil {
+		w.logger.Warn("Failed to prune worktrees: %v", err)
+		// Don't fail - just warn since this is housekeeping
+	}
+	
+	// Optional: Run garbage collection to clean up unreachable objects
+	_, err = w.gitRunner.Run(ctx, mirrorPath, "gc", "--prune=now")
+	if err != nil {
+		w.logger.Warn("Failed to run garbage collection: %v", err)
+		// Don't fail - just warn since this is housekeeping
+	}
+	
+	return nil
 }
 
 // addWorktree adds a new worktree from the mirror
@@ -201,6 +229,7 @@ func (w *WorkspaceManager) addWorktree(ctx context.Context, mirrorPath, storyWor
 }
 
 // createBranch creates and checks out a new branch in the story work directory
+// If the branch already exists, it will try incremental names (e.g., story-050-2, story-050-3, etc.)
 func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branchName string) error {
 	w.logger.Debug("createBranch called with storyWorkDir=%s, branchName=%s", storyWorkDir, branchName)
 	
@@ -211,11 +240,36 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 	}
 	w.logger.Debug("Story work directory exists, proceeding with branch creation")
 	
-	_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)
-	if err != nil {
+	// Try to create the branch with incremental names if collision occurs
+	originalBranchName := branchName
+	attempt := 1
+	maxAttempts := 10 // Safety limit to prevent infinite loops
+	
+	for attempt <= maxAttempts {
+		_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)
+		if err == nil {
+			// Success! Log if we had to use an incremented name
+			if attempt > 1 {
+				w.logger.Warn("Branch name collision detected: '%s' already exists, using '%s' instead", originalBranchName, branchName)
+			}
+			return nil
+		}
+		
+		// Check if this is a "branch already exists" error
+		if strings.Contains(err.Error(), "already exists") {
+			// Increment the branch name and try again
+			attempt++
+			branchName = fmt.Sprintf("%s-%d", originalBranchName, attempt)
+			w.logger.Debug("Branch collision detected, trying next name: %s", branchName)
+			continue
+		}
+		
+		// If it's not a collision error, return the original error
 		return fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
 	}
-	return nil
+	
+	// If we've exhausted all attempts
+	return fmt.Errorf("unable to create branch after %d attempts, last tried: %s", maxAttempts, branchName)
 }
 
 // BuildMirrorPath constructs the mirror repository path

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -60,8 +61,10 @@ type Coder struct {
 	renderer                *templates.Renderer
 	workDir                 string
 	logger                  *logx.Logger
-	dispatcher              *dispatch.Dispatcher // Dispatcher for sending messages
-	workspaceManager        *WorkspaceManager    // Git worktree management
+	dispatcher              *dispatch.Dispatcher     // Dispatcher for sending messages
+	workspaceManager        *WorkspaceManager        // Git worktree management
+	buildRegistry           *build.Registry          // Build backend registry
+	buildService            *build.BuildService  // Build service for MCP tools
 
 	// Iteration budgets
 	codingBudget int
@@ -138,7 +141,7 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 }
 
 // NewCoder creates a new coder using agent foundation  
-func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent) (*Coder, error) {
+func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.BuildService) (*Coder, error) {
 	if llmClient == nil {
 		return nil, fmt.Errorf("LLM client is required")
 	}
@@ -190,6 +193,8 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 		workDir:          workDir,
 		logger:           logx.NewLogger(agentID),
 		dispatcher:       nil, // Will be set during Attach()
+		buildRegistry:    build.NewRegistry(),
+		buildService:     buildService,
 		codingBudget:     codingBudget,
 		fixingBudget:     fixingBudget,
 	}
@@ -200,12 +205,12 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 
 
 // NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode)
-func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager) (*Coder, error) {
+func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.BuildService) (*Coder, error) {
 	// Create Claude LLM client
 	llmClient := agent.NewClaudeClient(apiKey)
 	
 	// Create coder with LLM integration
-	coder, err := NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil)
+	coder, err := NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil, buildService)
 	if err != nil {
 		return nil, err
 	}
@@ -729,6 +734,37 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 	} else {
 		log.Printf("Shell tool registered successfully")
 	}
+	
+	// Register MCP build tools
+	if c.buildService != nil {
+		buildTool := tools.NewBuildTool(c.buildService)
+		if err := tools.Register(buildTool); err != nil {
+			log.Printf("Build tool registration: %v (likely already registered)", err)
+		} else {
+			log.Printf("Build tool registered successfully")
+		}
+		
+		testTool := tools.NewTestTool(c.buildService)
+		if err := tools.Register(testTool); err != nil {
+			log.Printf("Test tool registration: %v (likely already registered)", err)
+		} else {
+			log.Printf("Test tool registered successfully")
+		}
+		
+		lintTool := tools.NewLintTool(c.buildService)
+		if err := tools.Register(lintTool); err != nil {
+			log.Printf("Lint tool registration: %v (likely already registered)", err)
+		} else {
+			log.Printf("Lint tool registered successfully")
+		}
+		
+		backendInfoTool := tools.NewBackendInfoTool(c.buildService)
+		if err := tools.Register(backendInfoTool); err != nil {
+			log.Printf("Backend info tool registration: %v (likely already registered)", err)
+		} else {
+			log.Printf("Backend info tool registered successfully")
+		}
+	}
 
 	filesCreated := 0
 
@@ -808,6 +844,65 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			} else {
 				log.Printf("Warning: could not parse tool execution result")
 			}
+			continue
+		}
+		
+		// Handle build tools
+		if toolCall.Name == "build" || toolCall.Name == "test" || toolCall.Name == "lint" || toolCall.Name == "backend_info" {
+			// Get the tool from registry
+			tool, err := tools.Get(toolCall.Name)
+			if err != nil {
+				return filesCreated, fmt.Errorf("%s tool not available: %w", toolCall.Name, err)
+			}
+			
+			// Set working directory if not provided
+			args := make(map[string]any)
+			for k, v := range toolCall.Parameters {
+				args[k] = v
+			}
+			if _, hasCwd := args["cwd"]; !hasCwd {
+				args["cwd"] = c.workDir
+			}
+			
+			// Execute the tool
+			result, err := tool.Exec(ctx, args)
+			if err != nil {
+				return filesCreated, fmt.Errorf("failed to execute %s tool: %w", toolCall.Name, err)
+			}
+			
+			// Log tool execution
+			log.Printf("Executing %s tool in %s", toolCall.Name, args["cwd"])
+			
+			// Log result if available
+			if resultMap, ok := result.(map[string]any); ok {
+				if success, ok := resultMap["success"].(bool); ok {
+					if success {
+						log.Printf("%s tool succeeded", toolCall.Name)
+						c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation completed successfully", toolCall.Name))
+					} else {
+						log.Printf("%s tool failed", toolCall.Name)
+						c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation failed", toolCall.Name))
+					}
+				}
+				
+				if output, ok := resultMap["output"].(string); ok && output != "" {
+					log.Printf("%s output: %s", toolCall.Name, output)
+					c.contextManager.AddMessage("tool", fmt.Sprintf("%s output: %s", toolCall.Name, output))
+				}
+				
+				if errorMsg, ok := resultMap["error"].(string); ok && errorMsg != "" {
+					log.Printf("%s error: %s", toolCall.Name, errorMsg)
+					c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
+				}
+				
+				if backend, ok := resultMap["backend"].(string); ok && backend != "" {
+					log.Printf("Using %s backend", backend)
+					c.contextManager.AddMessage("tool", fmt.Sprintf("Using %s backend", backend))
+				}
+			} else {
+				log.Printf("Warning: could not parse %s tool result", toolCall.Name)
+			}
+			continue
 		}
 	}
 
@@ -1243,12 +1338,10 @@ func (c *Coder) writeFile(filename, content string) error {
 
 // handleTesting processes the TESTING state - implements AR-103
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Testing phase: running make test")
-
 	// Get worktree path for running tests
 	worktreePath, exists := sm.GetStateValue("worktree_path")
 	if !exists || worktreePath == "" {
-		c.logger.Warn("No worktree path found, skipping make test")
+		c.logger.Warn("No worktree path found, skipping tests")
 		// Fallback to simulated testing for backward compatibility
 		return c.handleTestingLegacy(ctx, sm)
 	}
@@ -1258,7 +1351,55 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		return agent.StateError, false, fmt.Errorf("worktree_path is not a string: %v", worktreePath)
 	}
 
-	// Run make test in the worktree directory
+	// Use MCP test tool instead of direct build registry calls
+	if c.buildService != nil {
+		// Get backend info first
+		backendInfo, err := c.buildService.GetBackendInfo(worktreePathStr)
+		if err != nil {
+			c.logger.Error("Failed to get backend info: %v", err)
+			return agent.StateError, false, fmt.Errorf("failed to get backend info: %w", err)
+		}
+		
+		// Store backend information for context
+		sm.SetStateData("build_backend", backendInfo.Name)
+		c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backendInfo.Name))
+
+		// Run tests using the build service
+		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, worktreePathStr)
+		if err != nil {
+			c.logger.Error("Failed to run tests: %v", err)
+			sm.SetStateData("test_error", err.Error())
+			sm.SetStateData("fixing_reason", "test_failure")
+			return StateFixing, false, nil
+		}
+		
+		// Store test results
+		sm.SetStateData("tests_passed", testsPassed)
+		sm.SetStateData("test_output", testOutput)
+		sm.SetStateData("testing_completed_at", time.Now().UTC())
+
+		if !testsPassed {
+			c.logger.Info("Tests failed, transitioning to FIXING state")
+			sm.SetStateData("fixing_reason", "test_failure")
+			return StateFixing, false, nil
+		}
+
+		c.logger.Info("Tests passed successfully")
+		return c.proceedToCodeReview(ctx, sm)
+	}
+
+	// Fallback to original implementation if no build service
+	backend, err := c.buildRegistry.Detect(worktreePathStr)
+	if err != nil {
+		c.logger.Error("Failed to detect build backend: %v", err)
+		return agent.StateError, false, fmt.Errorf("failed to detect build backend: %w", err)
+	}
+
+	// Store backend information for context
+	sm.SetStateData("build_backend", backend.Name())
+	c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backend.Name()))
+
+	// Run tests using the detected backend
 	testsPassed, testOutput, err := c.runMakeTest(ctx, worktreePathStr)
 	
 	// Store test results
@@ -1267,7 +1408,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 	sm.SetStateData("testing_completed_at", time.Now().UTC())
 
 	if err != nil {
-		c.logger.Error("Failed to run make test: %v", err)
+		c.logger.Error("Failed to run tests: %v", err)
 		sm.SetStateData("test_error", err.Error())
 		sm.SetStateData("fixing_reason", "test_failure")
 		return StateFixing, false, nil
@@ -1994,39 +2135,87 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	return StateSetup, false, nil // Transition to SETUP for retry
 }
 
-// runMakeTest executes make test in the specified directory - implements AR-103
+// runMakeTest executes tests using the appropriate build backend - implements AR-103
 func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, string, error) {
-	c.logger.Info("Running make test in %s", worktreePath)
+	c.logger.Info("Running tests in %s", worktreePath)
 	
 	// Create a context with timeout for the test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	
-	// Run make test in the worktree directory
-	cmd := exec.CommandContext(testCtx, "make", "test")
-	cmd.Dir = worktreePath
+	// Detect the appropriate build backend
+	backend, err := c.buildRegistry.Detect(worktreePath)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to detect build backend: %w", err)
+	}
 	
-	// Capture combined output (stdout + stderr)
-	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
+	c.logger.Info("Using %s backend for testing", backend.Name())
+	
+	// Capture output with a buffer
+	var outputBuffer strings.Builder
+	
+	// Run tests using the detected backend
+	err = backend.Test(testCtx, worktreePath, &outputBuffer)
+	outputStr := outputBuffer.String()
 	
 	// Log the test output for debugging
-	c.logger.Info("Make test output: %s", outputStr)
+	c.logger.Info("Test output: %s", outputStr)
 	
 	if err != nil {
 		// Check if it's a timeout
 		if testCtx.Err() == context.DeadlineExceeded {
-			return false, outputStr, fmt.Errorf("make test timed out after 5 minutes")
+			return false, outputStr, fmt.Errorf("tests timed out after 5 minutes")
 		}
 		
-		// make test failed - this is expected when tests fail
-		c.logger.Info("Make test failed with exit code, tests did not pass")
+		// Tests failed - this is expected when tests fail
+		c.logger.Info("Tests failed: %v", err)
 		return false, outputStr, nil
 	}
 	
-	// make test succeeded
-	c.logger.Info("Make test completed successfully")
+	// Tests succeeded
+	c.logger.Info("Tests completed successfully")
 	return true, outputStr, nil
+}
+
+// runTestWithBuildService runs tests using the build service instead of direct backend calls
+func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string) (bool, string, error) {
+	c.logger.Info("Running tests via build service in %s", worktreePath)
+	
+	// Create a context with timeout for the test execution
+	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	
+	// Create test request
+	req := &build.BuildRequest{
+		ProjectRoot: worktreePath,
+		Operation:   "test",
+		Timeout:     300, // 5 minutes
+		Context:     make(map[string]string),
+	}
+	
+	// Execute test via build service
+	response, err := c.buildService.ExecuteBuild(testCtx, req)
+	if err != nil {
+		return false, "", fmt.Errorf("build service test execution failed: %w", err)
+	}
+	
+	// Log the test output for debugging
+	c.logger.Info("Test output: %s", response.Output)
+	
+	if !response.Success {
+		// Check if it's a timeout
+		if testCtx.Err() == context.DeadlineExceeded {
+			return false, response.Output, fmt.Errorf("tests timed out after 5 minutes")
+		}
+		
+		// Tests failed - this is expected when tests fail
+		c.logger.Info("Tests failed: %s", response.Error)
+		return false, response.Output, nil
+	}
+	
+	// Tests succeeded
+	c.logger.Info("Tests completed successfully via build service")
+	return true, response.Output, nil
 }
 
 // handleTestingLegacy provides backward compatibility for testing without worktrees
@@ -2168,6 +2357,16 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 	
 	// Get base branch from config (default: main)
 	baseBranch := "main" // TODO: Get from workspace manager config
+	
+	// Check if gh is available
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
+	}
+	
+	// Check if GITHUB_TOKEN is set
+	if os.Getenv("GITHUB_TOKEN") == "" {
+		return "", fmt.Errorf("GITHUB_TOKEN environment variable is not set")
+	}
 	
 	// Create PR using gh CLI
 	prCmd := exec.CommandContext(prCtx, "gh", "pr", "create", 
