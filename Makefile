@@ -3,7 +3,7 @@
 # Build all binaries
 build:
 	go generate ./...
-	go build -o bin/orchestrator .
+	go build -o bin/orchestrator ./cmd/orchestrator
 	go build -o bin/agentctl ./cmd/agentctl
 	go build -o bin/replayer ./cmd/replayer
 
