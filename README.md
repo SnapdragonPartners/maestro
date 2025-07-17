@@ -9,6 +9,45 @@ This system implements a message-passing architecture where:
 - **Coding agents** process tasks and return RESULT/ERROR/QUESTION messages
 - The **orchestrator** manages agent communication with rate limiting and event logging
 
+## Requirements
+
+### System Requirements
+
+- **Go**: Version 1.24+ required for building the orchestrator
+- **Docker**: Version 20.10+ for sandboxed AI agent execution (recommended)
+- **Platform**: Linux, macOS, or Windows with Docker Desktop
+- **Resources**: Minimum 2GB RAM, 1 CPU core available for containers
+
+### Docker Sandboxing
+
+The system uses Docker containers by default to provide secure, isolated execution environments for AI agents:
+
+- **Security**: Prevents agents from accessing files outside their workspace
+- **Isolation**: Each agent runs in a separate container with resource limits
+- **Compatibility**: Supports git worktrees and architect code review workflows
+
+For detailed information about Docker sandboxing, see [README_SANDBOX.md](README_SANDBOX.md).
+
+### Environment Variables
+
+Required environment variables for AI model access:
+
+```bash
+# For Claude coding agents
+export ANTHROPIC_API_KEY=your_anthropic_api_key
+
+# For OpenAI o3 architect agents  
+export OPENAI_API_KEY=your_openai_api_key
+
+# Optional: Custom configuration file path
+export CONFIG_PATH=/path/to/config.json
+```
+
+### Optional Dependencies
+
+- **Git**: For worktree management and code review workflows
+- **Make**: For convenient build commands (optional, can use `go build` directly)
+
 ## Quick Start
 
 ### Building the System

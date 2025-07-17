@@ -41,6 +41,28 @@ type ModelCfg struct {
 	CompactionBuffer int `json:"compaction_buffer"`  // Buffer tokens before compaction
 }
 
+// ExecutorConfig contains executor-specific configuration
+type ExecutorConfig struct {
+	Type     string       `json:"type"`     // "auto", "docker", "local"
+	Docker   DockerConfig `json:"docker"`   // Docker-specific settings
+	Fallback string       `json:"fallback"` // Fallback executor when preferred unavailable
+}
+
+// DockerConfig contains Docker executor configuration
+type DockerConfig struct {
+	Image       string            `json:"image"`        // Docker image to use
+	Network     string            `json:"network"`      // Network mode: "none", "bridge", "host"
+	ReadOnly    bool              `json:"read_only"`    // Mount filesystem read-only
+	TmpfsSize   string            `json:"tmpfs_size"`   // Size for tmpfs mounts (e.g., "100m")
+	Volumes     []string          `json:"volumes"`      // Additional volumes to mount
+	Env         map[string]string `json:"env"`          // Environment variables
+	CPUs        string            `json:"cpus"`         // CPU limit (e.g., "2", "1.5")
+	Memory      string            `json:"memory"`       // Memory limit (e.g., "2g", "512m")
+	PIDs        int64             `json:"pids"`         // Process limit
+	AutoPull    bool              `json:"auto_pull"`    // Auto-pull image if not available
+	PullTimeout int               `json:"pull_timeout"` // Timeout for image pull in seconds
+}
+
 type Config struct {
 	Models                     map[string]ModelCfg `json:"models"`
 	GracefulShutdownTimeoutSec int                 `json:"graceful_shutdown_timeout_sec"`
@@ -55,6 +77,8 @@ type Config struct {
 	MirrorDir       string `json:"mirror_dir"`       // Mirror directory path (default: $WORKDIR/.mirrors)
 	WorktreePattern string `json:"worktree_pattern"` // Worktree path pattern (default: {$WORKDIR}/{AGENT_ID}/{STORY_ID})
 	BranchPattern   string `json:"branch_pattern"`   // Branch name pattern (default: story-{STORY_ID})
+	// Executor configuration
+	Executor ExecutorConfig `json:"executor"` // Executor settings
 }
 
 var envVarRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -82,6 +106,9 @@ func LoadConfig(configPath string) (*Config, error) {
 
 	// Apply environment variable overrides
 	applyEnvOverrides(&config)
+
+	// Apply defaults
+	applyDefaults(&config)
 
 	// Validate config
 	if err := validateConfig(&config); err != nil {
@@ -165,9 +192,56 @@ func parseFloat(s string) (float64, error) {
 	return result, err
 }
 
+// applyDefaults sets default values for missing configuration
+func applyDefaults(config *Config) {
+	// Set executor defaults if not specified
+	if config.Executor.Type == "" {
+		config.Executor.Type = "docker"
+	}
+	if config.Executor.Fallback == "" {
+		config.Executor.Fallback = "local"
+	}
+
+	// Set Docker defaults
+	if config.Executor.Docker.Image == "" {
+		config.Executor.Docker.Image = "golang:1.24-alpine"
+	}
+	if config.Executor.Docker.Network == "" {
+		config.Executor.Docker.Network = "none"
+	}
+	if config.Executor.Docker.TmpfsSize == "" {
+		config.Executor.Docker.TmpfsSize = "100m"
+	}
+	if config.Executor.Docker.CPUs == "" {
+		config.Executor.Docker.CPUs = "2"
+	}
+	if config.Executor.Docker.Memory == "" {
+		config.Executor.Docker.Memory = "2g"
+	}
+	if config.Executor.Docker.PIDs == 0 {
+		config.Executor.Docker.PIDs = 1024
+	}
+	if config.Executor.Docker.PullTimeout == 0 {
+		config.Executor.Docker.PullTimeout = 300 // 5 minutes
+	}
+
+	// Initialize empty maps if nil
+	if config.Executor.Docker.Env == nil {
+		config.Executor.Docker.Env = make(map[string]string)
+	}
+	if config.Executor.Docker.Volumes == nil {
+		config.Executor.Docker.Volumes = []string{}
+	}
+}
+
 func validateConfig(config *Config) error {
 	if len(config.Models) == 0 {
 		return fmt.Errorf("no models configured")
+	}
+
+	// Validate executor configuration
+	if err := validateExecutorConfig(&config.Executor); err != nil {
+		return fmt.Errorf("executor config validation failed: %w", err)
 	}
 
 	agentIDs := make(map[string]bool)
@@ -306,6 +380,66 @@ func validateConfig(config *Config) error {
 		if !strings.HasPrefix(config.RepoURL, "git@") && !strings.HasPrefix(config.RepoURL, "https://") {
 			return fmt.Errorf("repo_url must start with 'git@' or 'https://'")
 		}
+	}
+
+	return nil
+}
+
+// validateExecutorConfig validates the executor configuration
+func validateExecutorConfig(executor *ExecutorConfig) error {
+	// Validate executor type
+	validTypes := []string{"auto", "docker", "local"}
+	found := false
+	for _, t := range validTypes {
+		if executor.Type == t {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("invalid executor type '%s', must be one of: %s", executor.Type, strings.Join(validTypes, ", "))
+	}
+
+	// Validate fallback executor
+	if executor.Fallback != "" {
+		validFallbacks := []string{"docker", "local"}
+		found = false
+		for _, t := range validFallbacks {
+			if executor.Fallback == t {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("invalid fallback executor '%s', must be one of: %s", executor.Fallback, strings.Join(validFallbacks, ", "))
+		}
+	}
+
+	// Validate Docker configuration
+	if executor.Docker.Image == "" {
+		return fmt.Errorf("docker.image is required")
+	}
+
+	if executor.Docker.Network != "" {
+		validNetworks := []string{"none", "bridge", "host"}
+		found = false
+		for _, n := range validNetworks {
+			if executor.Docker.Network == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("invalid docker network '%s', must be one of: %s", executor.Docker.Network, strings.Join(validNetworks, ", "))
+		}
+	}
+
+	// Validate resource limits
+	if executor.Docker.PIDs < 0 {
+		return fmt.Errorf("docker.pids cannot be negative")
+	}
+	if executor.Docker.PullTimeout < 0 {
+		return fmt.Errorf("docker.pull_timeout cannot be negative")
 	}
 
 	return nil

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"orchestrator/pkg/bootstrap"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
@@ -102,7 +103,67 @@ func min(a, b int) int {
 	return b
 }
 
+// handleBootstrapDocker handles the bootstrap-docker command
+func handleBootstrapDocker() {
+	// Get current directory
+	currentDir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get current directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create bootstrap configuration
+	config := bootstrap.DefaultConfig()
+
+	// Create artifact generator
+	generator := bootstrap.NewArtifactGenerator(currentDir, config)
+
+	// Detect build backend
+	goBackend := &build.GoBackend{}
+	nodeBackend := &build.NodeBackend{}
+	pythonBackend := &build.PythonBackend{}
+
+	var backend build.BuildBackend
+	if goBackend.Detect(currentDir) {
+		backend = goBackend
+	} else if nodeBackend.Detect(currentDir) {
+		backend = nodeBackend
+	} else if pythonBackend.Detect(currentDir) {
+		backend = pythonBackend
+	} else {
+		// Default to a null backend
+		backend = &build.NullBackend{}
+	}
+
+	// Generate Dockerfile
+	fmt.Printf("Generating Dockerfile for %s backend...\n", backend.Name())
+	if err := generator.GenerateDockerfile(backend); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to generate Dockerfile: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Generate .dockerignore
+	fmt.Printf("Generating .dockerignore...\n")
+	if err := generator.GenerateDockerignore(backend); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to generate .dockerignore: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Successfully generated Dockerfile and .dockerignore for %s project\n", backend.Name())
+}
+
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [bootstrap-docker|run] ...\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	// Handle bootstrap-docker command
+	if os.Args[1] == "bootstrap-docker" {
+		handleBootstrapDocker()
+		return
+	}
+
 	// Parse agent type - default to coder if not specified
 	agentType := "coder"
 	if len(os.Args) >= 3 && os.Args[1] == "run" {
@@ -112,8 +173,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--cleanup]\n", os.Args[0])
 			os.Exit(1)
 		}
-	} else if len(os.Args) < 2 || os.Args[1] != "run" {
-		fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--cleanup]\n", os.Args[0])
+	} else if os.Args[1] != "run" {
+		fmt.Fprintf(os.Stderr, "Usage: %s [bootstrap-docker|run] ...\n", os.Args[0])
 		os.Exit(1)
 	}
 
