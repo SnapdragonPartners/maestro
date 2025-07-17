@@ -32,7 +32,7 @@ func (n *NullBackend) Build(ctx context.Context, root string, stream io.Writer) 
 	if !n.isEmptyRepo(root) {
 		return fmt.Errorf("null backend should only be used for empty repositories")
 	}
-	
+
 	fmt.Fprintf(stream, "✅ Build successful (no build configured for empty repository)\n")
 	return nil
 }
@@ -42,7 +42,7 @@ func (n *NullBackend) Test(ctx context.Context, root string, stream io.Writer) e
 	if !n.isEmptyRepo(root) {
 		return fmt.Errorf("null backend should only be used for empty repositories")
 	}
-	
+
 	fmt.Fprintf(stream, "✅ Tests passed (no tests configured for empty repository)\n")
 	return nil
 }
@@ -52,7 +52,7 @@ func (n *NullBackend) Lint(ctx context.Context, root string, stream io.Writer) e
 	if !n.isEmptyRepo(root) {
 		return fmt.Errorf("null backend should only be used for empty repositories")
 	}
-	
+
 	fmt.Fprintf(stream, "✅ Linting passed (no linting configured for empty repository)\n")
 	return nil
 }
@@ -62,7 +62,7 @@ func (n *NullBackend) Run(ctx context.Context, root string, args []string, strea
 	if !n.isEmptyRepo(root) {
 		return fmt.Errorf("null backend should only be used for empty repositories")
 	}
-	
+
 	fmt.Fprintf(stream, "✅ Run successful (no run target configured for empty repository)\n")
 	return nil
 }
@@ -80,13 +80,13 @@ func (n *NullBackend) isEmptyRepo(root string) bool {
 		"CMakeLists.txt",
 		"Dockerfile",
 	}
-	
+
 	for _, file := range projectFiles {
 		if _, err := os.Stat(filepath.Join(root, file)); err == nil {
 			return false
 		}
 	}
-	
+
 	// Check for source code directories
 	srcDirs := []string{"src", "lib", "cmd", "internal", "pkg"}
 	for _, dir := range srcDirs {
@@ -94,6 +94,6 @@ func (n *NullBackend) isEmptyRepo(root string) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }

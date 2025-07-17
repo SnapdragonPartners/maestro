@@ -43,7 +43,7 @@ func TestWriteMessage(t *testing.T) {
 	defer writer.Close()
 
 	// Create test message
-	msg := proto.NewAgentMsg(proto.MsgTypeTASK, "architect", "claude")
+	msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg.SetPayload("story_id", "001")
 	msg.SetPayload("content", "Implement health endpoint")
 	msg.SetMetadata("priority", "high")
@@ -82,7 +82,7 @@ func TestWriteMultipleMessages(t *testing.T) {
 
 	// Write multiple messages
 	messages := []*proto.AgentMsg{
-		proto.NewAgentMsg(proto.MsgTypeTASK, "architect", "claude"),
+		proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude"),
 		proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect"),
 		proto.NewAgentMsg(proto.MsgTypeERROR, "claude", "architect"),
 	}
@@ -135,7 +135,7 @@ func TestDailyRotation(t *testing.T) {
 	defer writer.Close()
 
 	// Write a message to the initial file
-	msg1 := proto.NewAgentMsg(proto.MsgTypeTASK, "architect", "claude")
+	msg1 := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg1.SetPayload("day", "today")
 
 	err = writer.WriteMessage(msg1)
@@ -229,7 +229,7 @@ func TestReadMessages(t *testing.T) {
 	logFile := filepath.Join(tmpDir, "test-events.jsonl")
 
 	// Create test messages
-	msg1 := proto.NewAgentMsg(proto.MsgTypeTASK, "architect", "claude")
+	msg1 := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg1.SetPayload("task", "test1")
 
 	msg2 := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
@@ -347,7 +347,7 @@ func TestWriterClose(t *testing.T) {
 	}
 
 	// Write a message
-	msg := proto.NewAgentMsg(proto.MsgTypeTASK, "test", "test")
+	msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "test", "test")
 	err = writer.WriteMessage(msg)
 	if err != nil {
 		t.Fatalf("Failed to write message: %v", err)
@@ -385,7 +385,7 @@ func TestConcurrentWrites(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		go func(id int) {
-			msg := proto.NewAgentMsg(proto.MsgTypeTASK, "test", "test")
+			msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "test", "test")
 			msg.SetPayload("id", id)
 
 			err := writer.WriteMessage(msg)

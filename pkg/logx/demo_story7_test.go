@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// Use the same contextKey type as defined in context_debug_test.go
+
 // TestStory7Implementation demonstrates the new context-aware debug logging
 // This shows the completed implementation of Story 7 from the audit
 func TestStory7Implementation(t *testing.T) {
@@ -13,8 +15,10 @@ func TestStory7Implementation(t *testing.T) {
 	SetDebugConfig(true, false, ".")
 	SetDebugDomains([]string{"coder", "architect", "dispatch"})
 
-	// Create context with agent ID
-	ctx := context.WithValue(context.Background(), "agent_id", "claude-001")
+	// Create context with agent ID using typed key to avoid collisions
+	type contextKey string
+	const agentIDKey contextKey = "agent_id"
+	ctx := context.WithValue(context.Background(), agentIDKey, "claude-001")
 
 	// Demonstrate the new Debug(ctx, domain, format, args...) pattern
 	t.Log("=== Story 7: Context-Aware Debug Logging Demo ===")

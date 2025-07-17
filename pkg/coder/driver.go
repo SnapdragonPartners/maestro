@@ -61,9 +61,9 @@ type Coder struct {
 	renderer                *templates.Renderer
 	workDir                 string
 	logger                  *logx.Logger
-	dispatcher              *dispatch.Dispatcher     // Dispatcher for sending messages
-	workspaceManager        *WorkspaceManager        // Git worktree management
-	buildRegistry           *build.Registry          // Build backend registry
+	dispatcher              *dispatch.Dispatcher // Dispatcher for sending messages
+	workspaceManager        *WorkspaceManager    // Git worktree management
+	buildRegistry           *build.Registry      // Build backend registry
 	buildService            *build.BuildService  // Build service for MCP tools
 
 	// Iteration budgets
@@ -73,7 +73,7 @@ type Coder struct {
 	// REQUEST→RESULT flow state
 	pendingApprovalRequest *ApprovalRequest
 	pendingQuestion        *Question
-	
+
 	// Channels for dispatcher communication
 	storyCh <-chan *proto.AgentMsg // Channel to receive story messages
 	replyCh <-chan *proto.AgentMsg // Channel to receive replies (for future use)
@@ -140,7 +140,7 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 	return nil, fmt.Errorf("unsupported approval data type: %T", data)
 }
 
-// NewCoder creates a new coder using agent foundation  
+// NewCoder creates a new coder using agent foundation
 func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.BuildService) (*Coder, error) {
 	if llmClient == nil {
 		return nil, fmt.Errorf("LLM client is required")
@@ -202,22 +202,20 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 	return coder, nil
 }
 
-
-
 // NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode)
 func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.BuildService) (*Coder, error) {
 	// Create Claude LLM client
 	llmClient := agent.NewClaudeClient(apiKey)
-	
+
 	// Create coder with LLM integration
 	coder, err := NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil, buildService)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Set the workspace manager
 	coder.workspaceManager = workspaceManager
-	
+
 	return coder, nil
 }
 
@@ -240,7 +238,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 	if iterationCount >= budget {
 		// Send REQUEST message for BUDGET_REVIEW approval
 		content := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
-		
+
 		c.pendingApprovalRequest = &ApprovalRequest{
 			ID:      proto.GenerateApprovalID(),
 			Content: content,
@@ -261,7 +259,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 			requestMsg.SetPayload("origin", string(origin))
 			requestMsg.SetPayload("loops", iterationCount)
 			requestMsg.SetPayload("max_loops", budget)
-			
+
 			if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
 				c.logger.Error("🧑‍💻 Failed to send BUDGET_REVIEW request: %v", err)
 			} else {
@@ -316,10 +314,15 @@ func (c *Coder) isCoderState(state agent.State) bool {
 	return IsCoderState(state)
 }
 
+// contextKeyAgentID is a unique type for agent ID context key
+type contextKeyAgentID string
+
+const agentIDKey contextKeyAgentID = "agent_id"
+
 // ProcessTask initiates task processing with the new agent foundation
 func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 	// Add agent ID to context for debug logging
-	ctx = context.WithValue(ctx, "agent_id", c.agentConfig.ID)
+	ctx = context.WithValue(ctx, agentIDKey, c.agentConfig.ID)
 
 	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
 
@@ -385,37 +388,37 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 			logx.Warnf("🧑‍💻 Received nil story message")
 			return agent.StateWaiting, false, nil
 		}
-		
+
 		// Extract story content and store it in state data
 		content, exists := storyMsg.GetPayload(proto.KeyContent)
 		if !exists {
 			return agent.StateError, false, fmt.Errorf("story message missing content")
 		}
-		
+
 		contentStr, ok := content.(string)
 		if !ok {
 			return agent.StateError, false, fmt.Errorf("story content must be a string")
 		}
-		
+
 		// Extract the actual story ID from the payload
 		storyID, exists := storyMsg.GetPayload(proto.KeyStoryID)
 		if !exists {
 			return agent.StateError, false, fmt.Errorf("story message missing story_id")
 		}
-		
+
 		storyIDStr, ok := storyID.(string)
 		if !ok {
 			return agent.StateError, false, fmt.Errorf("story_id must be a string")
 		}
-		
+
 		logx.Infof("🧑‍💻 Received story message %s for story %s, transitioning to SETUP", storyMsg.ID, storyIDStr)
-		
+
 		// Store the task content and story ID for the SETUP state
 		sm.SetStateData(keyTaskContent, contentStr)
 		sm.SetStateData("story_message_id", storyMsg.ID)
 		sm.SetStateData("story_id", storyIDStr) // For workspace manager - use actual story ID
 		sm.SetStateData(keyStartedAt, time.Now().UTC())
-		
+
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "received story message")
 		return StateSetup, false, nil
 	}
@@ -487,11 +490,11 @@ func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMa
 		requestMsg.SetPayload("content", resp.Content)
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-		
+
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
 			return agent.StateError, false, fmt.Errorf("failed to send plan approval request: %w", err)
 		}
-		
+
 		c.logger.Info("🧑‍💻 Sent plan approval request %s to architect during PLANNING->PLAN_REVIEW transition", c.pendingApprovalRequest.ID)
 	} else {
 		return agent.StateError, false, fmt.Errorf("dispatcher not set")
@@ -536,10 +539,10 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
 			return StatePlanReview, false, nil
 		}
-		
+
 		if resultMsg.Type == proto.MsgTypeRESULT {
 			c.logger.Info("🧑‍💻 Received RESULT message %s for plan approval", resultMsg.ID)
-			
+
 			// Extract approval result and store it
 			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
 				sm.SetStateData(keyPlanApprovalResult, approvalData)
@@ -734,7 +737,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 	} else {
 		log.Printf("Shell tool registered successfully")
 	}
-	
+
 	// Register MCP build tools
 	if c.buildService != nil {
 		buildTool := tools.NewBuildTool(c.buildService)
@@ -743,21 +746,21 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		} else {
 			log.Printf("Build tool registered successfully")
 		}
-		
+
 		testTool := tools.NewTestTool(c.buildService)
 		if err := tools.Register(testTool); err != nil {
 			log.Printf("Test tool registration: %v (likely already registered)", err)
 		} else {
 			log.Printf("Test tool registered successfully")
 		}
-		
+
 		lintTool := tools.NewLintTool(c.buildService)
 		if err := tools.Register(lintTool); err != nil {
 			log.Printf("Lint tool registration: %v (likely already registered)", err)
 		} else {
 			log.Printf("Lint tool registered successfully")
 		}
-		
+
 		backendInfoTool := tools.NewBackendInfoTool(c.buildService)
 		if err := tools.Register(backendInfoTool); err != nil {
 			log.Printf("Backend info tool registration: %v (likely already registered)", err)
@@ -846,7 +849,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			}
 			continue
 		}
-		
+
 		// Handle build tools
 		if toolCall.Name == "build" || toolCall.Name == "test" || toolCall.Name == "lint" || toolCall.Name == "backend_info" {
 			// Get the tool from registry
@@ -854,7 +857,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			if err != nil {
 				return filesCreated, fmt.Errorf("%s tool not available: %w", toolCall.Name, err)
 			}
-			
+
 			// Set working directory if not provided
 			args := make(map[string]any)
 			for k, v := range toolCall.Parameters {
@@ -863,16 +866,16 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			if _, hasCwd := args["cwd"]; !hasCwd {
 				args["cwd"] = c.workDir
 			}
-			
+
 			// Execute the tool
 			result, err := tool.Exec(ctx, args)
 			if err != nil {
 				return filesCreated, fmt.Errorf("failed to execute %s tool: %w", toolCall.Name, err)
 			}
-			
+
 			// Log tool execution
 			log.Printf("Executing %s tool in %s", toolCall.Name, args["cwd"])
-			
+
 			// Log result if available
 			if resultMap, ok := result.(map[string]any); ok {
 				if success, ok := resultMap["success"].(bool); ok {
@@ -884,17 +887,17 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 						c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation failed", toolCall.Name))
 					}
 				}
-				
+
 				if output, ok := resultMap["output"].(string); ok && output != "" {
 					log.Printf("%s output: %s", toolCall.Name, output)
 					c.contextManager.AddMessage("tool", fmt.Sprintf("%s output: %s", toolCall.Name, output))
 				}
-				
+
 				if errorMsg, ok := resultMap["error"].(string); ok && errorMsg != "" {
 					log.Printf("%s error: %s", toolCall.Name, errorMsg)
 					c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
 				}
-				
+
 				if backend, ok := resultMap["backend"].(string); ok && backend != "" {
 					log.Printf("Using %s backend", backend)
 					c.contextManager.AddMessage("tool", fmt.Sprintf("Using %s backend", backend))
@@ -1359,7 +1362,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 			c.logger.Error("Failed to get backend info: %v", err)
 			return agent.StateError, false, fmt.Errorf("failed to get backend info: %w", err)
 		}
-		
+
 		// Store backend information for context
 		sm.SetStateData("build_backend", backendInfo.Name)
 		c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backendInfo.Name))
@@ -1372,7 +1375,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 			sm.SetStateData("fixing_reason", "test_failure")
 			return StateFixing, false, nil
 		}
-		
+
 		// Store test results
 		sm.SetStateData("tests_passed", testsPassed)
 		sm.SetStateData("test_output", testOutput)
@@ -1401,7 +1404,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 
 	// Run tests using the detected backend
 	testsPassed, testOutput, err := c.runMakeTest(ctx, worktreePathStr)
-	
+
 	// Store test results
 	sm.SetStateData("tests_passed", testsPassed)
 	sm.SetStateData("test_output", testOutput)
@@ -1437,7 +1440,7 @@ func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (a
 
 	// Check what triggered FIXING
 	fixingReason, _ := sm.GetStateValue("fixing_reason")
-	
+
 	switch fixingReason {
 	case "test_failure":
 		return c.handleTestFailureFix(ctx, sm)
@@ -1470,20 +1473,20 @@ func (c *Coder) handleReviewRejectionFix(ctx context.Context, sm *agent.BaseStat
 // handleMergeConflictFix handles fixing when triggered by merge conflicts
 func (c *Coder) handleMergeConflictFix(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	c.logger.Info("🧑‍💻 Fixing merge conflicts")
-	
+
 	// Get conflict details if available
 	conflictDetails, _ := sm.GetStateValue("conflict_details")
 	c.logger.Info("Conflict details: %v", conflictDetails)
-	
+
 	// TODO: Implement intelligent merge conflict resolution:
 	// 1. Pull latest changes from main branch
 	// 2. Identify conflict files
 	// 3. Use LLM to resolve conflicts intelligently
 	// 4. Update implementation as needed
-	
+
 	sm.SetStateData("merge_conflicts_fixed", true)
 	sm.SetStateData("fixing_completed_at", time.Now().UTC())
-	
+
 	// Transition to TESTING (conflicts might break tests)
 	return StateTesting, false, nil
 }
@@ -1514,19 +1517,19 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
 			c.logger.Info("🧑‍💻 Code approved, pushing branch and creating PR")
-			
+
 			// AR-104: Push branch and open pull request
 			if err := c.pushBranchAndCreatePR(ctx, sm); err != nil {
 				c.logger.Error("Failed to push branch and create PR: %v", err)
 				return agent.StateError, false, err
 			}
-			
+
 			// Send merge REQUEST to architect instead of going to DONE
 			if err := c.sendMergeRequest(ctx, sm); err != nil {
 				c.logger.Error("Failed to send merge request: %v", err)
 				return agent.StateError, false, err
 			}
-			
+
 			c.logger.Info("🧑‍💻 Waiting for merge approval from architect")
 			return StateAwaitMerge, false, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
@@ -1548,10 +1551,10 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
 			return StateCodeReview, false, nil
 		}
-		
+
 		if resultMsg.Type == proto.MsgTypeRESULT {
 			c.logger.Info("🧑‍💻 Received RESULT message %s for code approval", resultMsg.ID)
-			
+
 			// Extract approval result and store it
 			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
 				sm.SetStateData(keyCodeApprovalResult, approvalData)
@@ -1572,7 +1575,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 // handleAwaitMerge processes the AWAIT_MERGE state, waiting for merge results from architect
 func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Await merge phase: waiting for architect merge result")
-	
+
 	// Check if we already have merge result from previous processing
 	if mergeData, exists := sm.GetStateValue("merge_result"); exists {
 		result, err := convertMergeData(mergeData)
@@ -1581,7 +1584,7 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 		}
 
 		sm.SetStateData("merge_completed_at", time.Now().UTC())
-		
+
 		switch result.Status {
 		case "merged":
 			c.logger.Info("🧑‍💻 PR merged successfully, task completed")
@@ -1606,10 +1609,10 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
 			return StateAwaitMerge, false, nil
 		}
-		
+
 		if resultMsg.Type == proto.MsgTypeRESULT {
 			c.logger.Info("🧑‍💻 Received RESULT message %s for merge", resultMsg.ID)
-			
+
 			// Extract merge result and store it
 			if status, exists := resultMsg.GetPayload("status"); exists {
 				mergeResult := map[string]interface{}{
@@ -1621,7 +1624,7 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 				if mergeCommit, exists := resultMsg.GetPayload("merge_commit"); exists {
 					mergeResult["merge_commit"] = mergeCommit
 				}
-				
+
 				sm.SetStateData("merge_result", mergeResult)
 				c.logger.Info("🧑‍💻 Merge result received and stored")
 				// Return same state to re-process with the new merge data
@@ -1650,27 +1653,27 @@ func convertMergeData(data interface{}) (*MergeResult, error) {
 	if !ok {
 		return nil, fmt.Errorf("merge data is not a map")
 	}
-	
+
 	result := &MergeResult{}
-	
+
 	if status, exists := dataMap["status"]; exists {
 		if statusStr, ok := status.(string); ok {
 			result.Status = statusStr
 		}
 	}
-	
+
 	if conflictInfo, exists := dataMap["conflict_info"]; exists {
 		if conflictStr, ok := conflictInfo.(string); ok {
 			result.ConflictInfo = conflictStr
 		}
 	}
-	
+
 	if mergeCommit, exists := dataMap["merge_commit"]; exists {
 		if commitStr, ok := mergeCommit.(string); ok {
 			result.MergeCommit = commitStr
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -1687,7 +1690,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 
 		sm.SetStateData("budget_review_completed_at", time.Now().UTC())
 		c.pendingApprovalRequest = nil // Clear since we have the result
-		
+
 		// Get origin state from stored data
 		origin, _ := sm.GetStateValue("origin")
 		originStr, _ := origin.(string)
@@ -1700,7 +1703,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 		case proto.ApprovalStatusNeedsChanges:
 			// CONTINUE/PIVOT - return to origin state and reset counter
 			c.logger.Info("🧑‍💻 Budget review needs changes, returning to origin state: %s", originStr)
-			
+
 			// Reset the iteration counter for the origin state
 			switch originStr {
 			case string(StateCoding):
@@ -1731,10 +1734,10 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
 			return StateBudgetReview, false, nil
 		}
-		
+
 		if resultMsg.Type == proto.MsgTypeRESULT {
 			c.logger.Info("🧑‍💻 Received RESULT message %s for budget review", resultMsg.ID)
-			
+
 			// Extract approval result and store it
 			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
 				sm.SetStateData(keyCodeApprovalResult, approvalData)
@@ -1825,7 +1828,7 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 			questionMsg.SetPayload(proto.KeyReason, questionReason.(string))
 			questionMsg.SetPayload(proto.KeyQuestionID, c.pendingQuestion.ID)
 			questionMsg.SetPayload("origin", questionOrigin.(string))
-			
+
 			if err := c.dispatcher.DispatchMessage(questionMsg); err != nil {
 				c.logger.Error("🧑‍💻 Failed to send QUESTION message to architect: %v", err)
 			} else {
@@ -1851,7 +1854,6 @@ func (c *Coder) detectHelpRequest(taskContent string) bool {
 	}
 	return false
 }
-
 
 func (c *Coder) formatContextAsString() string {
 	messages := c.contextManager.GetMessages()
@@ -2057,7 +2059,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 
 	// Store worktree path for subsequent states
 	sm.SetStateData("worktree_path", worktreePath)
-	
+
 	// Update the coder's working directory to use the story work directory
 	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place
 	c.workDir = worktreePath
@@ -2138,40 +2140,40 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (ag
 // runMakeTest executes tests using the appropriate build backend - implements AR-103
 func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, string, error) {
 	c.logger.Info("Running tests in %s", worktreePath)
-	
+
 	// Create a context with timeout for the test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	
+
 	// Detect the appropriate build backend
 	backend, err := c.buildRegistry.Detect(worktreePath)
 	if err != nil {
 		return false, "", fmt.Errorf("failed to detect build backend: %w", err)
 	}
-	
+
 	c.logger.Info("Using %s backend for testing", backend.Name())
-	
+
 	// Capture output with a buffer
 	var outputBuffer strings.Builder
-	
+
 	// Run tests using the detected backend
 	err = backend.Test(testCtx, worktreePath, &outputBuffer)
 	outputStr := outputBuffer.String()
-	
+
 	// Log the test output for debugging
 	c.logger.Info("Test output: %s", outputStr)
-	
+
 	if err != nil {
 		// Check if it's a timeout
 		if testCtx.Err() == context.DeadlineExceeded {
 			return false, outputStr, fmt.Errorf("tests timed out after 5 minutes")
 		}
-		
+
 		// Tests failed - this is expected when tests fail
 		c.logger.Info("Tests failed: %v", err)
 		return false, outputStr, nil
 	}
-	
+
 	// Tests succeeded
 	c.logger.Info("Tests completed successfully")
 	return true, outputStr, nil
@@ -2180,11 +2182,11 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 // runTestWithBuildService runs tests using the build service instead of direct backend calls
 func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string) (bool, string, error) {
 	c.logger.Info("Running tests via build service in %s", worktreePath)
-	
+
 	// Create a context with timeout for the test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	
+
 	// Create test request
 	req := &build.BuildRequest{
 		ProjectRoot: worktreePath,
@@ -2192,27 +2194,27 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 		Timeout:     300, // 5 minutes
 		Context:     make(map[string]string),
 	}
-	
+
 	// Execute test via build service
 	response, err := c.buildService.ExecuteBuild(testCtx, req)
 	if err != nil {
 		return false, "", fmt.Errorf("build service test execution failed: %w", err)
 	}
-	
+
 	// Log the test output for debugging
 	c.logger.Info("Test output: %s", response.Output)
-	
+
 	if !response.Success {
 		// Check if it's a timeout
 		if testCtx.Err() == context.DeadlineExceeded {
 			return false, response.Output, fmt.Errorf("tests timed out after 5 minutes")
 		}
-		
+
 		// Tests failed - this is expected when tests fail
 		c.logger.Info("Tests failed: %s", response.Error)
 		return false, response.Output, nil
 	}
-	
+
 	// Tests succeeded
 	c.logger.Info("Tests completed successfully via build service")
 	return true, response.Output, nil
@@ -2221,7 +2223,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 // handleTestingLegacy provides backward compatibility for testing without worktrees
 func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
 	c.logger.Info("Using legacy testing mode (no worktree)")
-	
+
 	// Check for deliberate test failures
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
 	taskStr, _ := taskContent.(string)
@@ -2249,7 +2251,7 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 	// Tests passed, send REQUEST message to architect for code approval as part of transition to CODE_REVIEW
 	filesCreated, _ := sm.GetStateValue("files_created")
 	codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed", filesCreated)
-	
+
 	c.pendingApprovalRequest = &ApprovalRequest{
 		ID:      proto.GenerateApprovalID(),
 		Content: codeContent,
@@ -2264,11 +2266,11 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 		requestMsg.SetPayload("content", codeContent)
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-		
+
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
 			return agent.StateError, false, fmt.Errorf("failed to send code approval request: %w", err)
 		}
-		
+
 		c.logger.Info("🧑‍💻 Sent code approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.ID)
 	} else {
 		return agent.StateError, false, fmt.Errorf("dispatcher not set")
@@ -2325,7 +2327,7 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 	// Step 2: Create PR if GITHUB_TOKEN is available
 	if githubToken := os.Getenv("GITHUB_TOKEN"); githubToken != "" {
 		c.logger.Info("GITHUB_TOKEN found, creating pull request")
-		
+
 		prURL, err := c.createPullRequest(ctx, worktreePathStr, branchName, storyIDStr, agentID)
 		if err != nil {
 			// Log error but don't fail the push - PR creation is optional
@@ -2335,7 +2337,7 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 			c.logger.Info("Successfully created pull request: %s", prURL)
 			sm.SetStateData("pr_url", prURL)
 			sm.SetStateData("pr_created", true)
-			
+
 			// TODO: Post PR URL back to architect agent via message
 			c.logger.Info("🧑‍💻 Pull request created for story %s: %s", storyIDStr, prURL)
 		}
@@ -2354,22 +2356,22 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 
 	// Build PR title and body
 	title := fmt.Sprintf("Story #%s: generated by agent %s", storyID, agentID)
-	
+
 	// Get base branch from config (default: main)
 	baseBranch := "main" // TODO: Get from workspace manager config
-	
+
 	// Check if gh is available
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
 	}
-	
+
 	// Check if GITHUB_TOKEN is set
 	if os.Getenv("GITHUB_TOKEN") == "" {
 		return "", fmt.Errorf("GITHUB_TOKEN environment variable is not set")
 	}
-	
+
 	// Create PR using gh CLI
-	prCmd := exec.CommandContext(prCtx, "gh", "pr", "create", 
+	prCmd := exec.CommandContext(prCtx, "gh", "pr", "create",
 		"--title", title,
 		"--body", fmt.Sprintf("Automated pull request for story %s generated by agent %s", storyID, agentID),
 		"--base", baseBranch,
@@ -2392,19 +2394,19 @@ func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine
 	storyID, _ := sm.GetStateValue("story_id")
 	prURL, _ := sm.GetStateValue("pr_url")
 	branchName, _ := sm.GetStateValue("pushed_branch")
-	
+
 	// Convert to strings safely
 	storyIDStr, _ := storyID.(string)
 	prURLStr, _ := prURL.(string)
 	branchNameStr, _ := branchName.(string)
-	
+
 	c.logger.Info("🧑‍💻 Sending merge request to architect for story %s", storyIDStr)
-	
+
 	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 	requestMsg.SetPayload("request_type", "merge")
 	requestMsg.SetPayload("pr_url", prURLStr)
 	requestMsg.SetPayload("branch_name", branchNameStr)
 	requestMsg.SetPayload("story_id", storyIDStr)
-	
+
 	return c.dispatcher.DispatchMessage(requestMsg)
 }

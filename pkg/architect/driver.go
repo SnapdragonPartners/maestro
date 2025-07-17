@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/bootstrap"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -25,21 +26,66 @@ type LLMClient interface {
 	GenerateResponse(ctx context.Context, prompt string) (string, error)
 }
 
+// LLMClientToAgentAdapter adapts architect LLMClient to agent.LLMClient
+type LLMClientToAgentAdapter struct {
+	client LLMClient
+}
+
+func (a *LLMClientToAgentAdapter) Complete(ctx context.Context, req agent.CompletionRequest) (agent.CompletionResponse, error) {
+	// Convert the first message to a prompt
+	if len(req.Messages) == 0 {
+		return agent.CompletionResponse{}, fmt.Errorf("no messages in completion request")
+	}
+
+	prompt := req.Messages[0].Content
+
+	// Call the architect's LLMClient
+	response, err := a.client.GenerateResponse(ctx, prompt)
+	if err != nil {
+		return agent.CompletionResponse{}, err
+	}
+
+	// Convert back to agent format
+	return agent.CompletionResponse{
+		Content: response,
+	}, nil
+}
+
+func (a *LLMClientToAgentAdapter) Stream(ctx context.Context, req agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
+	// Simple implementation: call Complete and stream the result as a single chunk
+	response, err := a.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a channel and send the response as a single chunk
+	ch := make(chan agent.StreamChunk, 1)
+	ch <- agent.StreamChunk{
+		Content: response.Content,
+		Done:    true,
+		Error:   nil,
+	}
+	close(ch)
+
+	return ch, nil
+}
+
 // Driver manages the state machine for an architect workflow
 type Driver struct {
-	architectID       string
-	stateStore        *state.Store
-	contextManager    *contextmgr.ContextManager
-	currentState      agent.State
-	stateData         map[string]any
-	llmClient         LLMClient            // LLM for intelligent responses
-	renderer          *templates.Renderer  // Template renderer for prompts
-	workDir           string               // Workspace directory
-	storiesDir        string               // Directory for story files
-	queue             *Queue               // Story queue manager
-	escalationHandler *EscalationHandler   // Escalation handler
-	dispatcher        *dispatch.Dispatcher // Dispatcher for sending messages
-	logger            *logx.Logger         // Logger with proper agent prefixing
+	architectID        string
+	stateStore         *state.Store
+	contextManager     *contextmgr.ContextManager
+	currentState       agent.State
+	stateData          map[string]any
+	llmClient          LLMClient            // LLM for intelligent responses
+	renderer           *templates.Renderer  // Template renderer for prompts
+	workDir            string               // Workspace directory
+	storiesDir         string               // Directory for story files
+	queue              *Queue               // Story queue manager
+	escalationHandler  *EscalationHandler   // Escalation handler
+	dispatcher         *dispatch.Dispatcher // Dispatcher for sending messages
+	logger             *logx.Logger         // Logger with proper agent prefixing
+	orchestratorConfig *config.Config       // Orchestrator configuration for repo access
 
 	// Channel-based architecture - channels provided by dispatcher.Attach()
 	specCh      <-chan *proto.AgentMsg // Read-only channel for spec messages
@@ -48,25 +94,26 @@ type Driver struct {
 }
 
 // NewDriver creates a new architect driver instance
-func NewDriver(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string) *Driver {
+func NewDriver(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string, orchestratorConfig *config.Config) *Driver {
 	renderer, _ := templates.NewRenderer()
 	queue := NewQueue(storiesDir)
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 
 	return &Driver{
-		architectID:       architectID,
-		stateStore:        stateStore,
-		contextManager:    contextmgr.NewContextManagerWithModel(modelConfig),
-		currentState:      StateWaiting,
-		stateData:         make(map[string]any),
-		llmClient:         llmClient,
-		renderer:          renderer,
-		workDir:           workDir,
-		storiesDir:        storiesDir,
-		queue:             queue,
-		escalationHandler: escalationHandler,
-		dispatcher:        dispatcher,
-		logger:            logx.NewLogger(architectID),
+		architectID:        architectID,
+		stateStore:         stateStore,
+		contextManager:     contextmgr.NewContextManagerWithModel(modelConfig),
+		currentState:       StateWaiting,
+		stateData:          make(map[string]any),
+		llmClient:          llmClient,
+		renderer:           renderer,
+		workDir:            workDir,
+		storiesDir:         storiesDir,
+		queue:              queue,
+		escalationHandler:  escalationHandler,
+		dispatcher:         dispatcher,
+		logger:             logx.NewLogger(architectID),
+		orchestratorConfig: orchestratorConfig,
 		// Channels will be set during Attach()
 		specCh:      nil,
 		questionsCh: nil,
@@ -185,12 +232,12 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 // Run starts the architect's state machine loop in WAITING state
 func (d *Driver) Run(ctx context.Context) error {
 	d.logger.Info("🏗️ Architect %s starting state machine", d.architectID)
-	
+
 	// Ensure channels are attached
 	if d.specCh == nil || d.questionsCh == nil {
 		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
-	
+
 	// Start in WAITING state, ready to receive specs
 	d.currentState = StateWaiting
 	d.stateData = make(map[string]any)
@@ -317,7 +364,7 @@ func (d *Driver) processCurrentState(ctx context.Context) (agent.State, error) {
 	}
 }
 
-// handleScoping processes the scoping phase (spec analysis and story generation)
+// handleScoping processes the scoping phase (platform detection, bootstrap, spec analysis and story generation)
 func (d *Driver) handleScoping(ctx context.Context) (agent.State, error) {
 	d.contextManager.AddMessage("assistant", "Scoping phase: analyzing specification and generating stories")
 
@@ -335,48 +382,101 @@ func (d *Driver) handleScoping(ctx context.Context) (agent.State, error) {
 		return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
 	}
 
-	// Use LLM for spec analysis if available
-	var requirements []Requirement
-	if d.llmClient != nil {
-		requirements, err = d.parseSpecWithLLM(ctx, string(rawSpecContent), specFile)
+	// STEP 1: Platform Detection - check if platform already detected
+	if _, exists := d.stateData["platform_detected"]; !exists {
+		d.logger.Info("🏗️ Starting platform detection for project")
+
+		// Run platform detection on existing code first
+		platformRecommendation, err := d.detectOrRecommendPlatform(ctx, string(rawSpecContent))
 		if err != nil {
-			// Graceful fallback to deterministic parsing
-			d.logger.Warn("LLM parsing failed (%v), falling back to deterministic parser", err)
+			return StateError, fmt.Errorf("platform detection failed: %w", err)
+		}
+
+		// Store platform recommendation
+		d.stateData["platform_recommendation"] = platformRecommendation
+		d.stateData["platform_detected"] = true
+
+		d.logger.Info("🏗️ Platform detection completed: %s (confidence: %.2f)",
+			platformRecommendation.Platform, platformRecommendation.Confidence)
+	}
+
+	// STEP 2: Bootstrap - check if bootstrap already executed
+	if _, exists := d.stateData["bootstrap_completed"]; !exists {
+		d.logger.Info("🏗️ Starting bootstrap phase")
+
+		// Get platform recommendation
+		platformRecommendation, exists := d.stateData["platform_recommendation"]
+		if !exists {
+			return StateError, fmt.Errorf("platform recommendation not found in state data")
+		}
+
+		// Execute bootstrap with platform recommendation
+		if err := d.executeBootstrap(ctx, platformRecommendation); err != nil {
+			return StateError, fmt.Errorf("bootstrap execution failed: %w", err)
+		}
+
+		d.stateData["bootstrap_completed"] = true
+		d.logger.Info("🏗️ Bootstrap phase completed successfully")
+	}
+
+	// STEP 3: Spec Analysis - check if spec already parsed
+	var requirements []Requirement
+	if _, exists := d.stateData["spec_parsing_completed_at"]; !exists {
+		// Use LLM for spec analysis if available
+		if d.llmClient != nil {
+			requirements, err = d.parseSpecWithLLM(ctx, string(rawSpecContent), specFile)
+			if err != nil {
+				// Graceful fallback to deterministic parsing
+				d.logger.Warn("LLM parsing failed (%v), falling back to deterministic parser", err)
+				requirements, err = d.parseSpecDeterministic(specFile)
+				if err != nil {
+					return StateError, fmt.Errorf("both LLM and deterministic parsing failed: %w", err)
+				}
+				d.stateData["parsing_method"] = "deterministic_fallback"
+			} else {
+				d.stateData["parsing_method"] = "llm_primary"
+			}
+		} else {
+			// Use deterministic parsing only
 			requirements, err = d.parseSpecDeterministic(specFile)
 			if err != nil {
-				return StateError, fmt.Errorf("both LLM and deterministic parsing failed: %w", err)
+				return StateError, fmt.Errorf("deterministic parsing failed: %w", err)
 			}
-			d.stateData["parsing_method"] = "deterministic_fallback"
-		} else {
-			d.stateData["parsing_method"] = "llm_primary"
+			d.stateData["parsing_method"] = "deterministic_only"
 		}
+
+		// Store parsed requirements
+		d.stateData["requirements"] = requirements
+		d.stateData["raw_spec_content"] = string(rawSpecContent)
+		d.stateData["spec_parsing_completed_at"] = time.Now().UTC()
 	} else {
-		// Use deterministic parsing only
-		requirements, err = d.parseSpecDeterministic(specFile)
-		if err != nil {
-			return StateError, fmt.Errorf("deterministic parsing failed: %w", err)
+		// Reload requirements from state data
+		if reqData, exists := d.stateData["requirements"]; exists {
+			requirements, err = d.convertToRequirements(reqData)
+			if err != nil {
+				return StateError, fmt.Errorf("failed to convert requirements from state data: %w", err)
+			}
 		}
-		d.stateData["parsing_method"] = "deterministic_only"
 	}
 
-	// Store parsed requirements
-	d.stateData["requirements"] = requirements
-	d.stateData["raw_spec_content"] = string(rawSpecContent)
-	d.stateData["spec_parsing_completed_at"] = time.Now().UTC()
+	// STEP 4: Story Generation - check if stories already generated
+	if _, exists := d.stateData["stories_generated"]; !exists {
+		// Generate story files immediately in the scoping phase
+		specParser := NewSpecParser(d.storiesDir)
+		storyFiles, err := specParser.GenerateStoryFiles(requirements)
+		if err != nil {
+			return StateError, fmt.Errorf("failed to generate story files: %w", err)
+		}
 
-	// Generate story files immediately in the scoping phase
-	specParser := NewSpecParser(d.storiesDir)
-	storyFiles, err := specParser.GenerateStoryFiles(requirements)
-	if err != nil {
-		return StateError, fmt.Errorf("failed to generate story files: %w", err)
+		d.stateData["story_files"] = storyFiles
+		d.stateData["stories_generated"] = true
+		d.stateData["stories_count"] = len(storyFiles)
+
+		d.logger.Info("🏗️ Story generation completed: %d stories generated", len(storyFiles))
 	}
 
-	d.stateData["story_files"] = storyFiles
-	d.stateData["stories_generated"] = true
-	d.stateData["stories_count"] = len(storyFiles)
-
-	d.logger.Info("scoping completed using %s method, extracted %d requirements and generated %d stories",
-		d.stateData["parsing_method"], len(requirements), len(storyFiles))
+	d.logger.Info("🏗️ Scoping completed using %s method, extracted %d requirements and generated %d stories",
+		d.stateData["parsing_method"], len(requirements), d.stateData["stories_count"])
 
 	return StateDispatching, nil
 }
@@ -594,12 +694,12 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 // handleApprovalRequest processes a REQUEST message and returns a RESULT
 func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	requestType, _ := requestMsg.GetPayload("request_type")
-	
+
 	// Check if this is a merge request
 	if requestTypeStr, ok := requestType.(string); ok && requestTypeStr == "merge" {
 		return d.handleMergeRequest(ctx, requestMsg)
 	}
-	
+
 	// Handle regular approval requests
 	content, _ := requestMsg.GetPayload("content")
 	approvalTypeStr, _ := requestMsg.GetPayload("approval_type")
@@ -610,7 +710,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	if approvalTypeStr != nil {
 		approvalTypeString, _ = approvalTypeStr.(string)
 	}
-	
+
 	approvalIDString := ""
 	if approvalID != nil {
 		approvalIDString, _ = approvalID.(string)
@@ -668,23 +768,23 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 // handleMergeRequest processes a merge REQUEST message and returns a RESULT
 func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg) (*proto.AgentMsg, error) {
 	prURL, _ := request.GetPayload("pr_url")
-	branchName, _ := request.GetPayload("branch_name") 
+	branchName, _ := request.GetPayload("branch_name")
 	storyID, _ := request.GetPayload("story_id")
-	
+
 	// Convert to strings safely
 	prURLStr, _ := prURL.(string)
 	branchNameStr, _ := branchName.(string)
 	storyIDStr, _ := storyID.(string)
-	
+
 	d.logger.Info("🏗️ Processing merge request for story %s, PR: %s, branch: %s", storyIDStr, prURLStr, branchNameStr)
-	
+
 	// Attempt merge using GitHub CLI
 	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, storyIDStr)
-	
+
 	// Create RESULT response
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, request.FromAgent)
 	resultMsg.ParentMsgID = request.ID
-	
+
 	if err != nil || (mergeResult != nil && mergeResult.HasConflicts) {
 		if err != nil {
 			d.logger.Info("🏗️ Merge failed with error for story %s: %v", storyIDStr, err)
@@ -699,7 +799,7 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		d.logger.Info("🏗️ Merge successful for story %s, commit: %s", storyIDStr, mergeResult.CommitSHA)
 		resultMsg.SetPayload("status", "merged")
 		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
-		
+
 		// Mark story as completed in queue
 		if d.queue != nil {
 			if err := d.queue.MarkCompleted(storyIDStr); err != nil {
@@ -707,7 +807,7 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 			}
 		}
 	}
-	
+
 	return resultMsg, nil
 }
 
@@ -721,22 +821,22 @@ type MergeAttemptResult struct {
 // attemptPRMerge attempts to merge a PR using GitHub CLI
 func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*MergeAttemptResult, error) {
 	d.logger.Info("🏗️ Attempting to merge PR: %s", prURL)
-	
+
 	// Use gh CLI to merge PR with squash strategy and branch deletion
 	// gh pr merge <pr-url> --squash --delete-branch
 	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	
+
 	// Check if gh is available
 	if _, err := exec.LookPath("gh"); err != nil {
 		return nil, fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
 	}
-	
+
 	cmd := exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
 	output, err := cmd.CombinedOutput()
-	
+
 	result := &MergeAttemptResult{}
-	
+
 	if err != nil {
 		// Check if error is due to merge conflicts
 		outputStr := strings.ToLower(string(output))
@@ -746,19 +846,19 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*Me
 			result.ConflictInfo = string(output)
 			return result, nil // Not an error, just conflicts
 		}
-		
+
 		// Other error (permissions, network, etc.)
 		d.logger.Error("🏗️ Failed to merge PR %s: %v\nOutput: %s", prURL, err, string(output))
 		return nil, fmt.Errorf("gh pr merge failed: %w\nOutput: %s", err, string(output))
 	}
-	
+
 	// Success - extract commit SHA from output if available
 	outputStr := string(output)
 	d.logger.Info("🏗️ Merge successful for PR %s\nOutput: %s", prURL, outputStr)
-	
+
 	// TODO: Parse commit SHA from gh output if needed
 	result.CommitSHA = "merged" // Placeholder until we parse actual SHA
-	
+
 	return result, nil
 }
 
@@ -839,10 +939,8 @@ func (d *Driver) transitionTo(ctx context.Context, newState agent.State, additio
 	}
 
 	// Merge additional data if provided
-	if additionalData != nil {
-		for k, v := range additionalData {
-			d.stateData[k] = v
-		}
+	for k, v := range additionalData {
+		d.stateData[k] = v
 	}
 
 	// Persist state
@@ -907,40 +1005,6 @@ func (d *Driver) formatContextAsString() string {
 	}
 
 	return strings.Join(contextParts, "\n")
-}
-
-// parseSpecAnalysisResponse extracts requirements from LLM response
-func (d *Driver) parseSpecAnalysisResponse(response string) []map[string]any {
-	// Simple mock parsing - in real implementation would parse JSON response
-	return []map[string]any{
-		{
-			"title":            "Parsed requirement from LLM",
-			"description":      "LLM-generated requirement description",
-			"estimated_points": 2,
-		},
-	}
-}
-
-// formatRequirementsForLLM converts requirements to a string format for LLM analysis
-func (d *Driver) formatRequirementsForLLM(requirements []Requirement) string {
-	var result strings.Builder
-	result.WriteString("Extracted Requirements:\n\n")
-
-	for i, req := range requirements {
-		result.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, req.Title))
-		if req.Description != "" {
-			result.WriteString(fmt.Sprintf("   Description: %s\n", req.Description))
-		}
-		if len(req.AcceptanceCriteria) > 0 {
-			result.WriteString("   Acceptance Criteria:\n")
-			for _, criterion := range req.AcceptanceCriteria {
-				result.WriteString(fmt.Sprintf("   - %s\n", criterion))
-			}
-		}
-		result.WriteString(fmt.Sprintf("   Estimated Points: %d\n\n", req.EstimatedPoints))
-	}
-
-	return result.String()
 }
 
 // convertToRequirements converts state data back to Requirements slice
@@ -1118,7 +1182,7 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
 			storyMsg.SetPayload(proto.KeyContent, content)
 			storyMsg.SetPayload(proto.KeyRequirements, requirements)
-			
+
 			// Detect backend from story content and requirements
 			backend := d.detectBackend(storyID, content, requirements)
 			storyMsg.SetPayload(proto.KeyBackend, backend)
@@ -1127,7 +1191,7 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 			// Fallback to title if content parsing fails
 			storyMsg.SetPayload(proto.KeyContent, story.Title)
 			storyMsg.SetPayload(proto.KeyRequirements, []string{})
-			
+
 			// Default backend detection from title
 			backend := d.detectBackend(storyID, story.Title, []string{})
 			storyMsg.SetPayload(proto.KeyBackend, backend)
@@ -1282,13 +1346,13 @@ func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
 func (d *Driver) detectBackend(storyID, content string, requirements []string) string {
 	// Convert content to lowercase for case-insensitive matching
 	contentLower := strings.ToLower(content)
-	
+
 	// Convert requirements to lowercase for case-insensitive matching
 	requirementsLower := make([]string, len(requirements))
 	for i, req := range requirements {
 		requirementsLower[i] = strings.ToLower(req)
 	}
-	
+
 	// Check content for backend indicators
 	if containsBackendKeywords(contentLower, []string{
 		"go", "golang", "go.mod", "go.sum", "main.go", "package main",
@@ -1296,27 +1360,27 @@ func (d *Driver) detectBackend(storyID, content string, requirements []string) s
 	}) {
 		return "go"
 	}
-	
+
 	if containsBackendKeywords(contentLower, []string{
 		"python", "pip", "requirements.txt", "setup.py", "pyproject.toml",
 		"def ", "import ", "from ", "python3", "venv", "virtualenv", "uv",
 	}) {
 		return "python"
 	}
-	
+
 	if containsBackendKeywords(contentLower, []string{
 		"javascript", "typescript", "node", "npm", "package.json", "yarn",
 		"pnpm", "bun", "const ", "let ", "var ", "function", "=>", "nodejs",
 	}) {
 		return "node"
 	}
-	
+
 	if containsBackendKeywords(contentLower, []string{
 		"makefile", "gcc", "clang", "c++", "cpp",
 	}) || strings.Contains(contentLower, " make ") || strings.HasPrefix(contentLower, "make ") || strings.HasSuffix(contentLower, " make") || strings.Contains(contentLower, " c ") {
 		return "make"
 	}
-	
+
 	// Check requirements for backend indicators
 	for _, req := range requirementsLower {
 		if containsBackendKeywords(req, []string{
@@ -1324,26 +1388,26 @@ func (d *Driver) detectBackend(storyID, content string, requirements []string) s
 		}) {
 			return "go"
 		}
-		
+
 		if containsBackendKeywords(req, []string{
 			"python", "pip", "requirements.txt", "setup.py", "pyproject.toml",
 		}) {
 			return "python"
 		}
-		
+
 		if containsBackendKeywords(req, []string{
 			"javascript", "typescript", "node", "npm", "package.json", "yarn",
 		}) {
 			return "node"
 		}
-		
+
 		if containsBackendKeywords(req, []string{
 			"makefile", "gcc", "clang",
 		}) || strings.Contains(req, " make ") || strings.HasPrefix(req, "make ") || strings.HasSuffix(req, " make") {
 			return "make"
 		}
 	}
-	
+
 	// Default to null backend if no specific backend detected
 	d.logger.Info("🏗️ No specific backend detected for story %s, using null backend", storyID)
 	return "null"
@@ -1404,4 +1468,204 @@ func (d *Driver) getSpecFileFromMessage() string {
 
 	d.logger.Error("🏗️ Spec file path is not a string: %T = %v", specFile, specFile)
 	return ""
+}
+
+// detectOrRecommendPlatform runs platform detection on existing code, then spec analysis, then LLM recommendation
+func (d *Driver) detectOrRecommendPlatform(ctx context.Context, rawSpecContent string) (*bootstrap.PlatformRecommendation, error) {
+	d.logger.Info("🏗️ Starting platform detection and recommendation")
+
+	// Step 1: Check if platform already exists in project
+	existingPlatform, err := d.detectExistingPlatform()
+	if err != nil {
+		d.logger.Info("🏗️ No existing platform detected: %v", err)
+	} else if existingPlatform != "" {
+		d.logger.Info("🏗️ Detected existing platform: %s", existingPlatform)
+
+		// Return high-confidence recommendation for existing platform
+		return &bootstrap.PlatformRecommendation{
+			Platform:   existingPlatform,
+			Confidence: 0.9,
+			Rationale:  fmt.Sprintf("Existing %s project files detected in workspace", existingPlatform),
+			MultiStack: false,
+			Platforms:  []string{existingPlatform},
+		}, nil
+	}
+
+	// Step 2: Use LLM to analyze spec content
+	if d.llmClient != nil {
+		d.logger.Info("🏗️ No existing platform detected, using LLM to analyze spec content")
+
+		llmPlatform, err := d.simpleLLMPlatformDetection(ctx, rawSpecContent)
+		if err != nil {
+			d.logger.Error("🏗️ LLM analysis failed: %v", err)
+			return nil, fmt.Errorf("failed to detect platform: no existing platform files and LLM analysis failed: %w", err)
+		}
+
+		if llmPlatform != "" {
+			d.logger.Info("🏗️ LLM detected platform: %s", llmPlatform)
+			return &bootstrap.PlatformRecommendation{
+				Platform:   llmPlatform,
+				Confidence: 0.8,
+				Rationale:  fmt.Sprintf("Platform '%s' detected by LLM analysis of specification", llmPlatform),
+				MultiStack: false,
+				Platforms:  []string{llmPlatform},
+			}, nil
+		}
+	}
+
+	// Step 3: Hard error - we must determine a platform
+	return nil, fmt.Errorf("failed to detect platform: no existing platform files, no LLM available, and cannot proceed without platform determination")
+}
+
+// simpleLLMPlatformDetection uses a simple text prompt to detect platform
+func (d *Driver) simpleLLMPlatformDetection(ctx context.Context, specContent string) (string, error) {
+	// Get supported platforms from bootstrap package
+	supportedPlatformsMap := bootstrap.GetSupportedPlatforms()
+
+	// Build platform list with descriptions
+	var platformDescriptions []string
+	for _, platform := range supportedPlatformsMap {
+		desc := fmt.Sprintf("- %s: %s", platform.Name, platform.Description)
+		platformDescriptions = append(platformDescriptions, desc)
+	}
+
+	// Create prompt with supported platforms
+	prompt := fmt.Sprintf(`Analyze this project specification and determine the primary technology platform.
+
+SUPPORTED PLATFORMS:
+%s
+
+SPECIFICATION:
+%s
+
+INSTRUCTIONS:
+- Analyze the specification for technology indicators
+- Look for language names, version numbers, package managers, build tools, dependencies
+- Choose the BEST MATCHING platform from the supported platforms list above
+- If multiple platforms are mentioned, choose the PRIMARY one
+- If no platform is clearly specified, make your best recommendation based on the project requirements
+
+RESPOND WITH ONLY THE PLATFORM NAME (e.g., "go", "node", "python", etc.)
+
+Platform:`, strings.Join(platformDescriptions, "\n"), specContent)
+
+	// Call LLM
+	response, err := d.llmClient.GenerateResponse(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("LLM call failed: %w", err)
+	}
+
+	// Extract platform from response
+	platform := strings.TrimSpace(strings.ToLower(response))
+
+	// Validate platform against supported platforms
+	for _, supportedPlatform := range supportedPlatformsMap {
+		if platform == supportedPlatform.Name {
+			return platform, nil
+		}
+	}
+
+	return "", fmt.Errorf("LLM returned unsupported platform: %s (supported: %v)", platform, d.getSupportedPlatformNames())
+}
+
+// getSupportedPlatformNames returns a list of supported platform names
+func (d *Driver) getSupportedPlatformNames() []string {
+	supportedPlatformsMap := bootstrap.GetSupportedPlatforms()
+	names := make([]string, 0, len(supportedPlatformsMap))
+	for _, platform := range supportedPlatformsMap {
+		names = append(names, platform.Name)
+	}
+	return names
+}
+
+// detectExistingPlatform checks for existing platform files in the workspace
+func (d *Driver) detectExistingPlatform() (string, error) {
+	workspaceRoot := d.workDir
+
+	// Check for Go files
+	if d.hasFile(workspaceRoot, "go.mod") || d.hasFile(workspaceRoot, "main.go") {
+		return "go", nil
+	}
+
+	// Check for Node.js files
+	if d.hasFile(workspaceRoot, "package.json") || d.hasFile(workspaceRoot, "package-lock.json") {
+		return "node", nil
+	}
+
+	// Check for Python files
+	if d.hasFile(workspaceRoot, "requirements.txt") || d.hasFile(workspaceRoot, "pyproject.toml") || d.hasFile(workspaceRoot, "setup.py") {
+		return "python", nil
+	}
+
+	// Check for Makefile
+	if d.hasFile(workspaceRoot, "Makefile") || d.hasFile(workspaceRoot, "makefile") {
+		return "make", nil
+	}
+
+	return "", fmt.Errorf("no existing platform detected")
+}
+
+// hasFile checks if a file exists in the given directory
+func (d *Driver) hasFile(dir, filename string) bool {
+	_, err := os.Stat(fmt.Sprintf("%s/%s", dir, filename))
+	return err == nil
+}
+
+// executeBootstrap runs the bootstrap process with the given platform recommendation
+func (d *Driver) executeBootstrap(ctx context.Context, platformRecommendation interface{}) error {
+	d.logger.Info("🏗️ Starting bootstrap execution")
+
+	// Convert platform recommendation to the expected type
+	var recommendation *bootstrap.PlatformRecommendation
+	if rec, ok := platformRecommendation.(*bootstrap.PlatformRecommendation); ok {
+		recommendation = rec
+	} else {
+		return fmt.Errorf("invalid platform recommendation type: %T", platformRecommendation)
+	}
+
+	// Create bootstrap configuration
+	bootstrapConfig := &bootstrap.Config{
+		Enabled:                 true,
+		ForceBackend:            "",
+		SkipMakefile:            false,
+		AdditionalArtifacts:     []string{},
+		TemplateOverrides:       make(map[string]string),
+		BranchName:              "bootstrap-init",
+		AutoMerge:               true,
+		BaseBranch:              "main",
+		RepoURL:                 d.orchestratorConfig.RepoURL,
+		ArchitectRecommendation: recommendation,
+	}
+
+	// Create bootstrap phase
+	phase := bootstrap.NewPhase(d.workDir, bootstrapConfig)
+
+	// Execute bootstrap
+	result, err := phase.Execute(ctx)
+	if err != nil {
+		return fmt.Errorf("bootstrap execution failed: %w", err)
+	}
+
+	// Store bootstrap results in state data
+	d.stateData["bootstrap_result"] = result
+	d.stateData["bootstrap_backend"] = result.Backend
+	d.stateData["bootstrap_duration"] = result.Duration
+	d.stateData["bootstrap_files_count"] = len(result.GeneratedFiles)
+
+	if result.Success {
+		d.logger.Info("🏗️ Bootstrap completed successfully: backend=%s, files=%d, duration=%v",
+			result.Backend, len(result.GeneratedFiles), result.Duration)
+
+		if result.BranchCreated != "" {
+			d.logger.Info("🏗️ Created bootstrap branch: %s", result.BranchCreated)
+		}
+
+		if result.MergeCompleted {
+			d.logger.Info("🏗️ Bootstrap artifacts merged to main branch")
+		}
+	} else {
+		return fmt.Errorf("bootstrap failed: %s", result.Error)
+	}
+
+	return nil
 }

@@ -3,28 +3,30 @@ package architect
 import (
 	"testing"
 	"time"
+
+	"orchestrator/pkg/agent"
 )
 
 func TestArchitectStateString(t *testing.T) {
 	tests := []struct {
-		state    ArchitectState
+		state    agent.State
 		expected string
 	}{
-		{StateWaiting, "Waiting"},
-		{StateScoping, "Scoping"},
-		{StateDispatching, "Dispatching"},
-		{StateMonitoring, "Monitoring"},
-		{StateRequest, "Request"},
-		{StateEscalated, "Escalated"},
-		{StateMerging, "Merging"},
-		{StateDone, "Done"},
-		{StateError, "Error"},
-		{ArchitectState(999), "ArchitectState(999)"}, // Invalid state
+		{StateWaiting, "WAITING"},
+		{StateScoping, "SCOPING"},
+		{StateDispatching, "DISPATCHING"},
+		{StateMonitoring, "MONITORING"},
+		{StateRequest, "REQUEST"},
+		{StateEscalated, "ESCALATED"},
+		{StateMerging, "MERGING"},
+		{StateDone, "DONE"},
+		{StateError, "ERROR"},
+		{agent.State("INVALID"), "INVALID"}, // Invalid state
 	}
 
 	for _, test := range tests {
 		t.Run(test.expected, func(t *testing.T) {
-			result := test.state.String()
+			result := string(test.state)
 			if result != test.expected {
 				t.Errorf("Expected %s, got %s", test.expected, result)
 			}
@@ -35,8 +37,8 @@ func TestArchitectStateString(t *testing.T) {
 func TestIsValidArchitectTransition(t *testing.T) {
 	// Test all valid transitions as defined in STATES.md
 	validTransitions := []struct {
-		from ArchitectState
-		to   ArchitectState
+		from agent.State
+		to   agent.State
 		name string
 	}{
 		// WAITING transitions
@@ -87,8 +89,8 @@ func TestIsValidArchitectTransition(t *testing.T) {
 func TestInvalidArchitectTransitions(t *testing.T) {
 	// Test a comprehensive set of invalid transitions
 	invalidTransitions := []struct {
-		from ArchitectState
-		to   ArchitectState
+		from agent.State
+		to   agent.State
 		name string
 	}{
 		// Invalid WAITING transitions
@@ -183,7 +185,7 @@ func TestEscalationTimeout(t *testing.T) {
 
 func TestGetAllArchitectStates(t *testing.T) {
 	states := GetAllArchitectStates()
-	expected := []ArchitectState{
+	expected := []agent.State{
 		StateWaiting,
 		StateScoping,
 		StateDispatching,
@@ -208,7 +210,7 @@ func TestGetAllArchitectStates(t *testing.T) {
 
 func TestIsTerminalState(t *testing.T) {
 	tests := []struct {
-		state    ArchitectState
+		state    agent.State
 		expected bool
 	}{
 		{StateWaiting, false},
@@ -234,7 +236,7 @@ func TestIsTerminalState(t *testing.T) {
 
 func TestIsValidArchitectState(t *testing.T) {
 	// Test all valid states
-	validStates := []ArchitectState{
+	validStates := []agent.State{
 		StateWaiting,
 		StateScoping,
 		StateDispatching,
@@ -255,16 +257,16 @@ func TestIsValidArchitectState(t *testing.T) {
 	}
 
 	// Test invalid states
-	invalidStates := []ArchitectState{
-		ArchitectState(999),
-		ArchitectState(-1),
-		ArchitectState(100),
+	invalidStates := []agent.State{
+		agent.State("INVALID"),
+		agent.State("UNKNOWN"),
+		agent.State("BADSTATE"),
 	}
 
 	for _, state := range invalidStates {
 		t.Run("InvalidState", func(t *testing.T) {
 			if IsValidArchitectState(state) {
-				t.Errorf("Expected %d to be an invalid state", int(state))
+				t.Errorf("Expected %s to be an invalid state", state)
 			}
 		})
 	}
@@ -287,18 +289,18 @@ func TestTransitionMapCompleteness(t *testing.T) {
 func TestValidNextStates(t *testing.T) {
 	// Test the ValidNextStates helper function
 	tests := []struct {
-		from     ArchitectState
-		expected []ArchitectState
+		from     agent.State
+		expected []agent.State
 	}{
-		{StateWaiting, []ArchitectState{StateScoping}},
-		{StateScoping, []ArchitectState{StateDispatching, StateError}},
-		{StateDispatching, []ArchitectState{StateMonitoring, StateDone}},
-		{StateMonitoring, []ArchitectState{StateRequest, StateMerging}},
-		{StateRequest, []ArchitectState{StateMonitoring, StateMerging, StateEscalated, StateError}},
-		{StateEscalated, []ArchitectState{StateRequest, StateError}},
-		{StateMerging, []ArchitectState{StateDispatching, StateError}},
-		{StateDone, []ArchitectState{StateWaiting}},
-		{StateError, []ArchitectState{StateWaiting}},
+		{StateWaiting, []agent.State{StateScoping}},
+		{StateScoping, []agent.State{StateDispatching, StateError}},
+		{StateDispatching, []agent.State{StateMonitoring, StateDone}},
+		{StateMonitoring, []agent.State{StateRequest, StateMerging}},
+		{StateRequest, []agent.State{StateMonitoring, StateMerging, StateEscalated, StateError}},
+		{StateEscalated, []agent.State{StateRequest, StateError}},
+		{StateMerging, []agent.State{StateDispatching, StateError}},
+		{StateDone, []agent.State{StateWaiting}},
+		{StateError, []agent.State{StateWaiting}},
 	}
 
 	for _, test := range tests {
@@ -309,7 +311,7 @@ func TestValidNextStates(t *testing.T) {
 			}
 
 			// Check that all expected states are present
-			resultSet := make(map[ArchitectState]bool)
+			resultSet := make(map[agent.State]bool)
 			for _, state := range result {
 				resultSet[state] = true
 			}
@@ -326,7 +328,7 @@ func TestValidNextStates(t *testing.T) {
 func TestTransitionMapIntegrity(t *testing.T) {
 	// Verify that all target states in the transition map are valid states
 	allStates := GetAllArchitectStates()
-	stateSet := make(map[ArchitectState]bool)
+	stateSet := make(map[agent.State]bool)
 	for _, state := range allStates {
 		stateSet[state] = true
 	}
@@ -350,6 +352,6 @@ func BenchmarkIsValidArchitectTransition(b *testing.B) {
 
 func BenchmarkArchitectStateString(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = StateWaiting.String()
+		_ = string(StateWaiting)
 	}
 }

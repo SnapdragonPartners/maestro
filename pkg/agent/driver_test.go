@@ -323,7 +323,7 @@ func TestBaseDriverTimeout(t *testing.T) {
 
 	// Test StepWithTimeout with very short timeout
 	ctx := context.Background()
-	done, err := driver.StepWithTimeout(ctx, 1*time.Nanosecond)
+	_, err := driver.StepWithTimeout(ctx, 1*time.Nanosecond)
 
 	// This might timeout or complete quickly depending on timing
 	// We mainly want to verify the method exists and doesn't panic
@@ -335,7 +335,7 @@ func TestBaseDriverTimeout(t *testing.T) {
 	}
 
 	// Test with reasonable timeout
-	done, err = driver.StepWithTimeout(ctx, 1*time.Second)
+	done, err := driver.StepWithTimeout(ctx, 1*time.Second)
 	if err != nil && err.Error() != "ProcessState not implemented" {
 		t.Errorf("StepWithTimeout failed with reasonable timeout: %v", err)
 	}

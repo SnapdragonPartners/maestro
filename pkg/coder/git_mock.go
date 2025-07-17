@@ -10,7 +10,7 @@ import (
 type MockGitRunner struct {
 	// Commands maps command signatures to their outputs
 	Commands map[string][]byte
-	// Errors maps command signatures to their errors  
+	// Errors maps command signatures to their errors
 	Errors map[string]error
 	// CallLog tracks all commands that were called
 	CallLog []GitCall
@@ -41,17 +41,17 @@ func (m *MockGitRunner) Run(ctx context.Context, dir string, args ...string) ([]
 
 	// Build command signature for lookup
 	sig := m.buildSignature(dir, args...)
-	
+
 	// Check for specific error
 	if err, exists := m.Errors[sig]; exists {
 		return nil, err
 	}
-	
+
 	// Check for specific output
 	if output, exists := m.Commands[sig]; exists {
 		return output, nil
 	}
-	
+
 	// Default successful output
 	return []byte("mock output"), nil
 }

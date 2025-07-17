@@ -176,10 +176,8 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, me
 	}
 
 	// Merge additional metadata if provided
-	if metadata != nil {
-		for k, v := range metadata {
-			sm.stateData[k] = v
-		}
+	for k, v := range metadata {
+		sm.stateData[k] = v
 	}
 
 	// Persist state changes

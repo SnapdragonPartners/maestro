@@ -18,7 +18,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	// Execute second step - should process planning and transition
-	done, err = driver.Step(ctx)
+	_, err = driver.Step(ctx)
 	if err != nil {
 		t.Fatalf("Second step failed: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestIdleCPUUsage(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestNoNestedLoops(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}

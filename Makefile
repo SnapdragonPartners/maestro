@@ -1,7 +1,7 @@
 .PHONY: build test lint run clean agentctl replayer ui-dev build-css
 
 # Build all binaries
-build:
+build: lint 
 	go generate ./...
 	go build -o bin/orchestrator ./cmd/orchestrator
 	go build -o bin/agentctl ./cmd/agentctl
@@ -37,7 +37,7 @@ lint-docs:
 	@echo "Documentation lint completed"
 
 # Run the orchestrator with banner
-run: build
+run: build-css build
 	./bin/orchestrator
 
 # Build Tailwind CSS

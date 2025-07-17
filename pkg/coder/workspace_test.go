@@ -29,9 +29,9 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 			storyID:    "050",
 			mockCommands: map[string][]byte{
 				"|clone --bare git@github.com:user/repo.git": []byte("Cloning..."),
-				"|remote update --prune":                           []byte("Fetching..."),
-				"|worktree add --detach":                       []byte("Adding worktree..."),
-				"|switch -c story-050":                         []byte("Switched to branch"),
+				"|remote update --prune":                     []byte("Fetching..."),
+				"|worktree add --detach":                     []byte("Adding worktree..."),
+				"|switch -c story-050":                       []byte("Switched to branch"),
 			},
 			expectedError: false,
 		},
@@ -54,7 +54,7 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 			storyID:    "050",
 			mockCommands: map[string][]byte{
 				"|clone --bare git@github.com:user/repo.git": []byte("Cloning..."),
-				"|remote update --prune":                           []byte("Fetching..."),
+				"|remote update --prune":                     []byte("Fetching..."),
 			},
 			mockErrors: map[string]error{
 				"|worktree add --detach": fmt.Errorf("worktree add failed"),
@@ -66,7 +66,7 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tempDir := t.TempDir()
-			
+
 			// Setup mock GitRunner
 			mockGit := NewMockGitRunner()
 			for cmd, output := range tt.mockCommands {
@@ -180,7 +180,7 @@ func TestWorkspaceManagerPathBuilding(t *testing.T) {
 	)
 
 	// Test mirror path building
-	mirrorPath := wm.buildMirrorPath()
+	mirrorPath := wm.BuildMirrorPath()
 	expectedMirrorPath := filepath.Join(tempDir, ".mirrors", "repo.git")
 	if mirrorPath != expectedMirrorPath {
 		t.Errorf("Expected mirror path %s, got %s", expectedMirrorPath, mirrorPath)
@@ -287,7 +287,6 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 		"{AGENT_ID}/{STORY_ID}",
 	)
 
-
 	// 4. Test workspace setup
 	start := time.Now()
 	agentWorkDir := filepath.Join(workDir, "test-agent")
@@ -341,7 +340,7 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	}
 
 	// Verify worktrees are listed
-	output, err = gitRunner.Run(ctx, wm.buildMirrorPath(), "worktree", "list")
+	output, err = gitRunner.Run(ctx, wm.BuildMirrorPath(), "worktree", "list")
 	if err != nil {
 		t.Fatal("Failed to list worktrees:", err)
 	}
@@ -365,7 +364,7 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	}
 
 	// Verify worktree is no longer listed
-	output, err = gitRunner.Run(ctx, wm.buildMirrorPath(), "worktree", "list")
+	output, err = gitRunner.Run(ctx, wm.BuildMirrorPath(), "worktree", "list")
 	if err != nil {
 		t.Fatal("Failed to list worktrees after cleanup:", err)
 	}
@@ -386,10 +385,10 @@ func parseMockCommand(cmd string) []string {
 }
 
 func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && 
-		   (s == substr || (len(s) > len(substr) && 
-		   (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-		   containsSubstring(s, substr))))
+	return len(s) > 0 && len(substr) > 0 &&
+		(s == substr || (len(s) > len(substr) &&
+			(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+				containsSubstring(s, substr))))
 }
 
 func containsSubstring(s, substr string) bool {

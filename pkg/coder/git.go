@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	
+
 	"orchestrator/pkg/logx"
 )
 
@@ -19,7 +19,7 @@ type GitRunner interface {
 }
 
 // DefaultGitRunner implements GitRunner using the system git command
-type DefaultGitRunner struct{
+type DefaultGitRunner struct {
 	logger *logx.Logger
 }
 
@@ -36,25 +36,25 @@ func (g *DefaultGitRunner) Run(ctx context.Context, dir string, args ...string) 
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	
+
 	// Log the command being executed
 	logDir := dir
 	if logDir == "" {
 		logDir = "."
 	}
 	g.logger.Debug("Executing Git command: cd %s && git %s", logDir, strings.Join(args, " "))
-	
+
 	// Combine stdout and stderr to capture all git output
 	output, err := cmd.CombinedOutput()
-	
+
 	// Add context to error for better debugging
 	if err != nil {
 		g.logger.Error("Git command failed: %v", err)
 		g.logger.Debug("Git command output: %s", string(output))
-		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s", 
+		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s",
 			strings.Join(args, " "), dir, err, string(output))
 	}
-	
+
 	g.logger.Debug("Git command succeeded: %s", string(output))
 	return output, nil
 }
@@ -80,7 +80,7 @@ func NewWorkspaceManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranc
 		// If we can't get absolute path, use the original (fallback)
 		absProjectWorkDir = projectWorkDir
 	}
-	
+
 	return &WorkspaceManager{
 		gitRunner:       gitRunner,
 		projectWorkDir:  absProjectWorkDir,
@@ -97,14 +97,14 @@ func NewWorkspaceManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranc
 func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID, agentWorkDir string) (string, error) {
 	w.logger.Debug("SetupWorkspace called with agentID=%s, storyID=%s, agentWorkDir=%s", agentID, storyID, agentWorkDir)
 	w.logger.Debug("ProjectWorkDir: %s", w.projectWorkDir)
-	
+
 	// Step 1: Ensure mirror clone exists and is up to date
 	mirrorPath, err := w.ensureMirrorClone(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to setup mirror clone: %w", err)
 	}
 	w.logger.Debug("Mirror path: %s", mirrorPath)
-	
+
 	// Step 1.5: Occasionally clean up old worktrees (housekeeping)
 	// Run cleanup every 10th story to avoid overhead
 	if strings.HasSuffix(storyID, "0") {
@@ -123,7 +123,7 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 	if err := w.addWorktree(ctx, mirrorPath, storyWorkDir); err != nil {
 		return "", fmt.Errorf("failed to add worktree from mirror %s to %s: %w", mirrorPath, storyWorkDir, err)
 	}
-	
+
 	// Verify the worktree was created
 	if _, err := os.Stat(storyWorkDir); err != nil {
 		w.logger.Error("Story work directory does not exist after git worktree add: %s (error: %v)", storyWorkDir, err)
@@ -195,35 +195,35 @@ func (w *WorkspaceManager) ensureMirrorClone(ctx context.Context) (string, error
 // cleanupWorktrees prunes obsolete worktrees and runs garbage collection
 func (w *WorkspaceManager) cleanupWorktrees(ctx context.Context, mirrorPath string) error {
 	w.logger.Debug("Cleaning up worktrees in mirror: %s", mirrorPath)
-	
+
 	// Prune worktrees that are no longer needed
 	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "prune", "--expire", "1.day.ago")
 	if err != nil {
 		w.logger.Warn("Failed to prune worktrees: %v", err)
 		// Don't fail - just warn since this is housekeeping
 	}
-	
+
 	// Optional: Run garbage collection to clean up unreachable objects
 	_, err = w.gitRunner.Run(ctx, mirrorPath, "gc", "--prune=now")
 	if err != nil {
 		w.logger.Warn("Failed to run garbage collection: %v", err)
 		// Don't fail - just warn since this is housekeeping
 	}
-	
+
 	return nil
 }
 
 // addWorktree adds a new worktree from the mirror
 func (w *WorkspaceManager) addWorktree(ctx context.Context, mirrorPath, storyWorkDir string) error {
 	w.logger.Debug("Adding worktree from mirror=%s to path=%s with branch=%s", mirrorPath, storyWorkDir, w.baseBranch)
-	
+
 	// storyWorkDir is guaranteed to be absolute from BuildStoryWorkDir
 	// For bare repositories, we need to use the branch name directly
 	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", storyWorkDir, w.baseBranch)
 	if err != nil {
 		return fmt.Errorf("git worktree add --detach %s %s failed from %s: %w", storyWorkDir, w.baseBranch, mirrorPath, err)
 	}
-	
+
 	w.logger.Debug("Successfully added worktree at path=%s", storyWorkDir)
 	return nil
 }
@@ -232,19 +232,19 @@ func (w *WorkspaceManager) addWorktree(ctx context.Context, mirrorPath, storyWor
 // If the branch already exists, it will try incremental names (e.g., story-050-2, story-050-3, etc.)
 func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branchName string) error {
 	w.logger.Debug("createBranch called with storyWorkDir=%s, branchName=%s", storyWorkDir, branchName)
-	
+
 	// Check if story work directory exists before trying to create branch
 	if _, err := os.Stat(storyWorkDir); os.IsNotExist(err) {
 		w.logger.Error("story work directory does not exist: %s", storyWorkDir)
 		return fmt.Errorf("story work directory does not exist: %s", storyWorkDir)
 	}
 	w.logger.Debug("Story work directory exists, proceeding with branch creation")
-	
+
 	// Try to create the branch with incremental names if collision occurs
 	originalBranchName := branchName
 	attempt := 1
 	maxAttempts := 10 // Safety limit to prevent infinite loops
-	
+
 	for attempt <= maxAttempts {
 		_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)
 		if err == nil {
@@ -254,7 +254,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 			}
 			return nil
 		}
-		
+
 		// Check if this is a "branch already exists" error
 		if strings.Contains(err.Error(), "already exists") {
 			// Increment the branch name and try again
@@ -263,11 +263,11 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 			w.logger.Debug("Branch collision detected, trying next name: %s", branchName)
 			continue
 		}
-		
+
 		// If it's not a collision error, return the original error
 		return fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
 	}
-	
+
 	// If we've exhausted all attempts
 	return fmt.Errorf("unable to create branch after %d attempts, last tried: %s", maxAttempts, branchName)
 }
@@ -277,7 +277,7 @@ func (w *WorkspaceManager) BuildMirrorPath() string {
 	// Extract repo name from URL (e.g., git@github.com:user/repo.git -> repo)
 	repoName := filepath.Base(w.repoURL)
 	repoName = strings.TrimSuffix(repoName, ".git")
-	
+
 	return filepath.Join(w.projectWorkDir, w.mirrorDir, repoName+".git")
 }
 
@@ -289,23 +289,23 @@ func (w *WorkspaceManager) BuildStoryWorkDir(agentID, storyID, agentWorkDir stri
 		// If we can't get absolute path, use the original (fallback)
 		absAgentWorkDir = agentWorkDir
 	}
-	
+
 	path := w.worktreePattern
 	path = strings.ReplaceAll(path, "{AGENT_ID}", agentID)
 	path = strings.ReplaceAll(path, "{STORY_ID}", storyID)
-	
+
 	// Make absolute if relative - use agent work directory as base
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(absAgentWorkDir, path)
 	}
-	
+
 	// Ensure the final path is absolute
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		// If we can't get absolute path, use the constructed path (fallback)
 		absPath = path
 	}
-	
+
 	return absPath
 }
 

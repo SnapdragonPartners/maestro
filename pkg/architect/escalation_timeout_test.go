@@ -6,13 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/state"
 )
+
+// Mock implementations for testing
+type mockLLMClient struct{}
+
+func (m *mockLLMClient) GenerateResponse(ctx context.Context, prompt string) (string, error) {
+	return "mock response", nil
+}
 
 func TestEscalationTimeoutGuard(t *testing.T) {
 	// Create test setup
 	stateStore, _ := state.NewStore("test_data")
-	driver := NewDriver("test-architect", stateStore, "test_work", "test_stories")
+	mockConfig := &config.ModelCfg{}
+	mockLLM := &mockLLMClient{}
+	mockOrchestratorConfig := &config.Config{}
+	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "test_work", "test_stories", mockOrchestratorConfig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -21,7 +32,7 @@ func TestEscalationTimeoutGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
-	defer driver.Shutdown()
+	defer driver.Shutdown(ctx)
 
 	t.Run("Escalation timeout guard - immediate timeout", func(t *testing.T) {
 		// Set up a scenario where escalation timeout is already exceeded
@@ -110,7 +121,10 @@ func TestEscalationTimeoutGuard(t *testing.T) {
 func TestEscalationTimestampRecording(t *testing.T) {
 	// Create test setup
 	stateStore, _ := state.NewStore("test_data")
-	driver := NewDriver("test-architect", stateStore, "test_work", "test_stories")
+	mockConfig := &config.ModelCfg{}
+	mockLLM := &mockLLMClient{}
+	mockOrchestratorConfig := &config.Config{}
+	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "test_work", "test_stories", mockOrchestratorConfig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -119,7 +133,7 @@ func TestEscalationTimestampRecording(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
-	defer driver.Shutdown()
+	defer driver.Shutdown(ctx)
 
 	t.Run("Escalation timestamp recorded on transition", func(t *testing.T) {
 		// Record time before transition
@@ -184,7 +198,10 @@ func TestEscalationTimestampRecording(t *testing.T) {
 func TestEscalationTimeoutLogging(t *testing.T) {
 	// Create test setup with logs
 	stateStore, _ := state.NewStore("test_data")
-	driver := NewDriver("test-architect", stateStore, "test_work", "test_stories")
+	mockConfig := &config.ModelCfg{}
+	mockLLM := &mockLLMClient{}
+	mockOrchestratorConfig := &config.Config{}
+	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "test_work", "test_stories", mockOrchestratorConfig)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -193,7 +210,7 @@ func TestEscalationTimeoutLogging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
-	defer driver.Shutdown()
+	defer driver.Shutdown(ctx)
 
 	t.Run("Timeout logging via escalation handler", func(t *testing.T) {
 		// Test the LogTimeout method directly

@@ -17,7 +17,6 @@ func NewStoryMessage(fromAgent, toAgent string) *MessageBuilder {
 	return &MessageBuilder{msg: msg}
 }
 
-
 // NewResultMessage creates a new RESULT message builder
 func NewResultMessage(fromAgent, toAgent string) *MessageBuilder {
 	msg := proto.NewAgentMsg(proto.MsgTypeRESULT, fromAgent, toAgent)

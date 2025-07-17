@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+// Use the same contextKey type as defined in context_debug_test.go
+
 // TestDefaultLogDirectory verifies that the default log directory is set correctly
 func TestDefaultLogDirectory(t *testing.T) {
 	// Clear any environment variables that might affect the test
@@ -75,7 +77,10 @@ func TestDebugToFileWithDefaultDir(t *testing.T) {
 	// Set up debug config to use temporary directory
 	SetDebugConfig(true, true, tempDir)
 
-	ctx := context.WithValue(context.Background(), "agent_id", "test-agent")
+	// Use typed context key to avoid collisions
+	type contextKey string
+	const agentIDKey contextKey = "agent_id"
+	ctx := context.WithValue(context.Background(), agentIDKey, "test-agent")
 
 	// Test the global DebugToFile function
 	DebugToFile(ctx, "test", "test_file.log", "Test message: %s", "hello")

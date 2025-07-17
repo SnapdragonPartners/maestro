@@ -50,11 +50,11 @@ type Config struct {
 	StoryChannelFactor         int                 `json:"story_channel_factor"`   // Buffer factor for storyCh: factor × numCoders
 	QuestionsChannelSize       int                 `json:"questions_channel_size"` // Buffer size for questionsCh
 	// Git worktree settings
-	RepoURL          string `json:"repo_url"`           // Git repository URL for SSH clone/push
-	BaseBranch       string `json:"base_branch"`        // Base branch name (default: main)
-	MirrorDir        string `json:"mirror_dir"`         // Mirror directory path (default: $WORKDIR/.mirrors)
-	WorktreePattern  string `json:"worktree_pattern"`   // Worktree path pattern (default: {$WORKDIR}/{AGENT_ID}/{STORY_ID})
-	BranchPattern    string `json:"branch_pattern"`     // Branch name pattern (default: story-{STORY_ID})
+	RepoURL         string `json:"repo_url"`         // Git repository URL for SSH clone/push
+	BaseBranch      string `json:"base_branch"`      // Base branch name (default: main)
+	MirrorDir       string `json:"mirror_dir"`       // Mirror directory path (default: $WORKDIR/.mirrors)
+	WorktreePattern string `json:"worktree_pattern"` // Worktree path pattern (default: {$WORKDIR}/{AGENT_ID}/{STORY_ID})
+	BranchPattern   string `json:"branch_pattern"`   // Branch name pattern (default: story-{STORY_ID})
 }
 
 var envVarRegex = regexp.MustCompile(`\$\{([^}]+)\}`)

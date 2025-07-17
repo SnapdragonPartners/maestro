@@ -2,10 +2,17 @@ package architect
 
 import (
 	"testing"
+
+	"orchestrator/pkg/config"
+	"orchestrator/pkg/state"
 )
 
 func TestParseSpecAnalysisJSON(t *testing.T) {
-	driver := NewDriver("test-architect", nil, "/tmp/test", "/tmp/stories")
+	stateStore, _ := state.NewStore("test_data")
+	mockConfig := &config.ModelCfg{}
+	mockLLM := &mockLLMClient{}
+	mockOrchestratorConfig := &config.Config{}
+	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "/tmp/test", "/tmp/stories", mockOrchestratorConfig)
 
 	// Test valid LLM response
 	validResponse := `
@@ -78,7 +85,11 @@ This analysis extracts the core requirements for implementation.
 }
 
 func TestParseSpecAnalysisJSONInvalid(t *testing.T) {
-	driver := NewDriver("test-architect", nil, "/tmp/test", "/tmp/stories")
+	stateStore, _ := state.NewStore("test_data")
+	mockConfig := &config.ModelCfg{}
+	mockLLM := &mockLLMClient{}
+	mockOrchestratorConfig := &config.Config{}
+	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "/tmp/test", "/tmp/stories", mockOrchestratorConfig)
 
 	testCases := []struct {
 		name     string
@@ -113,7 +124,11 @@ func TestParseSpecAnalysisJSONInvalid(t *testing.T) {
 }
 
 func TestParseSpecAnalysisJSONDefaults(t *testing.T) {
-	driver := NewDriver("test-architect", nil, "/tmp/test", "/tmp/stories")
+	stateStore, _ := state.NewStore("test_data")
+	mockConfig := &config.ModelCfg{}
+	mockLLM := &mockLLMClient{}
+	mockOrchestratorConfig := &config.Config{}
+	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "/tmp/test", "/tmp/stories", mockOrchestratorConfig)
 
 	// Test response with edge cases that should get defaults
 	responseWithDefaults := `{

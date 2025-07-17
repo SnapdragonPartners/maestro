@@ -235,7 +235,7 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 			sm.SetStateData(keyCodingIterations, 5)
 			sm.SetStateData(keyFixingIterations, 5)
 
-			// Call processAutoCheckinAnswer - DISABLED 
+			// Call processAutoCheckinAnswer - DISABLED
 			// err := driver.processAutoCheckinAnswer(tt.answer)
 			var err error = nil // placeholder for test compilation
 

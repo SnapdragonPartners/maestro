@@ -467,7 +467,7 @@ func TestEnumParsing(t *testing.T) {
 			{"request", MsgTypeREQUEST, false},
 			{"invalid", "", true},
 		}
-		
+
 		for _, tt := range tests {
 			result, err := ParseMsgType(tt.input)
 			if tt.hasError {
@@ -484,7 +484,7 @@ func TestEnumParsing(t *testing.T) {
 			}
 		}
 	})
-	
+
 	// Test ParseApprovalStatus
 	t.Run("ParseApprovalStatus", func(t *testing.T) {
 		tests := []struct {
@@ -498,7 +498,7 @@ func TestEnumParsing(t *testing.T) {
 			{"NEEDS_FIXES", ApprovalStatusNeedsChanges, false},
 			{"invalid", "", true},
 		}
-		
+
 		for _, tt := range tests {
 			result, err := ParseApprovalStatus(tt.input)
 			if tt.hasError {
@@ -515,7 +515,7 @@ func TestEnumParsing(t *testing.T) {
 			}
 		}
 	})
-	
+
 	// Test ParseApprovalType
 	t.Run("ParseApprovalType", func(t *testing.T) {
 		tests := []struct {
@@ -529,7 +529,7 @@ func TestEnumParsing(t *testing.T) {
 			{"budget_review", ApprovalTypeBudgetReview, false},
 			{"invalid", "", true},
 		}
-		
+
 		for _, tt := range tests {
 			result, err := ParseApprovalType(tt.input)
 			if tt.hasError {
@@ -551,7 +551,7 @@ func TestEnumParsing(t *testing.T) {
 // TestSafeExtractFromPayload tests the generic enum extraction utility
 func TestSafeExtractFromPayload(t *testing.T) {
 	msg := NewAgentMsg(MsgTypeREQUEST, "test", "test")
-	
+
 	// Test successful extraction
 	msg.SetPayload("approval_type", "plan")
 	result, err := SafeExtractFromPayload(msg, "approval_type", ParseApprovalType)
@@ -561,13 +561,13 @@ func TestSafeExtractFromPayload(t *testing.T) {
 	if result != ApprovalTypePlan {
 		t.Errorf("SafeExtractFromPayload = %q, expected %q", result, ApprovalTypePlan)
 	}
-	
+
 	// Test missing key
 	_, err = SafeExtractFromPayload(msg, "missing_key", ParseApprovalType)
 	if err == nil {
 		t.Error("SafeExtractFromPayload should fail for missing key")
 	}
-	
+
 	// Test invalid value
 	msg.SetPayload("invalid_type", "invalid")
 	_, err = SafeExtractFromPayload(msg, "invalid_type", ParseApprovalType)

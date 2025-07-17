@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/build"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
@@ -62,7 +61,7 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 
 				// Clear the pending request
 				agent.ClearPendingApprovalRequest()
-				
+
 				// Continue with next iteration to process the approval
 				continue
 			}
@@ -101,10 +100,6 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
 }
 
 func main() {
@@ -202,12 +197,12 @@ func main() {
 	switch agentType {
 	case "coder":
 		var claudeAgent *coder.Coder
-		
+
 		// Auto-detect mode based on API key availability
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		if apiKey != "" {
 			fmt.Fprintf(os.Stderr, "ANTHROPIC_API_KEY detected, using live mode\n")
-			
+
 			// Create a minimal WorkspaceManager for agentctl (testing only)
 			gitRunner := coder.NewDefaultGitRunner()
 			workspaceManager := coder.NewWorkspaceManager(
@@ -219,10 +214,10 @@ func main() {
 				"story-{STORY_ID}",
 				"agentctl/{STORY_ID}",
 			)
-			
+
 			// Create BuildService for MCP tools
 			buildService := build.NewBuildService()
-			
+
 			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager, buildService)
 		} else {
 			fmt.Fprintf(os.Stderr, "No ANTHROPIC_API_KEY found, would use mock mode (but mocks removed)\n")

@@ -30,16 +30,16 @@ func NewArtifactGenerator(projectRoot string, config *Config) *ArtifactGenerator
 // Generate creates bootstrap artifacts for the given backend
 func (g *ArtifactGenerator) Generate(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	g.logger.Info("Generating bootstrap artifacts for %s backend", backend.Name())
-	
+
 	var generatedFiles []string
-	
+
 	// Core artifacts (always generated)
 	coreArtifacts, err := g.generateCoreArtifacts(ctx, backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate core artifacts: %w", err)
 	}
 	generatedFiles = append(generatedFiles, coreArtifacts...)
-	
+
 	// Makefile artifacts (unless disabled)
 	if !g.config.SkipMakefile {
 		makefileArtifacts, err := g.generateMakefileArtifacts(ctx, backend)
@@ -48,21 +48,21 @@ func (g *ArtifactGenerator) Generate(ctx context.Context, backend build.BuildBac
 		}
 		generatedFiles = append(generatedFiles, makefileArtifacts...)
 	}
-	
+
 	// Backend-specific artifacts
 	backendArtifacts, err := g.generateBackendArtifacts(ctx, backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate backend artifacts: %w", err)
 	}
 	generatedFiles = append(generatedFiles, backendArtifacts...)
-	
+
 	// Additional artifacts (from configuration)
 	additionalArtifacts, err := g.generateAdditionalArtifacts(ctx, backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate additional artifacts: %w", err)
 	}
 	generatedFiles = append(generatedFiles, additionalArtifacts...)
-	
+
 	g.logger.Info("Generated %d bootstrap artifacts", len(generatedFiles))
 	return generatedFiles, nil
 }
@@ -70,51 +70,70 @@ func (g *ArtifactGenerator) Generate(ctx context.Context, backend build.BuildBac
 // generateCoreArtifacts generates core bootstrap artifacts (always created)
 func (g *ArtifactGenerator) generateCoreArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
-	
+
+	// Create .maestro directory first
+	maestroDir := filepath.Join(g.projectRoot, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create .maestro directory: %w", err)
+	}
+
+	// Create .maestro/makefiles subdirectory
+	makefilesDir := filepath.Join(maestroDir, "makefiles")
+	if err := os.MkdirAll(makefilesDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create .maestro/makefiles directory: %w", err)
+	}
+
 	// .gitignore
 	if err := g.generateGitignore(backend); err != nil {
 		return nil, fmt.Errorf("failed to generate .gitignore: %w", err)
 	}
 	files = append(files, ".gitignore")
-	
+
 	// .gitattributes (for union merge strategy)
 	if err := g.generateGitattributes(); err != nil {
 		return nil, fmt.Errorf("failed to generate .gitattributes: %w", err)
 	}
 	files = append(files, ".gitattributes")
-	
+
 	// .editorconfig
 	if err := g.generateEditorconfig(); err != nil {
 		return nil, fmt.Errorf("failed to generate .editorconfig: %w", err)
 	}
 	files = append(files, ".editorconfig")
-	
+
 	return files, nil
 }
 
 // generateMakefileArtifacts generates Makefile-related artifacts
 func (g *ArtifactGenerator) generateMakefileArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
-	
+
 	// Root Makefile with include pattern
 	if err := g.generateRootMakefile(); err != nil {
 		return nil, fmt.Errorf("failed to generate root Makefile: %w", err)
 	}
 	files = append(files, "Makefile")
-	
-	// agent.mk with backend-specific targets
-	if err := g.generateAgentMakefile(backend); err != nil {
-		return nil, fmt.Errorf("failed to generate agent.mk: %w", err)
+
+	// Generate core makefile in .maestro/makefiles/
+	if err := g.generateCoreMakefile(); err != nil {
+		return nil, fmt.Errorf("failed to generate core makefile: %w", err)
 	}
-	files = append(files, "agent.mk")
-	
+	files = append(files, ".maestro/makefiles/core.mk")
+
+	// Generate platform-specific makefiles based on architect recommendation
+	platformFiles, err := g.generatePlatformMakefiles(backend)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate platform makefiles: %w", err)
+	}
+	files = append(files, platformFiles...)
+
 	return files, nil
 }
 
 // generateBackendArtifacts generates backend-specific artifacts
 func (g *ArtifactGenerator) generateBackendArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
-	
+
 	switch backend.Name() {
 	case "go":
 		goFiles, err := g.generateGoArtifacts()
@@ -122,36 +141,36 @@ func (g *ArtifactGenerator) generateBackendArtifacts(ctx context.Context, backen
 			return nil, fmt.Errorf("failed to generate Go artifacts: %w", err)
 		}
 		files = append(files, goFiles...)
-		
+
 	case "python":
 		pythonFiles, err := g.generatePythonArtifacts()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate Python artifacts: %w", err)
 		}
 		files = append(files, pythonFiles...)
-		
+
 	case "node":
 		nodeFiles, err := g.generateNodeArtifacts()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate Node.js artifacts: %w", err)
 		}
 		files = append(files, nodeFiles...)
-		
+
 	case "null":
 		// No backend-specific artifacts for null backend
 		g.logger.Info("No backend-specific artifacts for null backend")
-		
+
 	default:
 		g.logger.Warn("Unknown backend type: %s, skipping backend-specific artifacts", backend.Name())
 	}
-	
+
 	return files, nil
 }
 
 // generateAdditionalArtifacts generates additional artifacts from configuration
 func (g *ArtifactGenerator) generateAdditionalArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
-	
+
 	for _, artifact := range g.config.AdditionalArtifacts {
 		switch artifact {
 		case "README.md":
@@ -159,63 +178,63 @@ func (g *ArtifactGenerator) generateAdditionalArtifacts(ctx context.Context, bac
 				return nil, fmt.Errorf("failed to generate README.md: %w", err)
 			}
 			files = append(files, "README.md")
-			
+
 		case "CONTRIBUTING.md":
 			if err := g.generateContributing(backend); err != nil {
 				return nil, fmt.Errorf("failed to generate CONTRIBUTING.md: %w", err)
 			}
 			files = append(files, "CONTRIBUTING.md")
-			
+
 		case "LICENSE":
 			if err := g.generateLicense(); err != nil {
 				return nil, fmt.Errorf("failed to generate LICENSE: %w", err)
 			}
 			files = append(files, "LICENSE")
-			
+
 		case "Dockerfile":
 			if err := g.generateDockerfile(backend); err != nil {
 				return nil, fmt.Errorf("failed to generate Dockerfile: %w", err)
 			}
 			files = append(files, "Dockerfile")
-			
+
 		case ".github/workflows/ci.yaml":
 			if err := g.generateCIWorkflow(backend); err != nil {
 				return nil, fmt.Errorf("failed to generate CI workflow: %w", err)
 			}
 			files = append(files, ".github/workflows/ci.yaml")
-			
+
 		default:
 			g.logger.Warn("Unknown additional artifact: %s", artifact)
 		}
 	}
-	
+
 	return files, nil
 }
 
 // generateGitignore generates a .gitignore file appropriate for the backend
 func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error {
 	var content strings.Builder
-	
+
 	// Common ignores
 	content.WriteString("# Generated by Claude Code Bootstrap\n")
 	content.WriteString("# OS-specific files\n")
 	content.WriteString(".DS_Store\n")
 	content.WriteString("Thumbs.db\n")
 	content.WriteString("\n")
-	
+
 	content.WriteString("# IDE/Editor files\n")
 	content.WriteString(".vscode/\n")
 	content.WriteString(".idea/\n")
 	content.WriteString("*.swp\n")
 	content.WriteString("*.swo\n")
 	content.WriteString("\n")
-	
+
 	content.WriteString("# Temporary files\n")
 	content.WriteString("*.tmp\n")
 	content.WriteString("*.temp\n")
 	content.WriteString("*.log\n")
 	content.WriteString("\n")
-	
+
 	// Backend-specific ignores
 	switch backend.Name() {
 	case "go":
@@ -228,7 +247,7 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 		content.WriteString("*.test\n")
 		content.WriteString("*.out\n")
 		content.WriteString("go.work\n")
-		
+
 	case "python":
 		content.WriteString("# Python\n")
 		content.WriteString("__pycache__/\n")
@@ -259,7 +278,7 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 		content.WriteString("ENV/\n")
 		content.WriteString("env.bak/\n")
 		content.WriteString("venv.bak/\n")
-		
+
 	case "node":
 		content.WriteString("# Node.js\n")
 		content.WriteString("node_modules/\n")
@@ -308,7 +327,7 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 		content.WriteString(".tern-port\n")
 		content.WriteString(".stores\n")
 	}
-	
+
 	return g.writeFile(".gitignore", content.String())
 }
 
@@ -360,17 +379,23 @@ func (g *ArtifactGenerator) generateRootMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # This Makefile uses the include pattern to prevent merge conflicts
 # Human-maintained targets should be added here
-# Agent-generated targets are in agent.mk
+# Agent-generated targets are in .maestro/makefiles/
 
-# Include agent-generated targets
--include agent.mk
+# Include core makefile
+-include .maestro/makefiles/core.mk
 
-# Default targets if agent.mk doesn't exist
-# Note: .PHONY declarations are in agent.mk to avoid conflicts
+# Include platform-specific makefiles
+-include .maestro/makefiles/go.mk
+-include .maestro/makefiles/node.mk
+-include .maestro/makefiles/python.mk
+-include .maestro/makefiles/react.mk
+-include .maestro/makefiles/docker.mk
+
+# Default targets if no makefiles exist
 .PHONY: help
 
-# Only define fallback targets if agent.mk doesn't exist
-ifeq ($(wildcard agent.mk),)
+# Only define fallback targets if core.mk doesn't exist
+ifeq ($(wildcard .maestro/makefiles/core.mk),)
 build:
 	@echo "No build configured. Run bootstrap to set up build system."
 
@@ -393,113 +418,426 @@ help:
 	@echo "  help   - Show this help message"
 	@echo ""
 	@echo "This project uses Claude Code Bootstrap for build management."
-	@echo "Agent-generated targets are in agent.mk."
+	@echo "Agent-generated targets are in .maestro/makefiles/"
 `
 	return g.writeFile("Makefile", content)
 }
 
-// generateAgentMakefile generates agent.mk with backend-specific targets
-func (g *ArtifactGenerator) generateAgentMakefile(backend build.BuildBackend) error {
-	var content strings.Builder
-	
-	content.WriteString("# Generated by Claude Code Bootstrap\n")
-	content.WriteString("# This file contains agent-generated build targets\n")
-	content.WriteString("# Backend: " + backend.Name() + "\n")
-	content.WriteString("\n")
-	content.WriteString(".PHONY: build test lint run\n")
-	content.WriteString("\n")
-	
-	switch backend.Name() {
-	case "go":
-		content.WriteString("build:\n")
-		content.WriteString("\tgo mod download\n")
-		content.WriteString("\tgo build ./...\n")
-		content.WriteString("\n")
-		content.WriteString("test:\n")
-		content.WriteString("\tgo test ./...\n")
-		content.WriteString("\n")
-		content.WriteString("lint:\n")
-		content.WriteString("\t@which golangci-lint > /dev/null || (echo \"golangci-lint not found, using go vet\" && go vet ./...)\n")
-		content.WriteString("\t@which golangci-lint > /dev/null && golangci-lint run ./...\n")
-		content.WriteString("\n")
-		content.WriteString("run:\n")
-		content.WriteString("\tgo run .\n")
-		
-	case "python":
-		content.WriteString("build:\n")
-		content.WriteString("\t@which uv > /dev/null && uv sync || pip install -r requirements.txt\n")
-		content.WriteString("\n")
-		content.WriteString("test:\n")
-		content.WriteString("\t@which pytest > /dev/null && pytest || python -m unittest discover\n")
-		content.WriteString("\n")
-		content.WriteString("lint:\n")
-		content.WriteString("\t@which ruff > /dev/null && ruff check . || (which flake8 > /dev/null && flake8 .)\n")
-		content.WriteString("\n")
-		content.WriteString("run:\n")
-		content.WriteString("\t@test -f main.py && python main.py || (test -f app.py && python app.py || echo \"No main.py or app.py found\")\n")
-		
-	case "node":
-		content.WriteString("build:\n")
-		content.WriteString("\t@which npm > /dev/null && npm install || echo \"npm not found\"\n")
-		content.WriteString("\t@npm run build 2>/dev/null || echo \"No build script found\"\n")
-		content.WriteString("\n")
-		content.WriteString("test:\n")
-		content.WriteString("\t@npm test 2>/dev/null || echo \"No test script found\"\n")
-		content.WriteString("\n")
-		content.WriteString("lint:\n")
-		content.WriteString("\t@npm run lint 2>/dev/null || (which eslint > /dev/null && npx eslint .)\n")
-		content.WriteString("\n")
-		content.WriteString("run:\n")
-		content.WriteString("\t@npm start 2>/dev/null || (test -f index.js && node index.js || echo \"No start script or index.js found\")\n")
-		
-	case "make":
-		content.WriteString("# Makefile backend detected - delegating to existing Makefile\n")
-		content.WriteString("build:\n")
-		content.WriteString("\t@make build 2>/dev/null || echo \"No build target in Makefile\"\n")
-		content.WriteString("\n")
-		content.WriteString("test:\n")
-		content.WriteString("\t@make test 2>/dev/null || echo \"No test target in Makefile\"\n")
-		content.WriteString("\n")
-		content.WriteString("lint:\n")
-		content.WriteString("\t@make lint 2>/dev/null || echo \"No lint target in Makefile\"\n")
-		content.WriteString("\n")
-		content.WriteString("run:\n")
-		content.WriteString("\t@make run 2>/dev/null || echo \"No run target in Makefile\"\n")
-		
-	default:
-		content.WriteString("# Unknown backend - providing basic targets\n")
-		content.WriteString("build:\n")
-		content.WriteString("\t@echo \"Build not configured for backend: " + backend.Name() + "\"\n")
-		content.WriteString("\n")
-		content.WriteString("test:\n")
-		content.WriteString("\t@echo \"Tests not configured for backend: " + backend.Name() + "\"\n")
-		content.WriteString("\n")
-		content.WriteString("lint:\n")
-		content.WriteString("\t@echo \"Linting not configured for backend: " + backend.Name() + "\"\n")
-		content.WriteString("\n")
-		content.WriteString("run:\n")
-		content.WriteString("\t@echo \"Run not configured for backend: " + backend.Name() + "\"\n")
+// generateCoreMakefile generates the core makefile with common targets
+func (g *ArtifactGenerator) generateCoreMakefile() error {
+	content := `# Generated by Claude Code Bootstrap
+# Core makefile with common targets and utilities
+
+### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT
+.PHONY: help clean info bootstrap-info
+
+# Default target
+.DEFAULT_GOAL := help
+
+# Clean up build artifacts
+clean:
+	@echo "🧹 Cleaning up build artifacts..."
+	rm -rf build/
+	rm -rf dist/
+	rm -rf node_modules/
+	rm -rf .pytest_cache/
+	rm -rf __pycache__/
+	find . -name "*.pyc" -delete
+	find . -name "*.pyo" -delete
+	find . -name "*~" -delete
+	go clean -cache -testcache -modcache 2>/dev/null || true
+	@echo "✅ Clean completed"
+
+# Show build information
+info:
+	@echo "📋 Build Information:"
+	@echo "  Project: $(shell basename $(PWD))"
+	@echo "  Generated: $(shell date)"
+	@echo "  Bootstrap: Claude Code Bootstrap"
+	@echo "  Platform: $(shell uname -s)"
+
+# Show bootstrap information
+bootstrap-info:
+	@echo "🚀 Bootstrap Information:"
+	@echo "  Status: Active"
+	@echo "  Configuration: .maestro/makefiles/"
+	@echo "  Available platforms: go, node, python, react, docker"
+	@echo "  Help: make help"
+
+# Help target (will be overridden by platform-specific makefiles)
+help:
+	@echo "📖 Available targets:"
+	@echo "  help         - Show this help message"
+	@echo "  clean        - Clean build artifacts"
+	@echo "  info         - Show build information"
+	@echo "  bootstrap-info - Show bootstrap information"
+	@echo ""
+	@echo "Platform-specific targets will be shown when available."
+### ⇣ GENERATED BLOCK ⇣ DO NOT EDIT
+`
+	return g.writeFile(".maestro/makefiles/core.mk", content)
+}
+
+// generatePlatformMakefiles generates platform-specific makefiles based on architect recommendation
+func (g *ArtifactGenerator) generatePlatformMakefiles(backend build.BuildBackend) ([]string, error) {
+	var files []string
+
+	// Get platforms from architect recommendation
+	platforms := g.getPlatformsFromRecommendation(backend)
+
+	for _, platform := range platforms {
+		switch platform {
+		case "go":
+			if err := g.generateGoMakefile(); err != nil {
+				return nil, fmt.Errorf("failed to generate Go makefile: %w", err)
+			}
+			files = append(files, ".maestro/makefiles/go.mk")
+
+		case "node":
+			if err := g.generateNodeMakefile(); err != nil {
+				return nil, fmt.Errorf("failed to generate Node.js makefile: %w", err)
+			}
+			files = append(files, ".maestro/makefiles/node.mk")
+
+		case "python":
+			if err := g.generatePythonMakefile(); err != nil {
+				return nil, fmt.Errorf("failed to generate Python makefile: %w", err)
+			}
+			files = append(files, ".maestro/makefiles/python.mk")
+
+		case "react":
+			if err := g.generateReactMakefile(); err != nil {
+				return nil, fmt.Errorf("failed to generate React makefile: %w", err)
+			}
+			files = append(files, ".maestro/makefiles/react.mk")
+
+		case "docker":
+			if err := g.generateDockerMakefile(); err != nil {
+				return nil, fmt.Errorf("failed to generate Docker makefile: %w", err)
+			}
+			files = append(files, ".maestro/makefiles/docker.mk")
+
+		default:
+			g.logger.Warn("Unknown platform: %s, skipping makefile generation", platform)
+		}
 	}
-	
-	return g.writeFile("agent.mk", content.String())
+
+	return files, nil
+}
+
+// getPlatformsFromRecommendation extracts platforms from architect recommendation
+func (g *ArtifactGenerator) getPlatformsFromRecommendation(backend build.BuildBackend) []string {
+	// If we have architect recommendation, use it
+	if g.config.ArchitectRecommendation != nil {
+		if g.config.ArchitectRecommendation.MultiStack {
+			return g.config.ArchitectRecommendation.Platforms
+		}
+		return []string{g.config.ArchitectRecommendation.Platform}
+	}
+
+	// Fallback to backend name
+	return []string{backend.Name()}
+}
+
+// generateGoMakefile generates Go-specific makefile
+func (g *ArtifactGenerator) generateGoMakefile() error {
+	content := `# Generated by Claude Code Bootstrap
+# Go-specific build targets
+
+### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT
+.PHONY: go-build go-test go-lint go-run go-mod go-format go-vet
+
+# Override common targets for Go
+build: go-build
+test: go-test
+lint: go-lint
+run: go-run
+
+# Go-specific targets
+go-build:
+	@echo "🔨 Building Go project..."
+	go mod download
+	go build ./...
+	@echo "✅ Go build completed"
+
+go-test:
+	@echo "🧪 Running Go tests..."
+	go test ./...
+	@echo "✅ Go tests completed"
+
+go-lint:
+	@echo "🔍 Running Go linting..."
+	@which golangci-lint > /dev/null || (echo "golangci-lint not found, using go vet" && go vet ./...)
+	@which golangci-lint > /dev/null && golangci-lint run ./...
+	@echo "✅ Go linting completed"
+
+go-run:
+	@echo "🚀 Running Go application..."
+	go run .
+
+go-mod:
+	@echo "📦 Updating Go modules..."
+	go mod tidy
+	go mod download
+	@echo "✅ Go modules updated"
+
+go-format:
+	@echo "🎨 Formatting Go code..."
+	go fmt ./...
+	@echo "✅ Go formatting completed"
+
+go-vet:
+	@echo "🔍 Running go vet..."
+	go vet ./...
+	@echo "✅ Go vet completed"
+
+help::
+	@echo "🐹 Go targets:"
+	@echo "  go-build     - Build Go project"
+	@echo "  go-test      - Run Go tests"
+	@echo "  go-lint      - Run Go linting"
+	@echo "  go-run       - Run Go application"
+	@echo "  go-mod       - Update Go modules"
+	@echo "  go-format    - Format Go code"
+	@echo "  go-vet       - Run go vet"
+	@echo ""
+### ⇣ GENERATED BLOCK ⇣ DO NOT EDIT
+`
+	return g.writeFile(".maestro/makefiles/go.mk", content)
+}
+
+// generateNodeMakefile generates Node.js-specific makefile
+func (g *ArtifactGenerator) generateNodeMakefile() error {
+	content := `# Generated by Claude Code Bootstrap
+# Node.js-specific build targets
+
+### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT
+.PHONY: node-build node-test node-lint node-run node-install node-dev
+
+# Override common targets for Node.js
+build: node-build
+test: node-test
+lint: node-lint
+run: node-run
+
+# Node.js-specific targets
+node-build:
+	@echo "🔨 Building Node.js project..."
+	npm run build
+	@echo "✅ Node.js build completed"
+
+node-test:
+	@echo "🧪 Running Node.js tests..."
+	npm test
+	@echo "✅ Node.js tests completed"
+
+node-lint:
+	@echo "🔍 Running Node.js linting..."
+	npm run lint
+	@echo "✅ Node.js linting completed"
+
+node-run:
+	@echo "🚀 Running Node.js application..."
+	npm start
+
+node-install:
+	@echo "📦 Installing Node.js dependencies..."
+	npm install
+	@echo "✅ Node.js dependencies installed"
+
+node-dev:
+	@echo "🚀 Starting Node.js development server..."
+	npm run dev
+
+help::
+	@echo "🟢 Node.js targets:"
+	@echo "  node-build   - Build Node.js project"
+	@echo "  node-test    - Run Node.js tests"
+	@echo "  node-lint    - Run Node.js linting"
+	@echo "  node-run     - Run Node.js application"
+	@echo "  node-install - Install Node.js dependencies"
+	@echo "  node-dev     - Start development server"
+	@echo ""
+### ⇣ GENERATED BLOCK ⇣ DO NOT EDIT
+`
+	return g.writeFile(".maestro/makefiles/node.mk", content)
+}
+
+// generatePythonMakefile generates Python-specific makefile
+func (g *ArtifactGenerator) generatePythonMakefile() error {
+	content := `# Generated by Claude Code Bootstrap
+# Python-specific build targets
+
+### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT
+.PHONY: python-build python-test python-lint python-run python-install python-format
+
+# Override common targets for Python
+build: python-build
+test: python-test
+lint: python-lint
+run: python-run
+
+# Python-specific targets
+python-build:
+	@echo "🔨 Building Python project..."
+	@which uv > /dev/null && uv sync || pip install -r requirements.txt
+	@echo "✅ Python build completed"
+
+python-test:
+	@echo "🧪 Running Python tests..."
+	@which uv > /dev/null && uv run pytest || python -m pytest
+	@echo "✅ Python tests completed"
+
+python-lint:
+	@echo "🔍 Running Python linting..."
+	@which uv > /dev/null && uv run ruff check . || python -m ruff check .
+	@echo "✅ Python linting completed"
+
+python-run:
+	@echo "🚀 Running Python application..."
+	@which uv > /dev/null && uv run python main.py || python main.py
+
+python-install:
+	@echo "📦 Installing Python dependencies..."
+	@which uv > /dev/null && uv sync || pip install -r requirements.txt
+	@echo "✅ Python dependencies installed"
+
+python-format:
+	@echo "🎨 Formatting Python code..."
+	@which uv > /dev/null && uv run black . || python -m black .
+	@echo "✅ Python formatting completed"
+
+help::
+	@echo "🐍 Python targets:"
+	@echo "  python-build   - Build Python project"
+	@echo "  python-test    - Run Python tests"
+	@echo "  python-lint    - Run Python linting"
+	@echo "  python-run     - Run Python application"
+	@echo "  python-install - Install Python dependencies"
+	@echo "  python-format  - Format Python code"
+	@echo ""
+### ⇣ GENERATED BLOCK ⇣ DO NOT EDIT
+`
+	return g.writeFile(".maestro/makefiles/python.mk", content)
+}
+
+// generateReactMakefile generates React-specific makefile
+func (g *ArtifactGenerator) generateReactMakefile() error {
+	content := `# Generated by Claude Code Bootstrap
+# React-specific build targets
+
+### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT
+.PHONY: react-build react-test react-lint react-run react-install react-dev
+
+# React-specific targets (doesn't override common targets)
+react-build:
+	@echo "🔨 Building React project..."
+	npm run build
+	@echo "✅ React build completed"
+
+react-test:
+	@echo "🧪 Running React tests..."
+	npm test
+	@echo "✅ React tests completed"
+
+react-lint:
+	@echo "🔍 Running React linting..."
+	npm run lint
+	@echo "✅ React linting completed"
+
+react-run:
+	@echo "🚀 Running React application..."
+	npm start
+
+react-install:
+	@echo "📦 Installing React dependencies..."
+	npm install
+	@echo "✅ React dependencies installed"
+
+react-dev:
+	@echo "🚀 Starting React development server..."
+	npm run dev
+
+help::
+	@echo "⚛️ React targets:"
+	@echo "  react-build   - Build React project"
+	@echo "  react-test    - Run React tests"
+	@echo "  react-lint    - Run React linting"
+	@echo "  react-run     - Run React application"
+	@echo "  react-install - Install React dependencies"
+	@echo "  react-dev     - Start development server"
+	@echo ""
+### ⇣ GENERATED BLOCK ⇣ DO NOT EDIT
+`
+	return g.writeFile(".maestro/makefiles/react.mk", content)
+}
+
+// generateDockerMakefile generates Docker-specific makefile
+func (g *ArtifactGenerator) generateDockerMakefile() error {
+	content := `# Generated by Claude Code Bootstrap
+# Docker-specific build targets
+
+### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT
+.PHONY: docker-build docker-run docker-push docker-clean docker-logs docker-shell
+
+# Docker-specific targets
+docker-build:
+	@echo "🐳 Building Docker image..."
+	docker build -t $(shell basename $(PWD)) .
+	@echo "✅ Docker build completed"
+
+docker-run:
+	@echo "🚀 Running Docker container..."
+	docker run -it --rm $(shell basename $(PWD))
+
+docker-push:
+	@echo "📤 Pushing Docker image..."
+	docker push $(shell basename $(PWD))
+	@echo "✅ Docker push completed"
+
+docker-clean:
+	@echo "🧹 Cleaning Docker artifacts..."
+	docker system prune -f
+	@echo "✅ Docker cleanup completed"
+
+docker-logs:
+	@echo "📋 Showing Docker logs..."
+	docker logs $(shell basename $(PWD))
+
+docker-shell:
+	@echo "🐚 Opening Docker shell..."
+	docker run -it --rm $(shell basename $(PWD)) /bin/bash
+
+help::
+	@echo "🐳 Docker targets:"
+	@echo "  docker-build - Build Docker image"
+	@echo "  docker-run   - Run Docker container"
+	@echo "  docker-push  - Push Docker image"
+	@echo "  docker-clean - Clean Docker artifacts"
+	@echo "  docker-logs  - Show Docker logs"
+	@echo "  docker-shell - Open Docker shell"
+	@echo ""
+### ⇣ GENERATED BLOCK ⇣ DO NOT EDIT
+`
+	return g.writeFile(".maestro/makefiles/docker.mk", content)
 }
 
 // Backend-specific artifact generators
 func (g *ArtifactGenerator) generateGoArtifacts() ([]string, error) {
 	var files []string
-	
+
 	// golangci-lint.yaml
 	if err := g.generateGolangciLintConfig(); err != nil {
 		return nil, err
 	}
 	files = append(files, ".golangci.yaml")
-	
+
 	return files, nil
 }
 
 func (g *ArtifactGenerator) generatePythonArtifacts() ([]string, error) {
 	var files []string
-	
+
 	// pyproject.toml (if it doesn't exist)
 	if _, err := os.Stat(filepath.Join(g.projectRoot, "pyproject.toml")); os.IsNotExist(err) {
 		if err := g.generatePyprojectToml(); err != nil {
@@ -507,48 +845,48 @@ func (g *ArtifactGenerator) generatePythonArtifacts() ([]string, error) {
 		}
 		files = append(files, "pyproject.toml")
 	}
-	
+
 	// ruff.toml
 	if err := g.generateRuffConfig(); err != nil {
 		return nil, err
 	}
 	files = append(files, "ruff.toml")
-	
+
 	return files, nil
 }
 
 func (g *ArtifactGenerator) generateNodeArtifacts() ([]string, error) {
 	var files []string
-	
+
 	// .eslintrc.js
 	if err := g.generateEslintConfig(); err != nil {
 		return nil, err
 	}
 	files = append(files, ".eslintrc.js")
-	
+
 	// .nvmrc
 	if err := g.generateNvmrc(); err != nil {
 		return nil, err
 	}
 	files = append(files, ".nvmrc")
-	
+
 	return files, nil
 }
 
 // Helper method to write files
 func (g *ArtifactGenerator) writeFile(filename, content string) error {
 	fullPath := filepath.Join(g.projectRoot, filename)
-	
+
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory for %s: %w", filename, err)
 	}
-	
+
 	// Write file
 	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write %s: %w", filename, err)
 	}
-	
+
 	g.logger.Debug("Generated file: %s", filename)
 	return nil
 }
@@ -707,19 +1045,19 @@ func (g *ArtifactGenerator) generateContributing(backend build.BuildBackend) err
 ## Development Setup
 
 1. Clone the repository
-2. Install dependencies: `+"`make build`"+`
-3. Run tests: `+"`make test`"+`
-4. Run linting: `+"`make lint`"+`
+2. Install dependencies: ` + "`make build`" + `
+3. Run tests: ` + "`make test`" + `
+4. Run linting: ` + "`make lint`" + `
 
 ## Code Style
 
 This project uses automated linting and formatting tools.
-Run `+"`make lint`"+` to check your code before submitting.
+Run ` + "`make lint`" + ` to check your code before submitting.
 
 ## Testing
 
 All code changes should include appropriate tests.
-Run `+"`make test`"+` to run the test suite.
+Run ` + "`make test`" + ` to run the test suite.
 
 ## Pull Requests
 
@@ -762,7 +1100,7 @@ SOFTWARE.
 
 func (g *ArtifactGenerator) generateDockerfile(backend build.BuildBackend) error {
 	var content string
-	
+
 	switch backend.Name() {
 	case "go":
 		content = `# Generated by Claude Code Bootstrap
@@ -813,13 +1151,13 @@ COPY . .
 CMD ["echo", "No Dockerfile template for backend: ` + backend.Name() + `"]
 `
 	}
-	
+
 	return g.writeFile("Dockerfile", content)
 }
 
 func (g *ArtifactGenerator) generateCIWorkflow(backend build.BuildBackend) error {
 	var content string
-	
+
 	switch backend.Name() {
 	case "go":
 		content = `# Generated by Claude Code Bootstrap
@@ -945,12 +1283,12 @@ jobs:
       run: make lint
 `
 	}
-	
+
 	// Create .github/workflows directory
 	workflowDir := filepath.Join(g.projectRoot, ".github", "workflows")
 	if err := os.MkdirAll(workflowDir, 0755); err != nil {
 		return fmt.Errorf("failed to create .github/workflows directory: %w", err)
 	}
-	
+
 	return g.writeFile(".github/workflows/ci.yaml", content)
 }

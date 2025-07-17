@@ -7,6 +7,11 @@ import (
 	"testing"
 )
 
+// contextKey is a custom type for context keys to avoid collisions
+type contextKey string
+
+const agentIDKey contextKey = "agent_id"
+
 func TestContextDebugLogging(t *testing.T) {
 	// Reset environment
 	os.Unsetenv("DEBUG")
@@ -21,7 +26,7 @@ func TestContextDebugLogging(t *testing.T) {
 	SetDebugConfig(true, false, ".")
 
 	// Test basic context debug logging
-	ctx := context.WithValue(context.Background(), "agent_id", "test-agent")
+	ctx := context.WithValue(context.Background(), agentIDKey, "test-agent")
 
 	// This should work since debug is enabled and no domain filtering
 	Debug(ctx, "coder", "Test message: %s", "hello")
@@ -79,7 +84,7 @@ func TestDebugToFileFunction(t *testing.T) {
 	// Enable debug with file logging
 	SetDebugConfig(true, true, tempDir)
 
-	ctx := context.WithValue(context.Background(), "agent_id", "test-agent")
+	ctx := context.WithValue(context.Background(), agentIDKey, "test-agent")
 
 	// Test debug to file
 	DebugToFile(ctx, "coder", "test_debug.log", "Test debug message: %s", "file content")

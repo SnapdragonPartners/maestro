@@ -501,40 +501,28 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 }
 
 func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, agent Agent) *DispatchResult {
-	maxRetries := d.config.MaxRetryAttempts
-
-	var lastErr error
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Extract model name from agent logID (format: "model:id")
-		modelName := msg.ToAgent
-		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
-			modelName = parts[0]
-		}
-
-		// Check rate limiting before each attempt
-		if err := d.checkRateLimit(modelName); err != nil {
-			d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
-			return &DispatchResult{Error: err}
-		}
-
-		// Create retry message
-		retryMsg := msg.Clone()
-		retryMsg.RetryCount = attempt
-
-		// Process message - NOTE: ProcessMessage removed from Agent interface
-		// Agents now receive messages via channels exclusively
-		d.logger.Debug("Attempt %d/%d for message %s", attempt+1, maxRetries+1, msg.ID)
-
-		// Release agent slot after processing attempt
-		d.rateLimiter.ReleaseAgent(modelName)
-
-		// No direct message processing - messages flow through channels
-		return &DispatchResult{Message: nil}
+	// Extract model name from agent logID (format: "model:id")
+	modelName := msg.ToAgent
+	if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
+		modelName = parts[0]
 	}
 
-	d.logger.Error("All retry attempts failed for message %s: %v", msg.ID, lastErr)
-	return &DispatchResult{Error: fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)}
+	// Check rate limiting before processing
+	if err := d.checkRateLimit(modelName); err != nil {
+		d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
+		return &DispatchResult{Error: err}
+	}
+
+	// Process message - NOTE: ProcessMessage removed from Agent interface
+	// Agents now receive messages via channels exclusively
+	d.logger.Debug("Processing message %s for agent %s", msg.ID, msg.ToAgent)
+
+	// Release agent slot after processing
+	d.rateLimiter.ReleaseAgent(modelName)
+
+	// Messages flow through channels - no direct processing or retry needed here
+	// The retry logic would be handled at a higher level if needed
+	return &DispatchResult{Message: nil}
 }
 
 func (d *Dispatcher) checkRateLimit(agentModel string) error {

@@ -32,7 +32,7 @@ func TestConcurrentCoders(t *testing.T) {
 			}
 
 			// Create coder - this will initialize local transitions
-			_, err = NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+			_, err = NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
 			if err != nil {
 				mu.Lock()
 				errors = append(errors, err)
@@ -71,7 +71,7 @@ func TestConcurrentTransitions(t *testing.T) {
 				return
 			}
 
-			driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+			driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
 			if err != nil {
 				mu.Lock()
 				errors = append(errors, err)

@@ -26,13 +26,13 @@ func (m *MakeBackend) Name() string {
 // Detect checks if a Makefile exists in the project root
 func (m *MakeBackend) Detect(root string) bool {
 	makefiles := []string{"Makefile", "makefile", "GNUmakefile"}
-	
+
 	for _, makefile := range makefiles {
 		if _, err := os.Stat(filepath.Join(root, makefile)); err == nil {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -61,19 +61,19 @@ func (m *MakeBackend) Run(ctx context.Context, root string, args []string, strea
 // runMakeTarget executes a specific make target
 func (m *MakeBackend) runMakeTarget(ctx context.Context, root, target string, stream io.Writer) error {
 	fmt.Fprintf(stream, "🔨 Running make %s...\n", target)
-	
+
 	cmd := exec.CommandContext(ctx, "make", target)
 	cmd.Dir = root
 	cmd.Stdout = stream
 	cmd.Stderr = stream
-	
+
 	if err := cmd.Run(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			return fmt.Errorf("make %s failed with exit code %d", target, exitError.ExitCode())
 		}
 		return fmt.Errorf("make %s failed: %w", target, err)
 	}
-	
+
 	fmt.Fprintf(stream, "✅ make %s completed successfully\n", target)
 	return nil
 }
@@ -83,7 +83,7 @@ func (m *MakeBackend) ValidateTargets(root string, targets []string) error {
 	// Find the Makefile
 	var makefilePath string
 	makefiles := []string{"Makefile", "makefile", "GNUmakefile"}
-	
+
 	for _, makefile := range makefiles {
 		path := filepath.Join(root, makefile)
 		if _, err := os.Stat(path); err == nil {
@@ -91,19 +91,19 @@ func (m *MakeBackend) ValidateTargets(root string, targets []string) error {
 			break
 		}
 	}
-	
+
 	if makefilePath == "" {
 		return fmt.Errorf("no Makefile found in %s", root)
 	}
-	
+
 	// Read the Makefile content
 	content, err := os.ReadFile(makefilePath)
 	if err != nil {
 		return fmt.Errorf("failed to read Makefile: %w", err)
 	}
-	
+
 	makefileContent := string(content)
-	
+
 	// Check for each required target
 	var missingTargets []string
 	for _, target := range targets {
@@ -117,10 +117,10 @@ func (m *MakeBackend) ValidateTargets(root string, targets []string) error {
 			}
 		}
 	}
-	
+
 	if len(missingTargets) > 0 {
 		return fmt.Errorf("missing required targets in Makefile: %s", strings.Join(missingTargets, ", "))
 	}
-	
+
 	return nil
 }

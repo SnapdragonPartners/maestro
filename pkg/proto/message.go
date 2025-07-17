@@ -99,7 +99,7 @@ const (
 
 	// ApprovalTypeCode indicates a code approval request
 	ApprovalTypeCode ApprovalType = "code"
-	
+
 	// ApprovalTypeBudgetReview indicates a budget review approval request
 	ApprovalTypeBudgetReview ApprovalType = "budget_review"
 )
@@ -305,7 +305,7 @@ func ValidateMsgType(msgType string) (MsgType, bool) {
 func ParseMsgType(s string) (MsgType, error) {
 	// Normalize to uppercase for comparison
 	normalizedType := strings.ToUpper(s)
-	
+
 	switch normalizedType {
 	case "STORY":
 		return MsgTypeSTORY, nil
@@ -558,7 +558,7 @@ func (msg *AgentMsg) GetCorrelationID() (string, bool) {
 func ParseApprovalStatus(s string) (ApprovalStatus, error) {
 	// Normalize to uppercase for comparison
 	normalizedStatus := strings.ToUpper(s)
-	
+
 	switch normalizedStatus {
 	case "APPROVED":
 		return ApprovalStatusApproved, nil
@@ -581,7 +581,7 @@ func ParseApprovalStatus(s string) (ApprovalStatus, error) {
 func ParseApprovalType(s string) (ApprovalType, error) {
 	// Normalize to lowercase for comparison
 	normalizedType := strings.ToLower(s)
-	
+
 	switch normalizedType {
 	case "plan":
 		return ApprovalTypePlan, nil
@@ -604,7 +604,7 @@ type EnumExtractor[T any] func(string) (T, error)
 // SafeExtractFromPayload extracts and validates an enum value from a message payload
 func SafeExtractFromPayload[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
 	var zero T
-	
+
 	if rawValue, exists := msg.GetPayload(key); exists {
 		if strValue, ok := rawValue.(string); ok {
 			return parser(strValue)
@@ -617,7 +617,7 @@ func SafeExtractFromPayload[T any](msg *AgentMsg, key string, parser EnumExtract
 // SafeExtractFromMetadata extracts and validates an enum value from a message metadata
 func SafeExtractFromMetadata[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
 	var zero T
-	
+
 	if strValue, exists := msg.GetMetadata(key); exists {
 		return parser(strValue)
 	}

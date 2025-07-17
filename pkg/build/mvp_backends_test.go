@@ -32,11 +32,11 @@ version = "0.1.0"
 		}
 
 		backend := NewPythonBackend()
-		
+
 		if !backend.Detect(tempDir) {
 			t.Error("PythonBackend should detect directories with pyproject.toml")
 		}
-		
+
 		if backend.Name() != "python" {
 			t.Errorf("Expected name 'python', got '%s'", backend.Name())
 		}
@@ -59,7 +59,7 @@ flask>=2.0.0
 		}
 
 		backend := NewPythonBackend()
-		
+
 		if !backend.Detect(tempDir) {
 			t.Error("PythonBackend should detect directories with requirements.txt")
 		}
@@ -85,7 +85,7 @@ if __name__ == "__main__":
 		}
 
 		backend := NewPythonBackend()
-		
+
 		if !backend.Detect(tempDir) {
 			t.Error("PythonBackend should detect directories with Python files")
 		}
@@ -103,13 +103,13 @@ if __name__ == "__main__":
 		os.WriteFile(filepath.Join(tempDir, "requirements.txt"), []byte("# No dependencies"), 0644)
 
 		backend := NewPythonBackend()
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		
+
 		var buf strings.Builder
-		err = backend.Build(ctx, tempDir, &buf)
-		
+		_ = backend.Build(ctx, tempDir, &buf)
+
 		// Build should complete (may warn about missing tools)
 		output := buf.String()
 		if !strings.Contains(output, "Python") {
@@ -148,11 +148,11 @@ func TestNodeBackend(t *testing.T) {
 		}
 
 		backend := NewNodeBackend()
-		
+
 		if !backend.Detect(tempDir) {
 			t.Error("NodeBackend should detect directories with package.json")
 		}
-		
+
 		if backend.Name() != "node" {
 			t.Errorf("Expected name 'node', got '%s'", backend.Name())
 		}
@@ -181,14 +181,14 @@ app.listen(3000);
 		}
 
 		backend := NewNodeBackend()
-		
+
 		if !backend.Detect(tempDir) {
 			t.Error("NodeBackend should detect directories with JavaScript files")
 		}
 	})
 
-	// Test package manager detection
-	t.Run("package manager detection", func(t *testing.T) {
+	// Test build operation (using make instead of package manager detection)
+	t.Run("build operation", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "node-backend-test")
 		if err != nil {
 			t.Fatalf("Failed to create temp dir: %v", err)
@@ -200,93 +200,44 @@ app.listen(3000);
 		os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJson), 0644)
 
 		backend := NewNodeBackend()
-		
-		// Test different lock files
-		testCases := []struct {
-			lockFile string
-			expected string
-		}{
-			{"package-lock.json", "npm"},
-			{"yarn.lock", "yarn"},
-			{"pnpm-lock.yaml", "pnpm"},
-			{"bun.lockb", "bun"},
-		}
 
-		for _, tc := range testCases {
-			// Create lock file
-			os.WriteFile(filepath.Join(tempDir, tc.lockFile), []byte("{}"), 0644)
-			
-			detected := backend.detectPackageManager(tempDir)
-			if detected != tc.expected && backend.commandExists(tc.expected) {
-				t.Errorf("Expected package manager '%s' for %s, got '%s'", tc.expected, tc.lockFile, detected)
-			}
-			
-			// Clean up
-			os.Remove(filepath.Join(tempDir, tc.lockFile))
-		}
-	})
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	// Test script detection
-	t.Run("script detection", func(t *testing.T) {
-		tempDir, err := os.MkdirTemp("", "node-backend-test")
-		if err != nil {
-			t.Fatalf("Failed to create temp dir: %v", err)
-		}
-		defer os.RemoveAll(tempDir)
+		var buf strings.Builder
+		_ = backend.Build(ctx, tempDir, &buf)
 
-		// Create package.json with scripts
-		packageJson := `{
-  "name": "test",
-  "scripts": {
-    "start": "node index.js",
-    "test": "jest",
-    "build": "webpack",
-    "lint": "eslint ."
-  }
-}
-`
-		os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJson), 0644)
-
-		backend := NewNodeBackend()
-		
-		// Test script detection
-		scripts := []string{"start", "test", "build", "lint"}
-		for _, script := range scripts {
-			if !backend.hasScript(tempDir, script) {
-				t.Errorf("Should detect script '%s'", script)
-			}
-		}
-		
-		// Test non-existent script
-		if backend.hasScript(tempDir, "nonexistent") {
-			t.Error("Should not detect non-existent script")
+		// Build should complete (may warn about missing Makefile)
+		output := buf.String()
+		if !strings.Contains(output, "Node.js") {
+			t.Error("Expected 'Node.js' in build output")
 		}
 	})
 }
 
 func TestRegistryWithMVPBackends(t *testing.T) {
 	registry := NewRegistry()
-	
+
 	// Test that all MVP backends are registered
 	backends := registry.List()
 	expectedBackends := []string{"go", "python", "node", "make", "null"}
-	
+
 	if len(backends) != len(expectedBackends) {
 		t.Errorf("Expected %d backends, got %d", len(expectedBackends), len(backends))
 	}
-	
+
 	// Check that all expected backends are present
 	foundBackends := make(map[string]bool)
 	for _, registration := range backends {
 		foundBackends[registration.Backend.Name()] = true
 	}
-	
+
 	for _, expected := range expectedBackends {
 		if !foundBackends[expected] {
 			t.Errorf("Expected backend '%s' not found", expected)
 		}
 	}
-	
+
 	// Test priority ordering
 	for i := 1; i < len(backends); i++ {
 		if backends[i-1].Priority < backends[i].Priority {
@@ -310,13 +261,13 @@ func TestMultiBackendDetection(t *testing.T) {
 	os.WriteFile(filepath.Join(tempDir, "Makefile"), []byte("build:\n\techo test"), 0644)
 
 	registry := NewRegistry()
-	
+
 	// Should detect Go backend (highest priority)
 	backend, err := registry.Detect(tempDir)
 	if err != nil {
 		t.Fatalf("Detection failed: %v", err)
 	}
-	
+
 	if backend.Name() != "go" {
 		t.Errorf("Expected 'go' backend for multi-backend project, got '%s'", backend.Name())
 	}

@@ -58,7 +58,7 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 			cwd = cwdStr
 		}
 	}
-	
+
 	// Use current directory if not specified
 	if cwd == "" {
 		var err error
@@ -67,13 +67,13 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 			return nil, fmt.Errorf("failed to get working directory: %w", err)
 		}
 	}
-	
+
 	// Make path absolute
 	absPath, err := filepath.Abs(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
 	}
-	
+
 	// Extract timeout
 	timeout := 300 // Default 5 minutes
 	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
@@ -81,7 +81,7 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 			timeout = int(timeoutFloat)
 		}
 	}
-	
+
 	// Create build request
 	req := &build.BuildRequest{
 		ProjectRoot: absPath,
@@ -89,7 +89,7 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 		Timeout:     timeout,
 		Context:     make(map[string]string),
 	}
-	
+
 	// Execute build
 	response, err := b.buildService.ExecuteBuild(ctx, req)
 	if err != nil {
@@ -98,7 +98,7 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 			"error":   err.Error(),
 		}, nil
 	}
-	
+
 	return map[string]any{
 		"success":     response.Success,
 		"backend":     response.Backend,
@@ -156,7 +156,7 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			cwd = cwdStr
 		}
 	}
-	
+
 	// Use current directory if not specified
 	if cwd == "" {
 		var err error
@@ -165,13 +165,13 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			return nil, fmt.Errorf("failed to get working directory: %w", err)
 		}
 	}
-	
+
 	// Make path absolute
 	absPath, err := filepath.Abs(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
 	}
-	
+
 	// Extract timeout
 	timeout := 300 // Default 5 minutes
 	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
@@ -179,7 +179,7 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			timeout = int(timeoutFloat)
 		}
 	}
-	
+
 	// Create test request
 	req := &build.BuildRequest{
 		ProjectRoot: absPath,
@@ -187,7 +187,7 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 		Timeout:     timeout,
 		Context:     make(map[string]string),
 	}
-	
+
 	// Execute test
 	response, err := t.buildService.ExecuteBuild(ctx, req)
 	if err != nil {
@@ -196,7 +196,7 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			"error":   err.Error(),
 		}, nil
 	}
-	
+
 	return map[string]any{
 		"success":     response.Success,
 		"backend":     response.Backend,
@@ -254,7 +254,7 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			cwd = cwdStr
 		}
 	}
-	
+
 	// Use current directory if not specified
 	if cwd == "" {
 		var err error
@@ -263,13 +263,13 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			return nil, fmt.Errorf("failed to get working directory: %w", err)
 		}
 	}
-	
+
 	// Make path absolute
 	absPath, err := filepath.Abs(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
 	}
-	
+
 	// Extract timeout
 	timeout := 300 // Default 5 minutes
 	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
@@ -277,7 +277,7 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			timeout = int(timeoutFloat)
 		}
 	}
-	
+
 	// Create lint request
 	req := &build.BuildRequest{
 		ProjectRoot: absPath,
@@ -285,7 +285,7 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 		Timeout:     timeout,
 		Context:     make(map[string]string),
 	}
-	
+
 	// Execute lint
 	response, err := l.buildService.ExecuteBuild(ctx, req)
 	if err != nil {
@@ -294,7 +294,7 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 			"error":   err.Error(),
 		}, nil
 	}
-	
+
 	return map[string]any{
 		"success":     response.Success,
 		"backend":     response.Backend,
@@ -348,7 +348,7 @@ func (b *BackendInfoTool) Exec(ctx context.Context, args map[string]any) (any, e
 			cwd = cwdStr
 		}
 	}
-	
+
 	// Use current directory if not specified
 	if cwd == "" {
 		var err error
@@ -357,13 +357,13 @@ func (b *BackendInfoTool) Exec(ctx context.Context, args map[string]any) (any, e
 			return nil, fmt.Errorf("failed to get working directory: %w", err)
 		}
 	}
-	
+
 	// Make path absolute
 	absPath, err := filepath.Abs(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
 	}
-	
+
 	// Get backend info
 	info, err := b.buildService.GetBackendInfo(absPath)
 	if err != nil {
@@ -372,7 +372,7 @@ func (b *BackendInfoTool) Exec(ctx context.Context, args map[string]any) (any, e
 			"error":   err.Error(),
 		}, nil
 	}
-	
+
 	return map[string]any{
 		"success":      true,
 		"backend":      info.Name,

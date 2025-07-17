@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/build"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
@@ -113,7 +113,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 
 	// Create BuildService for MCP tools
 	buildService := build.NewBuildService()
-	
+
 	// Create coder driver
 	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil, buildService)
 	if err != nil {
@@ -152,7 +152,7 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 
 	// Create BuildService for MCP tools
 	buildService := build.NewBuildService()
-	
+
 	// Create coder driver with agent configuration
 	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig, buildService)
 	if err != nil {

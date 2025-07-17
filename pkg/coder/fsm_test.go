@@ -40,7 +40,7 @@ func TestSetupStateTransitions(t *testing.T) {
 
 func TestSetupStateInValidStates(t *testing.T) {
 	validStates := GetValidStates()
-	
+
 	// Check that SETUP is included
 	found := false
 	for _, state := range validStates {
@@ -49,7 +49,7 @@ func TestSetupStateInValidStates(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !found {
 		t.Error("SETUP state should be in valid states list")
 	}
@@ -96,7 +96,7 @@ func TestBudgetReviewStateTransitions(t *testing.T) {
 	if IsValidCoderTransition(StateBudgetReview, StatePlanning) {
 		t.Error("BUDGET_REVIEW → PLANNING should not be valid")
 	}
-	
+
 	if IsValidCoderTransition(StateBudgetReview, StateTesting) {
 		t.Error("BUDGET_REVIEW → TESTING should not be valid")
 	}
@@ -104,7 +104,7 @@ func TestBudgetReviewStateTransitions(t *testing.T) {
 
 func TestBudgetReviewStateInValidStates(t *testing.T) {
 	validStates := GetValidStates()
-	
+
 	// Check that BUDGET_REVIEW is included
 	found := false
 	for _, state := range validStates {
@@ -113,7 +113,7 @@ func TestBudgetReviewStateInValidStates(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !found {
 		t.Error("BUDGET_REVIEW state should be in valid states list")
 	}

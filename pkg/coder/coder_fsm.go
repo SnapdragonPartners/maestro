@@ -11,26 +11,26 @@ import (
 // We inherit three states, WAITING (the entry state), DONE and ERROR from the base agent.
 // DONE and ERROR are no longer terminal - they can transition to SETUP for the next story.
 const (
-	StateSetup       agent.State = "SETUP"
-	StatePlanning    agent.State = "PLANNING"
-	StateCoding      agent.State = "CODING"
-	StateTesting     agent.State = "TESTING"
-	StateFixing      agent.State = "FIXING"
-	StatePlanReview  agent.State = "PLAN_REVIEW"
-	StateCodeReview  agent.State = "CODE_REVIEW"
+	StateSetup        agent.State = "SETUP"
+	StatePlanning     agent.State = "PLANNING"
+	StateCoding       agent.State = "CODING"
+	StateTesting      agent.State = "TESTING"
+	StateFixing       agent.State = "FIXING"
+	StatePlanReview   agent.State = "PLAN_REVIEW"
+	StateCodeReview   agent.State = "CODE_REVIEW"
 	StateBudgetReview agent.State = "BUDGET_REVIEW"
-	StateAwaitMerge  agent.State = "AWAIT_MERGE"
-	StateQuestion    agent.State = "QUESTION"
+	StateAwaitMerge   agent.State = "AWAIT_MERGE"
+	StateQuestion     agent.State = "QUESTION"
 )
 
 // Import AUTO_CHECKIN types from proto package for inter-agent communication
 type AutoAction = proto.AutoAction
 
 const (
-	AutoContinue              = proto.AutoContinue
-	AutoPivot                 = proto.AutoPivot
-	AutoEscalate              = proto.AutoEscalate
-	AutoAbandon               = proto.AutoAbandon
+	AutoContinue               = proto.AutoContinue
+	AutoPivot                  = proto.AutoPivot
+	AutoEscalate               = proto.AutoEscalate
+	AutoAbandon                = proto.AutoAbandon
 	QuestionReasonBudgetReview = proto.QuestionReasonBudgetReview
 )
 
