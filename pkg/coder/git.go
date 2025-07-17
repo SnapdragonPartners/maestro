@@ -93,15 +93,21 @@ func NewWorkspaceManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranc
 	}
 }
 
+// WorkspaceResult contains the results of workspace setup
+type WorkspaceResult struct {
+	WorkDir    string
+	BranchName string
+}
+
 // SetupWorkspace implements the AR-102 workspace initialization logic
-func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID, agentWorkDir string) (string, error) {
+func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID, agentWorkDir string) (*WorkspaceResult, error) {
 	w.logger.Debug("SetupWorkspace called with agentID=%s, storyID=%s, agentWorkDir=%s", agentID, storyID, agentWorkDir)
 	w.logger.Debug("ProjectWorkDir: %s", w.projectWorkDir)
 
 	// Step 1: Ensure mirror clone exists and is up to date
 	mirrorPath, err := w.ensureMirrorClone(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to setup mirror clone: %w", err)
+		return nil, fmt.Errorf("failed to setup mirror clone: %w", err)
 	}
 	w.logger.Debug("Mirror path: %s", mirrorPath)
 
@@ -116,28 +122,32 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 	storyWorkDir := w.BuildStoryWorkDir(agentID, storyID, agentWorkDir)
 	w.logger.Debug("Story work directory: %s", storyWorkDir)
 	if err := os.MkdirAll(filepath.Dir(storyWorkDir), 0755); err != nil {
-		return "", fmt.Errorf("failed to create story work directory parent: %w", err)
+		return nil, fmt.Errorf("failed to create story work directory parent: %w", err)
 	}
 
 	// Step 3: Add worktree
 	if err := w.addWorktree(ctx, mirrorPath, storyWorkDir); err != nil {
-		return "", fmt.Errorf("failed to add worktree from mirror %s to %s: %w", mirrorPath, storyWorkDir, err)
+		return nil, fmt.Errorf("failed to add worktree from mirror %s to %s: %w", mirrorPath, storyWorkDir, err)
 	}
 
 	// Verify the worktree was created
 	if _, err := os.Stat(storyWorkDir); err != nil {
 		w.logger.Error("Story work directory does not exist after git worktree add: %s (error: %v)", storyWorkDir, err)
-		return "", fmt.Errorf("story work directory was not created at %s: %w", storyWorkDir, err)
+		return nil, fmt.Errorf("story work directory was not created at %s: %w", storyWorkDir, err)
 	}
 	w.logger.Debug("Verified story work directory exists at: %s", storyWorkDir)
 
 	// Step 4: Create and checkout branch
 	branchName := w.buildBranchName(storyID)
-	if err := w.createBranch(ctx, storyWorkDir, branchName); err != nil {
-		return "", fmt.Errorf("failed to create branch: %w", err)
+	actualBranchName, err := w.createBranch(ctx, storyWorkDir, branchName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create branch: %w", err)
 	}
 
-	return storyWorkDir, nil
+	return &WorkspaceResult{
+		WorkDir:    storyWorkDir,
+		BranchName: actualBranchName,
+	}, nil
 }
 
 // CleanupWorkspace removes a worktree and cleans up the workspace
@@ -230,13 +240,14 @@ func (w *WorkspaceManager) addWorktree(ctx context.Context, mirrorPath, storyWor
 
 // createBranch creates and checks out a new branch in the story work directory
 // If the branch already exists, it will try incremental names (e.g., story-050-2, story-050-3, etc.)
-func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branchName string) error {
+// Returns the actual branch name that was created
+func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branchName string) (string, error) {
 	w.logger.Debug("createBranch called with storyWorkDir=%s, branchName=%s", storyWorkDir, branchName)
 
 	// Check if story work directory exists before trying to create branch
 	if _, err := os.Stat(storyWorkDir); os.IsNotExist(err) {
 		w.logger.Error("story work directory does not exist: %s", storyWorkDir)
-		return fmt.Errorf("story work directory does not exist: %s", storyWorkDir)
+		return "", fmt.Errorf("story work directory does not exist: %s", storyWorkDir)
 	}
 	w.logger.Debug("Story work directory exists, proceeding with branch creation")
 
@@ -252,7 +263,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 			if attempt > 1 {
 				w.logger.Warn("Branch name collision detected: '%s' already exists, using '%s' instead", originalBranchName, branchName)
 			}
-			return nil
+			return branchName, nil
 		}
 
 		// Check if this is a "branch already exists" error
@@ -265,11 +276,11 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 		}
 
 		// If it's not a collision error, return the original error
-		return fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
+		return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
 	}
 
 	// If we've exhausted all attempts
-	return fmt.Errorf("unable to create branch after %d attempts, last tried: %s", maxAttempts, branchName)
+	return "", fmt.Errorf("unable to create branch after %d attempts, last tried: %s", maxAttempts, branchName)
 }
 
 // BuildMirrorPath constructs the mirror repository path

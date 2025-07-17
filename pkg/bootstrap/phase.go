@@ -3,18 +3,21 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/coder"
 	"orchestrator/pkg/logx"
 )
 
 // Phase represents the PROJECT_BOOTSTRAP orchestrator phase
 type Phase struct {
-	projectRoot   string
-	buildRegistry *build.Registry
-	logger        *logx.Logger
-	config        *Config
+	projectRoot      string
+	buildRegistry    *build.Registry
+	logger           *logx.Logger
+	config           *Config
+	workspaceManager *coder.WorkspaceManager
 }
 
 // Config holds bootstrap configuration options
@@ -52,11 +55,24 @@ func NewPhase(projectRoot string, config *Config) *Phase {
 		config = DefaultConfig()
 	}
 
+	// Create workspace manager for git operations using the same pattern as coder
+	gitRunner := coder.NewDefaultGitRunner()
+	workspaceManager := coder.NewWorkspaceManager(
+		gitRunner,
+		filepath.Dir(projectRoot), // Use parent of projectRoot as projectWorkDir
+		config.RepoURL,
+		config.BaseBranch,
+		".mirrors",
+		"bootstrap-{STORY_ID}", // Won't be used since we commit to main
+		"{STORY_ID}",           // Won't be used since we use projectRoot directly
+	)
+
 	return &Phase{
-		projectRoot:   projectRoot,
-		buildRegistry: build.NewRegistry(),
-		logger:        logx.NewLogger("bootstrap"),
-		config:        config,
+		projectRoot:      projectRoot,
+		buildRegistry:    build.NewRegistry(),
+		logger:           logx.NewLogger("bootstrap"),
+		config:           config,
+		workspaceManager: workspaceManager,
 	}
 }
 
@@ -92,13 +108,15 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 		Metadata:       make(map[string]string),
 	}
 
-	// Step 1: Ensure we have a Git repository (required for bootstrap)
-	if err := p.ensureGitRepository(ctx); err != nil {
-		return p.failureResult(startTime, fmt.Errorf("git repository validation failed: %w", err))
+	// Step 1: Setup workspace using WorkspaceManager (ensures mirror exists and creates worktree)
+	workDir, err := p.setupWorkspace(ctx)
+	if err != nil {
+		return p.failureResult(startTime, fmt.Errorf("workspace setup failed: %w", err))
 	}
+	p.logger.Info("Bootstrap workspace ready at: %s", workDir)
 
-	// Step 2: Detect build backend
-	backend, err := p.detectBackend(ctx)
+	// Step 2: Detect build backend (using workspace directory)
+	backend, err := p.detectBackend(ctx, workDir)
 	if err != nil {
 		return p.failureResult(startTime, fmt.Errorf("backend detection failed: %w", err))
 	}
@@ -107,8 +125,8 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 	result.Metadata["backend_detected"] = backend.Name()
 	p.logger.Info("Detected backend: %s", backend.Name())
 
-	// Step 3: Generate bootstrap artifacts
-	artifacts, err := p.generateArtifacts(ctx, backend)
+	// Step 3: Generate bootstrap artifacts in workspace
+	artifacts, err := p.generateArtifacts(ctx, backend, workDir)
 	if err != nil {
 		return p.failureResult(startTime, fmt.Errorf("artifact generation failed: %w", err))
 	}
@@ -117,30 +135,9 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 	result.Metadata["artifacts_count"] = fmt.Sprintf("%d", len(artifacts))
 	p.logger.Info("Generated %d bootstrap artifacts", len(artifacts))
 
-	// Step 4: Create bootstrap branch (Git is now guaranteed to be available)
-	branchName, err := p.createBootstrapBranch(ctx, artifacts)
-	if err != nil {
-		return p.failureResult(startTime, fmt.Errorf("failed to create bootstrap branch: %w", err))
-	}
-
-	if branchName != "" {
-		result.BranchCreated = branchName
-		result.Metadata["branch_created"] = branchName
-		p.logger.Info("Created bootstrap branch: %s", branchName)
-	}
-
-	// Step 5: Auto-merge to base branch (if configured)
-	if p.config.AutoMerge && branchName != "" {
-		merged, err := p.autoMergeBootstrap(ctx, branchName)
-		if err != nil {
-			return p.failureResult(startTime, fmt.Errorf("failed to auto-merge bootstrap: %w", err))
-		}
-
-		result.MergeCompleted = merged
-		result.Metadata["merge_completed"] = fmt.Sprintf("%t", merged)
-		if merged {
-			p.logger.Info("Auto-merged bootstrap to %s", p.config.BaseBranch)
-		}
+	// Step 4: Commit artifacts directly to main branch
+	if err := p.commitToMain(ctx, workDir, artifacts); err != nil {
+		return p.failureResult(startTime, fmt.Errorf("failed to commit bootstrap artifacts: %w", err))
 	}
 
 	// Step 6: Success
@@ -153,7 +150,7 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 }
 
 // detectBackend detects the appropriate build backend for the project
-func (p *Phase) detectBackend(ctx context.Context) (build.BuildBackend, error) {
+func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildBackend, error) {
 	// Check for forced backend override
 	if p.config.ForceBackend != "" {
 		backend, err := p.buildRegistry.GetByName(p.config.ForceBackend)
@@ -177,8 +174,8 @@ func (p *Phase) detectBackend(ctx context.Context) (build.BuildBackend, error) {
 		}
 	}
 
-	// Auto-detect backend
-	backend, err := p.buildRegistry.Detect(p.projectRoot)
+	// Auto-detect backend using workspace directory
+	backend, err := p.buildRegistry.Detect(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("auto-detection failed: %w", err)
 	}
@@ -187,8 +184,8 @@ func (p *Phase) detectBackend(ctx context.Context) (build.BuildBackend, error) {
 }
 
 // generateArtifacts generates bootstrap artifacts based on the detected backend
-func (p *Phase) generateArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
-	generator := NewArtifactGenerator(p.projectRoot, p.config)
+func (p *Phase) generateArtifacts(ctx context.Context, backend build.BuildBackend, workDir string) ([]string, error) {
+	generator := NewArtifactGenerator(workDir, p.config)
 
 	artifacts, err := generator.Generate(ctx, backend)
 	if err != nil {
@@ -198,44 +195,62 @@ func (p *Phase) generateArtifacts(ctx context.Context, backend build.BuildBacken
 	return artifacts, nil
 }
 
-// createBootstrapBranch creates a dedicated bootstrap branch for the artifacts
-func (p *Phase) createBootstrapBranch(ctx context.Context, artifacts []string) (string, error) {
-	gitManager := NewGitManager(p.projectRoot, p.logger)
+// setupWorkspace uses WorkspaceManager to create a workspace for bootstrap operations
+func (p *Phase) setupWorkspace(ctx context.Context) (string, error) {
+	// For bootstrap, we'll use a dummy story ID since we're working directly on main
+	// The important thing is that we get a proper worktree from the mirror
+	dummyStoryID := "bootstrap"
+	agentID := "bootstrap"
 
-	// Check if we're in a Git repository (this should never happen now due to ensureGitRepository)
-	if !gitManager.IsGitRepository() {
-		return "", fmt.Errorf("not in a Git repository - this should have been caught earlier")
+	// Use projectRoot as the agent work directory for bootstrap
+	workspaceResult, err := p.workspaceManager.SetupWorkspace(ctx, agentID, dummyStoryID, p.projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to setup workspace: %w", err)
 	}
 
-	// Create bootstrap branch
-	branchName := p.config.BranchName
-	if err := gitManager.CreateBranch(ctx, branchName); err != nil {
-		return "", fmt.Errorf("failed to create branch %s: %w", branchName, err)
-	}
-
-	// Commit bootstrap artifacts
-	if err := gitManager.CommitArtifacts(ctx, artifacts, "Bootstrap project build system"); err != nil {
-		return "", fmt.Errorf("failed to commit artifacts: %w", err)
-	}
-
-	return branchName, nil
+	return workspaceResult.WorkDir, nil
 }
 
-// autoMergeBootstrap automatically merges the bootstrap branch to the base branch
-func (p *Phase) autoMergeBootstrap(ctx context.Context, branchName string) (bool, error) {
-	gitManager := NewGitManager(p.projectRoot, p.logger)
+// commitToMain commits the bootstrap artifacts directly to the main branch
+func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []string) error {
+	gitRunner := coder.NewDefaultGitRunner()
 
-	// Merge bootstrap branch to base branch
-	if err := gitManager.MergeBranch(ctx, branchName, p.config.BaseBranch); err != nil {
-		return false, fmt.Errorf("failed to merge %s to %s: %w", branchName, p.config.BaseBranch, err)
+	// Ensure we're on the main branch
+	if _, err := gitRunner.Run(ctx, workDir, "checkout", p.config.BaseBranch); err != nil {
+		return fmt.Errorf("failed to checkout %s: %w", p.config.BaseBranch, err)
 	}
 
-	// Clean up bootstrap branch
-	if err := gitManager.DeleteBranch(ctx, branchName); err != nil {
-		p.logger.Warn("Failed to delete bootstrap branch %s: %v", branchName, err)
+	// Add all artifacts to staging
+	for _, artifact := range artifacts {
+		if _, err := gitRunner.Run(ctx, workDir, "add", artifact); err != nil {
+			return fmt.Errorf("failed to add %s to staging: %w", artifact, err)
+		}
 	}
 
-	return true, nil
+	// Check if there are any changes to commit
+	output, err := gitRunner.Run(ctx, workDir, "diff", "--cached", "--name-only")
+	if err != nil {
+		return fmt.Errorf("failed to check staging area: %w", err)
+	}
+
+	if len(output) == 0 {
+		p.logger.Info("No changes to commit")
+		return nil
+	}
+
+	// Commit changes
+	commitMessage := "Bootstrap project build system\n\nGenerated bootstrap artifacts:\n"
+	for _, artifact := range artifacts {
+		commitMessage += "- " + artifact + "\n"
+	}
+	commitMessage += "\n🤖 Generated with [Claude Code](https://claude.ai/code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+
+	if _, err := gitRunner.Run(ctx, workDir, "commit", "-m", commitMessage); err != nil {
+		return fmt.Errorf("failed to commit artifacts: %w", err)
+	}
+
+	p.logger.Info("Committed bootstrap artifacts to %s", p.config.BaseBranch)
+	return nil
 }
 
 // failureResult creates a failure result with timing information
@@ -254,32 +269,6 @@ func (p *Phase) failureResult(startTime time.Time, err error) (*PhaseResult, err
 
 	p.logger.Error("PROJECT_BOOTSTRAP phase failed after %v: %v", duration, err)
 	return result, err
-}
-
-// ensureGitRepository ensures we have a Git repository, cloning if necessary
-func (p *Phase) ensureGitRepository(ctx context.Context) error {
-	gitManager := NewGitManager(p.projectRoot, p.logger)
-
-	// Check if we're already in a Git repository
-	if gitManager.IsGitRepository() {
-		p.logger.Info("Already in a Git repository")
-		return nil
-	}
-
-	// If no repository URL is configured, this is a hard error
-	if p.config.RepoURL == "" {
-		return fmt.Errorf("not in a Git repository and no repository URL configured - bootstrap requires Git for branch creation and commits")
-	}
-
-	// Clone the repository
-	p.logger.Info("Not in a Git repository, cloning from: %s", p.config.RepoURL)
-
-	if err := gitManager.Clone(ctx, p.config.RepoURL); err != nil {
-		return fmt.Errorf("failed to clone repository %s: %w", p.config.RepoURL, err)
-	}
-
-	p.logger.Info("Successfully cloned repository to: %s", p.projectRoot)
-	return nil
 }
 
 // GetStatus returns the current status of the bootstrap phase

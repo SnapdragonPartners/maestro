@@ -411,11 +411,19 @@ endif
 
 help:
 	@echo "Available targets:"
-	@echo "  build  - Build the project"
-	@echo "  test   - Run tests"
-	@echo "  lint   - Run linting"
-	@echo "  run    - Run the application"
-	@echo "  help   - Show this help message"
+	@echo "  build      - Build the project"
+	@echo "  test       - Run tests"
+	@echo "  lint       - Run linting"
+	@echo "  run        - Run the application"
+	@echo "  clean      - Clean build artifacts"
+	@echo "  help       - Show this help message"
+	@echo ""
+	@echo "Platform-specific help:"
+	@echo "  go-help    - Show Go targets (if available)"
+	@echo "  node-help  - Show Node.js targets (if available)"
+	@echo "  python-help - Show Python targets (if available)"
+	@echo "  react-help - Show React targets (if available)"
+	@echo "  docker-help - Show Docker targets (if available)"
 	@echo ""
 	@echo "This project uses Claude Code Bootstrap for build management."
 	@echo "Agent-generated targets are in .maestro/makefiles/"
@@ -591,7 +599,7 @@ go-vet:
 	go vet ./...
 	@echo "✅ Go vet completed"
 
-help::
+go-help:
 	@echo "🐹 Go targets:"
 	@echo "  go-build     - Build Go project"
 	@echo "  go-test      - Run Go tests"
@@ -649,7 +657,7 @@ node-dev:
 	@echo "🚀 Starting Node.js development server..."
 	npm run dev
 
-help::
+node-help:
 	@echo "🟢 Node.js targets:"
 	@echo "  node-build   - Build Node.js project"
 	@echo "  node-test    - Run Node.js tests"
@@ -707,7 +715,7 @@ python-format:
 	@which uv > /dev/null && uv run black . || python -m black .
 	@echo "✅ Python formatting completed"
 
-help::
+python-help:
 	@echo "🐍 Python targets:"
 	@echo "  python-build   - Build Python project"
 	@echo "  python-test    - Run Python tests"
@@ -758,7 +766,7 @@ react-dev:
 	@echo "🚀 Starting React development server..."
 	npm run dev
 
-help::
+react-help:
 	@echo "⚛️ React targets:"
 	@echo "  react-build   - Build React project"
 	@echo "  react-test    - Run React tests"
@@ -808,7 +816,7 @@ docker-shell:
 	@echo "🐚 Opening Docker shell..."
 	docker run -it --rm $(shell basename $(PWD)) /bin/bash
 
-help::
+docker-help:
 	@echo "🐳 Docker targets:"
 	@echo "  docker-build - Build Docker image"
 	@echo "  docker-run   - Run Docker container"

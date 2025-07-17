@@ -92,7 +92,7 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 
 			// Test setup
 			ctx := context.Background()
-			worktreePath, err := wm.SetupWorkspace(ctx, tt.agentID, tt.storyID, "/tmp/test-agent")
+			workspaceResult, err := wm.SetupWorkspace(ctx, tt.agentID, tt.storyID, "/tmp/test-agent")
 
 			if tt.expectedError {
 				if err == nil {
@@ -108,8 +108,14 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 
 			// Verify worktree path
 			expectedPath := filepath.Join(tempDir, tt.agentID, tt.storyID)
-			if worktreePath != expectedPath {
-				t.Errorf("Expected worktree path %s, got %s", expectedPath, worktreePath)
+			if workspaceResult.WorkDir != expectedPath {
+				t.Errorf("Expected worktree path %s, got %s", expectedPath, workspaceResult.WorkDir)
+			}
+
+			// Verify branch name
+			expectedBranchName := fmt.Sprintf("story-%s", tt.storyID)
+			if workspaceResult.BranchName != expectedBranchName {
+				t.Errorf("Expected branch name %s, got %s", expectedBranchName, workspaceResult.BranchName)
 			}
 		})
 	}
@@ -290,7 +296,7 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	// 4. Test workspace setup
 	start := time.Now()
 	agentWorkDir := filepath.Join(workDir, "test-agent")
-	worktreePath, err := wm.SetupWorkspace(ctx, "test-agent", "042", agentWorkDir)
+	workspaceResult, err := wm.SetupWorkspace(ctx, "test-agent", "042", agentWorkDir)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -304,17 +310,17 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 
 	// Verify worktree exists and has content
 	expectedWorktreePath := filepath.Join(workDir, "test-agent", "042")
-	if worktreePath != expectedWorktreePath {
-		t.Errorf("Expected worktree path %s, got %s", expectedWorktreePath, worktreePath)
+	if workspaceResult.WorkDir != expectedWorktreePath {
+		t.Errorf("Expected worktree path %s, got %s", expectedWorktreePath, workspaceResult.WorkDir)
 	}
 
-	readmePath := filepath.Join(worktreePath, "README.md")
+	readmePath := filepath.Join(workspaceResult.WorkDir, "README.md")
 	if _, err := os.Stat(readmePath); os.IsNotExist(err) {
 		t.Error("README.md should exist in worktree")
 	}
 
 	// Verify branch is checked out
-	output, err := gitRunner.Run(ctx, worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+	output, err := gitRunner.Run(ctx, workspaceResult.WorkDir, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		t.Fatal("Failed to get current branch:", err)
 	}
@@ -326,16 +332,16 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 
 	// 5. Test multiple agents using same mirror (shared object dir)
 	agent2WorkDir := filepath.Join(workDir, "test-agent-2")
-	secondWorktreePath, err := wm.SetupWorkspace(ctx, "test-agent-2", "043", agent2WorkDir)
+	secondWorkspaceResult, err := wm.SetupWorkspace(ctx, "test-agent-2", "043", agent2WorkDir)
 	if err != nil {
 		t.Fatal("Second workspace setup failed:", err)
 	}
 
 	// Verify both worktrees exist
-	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+	if _, err := os.Stat(workspaceResult.WorkDir); os.IsNotExist(err) {
 		t.Error("First worktree should still exist")
 	}
-	if _, err := os.Stat(secondWorktreePath); os.IsNotExist(err) {
+	if _, err := os.Stat(secondWorkspaceResult.WorkDir); os.IsNotExist(err) {
 		t.Error("Second worktree should exist")
 	}
 
@@ -359,7 +365,7 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	}
 
 	// Verify worktree is removed
-	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+	if _, err := os.Stat(workspaceResult.WorkDir); !os.IsNotExist(err) {
 		t.Error("Worktree should be removed after cleanup")
 	}
 

@@ -98,14 +98,12 @@ func TestIsCoderState(t *testing.T) {
 // This test is obsolete because GetCoderStateConstants function was removed
 // State constants are now directly defined in coder_fsm.go
 
-// TestDriverIsCoderState verifies the driver's isCoderState method uses dynamic derivation
+// TestDriverIsCoderState verifies the IsCoderState function uses dynamic derivation
 func TestDriverIsCoderState(t *testing.T) {
-	driver := &Coder{}
-
 	// Test all dynamically derived states
 	derivedStates := GetAllCoderStates()
 	for _, agentState := range derivedStates {
-		if !driver.isCoderState(agentState) {
+		if !IsCoderState(agentState) {
 			t.Errorf("Driver should recognize %q as a coder state", string(agentState))
 		}
 	}
@@ -114,7 +112,7 @@ func TestDriverIsCoderState(t *testing.T) {
 	nonCoderStates := []string{"WAITING", "DONE", "ERROR", "INVALID"}
 	for _, stateStr := range nonCoderStates {
 		agentState := agent.State(stateStr)
-		if driver.isCoderState(agentState) {
+		if IsCoderState(agentState) {
 			t.Errorf("Driver should not recognize %q as a coder state", stateStr)
 		}
 	}

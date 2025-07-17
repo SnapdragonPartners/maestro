@@ -309,11 +309,6 @@ func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
 	}
 }
 
-// isCoderState checks if a state is a coder-specific state using canonical derivation
-func (c *Coder) isCoderState(state agent.State) bool {
-	return IsCoderState(state)
-}
-
 // contextKeyAgentID is a unique type for agent ID context key
 type contextKeyAgentID string
 
@@ -2051,19 +2046,20 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	agentID := c.GetAgentID()
 	// Make agent ID filesystem-safe by replacing colons with dashes
 	fsafeAgentID := strings.ReplaceAll(agentID, ":", "-")
-	worktreePath, err := c.workspaceManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
+	workspaceResult, err := c.workspaceManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
 	if err != nil {
 		c.logger.Error("Failed to setup workspace: %v", err)
 		return agent.StateError, false, fmt.Errorf("workspace setup failed: %w", err)
 	}
 
-	// Store worktree path for subsequent states
-	sm.SetStateData("worktree_path", worktreePath)
+	// Store worktree path and actual branch name for subsequent states
+	sm.SetStateData("worktree_path", workspaceResult.WorkDir)
+	sm.SetStateData("actual_branch_name", workspaceResult.BranchName)
 
 	// Update the coder's working directory to use the story work directory
 	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place
-	c.workDir = worktreePath
-	c.logger.Info("Workspace setup complete: %s", worktreePath)
+	c.workDir = workspaceResult.WorkDir
+	c.logger.Info("Workspace setup complete: %s", workspaceResult.WorkDir)
 	c.logger.Debug("Updated coder working directory to: %s", c.workDir)
 
 	return StatePlanning, false, nil
@@ -2303,7 +2299,20 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 		return fmt.Errorf("story_id is not a string: %v", storyID)
 	}
 
-	branchName := fmt.Sprintf("story-%s", storyIDStr)
+	// Use the actual branch name that was created (which may be different due to collisions)
+	actualBranchName, exists := sm.GetStateValue("actual_branch_name")
+	if !exists || actualBranchName == "" {
+		// Fallback to generating the branch name if not found
+		actualBranchName = fmt.Sprintf("story-%s", storyIDStr)
+		c.logger.Warn("actual_branch_name not found in state, using fallback: %s", actualBranchName)
+	}
+
+	branchName, ok := actualBranchName.(string)
+	if !ok {
+		branchName = fmt.Sprintf("story-%s", storyIDStr)
+		c.logger.Warn("actual_branch_name is not a string, using fallback: %s", branchName)
+	}
+
 	agentID := c.GetAgentID()
 
 	c.logger.Info("Pushing branch %s for story %s", branchName, storyIDStr)
