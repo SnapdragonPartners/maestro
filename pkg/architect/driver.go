@@ -779,7 +779,7 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 	d.logger.Info("🏗️ Processing merge request for story %s, PR: %s, branch: %s", storyIDStr, prURLStr, branchNameStr)
 
 	// Attempt merge using GitHub CLI
-	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, storyIDStr)
+	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, branchNameStr, storyIDStr)
 
 	// Create RESULT response
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, d.architectID, request.FromAgent)
@@ -819,11 +819,10 @@ type MergeAttemptResult struct {
 }
 
 // attemptPRMerge attempts to merge a PR using GitHub CLI
-func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*MergeAttemptResult, error) {
-	d.logger.Info("🏗️ Attempting to merge PR: %s", prURL)
+func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID string) (*MergeAttemptResult, error) {
+	d.logger.Info("🏗️ Attempting to merge PR: %s, branch: %s", prURL, branchName)
 
 	// Use gh CLI to merge PR with squash strategy and branch deletion
-	// gh pr merge <pr-url> --squash --delete-branch
 	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -832,8 +831,51 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*Me
 		return nil, fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
 	}
 
-	cmd := exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
-	output, err := cmd.CombinedOutput()
+	// If no PR URL provided, use branch name to find or create the PR
+	var cmd *exec.Cmd
+	var output []byte
+	var err error
+
+	if prURL == "" || prURL == " " {
+		if branchName == "" {
+			return nil, fmt.Errorf("no PR URL or branch name provided for merge")
+		}
+		d.logger.Info("🏗️ No PR URL provided, checking for existing PR for branch: %s", branchName)
+
+		// First, try to find an existing PR for this branch
+		listCmd := exec.CommandContext(mergeCtx, "gh", "pr", "list", "--head", branchName, "--json", "number,url")
+		listOutput, listErr := listCmd.CombinedOutput()
+
+		if listErr == nil && len(listOutput) > 0 && string(listOutput) != "[]" {
+			// Found existing PR, try to merge it
+			d.logger.Info("🏗️ Found existing PR for branch %s, attempting merge", branchName)
+			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
+			output, err = cmd.CombinedOutput()
+		} else {
+			// No PR found, create one first then merge
+			d.logger.Info("🏗️ No existing PR found for branch %s, creating PR first", branchName)
+
+			// Create PR
+			createCmd := exec.CommandContext(mergeCtx, "gh", "pr", "create",
+				"--title", fmt.Sprintf("Story merge: %s", storyID),
+				"--body", fmt.Sprintf("Automated merge for story %s", storyID),
+				"--base", "main",
+				"--head", branchName)
+			createOutput, createErr := createCmd.CombinedOutput()
+
+			if createErr != nil {
+				return nil, fmt.Errorf("failed to create PR for branch %s: %w\nOutput: %s", branchName, createErr, string(createOutput))
+			}
+
+			d.logger.Info("🏗️ Created PR for branch %s, now attempting merge", branchName)
+			// Now try to merge the newly created PR
+			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
+			output, err = cmd.CombinedOutput()
+		}
+	} else {
+		cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
+		output, err = cmd.CombinedOutput()
+	}
 
 	result := &MergeAttemptResult{}
 
@@ -841,20 +883,32 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, storyID string) (*Me
 		// Check if error is due to merge conflicts
 		outputStr := strings.ToLower(string(output))
 		if strings.Contains(outputStr, "conflict") || strings.Contains(outputStr, "merge conflict") {
-			d.logger.Info("🏗️ Merge conflicts detected for PR %s", prURL)
+			mergeTarget := prURL
+			if mergeTarget == "" {
+				mergeTarget = branchName
+			}
+			d.logger.Info("🏗️ Merge conflicts detected for %s", mergeTarget)
 			result.HasConflicts = true
 			result.ConflictInfo = string(output)
 			return result, nil // Not an error, just conflicts
 		}
 
 		// Other error (permissions, network, etc.)
-		d.logger.Error("🏗️ Failed to merge PR %s: %v\nOutput: %s", prURL, err, string(output))
+		mergeTarget := prURL
+		if mergeTarget == "" {
+			mergeTarget = branchName
+		}
+		d.logger.Error("🏗️ Failed to merge %s: %v\nOutput: %s", mergeTarget, err, string(output))
 		return nil, fmt.Errorf("gh pr merge failed: %w\nOutput: %s", err, string(output))
 	}
 
 	// Success - extract commit SHA from output if available
 	outputStr := string(output)
-	d.logger.Info("🏗️ Merge successful for PR %s\nOutput: %s", prURL, outputStr)
+	mergeTarget := prURL
+	if mergeTarget == "" {
+		mergeTarget = branchName
+	}
+	d.logger.Info("🏗️ Merge successful for %s\nOutput: %s", mergeTarget, outputStr)
 
 	// TODO: Parse commit SHA from gh output if needed
 	result.CommitSHA = "merged" // Placeholder until we parse actual SHA

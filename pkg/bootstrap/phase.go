@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -125,19 +126,31 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 	result.Metadata["backend_detected"] = backend.Name()
 	p.logger.Info("Detected backend: %s", backend.Name())
 
-	// Step 3: Generate bootstrap artifacts in workspace
-	artifacts, err := p.generateArtifacts(ctx, backend, workDir)
-	if err != nil {
-		return p.failureResult(startTime, fmt.Errorf("artifact generation failed: %w", err))
+	// Step 3: Check if bootstrap artifacts already exist
+	if p.bootstrapArtifactsExist(workDir) {
+		p.logger.Info("Bootstrap artifacts already exist, skipping generation")
+		result.GeneratedFiles = []string{}
+		result.Metadata["artifacts_count"] = "0"
+		result.Metadata["artifacts_skipped"] = "already_exist"
+	} else {
+		// Generate bootstrap artifacts in workspace
+		artifacts, err := p.generateArtifacts(ctx, backend, workDir)
+		if err != nil {
+			return p.failureResult(startTime, fmt.Errorf("artifact generation failed: %w", err))
+		}
+
+		result.GeneratedFiles = artifacts
+		result.Metadata["artifacts_count"] = fmt.Sprintf("%d", len(artifacts))
+		p.logger.Info("Generated %d bootstrap artifacts", len(artifacts))
 	}
 
-	result.GeneratedFiles = artifacts
-	result.Metadata["artifacts_count"] = fmt.Sprintf("%d", len(artifacts))
-	p.logger.Info("Generated %d bootstrap artifacts", len(artifacts))
-
-	// Step 4: Commit artifacts directly to main branch
-	if err := p.commitToMain(ctx, workDir, artifacts); err != nil {
-		return p.failureResult(startTime, fmt.Errorf("failed to commit bootstrap artifacts: %w", err))
+	// Step 4: Commit artifacts directly to main branch (only if new artifacts were generated)
+	if len(result.GeneratedFiles) > 0 {
+		if err := p.commitToMain(ctx, workDir, result.GeneratedFiles); err != nil {
+			return p.failureResult(startTime, fmt.Errorf("failed to commit bootstrap artifacts: %w", err))
+		}
+	} else {
+		p.logger.Info("No new artifacts to commit")
 	}
 
 	// Step 6: Success
@@ -250,6 +263,14 @@ func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []st
 	}
 
 	p.logger.Info("Committed bootstrap artifacts to %s", p.config.BaseBranch)
+
+	// Push the changes to remote to ensure other agents see the bootstrap artifacts
+	p.logger.Info("Pushing bootstrap artifacts to remote %s", p.config.BaseBranch)
+	if _, err := gitRunner.Run(ctx, workDir, "push", "origin", p.config.BaseBranch); err != nil {
+		return fmt.Errorf("failed to push bootstrap artifacts to remote: %w", err)
+	}
+
+	p.logger.Info("Successfully pushed bootstrap artifacts to remote %s", p.config.BaseBranch)
 	return nil
 }
 
@@ -279,4 +300,30 @@ func (p *Phase) GetStatus() map[string]interface{} {
 		"config":       p.config,
 		"backends":     p.buildRegistry.List(),
 	}
+}
+
+// bootstrapArtifactsExist checks if key bootstrap artifacts already exist in the work directory
+func (p *Phase) bootstrapArtifactsExist(workDir string) bool {
+	// Check for key bootstrap artifacts that indicate bootstrap has already run
+	keyArtifacts := []string{
+		"Makefile",       // Root Makefile is always generated unless explicitly skipped
+		".gitignore",     // Git ignore file
+		".gitattributes", // Git attributes file
+	}
+
+	// Skip Makefile check if it's disabled in config
+	if p.config.SkipMakefile {
+		keyArtifacts = keyArtifacts[1:] // Remove Makefile from the list
+	}
+
+	for _, artifact := range keyArtifacts {
+		artifactPath := filepath.Join(workDir, artifact)
+		if _, err := os.Stat(artifactPath); os.IsNotExist(err) {
+			p.logger.Debug("Bootstrap artifact missing: %s", artifact)
+			return false
+		}
+	}
+
+	p.logger.Debug("All key bootstrap artifacts exist in %s", workDir)
+	return true
 }

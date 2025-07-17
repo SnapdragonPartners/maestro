@@ -276,6 +276,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 // ProcessState implements the v2 FSM state machine logic
 func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
 	sm := c.BaseStateMachine
+	c.logger.Debug("ProcessState: coder %p, workDir: %s, currentState: %s", c, c.workDir, c.GetCurrentState())
 
 	switch c.GetCurrentState() {
 	case agent.StateWaiting:
@@ -657,7 +658,11 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 		if err != nil {
 			return agent.StateError, false, fmt.Errorf("failed to execute tool calls: %w", err)
 		}
-		log.Printf("MCP tool execution created %d files", filesCreated)
+		if filesCreated == -1 {
+			log.Printf("MCP tool execution: completion signaled via tool")
+		} else {
+			log.Printf("MCP tool execution created %d files", filesCreated)
+		}
 
 		// Reset no-tool-calls counter since we had tool calls
 		sm.SetStateData("no_tool_calls_count", 0)
@@ -764,6 +769,14 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		}
 	}
 
+	// Register the "done" tool for signaling completion
+	doneTool := tools.NewDoneTool()
+	if err := tools.Register(doneTool); err != nil {
+		log.Printf("Done tool registration: %v (likely already registered)", err)
+	} else {
+		log.Printf("Done tool registered successfully")
+	}
+
 	filesCreated := 0
 
 	for i, toolCall := range toolCalls {
@@ -774,10 +787,18 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			if reason, ok := toolCall.Parameters["reason"].(string); ok {
 				log.Printf("Claude marked implementation complete: %s", reason)
 				c.contextManager.AddMessage("tool", fmt.Sprintf("Implementation marked complete: %s", reason))
-				// Return high file count to signal completion
-				return 99, nil
+				// Return special completion signal (not a real file count)
+				return -1, nil
 			}
 			continue
+		}
+
+		if toolCall.Name == "done" {
+			// Claude signaled completion via done tool
+			log.Printf("Claude used 'done' tool to signal completion")
+			c.contextManager.AddMessage("tool", "Implementation marked complete via done tool")
+			// Return special completion signal (not a real file count)
+			return -1, nil
 		}
 
 		if toolCall.Name == "shell" {
@@ -803,12 +824,15 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			}
 
 			// Log tool execution
-			if cmd, ok := args["cmd"].(string); ok {
+			var cmd string
+			var isFileCreationCommand bool
+			if cmdStr, ok := args["cmd"].(string); ok {
+				cmd = cmdStr
 				log.Printf("Executing shell command: %s", cmd)
 				c.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
 
-				// Count file creation commands - expanded patterns
-				if strings.Contains(cmd, "cat >") ||
+				// Check if this is a file creation command - expanded patterns
+				isFileCreationCommand = strings.Contains(cmd, "cat >") ||
 					strings.Contains(cmd, "echo >") ||
 					strings.Contains(cmd, "tee ") ||
 					strings.Contains(cmd, "go mod init") ||
@@ -817,15 +841,13 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 					strings.Contains(cmd, "mv ") ||
 					strings.Contains(cmd, "mkdir") ||
 					strings.Contains(cmd, " > ") ||
-					strings.Contains(cmd, " >> ") {
-					log.Printf("Detected file creation command, incrementing count")
-					filesCreated++
-				}
+					strings.Contains(cmd, " >> ")
 			} else {
 				log.Printf("Warning: tool call missing 'cmd' parameter")
 			}
 
-			// Log result if available
+			// Log result and check if command succeeded
+			var commandSucceeded = true
 			if resultMap, ok := result.(map[string]any); ok {
 				if output, ok := resultMap["stdout"].(string); ok && output != "" {
 					log.Printf("Command stdout: %s", output)
@@ -838,9 +860,18 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 				if exitCode, ok := resultMap["exit_code"].(int); ok && exitCode != 0 {
 					log.Printf("Command exited with code: %d", exitCode)
 					c.contextManager.AddMessage("tool", fmt.Sprintf("Command failed with exit code: %d", exitCode))
+					commandSucceeded = false
 				}
 			} else {
 				log.Printf("Warning: could not parse tool execution result")
+			}
+
+			// Only count file creation if it's a file creation command AND it succeeded
+			if isFileCreationCommand && commandSucceeded {
+				log.Printf("Detected successful file creation command, incrementing count")
+				filesCreated++
+			} else if isFileCreationCommand && !commandSucceeded {
+				log.Printf("File creation command failed, not counting towards file creation")
 			}
 			continue
 		}
@@ -909,9 +940,9 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 
 // isImplementationComplete checks if the current implementation appears complete
 func (c *Coder) isImplementationComplete(responseContent string, filesCreated int, sm *agent.BaseStateMachine) bool {
-	// Method 1: Explicit completion signal via mark_complete tool
-	if filesCreated == 99 {
-		log.Printf("Completion detected: Claude used mark_complete tool")
+	// Method 1: Explicit completion signal via mark_complete or done tool
+	if filesCreated == -1 {
+		log.Printf("Completion detected: Claude used completion tool")
 		return true
 	}
 
@@ -2061,6 +2092,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	c.workDir = workspaceResult.WorkDir
 	c.logger.Info("Workspace setup complete: %s", workspaceResult.WorkDir)
 	c.logger.Debug("Updated coder working directory to: %s", c.workDir)
+	c.logger.Debug("Coder instance pointer: %p, workDir: %s", c, c.workDir)
 
 	return StatePlanning, false, nil
 }
@@ -2384,8 +2416,7 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 		"--title", title,
 		"--body", fmt.Sprintf("Automated pull request for story %s generated by agent %s", storyID, agentID),
 		"--base", baseBranch,
-		"--head", branchName,
-		"--label", "agent-story")
+		"--head", branchName)
 	prCmd.Dir = worktreePath
 
 	prOutput, err := prCmd.CombinedOutput()
@@ -2409,7 +2440,15 @@ func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine
 	prURLStr, _ := prURL.(string)
 	branchNameStr, _ := branchName.(string)
 
-	c.logger.Info("🧑‍💻 Sending merge request to architect for story %s", storyIDStr)
+	// Log the state of PR creation for debugging
+	if prCreated, exists := sm.GetStateValue("pr_created"); exists && prCreated.(bool) {
+		c.logger.Info("🧑‍💻 Sending merge request to architect for story %s with PR: %s", storyIDStr, prURLStr)
+	} else {
+		c.logger.Info("🧑‍💻 Sending merge request to architect for story %s with branch: %s (PR creation failed or skipped)", storyIDStr, branchNameStr)
+		if prError, exists := sm.GetStateValue("pr_creation_error"); exists {
+			c.logger.Warn("🧑‍💻 PR creation error: %v", prError)
+		}
+	}
 
 	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 	requestMsg.SetPayload("request_type", "merge")

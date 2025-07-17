@@ -251,10 +251,87 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 	}
 	w.logger.Debug("Story work directory exists, proceeding with branch creation")
 
-	// Try to create the branch with incremental names if collision occurs
+	// Get list of existing branches to avoid collisions
+	existingBranches, err := w.getExistingBranches(ctx, storyWorkDir)
+	if err != nil {
+		w.logger.Warn("Failed to get existing branches, falling back to trial-and-error method: %v", err)
+		return w.createBranchWithRetry(ctx, storyWorkDir, branchName)
+	}
+
+	// Find an available branch name
 	originalBranchName := branchName
 	attempt := 1
 	maxAttempts := 10 // Safety limit to prevent infinite loops
+
+	for attempt <= maxAttempts {
+		if !w.branchExists(branchName, existingBranches) {
+			// Branch name is available, create it
+			_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)
+			if err == nil {
+				// Success! Log if we had to use an incremented name
+				if attempt > 1 {
+					w.logger.Warn("Branch name collision detected: '%s' already exists, using '%s' instead", originalBranchName, branchName)
+				}
+				return branchName, nil
+			}
+			// If creation still failed, it's a real error
+			return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
+		}
+
+		// Branch exists, try next incremental name
+		attempt++
+		branchName = fmt.Sprintf("%s-%d", originalBranchName, attempt)
+		w.logger.Info("Branch '%s' exists, trying next name: %s", originalBranchName, branchName)
+	}
+
+	// If we've exhausted all attempts
+	return "", fmt.Errorf("unable to find available branch name after %d attempts, last tried: %s", maxAttempts, branchName)
+}
+
+// getExistingBranches gets a list of all branches (local and remote) in the repository
+func (w *WorkspaceManager) getExistingBranches(ctx context.Context, storyWorkDir string) ([]string, error) {
+	// Get all branches (local and remote)
+	output, err := w.gitRunner.Run(ctx, storyWorkDir, "branch", "-a")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list branches: %w", err)
+	}
+
+	// Parse branch names from output
+	lines := strings.Split(string(output), "\n")
+	var branches []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Remove markers like "* " for current branch and "remotes/" prefix
+		line = strings.TrimPrefix(line, "* ")
+		line = strings.TrimPrefix(line, "remotes/origin/")
+		// Skip HEAD references
+		if strings.Contains(line, "HEAD ->") {
+			continue
+		}
+		branches = append(branches, strings.TrimSpace(line))
+	}
+
+	return branches, nil
+}
+
+// branchExists checks if a branch name exists in the list of existing branches
+func (w *WorkspaceManager) branchExists(branchName string, existingBranches []string) bool {
+	for _, existing := range existingBranches {
+		if existing == branchName {
+			return true
+		}
+	}
+	return false
+}
+
+// createBranchWithRetry is the fallback method that uses trial-and-error (original approach)
+func (w *WorkspaceManager) createBranchWithRetry(ctx context.Context, storyWorkDir, branchName string) (string, error) {
+	originalBranchName := branchName
+	attempt := 1
+	maxAttempts := 10
 
 	for attempt <= maxAttempts {
 		_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)

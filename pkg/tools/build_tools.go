@@ -304,6 +304,40 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	}, nil
 }
 
+// DoneTool provides MCP interface for signaling task completion
+type DoneTool struct{}
+
+// NewDoneTool creates a new done tool instance
+func NewDoneTool() *DoneTool {
+	return &DoneTool{}
+}
+
+// Definition returns the tool's definition in Claude API format
+func (d *DoneTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "done",
+		Description: "Signal that the coding task is complete and advance the FSM to TESTING state",
+		InputSchema: InputSchema{
+			Type:       "object",
+			Properties: map[string]Property{},
+			Required:   []string{},
+		},
+	}
+}
+
+// Name returns the tool identifier
+func (d *DoneTool) Name() string {
+	return "done"
+}
+
+// Exec executes the done operation
+func (d *DoneTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+	return map[string]any{
+		"success": true,
+		"message": "Task marked as complete, advancing to TESTING state",
+	}, nil
+}
+
 // BackendInfoTool provides MCP interface for backend information
 type BackendInfoTool struct {
 	buildService *build.BuildService
