@@ -1,180 +1,154 @@
-# Bootstrap System Implementation TODO
+# Bootstrap System Redesign - Implementation Tasks
 
-**Status**: Phase 2 (Build Backend System) Complete - Moving to Phase 1 & 4 Integration
+## Overview
+Redesigning bootstrap system to be architect-integrated, Makefile-centric, with proper Git integration and multi-platform support. Bootstrap is now triggered by spec receipt and integrated into the architect's SCOPING state.
 
-## Current State
+## Core Architecture Changes
 
-✅ **COMPLETED**:
-- Build backend system (`pkg/build/`) with unified `BuildBackend` interface
-- MVP backends: Go, Python (uv), Node.js, Make, Null
-- Priority-based backend detection and registry
-- Comprehensive test suite and documentation
-- Coder agent integration (agents detect and run build tools directly)
+### 1. Architect-Integrated Bootstrap Flow
+- [x] **Load architect before bootstrap phase** 
+- [x] **Create LLM prompt for stack analysis**
+  - Prompt: "Determine what technology stack the user intended from this specification. If none is specified, make a recommendation based on the requirements. Consider that projects often use multiple technologies (e.g., Go backend + React frontend)."
+- [x] **Add validation for architect recommendations**
+  - Validate against explicit technology keywords in spec
+  - Score confidence of recommendation
+- [ ] **Integrate platform detection into architect SCOPING state**
+  - Run platform detection on existing code first
+  - If platform detected → add to scoping context
+  - If no platform → LLM recommends from spec
+  - If confident → save platform, trigger bootstrap
+  - If uncertain → transition to ERROR with clarifying questions
+- [ ] **Add QUESTION channel for ambiguous specs**
+  - Block bootstrap until clarification received
+- [ ] **Support semantic version detection**
+  - Extract version requirements from spec (Go 1.24, Node 20, etc.)
 
-❌ **MISSING**: 
-- Orchestrator-level PROJECT_BOOTSTRAP phase
-- Orchestrator build execution endpoints
-- Agent refactoring to use orchestrator endpoints
+### 2. Platform Whitelist & Validation
+- [x] **Create supported platform whitelist**
+  - Initial: go, node, python, make, null
+  - Future: rust, java, docker, etc.
+- [x] **Add LLM hallucination prevention**
+  - Score exotic stacks against whitelist
+  - Require human approval for non-whitelisted platforms
+- [x] **Add fallback to safe defaults**
+  - Default to "go" or "null" for low-confidence recommendations
 
-## Phase 1: PROJECT_BOOTSTRAP Orchestrator Phase
+### 3. Bootstrap Integration into Architect SCOPING
+- [ ] **Move bootstrap trigger from orchestrator to architect**
+  - Remove bootstrap from orchestrator startup
+  - Integrate platform detection into SCOPING state
+- [ ] **Enhanced SCOPING state workflow**
+  - Step 1: Run platform detection on existing code
+  - Step 2: If platform detected → add to scoping context
+  - Step 3: If no platform → LLM recommends from spec
+  - Step 4: If confident → save platform, trigger bootstrap
+  - Step 5: If uncertain → transition to ERROR with questions
+- [ ] **Bootstrap execution within SCOPING**
+  - Create bootstrap worktree (`bootstrap-init` branch)
+  - Generate `.maestro` directory structure
+  - Commit bootstrap artifacts to Git
+  - Continue to story generation with platform context
 
-### 🔴 Critical (High Priority)
+### 4. .maestro Directory Structure
+- [x] **Create `.maestro/` directory for artifacts**
+- [x] **Move generated files to `.maestro/`**
+  - `.maestro/makefiles/core.mk`
+  - `.maestro/makefiles/go.mk`
+  - `.maestro/makefiles/node.mk`
+  - `.maestro/makefiles/python.mk`
+  - `.maestro/config.json` (optional)
+- [x] **Update root Makefile to include from `.maestro/`**
+  ```makefile
+  include .maestro/makefiles/core.mk
+  include .maestro/makefiles/go.mk
+  # etc.
+  ```
 
-- [ ] **Implement PROJECT_BOOTSTRAP orchestrator phase** (`bootstrap-1`)
-  - Add blocking phase that runs before story dispatch
-  - Orchestrator must complete bootstrap before any coder tasks are sent
-  - Integration with main orchestrator startup flow
+### 5. Makefile-Centric Build System
+- [x] **Update all build backends to use Makefile**
+  - Change from direct `go test` to `make test`
+  - Change from direct `npm test` to `make test`
+  - Never bypass Makefile with direct toolchain calls
+- [x] **Create modular Makefile generation**
+  - `makefiles/core.mk` - generated once, rarely edited
+  - `makefiles/{platform}.mk` - language-specific templates
+  - Root Makefile as thin facade with includes
+- [x] **Add sentinel comments for generated blocks**
+  - `### ⇡ GENERATED BLOCK ⇡ DO NOT EDIT`
+  - Preserve human edits outside generated blocks
+- [x] **Self-test Makefiles before committing**
+  - Run `make test` on empty stub project
+  - Ensure syntactic validity
 
-- [ ] **Create Story 000 blocking mechanism in dispatcher** (`bootstrap-2`)
-  - Dispatcher won't send tasks until bootstrap story is in `DONE` state
-  - Special handling for Story 000 as blocking prerequisite
-  - Story dependency system integration
+### 6. Stack Evolution Support
+- [ ] **Add STACK_ADD message type**
+  - For adding technologies after initial bootstrap
+- [ ] **Create bootstrap-update workflow**
+  - Schedule bootstrap-update tasks via dispatcher
+  - Generate new `.maestro/makefiles/{platform}.mk`
+  - Update root Makefile includes
+- [ ] **Create stack manifest file**
+  - `.maestro/stack.yaml` or `.maestro/bootstrap.lock`
+  - Track current stacks & versions
+  - Enable diff between desired vs current state
+- [ ] **Make stack changes additive**
+  - Never remove existing blocks unless explicitly instructed
+  - Support coexistence of multiple technologies
 
-- [ ] **Add bootstrap branch creation and auto-merge logic** (`bootstrap-3`)
-  - Create dedicated `bootstrap-init` branch for bootstrap artifacts
-  - Auto-merge to `main` branch after bootstrap completion
-  - Git worktree integration with existing workspace manager
+### 7. Cross-Platform & Tool Support
+- [x] **Add cross-platform Makefile compatibility**
+  - Avoid Bash-only commands
+  - Use portable Make rules or Go helpers
+- [x] **Add version pinning support**
+  - Generate `.tool-versions` (asdf)
+  - Generate `.nvmrc` for Node
+  - Update `go.mod` go directive
+- [x] **Add security scanning targets**
+  - `make scan` wired to `npm audit`, `gosec`, etc.
+  - Optional but wire once rather than retrofit
 
-- [ ] **Design bootstrap artifact templates** (`bootstrap-4`)
-  - Makefile with include pattern for conflict-free updates
-  - Language-specific `.gitignore` files
-  - CI workflow templates (`.github/workflows/ci.yaml`)
-  - Development environment files (`.editorconfig`, version pinning)
+### 8. Error Handling & Recovery
+- [ ] **Add bootstrap failure detection**
+  - Detect repeated bootstrap branch failures
+  - Auto-escalate to human intervention
+- [ ] **Add existing code conflict detection**
+  - Check for non-empty directories (`go.mod`, `package.json`)
+  - Present merge strategies (replace/coexist)
+- [ ] **Add bootstrap rollback capability**
+  - Ability to revert bad bootstrap artifacts
 
-## Phase 4: Orchestrator Build Execution
+## Implementation Order
+1. **Phase 1**: Architect-first backend determination + platform whitelist ✅
+2. **Phase 2**: `.maestro` directory structure + modular Makefiles ✅
+3. **Phase 3**: Bootstrap integration into architect SCOPING state 🔄
+4. **Phase 4**: Stack evolution support + idempotency
+5. **Phase 5**: Cross-platform support + tooling integration
 
-### 🔴 Critical (High Priority)
+## Current Architecture: Spec-Driven Bootstrap
+Bootstrap is now triggered by spec receipt and integrated into the architect's SCOPING state:
 
-- [ ] **Create orchestrator build execution endpoints** (`bootstrap-5`)
-  - HTTP/gRPC endpoints for build, test, lint, run operations
-  - Streaming output support for real-time feedback
-  - Context and timeout handling
+1. **Orchestrator Startup**: No bootstrap - just start agents in WAITING state
+2. **Spec Receipt**: Web UI or CLI provides spec to architect
+3. **SCOPING State Enhanced**: 
+   - Run platform detection on existing code
+   - If platform detected → add to scoping context
+   - If no platform → LLM recommends from spec  
+   - If confident → save platform, trigger bootstrap
+   - If uncertain → transition to ERROR with questions
+4. **Bootstrap Execution**: Create `.maestro` structure, commit artifacts
+5. **Story Generation**: Stories include platform context, sent to storyCh
+6. **Coding Agents**: Naturally blocked until bootstrap completes
 
-- [ ] **Add BuildBackend integration to orchestrator** (`bootstrap-6`)
-  - Orchestrator manages backend detection per project
-  - Backend selection and caching
-  - Connection between endpoints and build backend system
+## Testing Strategy
+- [ ] **Test with empty projects** (new project bootstrap)
+- [ ] **Test with existing projects** (conflict detection)
+- [ ] **Test multi-platform projects** (Go + Node, Python + React)
+- [ ] **Test stack evolution** (adding platforms later)
+- [ ] **Test idempotency** (rerunning bootstrap)
+- [ ] **Test cross-platform** (Windows compatibility)
 
-- [ ] **Refactor coder agents to use orchestrator build endpoints** (`bootstrap-7`)
-  - Remove direct build tool execution from coder agents
-  - Replace `runMakeTest` with orchestrator API calls
-  - Update `TESTING` state to use orchestrator endpoints
-
-### 🟡 Medium Priority
-
-- [ ] **Update coder templates to use backend info from TASK payload** (`bootstrap-8`)
-  - Templates reference backend-specific information
-  - Context about available build operations
-  - Language-specific guidance
-
-- [ ] **Add backend name to TASK payload from architect** (`bootstrap-9`)
-  - Architect detects backend during story generation
-  - Backend information included in task messages
-  - Integration with existing task payload structure
-
-- [ ] **Implement backend selection and caching in orchestrator** (`bootstrap-10`)
-  - Cache backend detection results per project
-  - Lazy loading and invalidation strategies
-  - Performance optimization for repeated operations
-
-## Implementation Details
-
-### 🟡 Medium Priority
-
-- [ ] **Create bootstrap configuration options** (`bootstrap-11`)
-  - `force_backend` to override auto-detection
-  - `skip_makefile` to disable Makefile generation
-  - `additional_artifacts` for custom templates
-  - `template_overrides` for custom template paths
-
-- [ ] **Add bootstrap artifact generation** (`bootstrap-12`)
-  - Makefile with include pattern (`-include agent.mk`)
-  - Generated `agent.mk` with backend-specific targets
-  - `.gitattributes` with union merge configuration
-  - README.md skeleton and CONTRIBUTING.md
-
-- [ ] **Implement NodeBackend and PythonBackend artifact templates** (`bootstrap-13`)
-  - Node.js: `package.json` scripts, `.nvmrc`, `eslint` config
-  - Python: `pyproject.toml`, `requirements.txt`, `ruff` config
-  - Go: `go.mod`, `golangci-lint.yaml`, module structure
-
-## Testing & Validation
-
-### 🟢 Low Priority
-
-- [ ] **Create smoke test: empty repo → bootstrap → health endpoint story** (`bootstrap-14`)
-  - End-to-end test of complete bootstrap flow
-  - Validates that empty repository becomes fully functional
-  - Health endpoint as minimal working application
-
-- [ ] **Test bootstrap with existing projects** (`bootstrap-15`)
-  - Go projects with existing `go.mod`
-  - Node.js projects with existing `package.json`
-  - Python projects with existing `pyproject.toml` or `requirements.txt`
-
-- [ ] **Validate conflict-free Makefile updates** (`bootstrap-16`)
-  - Test include file pattern with existing Makefiles
-  - Verify union merge strategy prevents conflicts
-  - Multiple agents updating build files simultaneously
-
-## Documentation
-
-### 🟢 Low Priority
-
-- [ ] **Update README with bootstrap requirements** (`bootstrap-17`)
-  - Document bootstrap phase in orchestrator startup
-  - Prerequisites and configuration options
-  - Troubleshooting guide for bootstrap failures
-
-- [ ] **Create migration guide for existing projects** (`bootstrap-18`)
-  - How to migrate projects with existing Makefiles
-  - Handling complex build systems
-  - Preserving existing customizations
-
-## Architecture Notes
-
-### Key Design Principles
-
-1. **Orchestrator-Level Build Execution**: Agents request builds from orchestrator instead of running tools directly
-2. **Language-Agnostic Interface**: Unified API regardless of underlying toolchain
-3. **Conflict-Free Makefile Strategy**: Include file pattern preserves human customizations
-4. **Blocking Bootstrap Phase**: Ensures build infrastructure exists before any coding begins
-
-### Integration Points
-
-- **Orchestrator**: Manages bootstrap phase and build execution
-- **Dispatcher**: Blocks story dispatch until bootstrap complete
-- **Architect**: Detects backend and includes in task payloads
-- **Coder**: Uses orchestrator endpoints instead of direct tool execution
-- **Workspace Manager**: Handles bootstrap branch creation and merging
-
-### File Structure
-
-```
-pkg/
-├── build/           # ✅ Build backend system (COMPLETE)
-│   ├── backend.go
-│   ├── registry.go
-│   ├── go_backend.go
-│   ├── python_backend.go
-│   ├── node_backend.go
-│   └── README.md
-├── bootstrap/       # ❌ Bootstrap orchestrator phase (TODO)
-│   ├── phase.go
-│   ├── artifacts.go
-│   └── templates/
-├── endpoints/       # ❌ Build execution endpoints (TODO)
-│   ├── build_api.go
-│   └── streaming.go
-└── ...
-```
-
-## Next Steps
-
-1. **Start with Phase 1**: Implement PROJECT_BOOTSTRAP orchestrator phase
-2. **Add Story 000 blocking**: Modify dispatcher to handle bootstrap dependencies
-3. **Create build endpoints**: Move build execution to orchestrator level
-4. **Refactor agents**: Update coder agents to use orchestrator endpoints
-5. **Test integration**: Validate complete bootstrap flow with real projects
-
-The goal is to transform the current agent-level build execution into a proper orchestrator-managed bootstrap system that eliminates the Makefile dependency problem entirely.
+## Future Considerations
+- Docker/dev-container generation
+- More sophisticated linter/manager configurability (uv, venv)
+- IDE integration (.vscode, .idea)
+- CI/CD pipeline generation
