@@ -5,13 +5,22 @@ import (
 	"time"
 )
 
+// ExecutorType represents the type of executor
+type ExecutorType string
+
+// Executor type constants
+const (
+	ExecutorTypeLocal  ExecutorType = "local"
+	ExecutorTypeDocker ExecutorType = "docker"
+)
+
 // Executor defines the interface for executing commands in different environments
 type Executor interface {
 	// Run executes a command with the given options and returns the result
 	Run(ctx context.Context, cmd []string, opts ExecOpts) (ExecResult, error)
 
 	// Name returns the executor type name for logging/debugging
-	Name() string
+	Name() ExecutorType
 
 	// Available returns true if this executor can be used in the current environment
 	Available() bool

@@ -34,7 +34,7 @@ func (r *Registry) Register(executor Executor) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.executors[name] = executor
+	r.executors[string(name)] = executor
 	return nil
 }
 
@@ -170,7 +170,7 @@ func init() {
 
 	// Register Docker executor with a default image
 	// This will be configurable later via configuration
-	dockerExec := NewDockerExec("alpine:latest")
+	dockerExec := NewLongRunningDockerExec("alpine:latest")
 	if err := Register(dockerExec); err != nil {
 		panic(fmt.Sprintf("Failed to register docker executor: %v", err))
 	}

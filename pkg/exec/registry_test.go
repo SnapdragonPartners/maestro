@@ -12,8 +12,8 @@ type mockExecutor struct {
 	available bool
 }
 
-func (m *mockExecutor) Name() string {
-	return m.name
+func (m *mockExecutor) Name() ExecutorType {
+	return ExecutorType(m.name)
 }
 
 func (m *mockExecutor) Available() bool {
@@ -46,8 +46,8 @@ func TestRegistry_Register(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if executor.Name() != "test" {
-		t.Errorf("Expected name 'test', got %s", executor.Name())
+	if string(executor.Name()) != "test" {
+		t.Errorf("Expected name 'test', got %s", string(executor.Name()))
 	}
 }
 
@@ -93,8 +93,8 @@ func TestRegistry_GetDefault(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if executor.Name() != "local" {
-		t.Errorf("Expected default executor 'local', got %s", executor.Name())
+	if string(executor.Name()) != "local" {
+		t.Errorf("Expected default executor 'local', got %s", string(executor.Name()))
 	}
 }
 
@@ -114,8 +114,8 @@ func TestRegistry_SetDefault(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if executor.Name() != "test" {
-		t.Errorf("Expected default executor 'test', got %s", executor.Name())
+	if string(executor.Name()) != "test" {
+		t.Errorf("Expected default executor 'test', got %s", string(executor.Name()))
 	}
 }
 
@@ -183,7 +183,7 @@ func TestRegistry_GetAvailable(t *testing.T) {
 
 	for _, executor := range available {
 		if !executor.Available() {
-			t.Errorf("Executor %s should be available", executor.Name())
+			t.Errorf("Executor %s should be available", string(executor.Name()))
 		}
 	}
 }
@@ -204,8 +204,8 @@ func TestRegistry_GetBest(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if executor.Name() != "docker" {
-		t.Errorf("Expected 'docker' executor, got %s", executor.Name())
+	if string(executor.Name()) != "docker" {
+		t.Errorf("Expected 'docker' executor, got %s", string(executor.Name()))
 	}
 }
 
@@ -225,8 +225,8 @@ func TestRegistry_GetBest_Fallback(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if executor.Name() != "local" {
-		t.Errorf("Expected 'local' executor, got %s", executor.Name())
+	if string(executor.Name()) != "local" {
+		t.Errorf("Expected 'local' executor, got %s", string(executor.Name()))
 	}
 }
 
@@ -262,8 +262,8 @@ func TestGlobalRegistry(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if executor.Name() != "global_test" {
-		t.Errorf("Expected 'global_test', got %s", executor.Name())
+	if string(executor.Name()) != "global_test" {
+		t.Errorf("Expected 'global_test', got %s", string(executor.Name()))
 	}
 
 	// Test that local executor is registered by default

@@ -76,6 +76,14 @@ func (g *GoBackend) Run(ctx context.Context, root string, args []string, stream 
 	return nil
 }
 
+// GetDockerImage returns the appropriate Docker image for Go projects
+// It attempts to detect the Go version from go.mod and returns the corresponding image
+func (g *GoBackend) GetDockerImage(root string) string {
+	// TODO: Parse go.mod to detect Go version and return appropriate image
+	// For now, return the default Go image
+	return "golang:1.24-alpine"
+}
+
 // runMakeCommand executes a make command with the given target
 func (g *GoBackend) runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
 	cmd := exec.CommandContext(ctx, "make", target)

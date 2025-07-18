@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
@@ -45,6 +46,38 @@ const (
 	keyQuestionCompletedAt = "question_completed_at"
 )
 
+// Docker container constants
+const (
+	DefaultDockerImage = config.DefaultUbuntuDockerImage // Fallback for unknown project types
+)
+
+// getDockerImageForAgent returns the appropriate Docker image based on agent configuration and detected backend
+func getDockerImageForAgent(agentConfig *config.Agent, buildRegistry *build.Registry, workDir string) string {
+	// 1. Use agent-specific Docker image if specified in config
+	if agentConfig != nil && agentConfig.DockerImage != "" {
+		return agentConfig.DockerImage
+	}
+
+	// 2. Use backend-specific default based on detected project type
+	if buildRegistry != nil && workDir != "" {
+		if backend, err := buildRegistry.Detect(workDir); err == nil {
+			return backend.GetDockerImage(workDir)
+		}
+	}
+
+	// 3. No universal fallback - each backend must define its own default
+	// This should not happen in normal operation since we don't support generic backends
+	// If we reach here, it means backend detection failed
+	return ""
+}
+
+// Context key type for story ID
+type contextKey string
+
+const (
+	contextKeyStoryID contextKey = "story_id"
+)
+
 // File creation constants
 const (
 	defaultFilename   = "code.txt" // Standard filename for unfenced code blocks
@@ -59,12 +92,15 @@ type Coder struct {
 	contextManager          *contextmgr.ContextManager
 	llmClient               agent.LLMClient
 	renderer                *templates.Renderer
-	workDir                 string
+	workDir                 string // Current working directory (may be story-specific)
+	originalWorkDir         string // Original agent work directory (for cleanup)
 	logger                  *logx.Logger
-	dispatcher              *dispatch.Dispatcher // Dispatcher for sending messages
-	workspaceManager        *WorkspaceManager    // Git worktree management
-	buildRegistry           *build.Registry      // Build backend registry
-	buildService            *build.BuildService  // Build service for MCP tools
+	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
+	workspaceManager        *WorkspaceManager              // Git worktree management
+	buildRegistry           *build.Registry                // Build backend registry
+	buildService            *build.BuildService            // Build service for MCP tools
+	longRunningExecutor     *execpkg.LongRunningDockerExec // Long-running Docker executor for container per story
+	containerName           string                         // Current story container name
 
 	// Iteration budgets
 	codingBudget int
@@ -116,6 +152,11 @@ func (c *Coder) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 // convertApprovalData converts approval data from various formats to *proto.ApprovalResult
 // Handles both direct struct pointers and map[string]interface{} from JSON deserialization
 func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
+	// If data is nil or empty, return error indicating no approval data
+	if data == nil {
+		return nil, fmt.Errorf("no approval data available")
+	}
+
 	// If it's already the correct type, return it
 	if result, ok := data.(*proto.ApprovalResult); ok {
 		return result, nil
@@ -134,6 +175,20 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 			return nil, fmt.Errorf("failed to unmarshal approval data: %w", err)
 		}
 
+		return &result, nil
+	}
+
+	// If it's a string (from cleanup or serialization), handle appropriately
+	if str, ok := data.(string); ok {
+		// Empty string means no approval result (from cleanup)
+		if str == "" {
+			return nil, fmt.Errorf("no approval data available")
+		}
+		// Non-empty string might be JSON-serialized approval result
+		var result proto.ApprovalResult
+		if err := json.Unmarshal([]byte(str), &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal approval data from string: %w", err)
+		}
 		return &result, nil
 	}
 
@@ -183,20 +238,26 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 		}
 	}
 
+	// Create build registry first so we can use it for Docker image selection
+	buildRegistry := build.NewRegistry()
+
 	coder := &Coder{
-		BaseStateMachine: sm,
-		agentConfig:      agentCfg,
-		configAgent:      agentConfig,
-		contextManager:   contextmgr.NewContextManagerWithModel(modelConfig),
-		llmClient:        llmClient,
-		renderer:         renderer,
-		workDir:          workDir,
-		logger:           logx.NewLogger(agentID),
-		dispatcher:       nil, // Will be set during Attach()
-		buildRegistry:    build.NewRegistry(),
-		buildService:     buildService,
-		codingBudget:     codingBudget,
-		fixingBudget:     fixingBudget,
+		BaseStateMachine:    sm,
+		agentConfig:         agentCfg,
+		configAgent:         agentConfig,
+		contextManager:      contextmgr.NewContextManagerWithModel(modelConfig),
+		llmClient:           llmClient,
+		renderer:            renderer,
+		workDir:             workDir,
+		originalWorkDir:     workDir, // Store original work directory for cleanup
+		logger:              logx.NewLogger(agentID),
+		dispatcher:          nil, // Will be set during Attach()
+		buildRegistry:       buildRegistry,
+		buildService:        buildService,
+		codingBudget:        codingBudget,
+		fixingBudget:        fixingBudget,
+		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(agentConfig, buildRegistry, workDir)),
+		containerName:       "", // Will be set during setup
 	}
 
 	return coder, nil
@@ -276,38 +337,54 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 // ProcessState implements the v2 FSM state machine logic
 func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
 	sm := c.BaseStateMachine
-	c.logger.Debug("ProcessState: coder %p, workDir: %s, currentState: %s", c, c.workDir, c.GetCurrentState())
+	currentState := c.GetCurrentState()
+	c.logger.Debug("ProcessState: coder %p, workDir: %s, currentState: %s", c, c.workDir, currentState)
 
-	switch c.GetCurrentState() {
+	var nextState agent.State
+	var done bool
+	var err error
+
+	switch currentState {
 	case agent.StateWaiting:
-		return c.handleWaiting(ctx, sm)
+		nextState, done, err = c.handleWaiting(ctx, sm)
 	case StateSetup:
-		return c.handleSetup(ctx, sm)
+		nextState, done, err = c.handleSetup(ctx, sm)
 	case StatePlanning:
-		return c.handlePlanning(ctx, sm)
+		nextState, done, err = c.handlePlanning(ctx, sm)
 	case StatePlanReview:
-		return c.handlePlanReview(ctx, sm)
+		nextState, done, err = c.handlePlanReview(ctx, sm)
 	case StateCoding:
-		return c.handleCoding(ctx, sm)
+		nextState, done, err = c.handleCoding(ctx, sm)
 	case StateTesting:
-		return c.handleTesting(ctx, sm)
+		nextState, done, err = c.handleTesting(ctx, sm)
 	case StateFixing:
-		return c.handleFixing(ctx, sm)
+		nextState, done, err = c.handleFixing(ctx, sm)
 	case StateCodeReview:
-		return c.handleCodeReview(ctx, sm)
+		nextState, done, err = c.handleCodeReview(ctx, sm)
 	case StateBudgetReview:
-		return c.handleBudgetReview(ctx, sm)
+		nextState, done, err = c.handleBudgetReview(ctx, sm)
 	case StateAwaitMerge:
-		return c.handleAwaitMerge(ctx, sm)
+		nextState, done, err = c.handleAwaitMerge(ctx, sm)
+	case StateCleanup:
+		nextState, done, err = c.handleCleanup(ctx, sm)
 	case StateQuestion:
-		return c.handleQuestion(ctx, sm)
+		nextState, done, err = c.handleQuestion(ctx, sm)
 	case agent.StateDone:
-		return c.handleDone(ctx, sm)
+		nextState, done, err = c.handleDone(ctx, sm)
 	case agent.StateError:
-		return c.handleError(ctx, sm)
+		nextState, done, err = c.handleError(ctx, sm)
 	default:
 		return agent.StateError, false, fmt.Errorf("unknown state: %s", c.GetCurrentState())
 	}
+
+	// Log the state transition decision
+	if err != nil {
+		c.logger.Error("🔄 State handler %s returned error: %v", currentState, err)
+	} else if nextState != currentState {
+		c.logger.Info("🔄 State handler %s → %s (done: %v)", currentState, nextState, done)
+	}
+
+	return nextState, done, err
 }
 
 // contextKeyAgentID is a unique type for agent ID context key
@@ -998,9 +1075,6 @@ func (c *Coder) getWorkingDirectoryContents() string {
 
 	var items []string
 	for _, entry := range entries {
-		if entry.Name() == "state" {
-			continue // Skip internal state directory
-		}
 		if entry.IsDir() {
 			items = append(items, entry.Name()+"/")
 		} else {
@@ -1607,8 +1681,8 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 
 		switch result.Status {
 		case "merged":
-			c.logger.Info("🧑‍💻 PR merged successfully, task completed")
-			return agent.StateDone, true, nil
+			c.logger.Info("🧑‍💻 PR merged successfully, transitioning to cleanup")
+			return StateCleanup, false, nil
 		case "merge_conflict":
 			c.logger.Info("🧑‍💻 Merge conflict detected, transitioning to FIXING")
 			sm.SetStateData("fixing_reason", "merge_conflict")
@@ -1793,7 +1867,7 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 		sm.SetStateData(keyQuestionCompletedAt, time.Now().UTC())
 
 		// Clear the answer so we don't loop
-		sm.SetStateData(keyArchitectAnswer, "")
+		sm.SetStateData(keyArchitectAnswer, nil)
 
 		// Return to origin state using metadata
 		origin, _ := sm.GetStateValue(keyQuestionOrigin)
@@ -2041,6 +2115,20 @@ func (c *Coder) Step(ctx context.Context) (bool, error) {
 
 // Shutdown performs cleanup (required for Driver interface)
 func (c *Coder) Shutdown(ctx context.Context) error {
+	c.logger.Info("Shutting down coder agent %s", c.GetAgentID())
+
+	// Stop the long-running container if it exists
+	c.cleanupContainer(ctx, "shutdown")
+
+	// Use the executor's shutdown method for comprehensive cleanup
+	if c.longRunningExecutor != nil {
+		if err := c.longRunningExecutor.Shutdown(ctx); err != nil {
+			c.logger.Error("Failed to shutdown long-running executor: %v", err)
+			// Continue with persist even if container cleanup fails
+		}
+	}
+
+	c.logger.Info("Coder agent %s shutdown complete", c.GetAgentID())
 	return c.Persist()
 }
 
@@ -2064,7 +2152,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 
 	storyIDStr, ok := storyID.(string)
 	if !ok {
-		return agent.StateError, false, fmt.Errorf("story_id is not a string: %v", storyID)
+		return agent.StateError, false, fmt.Errorf("story_id is not a string in SETUP state: %v (type: %T)", storyID, storyID)
 	}
 
 	// Setup workspace
@@ -2081,21 +2169,96 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	sm.SetStateData("worktree_path", workspaceResult.WorkDir)
 	sm.SetStateData("actual_branch_name", workspaceResult.BranchName)
 
-	// Update the coder's working directory to use the story work directory
+	// Update the coder's working directory to use the agent work directory
 	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place
 	c.workDir = workspaceResult.WorkDir
 	c.logger.Info("Workspace setup complete: %s", workspaceResult.WorkDir)
 	c.logger.Debug("Updated coder working directory to: %s", c.workDir)
 	c.logger.Debug("Coder instance pointer: %p, workDir: %s", c, c.workDir)
 
+	// Start long-running Docker container for this story
+	if c.longRunningExecutor != nil {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		// Add story ID to context for container identification
+		storyCtx := context.WithValue(ctx, contextKeyStoryID, storyIDStr)
+
+		// Configure container with workspace mounting
+		execOpts := execpkg.ExecOpts{
+			WorkDir:         c.workDir,
+			ReadOnly:        true, // Read-only root filesystem for security
+			NetworkDisabled: true, // Disable network access for security
+			User:            "",   // Use default user mapping
+			Env:             []string{},
+			Timeout:         0,   // No timeout for long-running container
+			ResourceLimits:  nil, // Use default resource limits
+		}
+
+		containerName, err := c.longRunningExecutor.StartContainer(storyCtx, storyIDStr, execOpts)
+		if err != nil {
+			c.logger.Error("Failed to start long-running container: %v", err)
+			return agent.StateError, false, fmt.Errorf("failed to start container: %w", err)
+		}
+
+		c.containerName = containerName
+		c.logger.Info("Started long-running container: %s", containerName)
+
+		// Update the shell tool to use the story-specific container context
+		// This will ensure all shell commands run in the persistent container
+		if err := c.updateShellToolForStory(storyCtx); err != nil {
+			c.logger.Error("Failed to update shell tool for story: %v", err)
+			// Continue anyway - this shouldn't block the story
+		}
+	}
+
 	return StatePlanning, false, nil
 }
 
-// handleDone implements cleanup and restart logic for DONE state
-func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+// SetDockerImage configures the Docker image for the long-running executor
+func (c *Coder) SetDockerImage(image string) {
+	if c.longRunningExecutor != nil {
+		c.longRunningExecutor.SetImage(image)
+	}
+}
+
+// cleanupContainer stops and removes the current story's container
+func (c *Coder) cleanupContainer(ctx context.Context, reason string) {
+	if c.longRunningExecutor != nil && c.containerName != "" {
+		c.logger.Info("Stopping long-running container %s (%s)", c.containerName, reason)
+
+		containerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		if err := c.longRunningExecutor.StopContainer(containerCtx, c.containerName); err != nil {
+			c.logger.Error("Failed to stop container %s: %v", c.containerName, err)
+		} else {
+			c.logger.Info("Container %s stopped successfully", c.containerName)
+		}
+
+		// Clear container name
+		c.containerName = ""
+	}
+}
+
+// updateShellToolForStory updates the shell tool to use the story-specific container context
+func (c *Coder) updateShellToolForStory(storyCtx context.Context) error {
+	// Update the shell tool to use the long-running executor
+	if err := tools.UpdateShellToolExecutor(c.longRunningExecutor); err != nil {
+		return fmt.Errorf("failed to update shell tool with long-running executor: %w", err)
+	}
+
+	return nil
+}
+
+// handleCleanup implements cleanup logic for CLEANUP state
+func (c *Coder) handleCleanup(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	// Stop the long-running container
+	c.cleanupContainer(ctx, "story completed")
+
 	if c.workspaceManager == nil {
 		c.logger.Warn("No workspace manager configured, skipping cleanup")
-		return StateSetup, false, nil // Ready for next story
+		return agent.StateWaiting, false, nil // Ready for next story
 	}
 
 	// Get story ID for cleanup
@@ -2103,7 +2266,7 @@ func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (age
 	if exists {
 		if storyIDStr, ok := storyID.(string); ok {
 			agentID := c.GetAgentID()
-			if err := c.workspaceManager.CleanupWorkspace(ctx, agentID, storyIDStr, c.workDir); err != nil {
+			if err := c.workspaceManager.CleanupWorkspace(ctx, agentID, storyIDStr, c.originalWorkDir); err != nil {
 				c.logger.Error("Failed to cleanup workspace: %v", err)
 				// Continue anyway - don't block restart
 			} else {
@@ -2113,14 +2276,28 @@ func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (age
 	}
 
 	// Clear old state data for fresh start
-	sm.SetStateData("story_id", "")
-	sm.SetStateData("worktree_path", "")
-	sm.SetStateData("task_content", "")
-	sm.SetStateData("plan_approval_result", "")
-	sm.SetStateData("code_approval_result", "")
+	sm.SetStateData("story_id", nil)
+	sm.SetStateData("worktree_path", nil)
+	sm.SetStateData("task_content", nil)
+	sm.SetStateData("plan_approval_result", nil)
+	sm.SetStateData("code_approval_result", nil)
 
-	c.logger.Info("Story completed, ready for next assignment")
-	return StateSetup, false, nil // Transition to SETUP for next story
+	c.logger.Info("🧑‍💻 Story completed, transitioning to WAITING for next assignment")
+	return agent.StateWaiting, false, nil // Transition to WAITING for next story
+}
+
+// handleDone implements cleanup and terminal logic for DONE state
+func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+	// Call the cleanup function to handle container and workspace cleanup
+	_, _, err := c.handleCleanup(ctx, sm)
+	if err != nil {
+		c.logger.Error("Failed to cleanup during DONE: %v", err)
+		// Continue anyway - don't block shutdown
+	}
+
+	c.logger.Info("🧑‍💻 Agent shutting down - DONE state is terminal")
+	// DONE is terminal - no state transition
+	return agent.StateDone, false, nil
 }
 
 // handleError implements cleanup and restart logic for ERROR state
@@ -2128,6 +2305,9 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	// Log error state entry
 	errorMsg, _ := sm.GetStateValue("error_message")
 	c.logger.Error("Entered ERROR state: %v", errorMsg)
+
+	// Stop the long-running container
+	c.cleanupContainer(ctx, "error occurred")
 
 	if c.workspaceManager == nil {
 		c.logger.Warn("No workspace manager configured, skipping cleanup")
@@ -2139,7 +2319,7 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	if exists {
 		if storyIDStr, ok := storyID.(string); ok {
 			agentID := c.GetAgentID()
-			if err := c.workspaceManager.CleanupWorkspace(ctx, agentID, storyIDStr, c.workDir); err != nil {
+			if err := c.workspaceManager.CleanupWorkspace(ctx, agentID, storyIDStr, c.originalWorkDir); err != nil {
 				c.logger.Error("Failed to cleanup workspace after error: %v", err)
 				// Continue anyway - don't block retry
 			} else {
@@ -2149,11 +2329,11 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	}
 
 	// Clear state data for fresh start (keep error info for debugging)
-	sm.SetStateData("story_id", "")
-	sm.SetStateData("worktree_path", "")
-	sm.SetStateData("task_content", "")
-	sm.SetStateData("plan_approval_result", "")
-	sm.SetStateData("code_approval_result", "")
+	sm.SetStateData("story_id", nil)
+	sm.SetStateData("worktree_path", nil)
+	sm.SetStateData("task_content", nil)
+	sm.SetStateData("plan_approval_result", nil)
+	sm.SetStateData("code_approval_result", nil)
 
 	c.logger.Info("Error handled, ready for retry via SETUP")
 	return StateSetup, false, nil // Transition to SETUP for retry
@@ -2316,13 +2496,13 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 	}
 
 	storyID, exists := sm.GetStateValue("story_id")
-	if !exists || storyID == "" {
+	if !exists || storyID == nil {
 		return fmt.Errorf("no story_id found in state data")
 	}
 
 	storyIDStr, ok := storyID.(string)
 	if !ok {
-		return fmt.Errorf("story_id is not a string: %v", storyID)
+		return fmt.Errorf("story_id is not a string in pushBranchAndCreatePR: %v (type: %T)", storyID, storyID)
 	}
 
 	// Use the actual branch name that was created (which may be different due to collisions)

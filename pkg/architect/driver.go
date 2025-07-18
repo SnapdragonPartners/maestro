@@ -304,6 +304,10 @@ func (d *Driver) handleWaiting(ctx context.Context) (agent.State, error) {
 		d.logger.Info("🏗️ Architect WAITING state context cancelled")
 		return StateError, ctx.Err()
 	case specMsg := <-d.specCh:
+		if specMsg == nil {
+			d.logger.Warn("🏗️ Architect received nil spec message, likely due to shutdown")
+			return StateError, fmt.Errorf("received nil spec message")
+		}
 		d.logger.Info("🏗️ Architect received spec message %s, transitioning to SCOPING", specMsg.ID)
 
 		// Store the spec message for processing in SCOPING state
@@ -311,6 +315,10 @@ func (d *Driver) handleWaiting(ctx context.Context) (agent.State, error) {
 
 		return StateScoping, nil
 	case questionMsg := <-d.questionsCh:
+		if questionMsg == nil {
+			d.logger.Warn("🏗️ Architect received nil question message, likely due to shutdown")
+			return StateError, fmt.Errorf("received nil question message")
+		}
 		d.logger.Info("🏗️ Architect received question message %s in WAITING state, transitioning to REQUEST", questionMsg.ID)
 
 		// Store the question for processing in REQUEST state

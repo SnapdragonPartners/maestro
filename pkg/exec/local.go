@@ -18,8 +18,8 @@ func NewLocalExec() *LocalExec {
 }
 
 // Name returns the executor type name
-func (e *LocalExec) Name() string {
-	return "local"
+func (e *LocalExec) Name() ExecutorType {
+	return ExecutorTypeLocal
 }
 
 // Available returns true since local execution is always available
@@ -72,7 +72,7 @@ func (e *LocalExec) Run(ctx context.Context, cmd []string, opts ExecOpts) (ExecR
 		Stdout:       stdout,
 		Stderr:       stderr,
 		Duration:     duration,
-		ExecutorUsed: e.Name(),
+		ExecutorUsed: string(e.Name()),
 	}
 
 	// Return the result even if the command failed (non-zero exit code)

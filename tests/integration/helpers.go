@@ -298,8 +298,8 @@ func StartCoderWithTask(t *testing.T, harness *TestHarness, coderID, taskContent
 		t.Fatalf("Failed to initialize coder %s: %v", coderID, err)
 	}
 
-	// Transition to PLANNING state to start the workflow
-	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StatePlanning, nil); err != nil {
-		t.Fatalf("Failed to transition coder %s to PLANNING: %v", coderID, err)
+	// Transition to SETUP state first, then the state machine will naturally transition to PLANNING
+	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StateSetup, nil); err != nil {
+		t.Fatalf("Failed to transition coder %s to SETUP: %v", coderID, err)
 	}
 }

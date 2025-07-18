@@ -127,6 +127,14 @@ func (n *NodeBackend) Run(ctx context.Context, root string, args []string, strea
 	return nil
 }
 
+// GetDockerImage returns the appropriate Docker image for Node.js projects
+// It attempts to detect the Node.js version from package.json and returns the corresponding image
+func (n *NodeBackend) GetDockerImage(root string) string {
+	// TODO: Parse package.json to detect Node.js version
+	// For now, return the default Node.js image
+	return "node:20-alpine"
+}
+
 // runMakeCommand executes a make command with the given target
 func (n *NodeBackend) runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
 	cmd := exec.CommandContext(ctx, "make", target)

@@ -97,3 +97,10 @@ func (n *NullBackend) isEmptyRepo(root string) bool {
 
 	return true
 }
+
+// GetDockerImage returns the appropriate Docker image for null backend
+// Since null backend is for empty repositories, we use a generic Ubuntu image
+func (n *NullBackend) GetDockerImage(root string) string {
+	// Empty repositories get a generic Ubuntu image
+	return "ubuntu:22.04"
+}

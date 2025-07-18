@@ -165,6 +165,9 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, me
 	// Update current state
 	sm.currentState = newState
 
+	// Log the transition
+	sm.logger.Info("🔄 State machine transition: %s → %s", oldState, newState)
+
 	// Update state data with transition metadata
 	sm.stateData["previous_state"] = oldState.String()
 	sm.stateData["current_state"] = newState.String()

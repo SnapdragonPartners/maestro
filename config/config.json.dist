@@ -12,7 +12,8 @@
           "name": "claude-main",
           "id": "001",
           "type": "coder",
-          "workdir": "./work/claude-main"
+          "workdir": "./work/claude-main",
+          "docker_image": "golang:1.24-alpine"
         }
       ]
     },
@@ -43,5 +44,21 @@
   "max_retry_attempts": 3,
   "retry_backoff_multiplier": 2.0,
   "story_channel_factor": 8,
-  "questions_channel_size": 1
+  "questions_channel_size": 1,
+  "executor": {
+    "type": "docker",
+    "fallback": "local",
+    "docker": {
+      "image": "golang:1.24-alpine",
+      "network": "none",
+      "read_only": true,
+      "auto_pull": true,
+      "pull_timeout": 300,
+      "cpus": "2",
+      "memory": "4g",
+      "pids": 256,
+      "tmpfs_size": "100m"
+    }
+  },
+  "_executor_comment": "Executor configuration: type (docker|local|auto), Docker image for sandboxing, resource limits, and security settings"
 }

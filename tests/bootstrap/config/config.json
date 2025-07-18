@@ -41,5 +41,17 @@
   "max_retry_attempts": 3,
   "retry_backoff_multiplier": 2.0,
   "story_channel_factor": 8,
-  "questions_channel_size": 1
+  "questions_channel_size": 1,
+  "executor": {
+    "type": "docker",
+    "fallback": "local",
+    "docker": {
+      "image": "golang:1.24-alpine",
+      "auto_pull": true,
+      "pull_timeout": 300,
+      "cpus": "2",
+      "memory": "2g",
+      "pids": 1024
+    }
+  }
 }

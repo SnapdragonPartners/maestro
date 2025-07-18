@@ -9,7 +9,8 @@ import (
 
 // State constants - single source of truth for state names
 // We inherit three states, WAITING (the entry state), DONE and ERROR from the base agent.
-// DONE and ERROR are no longer terminal - they can transition to SETUP for the next story.
+// DONE is terminal (agent shutdown), ERROR transitions to WAITING for recovery.
+// CLEANUP handles story completion and transitions to WAITING for next story.
 const (
 	StateSetup        agent.State = "SETUP"
 	StatePlanning     agent.State = "PLANNING"
@@ -20,6 +21,7 @@ const (
 	StateCodeReview   agent.State = "CODE_REVIEW"
 	StateBudgetReview agent.State = "BUDGET_REVIEW"
 	StateAwaitMerge   agent.State = "AWAIT_MERGE"
+	StateCleanup      agent.State = "CLEANUP"
 	StateQuestion     agent.State = "QUESTION"
 )
 
@@ -49,7 +51,7 @@ func ValidateState(state agent.State) error {
 func GetValidStates() []agent.State {
 	return []agent.State{
 		agent.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting, StateFixing,
-		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion, agent.StateDone, agent.StateError,
+		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateCleanup, StateQuestion, agent.StateDone, agent.StateError,
 	}
 }
 
@@ -84,15 +86,18 @@ var CoderTransitions = map[agent.State][]agent.State{
 	// BUDGET_REVIEW can continue/pivot (→CODING/FIXING), escalate (→CODE_REVIEW), or abandon (→ERROR)
 	StateBudgetReview: {StateCoding, StateFixing, StateCodeReview, agent.StateError},
 
-	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→FIXING)
-	StateAwaitMerge: {agent.StateDone, StateFixing},
+	// AWAIT_MERGE can complete successfully (→CLEANUP) or encounter merge conflicts (→FIXING)
+	StateAwaitMerge: {StateCleanup, StateFixing},
+
+	// CLEANUP can return to WAITING for next story or transition to DONE for shutdown
+	StateCleanup: {agent.StateWaiting, agent.StateDone},
 
 	// QUESTION can return to origin state or escalate to error based on answer type
 	StateQuestion: {StatePlanning, StateCoding, StateFixing, agent.StateError},
 
-	// DONE and ERROR are no longer terminal - they can restart via SETUP
-	agent.StateDone:  {StateSetup},
-	agent.StateError: {StateSetup},
+	// ERROR can restart the workflow - ERROR returns to WAITING for recovery
+	// DONE is terminal (no transitions)
+	agent.StateError: {agent.StateWaiting},
 }
 
 // IsValidCoderTransition checks if a transition between two states is allowed

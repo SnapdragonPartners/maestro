@@ -40,6 +40,11 @@ func (m *mockBuildBackend) Run(ctx context.Context, root string, args []string, 
 	return nil
 }
 
+func (m *mockBuildBackend) GetDockerImage(root string) string {
+	// Return a default image for mock backends
+	return "ubuntu:22.04"
+}
+
 func TestDockerfileGeneration(t *testing.T) {
 	tempDir := t.TempDir()
 

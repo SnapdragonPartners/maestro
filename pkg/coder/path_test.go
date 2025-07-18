@@ -19,14 +19,14 @@ func TestPathConstruction(t *testing.T) {
 	)
 
 	agentWorkDir := "/Users/dratner/Code/maestro/work/test/claude_sonnet4-001"
-	storyWorkDir := wm.BuildStoryWorkDir("claude_sonnet4-001", "050", agentWorkDir)
+	actualAgentWorkDir := wm.BuildAgentWorkDir("claude_sonnet4-001", agentWorkDir)
 	mirrorPath := wm.BuildMirrorPath()
 
-	expectedStoryWorkDir := "/Users/dratner/Code/maestro/work/test/claude_sonnet4-001/050"
+	expectedAgentWorkDir := "/Users/dratner/Code/maestro/work/test/claude_sonnet4-001"
 	expectedMirrorPath := "/Users/dratner/Code/maestro/work/test/.mirrors/maestro-demo.git"
 
-	if storyWorkDir != expectedStoryWorkDir {
-		t.Errorf("Expected story work dir %s, got %s", expectedStoryWorkDir, storyWorkDir)
+	if actualAgentWorkDir != expectedAgentWorkDir {
+		t.Errorf("Expected agent work dir %s, got %s", expectedAgentWorkDir, actualAgentWorkDir)
 	}
 
 	if mirrorPath != expectedMirrorPath {
@@ -35,6 +35,6 @@ func TestPathConstruction(t *testing.T) {
 
 	t.Logf("ProjectWorkDir: /Users/dratner/Code/maestro/work/test")
 	t.Logf("AgentWorkDir: %s", agentWorkDir)
-	t.Logf("StoryWorkDir: %s", storyWorkDir)
+	t.Logf("ActualAgentWorkDir: %s", actualAgentWorkDir)
 	t.Logf("MirrorPath: %s", mirrorPath)
 }

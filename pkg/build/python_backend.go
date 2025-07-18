@@ -120,6 +120,14 @@ func (p *PythonBackend) Run(ctx context.Context, root string, args []string, str
 	return nil
 }
 
+// GetDockerImage returns the appropriate Docker image for Python projects
+// It attempts to detect the Python version from project files and returns the corresponding image
+func (p *PythonBackend) GetDockerImage(root string) string {
+	// TODO: Parse pyproject.toml or other files to detect Python version
+	// For now, return the default Python image
+	return "python:3.11-alpine"
+}
+
 // runMakeCommand executes a make command with the given target
 func (p *PythonBackend) runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
 	cmd := exec.CommandContext(ctx, "make", target)

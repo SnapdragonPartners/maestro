@@ -24,6 +24,10 @@ type BuildBackend interface {
 
 	// Run executes the application with provided arguments
 	Run(ctx context.Context, root string, args []string, stream io.Writer) error
+
+	// GetDockerImage returns the appropriate Docker image for this backend
+	// The root parameter allows for version detection (e.g., parsing go.mod for Go version)
+	GetDockerImage(root string) string
 }
 
 // BackendPriority defines the priority order for backend detection

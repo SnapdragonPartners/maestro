@@ -24,8 +24,8 @@ func TestCheckLoopBudget(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	// Create base state machine
-	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, nil)
+	// Create base state machine with coder transitions
+	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, CoderTransitions)
 
 	// Create test driver with custom budgets
 	agentConfig := &config.Agent{
@@ -153,8 +153,8 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	// Create base state machine
-	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, nil)
+	// Create base state machine with coder transitions
+	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, CoderTransitions)
 
 	// Create test driver
 	driver := &Coder{

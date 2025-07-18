@@ -4,7 +4,7 @@ import (
 	"net/http"
 )
 
-// Health handles the health check endpoint
+// Health handles HTTP requests to the /health endpoint
 func Health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)

@@ -124,3 +124,10 @@ func (m *MakeBackend) ValidateTargets(root string, targets []string) error {
 
 	return nil
 }
+
+// GetDockerImage returns the appropriate Docker image for Makefile projects
+// Since Makefile projects can be any language, we return a generic Ubuntu image
+func (m *MakeBackend) GetDockerImage(root string) string {
+	// Generic Makefile projects get a Ubuntu image with build tools
+	return "ubuntu:22.04"
+}

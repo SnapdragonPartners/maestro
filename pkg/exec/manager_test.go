@@ -80,8 +80,8 @@ func TestExecutorManager_Initialize(t *testing.T) {
 					t.Fatalf("Failed to get default executor: %v", err)
 				}
 
-				if defaultExec.Name() != tc.expectType {
-					t.Errorf("Expected default executor %s, got %s", tc.expectType, defaultExec.Name())
+				if string(defaultExec.Name()) != tc.expectType {
+					t.Errorf("Expected default executor %s, got %s", tc.expectType, string(defaultExec.Name()))
 				}
 			}
 		})
@@ -303,8 +303,8 @@ func TestExecutorManager_GetExecutor(t *testing.T) {
 		t.Fatalf("Failed to get local executor: %v", err)
 	}
 
-	if localExec.Name() != "local" {
-		t.Errorf("Expected local executor, got %s", localExec.Name())
+	if string(localExec.Name()) != "local" {
+		t.Errorf("Expected local executor, got %s", string(localExec.Name()))
 	}
 }
 
@@ -373,8 +373,8 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 		}
 
 		// Should be docker only (no fallback to local)
-		if defaultExec.Name() != "docker" {
-			t.Errorf("Expected auto to select 'docker', got '%s'", defaultExec.Name())
+		if string(defaultExec.Name()) != "docker" {
+			t.Errorf("Expected auto to select 'docker', got '%s'", string(defaultExec.Name()))
 		}
 	})
 
@@ -401,8 +401,8 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 			t.Fatalf("Failed to get default executor: %v", err)
 		}
 
-		if defaultExec.Name() != "local" {
-			t.Errorf("Expected local executor, got '%s'", defaultExec.Name())
+		if string(defaultExec.Name()) != "local" {
+			t.Errorf("Expected local executor, got '%s'", string(defaultExec.Name()))
 		}
 	})
 

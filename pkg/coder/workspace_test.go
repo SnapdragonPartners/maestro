@@ -92,7 +92,15 @@ func TestWorkspaceManagerSetup_Unit(t *testing.T) {
 
 			// Test setup
 			ctx := context.Background()
-			workspaceResult, err := wm.SetupWorkspace(ctx, tt.agentID, tt.storyID, "/tmp/test-agent")
+			agentWorkDir := "/tmp/test-agent"
+
+			// For unit tests with mocks, we need to create the directory manually
+			// since the mock git runner doesn't actually create files
+			if !tt.expectedError {
+				os.MkdirAll(agentWorkDir, 0755)
+			}
+
+			workspaceResult, err := wm.SetupWorkspace(ctx, tt.agentID, tt.storyID, agentWorkDir)
 
 			if tt.expectedError {
 				if err == nil {
@@ -142,10 +150,9 @@ func TestWorkspaceManagerCleanup_Unit(t *testing.T) {
 		t.Errorf("Unexpected error during cleanup: %v", err)
 	}
 
-	// Verify cleanup commands were called
+	// Verify cleanup commands were called (simplified - just worktree remove)
 	expectedCommands := [][]string{
-		{"worktree", "remove"},
-		{"worktree", "prune"},
+		{"worktree", "remove", "--force"},
 	}
 
 	for _, expectedCmd := range expectedCommands {
@@ -192,11 +199,11 @@ func TestWorkspaceManagerPathBuilding(t *testing.T) {
 		t.Errorf("Expected mirror path %s, got %s", expectedMirrorPath, mirrorPath)
 	}
 
-	// Test story work directory path building
-	storyWorkDir := wm.BuildStoryWorkDir("agent-1", "050", "/tmp/test-agent")
-	expectedStoryWorkDir := filepath.Join("/tmp/test-agent", "050")
-	if storyWorkDir != expectedStoryWorkDir {
-		t.Errorf("Expected story work directory %s, got %s", expectedStoryWorkDir, storyWorkDir)
+	// Test agent work directory path building (simplified - returns agent work directory directly)
+	agentWorkDir := wm.BuildAgentWorkDir("agent-1", "/tmp/test-agent")
+	expectedAgentWorkDir := "/tmp/test-agent"
+	if agentWorkDir != expectedAgentWorkDir {
+		t.Errorf("Expected agent work directory %s, got %s", expectedAgentWorkDir, agentWorkDir)
 	}
 
 	// Test branch name building
@@ -308,8 +315,8 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 		t.Logf("Warning: Setup took %v (acceptance criteria: <300ms)", duration)
 	}
 
-	// Verify worktree exists and has content
-	expectedWorktreePath := filepath.Join(workDir, "test-agent", "042")
+	// Verify worktree exists and has content (simplified - agent work directory only)
+	expectedWorktreePath := filepath.Join(workDir, "test-agent")
 	if workspaceResult.WorkDir != expectedWorktreePath {
 		t.Errorf("Expected worktree path %s, got %s", expectedWorktreePath, workspaceResult.WorkDir)
 	}

@@ -118,60 +118,56 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 		w.cleanupWorktrees(ctx, mirrorPath)
 	}
 
-	// Step 2: Create story work directory path
-	storyWorkDir := w.BuildStoryWorkDir(agentID, storyID, agentWorkDir)
-	w.logger.Debug("Story work directory: %s", storyWorkDir)
-	if err := os.MkdirAll(filepath.Dir(storyWorkDir), 0755); err != nil {
-		return nil, fmt.Errorf("failed to create story work directory parent: %w", err)
+	// Step 2: Get agent work directory (simplified - work directly in agent directory)
+	agentWorkDirPath := w.BuildAgentWorkDir(agentID, agentWorkDir)
+	w.logger.Debug("Agent work directory: %s", agentWorkDirPath)
+
+	// Step 3: Create fresh agent work directory (remove existing if present)
+	if err := w.createFreshWorktree(ctx, mirrorPath, agentWorkDirPath); err != nil {
+		return nil, fmt.Errorf("failed to create fresh worktree at %s: %w", agentWorkDirPath, err)
 	}
 
-	// Step 3: Add worktree
-	if err := w.addWorktree(ctx, mirrorPath, storyWorkDir); err != nil {
-		return nil, fmt.Errorf("failed to add worktree from mirror %s to %s: %w", mirrorPath, storyWorkDir, err)
+	// Verify the worktree exists
+	if _, err := os.Stat(agentWorkDirPath); err != nil {
+		w.logger.Error("Agent work directory does not exist after worktree setup: %s (error: %v)", agentWorkDirPath, err)
+		return nil, fmt.Errorf("agent work directory was not created at %s: %w", agentWorkDirPath, err)
 	}
-
-	// Verify the worktree was created
-	if _, err := os.Stat(storyWorkDir); err != nil {
-		w.logger.Error("Story work directory does not exist after git worktree add: %s (error: %v)", storyWorkDir, err)
-		return nil, fmt.Errorf("story work directory was not created at %s: %w", storyWorkDir, err)
-	}
-	w.logger.Debug("Verified story work directory exists at: %s", storyWorkDir)
+	w.logger.Debug("Verified agent work directory exists at: %s", agentWorkDirPath)
 
 	// Step 4: Create and checkout branch
 	branchName := w.buildBranchName(storyID)
-	actualBranchName, err := w.createBranch(ctx, storyWorkDir, branchName)
+	actualBranchName, err := w.createBranch(ctx, agentWorkDirPath, branchName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create branch: %w", err)
 	}
 
 	return &WorkspaceResult{
-		WorkDir:    storyWorkDir,
+		WorkDir:    agentWorkDirPath,
 		BranchName: actualBranchName,
 	}, nil
 }
 
-// CleanupWorkspace removes a worktree and cleans up the workspace
+// CleanupWorkspace removes the agent work directory completely after a story
+// This is much simpler now since we recreate the directory fresh for each story
 func (w *WorkspaceManager) CleanupWorkspace(ctx context.Context, agentID, storyID, agentWorkDir string) error {
-	storyWorkDir := w.BuildStoryWorkDir(agentID, storyID, agentWorkDir)
+	agentWorkDirPath := w.BuildAgentWorkDir(agentID, agentWorkDir)
+	w.logger.Debug("Cleaning up workspace for story %s by removing directory: %s", storyID, agentWorkDirPath)
+
+	// Remove the entire agent work directory
+	if _, err := os.Stat(agentWorkDirPath); err == nil {
+		w.logger.Debug("Removing agent work directory: %s", agentWorkDirPath)
+		if err := os.RemoveAll(agentWorkDirPath); err != nil {
+			return fmt.Errorf("failed to remove agent work directory: %w", err)
+		}
+	} else {
+		w.logger.Debug("Agent work directory does not exist, nothing to clean up: %s", agentWorkDirPath)
+	}
+
+	// Remove worktree registration from git (ignore errors since directory is gone)
 	mirrorPath := w.BuildMirrorPath()
+	w.gitRunner.Run(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDirPath)
 
-	// Remove worktree (must be run from the mirror directory)
-	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "remove", storyWorkDir)
-	if err != nil {
-		return fmt.Errorf("failed to remove worktree: %w", err)
-	}
-
-	// Prune worktrees
-	_, err = w.gitRunner.Run(ctx, mirrorPath, "worktree", "prune")
-	if err != nil {
-		return fmt.Errorf("failed to prune worktrees: %w", err)
-	}
-
-	// Remove agent directory if empty
-	if isEmpty, _ := w.isDirectoryEmpty(agentWorkDir); isEmpty {
-		os.RemoveAll(agentWorkDir)
-	}
-
+	w.logger.Debug("Completed cleanup for story %s", storyID)
 	return nil
 }
 
@@ -223,39 +219,56 @@ func (w *WorkspaceManager) cleanupWorktrees(ctx context.Context, mirrorPath stri
 	return nil
 }
 
-// addWorktree adds a new worktree from the mirror
-func (w *WorkspaceManager) addWorktree(ctx context.Context, mirrorPath, storyWorkDir string) error {
-	w.logger.Debug("Adding worktree from mirror=%s to path=%s with branch=%s", mirrorPath, storyWorkDir, w.baseBranch)
+// createFreshWorktree creates a completely fresh worktree by removing any existing directory
+// and creating a new one. This ensures a perfectly clean state for each story.
+func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, agentWorkDir string) error {
+	w.logger.Debug("Creating fresh worktree at: %s", agentWorkDir)
 
-	// storyWorkDir is guaranteed to be absolute from BuildStoryWorkDir
-	// For bare repositories, we need to use the branch name directly
-	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", storyWorkDir, w.baseBranch)
-	if err != nil {
-		return fmt.Errorf("git worktree add --detach %s %s failed from %s: %w", storyWorkDir, w.baseBranch, mirrorPath, err)
+	// Step 1: Remove existing directory completely if it exists
+	if _, err := os.Stat(agentWorkDir); err == nil {
+		w.logger.Debug("Removing existing agent work directory: %s", agentWorkDir)
+		if err := os.RemoveAll(agentWorkDir); err != nil {
+			return fmt.Errorf("failed to remove existing directory: %w", err)
+		}
 	}
 
-	w.logger.Debug("Successfully added worktree at path=%s", storyWorkDir)
+	// Step 2: Remove any lingering worktree registration (ignore errors)
+	w.gitRunner.Run(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDir)
+
+	// Step 3: Create parent directory if needed
+	if err := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory: %w", err)
+	}
+
+	// Step 4: Create the fresh worktree
+	w.logger.Debug("Creating fresh worktree at: %s", agentWorkDir)
+	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", agentWorkDir, w.baseBranch)
+	if err != nil {
+		return fmt.Errorf("git worktree add --detach %s %s failed from %s: %w", agentWorkDir, w.baseBranch, mirrorPath, err)
+	}
+
+	w.logger.Debug("Successfully created fresh worktree at: %s", agentWorkDir)
 	return nil
 }
 
-// createBranch creates and checks out a new branch in the story work directory
+// createBranch creates and checks out a new branch in the agent work directory
 // If the branch already exists, it will try incremental names (e.g., story-050-2, story-050-3, etc.)
 // Returns the actual branch name that was created
-func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branchName string) (string, error) {
-	w.logger.Debug("createBranch called with storyWorkDir=%s, branchName=%s", storyWorkDir, branchName)
+func (w *WorkspaceManager) createBranch(ctx context.Context, agentWorkDir, branchName string) (string, error) {
+	w.logger.Debug("createBranch called with agentWorkDir=%s, branchName=%s", agentWorkDir, branchName)
 
-	// Check if story work directory exists before trying to create branch
-	if _, err := os.Stat(storyWorkDir); os.IsNotExist(err) {
-		w.logger.Error("story work directory does not exist: %s", storyWorkDir)
-		return "", fmt.Errorf("story work directory does not exist: %s", storyWorkDir)
+	// Check if agent work directory exists before trying to create branch
+	if _, err := os.Stat(agentWorkDir); os.IsNotExist(err) {
+		w.logger.Error("agent work directory does not exist: %s", agentWorkDir)
+		return "", fmt.Errorf("agent work directory does not exist: %s", agentWorkDir)
 	}
-	w.logger.Debug("Story work directory exists, proceeding with branch creation")
+	w.logger.Debug("Agent work directory exists, proceeding with branch creation")
 
 	// Get list of existing branches to avoid collisions
-	existingBranches, err := w.getExistingBranches(ctx, storyWorkDir)
+	existingBranches, err := w.getExistingBranches(ctx, agentWorkDir)
 	if err != nil {
 		w.logger.Warn("Failed to get existing branches, falling back to trial-and-error method: %v", err)
-		return w.createBranchWithRetry(ctx, storyWorkDir, branchName)
+		return w.createBranchWithRetry(ctx, agentWorkDir, branchName)
 	}
 
 	// Find an available branch name
@@ -266,7 +279,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 	for attempt <= maxAttempts {
 		if !w.branchExists(branchName, existingBranches) {
 			// Branch name is available, create it
-			_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)
+			_, err := w.gitRunner.Run(ctx, agentWorkDir, "switch", "-c", branchName)
 			if err == nil {
 				// Success! Log if we had to use an incremented name
 				if attempt > 1 {
@@ -275,7 +288,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 				return branchName, nil
 			}
 			// If creation still failed, it's a real error
-			return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
+			return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, agentWorkDir, err)
 		}
 
 		// Branch exists, try next incremental name
@@ -289,9 +302,9 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, storyWorkDir, branc
 }
 
 // getExistingBranches gets a list of all branches (local and remote) in the repository
-func (w *WorkspaceManager) getExistingBranches(ctx context.Context, storyWorkDir string) ([]string, error) {
+func (w *WorkspaceManager) getExistingBranches(ctx context.Context, agentWorkDir string) ([]string, error) {
 	// Get all branches (local and remote)
-	output, err := w.gitRunner.Run(ctx, storyWorkDir, "branch", "-a")
+	output, err := w.gitRunner.Run(ctx, agentWorkDir, "branch", "-a")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list branches: %w", err)
 	}
@@ -328,13 +341,13 @@ func (w *WorkspaceManager) branchExists(branchName string, existingBranches []st
 }
 
 // createBranchWithRetry is the fallback method that uses trial-and-error (original approach)
-func (w *WorkspaceManager) createBranchWithRetry(ctx context.Context, storyWorkDir, branchName string) (string, error) {
+func (w *WorkspaceManager) createBranchWithRetry(ctx context.Context, agentWorkDir, branchName string) (string, error) {
 	originalBranchName := branchName
 	attempt := 1
 	maxAttempts := 10
 
 	for attempt <= maxAttempts {
-		_, err := w.gitRunner.Run(ctx, storyWorkDir, "switch", "-c", branchName)
+		_, err := w.gitRunner.Run(ctx, agentWorkDir, "switch", "-c", branchName)
 		if err == nil {
 			// Success! Log if we had to use an incremented name
 			if attempt > 1 {
@@ -353,7 +366,7 @@ func (w *WorkspaceManager) createBranchWithRetry(ctx context.Context, storyWorkD
 		}
 
 		// If it's not a collision error, return the original error
-		return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, storyWorkDir, err)
+		return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, agentWorkDir, err)
 	}
 
 	// If we've exhausted all attempts
@@ -369,8 +382,8 @@ func (w *WorkspaceManager) BuildMirrorPath() string {
 	return filepath.Join(w.projectWorkDir, w.mirrorDir, repoName+".git")
 }
 
-// BuildStoryWorkDir constructs the story work directory path using the pattern
-func (w *WorkspaceManager) BuildStoryWorkDir(agentID, storyID, agentWorkDir string) string {
+// BuildAgentWorkDir returns the agent work directory as an absolute path
+func (w *WorkspaceManager) BuildAgentWorkDir(agentID, agentWorkDir string) string {
 	// Convert agentWorkDir to absolute path
 	absAgentWorkDir, err := filepath.Abs(agentWorkDir)
 	if err != nil {
@@ -378,35 +391,10 @@ func (w *WorkspaceManager) BuildStoryWorkDir(agentID, storyID, agentWorkDir stri
 		absAgentWorkDir = agentWorkDir
 	}
 
-	path := w.worktreePattern
-	path = strings.ReplaceAll(path, "{AGENT_ID}", agentID)
-	path = strings.ReplaceAll(path, "{STORY_ID}", storyID)
-
-	// Make absolute if relative - use agent work directory as base
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(absAgentWorkDir, path)
-	}
-
-	// Ensure the final path is absolute
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		// If we can't get absolute path, use the constructed path (fallback)
-		absPath = path
-	}
-
-	return absPath
+	return absAgentWorkDir
 }
 
 // buildBranchName constructs the branch name using the pattern
 func (w *WorkspaceManager) buildBranchName(storyID string) string {
 	return strings.ReplaceAll(w.branchPattern, "{STORY_ID}", storyID)
-}
-
-// isDirectoryEmpty checks if a directory is empty
-func (w *WorkspaceManager) isDirectoryEmpty(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false, err
-	}
-	return len(entries) == 0, nil
 }

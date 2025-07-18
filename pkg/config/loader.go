@@ -15,6 +15,12 @@ const (
 	DefaultFixingBudget = 3 // Default from story requirements
 )
 
+// Default Docker images for different project types
+const (
+	DefaultGoDockerImage     = "golang:1.24-alpine"
+	DefaultUbuntuDockerImage = "ubuntu:22.04"
+)
+
 type IterationBudgets struct {
 	CodingBudget int `json:"coding_budget"`
 	FixingBudget int `json:"fixing_budget"`
@@ -26,6 +32,7 @@ type Agent struct {
 	Type             string           `json:"type"` // "architect" or "coder"
 	WorkDir          string           `json:"workdir"`
 	IterationBudgets IterationBudgets `json:"iteration_budgets"`
+	DockerImage      string           `json:"docker_image,omitempty"` // Optional Docker image override
 }
 
 type ModelCfg struct {
@@ -204,7 +211,7 @@ func applyDefaults(config *Config) {
 
 	// Set Docker defaults
 	if config.Executor.Docker.Image == "" {
-		config.Executor.Docker.Image = "golang:1.24-alpine"
+		config.Executor.Docker.Image = DefaultGoDockerImage
 	}
 	if config.Executor.Docker.Network == "" {
 		config.Executor.Docker.Network = "none"

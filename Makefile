@@ -38,7 +38,7 @@ lint-docs:
 
 # Run the orchestrator with banner
 run: build-css build
-	./bin/orchestrator
+	clear && rm -rf ~/Code/maestro-work/test && ./bin/orchestrator -workdir ~/Code/maestro-work/test -ui
 
 # Build Tailwind CSS
 build-css:
