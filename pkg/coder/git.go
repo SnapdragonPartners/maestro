@@ -16,6 +16,9 @@ type GitRunner interface {
 	// Run executes a Git command in the specified directory
 	// Returns stdout+stderr combined output and any error
 	Run(ctx context.Context, dir string, args ...string) ([]byte, error)
+
+	// RunQuiet executes a Git command without logging errors (for fault-tolerant operations)
+	RunQuiet(ctx context.Context, dir string, args ...string) ([]byte, error)
 }
 
 // DefaultGitRunner implements GitRunner using the system git command
@@ -49,8 +52,9 @@ func (g *DefaultGitRunner) Run(ctx context.Context, dir string, args ...string) 
 
 	// Add context to error for better debugging
 	if err != nil {
-		g.logger.Error("Git command failed: %v", err)
-		g.logger.Debug("Git command output: %s", string(output))
+		g.logger.Error("Git command failed: cd %s && git %s", logDir, strings.Join(args, " "))
+		g.logger.Error("Git error: %v", err)
+		g.logger.Error("Git output: %s", string(output))
 		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s",
 			strings.Join(args, " "), dir, err, string(output))
 	}
@@ -59,16 +63,50 @@ func (g *DefaultGitRunner) Run(ctx context.Context, dir string, args ...string) 
 	return output, nil
 }
 
-// WorkspaceManager handles Git worktree operations for coder agents
+// RunQuiet executes a Git command without logging errors (for fault-tolerant operations)
+func (g *DefaultGitRunner) RunQuiet(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+
+	// Log command at debug level only
+	logDir := dir
+	if logDir == "" {
+		logDir = "."
+	}
+	g.logger.Debug("Executing Git command (quiet): cd %s && git %s", logDir, strings.Join(args, " "))
+
+	// Combine stdout and stderr to capture all git output
+	output, err := cmd.CombinedOutput()
+
+	// Don't log errors - caller will handle them if needed
+	if err != nil {
+		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s",
+			strings.Join(args, " "), dir, err, string(output))
+	}
+
+	g.logger.Debug("Git command succeeded (quiet): %s", string(output))
+	return output, nil
+}
+
+// ContainerManager defines the interface for managing Docker containers
+type ContainerManager interface {
+	StopContainer(ctx context.Context, containerName string) error
+	Shutdown(ctx context.Context) error
+}
+
+// WorkspaceManager handles Git worktree operations and container cleanup for coder agents
 type WorkspaceManager struct {
-	gitRunner       GitRunner
-	projectWorkDir  string // Project work directory (shared across all agents) - contains mirrors and worktrees
-	repoURL         string
-	baseBranch      string
-	mirrorDir       string // Mirror directory relative to projectWorkDir (e.g., ".mirrors")
-	branchPattern   string // Pattern for branch names (e.g., "story-{STORY_ID}")
-	worktreePattern string // Pattern for worktree paths relative to agentWorkDir (e.g., "{STORY_ID}")
-	logger          *logx.Logger
+	gitRunner        GitRunner
+	projectWorkDir   string // Project work directory (shared across all agents) - contains mirrors and worktrees
+	repoURL          string
+	baseBranch       string
+	mirrorDir        string           // Mirror directory relative to projectWorkDir (e.g., ".mirrors")
+	branchPattern    string           // Pattern for branch names (e.g., "story-{STORY_ID}")
+	worktreePattern  string           // Pattern for worktree paths relative to agentWorkDir (e.g., "{STORY_ID}")
+	containerManager ContainerManager // Optional container manager for Docker cleanup
+	logger           *logx.Logger
 }
 
 // NewWorkspaceManager creates a new workspace manager
@@ -82,15 +120,21 @@ func NewWorkspaceManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranc
 	}
 
 	return &WorkspaceManager{
-		gitRunner:       gitRunner,
-		projectWorkDir:  absProjectWorkDir,
-		repoURL:         repoURL,
-		baseBranch:      baseBranch,
-		mirrorDir:       mirrorDir,
-		branchPattern:   branchPattern,
-		worktreePattern: worktreePattern,
-		logger:          logx.NewLogger("workspace"),
+		gitRunner:        gitRunner,
+		projectWorkDir:   absProjectWorkDir,
+		repoURL:          repoURL,
+		baseBranch:       baseBranch,
+		mirrorDir:        mirrorDir,
+		branchPattern:    branchPattern,
+		worktreePattern:  worktreePattern,
+		containerManager: nil, // Set via SetContainerManager if needed
+		logger:           logx.NewLogger("workspace"),
 	}
+}
+
+// SetContainerManager sets the container manager for Docker cleanup operations
+func (w *WorkspaceManager) SetContainerManager(containerManager ContainerManager) {
+	w.containerManager = containerManager
 }
 
 // WorkspaceResult contains the results of workspace setup
@@ -171,6 +215,60 @@ func (w *WorkspaceManager) CleanupWorkspace(ctx context.Context, agentID, storyI
 	return nil
 }
 
+// CleanupAgentResources performs comprehensive cleanup of all agent resources
+// This is the DRY method shared between orchestrator and agent SETUP state
+func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, containerName string, agentWorkDir, stateDir string) error {
+	w.logger.Info("Starting comprehensive cleanup for agent %s", agentID)
+
+	var cleanupErrors []error
+
+	// 1. Stop and cleanup Docker container if provided
+	if containerName != "" && w.containerManager != nil {
+		w.logger.Debug("Stopping container: %s", containerName)
+		if err := w.containerManager.StopContainer(ctx, containerName); err != nil {
+			w.logger.Error("Failed to stop container %s: %v", containerName, err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("container cleanup failed: %w", err))
+		} else {
+			w.logger.Info("Successfully stopped container: %s", containerName)
+		}
+	}
+
+	// 2. Clean up workspace (git worktree + directory)
+	// Use empty storyID since we're cleaning up entire agent workspace
+	if err := w.CleanupWorkspace(ctx, agentID, "", agentWorkDir); err != nil {
+		w.logger.Error("Failed to cleanup workspace for agent %s: %v", agentID, err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("workspace cleanup failed: %w", err))
+	}
+
+	// 3. Remove agent state directory if provided
+	if stateDir != "" {
+		w.logger.Debug("Removing agent state directory: %s", stateDir)
+		if err := os.RemoveAll(stateDir); err != nil {
+			w.logger.Error("Failed to remove state directory %s: %v", stateDir, err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("state directory cleanup failed: %w", err))
+		} else {
+			w.logger.Info("Removed agent state directory: %s", stateDir)
+		}
+	}
+
+	// 4. Additional container manager shutdown if available
+	if w.containerManager != nil {
+		w.logger.Debug("Shutting down container manager")
+		if err := w.containerManager.Shutdown(ctx); err != nil {
+			w.logger.Error("Failed to shutdown container manager: %v", err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("container manager shutdown failed: %w", err))
+		}
+	}
+
+	// Return combined errors if any occurred
+	if len(cleanupErrors) > 0 {
+		return fmt.Errorf("cleanup completed with %d errors: %v", len(cleanupErrors), cleanupErrors)
+	}
+
+	w.logger.Info("Successfully completed comprehensive cleanup for agent %s", agentID)
+	return nil
+}
+
 // ensureMirrorClone creates or updates the mirror clone
 func (w *WorkspaceManager) ensureMirrorClone(ctx context.Context) (string, error) {
 	mirrorPath := w.BuildMirrorPath()
@@ -233,7 +331,11 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 	}
 
 	// Step 2: Remove any lingering worktree registration (ignore errors)
-	w.gitRunner.Run(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDir)
+	// This command is expected to fail if no worktree exists - that's fine
+	_, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDir)
+	if err != nil {
+		w.logger.Debug("Worktree remove failed (expected): %v", err)
+	}
 
 	// Step 3: Create parent directory if needed
 	if err := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); err != nil {
@@ -242,7 +344,7 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 
 	// Step 4: Create the fresh worktree
 	w.logger.Debug("Creating fresh worktree at: %s", agentWorkDir)
-	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", agentWorkDir, w.baseBranch)
+	_, err = w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", agentWorkDir, w.baseBranch)
 	if err != nil {
 		return fmt.Errorf("git worktree add --detach %s %s failed from %s: %w", agentWorkDir, w.baseBranch, mirrorPath, err)
 	}

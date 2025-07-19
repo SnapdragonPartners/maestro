@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"orchestrator/pkg/agent"
+	"orchestrator/pkg/proto"
 )
 
 // IMPORTANT: This file is the canonical implementation of the architect FSM
@@ -16,31 +16,31 @@ import (
 // Architect state constants - derived directly from STATES.md
 const (
 	// Entry state
-	StateWaiting agent.State = "WAITING"
+	StateWaiting proto.State = "WAITING"
 
 	// Spec intake states
-	StateScoping agent.State = "SCOPING"
+	StateScoping proto.State = "SCOPING"
 
 	// Story dispatch states
-	StateDispatching agent.State = "DISPATCHING"
+	StateDispatching proto.State = "DISPATCHING"
 
 	// Main event loop states
-	StateMonitoring agent.State = "MONITORING"
-	StateRequest    agent.State = "REQUEST"
+	StateMonitoring proto.State = "MONITORING"
+	StateRequest    proto.State = "REQUEST"
 
 	// Human escalation states
-	StateEscalated agent.State = "ESCALATED"
+	StateEscalated proto.State = "ESCALATED"
 
 	// Merge & unblock states
-	StateMerging agent.State = "MERGING"
+	StateMerging proto.State = "MERGING"
 
 	// Terminal states
-	StateDone  agent.State = "DONE"
-	StateError agent.State = "ERROR"
+	StateDone  proto.State = "DONE"
+	StateError proto.State = "ERROR"
 )
 
 // ValidateState checks if a state is valid for architect agents
-func ValidateState(state agent.State) error {
+func ValidateState(state proto.State) error {
 	validStates := GetValidStates()
 	for _, validState := range validStates {
 		if state == validState {
@@ -51,8 +51,8 @@ func ValidateState(state agent.State) error {
 }
 
 // GetValidStates returns all valid states for architect agents
-func GetValidStates() []agent.State {
-	return []agent.State{
+func GetValidStates() []proto.State {
+	return []proto.State{
 		StateWaiting, StateScoping, StateDispatching, StateMonitoring,
 		StateRequest, StateEscalated, StateMerging, StateDone, StateError,
 	}
@@ -61,7 +61,7 @@ func GetValidStates() []agent.State {
 // architectTransitions defines the canonical state transition map for architect agents.
 // This is the single source of truth, derived directly from STATES.md.
 // Any code, tests, or diagrams must match this specification exactly.
-var architectTransitions = map[agent.State][]agent.State{
+var architectTransitions = map[proto.State][]proto.State{
 	// WAITING can transition to SCOPING when spec received, or REQUEST when question received
 	StateWaiting: {StateScoping, StateRequest},
 
@@ -93,13 +93,13 @@ var architectTransitions = map[agent.State][]agent.State{
 
 // ValidNextStates returns the allowed next states for a given state
 // This is the preferred way to access transition information
-func ValidNextStates(from agent.State) []agent.State {
+func ValidNextStates(from proto.State) []proto.State {
 	return architectTransitions[from]
 }
 
 // IsValidArchitectTransition checks if a transition between two states is allowed
 // according to the canonical state machine specification from STATES.md
-func IsValidArchitectTransition(from, to agent.State) bool {
+func IsValidArchitectTransition(from, to proto.State) bool {
 	allowedStates := ValidNextStates(from)
 	for _, state := range allowedStates {
 		if state == to {
@@ -120,8 +120,8 @@ const HeartbeatInterval = 30 * time.Second
 const DispatcherSendTimeout = 500 * time.Millisecond
 
 // GetAllArchitectStates returns all valid architect states in deterministic order
-func GetAllArchitectStates() []agent.State {
-	return []agent.State{
+func GetAllArchitectStates() []proto.State {
+	return []proto.State{
 		StateWaiting,
 		StateScoping,
 		StateDispatching,
@@ -135,12 +135,12 @@ func GetAllArchitectStates() []agent.State {
 }
 
 // IsTerminalState returns true if the state is a terminal state (DONE or ERROR)
-func IsTerminalState(state agent.State) bool {
+func IsTerminalState(state proto.State) bool {
 	return state == StateDone || state == StateError
 }
 
 // IsValidArchitectState checks if a given state is a valid architect state
-func IsValidArchitectState(state agent.State) bool {
+func IsValidArchitectState(state proto.State) bool {
 	allStates := GetAllArchitectStates()
 	for _, validState := range allStates {
 		if validState == state {

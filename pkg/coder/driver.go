@@ -149,6 +149,12 @@ func (c *Coder) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 	c.logger.Info("🧑‍💻 Coder %s dispatcher set: %p", c.GetID(), dispatcher)
 }
 
+// SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications
+func (c *Coder) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
+	c.BaseStateMachine.SetStateNotificationChannel(stateNotifCh)
+	c.logger.Info("🧑‍💻 Coder %s state notification channel set", c.GetID())
+}
+
 // convertApprovalData converts approval data from various formats to *proto.ApprovalResult
 // Handles both direct struct pointers and map[string]interface{} from JSON deserialization
 func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
@@ -224,7 +230,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 
 	// Use canonical transition table from fsm package - single source of truth
 	// This ensures driver behavior exactly matches STATES.md specification
-	sm := agent.NewBaseStateMachine(agentID, agent.StateWaiting, stateStore, CoderTransitions)
+	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, stateStore, CoderTransitions)
 
 	// Set iteration budgets from agent config, with fallback to defaults
 	codingBudget := config.DefaultCodingBudget
@@ -277,12 +283,17 @@ func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, 
 	// Set the workspace manager
 	coder.workspaceManager = workspaceManager
 
+	// Configure workspace manager with container manager for comprehensive cleanup
+	if workspaceManager != nil && coder.longRunningExecutor != nil {
+		workspaceManager.SetContainerManager(coder.longRunningExecutor)
+	}
+
 	return coder, nil
 }
 
 // checkLoopBudget tracks loop counts and triggers BUDGET_REVIEW when budget is exceeded
 // Returns true if budget exceeded and BUDGET_REVIEW should be triggered
-func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin agent.State) bool {
+func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin proto.State) bool {
 	// Get current iteration count
 	var iterationCount int
 	if val, exists := sm.GetStateValue(key); exists {
@@ -335,17 +346,17 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 }
 
 // ProcessState implements the v2 FSM state machine logic
-func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
+func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	sm := c.BaseStateMachine
 	currentState := c.GetCurrentState()
 	c.logger.Debug("ProcessState: coder %p, workDir: %s, currentState: %s", c, c.workDir, currentState)
 
-	var nextState agent.State
+	var nextState proto.State
 	var done bool
 	var err error
 
 	switch currentState {
-	case agent.StateWaiting:
+	case proto.StateWaiting:
 		nextState, done, err = c.handleWaiting(ctx, sm)
 	case StateSetup:
 		nextState, done, err = c.handleSetup(ctx, sm)
@@ -365,16 +376,14 @@ func (c *Coder) ProcessState(ctx context.Context) (agent.State, bool, error) {
 		nextState, done, err = c.handleBudgetReview(ctx, sm)
 	case StateAwaitMerge:
 		nextState, done, err = c.handleAwaitMerge(ctx, sm)
-	case StateCleanup:
-		nextState, done, err = c.handleCleanup(ctx, sm)
 	case StateQuestion:
 		nextState, done, err = c.handleQuestion(ctx, sm)
-	case agent.StateDone:
+	case proto.StateDone:
 		nextState, done, err = c.handleDone(ctx, sm)
-	case agent.StateError:
+	case proto.StateError:
 		nextState, done, err = c.handleError(ctx, sm)
 	default:
-		return agent.StateError, false, fmt.Errorf("unknown state: %s", c.GetCurrentState())
+		return proto.StateError, false, fmt.Errorf("unknown state: %s", c.GetCurrentState())
 	}
 
 	// Log the state transition decision
@@ -434,7 +443,7 @@ func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 }
 
 // handleWaiting processes the WAITING state
-func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "WAITING")
 	c.contextManager.AddMessage("assistant", "Waiting for task assignment")
 
@@ -448,40 +457,40 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 	// If no story channel is set, stay in WAITING (shouldn't happen in normal operation)
 	if c.storyCh == nil {
 		logx.Warnf("🧑‍💻 Coder in WAITING state but no story channel set")
-		return agent.StateWaiting, false, nil
+		return proto.StateWaiting, false, nil
 	}
 
 	// Block waiting for a story message
 	logx.Infof("🧑‍💻 Coder waiting for story message...")
 	select {
 	case <-ctx.Done():
-		return agent.StateError, false, ctx.Err()
+		return proto.StateError, false, ctx.Err()
 	case storyMsg := <-c.storyCh:
 		if storyMsg == nil {
 			logx.Warnf("🧑‍💻 Received nil story message")
-			return agent.StateWaiting, false, nil
+			return proto.StateWaiting, false, nil
 		}
 
 		// Extract story content and store it in state data
 		content, exists := storyMsg.GetPayload(proto.KeyContent)
 		if !exists {
-			return agent.StateError, false, fmt.Errorf("story message missing content")
+			return proto.StateError, false, fmt.Errorf("story message missing content")
 		}
 
 		contentStr, ok := content.(string)
 		if !ok {
-			return agent.StateError, false, fmt.Errorf("story content must be a string")
+			return proto.StateError, false, fmt.Errorf("story content must be a string")
 		}
 
 		// Extract the actual story ID from the payload
 		storyID, exists := storyMsg.GetPayload(proto.KeyStoryID)
 		if !exists {
-			return agent.StateError, false, fmt.Errorf("story message missing story_id")
+			return proto.StateError, false, fmt.Errorf("story message missing story_id")
 		}
 
 		storyIDStr, ok := storyID.(string)
 		if !ok {
-			return agent.StateError, false, fmt.Errorf("story_id must be a string")
+			return proto.StateError, false, fmt.Errorf("story_id must be a string")
 		}
 
 		logx.Infof("🧑‍💻 Received story message %s for story %s, transitioning to SETUP", storyMsg.ID, storyIDStr)
@@ -498,7 +507,7 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 }
 
 // handlePlanning processes the PLANNING state
-func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "PLANNING")
 	c.contextManager.AddMessage("assistant", "Planning phase: analyzing requirements")
 
@@ -518,7 +527,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 }
 
 // handlePlanningWithLLM generates plan using LLM
-func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (agent.State, bool, error) {
+func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (proto.State, bool, error) {
 	// Create planning prompt
 	templateData := &templates.TemplateData{
 		TaskContent: taskContent,
@@ -527,7 +536,7 @@ func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMa
 
 	prompt, err := c.renderer.Render(templates.PlanningTemplate, templateData)
 	if err != nil {
-		return agent.StateError, false, fmt.Errorf("failed to render planning template: %w", err)
+		return proto.StateError, false, fmt.Errorf("failed to render planning template: %w", err)
 	}
 
 	// Get LLM response
@@ -540,7 +549,7 @@ func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMa
 
 	resp, err := c.llmClient.Complete(ctx, req)
 	if err != nil {
-		return agent.StateError, false, fmt.Errorf("failed to get LLM planning response: %w", err)
+		return proto.StateError, false, fmt.Errorf("failed to get LLM planning response: %w", err)
 	}
 
 	// Store plan
@@ -565,26 +574,26 @@ func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMa
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to send plan approval request: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to send plan approval request: %w", err)
 		}
 
 		c.logger.Info("🧑‍💻 Sent plan approval request %s to architect during PLANNING->PLAN_REVIEW transition", c.pendingApprovalRequest.ID)
 	} else {
-		return agent.StateError, false, fmt.Errorf("dispatcher not set")
+		return proto.StateError, false, fmt.Errorf("dispatcher not set")
 	}
 
 	return StatePlanReview, false, nil
 }
 
 // handlePlanReview processes the PLAN_REVIEW state - blocks waiting for architect's RESULT response
-func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Plan review phase: waiting for architect approval")
 
 	// Check if we already have approval result from previous processing
 	if approvalData, exists := sm.GetStateValue(keyPlanApprovalResult); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
 		}
 
 		sm.SetStateData("plan_review_completed_at", time.Now().UTC())
@@ -598,7 +607,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 			c.logger.Info("🧑‍💻 Plan rejected/needs changes, transitioning back to PLANNING")
 			return StatePlanning, false, nil
 		default:
-			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
+			return proto.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
 	}
 
@@ -606,7 +615,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 	c.logger.Debug("🧑‍💻 Blocking in PLAN_REVIEW, waiting for architect RESULT...")
 	select {
 	case <-ctx.Done():
-		return agent.StateError, false, ctx.Err()
+		return proto.StateError, false, ctx.Err()
 	case resultMsg := <-c.replyCh:
 		if resultMsg == nil {
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
@@ -624,7 +633,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 				return StatePlanReview, false, nil
 			} else {
 				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
-				return agent.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+				return proto.StateError, false, fmt.Errorf("RESULT message missing approval_result")
 			}
 		} else {
 			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
@@ -634,7 +643,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 }
 
 // handleCoding processes the CODING state
-func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Coding phase: implementing solution")
 
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
@@ -647,7 +656,7 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (a
 }
 
 // handleCodingWithLLM generates actual code using LLM
-func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent, plan string) (agent.State, bool, error) {
+func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent, plan string) (proto.State, bool, error) {
 	// Create coding prompt
 	templateData := &templates.TemplateData{
 		TaskContent: taskContent,
@@ -658,7 +667,7 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 
 	prompt, err := c.renderer.Render(templates.CodingTemplate, templateData)
 	if err != nil {
-		return agent.StateError, false, fmt.Errorf("failed to render coding template: %w", err)
+		return proto.StateError, false, fmt.Errorf("failed to render coding template: %w", err)
 	}
 
 	// Get LLM response for code generation with shell tool
@@ -722,7 +731,7 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 
 	resp, err := c.llmClient.Complete(ctx, req)
 	if err != nil {
-		return agent.StateError, false, fmt.Errorf("failed to get LLM coding response: %w", err)
+		return proto.StateError, false, fmt.Errorf("failed to get LLM coding response: %w", err)
 	}
 
 	// Temporarily fall back to text parsing until tool calling is implemented
@@ -733,7 +742,7 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 		c.logger.Info("Executing %d tool calls via MCP in working directory: %s", len(resp.ToolCalls), c.workDir)
 		filesCreated, err = c.executeMCPToolCalls(ctx, resp.ToolCalls)
 		if err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to execute tool calls: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to execute tool calls: %w", err)
 		}
 		if filesCreated == -1 {
 			c.logger.Info("MCP tool execution: completion signaled via tool")
@@ -761,7 +770,7 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 		// Parse the response to extract files and create them
 		filesCreated, err = c.parseAndCreateFiles(resp.Content)
 		if err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to create files: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to create files: %w", err)
 		}
 		c.logger.Info("Text parsing created %d files", filesCreated)
 	}
@@ -1434,7 +1443,7 @@ func (c *Coder) writeFile(filename, content string) error {
 }
 
 // handleTesting processes the TESTING state - implements AR-103
-func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Get worktree path for running tests
 	worktreePath, exists := sm.GetStateValue("worktree_path")
 	if !exists || worktreePath == "" {
@@ -1445,7 +1454,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 
 	worktreePathStr, ok := worktreePath.(string)
 	if !ok {
-		return agent.StateError, false, fmt.Errorf("worktree_path is not a string: %v", worktreePath)
+		return proto.StateError, false, fmt.Errorf("worktree_path is not a string: %v", worktreePath)
 	}
 
 	// Use MCP test tool instead of direct build registry calls
@@ -1454,7 +1463,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		backendInfo, err := c.buildService.GetBackendInfo(worktreePathStr)
 		if err != nil {
 			c.logger.Error("Failed to get backend info: %v", err)
-			return agent.StateError, false, fmt.Errorf("failed to get backend info: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to get backend info: %w", err)
 		}
 
 		// Store backend information for context
@@ -1489,7 +1498,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 	backend, err := c.buildRegistry.Detect(worktreePathStr)
 	if err != nil {
 		c.logger.Error("Failed to detect build backend: %v", err)
-		return agent.StateError, false, fmt.Errorf("failed to detect build backend: %w", err)
+		return proto.StateError, false, fmt.Errorf("failed to detect build backend: %w", err)
 	}
 
 	// Store backend information for context
@@ -1523,7 +1532,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 }
 
 // handleFixing processes the FIXING state
-func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Fixing phase: addressing issues")
 
 	// Check iteration limit using BUDGET_REVIEW mechanism
@@ -1549,7 +1558,7 @@ func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (a
 }
 
 // handleTestFailureFix handles fixing when triggered by test failures
-func (c *Coder) handleTestFailureFix(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleTestFailureFix(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.logger.Info("🧑‍💻 Fixing test failures")
 	sm.SetStateData("fixes_applied", true)
 	sm.SetStateData("fixing_completed_at", time.Now().UTC())
@@ -1557,7 +1566,7 @@ func (c *Coder) handleTestFailureFix(ctx context.Context, sm *agent.BaseStateMac
 }
 
 // handleReviewRejectionFix handles fixing when triggered by code review rejections
-func (c *Coder) handleReviewRejectionFix(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleReviewRejectionFix(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.logger.Info("🧑‍💻 Fixing code review issues")
 	sm.SetStateData("fixes_applied", true)
 	sm.SetStateData("fixing_completed_at", time.Now().UTC())
@@ -1565,7 +1574,7 @@ func (c *Coder) handleReviewRejectionFix(ctx context.Context, sm *agent.BaseStat
 }
 
 // handleMergeConflictFix handles fixing when triggered by merge conflicts
-func (c *Coder) handleMergeConflictFix(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleMergeConflictFix(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.logger.Info("🧑‍💻 Fixing merge conflicts")
 
 	// Get conflict details if available
@@ -1586,7 +1595,7 @@ func (c *Coder) handleMergeConflictFix(ctx context.Context, sm *agent.BaseStateM
 }
 
 // handleGenericFix provides backward compatibility for existing FIXING logic
-func (c *Coder) handleGenericFix(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleGenericFix(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.logger.Info("🧑‍💻 Generic fixing (backward compatibility)")
 	sm.SetStateData("fixes_applied", true)
 	sm.SetStateData("fixing_completed_at", time.Now().UTC())
@@ -1594,14 +1603,14 @@ func (c *Coder) handleGenericFix(ctx context.Context, sm *agent.BaseStateMachine
 }
 
 // handleCodeReview processes the CODE_REVIEW state - blocks waiting for architect's RESULT response
-func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Code review phase: waiting for architect approval")
 
 	// Check if we already have approval result from previous processing
 	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
 		}
 
 		sm.SetStateData("code_review_completed_at", time.Now().UTC())
@@ -1615,13 +1624,13 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 			// AR-104: Push branch and open pull request
 			if err := c.pushBranchAndCreatePR(ctx, sm); err != nil {
 				c.logger.Error("Failed to push branch and create PR: %v", err)
-				return agent.StateError, false, err
+				return proto.StateError, false, err
 			}
 
 			// Send merge REQUEST to architect instead of going to DONE
 			if err := c.sendMergeRequest(ctx, sm); err != nil {
 				c.logger.Error("Failed to send merge request: %v", err)
-				return agent.StateError, false, err
+				return proto.StateError, false, err
 			}
 
 			c.logger.Info("🧑‍💻 Waiting for merge approval from architect")
@@ -1631,7 +1640,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 			sm.SetStateData("fixing_reason", "code_review_rejection")
 			return StateFixing, false, nil
 		default:
-			return agent.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
+			return proto.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
 		}
 	}
 
@@ -1639,7 +1648,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	c.logger.Debug("🧑‍💻 Blocking in CODE_REVIEW, waiting for architect RESULT...")
 	select {
 	case <-ctx.Done():
-		return agent.StateError, false, ctx.Err()
+		return proto.StateError, false, ctx.Err()
 	case resultMsg := <-c.replyCh:
 		if resultMsg == nil {
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
@@ -1657,7 +1666,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 				return StateCodeReview, false, nil
 			} else {
 				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
-				return agent.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+				return proto.StateError, false, fmt.Errorf("RESULT message missing approval_result")
 			}
 		} else {
 			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
@@ -1667,29 +1676,29 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 }
 
 // handleAwaitMerge processes the AWAIT_MERGE state, waiting for merge results from architect
-func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Await merge phase: waiting for architect merge result")
 
 	// Check if we already have merge result from previous processing
 	if mergeData, exists := sm.GetStateValue("merge_result"); exists {
 		result, err := convertMergeData(mergeData)
 		if err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to convert merge data: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to convert merge data: %w", err)
 		}
 
 		sm.SetStateData("merge_completed_at", time.Now().UTC())
 
 		switch result.Status {
 		case "merged":
-			c.logger.Info("🧑‍💻 PR merged successfully, transitioning to cleanup")
-			return StateCleanup, false, nil
+			c.logger.Info("🧑‍💻 PR merged successfully, story complete")
+			return proto.StateDone, false, nil
 		case "merge_conflict":
 			c.logger.Info("🧑‍💻 Merge conflict detected, transitioning to FIXING")
 			sm.SetStateData("fixing_reason", "merge_conflict")
 			sm.SetStateData("conflict_details", result.ConflictInfo)
 			return StateFixing, false, nil
 		default:
-			return agent.StateError, false, fmt.Errorf("unknown merge status: %s", result.Status)
+			return proto.StateError, false, fmt.Errorf("unknown merge status: %s", result.Status)
 		}
 	}
 
@@ -1697,7 +1706,7 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 	c.logger.Debug("🧑‍💻 Blocking in AWAIT_MERGE, waiting for architect merge result...")
 	select {
 	case <-ctx.Done():
-		return agent.StateError, false, ctx.Err()
+		return proto.StateError, false, ctx.Err()
 	case resultMsg := <-c.replyCh:
 		if resultMsg == nil {
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
@@ -1725,7 +1734,7 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 				return StateAwaitMerge, false, nil
 			} else {
 				c.logger.Error("🧑‍💻 RESULT message missing status payload")
-				return agent.StateError, false, fmt.Errorf("RESULT message missing status")
+				return proto.StateError, false, fmt.Errorf("RESULT message missing status")
 			}
 		} else {
 			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
@@ -1772,14 +1781,14 @@ func convertMergeData(data interface{}) (*MergeResult, error) {
 }
 
 // handleBudgetReview processes the BUDGET_REVIEW state - blocks waiting for architect's RESULT response
-func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Budget review phase: waiting for architect guidance")
 
 	// Check if we already have approval result from previous processing
 	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to convert budget review approval data: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to convert budget review approval data: %w", err)
 		}
 
 		sm.SetStateData("budget_review_completed_at", time.Now().UTC())
@@ -1812,9 +1821,9 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 		case proto.ApprovalStatusRejected:
 			// ABANDON - move to ERROR
 			c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
-			return agent.StateError, false, fmt.Errorf("task abandoned by architect after budget review")
+			return proto.StateError, false, fmt.Errorf("task abandoned by architect after budget review")
 		default:
-			return agent.StateError, false, fmt.Errorf("unknown budget review approval status: %s", result.Status)
+			return proto.StateError, false, fmt.Errorf("unknown budget review approval status: %s", result.Status)
 		}
 	}
 
@@ -1822,7 +1831,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 	c.logger.Debug("🧑‍💻 Blocking in BUDGET_REVIEW, waiting for architect RESULT...")
 	select {
 	case <-ctx.Done():
-		return agent.StateError, false, ctx.Err()
+		return proto.StateError, false, ctx.Err()
 	case resultMsg := <-c.replyCh:
 		if resultMsg == nil {
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
@@ -1840,7 +1849,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 				return StateBudgetReview, false, nil
 			} else {
 				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
-				return agent.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+				return proto.StateError, false, fmt.Errorf("RESULT message missing approval_result")
 			}
 		} else {
 			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
@@ -1850,7 +1859,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 }
 
 // handleQuestion processes the QUESTION state with origin tracking
-func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Question phase: awaiting clarification")
 
 	// Regular QUESTION→ANSWER flow (no more budget review logic)
@@ -1858,7 +1867,7 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 }
 
 // handleRegularQuestion handles regular QUESTION→ANSWER flow
-func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Check if we have an answer
 	if answer, exists := sm.GetStateValue(keyArchitectAnswer); exists {
 		answerStr, _ := answer.(string)
@@ -2063,12 +2072,12 @@ func (c *Coder) GetAgentType() agent.AgentType {
 }
 
 // ValidateState checks if a state is valid for this coder agent
-func (c *Coder) ValidateState(state agent.State) error {
+func (c *Coder) ValidateState(state proto.State) error {
 	return ValidateState(state)
 }
 
 // GetValidStates returns all valid states for this coder agent
-func (c *Coder) GetValidStates() []agent.State {
+func (c *Coder) GetValidStates() []proto.State {
 	return GetValidStates()
 }
 
@@ -2138,7 +2147,7 @@ func (c *Coder) Initialize(ctx context.Context) error {
 }
 
 // handleSetup implements AR-102 workspace initialization
-func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	if c.workspaceManager == nil {
 		c.logger.Warn("No workspace manager configured, skipping Git worktree setup")
 		return StatePlanning, false, nil
@@ -2147,12 +2156,12 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	// Get story ID from state data
 	storyID, exists := sm.GetStateValue("story_id")
 	if !exists {
-		return agent.StateError, false, fmt.Errorf("no story_id found in state data during SETUP")
+		return proto.StateError, false, fmt.Errorf("no story_id found in state data during SETUP")
 	}
 
 	storyIDStr, ok := storyID.(string)
 	if !ok {
-		return agent.StateError, false, fmt.Errorf("story_id is not a string in SETUP state: %v (type: %T)", storyID, storyID)
+		return proto.StateError, false, fmt.Errorf("story_id is not a string in SETUP state: %v (type: %T)", storyID, storyID)
 	}
 
 	// Setup workspace
@@ -2162,7 +2171,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 	workspaceResult, err := c.workspaceManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
 	if err != nil {
 		c.logger.Error("Failed to setup workspace: %v", err)
-		return agent.StateError, false, fmt.Errorf("workspace setup failed: %w", err)
+		return proto.StateError, false, fmt.Errorf("workspace setup failed: %w", err)
 	}
 
 	// Store worktree path and actual branch name for subsequent states
@@ -2198,7 +2207,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (ag
 		containerName, err := c.longRunningExecutor.StartContainer(storyCtx, storyIDStr, execOpts)
 		if err != nil {
 			c.logger.Error("Failed to start long-running container: %v", err)
-			return agent.StateError, false, fmt.Errorf("failed to start container: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to start container: %w", err)
 		}
 
 		c.containerName = containerName
@@ -2220,6 +2229,11 @@ func (c *Coder) SetDockerImage(image string) {
 	if c.longRunningExecutor != nil {
 		c.longRunningExecutor.SetImage(image)
 	}
+}
+
+// GetContainerName returns the current container name for cleanup purposes
+func (c *Coder) GetContainerName() string {
+	return c.containerName
 }
 
 // cleanupContainer stops and removes the current story's container
@@ -2251,57 +2265,21 @@ func (c *Coder) updateShellToolForStory(storyCtx context.Context) error {
 	return nil
 }
 
-// handleCleanup implements cleanup logic for CLEANUP state
-func (c *Coder) handleCleanup(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	// Stop the long-running container
-	c.cleanupContainer(ctx, "story completed")
-
-	if c.workspaceManager == nil {
-		c.logger.Warn("No workspace manager configured, skipping cleanup")
-		return agent.StateWaiting, false, nil // Ready for next story
+// handleDone implements terminal logic for DONE state
+func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+	// DONE is terminal - orchestrator will handle all cleanup and restart
+	// Only log once when entering DONE state to avoid spam
+	if val, exists := sm.GetStateValue("done_logged"); !exists || val != true {
+		c.logger.Info("🧑‍💻 Agent in DONE state - orchestrator will handle cleanup and restart")
+		sm.SetStateData("done_logged", true)
 	}
 
-	// Get story ID for cleanup
-	storyID, exists := sm.GetStateValue("story_id")
-	if exists {
-		if storyIDStr, ok := storyID.(string); ok {
-			agentID := c.GetAgentID()
-			if err := c.workspaceManager.CleanupWorkspace(ctx, agentID, storyIDStr, c.originalWorkDir); err != nil {
-				c.logger.Error("Failed to cleanup workspace: %v", err)
-				// Continue anyway - don't block restart
-			} else {
-				c.logger.Info("Workspace cleanup complete for story %s", storyIDStr)
-			}
-		}
-	}
-
-	// Clear old state data for fresh start
-	sm.SetStateData("story_id", nil)
-	sm.SetStateData("worktree_path", nil)
-	sm.SetStateData("task_content", nil)
-	sm.SetStateData("plan_approval_result", nil)
-	sm.SetStateData("code_approval_result", nil)
-
-	c.logger.Info("🧑‍💻 Story completed, transitioning to WAITING for next assignment")
-	return agent.StateWaiting, false, nil // Transition to WAITING for next story
-}
-
-// handleDone implements cleanup and terminal logic for DONE state
-func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
-	// Call the cleanup function to handle container and workspace cleanup
-	_, _, err := c.handleCleanup(ctx, sm)
-	if err != nil {
-		c.logger.Error("Failed to cleanup during DONE: %v", err)
-		// Continue anyway - don't block shutdown
-	}
-
-	c.logger.Info("🧑‍💻 Agent shutting down - DONE state is terminal")
-	// DONE is terminal - no state transition
-	return agent.StateDone, false, nil
+	// Return done=true to stop the run loop
+	return proto.StateDone, true, nil
 }
 
 // handleError implements cleanup and restart logic for ERROR state
-func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Log error state entry
 	errorMsg, _ := sm.GetStateValue("error_message")
 	c.logger.Error("Entered ERROR state: %v", errorMsg)
@@ -2423,7 +2401,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 }
 
 // handleTestingLegacy provides backward compatibility for testing without worktrees
-func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.logger.Info("Using legacy testing mode (no worktree)")
 
 	// Check for deliberate test failures
@@ -2449,7 +2427,7 @@ func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMach
 }
 
 // proceedToCodeReview handles the common logic for transitioning to CODE_REVIEW after successful testing
-func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (agent.State, bool, error) {
+func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Tests passed, send REQUEST message to architect for code approval as part of transition to CODE_REVIEW
 	filesCreated, _ := sm.GetStateValue("files_created")
 	codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed", filesCreated)
@@ -2470,12 +2448,12 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return agent.StateError, false, fmt.Errorf("failed to send code approval request: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to send code approval request: %w", err)
 		}
 
 		c.logger.Info("🧑‍💻 Sent code approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.ID)
 	} else {
-		return agent.StateError, false, fmt.Errorf("dispatcher not set")
+		return proto.StateError, false, fmt.Errorf("dispatcher not set")
 	}
 
 	return StateCodeReview, false, nil

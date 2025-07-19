@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/proto"
 )
 
@@ -73,7 +72,7 @@ Requirements:
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -81,7 +80,7 @@ Requirements:
 	}
 
 	// Verify final state
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Verify that the coder recovered from the invalid code block
 	messages := architect.GetReceivedMessages()
@@ -178,19 +177,19 @@ func TestStory3MalformedResponseHandling(t *testing.T) {
 				state := h.GetCoderState(coderID)
 				// For malformed responses, we don't expect to reach DONE
 				// Just run until timeout or until coder reaches a stable error state
-				return state == agent.StateDone || state == agent.StateError
+				return state == proto.StateDone || state == proto.StateError
 			})
 
 			// Check if we got the expected outcome
 			finalState := harness.GetCoderState(coderID)
 
 			if tc.expectError {
-				if finalState != agent.StateError && err == nil {
+				if finalState != proto.StateError && err == nil {
 					t.Errorf("Expected error state or timeout for %s, but got state %s", tc.name, finalState)
 				}
 			} else {
 				// Should handle gracefully and not crash
-				if finalState == agent.StateError {
+				if finalState == proto.StateError {
 					t.Errorf("Expected graceful handling for %s, but got error state", tc.name)
 				}
 			}
@@ -248,7 +247,7 @@ func TestStory3ErrorRecoveryWithValidFollowup(t *testing.T) {
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
 		state := h.GetCoderState(coderID)
-		return state == agent.StateDone || state == agent.StateError
+		return state == proto.StateDone || state == proto.StateError
 	})
 
 	if err != nil {

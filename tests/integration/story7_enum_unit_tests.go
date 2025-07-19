@@ -3,7 +3,6 @@ package integration
 import (
 	"testing"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/proto"
 )
@@ -211,14 +210,14 @@ func TestStory7NormaliseApprovalType(t *testing.T) {
 func TestStory7StateTransitionValidation(t *testing.T) {
 	testCases := []struct {
 		name     string
-		from     agent.State
-		to       agent.State
+		from     proto.State
+		to       proto.State
 		expected bool
 	}{
 		// Valid transitions (using actual coder states)
 		{
 			name:     "waiting_to_planning",
-			from:     agent.StateWaiting,
+			from:     proto.StateWaiting,
 			to:       coder.StatePlanning,
 			expected: true,
 		},
@@ -231,51 +230,51 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 		{
 			name:     "coding_to_done",
 			from:     coder.StateCoding,
-			to:       agent.StateDone,
+			to:       proto.StateDone,
 			expected: true,
 		},
 		{
 			name:     "any_to_error",
 			from:     coder.StatePlanning,
-			to:       agent.StateError,
+			to:       proto.StateError,
 			expected: true,
 		},
 		// Invalid transitions
 		{
 			name:     "waiting_to_coding_invalid",
-			from:     agent.StateWaiting,
+			from:     proto.StateWaiting,
 			to:       coder.StateCoding,
 			expected: false,
 		},
 		{
 			name:     "done_to_planning_invalid",
-			from:     agent.StateDone,
+			from:     proto.StateDone,
 			to:       coder.StatePlanning,
 			expected: false,
 		},
 		{
 			name:     "coding_to_waiting_invalid",
 			from:     coder.StateCoding,
-			to:       agent.StateWaiting,
+			to:       proto.StateWaiting,
 			expected: false,
 		},
 		{
 			name:     "error_to_planning_invalid",
-			from:     agent.StateError,
+			from:     proto.StateError,
 			to:       coder.StatePlanning,
 			expected: false,
 		},
 		// Same state transitions
 		{
 			name:     "waiting_to_waiting",
-			from:     agent.StateWaiting,
-			to:       agent.StateWaiting,
+			from:     proto.StateWaiting,
+			to:       proto.StateWaiting,
 			expected: false, // Usually same-state transitions are not valid
 		},
 		{
 			name:     "done_to_done",
-			from:     agent.StateDone,
-			to:       agent.StateDone,
+			from:     proto.StateDone,
+			to:       proto.StateDone,
 			expected: false,
 		},
 	}
@@ -445,14 +444,14 @@ func containsString(s, substr string) bool {
 
 // isValidStateTransition checks if a state transition is valid
 // This is a simplified implementation for testing purposes
-func isValidStateTransition(from, to agent.State) bool {
+func isValidStateTransition(from, to proto.State) bool {
 	// Define valid transitions based on the coder FSM
-	validTransitions := map[agent.State][]agent.State{
-		agent.StateWaiting:  {coder.StatePlanning, agent.StateError},
-		coder.StatePlanning: {coder.StateCoding, agent.StateError},
-		coder.StateCoding:   {agent.StateDone, agent.StateError},
-		agent.StateDone:     {}, // Terminal state
-		agent.StateError:    {}, // Terminal state
+	validTransitions := map[proto.State][]proto.State{
+		proto.StateWaiting:  {coder.StatePlanning, proto.StateError},
+		coder.StatePlanning: {coder.StateCoding, proto.StateError},
+		coder.StateCoding:   {proto.StateDone, proto.StateError},
+		proto.StateDone:     {}, // Terminal state
+		proto.StateError:    {}, // Terminal state
 	}
 
 	// Check if transition is in the valid list

@@ -75,7 +75,7 @@ type Driver struct {
 	architectID        string
 	stateStore         *state.Store
 	contextManager     *contextmgr.ContextManager
-	currentState       agent.State
+	currentState       proto.State
 	stateData          map[string]any
 	llmClient          LLMClient            // LLM for intelligent responses
 	renderer           *templates.Renderer  // Template renderer for prompts
@@ -137,6 +137,13 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 	d.logger.Info("🏗️ Architect %s dispatcher set: %p", d.architectID, dispatcher)
 }
 
+// SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications
+func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
+	// TODO: Implement state change notifications for architect
+	// For now, just log that it's set - architect uses different state management
+	d.logger.Info("🏗️ Architect %s state notification channel set", d.architectID)
+}
+
 // Initialize sets up the driver and loads any existing state
 func (d *Driver) Initialize(ctx context.Context) error {
 	// Load existing state if available
@@ -150,7 +157,7 @@ func (d *Driver) Initialize(ctx context.Context) error {
 	// If we have saved state, restore it
 	if savedState != "" {
 		d.logger.Info("Found saved state: %s, restoring...", savedState)
-		// Convert string state to agent.State
+		// Convert string state to proto.State
 		loadedState := d.stringToState(savedState)
 		if loadedState == StateError && savedState != "Error" {
 			d.logger.Warn("loaded unknown state '%s', setting to ERROR", savedState)
@@ -167,11 +174,11 @@ func (d *Driver) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// stringToState converts a string state to agent.State
+// stringToState converts a string state to proto.State
 // Returns StateError for unknown states
-func (d *Driver) stringToState(stateStr string) agent.State {
-	// Direct string to agent.State conversion since we're using string constants
-	state := agent.State(stateStr)
+func (d *Driver) stringToState(stateStr string) proto.State {
+	// Direct string to proto.State conversion since we're using string constants
+	state := proto.State(stateStr)
 	if err := ValidateState(state); err != nil {
 		return StateError
 	}
@@ -217,7 +224,7 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 	}
 
 	// Check if we're done (reached terminal state)
-	if nextState == agent.StateDone || nextState == agent.StateError {
+	if nextState == proto.StateDone || nextState == proto.StateError {
 		return true, nil
 	}
 
@@ -296,7 +303,7 @@ func (d *Driver) Run(ctx context.Context) error {
 }
 
 // handleWaiting blocks until a spec message or question is received
-func (d *Driver) handleWaiting(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	d.logger.Info("🏗️ Architect waiting for spec or question...")
 
 	select {
@@ -344,7 +351,7 @@ func (d *Driver) ownsSpec() bool {
 }
 
 // processCurrentState handles the logic for the current state
-func (d *Driver) processCurrentState(ctx context.Context) (agent.State, error) {
+func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	switch d.currentState {
 	case StateWaiting:
 		// WAITING state - block until spec received
@@ -373,7 +380,7 @@ func (d *Driver) processCurrentState(ctx context.Context) (agent.State, error) {
 }
 
 // handleScoping processes the scoping phase (platform detection, bootstrap, spec analysis and story generation)
-func (d *Driver) handleScoping(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Scoping phase: analyzing specification and generating stories")
 
 	// Extract spec file path from the SPEC message
@@ -527,7 +534,7 @@ func (d *Driver) parseSpecDeterministic(specFile string) ([]Requirement, error) 
 }
 
 // handleDispatching processes the dispatching phase (queue management and story assignment)
-func (d *Driver) handleDispatching(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Dispatching phase: managing queue and assigning stories")
 
 	// Initialize queue if not already done
@@ -575,7 +582,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (agent.State, error) {
 }
 
 // handleMonitoring processes the monitoring phase (waiting for coder requests)
-func (d *Driver) handleMonitoring(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Monitoring phase: waiting for coder requests and review completions")
 
 	// First, check if we need to dispatch any ready stories
@@ -617,13 +624,21 @@ func (d *Driver) handleMonitoring(ctx context.Context) (agent.State, error) {
 }
 
 // handleRequest processes the request phase (handling coder requests)
-func (d *Driver) handleRequest(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
+	// Check for context cancellation first
+	select {
+	case <-ctx.Done():
+		d.logger.Info("🏗️ Request processing cancelled due to context cancellation")
+		return StateError, ctx.Err()
+	default:
+	}
+
 	d.contextManager.AddMessage("assistant", "Request phase: processing coder request")
 
 	// Get the current request from state data
 	requestMsg, exists := d.stateData["current_request"].(*proto.AgentMsg)
-	if !exists {
-		d.logger.Error("🏗️ No current request found in state data")
+	if !exists || requestMsg == nil {
+		d.logger.Error("🏗️ No current request found in state data or request is nil")
 		return StateError, fmt.Errorf("no current request found")
 	}
 
@@ -925,7 +940,7 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 }
 
 // handleEscalated processes the escalated phase (waiting for human intervention)
-func (d *Driver) handleEscalated(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Escalated phase: waiting for human intervention")
 
 	// Check escalation timeout (2 hours)
@@ -975,7 +990,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (agent.State, error) {
 }
 
 // handleMerging processes the merging phase (merging approved code)
-func (d *Driver) handleMerging(ctx context.Context) (agent.State, error) {
+func (d *Driver) handleMerging(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Merging phase: processing completed stories")
 
 	// TODO: Implement proper merging logic without RequestWorker
@@ -985,7 +1000,7 @@ func (d *Driver) handleMerging(ctx context.Context) (agent.State, error) {
 }
 
 // transitionTo moves the driver to a new state and persists it
-func (d *Driver) transitionTo(ctx context.Context, newState agent.State, additionalData map[string]any) error {
+func (d *Driver) transitionTo(ctx context.Context, newState proto.State, additionalData map[string]any) error {
 	oldState := d.currentState
 	d.currentState = newState
 
@@ -1021,7 +1036,7 @@ func (d *Driver) transitionTo(ctx context.Context, newState agent.State, additio
 }
 
 // GetCurrentState returns the current state of the driver
-func (d *Driver) GetCurrentState() agent.State {
+func (d *Driver) GetCurrentState() proto.State {
 	return d.currentState
 }
 
@@ -1040,12 +1055,12 @@ func (d *Driver) GetAgentType() agent.AgentType {
 }
 
 // ValidateState checks if a state is valid for this architect agent
-func (d *Driver) ValidateState(state agent.State) error {
+func (d *Driver) ValidateState(state proto.State) error {
 	return ValidateState(state)
 }
 
 // GetValidStates returns all valid states for this architect agent
-func (d *Driver) GetValidStates() []agent.State {
+func (d *Driver) GetValidStates() []proto.State {
 	return GetValidStates()
 }
 

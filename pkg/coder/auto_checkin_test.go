@@ -6,6 +6,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -25,7 +26,7 @@ func TestCheckLoopBudget(t *testing.T) {
 	}
 
 	// Create base state machine with coder transitions
-	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test", proto.StateWaiting, stateStore, CoderTransitions)
 
 	// Create test driver with custom budgets
 	agentConfig := &config.Agent{
@@ -45,7 +46,7 @@ func TestCheckLoopBudget(t *testing.T) {
 		name          string
 		key           string
 		budget        int
-		origin        agent.State
+		origin        proto.State
 		iterations    int
 		expectTrigger bool
 		expectedLoops int
@@ -154,7 +155,7 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 	}
 
 	// Create base state machine with coder transitions
-	sm := agent.NewBaseStateMachine("test", agent.StateWaiting, stateStore, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test", proto.StateWaiting, stateStore, CoderTransitions)
 
 	// Create test driver
 	driver := &Coder{

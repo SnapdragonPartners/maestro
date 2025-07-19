@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"orchestrator/pkg/agent"
+	"orchestrator/pkg/proto"
 )
 
 // TestGetAllCoderStates verifies that all states are correctly derived from ValidCoderTransitions
@@ -13,7 +13,7 @@ func TestGetAllCoderStates(t *testing.T) {
 	derivedStates := GetAllCoderStates()
 
 	// Expected states based on current CoderTransitions map
-	expectedStates := []agent.State{
+	expectedStates := []proto.State{
 		StatePlanning, StateCoding, StateTesting, StateFixing,
 		StatePlanReview, StateCodeReview, StateQuestion,
 	}
@@ -87,7 +87,7 @@ func TestIsCoderState(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := IsCoderState(agent.State(tc.state))
+		result := IsCoderState(proto.State(tc.state))
 		if result != tc.expected {
 			t.Errorf("IsCoderState(%q) = %v, expected %v (%s)", tc.state, result, tc.expected, tc.desc)
 		}
@@ -111,7 +111,7 @@ func TestDriverIsCoderState(t *testing.T) {
 	// Test some non-coder states
 	nonCoderStates := []string{"WAITING", "DONE", "ERROR", "INVALID"}
 	for _, stateStr := range nonCoderStates {
-		agentState := agent.State(stateStr)
+		agentState := proto.State(stateStr)
 		if IsCoderState(agentState) {
 			t.Errorf("Driver should not recognize %q as a coder state", stateStr)
 		}

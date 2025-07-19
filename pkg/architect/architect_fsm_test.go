@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
+	"orchestrator/pkg/proto"
 )
 
 func TestArchitectStateString(t *testing.T) {
 	tests := []struct {
-		state    agent.State
+		state    proto.State
 		expected string
 	}{
 		{StateWaiting, "WAITING"},
@@ -21,7 +21,7 @@ func TestArchitectStateString(t *testing.T) {
 		{StateMerging, "MERGING"},
 		{StateDone, "DONE"},
 		{StateError, "ERROR"},
-		{agent.State("INVALID"), "INVALID"}, // Invalid state
+		{proto.State("INVALID"), "INVALID"}, // Invalid state
 	}
 
 	for _, test := range tests {
@@ -37,8 +37,8 @@ func TestArchitectStateString(t *testing.T) {
 func TestIsValidArchitectTransition(t *testing.T) {
 	// Test all valid transitions as defined in STATES.md
 	validTransitions := []struct {
-		from agent.State
-		to   agent.State
+		from proto.State
+		to   proto.State
 		name string
 	}{
 		// WAITING transitions
@@ -89,8 +89,8 @@ func TestIsValidArchitectTransition(t *testing.T) {
 func TestInvalidArchitectTransitions(t *testing.T) {
 	// Test a comprehensive set of invalid transitions
 	invalidTransitions := []struct {
-		from agent.State
-		to   agent.State
+		from proto.State
+		to   proto.State
 		name string
 	}{
 		// Invalid WAITING transitions
@@ -185,7 +185,7 @@ func TestEscalationTimeout(t *testing.T) {
 
 func TestGetAllArchitectStates(t *testing.T) {
 	states := GetAllArchitectStates()
-	expected := []agent.State{
+	expected := []proto.State{
 		StateWaiting,
 		StateScoping,
 		StateDispatching,
@@ -210,7 +210,7 @@ func TestGetAllArchitectStates(t *testing.T) {
 
 func TestIsTerminalState(t *testing.T) {
 	tests := []struct {
-		state    agent.State
+		state    proto.State
 		expected bool
 	}{
 		{StateWaiting, false},
@@ -236,7 +236,7 @@ func TestIsTerminalState(t *testing.T) {
 
 func TestIsValidArchitectState(t *testing.T) {
 	// Test all valid states
-	validStates := []agent.State{
+	validStates := []proto.State{
 		StateWaiting,
 		StateScoping,
 		StateDispatching,
@@ -257,10 +257,10 @@ func TestIsValidArchitectState(t *testing.T) {
 	}
 
 	// Test invalid states
-	invalidStates := []agent.State{
-		agent.State("INVALID"),
-		agent.State("UNKNOWN"),
-		agent.State("BADSTATE"),
+	invalidStates := []proto.State{
+		proto.State("INVALID"),
+		proto.State("UNKNOWN"),
+		proto.State("BADSTATE"),
 	}
 
 	for _, state := range invalidStates {
@@ -289,18 +289,18 @@ func TestTransitionMapCompleteness(t *testing.T) {
 func TestValidNextStates(t *testing.T) {
 	// Test the ValidNextStates helper function
 	tests := []struct {
-		from     agent.State
-		expected []agent.State
+		from     proto.State
+		expected []proto.State
 	}{
-		{StateWaiting, []agent.State{StateScoping}},
-		{StateScoping, []agent.State{StateDispatching, StateError}},
-		{StateDispatching, []agent.State{StateMonitoring, StateDone}},
-		{StateMonitoring, []agent.State{StateRequest, StateMerging}},
-		{StateRequest, []agent.State{StateMonitoring, StateMerging, StateEscalated, StateError}},
-		{StateEscalated, []agent.State{StateRequest, StateError}},
-		{StateMerging, []agent.State{StateDispatching, StateError}},
-		{StateDone, []agent.State{StateWaiting}},
-		{StateError, []agent.State{StateWaiting}},
+		{StateWaiting, []proto.State{StateScoping}},
+		{StateScoping, []proto.State{StateDispatching, StateError}},
+		{StateDispatching, []proto.State{StateMonitoring, StateDone}},
+		{StateMonitoring, []proto.State{StateRequest, StateMerging}},
+		{StateRequest, []proto.State{StateMonitoring, StateMerging, StateEscalated, StateError}},
+		{StateEscalated, []proto.State{StateRequest, StateError}},
+		{StateMerging, []proto.State{StateDispatching, StateError}},
+		{StateDone, []proto.State{StateWaiting}},
+		{StateError, []proto.State{StateWaiting}},
 	}
 
 	for _, test := range tests {
@@ -311,7 +311,7 @@ func TestValidNextStates(t *testing.T) {
 			}
 
 			// Check that all expected states are present
-			resultSet := make(map[agent.State]bool)
+			resultSet := make(map[proto.State]bool)
 			for _, state := range result {
 				resultSet[state] = true
 			}
@@ -328,7 +328,7 @@ func TestValidNextStates(t *testing.T) {
 func TestTransitionMapIntegrity(t *testing.T) {
 	// Verify that all target states in the transition map are valid states
 	allStates := GetAllArchitectStates()
-	stateSet := make(map[agent.State]bool)
+	stateSet := make(map[proto.State]bool)
 	for _, state := range allStates {
 		stateSet[state] = true
 	}

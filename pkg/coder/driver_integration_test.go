@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
@@ -55,7 +54,7 @@ func TestCoderHealthStoryIntegration(t *testing.T) {
 
 	// Verify final state is DONE
 	finalState := driver.GetCurrentState()
-	if finalState != agent.StateDone {
+	if finalState != proto.StateDone {
 		// Get state data for debugging
 		stateData := driver.GetStateData()
 		t.Errorf("Expected final state to be DONE, got %s. State data: %+v", finalState, stateData)
@@ -241,17 +240,17 @@ func TestCoderFailureAndRetry(t *testing.T) {
 	testCases := []struct {
 		name        string
 		taskContent string
-		expectFlow  []agent.State
+		expectFlow  []proto.State
 	}{
 		{
 			name:        "Test failure and fix cycle",
 			taskContent: "Create endpoint that should test fail initially",
-			expectFlow:  []agent.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateFixing, StateCoding, StateTesting, StateCodeReview, agent.StateDone},
+			expectFlow:  []proto.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateFixing, StateCoding, StateTesting, StateCodeReview, proto.StateDone},
 		},
 		{
 			name:        "Normal successful flow",
 			taskContent: "Create simple endpoint that works",
-			expectFlow:  []agent.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateCodeReview, agent.StateDone},
+			expectFlow:  []proto.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateCodeReview, proto.StateDone},
 		},
 	}
 
@@ -278,7 +277,7 @@ func TestCoderFailureAndRetry(t *testing.T) {
 				t.Fatalf("Failed to initialize driver: %v", err)
 			}
 
-			var stateTrace []agent.State
+			var stateTrace []proto.State
 			stateTrace = append(stateTrace, driver.GetCurrentState())
 
 			// Process the task
@@ -301,7 +300,7 @@ func TestCoderFailureAndRetry(t *testing.T) {
 						stateTrace = append(stateTrace, currentState)
 					}
 
-					if currentState == agent.StateDone || currentState == agent.StateError {
+					if currentState == proto.StateDone || currentState == proto.StateError {
 						goto testComplete
 					}
 				}
@@ -309,7 +308,7 @@ func TestCoderFailureAndRetry(t *testing.T) {
 
 		testComplete:
 			finalState := driver.GetCurrentState()
-			if finalState != agent.StateDone {
+			if finalState != proto.StateDone {
 				t.Errorf("Expected final state DONE, got %s. State trace: %v", finalState, stateTrace)
 			}
 

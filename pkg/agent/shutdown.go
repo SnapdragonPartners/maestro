@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"orchestrator/pkg/proto"
 )
 
 // ShutdownManager handles graceful shutdown of agent components
@@ -126,7 +128,7 @@ type ShutdownableDriver struct {
 }
 
 // NewShutdownableDriver creates a driver with shutdown management
-func NewShutdownableDriver(config *AgentConfig, initialState State, shutdownMgr *ShutdownManager) (*ShutdownableDriver, error) {
+func NewShutdownableDriver(config *AgentConfig, initialState proto.State, shutdownMgr *ShutdownManager) (*ShutdownableDriver, error) {
 	baseDriver, err := NewBaseDriver(config, initialState)
 	if err != nil {
 		return nil, err
@@ -200,7 +202,7 @@ func (d *ShutdownableDriver) Run(ctx context.Context) error {
 // handleShutdown performs graceful shutdown procedures
 func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
 	// Try to transition to a safe state before shutting down
-	if d.GetCurrentState() != StateDone && d.GetCurrentState() != StateError {
+	if d.GetCurrentState() != proto.StateDone && d.GetCurrentState() != proto.StateError {
 		// Attempt to save current work
 		if err := d.Persist(); err != nil {
 			d.config.Context.Logger.Printf("Warning: failed to persist state during shutdown: %v", err)
@@ -213,7 +215,7 @@ func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
 			"can_resume":      true,
 		}
 
-		if err := d.TransitionTo(ctx, StateError, metadata); err != nil {
+		if err := d.TransitionTo(ctx, proto.StateError, metadata); err != nil {
 			d.config.Context.Logger.Printf("Warning: failed to transition to error state during shutdown: %v", err)
 		}
 	}
@@ -234,7 +236,7 @@ func (d *ShutdownableDriver) Shutdown(ctx context.Context) error {
 		"shutdown_time":  time.Now().UTC(),
 	}
 
-	if err := d.TransitionTo(ctx, StateDone, metadata); err != nil {
+	if err := d.TransitionTo(ctx, proto.StateDone, metadata); err != nil {
 		// Don't fail shutdown for transition errors
 		d.config.Context.Logger.Printf("Warning: failed to mark clean shutdown: %v", err)
 	}
@@ -253,7 +255,7 @@ func (d *ShutdownableDriver) CanResume() bool {
 
 	// Check if in a resumable state (generic agent states only)
 	state := d.GetCurrentState()
-	return state == StateWaiting // Only generic states are resumable at the agent level
+	return state == proto.StateWaiting // Only generic states are resumable at the agent level
 }
 
 // Resume attempts to resume operations from a previous state

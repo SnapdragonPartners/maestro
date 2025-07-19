@@ -58,7 +58,7 @@ func GetTestTimeouts() TestTimeouts {
 }
 
 // RequireState asserts that a coder is in the expected state
-func RequireState(t *testing.T, harness *TestHarness, coderID string, want agent.State) {
+func RequireState(t *testing.T, harness *TestHarness, coderID string, want proto.State) {
 	t.Helper()
 
 	actual := harness.GetCoderState(coderID)
@@ -268,7 +268,7 @@ func DrainChannel(ch <-chan *proto.AgentMsg) int {
 }
 
 // WaitForCoderState is a helper that waits for a coder to reach a specific state
-func WaitForCoderState(t *testing.T, harness *TestHarness, coderID string, targetState agent.State, timeout time.Duration) {
+func WaitForCoderState(t *testing.T, harness *TestHarness, coderID string, targetState proto.State, timeout time.Duration) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

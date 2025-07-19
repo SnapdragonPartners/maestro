@@ -1,6 +1,10 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+
+	"orchestrator/pkg/proto"
+)
 
 // AgentType represents the type of an agent
 type AgentType string
@@ -33,8 +37,8 @@ func ParseAgentType(s string) (AgentType, error) {
 }
 
 // ParseState safely parses a string into a State with validation
-func ParseState(s string, driver Driver) (State, error) {
-	state := State(s)
+func ParseState(s string, driver Driver) (proto.State, error) {
+	state := proto.State(s)
 	if err := driver.ValidateState(state); err != nil {
 		return "", fmt.Errorf("invalid state '%s' for agent type '%s': %w", s, driver.GetAgentType(), err)
 	}
@@ -42,7 +46,7 @@ func ParseState(s string, driver Driver) (State, error) {
 }
 
 // IsValidStateTransition checks if a transition from one state to another is valid for the given driver
-func IsValidStateTransition(driver Driver, from, to State) error {
+func IsValidStateTransition(driver Driver, from, to proto.State) error {
 	// First validate both states are valid for this agent type
 	if err := driver.ValidateState(from); err != nil {
 		return fmt.Errorf("invalid from state: %w", err)

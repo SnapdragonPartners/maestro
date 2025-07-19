@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/proto"
 )
@@ -49,7 +48,7 @@ Requirements:
 
 	// Run until the coder reaches DONE state
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -57,7 +56,7 @@ Requirements:
 	}
 
 	// Verify final state
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Verify the revision cycle happened
 	messages := architect.GetReceivedMessages()
@@ -131,7 +130,7 @@ Requirements:
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -139,7 +138,7 @@ Requirements:
 	}
 
 	// Verify final state
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Verify multiple revisions occurred
 	messages := architect.GetReceivedMessages()
@@ -181,7 +180,7 @@ func TestStory2RevisionStateTransitions(t *testing.T) {
 	StartCoderWithTask(t, harness, coderID, "Create a simple function that adds two numbers")
 
 	// Track state transitions
-	seenStates := make(map[agent.State]bool)
+	seenStates := make(map[proto.State]bool)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -192,7 +191,7 @@ func TestStory2RevisionStateTransitions(t *testing.T) {
 		seenStates[currentState] = true
 
 		// Stop when we reach DONE
-		return currentState == agent.StateDone
+		return currentState == proto.StateDone
 	})
 
 	if err != nil {
@@ -200,7 +199,7 @@ func TestStory2RevisionStateTransitions(t *testing.T) {
 	}
 
 	// Verify we saw the expected state transitions for a revision cycle
-	expectedStates := []agent.State{
+	expectedStates := []proto.State{
 		coder.StatePlanning,
 		// Note: Other states depend on actual coder implementation
 	}

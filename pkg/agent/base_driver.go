@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+
+	"orchestrator/pkg/proto"
 )
 
 // BaseDriver provides common functionality for agent drivers
@@ -14,7 +16,7 @@ type BaseDriver struct {
 }
 
 // NewBaseDriver creates a new base driver
-func NewBaseDriver(config *AgentConfig, initialState State) (*BaseDriver, error) {
+func NewBaseDriver(config *AgentConfig, initialState proto.State) (*BaseDriver, error) {
 	// Validate config
 	if err := config.Validate(); err != nil {
 		return nil, err

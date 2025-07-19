@@ -9,7 +9,6 @@ import (
 	"testing/quick"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/proto"
 )
@@ -103,15 +102,15 @@ func testCoderStability(t *testing.T, input FuzzInput) bool {
 	err := harness.Run(ctx, func(h *TestHarness) bool {
 		state := h.GetCoderState(coderID)
 		// Stop early if we reach a terminal state
-		return state == agent.StateDone || state == agent.StateError
+		return state == proto.StateDone || state == proto.StateError
 	})
 
 	// Check final state is valid
 	finalState := harness.GetCoderState(coderID)
-	validFinalStates := []agent.State{
-		agent.StateDone,
-		agent.StateError,
-		agent.StateWaiting,
+	validFinalStates := []proto.State{
+		proto.StateDone,
+		proto.StateError,
+		proto.StateWaiting,
 		coder.StatePlanning,
 		coder.StateCoding,
 	}
@@ -243,7 +242,7 @@ func testConcurrentStability(t *testing.T) bool {
 		// Stop if all coders reach terminal states
 		states := h.GetAllCoderStates()
 		for _, state := range states {
-			if state != agent.StateDone && state != agent.StateError {
+			if state != proto.StateDone && state != proto.StateError {
 				return false
 			}
 		}
@@ -253,7 +252,7 @@ func testConcurrentStability(t *testing.T) bool {
 	// Check all coders are in valid states
 	finalStates := harness.GetAllCoderStates()
 	for coderID, state := range finalStates {
-		if state == agent.State("") { // Invalid/uninitialized state
+		if state == proto.State("") { // Invalid/uninitialized state
 			t.Logf("Concurrent fuzz failed: coder %s in invalid state", coderID)
 			return false
 		}
@@ -365,14 +364,14 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
 		state := h.GetCoderState(coderID)
-		return state == agent.StateDone || state == agent.StateError
+		return state == proto.StateDone || state == proto.StateError
 	})
 
 	// Check final state is reasonable
 	finalState := harness.GetCoderState(coderID)
 
 	// The coder should handle the sequence gracefully
-	if finalState == agent.State("") {
+	if finalState == proto.State("") {
 		t.Logf("Message sequence test failed: invalid final state for sequence %v", sequence)
 		return false
 	}

@@ -56,6 +56,31 @@ func (m *MockGitRunner) Run(ctx context.Context, dir string, args ...string) ([]
 	return []byte("mock output"), nil
 }
 
+// RunQuiet implements GitRunner interface for testing (same behavior as Run)
+func (m *MockGitRunner) RunQuiet(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	// Log the call with a quiet marker
+	m.CallLog = append(m.CallLog, GitCall{
+		Dir:  dir + "|quiet",
+		Args: append([]string{}, args...), // Copy slice
+	})
+
+	// Build command signature for lookup (same as Run)
+	sig := m.buildSignature(dir, args...)
+
+	// Check for specific error
+	if err, exists := m.Errors[sig]; exists {
+		return nil, err
+	}
+
+	// Check for specific output
+	if output, exists := m.Commands[sig]; exists {
+		return output, nil
+	}
+
+	// Default successful output
+	return []byte("mock output"), nil
+}
+
 // SetCommand sets the expected output for a specific command
 func (m *MockGitRunner) SetCommand(dir string, output []byte, args ...string) {
 	sig := m.buildSignature(dir, args...)

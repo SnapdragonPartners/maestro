@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"log"
+
+	"orchestrator/pkg/proto"
 )
 
 // Driver represents a generic agent driver interface
@@ -18,7 +20,7 @@ type Driver interface {
 	Step(ctx context.Context) (bool, error)
 
 	// GetCurrentState returns the current state of the driver
-	GetCurrentState() State
+	GetCurrentState() proto.State
 
 	// GetStateData returns a copy of the current state data
 	GetStateData() map[string]any
@@ -27,10 +29,10 @@ type Driver interface {
 	GetAgentType() AgentType
 
 	// ValidateState checks if a state is valid for this agent type
-	ValidateState(state State) error
+	ValidateState(state proto.State) error
 
 	// GetValidStates returns all valid states for this agent type
-	GetValidStates() []State
+	GetValidStates() []proto.State
 
 	// Shutdown performs cleanup when the driver is stopping
 	Shutdown(ctx context.Context) error

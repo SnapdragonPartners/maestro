@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/proto"
 )
@@ -47,7 +46,7 @@ Requirements:
 
 	// Run until the coder reaches DONE state
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -55,7 +54,7 @@ Requirements:
 	}
 
 	// Verify final state
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Verify architect received exactly one RESULT message
 	messages := architect.GetReceivedMessages()
@@ -139,7 +138,7 @@ func TestStory1MultipleCodersIndependent(t *testing.T) {
 
 	// Verify all coders reached DONE state
 	for _, coderID := range coderIDs {
-		RequireState(t, harness, coderID, agent.StateDone)
+		RequireState(t, harness, coderID, proto.StateDone)
 	}
 
 	// Verify architect received messages from all coders

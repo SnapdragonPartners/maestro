@@ -623,3 +623,26 @@ func SafeExtractFromMetadata[T any](msg *AgentMsg, key string, parser EnumExtrac
 	}
 	return zero, fmt.Errorf("metadata key %s not found", key)
 }
+
+// State represents a state in a state machine
+type State string
+
+const (
+	StateDone    State = "DONE"
+	StateError   State = "ERROR"
+	StateWaiting State = "WAITING"
+)
+
+// String returns the string representation of State
+func (s State) String() string {
+	return string(s)
+}
+
+// StateChangeNotification represents an agent state change event
+type StateChangeNotification struct {
+	AgentID   string         `json:"agent_id"`
+	FromState State          `json:"from_state"`
+	ToState   State          `json:"to_state"`
+	Timestamp time.Time      `json:"timestamp"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}

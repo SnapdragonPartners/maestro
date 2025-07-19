@@ -1,12 +1,12 @@
-Here’s the complete current **STATES.md** content, inline for easy copy-paste:
+Here's the complete current **STATES.md** content, inline for easy copy-paste:
 
 ---
 
 # Coder Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-07-18 (rev E - Cleanup State for Multi-Story Workflow)*
+*Last updated: 2025-07-18 (rev F - Agent Restart Workflow)*
 
-This document is the **single source of truth** for the coder agent’s workflow.
+This document is the **single source of truth** for the coder agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
 
 ---
@@ -50,7 +50,7 @@ stateDiagram-v2
     CODE_REVIEW   --> FIXING           : changes
     CODE_REVIEW   --> ERROR            : abandon/error
     
-    AWAIT_MERGE   --> CLEANUP          : merge successful
+    AWAIT_MERGE   --> DONE             : merge successful
     AWAIT_MERGE   --> FIXING           : merge conflicts 
 
     %% Budget review (budget exceeded)
@@ -65,13 +65,9 @@ stateDiagram-v2
     QUESTION      --> FIXING           : return to fixing
     QUESTION      --> ERROR            : abandon/error 
 
-    %% Multi-story workflow - cleanup and return to WAITING
-    CLEANUP       --> WAITING          : cleanup complete
-    CLEANUP       --> DONE             : architect shutdown signal
-    ERROR         --> WAITING
-
-    %% Terminal state
-    DONE          --> [*]
+    %% Agent restart workflow - orchestrator handles cleanup
+    ERROR         --> DONE             : orchestrator cleanup & restart
+    DONE          --> [*]              : orchestrator shuts down agent
 ```
 
 ---
@@ -90,31 +86,29 @@ stateDiagram-v2
 | **CODE\_REVIEW**    | Architect reviews the code and either approves, requests changes, or abandons. |
 | **BUDGET\_REVIEW**  | Architect reviews budget exceeded request and decides how to proceed. |
 | **AWAIT\_MERGE**    | Waiting for architect to merge PR after code approval.                        |
-| **CLEANUP**         | Clean up workspace and container resources after successful story completion.  |
 | **QUESTION**        | Awaiting external clarification or information.                                |
-| **DONE**            | Agent termination state - no more work will be assigned.                       |
+| **DONE**            | Agent termination state - orchestrator will shut down and restart agent.       |
 | **ERROR**           | Task abandoned or unrecoverable failure encountered.                           |
 
 ---
 
 ## Allowed transitions (tabular)
 
-| From \ To           | WAITING | SETUP | PLAN\_REVIEW | PLANNING | CODING | TESTING | FIXING | CODE\_REVIEW | BUDGET\_REVIEW | AWAIT\_MERGE | CLEANUP | QUESTION | DONE | ERROR |
-| ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------ | ------------ | -------------- | ------------ | ------- | -------- | ---- | ----- |
-| **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –      | –            | –              | –            | –       | –        | –    | –     |
-| **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –      | –            | –              | –            | –       | –        | –    | ✔︎    |
-| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –      | –            | –              | –            | –       | ✔︎       | –    | –     |
-| **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –      | –            | –              | –            | –       | –        | –    | ✔︎    |
-| **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | –       | ✔︎       | –    | ✔︎    |
-| **TESTING**         | –       | –     | –            | –        | –      | –       | ✔︎     | ✔︎           | –              | –            | –       | –        | –    | –     |
-| **FIXING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | –       | ✔︎       | –    | ✔︎    |
-| **CODE\_REVIEW**    | –       | –     | –            | –        | –      | –       | ✔︎     | –            | –              | ✔︎           | –       | –        | –    | ✔︎    |
-| **BUDGET\_REVIEW**  | –       | –     | –            | –        | ✔︎     | –       | ✔︎     | ✔︎           | –              | –            | –       | –        | –    | ✔︎    |
-| **AWAIT\_MERGE**    | –       | –     | –            | –        | –      | –       | ✔︎     | –            | –              | –            | ✔︎      | –        | –    | –     |
-| **CLEANUP**         | ✔︎      | –     | –            | –        | –      | –       | –      | –            | –              | –            | –       | –        | ✔︎   | –     |
-| **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | ✔︎     | –            | –              | –            | –       | –        | –    | ✔︎    |
-| **DONE**            | –       | –     | –            | –        | –      | –       | –      | –            | –              | –            | –       | –        | –    | –     |
-| **ERROR**           | ✔︎      | –     | –            | –        | –      | –       | –      | –            | –              | –            | –       | –        | –    | –     |
+| From \ To           | WAITING | SETUP | PLAN\_REVIEW | PLANNING | CODING | TESTING | FIXING | CODE\_REVIEW | BUDGET\_REVIEW | AWAIT\_MERGE | QUESTION | DONE | ERROR |
+| ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------ | ------------ | -------------- | ------------ | -------- | ---- | ----- |
+| **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –      | –            | –              | –            | –        | –    | –     |
+| **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –      | –            | –              | –            | –        | –    | ✔︎    |
+| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –      | –            | –              | –            | ✔︎       | –    | –     |
+| **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –      | –            | –              | –            | –        | –    | ✔︎    |
+| **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | ✔︎       | –    | ✔︎    |
+| **TESTING**         | –       | –     | –            | –        | –      | –       | ✔︎     | ✔︎           | –              | –            | –        | –    | –     |
+| **FIXING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | ✔︎       | –    | ✔︎    |
+| **CODE\_REVIEW**    | –       | –     | –            | –        | –      | –       | ✔︎     | –            | –              | ✔︎           | –        | –    | ✔︎    |
+| **BUDGET\_REVIEW**  | –       | –     | –            | –        | ✔︎     | –       | ✔︎     | ✔︎           | –              | –            | –        | –    | ✔︎    |
+| **AWAIT\_MERGE**    | –       | –     | –            | –        | –      | –       | ✔︎     | –            | –              | –            | –        | ✔︎   | –     |
+| **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | ✔︎     | –            | –              | –            | –        | –    | ✔︎    |
+| **DONE**            | –       | –     | –            | –        | –      | –       | –      | –            | –              | –            | –        | –    | –     |
+| **ERROR**           | –       | –     | –            | –        | –      | –       | –      | –            | –              | –            | –        | ✔︎   | –     |
 
 *(✔︎ = allowed, — = invalid)*
 
@@ -146,43 +140,45 @@ Upon receiving architect approval:
   1. It receives **ABANDON** from `PLAN_REVIEW`, `CODE_REVIEW`, `BUDGET_REVIEW`, or `QUESTION`.
   2. An **auto-approve** request is rejected with ABANDON.
   3. Any unrecoverable runtime error occurs (panic, out-of-retries, etc.).
-* **ERROR** is terminal; orchestrator decides next steps.
+* **ERROR** transitions to **DONE** for orchestrator cleanup and agent restart.
 
 ---
 
 ## Worktree & Merge Workflow Integration
 
-This FSM now includes **Git worktree support** and **merge workflow**:
+This FSM includes **Git worktree support** and **merge workflow**:
 
-### New States:
+### Key States:
 - **SETUP**: Initialize Git worktree and story branch (entry state before PLANNING)
 - **BUDGET_REVIEW**: Architect reviews budget exceeded request when iteration budget is exceeded
 - **AWAIT_MERGE**: Wait for architect merge result after PR creation
-- **CLEANUP**: Clean up workspace and container resources after successful story completion
+- **DONE**: Terminal state - orchestrator will shut down and restart agent with clean state
 
 ### Enhanced States:
-- **FIXING**: Now handles merge conflicts in addition to test failures and review rejections
-- **DONE**: Now terminal state for agent shutdown (no more stories will be assigned)
+- **FIXING**: Handles merge conflicts in addition to test failures and review rejections
+- **ERROR**: Transitions to DONE for orchestrator cleanup and restart
 
 ### Workflow Flow:
 ```
-WAITING → SETUP → PLANNING → CODING → TESTING → CODE_REVIEW → AWAIT_MERGE → CLEANUP → WAITING
+WAITING → SETUP → PLANNING → CODING → TESTING → CODE_REVIEW → AWAIT_MERGE → DONE
                     ↑         ↑         ↑           ↑             ↑           ↓
-                    └─────────┴─────────┴───FIXING──┴─────────────┘         DONE (terminal)
-                              ↑         ↑
-                              └─BUDGET_REVIEW─┘
+                    └─────────┴─────────┴───FIXING──┴─────────────┘    [agent restart]
+                              ↑         ↑                              ↓
+                              └─BUDGET_REVIEW─┘                    WAITING (new agent)
 ```
 
 ### Merge Conflict Resolution:
 1. Code approved → PR created → merge request sent to architect
 2. Architect attempts merge using `gh pr merge --squash --delete-branch`
 3. If conflicts: `AWAIT_MERGE → FIXING(reason=merge_conflict) → TESTING → CODE_REVIEW`
-4. If success: `AWAIT_MERGE → CLEANUP → WAITING` (story completed, ready for next story)
+4. If success: `AWAIT_MERGE → DONE` (orchestrator shuts down agent and creates new one)
 
-### Multi-Story Workflow:
-- **Normal flow**: Stories complete via `CLEANUP → WAITING`, agent ready for next story
-- **Terminal flow**: Architect can signal shutdown via `CLEANUP → DONE` when no more stories
-- **Error recovery**: Failed stories transition via `ERROR → WAITING` after cleanup
+### Agent Restart Workflow:
+- **Story completion**: `AWAIT_MERGE → DONE` (merge successful)
+- **Error recovery**: `ERROR → DONE` (unrecoverable failure)
+- **Orchestrator actions**: On DONE state, orchestrator shuts down agent and creates fresh instance
+- **Complete cleanup**: All resources deleted (workspace, containers, state) for clean slate
+- **Future metrics**: Orchestrator will aggregate metrics across agent restarts (not yet implemented)
 
 ---
 

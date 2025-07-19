@@ -41,6 +41,7 @@ type Agent interface {
 type ChannelReceiver interface {
 	SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
 	SetDispatcher(dispatcher *Dispatcher)
+	SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification)
 }
 
 type Dispatcher struct {
@@ -73,6 +74,9 @@ type Dispatcher struct {
 
 	// Supervisor pattern for error handling
 	errCh chan AgentError // Channel for agent error reporting
+
+	// State change notifications
+	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
 }
 
 type DispatchResult struct {
@@ -95,6 +99,7 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		questionsCh:   make(chan *proto.AgentMsg, cfg.QuestionsChannelSize),                 // Buffer size from config
 		replyChannels: make(map[string]chan *proto.AgentMsg),                                // Per-agent reply channels
 		errCh:         make(chan AgentError, 10),                                            // Buffered channel for error reporting
+		stateChangeCh: make(chan *proto.StateChangeNotification, 100),                       // Buffered channel for state change notifications
 	}, nil
 }
 
@@ -121,6 +126,9 @@ func (d *Dispatcher) Attach(ag Agent) {
 
 	// Set up channels for agents that implement ChannelReceiver interface
 	if channelReceiver, ok := ag.(ChannelReceiver); ok {
+		// Set up state notification channel for all ChannelReceiver agents
+		channelReceiver.SetStateNotificationChannel(d.stateChangeCh)
+
 		// Determine agent type to provide appropriate channels
 		if agentDriver, ok := ag.(agent.Driver); ok {
 			switch agentDriver.GetAgentType() {
@@ -150,6 +158,11 @@ func (d *Dispatcher) Attach(ag Agent) {
 	} else {
 		d.logger.Warn("Agent %s does not implement Driver interface", agentID)
 	}
+}
+
+// Detach removes an agent and cleans up its channels (public method for orchestrator)
+func (d *Dispatcher) Detach(agentID string) {
+	d.detach(agentID)
 }
 
 // detach removes an agent and cleans up its channels
@@ -697,6 +710,11 @@ func (d *Dispatcher) GetStoryCh() <-chan *proto.AgentMsg {
 	return d.storyCh
 }
 
+// GetStateChangeChannel returns the state change notification channel
+func (d *Dispatcher) GetStateChangeChannel() <-chan *proto.StateChangeNotification {
+	return d.stateChangeCh
+}
+
 // ArchitectChannels contains the channels returned to architects
 type ArchitectChannels struct {
 	Specs <-chan *proto.AgentMsg // Delivers spec messages
@@ -753,6 +771,12 @@ func (d *Dispatcher) closeAllChannels() {
 	if d.errCh != nil {
 		close(d.errCh)
 		d.logger.Info("Closed error reporting channel")
+	}
+
+	// Close state change notification channel
+	if d.stateChangeCh != nil {
+		close(d.stateChangeCh)
+		d.logger.Info("Closed state change notification channel")
 	}
 }
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
+	"orchestrator/pkg/proto"
 )
 
 // TestStory4HighConcurrency tests 10 coders running simultaneously
@@ -75,7 +75,7 @@ func TestStory4HighConcurrency(t *testing.T) {
 
 	// Verify all coders reached DONE state
 	for _, coderID := range coderIDs {
-		RequireState(t, harness, coderID, agent.StateDone)
+		RequireState(t, harness, coderID, proto.StateDone)
 	}
 
 	// Verify completion time is within expected bounds (target: 500ms wall-clock)
@@ -160,7 +160,7 @@ func TestStory4ChannelIsolationUnderLoad(t *testing.T) {
 
 	// Verify all coders completed
 	for _, coderID := range coderIDs {
-		RequireState(t, harness, coderID, agent.StateDone)
+		RequireState(t, harness, coderID, proto.StateDone)
 	}
 
 	// Verify no messages were lost or crossed between channels

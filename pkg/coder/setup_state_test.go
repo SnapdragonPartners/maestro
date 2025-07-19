@@ -7,6 +7,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -15,7 +16,7 @@ func TestSetupStateHandler(t *testing.T) {
 		name          string
 		setupMock     func(*MockGitRunner)
 		storyID       string
-		expectedState agent.State
+		expectedState proto.State
 		expectedError bool
 		skipWorkspace bool
 	}{
@@ -38,7 +39,7 @@ func TestSetupStateHandler(t *testing.T) {
 			setupMock: func(mock *MockGitRunner) {
 				// No setup needed
 			},
-			expectedState: agent.StateError,
+			expectedState: proto.StateError,
 			expectedError: true,
 		},
 		{
@@ -48,7 +49,7 @@ func TestSetupStateHandler(t *testing.T) {
 				// Mock failed Git operation
 				mock.SetError("", fmt.Errorf("git clone failed"), "clone", "--bare")
 			},
-			expectedState: agent.StateError,
+			expectedState: proto.StateError,
 			expectedError: true,
 		},
 		{

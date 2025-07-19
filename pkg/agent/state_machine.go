@@ -8,26 +8,17 @@ import (
 	"time"
 
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/proto"
 )
-
-// State represents a state in a state machine
-type State string
 
 const (
-	StateDone         State = "DONE"
-	StateError        State = "ERROR"
-	StateWaiting      State = "WAITING"
-	DefaultMaxRetries       = 3
+	DefaultMaxRetries = 3
 )
-
-func (s State) String() string {
-	return string(s)
-}
 
 // StateTransition represents a transition between states
 type StateTransition struct {
-	FromState State
-	ToState   State
+	FromState proto.State
+	ToState   proto.State
 	Timestamp time.Time
 	Metadata  map[string]any
 }
@@ -35,14 +26,14 @@ type StateTransition struct {
 // StateMachine defines the interface for state machine implementations
 type StateMachine interface {
 	// GetCurrentState returns the current state
-	GetCurrentState() State
+	GetCurrentState() proto.State
 
 	// ProcessState handles the logic for the current state
 	// Returns next state and whether processing is complete
-	ProcessState(ctx context.Context) (next State, done bool, err error)
+	ProcessState(ctx context.Context) (next proto.State, done bool, err error)
 
 	// TransitionTo moves to a new state
-	TransitionTo(ctx context.Context, newState State, metadata map[string]any) error
+	TransitionTo(ctx context.Context, newState proto.State, metadata map[string]any) error
 
 	// Initialize sets up the state machine
 	Initialize(ctx context.Context) error
@@ -58,7 +49,7 @@ type StateMachine interface {
 type StateData map[string]any
 
 // TransitionTable represents valid state transitions for an agent instance
-type TransitionTable map[State][]State
+type TransitionTable map[proto.State][]proto.State
 
 // StateStore defines the interface for state persistence
 type StateStore interface {
@@ -71,7 +62,7 @@ type StateStore interface {
 // BaseStateMachine provides common state machine functionality
 type BaseStateMachine struct {
 	agentID      string
-	currentState State
+	currentState proto.State
 	stateData    StateData
 	transitions  []StateTransition
 	store        StateStore      // State persistence
@@ -80,10 +71,13 @@ type BaseStateMachine struct {
 	retryCount   int             // Tracks retry attempts
 	maxRetries   int             // Maximum retries before failing
 	logger       *logx.Logger    // Agent-specific logger
+
+	// State change notifications
+	stateNotifCh chan<- *proto.StateChangeNotification // Channel for state change notifications
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table
-func NewBaseStateMachine(agentID string, initialState State, store StateStore, table TransitionTable) *BaseStateMachine {
+func NewBaseStateMachine(agentID string, initialState proto.State, store StateStore, table TransitionTable) *BaseStateMachine {
 	// Use global ValidTransitions as fallback to preserve existing behavior
 	if table == nil {
 		table = ValidTransitions
@@ -102,7 +96,7 @@ func NewBaseStateMachine(agentID string, initialState State, store StateStore, t
 }
 
 // GetCurrentState returns the current state
-func (sm *BaseStateMachine) GetCurrentState() State {
+func (sm *BaseStateMachine) GetCurrentState() proto.State {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	return sm.currentState
@@ -136,7 +130,7 @@ func (sm *BaseStateMachine) GetStateValue(key string) (any, bool) {
 }
 
 // TransitionTo moves to a new state and records the transition
-func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, metadata map[string]any) error {
+func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.State, metadata map[string]any) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -167,6 +161,26 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState State, me
 
 	// Log the transition
 	sm.logger.Info("🔄 State machine transition: %s → %s", oldState, newState)
+
+	// Send state change notification (non-blocking)
+	if sm.stateNotifCh != nil {
+		notification := &proto.StateChangeNotification{
+			AgentID:   sm.agentID,
+			FromState: oldState,
+			ToState:   newState,
+			Timestamp: transition.Timestamp,
+			Metadata:  metadata,
+		}
+
+		select {
+		case sm.stateNotifCh <- notification:
+			// Notification sent successfully
+		default:
+			// Channel full, log warning but don't block
+			sm.logger.Warn("State notification channel full, dropping notification for %s: %s->%s",
+				sm.agentID, oldState, newState)
+		}
+	}
 
 	// Update state data with transition metadata
 	sm.stateData["previous_state"] = oldState.String()
@@ -253,8 +267,15 @@ func (sm *BaseStateMachine) SetMaxRetries(max int) {
 	sm.maxRetries = max
 }
 
+// SetStateNotificationChannel sets the channel for state change notifications
+func (sm *BaseStateMachine) SetStateNotificationChannel(ch chan<- *proto.StateChangeNotification) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.stateNotifCh = ch
+}
+
 // ProcessState provides a default implementation that derived types should override
-func (sm *BaseStateMachine) ProcessState(ctx context.Context) (State, bool, error) {
+func (sm *BaseStateMachine) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	return sm.currentState, false, fmt.Errorf("ProcessState not implemented")
 }
 
@@ -289,12 +310,12 @@ func (sm *BaseStateMachine) Initialize(ctx context.Context) error {
 
 					// Safely extract from_state
 					if fromState, ok := tMap["from_state"].(string); ok {
-						transition.FromState = State(fromState)
+						transition.FromState = proto.State(fromState)
 					}
 
 					// Safely extract to_state
 					if toState, ok := tMap["to_state"].(string); ok {
-						transition.ToState = State(toState)
+						transition.ToState = proto.State(toState)
 					}
 
 					// Safely extract timestamp
@@ -330,7 +351,7 @@ func (sm *BaseStateMachine) Initialize(ctx context.Context) error {
 
 		// Restore current state
 		if currentState, ok := state["current_state"].(string); ok {
-			sm.currentState = State(currentState)
+			sm.currentState = proto.State(currentState)
 		}
 	}
 
