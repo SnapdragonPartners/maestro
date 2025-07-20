@@ -53,7 +53,7 @@ func TestCheckLoopBudget(t *testing.T) {
 	}{
 		{
 			name:          "coding under budget",
-			key:           keyCodingIterations,
+			key:           string(stateDataKeyCodingIterations),
 			budget:        3,
 			origin:        StateCoding,
 			iterations:    2,
@@ -62,7 +62,7 @@ func TestCheckLoopBudget(t *testing.T) {
 		},
 		{
 			name:          "coding at budget",
-			key:           keyCodingIterations,
+			key:           string(stateDataKeyCodingIterations),
 			budget:        3,
 			origin:        StateCoding,
 			iterations:    3,
@@ -71,7 +71,7 @@ func TestCheckLoopBudget(t *testing.T) {
 		},
 		{
 			name:          "fixing under budget",
-			key:           keyFixingIterations,
+			key:           string(stateDataKeyFixingIterations),
 			budget:        2,
 			origin:        StateFixing,
 			iterations:    1,
@@ -80,7 +80,7 @@ func TestCheckLoopBudget(t *testing.T) {
 		},
 		{
 			name:          "fixing at budget",
-			key:           keyFixingIterations,
+			key:           string(stateDataKeyFixingIterations),
 			budget:        2,
 			origin:        StateFixing,
 			iterations:    2,
@@ -93,9 +93,9 @@ func TestCheckLoopBudget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset state
 			sm.SetStateData(tt.key, tt.iterations-1)
-			sm.SetStateData(keyQuestionReason, "")
-			sm.SetStateData(keyQuestionOrigin, "")
-			sm.SetStateData(keyQuestionContent, "")
+			sm.SetStateData(string(stateDataKeyQuestionReason), "")
+			sm.SetStateData(string(stateDataKeyQuestionOrigin), "")
+			sm.SetStateData(string(stateDataKeyQuestionContent), "")
 
 			// Call checkLoopBudget
 			triggered := driver.checkLoopBudget(sm, tt.key, tt.budget, tt.origin)
@@ -120,16 +120,16 @@ func TestCheckLoopBudget(t *testing.T) {
 
 			// If triggered, check BUDGET_REVIEW fields
 			if tt.expectTrigger {
-				if reason, exists := sm.GetStateValue(keyQuestionReason); !exists || reason != "BUDGET_REVIEW" {
+				if reason, exists := sm.GetStateValue(string(stateDataKeyQuestionReason)); !exists || reason != "BUDGET_REVIEW" {
 					t.Errorf("Expected question_reason=BUDGET_REVIEW, got %v", reason)
 				}
-				if origin, exists := sm.GetStateValue(keyQuestionOrigin); !exists || origin != string(tt.origin) {
+				if origin, exists := sm.GetStateValue(string(stateDataKeyQuestionOrigin)); !exists || origin != string(tt.origin) {
 					t.Errorf("Expected question_origin=%s, got %v", tt.origin, origin)
 				}
-				if loops, exists := sm.GetStateValue(keyLoops); !exists || loops != tt.expectedLoops {
+				if loops, exists := sm.GetStateValue(string(stateDataKeyLoops)); !exists || loops != tt.expectedLoops {
 					t.Errorf("Expected loops=%d, got %v", tt.expectedLoops, loops)
 				}
-				if maxLoops, exists := sm.GetStateValue(keyMaxLoops); !exists || maxLoops != tt.budget {
+				if maxLoops, exists := sm.GetStateValue(string(stateDataKeyMaxLoops)); !exists || maxLoops != tt.budget {
 					t.Errorf("Expected max_loops=%d, got %v", tt.budget, maxLoops)
 				}
 			}
@@ -231,10 +231,10 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 			// Reset state
 			driver.codingBudget = 5
 			driver.fixingBudget = 3
-			sm.SetStateData(keyQuestionReason, "BUDGET_REVIEW")
-			sm.SetStateData(keyQuestionOrigin, tt.origin)
-			sm.SetStateData(keyCodingIterations, 5)
-			sm.SetStateData(keyFixingIterations, 5)
+			sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
+			sm.SetStateData(string(stateDataKeyQuestionOrigin), tt.origin)
+			sm.SetStateData(string(stateDataKeyCodingIterations), 5)
+			sm.SetStateData(string(stateDataKeyFixingIterations), 5)
 
 			// Call processAutoCheckinAnswer - DISABLED
 			// err := driver.processAutoCheckinAnswer(tt.answer)
@@ -263,9 +263,9 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 
 			// Check counter reset for CONTINUE and PIVOT
 			if tt.answer == "CONTINUE" || tt.answer == "CONTINUE 2" || tt.answer == "PIVOT" {
-				key := keyCodingIterations
+				key := string(stateDataKeyCodingIterations)
 				if tt.origin == "FIXING" {
-					key = keyFixingIterations
+					key = string(stateDataKeyFixingIterations)
 				}
 				if val, exists := sm.GetStateValue(key); exists {
 					if count, ok := val.(int); ok && count != tt.expectedCounter {

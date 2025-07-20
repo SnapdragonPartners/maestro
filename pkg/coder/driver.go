@@ -46,6 +46,10 @@ func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
 	}
 
 	c.logger.Debug("Retrieved %d tools: %v", len(requestedTools), toolNames)
+	// Debug: Log tool definitions to identify potential issues
+	for _, tool := range requestedTools {
+		c.logger.Debug("Tool %s: %+v", tool.Name, tool)
+	}
 	return requestedTools
 }
 
@@ -74,28 +78,43 @@ func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.Completio
 	return messages
 }
 
-// State data keys - using constants to prevent key mismatch bugs
-const (
-	keyPlanApprovalResult = "plan_approval_result"
-	keyCodeApprovalResult = "code_approval_result"
-	keyArchitectAnswer    = "architect_answer"
-	keyTaskContent        = "task_content"
-	keyStartedAt          = "started_at"
-	keyCodingIterations   = "coding_iterations"
-	keyFixingIterations   = "fixing_iterations"
-	keyPlanningIterations = "planning_iterations"
+// StateDataKey provides type safety for state data access
+type stateDataKey string
 
-	// BUDGET_REVIEW state keys
-	keyQuestionReason      = "question_reason"
-	keyQuestionOrigin      = "question_origin"
-	keyQuestionContent     = "question_content"
-	keyBudgetReviewAction  = "budget_review_action"
-	keyErrorMessage        = "error_msg"
-	keyLoops               = "loops"
-	keyMaxLoops            = "max_loops"
-	keyQuestionAnswered    = "question_answered"
-	keyQuestionCompletedAt = "question_completed_at"
+// State data keys - using typed constants to prevent key mismatch bugs
+const (
+	stateDataKeyPlan               stateDataKey = "plan"
+	stateDataKeyPlanConfidence     stateDataKey = "plan_confidence"
+	stateDataKeyPlanTodos          stateDataKey = "plan_todos"
+	stateDataKeyExplorationSummary stateDataKey = "exploration_summary"
+	stateDataKeyPlanRisks          stateDataKey = "plan_risks"
+	stateDataKeyPlanApprovalResult stateDataKey = "plan_approval_result"
+	stateDataKeyCodeApprovalResult stateDataKey = "code_approval_result"
+	stateDataKeyArchitectAnswer    stateDataKey = "architect_answer"
+	stateDataKeyTaskContent        stateDataKey = "task_content"
+	stateDataKeyStartedAt          stateDataKey = "started_at"
+	stateDataKeyCodingIterations   stateDataKey = "coding_iterations"
+	stateDataKeyFixingIterations   stateDataKey = "fixing_iterations"
+	stateDataKeyPlanningIterations stateDataKey = "planning_iterations"
+
+	// BUDGET_REVIEW and other state keys
+	stateDataKeyQuestionReason      stateDataKey = "question_reason"
+	stateDataKeyQuestionOrigin      stateDataKey = "question_origin"
+	stateDataKeyQuestionContent     stateDataKey = "question_content"
+	stateDataKeyBudgetReviewAction  stateDataKey = "budget_review_action"
+	stateDataKeyErrorMessage        stateDataKey = "error_msg"
+	stateDataKeyLoops               stateDataKey = "loops"
+	stateDataKeyMaxLoops            stateDataKey = "max_loops"
+	stateDataKeyQuestionAnswered    stateDataKey = "question_answered"
+	stateDataKeyQuestionCompletedAt stateDataKey = "question_completed_at"
 )
+
+// PlanTodo represents a single task item in the implementation plan
+type PlanTodo struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Completed   bool   `json:"completed"`
+}
 
 // Docker container constants
 const (
@@ -455,8 +474,8 @@ func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
 
 	// Reset for new task
-	c.BaseStateMachine.SetStateData(keyTaskContent, taskContent)
-	c.BaseStateMachine.SetStateData(keyStartedAt, time.Now().UTC())
+	c.BaseStateMachine.SetStateData(string(stateDataKeyTaskContent), taskContent)
+	c.BaseStateMachine.SetStateData(string(stateDataKeyStartedAt), time.Now().UTC())
 
 	// Add to context manager
 	c.contextManager.AddMessage("user", taskContent)
@@ -494,7 +513,7 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 	c.contextManager.AddMessage("assistant", "Waiting for task assignment")
 
 	// First check if we already have a task from previous processing
-	taskContent, exists := sm.GetStateValue(keyTaskContent)
+	taskContent, exists := sm.GetStateValue(string(stateDataKeyTaskContent))
 	if exists && taskContent != "" {
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "task content available")
 		return StateSetup, false, nil
@@ -542,10 +561,10 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 		logx.Infof("🧑‍💻 Received story message %s for story %s, transitioning to SETUP", storyMsg.ID, storyIDStr)
 
 		// Store the task content and story ID for the SETUP state
-		sm.SetStateData(keyTaskContent, contentStr)
+		sm.SetStateData(string(stateDataKeyTaskContent), contentStr)
 		sm.SetStateData("story_message_id", storyMsg.ID)
 		sm.SetStateData("story_id", storyIDStr) // For workspace manager - use actual story ID
-		sm.SetStateData(keyStartedAt, time.Now().UTC())
+		sm.SetStateData(string(stateDataKeyStartedAt), time.Now().UTC())
 
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "received story message")
 		return StateSetup, false, nil
@@ -558,21 +577,21 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	c.contextManager.AddMessage("assistant", "Enhanced planning phase: exploring codebase and creating comprehensive plan")
 
 	// Check and increment planning iterations for budget control
-	currentIterations, _ := sm.GetStateValue(keyPlanningIterations)
+	currentIterations, _ := sm.GetStateValue(string(stateDataKeyPlanningIterations))
 	iterations, _ := currentIterations.(int)
 	iterations++
-	sm.SetStateData(keyPlanningIterations, iterations)
+	sm.SetStateData(string(stateDataKeyPlanningIterations), iterations)
 
 	// Planning budget limit to prevent infinite loops (similar to coding/fixing)
 	const maxPlanningIterations = 10
 	if iterations > maxPlanningIterations {
 		c.logger.Warn("Planning iteration limit reached (%d), transitioning to BUDGET_REVIEW", maxPlanningIterations)
 		// Set up budget review data (similar to coding/fixing)
-		sm.SetStateData(keyQuestionReason, "BUDGET_REVIEW")
-		sm.SetStateData(keyQuestionOrigin, "PLANNING")
-		sm.SetStateData(keyErrorMessage, "Planning iteration budget exceeded")
-		sm.SetStateData(keyLoops, iterations)
-		sm.SetStateData(keyMaxLoops, maxPlanningIterations)
+		sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
+		sm.SetStateData(string(stateDataKeyQuestionOrigin), "PLANNING")
+		sm.SetStateData(string(stateDataKeyErrorMessage), "Planning iteration budget exceeded")
+		sm.SetStateData(string(stateDataKeyLoops), iterations)
+		sm.SetStateData(string(stateDataKeyMaxLoops), maxPlanningIterations)
 		return StateBudgetReview, false, nil
 	}
 
@@ -587,7 +606,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	}
 
 	// Continue with iterative planning using LLM + tools
-	taskContent, _ := sm.GetStateValue(keyTaskContent)
+	taskContent, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
 	taskStr, _ := taskContent.(string)
 
 	return c.handleIterativePlanning(ctx, sm, taskStr)
@@ -600,7 +619,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 	c.contextManager.AddMessage("assistant", "Plan review phase: waiting for architect approval")
 
 	// Check if we already have approval result from previous processing
-	if approvalData, exists := sm.GetStateValue(keyPlanApprovalResult); exists {
+	if approvalData, exists := sm.GetStateValue(string(stateDataKeyPlanApprovalResult)); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
 			return proto.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
@@ -646,7 +665,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 
 			// Extract approval result and store it
 			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
-				sm.SetStateData(keyPlanApprovalResult, approvalData)
+				sm.SetStateData(string(stateDataKeyPlanApprovalResult), approvalData)
 				c.logger.Info("🧑‍💻 Plan approval result received and stored")
 				// Return same state to re-process with the new approval data
 				return StatePlanReview, false, nil
@@ -671,13 +690,13 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (p
 	}
 
 	// Restore coding context if returning from QUESTION
-	if questionAnswered, exists := sm.GetStateValue(keyQuestionAnswered); exists && questionAnswered.(bool) {
+	if questionAnswered, exists := sm.GetStateValue(string(stateDataKeyQuestionAnswered)); exists && questionAnswered.(bool) {
 		c.restoreCodingContext(sm)
-		sm.SetStateData(keyQuestionAnswered, false) // Clear flag
+		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
 		c.logger.Info("🧑‍💻 Restored coding context after question answered")
 	}
 
-	taskContent, _ := sm.GetStateValue(keyTaskContent)
+	taskContent, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
 	taskStr, _ := taskContent.(string)
 	plan, _ := sm.GetStateValue("plan")
 	planStr, _ := plan.(string)
@@ -769,7 +788,7 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 	}
 
 	// Check iteration limit using BUDGET_REVIEW mechanism
-	if c.checkLoopBudget(sm, keyCodingIterations, c.codingBudget, StateCoding) {
+	if c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), c.codingBudget, StateCoding) {
 		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
 		return StateBudgetReview, false, nil
 	}
@@ -779,7 +798,7 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 	c.contextManager.AddMessage("system", fmt.Sprintf("Previous iteration created %d files/directories. Current workspace contains: %s. The implementation is not yet complete. Please continue with the next steps to create the actual source code files (like main.go, handlers, etc).", filesCreated, fileList))
 
 	// Continue coding if implementation is not complete
-	currentIterations, _ := sm.GetStateValue(keyCodingIterations)
+	currentIterations, _ := sm.GetStateValue(string(stateDataKeyCodingIterations))
 	iterCount, _ := currentIterations.(int)
 	c.logger.Info("Implementation appears incomplete (iteration %d/%d), continuing in CODING state", iterCount, c.codingBudget)
 
@@ -1523,14 +1542,14 @@ func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (p
 	}
 
 	// Restore fixing context if returning from QUESTION
-	if questionAnswered, exists := sm.GetStateValue(keyQuestionAnswered); exists && questionAnswered.(bool) {
+	if questionAnswered, exists := sm.GetStateValue(string(stateDataKeyQuestionAnswered)); exists && questionAnswered.(bool) {
 		c.restoreFixingContext(sm)
-		sm.SetStateData(keyQuestionAnswered, false) // Clear flag
+		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
 		c.logger.Info("🧑‍💻 Restored fixing context after question answered")
 	}
 
 	// Check iteration limit using BUDGET_REVIEW mechanism
-	if c.checkLoopBudget(sm, keyFixingIterations, c.fixingBudget, StateFixing) {
+	if c.checkLoopBudget(sm, string(stateDataKeyFixingIterations), c.fixingBudget, StateFixing) {
 		c.logger.Info("Fixing budget exceeded, triggering BUDGET_REVIEW")
 		return StateBudgetReview, false, nil
 	}
@@ -1604,7 +1623,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	c.contextManager.AddMessage("assistant", "Code review phase: waiting for architect approval")
 
 	// Check if we already have approval result from previous processing
-	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
+	if approvalData, exists := sm.GetStateValue(string(stateDataKeyCodeApprovalResult)); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
 			return proto.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
@@ -1657,7 +1676,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 
 			// Extract approval result and store it
 			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
-				sm.SetStateData(keyCodeApprovalResult, approvalData)
+				sm.SetStateData(string(stateDataKeyCodeApprovalResult), approvalData)
 				c.logger.Info("🧑‍💻 Code approval result received and stored")
 				// Return same state to re-process with the new approval data
 				return StateCodeReview, false, nil
@@ -1782,7 +1801,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 	c.contextManager.AddMessage("assistant", "Budget review phase: waiting for architect guidance")
 
 	// Check if we already have approval result from previous processing
-	if approvalData, exists := sm.GetStateValue(keyCodeApprovalResult); exists {
+	if approvalData, exists := sm.GetStateValue(string(stateDataKeyCodeApprovalResult)); exists {
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
 			return proto.StateError, false, fmt.Errorf("failed to convert budget review approval data: %w", err)
@@ -1807,10 +1826,10 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 			// Reset the iteration counter for the origin state
 			switch originStr {
 			case string(StateCoding):
-				sm.SetStateData(keyCodingIterations, 0)
+				sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 				return StateCoding, false, nil
 			case string(StateFixing):
-				sm.SetStateData(keyFixingIterations, 0)
+				sm.SetStateData(string(stateDataKeyFixingIterations), 0)
 				return StateFixing, false, nil
 			default:
 				return StateCoding, false, nil // default fallback
@@ -1840,7 +1859,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 
 			// Extract approval result and store it
 			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
-				sm.SetStateData(keyCodeApprovalResult, approvalData)
+				sm.SetStateData(string(stateDataKeyCodeApprovalResult), approvalData)
 				c.logger.Info("🧑‍💻 Budget review approval result received and stored")
 				// Return same state to re-process with the new approval data
 				return StateBudgetReview, false, nil
@@ -1866,17 +1885,17 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 // handleRegularQuestion handles regular QUESTION→ANSWER flow
 func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Check if we have an answer
-	if answer, exists := sm.GetStateValue(keyArchitectAnswer); exists {
+	if answer, exists := sm.GetStateValue(string(stateDataKeyArchitectAnswer)); exists {
 		answerStr, _ := answer.(string)
-		sm.SetStateData(keyQuestionAnswered, true)
+		sm.SetStateData(string(stateDataKeyQuestionAnswered), true)
 		sm.SetStateData("architect_response", answerStr)
-		sm.SetStateData(keyQuestionCompletedAt, time.Now().UTC())
+		sm.SetStateData(string(stateDataKeyQuestionCompletedAt), time.Now().UTC())
 
 		// Clear the answer so we don't loop
-		sm.SetStateData(keyArchitectAnswer, nil)
+		sm.SetStateData(string(stateDataKeyArchitectAnswer), nil)
 
 		// Return to origin state using metadata
-		origin, _ := sm.GetStateValue(keyQuestionOrigin)
+		origin, _ := sm.GetStateValue(string(stateDataKeyQuestionOrigin))
 		originStr, _ := origin.(string)
 
 		switch originStr {
@@ -1896,10 +1915,10 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 
 	// Create question for architect if we don't have one pending
 	if c.pendingQuestion == nil {
-		questionContent, _ := sm.GetStateValue(keyQuestionContent)
-		questionReason, _ := sm.GetStateValue(keyQuestionReason)
-		questionOrigin, _ := sm.GetStateValue(keyQuestionOrigin)
-		errorMsg, _ := sm.GetStateValue(keyErrorMessage)
+		questionContent, _ := sm.GetStateValue(string(stateDataKeyQuestionContent))
+		questionReason, _ := sm.GetStateValue(string(stateDataKeyQuestionReason))
+		questionOrigin, _ := sm.GetStateValue(string(stateDataKeyQuestionOrigin))
+		errorMsg, _ := sm.GetStateValue(string(stateDataKeyErrorMessage))
 
 		// Include error message in content if present
 		content := ""
@@ -2005,9 +2024,9 @@ func (c *Coder) ProcessApprovalResult(approvalStatus string, approvalType string
 	// Store using the correct key based on type
 	switch stdApprovalType {
 	case proto.ApprovalTypePlan:
-		c.BaseStateMachine.SetStateData(keyPlanApprovalResult, result)
+		c.BaseStateMachine.SetStateData(string(stateDataKeyPlanApprovalResult), result)
 	case proto.ApprovalTypeCode:
-		c.BaseStateMachine.SetStateData(keyCodeApprovalResult, result)
+		c.BaseStateMachine.SetStateData(string(stateDataKeyCodeApprovalResult), result)
 	default:
 		return fmt.Errorf("unknown approval type: %s", approvalType)
 	}
@@ -2027,7 +2046,7 @@ func (c *Coder) ProcessApprovalResult(approvalStatus string, approvalType string
 func (c *Coder) ProcessAnswer(answer string) error {
 	// Only handle regular QUESTION→ANSWER flow
 	// Budget review now uses REQUEST→RESULT flow
-	c.BaseStateMachine.SetStateData(keyArchitectAnswer, answer)
+	c.BaseStateMachine.SetStateData(string(stateDataKeyArchitectAnswer), answer)
 	return nil
 }
 
@@ -2338,9 +2357,9 @@ func (c *Coder) handleQuestionTransition(ctx context.Context, sm *agent.BaseStat
 	urgency, _ := questionMap["urgency"].(string)
 
 	// Set question state data for QUESTION state handler
-	sm.SetStateData(keyQuestionContent, question)
-	sm.SetStateData(keyQuestionReason, fmt.Sprintf("Planning clarification (%s urgency)", urgency))
-	sm.SetStateData(keyQuestionOrigin, string(StatePlanning))
+	sm.SetStateData(string(stateDataKeyQuestionContent), question)
+	sm.SetStateData(string(stateDataKeyQuestionReason), fmt.Sprintf("Planning clarification (%s urgency)", urgency))
+	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StatePlanning))
 	sm.SetStateData("question_context", context)
 
 	// Clear the question submission trigger
@@ -2366,9 +2385,9 @@ func (c *Coder) handleCodingQuestionTransition(ctx context.Context, sm *agent.Ba
 	urgency, _ := questionMap["urgency"].(string)
 
 	// Set question state data for QUESTION state handler
-	sm.SetStateData(keyQuestionContent, question)
-	sm.SetStateData(keyQuestionReason, fmt.Sprintf("Coding clarification (%s urgency)", urgency))
-	sm.SetStateData(keyQuestionOrigin, string(StateCoding))
+	sm.SetStateData(string(stateDataKeyQuestionContent), question)
+	sm.SetStateData(string(stateDataKeyQuestionReason), fmt.Sprintf("Coding clarification (%s urgency)", urgency))
+	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StateCoding))
 	sm.SetStateData("question_context", context)
 
 	// Clear the question submission trigger
@@ -2394,9 +2413,9 @@ func (c *Coder) handleFixingQuestionTransition(ctx context.Context, sm *agent.Ba
 	urgency, _ := questionMap["urgency"].(string)
 
 	// Set question state data for QUESTION state handler
-	sm.SetStateData(keyQuestionContent, question)
-	sm.SetStateData(keyQuestionReason, fmt.Sprintf("Fixing clarification (%s urgency)", urgency))
-	sm.SetStateData(keyQuestionOrigin, string(StateFixing))
+	sm.SetStateData(string(stateDataKeyQuestionContent), question)
+	sm.SetStateData(string(stateDataKeyQuestionReason), fmt.Sprintf("Fixing clarification (%s urgency)", urgency))
+	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StateFixing))
 	sm.SetStateData("question_context", context)
 
 	// Clear the question submission trigger
@@ -2417,12 +2436,30 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 	confidence, _ := planMap["confidence"].(string)
 	explorationSummary, _ := planMap["exploration_summary"].(string)
 	risks, _ := planMap["risks"].(string)
+	todos, _ := planMap["todos"].([]any)
 
-	// Store plan data
-	sm.SetStateData("plan", plan)
-	sm.SetStateData("plan_confidence", confidence)
-	sm.SetStateData("exploration_summary", explorationSummary)
-	sm.SetStateData("plan_risks", risks)
+	// Convert todos to structured format
+	planTodos := make([]PlanTodo, len(todos))
+	for i, todoItem := range todos {
+		if todoMap, ok := todoItem.(map[string]any); ok {
+			planTodos[i] = PlanTodo{
+				ID:          todoMap["id"].(string),
+				Description: todoMap["description"].(string),
+				Completed:   todoMap["completed"].(bool),
+			}
+		}
+	}
+
+	// Get original story content for reference
+	originalStory, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
+	originalStoryStr, _ := originalStory.(string)
+
+	// Store plan data using typed constants
+	sm.SetStateData(string(stateDataKeyPlan), plan)
+	sm.SetStateData(string(stateDataKeyPlanConfidence), confidence)
+	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
+	sm.SetStateData(string(stateDataKeyPlanRisks), risks)
+	sm.SetStateData(string(stateDataKeyPlanTodos), planTodos)
 	sm.SetStateData("planning_completed_at", time.Now().UTC())
 
 	// Clear the plan submission trigger
@@ -2440,10 +2477,12 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
 		requestMsg.SetPayload("approval_type", proto.ApprovalTypePlan.String())
-		requestMsg.SetPayload("content", plan)
+		requestMsg.SetPayload("plan", plan)
 		requestMsg.SetPayload("confidence", confidence)
 		requestMsg.SetPayload("exploration_summary", explorationSummary)
 		requestMsg.SetPayload("risks", risks)
+		requestMsg.SetPayload("todos", planTodos)
+		requestMsg.SetPayload("original_story", originalStoryStr)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
@@ -2462,9 +2501,9 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 // handleIterativePlanning implements tool-supported planning workflow
 func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (proto.State, bool, error) {
 	// Restore planning context if returning from QUESTION
-	if questionAnswered, exists := sm.GetStateValue(keyQuestionAnswered); exists && questionAnswered.(bool) {
+	if questionAnswered, exists := sm.GetStateValue(string(stateDataKeyQuestionAnswered)); exists && questionAnswered.(bool) {
 		c.restorePlanningContext(sm)
-		sm.SetStateData(keyQuestionAnswered, false) // Clear flag
+		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
 		c.logger.Info("🧑‍💻 Restored planning context after question answered")
 	}
 
@@ -2845,7 +2884,7 @@ func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMach
 	c.logger.Info("Using legacy testing mode (no worktree)")
 
 	// Check for deliberate test failures
-	taskContent, _ := sm.GetStateValue(keyTaskContent)
+	taskContent, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
 	taskStr, _ := taskContent.(string)
 
 	shouldFail := strings.Contains(strings.ToLower(taskStr), "test fail") ||

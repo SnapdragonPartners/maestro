@@ -47,12 +47,12 @@ After thorough exploration, create a comprehensive implementation plan.
   - All write operations will fail (filesystem is mounted read-only)
   - Use for: find, grep, cat, ls, tree, etc.
   
-- **`ask_question`** - Ask architect for clarification (COMING SOON)
+- **`ask_question`** - Ask architect for clarification
   - Parameters: question, context, urgency
   - Transitions to QUESTION state, returns with architect's answer
   
-- **`submit_plan`** - Submit your final implementation plan (COMING SOON)
-  - Parameters: plan, confidence, exploration_summary, risks
+- **`submit_plan`** - Submit your final implementation plan
+  - Parameters: plan, confidence, exploration_summary, risks, **todos** (required)
   - Advances to PLAN_REVIEW state for architect approval
 
 ## Expected Plan Format
@@ -93,5 +93,37 @@ Create a comprehensive plan based on your exploration:
   ]
 }
 ```
+
+## Phase 3: Submit Structured Plan
+
+When submitting your plan with `submit_plan`, you MUST provide:
+
+### Required Parameters:
+- **`plan`**: Your complete implementation plan (JSON format above)
+- **`confidence`**: "HIGH", "MEDIUM", or "LOW" based on exploration
+- **`exploration_summary`**: Brief summary of files explored and findings
+- **`risks`**: Potential challenges or risks identified
+- **`todos`**: **REQUIRED** - Ordered list of implementation tasks
+
+### Todos Format:
+The `todos` parameter should be an array of objects, each with a `task` field describing a specific implementation step:
+
+```json
+{
+  "todos": [
+    {"task": "Create base module structure in pkg/mymodule/"},
+    {"task": "Implement core functionality with error handling"}, 
+    {"task": "Add unit tests covering all public functions"},
+    {"task": "Update documentation and examples"},
+    {"task": "Integrate with existing service patterns"}
+  ]
+}
+```
+
+**Important**: Todos will be used to track progress during implementation. Each todo should be:
+- **Specific**: Clear, actionable task
+- **Ordered**: Dependencies implicit in sequence  
+- **Complete**: Covers all implementation work
+- **Testable**: Can be verified when done
 
 **Start by exploring the codebase systematically. Do not create a plan until you understand the existing implementation.**

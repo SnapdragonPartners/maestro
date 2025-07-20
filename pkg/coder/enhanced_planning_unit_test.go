@@ -227,11 +227,11 @@ func TestQuestionTransitionLogic(t *testing.T) {
 	}
 
 	// Verify question data was set correctly
-	if content, exists := driver.BaseStateMachine.GetStateValue(keyQuestionContent); !exists || content != "How should I implement this feature?" {
+	if content, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionContent)); !exists || content != "How should I implement this feature?" {
 		t.Error("Question content not set correctly")
 	}
 
-	if origin, exists := driver.BaseStateMachine.GetStateValue(keyQuestionOrigin); !exists || origin != string(StatePlanning) {
+	if origin, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionOrigin)); !exists || origin != string(StatePlanning) {
 		t.Error("Question origin not set correctly")
 	}
 
@@ -246,7 +246,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 		t.Errorf("Expected transition to QUESTION, got %s", nextState)
 	}
 
-	if origin, exists := driver.BaseStateMachine.GetStateValue(keyQuestionOrigin); !exists || origin != string(StateCoding) {
+	if origin, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionOrigin)); !exists || origin != string(StateCoding) {
 		t.Error("Coding question origin not set correctly")
 	}
 
@@ -261,7 +261,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 		t.Errorf("Expected transition to QUESTION, got %s", nextState)
 	}
 
-	if origin, exists := driver.BaseStateMachine.GetStateValue(keyQuestionOrigin); !exists || origin != string(StateFixing) {
+	if origin, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionOrigin)); !exists || origin != string(StateFixing) {
 		t.Error("Fixing question origin not set correctly")
 	}
 

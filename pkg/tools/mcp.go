@@ -28,9 +28,12 @@ type InputSchema struct {
 
 // Property defines a single property in the input schema
 type Property struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
+	Type        string               `json:"type"`
+	Description string               `json:"description,omitempty"`
+	Enum        []string             `json:"enum,omitempty"`
+	Items       *Property            `json:"items,omitempty"`
+	Properties  map[string]*Property `json:"properties,omitempty"`
+	Required    []string             `json:"required,omitempty"`
 }
 
 // ToolUse represents a Claude tool use request

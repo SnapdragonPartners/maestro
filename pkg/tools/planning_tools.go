@@ -126,8 +126,22 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Potential risks or challenges identified (optional)",
 				},
+				"todos": {
+					Type:        "array",
+					Description: "Ordered list of implementation tasks to be completed during coding phase",
+					Items: &Property{
+						Type: "object",
+						Properties: map[string]*Property{
+							"task": {
+								Type:        "string",
+								Description: "Single implementation task description",
+							},
+						},
+						Required: []string{"task"},
+					},
+				},
 			},
-			Required: []string{"plan", "confidence"},
+			Required: []string{"plan", "confidence", "todos"},
 		},
 	}
 }
@@ -187,6 +201,59 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 	}
 
+	// Extract and validate todos
+	todos, hasTodos := args["todos"]
+	if !hasTodos {
+		return nil, fmt.Errorf("todos parameter is required")
+	}
+
+	var validatedTodos []map[string]any
+	if hasTodos {
+		todosArray, ok := todos.([]any)
+		if !ok {
+			return nil, fmt.Errorf("todos must be an array")
+		}
+
+		if len(todosArray) > 0 {
+			// Convert object todos to structured format
+			validatedTodos = make([]map[string]any, len(todosArray))
+			for i, todoItem := range todosArray {
+				todoObj, ok := todoItem.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("todo item %d must be an object", i)
+				}
+				task, hasTask := todoObj["task"]
+				if !hasTask {
+					return nil, fmt.Errorf("todo item %d missing 'task' field", i)
+				}
+				taskStr, ok := task.(string)
+				if !ok {
+					return nil, fmt.Errorf("todo item %d 'task' field must be a string", i)
+				}
+				if taskStr == "" {
+					return nil, fmt.Errorf("todo item %d 'task' cannot be empty", i)
+				}
+
+				validatedTodos[i] = map[string]any{
+					"id":          fmt.Sprintf("todo_%03d", i+1),
+					"description": taskStr,
+					"completed":   false,
+				}
+			}
+		}
+	}
+
+	// Create default todo if none provided
+	if len(validatedTodos) == 0 {
+		validatedTodos = []map[string]any{
+			{
+				"id":          "todo_001",
+				"description": "Implement task according to plan",
+				"completed":   false,
+			},
+		}
+	}
+
 	return map[string]any{
 		"success":             true,
 		"message":             "Plan submitted successfully, advancing to PLAN_REVIEW",
@@ -194,6 +261,7 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		"confidence":          confidenceStr,
 		"exploration_summary": explorationSummary,
 		"risks":               risks,
+		"todos":               validatedTodos,
 		"next_state":          "PLAN_REVIEW",
 	}, nil
 }
