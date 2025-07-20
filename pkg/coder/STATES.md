@@ -25,6 +25,7 @@ stateDiagram-v2
 
     %% Planning phase
     PLANNING      --> PLAN_REVIEW      : submit plan
+    PLANNING      --> DONE             : mark complete (approved)
     PLANNING      --> QUESTION         : clarification
     PLANNING      --> BUDGET_REVIEW    : budget exceeded
 
@@ -100,7 +101,7 @@ stateDiagram-v2
 | ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------ | ------------ | -------------- | ------------ | -------- | ---- | ----- |
 | **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –      | –            | –              | –            | –        | –    | –     |
 | **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –      | –            | –              | –            | –        | –    | ✔︎    |
-| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –      | –            | ✔︎             | –            | ✔︎       | –    | –     |
+| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –      | –            | ✔︎             | –            | ✔︎       | ✔︎   | –     |
 | **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –      | –            | –              | –            | –        | –    | ✔︎    |
 | **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | ✔︎       | –    | ✔︎    |
 | **TESTING**         | –       | –     | –            | –        | –      | –       | ✔︎     | ✔︎           | –              | –            | –        | –    | –     |
@@ -127,11 +128,13 @@ stateDiagram-v2
 
 Upon receiving architect approval:
 
-| Approval Result      | Next state                                                                           |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| **CONTINUE / PIVOT** | Return to the originating state (`PLANNING`, `CODING` or `FIXING`) and reset counter. |
-| **ESCALATE**         | Move to `CODE_REVIEW`.                                                               |
-| **ABANDON**          | Move to `ERROR`.                                                                     |
+| Approval Result      | Status Code           | Next state                                                                           |
+| -------------------- | -------------------- | ------------------------------------------------------------------------------------ |
+| **CONTINUE / PIVOT** | `ApprovalStatusApproved` | Return to the originating state (`PLANNING`, `CODING` or `FIXING`) and reset counter. |
+| **ESCALATE**         | `ApprovalStatusNeedsChanges` | Move to `CODE_REVIEW`.                                                               |
+| **ABANDON**          | `ApprovalStatusRejected` | Move to `ERROR`.                                                                     |
+
+Note: The architect uses standard approval status codes that map to budget review actions as shown above.
 
 ---
 
@@ -153,6 +156,9 @@ This FSM includes **Git worktree support** and **merge workflow**:
 ### Key States:
 - **SETUP**: Initialize Git worktree and story branch (entry state before PLANNING)
 - **BUDGET_REVIEW**: Architect reviews budget exceeded request when iteration budget is exceeded
+
+### Special Transitions:
+- **PLANNING → DONE**: Direct completion when story requirements are already implemented (via `mark_story_complete` tool)
 - **AWAIT_MERGE**: Wait for architect merge result after PR creation
 - **DONE**: Terminal state - orchestrator will shut down and restart agent with clean state
 

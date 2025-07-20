@@ -4,8 +4,9 @@ package tools
 // and enable compile-time checking
 const (
 	// Planning tools
-	ToolSubmitPlan  = "submit_plan"
-	ToolAskQuestion = "ask_question"
+	ToolSubmitPlan        = "submit_plan"
+	ToolAskQuestion       = "ask_question"
+	ToolMarkStoryComplete = "mark_story_complete"
 
 	// Development tools
 	ToolShell       = "shell"

@@ -34,6 +34,8 @@ type Property struct {
 	Items       *Property            `json:"items,omitempty"`
 	Properties  map[string]*Property `json:"properties,omitempty"`
 	Required    []string             `json:"required,omitempty"`
+	MinItems    *int                 `json:"minItems,omitempty"`
+	MaxItems    *int                 `json:"maxItems,omitempty"`
 }
 
 // ToolUse represents a Claude tool use request

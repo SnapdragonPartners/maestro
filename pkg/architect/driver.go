@@ -755,12 +755,44 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	// If we have LLM client, use it for more intelligent review
 	if d.llmClient != nil {
-		llmResponse, err := d.llmClient.GenerateResponse(ctx, fmt.Sprintf("Review this request: %v", content))
+		var prompt string
+		switch approvalType {
+		case proto.ApprovalTypeCompletion:
+			// Extract completion-specific data for better review
+			reason, _ := requestMsg.GetPayload("completion_reason")
+			evidence, _ := requestMsg.GetPayload("completion_evidence")
+			confidence, _ := requestMsg.GetPayload("completion_confidence")
+			originalStory, _ := requestMsg.GetPayload("original_story")
+
+			prompt = fmt.Sprintf(`Review this story completion claim:
+
+ORIGINAL STORY:
+%v
+
+COMPLETION CLAIM:
+- Reason: %v
+- Evidence: %v  
+- Confidence: %v
+
+Please evaluate if the story requirements are truly satisfied based on the evidence provided. 
+Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback on what's missing]".`,
+				originalStory, reason, evidence, confidence)
+		default:
+			prompt = fmt.Sprintf("Review this request: %v", content)
+		}
+
+		llmResponse, err := d.llmClient.GenerateResponse(ctx, prompt)
 		if err != nil {
 			d.logger.Warn("🏗️ LLM failed, using fallback approval: %v", err)
 		} else {
 			feedback = llmResponse
-			// For now, always approve in LLM mode (real logic would parse LLM response)
+			// For completion requests, parse LLM response to determine approval
+			if approvalType == proto.ApprovalTypeCompletion {
+				if strings.Contains(strings.ToUpper(llmResponse), "REJECTED") {
+					approved = false
+				}
+			}
+			// For other types, always approve in LLM mode for now
 		}
 	}
 
@@ -768,6 +800,14 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	if approved && approvalType == proto.ApprovalTypePlan {
 		if err := d.saveApprovedPlanArtifact(ctx, requestMsg, content); err != nil {
 			d.logger.Warn("🏗️ Failed to save plan artifact: %v", err)
+			// Continue with approval - saving artifacts shouldn't block workflow
+		}
+	}
+
+	// Save approved completion claims as artifacts
+	if approved && approvalType == proto.ApprovalTypeCompletion {
+		if err := d.saveCompletionArtifact(ctx, requestMsg); err != nil {
+			d.logger.Warn("🏗️ Failed to save completion artifact: %v", err)
 			// Continue with approval - saving artifacts shouldn't block workflow
 		}
 	}
@@ -1804,5 +1844,58 @@ func (d *Driver) saveApprovedPlanArtifact(ctx context.Context, requestMsg *proto
 	}
 
 	d.logger.Info("🏗️ Saved approved plan artifact: %s", filename)
+	return nil
+}
+
+// saveCompletionArtifact saves completion approval artifacts for traceability
+func (d *Driver) saveCompletionArtifact(ctx context.Context, requestMsg *proto.AgentMsg) error {
+	// Create stories/completions directory in work directory if it doesn't exist
+	completionsDir := filepath.Join(d.workDir, "stories", "completions")
+	if err := os.MkdirAll(completionsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create stories/completions directory: %w", err)
+	}
+
+	// Helper function to safely get string payload
+	getStringPayload := func(key string) string {
+		if val, exists := requestMsg.GetPayload(key); exists {
+			if str, ok := val.(string); ok {
+				return str
+			}
+		}
+		return ""
+	}
+
+	// Create completion artifact data structure
+	artifact := map[string]interface{}{
+		"timestamp":             time.Now().UTC(),
+		"architect_id":          d.architectID,
+		"completion_reason":     getStringPayload("completion_reason"),
+		"completion_evidence":   getStringPayload("completion_evidence"),
+		"completion_confidence": getStringPayload("completion_confidence"),
+		"original_story":        getStringPayload("original_story"),
+		"approval_id":           getStringPayload("approval_id"),
+		"coder_id":              requestMsg.FromAgent,
+		"content":               getStringPayload("content"),
+	}
+
+	// Generate filename with timestamp and approval ID
+	approvalID := getStringPayload("approval_id")
+	if approvalID == "" {
+		approvalID = "unknown"
+	}
+	filename := fmt.Sprintf("completion_%s_%d.json", approvalID, time.Now().Unix())
+	filePath := filepath.Join(completionsDir, filename)
+
+	// Write artifact to file
+	artifactJSON, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal completion artifact: %w", err)
+	}
+
+	if err := os.WriteFile(filePath, artifactJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write completion artifact: %w", err)
+	}
+
+	d.logger.Info("🏗️ Saved completion artifact: %s", filePath)
 	return nil
 }

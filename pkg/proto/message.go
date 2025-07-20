@@ -102,6 +102,9 @@ const (
 
 	// ApprovalTypeBudgetReview indicates a budget review approval request
 	ApprovalTypeBudgetReview ApprovalType = "budget_review"
+
+	// ApprovalTypeCompletion indicates a story completion request
+	ApprovalTypeCompletion ApprovalType = "completion"
 )
 
 // ApprovalRequest represents a request for approval (plan or code)
@@ -423,7 +426,7 @@ func ValidateApprovalStatus(status string) (ApprovalStatus, bool) {
 // ValidateApprovalType validates if a string is a valid approval type
 func ValidateApprovalType(approvalType string) (ApprovalType, bool) {
 	switch ApprovalType(approvalType) {
-	case ApprovalTypePlan, ApprovalTypeCode, ApprovalTypeBudgetReview:
+	case ApprovalTypePlan, ApprovalTypeCode, ApprovalTypeBudgetReview, ApprovalTypeCompletion:
 		return ApprovalType(approvalType), true
 	default:
 		return "", false
@@ -589,6 +592,8 @@ func ParseApprovalType(s string) (ApprovalType, error) {
 		return ApprovalTypeCode, nil
 	case "budget_review":
 		return ApprovalTypeBudgetReview, nil
+	case "completion":
+		return ApprovalTypeCompletion, nil
 	default:
 		// Check if it's already in the correct format
 		if approvalType, valid := ValidateApprovalType(s); valid {

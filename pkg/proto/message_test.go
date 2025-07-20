@@ -527,6 +527,7 @@ func TestEnumParsing(t *testing.T) {
 			{"PLAN", ApprovalTypePlan, false},
 			{"code", ApprovalTypeCode, false},
 			{"budget_review", ApprovalTypeBudgetReview, false},
+			{"completion", ApprovalTypeCompletion, false},
 			{"invalid", "", true},
 		}
 

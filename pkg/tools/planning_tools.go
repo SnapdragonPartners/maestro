@@ -128,17 +128,12 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 				},
 				"todos": {
 					Type:        "array",
-					Description: "Ordered list of implementation tasks to be completed during coding phase",
+					Description: "Ordered list of implementation tasks (imperative, 5-15 words)",
 					Items: &Property{
-						Type: "object",
-						Properties: map[string]*Property{
-							"task": {
-								Type:        "string",
-								Description: "Single implementation task description",
-							},
-						},
-						Required: []string{"task"},
+						Type: "string",
 					},
+					MinItems: &[]int{1}[0],
+					MaxItems: &[]int{25}[0],
 				},
 			},
 			Required: []string{"plan", "confidence", "todos"},
@@ -215,28 +210,20 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 
 		if len(todosArray) > 0 {
-			// Convert object todos to structured format
+			// Convert string todos to structured format
 			validatedTodos = make([]map[string]any, len(todosArray))
 			for i, todoItem := range todosArray {
-				todoObj, ok := todoItem.(map[string]any)
+				todoStr, ok := todoItem.(string)
 				if !ok {
-					return nil, fmt.Errorf("todo item %d must be an object", i)
+					return nil, fmt.Errorf("todo item %d must be a string", i)
 				}
-				task, hasTask := todoObj["task"]
-				if !hasTask {
-					return nil, fmt.Errorf("todo item %d missing 'task' field", i)
-				}
-				taskStr, ok := task.(string)
-				if !ok {
-					return nil, fmt.Errorf("todo item %d 'task' field must be a string", i)
-				}
-				if taskStr == "" {
-					return nil, fmt.Errorf("todo item %d 'task' cannot be empty", i)
+				if todoStr == "" {
+					return nil, fmt.Errorf("todo item %d cannot be empty", i)
 				}
 
 				validatedTodos[i] = map[string]any{
 					"id":          fmt.Sprintf("todo_%03d", i+1),
-					"description": taskStr,
+					"description": todoStr,
 					"completed":   false,
 				}
 			}
@@ -263,5 +250,103 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		"risks":               risks,
 		"todos":               validatedTodos,
 		"next_state":          "PLAN_REVIEW",
+	}, nil
+}
+
+// MarkStoryCompleteTool signals that story requirements are already implemented
+type MarkStoryCompleteTool struct{}
+
+// NewMarkStoryCompleteTool creates a new mark story complete tool instance
+func NewMarkStoryCompleteTool() *MarkStoryCompleteTool {
+	return &MarkStoryCompleteTool{}
+}
+
+// Definition returns the tool's definition in Claude API format
+func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "mark_story_complete",
+		Description: "Signal that the story requirements are already fully implemented",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"reason": {
+					Type:        "string",
+					Description: "Clear explanation of why the story is already complete",
+				},
+				"evidence": {
+					Type:        "string",
+					Description: "File paths and code evidence supporting the completion claim",
+				},
+				"confidence": {
+					Type:        "string",
+					Description: "Your confidence level in this assessment",
+					Enum:        []string{"HIGH", "MEDIUM", "LOW"},
+				},
+			},
+			Required: []string{"reason", "evidence", "confidence"},
+		},
+	}
+}
+
+// Name returns the tool identifier
+func (m *MarkStoryCompleteTool) Name() string {
+	return "mark_story_complete"
+}
+
+// Exec executes the mark story complete operation
+func (m *MarkStoryCompleteTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+	reason, ok := args["reason"]
+	if !ok {
+		return nil, fmt.Errorf("reason parameter is required")
+	}
+
+	reasonStr, ok := reason.(string)
+	if !ok {
+		return nil, fmt.Errorf("reason must be a string")
+	}
+
+	if reasonStr == "" {
+		return nil, fmt.Errorf("reason cannot be empty")
+	}
+
+	evidence, ok := args["evidence"]
+	if !ok {
+		return nil, fmt.Errorf("evidence parameter is required")
+	}
+
+	evidenceStr, ok := evidence.(string)
+	if !ok {
+		return nil, fmt.Errorf("evidence must be a string")
+	}
+
+	if evidenceStr == "" {
+		return nil, fmt.Errorf("evidence cannot be empty")
+	}
+
+	confidence, ok := args["confidence"]
+	if !ok {
+		return nil, fmt.Errorf("confidence parameter is required")
+	}
+
+	confidenceStr, ok := confidence.(string)
+	if !ok {
+		return nil, fmt.Errorf("confidence must be a string")
+	}
+
+	// Validate confidence level
+	switch confidenceStr {
+	case "HIGH", "MEDIUM", "LOW":
+		// Valid confidence level
+	default:
+		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
+	}
+
+	return map[string]any{
+		"success":    true,
+		"message":    "Story completion request submitted, requesting architect approval",
+		"reason":     reasonStr,
+		"evidence":   evidenceStr,
+		"confidence": confidenceStr,
+		"next_state": "COMPLETION_REVIEW",
 	}, nil
 }

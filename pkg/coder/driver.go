@@ -83,19 +83,20 @@ type stateDataKey string
 
 // State data keys - using typed constants to prevent key mismatch bugs
 const (
-	stateDataKeyPlan               stateDataKey = "plan"
-	stateDataKeyPlanConfidence     stateDataKey = "plan_confidence"
-	stateDataKeyPlanTodos          stateDataKey = "plan_todos"
-	stateDataKeyExplorationSummary stateDataKey = "exploration_summary"
-	stateDataKeyPlanRisks          stateDataKey = "plan_risks"
-	stateDataKeyPlanApprovalResult stateDataKey = "plan_approval_result"
-	stateDataKeyCodeApprovalResult stateDataKey = "code_approval_result"
-	stateDataKeyArchitectAnswer    stateDataKey = "architect_answer"
-	stateDataKeyTaskContent        stateDataKey = "task_content"
-	stateDataKeyStartedAt          stateDataKey = "started_at"
-	stateDataKeyCodingIterations   stateDataKey = "coding_iterations"
-	stateDataKeyFixingIterations   stateDataKey = "fixing_iterations"
-	stateDataKeyPlanningIterations stateDataKey = "planning_iterations"
+	stateDataKeyPlan                     stateDataKey = "plan"
+	stateDataKeyPlanConfidence           stateDataKey = "plan_confidence"
+	stateDataKeyPlanTodos                stateDataKey = "plan_todos"
+	stateDataKeyExplorationSummary       stateDataKey = "exploration_summary"
+	stateDataKeyPlanRisks                stateDataKey = "plan_risks"
+	stateDataKeyPlanApprovalResult       stateDataKey = "plan_approval_result"
+	stateDataKeyCompletionApprovalResult stateDataKey = "completion_approval_result"
+	stateDataKeyCodeApprovalResult       stateDataKey = "code_approval_result"
+	stateDataKeyArchitectAnswer          stateDataKey = "architect_answer"
+	stateDataKeyTaskContent              stateDataKey = "task_content"
+	stateDataKeyStartedAt                stateDataKey = "started_at"
+	stateDataKeyCodingIterations         stateDataKey = "coding_iterations"
+	stateDataKeyFixingIterations         stateDataKey = "fixing_iterations"
+	stateDataKeyPlanningIterations       stateDataKey = "planning_iterations"
 
 	// BUDGET_REVIEW and other state keys
 	stateDataKeyQuestionReason      stateDataKey = "question_reason"
@@ -107,6 +108,8 @@ const (
 	stateDataKeyMaxLoops            stateDataKey = "max_loops"
 	stateDataKeyQuestionAnswered    stateDataKey = "question_answered"
 	stateDataKeyQuestionCompletedAt stateDataKey = "question_completed_at"
+	stateDataKeyCompletionSubmitted stateDataKey = "completion_submitted"
+	stateDataKeyAwaitingCompletion  stateDataKey = "awaiting_completion_approval"
 )
 
 // PlanTodo represents a single task item in the implementation plan
@@ -603,6 +606,25 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	// Check for plan submission (submit_plan was called)
 	if planData, exists := sm.GetStateValue("plan_submitted"); exists {
 		return c.handlePlanSubmission(ctx, sm, planData)
+	}
+
+	// Check for completion submission (mark_story_complete was called)
+	if completionData, exists := sm.GetStateValue(string(stateDataKeyCompletionSubmitted)); exists && completionData != nil {
+		return c.handleCompletionSubmission(ctx, sm, completionData)
+	}
+
+	// Check for completion approval result from architect
+	if approvalResult, exists := sm.GetStateValue(string(stateDataKeyCompletionApprovalResult)); exists {
+		return c.handleCompletionApprovalResult(ctx, sm, approvalResult)
+	}
+
+	// Check if we're waiting for completion approval - if so, block further planning
+	if awaitingApproval, exists := sm.GetStateValue(string(stateDataKeyAwaitingCompletion)); exists {
+		if awaiting, ok := awaitingApproval.(bool); ok && awaiting {
+			c.logger.Debug("🧑‍💻 Blocking planning while awaiting completion approval from architect")
+			// Stay in PLANNING state but don't call LLM - just wait for architect response
+			return StatePlanning, false, nil
+		}
 	}
 
 	// Continue with iterative planning using LLM + tools
@@ -1630,27 +1652,44 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		}
 
 		sm.SetStateData("code_review_completed_at", time.Now().UTC())
+
+		// Store approval type before clearing the request
+		approvalType := c.pendingApprovalRequest.Type
 		c.pendingApprovalRequest = nil // Clear since we have the result
 
-		// Regular code approval logic
+		// Handle approval based on original request type
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
-			c.logger.Info("🧑‍💻 Code approved, pushing branch and creating PR")
+			// Check what TYPE of approval this was
+			if approvalType == proto.ApprovalTypeCompletion {
+				// Completion approved - skip directly to DONE, no merge needed
+				c.logger.Info("🧑‍💻 Story completion approved by architect")
 
-			// AR-104: Push branch and open pull request
-			if err := c.pushBranchAndCreatePR(ctx, sm); err != nil {
-				c.logger.Error("Failed to push branch and create PR: %v", err)
-				return proto.StateError, false, err
+				// Optionally: Clean up empty development branch
+				if err := c.cleanupEmptyBranch(ctx, sm); err != nil {
+					c.logger.Warn("Failed to cleanup empty branch: %v", err)
+				}
+
+				return proto.StateDone, true, nil
+			} else {
+				// Normal code approval - proceed with merge flow
+				c.logger.Info("🧑‍💻 Code approved, pushing branch and creating PR")
+
+				// AR-104: Push branch and open pull request
+				if err := c.pushBranchAndCreatePR(ctx, sm); err != nil {
+					c.logger.Error("Failed to push branch and create PR: %v", err)
+					return proto.StateError, false, err
+				}
+
+				// Send merge REQUEST to architect instead of going to DONE
+				if err := c.sendMergeRequest(ctx, sm); err != nil {
+					c.logger.Error("Failed to send merge request: %v", err)
+					return proto.StateError, false, err
+				}
+
+				c.logger.Info("🧑‍💻 Waiting for merge approval from architect")
+				return StateAwaitMerge, false, nil
 			}
-
-			// Send merge REQUEST to architect instead of going to DONE
-			if err := c.sendMergeRequest(ctx, sm); err != nil {
-				c.logger.Error("Failed to send merge request: %v", err)
-				return proto.StateError, false, err
-			}
-
-			c.logger.Info("🧑‍💻 Waiting for merge approval from architect")
-			return StateAwaitMerge, false, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
 			c.logger.Info("🧑‍💻 Code rejected/needs changes, transitioning to FIXING")
 			sm.SetStateData("fixing_reason", "code_review_rejection")
@@ -1816,15 +1855,14 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
-			// ESCALATE - move to CODE_REVIEW
-			c.logger.Info("🧑‍💻 Budget review approved, escalating to CODE_REVIEW")
-			return StateCodeReview, false, nil
-		case proto.ApprovalStatusNeedsChanges:
 			// CONTINUE/PIVOT - return to origin state and reset counter
-			c.logger.Info("🧑‍💻 Budget review needs changes, returning to origin state: %s", originStr)
+			c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
 
 			// Reset the iteration counter for the origin state
 			switch originStr {
+			case string(StatePlanning):
+				sm.SetStateData(string(stateDataKeyPlanningIterations), 0)
+				return StatePlanning, false, nil
 			case string(StateCoding):
 				sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 				return StateCoding, false, nil
@@ -1834,6 +1872,10 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 			default:
 				return StateCoding, false, nil // default fallback
 			}
+		case proto.ApprovalStatusNeedsChanges:
+			// ESCALATE - move to CODE_REVIEW
+			c.logger.Info("🧑‍💻 Budget review needs changes, escalating to CODE_REVIEW")
+			return StateCodeReview, false, nil
 		case proto.ApprovalStatusRejected:
 			// ABANDON - move to ERROR
 			c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
@@ -2338,6 +2380,14 @@ func (c *Coder) registerPlanningTools() error {
 		c.logger.Info("SubmitPlan tool registered successfully")
 	}
 
+	// Register mark_story_complete tool
+	markStoryCompleteTool := tools.NewMarkStoryCompleteTool()
+	if err := tools.Register(markStoryCompleteTool); err != nil {
+		c.logger.Info("MarkStoryComplete tool registration: %v (likely already registered)", err)
+	} else {
+		c.logger.Info("MarkStoryComplete tool registered successfully")
+	}
+
 	return nil
 }
 
@@ -2498,6 +2548,121 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 	return StatePlanReview, false, nil
 }
 
+// handleCompletionSubmission processes completion signal from mark_story_complete tool
+func (c *Coder) handleCompletionSubmission(ctx context.Context, sm *agent.BaseStateMachine, completionData any) (proto.State, bool, error) {
+	c.logger.Debug("Processing completion submission, data type: %T", completionData)
+
+	if completionData == nil {
+		c.logger.Debug("Completion data is nil, skipping")
+		return proto.StateError, false, fmt.Errorf("completion data is nil")
+	}
+
+	completionMap, ok := completionData.(map[string]any)
+	if !ok {
+		c.logger.Debug("Completion data is not map[string]any, got: %T, value: %+v", completionData, completionData)
+		return proto.StateError, false, fmt.Errorf("invalid completion data format: expected map[string]any, got %T", completionData)
+	}
+
+	reason, _ := completionMap["reason"].(string)
+	evidence, _ := completionMap["evidence"].(string)
+	confidence, _ := completionMap["confidence"].(string)
+
+	// Get original story content for reference
+	originalStory, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
+	originalStoryStr, _ := originalStory.(string)
+
+	// Store completion data
+	sm.SetStateData("completion_reason", reason)
+	sm.SetStateData("completion_evidence", evidence)
+	sm.SetStateData("completion_confidence", confidence)
+	sm.SetStateData("completion_submitted_at", time.Now().UTC())
+
+	// Clear the completion submission trigger
+	sm.SetStateData(string(stateDataKeyCompletionSubmitted), nil)
+
+	// Send REQUEST message to architect for completion approval
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: fmt.Sprintf("Story completion claim:\n\nReason: %s\n\nEvidence: %s\n\nConfidence: %s", reason, evidence, confidence),
+		Reason:  "Story appears to be already implemented - requesting completion approval",
+		Type:    proto.ApprovalTypeCompletion,
+	}
+
+	if c.dispatcher != nil {
+		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
+		requestMsg.SetPayload("approval_type", proto.ApprovalTypeCompletion.String())
+		requestMsg.SetPayload("content", c.pendingApprovalRequest.Content)
+		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
+		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+		requestMsg.SetPayload("original_story", originalStoryStr)
+		requestMsg.SetPayload("completion_reason", reason)
+		requestMsg.SetPayload("completion_evidence", evidence)
+		requestMsg.SetPayload("completion_confidence", confidence)
+
+		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+			return proto.StateError, false, fmt.Errorf("failed to send completion approval request: %w", err)
+		}
+		c.logger.Info("🧑‍💻 Sent %s approval request %s to architect (request_type: %s)",
+			proto.ApprovalTypeCompletion, c.pendingApprovalRequest.ID, proto.RequestApproval.String())
+	} else {
+		c.logger.Error("🧑‍💻 Dispatcher is nil, cannot send completion approval request")
+		return proto.StateError, false, fmt.Errorf("dispatcher not available for completion approval request")
+	}
+
+	// Set flag to block further planning while waiting for completion approval
+	sm.SetStateData(string(stateDataKeyAwaitingCompletion), true)
+
+	// Stay in PLANNING but block further LLM calls until approval received
+	return StatePlanning, false, nil
+}
+
+// handleCompletionApprovalResult processes completion approval response from architect
+func (c *Coder) handleCompletionApprovalResult(ctx context.Context, sm *agent.BaseStateMachine, approvalResult any) (proto.State, bool, error) {
+	resultData, ok := approvalResult.(map[string]any)
+	if !ok {
+		return proto.StateError, false, fmt.Errorf("invalid completion approval result format")
+	}
+
+	status, _ := resultData["status"].(string)
+	feedback, _ := resultData["feedback"].(string)
+
+	// Clear the approval result to prevent reprocessing
+	sm.SetStateData(string(stateDataKeyCompletionApprovalResult), nil)
+
+	// Clear the awaiting approval flag
+	sm.SetStateData(string(stateDataKeyAwaitingCompletion), nil)
+
+	switch status {
+	case "APPROVED":
+		c.logger.Info("🧑‍💻 Story completion approved by architect, transitioning to DONE")
+		c.contextManager.AddMessage("assistant", fmt.Sprintf("Story completion approved: %s", feedback))
+
+		// Mark story as completed in state
+		sm.SetStateData("story_completed_at", time.Now().UTC())
+		sm.SetStateData("completion_status", "APPROVED")
+		sm.SetStateData("completion_feedback", feedback)
+
+		// Transition directly to DONE
+		return proto.StateDone, false, nil
+
+	case "REJECTED", "NEEDS_CHANGES":
+		c.logger.Info("🧑‍💻 Story completion rejected by architect: %s", feedback)
+		c.contextManager.AddMessage("assistant", fmt.Sprintf("Story completion rejected by architect. Feedback: %s\n\nContinuing with planning...", feedback))
+
+		// Store rejection feedback for context
+		sm.SetStateData("completion_rejection_feedback", feedback)
+
+		// Continue with normal planning flow
+		// The rejection feedback is already in context via contextManager.AddMessage
+		return StatePlanning, false, nil
+
+	default:
+		c.logger.Error("🧑‍💻 Unknown completion approval status: %s", status)
+		return proto.StateError, false, fmt.Errorf("unknown completion approval status: %s", status)
+	}
+}
+
 // handleIterativePlanning implements tool-supported planning workflow
 func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (proto.State, bool, error) {
 	// Restore planning context if returning from QUESTION
@@ -2558,8 +2723,8 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 
 	req := agent.CompletionRequest{
 		Messages:  messages,
-		MaxTokens: 8192,                                                                     // Increased for exploration
-		Tools:     c.getTools(tools.ToolSubmitPlan, tools.ToolAskQuestion, tools.ToolShell), // Handler explicitly declares needed tools
+		MaxTokens: 8192,                                                                                                  // Increased for exploration
+		Tools:     c.getTools(tools.ToolSubmitPlan, tools.ToolAskQuestion, tools.ToolMarkStoryComplete, tools.ToolShell), // Handler explicitly declares needed tools
 	}
 
 	resp, err := c.llmClient.Complete(ctx, req)
@@ -2722,6 +2887,13 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 			// Set plan_submitted state data to trigger handlePlanSubmission
 			sm.SetStateData("plan_submitted", resultMap)
 			// Return to planning state to allow handlePlanSubmission to process the REQUEST
+			return StatePlanning, false, nil
+		}
+	case tools.ToolMarkStoryComplete:
+		if nextState == "COMPLETION_REVIEW" {
+			// Set completion_submitted state data to trigger handleCompletionSubmission
+			sm.SetStateData(string(stateDataKeyCompletionSubmitted), resultMap)
+			// Return to planning state to allow handleCompletionSubmission to process the REQUEST
 			return StatePlanning, false, nil
 		}
 	case tools.ToolAskQuestion:
@@ -2907,35 +3079,148 @@ func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMach
 
 // proceedToCodeReview handles the common logic for transitioning to CODE_REVIEW after successful testing
 func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Tests passed, send REQUEST message to architect for code approval as part of transition to CODE_REVIEW
-	filesCreated, _ := sm.GetStateValue("files_created")
-	codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed", filesCreated)
+	// Generate git diff to check if any files actually changed
+	gitDiff, err := c.generateGitDiff(ctx, sm)
+	if err != nil {
+		c.logger.Warn("Failed to generate git diff, proceeding with normal code review: %v", err)
+		gitDiff = "" // Continue with normal flow if diff fails
+	}
 
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: codeContent,
-		Reason:  "Code requires architect approval before completion",
-		Type:    proto.ApprovalTypeCode,
+	// Tests passed, send REQUEST message to architect for approval
+	filesCreated, _ := sm.GetStateValue("files_created")
+
+	// Check if we have any actual changes to review
+	if gitDiff == "" || len(strings.TrimSpace(gitDiff)) == 0 {
+		// No changes - send completion approval instead of code approval
+		c.logger.Info("🧑‍💻 No file changes detected, requesting story completion approval")
+
+		codeContent := fmt.Sprintf("Story completed during implementation phase: %v files processed, tests passed, no changes needed", filesCreated)
+
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: codeContent,
+			Reason:  "Story requirements already satisfied, requesting completion approval",
+			Type:    proto.ApprovalTypeCompletion,
+		}
+	} else {
+		// Normal code approval with diff included
+		c.logger.Info("🧑‍💻 File changes detected, requesting code review approval")
+
+		codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed\n\nChanges:\n%s", filesCreated, gitDiff)
+
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: codeContent,
+			Reason:  "Code requires architect approval before completion",
+			Type:    proto.ApprovalTypeCode,
+		}
 	}
 
 	if c.dispatcher != nil {
 		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
-		requestMsg.SetPayload("approval_type", proto.ApprovalTypeCode.String())
-		requestMsg.SetPayload("content", codeContent)
+		requestMsg.SetPayload("approval_type", c.pendingApprovalRequest.Type.String())
+		requestMsg.SetPayload("content", c.pendingApprovalRequest.Content)
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to send code approval request: %w", err)
+			return proto.StateError, false, fmt.Errorf("failed to send approval request: %w", err)
 		}
 
-		c.logger.Info("🧑‍💻 Sent code approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.ID)
+		c.logger.Info("🧑‍💻 Sent %s approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.Type, c.pendingApprovalRequest.ID)
 	} else {
 		return proto.StateError, false, fmt.Errorf("dispatcher not set")
 	}
 
 	return StateCodeReview, false, nil
+}
+
+// generateGitDiff generates a git diff showing changes made to the story branch
+func (c *Coder) generateGitDiff(ctx context.Context, sm *agent.BaseStateMachine) (string, error) {
+	// Get the shell tool from registry
+	tool, err := tools.Get("shell")
+	if err != nil {
+		return "", fmt.Errorf("shell tool not available: %w", err)
+	}
+
+	// Get the main branch name for comparison (usually 'main' or 'master')
+	mainBranch := "main" // Could make this configurable if needed
+
+	// Generate diff between current branch and main branch
+	args := map[string]any{
+		"cmd": "git diff " + mainBranch + "..HEAD",
+		"cwd": c.workDir,
+	}
+
+	result, err := tool.Exec(ctx, args)
+	if err != nil {
+		// Try 'master' if 'main' doesn't exist
+		args["cmd"] = "git diff master..HEAD"
+		result, err = tool.Exec(ctx, args)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate git diff: %w", err)
+		}
+	}
+
+	// Extract stdout from result
+	if resultMap, ok := result.(map[string]any); ok {
+		if stdout, ok := resultMap["stdout"].(string); ok {
+			return stdout, nil
+		}
+	}
+
+	return "", fmt.Errorf("unexpected result format from shell tool")
+}
+
+// cleanupEmptyBranch optionally deletes the development branch when no changes were made
+func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachine) error {
+	// Get the shell tool from registry
+	tool, err := tools.Get("shell")
+	if err != nil {
+		return fmt.Errorf("shell tool not available: %w", err)
+	}
+
+	// Get the current branch name
+	branchName, exists := sm.GetStateValue("branch_name")
+	if !exists {
+		c.logger.Debug("No branch name stored, skipping branch cleanup")
+		return nil
+	}
+
+	branchNameStr, ok := branchName.(string)
+	if !ok || branchNameStr == "" {
+		c.logger.Debug("Invalid branch name, skipping branch cleanup")
+		return nil
+	}
+
+	c.logger.Info("🧹 Cleaning up empty development branch: %s", branchNameStr)
+
+	// Switch back to main branch first
+	args := map[string]any{
+		"cmd": "git checkout main",
+		"cwd": c.workDir,
+	}
+
+	_, err = tool.Exec(ctx, args)
+	if err != nil {
+		// Try master if main doesn't exist
+		args["cmd"] = "git checkout master"
+		_, err = tool.Exec(ctx, args)
+		if err != nil {
+			return fmt.Errorf("failed to checkout main/master branch: %w", err)
+		}
+	}
+
+	// Delete the development branch
+	args["cmd"] = "git branch -D " + branchNameStr
+	_, err = tool.Exec(ctx, args)
+	if err != nil {
+		return fmt.Errorf("failed to delete branch %s: %w", branchNameStr, err)
+	}
+
+	c.logger.Info("🧹 Successfully cleaned up empty branch: %s", branchNameStr)
+	return nil
 }
 
 // pushBranchAndCreatePR implements AR-104: Push branch & open pull request
