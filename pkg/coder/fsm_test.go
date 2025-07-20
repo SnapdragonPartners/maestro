@@ -92,9 +92,14 @@ func TestBudgetReviewStateTransitions(t *testing.T) {
 		t.Error("BUDGET_REVIEW → ERROR should be valid")
 	}
 
-	// Test invalid transitions
-	if IsValidCoderTransition(StateBudgetReview, StatePlanning) {
-		t.Error("BUDGET_REVIEW → PLANNING should not be valid")
+	// Test BUDGET_REVIEW → PLANNING (now valid with planning budget)
+	if !IsValidCoderTransition(StateBudgetReview, StatePlanning) {
+		t.Error("BUDGET_REVIEW → PLANNING should be valid")
+	}
+
+	// Test PLANNING → BUDGET_REVIEW
+	if !IsValidCoderTransition(StatePlanning, StateBudgetReview) {
+		t.Error("PLANNING → BUDGET_REVIEW should be valid")
 	}
 
 	if IsValidCoderTransition(StateBudgetReview, StateTesting) {

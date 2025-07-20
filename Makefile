@@ -3,7 +3,7 @@
 # Build all binaries
 build: lint 
 	go generate ./...
-	go build -o bin/orchestrator ./cmd/orchestrator
+	go build -o bin/maestro ./cmd/orchestrator
 	go build -o bin/agentctl ./cmd/agentctl
 	go build -o bin/replayer ./cmd/replayer
 
@@ -38,7 +38,7 @@ lint-docs:
 
 # Run the orchestrator with banner
 run: build-css build
-	clear && rm -rf ~/Code/maestro-work/test && ./bin/orchestrator -workdir ~/Code/maestro-work/test -ui
+	clear && rm -rf ~/Code/maestro-work/test && ./bin/maestro -workdir ~/Code/maestro-work/test -ui
 
 # Build Tailwind CSS
 build-css:

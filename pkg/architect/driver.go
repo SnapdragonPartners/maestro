@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -760,6 +761,14 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		} else {
 			feedback = llmResponse
 			// For now, always approve in LLM mode (real logic would parse LLM response)
+		}
+	}
+
+	// Save approved plans as artifacts for traceability
+	if approved && approvalType == proto.ApprovalTypePlan {
+		if err := d.saveApprovedPlanArtifact(ctx, requestMsg, content); err != nil {
+			d.logger.Warn("🏗️ Failed to save plan artifact: %v", err)
+			// Continue with approval - saving artifacts shouldn't block workflow
 		}
 	}
 
@@ -1744,5 +1753,56 @@ func (d *Driver) executeBootstrap(ctx context.Context, platformRecommendation in
 		return fmt.Errorf("bootstrap failed: %s", result.Error)
 	}
 
+	return nil
+}
+
+// saveApprovedPlanArtifact saves approved plans as JSON artifacts for traceability
+func (d *Driver) saveApprovedPlanArtifact(ctx context.Context, requestMsg *proto.AgentMsg, content interface{}) error {
+	// Create stories/plans directory in work directory if it doesn't exist
+	storiesDir := filepath.Join(d.workDir, "stories", "plans")
+	if err := os.MkdirAll(storiesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create stories/plans directory: %w", err)
+	}
+
+	// Helper function to safely get string payload
+	getStringPayload := func(key string) string {
+		if val, exists := requestMsg.GetPayload(key); exists {
+			if str, ok := val.(string); ok {
+				return str
+			}
+		}
+		return ""
+	}
+
+	// Create artifact data structure with message and metadata
+	artifact := map[string]interface{}{
+		"timestamp":           time.Now().UTC(),
+		"architect_id":        d.architectID,
+		"agent_id":            requestMsg.FromAgent,
+		"approval_id":         getStringPayload("approval_id"),
+		"message":             requestMsg,
+		"plan_content":        content,
+		"confidence":          getStringPayload("confidence"),
+		"exploration_summary": getStringPayload("exploration_summary"),
+		"risks":               getStringPayload("risks"),
+	}
+
+	// Generate filename with timestamp and agent ID
+	timestamp := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("approved-plan-%s-%s.json", requestMsg.FromAgent, timestamp)
+	filePath := filepath.Join(storiesDir, filename)
+
+	// Serialize to JSON with pretty printing
+	jsonData, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal plan artifact: %w", err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write plan artifact: %w", err)
+	}
+
+	d.logger.Info("🏗️ Saved approved plan artifact: %s", filename)
 	return nil
 }

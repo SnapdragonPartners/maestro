@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"io"
+	"orchestrator/pkg/tools"
 )
 
 // CompletionRole represents the role of a message in a conversation
@@ -20,12 +21,7 @@ type CompletionMessage struct {
 	Content string
 }
 
-// Tool represents a tool/function that can be called by the LLM
-type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
-}
+// Use tools.ToolDefinition directly instead of separate agent.Tool
 
 // ToolCall represents a tool call made by the LLM
 type ToolCall struct {
@@ -39,7 +35,7 @@ type CompletionRequest struct {
 	Messages    []CompletionMessage
 	MaxTokens   int
 	Temperature float32
-	Tools       []Tool
+	Tools       []tools.ToolDefinition
 }
 
 // CompletionResponse represents a response from a completion request

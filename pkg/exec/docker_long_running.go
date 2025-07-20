@@ -154,11 +154,48 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 			return "", fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
-		// Mount working directory as read-write for agent workspaces
+		// Mount working directory - mode determined by opts.ReadOnly
 		mountMode := "rw"
+		if opts.ReadOnly {
+			mountMode = "ro"
+		}
 
 		// Handle cross-platform path mapping
 		hostPath := d.normalizePath(absWorkDir)
+
+		// Resolve any symlinks that might cause Docker Desktop issues
+		if resolvedPath, err := filepath.EvalSymlinks(hostPath); err == nil {
+			if resolvedPath != hostPath {
+				d.logger.Info("Resolved symlink: %s -> %s", hostPath, resolvedPath)
+				hostPath = resolvedPath
+			}
+		} else {
+			d.logger.Warn("Failed to resolve symlinks for %s: %v", hostPath, err)
+		}
+
+		d.logger.Debug("Checking workspace directory: %s", hostPath)
+
+		// Ensure the workspace directory exists before mounting (critical for Docker Desktop)
+		// Docker Desktop will fail with "/host_mnt/" errors if the directory doesn't exist
+		if stat, err := os.Stat(hostPath); os.IsNotExist(err) {
+			d.logger.Info("Directory does not exist, creating: %s", hostPath)
+			if err := os.MkdirAll(hostPath, 0755); err != nil {
+				return "", fmt.Errorf("failed to create workspace directory %s: %w", hostPath, err)
+			}
+			d.logger.Info("Created workspace directory: %s", hostPath)
+		} else if err != nil {
+			return "", fmt.Errorf("failed to stat workspace directory %s: %w", hostPath, err)
+		} else {
+			d.logger.Debug("Directory exists: %s (mode: %v)", hostPath, stat.Mode())
+		}
+
+		// Wait for Docker Desktop's gRPC-FUSE layer to see the directory
+		// This fixes timing issues where newly created directories aren't immediately
+		// visible to Docker Desktop's VM, causing "/host_mnt/" mount failures
+		if err := d.waitUntilDockerCanMount(hostPath, 5*time.Second); err != nil {
+			return "", fmt.Errorf("directory not accessible to Docker Desktop: %w", err)
+		}
+
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode))
 
 		// Set working directory inside container
@@ -180,10 +217,38 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 
 	// Create and start container
 	cmd := exec.CommandContext(ctx, d.dockerCmd, args...)
+
+	// Ensure Docker has access to necessary environment variables
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+
 	d.logger.Info("Starting long-running container: %s", strings.Join(cmd.Args, " "))
+
+	// Debug: Log working directory and environment
+	workDir := cmd.Dir
+	if workDir == "" {
+		workDir = "<empty>"
+	}
+	d.logger.Debug("Docker command working directory: %s", workDir)
+	d.logger.Debug("Docker command environment: %v", cmd.Env)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		cmdString := strings.Join(cmd.Args, " ")
+		if cmdString == "" {
+			cmdString = "<empty command args>"
+		}
+		d.logger.Error("Docker command failed: %s", cmdString)
+		d.logger.Error("Docker command error: %v", err)
+		d.logger.Error("Docker command output: %s", string(output))
+
+		// Try to see if the container was created but failed
+		checkCmd := exec.Command(d.dockerCmd, "ps", "-a", "--filter", "name="+containerName, "--format", "{{.Status}}")
+		if checkOutput, checkErr := checkCmd.CombinedOutput(); checkErr == nil {
+			d.logger.Info("Container status after failure: %s", string(checkOutput))
+		}
+
 		return "", fmt.Errorf("failed to start container %s: %w\nOutput: %s", containerName, err, string(output))
 	}
 
@@ -338,7 +403,13 @@ func (d *LongRunningDockerExec) executeCommand(cmd *exec.Cmd) (string, string, e
 
 	// Log stderr if command failed
 	if err != nil {
-		d.logger.Error("Docker command failed: %s", stderr.String())
+		cmdString := strings.Join(cmd.Args, " ")
+		if cmdString == "" {
+			cmdString = "<empty exec command args>"
+		}
+		d.logger.Warn("Docker exec command failed: %s", cmdString)
+		d.logger.Warn("Docker exec error: %v", err)
+		d.logger.Warn("Docker exec stderr: %s", stderr.String())
 	}
 
 	return stdout.String(), stderr.String(), err
@@ -355,7 +426,60 @@ func (d *LongRunningDockerExec) normalizePath(path string) string {
 			return "/" + drive + rest
 		}
 	}
+
+	// On macOS with Docker Desktop, ensure path is absolute and clean
+	// Docker Desktop on macOS automatically maps /Users, /Volumes, /tmp, and /var/folders
+	if runtime.GOOS == "darwin" {
+		// Clean the path to avoid Docker Desktop path resolution issues
+		cleanPath := filepath.Clean(path)
+
+		// Ensure path starts with one of the shared directories Docker Desktop supports
+		allowedPrefixes := []string{"/Users", "/Volumes", "/tmp", "/var/folders", "/private/tmp"}
+		for _, prefix := range allowedPrefixes {
+			if strings.HasPrefix(cleanPath, prefix) {
+				return cleanPath
+			}
+		}
+
+		// If path doesn't start with a shared directory, Docker Desktop won't be able to mount it
+		d.logger.Warn("Path %s may not be accessible to Docker Desktop on macOS. Ensure it's under /Users, /Volumes, /tmp, or /var/folders", cleanPath)
+		return cleanPath
+	}
+
 	return path
+}
+
+// waitUntilDockerCanMount waits until Docker Desktop's gRPC-FUSE layer can see the directory
+// This prevents "/host_mnt/" errors when mounting newly created directories
+func (d *LongRunningDockerExec) waitUntilDockerCanMount(hostPath string, timeout time.Duration) error {
+	d.logger.Debug("Waiting for Docker Desktop to see directory: %s", hostPath)
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		// Test if Docker can mount the directory by doing a quick test mount
+		testCmd := exec.Command(d.dockerCmd, "run", "--rm", "-v", hostPath+":/test:ro", "alpine", "true")
+
+		// Ensure test command has environment variables
+		if testCmd.Env == nil {
+			testCmd.Env = os.Environ()
+		}
+
+		if err := testCmd.Run(); err == nil {
+			d.logger.Debug("Docker Desktop can now mount directory: %s", hostPath)
+			return nil // Docker can see the directory
+		} else {
+			d.logger.Debug("Docker mount test failed (expected while waiting): %s", strings.Join(testCmd.Args, " "))
+		}
+
+		// Also try touching parent directory to trigger gRPC-FUSE rescan
+		if parentDir := filepath.Dir(hostPath); parentDir != hostPath {
+			os.Chtimes(parentDir, time.Now(), time.Now())
+		}
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return fmt.Errorf("directory %s did not become mountable within %v", hostPath, timeout)
 }
 
 // Context key type for story ID

@@ -22,7 +22,57 @@ import (
 	"orchestrator/pkg/state"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
+
+// getTools returns specific tools by name (variadic for clean handler usage)
+func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
+	if len(toolNames) == 0 {
+		return nil
+	}
+
+	// Get all available tools from registry
+	allTools := tools.GetToolDefinitions()
+
+	// Filter to only requested tools
+	var requestedTools []tools.ToolDefinition
+	for _, toolName := range toolNames {
+		for _, tool := range allTools {
+			if tool.Name == toolName {
+				requestedTools = append(requestedTools, tool)
+				break
+			}
+		}
+	}
+
+	c.logger.Debug("Retrieved %d tools: %v", len(requestedTools), toolNames)
+	return requestedTools
+}
+
+// buildMessagesWithContext creates completion messages with context history
+// This centralizes the pattern used across PLANNING, CODING, and FIXING states
+func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
+	messages := []agent.CompletionMessage{
+		{Role: agent.RoleUser, Content: initialPrompt},
+	}
+
+	// Add conversation history from context manager (critical for tool results)
+	contextMessages := c.contextManager.GetMessages()
+	for _, msg := range contextMessages {
+		role := agent.RoleAssistant
+		if msg.Role == "user" || msg.Role == "system" {
+			role = agent.RoleUser
+		} else if msg.Role == "tool" {
+			role = agent.RoleUser // Tool messages appear as user messages to Claude
+		}
+		messages = append(messages, agent.CompletionMessage{
+			Role:    role,
+			Content: fmt.Sprintf("[%s] %s", msg.Role, msg.Content),
+		})
+	}
+
+	return messages
+}
 
 // State data keys - using constants to prevent key mismatch bugs
 const (
@@ -33,6 +83,7 @@ const (
 	keyStartedAt          = "started_at"
 	keyCodingIterations   = "coding_iterations"
 	keyFixingIterations   = "fixing_iterations"
+	keyPlanningIterations = "planning_iterations"
 
 	// BUDGET_REVIEW state keys
 	keyQuestionReason      = "question_reason"
@@ -71,12 +122,7 @@ func getDockerImageForAgent(agentConfig *config.Agent, buildRegistry *build.Regi
 	return ""
 }
 
-// Context key type for story ID
-type contextKey string
-
-const (
-	contextKeyStoryID contextKey = "story_id"
-)
+// Removed unused context keys - simplified container management
 
 // File creation constants
 const (
@@ -506,84 +552,48 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 	}
 }
 
-// handlePlanning processes the PLANNING state
+// handlePlanning processes the PLANNING state with enhanced codebase exploration
 func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "PLANNING")
-	c.contextManager.AddMessage("assistant", "Planning phase: analyzing requirements")
+	c.contextManager.AddMessage("assistant", "Enhanced planning phase: exploring codebase and creating comprehensive plan")
 
+	// Check and increment planning iterations for budget control
+	currentIterations, _ := sm.GetStateValue(keyPlanningIterations)
+	iterations, _ := currentIterations.(int)
+	iterations++
+	sm.SetStateData(keyPlanningIterations, iterations)
+
+	// Planning budget limit to prevent infinite loops (similar to coding/fixing)
+	const maxPlanningIterations = 10
+	if iterations > maxPlanningIterations {
+		c.logger.Warn("Planning iteration limit reached (%d), transitioning to BUDGET_REVIEW", maxPlanningIterations)
+		// Set up budget review data (similar to coding/fixing)
+		sm.SetStateData(keyQuestionReason, "BUDGET_REVIEW")
+		sm.SetStateData(keyQuestionOrigin, "PLANNING")
+		sm.SetStateData(keyErrorMessage, "Planning iteration budget exceeded")
+		sm.SetStateData(keyLoops, iterations)
+		sm.SetStateData(keyMaxLoops, maxPlanningIterations)
+		return StateBudgetReview, false, nil
+	}
+
+	// Check for question tool result (ask_question was called)
+	if questionData, exists := sm.GetStateValue("question_submitted"); exists {
+		return c.handleQuestionTransition(ctx, sm, questionData)
+	}
+
+	// Check for plan submission (submit_plan was called)
+	if planData, exists := sm.GetStateValue("plan_submitted"); exists {
+		return c.handlePlanSubmission(ctx, sm, planData)
+	}
+
+	// Continue with iterative planning using LLM + tools
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
 	taskStr, _ := taskContent.(string)
 
-	// Check for help requests
-	if c.detectHelpRequest(taskStr) {
-		sm.SetStateData(keyQuestionReason, "Help requested during planning")
-		sm.SetStateData(keyQuestionContent, taskStr)
-		sm.SetStateData(keyQuestionOrigin, string(StatePlanning))
-		return StateQuestion, false, nil
-	}
-
-	// Generate plan using LLM (always required)
-	return c.handlePlanningWithLLM(ctx, sm, taskStr)
+	return c.handleIterativePlanning(ctx, sm, taskStr)
 }
 
-// handlePlanningWithLLM generates plan using LLM
-func (c *Coder) handlePlanningWithLLM(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (proto.State, bool, error) {
-	// Create planning prompt
-	templateData := &templates.TemplateData{
-		TaskContent: taskContent,
-		Context:     c.formatContextAsString(),
-	}
-
-	prompt, err := c.renderer.Render(templates.PlanningTemplate, templateData)
-	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to render planning template: %w", err)
-	}
-
-	// Get LLM response
-	req := agent.CompletionRequest{
-		Messages: []agent.CompletionMessage{
-			{Role: agent.RoleUser, Content: prompt},
-		},
-		MaxTokens: 4096,
-	}
-
-	resp, err := c.llmClient.Complete(ctx, req)
-	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to get LLM planning response: %w", err)
-	}
-
-	// Store plan
-	sm.SetStateData("plan", resp.Content)
-	sm.SetStateData("planning_completed_at", time.Now().UTC())
-	c.contextManager.AddMessage("assistant", resp.Content)
-
-	// Send REQUEST message to architect for plan approval as part of transition to PLAN_REVIEW
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: resp.Content,
-		Reason:  "Plan requires architect approval before proceeding to coding",
-		Type:    proto.ApprovalTypePlan,
-	}
-
-	if c.dispatcher != nil {
-		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
-		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
-		requestMsg.SetPayload("approval_type", proto.ApprovalTypePlan.String())
-		requestMsg.SetPayload("content", resp.Content)
-		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
-		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-
-		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to send plan approval request: %w", err)
-		}
-
-		c.logger.Info("🧑‍💻 Sent plan approval request %s to architect during PLANNING->PLAN_REVIEW transition", c.pendingApprovalRequest.ID)
-	} else {
-		return proto.StateError, false, fmt.Errorf("dispatcher not set")
-	}
-
-	return StatePlanReview, false, nil
-}
+// Removed handlePlanningWithLLM - replaced with enhanced iterative planning
 
 // handlePlanReview processes the PLAN_REVIEW state - blocks waiting for architect's RESULT response
 func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
@@ -601,7 +611,16 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		switch result.Status {
 		case proto.ApprovalStatusApproved:
-			c.logger.Info("🧑‍💻 Plan approved, transitioning to CODING")
+			c.logger.Info("🧑‍💻 Plan approved, reconfiguring container for coding")
+
+			// Reconfigure container with read-write workspace for coding phase
+			if c.longRunningExecutor != nil {
+				if err := c.configureWorkspaceMount(ctx, false, "coding"); err != nil {
+					return proto.StateError, false, fmt.Errorf("failed to configure coding container: %w", err)
+				}
+			}
+
+			c.logger.Info("🧑‍💻 Container reconfigured, transitioning to CODING")
 			return StateCoding, false, nil
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
 			c.logger.Info("🧑‍💻 Plan rejected/needs changes, transitioning back to PLANNING")
@@ -646,12 +665,24 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Coding phase: implementing solution")
 
+	// Check for question tool result (ask_question was called during coding)
+	if questionData, exists := sm.GetStateValue("question_submitted"); exists {
+		return c.handleCodingQuestionTransition(ctx, sm, questionData)
+	}
+
+	// Restore coding context if returning from QUESTION
+	if questionAnswered, exists := sm.GetStateValue(keyQuestionAnswered); exists && questionAnswered.(bool) {
+		c.restoreCodingContext(sm)
+		sm.SetStateData(keyQuestionAnswered, false) // Clear flag
+		c.logger.Info("🧑‍💻 Restored coding context after question answered")
+	}
+
 	taskContent, _ := sm.GetStateValue(keyTaskContent)
 	taskStr, _ := taskContent.(string)
 	plan, _ := sm.GetStateValue("plan")
 	planStr, _ := plan.(string)
 
-	// Generate code using LLM (always required)
+	// Continue with coding implementation
 	return c.handleCodingWithLLM(ctx, sm, taskStr, planStr)
 }
 
@@ -672,61 +703,12 @@ func (c *Coder) handleCodingWithLLM(ctx context.Context, sm *agent.BaseStateMach
 
 	// Get LLM response for code generation with shell tool
 	// Build messages including conversation context
-	messages := []agent.CompletionMessage{}
-
-	// Add the initial prompt
-	messages = append(messages, agent.CompletionMessage{Role: agent.RoleUser, Content: prompt})
-
-	// Add conversation history from context manager
-	contextMessages := c.contextManager.GetMessages()
-	for _, msg := range contextMessages {
-		role := agent.RoleAssistant
-		if msg.Role == "user" || msg.Role == "system" {
-			role = agent.RoleUser
-		}
-		messages = append(messages, agent.CompletionMessage{
-			Role:    role,
-			Content: fmt.Sprintf("[%s] %s", msg.Role, msg.Content),
-		})
-	}
+	messages := c.buildMessagesWithContext(prompt)
 
 	req := agent.CompletionRequest{
 		Messages:  messages,
 		MaxTokens: 4096,
-		Tools: []agent.Tool{
-			{
-				Name:        "shell",
-				Description: "Execute shell commands for file operations",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"cmd": map[string]any{
-							"type":        "string",
-							"description": "Shell command to execute",
-						},
-						"cwd": map[string]any{
-							"type":        "string",
-							"description": "Working directory for the command",
-						},
-					},
-					"required": []string{"cmd"},
-				},
-			},
-			{
-				Name:        "mark_complete",
-				Description: "Call this when the implementation is complete and ready for testing",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"reason": map[string]any{
-							"type":        "string",
-							"description": "Why you believe the implementation is complete",
-						},
-					},
-					"required": []string{"reason"},
-				},
-			},
-		},
+		Tools:     c.getTools(tools.ToolShell, tools.ToolBuild, tools.ToolTest, tools.ToolDone, tools.ToolAskQuestion), // Handler declares coding tools
 	}
 
 	resp, err := c.llmClient.Complete(ctx, req)
@@ -1535,6 +1517,18 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 func (c *Coder) handleFixing(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Fixing phase: addressing issues")
 
+	// Check for question tool result from LLM
+	if questionData, exists := sm.GetStateValue("question_submitted"); exists {
+		return c.handleFixingQuestionTransition(ctx, sm, questionData)
+	}
+
+	// Restore fixing context if returning from QUESTION
+	if questionAnswered, exists := sm.GetStateValue(keyQuestionAnswered); exists && questionAnswered.(bool) {
+		c.restoreFixingContext(sm)
+		sm.SetStateData(keyQuestionAnswered, false) // Clear flag
+		c.logger.Info("🧑‍💻 Restored fixing context after question answered")
+	}
+
 	// Check iteration limit using BUDGET_REVIEW mechanism
 	if c.checkLoopBudget(sm, keyFixingIterations, c.fixingBudget, StateFixing) {
 		c.logger.Info("Fixing budget exceeded, triggering BUDGET_REVIEW")
@@ -1581,10 +1575,13 @@ func (c *Coder) handleMergeConflictFix(ctx context.Context, sm *agent.BaseStateM
 	conflictDetails, _ := sm.GetStateValue("conflict_details")
 	c.logger.Info("Conflict details: %v", conflictDetails)
 
-	// TODO: Implement intelligent merge conflict resolution:
+	// TODO: Implement intelligent merge conflict resolution with LLM:
 	// 1. Pull latest changes from main branch
 	// 2. Identify conflict files
-	// 3. Use LLM to resolve conflicts intelligently
+	// 3. Use LLM to resolve conflicts intelligently with AskQuestionTool support:
+	//    - Create completion request with AskQuestionTool in Tools array
+	//    - Process tool calls for questions during conflict resolution
+	//    - Example: c.askQuestionTool.Definition() in Tools slice
 	// 4. Update implementation as needed
 
 	sm.SetStateData("merge_conflicts_fixed", true)
@@ -1946,17 +1943,7 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 
 // Helper methods
 
-func (c *Coder) detectHelpRequest(taskContent string) bool {
-	lower := strings.ToLower(taskContent)
-	helpKeywords := []string{"help", "question", "clarify", "guidance", "not sure", "unclear"}
-
-	for _, keyword := range helpKeywords {
-		if strings.Contains(lower, keyword) {
-			return true
-		}
-	}
-	return false
-}
+// Removed detectHelpRequest - replaced with tool-based question mechanism
 
 func (c *Coder) formatContextAsString() string {
 	messages := c.contextManager.GetMessages()
@@ -2166,8 +2153,8 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 
 	// Setup workspace
 	agentID := c.GetAgentID()
-	// Make agent ID filesystem-safe by replacing colons with dashes
-	fsafeAgentID := strings.ReplaceAll(agentID, ":", "-")
+	// Make agent ID filesystem-safe using shared sanitization helper
+	fsafeAgentID := utils.SanitizeIdentifier(agentID)
 	workspaceResult, err := c.workspaceManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
 	if err != nil {
 		c.logger.Error("Failed to setup workspace: %v", err)
@@ -2185,40 +2172,17 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	c.logger.Debug("Updated coder working directory to: %s", c.workDir)
 	c.logger.Debug("Coder instance pointer: %p, workDir: %s", c, c.workDir)
 
-	// Start long-running Docker container for this story
+	// Configure container with read-only workspace for planning phase
 	if c.longRunningExecutor != nil {
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		// Add story ID to context for container identification
-		storyCtx := context.WithValue(ctx, contextKeyStoryID, storyIDStr)
-
-		// Configure container with workspace mounting
-		execOpts := execpkg.ExecOpts{
-			WorkDir:         c.workDir,
-			ReadOnly:        true, // Read-only root filesystem for security
-			NetworkDisabled: true, // Disable network access for security
-			User:            "",   // Use default user mapping
-			Env:             []string{},
-			Timeout:         0,   // No timeout for long-running container
-			ResourceLimits:  nil, // Use default resource limits
+		if err := c.configureWorkspaceMount(ctx, true, "planning"); err != nil {
+			return proto.StateError, false, fmt.Errorf("failed to configure planning container: %w", err)
 		}
+	}
 
-		containerName, err := c.longRunningExecutor.StartContainer(storyCtx, storyIDStr, execOpts)
-		if err != nil {
-			c.logger.Error("Failed to start long-running container: %v", err)
-			return proto.StateError, false, fmt.Errorf("failed to start container: %w", err)
-		}
-
-		c.containerName = containerName
-		c.logger.Info("Started long-running container: %s", containerName)
-
-		// Update the shell tool to use the story-specific container context
-		// This will ensure all shell commands run in the persistent container
-		if err := c.updateShellToolForStory(storyCtx); err != nil {
-			c.logger.Error("Failed to update shell tool for story: %v", err)
-			// Continue anyway - this shouldn't block the story
-		}
+	// Register planning tools
+	if err := c.registerPlanningTools(); err != nil {
+		c.logger.Error("Failed to register planning tools: %v", err)
+		// Continue anyway - this shouldn't block the story
 	}
 
 	return StatePlanning, false, nil
@@ -2229,6 +2193,59 @@ func (c *Coder) SetDockerImage(image string) {
 	if c.longRunningExecutor != nil {
 		c.longRunningExecutor.SetImage(image)
 	}
+}
+
+// configureWorkspaceMount configures container with readonly or readwrite workspace access
+func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purpose string) error {
+	// Stop current container to reconfigure
+	if c.containerName != "" {
+		c.logger.Info("Stopping existing container %s to reconfigure for %s", c.containerName, purpose)
+		c.cleanupContainer(ctx, fmt.Sprintf("reconfigure for %s", purpose))
+	}
+
+	// Create execution options for the new container
+	execOpts := execpkg.ExecOpts{
+		WorkDir:         c.workDir,
+		ReadOnly:        readonly,
+		NetworkDisabled: readonly,    // Disable network during planning for security
+		User:            "1000:1000", // Run as non-root user
+		Env:             []string{},
+		Timeout:         0, // No timeout for long-running container
+		ResourceLimits: &execpkg.ResourceLimits{
+			CPUs:   "1",    // Limited CPU for planning
+			Memory: "512m", // Limited memory for planning
+			PIDs:   256,    // Limited processes for planning
+		},
+	}
+
+	// For coding phase, allow more resources and network access
+	if !readonly {
+		execOpts.ResourceLimits.CPUs = "2"
+		execOpts.ResourceLimits.Memory = "2g"
+		execOpts.ResourceLimits.PIDs = 1024
+		execOpts.NetworkDisabled = false
+	}
+
+	// Use sanitized agent ID for container naming (story ID not accessible from here)
+	agentID := c.GetID()
+	sanitizedAgentID := utils.SanitizeContainerName(agentID)
+
+	// Start new container with appropriate configuration
+	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, execOpts)
+	if err != nil {
+		return fmt.Errorf("failed to start %s container: %w", purpose, err)
+	}
+
+	c.containerName = containerName
+	c.logger.Info("Started %s container: %s (readonly=%v)", purpose, containerName, readonly)
+
+	// Update shell tool to use the new container
+	if err := c.updateShellToolForStory(ctx); err != nil {
+		c.logger.Error("Failed to update shell tool for new container: %v", err)
+		// Continue anyway - this shouldn't block the story
+	}
+
+	return nil
 }
 
 // GetContainerName returns the current container name for cleanup purposes
@@ -2263,6 +2280,429 @@ func (c *Coder) updateShellToolForStory(storyCtx context.Context) error {
 	}
 
 	return nil
+}
+
+// executeShellCommand runs a shell command in the current container
+func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string, error) {
+	if c.longRunningExecutor == nil || c.containerName == "" {
+		return "", fmt.Errorf("no active container for shell execution")
+	}
+
+	opts := execpkg.ExecOpts{
+		WorkDir: "/workspace",
+		Timeout: 30 * time.Second,
+	}
+
+	result, err := c.longRunningExecutor.Run(ctx, args, opts)
+	if err != nil {
+		return "", fmt.Errorf("shell command failed: %w", err)
+	}
+
+	return result.Stdout, nil
+}
+
+// registerPlanningTools registers tools needed for enhanced planning
+func (c *Coder) registerPlanningTools() error {
+	// Register ask_question tool
+	askQuestionTool := tools.NewAskQuestionTool()
+	if err := tools.Register(askQuestionTool); err != nil {
+		c.logger.Info("AskQuestion tool registration: %v (likely already registered)", err)
+	} else {
+		c.logger.Info("AskQuestion tool registered successfully")
+	}
+
+	// Register submit_plan tool
+	submitPlanTool := tools.NewSubmitPlanTool()
+	if err := tools.Register(submitPlanTool); err != nil {
+		c.logger.Info("SubmitPlan tool registration: %v (likely already registered)", err)
+	} else {
+		c.logger.Info("SubmitPlan tool registered successfully")
+	}
+
+	return nil
+}
+
+// handleQuestionTransition processes ask_question tool results
+func (c *Coder) handleQuestionTransition(ctx context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
+	// Store current planning context for restoration
+	c.storePlanningContext(sm)
+
+	// Extract question details from tool result
+	questionMap, ok := questionData.(map[string]any)
+	if !ok {
+		return proto.StateError, false, fmt.Errorf("invalid question data format")
+	}
+
+	question, _ := questionMap["question"].(string)
+	context, _ := questionMap["context"].(string)
+	urgency, _ := questionMap["urgency"].(string)
+
+	// Set question state data for QUESTION state handler
+	sm.SetStateData(keyQuestionContent, question)
+	sm.SetStateData(keyQuestionReason, fmt.Sprintf("Planning clarification (%s urgency)", urgency))
+	sm.SetStateData(keyQuestionOrigin, string(StatePlanning))
+	sm.SetStateData("question_context", context)
+
+	// Clear the question submission trigger
+	sm.SetStateData("question_submitted", nil)
+
+	c.logger.Info("🧑‍💻 Question submitted during planning: %s", question)
+	return StateQuestion, false, nil
+}
+
+// handleCodingQuestionTransition processes ask_question tool results from CODING state
+func (c *Coder) handleCodingQuestionTransition(ctx context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
+	// Store current coding context for restoration
+	c.storeCodingContext(sm)
+
+	// Extract question details from tool result
+	questionMap, ok := questionData.(map[string]any)
+	if !ok {
+		return proto.StateError, false, fmt.Errorf("invalid question data format")
+	}
+
+	question, _ := questionMap["question"].(string)
+	context, _ := questionMap["context"].(string)
+	urgency, _ := questionMap["urgency"].(string)
+
+	// Set question state data for QUESTION state handler
+	sm.SetStateData(keyQuestionContent, question)
+	sm.SetStateData(keyQuestionReason, fmt.Sprintf("Coding clarification (%s urgency)", urgency))
+	sm.SetStateData(keyQuestionOrigin, string(StateCoding))
+	sm.SetStateData("question_context", context)
+
+	// Clear the question submission trigger
+	sm.SetStateData("question_submitted", nil)
+
+	c.logger.Info("🧑‍💻 Question submitted during coding: %s", question)
+	return StateQuestion, false, nil
+}
+
+// handleFixingQuestionTransition processes ask_question tool results from FIXING state
+func (c *Coder) handleFixingQuestionTransition(ctx context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
+	// Store current fixing context for restoration
+	c.storeFixingContext(sm)
+
+	// Extract question details from tool result
+	questionMap, ok := questionData.(map[string]any)
+	if !ok {
+		return proto.StateError, false, fmt.Errorf("invalid question data format")
+	}
+
+	question, _ := questionMap["question"].(string)
+	context, _ := questionMap["context"].(string)
+	urgency, _ := questionMap["urgency"].(string)
+
+	// Set question state data for QUESTION state handler
+	sm.SetStateData(keyQuestionContent, question)
+	sm.SetStateData(keyQuestionReason, fmt.Sprintf("Fixing clarification (%s urgency)", urgency))
+	sm.SetStateData(keyQuestionOrigin, string(StateFixing))
+	sm.SetStateData("question_context", context)
+
+	// Clear the question submission trigger
+	sm.SetStateData("question_submitted", nil)
+
+	c.logger.Info("🧑‍💻 Question submitted during fixing: %s", question)
+	return StateQuestion, false, nil
+}
+
+// handlePlanSubmission processes submit_plan tool results
+func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMachine, planData any) (proto.State, bool, error) {
+	planMap, ok := planData.(map[string]any)
+	if !ok {
+		return proto.StateError, false, fmt.Errorf("invalid plan data format")
+	}
+
+	plan, _ := planMap["plan"].(string)
+	confidence, _ := planMap["confidence"].(string)
+	explorationSummary, _ := planMap["exploration_summary"].(string)
+	risks, _ := planMap["risks"].(string)
+
+	// Store plan data
+	sm.SetStateData("plan", plan)
+	sm.SetStateData("plan_confidence", confidence)
+	sm.SetStateData("exploration_summary", explorationSummary)
+	sm.SetStateData("plan_risks", risks)
+	sm.SetStateData("planning_completed_at", time.Now().UTC())
+
+	// Clear the plan submission trigger
+	sm.SetStateData("plan_submitted", nil)
+
+	// Send REQUEST message to architect for approval
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: plan,
+		Reason:  fmt.Sprintf("Enhanced plan requires approval (confidence: %s)", confidence),
+		Type:    proto.ApprovalTypePlan,
+	}
+
+	if c.dispatcher != nil {
+		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
+		requestMsg.SetPayload("approval_type", proto.ApprovalTypePlan.String())
+		requestMsg.SetPayload("content", plan)
+		requestMsg.SetPayload("confidence", confidence)
+		requestMsg.SetPayload("exploration_summary", explorationSummary)
+		requestMsg.SetPayload("risks", risks)
+		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+
+		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+			return proto.StateError, false, fmt.Errorf("failed to send enhanced plan approval request: %w", err)
+		}
+
+		c.logger.Info("🧑‍💻 Sent enhanced plan approval request %s to architect", c.pendingApprovalRequest.ID)
+	} else {
+		c.logger.Error("🧑‍💻 Dispatcher is nil, cannot send plan approval request")
+		return proto.StateError, false, fmt.Errorf("dispatcher not available for plan approval request")
+	}
+
+	return StatePlanReview, false, nil
+}
+
+// handleIterativePlanning implements tool-supported planning workflow
+func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (proto.State, bool, error) {
+	// Restore planning context if returning from QUESTION
+	if questionAnswered, exists := sm.GetStateValue(keyQuestionAnswered); exists && questionAnswered.(bool) {
+		c.restorePlanningContext(sm)
+		sm.SetStateData(keyQuestionAnswered, false) // Clear flag
+		c.logger.Info("🧑‍💻 Restored planning context after question answered")
+	}
+
+	// Generate tree output for template (cached for efficiency)
+	treeOutput, exists := sm.GetStateValue("tree_output_cached")
+	if !exists {
+		tree := "Project structure not available"
+		if c.longRunningExecutor != nil && c.containerName != "" {
+			// Try tree command first, fall back to find if not available
+			c.logger.Debug("Attempting to get workspace structure")
+			if treeResult, err := c.executeShellCommand(ctx, "tree", "/workspace", "-L", "3", "-I", "node_modules|.git|*.log"); err == nil {
+				c.logger.Debug("tree command succeeded")
+				tree = treeResult
+			} else {
+				// Fallback: use find to show directory structure
+				c.logger.Info("tree command failed, using find fallback: %v", err)
+				if findResult, findErr := c.executeShellCommand(ctx, "find", "/workspace", "-maxdepth", "3", "-type", "d"); findErr == nil {
+					c.logger.Info("find fallback succeeded")
+					tree = "Directory structure (find fallback):\n" + findResult
+				} else {
+					c.logger.Warn("find fallback failed, trying ls: %v", findErr)
+					// Ultimate fallback: basic ls
+					if lsResult, lsErr := c.executeShellCommand(ctx, "ls", "-la", "/workspace"); lsErr == nil {
+						c.logger.Info("ls fallback succeeded")
+						tree = "Basic workspace listing:\n" + lsResult
+					} else {
+						c.logger.Error("All workspace listing commands failed: ls error: %v", lsErr)
+					}
+				}
+			}
+		}
+		treeOutput = tree
+		sm.SetStateData("tree_output_cached", tree)
+	}
+
+	// Create enhanced template data
+	templateData := &templates.TemplateData{
+		TaskContent: taskContent,
+		Context:     c.formatContextAsString(),
+		TreeOutput:  treeOutput.(string),
+	}
+
+	// Render enhanced planning template
+	prompt, err := c.renderer.Render(templates.PlanningTemplate, templateData)
+	if err != nil {
+		return proto.StateError, false, fmt.Errorf("failed to render planning template: %w", err)
+	}
+
+	// Get LLM response with tool support
+	// Build messages starting with the planning prompt
+	messages := c.buildMessagesWithContext(prompt)
+
+	req := agent.CompletionRequest{
+		Messages:  messages,
+		MaxTokens: 8192,                                                                     // Increased for exploration
+		Tools:     c.getTools(tools.ToolSubmitPlan, tools.ToolAskQuestion, tools.ToolShell), // Handler explicitly declares needed tools
+	}
+
+	resp, err := c.llmClient.Complete(ctx, req)
+	if err != nil {
+		return proto.StateError, false, fmt.Errorf("failed to get LLM planning response: %w", err)
+	}
+
+	// Process tool calls if any (when supported)
+	if len(resp.ToolCalls) > 0 {
+		return c.processPlanningToolCalls(ctx, sm, resp.ToolCalls)
+	}
+
+	// If no tool calls, continue in planning state with response
+	c.contextManager.AddMessage("assistant", resp.Content)
+	c.logger.Info("🧑‍💻 Planning iteration completed, staying in PLANNING for potential tool usage")
+	return StatePlanning, false, nil
+}
+
+// Context management helper methods
+func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
+	context := map[string]any{
+		"exploration_history": c.getExplorationHistory(),
+		"files_examined":      c.getFilesExamined(),
+		"current_findings":    c.getCurrentFindings(),
+		"timestamp":           time.Now().UTC(),
+	}
+	sm.SetStateData("planning_context_saved", context)
+	c.logger.Debug("🧑‍💻 Stored planning context for QUESTION transition")
+}
+
+func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
+	context := map[string]any{
+		"coding_progress": c.getCodingProgress(),
+		"files_created":   c.getFilesCreated(),
+		"current_task":    c.getCurrentTask(),
+		"timestamp":       time.Now().UTC(),
+	}
+	sm.SetStateData("coding_context_saved", context)
+	c.logger.Debug("🧑‍💻 Stored coding context for QUESTION transition")
+}
+
+func (c *Coder) storeFixingContext(sm *agent.BaseStateMachine) {
+	context := map[string]any{
+		"fixing_progress": c.getFixingProgress(),
+		"test_failures":   c.getTestFailures(),
+		"current_fixes":   c.getCurrentFixes(),
+		"timestamp":       time.Now().UTC(),
+	}
+	sm.SetStateData("fixing_context_saved", context)
+	c.logger.Debug("🧑‍💻 Stored fixing context for QUESTION transition")
+}
+
+func (c *Coder) restorePlanningContext(sm *agent.BaseStateMachine) {
+	if contextData, exists := sm.GetStateValue("planning_context_saved"); exists {
+		if context, ok := contextData.(map[string]any); ok {
+			c.restoreExplorationHistory(context["exploration_history"])
+			c.restoreFilesExamined(context["files_examined"])
+			c.restoreCurrentFindings(context["current_findings"])
+			c.logger.Debug("🧑‍💻 Restored planning context from QUESTION transition")
+		}
+	}
+}
+
+func (c *Coder) restoreCodingContext(sm *agent.BaseStateMachine) {
+	if contextData, exists := sm.GetStateValue("coding_context_saved"); exists {
+		if context, ok := contextData.(map[string]any); ok {
+			c.restoreCodingProgress(context["coding_progress"])
+			c.restoreFilesCreated(context["files_created"])
+			c.restoreCurrentTask(context["current_task"])
+			c.logger.Debug("🧑‍💻 Restored coding context from QUESTION transition")
+		}
+	}
+}
+
+func (c *Coder) restoreFixingContext(sm *agent.BaseStateMachine) {
+	if contextData, exists := sm.GetStateValue("fixing_context_saved"); exists {
+		if context, ok := contextData.(map[string]any); ok {
+			c.restoreFixingProgress(context["fixing_progress"])
+			c.restoreTestFailures(context["test_failures"])
+			c.restoreCurrentFixes(context["current_fixes"])
+			c.logger.Debug("🧑‍💻 Restored fixing context from QUESTION transition")
+		}
+	}
+}
+
+// Placeholder helper methods for context management (to be enhanced as needed)
+func (c *Coder) getExplorationHistory() any    { return []string{} }
+func (c *Coder) getFilesExamined() any         { return []string{} }
+func (c *Coder) getCurrentFindings() any       { return map[string]any{} }
+func (c *Coder) getCodingProgress() any        { return map[string]any{} }
+func (c *Coder) getFilesCreated() any          { return []string{} }
+func (c *Coder) getCurrentTask() any           { return map[string]any{} }
+func (c *Coder) getFixingProgress() any        { return map[string]any{} }
+func (c *Coder) getTestFailures() any          { return []string{} }
+func (c *Coder) getCurrentFixes() any          { return map[string]any{} }
+func (c *Coder) restoreExplorationHistory(any) {}
+func (c *Coder) restoreFilesExamined(any)      {}
+func (c *Coder) restoreCurrentFindings(any)    {}
+func (c *Coder) restoreCodingProgress(any)     {}
+func (c *Coder) restoreFilesCreated(any)       {}
+func (c *Coder) restoreCurrentTask(any)        {}
+func (c *Coder) restoreFixingProgress(any)     {}
+func (c *Coder) restoreTestFailures(any)       {}
+func (c *Coder) restoreCurrentFixes(any)       {}
+
+// processPlanningToolCalls handles tool execution during planning
+func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
+	c.logger.Info("🧑‍💻 Processing %d tool calls in planning state", len(toolCalls))
+
+	for _, toolCall := range toolCalls {
+		c.logger.Info("Executing planning tool: %s", toolCall.Name)
+
+		// Get tool from registry and execute
+		tool, err := tools.Get(toolCall.Name)
+		if err != nil {
+			c.logger.Error("Tool not found in registry: %s", toolCall.Name)
+			return proto.StateError, false, fmt.Errorf("tool %s not found: %w", toolCall.Name, err)
+		}
+
+		result, err := tool.Exec(ctx, toolCall.Parameters)
+		if err != nil {
+			c.logger.Error("Tool execution failed for %s: %v", toolCall.Name, err)
+			return proto.StateError, false, fmt.Errorf("failed to execute tool %s: %w", toolCall.Name, err)
+		}
+
+		// Handle tool result generically - check if tool requests state transition
+		if resultMap, ok := result.(map[string]any); ok {
+			if nextState, hasNextState := resultMap["next_state"].(string); hasNextState {
+				return c.handleToolStateTransition(ctx, sm, toolCall.Name, nextState, resultMap)
+			}
+		}
+
+		// No state transition requested - continue in current state
+		// Add tool execution results to context so Claude can see them
+		c.addToolResultToContext(toolCall, result)
+		c.logger.Info("Tool %s executed successfully, continuing in planning", toolCall.Name)
+	}
+
+	return StatePlanning, false, nil
+}
+
+// handleToolStateTransition processes generic tool state transitions
+func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
+	// Store all result data in state machine (let the tool decide what to store)
+	for key, value := range resultMap {
+		if key != "next_state" && key != "success" && key != "message" {
+			sm.SetStateData(key, value)
+		}
+	}
+
+	// Log the transition
+	if message, hasMessage := resultMap["message"].(string); hasMessage {
+		c.logger.Info("Tool %s: %s", toolName, message)
+	}
+
+	// Handle tool-specific state transitions that require special processing
+	switch toolName {
+	case tools.ToolSubmitPlan:
+		if nextState == "PLAN_REVIEW" {
+			// Set plan_submitted state data to trigger handlePlanSubmission
+			sm.SetStateData("plan_submitted", resultMap)
+			// Return to planning state to allow handlePlanSubmission to process the REQUEST
+			return StatePlanning, false, nil
+		}
+	case tools.ToolAskQuestion:
+		if nextState == "QUESTION" {
+			// Set question_submitted state data to trigger handleQuestionTransition
+			sm.SetStateData("question_submitted", resultMap)
+			return StatePlanning, false, nil
+		}
+	}
+
+	// Default behavior for tools that don't need special processing
+	switch nextState {
+	case "PLAN_REVIEW":
+		return StatePlanReview, false, nil
+	case "QUESTION":
+		return StateQuestion, false, nil
+	default:
+		c.logger.Warn("Tool %s requested unknown state transition: %s", toolName, nextState)
+		return StatePlanning, false, nil
+	}
 }
 
 // handleDone implements terminal logic for DONE state
@@ -2645,4 +3085,55 @@ func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine
 	requestMsg.SetPayload("story_id", storyIDStr)
 
 	return c.dispatcher.DispatchMessage(requestMsg)
+}
+
+// addToolResultToContext adds tool execution results to context for Claude to see (DRY version of CODING logic)
+func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
+	// Handle shell tool results specifically (most common case)
+	if toolCall.Name == "shell" {
+		if cmd, ok := toolCall.Parameters["cmd"].(string); ok {
+			c.logger.Info("Shell command: %s", cmd)
+			c.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
+		}
+
+		// Add shell output to context (reuse existing CODING logic)
+		if resultMap, ok := result.(map[string]any); ok {
+			if output, ok := resultMap["stdout"].(string); ok && output != "" {
+				c.logger.Debug("Shell stdout: %s", output)
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Output: %s", output))
+			}
+			if stderr, ok := resultMap["stderr"].(string); ok && stderr != "" {
+				c.logger.Debug("Shell stderr: %s", stderr)
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Error: %s", stderr))
+			}
+			if exitCode, ok := resultMap["exit_code"].(int); ok && exitCode != 0 {
+				c.logger.Debug("Shell exit code: %d", exitCode)
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Command failed with exit code: %d", exitCode))
+			}
+		}
+		return
+	}
+
+	// Handle other tools generically (build, test, lint, etc.)
+	if resultMap, ok := result.(map[string]any); ok {
+		if success, ok := resultMap["success"].(bool); ok {
+			if success {
+				c.logger.Info("%s tool succeeded", toolCall.Name)
+				c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation completed successfully", toolCall.Name))
+			} else {
+				c.logger.Info("%s tool failed", toolCall.Name)
+				c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation failed", toolCall.Name))
+			}
+		}
+
+		if output, ok := resultMap["output"].(string); ok && output != "" {
+			c.logger.Debug("%s output: %s", toolCall.Name, output)
+			c.contextManager.AddMessage("tool", fmt.Sprintf("%s output: %s", toolCall.Name, output))
+		}
+
+		if errorMsg, ok := resultMap["error"].(string); ok && errorMsg != "" {
+			c.logger.Debug("%s error: %s", toolCall.Name, errorMsg)
+			c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
+		}
+	}
 }

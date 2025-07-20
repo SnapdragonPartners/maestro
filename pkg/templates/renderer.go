@@ -19,6 +19,7 @@ type TemplateData struct {
 	Implementation string         `json:"implementation,omitempty"`
 	TestResults    string         `json:"test_results,omitempty"`
 	WorkDir        string         `json:"work_dir,omitempty"`
+	TreeOutput     string         `json:"tree_output,omitempty"`
 	Extra          map[string]any `json:"extra,omitempty"`
 }
 

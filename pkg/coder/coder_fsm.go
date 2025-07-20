@@ -62,8 +62,8 @@ var CoderTransitions = map[proto.State][]proto.State{
 	// SETUP prepares workspace (mirror clone, worktree, branch) then goes to PLANNING
 	StateSetup: {StatePlanning, proto.StateError},
 
-	// PLANNING can submit plan for review or ask questions
-	StatePlanning: {StatePlanReview, StateQuestion},
+	// PLANNING can submit plan for review, ask questions, or exceed budget (→BUDGET_REVIEW)
+	StatePlanning: {StatePlanReview, StateQuestion, StateBudgetReview},
 
 	// PLAN_REVIEW can approve (→CODING), request changes (→PLANNING), or abandon (→ERROR)
 	StatePlanReview: {StatePlanning, StateCoding, proto.StateError},
@@ -80,8 +80,8 @@ var CoderTransitions = map[proto.State][]proto.State{
 	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→FIXING), or abandon (→ERROR)
 	StateCodeReview: {StateAwaitMerge, StateFixing, proto.StateError},
 
-	// BUDGET_REVIEW can continue/pivot (→CODING/FIXING), escalate (→CODE_REVIEW), or abandon (→ERROR)
-	StateBudgetReview: {StateCoding, StateFixing, StateCodeReview, proto.StateError},
+	// BUDGET_REVIEW can continue/pivot (→PLANNING/CODING/FIXING), escalate (→CODE_REVIEW), or abandon (→ERROR)
+	StateBudgetReview: {StatePlanning, StateCoding, StateFixing, StateCodeReview, proto.StateError},
 
 	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→FIXING)
 	StateAwaitMerge: {proto.StateDone, StateFixing},

@@ -26,6 +26,7 @@ stateDiagram-v2
     %% Planning phase
     PLANNING      --> PLAN_REVIEW      : submit plan
     PLANNING      --> QUESTION         : clarification
+    PLANNING      --> BUDGET_REVIEW    : budget exceeded
 
     PLAN_REVIEW   --> CODING           : approve
     PLAN_REVIEW   --> PLANNING         : changes
@@ -54,6 +55,7 @@ stateDiagram-v2
     AWAIT_MERGE   --> FIXING           : merge conflicts 
 
     %% Budget review (budget exceeded)
+    BUDGET_REVIEW --> PLANNING         : continue/pivot
     BUDGET_REVIEW --> CODING           : continue/pivot
     BUDGET_REVIEW --> FIXING           : continue/pivot
     BUDGET_REVIEW --> CODE_REVIEW      : escalate
@@ -98,13 +100,13 @@ stateDiagram-v2
 | ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------ | ------------ | -------------- | ------------ | -------- | ---- | ----- |
 | **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –      | –            | –              | –            | –        | –    | –     |
 | **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –      | –            | –              | –            | –        | –    | ✔︎    |
-| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –      | –            | –              | –            | ✔︎       | –    | –     |
+| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –      | –            | ✔︎             | –            | ✔︎       | –    | –     |
 | **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –      | –            | –              | –            | –        | –    | ✔︎    |
 | **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | ✔︎       | –    | ✔︎    |
 | **TESTING**         | –       | –     | –            | –        | –      | –       | ✔︎     | ✔︎           | –              | –            | –        | –    | –     |
 | **FIXING**          | –       | –     | –            | –        | –      | ✔︎      | –      | –            | ✔︎             | –            | ✔︎       | –    | ✔︎    |
 | **CODE\_REVIEW**    | –       | –     | –            | –        | –      | –       | ✔︎     | –            | –              | ✔︎           | –        | –    | ✔︎    |
-| **BUDGET\_REVIEW**  | –       | –     | –            | –        | ✔︎     | –       | ✔︎     | ✔︎           | –              | –            | –        | –    | ✔︎    |
+| **BUDGET\_REVIEW**  | –       | –     | –            | ✔︎       | ✔︎     | –       | ✔︎     | ✔︎           | –              | –            | –        | –    | ✔︎    |
 | **AWAIT\_MERGE**    | –       | –     | –            | –        | –      | –       | ✔︎     | –            | –              | –            | –        | ✔︎   | –     |
 | **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | ✔︎     | –            | –              | –            | –        | –    | ✔︎    |
 | **DONE**            | –       | –     | –            | –        | –      | –       | –      | –            | –              | –            | –        | –    | –     |
@@ -116,8 +118,8 @@ stateDiagram-v2
 
 ## AUTO\_CHECKIN & deterministic budget overflow
 
-1. **Optional question:** While in `CODING` or `FIXING`, the LLM may voluntarily ask for clarification and transition to `QUESTION`.
-2. **Deterministic budget review:** Each long-running loop has an iteration budget (`coding_iterations`, `fixing_iterations`). When exhausted, the agent **must** transition to `BUDGET_REVIEW` requesting one of:
+1. **Optional question:** While in `PLANNING`, `CODING` or `FIXING`, the LLM may voluntarily ask for clarification and transition to `QUESTION`.
+2. **Deterministic budget review:** Each long-running loop has an iteration budget (`planning_iterations`, `coding_iterations`, `fixing_iterations`). When exhausted, the agent **must** transition to `BUDGET_REVIEW` requesting one of:
    • **CONTINUE** (same plan)
    • **PIVOT** (small plan change)
    • **ESCALATE** (send to `CODE_REVIEW`)
@@ -125,11 +127,11 @@ stateDiagram-v2
 
 Upon receiving architect approval:
 
-| Approval Result      | Next state                                                                |
-| -------------------- | ------------------------------------------------------------------------- |
-| **CONTINUE / PIVOT** | Return to the originating state (`CODING` or `FIXING`) and reset counter. |
-| **ESCALATE**         | Move to `CODE_REVIEW`.                                                    |
-| **ABANDON**          | Move to `ERROR`.                                                          |
+| Approval Result      | Next state                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| **CONTINUE / PIVOT** | Return to the originating state (`PLANNING`, `CODING` or `FIXING`) and reset counter. |
+| **ESCALATE**         | Move to `CODE_REVIEW`.                                                               |
+| **ABANDON**          | Move to `ERROR`.                                                                     |
 
 ---
 
