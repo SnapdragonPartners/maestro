@@ -133,7 +133,7 @@ func TestCoderQuestionFlow(t *testing.T) {
 
 	// Check that question data is set correctly
 	stateData := driver.GetStateData()
-	if origin, exists := stateData["question_origin"]; !exists || origin != "PLANNING" {
+	if origin, exists := stateData["question_origin"]; !exists || origin != string(StatePlanning) {
 		t.Errorf("Expected question_origin to be PLANNING, got %v", origin)
 	}
 
@@ -245,7 +245,7 @@ func TestCoderFailureAndRetry(t *testing.T) {
 		{
 			name:        "Test failure and fix cycle",
 			taskContent: "Create endpoint that should test fail initially",
-			expectFlow:  []proto.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateFixing, StateCoding, StateTesting, StateCodeReview, proto.StateDone},
+			expectFlow:  []proto.State{StatePlanning, StatePlanReview, StateCoding, StateTesting, StateCoding, StateTesting, StateCodeReview, proto.StateDone},
 		},
 		{
 			name:        "Normal successful flow",

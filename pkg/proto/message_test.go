@@ -465,6 +465,8 @@ func TestEnumParsing(t *testing.T) {
 			{"story", MsgTypeSTORY, false},
 			{"STORY", MsgTypeSTORY, false},
 			{"request", MsgTypeREQUEST, false},
+			{"requeue", MsgTypeREQUEUE, false},
+			{"REQUEUE", MsgTypeREQUEUE, false},
 			{"invalid", "", true},
 		}
 

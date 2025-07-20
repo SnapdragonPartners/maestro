@@ -67,24 +67,9 @@ func TestBudgetReviewStateTransitions(t *testing.T) {
 		t.Error("CODING → BUDGET_REVIEW should be valid")
 	}
 
-	// Test FIXING → BUDGET_REVIEW
-	if !IsValidCoderTransition(StateFixing, StateBudgetReview) {
-		t.Error("FIXING → BUDGET_REVIEW should be valid")
-	}
-
 	// Test BUDGET_REVIEW → CODING
 	if !IsValidCoderTransition(StateBudgetReview, StateCoding) {
 		t.Error("BUDGET_REVIEW → CODING should be valid")
-	}
-
-	// Test BUDGET_REVIEW → FIXING
-	if !IsValidCoderTransition(StateBudgetReview, StateFixing) {
-		t.Error("BUDGET_REVIEW → FIXING should be valid")
-	}
-
-	// Test BUDGET_REVIEW → CODE_REVIEW
-	if !IsValidCoderTransition(StateBudgetReview, StateCodeReview) {
-		t.Error("BUDGET_REVIEW → CODE_REVIEW should be valid")
 	}
 
 	// Test BUDGET_REVIEW → ERROR

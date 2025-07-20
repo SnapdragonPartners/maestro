@@ -17,6 +17,7 @@ const (
 	MsgTypeANSWER   MsgType = "ANSWER"   // Information response: "Here's the guidance..."
 	MsgTypeREQUEST  MsgType = "REQUEST"  // Approval request: "Please review this code"
 	MsgTypeRESULT   MsgType = "RESULT"   // Approval response: "APPROVED/REJECTED/NEEDS_CHANGES"
+	MsgTypeREQUEUE  MsgType = "REQUEUE"  // Fire-and-forget: requeue failed story for retry
 	MsgTypeERROR    MsgType = "ERROR"
 	MsgTypeSHUTDOWN MsgType = "SHUTDOWN"
 )
@@ -297,7 +298,7 @@ func generateID() string {
 // ValidateMsgType validates if a string is a valid message type
 func ValidateMsgType(msgType string) (MsgType, bool) {
 	switch MsgType(msgType) {
-	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeRESULT, MsgTypeERROR, MsgTypeSHUTDOWN:
+	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeRESULT, MsgTypeREQUEUE, MsgTypeERROR, MsgTypeSHUTDOWN:
 		return MsgType(msgType), true
 	default:
 		return "", false
@@ -322,6 +323,8 @@ func ParseMsgType(s string) (MsgType, error) {
 		return MsgTypeREQUEST, nil
 	case "RESULT":
 		return MsgTypeRESULT, nil
+	case "REQUEUE":
+		return MsgTypeREQUEUE, nil
 	case "ERROR":
 		return MsgTypeERROR, nil
 	case "SHUTDOWN":

@@ -79,52 +79,55 @@ func TestAutoCheckinCoding(t *testing.T) {
 	}
 }
 
-// TestAutoCheckinFixing tests AUTO_CHECKIN behavior in FIXING state
-func TestAutoCheckinFixing(t *testing.T) {
+// TestAutoCheckinCodingFix tests BUDGET_REVIEW behavior in CODING state when doing fixing work
+func TestAutoCheckinCodingFix(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Create coder with low fixing budget
+	// Create coder with low coding budget
 	agentConfig := &config.Agent{
 		ID:   "test-coder",
 		Type: "coder",
 		Name: "Test Coder",
 		IterationBudgets: config.IterationBudgets{
-			CodingBudget: 8, // High enough to reach FIXING
-			FixingBudget: 1, // Low budget to trigger AUTO_CHECKIN quickly
+			CodingBudget: 1, // Low budget to trigger BUDGET_REVIEW quickly
 		},
 	}
 
 	driver := CreateTestCoderWithAgent(t, "test-coder", agentConfig)
 
-	// Transition to FIXING state manually for this test
-	err := driver.TransitionTo(context.Background(), coder.StateFixing, nil)
+	// Transition to CODING state with test failure data to simulate fixing work
+	err := driver.TransitionTo(context.Background(), coder.StateCoding, nil)
 	if err != nil {
-		t.Fatalf("Failed to transition to FIXING: %v", err)
+		t.Fatalf("Failed to transition to CODING: %v", err)
 	}
 
-	// Process the FIXING state - should trigger AUTO_CHECKIN immediately since budget is 1
+	// Set up test failure data to simulate the CODING state doing fixing work
+	driver.SetStateData("test_failure_output", "test failed: connection refused")
+	driver.SetStateData("coding_mode", "test_fix")
+
+	// Process the CODING state - should trigger BUDGET_REVIEW immediately since budget is 1
 	done, err := driver.Step(context.Background())
 	if err != nil {
-		t.Fatalf("Failed to step through FIXING: %v", err)
+		t.Fatalf("Failed to step through CODING: %v", err)
 	}
 
 	if done {
 		t.Fatalf("Expected step to not be done")
 	}
 
-	// Check if we're now in QUESTION state
+	// Check if we're now in BUDGET_REVIEW state
 	currentState := driver.GetCurrentState()
-	if currentState.String() != "QUESTION" {
-		t.Fatalf("Expected QUESTION state after fixing budget exceeded, got %s", currentState)
+	if currentState.String() != "BUDGET_REVIEW" {
+		t.Fatalf("Expected BUDGET_REVIEW state after coding budget exceeded, got %s", currentState)
 	}
 
-	// Verify AUTO_CHECKIN question fields
-	if reason, exists := driver.GetStateValue("question_reason"); !exists || reason != "AUTO_CHECKIN" {
-		t.Fatalf("Expected question_reason=AUTO_CHECKIN, got %v", reason)
+	// Verify BUDGET_REVIEW request was made
+	if reason, exists := driver.GetStateValue("question_reason"); !exists || reason != "BUDGET_REVIEW" {
+		t.Fatalf("Expected question_reason=BUDGET_REVIEW, got %v", reason)
 	}
 
-	if origin, exists := driver.GetStateValue("question_origin"); !exists || origin != "FIXING" {
-		t.Fatalf("Expected question_origin=FIXING, got %v", origin)
+	if origin, exists := driver.GetStateValue("question_origin"); !exists || origin != "CODING" {
+		t.Fatalf("Expected question_origin=CODING, got %v", origin)
 	}
 }
 

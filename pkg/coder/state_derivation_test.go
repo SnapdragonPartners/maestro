@@ -14,8 +14,8 @@ func TestGetAllCoderStates(t *testing.T) {
 
 	// Expected states based on current CoderTransitions map
 	expectedStates := []proto.State{
-		StatePlanning, StateCoding, StateTesting, StateFixing,
-		StatePlanReview, StateCodeReview, StateQuestion,
+		StateSetup, StatePlanning, StateCoding, StateTesting,
+		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion,
 	}
 
 	// Sort expected states for comparison
@@ -74,7 +74,6 @@ func TestIsCoderState(t *testing.T) {
 		{"PLANNING", true, "Valid coder state"},
 		{"CODING", true, "Valid coder state"},
 		{"TESTING", true, "Valid coder state"},
-		{"FIXING", true, "Valid coder state"},
 		{"PLAN_REVIEW", true, "Valid coder state"},
 		{"CODE_REVIEW", true, "Valid coder state"},
 		{"QUESTION", true, "Valid coder state"},
@@ -141,7 +140,7 @@ func TestStateDerivation_Performance(t *testing.T) {
 
 	// Test IsCoderState performance
 	for i := 0; i < iterations; i++ {
-		if !IsCoderState("PLANNING") {
+		if !IsCoderState(StatePlanning) {
 			t.Error("Should recognize PLANNING as coder state")
 			break
 		}

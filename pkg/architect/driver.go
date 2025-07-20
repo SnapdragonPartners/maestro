@@ -654,6 +654,10 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		response, err = d.handleQuestionRequest(ctx, requestMsg)
 	case proto.MsgTypeREQUEST:
 		response, err = d.handleApprovalRequest(ctx, requestMsg)
+	case proto.MsgTypeREQUEUE:
+		err = d.handleRequeueRequest(ctx, requestMsg)
+		// No response needed for requeue messages (fire-and-forget)
+		response = nil
 	default:
 		d.logger.Error("🏗️ Unknown request type: %s", requestMsg.Type)
 		return StateError, fmt.Errorf("unknown request type: %s", requestMsg.Type)
@@ -835,6 +839,41 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 	d.logger.Info("🏗️ Sending approval result: status=%s", approvalResult.Status)
 
 	return response, nil
+}
+
+// handleRequeueRequest processes a REQUEUE message (fire-and-forget)
+func (d *Driver) handleRequeueRequest(ctx context.Context, requeueMsg *proto.AgentMsg) error {
+	storyID, _ := requeueMsg.GetPayload("story_id")
+	reason, _ := requeueMsg.GetPayload("reason")
+
+	storyIDStr, _ := storyID.(string)
+	reasonStr, _ := reason.(string)
+
+	d.logger.Info("🏗️ Processing story requeue request: story_id=%s, reason=%s, from=%s",
+		storyIDStr, reasonStr, requeueMsg.FromAgent)
+
+	if storyIDStr == "" {
+		d.logger.Error("🏗️ Requeue request missing story_id")
+		return fmt.Errorf("requeue request missing story_id")
+	}
+
+	// Load current queue state
+	if d.queue == nil {
+		d.logger.Error("🏗️ No queue available for requeue")
+		return fmt.Errorf("no queue available")
+	}
+
+	// Mark story as pending for reassignment
+	if err := d.queue.MarkPending(storyIDStr); err != nil {
+		d.logger.Error("🏗️ Failed to requeue story %s: %v", storyIDStr, err)
+		return fmt.Errorf("failed to requeue story %s: %w", storyIDStr, err)
+	}
+
+	// Log the requeue event - this will appear in the architect logs
+	d.logger.Info("🏗️ Story %s successfully requeued due to: %s (from agent %s)",
+		storyIDStr, reasonStr, requeueMsg.FromAgent)
+
+	return nil
 }
 
 // handleMergeRequest processes a merge REQUEST message and returns a RESULT

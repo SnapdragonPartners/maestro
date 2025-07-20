@@ -123,62 +123,6 @@ func TestCodingContextManagement(t *testing.T) {
 	t.Log("Coding context management works correctly")
 }
 
-// TestFixingContextManagement tests fixing context save/restore functionality
-func TestFixingContextManagement(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "fixing-context-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 4096,
-		MaxReplyTokens:   1024,
-		CompactionBuffer: 512,
-	}
-
-	responses := []agent.CompletionResponse{
-		{Content: "Fixing context test response"},
-	}
-	mockLLM := agent.NewMockLLMClient(responses, nil)
-
-	driver, err := NewCoder("fixing-context-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
-	if err != nil {
-		t.Fatalf("Failed to create driver: %v", err)
-	}
-
-	// Test fixing context storage
-	driver.storeFixingContext(driver.BaseStateMachine)
-
-	// Verify context was saved
-	if saved, exists := driver.BaseStateMachine.GetStateValue("fixing_context_saved"); !exists {
-		t.Error("Expected fixing context to be saved")
-	} else {
-		if contextData, ok := saved.(map[string]any); !ok {
-			t.Error("Expected fixing context to be a map")
-		} else {
-			// Verify required fields exist
-			expectedFields := []string{"fixing_progress", "test_failures", "current_fixes", "timestamp"}
-			for _, field := range expectedFields {
-				if _, exists := contextData[field]; !exists {
-					t.Errorf("Expected context field %s not found", field)
-				}
-			}
-		}
-	}
-
-	// Test context restoration
-	driver.restoreFixingContext(driver.BaseStateMachine)
-	// Context restoration calls placeholder methods, so we just verify no panics occur
-
-	t.Log("Fixing context management works correctly")
-}
-
 // TestQuestionTransitionLogic tests question transition handlers
 func TestQuestionTransitionLogic(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "question-transition-test")
@@ -248,21 +192,6 @@ func TestQuestionTransitionLogic(t *testing.T) {
 
 	if origin, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionOrigin)); !exists || origin != string(StateCoding) {
 		t.Error("Coding question origin not set correctly")
-	}
-
-	// Test fixing question transition
-	driver.BaseStateMachine.SetStateData("question_submitted", nil) // Reset
-	nextState, _, err = driver.handleFixingQuestionTransition(ctx, driver.BaseStateMachine, questionData)
-	if err != nil {
-		t.Fatalf("Fixing question transition failed: %v", err)
-	}
-
-	if nextState != StateQuestion {
-		t.Errorf("Expected transition to QUESTION, got %s", nextState)
-	}
-
-	if origin, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionOrigin)); !exists || origin != string(StateFixing) {
-		t.Error("Fixing question origin not set correctly")
 	}
 
 	t.Log("Question transition logic works correctly across all states")

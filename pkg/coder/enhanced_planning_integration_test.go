@@ -430,38 +430,6 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 		t.Errorf("Expected question_origin to be CODING, got %v", origin)
 	}
 
-	// Test question handling in FIXING state
-	driver.SetStateData("fixing_reason", "test_failure")
-	if err := driver.TransitionTo(ctx, StateFixing, nil); err != nil {
-		t.Fatalf("Failed to transition to FIXING: %v", err)
-	}
-
-	// Simulate ask_question from FIXING state
-	fixingQuestionData := map[string]interface{}{
-		"question": "How should I handle the token refresh failure in tests?",
-		"context":  "Tests failing due to expired tokens, need guidance on mock strategy",
-		"urgency":  "LOW",
-	}
-
-	driver.SetStateData("question_submitted", fixingQuestionData)
-
-	// Process FIXING state with question
-	fixingNextState, _, err := driver.ProcessState(ctx)
-	if err != nil {
-		t.Fatalf("Failed to process fixing with question: %v", err)
-	}
-
-	// Should transition to QUESTION state from FIXING
-	if fixingNextState != StateQuestion {
-		t.Errorf("Expected transition to QUESTION from FIXING, got %s", fixingNextState)
-	}
-
-	// Verify question origin is tracked correctly
-	fixingStateData := driver.GetStateData()
-	if origin, exists := fixingStateData["question_origin"]; !exists || origin != string(StateFixing) {
-		t.Errorf("Expected question_origin to be FIXING, got %v", origin)
-	}
-
 	t.Log("Tool-based question flow tested successfully across all states")
 }
 

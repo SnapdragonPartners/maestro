@@ -57,7 +57,7 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Error("Expected urgency to be preserved")
 	}
 
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != "QUESTION" {
+	if nextState, exists := resultMap["next_state"]; !exists || nextState != string(StateQuestion) {
 		t.Error("Expected next_state to be QUESTION")
 	}
 }
@@ -198,7 +198,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Error("Expected confidence to be preserved")
 	}
 
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != "PLAN_REVIEW" {
+	if nextState, exists := resultMap["next_state"]; !exists || nextState != string(StatePlanReview) {
 		t.Error("Expected next_state to be PLAN_REVIEW")
 	}
 }

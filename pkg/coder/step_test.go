@@ -46,7 +46,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	// Verify state changed to PLANNING
-	if state := driver.GetCurrentState(); state.String() != "PLANNING" {
+	if state := driver.GetCurrentState(); state != StatePlanning {
 		t.Errorf("Expected state PLANNING after first step, got %s", state)
 	}
 
@@ -57,7 +57,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	// Should have moved to PLAN_REVIEW
-	if state := driver.GetCurrentState(); state.String() != "PLAN_REVIEW" {
+	if state := driver.GetCurrentState(); state != StatePlanReview {
 		t.Errorf("Expected state PLAN_REVIEW after second step, got %s", state)
 	}
 }

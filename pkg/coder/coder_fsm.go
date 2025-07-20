@@ -14,7 +14,6 @@ const (
 	StatePlanning     proto.State = "PLANNING"
 	StateCoding       proto.State = "CODING"
 	StateTesting      proto.State = "TESTING"
-	StateFixing       proto.State = "FIXING"
 	StatePlanReview   proto.State = "PLAN_REVIEW"
 	StateCodeReview   proto.State = "CODE_REVIEW"
 	StateBudgetReview proto.State = "BUDGET_REVIEW"
@@ -47,7 +46,7 @@ func ValidateState(state proto.State) error {
 // GetValidStates returns all valid states for coder agents
 func GetValidStates() []proto.State {
 	return []proto.State{
-		proto.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting, StateFixing,
+		proto.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting,
 		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion, proto.StateDone, proto.StateError,
 	}
 }
@@ -65,29 +64,26 @@ var CoderTransitions = map[proto.State][]proto.State{
 	// PLANNING can submit plan for review, ask questions, or exceed budget (→BUDGET_REVIEW)
 	StatePlanning: {StatePlanReview, StateQuestion, StateBudgetReview},
 
-	// PLAN_REVIEW can approve (→CODING), request changes (→PLANNING), or abandon (→ERROR)
-	StatePlanReview: {StatePlanning, StateCoding, proto.StateError},
+	// PLAN_REVIEW can approve plan (→CODING), approve completion (→DONE), request changes (→PLANNING), or abandon (→ERROR)
+	StatePlanReview: {StatePlanning, StateCoding, proto.StateDone, proto.StateError},
 
 	// CODING can complete (→TESTING), ask questions, exceed budget (→BUDGET_REVIEW), or hit unrecoverable error
 	StateCoding: {StateTesting, StateQuestion, StateBudgetReview, proto.StateError},
 
-	// TESTING can pass (→CODE_REVIEW) or fail (→FIXING)
-	StateTesting: {StateFixing, StateCodeReview},
+	// TESTING can pass (→CODE_REVIEW) or fail (→CODING)
+	StateTesting: {StateCoding, StateCodeReview},
 
-	// FIXING can fix and retest, ask questions, exceed budget (→BUDGET_REVIEW), or hit unrecoverable error
-	StateFixing: {StateTesting, StateQuestion, StateBudgetReview, proto.StateError},
+	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→CODING), or abandon (→ERROR)
+	StateCodeReview: {StateAwaitMerge, StateCoding, proto.StateError},
 
-	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→FIXING), or abandon (→ERROR)
-	StateCodeReview: {StateAwaitMerge, StateFixing, proto.StateError},
+	// BUDGET_REVIEW can continue (→CODING), pivot (→PLANNING), or abandon (→ERROR)
+	StateBudgetReview: {StatePlanning, StateCoding, proto.StateError},
 
-	// BUDGET_REVIEW can continue/pivot (→PLANNING/CODING/FIXING), escalate (→CODE_REVIEW), or abandon (→ERROR)
-	StateBudgetReview: {StatePlanning, StateCoding, StateFixing, StateCodeReview, proto.StateError},
-
-	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→FIXING)
-	StateAwaitMerge: {proto.StateDone, StateFixing},
+	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→CODING)
+	StateAwaitMerge: {proto.StateDone, StateCoding},
 
 	// QUESTION can return to origin state or escalate to error based on answer type
-	StateQuestion: {StatePlanning, StateCoding, StateFixing, proto.StateError},
+	StateQuestion: {StatePlanning, StateCoding, proto.StateError},
 
 	// ERROR transitions to DONE for orchestrator cleanup and restart
 	// DONE is terminal (no transitions)

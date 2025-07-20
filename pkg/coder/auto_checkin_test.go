@@ -32,14 +32,12 @@ func TestCheckLoopBudget(t *testing.T) {
 	agentConfig := &config.Agent{
 		IterationBudgets: config.IterationBudgets{
 			CodingBudget: 3,
-			FixingBudget: 2,
 		},
 	}
 
 	driver := &Coder{
 		BaseStateMachine: sm,
 		codingBudget:     agentConfig.IterationBudgets.CodingBudget,
-		fixingBudget:     agentConfig.IterationBudgets.FixingBudget,
 	}
 
 	tests := []struct {
@@ -68,24 +66,6 @@ func TestCheckLoopBudget(t *testing.T) {
 			iterations:    3,
 			expectTrigger: true,
 			expectedLoops: 3,
-		},
-		{
-			name:          "fixing under budget",
-			key:           string(stateDataKeyFixingIterations),
-			budget:        2,
-			origin:        StateFixing,
-			iterations:    1,
-			expectTrigger: false,
-			expectedLoops: 1,
-		},
-		{
-			name:          "fixing at budget",
-			key:           string(stateDataKeyFixingIterations),
-			budget:        2,
-			origin:        StateFixing,
-			iterations:    2,
-			expectTrigger: true,
-			expectedLoops: 2,
 		},
 	}
 
@@ -161,7 +141,6 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 	driver := &Coder{
 		BaseStateMachine: sm,
 		codingBudget:     5,
-		fixingBudget:     3,
 	}
 
 	tests := []struct {
@@ -174,23 +153,15 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 	}{
 		{
 			name:            "continue with increase",
-			origin:          "CODING",
+			origin:          string(StateCoding),
 			answer:          "CONTINUE 2",
 			expectError:     false,
 			expectedBudget:  7, // 5 + 2
 			expectedCounter: 0,
 		},
 		{
-			name:            "continue without increase",
-			origin:          "FIXING",
-			answer:          "CONTINUE",
-			expectError:     false,
-			expectedBudget:  3, // no change
-			expectedCounter: 0,
-		},
-		{
 			name:            "pivot command",
-			origin:          "CODING",
+			origin:          string(StateCoding),
 			answer:          "PIVOT",
 			expectError:     false,
 			expectedBudget:  5, // no change
@@ -198,18 +169,10 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 		},
 		{
 			name:            "escalate command",
-			origin:          "CODING",
+			origin:          string(StateCoding),
 			answer:          "ESCALATE",
 			expectError:     false,
 			expectedBudget:  5, // no change
-			expectedCounter: 5, // unchanged
-		},
-		{
-			name:            "abandon command",
-			origin:          "FIXING",
-			answer:          "ABANDON",
-			expectError:     false,
-			expectedBudget:  3, // no change
 			expectedCounter: 5, // unchanged
 		},
 		{
@@ -230,11 +193,9 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset state
 			driver.codingBudget = 5
-			driver.fixingBudget = 3
 			sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
 			sm.SetStateData(string(stateDataKeyQuestionOrigin), tt.origin)
 			sm.SetStateData(string(stateDataKeyCodingIterations), 5)
-			sm.SetStateData(string(stateDataKeyFixingIterations), 5)
 
 			// Call processAutoCheckinAnswer - DISABLED
 			// err := driver.processAutoCheckinAnswer(tt.answer)
@@ -254,19 +215,13 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 			}
 
 			// Check budget changes
-			if tt.origin == "CODING" && driver.codingBudget != tt.expectedBudget {
+			if tt.origin == string(StateCoding) && driver.codingBudget != tt.expectedBudget {
 				t.Errorf("Expected coding budget %d, got %d", tt.expectedBudget, driver.codingBudget)
-			}
-			if tt.origin == "FIXING" && driver.fixingBudget != tt.expectedBudget {
-				t.Errorf("Expected fixing budget %d, got %d", tt.expectedBudget, driver.fixingBudget)
 			}
 
 			// Check counter reset for CONTINUE and PIVOT
 			if tt.answer == "CONTINUE" || tt.answer == "CONTINUE 2" || tt.answer == "PIVOT" {
 				key := string(stateDataKeyCodingIterations)
-				if tt.origin == "FIXING" {
-					key = string(stateDataKeyFixingIterations)
-				}
 				if val, exists := sm.GetStateValue(key); exists {
 					if count, ok := val.(int); ok && count != tt.expectedCounter {
 						t.Errorf("Expected counter %d, got %d", tt.expectedCounter, count)

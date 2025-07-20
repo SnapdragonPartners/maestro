@@ -118,17 +118,11 @@ func BenchmarkContextPreservation(b *testing.B) {
 		driver.restoreCodingContext(driver.BaseStateMachine)
 		codingContextTime := time.Since(startTime)
 
-		startTime = time.Now()
-		driver.storeFixingContext(driver.BaseStateMachine)
-		driver.restoreFixingContext(driver.BaseStateMachine)
-		fixingContextTime := time.Since(startTime)
-
 		if i == 0 {
 			b.Logf("Context preservation timings:")
 			b.Logf("  Planning save: %v", saveTime)
 			b.Logf("  Planning restore: %v", restoreTime)
 			b.Logf("  Coding context cycle: %v", codingContextTime)
-			b.Logf("  Fixing context cycle: %v", fixingContextTime)
 		}
 	}
 }
