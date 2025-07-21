@@ -3,12 +3,14 @@ package tools
 import (
 	"context"
 	"testing"
+
+	"orchestrator/pkg/exec"
 )
 
 func TestRegistry_Register(t *testing.T) {
 	registry := &Registry{tools: make(map[string]ToolChannel)}
 
-	tool := NewShellTool()
+	tool := NewShellTool(exec.NewLocalExec())
 
 	// Test successful registration
 	if err := registry.Register(tool); err != nil {
@@ -28,7 +30,7 @@ func TestRegistry_Register(t *testing.T) {
 
 func TestRegistry_Get(t *testing.T) {
 	registry := &Registry{tools: make(map[string]ToolChannel)}
-	tool := NewShellTool()
+	tool := NewShellTool(exec.NewLocalExec())
 
 	// Test getting non-existent tool
 	if _, err := registry.Get("nonexistent"); err == nil {
@@ -60,7 +62,7 @@ func TestRegistry_GetAll(t *testing.T) {
 	}
 
 	// Add tools and test
-	tool1 := NewShellTool()
+	tool1 := NewShellTool(exec.NewLocalExec())
 	registry.Register(tool1)
 
 	all = registry.GetAll()
@@ -77,11 +79,9 @@ func TestGlobalRegistry(t *testing.T) {
 	// Clear global registry for clean test
 	globalRegistry.Clear()
 
-	tool := NewShellTool()
-
-	// Test global Register
-	if err := Register(tool); err != nil {
-		t.Errorf("Expected no error with global Register, got %v", err)
+	// Test InitializeShellTool
+	if err := InitializeShellTool(exec.NewLocalExec()); err != nil {
+		t.Errorf("Expected no error with InitializeShellTool, got %v", err)
 	}
 
 	// Test global Get
@@ -112,14 +112,14 @@ func TestGlobalRegistry(t *testing.T) {
 }
 
 func TestShellTool_Name(t *testing.T) {
-	tool := NewShellTool()
+	tool := NewShellTool(exec.NewLocalExec())
 	if tool.Name() != "shell" {
 		t.Errorf("Expected tool name 'shell', got '%s'", tool.Name())
 	}
 }
 
 func TestShellTool_Definition(t *testing.T) {
-	tool := NewShellTool()
+	tool := NewShellTool(exec.NewLocalExec())
 	def := tool.Definition()
 
 	if def.Name != "shell" {
@@ -148,7 +148,7 @@ func TestShellTool_Definition(t *testing.T) {
 }
 
 func TestShellTool_Exec(t *testing.T) {
-	tool := NewShellTool()
+	tool := NewShellTool(exec.NewLocalExec())
 	ctx := context.Background()
 
 	// Test missing cmd argument

@@ -40,8 +40,8 @@ func (a *MockDriverAgent) GetAgentType() agent.AgentType {
 	return a.agentType
 }
 
-func (a *MockDriverAgent) GetCurrentState() agent.State {
-	return agent.StateWaiting
+func (a *MockDriverAgent) GetCurrentState() proto.State {
+	return proto.StateWaiting
 }
 
 func TestLogicalNameResolution(t *testing.T) {

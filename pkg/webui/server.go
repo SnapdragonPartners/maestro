@@ -681,3 +681,26 @@ func (s *Server) StartServer(ctx context.Context, port int) error {
 
 	return nil
 }
+
+// findArchitectState finds the state of the architect agent
+func (s *Server) findArchitectState() (*state.AgentState, error) {
+	// List all agents
+	agents, err := s.store.ListAgents()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list agents: %w", err)
+	}
+
+	// Find the architect agent
+	for _, agentID := range agents {
+		if strings.HasPrefix(agentID, "architect:") {
+			agentState, err := s.store.GetStateInfo(agentID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get architect state: %w", err)
+			}
+			return agentState, nil
+		}
+	}
+
+	// No architect found
+	return nil, nil
+}

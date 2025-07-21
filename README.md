@@ -9,6 +9,45 @@ This system implements a message-passing architecture where:
 - **Coding agents** process tasks and return RESULT/ERROR/QUESTION messages
 - The **orchestrator** manages agent communication with rate limiting and event logging
 
+## Requirements
+
+### System Requirements
+
+- **Go**: Version 1.24+ required for building the orchestrator
+- **Docker**: Version 20.10+ for sandboxed AI agent execution (recommended)
+- **Platform**: Linux, macOS, or Windows with Docker Desktop
+- **Resources**: Minimum 2GB RAM, 1 CPU core available for containers
+
+### Docker Sandboxing
+
+The system uses Docker containers by default to provide secure, isolated execution environments for AI agents:
+
+- **Security**: Prevents agents from accessing files outside their workspace
+- **Isolation**: Each agent runs in a separate container with resource limits
+- **Compatibility**: Supports git worktrees and architect code review workflows
+
+For detailed information about Docker sandboxing, see [README_SANDBOX.md](README_SANDBOX.md).
+
+### Environment Variables
+
+Required environment variables for AI model access:
+
+```bash
+# For Claude coding agents
+export ANTHROPIC_API_KEY=your_anthropic_api_key
+
+# For OpenAI o3 architect agents  
+export OPENAI_API_KEY=your_openai_api_key
+
+# Optional: Custom configuration file path
+export CONFIG_PATH=/path/to/config.json
+```
+
+### Optional Dependencies
+
+- **Git**: For worktree management and code review workflows
+- **Make**: For convenient build commands (optional, can use `go build` directly)
+
 ## Quick Start
 
 ### Building the System
@@ -319,7 +358,7 @@ The system uses JSON configuration with environment variable overrides:
       "max_budget_per_day_usd": 50.0,
       "api_key": "${ANTHROPIC_API_KEY}",
       "agents": [
-        {"name": "claude-coder", "id": "001", "type": "coder", "work_dir": "./work/claude"}
+        {"name": "claude-coder", "id": "001", "type": "coder", "workdir": "./work/claude"}
       ]
     },
     "openai_o3": {
@@ -327,12 +366,45 @@ The system uses JSON configuration with environment variable overrides:
       "max_budget_per_day_usd": 20.0, 
       "api_key": "${OPENAI_API_KEY}",
       "agents": [
-        {"name": "architect", "id": "001", "type": "architect", "work_dir": "./work/architect"}
+        {"name": "architect", "id": "001", "type": "architect", "workdir": "./work/architect"}
       ]
     }
-  }
+  },
+  "repo_url": "git@github.com:user/repo.git",
+  "base_branch": "main",
+  "mirror_dir": ".mirrors",
+  "worktree_pattern": "{AGENT_ID}/{STORY_ID}",
+  "branch_pattern": "story-{STORY_ID}"
 }
 ```
+
+### Git Worktree Support (Worktree MVP)
+
+The system supports Git worktrees for isolated agent workspaces, enabling multiple concurrent story development:
+
+**Story File Naming Constraint**: Story files MUST follow the pattern `{ID}.md` (e.g., `050.md`, `123.md`). The filename becomes the canonical story identifier and Git branch name. Invalid examples: `R-12345_login.md` → unclear story ID extraction.
+
+**Startup Sequence**:
+1. **Parse configuration** from `CONFIG_PATH` or `--config` flag
+2. **Create WORKDIR** if missing (from config or CLI argument)  
+3. **Initialize Git mirrors** lazily in `{WORKDIR}/.mirrors/` subdirectory
+4. **Start agents** with workspace managers configured
+
+**Git Configuration**:
+- `repo_url`: SSH repository URL for clone/push operations
+- `base_branch`: Base branch for worktree creation (default: `main`)
+- `mirror_dir`: Mirror repository location relative to WORKDIR (default: `.mirrors`)
+- `worktree_pattern`: Workspace path template (default: `{AGENT_ID}/{STORY_ID}`)
+- `branch_pattern`: Git branch naming (default: `story-{STORY_ID}`)
+
+**Workspace Flow**:
+1. **SETUP**: Create mirror clone (if needed), add worktree, create story branch
+2. **Code Development**: Generate code in isolated workspace
+3. **TESTING**: Run `make test` in worktree directory  
+4. **Branch Push**: Push story branch for review (if `GITHUB_TOKEN` available)
+5. **Cleanup**: Remove worktree after completion, prepare for next story
+
+This enables agents to work on multiple stories sequentially with proper isolation and cleanup.
 
 ## Development Stories
 

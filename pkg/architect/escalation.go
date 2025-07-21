@@ -164,7 +164,8 @@ func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, a
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 
-	logx.Errorf("escalated system error %s for story %s (priority: critical)",
+	defaultLogger := logx.NewLogger("architect")
+	defaultLogger.Error("escalated system error %s for story %s (priority: critical)",
 		escalation.ID, escalation.StoryID)
 
 	return nil

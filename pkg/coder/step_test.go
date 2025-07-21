@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -17,7 +18,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -28,7 +29,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	// Set up task content to trigger state transitions
-	driver.BaseStateMachine.SetStateData("task_content", "Test task for atomic transitions")
+	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Test task for atomic transitions")
 
 	// Initial state should be WAITING
 	if state := driver.GetCurrentState(); state.String() != "WAITING" {
@@ -45,18 +46,18 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	// Verify state changed to PLANNING
-	if state := driver.GetCurrentState(); state.String() != "PLANNING" {
+	if state := driver.GetCurrentState(); state != StatePlanning {
 		t.Errorf("Expected state PLANNING after first step, got %s", state)
 	}
 
 	// Execute second step - should process planning and transition
-	done, err = driver.Step(ctx)
+	_, err = driver.Step(ctx)
 	if err != nil {
 		t.Fatalf("Second step failed: %v", err)
 	}
 
 	// Should have moved to PLAN_REVIEW
-	if state := driver.GetCurrentState(); state.String() != "PLAN_REVIEW" {
+	if state := driver.GetCurrentState(); state != StatePlanReview {
 		t.Errorf("Expected state PLAN_REVIEW after second step, got %s", state)
 	}
 }
@@ -69,7 +70,7 @@ func TestIdleCPUUsage(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestNoNestedLoops(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoderDriver("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -131,7 +132,7 @@ func TestNoNestedLoops(t *testing.T) {
 	}
 
 	// Set up a task that will reach approval phase
-	driver.BaseStateMachine.SetStateData("task_content", "Test approval flow")
+	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Test approval flow")
 
 	// Process until we reach an approval state
 	maxSteps := 10
@@ -147,7 +148,7 @@ func TestNoNestedLoops(t *testing.T) {
 		// Check if we have pending approval (which would normally trigger external message)
 		if hasPending, _, _, _, _ := driver.GetPendingApprovalRequest(); hasPending {
 			// Simulate external approval result processing
-			err := driver.ProcessApprovalResult("approved", "plan")
+			err := driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String())
 			if err != nil {
 				t.Fatalf("Failed to process approval result: %v", err)
 			}

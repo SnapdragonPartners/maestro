@@ -633,7 +633,7 @@ func (re *ReviewEvaluator) escalateToHuman(ctx context.Context, pendingReview *P
 	return nil
 }
 
-// approveSubmission marks the code as approved and completes the story
+// approveSubmission marks the code as approved (story completion happens after successful merge)
 func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview *PendingReview, reviewNotes string) error {
 	// Update review record
 	now := time.Now().UTC()
@@ -641,11 +641,8 @@ func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview 
 	pendingReview.ReviewNotes = reviewNotes
 	pendingReview.ReviewedAt = &now
 
-	// Mark story as completed in queue
-	err := re.queue.MarkCompleted(pendingReview.StoryID)
-	if err != nil {
-		return fmt.Errorf("failed to mark story %s as completed: %w", pendingReview.StoryID, err)
-	}
+	// Story completion is now deferred until after successful PR merge
+	// This aligns with the new merge workflow where only successful merges mark stories as complete
 
 	// Signal merge channel for completed story
 	if re.mergeCh != nil {
@@ -659,7 +656,7 @@ func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview 
 	}
 
 	// Send approval message back to agent
-	err = re.sendReviewResult(ctx, pendingReview, "APPROVED")
+	err := re.sendReviewResult(ctx, pendingReview, proto.ApprovalStatusApproved.String())
 	if err != nil {
 		return fmt.Errorf("failed to send approval message: %w", err)
 	}

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/proto"
 )
@@ -118,22 +117,22 @@ func (h *TestHarness) AddCoder(coderID string, driver *coder.Coder) {
 }
 
 // GetCoderState returns the current state of a specific coder
-func (h *TestHarness) GetCoderState(coderID string) agent.State {
+func (h *TestHarness) GetCoderState(coderID string) proto.State {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	if coderAgent, exists := h.coders[coderID]; exists {
 		return coderAgent.Driver.GetCurrentState()
 	}
-	return agent.StateError
+	return proto.StateError
 }
 
 // GetAllCoderStates returns the current states of all coders
-func (h *TestHarness) GetAllCoderStates() map[string]agent.State {
+func (h *TestHarness) GetAllCoderStates() map[string]proto.State {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	states := make(map[string]agent.State)
+	states := make(map[string]proto.State)
 	for id, coderAgent := range h.coders {
 		states[id] = coderAgent.Driver.GetCurrentState()
 	}
@@ -144,7 +143,7 @@ func (h *TestHarness) GetAllCoderStates() map[string]agent.State {
 func DefaultStopCondition(harness *TestHarness) bool {
 	states := harness.GetAllCoderStates()
 	for _, state := range states {
-		if state != agent.StateDone {
+		if state != proto.StateDone {
 			return false
 		}
 	}
@@ -189,7 +188,7 @@ func (h *TestHarness) Run(ctx context.Context, stopWhen StopCondition) error {
 }
 
 // Wait blocks until a specific coder reaches the target state or timeout
-func (h *TestHarness) Wait(ctx context.Context, coderID string, wantState agent.State) error {
+func (h *TestHarness) Wait(ctx context.Context, coderID string, wantState proto.State) error {
 	h.mu.RLock()
 	globalTimeout := h.timeouts.Global
 	h.mu.RUnlock()

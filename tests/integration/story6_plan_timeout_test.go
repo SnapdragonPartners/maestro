@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/proto"
 )
 
@@ -75,7 +74,7 @@ Requirements:
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -83,7 +82,7 @@ Requirements:
 	}
 
 	// Verify final state
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Verify that resubmission occurred
 	mu.Lock()
@@ -236,7 +235,7 @@ func TestStory6TimeoutRecoveryWithValidResponse(t *testing.T) {
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -244,7 +243,7 @@ func TestStory6TimeoutRecoveryWithValidResponse(t *testing.T) {
 	}
 
 	// Verify successful completion despite initial timeout
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Check request count
 	mu.Lock()
@@ -303,7 +302,7 @@ func TestStory6NoResubmissionOnQuickResponse(t *testing.T) {
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -311,7 +310,7 @@ func TestStory6NoResubmissionOnQuickResponse(t *testing.T) {
 	}
 
 	// Verify completion
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Should have exactly 1 request (no resubmission needed)
 	mu.Lock()

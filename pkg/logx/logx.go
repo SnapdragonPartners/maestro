@@ -487,6 +487,25 @@ func Warnf(format string, args ...any) {
 	defaultLogger.Warn(format, args...)
 }
 
-func Errorf(format string, args ...any) {
-	defaultLogger.Error(format, args...)
+// Errorf logs and returns the formatted error.
+// Use this when you need both logging and error returning:
+//
+//	err := logx.Errorf("setup failed: %w", err)
+func Errorf(format string, args ...any) error {
+	err := fmt.Errorf(format, args...)
+	defaultLogger.Error("%s", err.Error())
+	return err
+}
+
+// Wrap logs msg + ": " + err.Error() and returns fmt.Errorf("%s: %w", msg, err).
+// Use this when you need both logging and error wrapping:
+//
+//	if err != nil { return logx.Wrap(err, "db connect") }
+func Wrap(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+	wrappedErr := fmt.Errorf("%s: %w", msg, err)
+	defaultLogger.Error("%s", wrappedErr.Error())
+	return wrappedErr
 }

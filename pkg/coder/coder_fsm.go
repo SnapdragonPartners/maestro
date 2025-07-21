@@ -1,94 +1,157 @@
 package coder
 
 import (
-	"fmt"
-
-	"orchestrator/pkg/agent"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
 
 // State constants - single source of truth for state names
-// We inherit three states, WAITING (the entry state), DONE and ERROR
-// (the exit states) from the base agent.
+// We inherit three states, WAITING (the entry state), DONE and ERROR from the base agent.
+// DONE is terminal (agent shutdown), ERROR transitions to DONE for orchestrator cleanup.
 const (
-	StatePlanning   agent.State = "PLANNING"
-	StateCoding     agent.State = "CODING"
-	StateTesting    agent.State = "TESTING"
-	StateFixing     agent.State = "FIXING"
-	StatePlanReview agent.State = "PLAN_REVIEW"
-	StateCodeReview agent.State = "CODE_REVIEW"
-	StateQuestion   agent.State = "QUESTION"
+	StateSetup        proto.State = "SETUP"
+	StatePlanning     proto.State = "PLANNING"
+	StateCoding       proto.State = "CODING"
+	StateTesting      proto.State = "TESTING"
+	StatePlanReview   proto.State = "PLAN_REVIEW"
+	StateCodeReview   proto.State = "CODE_REVIEW"
+	StateBudgetReview proto.State = "BUDGET_REVIEW"
+	StateAwaitMerge   proto.State = "AWAIT_MERGE"
+	StateQuestion     proto.State = "QUESTION"
 )
 
 // Import AUTO_CHECKIN types from proto package for inter-agent communication
 type AutoAction = proto.AutoAction
 
 const (
-	AutoContinue              = proto.AutoContinue
-	AutoPivot                 = proto.AutoPivot
-	AutoEscalate              = proto.AutoEscalate
-	AutoAbandon               = proto.AutoAbandon
-	QuestionReasonAutoCheckin = proto.QuestionReasonAutoCheckin
+	AutoContinue               = proto.AutoContinue
+	AutoPivot                  = proto.AutoPivot
+	AutoEscalate               = proto.AutoEscalate
+	AutoAbandon                = proto.AutoAbandon
+	QuestionReasonBudgetReview = proto.QuestionReasonBudgetReview
+)
+
+// State data keys - single source of truth for SetStateData/GetStateValue calls
+const (
+	KeyOrigin                      = "origin"
+	KeyErrorMessage                = "error_message"
+	KeyStoryMessageID              = "story_message_id"
+	KeyStoryID                     = "story_id"
+	KeyQuestionSubmitted           = "question_submitted"
+	KeyPlanSubmitted               = "plan_submitted"
+	KeyStoryCompletedAt            = "story_completed_at"
+	KeyCompletionStatus            = "completion_status"
+	KeyPlanReviewCompletedAt       = "plan_review_completed_at"
+	KeyMergeConflictDetails        = "merge_conflict_details"
+	KeyCodeReviewRejectionFeedback = "code_review_rejection_feedback"
+	KeyTestFailureOutput           = "test_failure_output"
+	KeyPlan                        = "plan"
+	KeyCodingMode                  = "coding_mode"
+	KeyNoToolCallsCount            = "no_tool_calls_count"
+	KeyCodeGenerated               = "code_generated"
+	KeyFilesCreated                = "files_created"
+	KeyCodingCompletedAt           = "coding_completed_at"
+	KeyWorktreePath                = "worktree_path"
+	KeyBuildBackend                = "build_backend"
+	KeyTestError                   = "test_error"
+	KeyTestsPassed                 = "tests_passed"
+	KeyTestOutput                  = "test_output"
+	KeyTestingCompletedAt          = "testing_completed_at"
+	KeyCodeReviewCompletedAt       = "code_review_completed_at"
+	KeyMergeResult                 = "merge_result"
+	KeyMergeCompletedAt            = "merge_completed_at"
+	KeyBudgetReviewCompletedAt     = "budget_review_completed_at"
+	KeyArchitectResponse           = "architect_response"
+	KeyActualBranchName            = "actual_branch_name"
+	KeyQuestionContext             = "question_context"
+	KeyPlanningCompletedAt         = "planning_completed_at"
+	KeyCompletionReason            = "completion_reason"
+	KeyCompletionEvidence          = "completion_evidence"
+	KeyCompletionConfidence        = "completion_confidence"
+	KeyCompletionSubmittedAt       = "completion_submitted_at"
+	KeyTreeOutputCached            = "tree_output_cached"
+	KeyPlanningContextSaved        = "planning_context_saved"
+	KeyCodingContextSaved          = "coding_context_saved"
+	KeyDoneLogged                  = "done_logged"
+	KeyFixesApplied                = "fixes_applied"
+	KeyBranchName                  = "branch_name"
+	KeyBranchPushed                = "branch_pushed"
+	KeyPushedBranch                = "pushed_branch"
+	KeyPRCreationError             = "pr_creation_error"
+	KeyPRURL                       = "pr_url"
+	KeyPRCreated                   = "pr_created"
+	KeyPRSkipped                   = "pr_skipped"
+	KeyTaskContent                 = "task_content"
+	KeyPlanApprovalResult          = "plan_approval_result"
+	KeyCodeApprovalResult          = "code_approval_result"
+	KeyExplorationFindings         = "exploration_findings"
+	KeyQuestionAnswered            = "question_answered"
+	KeyPlanConfidence              = "plan_confidence"
+	KeyExplorationSummary          = "exploration_summary"
+	KeyPlanRisks                   = "plan_risks"
 )
 
 // ValidateState checks if a state is valid for coder agents
-func ValidateState(state agent.State) error {
+func ValidateState(state proto.State) error {
 	validStates := GetValidStates()
 	for _, validState := range validStates {
 		if state == validState {
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid coder state: %s", state)
+	return logx.Errorf("invalid coder state: %s", state)
 }
 
 // GetValidStates returns all valid states for coder agents
-func GetValidStates() []agent.State {
-	return []agent.State{
-		agent.StateWaiting, StatePlanning, StateCoding, StateTesting, StateFixing,
-		StatePlanReview, StateCodeReview, StateQuestion, agent.StateDone, agent.StateError,
+func GetValidStates() []proto.State {
+	return []proto.State{
+		proto.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting,
+		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion, proto.StateDone, proto.StateError,
 	}
 }
 
 // CoderTransitions defines the canonical state transition map for coder agents.
-// This is the single source of truth, derived directly from STATES.md.
+// This is the single source of truth, derived directly from STATES.md and worktree MVP stories.
 // Any code, tests, or diagrams must match this specification exactly.
-var CoderTransitions = map[agent.State][]agent.State{
-	// WAITING can only transition to PLANNING when receiving task
-	agent.StateWaiting: {StatePlanning},
+var CoderTransitions = map[proto.State][]proto.State{
+	// WAITING can transition to SETUP when receiving task assignment
+	proto.StateWaiting: {StateSetup},
 
-	// PLANNING can submit plan for review or ask questions
-	StatePlanning: {StatePlanReview, StateQuestion},
+	// SETUP prepares workspace (mirror clone, worktree, branch) then goes to PLANNING
+	StateSetup: {StatePlanning, proto.StateError},
 
-	// PLAN_REVIEW can approve (→CODING), request changes (→PLANNING), or abandon (→ERROR)
-	StatePlanReview: {StatePlanning, StateCoding, agent.StateError},
+	// PLANNING can submit plan for review, ask questions, or exceed budget (→BUDGET_REVIEW)
+	StatePlanning: {StatePlanReview, StateQuestion, StateBudgetReview},
 
-	// CODING can complete (→TESTING), ask questions, or hit unrecoverable error
-	StateCoding: {StateTesting, StateQuestion, agent.StateError},
+	// PLAN_REVIEW can approve plan (→CODING), approve completion (→DONE), request changes (→PLANNING), or abandon (→ERROR)
+	StatePlanReview: {StatePlanning, StateCoding, proto.StateDone, proto.StateError},
 
-	// TESTING can pass (→CODE_REVIEW) or fail (→FIXING)
-	StateTesting: {StateFixing, StateCodeReview},
+	// CODING can complete (→TESTING), ask questions, exceed budget (→BUDGET_REVIEW), or hit unrecoverable error
+	StateCoding: {StateTesting, StateQuestion, StateBudgetReview, proto.StateError},
 
-	// FIXING can fix and retest, ask questions, or hit unrecoverable error
-	StateFixing: {StateTesting, StateQuestion, agent.StateError},
+	// TESTING can pass (→CODE_REVIEW) or fail (→CODING)
+	StateTesting: {StateCoding, StateCodeReview},
 
-	// CODE_REVIEW can approve (→DONE), request changes (→FIXING), or abandon (→ERROR)
-	StateCodeReview: {agent.StateDone, StateFixing, agent.StateError},
+	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→CODING), or abandon (→ERROR)
+	StateCodeReview: {StateAwaitMerge, StateCoding, proto.StateError},
 
-	// QUESTION can return to any non-terminal state based on answer type
-	StateQuestion: {
-		StatePlanReview, StatePlanning, StateCoding,
-		StateFixing, StateCodeReview, agent.StateError,
-	},
+	// BUDGET_REVIEW can continue (→CODING), pivot (→PLANNING), or abandon (→ERROR)
+	StateBudgetReview: {StatePlanning, StateCoding, proto.StateError},
 
-	// Terminal states have no outgoing transitions
-	agent.StateDone:  {},
-	agent.StateError: {},
+	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→CODING)
+	StateAwaitMerge: {proto.StateDone, StateCoding},
+
+	// QUESTION can return to origin state or escalate to error based on answer type
+	StateQuestion: {StatePlanning, StateCoding, proto.StateError},
+
+	// ERROR transitions to DONE for orchestrator cleanup and restart
+	// DONE is terminal (no transitions)
+	proto.StateError: {proto.StateDone},
 }
 
 // IsValidCoderTransition checks if a transition between two states is allowed
 // according to the canonical state machine specification.
-func IsValidCoderTransition(from, to agent.State) bool {
+func IsValidCoderTransition(from, to proto.State) bool {
 	allowedStates, exists := CoderTransitions[from]
 	if !exists {
 		return false
@@ -105,8 +168,8 @@ func IsValidCoderTransition(from, to agent.State) bool {
 
 // GetAllCoderStates returns all valid coder states derived from the transition map
 // Returns states in deterministic alphabetical order
-func GetAllCoderStates() []agent.State {
-	stateSet := make(map[agent.State]bool)
+func GetAllCoderStates() []proto.State {
+	stateSet := make(map[proto.State]bool)
 
 	// Collect all states that appear as keys (source states)
 	for fromState := range CoderTransitions {
@@ -121,10 +184,10 @@ func GetAllCoderStates() []agent.State {
 	}
 
 	// Convert set to slice, filtering out base agent states to match legacy behavior
-	states := make([]agent.State, 0, len(stateSet))
+	states := make([]proto.State, 0, len(stateSet))
 	for state := range stateSet {
 		// Exclude base agent states to match legacy GetAllCoderStates behavior
-		if state != agent.StateWaiting && state != agent.StateDone && state != agent.StateError {
+		if state != proto.StateWaiting && state != proto.StateDone && state != proto.StateError {
 			states = append(states, state)
 		}
 	}
@@ -143,9 +206,9 @@ func GetAllCoderStates() []agent.State {
 
 // IsCoderState checks if a given state is a valid coder-specific state
 // Excludes base agent states (WAITING, DONE, ERROR) to match legacy behavior
-func IsCoderState(state agent.State) bool {
+func IsCoderState(state proto.State) bool {
 	// Base agent states are not considered "coder states" for backward compatibility
-	if state == agent.StateWaiting || state == agent.StateDone || state == agent.StateError {
+	if state == proto.StateWaiting || state == proto.StateDone || state == proto.StateError {
 		return false
 	}
 

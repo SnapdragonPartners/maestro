@@ -3,7 +3,7 @@
 # Build all binaries
 build:
 	go generate ./...
-	go build -o bin/orchestrator .
+	go build -o bin/maestro ./cmd/orchestrator
 	go build -o bin/agentctl ./cmd/agentctl
 	go build -o bin/replayer ./cmd/replayer
 
@@ -19,11 +19,16 @@ replayer:
 test:
 	go test ./...
 
+# Install golangci-lint if not present
+install-lint:
+	@which golangci-lint > /dev/null || { \
+		echo "Installing golangci-lint..."; \
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
+	}
+
 # Run linting tools
-lint:
-	go fix ./...
-	gofmt -s -w .
-	staticcheck ./...
+lint: install-lint
+	golangci-lint run
 
 # Lint documentation (markdown files)
 lint-docs:
@@ -37,8 +42,8 @@ lint-docs:
 	@echo "Documentation lint completed"
 
 # Run the orchestrator with banner
-run: build
-	./bin/orchestrator
+run: build-css build
+	clear && rm -rf ~/Code/maestro-work/test && ./bin/maestro -workdir ~/Code/maestro-work/test -ui
 
 # Build Tailwind CSS
 build-css:

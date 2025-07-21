@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/proto"
 )
@@ -70,7 +69,7 @@ Requirements:
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		return h.GetCoderState(coderID) == agent.StateDone
+		return h.GetCoderState(coderID) == proto.StateDone
 	})
 
 	if err != nil {
@@ -78,7 +77,7 @@ Requirements:
 	}
 
 	// Verify final state
-	RequireState(t, harness, coderID, agent.StateDone)
+	RequireState(t, harness, coderID, proto.StateDone)
 
 	// Verify that multiple requests were made due to unknown approval_type handling
 	messages := architect.GetReceivedMessages()
@@ -162,14 +161,14 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 
 			_ = harness.Run(ctx, func(h *TestHarness) bool {
 				state := h.GetCoderState(coderID)
-				return state == agent.StateDone || state == agent.StateError
+				return state == proto.StateDone || state == proto.StateError
 			})
 
 			// The coder should handle unknown types gracefully
 			finalState := harness.GetCoderState(coderID)
 
 			// Should not crash or enter error state due to unknown approval type
-			if finalState == agent.StateError {
+			if finalState == proto.StateError {
 				t.Errorf("Coder entered error state for unknown approval_type '%s'", unknownType)
 			}
 
@@ -278,7 +277,7 @@ func TestStory5ApprovalTypeValidation(t *testing.T) {
 
 			_ = harness.Run(ctx, func(h *TestHarness) bool {
 				state := h.GetCoderState(coderID)
-				return state == agent.StateDone || requestCount >= 3 // Limit requests
+				return state == proto.StateDone || requestCount >= 3 // Limit requests
 			})
 
 			// Check if behavior matches expectations

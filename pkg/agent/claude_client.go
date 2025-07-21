@@ -83,21 +83,30 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			if SystemMode == ModeDebug {
 				log.Printf("Adding tool: %s", tool.Name)
 			}
-			// Build the tool schema from the tool parameters
+			// Convert tools.ToolDefinition directly to Anthropic format
 			var properties any
 			var required []string
 
-			// For JSON schema, we can just pass the entire schema structure
-			if props, ok := tool.Parameters["properties"]; ok {
-				// Pass the properties structure directly
+			// Convert InputSchema properties to the format expected by Anthropic API
+			if len(tool.InputSchema.Properties) > 0 {
+				props := make(map[string]any)
+				for name, prop := range tool.InputSchema.Properties {
+					propMap := make(map[string]any)
+					propMap["type"] = prop.Type
+					if prop.Description != "" {
+						propMap["description"] = prop.Description
+					}
+					if len(prop.Enum) > 0 {
+						propMap["enum"] = prop.Enum
+					}
+					props[name] = propMap
+				}
 				properties = props
 			}
-			if reqFields, ok := tool.Parameters["required"].([]any); ok {
-				for _, field := range reqFields {
-					if fieldStr, ok := field.(string); ok {
-						required = append(required, fieldStr)
-					}
-				}
+
+			// Convert required fields
+			if len(tool.InputSchema.Required) > 0 {
+				required = tool.InputSchema.Required
 			}
 
 			toolParam := anthropic.ToolParam{

@@ -17,7 +17,7 @@ func TestNewStore(t *testing.T) {
 	}
 
 	if store == nil {
-		t.Error("Expected non-nil store")
+		t.Fatal("Expected non-nil store")
 	}
 
 	if store.baseDir != tempDir {
@@ -161,7 +161,7 @@ func TestStore_GetStateInfo(t *testing.T) {
 	}
 
 	if info == nil {
-		t.Error("Expected non-nil state info")
+		t.Fatal("Expected non-nil state info")
 	}
 
 	if info.State != "TESTING" {

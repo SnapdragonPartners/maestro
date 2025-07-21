@@ -197,6 +197,11 @@ func (r *RetryableClient) shouldRetry(err error) bool {
 		return true
 	}
 
+	// Retry on empty responses from LLM
+	if strings.Contains(errStr, "empty response") {
+		return true
+	}
+
 	// Don't retry on client errors (4xx) except rate limiting
 	if strings.Contains(errStr, "400") ||
 		strings.Contains(errStr, "401") ||

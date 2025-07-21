@@ -41,6 +41,7 @@ type Agent interface {
 type ChannelReceiver interface {
 	SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
 	SetDispatcher(dispatcher *Dispatcher)
+	SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification)
 }
 
 type Dispatcher struct {
@@ -73,6 +74,9 @@ type Dispatcher struct {
 
 	// Supervisor pattern for error handling
 	errCh chan AgentError // Channel for agent error reporting
+
+	// State change notifications
+	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
 }
 
 type DispatchResult struct {
@@ -95,6 +99,7 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		questionsCh:   make(chan *proto.AgentMsg, cfg.QuestionsChannelSize),                 // Buffer size from config
 		replyChannels: make(map[string]chan *proto.AgentMsg),                                // Per-agent reply channels
 		errCh:         make(chan AgentError, 10),                                            // Buffered channel for error reporting
+		stateChangeCh: make(chan *proto.StateChangeNotification, 100),                       // Buffered channel for state change notifications
 	}, nil
 }
 
@@ -121,6 +126,9 @@ func (d *Dispatcher) Attach(ag Agent) {
 
 	// Set up channels for agents that implement ChannelReceiver interface
 	if channelReceiver, ok := ag.(ChannelReceiver); ok {
+		// Set up state notification channel for all ChannelReceiver agents
+		channelReceiver.SetStateNotificationChannel(d.stateChangeCh)
+
 		// Determine agent type to provide appropriate channels
 		if agentDriver, ok := ag.(agent.Driver); ok {
 			switch agentDriver.GetAgentType() {
@@ -150,6 +158,11 @@ func (d *Dispatcher) Attach(ag Agent) {
 	} else {
 		d.logger.Warn("Agent %s does not implement Driver interface", agentID)
 	}
+}
+
+// Detach removes an agent and cleans up its channels (public method for orchestrator)
+func (d *Dispatcher) Detach(agentID string) {
+	d.detach(agentID)
 }
 
 // detach removes an agent and cleans up its channels
@@ -474,6 +487,14 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		// ANSWER messages go to specific coder's reply channel
 		d.routeToReplyCh(msg, "ANSWER")
 
+	case proto.MsgTypeREQUEUE:
+		// REQUEUE messages go to questionsCh for architect to handle
+		d.logger.Info("🔄 Sending REQUEUE %s to questionsCh", msg.ID)
+
+		// Send to questionsCh (blocking)
+		d.questionsCh <- msg
+		d.logger.Info("✅ REQUEUE %s delivered to questionsCh", msg.ID)
+
 	default:
 		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately
 		d.logger.Info("Processing message type %s immediately (not queued)", msg.Type)
@@ -501,40 +522,28 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 }
 
 func (d *Dispatcher) processWithRetry(ctx context.Context, msg *proto.AgentMsg, agent Agent) *DispatchResult {
-	maxRetries := d.config.MaxRetryAttempts
-
-	var lastErr error
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Extract model name from agent logID (format: "model:id")
-		modelName := msg.ToAgent
-		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
-			modelName = parts[0]
-		}
-
-		// Check rate limiting before each attempt
-		if err := d.checkRateLimit(modelName); err != nil {
-			d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
-			return &DispatchResult{Error: err}
-		}
-
-		// Create retry message
-		retryMsg := msg.Clone()
-		retryMsg.RetryCount = attempt
-
-		// Process message - NOTE: ProcessMessage removed from Agent interface
-		// Agents now receive messages via channels exclusively
-		d.logger.Debug("Attempt %d/%d for message %s", attempt+1, maxRetries+1, msg.ID)
-
-		// Release agent slot after processing attempt
-		d.rateLimiter.ReleaseAgent(modelName)
-
-		// No direct message processing - messages flow through channels
-		return &DispatchResult{Message: nil}
+	// Extract model name from agent logID (format: "model:id")
+	modelName := msg.ToAgent
+	if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
+		modelName = parts[0]
 	}
 
-	d.logger.Error("All retry attempts failed for message %s: %v", msg.ID, lastErr)
-	return &DispatchResult{Error: fmt.Errorf("failed after %d attempts: %w", maxRetries+1, lastErr)}
+	// Check rate limiting before processing
+	if err := d.checkRateLimit(modelName); err != nil {
+		d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
+		return &DispatchResult{Error: err}
+	}
+
+	// Process message - NOTE: ProcessMessage removed from Agent interface
+	// Agents now receive messages via channels exclusively
+	d.logger.Debug("Processing message %s for agent %s", msg.ID, msg.ToAgent)
+
+	// Release agent slot after processing
+	d.rateLimiter.ReleaseAgent(modelName)
+
+	// Messages flow through channels - no direct processing or retry needed here
+	// The retry logic would be handled at a higher level if needed
+	return &DispatchResult{Message: nil}
 }
 
 func (d *Dispatcher) checkRateLimit(agentModel string) error {
@@ -709,6 +718,11 @@ func (d *Dispatcher) GetStoryCh() <-chan *proto.AgentMsg {
 	return d.storyCh
 }
 
+// GetStateChangeChannel returns the state change notification channel
+func (d *Dispatcher) GetStateChangeChannel() <-chan *proto.StateChangeNotification {
+	return d.stateChangeCh
+}
+
 // ArchitectChannels contains the channels returned to architects
 type ArchitectChannels struct {
 	Specs <-chan *proto.AgentMsg // Delivers spec messages
@@ -765,6 +779,12 @@ func (d *Dispatcher) closeAllChannels() {
 	if d.errCh != nil {
 		close(d.errCh)
 		d.logger.Info("Closed error reporting channel")
+	}
+
+	// Close state change notification channel
+	if d.stateChangeCh != nil {
+		close(d.stateChangeCh)
+		d.logger.Info("Closed state change notification channel")
 	}
 }
 

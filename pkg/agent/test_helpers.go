@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -58,7 +59,7 @@ func NewTestHelper(t *testing.T) *TestHelper {
 }
 
 // CreateTestDriver creates a driver with test configuration
-func (h *TestHelper) CreateTestDriver(id string, initialState State) *BaseDriver {
+func (h *TestHelper) CreateTestDriver(id string, initialState proto.State) *BaseDriver {
 	h.t.Helper()
 
 	ctx := &AgentContext{
@@ -106,7 +107,7 @@ func (h *TestHelper) CreateMockLLMClient(responses []string, errors []error) LLM
 }
 
 // CreateStateMachine creates a state machine for testing
-func (h *TestHelper) CreateStateMachine(id string, initialState State) *BaseStateMachine {
+func (h *TestHelper) CreateStateMachine(id string, initialState proto.State) *BaseStateMachine {
 	h.t.Helper()
 
 	sm := NewBaseStateMachine(id, initialState, h.store, nil)
@@ -118,7 +119,7 @@ func (h *TestHelper) CreateStateMachine(id string, initialState State) *BaseStat
 }
 
 // AssertState verifies that a state machine is in the expected state
-func (h *TestHelper) AssertState(sm StateMachine, expected State) {
+func (h *TestHelper) AssertState(sm StateMachine, expected proto.State) {
 	h.t.Helper()
 
 	actual := sm.GetCurrentState()
@@ -128,7 +129,7 @@ func (h *TestHelper) AssertState(sm StateMachine, expected State) {
 }
 
 // AssertStateTransition verifies a state transition works as expected
-func (h *TestHelper) AssertStateTransition(sm StateMachine, to State, metadata map[string]any) {
+func (h *TestHelper) AssertStateTransition(sm StateMachine, to proto.State, metadata map[string]any) {
 	h.t.Helper()
 
 	from := sm.GetCurrentState()
@@ -142,7 +143,7 @@ func (h *TestHelper) AssertStateTransition(sm StateMachine, to State, metadata m
 }
 
 // AssertInvalidTransition verifies that an invalid transition is rejected
-func (h *TestHelper) AssertInvalidTransition(sm StateMachine, to State) {
+func (h *TestHelper) AssertInvalidTransition(sm StateMachine, to proto.State) {
 	h.t.Helper()
 
 	from := sm.GetCurrentState()

@@ -1,0 +1,64 @@
+{
+  "_comment": "Required environment variables: ANTHROPIC_API_KEY, OPENAI_API_KEY, GIT_REPO_URL, GITHUB_TOKEN (for PR operations)",
+  "models": {
+    "claude_sonnet4": {
+      "max_tokens_per_minute": 10000,
+      "max_budget_per_day_usd": 25.0,
+      "cpm_tokens_in": 0.003,
+      "cpm_tokens_out": 0.015,
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "agents": [
+        {
+          "name": "claude-main",
+          "id": "001",
+          "type": "coder",
+          "workdir": "./work/claude-main",
+          "docker_image": "golang:1.24-alpine"
+        }
+      ]
+    },
+    "openai_o3": {
+      "max_tokens_per_minute": 500,
+      "max_budget_per_day_usd": 50.0,
+      "cpm_tokens_in": 0.004,
+      "cpm_tokens_out": 0.016,
+      "api_key": "${OPENAI_API_KEY}",
+      "agents": [
+        {
+          "name": "architect-main",
+          "id": "001",
+          "type": "architect",
+          "workdir": "./work/architect-main"
+        }
+      ]
+    }
+  },
+  "repo_url": "${GIT_REPO_URL}",
+  "base_branch": "main",
+  "mirror_dir": ".mirrors",
+  "worktree_pattern": "{AGENT_ID}/{STORY_ID}",
+  "branch_pattern": "story-{STORY_ID}",
+  "_git_comment": "Git worktree settings: repo_url (SSH), base_branch for worktrees, mirror_dir relative to workdir, patterns use {AGENT_ID}/{STORY_ID} placeholders",
+  "graceful_shutdown_timeout_sec": 30,
+  "event_log_rotation_hours": 24,
+  "max_retry_attempts": 3,
+  "retry_backoff_multiplier": 2.0,
+  "story_channel_factor": 8,
+  "questions_channel_size": 1,
+  "executor": {
+    "type": "docker",
+    "fallback": "local",
+    "docker": {
+      "image": "golang:1.24-alpine",
+      "network": "none",
+      "read_only": true,
+      "auto_pull": true,
+      "pull_timeout": 300,
+      "cpus": "2",
+      "memory": "4g",
+      "pids": 256,
+      "tmpfs_size": "100m"
+    }
+  },
+  "_executor_comment": "Executor configuration: type (docker|local|auto), Docker image for sandboxing, resource limits, and security settings"
+}

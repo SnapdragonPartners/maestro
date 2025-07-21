@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
@@ -57,7 +58,7 @@ func GetTestTimeouts() TestTimeouts {
 }
 
 // RequireState asserts that a coder is in the expected state
-func RequireState(t *testing.T, harness *TestHarness, coderID string, want agent.State) {
+func RequireState(t *testing.T, harness *TestHarness, coderID string, want proto.State) {
 	t.Helper()
 
 	actual := harness.GetCoderState(coderID)
@@ -110,8 +111,11 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	// This allows coders to follow the full REQUEST→RESULT communication pattern
 	mockLLM := &MockLLMClient{}
 
+	// Create BuildService for MCP tools
+	buildService := build.NewBuildService()
+
 	// Create coder driver
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -146,8 +150,11 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 	// Create a simple mock LLM client for testing
 	mockLLM := &MockLLMClient{}
 
+	// Create BuildService for MCP tools
+	buildService := build.NewBuildService()
+
 	// Create coder driver with agent configuration
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -261,7 +268,7 @@ func DrainChannel(ch <-chan *proto.AgentMsg) int {
 }
 
 // WaitForCoderState is a helper that waits for a coder to reach a specific state
-func WaitForCoderState(t *testing.T, harness *TestHarness, coderID string, targetState agent.State, timeout time.Duration) {
+func WaitForCoderState(t *testing.T, harness *TestHarness, coderID string, targetState proto.State, timeout time.Duration) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -291,8 +298,8 @@ func StartCoderWithTask(t *testing.T, harness *TestHarness, coderID, taskContent
 		t.Fatalf("Failed to initialize coder %s: %v", coderID, err)
 	}
 
-	// Transition to PLANNING state to start the workflow
-	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StatePlanning, nil); err != nil {
-		t.Fatalf("Failed to transition coder %s to PLANNING: %v", coderID, err)
+	// Transition to SETUP state first, then the state machine will naturally transition to PLANNING
+	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StateSetup, nil); err != nil {
+		t.Fatalf("Failed to transition coder %s to SETUP: %v", coderID, err)
 	}
 }

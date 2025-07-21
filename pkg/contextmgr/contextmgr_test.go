@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"strings"
 	"testing"
 
 	"orchestrator/pkg/config"
@@ -340,5 +341,162 @@ func TestGetCompactionInfo(t *testing.T) {
 
 	if info["max_reply_tokens"] != 200 {
 		t.Errorf("Expected max_reply_tokens 200, got %v", info["max_reply_tokens"])
+	}
+}
+
+// TestCompactionPreservesSystemPrompt tests that compaction never removes the first message
+func TestCompactionPreservesSystemPrompt(t *testing.T) {
+	cm := NewContextManager()
+
+	// Add system prompt and multiple messages
+	cm.AddMessage("system", "You are a helpful assistant")
+	cm.AddMessage("user", "Hello")
+	cm.AddMessage("assistant", "Hi there!")
+	cm.AddMessage("user", "How are you?")
+	cm.AddMessage("assistant", "I'm doing well!")
+
+	if cm.GetMessageCount() != 5 {
+		t.Errorf("Expected 5 messages initially, got %d", cm.GetMessageCount())
+	}
+
+	// Force aggressive compaction with very low target
+	err := cm.performCompaction(10) // Very low target to force maximum compaction
+	if err != nil {
+		t.Errorf("Compaction failed: %v", err)
+	}
+
+	// Should preserve at least system + 1 message
+	messages := cm.GetMessages()
+	if len(messages) < 2 {
+		t.Errorf("Compaction removed too many messages, got %d", len(messages))
+	}
+
+	// First message should still be the system prompt
+	if messages[0].Role != "system" || messages[0].Content != "You are a helpful assistant" {
+		t.Errorf("System prompt was not preserved: got role=%s, content=%s", 
+			messages[0].Role, messages[0].Content)
+	}
+}
+
+// TestSummarization tests the context summarization feature
+func TestSummarization(t *testing.T) {
+	cm := NewContextManager()
+
+	// Add system prompt and conversation
+	cm.AddMessage("system", "You are a coding assistant")
+	cm.AddMessage("user", "Create a file called hello.go")
+	cm.AddMessage("assistant", "I'll create the hello.go file for you")
+	cm.AddMessage("user", "There's an error in the code")
+	cm.AddMessage("assistant", "Let me fix that error")
+	cm.AddMessage("user", "Test the file")
+	cm.AddMessage("assistant", "Running tests now")
+
+	originalCount := cm.GetMessageCount()
+
+	// Test summarization directly
+	err := cm.performSummarization(50) // Low target to force summarization
+	if err != nil {
+		t.Errorf("Summarization failed: %v", err)
+	}
+
+	messages := cm.GetMessages()
+	
+	// Should have: system + summary + recent exchange
+	if len(messages) < 3 {
+		t.Errorf("Summarization didn't preserve enough context, got %d messages", len(messages))
+	}
+
+	// First message should still be system
+	if messages[0].Role != "system" {
+		t.Errorf("System message not preserved in summarization")
+	}
+
+	// Second message should be a summary
+	if !strings.Contains(messages[1].Content, "summary") && !strings.Contains(messages[1].Content, "conversation") {
+		t.Errorf("Summary message not found: %s", messages[1].Content)
+	}
+
+	// Should have fewer messages than original
+	if len(messages) >= originalCount {
+		t.Errorf("Summarization didn't reduce message count: %d >= %d", len(messages), originalCount)
+	}
+}
+
+// TestAddMessageValidation tests input validation in AddMessage
+func TestAddMessageValidation(t *testing.T) {
+	cm := NewContextManager()
+
+	initialCount := cm.GetMessageCount()
+
+	// Empty content should be ignored
+	cm.AddMessage("user", "")
+	cm.AddMessage("user", "   \n\t  ")
+	
+	if cm.GetMessageCount() != initialCount {
+		t.Errorf("Empty messages should be ignored, but count changed from %d to %d", 
+			initialCount, cm.GetMessageCount())
+	}
+
+	// Valid message should be added
+	cm.AddMessage("user", "Hello world")
+	if cm.GetMessageCount() != initialCount+1 {
+		t.Errorf("Valid message should be added, expected count %d, got %d", 
+			initialCount+1, cm.GetMessageCount())
+	}
+
+	// Empty role should default to "assistant"
+	cm.AddMessage("", "Test message")
+	messages := cm.GetMessages()
+	lastMsg := messages[len(messages)-1]
+	if lastMsg.Role != "assistant" {
+		t.Errorf("Empty role should default to 'assistant', got '%s'", lastMsg.Role)
+	}
+
+	// Content should be trimmed
+	cm.AddMessage("user", "  trimmed content  ")
+	messages = cm.GetMessages()
+	lastMsg = messages[len(messages)-1]
+	if lastMsg.Content != "trimmed content" {
+		t.Errorf("Content should be trimmed, got '%s'", lastMsg.Content)
+	}
+}
+
+// TestCreateConversationSummary tests the summarization logic
+func TestCreateConversationSummary(t *testing.T) {
+	cm := NewContextManager()
+
+	// Test empty messages
+	summary := cm.createConversationSummary([]Message{})
+	if summary != "" {
+		t.Errorf("Empty messages should return empty summary, got '%s'", summary)
+	}
+
+	// Test messages with different patterns
+	messages := []Message{
+		{Role: "user", Content: "Create a file called test.go"},
+		{Role: "assistant", Content: "I'll create the test.go file for you"},
+		{Role: "user", Content: "There's an error: undefined variable"},
+		{Role: "assistant", Content: "Let me fix that error for you"},
+		{Role: "user", Content: "Please discuss the algorithm"},
+	}
+
+	summary = cm.createConversationSummary(messages)
+	
+	if summary == "" {
+		t.Error("Summary should not be empty for valid messages")
+	}
+
+	// Should contain key information
+	if !strings.Contains(strings.ToLower(summary), "create") && !strings.Contains(strings.ToLower(summary), "file") {
+		t.Errorf("Summary should mention file creation: %s", summary)
+	}
+
+	if !strings.Contains(strings.ToLower(summary), "error") {
+		t.Errorf("Summary should mention errors: %s", summary)
+	}
+
+	// Should be reasonably short
+	if len(summary) > 1000 {
+		t.Errorf("Summary should be concise, got %d characters", len(summary))
 	}
 }

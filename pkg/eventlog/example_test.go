@@ -30,7 +30,7 @@ func ExampleWriter_usage() {
 	// Simulate orchestrator workflow with logged events
 
 	// 1. Architect creates a task
-	taskMsg := proto.NewAgentMsg(proto.MsgTypeTASK, "architect", "claude")
+	taskMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	taskMsg.SetPayload("story_id", "001")
 	taskMsg.SetPayload("content", "Implement health endpoint")
 	taskMsg.SetPayload("requirements", []string{"GET /health", "return 200 OK", "JSON response"})

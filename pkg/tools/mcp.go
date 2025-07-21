@@ -1,12 +1,12 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"sync"
+	"time"
+
+	"orchestrator/pkg/exec"
 )
 
 // ToolDefinition represents an Anthropic Claude tool definition
@@ -28,9 +28,14 @@ type InputSchema struct {
 
 // Property defines a single property in the input schema
 type Property struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
+	Type        string               `json:"type"`
+	Description string               `json:"description,omitempty"`
+	Enum        []string             `json:"enum,omitempty"`
+	Items       *Property            `json:"items,omitempty"`
+	Properties  map[string]*Property `json:"properties,omitempty"`
+	Required    []string             `json:"required,omitempty"`
+	MinItems    *int                 `json:"minItems,omitempty"`
+	MaxItems    *int                 `json:"maxItems,omitempty"`
 }
 
 // ToolUse represents a Claude tool use request
@@ -139,7 +144,32 @@ func (r *Registry) Clear() {
 }
 
 // ShellTool implements ToolChannel for shell command execution
-type ShellTool struct{}
+type ShellTool struct {
+	executor        exec.Executor
+	readOnly        bool
+	networkDisabled bool
+	resourceLimits  *exec.ResourceLimits
+}
+
+// NewShellTool creates a new shell tool with the specified executor
+func NewShellTool(executor exec.Executor) *ShellTool {
+	return &ShellTool{
+		executor:        executor,
+		readOnly:        true, // Default to read-only root filesystem for security
+		networkDisabled: true, // Default to network disabled for security
+		resourceLimits:  nil,  // No resource limits by default
+	}
+}
+
+// NewShellToolWithConfig creates a new shell tool with the specified executor and configuration
+func NewShellToolWithConfig(executor exec.Executor, readOnly, networkDisabled bool, resourceLimits *exec.ResourceLimits) *ShellTool {
+	return &ShellTool{
+		executor:        executor,
+		readOnly:        readOnly,
+		networkDisabled: networkDisabled,
+		resourceLimits:  resourceLimits,
+	}
+}
 
 // Definition returns the tool's definition in Claude API format
 func (s *ShellTool) Definition() ToolDefinition {
@@ -197,50 +227,30 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 	return s.executeShellCommand(ctx, cmdStr, cwd)
 }
 
-// executeShellCommand performs actual shell command execution
+// executeShellCommand performs actual shell command execution using the executor interface
 func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (any, error) {
-	// Create command with context for cancellation
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
-
-	// Set working directory if specified
-	if cwd != "" {
-		// Validate that the directory exists
-		if _, err := os.Stat(cwd); os.IsNotExist(err) {
-			return nil, fmt.Errorf("working directory does not exist: %s", cwd)
-		}
-		cmd.Dir = cwd
+	// Create ExecOpts with the shell command and security settings
+	opts := exec.ExecOpts{
+		WorkDir:         cwd,
+		Timeout:         30 * time.Second, // Default timeout
+		ReadOnly:        s.readOnly,
+		NetworkDisabled: s.networkDisabled,
+		ResourceLimits:  s.resourceLimits,
 	}
 
-	// Capture stdout and stderr
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Execute the command
-	err := cmd.Run()
-	exitCode := 0
+	// Execute the command using the executor interface
+	result, err := s.executor.Run(ctx, []string{"sh", "-c", cmdStr}, opts)
 	if err != nil {
-		// Extract exit code from error
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			// Command failed to start or other error
-			return nil, fmt.Errorf("failed to execute command: %w", err)
-		}
+		return nil, fmt.Errorf("failed to execute command: %w", err)
 	}
 
 	// Return result in a format consistent with Claude API
 	return map[string]any{
-		"stdout":    stdout.String(),
-		"stderr":    stderr.String(),
-		"exit_code": exitCode,
+		"stdout":    result.Stdout,
+		"stderr":    result.Stderr,
+		"exit_code": result.ExitCode,
 		"cwd":       cwd,
 	}, nil
-}
-
-// NewShellTool creates a new shell tool instance
-func NewShellTool() *ShellTool {
-	return &ShellTool{}
 }
 
 // GetToolDefinitions returns all registered tool definitions in Claude API format
@@ -255,13 +265,40 @@ func GetToolDefinitions() []ToolDefinition {
 	return definitions
 }
 
-// init registers the shell tool globally
-func init() {
-	// Register the shell tool on package initialization
-	// This ensures it's available whenever the tools package is imported
-	if err := Register(NewShellTool()); err != nil {
-		// Since this is in init(), we can't return the error
-		// In a real application, you might want to panic or log this
-		panic(fmt.Sprintf("Failed to register shell tool: %v", err))
+// UpdateShellToolExecutor updates the executor for the registered shell tool
+func UpdateShellToolExecutor(executor exec.Executor) error {
+	// Clear the registry and re-register with the new executor
+	globalRegistry.Clear()
+
+	// Re-register the shell tool with the new executor
+	if err := Register(NewShellTool(executor)); err != nil {
+		return fmt.Errorf("failed to register shell tool with new executor: %w", err)
 	}
+
+	return nil
+}
+
+// InitializeShellTool registers the shell tool with the specified executor
+// This should be called during application startup after the executor is configured
+func InitializeShellTool(executor exec.Executor) error {
+	// Clear any existing tools and register the shell tool with the configured executor
+	globalRegistry.Clear()
+
+	if err := Register(NewShellTool(executor)); err != nil {
+		return fmt.Errorf("failed to register shell tool: %w", err)
+	}
+
+	return nil
+}
+
+// InitializeShellToolWithConfig registers the shell tool with the specified executor and configuration
+func InitializeShellToolWithConfig(executor exec.Executor, readOnly, networkDisabled bool, resourceLimits *exec.ResourceLimits) error {
+	// Clear any existing tools and register the shell tool with the configured executor
+	globalRegistry.Clear()
+
+	if err := Register(NewShellToolWithConfig(executor, readOnly, networkDisabled, resourceLimits)); err != nil {
+		return fmt.Errorf("failed to register shell tool: %w", err)
+	}
+
+	return nil
 }

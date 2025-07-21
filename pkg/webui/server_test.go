@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -12,11 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -615,4 +618,453 @@ func TestParseLogLine(t *testing.T) {
 			t.Errorf("Expected nil for invalid line '%s', got %+v", line, entry)
 		}
 	}
+}
+
+// MockDriver implements the agent.Driver interface for testing
+type MockDriver struct {
+	id        string
+	agentType agent.AgentType
+	state     proto.State
+}
+
+func NewMockDriver(id string, agentType agent.AgentType, state proto.State) *MockDriver {
+	return &MockDriver{
+		id:        id,
+		agentType: agentType,
+		state:     state,
+	}
+}
+
+func (m *MockDriver) GetID() string                 { return m.id }
+func (m *MockDriver) GetAgentType() agent.AgentType { return m.agentType }
+func (m *MockDriver) GetCurrentState() proto.State  { return m.state }
+func (m *MockDriver) SetState(state proto.State)    { m.state = state }
+
+// Minimal implementations for interface compliance (using context.Context)
+func (m *MockDriver) Initialize(ctx context.Context) error   { return nil }
+func (m *MockDriver) Run(ctx context.Context) error          { return nil }
+func (m *MockDriver) Step(ctx context.Context) (bool, error) { return false, nil }
+func (m *MockDriver) GetStateData() map[string]any           { return make(map[string]any) }
+func (m *MockDriver) ValidateState(state proto.State) error  { return nil }
+func (m *MockDriver) GetValidStates() []proto.State          { return []proto.State{} }
+func (m *MockDriver) Shutdown(ctx context.Context) error     { return nil }
+func (m *MockDriver) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	return nil, nil
+}
+
+// TestAgentRestartMonitoring tests that the web UI properly handles agent restart scenarios
+func TestAgentRestartMonitoring(t *testing.T) {
+	// Create temporary directory and stores
+	tempDir := t.TempDir()
+
+	// Create config for dispatcher
+	cfg := &config.Config{
+		Models: map[string]config.ModelCfg{
+			"test_model": {
+				MaxTokensPerMinute: 1000,
+				MaxBudgetPerDayUSD: 10.0,
+			},
+		},
+	}
+
+	// Create rate limiter and event log
+	rateLimiter := limiter.NewLimiter(cfg)
+	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
+	if err != nil {
+		t.Fatalf("Failed to create event log: %v", err)
+	}
+	defer eventLog.Close()
+
+	// Create dispatcher
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	if err != nil {
+		t.Fatalf("Failed to create dispatcher: %v", err)
+	}
+
+	// Create state store for web UI
+	store, err := state.NewStore(filepath.Join(tempDir, "states"))
+	if err != nil {
+		t.Fatalf("Failed to create state store: %v", err)
+	}
+
+	// Create web UI server
+	server := NewServer(dispatcher, store, tempDir)
+
+	// Test 1: Initial agent registration
+	t.Run("InitialAgentRegistration", func(t *testing.T) {
+		// Create and register a mock coder agent
+		mockCoder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
+		dispatcher.Attach(mockCoder)
+
+		// Get agents from web UI
+		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w := httptest.NewRecorder()
+		server.handleAgents(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", w.Code)
+		}
+
+		var agents []AgentListItem
+		if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
+			t.Fatalf("Failed to decode agents response: %v", err)
+		}
+
+		// Verify agent is present
+		if len(agents) != 1 {
+			t.Fatalf("Expected 1 agent, got %d", len(agents))
+		}
+
+		if agents[0].ID != "claude_sonnet4:001" {
+			t.Errorf("Expected agent ID 'claude_sonnet4:001', got '%s'", agents[0].ID)
+		}
+
+		if agents[0].State != "WAITING" {
+			t.Errorf("Expected agent state 'WAITING', got '%s'", agents[0].State)
+		}
+
+		t.Logf("✅ Initial agent registration verified: %s in state %s", agents[0].ID, agents[0].State)
+	})
+
+	// Test 2: Agent state progression
+	t.Run("AgentStateProgression", func(t *testing.T) {
+		// Get the mock agent and change its state to DONE (triggering restart)
+		registeredAgents := dispatcher.GetRegisteredAgents()
+		if len(registeredAgents) != 1 {
+			t.Fatalf("Expected 1 registered agent, got %d", len(registeredAgents))
+		}
+
+		mockDriver := registeredAgents[0].Driver.(*MockDriver)
+		mockDriver.SetState(proto.StateDone)
+
+		// Get agents from web UI to verify state change
+		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w := httptest.NewRecorder()
+		server.handleAgents(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", w.Code)
+		}
+
+		var agents []AgentListItem
+		if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
+			t.Fatalf("Failed to decode agents response: %v", err)
+		}
+
+		// Verify agent state changed to DONE
+		if len(agents) != 1 {
+			t.Fatalf("Expected 1 agent, got %d", len(agents))
+		}
+
+		if agents[0].State != "DONE" {
+			t.Errorf("Expected agent state 'DONE', got '%s'", agents[0].State)
+		}
+
+		t.Logf("✅ Agent state progression verified: %s now in state %s", agents[0].ID, agents[0].State)
+	})
+
+	// Test 3: Agent restart simulation (detach and reattach)
+	t.Run("AgentRestartSimulation", func(t *testing.T) {
+		agentID := "claude_sonnet4:001"
+
+		// Step 1: Detach the agent (simulating shutdown)
+		dispatcher.Detach(agentID)
+
+		// Verify agent is no longer listed
+		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w := httptest.NewRecorder()
+		server.handleAgents(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", w.Code)
+		}
+
+		var agents []AgentListItem
+		if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
+			t.Fatalf("Failed to decode agents response: %v", err)
+		}
+
+		// Agent should be gone during restart
+		if len(agents) != 0 {
+			t.Errorf("Expected 0 agents during restart, got %d", len(agents))
+		}
+
+		t.Logf("✅ Agent detachment verified: agent list is empty during restart")
+
+		// Step 2: Reattach a new agent instance (simulating restart completion)
+		newMockCoder := NewMockDriver(agentID, agent.AgentTypeCoder, proto.StateWaiting)
+		dispatcher.Attach(newMockCoder)
+
+		// Verify agent reappears
+		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w = httptest.NewRecorder()
+		server.handleAgents(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", w.Code)
+		}
+
+		if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
+			t.Fatalf("Failed to decode agents response: %v", err)
+		}
+
+		// Agent should be back with fresh state
+		if len(agents) != 1 {
+			t.Fatalf("Expected 1 agent after restart, got %d", len(agents))
+		}
+
+		if agents[0].ID != agentID {
+			t.Errorf("Expected agent ID '%s', got '%s'", agentID, agents[0].ID)
+		}
+
+		if agents[0].State != "WAITING" {
+			t.Errorf("Expected restarted agent state 'WAITING', got '%s'", agents[0].State)
+		}
+
+		t.Logf("✅ Agent restart verified: %s reappeared in state %s", agents[0].ID, agents[0].State)
+	})
+
+	// Test 4: Multiple agent restart scenario
+	t.Run("MultipleAgentHandling", func(t *testing.T) {
+		// Add a second agent (architect)
+		architect := NewMockDriver("openai_o3:001", agent.AgentTypeArchitect, proto.StateWaiting)
+		dispatcher.Attach(architect)
+
+		// Verify both agents are present
+		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w := httptest.NewRecorder()
+		server.handleAgents(w, req)
+
+		var agents []AgentListItem
+		json.NewDecoder(w.Body).Decode(&agents)
+
+		if len(agents) != 2 {
+			t.Fatalf("Expected 2 agents, got %d", len(agents))
+		}
+
+		// Restart just the coder agent
+		dispatcher.Detach("claude_sonnet4:001")
+
+		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w = httptest.NewRecorder()
+		server.handleAgents(w, req)
+		json.NewDecoder(w.Body).Decode(&agents)
+
+		// Should have only architect now
+		if len(agents) != 1 {
+			t.Fatalf("Expected 1 agent during coder restart, got %d", len(agents))
+		}
+
+		if agents[0].ID != "openai_o3:001" {
+			t.Errorf("Expected architect to remain, got agent %s", agents[0].ID)
+		}
+
+		// Reattach coder
+		newCoder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
+		dispatcher.Attach(newCoder)
+
+		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w = httptest.NewRecorder()
+		server.handleAgents(w, req)
+		json.NewDecoder(w.Body).Decode(&agents)
+
+		// Both should be present again
+		if len(agents) != 2 {
+			t.Fatalf("Expected 2 agents after coder restart, got %d", len(agents))
+		}
+
+		t.Logf("✅ Multiple agent restart verified: architect unaffected, coder restarted")
+	})
+
+	t.Log("🎉 Agent restart monitoring continuity tests passed")
+}
+
+// TestArchitectMonitoringDuringRestart tests that architect monitoring remains stable during coder restarts
+func TestArchitectMonitoringDuringRestart(t *testing.T) {
+	// Create temporary directory and stores
+	tempDir := t.TempDir()
+
+	// Create config for dispatcher
+	cfg := &config.Config{
+		Models: map[string]config.ModelCfg{
+			"test_model": {
+				MaxTokensPerMinute: 1000,
+				MaxBudgetPerDayUSD: 10.0,
+			},
+		},
+	}
+
+	// Create rate limiter and event log
+	rateLimiter := limiter.NewLimiter(cfg)
+	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
+	if err != nil {
+		t.Fatalf("Failed to create event log: %v", err)
+	}
+	defer eventLog.Close()
+
+	// Create dispatcher
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	if err != nil {
+		t.Fatalf("Failed to create dispatcher: %v", err)
+	}
+
+	// Create state store for web UI
+	store, err := state.NewStore(filepath.Join(tempDir, "states"))
+	if err != nil {
+		t.Fatalf("Failed to create state store: %v", err)
+	}
+
+	// Create web UI server
+	server := NewServer(dispatcher, store, tempDir)
+
+	// Test scenario: Architect monitoring stability during coder restart cycles
+	t.Run("ArchitectStabilityDuringCoderRestart", func(t *testing.T) {
+		// Step 1: Register architect and coder agents
+		architect := NewMockDriver("openai_o3:001", agent.AgentTypeArchitect, proto.StateWaiting)
+		coder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
+
+		dispatcher.Attach(architect)
+		dispatcher.Attach(coder)
+
+		// Verify both agents are registered
+		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w := httptest.NewRecorder()
+		server.handleAgents(w, req)
+
+		var agents []AgentListItem
+		json.NewDecoder(w.Body).Decode(&agents)
+
+		if len(agents) != 2 {
+			t.Fatalf("Expected 2 agents initially, got %d", len(agents))
+		}
+
+		// Find architect and coder in response
+		var architectAgent, coderAgent *AgentListItem
+		for i := range agents {
+			if agents[i].ID == "openai_o3:001" {
+				architectAgent = &agents[i]
+			} else if agents[i].ID == "claude_sonnet4:001" {
+				coderAgent = &agents[i]
+			}
+		}
+
+		if architectAgent == nil || coderAgent == nil {
+			t.Fatal("Both architect and coder should be present")
+		}
+
+		t.Logf("✅ Initial setup: architect=%s (%s), coder=%s (%s)",
+			architectAgent.ID, architectAgent.State, coderAgent.ID, coderAgent.State)
+
+		// Step 2: Change architect to PROCESSING state (simulating work)
+		registeredAgents := dispatcher.GetRegisteredAgents()
+		var mockArchitect *MockDriver
+		for _, regAgent := range registeredAgents {
+			if regAgent.ID == "openai_o3:001" {
+				mockArchitect = regAgent.Driver.(*MockDriver)
+				break
+			}
+		}
+		mockArchitect.SetState(proto.State("MONITORING"))
+
+		// Step 3: Simulate coder restart cycle while architect is working
+		originalCoderID := "claude_sonnet4:001"
+
+		// Detach coder (simulating restart)
+		dispatcher.Detach(originalCoderID)
+
+		// Check architect is still visible and state unchanged
+		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w = httptest.NewRecorder()
+		server.handleAgents(w, req)
+		json.NewDecoder(w.Body).Decode(&agents)
+
+		// Should have only architect now
+		if len(agents) != 1 {
+			t.Fatalf("Expected 1 agent during coder restart, got %d", len(agents))
+		}
+
+		if agents[0].ID != "openai_o3:001" {
+			t.Errorf("Expected architect to remain, got %s", agents[0].ID)
+		}
+
+		if agents[0].State != "MONITORING" {
+			t.Errorf("Expected architect state to remain MONITORING, got %s", agents[0].State)
+		}
+
+		t.Logf("✅ Coder restart: architect remains stable in %s state", agents[0].State)
+
+		// Step 4: Reattach new coder instance
+		newCoder := NewMockDriver(originalCoderID, agent.AgentTypeCoder, proto.StateWaiting)
+		dispatcher.Attach(newCoder)
+
+		// Check both agents are visible again
+		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+		w = httptest.NewRecorder()
+		server.handleAgents(w, req)
+		json.NewDecoder(w.Body).Decode(&agents)
+
+		if len(agents) != 2 {
+			t.Fatalf("Expected 2 agents after coder restart, got %d", len(agents))
+		}
+
+		// Verify architect state persisted and coder was recreated
+		var newArchitectAgent, newCoderAgent *AgentListItem
+		for i := range agents {
+			if agents[i].ID == "openai_o3:001" {
+				newArchitectAgent = &agents[i]
+			} else if agents[i].ID == "claude_sonnet4:001" {
+				newCoderAgent = &agents[i]
+			}
+		}
+
+		if newArchitectAgent.State != "MONITORING" {
+			t.Errorf("Expected architect to maintain MONITORING state, got %s", newArchitectAgent.State)
+		}
+
+		if newCoderAgent.State != "WAITING" {
+			t.Errorf("Expected new coder to start in WAITING state, got %s", newCoderAgent.State)
+		}
+
+		t.Logf("✅ Post-restart verification: architect=%s (%s), coder=%s (%s)",
+			newArchitectAgent.ID, newArchitectAgent.State, newCoderAgent.ID, newCoderAgent.State)
+
+		// Step 5: Test multiple restart cycles
+		for cycle := 1; cycle <= 3; cycle++ {
+			t.Logf("Testing restart cycle %d", cycle)
+
+			// Change architect state to show it's actively working
+			mockArchitect.SetState(proto.State("DISPATCHING"))
+
+			// Restart coder again
+			dispatcher.Detach(originalCoderID)
+
+			// Quick check that architect is unaffected
+			req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+			w = httptest.NewRecorder()
+			server.handleAgents(w, req)
+			json.NewDecoder(w.Body).Decode(&agents)
+
+			if len(agents) != 1 || agents[0].ID != "openai_o3:001" {
+				t.Errorf("Cycle %d: architect should remain stable during coder restart", cycle)
+			}
+
+			// Reattach coder
+			anotherCoder := NewMockDriver(originalCoderID, agent.AgentTypeCoder, proto.StateWaiting)
+			dispatcher.Attach(anotherCoder)
+
+			// Verify both agents present
+			req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+			w = httptest.NewRecorder()
+			server.handleAgents(w, req)
+			json.NewDecoder(w.Body).Decode(&agents)
+
+			if len(agents) != 2 {
+				t.Errorf("Cycle %d: expected 2 agents after restart, got %d", cycle, len(agents))
+			}
+		}
+
+		t.Log("✅ Multiple restart cycles completed successfully")
+	})
+
+	t.Log("🎉 Architect monitoring stability tests passed")
 }

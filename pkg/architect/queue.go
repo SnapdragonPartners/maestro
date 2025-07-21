@@ -374,6 +374,22 @@ func (q *Queue) MarkAwaitHumanFeedback(storyID string) error {
 	return nil
 }
 
+// MarkPending resets a story to pending status for reassignment (used for requeuing)
+func (q *Queue) MarkPending(storyID string) error {
+	story, exists := q.stories[storyID]
+	if !exists {
+		return fmt.Errorf("story %s not found", storyID)
+	}
+
+	// Clear assignment and reset to pending
+	story.Status = StatusPending
+	story.AssignedAgent = ""
+	story.StartedAt = nil
+	story.LastUpdated = time.Now().UTC()
+
+	return nil
+}
+
 // GetStory returns a story by ID
 func (q *Queue) GetStory(storyID string) (*QueuedStory, bool) {
 	story, exists := q.stories[storyID]

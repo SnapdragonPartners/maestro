@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"orchestrator/pkg/agent"
+	"orchestrator/pkg/proto"
 )
 
 // TestGetAllCoderStates verifies that all states are correctly derived from ValidCoderTransitions
@@ -13,9 +13,9 @@ func TestGetAllCoderStates(t *testing.T) {
 	derivedStates := GetAllCoderStates()
 
 	// Expected states based on current CoderTransitions map
-	expectedStates := []agent.State{
-		StatePlanning, StateCoding, StateTesting, StateFixing,
-		StatePlanReview, StateCodeReview, StateQuestion,
+	expectedStates := []proto.State{
+		StateSetup, StatePlanning, StateCoding, StateTesting,
+		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion,
 	}
 
 	// Sort expected states for comparison
@@ -74,7 +74,6 @@ func TestIsCoderState(t *testing.T) {
 		{"PLANNING", true, "Valid coder state"},
 		{"CODING", true, "Valid coder state"},
 		{"TESTING", true, "Valid coder state"},
-		{"FIXING", true, "Valid coder state"},
 		{"PLAN_REVIEW", true, "Valid coder state"},
 		{"CODE_REVIEW", true, "Valid coder state"},
 		{"QUESTION", true, "Valid coder state"},
@@ -87,7 +86,7 @@ func TestIsCoderState(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		result := IsCoderState(agent.State(tc.state))
+		result := IsCoderState(proto.State(tc.state))
 		if result != tc.expected {
 			t.Errorf("IsCoderState(%q) = %v, expected %v (%s)", tc.state, result, tc.expected, tc.desc)
 		}
@@ -98,14 +97,12 @@ func TestIsCoderState(t *testing.T) {
 // This test is obsolete because GetCoderStateConstants function was removed
 // State constants are now directly defined in coder_fsm.go
 
-// TestDriverIsCoderState verifies the driver's isCoderState method uses dynamic derivation
+// TestDriverIsCoderState verifies the IsCoderState function uses dynamic derivation
 func TestDriverIsCoderState(t *testing.T) {
-	driver := &CoderDriver{}
-
 	// Test all dynamically derived states
 	derivedStates := GetAllCoderStates()
 	for _, agentState := range derivedStates {
-		if !driver.isCoderState(agentState) {
+		if !IsCoderState(agentState) {
 			t.Errorf("Driver should recognize %q as a coder state", string(agentState))
 		}
 	}
@@ -113,8 +110,8 @@ func TestDriverIsCoderState(t *testing.T) {
 	// Test some non-coder states
 	nonCoderStates := []string{"WAITING", "DONE", "ERROR", "INVALID"}
 	for _, stateStr := range nonCoderStates {
-		agentState := agent.State(stateStr)
-		if driver.isCoderState(agentState) {
+		agentState := proto.State(stateStr)
+		if IsCoderState(agentState) {
 			t.Errorf("Driver should not recognize %q as a coder state", stateStr)
 		}
 	}
@@ -143,7 +140,7 @@ func TestStateDerivation_Performance(t *testing.T) {
 
 	// Test IsCoderState performance
 	for i := 0; i < iterations; i++ {
-		if !IsCoderState("PLANNING") {
+		if !IsCoderState(StatePlanning) {
 			t.Error("Should recognize PLANNING as coder state")
 			break
 		}

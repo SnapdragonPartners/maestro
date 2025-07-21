@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -17,7 +18,7 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("race-test-agent", StateWaiting, store, nil)
+	sm := NewBaseStateMachine("race-test-agent", proto.StateWaiting, store, nil)
 
 	// Number of goroutines and operations per goroutine
 	numGoroutines := 10
@@ -68,7 +69,7 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		states := []State{StateWaiting, StateDone, StateError}
+		states := []proto.State{proto.StateWaiting, proto.StateDone, proto.StateError}
 
 		for i := 0; i < operationsPerGoroutine; i++ {
 			targetState := states[i%len(states)]
@@ -109,7 +110,7 @@ func TestStateDataConcurrency(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("concurrency-test-agent", StateWaiting, store, nil)
+	sm := NewBaseStateMachine("concurrency-test-agent", proto.StateWaiting, store, nil)
 
 	const numWriters = 5
 	const numReaders = 5

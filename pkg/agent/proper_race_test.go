@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
 
@@ -16,7 +17,7 @@ func TestStateDataThreadSafety(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("thread-safety-test", StateWaiting, store, nil)
+	sm := NewBaseStateMachine("thread-safety-test", proto.StateWaiting, store, nil)
 
 	const numGoroutines = 10
 	const operationsPerGoroutine = 100
@@ -77,7 +78,7 @@ func TestConcurrentReadersAndWriters(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	sm := NewBaseStateMachine("concurrent-test", StateWaiting, store, nil)
+	sm := NewBaseStateMachine("concurrent-test", proto.StateWaiting, store, nil)
 
 	const numWriters = 5
 	const numReaders = 5

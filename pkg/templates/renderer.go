@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -19,6 +20,7 @@ type TemplateData struct {
 	Implementation string         `json:"implementation,omitempty"`
 	TestResults    string         `json:"test_results,omitempty"`
 	WorkDir        string         `json:"work_dir,omitempty"`
+	TreeOutput     string         `json:"tree_output,omitempty"`
 	Extra          map[string]any `json:"extra,omitempty"`
 }
 
@@ -70,7 +72,9 @@ func NewRenderer() (*Renderer, error) {
 			return nil, fmt.Errorf("failed to read template %s: %w", name, err)
 		}
 
-		tmpl, err := template.New(string(name)).Parse(string(content))
+		tmpl, err := template.New(string(name)).Funcs(template.FuncMap{
+			"contains": strings.Contains,
+		}).Parse(string(content))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", name, err)
 		}
