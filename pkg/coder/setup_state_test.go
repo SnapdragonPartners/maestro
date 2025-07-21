@@ -207,14 +207,14 @@ func TestDoneStateHandler(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 			}
 
-			// Should transition to SETUP
-			if nextState != StateSetup {
-				t.Errorf("Expected next state %s, got %s", StateSetup, nextState)
+			// Should remain in DONE (terminal state)
+			if nextState != proto.StateDone {
+				t.Errorf("Expected next state %s, got %s", proto.StateDone, nextState)
 			}
 
-			// Should not be terminal
-			if done {
-				t.Error("Done state should not be terminal anymore")
+			// Should be terminal
+			if !done {
+				t.Error("Done state should be terminal")
 			}
 
 			// Verify state data is cleared
@@ -271,14 +271,14 @@ func TestErrorStateHandler(t *testing.T) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
-	// Should transition to SETUP
-	if nextState != StateSetup {
-		t.Errorf("Expected next state %s, got %s", StateSetup, nextState)
+	// Should remain in ERROR (terminal state)
+	if nextState != proto.StateError {
+		t.Errorf("Expected next state %s, got %s", proto.StateError, nextState)
 	}
 
-	// Should not be terminal
-	if done {
-		t.Error("Error state should not be terminal anymore")
+	// Should be terminal
+	if !done {
+		t.Error("Error state should be terminal")
 	}
 
 	// Verify state data is cleared (but error_message might be preserved)

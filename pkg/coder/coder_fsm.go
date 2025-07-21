@@ -144,9 +144,8 @@ var CoderTransitions = map[proto.State][]proto.State{
 	// QUESTION can return to origin state or escalate to error based on answer type
 	StateQuestion: {StatePlanning, StateCoding, proto.StateError},
 
-	// ERROR transitions to DONE for orchestrator cleanup and restart
+	// ERROR is terminal (no transitions) - agent requeues story before terminating
 	// DONE is terminal (no transitions)
-	proto.StateError: {proto.StateDone},
 }
 
 // IsValidCoderTransition checks if a transition between two states is allowed

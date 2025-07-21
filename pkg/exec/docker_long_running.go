@@ -24,6 +24,7 @@ type LongRunningDockerExec struct {
 	containerPrefix  string
 	mu               sync.RWMutex
 	activeContainers map[string]*ContainerInfo // key: container ID, value: container info
+	agentID          string                     // Agent ID for registry tracking
 }
 
 // ContainerInfo holds information about a running container
@@ -36,7 +37,8 @@ type ContainerInfo struct {
 }
 
 // NewLongRunningDockerExec creates a new long-running Docker executor
-func NewLongRunningDockerExec(image string) *LongRunningDockerExec {
+// agentID is optional - if empty, containers won't be tracked in global registry
+func NewLongRunningDockerExec(image, agentID string) *LongRunningDockerExec {
 	logger := logx.NewLogger("docker-longrunning")
 
 	// Auto-detect Docker command
@@ -53,6 +55,7 @@ func NewLongRunningDockerExec(image string) *LongRunningDockerExec {
 		dockerCmd:        dockerCmd,
 		containerPrefix:  "maestro-story-",
 		activeContainers: make(map[string]*ContainerInfo),
+		agentID:          agentID,
 	}
 }
 
@@ -264,6 +267,13 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		LastUsed:  time.Now(),
 	}
 
+	// Register with global registry (only if agentID is set)
+	if d.agentID != "" {
+		if registry := GetGlobalRegistry(); registry != nil {
+			registry.Register(d.agentID, containerName, "coding")
+		}
+	}
+
 	return containerName, nil
 }
 
@@ -294,6 +304,11 @@ func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName
 
 	// Remove from active containers
 	delete(d.activeContainers, containerName)
+
+	// Unregister from global registry (always clean up if registry exists)
+	if registry := GetGlobalRegistry(); registry != nil {
+		registry.Unregister(containerName)
+	}
 
 	d.logger.Info("Container %s stopped and removed (was active for %v)",
 		containerName, time.Since(info.CreatedAt))
@@ -387,6 +402,10 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts Exec
 	}
 
 	result.ExitCode = 0
+	
+	// Update container activity tracking
+	d.updateContainerActivity(containerName)
+	
 	return result, nil
 }
 
@@ -558,4 +577,22 @@ func (d *LongRunningDockerExec) GetActiveContainers() map[string]*ContainerInfo 
 		result[name] = info
 	}
 	return result
+}
+
+// updateContainerActivity updates the LastUsed timestamp in both local and global registry
+func (d *LongRunningDockerExec) updateContainerActivity(containerName string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Update local registry
+	if info, exists := d.activeContainers[containerName]; exists {
+		info.LastUsed = time.Now()
+	}
+
+	// Update global registry (only if agentID is set)
+	if d.agentID != "" {
+		if registry := GetGlobalRegistry(); registry != nil {
+			registry.UpdateLastUsed(containerName)
+		}
+	}
 }

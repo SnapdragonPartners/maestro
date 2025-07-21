@@ -170,7 +170,7 @@ func init() {
 
 	// Register Docker executor with a default image
 	// This will be configurable later via configuration
-	dockerExec := NewLongRunningDockerExec("alpine:latest")
+	dockerExec := NewLongRunningDockerExec("alpine:latest", "")
 	if err := Register(dockerExec); err != nil {
 		panic(fmt.Sprintf("Failed to register docker executor: %v", err))
 	}

@@ -14,7 +14,7 @@ Maestro is for engineers and small teams who want to use LLMs to write robust, p
 
 ## Status
 
-Maestro is currently a pre-release MVP. All core functionality is implemented, but the system is still under active development and subject to change. We have just start to use it to build itself.
+Maestro is currently a pre-release MVP. All core functionality is implemented, but the system is still under active development and subject to change. We have just started to use it to build itself.
 
 ## Key Features
 

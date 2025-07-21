@@ -40,7 +40,7 @@ func (m *ExecutorManager) Initialize(ctx context.Context) error {
 	}
 
 	// Register Docker executor if available
-	dockerExec := NewLongRunningDockerExec(m.config.Docker.Image)
+	dockerExec := NewLongRunningDockerExec(m.config.Docker.Image, "")
 	if err := m.registry.Register(dockerExec); err != nil {
 		return fmt.Errorf("failed to register docker executor: %w", err)
 	}

@@ -363,7 +363,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
 		codingBudget:        codingBudget,
-		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(agentConfig, buildRegistry, workDir)),
+		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(agentConfig, buildRegistry, workDir), agentConfig.ID),
 		containerName:       "", // Will be set during setup
 	}
 
@@ -598,6 +598,11 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 		}
 
 		logx.Infof("🧑‍💻 Received story message %s for story %s, transitioning to SETUP", storyMsg.ID, storyIDStr)
+
+		// Set lease immediately to ensure story is never dropped
+		if c.dispatcher != nil {
+			c.dispatcher.SetLease(c.GetAgentID(), storyIDStr)
+		}
 
 		// Store the task content and story ID for the SETUP state
 		sm.SetStateData(string(stateDataKeyTaskContent), contentStr)
@@ -2888,61 +2893,18 @@ func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (pro
 	return proto.StateDone, true, nil
 }
 
-// handleError implements cleanup and restart logic for ERROR state
+// handleError implements terminal logic for ERROR state
 func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Log error state entry
-	errorMsg, _ := sm.GetStateValue(KeyErrorMessage)
-	c.logger.Error("Entered ERROR state: %v", errorMsg)
-
-	// Stop the long-running container
-	c.cleanupContainer(ctx, "error occurred")
-
-	if c.workspaceManager == nil {
-		c.logger.Warn("No workspace manager configured, skipping cleanup")
-		return StateSetup, false, nil // Ready for retry
+	// ERROR is truly terminal - orchestrator handles all cleanup and story requeue
+	// Only log once when entering ERROR state to avoid spam
+	if val, exists := sm.GetStateValue(KeyDoneLogged); !exists || val != true {
+		errorMsg, _ := sm.GetStateValue(KeyErrorMessage)
+		c.logger.Error("🧑‍💻 Agent in ERROR state: %v - orchestrator will handle cleanup and story requeue", errorMsg)
+		sm.SetStateData(KeyDoneLogged, true)
 	}
 
-	// Attempt cleanup (best effort)
-	storyID, exists := sm.GetStateValue(KeyStoryID)
-	if exists {
-		if storyIDStr, ok := storyID.(string); ok {
-			agentID := c.GetAgentID()
-			if err := c.workspaceManager.CleanupWorkspace(ctx, agentID, storyIDStr, c.originalWorkDir); err != nil {
-				c.logger.Error("Failed to cleanup workspace after error: %v", err)
-				// Continue anyway - don't block retry
-			} else {
-				c.logger.Info("Workspace cleanup complete after error for story %s", storyIDStr)
-			}
-		}
-	}
-
-	// Try to requeue the story for another agent to pick up
-	if storyID, exists := sm.GetStateValue(KeyStoryID); exists {
-		if storyIDStr, ok := storyID.(string); ok && c.dispatcher != nil {
-			c.logger.Info("🧑‍💻 Attempting to requeue story %s for retry by another agent", storyIDStr)
-
-			// Send a fire-and-forget requeue message to architect
-			requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEUE, c.GetID(), "architect")
-			requeueMsg.SetPayload(KeyStoryID, storyIDStr)
-			requeueMsg.SetPayload("reason", fmt.Sprintf("Agent error: %v", errorMsg))
-
-			if err := c.dispatcher.DispatchMessage(requeueMsg); err != nil {
-				c.logger.Error("Failed to send requeue message: %v", err)
-			} else {
-				c.logger.Info("🧑‍💻 Story requeue message sent to architect")
-			}
-		}
-	}
-
-	// Clear state data for fresh start (keep error info for debugging)
-	sm.SetStateData(KeyStoryID, nil)
-	sm.SetStateData(KeyWorktreePath, nil)
-	sm.SetStateData(KeyTaskContent, nil)
-	sm.SetStateData(KeyPlanApprovalResult, nil)
-	sm.SetStateData(KeyCodeApprovalResult, nil)
-
-	c.logger.Info("Error handled, ready for orchestrator cleanup and restart")
-	return proto.StateError, true, nil // Signal done=true for orchestrator restart
+	// Return done=true to stop the run loop - orchestrator handles everything else
+	return proto.StateError, true, nil
 }
 
 // runMakeTest executes tests using the appropriate build backend - implements AR-103

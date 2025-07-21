@@ -22,14 +22,17 @@ func TestSetupStateTransitions(t *testing.T) {
 		t.Error("SETUP → ERROR should be valid")
 	}
 
-	// Test DONE → SETUP (non-terminal)
-	if !IsValidCoderTransition(proto.StateDone, StateSetup) {
-		t.Error("DONE → SETUP should be valid (non-terminal)")
+	// Test DONE is terminal (no outbound transitions)
+	if IsValidCoderTransition(proto.StateDone, StateSetup) {
+		t.Error("DONE should be terminal - no transitions allowed")
 	}
 
-	// Test ERROR → SETUP (non-terminal)
-	if !IsValidCoderTransition(proto.StateError, StateSetup) {
-		t.Error("ERROR → SETUP should be valid (non-terminal)")
+	// Test ERROR is terminal (no outbound transitions)
+	if IsValidCoderTransition(proto.StateError, StateSetup) {
+		t.Error("ERROR should be terminal - no transitions allowed")
+	}
+	if IsValidCoderTransition(proto.StateError, proto.StateDone) {
+		t.Error("ERROR should be terminal - no transitions allowed")
 	}
 
 	// Test invalid transitions

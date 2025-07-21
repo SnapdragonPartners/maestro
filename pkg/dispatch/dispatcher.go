@@ -10,6 +10,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/eventlog"
+	"orchestrator/pkg/exec"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -75,6 +76,13 @@ type Dispatcher struct {
 	// Supervisor pattern for error handling
 	errCh chan AgentError // Channel for agent error reporting
 
+	// Story lease tracking
+	leases      map[string]string // agent_id -> story_id
+	leasesMutex sync.Mutex        // Protects lease map
+
+	// Container registry for centralized container tracking
+	containerRegistry *exec.ContainerRegistry // Tracks all active containers
+
 	// State change notifications
 	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
 }
@@ -99,7 +107,9 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		questionsCh:   make(chan *proto.AgentMsg, cfg.QuestionsChannelSize),                 // Buffer size from config
 		replyChannels: make(map[string]chan *proto.AgentMsg),                                // Per-agent reply channels
 		errCh:         make(chan AgentError, 10),                                            // Buffered channel for error reporting
-		stateChangeCh: make(chan *proto.StateChangeNotification, 100),                       // Buffered channel for state change notifications
+		stateChangeCh:     make(chan *proto.StateChangeNotification, 100), // Buffered channel for state change notifications
+		leases:            make(map[string]string),                                      // Story lease tracking
+		containerRegistry: exec.NewContainerRegistry(logx.NewLogger("container-registry")), // Container tracking registry
 	}, nil
 }
 
@@ -237,6 +247,11 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	// Start supervisor goroutine for error handling
 	d.wg.Add(1)
 	go d.supervisor(ctx)
+
+	// Start container registry cleanup routine
+	// Check every 5 minutes for containers idle > 30 minutes
+	executor := exec.NewLongRunningDockerExec("alpine:latest", "") // Empty agentID - for cleanup only
+	d.containerRegistry.StartCleanupRoutine(ctx, executor, 5*time.Minute, 30*time.Minute)
 
 	return nil
 }
@@ -869,4 +884,57 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	}
 
 	return agentInfos
+}
+
+// SetLease records that an agent is working on a specific story
+func (d *Dispatcher) SetLease(agentID, storyID string) {
+	d.leasesMutex.Lock()
+	defer d.leasesMutex.Unlock()
+	d.leases[agentID] = storyID
+	d.logger.Debug("Set lease: agent %s -> story %s", agentID, storyID)
+}
+
+// GetLease returns the story ID that an agent is working on, or empty string if none
+func (d *Dispatcher) GetLease(agentID string) string {
+	d.leasesMutex.Lock()
+	defer d.leasesMutex.Unlock()
+	storyID := d.leases[agentID]
+	return storyID
+}
+
+// ClearLease removes an agent's story assignment
+func (d *Dispatcher) ClearLease(agentID string) {
+	d.leasesMutex.Lock()
+	defer d.leasesMutex.Unlock()
+	if storyID, exists := d.leases[agentID]; exists {
+		delete(d.leases, agentID)
+		d.logger.Debug("Cleared lease: agent %s was working on story %s", agentID, storyID)
+	}
+}
+
+// SendRequeue sends a requeue message for the story currently assigned to the given agent
+func (d *Dispatcher) SendRequeue(agentID, reason string) error {
+	storyID := d.GetLease(agentID)
+	if storyID == "" {
+		return fmt.Errorf("no lease found for agent %s", agentID)
+	}
+
+	// Create requeue message (matches existing logic from coder ERROR handler)
+	requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEUE, "orchestrator", "architect")
+	requeueMsg.SetPayload("story_id", storyID)
+	requeueMsg.SetPayload("reason", reason)
+
+	// Send to questions channel (same as existing requeue logic)
+	select {
+	case d.questionsCh <- requeueMsg:
+		d.logger.Info("Requeued story %s for agent %s (reason: %s)", storyID, agentID, reason)
+		return nil
+	default:
+		return fmt.Errorf("questions channel full, could not requeue story %s", storyID)
+	}
+}
+
+// GetContainerRegistry returns the container registry for orchestrator access
+func (d *Dispatcher) GetContainerRegistry() *exec.ContainerRegistry {
+	return d.containerRegistry
 }

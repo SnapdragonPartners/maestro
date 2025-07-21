@@ -9,6 +9,24 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// Global container registry instance - initialized by orchestrator at startup
+var globalContainerRegistry *ContainerRegistry
+var globalContainerRegistryMu sync.RWMutex
+
+// SetGlobalRegistry initializes the global container registry (called by orchestrator)
+func SetGlobalRegistry(registry *ContainerRegistry) {
+	globalContainerRegistryMu.Lock()
+	defer globalContainerRegistryMu.Unlock()
+	globalContainerRegistry = registry
+}
+
+// GetGlobalRegistry returns the global container registry
+func GetGlobalRegistry() *ContainerRegistry {
+	globalContainerRegistryMu.RLock()
+	defer globalContainerRegistryMu.RUnlock()
+	return globalContainerRegistry
+}
+
 // RegistryContainerInfo holds information about a registered container
 type RegistryContainerInfo struct {
 	AgentID       string    // Agent that owns this container

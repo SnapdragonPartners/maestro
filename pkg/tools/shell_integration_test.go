@@ -42,7 +42,7 @@ func TestShellTool_WithLocalExecutor(t *testing.T) {
 
 func TestShellTool_WithDockerExecutor(t *testing.T) {
 	// This test requires Docker to be available
-	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine")
+	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine", "")
 	if !dockerExec.Available() {
 		t.Skip("Docker not available, skipping Docker executor test")
 	}
@@ -116,7 +116,7 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 	}
 
 	// Now switch to docker executor if available
-	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine")
+	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine", "")
 	if dockerExec.Available() {
 		if err := UpdateShellToolExecutor(dockerExec); err != nil {
 			t.Fatalf("Failed to update to docker executor: %v", err)

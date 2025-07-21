@@ -60,9 +60,9 @@ stateDiagram-v2
     QUESTION      --> CODING           : return to coding
     QUESTION      --> ERROR            : abandon/error 
 
-    %% Agent restart workflow - orchestrator handles cleanup
-    ERROR         --> DONE             : orchestrator cleanup & restart
-    DONE          --> [*]              : orchestrator shuts down agent
+    %% Terminal states
+    DONE          --> [*]              : orchestrator handles cleanup and restart
+    ERROR         --> [*]              : orchestrator handles cleanup, requeue, and restart
 ```
 
 ---
@@ -82,7 +82,7 @@ stateDiagram-v2
 | **AWAIT\_MERGE**    | Waiting for architect to merge PR after code approval.                        |
 | **QUESTION**        | Awaiting external clarification or information.                                |
 | **DONE**            | Agent termination state - orchestrator will shut down and restart agent.       |
-| **ERROR**           | Task abandoned or unrecoverable failure encountered.                           |
+| **ERROR**           | Terminal state - task abandoned or unrecoverable failure; orchestrator handles requeue via lease system. |
 
 ---
 
@@ -101,7 +101,7 @@ stateDiagram-v2
 | **AWAIT\_MERGE**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –            | –        | ✔︎   | –     |
 | **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | –    | ✔︎    |
 | **DONE**            | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
-| **ERROR**           | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | ✔︎   | –     |
+| **ERROR**           | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
 
 *(✔︎ = allowed, — = invalid)*
 
@@ -135,7 +135,7 @@ Note: The architect uses standard approval status codes that map to budget revie
   1. It receives **ABANDON** from `PLAN_REVIEW`, `CODE_REVIEW`, `BUDGET_REVIEW`, or `QUESTION`.
   2. An **auto-approve** request is rejected with ABANDON.
   3. Any unrecoverable runtime error occurs (panic, out-of-retries, etc.).
-* **ERROR** transitions to **DONE** for orchestrator cleanup and agent restart.
+* **ERROR** is terminal - the orchestrator handles story requeue and agent restart via lease system.
 
 ---
 
@@ -172,9 +172,11 @@ WAITING → SETUP → PLANNING → CODING → TESTING → CODE_REVIEW → AWAIT_
 4. All issues resolved in unified CODING state with appropriate context
 
 ### Agent Restart Workflow:
-- **Story completion**: `AWAIT_MERGE → DONE` (merge successful)
-- **Error recovery**: `ERROR → DONE` (unrecoverable failure)
-- **Orchestrator actions**: On DONE state, orchestrator shuts down agent and creates fresh instance
+- **Story completion**: `AWAIT_MERGE → DONE` (merge successful)  
+- **Error recovery**: Any state → `ERROR` (unrecoverable failure)
+- **Terminal states**: Both DONE and ERROR are truly terminal - agents do no work
+- **Orchestrator actions**: On DONE/ERROR states, orchestrator handles all cleanup and restart
+- **Lease system**: Orchestrator tracks story assignments and requeues failed stories automatically
 - **Complete cleanup**: All resources deleted (workspace, containers, state) for clean slate
 - **Future metrics**: Orchestrator will aggregate metrics across agent restarts (not yet implemented)
 
