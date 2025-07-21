@@ -1,16 +1,13 @@
-![Maestro](web/static/img/logos/maestro_logo_big.png)
+![Maestro](web/static/img/logos/maestro_logo_small.png)
 
 # Multi-Agent AI Coding System Orchestrator
 
-A Go-based orchestrator that coordinates between Architect Agents (o3) and Coding Agents (Claude) to process development stories and implement code changes.
-
 ## Overview
 
-This system implements a message-passing architecture where:
-- **Architect agents** read development stories and create TASK messages
-- **Coding agents** process tasks and return RESULT/ERROR/QUESTION messages
-- The **orchestrator** manages agent communication with rate limiting and event logging
+A highly opinionated Go-based orchestrator that implements the full flow necessary to convert well-written tech specs into finished code via multiple concurrent agents.
 
+But Maestro is not just an agent framework. It implements a distinct workflow and is coupled to common but key development tools. For example, it uses git worktrees and it requires every project to have a makefile for build, test, and run. It enforces docker-based isolation of environments during coding. And it uses the differentiated strengths of different LLMs instead of relying on one. (By default it uses OpenAI o3 as an architect and Claude 4 Sonnet as a coder, for example.) It already contains functionality for code review and improvement as well as basic development.
+ 
 ## Requirements
 
 ### System Requirements
@@ -46,7 +43,6 @@ export OPENAI_API_KEY=your_openai_api_key
 # Optional: Custom configuration file path
 export CONFIG_PATH=/path/to/config.json
 ```
-
 
 ## Quick Start
 
