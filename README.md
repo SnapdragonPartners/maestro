@@ -1,12 +1,94 @@
+# Maestro: Multi-Agent Orchestration for Software Development
+
 ![Maestro](web/static/img/logos/maestro_logo_small.png)
 
-# Multi-Agent AI Coding System Orchestrator
+If you’re looking for a general-purpose agent framework, you’ll probably want something like CrewAI or LangChain. But if you're building robust software and want a system that reflects actual engineering best practices out of the box—welcome to Maestro.
 
-## Overview
+**Maestro** is a highly opinionated multi-agent orchestration system written in Go. It’s designed from the ground up to manage the full development lifecycle using two core agent roles: a singleton **Architect** and any number of **Coders**.
 
-A highly opinionated Go-based orchestrator that implements the full flow necessary to convert well-written tech specs into finished code via multiple concurrent agents.
+It follows a strict but extensible workflow, tightly integrated with conventional development tools—`git`, `make`, and `docker`—to ensure safety, repeatability, and test coverage.
 
-But Maestro is not just an agent framework. It implements a distinct workflow and is coupled to common but key development tools. For example, it uses git worktrees and it requires every project to have a makefile for build, test, and run. It enforces docker-based isolation of environments during coding. And it uses the differentiated strengths of different LLMs instead of relying on one. (By default it uses OpenAI o3 as an architect and Claude 4 Sonnet as a coder, for example.) It already contains functionality for code review and improvement as well as basic development.
+## Who It’s For
+
+Maestro is for engineers and small teams who want to use LLMs to write robust, production software with minimal oversight.
+
+## Status
+
+Maestro is currently a pre-release MVP. All core functionality is implemented, but the system is still under active development and subject to change. We have just start to use it to build itself.
+
+## Key Features
+
+- 🧠 **Two Agent Types**: One Architect, many Coders. Each with its own LLM backend.
+- 🧰 **Standard Tooling**: Uses `git worktrees`, `make`, and `docker` for isolated, language-aware dev environments.
+- 🧵 **LLM Specialization**: Architects default to OpenAI o3 for planning; Coders default to Claude for code generation and test coverage.
+- 🌐 **Web UI and CLI**: Real-time agent dashboards and full command-line support.
+- 🔄 **Spec-to-Code Flow**: From markdown spec to merged pull request, all automated.
+
+## How It Works
+
+1. You write a spec in markdown.
+2. The Architect parses it and asks clarifying questions.
+3. It generates implementation stories with dependency graphs.
+4. The orchestrator bootstraps the repo and initializes agents.
+5. Unblocked stories are dispatched to Coders.
+6. Each Coder clones the repo into a worktree and drafts a plan.
+7. The Architect approves the plan.
+8. The Coder writes, tests, and submits the code.
+9. The Architect reviews and merges the pull request.
+10. The **Coder agent resets**, ready for the next task.
+
+Throughout the process:
+- Coders can ask questions or escalate issues.
+- Architects enforce budget limits and validate merge readiness.
+- All planning happens in read-only containers; all dev happens in isolated, writable ones.
+
+## Why Go?
+
+Most orchestration frameworks are written in Python, but Go offers:
+- Fast startup, low memory usage
+- Easy deployment as a single binary
+- Strong concurrency primitives
+- No need for ML libraries—Maestro delegates all model calls to external APIs
+
+## Language Support
+
+Maestro is language-agnostic at the agent level but uses `make` during bootstrapping. By default, it supports:
+
+- Go
+- Python
+- JavaScript
+
+You can support any language by supplying your own Makefile or writing a custom agent backend using provided interfaces.
+
+## Extensibility
+
+Maestro includes base types and interfaces that make it easy to:
+
+- Write your own agent implementations
+- Plug in alternate LLM providers via Go interfaces
+- Override templates and execution logic
+
+## State Machines
+
+Maestro’s core logic is defined by canonical finite state machines (FSMs) for each agent:
+
+- [Coder FSM](pkg/coder/STATES.md#coder-agent-finite-state-machine-canonical)
+- [Architect FSM](pkg/architect/STATES.md#architect-agent-finite-state-machine-canonical)
+
+Mermaid diagrams are included and enforced via tests and documentation. Any deviation is considered a bug.
+
+## Learn More
+
+- 📖 [Documentation & Wiki](https://github.com/dratner/maestro/wiki)
+- 💬 [Discussion Board](https://github.com/dratner/maestro/discussions)
+
+## Contributing
+
+Maestro is MIT licensed and welcomes contributions.
+
+To contribute:
+- Join the [discussion board](https://github.com/dratner/maestro/discussions)
+- Open a [pull request](https://github.com/dratner/maestro/pulls) with improvements or bug fixes
  
 ## Requirements
 
