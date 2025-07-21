@@ -1,3 +1,5 @@
+![Maestro](web/static/img/logos/maestro_logo_big.png)
+
 # Multi-Agent AI Coding System Orchestrator
 
 A Go-based orchestrator that coordinates between Architect Agents (o3) and Coding Agents (Claude) to process development stories and implement code changes.
@@ -14,6 +16,8 @@ This system implements a message-passing architecture where:
 ### System Requirements
 
 - **Go**: Version 1.24+ required for building the orchestrator
+- **Git**: Required for worktree management and code review workflows
+- **Make**: Required for build commands
 - **Docker**: Version 20.10+ for sandboxed AI agent execution (recommended)
 - **Platform**: Linux, macOS, or Windows with Docker Desktop
 - **Resources**: Minimum 2GB RAM, 1 CPU core available for containers
@@ -43,10 +47,6 @@ export OPENAI_API_KEY=your_openai_api_key
 export CONFIG_PATH=/path/to/config.json
 ```
 
-### Optional Dependencies
-
-- **Git**: For worktree management and code review workflows
-- **Make**: For convenient build commands (optional, can use `go build` directly)
 
 ## Quick Start
 
