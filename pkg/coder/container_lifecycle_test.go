@@ -40,7 +40,7 @@ func TestContainerLifecycleWorkflow(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("container-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("container-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -70,16 +70,16 @@ func TestContainerLifecycleWorkflow(t *testing.T) {
 	}
 
 	// Test 3: Mock plan completion and transition to PLAN_REVIEW
-	driver.SetStateData("plan", "Mock plan: JWT-based REST API with bcrypt password hashing")
-	driver.SetStateData("plan_confidence", "HIGH")
-	driver.SetStateData("planning_completed_at", "2024-01-01T00:00:00Z")
+	driver.SetStateData(KeyPlan, "Mock plan: JWT-based REST API with bcrypt password hashing")
+	driver.SetStateData(KeyPlanConfidence, "HIGH")
+	driver.SetStateData(KeyPlanningCompletedAt, "2024-01-01T00:00:00Z")
 
 	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
 	// Test 4: Process plan approval and verify container reconfiguration
-	if err := driver.ProcessApprovalResult("APPROVED", "plan"); err != nil {
+	if err := driver.ProcessApprovalResult("APPROVED", KeyPlan); err != nil {
 		t.Fatalf("Failed to process plan approval: %v", err)
 	}
 
@@ -101,11 +101,11 @@ func TestContainerLifecycleWorkflow(t *testing.T) {
 		t.Errorf("Expected task content to be preserved, got %v", taskContent)
 	}
 
-	if plan, exists := finalStateData["plan"]; !exists || plan == "" {
+	if plan, exists := finalStateData[KeyPlan]; !exists || plan == "" {
 		t.Error("Expected plan to be preserved after container reconfiguration")
 	}
 
-	if confidence, exists := finalStateData["plan_confidence"]; !exists || confidence != "HIGH" {
+	if confidence, exists := finalStateData[KeyPlanConfidence]; !exists || confidence != "HIGH" {
 		t.Error("Expected plan confidence to be preserved")
 	}
 
@@ -136,7 +136,7 @@ func TestContainerSecurityConfiguration(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("security-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("security-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestContainerCleanupAndReconfiguration(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("cleanup-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("cleanup-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestContainerMountModeValidation(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("mount-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("mount-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestContainerResourceLimits(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("limits-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("limits-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}

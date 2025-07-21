@@ -34,7 +34,7 @@ func TestCoderHealthStoryIntegration(t *testing.T) {
 	}
 
 	// Create driver in mock mode (no LLM client)
-	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCoderHealthStoryIntegration(t *testing.T) {
 	}
 
 	// Verify the task content is preserved
-	if taskContent, exists := stateData["task_content"]; !exists || taskContent != healthTask {
+	if taskContent, exists := stateData[KeyTaskContent]; !exists || taskContent != healthTask {
 		t.Errorf("Expected task_content to be preserved, got %v", taskContent)
 	}
 }
@@ -108,7 +108,7 @@ func TestCoderQuestionFlow(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestCoderApprovalFlow(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -185,8 +185,8 @@ func TestCoderApprovalFlow(t *testing.T) {
 	}
 
 	// Manually set state to PLAN_REVIEW to test approval flow
-	driver.SetStateData("task_content", "Create API endpoint")
-	driver.SetStateData("plan", "Mock plan: Create REST API with proper error handling")
+	driver.SetStateData(KeyTaskContent, "Create API endpoint")
+	driver.SetStateData(KeyPlan, "Mock plan: Create REST API with proper error handling")
 	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestCoderFailureAndRetry(t *testing.T) {
 				t.Fatalf("Failed to create state store: %v", err)
 			}
 
-			driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil)
+			driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil, nil)
 			if err != nil {
 				t.Fatalf("Failed to create driver: %v", err)
 			}
@@ -336,7 +336,7 @@ func TestCoderStateManagement(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, modelConfig, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}

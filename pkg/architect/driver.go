@@ -96,7 +96,11 @@ type Driver struct {
 
 // NewDriver creates a new architect driver instance
 func NewDriver(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string, orchestratorConfig *config.Config) *Driver {
-	renderer, _ := templates.NewRenderer()
+	renderer, err := templates.NewRenderer()
+	if err != nil {
+		// Log the error but continue with nil renderer for graceful degradation
+		fmt.Printf("ERROR: Failed to initialize template renderer: %v\n", err)
+	}
 	queue := NewQueue(storiesDir)
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 
@@ -499,6 +503,11 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 
 // parseSpecWithLLM uses the LLM to analyze the specification
 func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile string) ([]Requirement, error) {
+	// Check if renderer is available
+	if d.renderer == nil {
+		return nil, fmt.Errorf("template renderer not available - falling back to deterministic parsing")
+	}
+
 	// LLM-first approach: send raw content directly to LLM
 	templateData := &templates.TemplateData{
 		TaskContent: rawSpecContent,

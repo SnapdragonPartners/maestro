@@ -17,6 +17,7 @@ import (
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
@@ -53,6 +54,16 @@ func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
 	return requestedTools
 }
 
+// truncateOutput truncates long output to prevent context bloat
+func truncateOutput(output string, maxLength int) string {
+	if len(output) <= maxLength {
+		return output
+	}
+	
+	truncated := output[:maxLength]
+	return truncated + "\n\n[... output truncated after " + fmt.Sprintf("%d", maxLength) + " characters for context management ...]"
+}
+
 // buildMessagesWithContext creates completion messages with context history
 // This centralizes the pattern used across PLANNING and CODING states
 func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
@@ -63,19 +74,34 @@ func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.Completio
 	// Add conversation history from context manager (critical for tool results)
 	contextMessages := c.contextManager.GetMessages()
 	for _, msg := range contextMessages {
+		// Skip empty messages to prevent malformed prompts
+		if strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+
+		// Map context roles to LLM client roles
 		role := agent.RoleAssistant
 		if msg.Role == "user" || msg.Role == "system" {
 			role = agent.RoleUser
 		} else if msg.Role == "tool" {
 			role = agent.RoleUser // Tool messages appear as user messages to Claude
 		}
+
 		messages = append(messages, agent.CompletionMessage{
 			Role:    role,
-			Content: fmt.Sprintf("[%s] %s", msg.Role, msg.Content),
+			Content: msg.Content, // Use original content without bracket formatting
 		})
 	}
 
-	return messages
+	// Validate and sanitize messages before returning
+	sanitized, err := agent.ValidateAndSanitizeMessages(messages)
+	if err != nil {
+		c.logger.Warn("Message validation failed, using sanitized version: %v", err)
+		// Return sanitized messages even if validation had issues
+		return sanitized
+	}
+
+	return sanitized
 }
 
 // StateDataKey provides type safety for state data access
@@ -83,17 +109,17 @@ type stateDataKey string
 
 // State data keys - using typed constants to prevent key mismatch bugs
 const (
-	stateDataKeyPlan                     stateDataKey = "plan"
+	stateDataKeyPlan                     stateDataKey = KeyPlan
 	stateDataKeyPlanConfidence           stateDataKey = "plan_confidence"
 	stateDataKeyPlanTodos                stateDataKey = "plan_todos"
 	stateDataKeyExplorationSummary       stateDataKey = "exploration_summary"
 	stateDataKeyPlanRisks                stateDataKey = "plan_risks"
-	stateDataKeyPlanApprovalResult       stateDataKey = "plan_approval_result"
+	stateDataKeyPlanApprovalResult       stateDataKey = KeyPlanApprovalResult
 	stateDataKeyCompletionApprovalResult stateDataKey = "completion_approval_result"
-	stateDataKeyCodeApprovalResult       stateDataKey = "code_approval_result"
+	stateDataKeyCodeApprovalResult       stateDataKey = KeyCodeApprovalResult
 	stateDataKeyBudgetApprovalResult     stateDataKey = "budget_approval_result"
 	stateDataKeyArchitectAnswer          stateDataKey = "architect_answer"
-	stateDataKeyTaskContent              stateDataKey = "task_content"
+	stateDataKeyTaskContent              stateDataKey = KeyTaskContent
 	stateDataKeyStartedAt                stateDataKey = "started_at"
 	stateDataKeyCodingIterations         stateDataKey = "coding_iterations"
 	stateDataKeyPlanningIterations       stateDataKey = "planning_iterations"
@@ -223,11 +249,11 @@ func (c *Coder) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChan
 }
 
 // convertApprovalData converts approval data from various formats to *proto.ApprovalResult
-// Handles both direct struct pointers and map[string]interface{} from JSON deserialization
-func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
+// Handles both direct struct pointers and map[string]any from JSON deserialization
+func convertApprovalData(data any) (*proto.ApprovalResult, error) {
 	// If data is nil or empty, return error indicating no approval data
 	if data == nil {
-		return nil, fmt.Errorf("no approval data available")
+		return nil, logx.Errorf("no approval data available")
 	}
 
 	// If it's already the correct type, return it
@@ -236,16 +262,16 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 	}
 
 	// If it's a map (from JSON deserialization), convert it
-	if dataMap, ok := data.(map[string]interface{}); ok {
+	if dataMap, ok := data.(map[string]any); ok {
 		// Convert map to JSON and then to struct
 		jsonData, err := json.Marshal(dataMap)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal approval data: %w", err)
+			return nil, logx.Wrap(err, "failed to marshal approval data")
 		}
 
 		var result proto.ApprovalResult
 		if err := json.Unmarshal(jsonData, &result); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal approval data: %w", err)
+			return nil, logx.Wrap(err, "failed to unmarshal approval data")
 		}
 
 		return &result, nil
@@ -255,25 +281,38 @@ func convertApprovalData(data interface{}) (*proto.ApprovalResult, error) {
 	if str, ok := data.(string); ok {
 		// Empty string means no approval result (from cleanup)
 		if str == "" {
-			return nil, fmt.Errorf("no approval data available")
+			return nil, logx.Errorf("no approval data available")
 		}
 		// Non-empty string might be JSON-serialized approval result
 		var result proto.ApprovalResult
 		if err := json.Unmarshal([]byte(str), &result); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal approval data from string: %w", err)
+			return nil, logx.Wrap(err, "failed to unmarshal approval data from string")
 		}
 		return &result, nil
 	}
 
-	return nil, fmt.Errorf("unsupported approval data type: %T", data)
+	return nil, logx.Errorf("unsupported approval data type: %T", data)
 }
 
 // NewCoder creates a new coder using agent foundation
-func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.BuildService) (*Coder, error) {
+func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.BuildService, logger *logx.Logger) (*Coder, error) {
 	if llmClient == nil {
-		return nil, fmt.Errorf("LLM client is required")
+		return nil, logx.Errorf("LLM client is required")
 	}
-	renderer, _ := templates.NewRenderer()
+
+	// Initialize common tools (thread-safe, runs only once)
+	tools.InitCommon()
+
+	// Use provided logger or create a default one
+	if logger == nil {
+		logger = logx.NewLogger(agentID)
+	}
+
+	renderer, err := templates.NewRenderer()
+	if err != nil {
+		// Log the error but continue with nil renderer for graceful degradation
+		fmt.Printf("ERROR: Failed to initialize coder template renderer: %v\n", err)
+	}
 
 	// Create agent context with logger
 	agentCtx := &agent.AgentContext{
@@ -319,7 +358,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 		renderer:            renderer,
 		workDir:             workDir,
 		originalWorkDir:     workDir, // Store original work directory for cleanup
-		logger:              logx.NewLogger(agentID),
+		logger:              logger,
 		dispatcher:          nil, // Will be set during Attach()
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
@@ -337,7 +376,7 @@ func NewCoderWithClaude(agentID, name, workDir string, stateStore *state.Store, 
 	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create coder with LLM integration
-	coder, err := NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil, buildService)
+	coder, err := NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil, buildService, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +420,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 		}
 
 		// Store origin state for later use
-		sm.SetStateData("origin", string(origin))
+		sm.SetStateData(KeyOrigin, string(origin))
 
 		if c.dispatcher != nil {
 			requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
@@ -390,7 +429,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 			requestMsg.SetPayload("content", content)
 			requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
 			requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-			requestMsg.SetPayload("origin", string(origin))
+			requestMsg.SetPayload(KeyOrigin, string(origin))
 			requestMsg.SetPayload("loops", iterationCount)
 			requestMsg.SetPayload("max_loops", budget)
 
@@ -443,14 +482,14 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	case proto.StateError:
 		nextState, done, err = c.handleError(ctx, sm)
 	default:
-		return proto.StateError, false, fmt.Errorf("unknown state: %s", c.GetCurrentState())
+		return proto.StateError, false, logx.Errorf("unknown state: %s", c.GetCurrentState())
 	}
 
 	// Log the state transition decision
 	if err != nil {
 		c.logger.Error("🔄 State handler %s returned error: %v", currentState, err)
 		// Store error message for ERROR state handling
-		sm.SetStateData("error_message", err.Error())
+		sm.SetStateData(KeyErrorMessage, err.Error())
 		// Transition to ERROR state instead of propagating error up
 		c.logger.Info("🔄 State handler %s → ERROR (due to error)", currentState)
 		return proto.StateError, false, nil
@@ -482,7 +521,7 @@ func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 
 	// Initialize if needed
 	if err := c.Initialize(ctx); err != nil {
-		return fmt.Errorf("failed to initialize: %w", err)
+		return logx.Wrap(err, "failed to initialize")
 	}
 
 	// Run the state machine loop using Step() for atomic processing
@@ -539,31 +578,31 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 		// Extract story content and store it in state data
 		content, exists := storyMsg.GetPayload(proto.KeyContent)
 		if !exists {
-			return proto.StateError, false, fmt.Errorf("story message missing content")
+			return proto.StateError, false, logx.Errorf("story message missing content")
 		}
 
 		contentStr, ok := content.(string)
 		if !ok {
-			return proto.StateError, false, fmt.Errorf("story content must be a string")
+			return proto.StateError, false, logx.Errorf("story content must be a string")
 		}
 
 		// Extract the actual story ID from the payload
 		storyID, exists := storyMsg.GetPayload(proto.KeyStoryID)
 		if !exists {
-			return proto.StateError, false, fmt.Errorf("story message missing story_id")
+			return proto.StateError, false, logx.Errorf("story message missing story_id")
 		}
 
 		storyIDStr, ok := storyID.(string)
 		if !ok {
-			return proto.StateError, false, fmt.Errorf("story_id must be a string")
+			return proto.StateError, false, logx.Errorf("story_id must be a string")
 		}
 
 		logx.Infof("🧑‍💻 Received story message %s for story %s, transitioning to SETUP", storyMsg.ID, storyIDStr)
 
 		// Store the task content and story ID for the SETUP state
 		sm.SetStateData(string(stateDataKeyTaskContent), contentStr)
-		sm.SetStateData("story_message_id", storyMsg.ID)
-		sm.SetStateData("story_id", storyIDStr) // For workspace manager - use actual story ID
+		sm.SetStateData(KeyStoryMessageID, storyMsg.ID)
+		sm.SetStateData(KeyStoryID, storyIDStr) // For workspace manager - use actual story ID
 		sm.SetStateData(string(stateDataKeyStartedAt), time.Now().UTC())
 
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "received story message")
@@ -590,12 +629,12 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	}
 
 	// Check for question tool result (ask_question was called)
-	if questionData, exists := sm.GetStateValue("question_submitted"); exists {
+	if questionData, exists := sm.GetStateValue(KeyQuestionSubmitted); exists {
 		return c.handleQuestionTransition(ctx, sm, questionData)
 	}
 
 	// Check for plan submission (submit_plan was called)
-	if planData, exists := sm.GetStateValue("plan_submitted"); exists {
+	if planData, exists := sm.GetStateValue(KeyPlanSubmitted); exists {
 		return c.handlePlanSubmission(ctx, sm, planData)
 	}
 
@@ -635,7 +674,7 @@ func (c *Coder) handleRequestBlocking(ctx context.Context, sm *agent.BaseStateMa
 				return currentState, false, nil
 			} else {
 				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
-				return proto.StateError, false, fmt.Errorf("RESULT message missing approval_result")
+				return proto.StateError, false, logx.Errorf("RESULT message missing approval_result")
 			}
 		} else {
 			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
@@ -654,7 +693,7 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 		// Reconfigure container with read-write workspace for coding phase
 		if c.longRunningExecutor != nil {
 			if err := c.configureWorkspaceMount(ctx, false, "coding"); err != nil {
-				return proto.StateError, false, fmt.Errorf("failed to configure coding container: %w", err)
+				return proto.StateError, false, logx.Wrap(err, "failed to configure coding container")
 			}
 		}
 
@@ -666,13 +705,13 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 		c.logger.Info("🧑‍💻 Story completion approved by architect, transitioning to DONE")
 
 		// Mark story as completed
-		sm.SetStateData("story_completed_at", time.Now().UTC())
-		sm.SetStateData("completion_status", "APPROVED")
+		sm.SetStateData(KeyStoryCompletedAt, time.Now().UTC())
+		sm.SetStateData(KeyCompletionStatus, "APPROVED")
 
 		return proto.StateDone, true, nil
 
 	default:
-		return proto.StateError, false, fmt.Errorf("unsupported approval type in plan review: %s", approvalType)
+		return proto.StateError, false, logx.Errorf("unsupported approval type in plan review: %s", approvalType)
 	}
 }
 
@@ -700,7 +739,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		result, err := convertApprovalData(approvalData)
 		if err != nil {
 			c.logger.Error("🧑‍💻 Failed to convert approval data: data=%+v, error=%v", approvalData, err)
-			return proto.StateError, false, fmt.Errorf("failed to convert %s approval data: %w", approvalType, err)
+			return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("failed to convert %s approval data", approvalType))
 		}
 
 		// Process the approval result based on status
@@ -709,20 +748,20 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 			// Clear the approval result and pending request since we have the result
 			sm.SetStateData(string(stateDataKeyPlanApprovalResult), nil)
 			c.pendingApprovalRequest = nil
-			sm.SetStateData("plan_review_completed_at", time.Now().UTC())
+			sm.SetStateData(KeyPlanReviewCompletedAt, time.Now().UTC())
 			return c.handlePlanReviewApproval(ctx, sm, approvalType)
 		case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
 			// Clear the approval result and pending request since we have the result
 			sm.SetStateData(string(stateDataKeyPlanApprovalResult), nil)
 			c.pendingApprovalRequest = nil
-			sm.SetStateData("plan_review_completed_at", time.Now().UTC())
+			sm.SetStateData(KeyPlanReviewCompletedAt, time.Now().UTC())
 			c.logger.Info("🧑‍💻 %s rejected/needs changes, returning to PLANNING", approvalType)
 			if result.Feedback != "" {
 				c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", result.Feedback))
 			}
 			return StatePlanning, false, nil
 		default:
-			return proto.StateError, false, fmt.Errorf("unknown %s approval status: %s", approvalType, result.Status)
+			return proto.StateError, false, logx.Errorf("unknown %s approval status: %s", approvalType, result.Status)
 		}
 	}
 
@@ -734,7 +773,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 // handleCoding processes the CODING state with priority-based work handling
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Check for question tool result (ask_question was called during coding)
-	if questionData, exists := sm.GetStateValue("question_submitted"); exists {
+	if questionData, exists := sm.GetStateValue(KeyQuestionSubmitted); exists {
 		return c.handleCodingQuestionTransition(ctx, sm, questionData)
 	}
 
@@ -746,19 +785,19 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (p
 	}
 
 	// Priority 1: Merge conflicts (highest priority)
-	if conflictData, exists := sm.GetStateValue("merge_conflict_details"); exists && conflictData != nil {
+	if conflictData, exists := sm.GetStateValue(KeyMergeConflictDetails); exists && conflictData != nil {
 		c.contextManager.AddMessage("assistant", "Coding phase: resolving merge conflicts")
 		return c.handleMergeConflictCoding(ctx, sm, conflictData)
 	}
 
 	// Priority 2: Code review feedback
-	if reviewData, exists := sm.GetStateValue("code_review_rejection_feedback"); exists && reviewData != nil {
+	if reviewData, exists := sm.GetStateValue(KeyCodeReviewRejectionFeedback); exists && reviewData != nil {
 		c.contextManager.AddMessage("assistant", "Coding phase: addressing code review feedback")
 		return c.handleCodeReviewCoding(ctx, sm, reviewData)
 	}
 
 	// Priority 3: Test failures
-	if testData, exists := sm.GetStateValue("test_failure_output"); exists && testData != nil {
+	if testData, exists := sm.GetStateValue(KeyTestFailureOutput); exists && testData != nil {
 		c.contextManager.AddMessage("assistant", "Coding phase: fixing test failures")
 		return c.handleTestFixCoding(ctx, sm, testData)
 	}
@@ -772,7 +811,7 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (p
 func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	taskContent, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
 	taskStr, _ := taskContent.(string)
-	plan, _ := sm.GetStateValue("plan")
+	plan, _ := sm.GetStateValue(KeyPlan)
 	planStr, _ := plan.(string)
 
 	// Check iteration limit first
@@ -782,7 +821,7 @@ func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMach
 	}
 
 	// Set coding mode for observability
-	sm.SetStateData("coding_mode", "initial")
+	sm.SetStateData(KeyCodingMode, "initial")
 
 	return c.executeCodingWithTemplate(ctx, sm, templates.CodingTemplate, map[string]any{
 		"TaskContent": taskStr,
@@ -798,8 +837,8 @@ func (c *Coder) handleMergeConflictCoding(ctx context.Context, sm *agent.BaseSta
 	taskStr, _ := taskContent.(string)
 
 	// Clear conflict data after processing
-	defer sm.SetStateData("merge_conflict_details", nil)
-	defer sm.SetStateData("coding_mode", nil)
+	defer sm.SetStateData(KeyMergeConflictDetails, nil)
+	defer sm.SetStateData(KeyCodingMode, nil)
 
 	return c.executeCodingWithTemplate(ctx, sm, templates.CodingTemplate, map[string]any{
 		"TaskContent":  taskStr,
@@ -815,8 +854,8 @@ func (c *Coder) handleCodeReviewCoding(ctx context.Context, sm *agent.BaseStateM
 	taskStr, _ := taskContent.(string)
 
 	// Clear review data after processing
-	defer sm.SetStateData("code_review_rejection_feedback", nil)
-	defer sm.SetStateData("coding_mode", nil)
+	defer sm.SetStateData(KeyCodeReviewRejectionFeedback, nil)
+	defer sm.SetStateData(KeyCodingMode, nil)
 
 	return c.executeCodingWithTemplate(ctx, sm, templates.CodingTemplate, map[string]any{
 		"TaskContent":    taskStr,
@@ -832,8 +871,8 @@ func (c *Coder) handleTestFixCoding(ctx context.Context, sm *agent.BaseStateMach
 	taskStr, _ := taskContent.(string)
 
 	// Clear test failure data after processing
-	defer sm.SetStateData("test_failure_output", nil)
-	defer sm.SetStateData("coding_mode", nil)
+	defer sm.SetStateData(KeyTestFailureOutput, nil)
+	defer sm.SetStateData(KeyCodingMode, nil)
 
 	return c.executeCodingWithTemplate(ctx, sm, templates.CodingTemplate, map[string]any{
 		"TaskContent": taskStr,
@@ -861,13 +900,17 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		tplData.Context += fmt.Sprintf("\n\nCode Review Feedback: %v", reviewFeedback)
 	}
 	if testOutput, exists := templateData["TestOutput"]; exists {
-		tplData.Context += fmt.Sprintf("\n\nTest Failure Output: %v", testOutput)
+		// Set TestResults field which the template expects
+		tplData.TestResults = fmt.Sprintf("%v", testOutput)
 	}
 
 	// Render the template
+	if c.renderer == nil {
+		return proto.StateError, false, logx.Errorf("template renderer not available")
+	}
 	prompt, err := c.renderer.Render(templateName, tplData)
 	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to render coding template: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to render coding template")
 	}
 
 	// Get LLM response for code generation with shell tool
@@ -882,7 +925,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	resp, err := c.llmClient.Complete(ctx, req)
 	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to get LLM coding response: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to get LLM coding response")
 	}
 
 	// Temporarily fall back to text parsing until tool calling is implemented
@@ -893,7 +936,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		c.logger.Info("Executing %d tool calls via MCP in working directory: %s", len(resp.ToolCalls), c.workDir)
 		filesCreated, err = c.executeMCPToolCalls(ctx, resp.ToolCalls)
 		if err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to execute tool calls: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to execute tool calls")
 		}
 		if filesCreated == -1 {
 			c.logger.Info("MCP tool execution: completion signaled via tool")
@@ -902,38 +945,38 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		}
 
 		// Reset no-tool-calls counter since we had tool calls
-		sm.SetStateData("no_tool_calls_count", 0)
+		sm.SetStateData(KeyNoToolCallsCount, 0)
 	} else {
 		c.logger.Info("No tool calls found, falling back to text parsing")
 
 		// Track consecutive iterations without tool calls
 		noToolCallsCount := 0
-		if val, exists := sm.GetStateValue("no_tool_calls_count"); exists {
+		if val, exists := sm.GetStateValue(KeyNoToolCallsCount); exists {
 			if count, ok := val.(int); ok {
 				noToolCallsCount = count
 			}
 		}
 		noToolCallsCount++
-		sm.SetStateData("no_tool_calls_count", noToolCallsCount)
+		sm.SetStateData(KeyNoToolCallsCount, noToolCallsCount)
 
 		c.logger.Info("No tool calls for %d consecutive iterations", noToolCallsCount)
 
 		// Parse the response to extract files and create them
 		filesCreated, err = c.parseAndCreateFiles(resp.Content)
 		if err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to create files: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to create files")
 		}
 		c.logger.Info("Text parsing created %d files", filesCreated)
 	}
 
 	// Store results
-	sm.SetStateData("code_generated", filesCreated > 0)
-	sm.SetStateData("files_created", filesCreated)
+	sm.SetStateData(KeyCodeGenerated, filesCreated > 0)
+	sm.SetStateData(KeyFilesCreated, filesCreated)
 	c.contextManager.AddMessage("assistant", resp.Content)
 
 	// Check if implementation seems complete
 	if c.isImplementationComplete(resp.Content, filesCreated, sm) {
-		sm.SetStateData("coding_completed_at", time.Now().UTC())
+		sm.SetStateData(KeyCodingCompletedAt, time.Now().UTC())
 		return StateTesting, false, nil
 	}
 
@@ -961,7 +1004,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 	// Check working directory permissions
 	if stat, err := os.Stat(c.workDir); err != nil {
 		c.logger.Info("Error accessing working directory %s: %v", c.workDir, err)
-		return 0, fmt.Errorf("cannot access working directory %s: %w", c.workDir, err)
+		return 0, logx.Wrap(err, fmt.Sprintf("cannot access working directory %s", c.workDir))
 	} else {
 		c.logger.Info("Working directory %s exists, mode: %v", c.workDir, stat.Mode())
 	}
@@ -1013,18 +1056,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 	for i, toolCall := range toolCalls {
 		c.logger.Info("Processing tool call %d: name=%s, id=%s", i+1, toolCall.Name, toolCall.ID)
 
-		if toolCall.Name == "mark_complete" {
-			// Claude signaled completion
-			if reason, ok := toolCall.Parameters["reason"].(string); ok {
-				c.logger.Info("Claude marked implementation complete: %s", reason)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("Implementation marked complete: %s", reason))
-				// Return special completion signal (not a real file count)
-				return -1, nil
-			}
-			continue
-		}
-
-		if toolCall.Name == "done" {
+		if toolCall.Name == tools.ToolDone {
 			// Claude signaled completion via done tool
 			c.logger.Info("Claude used 'done' tool to signal completion")
 			c.contextManager.AddMessage("tool", "Implementation marked complete via done tool")
@@ -1032,11 +1064,11 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			return -1, nil
 		}
 
-		if toolCall.Name == "shell" {
+		if toolCall.Name == tools.ToolShell {
 			// Get the shell tool from registry
-			tool, err := tools.Get("shell")
+			tool, err := tools.Get(tools.ToolShell)
 			if err != nil {
-				return filesCreated, fmt.Errorf("shell tool not available: %w", err)
+				return filesCreated, logx.Wrap(err, "shell tool not available")
 			}
 
 			// Set working directory if not provided
@@ -1051,7 +1083,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			// Execute the tool
 			result, err := tool.Exec(ctx, args)
 			if err != nil {
-				return filesCreated, fmt.Errorf("failed to execute shell command: %w", err)
+				return filesCreated, logx.Wrap(err, "failed to execute shell command")
 			}
 
 			// Log tool execution
@@ -1120,11 +1152,11 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		}
 
 		// Handle build tools
-		if toolCall.Name == "build" || toolCall.Name == "test" || toolCall.Name == "lint" || toolCall.Name == "backend_info" {
+		if toolCall.Name == tools.ToolBuild || toolCall.Name == tools.ToolTest || toolCall.Name == tools.ToolLint || toolCall.Name == tools.ToolBackendInfo {
 			// Get the tool from registry
 			tool, err := tools.Get(toolCall.Name)
 			if err != nil {
-				return filesCreated, fmt.Errorf("%s tool not available: %w", toolCall.Name, err)
+				return filesCreated, logx.Wrap(err, fmt.Sprintf("%s tool not available", toolCall.Name))
 			}
 
 			// Set working directory if not provided
@@ -1198,15 +1230,25 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 
 // isImplementationComplete checks if the current implementation appears complete
 func (c *Coder) isImplementationComplete(responseContent string, filesCreated int, sm *agent.BaseStateMachine) bool {
-	// Method 1: Explicit completion signal via mark_complete or done tool
+	// Method 1: Explicit completion signal via done tool (PRIMARY METHOD)
 	if filesCreated == -1 {
-		c.logger.Info("Completion detected: Claude used completion tool")
+		c.logger.Info("Completion detected: Claude used 'done' tool")
 		return true
+	}
+
+	// When fixing test failures, strongly prefer explicit tool completion
+	// This prevents false completion when Claude explains issues without fixing them
+	if testFailureData, exists := sm.GetStateValue(KeyTestFailureOutput); exists && testFailureData != nil {
+		c.logger.Debug("In test-fixing mode, only allowing explicit 'done' tool completion")
+
+		// In test-fixing mode, ONLY allow completion via 'done' tool
+		// This prevents false positives when Claude explains what needs to be done without actually doing it
+		return false
 	}
 
 	// Method 2: No tool calls pattern - if Claude stops making tool calls for 2+ consecutive iterations
 	noToolCallsCount := 0
-	if val, exists := sm.GetStateValue("no_tool_calls_count"); exists {
+	if val, exists := sm.GetStateValue(KeyNoToolCallsCount); exists {
 		if count, ok := val.(int); ok {
 			noToolCallsCount = count
 		}
@@ -1217,7 +1259,8 @@ func (c *Coder) isImplementationComplete(responseContent string, filesCreated in
 		return true
 	}
 
-	// Method 3: Natural language completion indicators
+	// Method 3: Natural language completion indicators (ONLY if work was actually done)
+	// This prevents false positives when Claude explains that work is already complete
 	completionIndicators := []string{
 		"implementation is complete",
 		"implementation complete",
@@ -1231,11 +1274,15 @@ func (c *Coder) isImplementationComplete(responseContent string, filesCreated in
 		"completed successfully",
 	}
 
-	responseLower := strings.ToLower(responseContent)
-	for _, indicator := range completionIndicators {
-		if strings.Contains(responseLower, indicator) {
-			c.logger.Info("Completion detected: Found completion indicator '%s' in response", indicator)
-			return true
+	// Only check for completion indicators if actual work was done
+	// This prevents false completion when Claude says "already complete"
+	if filesCreated > 0 {
+		responseLower := strings.ToLower(responseContent)
+		for _, indicator := range completionIndicators {
+			if strings.Contains(responseLower, indicator) {
+				c.logger.Info("Completion detected: Found completion indicator '%s' in response with %d files created", indicator, filesCreated)
+				return true
+			}
 		}
 	}
 
@@ -1600,7 +1647,7 @@ func (c *Coder) writeFile(filename, content string) error {
 	// Clean the filename
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
-		return fmt.Errorf("empty filename")
+		return logx.Errorf("empty filename")
 	}
 
 	filePath := filepath.Join(c.workDir, filename)
@@ -1608,12 +1655,12 @@ func (c *Coder) writeFile(filename, content string) error {
 	// Create directory if needed
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		return logx.Wrap(err, fmt.Sprintf("failed to create directory %s", dir))
 	}
 
 	// Write the file
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", filename, err)
+		return logx.Wrap(err, fmt.Sprintf("failed to write file %s", filename))
 	}
 
 	c.contextManager.AddMessage("tool", fmt.Sprintf("Created file: %s", filename))
@@ -1623,16 +1670,14 @@ func (c *Coder) writeFile(filename, content string) error {
 // handleTesting processes the TESTING state - implements AR-103
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Get worktree path for running tests
-	worktreePath, exists := sm.GetStateValue("worktree_path")
+	worktreePath, exists := sm.GetStateValue(KeyWorktreePath)
 	if !exists || worktreePath == "" {
-		c.logger.Warn("No worktree path found, skipping tests")
-		// Fallback to simulated testing for backward compatibility
-		return c.handleTestingLegacy(ctx, sm)
+		return proto.StateError, false, logx.Errorf("no worktree path found - workspace setup required")
 	}
 
 	worktreePathStr, ok := worktreePath.(string)
 	if !ok {
-		return proto.StateError, false, fmt.Errorf("worktree_path is not a string: %v", worktreePath)
+		return proto.StateError, false, logx.Errorf("worktree_path is not a string: %v", worktreePath)
 	}
 
 	// Use MCP test tool instead of direct build registry calls
@@ -1641,32 +1686,37 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		backendInfo, err := c.buildService.GetBackendInfo(worktreePathStr)
 		if err != nil {
 			c.logger.Error("Failed to get backend info: %v", err)
-			return proto.StateError, false, fmt.Errorf("failed to get backend info: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to get backend info")
 		}
 
 		// Store backend information for context
-		sm.SetStateData("build_backend", backendInfo.Name)
+		sm.SetStateData(KeyBuildBackend, backendInfo.Name)
 		c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backendInfo.Name))
 
 		// Run tests using the build service
 		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, worktreePathStr)
 		if err != nil {
 			c.logger.Error("Failed to run tests: %v", err)
-			sm.SetStateData("test_error", err.Error())
-			sm.SetStateData("test_failure_output", err.Error())
-			sm.SetStateData("coding_mode", "test_fix")
+			// Truncate error output to prevent context bloat
+			errorStr := err.Error()
+			truncatedError := truncateOutput(errorStr, 2000)
+			sm.SetStateData(KeyTestError, errorStr) // Keep full error for logging
+			sm.SetStateData(KeyTestFailureOutput, truncatedError) // Use truncated for context
+			sm.SetStateData(KeyCodingMode, "test_fix")
 			return StateCoding, false, nil
 		}
 
 		// Store test results
-		sm.SetStateData("tests_passed", testsPassed)
-		sm.SetStateData("test_output", testOutput)
-		sm.SetStateData("testing_completed_at", time.Now().UTC())
+		sm.SetStateData(KeyTestsPassed, testsPassed)
+		sm.SetStateData(KeyTestOutput, testOutput)
+		sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 		if !testsPassed {
 			c.logger.Info("Tests failed, transitioning to CODING state for fixes")
-			sm.SetStateData("test_failure_output", testOutput)
-			sm.SetStateData("coding_mode", "test_fix")
+			// Truncate test output to prevent context bloat
+			truncatedOutput := truncateOutput(testOutput, 2000)
+			sm.SetStateData(KeyTestFailureOutput, truncatedOutput)
+			sm.SetStateData(KeyCodingMode, "test_fix")
 			return StateCoding, false, nil
 		}
 
@@ -1678,33 +1728,38 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 	backend, err := c.buildRegistry.Detect(worktreePathStr)
 	if err != nil {
 		c.logger.Error("Failed to detect build backend: %v", err)
-		return proto.StateError, false, fmt.Errorf("failed to detect build backend: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to detect build backend")
 	}
 
 	// Store backend information for context
-	sm.SetStateData("build_backend", backend.Name())
+	sm.SetStateData(KeyBuildBackend, backend.Name())
 	c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backend.Name()))
 
 	// Run tests using the detected backend
 	testsPassed, testOutput, err := c.runMakeTest(ctx, worktreePathStr)
 
 	// Store test results
-	sm.SetStateData("tests_passed", testsPassed)
-	sm.SetStateData("test_output", testOutput)
-	sm.SetStateData("testing_completed_at", time.Now().UTC())
+	sm.SetStateData(KeyTestsPassed, testsPassed)
+	sm.SetStateData(KeyTestOutput, testOutput)
+	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 	if err != nil {
 		c.logger.Error("Failed to run tests: %v", err)
-		sm.SetStateData("test_error", err.Error())
-		sm.SetStateData("test_failure_output", err.Error())
-		sm.SetStateData("coding_mode", "test_fix")
+		// Truncate error output to prevent context bloat
+		errorStr := err.Error()
+		truncatedError := truncateOutput(errorStr, 2000)
+		sm.SetStateData(KeyTestError, errorStr) // Keep full error for logging
+		sm.SetStateData(KeyTestFailureOutput, truncatedError) // Use truncated for context
+		sm.SetStateData(KeyCodingMode, "test_fix")
 		return StateCoding, false, nil
 	}
 
 	if !testsPassed {
 		c.logger.Info("Tests failed, transitioning to CODING state for fixes")
-		sm.SetStateData("test_failure_output", testOutput)
-		sm.SetStateData("coding_mode", "test_fix")
+		// Truncate test output to prevent context bloat
+		truncatedOutput := truncateOutput(testOutput, 2000)
+		sm.SetStateData(KeyTestFailureOutput, truncatedOutput)
+		sm.SetStateData(KeyCodingMode, "test_fix")
 		return StateCoding, false, nil
 	}
 
@@ -1730,12 +1785,12 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 func (c *Coder) handleCodeReviewApproval(ctx context.Context, sm *agent.BaseStateMachine, approvalData any) (proto.State, bool, error) {
 	result, err := convertApprovalData(approvalData)
 	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to convert approval data: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to convert approval data")
 	}
 
 	// Store result and clear
 	sm.SetStateData(string(stateDataKeyCodeApprovalResult), nil)
-	sm.SetStateData("code_review_completed_at", time.Now().UTC())
+	sm.SetStateData(KeyCodeReviewCompletedAt, time.Now().UTC())
 
 	// Store approval type before clearing the request
 	approvalType := c.pendingApprovalRequest.Type
@@ -1777,11 +1832,11 @@ func (c *Coder) handleCodeReviewApproval(ctx context.Context, sm *agent.BaseStat
 	case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
 		c.logger.Info("🧑‍💻 Code rejected/needs changes, transitioning to CODING for fixes")
 		// Store review feedback for CODING state to prioritize
-		sm.SetStateData("code_review_rejection_feedback", result.Feedback)
-		sm.SetStateData("coding_mode", "review_fix")
+		sm.SetStateData(KeyCodeReviewRejectionFeedback, result.Feedback)
+		sm.SetStateData(KeyCodingMode, "review_fix")
 		return StateCoding, false, nil
 	default:
-		return proto.StateError, false, fmt.Errorf("unknown approval status: %s", result.Status)
+		return proto.StateError, false, logx.Errorf("unknown approval status: %s", result.Status)
 	}
 }
 
@@ -1790,13 +1845,9 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 	c.contextManager.AddMessage("assistant", "Await merge phase: waiting for architect merge result")
 
 	// Check if we already have merge result from previous processing
-	if mergeData, exists := sm.GetStateValue("merge_result"); exists {
-		result, err := convertMergeData(mergeData)
-		if err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to convert merge data: %w", err)
-		}
+	if result, exists := agent.GetTyped[git.MergeResult](sm, KeyMergeResult); exists {
 
-		sm.SetStateData("merge_completed_at", time.Now().UTC())
+		sm.SetStateData(KeyMergeCompletedAt, time.Now().UTC())
 
 		switch result.Status {
 		case "merged":
@@ -1804,11 +1855,11 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 			return proto.StateDone, false, nil
 		case "merge_conflict":
 			c.logger.Info("🧑‍💻 Merge conflict detected, transitioning to CODING for resolution")
-			sm.SetStateData("merge_conflict_details", result.ConflictInfo)
-			sm.SetStateData("coding_mode", "merge_fix")
+			sm.SetStateData(KeyMergeConflictDetails, result.ConflictInfo)
+			sm.SetStateData(KeyCodingMode, "merge_fix")
 			return StateCoding, false, nil
 		default:
-			return proto.StateError, false, fmt.Errorf("unknown merge status: %s", result.Status)
+			return proto.StateError, false, logx.Errorf("unknown merge status: %s", result.Status)
 		}
 	}
 
@@ -1828,66 +1879,29 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 
 			// Extract merge result and store it
 			if status, exists := resultMsg.GetPayload("status"); exists {
-				mergeResult := map[string]interface{}{
-					"status": status,
+				mergeResult := git.MergeResult{
+					Status: status.(string),
 				}
 				if conflictInfo, exists := resultMsg.GetPayload("conflict_details"); exists {
-					mergeResult["conflict_info"] = conflictInfo
+					mergeResult.ConflictInfo = conflictInfo.(string)
 				}
 				if mergeCommit, exists := resultMsg.GetPayload("merge_commit"); exists {
-					mergeResult["merge_commit"] = mergeCommit
+					mergeResult.MergeCommit = mergeCommit.(string)
 				}
 
-				sm.SetStateData("merge_result", mergeResult)
+				agent.SetTyped(sm, KeyMergeResult, mergeResult)
 				c.logger.Info("🧑‍💻 Merge result received and stored")
 				// Return same state to re-process with the new merge data
 				return StateAwaitMerge, false, nil
 			} else {
 				c.logger.Error("🧑‍💻 RESULT message missing status payload")
-				return proto.StateError, false, fmt.Errorf("RESULT message missing status")
+				return proto.StateError, false, logx.Errorf("RESULT message missing status")
 			}
 		} else {
 			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
 			return StateAwaitMerge, false, nil
 		}
 	}
-}
-
-// MergeResult represents the result of a merge operation
-type MergeResult struct {
-	Status       string
-	ConflictInfo string
-	MergeCommit  string
-}
-
-// convertMergeData converts stored merge data to MergeResult
-func convertMergeData(data interface{}) (*MergeResult, error) {
-	dataMap, ok := data.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("merge data is not a map")
-	}
-
-	result := &MergeResult{}
-
-	if status, exists := dataMap["status"]; exists {
-		if statusStr, ok := status.(string); ok {
-			result.Status = statusStr
-		}
-	}
-
-	if conflictInfo, exists := dataMap["conflict_info"]; exists {
-		if conflictStr, ok := conflictInfo.(string); ok {
-			result.ConflictInfo = conflictStr
-		}
-	}
-
-	if mergeCommit, exists := dataMap["merge_commit"]; exists {
-		if commitStr, ok := mergeCommit.(string); ok {
-			result.MergeCommit = commitStr
-		}
-	}
-
-	return result, nil
 }
 
 // handleBudgetReview processes the BUDGET_REVIEW state - blocks waiting for architect's RESULT response
@@ -1907,16 +1921,16 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 func (c *Coder) handleBudgetReviewApproval(ctx context.Context, sm *agent.BaseStateMachine, approvalData any) (proto.State, bool, error) {
 	result, err := convertApprovalData(approvalData)
 	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to convert budget review approval data: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to convert budget review approval data")
 	}
 
 	// Store result and clear
 	sm.SetStateData(string(stateDataKeyBudgetApprovalResult), nil)
-	sm.SetStateData("budget_review_completed_at", time.Now().UTC())
+	sm.SetStateData(KeyBudgetReviewCompletedAt, time.Now().UTC())
 	c.pendingApprovalRequest = nil // Clear since we have the result
 
 	// Get origin state from stored data
-	origin, _ := sm.GetStateValue("origin")
+	origin, _ := sm.GetStateValue(KeyOrigin)
 	originStr, _ := origin.(string)
 
 	switch result.Status {
@@ -1942,9 +1956,9 @@ func (c *Coder) handleBudgetReviewApproval(ctx context.Context, sm *agent.BaseSt
 	case proto.ApprovalStatusRejected:
 		// ABANDON - move to ERROR
 		c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
-		return proto.StateError, false, fmt.Errorf("task abandoned by architect after budget review")
+		return proto.StateError, false, logx.Errorf("task abandoned by architect after budget review")
 	default:
-		return proto.StateError, false, fmt.Errorf("unknown budget review approval status: %s", result.Status)
+		return proto.StateError, false, logx.Errorf("unknown budget review approval status: %s", result.Status)
 	}
 }
 
@@ -1962,7 +1976,7 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 	if answer, exists := sm.GetStateValue(string(stateDataKeyArchitectAnswer)); exists {
 		answerStr, _ := answer.(string)
 		sm.SetStateData(string(stateDataKeyQuestionAnswered), true)
-		sm.SetStateData("architect_response", answerStr)
+		sm.SetStateData(KeyArchitectResponse, answerStr)
 		sm.SetStateData(string(stateDataKeyQuestionCompletedAt), time.Now().UTC())
 
 		// Clear the answer so we don't loop
@@ -2018,7 +2032,7 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 			questionMsg.SetPayload(proto.KeyQuestion, content)
 			questionMsg.SetPayload(proto.KeyReason, questionReason.(string))
 			questionMsg.SetPayload(proto.KeyQuestionID, c.pendingQuestion.ID)
-			questionMsg.SetPayload("origin", questionOrigin.(string))
+			questionMsg.SetPayload(KeyOrigin, questionOrigin.(string))
 
 			if err := c.dispatcher.DispatchMessage(questionMsg); err != nil {
 				c.logger.Error("🧑‍💻 Failed to send QUESTION message to architect: %v", err)
@@ -2084,7 +2098,7 @@ func (c *Coder) ProcessApprovalResult(approvalStatus string, approvalType string
 	// Validate approval type
 	stdApprovalType, valid := proto.ValidateApprovalType(approvalType)
 	if !valid {
-		return fmt.Errorf("invalid approval type: %s", approvalType)
+		return logx.Errorf("invalid approval type: %s", approvalType)
 	}
 
 	result := &proto.ApprovalResult{
@@ -2100,12 +2114,12 @@ func (c *Coder) ProcessApprovalResult(approvalStatus string, approvalType string
 	case proto.ApprovalTypeCode:
 		c.BaseStateMachine.SetStateData(string(stateDataKeyCodeApprovalResult), result)
 	default:
-		return fmt.Errorf("unknown approval type: %s", approvalType)
+		return logx.Errorf("unknown approval type: %s", approvalType)
 	}
 
 	// Persist state to ensure approval result is saved
 	if err := c.BaseStateMachine.Persist(); err != nil {
-		return fmt.Errorf("failed to persist approval result: %w", err)
+		return logx.Wrap(err, "failed to persist approval result")
 	}
 
 	// Debug logging for approval processing
@@ -2193,7 +2207,7 @@ func (c *Coder) Step(ctx context.Context) (bool, error) {
 		// Transition validation is handled by base state machine
 
 		if err := c.TransitionTo(ctx, nextState, nil); err != nil {
-			return false, fmt.Errorf("failed to transition to state %s: %w", nextState, err)
+			return false, logx.Wrap(err, fmt.Sprintf("failed to transition to state %s", nextState))
 		}
 	}
 
@@ -2232,14 +2246,14 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	}
 
 	// Get story ID from state data
-	storyID, exists := sm.GetStateValue("story_id")
+	storyID, exists := sm.GetStateValue(KeyStoryID)
 	if !exists {
-		return proto.StateError, false, fmt.Errorf("no story_id found in state data during SETUP")
+		return proto.StateError, false, logx.Errorf("no story_id found in state data during SETUP")
 	}
 
 	storyIDStr, ok := storyID.(string)
 	if !ok {
-		return proto.StateError, false, fmt.Errorf("story_id is not a string in SETUP state: %v (type: %T)", storyID, storyID)
+		return proto.StateError, false, logx.Errorf("story_id is not a string in SETUP state: %v (type: %T)", storyID, storyID)
 	}
 
 	// Setup workspace
@@ -2249,12 +2263,12 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	workspaceResult, err := c.workspaceManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
 	if err != nil {
 		c.logger.Error("Failed to setup workspace: %v", err)
-		return proto.StateError, false, fmt.Errorf("workspace setup failed: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "workspace setup failed")
 	}
 
 	// Store worktree path and actual branch name for subsequent states
-	sm.SetStateData("worktree_path", workspaceResult.WorkDir)
-	sm.SetStateData("actual_branch_name", workspaceResult.BranchName)
+	sm.SetStateData(KeyWorktreePath, workspaceResult.WorkDir)
+	sm.SetStateData(KeyActualBranchName, workspaceResult.BranchName)
 
 	// Update the coder's working directory to use the agent work directory
 	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place
@@ -2266,7 +2280,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	// Configure container with read-only workspace for planning phase
 	if c.longRunningExecutor != nil {
 		if err := c.configureWorkspaceMount(ctx, true, "planning"); err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to configure planning container: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to configure planning container")
 		}
 	}
 
@@ -2324,7 +2338,7 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	// Start new container with appropriate configuration
 	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, execOpts)
 	if err != nil {
-		return fmt.Errorf("failed to start %s container: %w", purpose, err)
+		return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
 	}
 
 	c.containerName = containerName
@@ -2367,7 +2381,7 @@ func (c *Coder) cleanupContainer(ctx context.Context, reason string) {
 func (c *Coder) updateShellToolForStory(storyCtx context.Context) error {
 	// Update the shell tool to use the long-running executor
 	if err := tools.UpdateShellToolExecutor(c.longRunningExecutor); err != nil {
-		return fmt.Errorf("failed to update shell tool with long-running executor: %w", err)
+		return logx.Wrap(err, "failed to update shell tool with long-running executor")
 	}
 
 	return nil
@@ -2376,7 +2390,7 @@ func (c *Coder) updateShellToolForStory(storyCtx context.Context) error {
 // executeShellCommand runs a shell command in the current container
 func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string, error) {
 	if c.longRunningExecutor == nil || c.containerName == "" {
-		return "", fmt.Errorf("no active container for shell execution")
+		return "", logx.Errorf("no active container for shell execution")
 	}
 
 	opts := execpkg.ExecOpts{
@@ -2386,7 +2400,7 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 
 	result, err := c.longRunningExecutor.Run(ctx, args, opts)
 	if err != nil {
-		return "", fmt.Errorf("shell command failed: %w", err)
+		return "", logx.Wrap(err, "shell command failed")
 	}
 
 	return result.Stdout, nil
@@ -2429,7 +2443,7 @@ func (c *Coder) handleQuestionTransition(ctx context.Context, sm *agent.BaseStat
 	// Extract question details from tool result
 	questionMap, ok := questionData.(map[string]any)
 	if !ok {
-		return proto.StateError, false, fmt.Errorf("invalid question data format")
+		return proto.StateError, false, logx.Errorf("invalid question data format")
 	}
 
 	question, _ := questionMap["question"].(string)
@@ -2440,10 +2454,10 @@ func (c *Coder) handleQuestionTransition(ctx context.Context, sm *agent.BaseStat
 	sm.SetStateData(string(stateDataKeyQuestionContent), question)
 	sm.SetStateData(string(stateDataKeyQuestionReason), fmt.Sprintf("Planning clarification (%s urgency)", urgency))
 	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StatePlanning))
-	sm.SetStateData("question_context", context)
+	sm.SetStateData(KeyQuestionContext, context)
 
 	// Clear the question submission trigger
-	sm.SetStateData("question_submitted", nil)
+	sm.SetStateData(KeyQuestionSubmitted, nil)
 
 	c.logger.Info("🧑‍💻 Question submitted during planning: %s", question)
 	return StateQuestion, false, nil
@@ -2457,7 +2471,7 @@ func (c *Coder) handleCodingQuestionTransition(ctx context.Context, sm *agent.Ba
 	// Extract question details from tool result
 	questionMap, ok := questionData.(map[string]any)
 	if !ok {
-		return proto.StateError, false, fmt.Errorf("invalid question data format")
+		return proto.StateError, false, logx.Errorf("invalid question data format")
 	}
 
 	question, _ := questionMap["question"].(string)
@@ -2468,10 +2482,10 @@ func (c *Coder) handleCodingQuestionTransition(ctx context.Context, sm *agent.Ba
 	sm.SetStateData(string(stateDataKeyQuestionContent), question)
 	sm.SetStateData(string(stateDataKeyQuestionReason), fmt.Sprintf("Coding clarification (%s urgency)", urgency))
 	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StateCoding))
-	sm.SetStateData("question_context", context)
+	sm.SetStateData(KeyQuestionContext, context)
 
 	// Clear the question submission trigger
-	sm.SetStateData("question_submitted", nil)
+	sm.SetStateData(KeyQuestionSubmitted, nil)
 
 	c.logger.Info("🧑‍💻 Question submitted during coding: %s", question)
 	return StateQuestion, false, nil
@@ -2481,10 +2495,10 @@ func (c *Coder) handleCodingQuestionTransition(ctx context.Context, sm *agent.Ba
 func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMachine, planData any) (proto.State, bool, error) {
 	planMap, ok := planData.(map[string]any)
 	if !ok {
-		return proto.StateError, false, fmt.Errorf("invalid plan data format")
+		return proto.StateError, false, logx.Errorf("invalid plan data format")
 	}
 
-	plan, _ := planMap["plan"].(string)
+	plan, _ := planMap[KeyPlan].(string)
 	confidence, _ := planMap["confidence"].(string)
 	explorationSummary, _ := planMap["exploration_summary"].(string)
 	risks, _ := planMap["risks"].(string)
@@ -2512,10 +2526,10 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
 	sm.SetStateData(string(stateDataKeyPlanRisks), risks)
 	sm.SetStateData(string(stateDataKeyPlanTodos), planTodos)
-	sm.SetStateData("planning_completed_at", time.Now().UTC())
+	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
 	// Clear the plan submission trigger
-	sm.SetStateData("plan_submitted", nil)
+	sm.SetStateData(KeyPlanSubmitted, nil)
 
 	// Send REQUEST message to architect for approval
 	c.pendingApprovalRequest = &ApprovalRequest{
@@ -2529,7 +2543,7 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
 		requestMsg.SetPayload("approval_type", proto.ApprovalTypePlan.String())
-		requestMsg.SetPayload("plan", plan)
+		requestMsg.SetPayload(KeyPlan, plan)
 		requestMsg.SetPayload("confidence", confidence)
 		requestMsg.SetPayload("exploration_summary", explorationSummary)
 		requestMsg.SetPayload("risks", risks)
@@ -2538,13 +2552,13 @@ func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMac
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to send enhanced plan approval request: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to send enhanced plan approval request")
 		}
 
 		c.logger.Info("🧑‍💻 Sent enhanced plan approval request %s to architect", c.pendingApprovalRequest.ID)
 	} else {
 		c.logger.Error("🧑‍💻 Dispatcher is nil, cannot send plan approval request")
-		return proto.StateError, false, fmt.Errorf("dispatcher not available for plan approval request")
+		return proto.StateError, false, logx.Errorf("dispatcher not available for plan approval request")
 	}
 
 	return StatePlanReview, false, nil
@@ -2556,13 +2570,13 @@ func (c *Coder) handleCompletionSubmission(ctx context.Context, sm *agent.BaseSt
 
 	if completionData == nil {
 		c.logger.Debug("Completion data is nil, skipping")
-		return proto.StateError, false, fmt.Errorf("completion data is nil")
+		return proto.StateError, false, logx.Errorf("completion data is nil")
 	}
 
 	completionMap, ok := completionData.(map[string]any)
 	if !ok {
 		c.logger.Debug("Completion data is not map[string]any, got: %T, value: %+v", completionData, completionData)
-		return proto.StateError, false, fmt.Errorf("invalid completion data format: expected map[string]any, got %T", completionData)
+		return proto.StateError, false, logx.Errorf("invalid completion data format: expected map[string]any, got %T", completionData)
 	}
 
 	reason, _ := completionMap["reason"].(string)
@@ -2574,10 +2588,10 @@ func (c *Coder) handleCompletionSubmission(ctx context.Context, sm *agent.BaseSt
 	originalStoryStr, _ := originalStory.(string)
 
 	// Store completion data
-	sm.SetStateData("completion_reason", reason)
-	sm.SetStateData("completion_evidence", evidence)
-	sm.SetStateData("completion_confidence", confidence)
-	sm.SetStateData("completion_submitted_at", time.Now().UTC())
+	sm.SetStateData(KeyCompletionReason, reason)
+	sm.SetStateData(KeyCompletionEvidence, evidence)
+	sm.SetStateData(KeyCompletionConfidence, confidence)
+	sm.SetStateData(KeyCompletionSubmittedAt, time.Now().UTC())
 
 	// Clear the completion submission trigger
 	sm.SetStateData(string(stateDataKeyCompletionSubmitted), nil)
@@ -2598,18 +2612,18 @@ func (c *Coder) handleCompletionSubmission(ctx context.Context, sm *agent.BaseSt
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 		requestMsg.SetPayload("original_story", originalStoryStr)
-		requestMsg.SetPayload("completion_reason", reason)
-		requestMsg.SetPayload("completion_evidence", evidence)
-		requestMsg.SetPayload("completion_confidence", confidence)
+		requestMsg.SetPayload(KeyCompletionReason, reason)
+		requestMsg.SetPayload(KeyCompletionEvidence, evidence)
+		requestMsg.SetPayload(KeyCompletionConfidence, confidence)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to send completion approval request: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to send completion approval request")
 		}
 		c.logger.Info("🧑‍💻 Sent %s approval request %s to architect (request_type: %s)",
 			proto.ApprovalTypeCompletion, c.pendingApprovalRequest.ID, proto.RequestApproval.String())
 	} else {
 		c.logger.Error("🧑‍💻 Dispatcher is nil, cannot send completion approval request")
-		return proto.StateError, false, fmt.Errorf("dispatcher not available for completion approval request")
+		return proto.StateError, false, logx.Errorf("dispatcher not available for completion approval request")
 	}
 
 	// Clear the completion submission trigger
@@ -2630,7 +2644,7 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 	}
 
 	// Generate tree output for template (cached for efficiency)
-	treeOutput, exists := sm.GetStateValue("tree_output_cached")
+	treeOutput, exists := sm.GetStateValue(KeyTreeOutputCached)
 	if !exists {
 		tree := "Project structure not available"
 		if c.longRunningExecutor != nil && c.containerName != "" {
@@ -2658,7 +2672,7 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 			}
 		}
 		treeOutput = tree
-		sm.SetStateData("tree_output_cached", tree)
+		sm.SetStateData(KeyTreeOutputCached, tree)
 	}
 
 	// Create enhanced template data
@@ -2669,9 +2683,12 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 	}
 
 	// Render enhanced planning template
+	if c.renderer == nil {
+		return proto.StateError, false, logx.Errorf("template renderer not available for planning")
+	}
 	prompt, err := c.renderer.Render(templates.PlanningTemplate, templateData)
 	if err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to render planning template: %w", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to render planning template")
 	}
 
 	// Get LLM response with tool support
@@ -2687,11 +2704,11 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 	// Use base agent retry mechanism - exponential backoff is already implemented
 	resp, llmErr := c.llmClient.Complete(ctx, req)
 	if llmErr != nil {
-		return proto.StateError, false, fmt.Errorf("failed to get LLM planning response: %w", llmErr)
+		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM planning response")
 	}
 
 	if len(resp.Content) == 0 && len(resp.ToolCalls) == 0 {
-		return proto.StateError, false, fmt.Errorf("empty response from Claude")
+		return proto.StateError, false, logx.Errorf("empty response from Claude")
 	}
 
 	// Process tool calls if any (when supported)
@@ -2713,23 +2730,23 @@ func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
 		"current_findings":    c.getCurrentFindings(),
 		"timestamp":           time.Now().UTC(),
 	}
-	sm.SetStateData("planning_context_saved", context)
+	sm.SetStateData(KeyPlanningContextSaved, context)
 	c.logger.Debug("🧑‍💻 Stored planning context for QUESTION transition")
 }
 
 func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
 	context := map[string]any{
 		"coding_progress": c.getCodingProgress(),
-		"files_created":   c.getFilesCreated(),
+		KeyFilesCreated:   c.getFilesCreated(),
 		"current_task":    c.getCurrentTask(),
 		"timestamp":       time.Now().UTC(),
 	}
-	sm.SetStateData("coding_context_saved", context)
+	sm.SetStateData(KeyCodingContextSaved, context)
 	c.logger.Debug("🧑‍💻 Stored coding context for QUESTION transition")
 }
 
 func (c *Coder) restorePlanningContext(sm *agent.BaseStateMachine) {
-	if contextData, exists := sm.GetStateValue("planning_context_saved"); exists {
+	if contextData, exists := sm.GetStateValue(KeyPlanningContextSaved); exists {
 		if context, ok := contextData.(map[string]any); ok {
 			c.restoreExplorationHistory(context["exploration_history"])
 			c.restoreFilesExamined(context["files_examined"])
@@ -2740,10 +2757,10 @@ func (c *Coder) restorePlanningContext(sm *agent.BaseStateMachine) {
 }
 
 func (c *Coder) restoreCodingContext(sm *agent.BaseStateMachine) {
-	if contextData, exists := sm.GetStateValue("coding_context_saved"); exists {
+	if contextData, exists := sm.GetStateValue(KeyCodingContextSaved); exists {
 		if context, ok := contextData.(map[string]any); ok {
 			c.restoreCodingProgress(context["coding_progress"])
-			c.restoreFilesCreated(context["files_created"])
+			c.restoreFilesCreated(context[KeyFilesCreated])
 			c.restoreCurrentTask(context["current_task"])
 			c.logger.Debug("🧑‍💻 Restored coding context from QUESTION transition")
 		}
@@ -2781,7 +2798,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 		tool, err := tools.Get(toolCall.Name)
 		if err != nil {
 			c.logger.Error("Tool not found in registry: %s", toolCall.Name)
-			return proto.StateError, false, fmt.Errorf("tool %s not found: %w", toolCall.Name, err)
+			return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("tool %s not found", toolCall.Name))
 		}
 
 		result, err := tool.Exec(ctx, toolCall.Parameters)
@@ -2827,7 +2844,7 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 	case tools.ToolSubmitPlan:
 		if nextState == string(StatePlanReview) {
 			// Set plan_submitted state data to trigger handlePlanSubmission
-			sm.SetStateData("plan_submitted", resultMap)
+			sm.SetStateData(KeyPlanSubmitted, resultMap)
 			// Return to planning state to allow handlePlanSubmission to process the REQUEST
 			return StatePlanning, false, nil
 		}
@@ -2841,7 +2858,7 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 	case tools.ToolAskQuestion:
 		if nextState == string(StateQuestion) {
 			// Set question_submitted state data to trigger handleQuestionTransition
-			sm.SetStateData("question_submitted", resultMap)
+			sm.SetStateData(KeyQuestionSubmitted, resultMap)
 			return StatePlanning, false, nil
 		}
 	}
@@ -2862,9 +2879,9 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// DONE is terminal - orchestrator will handle all cleanup and restart
 	// Only log once when entering DONE state to avoid spam
-	if val, exists := sm.GetStateValue("done_logged"); !exists || val != true {
+	if val, exists := sm.GetStateValue(KeyDoneLogged); !exists || val != true {
 		c.logger.Info("🧑‍💻 Agent in DONE state - orchestrator will handle cleanup and restart")
-		sm.SetStateData("done_logged", true)
+		sm.SetStateData(KeyDoneLogged, true)
 	}
 
 	// Return done=true to stop the run loop
@@ -2874,7 +2891,7 @@ func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (pro
 // handleError implements cleanup and restart logic for ERROR state
 func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Log error state entry
-	errorMsg, _ := sm.GetStateValue("error_message")
+	errorMsg, _ := sm.GetStateValue(KeyErrorMessage)
 	c.logger.Error("Entered ERROR state: %v", errorMsg)
 
 	// Stop the long-running container
@@ -2886,7 +2903,7 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	}
 
 	// Attempt cleanup (best effort)
-	storyID, exists := sm.GetStateValue("story_id")
+	storyID, exists := sm.GetStateValue(KeyStoryID)
 	if exists {
 		if storyIDStr, ok := storyID.(string); ok {
 			agentID := c.GetAgentID()
@@ -2900,13 +2917,13 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	}
 
 	// Try to requeue the story for another agent to pick up
-	if storyID, exists := sm.GetStateValue("story_id"); exists {
+	if storyID, exists := sm.GetStateValue(KeyStoryID); exists {
 		if storyIDStr, ok := storyID.(string); ok && c.dispatcher != nil {
 			c.logger.Info("🧑‍💻 Attempting to requeue story %s for retry by another agent", storyIDStr)
 
 			// Send a fire-and-forget requeue message to architect
 			requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEUE, c.GetID(), "architect")
-			requeueMsg.SetPayload("story_id", storyIDStr)
+			requeueMsg.SetPayload(KeyStoryID, storyIDStr)
 			requeueMsg.SetPayload("reason", fmt.Sprintf("Agent error: %v", errorMsg))
 
 			if err := c.dispatcher.DispatchMessage(requeueMsg); err != nil {
@@ -2918,11 +2935,11 @@ func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	}
 
 	// Clear state data for fresh start (keep error info for debugging)
-	sm.SetStateData("story_id", nil)
-	sm.SetStateData("worktree_path", nil)
-	sm.SetStateData("task_content", nil)
-	sm.SetStateData("plan_approval_result", nil)
-	sm.SetStateData("code_approval_result", nil)
+	sm.SetStateData(KeyStoryID, nil)
+	sm.SetStateData(KeyWorktreePath, nil)
+	sm.SetStateData(KeyTaskContent, nil)
+	sm.SetStateData(KeyPlanApprovalResult, nil)
+	sm.SetStateData(KeyCodeApprovalResult, nil)
 
 	c.logger.Info("Error handled, ready for orchestrator cleanup and restart")
 	return proto.StateError, true, nil // Signal done=true for orchestrator restart
@@ -2939,7 +2956,7 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 	// Detect the appropriate build backend
 	backend, err := c.buildRegistry.Detect(worktreePath)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to detect build backend: %w", err)
+		return false, "", logx.Wrap(err, "failed to detect build backend")
 	}
 
 	c.logger.Info("Using %s backend for testing", backend.Name())
@@ -2957,7 +2974,7 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 	if err != nil {
 		// Check if it's a timeout
 		if testCtx.Err() == context.DeadlineExceeded {
-			return false, outputStr, fmt.Errorf("tests timed out after 5 minutes")
+			return false, outputStr, logx.Errorf("tests timed out after 5 minutes")
 		}
 
 		// Tests failed - this is expected when tests fail
@@ -2989,7 +3006,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 	// Execute test via build service
 	response, err := c.buildService.ExecuteBuild(testCtx, req)
 	if err != nil {
-		return false, "", fmt.Errorf("build service test execution failed: %w", err)
+		return false, "", logx.Wrap(err, "build service test execution failed")
 	}
 
 	// Log the test output for debugging
@@ -2998,7 +3015,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 	if !response.Success {
 		// Check if it's a timeout
 		if testCtx.Err() == context.DeadlineExceeded {
-			return false, response.Output, fmt.Errorf("tests timed out after 5 minutes")
+			return false, response.Output, logx.Errorf("tests timed out after 5 minutes")
 		}
 
 		// Tests failed - this is expected when tests fail
@@ -3011,30 +3028,6 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 	return true, response.Output, nil
 }
 
-// handleTestingLegacy provides backward compatibility for testing without worktrees
-func (c *Coder) handleTestingLegacy(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	c.logger.Info("Using legacy testing mode (no worktree)")
-
-	// Check for deliberate test failures
-	taskContent, _ := sm.GetStateValue(string(stateDataKeyTaskContent))
-	taskStr, _ := taskContent.(string)
-
-	shouldFail := strings.Contains(strings.ToLower(taskStr), "test fail") ||
-		strings.Contains(strings.ToLower(taskStr), "simulate fail")
-
-	// Check if already tried fixing
-	_, alreadyFixed := sm.GetStateValue("fixes_applied")
-
-	testsPassed := !shouldFail || alreadyFixed
-	sm.SetStateData("tests_passed", testsPassed)
-	sm.SetStateData("testing_completed_at", time.Now().UTC())
-
-	if !testsPassed {
-	}
-
-	return c.proceedToCodeReview(ctx, sm)
-}
-
 // proceedToCodeReview handles the common logic for transitioning to CODE_REVIEW after successful testing
 func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Generate git diff to check if any files actually changed
@@ -3045,7 +3038,7 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 	}
 
 	// Tests passed, send REQUEST message to architect for approval
-	filesCreated, _ := sm.GetStateValue("files_created")
+	filesCreated, _ := sm.GetStateValue(KeyFilesCreated)
 
 	// Check if we have any actual changes to review
 	if gitDiff == "" || len(strings.TrimSpace(gitDiff)) == 0 {
@@ -3083,12 +3076,12 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return proto.StateError, false, fmt.Errorf("failed to send approval request: %w", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to send approval request")
 		}
 
 		c.logger.Info("🧑‍💻 Sent %s approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.Type, c.pendingApprovalRequest.ID)
 	} else {
-		return proto.StateError, false, fmt.Errorf("dispatcher not set")
+		return proto.StateError, false, logx.Errorf("dispatcher not set")
 	}
 
 	return StateCodeReview, false, nil
@@ -3099,7 +3092,7 @@ func (c *Coder) generateGitDiff(ctx context.Context, sm *agent.BaseStateMachine)
 	// Get the shell tool from registry
 	tool, err := tools.Get("shell")
 	if err != nil {
-		return "", fmt.Errorf("shell tool not available: %w", err)
+		return "", logx.Wrap(err, "shell tool not available")
 	}
 
 	// Get the main branch name for comparison (usually 'main' or 'master')
@@ -3117,7 +3110,7 @@ func (c *Coder) generateGitDiff(ctx context.Context, sm *agent.BaseStateMachine)
 		args["cmd"] = "git diff master..HEAD"
 		result, err = tool.Exec(ctx, args)
 		if err != nil {
-			return "", fmt.Errorf("failed to generate git diff: %w", err)
+			return "", logx.Wrap(err, "failed to generate git diff")
 		}
 	}
 
@@ -3128,7 +3121,7 @@ func (c *Coder) generateGitDiff(ctx context.Context, sm *agent.BaseStateMachine)
 		}
 	}
 
-	return "", fmt.Errorf("unexpected result format from shell tool")
+	return "", logx.Errorf("unexpected result format from shell tool")
 }
 
 // cleanupEmptyBranch optionally deletes the development branch when no changes were made
@@ -3136,11 +3129,11 @@ func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachi
 	// Get the shell tool from registry
 	tool, err := tools.Get("shell")
 	if err != nil {
-		return fmt.Errorf("shell tool not available: %w", err)
+		return logx.Wrap(err, "shell tool not available")
 	}
 
 	// Get the current branch name
-	branchName, exists := sm.GetStateValue("branch_name")
+	branchName, exists := sm.GetStateValue(KeyBranchName)
 	if !exists {
 		c.logger.Debug("No branch name stored, skipping branch cleanup")
 		return nil
@@ -3166,7 +3159,7 @@ func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachi
 		args["cmd"] = "git checkout master"
 		_, err = tool.Exec(ctx, args)
 		if err != nil {
-			return fmt.Errorf("failed to checkout main/master branch: %w", err)
+			return logx.Wrap(err, "failed to checkout main/master branch")
 		}
 	}
 
@@ -3174,7 +3167,7 @@ func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachi
 	args["cmd"] = "git branch -D " + branchNameStr
 	_, err = tool.Exec(ctx, args)
 	if err != nil {
-		return fmt.Errorf("failed to delete branch %s: %w", branchNameStr, err)
+		return logx.Wrap(err, fmt.Sprintf("failed to delete branch %s", branchNameStr))
 	}
 
 	c.logger.Info("🧹 Successfully cleaned up empty branch: %s", branchNameStr)
@@ -3184,7 +3177,7 @@ func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachi
 // pushBranchAndCreatePR implements AR-104: Push branch & open pull request
 func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMachine) error {
 	// Get worktree path and story ID
-	worktreePath, exists := sm.GetStateValue("worktree_path")
+	worktreePath, exists := sm.GetStateValue(KeyWorktreePath)
 	if !exists || worktreePath == "" {
 		c.logger.Warn("No worktree path found, skipping branch push and PR creation")
 		return nil // Not an error - just skip for backward compatibility
@@ -3192,21 +3185,21 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 
 	worktreePathStr, ok := worktreePath.(string)
 	if !ok {
-		return fmt.Errorf("worktree_path is not a string: %v", worktreePath)
+		return logx.Errorf("worktree_path is not a string: %v", worktreePath)
 	}
 
-	storyID, exists := sm.GetStateValue("story_id")
+	storyID, exists := sm.GetStateValue(KeyStoryID)
 	if !exists || storyID == nil {
-		return fmt.Errorf("no story_id found in state data")
+		return logx.Errorf("no story_id found in state data")
 	}
 
 	storyIDStr, ok := storyID.(string)
 	if !ok {
-		return fmt.Errorf("story_id is not a string in pushBranchAndCreatePR: %v (type: %T)", storyID, storyID)
+		return logx.Errorf("story_id is not a string in pushBranchAndCreatePR: %v (type: %T)", storyID, storyID)
 	}
 
 	// Use the actual branch name that was created (which may be different due to collisions)
-	actualBranchName, exists := sm.GetStateValue("actual_branch_name")
+	actualBranchName, exists := sm.GetStateValue(KeyActualBranchName)
 	if !exists || actualBranchName == "" {
 		// Fallback to generating the branch name if not found
 		actualBranchName = fmt.Sprintf("story-%s", storyIDStr)
@@ -3232,7 +3225,7 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 	addCmd.Dir = worktreePathStr
 	addOutput, err := addCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to stage changes: %w\nOutput: %s", err, string(addOutput))
+		return logx.Errorf("failed to stage changes: %w\nOutput: %s", err, string(addOutput))
 	}
 	c.logger.Info("Staged all changes for commit")
 
@@ -3241,7 +3234,7 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 	statusCmd.Dir = worktreePathStr
 	statusOutput, err := statusCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to check git status: %w\nOutput: %s", err, string(statusOutput))
+		return logx.Errorf("failed to check git status: %w\nOutput: %s", err, string(statusOutput))
 	}
 
 	if len(strings.TrimSpace(string(statusOutput))) == 0 {
@@ -3255,7 +3248,7 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 	commitCmd.Dir = worktreePathStr
 	commitOutput, err := commitCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to commit changes: %w\nOutput: %s", err, string(commitOutput))
+		return logx.Errorf("failed to commit changes: %w\nOutput: %s", err, string(commitOutput))
 	}
 	c.logger.Info("Committed changes for story %s", storyIDStr)
 
@@ -3263,17 +3256,17 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 	pushCtx, pushCancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer pushCancel()
 
-	pushCmd := exec.CommandContext(pushCtx, "git", "push", "-u", "origin", branchName)
+	pushCmd := exec.CommandContext(pushCtx, "git", "push", "-u", KeyOrigin, branchName)
 	pushCmd.Dir = worktreePathStr
 
 	pushOutput, err := pushCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to push branch %s: %w\nOutput: %s", branchName, err, string(pushOutput))
+		return logx.Errorf("failed to push branch %s: %w\nOutput: %s", branchName, err, string(pushOutput))
 	}
 
 	c.logger.Info("Successfully pushed branch %s", branchName)
-	sm.SetStateData("branch_pushed", true)
-	sm.SetStateData("pushed_branch", branchName)
+	sm.SetStateData(KeyBranchPushed, true)
+	sm.SetStateData(KeyPushedBranch, branchName)
 
 	// Step 3: Create PR if GITHUB_TOKEN is available
 	if githubToken := os.Getenv("GITHUB_TOKEN"); githubToken != "" {
@@ -3283,18 +3276,18 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 		if err != nil {
 			// Log error but don't fail the push - PR creation is optional
 			c.logger.Error("Failed to create pull request: %v", err)
-			sm.SetStateData("pr_creation_error", err.Error())
+			sm.SetStateData(KeyPRCreationError, err.Error())
 		} else {
 			c.logger.Info("Successfully created pull request: %s", prURL)
-			sm.SetStateData("pr_url", prURL)
-			sm.SetStateData("pr_created", true)
+			sm.SetStateData(KeyPRURL, prURL)
+			sm.SetStateData(KeyPRCreated, true)
 
 			// TODO: Post PR URL back to architect agent via message
 			c.logger.Info("🧑‍💻 Pull request created for story %s: %s", storyIDStr, prURL)
 		}
 	} else {
 		c.logger.Info("No GITHUB_TOKEN found, skipping automatic PR creation")
-		sm.SetStateData("pr_skipped", "no_github_token")
+		sm.SetStateData(KeyPRSkipped, "no_github_token")
 	}
 
 	return nil
@@ -3313,12 +3306,12 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 
 	// Check if gh is available
 	if _, err := exec.LookPath("gh"); err != nil {
-		return "", fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
+		return "", logx.Wrap(err, "gh (GitHub CLI) is not available in PATH")
 	}
 
 	// Check if GITHUB_TOKEN is set
 	if os.Getenv("GITHUB_TOKEN") == "" {
-		return "", fmt.Errorf("GITHUB_TOKEN environment variable is not set")
+		return "", logx.Errorf("GITHUB_TOKEN environment variable is not set")
 	}
 
 	// Create PR using gh CLI
@@ -3331,7 +3324,7 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 
 	prOutput, err := prCmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("gh pr create failed: %w\nOutput: %s", err, string(prOutput))
+		return "", logx.Errorf("gh pr create failed: %w\nOutput: %s", err, string(prOutput))
 	}
 
 	// Extract PR URL from output (gh returns the PR URL)
@@ -3341,9 +3334,9 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 
 // sendMergeRequest sends a merge request to the architect for PR merging
 func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine) error {
-	storyID, _ := sm.GetStateValue("story_id")
-	prURL, _ := sm.GetStateValue("pr_url")
-	branchName, _ := sm.GetStateValue("pushed_branch")
+	storyID, _ := sm.GetStateValue(KeyStoryID)
+	prURL, _ := sm.GetStateValue(KeyPRURL)
+	branchName, _ := sm.GetStateValue(KeyPushedBranch)
 
 	// Convert to strings safely
 	storyIDStr, _ := storyID.(string)
@@ -3351,20 +3344,20 @@ func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine
 	branchNameStr, _ := branchName.(string)
 
 	// Log the state of PR creation for debugging
-	if prCreated, exists := sm.GetStateValue("pr_created"); exists && prCreated.(bool) {
+	if prCreated, exists := sm.GetStateValue(KeyPRCreated); exists && prCreated.(bool) {
 		c.logger.Info("🧑‍💻 Sending merge request to architect for story %s with PR: %s", storyIDStr, prURLStr)
 	} else {
 		c.logger.Info("🧑‍💻 Sending merge request to architect for story %s with branch: %s (PR creation failed or skipped)", storyIDStr, branchNameStr)
-		if prError, exists := sm.GetStateValue("pr_creation_error"); exists {
+		if prError, exists := sm.GetStateValue(KeyPRCreationError); exists {
 			c.logger.Warn("🧑‍💻 PR creation error: %v", prError)
 		}
 	}
 
 	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 	requestMsg.SetPayload("request_type", "merge")
-	requestMsg.SetPayload("pr_url", prURLStr)
-	requestMsg.SetPayload("branch_name", branchNameStr)
-	requestMsg.SetPayload("story_id", storyIDStr)
+	requestMsg.SetPayload(KeyPRURL, prURLStr)
+	requestMsg.SetPayload(KeyBranchName, branchNameStr)
+	requestMsg.SetPayload(KeyStoryID, storyIDStr)
 
 	return c.dispatcher.DispatchMessage(requestMsg)
 }
@@ -3372,7 +3365,7 @@ func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine
 // addToolResultToContext adds tool execution results to context for Claude to see (DRY version of CODING logic)
 func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 	// Handle shell tool results specifically (most common case)
-	if toolCall.Name == "shell" {
+	if toolCall.Name == tools.ToolShell {
 		if cmd, ok := toolCall.Parameters["cmd"].(string); ok {
 			c.logger.Info("Shell command: %s", cmd)
 			c.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))

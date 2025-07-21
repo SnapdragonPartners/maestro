@@ -1,7 +1,7 @@
 .PHONY: build test lint run clean agentctl replayer ui-dev build-css
 
 # Build all binaries
-build: lint 
+build:
 	go generate ./...
 	go build -o bin/maestro ./cmd/orchestrator
 	go build -o bin/agentctl ./cmd/agentctl
@@ -19,11 +19,16 @@ replayer:
 test:
 	go test ./...
 
+# Install golangci-lint if not present
+install-lint:
+	@which golangci-lint > /dev/null || { \
+		echo "Installing golangci-lint..."; \
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
+	}
+
 # Run linting tools
-lint:
-	go fix ./...
-	gofmt -s -w .
-	staticcheck ./...
+lint: install-lint
+	golangci-lint run
 
 # Lint documentation (markdown files)
 lint-docs:

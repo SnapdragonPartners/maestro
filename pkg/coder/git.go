@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"orchestrator/pkg/logx"
 )
@@ -55,7 +56,7 @@ func (g *DefaultGitRunner) Run(ctx context.Context, dir string, args ...string) 
 		g.logger.Error("Git command failed: cd %s && git %s", logDir, strings.Join(args, " "))
 		g.logger.Error("Git error: %v", err)
 		g.logger.Error("Git output: %s", string(output))
-		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s",
+		return output, logx.Errorf("git %s failed in %s: %w\nOutput: %s",
 			strings.Join(args, " "), dir, err, string(output))
 	}
 
@@ -82,7 +83,7 @@ func (g *DefaultGitRunner) RunQuiet(ctx context.Context, dir string, args ...str
 
 	// Don't log errors - caller will handle them if needed
 	if err != nil {
-		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s",
+		return output, logx.Errorf("git %s failed in %s: %w\nOutput: %s",
 			strings.Join(args, " "), dir, err, string(output))
 	}
 
@@ -151,7 +152,7 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 	// Step 1: Ensure mirror clone exists and is up to date
 	mirrorPath, err := w.ensureMirrorClone(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to setup mirror clone: %w", err)
+		return nil, logx.Wrap(err, "failed to setup mirror clone")
 	}
 	w.logger.Debug("Mirror path: %s", mirrorPath)
 
@@ -168,13 +169,13 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 
 	// Step 3: Create fresh agent work directory (remove existing if present)
 	if err := w.createFreshWorktree(ctx, mirrorPath, agentWorkDirPath); err != nil {
-		return nil, fmt.Errorf("failed to create fresh worktree at %s: %w", agentWorkDirPath, err)
+		return nil, logx.Wrap(err, fmt.Sprintf("failed to create fresh worktree at %s", agentWorkDirPath))
 	}
 
 	// Verify the worktree exists
 	if _, err := os.Stat(agentWorkDirPath); err != nil {
 		w.logger.Error("Agent work directory does not exist after worktree setup: %s (error: %v)", agentWorkDirPath, err)
-		return nil, fmt.Errorf("agent work directory was not created at %s: %w", agentWorkDirPath, err)
+		return nil, logx.Wrap(err, fmt.Sprintf("agent work directory was not created at %s", agentWorkDirPath))
 	}
 	w.logger.Debug("Verified agent work directory exists at: %s", agentWorkDirPath)
 
@@ -182,7 +183,7 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 	branchName := w.buildBranchName(storyID)
 	actualBranchName, err := w.createBranch(ctx, agentWorkDirPath, branchName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create branch: %w", err)
+		return nil, logx.Wrap(err, "failed to create branch")
 	}
 
 	return &WorkspaceResult{
@@ -201,7 +202,7 @@ func (w *WorkspaceManager) CleanupWorkspace(ctx context.Context, agentID, storyI
 	if _, err := os.Stat(agentWorkDirPath); err == nil {
 		w.logger.Debug("Removing agent work directory: %s", agentWorkDirPath)
 		if err := os.RemoveAll(agentWorkDirPath); err != nil {
-			return fmt.Errorf("failed to remove agent work directory: %w", err)
+			return logx.Wrap(err, "failed to remove agent work directory")
 		}
 	} else {
 		w.logger.Debug("Agent work directory does not exist, nothing to clean up: %s", agentWorkDirPath)
@@ -227,7 +228,7 @@ func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, c
 		w.logger.Debug("Stopping container: %s", containerName)
 		if err := w.containerManager.StopContainer(ctx, containerName); err != nil {
 			w.logger.Error("Failed to stop container %s: %v", containerName, err)
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("container cleanup failed: %w", err))
+			cleanupErrors = append(cleanupErrors, logx.Wrap(err, "container cleanup failed"))
 		} else {
 			w.logger.Info("Successfully stopped container: %s", containerName)
 		}
@@ -237,7 +238,7 @@ func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, c
 	// Use empty storyID since we're cleaning up entire agent workspace
 	if err := w.CleanupWorkspace(ctx, agentID, "", agentWorkDir); err != nil {
 		w.logger.Error("Failed to cleanup workspace for agent %s: %v", agentID, err)
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("workspace cleanup failed: %w", err))
+		cleanupErrors = append(cleanupErrors, logx.Wrap(err, "workspace cleanup failed"))
 	}
 
 	// 3. Remove agent state directory if provided
@@ -245,7 +246,7 @@ func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, c
 		w.logger.Debug("Removing agent state directory: %s", stateDir)
 		if err := os.RemoveAll(stateDir); err != nil {
 			w.logger.Error("Failed to remove state directory %s: %v", stateDir, err)
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("state directory cleanup failed: %w", err))
+			cleanupErrors = append(cleanupErrors, logx.Wrap(err, "state directory cleanup failed"))
 		} else {
 			w.logger.Info("Removed agent state directory: %s", stateDir)
 		}
@@ -256,13 +257,13 @@ func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, c
 		w.logger.Debug("Shutting down container manager")
 		if err := w.containerManager.Shutdown(ctx); err != nil {
 			w.logger.Error("Failed to shutdown container manager: %v", err)
-			cleanupErrors = append(cleanupErrors, fmt.Errorf("container manager shutdown failed: %w", err))
+			cleanupErrors = append(cleanupErrors, logx.Wrap(err, "container manager shutdown failed"))
 		}
 	}
 
 	// Return combined errors if any occurred
 	if len(cleanupErrors) > 0 {
-		return fmt.Errorf("cleanup completed with %d errors: %v", len(cleanupErrors), cleanupErrors)
+		return logx.Errorf("cleanup completed with %d errors: %v", len(cleanupErrors), cleanupErrors)
 	}
 
 	w.logger.Info("Successfully completed comprehensive cleanup for agent %s", agentID)
@@ -277,19 +278,35 @@ func (w *WorkspaceManager) ensureMirrorClone(ctx context.Context) (string, error
 	if _, err := os.Stat(mirrorPath); os.IsNotExist(err) {
 		// Create mirror directory
 		if err := os.MkdirAll(filepath.Dir(mirrorPath), 0755); err != nil {
-			return "", fmt.Errorf("failed to create mirror directory: %w", err)
+			return "", logx.Wrap(err, "failed to create mirror directory")
 		}
 
 		// Clone bare repository (not mirror to avoid push conflicts)
 		_, err := w.gitRunner.Run(ctx, "", "clone", "--bare", w.repoURL, mirrorPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to clone mirror from %s to %s: %w", w.repoURL, mirrorPath, err)
+			return "", logx.Wrap(err, fmt.Sprintf("failed to clone mirror from %s to %s", w.repoURL, mirrorPath))
 		}
 	} else {
 		// Update existing mirror - fetch all branches and tags with pruning
-		_, err := w.gitRunner.Run(ctx, mirrorPath, "remote", "update", "--prune")
+		// Use file locking to prevent concurrent git remote update operations
+		lockPath := filepath.Join(mirrorPath, ".update.lock")
+		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return "", fmt.Errorf("failed to update mirror %s: %w", mirrorPath, err)
+			return "", logx.Wrap(err, fmt.Sprintf("failed to create lock file %s", lockPath))
+		}
+		defer lockFile.Close()
+		defer os.Remove(lockPath) // Clean up lock file
+
+		// Acquire exclusive lock (blocks until available)
+		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX)
+		if err != nil {
+			return "", logx.Wrap(err, "failed to acquire exclusive lock for git remote update")
+		}
+		defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) // Release lock
+
+		_, err = w.gitRunner.Run(ctx, mirrorPath, "remote", "update", "--prune")
+		if err != nil {
+			return "", logx.Wrap(err, fmt.Sprintf("failed to update mirror %s", mirrorPath))
 		}
 	}
 
@@ -326,7 +343,7 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 	if _, err := os.Stat(agentWorkDir); err == nil {
 		w.logger.Debug("Removing existing agent work directory: %s", agentWorkDir)
 		if err := os.RemoveAll(agentWorkDir); err != nil {
-			return fmt.Errorf("failed to remove existing directory: %w", err)
+			return logx.Wrap(err, "failed to remove existing directory")
 		}
 	}
 
@@ -339,14 +356,14 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 
 	// Step 3: Create parent directory if needed
 	if err := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); err != nil {
-		return fmt.Errorf("failed to create parent directory: %w", err)
+		return logx.Wrap(err, "failed to create parent directory")
 	}
 
 	// Step 4: Create the fresh worktree
 	w.logger.Debug("Creating fresh worktree at: %s", agentWorkDir)
 	_, err = w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", agentWorkDir, w.baseBranch)
 	if err != nil {
-		return fmt.Errorf("git worktree add --detach %s %s failed from %s: %w", agentWorkDir, w.baseBranch, mirrorPath, err)
+		return logx.Wrap(err, fmt.Sprintf("git worktree add --detach %s %s failed from %s", agentWorkDir, w.baseBranch, mirrorPath))
 	}
 
 	w.logger.Debug("Successfully created fresh worktree at: %s", agentWorkDir)
@@ -362,7 +379,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, agentWorkDir, branc
 	// Check if agent work directory exists before trying to create branch
 	if _, err := os.Stat(agentWorkDir); os.IsNotExist(err) {
 		w.logger.Error("agent work directory does not exist: %s", agentWorkDir)
-		return "", fmt.Errorf("agent work directory does not exist: %s", agentWorkDir)
+		return "", logx.Errorf("agent work directory does not exist: %s", agentWorkDir)
 	}
 	w.logger.Debug("Agent work directory exists, proceeding with branch creation")
 
@@ -390,7 +407,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, agentWorkDir, branc
 				return branchName, nil
 			}
 			// If creation still failed, it's a real error
-			return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, agentWorkDir, err)
+			return "", logx.Wrap(err, fmt.Sprintf("git switch -c %s failed in %s", branchName, agentWorkDir))
 		}
 
 		// Branch exists, try next incremental name
@@ -400,7 +417,7 @@ func (w *WorkspaceManager) createBranch(ctx context.Context, agentWorkDir, branc
 	}
 
 	// If we've exhausted all attempts
-	return "", fmt.Errorf("unable to find available branch name after %d attempts, last tried: %s", maxAttempts, branchName)
+	return "", logx.Errorf("unable to find available branch name after %d attempts, last tried: %s", maxAttempts, branchName)
 }
 
 // getExistingBranches gets a list of all branches (local and remote) in the repository
@@ -408,7 +425,7 @@ func (w *WorkspaceManager) getExistingBranches(ctx context.Context, agentWorkDir
 	// Get all branches (local and remote)
 	output, err := w.gitRunner.Run(ctx, agentWorkDir, "branch", "-a")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list branches: %w", err)
+		return nil, logx.Wrap(err, "failed to list branches")
 	}
 
 	// Parse branch names from output
@@ -468,11 +485,11 @@ func (w *WorkspaceManager) createBranchWithRetry(ctx context.Context, agentWorkD
 		}
 
 		// If it's not a collision error, return the original error
-		return "", fmt.Errorf("git switch -c %s failed in %s: %w", branchName, agentWorkDir, err)
+		return "", logx.Wrap(err, fmt.Sprintf("git switch -c %s failed in %s", branchName, agentWorkDir))
 	}
 
 	// If we've exhausted all attempts
-	return "", fmt.Errorf("unable to create branch after %d attempts, last tried: %s", maxAttempts, branchName)
+	return "", logx.Errorf("unable to create branch after %d attempts, last tried: %s", maxAttempts, branchName)
 }
 
 // BuildMirrorPath constructs the mirror repository path

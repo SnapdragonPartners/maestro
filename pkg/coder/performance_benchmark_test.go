@@ -36,7 +36,7 @@ func BenchmarkContainerLifecycle(b *testing.B) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("perf-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("perf-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		b.Fatalf("Failed to create driver: %v", err)
 	}
@@ -95,7 +95,7 @@ func BenchmarkContextPreservation(b *testing.B) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("context-perf-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("context-perf-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		b.Fatalf("Failed to create driver: %v", err)
 	}
@@ -151,7 +151,7 @@ func BenchmarkHelperMethods(b *testing.B) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("helpers-perf-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("helpers-perf-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		b.Fatalf("Failed to create driver: %v", err)
 	}
@@ -231,12 +231,12 @@ func BenchmarkStateDataOperations(b *testing.B) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("state-perf-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("state-perf-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		b.Fatalf("Failed to create driver: %v", err)
 	}
 
-	testData := map[string]interface{}{
+	testData := map[string]any{
 		"task_content":          "Benchmark task content",
 		"plan":                  "Benchmark implementation plan",
 		"plan_confidence":       "HIGH",

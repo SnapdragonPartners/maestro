@@ -36,9 +36,20 @@ func NewContextManagerWithModel(modelConfig *config.ModelCfg) *ContextManager {
 
 // AddMessage stores a role/content pair in the context
 func (cm *ContextManager) AddMessage(role string, content string) {
+	// Basic validation - skip empty content to prevent context pollution
+	if strings.TrimSpace(content) == "" {
+		return // Silently ignore empty messages
+	}
+
+	// Clean up role to prevent malformed context
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "assistant" // Default role for empty roles
+	}
+
 	message := Message{
 		Role:    role,
-		Content: content,
+		Content: strings.TrimSpace(content),
 	}
 	cm.messages = append(cm.messages, message)
 }
@@ -93,23 +104,158 @@ func (cm *ContextManager) compactIfNeededLegacy(threshold int) error {
 
 // performCompaction reduces context size to the target
 func (cm *ContextManager) performCompaction(targetTokens int) error {
-	if len(cm.messages) <= 1 {
-		// Can't compact if we have 1 or fewer messages
+	// Always preserve index 0 (system prompt) and ensure minimum viable context
+	if len(cm.messages) <= 2 {
+		// Keep system prompt + at least one exchange - can't compact further
 		return nil
 	}
 
-	// Simple strategy: remove oldest messages until we're under target
-	for cm.CountTokens() > targetTokens && len(cm.messages) > 1 {
-		// Keep the first message (usually system prompt) and remove the second
-		if len(cm.messages) > 2 {
-			cm.messages = append(cm.messages[:1], cm.messages[2:]...)
-		} else {
-			// If only 2 messages, remove the first one
-			cm.messages = cm.messages[1:]
-		}
+	// Try simple sliding window compaction first
+	originalLen := len(cm.messages)
+	for cm.CountTokens() > targetTokens && len(cm.messages) > 2 {
+		// Remove the second message (oldest non-system message)
+		// This maintains: [system, msg3, msg4, ...] -> [system, msg4, ...]
+		cm.messages = append(cm.messages[:1], cm.messages[2:]...)
+	}
+
+	// If we removed a significant amount of context (>50% of messages),
+	// and we're still over target, try summarization instead
+	if len(cm.messages) < originalLen/2 && cm.CountTokens() > targetTokens {
+		return cm.performSummarization(targetTokens)
 	}
 
 	return nil
+}
+
+// performSummarization uses LLM-based context compression
+func (cm *ContextManager) performSummarization(targetTokens int) error {
+	if len(cm.messages) <= 2 {
+		return nil // Can't summarize minimal context
+	}
+
+	// Identify messages to summarize (everything except system + last exchange)
+	systemMsg := cm.messages[0]
+	var recentMsgs []Message
+	var toSummarize []Message
+
+	// Keep the last 2 messages as "recent" (preserve user-assistant exchange)
+	if len(cm.messages) >= 2 {
+		recentMsgs = cm.messages[len(cm.messages)-2:]
+		toSummarize = cm.messages[1:len(cm.messages)-2]
+	}
+
+	if len(toSummarize) == 0 {
+		return nil // Nothing to summarize
+	}
+
+	// Create summary of the middle conversation
+	summary := cm.createConversationSummary(toSummarize)
+	if summary == "" {
+		return nil // Fallback to sliding window if summarization fails
+	}
+
+	// Create summary message
+	summaryMsg := Message{
+		Role:    "assistant",
+		Content: fmt.Sprintf("Previous conversation summary: %s", summary),
+	}
+
+	// Reconstruct messages: [system, summary, recent_exchange...]
+	newMessages := []Message{systemMsg, summaryMsg}
+	newMessages = append(newMessages, recentMsgs...)
+	
+	cm.messages = newMessages
+	return nil
+}
+
+// createConversationSummary generates a concise summary of conversation messages
+func (cm *ContextManager) createConversationSummary(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	// Simple text-based summarization for now
+	// This could be enhanced to use an actual LLM call in the future
+	var topics []string
+	var codeActions []string
+	var issues []string
+
+	for _, msg := range messages {
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+
+		// Extract key information based on content patterns
+		if strings.Contains(strings.ToLower(content), "error") || 
+		   strings.Contains(strings.ToLower(content), "failed") ||
+		   strings.Contains(strings.ToLower(content), "issue") {
+			// Truncate long error messages
+			if len(content) > 100 {
+				content = content[:100] + "..."
+			}
+			issues = append(issues, content)
+		} else if strings.Contains(content, "file") && 
+				  (strings.Contains(content, "create") || strings.Contains(content, "edit")) {
+			// Code-related actions
+			if len(content) > 80 {
+				content = content[:80] + "..."
+			}
+			codeActions = append(codeActions, content)
+		} else {
+			// General topics/discussions
+			if len(content) > 60 {
+				content = content[:60] + "..."
+			}
+			topics = append(topics, content)
+		}
+	}
+
+	// Build summary
+	var summaryParts []string
+	
+	if len(topics) > 0 {
+		summaryParts = append(summaryParts, fmt.Sprintf("Topics discussed: %s", 
+			strings.Join(deduplicateStrings(topics), "; ")))
+	}
+	
+	if len(codeActions) > 0 {
+		summaryParts = append(summaryParts, fmt.Sprintf("Code actions: %s", 
+			strings.Join(deduplicateStrings(codeActions), "; ")))
+	}
+	
+	if len(issues) > 0 {
+		summaryParts = append(summaryParts, fmt.Sprintf("Issues encountered: %s", 
+			strings.Join(deduplicateStrings(issues), "; ")))
+	}
+
+	if len(summaryParts) == 0 {
+		return fmt.Sprintf("Previous conversation with %d messages", len(messages))
+	}
+
+	summary := strings.Join(summaryParts, ". ")
+	
+	// Ensure summary itself isn't too long
+	if len(summary) > 500 {
+		summary = summary[:500] + "..."
+	}
+	
+	return summary
+}
+
+// deduplicateStrings removes duplicate strings from a slice
+func deduplicateStrings(slice []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	
+	for _, item := range slice {
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	
+	return result
 }
 
 // GetMessages returns a copy of all messages in the context

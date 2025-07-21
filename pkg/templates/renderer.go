@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -71,7 +72,9 @@ func NewRenderer() (*Renderer, error) {
 			return nil, fmt.Errorf("failed to read template %s: %w", name, err)
 		}
 
-		tmpl, err := template.New(string(name)).Parse(string(content))
+		tmpl, err := template.New(string(name)).Funcs(template.FuncMap{
+			"contains": strings.Contains,
+		}).Parse(string(content))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", name, err)
 		}

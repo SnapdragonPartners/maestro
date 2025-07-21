@@ -50,7 +50,7 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 	mockLLM := createMockLLMClient()
 
 	// Create driver with mock LLM client
-	driver, err := NewCoder("enhanced-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("enhanced-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 	stateData := driver.GetStateData()
 
 	// Check that task content is preserved
-	if taskContent, exists := stateData["task_content"]; !exists || taskContent != planningTask {
+	if taskContent, exists := stateData[KeyTaskContent]; !exists || taskContent != planningTask {
 		t.Errorf("Expected task_content to be preserved, got %v", taskContent)
 	}
 
@@ -89,10 +89,10 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 
 	// Simulate successful planning completion
 	// In a real scenario, this would be triggered by tool usage
-	driver.SetStateData("plan", "Mock enhanced plan: JWT auth system with bcrypt hashing")
-	driver.SetStateData("plan_confidence", "HIGH")
-	driver.SetStateData("exploration_summary", "Found existing auth patterns in codebase")
-	driver.SetStateData("planning_completed_at", time.Now().UTC())
+	driver.SetStateData(KeyPlan, "Mock enhanced plan: JWT auth system with bcrypt hashing")
+	driver.SetStateData(KeyPlanConfidence, "HIGH")
+	driver.SetStateData(KeyExplorationSummary, "Found existing auth patterns in codebase")
+	driver.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
 	// Transition to PLAN_REVIEW
 	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
@@ -135,10 +135,10 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 
 	// Verify planning data is preserved
 	finalStateData := driver.GetStateData()
-	if plan, exists := finalStateData["plan"]; !exists || plan == "" {
+	if plan, exists := finalStateData[KeyPlan]; !exists || plan == "" {
 		t.Error("Expected plan to be preserved after approval")
 	}
-	if confidence, exists := finalStateData["plan_confidence"]; !exists || confidence != "HIGH" {
+	if confidence, exists := finalStateData[KeyPlanConfidence]; !exists || confidence != "HIGH" {
 		t.Error("Expected plan confidence to be preserved")
 	}
 }
@@ -165,7 +165,7 @@ func TestContainerLifecycleManagement(t *testing.T) {
 	// Create mock LLM client
 	mockLLM := createMockLLMClient()
 
-	driver, err := NewCoder("container-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("container-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -189,8 +189,8 @@ func TestContainerLifecycleManagement(t *testing.T) {
 	}
 
 	// Mock planning completion
-	driver.SetStateData("plan", "Mock plan: Simple HTTP server with health endpoint")
-	driver.SetStateData("planning_completed_at", time.Now().UTC())
+	driver.SetStateData(KeyPlan, "Mock plan: Simple HTTP server with health endpoint")
+	driver.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
 	// Transition to PLAN_REVIEW and approve
 	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
@@ -241,7 +241,7 @@ func TestPlanningContextPreservation(t *testing.T) {
 	// Create mock LLM client
 	mockLLM := createMockLLMClient()
 
-	driver, err := NewCoder("context-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("context-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -264,13 +264,13 @@ func TestPlanningContextPreservation(t *testing.T) {
 	}
 
 	// Simulate planning context being built up
-	driver.SetStateData("exploration_findings", map[string]interface{}{
+	driver.SetStateData(KeyExplorationFindings, map[string]any{
 		"existing_services": []string{"user-service", "auth-service"},
 		"patterns_found":    []string{"REST", "gRPC", "event-driven"},
 	})
 
 	// Simulate question submission (would normally be via tool)
-	driver.SetStateData("question_submitted", map[string]interface{}{
+	driver.SetStateData(KeyQuestionSubmitted, map[string]any{
 		"question": "Should I use GraphQL or REST for the new API?",
 		"context":  "Found existing REST services but team mentioned GraphQL",
 		"urgency":  "HIGH",
@@ -304,7 +304,7 @@ func TestPlanningContextPreservation(t *testing.T) {
 	}
 
 	// Set the flag to indicate question was answered
-	driver.SetStateData("question_answered", true)
+	driver.SetStateData(KeyQuestionAnswered, true)
 
 	// Process return to planning
 	if err := driver.Run(ctx); err != nil {
@@ -319,7 +319,7 @@ func TestPlanningContextPreservation(t *testing.T) {
 
 	// Verify context preservation worked
 	finalStateData := driver.GetStateData()
-	if findings, exists := finalStateData["exploration_findings"]; !exists || findings == nil {
+	if findings, exists := finalStateData[KeyExplorationFindings]; !exists || findings == nil {
 		t.Error("Expected exploration findings to be preserved after question answered")
 	}
 
@@ -348,7 +348,7 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 	// Create mock LLM client
 	mockLLM := createMockLLMClient()
 
-	driver, err := NewCoder("tool-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("tool-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -366,13 +366,13 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 	}
 
 	// Simulate ask_question tool call result
-	questionData := map[string]interface{}{
+	questionData := map[string]any{
 		"question": "Which OAuth2 flow should I implement?",
 		"context":  "Found existing session-based auth, need to know if we're adding or replacing",
 		"urgency":  "MEDIUM",
 	}
 
-	driver.SetStateData("question_submitted", questionData)
+	driver.SetStateData(KeyQuestionSubmitted, questionData)
 
 	// Process the planning state with question
 	nextState, _, err := driver.ProcessState(ctx)
@@ -398,20 +398,20 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 	}
 
 	// Test question handling in CODING state
-	driver.SetStateData("task_content", task)
-	driver.SetStateData("plan", "Mock plan for OAuth2")
+	driver.SetStateData(KeyTaskContent, task)
+	driver.SetStateData(KeyPlan, "Mock plan for OAuth2")
 	if err := driver.TransitionTo(ctx, StateCoding, nil); err != nil {
 		t.Fatalf("Failed to transition to CODING: %v", err)
 	}
 
 	// Simulate ask_question from CODING state
-	codingQuestionData := map[string]interface{}{
+	codingQuestionData := map[string]any{
 		"question": "Should I use PKCE for the authorization code flow?",
 		"context":  "Implementing authorization code flow, need security best practices",
 		"urgency":  "HIGH",
 	}
 
-	driver.SetStateData("question_submitted", codingQuestionData)
+	driver.SetStateData(KeyQuestionSubmitted, codingQuestionData)
 
 	// Process CODING state with question
 	codingNextState, _, err := driver.ProcessState(ctx)
@@ -455,7 +455,7 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 	// Create mock LLM client
 	mockLLM := createMockLLMClient()
 
-	driver, err := NewCoder("error-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("error-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 	}
 
 	// Set invalid question data
-	driver.SetStateData("question_submitted", "invalid-format")
+	driver.SetStateData(KeyQuestionSubmitted, "invalid-format")
 
 	// Should handle invalid question data gracefully
 	_, _, err = driver.ProcessState(ctx)
@@ -482,12 +482,12 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 	}
 
 	// Test missing required question fields
-	invalidQuestionData := map[string]interface{}{
+	invalidQuestionData := map[string]any{
 		"context": "Some context but no question",
 		"urgency": "HIGH",
 	}
 
-	driver.SetStateData("question_submitted", invalidQuestionData)
+	driver.SetStateData(KeyQuestionSubmitted, invalidQuestionData)
 
 	// Should handle missing question field
 	_, _, err = driver.ProcessState(ctx)
@@ -496,13 +496,13 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 	}
 
 	// Test valid recovery after error
-	validQuestionData := map[string]interface{}{
+	validQuestionData := map[string]any{
 		"question": "Valid question after error?",
 		"context":  "Recovery test context",
 		"urgency":  "LOW",
 	}
 
-	driver.SetStateData("question_submitted", validQuestionData)
+	driver.SetStateData(KeyQuestionSubmitted, validQuestionData)
 
 	// Should process successfully now
 	nextState, _, err := driver.ProcessState(ctx)

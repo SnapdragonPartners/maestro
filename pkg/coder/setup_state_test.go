@@ -70,7 +70,7 @@ func TestSetupStateHandler(t *testing.T) {
 			tempDir := t.TempDir()
 			stateStore, _ := state.NewStore(tempDir)
 
-			coder, err := NewCoder("test-agent", stateStore, &config.ModelCfg{}, &mockLLMClient{}, tempDir, &config.Agent{}, nil)
+			coder, err := NewCoder("test-agent", stateStore, &config.ModelCfg{}, &mockLLMClient{}, tempDir, &config.Agent{}, nil, nil)
 			if err != nil {
 				t.Fatal("Failed to create coder:", err)
 			}
@@ -94,7 +94,7 @@ func TestSetupStateHandler(t *testing.T) {
 
 			// Set story ID in state if provided
 			if tt.storyID != "" {
-				coder.BaseStateMachine.SetStateData("story_id", tt.storyID)
+				coder.BaseStateMachine.SetStateData(KeyStoryID, tt.storyID)
 			}
 
 			// Test the setup handler
@@ -124,7 +124,7 @@ func TestSetupStateHandler(t *testing.T) {
 
 			// Verify worktree path is set on success
 			if !tt.expectedError && !tt.skipWorkspace && tt.storyID != "" {
-				worktreePath, exists := coder.BaseStateMachine.GetStateValue("worktree_path")
+				worktreePath, exists := coder.BaseStateMachine.GetStateValue(KeyWorktreePath)
 				if !exists {
 					t.Error("worktree_path should be set after successful setup")
 				}
@@ -165,7 +165,7 @@ func TestDoneStateHandler(t *testing.T) {
 			tempDir := t.TempDir()
 			stateStore, _ := state.NewStore(tempDir)
 
-			coder, err := NewCoder("test-agent", stateStore, &config.ModelCfg{}, &mockLLMClient{}, tempDir, &config.Agent{}, nil)
+			coder, err := NewCoder("test-agent", stateStore, &config.ModelCfg{}, &mockLLMClient{}, tempDir, &config.Agent{}, nil, nil)
 			if err != nil {
 				t.Fatal("Failed to create coder:", err)
 			}
@@ -193,10 +193,10 @@ func TestDoneStateHandler(t *testing.T) {
 
 			// Set up state data
 			if tt.storyID != "" {
-				coder.BaseStateMachine.SetStateData("story_id", tt.storyID)
+				coder.BaseStateMachine.SetStateData(KeyStoryID, tt.storyID)
 			}
-			coder.BaseStateMachine.SetStateData("task_content", "test task")
-			coder.BaseStateMachine.SetStateData("worktree_path", "/some/path")
+			coder.BaseStateMachine.SetStateData(KeyTaskContent, "test task")
+			coder.BaseStateMachine.SetStateData(KeyWorktreePath, "/some/path")
 
 			// Test the done handler
 			ctx := context.Background()
@@ -218,12 +218,12 @@ func TestDoneStateHandler(t *testing.T) {
 			}
 
 			// Verify state data is cleared
-			storyIDCleared, _ := coder.BaseStateMachine.GetStateValue("story_id")
+			storyIDCleared, _ := coder.BaseStateMachine.GetStateValue(KeyStoryID)
 			if storyIDCleared != "" {
 				t.Error("story_id should be cleared after done")
 			}
 
-			taskContentCleared, _ := coder.BaseStateMachine.GetStateValue("task_content")
+			taskContentCleared, _ := coder.BaseStateMachine.GetStateValue(KeyTaskContent)
 			if taskContentCleared != "" {
 				t.Error("task_content should be cleared after done")
 			}
@@ -236,7 +236,7 @@ func TestErrorStateHandler(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, _ := state.NewStore(tempDir)
 
-	coder, err := NewCoder("test-agent", stateStore, &config.ModelCfg{}, &mockLLMClient{}, tempDir, &config.Agent{}, nil)
+	coder, err := NewCoder("test-agent", stateStore, &config.ModelCfg{}, &mockLLMClient{}, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatal("Failed to create coder:", err)
 	}
@@ -258,9 +258,9 @@ func TestErrorStateHandler(t *testing.T) {
 	// Note: SetWorkspaceManager method not available, skipping workspace setup
 
 	// Set up state data
-	coder.BaseStateMachine.SetStateData("story_id", "050")
-	coder.BaseStateMachine.SetStateData("error_message", "test error")
-	coder.BaseStateMachine.SetStateData("task_content", "test task")
+	coder.BaseStateMachine.SetStateData(KeyStoryID, "050")
+	coder.BaseStateMachine.SetStateData(KeyErrorMessage, "test error")
+	coder.BaseStateMachine.SetStateData(KeyTaskContent, "test task")
 
 	// Test the error handler
 	ctx := context.Background()
@@ -282,12 +282,12 @@ func TestErrorStateHandler(t *testing.T) {
 	}
 
 	// Verify state data is cleared (but error_message might be preserved)
-	storyIDCleared, _ := coder.BaseStateMachine.GetStateValue("story_id")
+	storyIDCleared, _ := coder.BaseStateMachine.GetStateValue(KeyStoryID)
 	if storyIDCleared != "" {
 		t.Error("story_id should be cleared after error")
 	}
 
-	taskContentCleared, _ := coder.BaseStateMachine.GetStateValue("task_content")
+	taskContentCleared, _ := coder.BaseStateMachine.GetStateValue(KeyTaskContent)
 	if taskContentCleared != "" {
 		t.Error("task_content should be cleared after error")
 	}

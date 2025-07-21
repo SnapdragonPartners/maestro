@@ -1,16 +1,16 @@
 {
   "version": "v1",
   "state": "MONITORING",
-  "last_timestamp": "2025-07-20T18:33:57.904055Z",
+  "last_timestamp": "2025-07-21T02:19:28.186024Z",
   "context_snapshot": {
     "agent_id": "test-architect",
-    "saved_at": "2025-07-20T18:33:57.904055Z",
+    "saved_at": "2025-07-21T02:19:28.186024Z",
     "state": "MONITORING"
   },
   "data": {
     "current_state": "MONITORING",
     "previous_state": "ESCALATED",
     "reason": "test_non_escalated",
-    "transition_at": "2025-07-20T18:33:57.896626Z"
+    "transition_at": "2025-07-21T02:19:28.180423Z"
   }
 }

@@ -1,8 +1,7 @@
 package coder
 
 import (
-	"fmt"
-
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
 
@@ -32,6 +31,66 @@ const (
 	QuestionReasonBudgetReview = proto.QuestionReasonBudgetReview
 )
 
+// State data keys - single source of truth for SetStateData/GetStateValue calls
+const (
+	KeyOrigin                      = "origin"
+	KeyErrorMessage                = "error_message"
+	KeyStoryMessageID              = "story_message_id"
+	KeyStoryID                     = "story_id"
+	KeyQuestionSubmitted           = "question_submitted"
+	KeyPlanSubmitted               = "plan_submitted"
+	KeyStoryCompletedAt            = "story_completed_at"
+	KeyCompletionStatus            = "completion_status"
+	KeyPlanReviewCompletedAt       = "plan_review_completed_at"
+	KeyMergeConflictDetails        = "merge_conflict_details"
+	KeyCodeReviewRejectionFeedback = "code_review_rejection_feedback"
+	KeyTestFailureOutput           = "test_failure_output"
+	KeyPlan                        = "plan"
+	KeyCodingMode                  = "coding_mode"
+	KeyNoToolCallsCount            = "no_tool_calls_count"
+	KeyCodeGenerated               = "code_generated"
+	KeyFilesCreated                = "files_created"
+	KeyCodingCompletedAt           = "coding_completed_at"
+	KeyWorktreePath                = "worktree_path"
+	KeyBuildBackend                = "build_backend"
+	KeyTestError                   = "test_error"
+	KeyTestsPassed                 = "tests_passed"
+	KeyTestOutput                  = "test_output"
+	KeyTestingCompletedAt          = "testing_completed_at"
+	KeyCodeReviewCompletedAt       = "code_review_completed_at"
+	KeyMergeResult                 = "merge_result"
+	KeyMergeCompletedAt            = "merge_completed_at"
+	KeyBudgetReviewCompletedAt     = "budget_review_completed_at"
+	KeyArchitectResponse           = "architect_response"
+	KeyActualBranchName            = "actual_branch_name"
+	KeyQuestionContext             = "question_context"
+	KeyPlanningCompletedAt         = "planning_completed_at"
+	KeyCompletionReason            = "completion_reason"
+	KeyCompletionEvidence          = "completion_evidence"
+	KeyCompletionConfidence        = "completion_confidence"
+	KeyCompletionSubmittedAt       = "completion_submitted_at"
+	KeyTreeOutputCached            = "tree_output_cached"
+	KeyPlanningContextSaved        = "planning_context_saved"
+	KeyCodingContextSaved          = "coding_context_saved"
+	KeyDoneLogged                  = "done_logged"
+	KeyFixesApplied                = "fixes_applied"
+	KeyBranchName                  = "branch_name"
+	KeyBranchPushed                = "branch_pushed"
+	KeyPushedBranch                = "pushed_branch"
+	KeyPRCreationError             = "pr_creation_error"
+	KeyPRURL                       = "pr_url"
+	KeyPRCreated                   = "pr_created"
+	KeyPRSkipped                   = "pr_skipped"
+	KeyTaskContent                 = "task_content"
+	KeyPlanApprovalResult          = "plan_approval_result"
+	KeyCodeApprovalResult          = "code_approval_result"
+	KeyExplorationFindings         = "exploration_findings"
+	KeyQuestionAnswered            = "question_answered"
+	KeyPlanConfidence              = "plan_confidence"
+	KeyExplorationSummary          = "exploration_summary"
+	KeyPlanRisks                   = "plan_risks"
+)
+
 // ValidateState checks if a state is valid for coder agents
 func ValidateState(state proto.State) error {
 	validStates := GetValidStates()
@@ -40,7 +99,7 @@ func ValidateState(state proto.State) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid coder state: %s", state)
+	return logx.Errorf("invalid coder state: %s", state)
 }
 
 // GetValidStates returns all valid states for coder agents

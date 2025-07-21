@@ -339,8 +339,8 @@ func validateConfig(config *Config) error {
 				model.Agents[i] = agent
 			}
 
-			// Check for duplicate agent IDs across all models
-			logID := fmt.Sprintf("%s:%s", name, agent.ID)
+			// Check for duplicate agent IDs across all models using new format
+			logID := agent.GetLogID(name)
 			if agentIDs[logID] {
 				return fmt.Errorf("duplicate agent ID: %s (model %s, agent %s)", logID, name, agent.Name)
 			}
@@ -452,9 +452,9 @@ func validateExecutorConfig(executor *ExecutorConfig) error {
 	return nil
 }
 
-// GetLogID returns the log ID for an agent (model:id format)
+// GetLogID returns the log ID for an agent (agentType-id format)
 func (a *Agent) GetLogID(modelName string) string {
-	return fmt.Sprintf("%s:%s", modelName, a.ID)
+	return fmt.Sprintf("%s-%s", a.Type, a.ID)
 }
 
 // GetAllAgents returns all agents from all models
@@ -472,26 +472,25 @@ func (c *Config) GetAllAgents() []AgentWithModel {
 	return agents
 }
 
-// GetAgentByLogID finds an agent by its log ID (model:id)
+// GetAgentByLogID finds an agent by its log ID (type-id format)
 func (c *Config) GetAgentByLogID(logID string) (*AgentWithModel, error) {
-	parts := strings.Split(logID, ":")
+	parts := strings.Split(logID, "-")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid log ID format: %s (expected model:id)", logID)
+		return nil, fmt.Errorf("invalid log ID format: %s (expected type-id)", logID)
 	}
 
-	modelName, agentID := parts[0], parts[1]
-	model, exists := c.Models[modelName]
-	if !exists {
-		return nil, fmt.Errorf("model not found: %s", modelName)
-	}
-
-	for _, agent := range model.Agents {
-		if agent.ID == agentID {
-			return &AgentWithModel{
-				Agent:     agent,
-				ModelName: modelName,
-				Model:     model,
-			}, nil
+	agentType, agentID := parts[0], parts[1]
+	
+	// Search through all models to find the agent with matching type and ID
+	for modelName, model := range c.Models {
+		for _, agent := range model.Agents {
+			if agent.Type == agentType && agent.ID == agentID {
+				return &AgentWithModel{
+					Agent:     agent,
+					ModelName: modelName,
+					Model:     model,
+				}, nil
+			}
 		}
 	}
 

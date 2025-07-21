@@ -55,7 +55,7 @@ func TestPlanCodeHappyPath(t *testing.T) {
 	mockLLM := agent.NewMockLLMClient(mockResponses, nil)
 
 	// Create coder agent with mock LLM to trigger REQUEST→RESULT flow
-	coderAgent, err := coder.NewCoder("test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{Name: "Test Coder"}, nil)
+	coderAgent, err := coder.NewCoder("test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{Name: "Test Coder"}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

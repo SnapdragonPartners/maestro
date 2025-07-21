@@ -129,6 +129,34 @@ func (sm *BaseStateMachine) GetStateValue(key string) (any, bool) {
 	return value, exists
 }
 
+// SetTyped stores a typed value in the state data with compile-time type safety
+func SetTyped[T any](sm *BaseStateMachine, key string, value T) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.stateData[key] = value
+}
+
+// GetTyped retrieves a typed value from the state data with compile-time type safety
+// Returns the value and a boolean indicating if the key was found
+func GetTyped[T any](sm *BaseStateMachine, key string) (T, bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	var zero T
+	value, exists := sm.stateData[key]
+	if !exists {
+		return zero, false
+	}
+
+	// Type assertion with error handling
+	typedValue, ok := value.(T)
+	if !ok {
+		return zero, false
+	}
+
+	return typedValue, true
+}
+
 // TransitionTo moves to a new state and records the transition
 func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.State, metadata map[string]any) error {
 	select {

@@ -18,7 +18,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	// Set up task content to trigger state transitions
-	driver.BaseStateMachine.SetStateData("task_content", "Test task for atomic transitions")
+	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Test task for atomic transitions")
 
 	// Initial state should be WAITING
 	if state := driver.GetCurrentState(); state.String() != "WAITING" {
@@ -70,7 +70,7 @@ func TestIdleCPUUsage(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestNoNestedLoops(t *testing.T) {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestNoNestedLoops(t *testing.T) {
 	}
 
 	// Set up a task that will reach approval phase
-	driver.BaseStateMachine.SetStateData("task_content", "Test approval flow")
+	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Test approval flow")
 
 	// Process until we reach an approval state
 	maxSteps := 10

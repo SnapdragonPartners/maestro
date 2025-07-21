@@ -487,6 +487,14 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		// ANSWER messages go to specific coder's reply channel
 		d.routeToReplyCh(msg, "ANSWER")
 
+	case proto.MsgTypeREQUEUE:
+		// REQUEUE messages go to questionsCh for architect to handle
+		d.logger.Info("🔄 Sending REQUEUE %s to questionsCh", msg.ID)
+
+		// Send to questionsCh (blocking)
+		d.questionsCh <- msg
+		d.logger.Info("✅ REQUEUE %s delivered to questionsCh", msg.ID)
+
 	default:
 		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately
 		d.logger.Info("Processing message type %s immediately (not queued)", msg.Type)

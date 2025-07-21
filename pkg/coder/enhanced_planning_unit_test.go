@@ -35,7 +35,7 @@ func TestPlanningContextManagement(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("context-unit-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("context-unit-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestPlanningContextManagement(t *testing.T) {
 	driver.storePlanningContext(driver.BaseStateMachine)
 
 	// Verify context was saved
-	if saved, exists := driver.BaseStateMachine.GetStateValue("planning_context_saved"); !exists {
+	if saved, exists := driver.BaseStateMachine.GetStateValue(KeyPlanningContextSaved); !exists {
 		t.Error("Expected planning context to be saved")
 	} else {
 		if contextData, ok := saved.(map[string]any); !ok {
@@ -91,7 +91,7 @@ func TestCodingContextManagement(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("coding-context-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("coding-context-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestCodingContextManagement(t *testing.T) {
 	driver.storeCodingContext(driver.BaseStateMachine)
 
 	// Verify context was saved
-	if saved, exists := driver.BaseStateMachine.GetStateValue("coding_context_saved"); !exists {
+	if saved, exists := driver.BaseStateMachine.GetStateValue(KeyCodingContextSaved); !exists {
 		t.Error("Expected coding context to be saved")
 	} else {
 		if contextData, ok := saved.(map[string]any); !ok {
@@ -147,7 +147,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("question-transition-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("question-transition-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 	}
 
 	// Test coding question transition
-	driver.BaseStateMachine.SetStateData("question_submitted", nil) // Reset
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, nil) // Reset
 	nextState, _, err = driver.handleCodingQuestionTransition(ctx, driver.BaseStateMachine, questionData)
 	if err != nil {
 		t.Fatalf("Coding question transition failed: %v", err)
@@ -221,7 +221,7 @@ func TestPlanSubmissionHandling(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("plan-submission-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("plan-submission-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -230,9 +230,9 @@ func TestPlanSubmissionHandling(t *testing.T) {
 
 	// Test plan submission handling
 	planData := map[string]any{
-		"plan":                "Comprehensive implementation plan for JWT auth system",
+		KeyPlan:               "Comprehensive implementation plan for JWT auth system",
 		"confidence":          "HIGH",
-		"exploration_summary": "Explored 15 files, found 3 existing patterns",
+		KeyExplorationSummary: "Explored 15 files, found 3 existing patterns",
 		"risks":               "Potential breaking changes to session handling",
 	}
 
@@ -246,29 +246,29 @@ func TestPlanSubmissionHandling(t *testing.T) {
 	}
 
 	// Verify plan data was stored correctly
-	if plan, exists := driver.BaseStateMachine.GetStateValue("plan"); !exists || plan != planData["plan"] {
+	if plan, exists := driver.BaseStateMachine.GetStateValue(KeyPlan); !exists || plan != planData[KeyPlan] {
 		t.Error("Plan content not stored correctly")
 	}
 
-	if confidence, exists := driver.BaseStateMachine.GetStateValue("plan_confidence"); !exists || confidence != "HIGH" {
+	if confidence, exists := driver.BaseStateMachine.GetStateValue(KeyPlanConfidence); !exists || confidence != "HIGH" {
 		t.Error("Plan confidence not stored correctly")
 	}
 
-	if summary, exists := driver.BaseStateMachine.GetStateValue("exploration_summary"); !exists || summary != planData["exploration_summary"] {
+	if summary, exists := driver.BaseStateMachine.GetStateValue(KeyExplorationSummary); !exists || summary != planData[KeyExplorationSummary] {
 		t.Error("Exploration summary not stored correctly")
 	}
 
-	if risks, exists := driver.BaseStateMachine.GetStateValue("plan_risks"); !exists || risks != planData["risks"] {
+	if risks, exists := driver.BaseStateMachine.GetStateValue(KeyPlanRisks); !exists || risks != planData["risks"] {
 		t.Error("Plan risks not stored correctly")
 	}
 
 	// Verify completion timestamp was set
-	if _, exists := driver.BaseStateMachine.GetStateValue("planning_completed_at"); !exists {
+	if _, exists := driver.BaseStateMachine.GetStateValue(KeyPlanningCompletedAt); !exists {
 		t.Error("Planning completion timestamp not set")
 	}
 
 	// Verify plan submission trigger was cleared
-	if trigger, exists := driver.BaseStateMachine.GetStateValue("plan_submitted"); exists && trigger != nil {
+	if trigger, exists := driver.BaseStateMachine.GetStateValue(KeyPlanSubmitted); exists && trigger != nil {
 		t.Error("Plan submission trigger should be cleared after processing")
 	}
 
@@ -299,7 +299,7 @@ func TestContainerConfigurationMethods(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("container-config-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("container-config-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestHelperMethods(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("helper-methods-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("helper-methods-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
@@ -457,18 +457,18 @@ func TestStateDataPreservation(t *testing.T) {
 	}
 	mockLLM := agent.NewMockLLMClient(responses, nil)
 
-	driver, err := NewCoder("state-preservation-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil)
+	driver, err := NewCoder("state-preservation-test", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
 
 	// Set up initial state data
 	testData := map[string]any{
-		"task_content":          "Test task for state preservation",
-		"plan":                  "Test implementation plan",
-		"plan_confidence":       "HIGH",
-		"exploration_summary":   "Test exploration summary",
-		"planning_completed_at": time.Now().UTC(),
+		"task_content":         "Test task for state preservation",
+		KeyPlan:                "Test implementation plan",
+		KeyPlanConfidence:      "HIGH",
+		KeyExplorationSummary:  "Test exploration summary",
+		KeyPlanningCompletedAt: time.Now().UTC(),
 	}
 
 	for key, value := range testData {

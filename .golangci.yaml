@@ -14,10 +14,27 @@ linters:
     - unused
     - errcheck
     - gosimple
-    - deadcode
-    - structcheck
-    - varcheck
     - typecheck
+    - goconst
+
+linters-settings:
+  goconst:
+    min-len: 3
+    min-occurrences: 2
+    ignore-tests: true
+    match-constant: true
+    numbers: false
+    min: 3
+    max: 3
+    ignore-calls: true
 
 issues:
   exclude-use-default: false
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+        - goconst
+    - path: "example_test\\.go"
+      linters:
+        - errcheck
