@@ -642,7 +642,7 @@ func (s *Server) isDebugFileLoggingEnabled() bool {
 	// This would need to access logx internal state.
 	// For now, check environment variable.
 	debugFile := os.Getenv("DEBUG_FILE")
-	return debugFile == "1" || strings.ToLower(debugFile) == "true"
+	return debugFile == "1" || strings.EqualFold(debugFile, "true")
 }
 
 func (s *Server) getDebugLogDir() string {

@@ -103,7 +103,7 @@ func getDefaultLogDir() string {
 }
 
 // Initialize debug configuration from environment variables.
-func init() {
+func init() { //nolint:gochecknoinits // Required for env var initialization
 	initDebugFromEnv()
 }
 
@@ -118,12 +118,12 @@ func initDebugFromEnv() {
 	}
 
 	// Check if debug is enabled via DEBUG=1 or DEBUG=true
-	if debug := os.Getenv("DEBUG"); debug == "1" || strings.ToLower(debug) == "true" {
+	if debug := os.Getenv("DEBUG"); debug == "1" || strings.EqualFold(debug, "true") {
 		debugConfig.Enabled = true
 	}
 
 	// Check for file logging via DEBUG_FILE=1 or DEBUG_FILE=true
-	if debugFile := os.Getenv("DEBUG_FILE"); debugFile == "1" || strings.ToLower(debugFile) == "true" {
+	if debugFile := os.Getenv("DEBUG_FILE"); debugFile == "1" || strings.EqualFold(debugFile, "true") {
 		debugConfig.FileLogging = true
 	}
 

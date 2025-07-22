@@ -7,16 +7,16 @@ import (
 
 // Registry manages available executors.
 type Registry struct {
-	executors map[string]Executor
-	default_  string
-	mu        sync.RWMutex
+	executors   map[string]Executor
+	defaultName string
+	mu          sync.RWMutex
 }
 
 // NewRegistry creates a new executor registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		executors: make(map[string]Executor),
-		default_:  "local", // Default to local executor
+		executors:   make(map[string]Executor),
+		defaultName: "local", // Default to local executor
 	}
 }
 
@@ -53,7 +53,7 @@ func (r *Registry) Get(name string) (Executor, error) {
 
 // GetDefault returns the default executor.
 func (r *Registry) GetDefault() (Executor, error) {
-	return r.Get(r.default_)
+	return r.Get(r.defaultName)
 }
 
 // SetDefault sets the default executor.
@@ -65,7 +65,7 @@ func (r *Registry) SetDefault(name string) error {
 		return fmt.Errorf("executor '%s' not found", name)
 	}
 
-	r.default_ = name
+	r.defaultName = name
 	return nil
 }
 
@@ -110,7 +110,7 @@ func (r *Registry) GetBest(preferences []string) (Executor, error) {
 	}
 
 	// Fall back to default.
-	if executor, exists := r.executors[r.default_]; exists && executor.Available() {
+	if executor, exists := r.executors[r.defaultName]; exists && executor.Available() {
 		return executor, nil
 	}
 
@@ -163,7 +163,7 @@ func GetBest(preferences []string) (Executor, error) {
 }
 
 // init registers the local executor by default.
-func init() {
+func init() { //nolint:gochecknoinits // Required for default executor registration
 	if err := Register(NewLocalExec()); err != nil {
 		panic(fmt.Sprintf("Failed to register local executor: %v", err))
 	}

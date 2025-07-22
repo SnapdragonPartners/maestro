@@ -22,6 +22,7 @@ type DockerfileConfig struct {
 }
 
 // detectGoVersion detects the Go version from the system.
+//
 //nolint:unparam // error return kept for future cases where version detection fails
 func (g *ArtifactGenerator) detectGoVersion() (string, error) {
 	// Try to get Go version from go command.
@@ -45,6 +46,7 @@ func (g *ArtifactGenerator) detectGoVersion() (string, error) {
 }
 
 // detectNodeVersion detects the Node.js version from the system.
+//
 //nolint:unparam // error return kept for future cases where version detection fails
 func (g *ArtifactGenerator) detectNodeVersion() (string, error) {
 	cmd := exec.Command("node", "--version")
@@ -67,6 +69,7 @@ func (g *ArtifactGenerator) detectNodeVersion() (string, error) {
 }
 
 // detectPythonVersion detects the Python version from the system.
+//
 //nolint:unparam // error return kept for future cases where version detection fails
 func (g *ArtifactGenerator) detectPythonVersion() (string, error) {
 	cmd := exec.Command("python3", "--version")
@@ -88,7 +91,7 @@ func (g *ArtifactGenerator) detectPythonVersion() (string, error) {
 	return "3.11", nil // Default fallback
 }
 
-// generateDockerignore generates a .dockerignore file based on the backend.
+// GenerateDockerignore generates a .dockerignore file based on the backend.
 func (g *ArtifactGenerator) GenerateDockerignore(backend build.BuildBackend) error {
 	var content strings.Builder
 

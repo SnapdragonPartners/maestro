@@ -113,11 +113,10 @@ func main() {
 
 	// Let defers run, then exit with proper code
 	if exitCode != 0 || err != nil {
-		defer os.Exit(exitCode)
-		return
+		os.Exit(exitCode)
 	}
 
-	defer os.Exit(0)
+	os.Exit(0)
 }
 
 func runReplayer(config ReplayConfig) (int, error) {

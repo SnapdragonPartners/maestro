@@ -64,7 +64,7 @@ func NewEscalationHandler(logsDir string, queue *Queue) *EscalationHandler {
 }
 
 // EscalateBusinessQuestion escalates a business question to human intervention.
-func (eh *EscalationHandler) EscalateBusinessQuestion(ctx context.Context, pendingQ *PendingQuestion) error {
+func (eh *EscalationHandler) EscalateBusinessQuestion(_ context.Context, pendingQ *PendingQuestion) error {
 	// Create escalation entry.
 	escalation := &EscalationEntry{
 		ID:          fmt.Sprintf("esc_%s_%d", pendingQ.ID, time.Now().Unix()),
@@ -99,7 +99,7 @@ func (eh *EscalationHandler) EscalateBusinessQuestion(ctx context.Context, pendi
 }
 
 // EscalateReviewFailure escalates repeated code review failures to human intervention.
-func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID, agentID string, failureCount int, lastReview string) error {
+func (eh *EscalationHandler) EscalateReviewFailure(_ context.Context, storyID, agentID string, failureCount int, lastReview string) error {
 	// Create escalation entry for review failure.
 	escalation := &EscalationEntry{
 		ID:       fmt.Sprintf("esc_review_%s_%d", storyID, time.Now().Unix()),
@@ -137,7 +137,7 @@ func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID,
 }
 
 // EscalateSystemError escalates system errors that require human intervention.
-func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, agentID, errorMsg string, errorContext map[string]any) error {
+func (eh *EscalationHandler) EscalateSystemError(_ context.Context, storyID, agentID, errorMsg string, errorContext map[string]any) error {
 	// Create escalation entry for system error.
 	escalation := &EscalationEntry{
 		ID:          fmt.Sprintf("esc_error_%s_%d", storyID, time.Now().Unix()),
@@ -317,7 +317,7 @@ func (eh *EscalationHandler) GetEscalationSummary() *EscalationSummary {
 	for _, escalation := range eh.escalations {
 		// Count by status.
 		switch escalation.Status {
-		case "pending":
+		case string(StatusPending):
 			summary.PendingEscalations++
 		case "resolved":
 			summary.ResolvedEscalations++

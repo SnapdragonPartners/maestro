@@ -466,7 +466,7 @@ type failingStateMachine struct {
 	StateMachine
 }
 
-func (f *failingStateMachine) ProcessState(ctx context.Context) (proto.State, bool, error) {
+func (f *failingStateMachine) ProcessState(_ context.Context) (proto.State, bool, error) {
 	return proto.StateError, false, fmt.Errorf("simulated processing failure")
 }
 

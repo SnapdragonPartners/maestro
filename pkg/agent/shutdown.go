@@ -15,7 +15,7 @@ type ShutdownManager struct {
 	mu          sync.RWMutex
 	components  []ShutdownComponent
 	timeouts    map[string]time.Duration
-	shutdownCtx context.Context
+	shutdownCtx context.Context //nolint:containedctx // Shutdown coordinator needs stored context
 	shutdownFn  context.CancelFunc
 	done        chan struct{}
 	once        sync.Once
@@ -121,7 +121,7 @@ func (sm *ShutdownManager) ShutdownContext() context.Context {
 	return sm.shutdownCtx
 }
 
-// Enhanced BaseDriver with shutdown handling.
+// ShutdownableDriver is an enhanced BaseDriver with shutdown handling.
 type ShutdownableDriver struct {
 	*BaseDriver
 	shutdownMgr *ShutdownManager

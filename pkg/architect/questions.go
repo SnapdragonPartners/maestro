@@ -178,7 +178,7 @@ func (qh *QuestionHandler) sendMockAnswer(ctx context.Context, pendingQ *Pending
 }
 
 // sendAnswerToAgent sends a RESULT message with the answer back to the requesting agent.
-func (qh *QuestionHandler) sendAnswerToAgent(ctx context.Context, pendingQ *PendingQuestion) error {
+func (qh *QuestionHandler) sendAnswerToAgent(_ context.Context, pendingQ *PendingQuestion) error {
 	// Create RESULT message.
 	resultMsg := proto.NewAgentMsg(
 		proto.MsgTypeRESULT,

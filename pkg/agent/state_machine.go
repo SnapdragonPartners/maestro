@@ -293,10 +293,10 @@ func (sm *BaseStateMachine) IncrementRetry() error {
 }
 
 // SetMaxRetries sets the maximum number of retries.
-func (sm *BaseStateMachine) SetMaxRetries(max int) {
+func (sm *BaseStateMachine) SetMaxRetries(maxRetries int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.maxRetries = max
+	sm.maxRetries = maxRetries
 }
 
 // SetStateNotificationChannel sets the channel for state change notifications.
@@ -337,33 +337,35 @@ func (sm *BaseStateMachine) Initialize(_ context.Context) error {
 		if transitionsAny, ok := state["transitions"].([]any); ok {
 			transitions := make([]StateTransition, 0, len(transitionsAny))
 			for _, t := range transitionsAny {
-				if tMap, ok := t.(map[string]any); ok {
-					transition := StateTransition{}
-
-					// Safely extract from_state.
-					if fromState, ok := tMap["from_state"].(string); ok {
-						transition.FromState = proto.State(fromState)
-					}
-
-					// Safely extract to_state.
-					if toState, ok := tMap["to_state"].(string); ok {
-						transition.ToState = proto.State(toState)
-					}
-
-					// Safely extract timestamp.
-					if ts, ok := tMap["timestamp"].(string); ok {
-						if t, err := time.Parse(time.RFC3339, ts); err == nil {
-							transition.Timestamp = t
-						}
-					}
-
-					// Safely extract metadata.
-					if meta, ok := tMap["metadata"].(map[string]any); ok {
-						transition.Metadata = meta
-					}
-
-					transitions = append(transitions, transition)
+				tMap, ok := t.(map[string]any)
+				if !ok {
+					continue
 				}
+				transition := StateTransition{}
+
+				// Safely extract from_state.
+				if fromState, ok := tMap["from_state"].(string); ok {
+					transition.FromState = proto.State(fromState)
+				}
+
+				// Safely extract to_state.
+				if toState, ok := tMap["to_state"].(string); ok {
+					transition.ToState = proto.State(toState)
+				}
+
+				// Safely extract timestamp.
+				if ts, ok := tMap["timestamp"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, ts); err == nil {
+						transition.Timestamp = t
+					}
+				}
+
+				// Safely extract metadata.
+				if meta, ok := tMap["metadata"].(map[string]any); ok {
+					transition.Metadata = meta
+				}
+
+				transitions = append(transitions, transition)
 			}
 			sm.transitions = transitions
 		}

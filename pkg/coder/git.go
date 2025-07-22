@@ -318,6 +318,7 @@ func (w *WorkspaceManager) ensureMirrorClone(ctx context.Context) (string, error
 }
 
 // cleanupWorktrees prunes obsolete worktrees and runs garbage collection.
+//
 //nolint:unparam // error return kept for future extensibility
 func (w *WorkspaceManager) cleanupWorktrees(ctx context.Context, mirrorPath string) error {
 	w.logger.Debug("Cleaning up worktrees in mirror: %s", mirrorPath)

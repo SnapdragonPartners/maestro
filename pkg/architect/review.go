@@ -139,6 +139,7 @@ func (re *ReviewEvaluator) performAutomatedReview(ctx context.Context, pendingRe
 }
 
 // runAutomatedChecks performs formatting, linting, and test checks.
+//
 //nolint:unparam // error return kept for future extensibility
 func (re *ReviewEvaluator) runAutomatedChecks(ctx context.Context, pendingReview *PendingReview) (bool, error) {
 	checks := []string{"format", "lint", "test"}
@@ -720,7 +721,7 @@ func (re *ReviewEvaluator) generateFixFeedback(pendingReview *PendingReview) str
 }
 
 // sendReviewResult sends the review result back to the agent.
-func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *PendingReview, result string) error {
+func (re *ReviewEvaluator) sendReviewResult(_ context.Context, pendingReview *PendingReview, result string) error {
 	// Create RESULT message.
 	resultMsg := proto.NewAgentMsg(
 		proto.MsgTypeRESULT,

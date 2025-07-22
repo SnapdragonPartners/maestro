@@ -40,20 +40,29 @@ func (m *MockLLMClient) Stream(_ context.Context, _ agent.CompletionRequest) (<-
 }
 
 // Test flags for configurable timeouts.
-var ( //nolint:gochecknoglobals
-	flagPlanTimeout   = flag.Duration("timeout-plan", 100*time.Millisecond, "Timeout for plan approval")
-	flagGlobalTimeout = flag.Duration("timeout-global", 2*time.Second, "Global test timeout")
-	flagPumpInterval  = flag.Duration("pump-interval", 10*time.Millisecond, "Message pump interval")
-	flagCoderStep     = flag.Duration("timeout-coder-step", 50*time.Millisecond, "Individual coder step timeout")
-)
+// globalFlags holds all test configuration flags in a single managed structure.
+type globalFlags struct {
+	planTimeout   *time.Duration
+	globalTimeout *time.Duration
+	pumpInterval  *time.Duration
+	coderStep     *time.Duration
+}
+
+// testFlags is the single global instance for test configuration.
+var testFlags = globalFlags{ //nolint:gochecknoglobals
+	planTimeout:   flag.Duration("timeout-plan", 100*time.Millisecond, "Timeout for plan approval"),
+	globalTimeout: flag.Duration("timeout-global", 2*time.Second, "Global test timeout"),
+	pumpInterval:  flag.Duration("pump-interval", 10*time.Millisecond, "Message pump interval"),
+	coderStep:     flag.Duration("timeout-coder-step", 50*time.Millisecond, "Individual coder step timeout"),
+}
 
 // GetTestTimeouts returns timeouts configured via command-line flags.
 func GetTestTimeouts() TestTimeouts {
 	return TestTimeouts{
-		Plan:      *flagPlanTimeout,
-		Global:    *flagGlobalTimeout,
-		Pump:      *flagPumpInterval,
-		CoderStep: *flagCoderStep,
+		Plan:      *testFlags.planTimeout,
+		Global:    *testFlags.globalTimeout,
+		Pump:      *testFlags.pumpInterval,
+		CoderStep: *testFlags.coderStep,
 	}
 }
 
@@ -223,7 +232,7 @@ func (MessageMatchers) MatchApprovalRequest() func(*proto.AgentMsg) bool {
 	return MessageMatchers{}.MatchRequestType(proto.RequestApproval)
 }
 
-// Common message matchers instance.
+// Match provides a common message matchers instance.
 var Match = MessageMatchers{} //nolint:gochecknoglobals
 
 // SetupTestEnvironment sets up common test environment settings.

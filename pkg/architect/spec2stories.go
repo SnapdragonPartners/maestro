@@ -333,7 +333,7 @@ func (sp *SpecParser) generateStoryContent(storyID string, req *Requirement) str
 	// Front matter.
 	content.WriteString("---\n")
 	content.WriteString(fmt.Sprintf("id: %s\n", storyID))
-	content.WriteString(fmt.Sprintf("title: \"%s\"\n", req.Title))
+	content.WriteString(fmt.Sprintf("title: %q\n", req.Title))
 
 	// Write dependencies.
 	content.WriteString("depends_on: [")
@@ -342,7 +342,7 @@ func (sp *SpecParser) generateStoryContent(storyID string, req *Requirement) str
 			if i > 0 {
 				content.WriteString(", ")
 			}
-			content.WriteString(fmt.Sprintf("\"%s\"", dep))
+			content.WriteString(fmt.Sprintf("%q", dep))
 		}
 	}
 	content.WriteString("]\n")

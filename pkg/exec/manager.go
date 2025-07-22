@@ -66,7 +66,7 @@ func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, er
 		m.logger.Warn("Using local executor - commands will run without sandboxing!")
 		return "local", nil
 
-	case "docker":
+	case string(ExecutorTypeDocker):
 		// Force Docker - fail if not available.
 		if !m.isDockerAvailable(ctx) {
 			return "", fmt.Errorf("docker executor requested but Docker daemon is not available")
@@ -74,7 +74,7 @@ func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, er
 		if !m.isDockerImageAvailable(ctx) {
 			return "", fmt.Errorf("docker executor requested but image '%s' is not available", m.config.Docker.Image)
 		}
-		return "docker", nil
+		return string(ExecutorTypeDocker), nil
 
 	case "auto":
 		// Auto-select Docker only - fail if not available.
@@ -86,7 +86,7 @@ func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, er
 		}
 
 		m.logger.Info("Auto-selected Docker executor (available and image exists)")
-		return "docker", nil
+		return string(ExecutorTypeDocker), nil
 
 	default:
 		return "", fmt.Errorf("unknown executor type: %s", m.config.Type)

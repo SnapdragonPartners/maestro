@@ -58,7 +58,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 	})
 }
 
-func TestNormaliseApprovalType(t *testing.T) {
+func TestParseApprovalType(t *testing.T) {
 	testCases := []struct {
 		input    string
 		expected proto.ApprovalType
@@ -77,7 +77,7 @@ func TestNormaliseApprovalType(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			result, err := proto.NormaliseApprovalType(tc.input)
+			result, err := proto.ParseApprovalType(tc.input)
 
 			if tc.hasError {
 				if err == nil {

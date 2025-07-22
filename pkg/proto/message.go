@@ -445,12 +445,6 @@ func (rt RequestType) String() string {
 	return string(rt)
 }
 
-// Deprecated: Use ParseApprovalType instead.
-// NormaliseApprovalType normalizes and validates approval type strings.
-func NormaliseApprovalType(s string) (ApprovalType, error) {
-	return ParseApprovalType(s)
-}
-
 // Approval helper methods.
 
 // IsApproved returns true if the status indicates approval.
@@ -669,7 +663,7 @@ func ParseApprovalType(s string) (ApprovalType, error) {
 	}
 }
 
-// SafeExtractEnum provides a generic way to safely extract and validate enum values from payloads.
+// EnumExtractor provides a generic way to safely extract and validate enum values from payloads.
 type EnumExtractor[T any] func(string) (T, error)
 
 // SafeExtractFromPayload extracts and validates an enum value from a message payload.

@@ -20,7 +20,7 @@ func (m *mockBuildBackend) Name() string {
 	return m.name
 }
 
-func (m *mockBuildBackend) Detect(root string) bool {
+func (m *mockBuildBackend) Detect(_ string) bool {
 	return true
 }
 
@@ -40,7 +40,7 @@ func (m *mockBuildBackend) Run(ctx context.Context, root string, args []string, 
 	return nil
 }
 
-func (m *mockBuildBackend) GetDockerImage(root string) string {
+func (m *mockBuildBackend) GetDockerImage(_ string) string {
 	// Return a default image for mock backends.
 	return "ubuntu:22.04"
 }

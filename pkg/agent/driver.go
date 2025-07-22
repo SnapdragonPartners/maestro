@@ -40,7 +40,7 @@ type Driver interface {
 
 // AgentContext contains shared context for all agents.
 type AgentContext struct {
-	Context   context.Context
+	Context   context.Context //nolint:containedctx // Shared context container by design
 	Logger    *log.Logger
 	WorkDir   string
 	LLMClient LLMClient

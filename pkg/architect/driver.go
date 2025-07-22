@@ -25,7 +25,7 @@ import (
 
 const (
 	buildSystemMake   = "make"
-	buildSystemPython = "python" 
+	buildSystemPython = "python"
 	buildSystemNode   = "node"
 )
 
@@ -768,7 +768,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	d.logger.Info("🏗️ Processing approval request: type=%v, approval_type=%v", requestType, approvalTypeString)
 
 	// Parse approval type from request.
-	approvalType, err := proto.NormaliseApprovalType(approvalTypeString)
+	approvalType, err := proto.ParseApprovalType(approvalTypeString)
 	if err != nil {
 		d.logger.Warn("🏗️ Invalid approval type %s, defaulting to plan", approvalTypeString)
 		approvalType = proto.ApprovalTypePlan

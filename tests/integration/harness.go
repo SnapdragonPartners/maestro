@@ -318,6 +318,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 }
 
 // processCoderMessage simulates the coder processing an incoming message.
+//
 //nolint:unparam // first return always nil by design in test harness
 func (h *TestHarness) processCoderMessage(ctx context.Context, coderAgent *CoderAgent, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// This is where we'd normally call the coder's ProcessMessage method.
@@ -358,7 +359,7 @@ func (h *TestHarness) processCoderMessage(ctx context.Context, coderAgent *Coder
 }
 
 // processApprovalResult handles approval results from the architect.
-func (h *TestHarness) processApprovalResult(_ context.Context, coderAgent *CoderAgent, msg *proto.AgentMsg) error {
+func (h *TestHarness) processApprovalResult(ctx context.Context, coderAgent *CoderAgent, msg *proto.AgentMsg) error {
 	// Extract status.
 	status, exists := msg.GetPayload(proto.KeyStatus)
 	if !exists {
@@ -382,7 +383,10 @@ func (h *TestHarness) processApprovalResult(_ context.Context, coderAgent *Coder
 	}
 
 	// Process the approval result.
-	return coderAgent.Driver.ProcessApprovalResult(context.Background(), statusStr, approvalTypeStr)
+	if err := coderAgent.Driver.ProcessApprovalResult(ctx, statusStr, approvalTypeStr); err != nil {
+		return fmt.Errorf("failed to process approval result: %w", err)
+	}
+	return nil
 }
 
 // createApprovalRequestMessage creates a REQUEST message for architect approval.

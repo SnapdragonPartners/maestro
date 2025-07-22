@@ -13,7 +13,7 @@ import (
 // Mock implementations for testing.
 type mockLLMClient struct{}
 
-func (m *mockLLMClient) GenerateResponse(ctx context.Context, prompt string) (string, error) {
+func (m *mockLLMClient) GenerateResponse(_ context.Context, prompt string) (string, error) {
 	return "mock response", nil
 }
 

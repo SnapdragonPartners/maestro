@@ -649,8 +649,8 @@ func (m *MockDriver) Step(_ context.Context) (bool, error)  { return false, nil 
 func (m *MockDriver) GetStateData() map[string]any          { return make(map[string]any) }
 func (m *MockDriver) ValidateState(state proto.State) error { return nil }
 func (m *MockDriver) GetValidStates() []proto.State         { return []proto.State{} }
-func (m *MockDriver) Shutdown(ctx context.Context) error    { return nil }
-func (m *MockDriver) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+func (m *MockDriver) Shutdown(_ context.Context) error      { return nil }
+func (m *MockDriver) ProcessMessage(_ context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	return nil, fmt.Errorf("mock driver - no message processing implemented")
 }
 

@@ -109,8 +109,8 @@ func TestStory7ParseRequestType(t *testing.T) {
 	}
 }
 
-// TestStory7NormaliseApprovalType tests the NormaliseApprovalType function.
-func TestStory7NormaliseApprovalType(t *testing.T) {
+// TestStory7ParseApprovalType tests the ParseApprovalType function.
+func TestStory7ParseApprovalType(t *testing.T) {
 	testCases := []struct {
 		name          string
 		input         string
@@ -181,7 +181,7 @@ func TestStory7NormaliseApprovalType(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := proto.NormaliseApprovalType(tc.input)
+			result, err := proto.ParseApprovalType(tc.input)
 
 			if tc.expectError {
 				if err == nil {
@@ -389,7 +389,7 @@ func TestStory7EdgeCaseHandling(t *testing.T) {
 			t.Error("Expected error for empty request type")
 		}
 
-		_, err = proto.NormaliseApprovalType("")
+		_, err = proto.ParseApprovalType("")
 		if err == nil {
 			t.Error("Expected error for empty approval type")
 		}

@@ -885,7 +885,7 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 			agentInfos = append(agentInfos, AgentInfo{
 				ID:     id,
 				Type:   driver.GetAgentType(),
-				State:  fmt.Sprintf("%v", driver.GetCurrentState()),
+				State:  driver.GetCurrentState().String(),
 				Driver: driver,
 			})
 		} else {

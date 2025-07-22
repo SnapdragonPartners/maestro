@@ -551,6 +551,7 @@ func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 }
 
 // handleWaiting processes the WAITING state.
+//
 //nolint:unparam // bool return is part of state machine interface
 func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "WAITING")
@@ -1848,13 +1849,13 @@ func (c *Coder) handleCodeReviewApproval(ctx context.Context, sm *agent.BaseStat
 }
 
 // handleAwaitMerge processes the AWAIT_MERGE state, waiting for merge results from architect.
+//
 //nolint:unparam // bool return is part of state machine interface
 func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	c.contextManager.AddMessage("assistant", "Await merge phase: waiting for architect merge result")
 
 	// Check if we already have merge result from previous processing.
 	if result, exists := agent.GetTyped[git.MergeResult](sm, KeyMergeResult); exists {
-
 		sm.SetStateData(KeyMergeCompletedAt, time.Now().UTC())
 
 		switch result.Status {
@@ -1935,7 +1936,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 }
 
 // handleBudgetReviewApproval processes budget review approval results.
-func (c *Coder) handleBudgetReviewApproval(ctx context.Context, sm *agent.BaseStateMachine, approvalData any) (proto.State, bool, error) {
+func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStateMachine, approvalData any) (proto.State, bool, error) {
 	result, err := convertApprovalData(approvalData)
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to convert budget review approval data")
@@ -1987,7 +1988,7 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 }
 
 // handleRegularQuestion handles regular QUESTION→ANSWER flow.
-func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+func (c *Coder) handleRegularQuestion(_ context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Check if we have an answer.
 	if _, exists := sm.GetStateValue(string(stateDataKeyArchitectAnswer)); exists {
 		answerStr := utils.GetStateValueOr[string](sm, string(stateDataKeyArchitectAnswer), "")
@@ -2270,6 +2271,7 @@ func (c *Coder) Initialize(ctx context.Context) error {
 }
 
 // handleSetup implements AR-102 workspace initialization.
+//
 //nolint:unparam // bool return is part of state machine interface
 func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	if c.workspaceManager == nil {
@@ -2439,6 +2441,7 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 }
 
 // registerPlanningTools registers tools needed for enhanced planning.
+//
 //nolint:unparam // error return kept for future extensibility
 func (c *Coder) registerPlanningTools() error {
 	// Register ask_question tool.
@@ -2494,21 +2497,21 @@ func (c *Coder) processQuestionTransition(sm *agent.BaseStateMachine, questionDa
 }
 
 // handleQuestionTransition processes ask_question tool results.
-func (c *Coder) handleQuestionTransition(ctx context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
+func (c *Coder) handleQuestionTransition(_ context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
 	// Store current planning context for restoration.
 	c.storePlanningContext(sm)
 	return c.processQuestionTransition(sm, questionData, StatePlanning, "Planning")
 }
 
 // handleCodingQuestionTransition processes ask_question tool results from CODING state.
-func (c *Coder) handleCodingQuestionTransition(ctx context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
+func (c *Coder) handleCodingQuestionTransition(_ context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
 	// Store current coding context for restoration.
 	c.storeCodingContext(sm)
 	return c.processQuestionTransition(sm, questionData, StateCoding, "Coding")
 }
 
 // handlePlanSubmission processes submit_plan tool results.
-func (c *Coder) handlePlanSubmission(ctx context.Context, sm *agent.BaseStateMachine, planData any) (proto.State, bool, error) {
+func (c *Coder) handlePlanSubmission(_ context.Context, sm *agent.BaseStateMachine, planData any) (proto.State, bool, error) {
 	planMap, ok := planData.(map[string]any)
 	if !ok {
 		return proto.StateError, false, logx.Errorf("invalid plan data format")

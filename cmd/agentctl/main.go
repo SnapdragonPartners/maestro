@@ -71,7 +71,7 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 		// Check for pending questions and auto-answer them.
 		if isLiveMode {
 			if hasPending, _, content, reason := agent.GetPendingQuestion(); hasPending {
-				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:min(100, len(content))])
+				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:minInt(100, len(content))])
 
 				// Provide a generic helpful answer.
 				answer := "Please proceed with your best judgment. Focus on clean, well-documented code that follows best practices."
@@ -96,7 +96,7 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 }
 
 // Helper functions.
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

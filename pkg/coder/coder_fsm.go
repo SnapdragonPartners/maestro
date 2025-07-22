@@ -20,7 +20,7 @@ const (
 	StateQuestion     proto.State = "QUESTION"
 )
 
-// Import AUTO_CHECKIN types from proto package for inter-agent communication.
+// AutoAction imports AUTO_CHECKIN types from proto package for inter-agent communication.
 type AutoAction = proto.AutoAction
 
 const (

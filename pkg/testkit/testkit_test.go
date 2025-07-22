@@ -31,7 +31,7 @@ func TestMockAnthropicServer(t *testing.T) {
 		"max_tokens": 1000
 	}`
 
-	resp, err := http.Post(server.URL+"/messages", "application/json", strings.NewReader(requestBody))
+	resp, err := http.Post(server.URL+"/messages", "application/json", strings.NewReader(requestBody)) //nolint:noctx // Test mock server call
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestMockOpenAIServer(t *testing.T) {
 		"max_tokens": 500
 	}`
 
-	resp, err := http.Post(server.URL+"/chat/completions", "application/json", strings.NewReader(requestBody))
+	resp, err := http.Post(server.URL+"/chat/completions", "application/json", strings.NewReader(requestBody)) //nolint:noctx // Test mock server call
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}

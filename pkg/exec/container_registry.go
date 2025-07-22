@@ -11,7 +11,7 @@ import (
 
 // Global container registry instance - initialized by orchestrator at startup.
 var globalContainerRegistry *ContainerRegistry //nolint:gochecknoglobals
-var globalContainerRegistryMu sync.RWMutex //nolint:gochecknoglobals
+var globalContainerRegistryMu sync.RWMutex     //nolint:gochecknoglobals
 
 // SetGlobalRegistry initializes the global container registry (called by orchestrator).
 func SetGlobalRegistry(registry *ContainerRegistry) {

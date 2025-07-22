@@ -246,7 +246,7 @@ func (g *GitManager) ConfigureUnionMerge(ctx context.Context) error {
 }
 
 // EnsureGitignore ensures that bootstrap artifacts are properly ignored.
-func (g *GitManager) EnsureGitignore(ctx context.Context) error {
+func (g *GitManager) EnsureGitignore(_ context.Context) error {
 	gitignorePath := filepath.Join(g.projectRoot, ".gitignore")
 
 	// Check if .gitignore exists.
