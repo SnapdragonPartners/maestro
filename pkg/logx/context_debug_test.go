@@ -7,41 +7,41 @@ import (
 	"testing"
 )
 
-// contextKey is a custom type for context keys to avoid collisions
+// contextKey is a custom type for context keys to avoid collisions.
 type contextKey string
 
 const agentIDKey contextKey = "agent_id"
 
 func TestContextDebugLogging(t *testing.T) {
-	// Reset environment
+	// Reset environment.
 	os.Unsetenv("DEBUG")
 	os.Unsetenv("DEBUG_DOMAINS")
 	os.Unsetenv("DEBUG_FILE")
 	os.Unsetenv("DEBUG_DIR")
 
-	// Reinitialize config
+	// Reinitialize config.
 	initDebugFromEnv()
 
-	// Enable debug logging
+	// Enable debug logging.
 	SetDebugConfig(true, false, ".")
 
-	// Test basic context debug logging
+	// Test basic context debug logging.
 	ctx := context.WithValue(context.Background(), agentIDKey, "test-agent")
 
-	// This should work since debug is enabled and no domain filtering
+	// This should work since debug is enabled and no domain filtering.
 	Debug(ctx, "coder", "Test message: %s", "hello")
 
-	// Test domain filtering
+	// Test domain filtering.
 	SetDebugDomains([]string{"coder", "architect"})
 
-	// These should work
+	// These should work.
 	Debug(ctx, "coder", "Coder message")
 	Debug(ctx, "architect", "Architect message")
 
-	// This should be filtered out
+	// This should be filtered out.
 	Debug(ctx, "dispatch", "Dispatch message")
 
-	// Test convenience functions
+	// Test convenience functions.
 	DebugState(ctx, "coder", "transition", "PLANNING", "starting new task")
 	DebugMessage(ctx, "coder", "TASK", "received task message")
 	DebugFlow(ctx, "coder", "code generation", "complete", "generated 5 files")
@@ -52,7 +52,7 @@ func TestEnvironmentVariableConfiguration(t *testing.T) {
 	os.Setenv("DEBUG", "1")
 	os.Setenv("DEBUG_DOMAINS", "coder,architect")
 
-	// Reinitialize
+	// Reinitialize.
 	initDebugFromEnv()
 
 	if !IsDebugEnabled() {
@@ -71,25 +71,25 @@ func TestEnvironmentVariableConfiguration(t *testing.T) {
 		t.Error("Expected dispatch domain to be disabled")
 	}
 
-	// Clean up
+	// Clean up.
 	os.Unsetenv("DEBUG")
 	os.Unsetenv("DEBUG_DOMAINS")
 	initDebugFromEnv()
 }
 
 func TestDebugToFileFunction(t *testing.T) {
-	// Setup temporary directory
+	// Setup temporary directory.
 	tempDir := t.TempDir()
 
-	// Enable debug with file logging
+	// Enable debug with file logging.
 	SetDebugConfig(true, true, tempDir)
 
 	ctx := context.WithValue(context.Background(), agentIDKey, "test-agent")
 
-	// Test debug to file
+	// Test debug to file.
 	DebugToFile(ctx, "coder", "test_debug.log", "Test debug message: %s", "file content")
 
-	// Verify file was created
+	// Verify file was created.
 	content, err := os.ReadFile(tempDir + "/test_debug.log")
 	if err != nil {
 		t.Fatalf("Failed to read debug file: %v", err)

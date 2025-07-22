@@ -12,9 +12,9 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// createMockLLMClient creates a mock LLM client with predefined responses for testing
+// createMockLLMClient creates a mock LLM client with predefined responses for testing.
 func createMockLLMClient() *agent.MockLLMClient {
-	// Need more responses to handle iterative planning workflow
+	// Need more responses to handle iterative planning workflow.
 	responses := []agent.CompletionResponse{
 		{Content: "Mock planning iteration 1: Exploring codebase..."},
 		{Content: "Mock planning iteration 2: Analyzing patterns..."},
@@ -27,7 +27,7 @@ func createMockLLMClient() *agent.MockLLMClient {
 	return agent.NewMockLLMClient(responses, nil)
 }
 
-// TestEnhancedPlanningWorkflow tests the complete enhanced planning flow
+// TestEnhancedPlanningWorkflow tests the complete enhanced planning flow.
 func TestEnhancedPlanningWorkflow(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "enhanced-planning-test")
 	if err != nil {
@@ -46,10 +46,10 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	// Create mock LLM client
+	// Create mock LLM client.
 	mockLLM := createMockLLMClient()
 
-	// Create driver with mock LLM client
+	// Create driver with mock LLM client.
 	driver, err := NewCoder("enhanced-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create driver: %v", err)
@@ -61,51 +61,51 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Test task that should trigger enhanced planning
+	// Test task that should trigger enhanced planning.
 	planningTask := "Implement user authentication system with JWT tokens and password hashing"
 	if err := driver.ProcessTask(ctx, planningTask); err != nil {
 		t.Fatalf("Failed to process planning task: %v", err)
 	}
 
-	// Verify we're in PLANNING state initially
-	currentState := driver.GetCurrentState()
+	// Verify we're in PLANNING state initially.
+	currentState := driver.BaseStateMachine.GetCurrentState()
 	if currentState != StatePlanning {
 		t.Errorf("Expected initial state to be PLANNING, got %s", currentState)
 	}
 
-	// Verify enhanced planning features are working
+	// Verify enhanced planning features are working.
 	stateData := driver.GetStateData()
 
-	// Check that task content is preserved
+	// Check that task content is preserved.
 	if taskContent, exists := stateData[KeyTaskContent]; !exists || taskContent != planningTask {
 		t.Errorf("Expected task_content to be preserved, got %v", taskContent)
 	}
 
-	// Check that tree output should be generated during planning
-	// Note: In mock mode this may not be available, but we can check the data structure
+	// Check that tree output should be generated during planning.
+	// Note: In mock mode this may not be available, but we can check the data structure.
 	if _, exists := stateData["tree_output"]; !exists {
 		t.Log("Tree output not available in mock mode - this is expected")
 	}
 
-	// Simulate successful planning completion
-	// In a real scenario, this would be triggered by tool usage
-	driver.SetStateData(KeyPlan, "Mock enhanced plan: JWT auth system with bcrypt hashing")
-	driver.SetStateData(KeyPlanConfidence, "HIGH")
-	driver.SetStateData(KeyExplorationSummary, "Found existing auth patterns in codebase")
-	driver.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
+	// Simulate successful planning completion.
+	// In a real scenario, this would be triggered by tool usage.
+	driver.BaseStateMachine.SetStateData(KeyPlan, "Mock enhanced plan: JWT auth system with bcrypt hashing")
+	driver.BaseStateMachine.SetStateData(KeyPlanConfidence, "HIGH")
+	driver.BaseStateMachine.SetStateData(KeyExplorationSummary, "Found existing auth patterns in codebase")
+	driver.BaseStateMachine.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
-	// Transition to PLAN_REVIEW
-	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
+	// Transition to PLAN_REVIEW.
+	if err := driver.BaseStateMachine.TransitionTo(ctx, StatePlanReview, nil); err != nil {
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
-	// Process plan review state
+	// Process plan review state.
 	_, _, err = driver.ProcessState(ctx)
 	if err != nil {
 		t.Fatalf("Failed to process PLAN_REVIEW state: %v", err)
 	}
 
-	// Should have pending approval request
+	// Should have pending approval request.
 	hasPending, approvalID, content, reason, approvalType := driver.GetPendingApprovalRequest()
 	if !hasPending {
 		t.Error("Expected pending approval request after plan submission")
@@ -117,23 +117,23 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 		t.Error("Approval request should have content, reason, and ID")
 	}
 
-	// Approve the enhanced plan
-	if err := driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String()); err != nil {
+	// Approve the enhanced plan.
+	if err := driver.ProcessApprovalResult(context.Background(), proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String()); err != nil {
 		t.Fatalf("Failed to process plan approval: %v", err)
 	}
 
-	// Continue processing
+	// Continue processing.
 	if err := driver.Run(ctx); err != nil {
 		t.Fatalf("Failed to continue after plan approval: %v", err)
 	}
 
-	// Should move to CODING state
-	finalState := driver.GetCurrentState()
+	// Should move to CODING state.
+	finalState := driver.BaseStateMachine.GetCurrentState()
 	if finalState != StateCoding {
 		t.Errorf("Expected state to be CODING after plan approval, got %s", finalState)
 	}
 
-	// Verify planning data is preserved
+	// Verify planning data is preserved.
 	finalStateData := driver.GetStateData()
 	if plan, exists := finalStateData[KeyPlan]; !exists || plan == "" {
 		t.Error("Expected plan to be preserved after approval")
@@ -143,7 +143,7 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 	}
 }
 
-// TestContainerLifecycleManagement tests readonly→readwrite container transitions
+// TestContainerLifecycleManagement tests readonly→readwrite container transitions.
 func TestContainerLifecycleManagement(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "container-lifecycle-test")
 	if err != nil {
@@ -162,7 +162,7 @@ func TestContainerLifecycleManagement(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	// Create mock LLM client
+	// Create mock LLM client.
 	mockLLM := createMockLLMClient()
 
 	driver, err := NewCoder("container-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
@@ -176,50 +176,50 @@ func TestContainerLifecycleManagement(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Test task
+	// Test task.
 	task := "Create simple HTTP server"
 	if err := driver.ProcessTask(ctx, task); err != nil {
 		t.Fatalf("Failed to process task: %v", err)
 	}
 
-	// In PLANNING state, container should be configured for readonly access
-	currentState := driver.GetCurrentState()
+	// In PLANNING state, container should be configured for readonly access.
+	currentState := driver.BaseStateMachine.GetCurrentState()
 	if currentState != StatePlanning {
 		t.Errorf("Expected state to be PLANNING, got %s", currentState)
 	}
 
-	// Mock planning completion
-	driver.SetStateData(KeyPlan, "Mock plan: Simple HTTP server with health endpoint")
-	driver.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
+	// Mock planning completion.
+	driver.BaseStateMachine.SetStateData(KeyPlan, "Mock plan: Simple HTTP server with health endpoint")
+	driver.BaseStateMachine.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
-	// Transition to PLAN_REVIEW and approve
-	if err := driver.TransitionTo(ctx, StatePlanReview, nil); err != nil {
+	// Transition to PLAN_REVIEW and approve.
+	if err := driver.BaseStateMachine.TransitionTo(ctx, StatePlanReview, nil); err != nil {
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
-	// Process approval
-	if err := driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String()); err != nil {
+	// Process approval.
+	if err := driver.ProcessApprovalResult(context.Background(), proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String()); err != nil {
 		t.Fatalf("Failed to process approval: %v", err)
 	}
 
-	// Continue to CODING state
+	// Continue to CODING state.
 	if err := driver.Run(ctx); err != nil {
 		t.Fatalf("Failed to run after approval: %v", err)
 	}
 
-	// Should be in CODING state now
-	codingState := driver.GetCurrentState()
+	// Should be in CODING state now.
+	codingState := driver.BaseStateMachine.GetCurrentState()
 	if codingState != StateCoding {
 		t.Errorf("Expected state to be CODING, got %s", codingState)
 	}
 
-	// In CODING state, container should be reconfigured for readwrite access
-	// Note: In mock mode we can't test actual container operations, but we can verify
-	// the state transitions work correctly
+	// In CODING state, container should be reconfigured for readwrite access.
+	// Note: In mock mode we can't test actual container operations, but we can verify.
+	// the state transitions work correctly.
 	t.Log("Container lifecycle transitions completed successfully in mock mode")
 }
 
-// TestPlanningContextPreservation tests context preservation during QUESTION transitions
+// TestPlanningContextPreservation tests context preservation during QUESTION transitions.
 func TestPlanningContextPreservation(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "context-preservation-test")
 	if err != nil {
@@ -238,7 +238,7 @@ func TestPlanningContextPreservation(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	// Create mock LLM client
+	// Create mock LLM client.
 	mockLLM := createMockLLMClient()
 
 	driver, err := NewCoder("context-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
@@ -252,72 +252,72 @@ func TestPlanningContextPreservation(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Start with a task
+	// Start with a task.
 	task := "Implement complex distributed system with microservices"
 	if err := driver.ProcessTask(ctx, task); err != nil {
 		t.Fatalf("Failed to process task: %v", err)
 	}
 
-	// Should be in PLANNING state
-	if driver.GetCurrentState() != StatePlanning {
-		t.Errorf("Expected state to be PLANNING, got %s", driver.GetCurrentState())
+	// Should be in PLANNING state.
+	if driver.BaseStateMachine.GetCurrentState() != StatePlanning {
+		t.Errorf("Expected state to be PLANNING, got %s", driver.BaseStateMachine.GetCurrentState())
 	}
 
-	// Simulate planning context being built up
-	driver.SetStateData(KeyExplorationFindings, map[string]any{
+	// Simulate planning context being built up.
+	driver.BaseStateMachine.SetStateData(KeyExplorationFindings, map[string]any{
 		"existing_services": []string{"user-service", "auth-service"},
 		"patterns_found":    []string{"REST", "gRPC", "event-driven"},
 	})
 
 	// Simulate question submission (would normally be via tool)
-	driver.SetStateData(KeyQuestionSubmitted, map[string]any{
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, map[string]any{
 		"question": "Should I use GraphQL or REST for the new API?",
 		"context":  "Found existing REST services but team mentioned GraphQL",
 		"urgency":  "HIGH",
 	})
 
-	// Process the question transition
+	// Process the question transition.
 	_, _, err = driver.ProcessState(ctx)
 	if err != nil {
 		t.Fatalf("Failed to process question transition: %v", err)
 	}
 
-	// Should be in QUESTION state
-	if driver.GetCurrentState() != StateQuestion {
-		t.Errorf("Expected state to be QUESTION, got %s", driver.GetCurrentState())
+	// Should be in QUESTION state.
+	if driver.BaseStateMachine.GetCurrentState() != StateQuestion {
+		t.Errorf("Expected state to be QUESTION, got %s", driver.BaseStateMachine.GetCurrentState())
 	}
 
-	// Verify question data is set correctly
+	// Verify question data is set correctly.
 	stateData := driver.GetStateData()
 	if origin, exists := stateData["question_origin"]; !exists || origin != string(StatePlanning) {
 		t.Errorf("Expected question_origin to be PLANNING, got %v", origin)
 	}
 
-	// Verify planning context was saved
+	// Verify planning context was saved.
 	if saved, exists := stateData["planning_context_saved"]; !exists || saved == nil {
 		t.Error("Expected planning context to be saved during question transition")
 	}
 
-	// Simulate architect answer
+	// Simulate architect answer.
 	if err := driver.ProcessAnswer("Use REST for consistency with existing services"); err != nil {
 		t.Fatalf("Failed to process answer: %v", err)
 	}
 
-	// Set the flag to indicate question was answered
-	driver.SetStateData(KeyQuestionAnswered, true)
+	// Set the flag to indicate question was answered.
+	driver.BaseStateMachine.SetStateData(KeyQuestionAnswered, true)
 
-	// Process return to planning
+	// Process return to planning.
 	if err := driver.Run(ctx); err != nil {
 		t.Fatalf("Failed to continue after answer: %v", err)
 	}
 
-	// Should return to PLANNING state
-	returnState := driver.GetCurrentState()
+	// Should return to PLANNING state.
+	returnState := driver.BaseStateMachine.GetCurrentState()
 	if returnState != StatePlanning {
 		t.Errorf("Expected to return to PLANNING state, got %s", returnState)
 	}
 
-	// Verify context preservation worked
+	// Verify context preservation worked.
 	finalStateData := driver.GetStateData()
 	if findings, exists := finalStateData[KeyExplorationFindings]; !exists || findings == nil {
 		t.Error("Expected exploration findings to be preserved after question answered")
@@ -326,7 +326,7 @@ func TestPlanningContextPreservation(t *testing.T) {
 	t.Log("Context preservation across QUESTION transition successful")
 }
 
-// TestToolBasedQuestionFlow tests the new ask_question tool integration
+// TestToolBasedQuestionFlow tests the new ask_question tool integration.
 func TestToolBasedQuestionFlow(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "tool-question-test")
 	if err != nil {
@@ -345,7 +345,7 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	// Create mock LLM client
+	// Create mock LLM client.
 	mockLLM := createMockLLMClient()
 
 	driver, err := NewCoder("tool-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
@@ -359,33 +359,33 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Test ask_question tool integration in PLANNING state
+	// Test ask_question tool integration in PLANNING state.
 	task := "Implement OAuth2 authentication"
 	if err := driver.ProcessTask(ctx, task); err != nil {
 		t.Fatalf("Failed to process task: %v", err)
 	}
 
-	// Simulate ask_question tool call result
+	// Simulate ask_question tool call result.
 	questionData := map[string]any{
 		"question": "Which OAuth2 flow should I implement?",
 		"context":  "Found existing session-based auth, need to know if we're adding or replacing",
 		"urgency":  "MEDIUM",
 	}
 
-	driver.SetStateData(KeyQuestionSubmitted, questionData)
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, questionData)
 
-	// Process the planning state with question
+	// Process the planning state with question.
 	nextState, _, err := driver.ProcessState(ctx)
 	if err != nil {
 		t.Fatalf("Failed to process planning with question: %v", err)
 	}
 
-	// Should transition to QUESTION state
+	// Should transition to QUESTION state.
 	if nextState != StateQuestion {
 		t.Errorf("Expected transition to QUESTION state, got %s", nextState)
 	}
 
-	// Verify question data was processed correctly
+	// Verify question data was processed correctly.
 	stateData := driver.GetStateData()
 	if content, exists := stateData["question_content"]; !exists || content != questionData["question"] {
 		t.Errorf("Expected question content to be preserved, got %v", content)
@@ -397,34 +397,34 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 		t.Error("Expected question reason to be non-empty string")
 	}
 
-	// Test question handling in CODING state
-	driver.SetStateData(KeyTaskContent, task)
-	driver.SetStateData(KeyPlan, "Mock plan for OAuth2")
-	if err := driver.TransitionTo(ctx, StateCoding, nil); err != nil {
+	// Test question handling in CODING state.
+	driver.BaseStateMachine.SetStateData(KeyTaskContent, task)
+	driver.BaseStateMachine.SetStateData(KeyPlan, "Mock plan for OAuth2")
+	if err := driver.BaseStateMachine.TransitionTo(ctx, StateCoding, nil); err != nil {
 		t.Fatalf("Failed to transition to CODING: %v", err)
 	}
 
-	// Simulate ask_question from CODING state
+	// Simulate ask_question from CODING state.
 	codingQuestionData := map[string]any{
 		"question": "Should I use PKCE for the authorization code flow?",
 		"context":  "Implementing authorization code flow, need security best practices",
 		"urgency":  "HIGH",
 	}
 
-	driver.SetStateData(KeyQuestionSubmitted, codingQuestionData)
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, codingQuestionData)
 
-	// Process CODING state with question
+	// Process CODING state with question.
 	codingNextState, _, err := driver.ProcessState(ctx)
 	if err != nil {
 		t.Fatalf("Failed to process coding with question: %v", err)
 	}
 
-	// Should transition to QUESTION state from CODING
+	// Should transition to QUESTION state from CODING.
 	if codingNextState != StateQuestion {
 		t.Errorf("Expected transition to QUESTION from CODING, got %s", codingNextState)
 	}
 
-	// Verify question origin is tracked correctly
+	// Verify question origin is tracked correctly.
 	codingStateData := driver.GetStateData()
 	if origin, exists := codingStateData["question_origin"]; !exists || origin != string(StateCoding) {
 		t.Errorf("Expected question_origin to be CODING, got %v", origin)
@@ -433,7 +433,7 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 	t.Log("Tool-based question flow tested successfully across all states")
 }
 
-// TestEnhancedPlanningErrorHandling tests error scenarios in enhanced planning
+// TestEnhancedPlanningErrorHandling tests error scenarios in enhanced planning.
 func TestEnhancedPlanningErrorHandling(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "planning-error-test")
 	if err != nil {
@@ -452,7 +452,7 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 		CompactionBuffer: 512,
 	}
 
-	// Create mock LLM client
+	// Create mock LLM client.
 	mockLLM := createMockLLMClient()
 
 	driver, err := NewCoder("error-test-coder", stateStore, modelConfig, mockLLM, tempDir, &config.Agent{}, nil, nil)
@@ -466,45 +466,45 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Test invalid question data format
+	// Test invalid question data format.
 	task := "Create API endpoint"
 	if err := driver.ProcessTask(ctx, task); err != nil {
 		t.Fatalf("Failed to process task: %v", err)
 	}
 
-	// Set invalid question data
-	driver.SetStateData(KeyQuestionSubmitted, "invalid-format")
+	// Set invalid question data.
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, "invalid-format")
 
-	// Should handle invalid question data gracefully
+	// Should handle invalid question data gracefully.
 	_, _, err = driver.ProcessState(ctx)
 	if err == nil {
 		t.Error("Expected error when processing invalid question data")
 	}
 
-	// Test missing required question fields
+	// Test missing required question fields.
 	invalidQuestionData := map[string]any{
 		"context": "Some context but no question",
 		"urgency": "HIGH",
 	}
 
-	driver.SetStateData(KeyQuestionSubmitted, invalidQuestionData)
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, invalidQuestionData)
 
-	// Should handle missing question field
+	// Should handle missing question field.
 	_, _, err = driver.ProcessState(ctx)
 	if err == nil {
 		t.Error("Expected error when question field is missing")
 	}
 
-	// Test valid recovery after error
+	// Test valid recovery after error.
 	validQuestionData := map[string]any{
 		"question": "Valid question after error?",
 		"context":  "Recovery test context",
 		"urgency":  "LOW",
 	}
 
-	driver.SetStateData(KeyQuestionSubmitted, validQuestionData)
+	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, validQuestionData)
 
-	// Should process successfully now
+	// Should process successfully now.
 	nextState, _, err := driver.ProcessState(ctx)
 	if err != nil {
 		t.Fatalf("Failed to process valid question after error: %v", err)

@@ -13,18 +13,18 @@ func TestValidateMessage(t *testing.T) {
 		errType string
 	}{
 		{
-			name: "valid user message",
-			msg:  CompletionMessage{Role: RoleUser, Content: "Hello world"},
+			name:    "valid user message",
+			msg:     CompletionMessage{Role: RoleUser, Content: "Hello world"},
 			wantErr: false,
 		},
 		{
-			name: "valid assistant message",
-			msg:  CompletionMessage{Role: RoleAssistant, Content: "Hi there!"},
+			name:    "valid assistant message",
+			msg:     CompletionMessage{Role: RoleAssistant, Content: "Hi there!"},
 			wantErr: false,
 		},
 		{
-			name: "valid system message",
-			msg:  CompletionMessage{Role: RoleSystem, Content: "You are a helpful assistant"},
+			name:    "valid system message",
+			msg:     CompletionMessage{Role: RoleSystem, Content: "You are a helpful assistant"},
 			wantErr: false,
 		},
 		{
@@ -62,17 +62,17 @@ func TestValidateMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateMessage(tt.msg)
-			
+
 			if tt.wantErr && err == nil {
 				t.Errorf("ValidateMessage() expected error but got none")
 				return
 			}
-			
+
 			if !tt.wantErr && err != nil {
 				t.Errorf("ValidateMessage() unexpected error: %v", err)
 				return
 			}
-			
+
 			if tt.wantErr && err != nil {
 				if !strings.Contains(err.Error(), tt.errType) {
 					t.Errorf("ValidateMessage() error type mismatch, want '%s' in error: %v", tt.errType, err)
@@ -114,11 +114,11 @@ func TestValidateMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateMessages(tt.messages)
-			
+
 			if tt.wantErr && err == nil {
 				t.Errorf("ValidateMessages() expected error but got none")
 			}
-			
+
 			if !tt.wantErr && err != nil {
 				t.Errorf("ValidateMessages() unexpected error: %v", err)
 			}
@@ -172,11 +172,11 @@ func TestSanitizeMessage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := SanitizeMessage(tt.input)
-			
+
 			if result.Role != tt.expected.Role {
 				t.Errorf("SanitizeMessage() role = %v, want %v", result.Role, tt.expected.Role)
 			}
-			
+
 			if result.Content != tt.expected.Content {
 				t.Errorf("SanitizeMessage() content = %v, want %v", result.Content, tt.expected.Content)
 			}
@@ -227,17 +227,17 @@ func TestValidateAndSanitizeMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := ValidateAndSanitizeMessages(tt.input)
-			
+
 			if tt.wantErr && err == nil {
 				t.Errorf("ValidateAndSanitizeMessages() expected error but got none")
 				return
 			}
-			
+
 			if !tt.wantErr && err != nil {
 				t.Errorf("ValidateAndSanitizeMessages() unexpected error: %v", err)
 				return
 			}
-			
+
 			if !tt.wantErr && tt.validate != nil {
 				if !tt.validate(result) {
 					t.Errorf("ValidateAndSanitizeMessages() result validation failed")

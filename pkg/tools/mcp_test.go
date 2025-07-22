@@ -12,17 +12,17 @@ func TestRegistry_Register(t *testing.T) {
 
 	tool := NewShellTool(exec.NewLocalExec())
 
-	// Test successful registration
+	// Test successful registration.
 	if err := registry.Register(tool); err != nil {
 		t.Errorf("Expected no error registering tool, got %v", err)
 	}
 
-	// Test duplicate registration
+	// Test duplicate registration.
 	if err := registry.Register(tool); err == nil {
 		t.Error("Expected error when registering duplicate tool")
 	}
 
-	// Test nil tool registration
+	// Test nil tool registration.
 	if err := registry.Register(nil); err == nil {
 		t.Error("Expected error when registering nil tool")
 	}
@@ -32,12 +32,12 @@ func TestRegistry_Get(t *testing.T) {
 	registry := &Registry{tools: make(map[string]ToolChannel)}
 	tool := NewShellTool(exec.NewLocalExec())
 
-	// Test getting non-existent tool
+	// Test getting non-existent tool.
 	if _, err := registry.Get("nonexistent"); err == nil {
 		t.Error("Expected error when getting non-existent tool")
 	}
 
-	// Register and test getting existing tool
+	// Register and test getting existing tool.
 	if err := registry.Register(tool); err != nil {
 		t.Fatalf("Failed to register tool: %v", err)
 	}
@@ -55,13 +55,13 @@ func TestRegistry_Get(t *testing.T) {
 func TestRegistry_GetAll(t *testing.T) {
 	registry := &Registry{tools: make(map[string]ToolChannel)}
 
-	// Test empty registry
+	// Test empty registry.
 	all := registry.GetAll()
 	if len(all) != 0 {
 		t.Errorf("Expected empty registry, got %d tools", len(all))
 	}
 
-	// Add tools and test
+	// Add tools and test.
 	tool1 := NewShellTool(exec.NewLocalExec())
 	registry.Register(tool1)
 
@@ -76,15 +76,15 @@ func TestRegistry_GetAll(t *testing.T) {
 }
 
 func TestGlobalRegistry(t *testing.T) {
-	// Clear global registry for clean test
+	// Clear global registry for clean test.
 	globalRegistry.Clear()
 
-	// Test InitializeShellTool
+	// Test InitializeShellTool.
 	if err := InitializeShellTool(exec.NewLocalExec()); err != nil {
 		t.Errorf("Expected no error with InitializeShellTool, got %v", err)
 	}
 
-	// Test global Get
+	// Test global Get.
 	retrieved, err := Get("shell")
 	if err != nil {
 		t.Errorf("Expected no error with global Get, got %v", err)
@@ -94,13 +94,13 @@ func TestGlobalRegistry(t *testing.T) {
 		t.Errorf("Expected tool name 'shell', got '%s'", retrieved.Name())
 	}
 
-	// Test global GetAll
+	// Test global GetAll.
 	all := GetAll()
 	if len(all) != 1 {
 		t.Errorf("Expected 1 tool in global registry, got %d", len(all))
 	}
 
-	// Test GetToolDefinitions
+	// Test GetToolDefinitions.
 	defs := GetToolDefinitions()
 	if len(defs) != 1 {
 		t.Errorf("Expected 1 tool definition, got %d", len(defs))
@@ -151,26 +151,26 @@ func TestShellTool_Exec(t *testing.T) {
 	tool := NewShellTool(exec.NewLocalExec())
 	ctx := context.Background()
 
-	// Test missing cmd argument
+	// Test missing cmd argument.
 	args := map[string]any{}
 	if _, err := tool.Exec(ctx, args); err == nil {
 		t.Error("Expected error when cmd argument is missing")
 	}
 
-	// Test invalid cmd argument type
+	// Test invalid cmd argument type.
 	args = map[string]any{"cmd": 123}
 	if _, err := tool.Exec(ctx, args); err == nil {
 		t.Error("Expected error when cmd argument is not a string")
 	}
 
-	// Test valid execution
+	// Test valid execution.
 	args = map[string]any{"cmd": "echo hello"}
 	result, err := tool.Exec(ctx, args)
 	if err != nil {
 		t.Errorf("Expected no error with valid args, got %v", err)
 	}
 
-	// Check result structure
+	// Check result structure.
 	resultMap, ok := result.(map[string]any)
 	if !ok {
 		t.Fatalf("Expected result to be map[string]any, got %T", result)
@@ -196,7 +196,7 @@ func TestShellTool_Exec(t *testing.T) {
 		t.Errorf("Expected exit_code 0, got %d", code)
 	}
 
-	// Test with cwd argument
+	// Test with cwd argument.
 	args = map[string]any{
 		"cmd": "pwd",
 		"cwd": "/tmp",

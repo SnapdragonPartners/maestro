@@ -12,14 +12,14 @@ import (
 func TestConcurrentCoders(t *testing.T) {
 	const numCoders = 10
 
-	// Create multiple coders concurrently
+	// Create multiple coders concurrently.
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	errors := make([]error, 0)
 
 	for i := 0; i < numCoders; i++ {
 		wg.Add(1)
-		go func(id int) {
+		go func(_ int) {
 			defer wg.Done()
 
 			tempDir := t.TempDir()
@@ -31,7 +31,7 @@ func TestConcurrentCoders(t *testing.T) {
 				return
 			}
 
-			// Create coder - this will initialize local transitions
+			// Create coder - this will initialize local transitions.
 			_, err = NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
 			if err != nil {
 				mu.Lock()
@@ -52,14 +52,14 @@ func TestConcurrentCoders(t *testing.T) {
 func TestConcurrentTransitions(t *testing.T) {
 	const numCoders = 5
 
-	// Create coders and test concurrent transitions
+	// Create coders and test concurrent transitions.
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	errors := make([]error, 0)
 
 	for i := 0; i < numCoders; i++ {
 		wg.Add(1)
-		go func(id int) {
+		go func(_ int) {
 			defer wg.Done()
 
 			tempDir := t.TempDir()
@@ -79,8 +79,8 @@ func TestConcurrentTransitions(t *testing.T) {
 				return
 			}
 
-			// Test a simple state transition
-			err = driver.TransitionTo(context.Background(), StatePlanning, map[string]any{"test": "data"})
+			// Test a simple state transition.
+			err = driver.BaseStateMachine.TransitionTo(context.Background(), StatePlanning, map[string]any{"test": "data"})
 			if err != nil {
 				mu.Lock()
 				errors = append(errors, err)

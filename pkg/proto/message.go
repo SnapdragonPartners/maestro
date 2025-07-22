@@ -1,3 +1,5 @@
+// Package proto defines the structured message protocol for agent communication.
+// It provides message types, states, and data structures used throughout the multi-agent system.
 package proto
 
 import (
@@ -6,42 +8,68 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
+// MsgType represents the type of agent message.
 type MsgType string
 
 const (
-	MsgTypeSTORY    MsgType = "STORY"    // Work items for coders (stories to implement)
-	MsgTypeSPEC     MsgType = "SPEC"     // Specifications for architects to process
-	MsgTypeQUESTION MsgType = "QUESTION" // Information request: "How should I approach this?"
-	MsgTypeANSWER   MsgType = "ANSWER"   // Information response: "Here's the guidance..."
-	MsgTypeREQUEST  MsgType = "REQUEST"  // Approval request: "Please review this code"
-	MsgTypeRESULT   MsgType = "RESULT"   // Approval response: "APPROVED/REJECTED/NEEDS_CHANGES"
-	MsgTypeREQUEUE  MsgType = "REQUEUE"  // Fire-and-forget: requeue failed story for retry
-	MsgTypeERROR    MsgType = "ERROR"
+	// MsgTypeSTORY represents work items for coders (stories to implement).
+	MsgTypeSTORY MsgType = "STORY"
+	// MsgTypeSPEC represents specifications for architects to process.
+	MsgTypeSPEC MsgType = "SPEC"
+	// MsgTypeQUESTION represents information requests.
+	MsgTypeQUESTION MsgType = "QUESTION"
+	// MsgTypeANSWER represents information responses.
+	MsgTypeANSWER MsgType = "ANSWER"
+	// MsgTypeREQUEST represents approval requests.
+	MsgTypeREQUEST MsgType = "REQUEST"
+	// MsgTypeRESULT represents approval responses.
+	MsgTypeRESULT MsgType = "RESULT"
+	// MsgTypeREQUEUE represents requeue requests for failed stories.
+	MsgTypeREQUEUE MsgType = "REQUEUE"
+	// MsgTypeERROR represents error messages.
+	MsgTypeERROR MsgType = "ERROR"
+	// MsgTypeSHUTDOWN represents shutdown signals.
 	MsgTypeSHUTDOWN MsgType = "SHUTDOWN"
 )
 
-// RequestType represents the type of request being made
+// RequestType represents the type of request being made.
 type RequestType string
 
 const (
-	// RequestApproval indicates an approval request
+	// RequestApproval indicates an approval request.
 	RequestApproval RequestType = "approval"
 
-	// RequestApprovalReview indicates an approval request review
+	// RequestApprovalReview indicates an approval request review.
 	RequestApprovalReview RequestType = "approval_request"
 
-	// RequestQuestion indicates a question request
+	// RequestQuestion indicates a question request.
 	RequestQuestion RequestType = "question"
 
-	// RequestResource indicates a resource request
+	// RequestResource indicates a resource request.
 	RequestResource RequestType = "resource"
 )
 
-// Common payload and metadata keys used in agent messages
+// Priority represents the priority level for messages.
+type Priority string
+
 const (
-	// Payload keys
+	// PriorityLow represents low priority messages.
+	PriorityLow Priority = "LOW"
+
+	// PriorityMedium represents medium priority messages.
+	PriorityMedium Priority = "MEDIUM"
+
+	// PriorityHigh represents high priority messages.
+	PriorityHigh Priority = "HIGH"
+)
+
+// Common payload and metadata keys used in agent messages.
+const (
+	// Payload keys.
 	KeyRequestType  = "request_type"
 	KeyApprovalType = "approval_type"
 	KeyAnswer       = "answer"
@@ -53,12 +81,12 @@ const (
 	KeyCurrentState = "current_state"
 	KeyRequest      = "request"
 
-	// Correlation keys for QUESTION/ANSWER and REQUEST/RESULT pairs
+	// Correlation keys for QUESTION/ANSWER and REQUEST/RESULT pairs.
 	KeyQuestionID    = "question_id"    // Unique ID for each question
 	KeyApprovalID    = "approval_id"    // Unique ID for each approval request
 	KeyCorrelationID = "correlation_id" // Generic correlation ID for any request/response pair
 
-	// Story-related keys
+	// Story-related keys.
 	KeyStoryType       = "story_type"
 	KeyStoryID         = "story_id"
 	KeyTitle           = "title"
@@ -68,47 +96,47 @@ const (
 	KeyFilePath        = "file_path"
 	KeyBackend         = "backend"
 
-	// Resource request keys
+	// Resource request keys.
 	KeyRequestedTokens     = "requestedTokens"
 	KeyRequestedIterations = "requestedIterations"
 	KeyJustification       = "justification"
 )
 
-// ApprovalStatus represents the status of an approval request
+// ApprovalStatus represents the status of an approval request.
 type ApprovalStatus string
 
 const (
-	// ApprovalStatusApproved indicates the request was approved
+	// ApprovalStatusApproved indicates the request was approved.
 	ApprovalStatusApproved ApprovalStatus = "APPROVED"
 
-	// ApprovalStatusRejected indicates the request was rejected
+	// ApprovalStatusRejected indicates the request was rejected.
 	ApprovalStatusRejected ApprovalStatus = "REJECTED"
 
-	// ApprovalStatusNeedsChanges indicates the request needs changes
+	// ApprovalStatusNeedsChanges indicates the request needs changes.
 	ApprovalStatusNeedsChanges ApprovalStatus = "NEEDS_CHANGES"
 
-	// ApprovalStatusPending indicates the request is pending review
+	// ApprovalStatusPending indicates the request is pending review.
 	ApprovalStatusPending ApprovalStatus = "PENDING"
 )
 
-// ApprovalType represents the type of approval being requested
+// ApprovalType represents the type of approval being requested.
 type ApprovalType string
 
 const (
-	// ApprovalTypePlan indicates a plan approval request
+	// ApprovalTypePlan indicates a plan approval request.
 	ApprovalTypePlan ApprovalType = "plan"
 
-	// ApprovalTypeCode indicates a code approval request
+	// ApprovalTypeCode indicates a code approval request.
 	ApprovalTypeCode ApprovalType = "code"
 
-	// ApprovalTypeBudgetReview indicates a budget review approval request
+	// ApprovalTypeBudgetReview indicates a budget review approval request.
 	ApprovalTypeBudgetReview ApprovalType = "budget_review"
 
-	// ApprovalTypeCompletion indicates a story completion request
+	// ApprovalTypeCompletion indicates a story completion request.
 	ApprovalTypeCompletion ApprovalType = "completion"
 )
 
-// ApprovalRequest represents a request for approval (plan or code)
+// ApprovalRequest represents a request for approval (plan or code).
 type ApprovalRequest struct {
 	ID          string       `json:"id"`
 	Type        ApprovalType `json:"type"`         // "plan" or "code"
@@ -119,7 +147,7 @@ type ApprovalRequest struct {
 	RequestedAt time.Time    `json:"requested_at"`
 }
 
-// ApprovalResult represents the result of an approval request
+// ApprovalResult represents the result of an approval request.
 type ApprovalResult struct {
 	ID         string         `json:"id"`
 	RequestID  string         `json:"request_id"`  // References the original request
@@ -130,7 +158,7 @@ type ApprovalResult struct {
 	ReviewedAt time.Time      `json:"reviewed_at"`
 }
 
-// ResourceRequest represents a request for additional resources (tokens, iterations, etc.)
+// ResourceRequest represents a request for additional resources (tokens, iterations, etc.).
 type ResourceRequest struct {
 	ID                  string    `json:"id"`
 	RequestedTokens     int       `json:"requestedTokens"`
@@ -141,7 +169,7 @@ type ResourceRequest struct {
 	StoryID             string    `json:"story_id,omitempty"`
 }
 
-// ResourceResult represents the result of a resource request
+// ResourceResult represents the result of a resource request.
 type ResourceResult struct {
 	ID                 string         `json:"id"`
 	RequestID          string         `json:"request_id"` // References the original request
@@ -153,6 +181,7 @@ type ResourceResult struct {
 	ReviewedAt         time.Time      `json:"reviewed_at"`
 }
 
+// AgentMsg represents a message passed between agents in the system.
 type AgentMsg struct {
 	ID          string            `json:"id"`
 	Type        MsgType           `json:"type"`
@@ -165,6 +194,7 @@ type AgentMsg struct {
 	ParentMsgID string            `json:"parent_msg_id,omitempty"`
 }
 
+// NewAgentMsg creates a new agent message with the specified parameters.
 func NewAgentMsg(msgType MsgType, fromAgent, toAgent string) *AgentMsg {
 	return &AgentMsg{
 		ID:        generateID(),
@@ -177,14 +207,24 @@ func NewAgentMsg(msgType MsgType, fromAgent, toAgent string) *AgentMsg {
 	}
 }
 
+// ToJSON serializes the agent message to JSON bytes.
 func (msg *AgentMsg) ToJSON() ([]byte, error) {
-	return json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, logx.Wrap(err, "failed to marshal AgentMsg to JSON")
+	}
+	return data, nil
 }
 
+// FromJSON deserializes JSON bytes into the agent message.
 func (msg *AgentMsg) FromJSON(data []byte) error {
-	return json.Unmarshal(data, msg)
+	if err := json.Unmarshal(data, msg); err != nil {
+		return logx.Wrap(err, "failed to unmarshal JSON to AgentMsg")
+	}
+	return nil
 }
 
+// FromJSON creates a new AgentMsg from JSON bytes.
 func FromJSON(data []byte) (*AgentMsg, error) {
 	var msg AgentMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
@@ -193,6 +233,7 @@ func FromJSON(data []byte) (*AgentMsg, error) {
 	return &msg, nil
 }
 
+// SetPayload sets a payload value for the message.
 func (msg *AgentMsg) SetPayload(key string, value any) {
 	if msg.Payload == nil {
 		msg.Payload = make(map[string]any)
@@ -200,6 +241,7 @@ func (msg *AgentMsg) SetPayload(key string, value any) {
 	msg.Payload[key] = value
 }
 
+// GetPayload retrieves a payload value from the message.
 func (msg *AgentMsg) GetPayload(key string) (any, bool) {
 	if msg.Payload == nil {
 		return nil, false
@@ -208,6 +250,7 @@ func (msg *AgentMsg) GetPayload(key string) (any, bool) {
 	return val, exists
 }
 
+// SetMetadata sets a metadata value for the message.
 func (msg *AgentMsg) SetMetadata(key, value string) {
 	if msg.Metadata == nil {
 		msg.Metadata = make(map[string]string)
@@ -215,6 +258,7 @@ func (msg *AgentMsg) SetMetadata(key, value string) {
 	msg.Metadata[key] = value
 }
 
+// GetMetadata retrieves a metadata value from the message.
 func (msg *AgentMsg) GetMetadata(key string) (string, bool) {
 	if msg.Metadata == nil {
 		return "", false
@@ -223,6 +267,7 @@ func (msg *AgentMsg) GetMetadata(key string) (string, bool) {
 	return val, exists
 }
 
+// Clone creates a deep copy of the agent message.
 func (msg *AgentMsg) Clone() *AgentMsg {
 	clone := &AgentMsg{
 		ID:          msg.ID,
@@ -234,7 +279,7 @@ func (msg *AgentMsg) Clone() *AgentMsg {
 		ParentMsgID: msg.ParentMsgID,
 	}
 
-	// Deep copy payload
+	// Deep copy payload.
 	if msg.Payload != nil {
 		clone.Payload = make(map[string]any)
 		for k, v := range msg.Payload {
@@ -242,7 +287,7 @@ func (msg *AgentMsg) Clone() *AgentMsg {
 		}
 	}
 
-	// Deep copy metadata
+	// Deep copy metadata.
 	if msg.Metadata != nil {
 		clone.Metadata = make(map[string]string)
 		for k, v := range msg.Metadata {
@@ -253,6 +298,7 @@ func (msg *AgentMsg) Clone() *AgentMsg {
 	return clone
 }
 
+// Validate checks if the agent message has valid required fields.
 func (msg *AgentMsg) Validate() error {
 	if msg.ID == "" {
 		return fmt.Errorf("message ID is required")
@@ -270,7 +316,7 @@ func (msg *AgentMsg) Validate() error {
 		return fmt.Errorf("timestamp is required")
 	}
 
-	// Validate message type using the validation function
+	// Validate message type using the validation function.
 	if _, valid := ValidateMsgType(string(msg.Type)); !valid {
 		return fmt.Errorf("invalid message type: %s", msg.Type)
 	}
@@ -278,24 +324,40 @@ func (msg *AgentMsg) Validate() error {
 	return nil
 }
 
-var (
-	idCounter int64
-	idMutex   sync.Mutex
-)
-
-// generateID creates a simple unique ID for messages
-// In a real implementation, this might use UUIDs or other schemes
-func generateID() string {
-	idMutex.Lock()
-	defer idMutex.Unlock()
-
-	idCounter++
-	return fmt.Sprintf("msg_%d_%d", time.Now().UnixNano(), idCounter)
+// IDGenerator provides thread-safe ID generation for messages.
+type IDGenerator struct {
+	counter int64
+	mutex   sync.Mutex
 }
 
-// MsgType helper methods
+// NextID generates the next unique ID.
+func (g *IDGenerator) NextID() string {
+	g.mutex.Lock()
+	defer g.mutex.Unlock()
+	g.counter++
+	return fmt.Sprintf("msg_%d_%d", time.Now().UnixNano(), g.counter)
+}
 
-// ValidateMsgType validates if a string is a valid message type
+// NextCounter generates the next unique counter value.
+func (g *IDGenerator) NextCounter() int64 {
+	g.mutex.Lock()
+	defer g.mutex.Unlock()
+	g.counter++
+	return g.counter
+}
+
+// Global ID generator instance.
+var globalIDGen = &IDGenerator{} //nolint:gochecknoglobals // Single global ID generator instance
+
+// generateID creates a simple unique ID for messages.
+// In a real implementation, this might use UUIDs or other schemes.
+func generateID() string {
+	return globalIDGen.NextID()
+}
+
+// MsgType helper methods.
+
+// ValidateMsgType validates if a string is a valid message type.
 func ValidateMsgType(msgType string) (MsgType, bool) {
 	switch MsgType(msgType) {
 	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeRESULT, MsgTypeREQUEUE, MsgTypeERROR, MsgTypeSHUTDOWN:
@@ -305,9 +367,9 @@ func ValidateMsgType(msgType string) (MsgType, bool) {
 	}
 }
 
-// ParseMsgType parses a string into a MsgType with validation
+// ParseMsgType parses a string into a MsgType with validation.
 func ParseMsgType(s string) (MsgType, error) {
-	// Normalize to uppercase for comparison
+	// Normalize to uppercase for comparison.
 	normalizedType := strings.ToUpper(s)
 
 	switch normalizedType {
@@ -330,7 +392,7 @@ func ParseMsgType(s string) (MsgType, error) {
 	case "SHUTDOWN":
 		return MsgTypeSHUTDOWN, nil
 	default:
-		// Check if it's already in the correct format
+		// Check if it's already in the correct format.
 		if msgType, valid := ValidateMsgType(s); valid {
 			return msgType, nil
 		}
@@ -338,14 +400,14 @@ func ParseMsgType(s string) (MsgType, error) {
 	}
 }
 
-// String returns the string representation of MsgType
+// String returns the string representation of MsgType.
 func (mt MsgType) String() string {
 	return string(mt)
 }
 
-// RequestType helper methods
+// RequestType helper methods.
 
-// ValidateRequestType validates if a string is a valid request type
+// ValidateRequestType validates if a string is a valid request type.
 func ValidateRequestType(requestType string) (RequestType, bool) {
 	switch RequestType(requestType) {
 	case RequestApproval, RequestApprovalReview, RequestQuestion, RequestResource:
@@ -355,9 +417,9 @@ func ValidateRequestType(requestType string) (RequestType, bool) {
 	}
 }
 
-// ParseRequestType parses a string into a RequestType with validation
+// ParseRequestType parses a string into a RequestType with validation.
 func ParseRequestType(s string) (RequestType, error) {
-	// Normalize to lowercase for comparison
+	// Normalize to lowercase for comparison.
 	normalizedType := strings.ToLower(s)
 
 	switch normalizedType {
@@ -370,7 +432,7 @@ func ParseRequestType(s string) (RequestType, error) {
 	case "resource":
 		return RequestResource, nil
 	default:
-		// Check if it's already in the correct format
+		// Check if it's already in the correct format.
 		if requestType, valid := ValidateRequestType(s); valid {
 			return requestType, nil
 		}
@@ -378,45 +440,45 @@ func ParseRequestType(s string) (RequestType, error) {
 	}
 }
 
-// String returns the string representation of RequestType
+// String returns the string representation of RequestType.
 func (rt RequestType) String() string {
 	return string(rt)
 }
 
-// Deprecated: Use ParseApprovalType instead
-// NormaliseApprovalType normalizes and validates approval type strings
+// Deprecated: Use ParseApprovalType instead.
+// NormaliseApprovalType normalizes and validates approval type strings.
 func NormaliseApprovalType(s string) (ApprovalType, error) {
 	return ParseApprovalType(s)
 }
 
-// Approval helper methods
+// Approval helper methods.
 
-// IsApproved returns true if the status indicates approval
+// IsApproved returns true if the status indicates approval.
 func (r *ApprovalResult) IsApproved() bool {
 	return r.Status == ApprovalStatusApproved
 }
 
-// IsRejected returns true if the status indicates rejection or needs changes
+// IsRejected returns true if the status indicates rejection or needs changes.
 func (r *ApprovalResult) IsRejected() bool {
 	return r.Status == ApprovalStatusRejected || r.Status == ApprovalStatusNeedsChanges
 }
 
-// IsPending returns true if the status indicates pending review
+// IsPending returns true if the status indicates pending review.
 func (r *ApprovalResult) IsPending() bool {
 	return r.Status == ApprovalStatusPending
 }
 
-// String returns the string representation of ApprovalStatus
+// String returns the string representation of ApprovalStatus.
 func (s ApprovalStatus) String() string {
 	return string(s)
 }
 
-// String returns the string representation of ApprovalType
+// String returns the string representation of ApprovalType.
 func (t ApprovalType) String() string {
 	return string(t)
 }
 
-// ValidateApprovalStatus validates if a string is a valid approval status
+// ValidateApprovalStatus validates if a string is a valid approval status.
 func ValidateApprovalStatus(status string) (ApprovalStatus, bool) {
 	switch ApprovalStatus(status) {
 	case ApprovalStatusApproved, ApprovalStatusRejected, ApprovalStatusNeedsChanges, ApprovalStatusPending:
@@ -426,7 +488,7 @@ func ValidateApprovalStatus(status string) (ApprovalStatus, bool) {
 	}
 }
 
-// ValidateApprovalType validates if a string is a valid approval type
+// ValidateApprovalType validates if a string is a valid approval type.
 func ValidateApprovalType(approvalType string) (ApprovalType, bool) {
 	switch ApprovalType(approvalType) {
 	case ApprovalTypePlan, ApprovalTypeCode, ApprovalTypeBudgetReview, ApprovalTypeCompletion:
@@ -436,9 +498,9 @@ func ValidateApprovalType(approvalType string) (ApprovalType, bool) {
 	}
 }
 
-// ConvertLegacyStatus converts legacy status strings to new constants
+// ConvertLegacyStatus converts legacy status strings to new constants.
 func ConvertLegacyStatus(legacyStatus string) ApprovalStatus {
-	// Normalize to lowercase for comparison
+	// Normalize to lowercase for comparison.
 	normalizedStatus := strings.ToLower(legacyStatus)
 
 	switch normalizedStatus {
@@ -451,31 +513,35 @@ func ConvertLegacyStatus(legacyStatus string) ApprovalStatus {
 	case "pending":
 		return ApprovalStatusPending
 	default:
-		// Check if it's already in the correct format
+		// Check if it's already in the correct format.
 		if status, valid := ValidateApprovalStatus(legacyStatus); valid {
 			return status
 		}
-		// Default to rejected for unknown statuses
+		// Default to rejected for unknown statuses.
 		return ApprovalStatusRejected
 	}
 }
 
-// AutoAction represents BUDGET_REVIEW command types for inter-agent communication
+// AutoAction represents BUDGET_REVIEW command types for inter-agent communication.
 type AutoAction string
 
 const (
+	// AutoContinue indicates to continue with the current approach.
 	AutoContinue AutoAction = "CONTINUE"
-	AutoPivot    AutoAction = "PIVOT"
+	// AutoPivot indicates to change approach or strategy.
+	AutoPivot AutoAction = "PIVOT"
+	// AutoEscalate indicates to escalate to higher authority.
 	AutoEscalate AutoAction = "ESCALATE"
-	AutoAbandon  AutoAction = "ABANDON"
+	// AutoAbandon indicates to abandon the current task.
+	AutoAbandon AutoAction = "ABANDON"
 )
 
-// Question reason constants
+// Question reason constants.
 const (
 	QuestionReasonBudgetReview = "BUDGET_REVIEW"
 )
 
-// ParseAutoAction validates and converts a string to AutoAction
+// ParseAutoAction validates and converts a string to AutoAction.
 func ParseAutoAction(s string) (AutoAction, error) {
 	switch AutoAction(s) {
 	case AutoContinue, AutoPivot, AutoEscalate, AutoAbandon:
@@ -485,49 +551,46 @@ func ParseAutoAction(s string) (AutoAction, error) {
 	}
 }
 
-// String returns the string representation of AutoAction
+// String returns the string representation of AutoAction.
 func (a AutoAction) String() string {
 	return string(a)
 }
 
-// Correlation ID helpers for QUESTION/ANSWER and REQUEST/RESULT pairs
+// Correlation ID helpers for QUESTION/ANSWER and REQUEST/RESULT pairs.
 
-// GenerateQuestionID creates a unique ID for a question
+// GenerateQuestionID creates a unique ID for a question.
 func GenerateQuestionID() string {
 	return fmt.Sprintf("q_%d_%d", time.Now().UnixNano(), generateUniqueCounter())
 }
 
-// GenerateApprovalID creates a unique ID for an approval request
+// GenerateApprovalID creates a unique ID for an approval request.
 func GenerateApprovalID() string {
 	return fmt.Sprintf("a_%d_%d", time.Now().UnixNano(), generateUniqueCounter())
 }
 
-// GenerateCorrelationID creates a unique ID for any request/response pair
+// GenerateCorrelationID creates a unique ID for any request/response pair.
 func GenerateCorrelationID() string {
 	return fmt.Sprintf("c_%d_%d", time.Now().UnixNano(), generateUniqueCounter())
 }
 
-// Helper for generating unique counters (reuses existing ID generation logic)
+// Helper for generating unique counters (reuses existing ID generation logic).
 func generateUniqueCounter() int64 {
-	idMutex.Lock()
-	defer idMutex.Unlock()
-	idCounter++
-	return idCounter
+	return globalIDGen.NextCounter()
 }
 
-// SetQuestionCorrelation sets question correlation fields on a message
+// SetQuestionCorrelation sets question correlation fields on a message.
 func (msg *AgentMsg) SetQuestionCorrelation(questionID string) {
 	msg.SetPayload(KeyQuestionID, questionID)
 	msg.SetPayload(KeyCorrelationID, questionID)
 }
 
-// SetApprovalCorrelation sets approval correlation fields on a message
+// SetApprovalCorrelation sets approval correlation fields on a message.
 func (msg *AgentMsg) SetApprovalCorrelation(approvalID string) {
 	msg.SetPayload(KeyApprovalID, approvalID)
 	msg.SetPayload(KeyCorrelationID, approvalID)
 }
 
-// GetQuestionID extracts the question ID from a message
+// GetQuestionID extracts the question ID from a message.
 func (msg *AgentMsg) GetQuestionID() (string, bool) {
 	if id, exists := msg.GetPayload(KeyQuestionID); exists {
 		if idStr, ok := id.(string); ok {
@@ -537,7 +600,7 @@ func (msg *AgentMsg) GetQuestionID() (string, bool) {
 	return "", false
 }
 
-// GetApprovalID extracts the approval ID from a message
+// GetApprovalID extracts the approval ID from a message.
 func (msg *AgentMsg) GetApprovalID() (string, bool) {
 	if id, exists := msg.GetPayload(KeyApprovalID); exists {
 		if idStr, ok := id.(string); ok {
@@ -547,7 +610,7 @@ func (msg *AgentMsg) GetApprovalID() (string, bool) {
 	return "", false
 }
 
-// GetCorrelationID extracts the correlation ID from a message
+// GetCorrelationID extracts the correlation ID from a message.
 func (msg *AgentMsg) GetCorrelationID() (string, bool) {
 	if id, exists := msg.GetPayload(KeyCorrelationID); exists {
 		if idStr, ok := id.(string); ok {
@@ -557,12 +620,12 @@ func (msg *AgentMsg) GetCorrelationID() (string, bool) {
 	return "", false
 }
 
-// Centralized Enum Parsing Utilities
-// These functions provide safe string-to-enum conversion with validation
+// Centralized Enum Parsing Utilities.
+// These functions provide safe string-to-enum conversion with validation.
 
-// ParseApprovalStatus parses a string into an ApprovalStatus with validation
+// ParseApprovalStatus parses a string into an ApprovalStatus with validation.
 func ParseApprovalStatus(s string) (ApprovalStatus, error) {
-	// Normalize to uppercase for comparison
+	// Normalize to uppercase for comparison.
 	normalizedStatus := strings.ToUpper(s)
 
 	switch normalizedStatus {
@@ -575,7 +638,7 @@ func ParseApprovalStatus(s string) (ApprovalStatus, error) {
 	case "PENDING":
 		return ApprovalStatusPending, nil
 	default:
-		// Check if it's already in the correct format
+		// Check if it's already in the correct format.
 		if status, valid := ValidateApprovalStatus(s); valid {
 			return status, nil
 		}
@@ -583,9 +646,9 @@ func ParseApprovalStatus(s string) (ApprovalStatus, error) {
 	}
 }
 
-// ParseApprovalType parses a string into an ApprovalType with validation
+// ParseApprovalType parses a string into an ApprovalType with validation.
 func ParseApprovalType(s string) (ApprovalType, error) {
-	// Normalize to lowercase for comparison
+	// Normalize to lowercase for comparison.
 	normalizedType := strings.ToLower(s)
 
 	switch normalizedType {
@@ -598,7 +661,7 @@ func ParseApprovalType(s string) (ApprovalType, error) {
 	case "completion":
 		return ApprovalTypeCompletion, nil
 	default:
-		// Check if it's already in the correct format
+		// Check if it's already in the correct format.
 		if approvalType, valid := ValidateApprovalType(s); valid {
 			return approvalType, nil
 		}
@@ -606,10 +669,10 @@ func ParseApprovalType(s string) (ApprovalType, error) {
 	}
 }
 
-// SafeExtractEnum provides a generic way to safely extract and validate enum values from payloads
+// SafeExtractEnum provides a generic way to safely extract and validate enum values from payloads.
 type EnumExtractor[T any] func(string) (T, error)
 
-// SafeExtractFromPayload extracts and validates an enum value from a message payload
+// SafeExtractFromPayload extracts and validates an enum value from a message payload.
 func SafeExtractFromPayload[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
 	var zero T
 
@@ -622,7 +685,7 @@ func SafeExtractFromPayload[T any](msg *AgentMsg, key string, parser EnumExtract
 	return zero, fmt.Errorf("payload key %s not found", key)
 }
 
-// SafeExtractFromMetadata extracts and validates an enum value from a message metadata
+// SafeExtractFromMetadata extracts and validates an enum value from a message metadata.
 func SafeExtractFromMetadata[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
 	var zero T
 
@@ -632,21 +695,24 @@ func SafeExtractFromMetadata[T any](msg *AgentMsg, key string, parser EnumExtrac
 	return zero, fmt.Errorf("metadata key %s not found", key)
 }
 
-// State represents a state in a state machine
+// State represents a state in a state machine.
 type State string
 
 const (
-	StateDone    State = "DONE"
-	StateError   State = "ERROR"
+	// StateDone indicates a completed state.
+	StateDone State = "DONE"
+	// StateError indicates an error state.
+	StateError State = "ERROR"
+	// StateWaiting indicates a waiting state.
 	StateWaiting State = "WAITING"
 )
 
-// String returns the string representation of State
+// String returns the string representation of State.
 func (s State) String() string {
 	return string(s)
 }
 
-// StateChangeNotification represents an agent state change event
+// StateChangeNotification represents an agent state change event.
 type StateChangeNotification struct {
 	AgentID   string         `json:"agent_id"`
 	FromState State          `json:"from_state"`

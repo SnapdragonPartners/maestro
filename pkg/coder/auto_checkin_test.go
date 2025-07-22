@@ -10,25 +10,25 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestCheckLoopBudget tests the checkLoopBudget helper function
+// TestCheckLoopBudget tests the checkLoopBudget helper function.
 func TestCheckLoopBudget(t *testing.T) {
-	// Create temp directory for state store
+	// Create temp directory for state store.
 	tempDir, err := os.MkdirTemp("", "auto-checkin-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create test state store
+	// Create test state store.
 	stateStore, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	// Create base state machine with coder transitions
+	// Create base state machine with coder transitions.
 	sm := agent.NewBaseStateMachine("test", proto.StateWaiting, stateStore, CoderTransitions)
 
-	// Create test driver with custom budgets
+	// Create test driver with custom budgets.
 	agentConfig := &config.Agent{
 		IterationBudgets: config.IterationBudgets{
 			CodingBudget: 3,
@@ -71,21 +71,21 @@ func TestCheckLoopBudget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset state
+			// Reset state.
 			sm.SetStateData(tt.key, tt.iterations-1)
 			sm.SetStateData(string(stateDataKeyQuestionReason), "")
 			sm.SetStateData(string(stateDataKeyQuestionOrigin), "")
 			sm.SetStateData(string(stateDataKeyQuestionContent), "")
 
-			// Call checkLoopBudget
+			// Call checkLoopBudget.
 			triggered := driver.checkLoopBudget(sm, tt.key, tt.budget, tt.origin)
 
-			// Verify trigger result
+			// Verify trigger result.
 			if triggered != tt.expectTrigger {
 				t.Errorf("Expected triggered=%v, got %v", tt.expectTrigger, triggered)
 			}
 
-			// Check iteration count
+			// Check iteration count.
 			if val, exists := sm.GetStateValue(tt.key); exists {
 				if count, ok := val.(int); ok {
 					if count != tt.expectedLoops {
@@ -98,7 +98,7 @@ func TestCheckLoopBudget(t *testing.T) {
 				t.Errorf("Expected iteration count to be stored")
 			}
 
-			// If triggered, check BUDGET_REVIEW fields
+			// If triggered, check BUDGET_REVIEW fields.
 			if tt.expectTrigger {
 				if reason, exists := sm.GetStateValue(string(stateDataKeyQuestionReason)); !exists || reason != "BUDGET_REVIEW" {
 					t.Errorf("Expected question_reason=BUDGET_REVIEW, got %v", reason)
@@ -117,27 +117,27 @@ func TestCheckLoopBudget(t *testing.T) {
 	}
 }
 
-// TestProcessBudgetReviewAnswer tests the BUDGET_REVIEW answer processing
-// TODO: This test needs to be updated for the new BUDGET_REVIEW state approach
+// TestProcessBudgetReviewAnswer tests the BUDGET_REVIEW answer processing.
+// TODO: This test needs to be updated for the new BUDGET_REVIEW state approach.
 func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 	t.Skip("Test disabled - needs update for BUDGET_REVIEW state approach")
-	// Create temp directory for state store
+	// Create temp directory for state store.
 	tempDir, err := os.MkdirTemp("", "auto-checkin-answer-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create test state store
+	// Create test state store.
 	stateStore, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	// Create base state machine with coder transitions
+	// Create base state machine with coder transitions.
 	sm := agent.NewBaseStateMachine("test", proto.StateWaiting, stateStore, CoderTransitions)
 
-	// Create test driver
+	// Create test driver.
 	driver := &Coder{
 		BaseStateMachine: sm,
 		codingBudget:     5,
@@ -191,17 +191,17 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset state
+			// Reset state.
 			driver.codingBudget = 5
 			sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
 			sm.SetStateData(string(stateDataKeyQuestionOrigin), tt.origin)
 			sm.SetStateData(string(stateDataKeyCodingIterations), 5)
 
-			// Call processAutoCheckinAnswer - DISABLED
-			// err := driver.processAutoCheckinAnswer(tt.answer)
+			// Call processAutoCheckinAnswer - DISABLED.
+			// err := driver.processAutoCheckinAnswer(tt.answer).
 			var err error = nil // placeholder for test compilation
 
-			// Check error expectation
+			// Check error expectation.
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error but got none")
 			}
@@ -209,17 +209,17 @@ func TestProcessBudgetReviewAnswer_DISABLED(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 			}
 
-			// Skip further checks if error was expected
+			// Skip further checks if error was expected.
 			if tt.expectError {
 				return
 			}
 
-			// Check budget changes
+			// Check budget changes.
 			if tt.origin == string(StateCoding) && driver.codingBudget != tt.expectedBudget {
 				t.Errorf("Expected coding budget %d, got %d", tt.expectedBudget, driver.codingBudget)
 			}
 
-			// Check counter reset for CONTINUE and PIVOT
+			// Check counter reset for CONTINUE and PIVOT.
 			if tt.answer == "CONTINUE" || tt.answer == "CONTINUE 2" || tt.answer == "PIVOT" {
 				key := string(stateDataKeyCodingIterations)
 				if val, exists := sm.GetStateValue(key); exists {

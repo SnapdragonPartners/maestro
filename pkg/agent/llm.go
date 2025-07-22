@@ -6,31 +6,34 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// CompletionRole represents the role of a message in a conversation
+// CompletionRole represents the role of a message in a conversation.
 type CompletionRole string
 
 const (
-	RoleSystem    CompletionRole = "system"
-	RoleUser      CompletionRole = "user"
+	// RoleSystem indicates a system message that provides instructions or context.
+	RoleSystem CompletionRole = "system"
+	// RoleUser indicates a message from the human user.
+	RoleUser CompletionRole = "user"
+	// RoleAssistant indicates a message from the AI assistant.
 	RoleAssistant CompletionRole = "assistant"
 )
 
-// CompletionMessage represents a message in a completion request
+// CompletionMessage represents a message in a completion request.
 type CompletionMessage struct {
 	Role    CompletionRole
 	Content string
 }
 
-// Use tools.ToolDefinition directly instead of separate agent.Tool
+// Use tools.ToolDefinition directly instead of separate agent.Tool.
 
-// ToolCall represents a tool call made by the LLM
+// ToolCall represents a tool call made by the LLM.
 type ToolCall struct {
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
 	Parameters map[string]any `json:"parameters"`
 }
 
-// CompletionRequest represents a request to generate a completion
+// CompletionRequest represents a request to generate a completion.
 type CompletionRequest struct {
 	Messages    []CompletionMessage
 	MaxTokens   int
@@ -38,29 +41,29 @@ type CompletionRequest struct {
 	Tools       []tools.ToolDefinition
 }
 
-// CompletionResponse represents a response from a completion request
+// CompletionResponse represents a response from a completion request.
 type CompletionResponse struct {
 	Content   string
 	ToolCalls []ToolCall
 }
 
-// StreamChunk represents a chunk of streamed completion response
+// StreamChunk represents a chunk of streamed completion response.
 type StreamChunk struct {
 	Content string
 	Done    bool
 	Error   error
 }
 
-// LLMClient defines the interface for language model interactions
+// LLMClient defines the interface for language model interactions.
 type LLMClient interface {
-	// Complete generates a completion synchronously
+	// Complete generates a completion synchronously.
 	Complete(ctx context.Context, in CompletionRequest) (CompletionResponse, error)
 
-	// Stream generates a completion as a stream of chunks
+	// Stream generates a completion as a stream of chunks.
 	Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error)
 }
 
-// LLMConfig represents configuration for an LLM client
+// LLMConfig represents configuration for an LLM client.
 type LLMConfig struct {
 	APIKey           string
 	ModelName        string
@@ -71,7 +74,7 @@ type LLMConfig struct {
 	CompactIfOver    int
 }
 
-// NewCompletionRequest creates a new completion request with default values
+// NewCompletionRequest creates a new completion request with default values.
 func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
 	return CompletionRequest{
 		Messages:    messages,
@@ -80,7 +83,7 @@ func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
 	}
 }
 
-// NewSystemMessage creates a new system message
+// NewSystemMessage creates a new system message.
 func NewSystemMessage(content string) CompletionMessage {
 	return CompletionMessage{
 		Role:    RoleSystem,
@@ -88,7 +91,7 @@ func NewSystemMessage(content string) CompletionMessage {
 	}
 }
 
-// NewUserMessage creates a new user message
+// NewUserMessage creates a new user message.
 func NewUserMessage(content string) CompletionMessage {
 	return CompletionMessage{
 		Role:    RoleUser,
@@ -96,12 +99,18 @@ func NewUserMessage(content string) CompletionMessage {
 	}
 }
 
-// StreamToReader converts a stream channel to an io.Reader
+// StreamToReader converts a stream channel to an io.Reader.
 func StreamToReader(stream <-chan StreamChunk) io.Reader {
 	pr, pw := io.Pipe()
 
 	go func() {
-		defer pw.Close()
+		defer func() {
+			if err := pw.Close(); err != nil {
+				// Log error but don't fail the stream processing.
+				// This is cleanup code in a streaming context.
+				_ = err // Ignore error in cleanup
+			}
+		}()
 		for chunk := range stream {
 			if chunk.Error != nil {
 				pw.CloseWithError(chunk.Error)

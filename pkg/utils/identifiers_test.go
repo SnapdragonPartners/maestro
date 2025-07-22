@@ -56,7 +56,7 @@ func TestSanitizeIdentifier(t *testing.T) {
 }
 
 func TestSanitizeContainerName(t *testing.T) {
-	// Test that SanitizeContainerName is equivalent to SanitizeIdentifier
+	// Test that SanitizeContainerName is equivalent to SanitizeIdentifier.
 	input := "claude_sonnet4:001"
 	expected := "claude_sonnet4-001"
 

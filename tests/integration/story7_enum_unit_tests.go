@@ -7,7 +7,7 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// TestStory7ParseRequestType tests the ParseRequestType function with various inputs
+// TestStory7ParseRequestType tests the ParseRequestType function with various inputs.
 func TestStory7ParseRequestType(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -109,7 +109,7 @@ func TestStory7ParseRequestType(t *testing.T) {
 	}
 }
 
-// TestStory7NormaliseApprovalType tests the NormaliseApprovalType function
+// TestStory7NormaliseApprovalType tests the NormaliseApprovalType function.
 func TestStory7NormaliseApprovalType(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -176,7 +176,7 @@ func TestStory7NormaliseApprovalType(t *testing.T) {
 			expectError:   true,
 			errorContains: "unknown",
 		},
-		// Note: No deprecated aliases currently defined
+		// Note: No deprecated aliases currently defined.
 	}
 
 	for _, tc := range testCases {
@@ -206,7 +206,7 @@ func TestStory7NormaliseApprovalType(t *testing.T) {
 	}
 }
 
-// TestStory7StateTransitionValidation tests agent state transition validation
+// TestStory7StateTransitionValidation tests agent state transition validation.
 func TestStory7StateTransitionValidation(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -239,7 +239,7 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 			to:       proto.StateError,
 			expected: true,
 		},
-		// Invalid transitions
+		// Invalid transitions.
 		{
 			name:     "waiting_to_coding_invalid",
 			from:     proto.StateWaiting,
@@ -264,7 +264,7 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 			to:       coder.StatePlanning,
 			expected: false,
 		},
-		// Same state transitions
+		// Same state transitions.
 		{
 			name:     "waiting_to_waiting",
 			from:     proto.StateWaiting,
@@ -281,8 +281,8 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Note: This assumes there's a function to validate transitions
-			// If it doesn't exist, we'd need to implement it or check the state machine logic
+			// Note: This assumes there's a function to validate transitions.
+			// If it doesn't exist, we'd need to implement it or check the state machine logic.
 			result := isValidStateTransition(tc.from, tc.to)
 
 			if result != tc.expected {
@@ -293,7 +293,7 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 	}
 }
 
-// TestStory7MessageTypeValidation tests message type validation and parsing
+// TestStory7MessageTypeValidation tests message type validation and parsing.
 func TestStory7MessageTypeValidation(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -359,7 +359,7 @@ func TestStory7MessageTypeValidation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Test string representation
+			// Test string representation.
 			str := string(tc.msgType)
 			if tc.isValid {
 				if str == "" {
@@ -368,7 +368,7 @@ func TestStory7MessageTypeValidation(t *testing.T) {
 				}
 			}
 
-			// Test that we can create messages with valid types
+			// Test that we can create messages with valid types.
 			if tc.isValid {
 				msg := proto.NewAgentMsg(tc.msgType, "test-from", "test-to")
 				if msg.Type != tc.msgType {
@@ -380,10 +380,10 @@ func TestStory7MessageTypeValidation(t *testing.T) {
 	}
 }
 
-// TestStory7EdgeCaseHandling tests various edge cases in enum handling
+// TestStory7EdgeCaseHandling tests various edge cases in enum handling.
 func TestStory7EdgeCaseHandling(t *testing.T) {
 	t.Run("nil_input_handling", func(t *testing.T) {
-		// Test that functions handle nil or empty inputs gracefully
+		// Test that functions handle nil or empty inputs gracefully.
 		_, err := proto.ParseRequestType("")
 		if err == nil {
 			t.Error("Expected error for empty request type")
@@ -396,7 +396,7 @@ func TestStory7EdgeCaseHandling(t *testing.T) {
 	})
 
 	t.Run("very_long_input", func(t *testing.T) {
-		// Test with very long strings
+		// Test with very long strings.
 		longInput := "approval" + string(make([]byte, 1000))
 		_, err := proto.ParseRequestType(longInput)
 		if err == nil {
@@ -405,7 +405,7 @@ func TestStory7EdgeCaseHandling(t *testing.T) {
 	})
 
 	t.Run("unicode_input", func(t *testing.T) {
-		// Test with unicode characters
+		// Test with unicode characters.
 		unicodeInput := "approval_🚀"
 		_, err := proto.ParseRequestType(unicodeInput)
 		if err == nil {
@@ -414,7 +414,7 @@ func TestStory7EdgeCaseHandling(t *testing.T) {
 	})
 
 	t.Run("case_sensitivity", func(t *testing.T) {
-		// Test various case combinations
+		// Test various case combinations.
 		inputs := []string{"APPROVAL", "approval", "Approval", "aPpRoVaL"}
 		for _, input := range inputs {
 			result, err := proto.ParseRequestType(input)
@@ -429,7 +429,7 @@ func TestStory7EdgeCaseHandling(t *testing.T) {
 	})
 }
 
-// Helper function to check if string contains substring
+// Helper function to check if string contains substring.
 func containsString(s, substr string) bool {
 	return len(substr) <= len(s) && (substr == "" ||
 		func() bool {
@@ -442,10 +442,10 @@ func containsString(s, substr string) bool {
 		}())
 }
 
-// isValidStateTransition checks if a state transition is valid
-// This is a simplified implementation for testing purposes
+// isValidStateTransition checks if a state transition is valid.
+// This is a simplified implementation for testing purposes.
 func isValidStateTransition(from, to proto.State) bool {
-	// Define valid transitions based on the coder FSM
+	// Define valid transitions based on the coder FSM.
 	validTransitions := map[proto.State][]proto.State{
 		proto.StateWaiting:  {coder.StatePlanning, proto.StateError},
 		coder.StatePlanning: {coder.StateCoding, proto.StateError},
@@ -454,7 +454,7 @@ func isValidStateTransition(from, to proto.State) bool {
 		proto.StateError:    {}, // Terminal state
 	}
 
-	// Check if transition is in the valid list
+	// Check if transition is in the valid list.
 	validTargets, exists := validTransitions[from]
 	if !exists {
 		return false

@@ -9,7 +9,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestStateDataThreadSafety tests concurrent access to different keys (no race expected)
+// TestStateDataThreadSafety tests concurrent access to different keys (no race expected).
 func TestStateDataThreadSafety(t *testing.T) {
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
@@ -24,21 +24,21 @@ func TestStateDataThreadSafety(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// Each goroutine writes to its own unique key
+	// Each goroutine writes to its own unique key.
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 
 			for j := 0; j < operationsPerGoroutine; j++ {
-				// Use unique key per goroutine to avoid expected conflicts
+				// Use unique key per goroutine to avoid expected conflicts.
 				key := fmt.Sprintf("key_%d", goroutineID)
 				expectedValue := goroutineID*1000 + j
 
 				// Write
 				sm.SetStateData(key, expectedValue)
 
-				// Read back immediately
+				// Read back immediately.
 				if actualValue, exists := sm.GetStateValue(key); exists {
 					if actualValue != expectedValue {
 						t.Errorf("Goroutine %d: expected %v, got %v", goroutineID, expectedValue, actualValue)
@@ -52,7 +52,7 @@ func TestStateDataThreadSafety(t *testing.T) {
 
 	wg.Wait()
 
-	// Verify all values are still correct
+	// Verify all values are still correct.
 	stateData := sm.GetStateData()
 	for i := 0; i < numGoroutines; i++ {
 		key := fmt.Sprintf("key_%d", i)
@@ -70,7 +70,7 @@ func TestStateDataThreadSafety(t *testing.T) {
 	t.Logf("Thread safety test completed: %d goroutines × %d operations each", numGoroutines, operationsPerGoroutine)
 }
 
-// TestConcurrentReadersAndWriters tests the specific concern about SetStateData thread safety
+// TestConcurrentReadersAndWriters tests the specific concern about SetStateData thread safety.
 func TestConcurrentReadersAndWriters(t *testing.T) {
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
@@ -86,7 +86,7 @@ func TestConcurrentReadersAndWriters(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// Writers - each writes to its own set of keys
+	// Writers - each writes to its own set of keys.
 	for i := 0; i < numWriters; i++ {
 		wg.Add(1)
 		go func(writerID int) {
@@ -99,17 +99,17 @@ func TestConcurrentReadersAndWriters(t *testing.T) {
 		}(i)
 	}
 
-	// Readers - continuously read all state data
+	// Readers - continuously read all state data.
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
-		go func(readerID int) {
+		go func(_ int) {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
-				// These operations should not panic or cause data races
+				// These operations should not panic or cause data races.
 				_ = sm.GetStateData()
 				_ = sm.GetCurrentState()
 
-				// Try to read some keys that might exist
+				// Try to read some keys that might exist.
 				for writerID := 0; writerID < numWriters; writerID++ {
 					key := fmt.Sprintf("writer_%d_key_%d", writerID, j%10)
 					_, _ = sm.GetStateValue(key)

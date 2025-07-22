@@ -1,16 +1,19 @@
 package agent
 
-// Mode defines the system operation mode
+// Mode defines the system operation mode.
 type Mode int
 
 const (
-	ModeLive  Mode = iota // Production: Real LLM, minimal logging
-	ModeDebug             // Development: Real LLM, verbose logging
-	ModeMock              // Testing: Mock LLM, controlled responses
+	// ModeLive indicates production mode with real LLM and minimal logging.
+	ModeLive Mode = iota
+	// ModeDebug indicates development mode with real LLM and verbose logging.
+	ModeDebug
+	// ModeMock indicates testing mode with mock LLM and controlled responses.
+	ModeMock
 )
 
-// SystemMode is the global system operation mode, set once at startup
-var SystemMode Mode
+// SystemMode is the global system operation mode, set once at startup.
+var SystemMode Mode //nolint:gochecknoglobals
 
 // InitMode sets the system mode. Must be called before any agent initialization.
 // Panics if called more than once outside of tests.

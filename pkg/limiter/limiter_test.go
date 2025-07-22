@@ -1,6 +1,7 @@
 package limiter
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestNewLimiter(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test that model limiters are created
+	// Test that model limiters are created.
 	tokens, budget, agents, err := limiter.GetStatus("claude")
 	if err != nil {
 		t.Fatalf("Failed to get status for claude: %v", err)
@@ -53,7 +54,7 @@ func TestNewLimiter(t *testing.T) {
 		t.Errorf("Expected claude to start with 0 agents, got %d", agents)
 	}
 
-	// Test unknown model
+	// Test unknown model.
 	_, _, _, err = limiter.GetStatus("unknown")
 	if err == nil {
 		t.Error("Expected error for unknown model")
@@ -65,7 +66,7 @@ func TestTokenReservation(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test successful reservation
+	// Test successful reservation.
 	err := limiter.Reserve("claude", 50)
 	if err != nil {
 		t.Fatalf("Failed to reserve tokens: %v", err)
@@ -79,13 +80,13 @@ func TestTokenReservation(t *testing.T) {
 		t.Errorf("Expected 50 tokens remaining, got %d", tokens)
 	}
 
-	// Test rate limit exceeded
+	// Test rate limit exceeded.
 	err = limiter.Reserve("claude", 60)
-	if err != ErrRateLimit {
+	if !errors.Is(err, ErrRateLimit) {
 		t.Errorf("Expected rate limit error, got %v", err)
 	}
 
-	// Test exact limit
+	// Test exact limit.
 	err = limiter.Reserve("claude", 50)
 	if err != nil {
 		t.Errorf("Expected successful reservation of remaining tokens, got %v", err)
@@ -105,7 +106,7 @@ func TestBudgetReservation(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test successful budget reservation
+	// Test successful budget reservation.
 	err := limiter.ReserveBudget("claude", 5.0)
 	if err != nil {
 		t.Fatalf("Failed to reserve budget: %v", err)
@@ -119,13 +120,13 @@ func TestBudgetReservation(t *testing.T) {
 		t.Errorf("Expected 5.0 budget spent, got %f", budget)
 	}
 
-	// Test budget exceeded
+	// Test budget exceeded.
 	err = limiter.ReserveBudget("claude", 6.0)
-	if err != ErrBudgetExceeded {
+	if !errors.Is(err, ErrBudgetExceeded) {
 		t.Errorf("Expected budget exceeded error, got %v", err)
 	}
 
-	// Test exact budget limit
+	// Test exact budget limit.
 	err = limiter.ReserveBudget("claude", 5.0)
 	if err != nil {
 		t.Errorf("Expected successful reservation of remaining budget, got %v", err)
@@ -158,7 +159,7 @@ func TestTokenRefill(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Use all tokens
+	// Use all tokens.
 	err := limiter.Reserve("test", 60)
 	if err != nil {
 		t.Fatalf("Failed to reserve initial tokens: %v", err)
@@ -172,13 +173,13 @@ func TestTokenRefill(t *testing.T) {
 		t.Errorf("Expected 0 tokens, got %d", tokens)
 	}
 
-	// Manually advance the lastRefill time by 1 minute to simulate time passage
+	// Manually advance the lastRefill time by 1 minute to simulate time passage.
 	modelLimiter := limiter.models["test"]
 	modelLimiter.mu.Lock()
 	modelLimiter.lastRefill = modelLimiter.lastRefill.Add(-time.Minute)
 	modelLimiter.mu.Unlock()
 
-	// Check that tokens are refilled
+	// Check that tokens are refilled.
 	tokens, _, _, err = limiter.GetStatus("test")
 	if err != nil {
 		t.Fatalf("Failed to get status after refill: %v", err)
@@ -193,7 +194,7 @@ func TestDailyReset(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Use some tokens and budget
+	// Use some tokens and budget.
 	err := limiter.Reserve("claude", 50)
 	if err != nil {
 		t.Fatalf("Failed to reserve tokens: %v", err)
@@ -215,7 +216,7 @@ func TestDailyReset(t *testing.T) {
 		t.Errorf("Expected 0 agents, got %d", agents)
 	}
 
-	// Trigger daily reset
+	// Trigger daily reset.
 	limiter.ResetDaily()
 
 	tokens, budget, agents, err = limiter.GetStatus("claude")
@@ -238,7 +239,7 @@ func TestMultipleModels(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test claude
+	// Test claude.
 	err := limiter.Reserve("claude", 30)
 	if err != nil {
 		t.Fatalf("Failed to reserve claude tokens: %v", err)
@@ -260,7 +261,7 @@ func TestMultipleModels(t *testing.T) {
 		t.Fatalf("Failed to reserve o3 budget: %v", err)
 	}
 
-	// Check claude status
+	// Check claude status.
 	claudeTokens, claudeBudget, _, err := limiter.GetStatus("claude")
 	if err != nil {
 		t.Fatalf("Failed to get claude status: %v", err)
@@ -269,7 +270,7 @@ func TestMultipleModels(t *testing.T) {
 		t.Errorf("Expected claude: 70 tokens, 3.0 budget; got %d tokens, %f budget", claudeTokens, claudeBudget)
 	}
 
-	// Check o3 status
+	// Check o3 status.
 	o3Tokens, o3Budget, _, err := limiter.GetStatus("o3")
 	if err != nil {
 		t.Fatalf("Failed to get o3 status: %v", err)
@@ -284,25 +285,25 @@ func TestConcurrentAccess(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test concurrent token reservations
+	// Test concurrent token reservations.
 	done := make(chan bool, 10)
 
 	for i := 0; i < 10; i++ {
 		go func() {
 			err := limiter.Reserve("claude", 10)
-			if err != nil && err != ErrRateLimit {
+			if err != nil && !errors.Is(err, ErrRateLimit) {
 				t.Errorf("Unexpected error: %v", err)
 			}
 			done <- true
 		}()
 	}
 
-	// Wait for all goroutines to complete
+	// Wait for all goroutines to complete.
 	for i := 0; i < 10; i++ {
 		<-done
 	}
 
-	// Check final state
+	// Check final state.
 	tokens, _, _, err := limiter.GetStatus("claude")
 	if err != nil {
 		t.Fatalf("Failed to get final status: %v", err)

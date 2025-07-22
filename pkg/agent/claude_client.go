@@ -10,13 +10,13 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-// ClaudeClient wraps the Anthropic API client to implement LLMClient interface
+// ClaudeClient wraps the Anthropic API client to implement LLMClient interface.
 type ClaudeClient struct {
 	client anthropic.Client
 	model  anthropic.Model
 }
 
-// NewClaudeClient creates a new Claude client wrapper with default retry logic
+// NewClaudeClient creates a new Claude client wrapper with default retry logic.
 func NewClaudeClient(apiKey string) LLMClient {
 	if SystemMode == ModeMock {
 		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
@@ -28,12 +28,12 @@ func NewClaudeClient(apiKey string) LLMClient {
 		model:  "claude-3-5-sonnet-20241022", // Default model
 	}
 
-	// Wrap with both circuit breaker and retry logic
+	// Wrap with both circuit breaker and retry logic.
 	return NewResilientClient(baseClient)
 }
 
-// NewClaudeClientWithModel creates a new Claude client with specific model and retry logic
-func NewClaudeClientWithModel(apiKey string, model string) LLMClient {
+// NewClaudeClientWithModel creates a new Claude client with specific model and retry logic.
+func NewClaudeClientWithModel(apiKey, model string) LLMClient {
 	if SystemMode == ModeMock {
 		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
 	}
@@ -44,17 +44,17 @@ func NewClaudeClientWithModel(apiKey string, model string) LLMClient {
 		model:  anthropic.Model(model),
 	}
 
-	// Wrap with both circuit breaker and retry logic
+	// Wrap with both circuit breaker and retry logic.
 	return NewResilientClient(baseClient)
 }
 
-// Complete implements the LLMClient interface
+// Complete implements the LLMClient interface.
 func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (CompletionResponse, error) {
 	if SystemMode == ModeDebug {
 		log.Printf("Claude completing request with %d messages, %d tools", len(in.Messages), len(in.Tools))
 	}
 
-	// Convert to Anthropic messages
+	// Convert to Anthropic messages.
 	messages := make([]anthropic.MessageParam, 0, len(in.Messages))
 	for _, msg := range in.Messages {
 		role := anthropic.MessageParamRole(msg.Role)
@@ -65,7 +65,7 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 		})
 	}
 
-	// Prepare request parameters
+	// Prepare request parameters.
 	maxTokens := int64(in.MaxTokens)
 	params := anthropic.MessageNewParams{
 		Model:     c.model,
@@ -73,7 +73,7 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 		MaxTokens: maxTokens,
 	}
 
-	// Add tools if provided using correct v1.5.0 API
+	// Add tools if provided using correct v1.5.0 API.
 	if len(in.Tools) > 0 {
 		if SystemMode == ModeDebug {
 			log.Printf("Processing %d tools for Claude API", len(in.Tools))
@@ -83,11 +83,11 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			if SystemMode == ModeDebug {
 				log.Printf("Adding tool: %s", tool.Name)
 			}
-			// Convert tools.ToolDefinition directly to Anthropic format
+			// Convert tools.ToolDefinition directly to Anthropic format.
 			var properties any
 			var required []string
 
-			// Convert InputSchema properties to the format expected by Anthropic API
+			// Convert InputSchema properties to the format expected by Anthropic API.
 			if len(tool.InputSchema.Properties) > 0 {
 				props := make(map[string]any)
 				for name, prop := range tool.InputSchema.Properties {
@@ -104,7 +104,7 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 				properties = props
 			}
 
-			// Convert required fields
+			// Convert required fields.
 			if len(tool.InputSchema.Required) > 0 {
 				required = tool.InputSchema.Required
 			}
@@ -121,13 +121,13 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			tools = append(tools, anthropic.ToolUnionParamOfTool(toolParam.InputSchema, toolParam.Name))
 		}
 		params.Tools = tools
-		// Set tool choice to auto so Claude will decide when to use tools
+		// Set tool choice to auto so Claude will decide when to use tools.
 		params.ToolChoice = anthropic.ToolChoiceUnionParam{
 			OfAuto: &anthropic.ToolChoiceAutoParam{},
 		}
 	}
 
-	// Make API request
+	// Make API request.
 	resp, err := c.client.Messages.New(ctx, params)
 
 	if err != nil {
@@ -138,7 +138,7 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 		return CompletionResponse{}, fmt.Errorf("empty response from Claude")
 	}
 
-	// Extract text content and tool calls from the response using v1.5.0 API
+	// Extract text content and tool calls from the response using v1.5.0 API.
 	var responseText string
 	var toolCalls []ToolCall
 
@@ -159,7 +159,7 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			if SystemMode == ModeDebug {
 				log.Printf("Found tool use: %s", toolUseBlock.Name)
 			}
-			// Parse the input parameters from RawMessage
+			// Parse the input parameters from RawMessage.
 			var params map[string]any
 			if err := json.Unmarshal(toolUseBlock.Input, &params); err != nil {
 				return CompletionResponse{}, fmt.Errorf("failed to parse tool input: %w", err)
@@ -190,9 +190,9 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 	}, nil
 }
 
-// Stream implements the LLMClient interface
+// Stream implements the LLMClient interface.
 func (c *ClaudeClient) Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error) {
-	// Return mock stream for now
+	// Return mock stream for now.
 	ch := make(chan StreamChunk, 1)
 	go func() {
 		defer close(ch)

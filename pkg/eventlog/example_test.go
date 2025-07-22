@@ -9,7 +9,7 @@ import (
 )
 
 func ExampleWriter_usage() {
-	// Create a temporary directory for this example
+	// Create a temporary directory for this example.
 	tmpDir, err := os.MkdirTemp("", "eventlog_example")
 	if err != nil {
 		fmt.Printf("Failed to create temp dir: %v\n", err)
@@ -19,7 +19,7 @@ func ExampleWriter_usage() {
 
 	fmt.Println("=== Event Log Demo ===")
 
-	// Create event log writer
+	// Create event log writer.
 	writer, err := NewWriter(tmpDir, 24)
 	if err != nil {
 		fmt.Printf("Failed to create writer: %v\n", err)
@@ -27,9 +27,9 @@ func ExampleWriter_usage() {
 	}
 	defer writer.Close()
 
-	// Simulate orchestrator workflow with logged events
+	// Simulate orchestrator workflow with logged events.
 
-	// 1. Architect creates a task
+	// 1. Architect creates a task.
 	taskMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	taskMsg.SetPayload("story_id", "001")
 	taskMsg.SetPayload("content", "Implement health endpoint")
@@ -39,7 +39,7 @@ func ExampleWriter_usage() {
 	writer.WriteMessage(taskMsg)
 	fmt.Printf("📝 Logged TASK: architect → claude (story 001)\n")
 
-	// 2. Claude processes and returns result
+	// 2. Claude processes and returns result.
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
 	resultMsg.ParentMsgID = taskMsg.ID
 	resultMsg.SetPayload("status", "completed")
@@ -50,7 +50,7 @@ func ExampleWriter_usage() {
 	writer.WriteMessage(resultMsg)
 	fmt.Printf("📝 Logged RESULT: claude → architect (task completed)\n")
 
-	// 3. Claude encounters an error on next task
+	// 3. Claude encounters an error on next task.
 	errorMsg := proto.NewAgentMsg(proto.MsgTypeERROR, "claude", "architect")
 	errorMsg.SetPayload("error", "API rate limit exceeded")
 	errorMsg.SetPayload("retry_after", "60s")
@@ -59,7 +59,7 @@ func ExampleWriter_usage() {
 	writer.WriteMessage(errorMsg)
 	fmt.Printf("📝 Logged ERROR: claude → architect (rate limit)\n")
 
-	// 4. Claude asks a question
+	// 4. Claude asks a question.
 	questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, "claude", "architect")
 	questionMsg.SetPayload("question", "Should I use goroutines for concurrent request handling?")
 	questionMsg.SetPayload("context", "Health endpoint implementation")
@@ -67,7 +67,7 @@ func ExampleWriter_usage() {
 	writer.WriteMessage(questionMsg)
 	fmt.Printf("📝 Logged QUESTION: claude → architect (design question)\n")
 
-	// 5. Orchestrator initiates shutdown
+	// 5. Orchestrator initiates shutdown.
 	shutdownMsg := proto.NewAgentMsg(proto.MsgTypeSHUTDOWN, "orchestrator", "all")
 	shutdownMsg.SetPayload("reason", "User requested shutdown")
 	shutdownMsg.SetPayload("timeout", "30s")
@@ -75,7 +75,7 @@ func ExampleWriter_usage() {
 	writer.WriteMessage(shutdownMsg)
 	fmt.Printf("📝 Logged SHUTDOWN: orchestrator → all agents\n")
 
-	// Read back all events
+	// Read back all events.
 	currentLogFile := writer.GetCurrentLogFile()
 	messages, err := ReadMessages(currentLogFile)
 	if err != nil {
@@ -85,7 +85,7 @@ func ExampleWriter_usage() {
 
 	fmt.Printf("\n📋 Event Log Summary: %d events recorded\n", len(messages))
 
-	// Show event details
+	// Show event details.
 	for i, msg := range messages {
 		fmt.Printf("  %d. [%s] %s → %s: %s\n",
 			i+1,
@@ -99,6 +99,6 @@ func ExampleWriter_usage() {
 	fmt.Println("=== End Demo ===")
 }
 
-func TestEventLogUsage(t *testing.T) {
+func TestEventLogUsage(_ *testing.T) {
 	ExampleWriter_usage()
 }

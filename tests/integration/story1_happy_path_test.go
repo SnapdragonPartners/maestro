@@ -9,24 +9,24 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// TestStory1HappyPath tests the basic REQUEST → RESULT → DONE flow
+// TestStory1HappyPath tests the basic REQUEST → RESULT → DONE flow.
 func TestStory1HappyPath(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Create test harness
+	// Create test harness.
 	harness := NewTestHarness(t)
 	harness.SetTimeouts(GetTestTimeouts())
 
-	// Create always-approval architect
+	// Create always-approval architect.
 	architect := NewAlwaysApprovalMockArchitect("architect")
 	harness.SetArchitect(architect)
 
-	// Create a single coder
+	// Create a single coder.
 	coderID := "coder-1"
 	coderDriver := CreateTestCoder(t, coderID)
 	harness.AddCoder(coderID, coderDriver)
 
-	// Define a simple task
+	// Define a simple task.
 	taskContent := `Create a simple Go HTTP server with a health endpoint.
 
 Requirements:
@@ -34,17 +34,17 @@ Requirements:
 - Respond to GET /health with {"status": "ok"}
 - Include proper error handling`
 
-	// Start the coder with the task
+	// Start the coder with the task.
 	StartCoderWithTask(t, harness, coderID, taskContent)
 
 	// Verify initial state (after task setup, coder should be in PLANNING)
 	RequireState(t, harness, coderID, coder.StatePlanning)
 
-	// Run the harness until completion
+	// Run the harness until completion.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Run until the coder reaches DONE state
+	// Run until the coder reaches DONE state.
 	err := harness.Run(ctx, func(h *TestHarness) bool {
 		return h.GetCoderState(coderID) == proto.StateDone
 	})
@@ -53,10 +53,10 @@ Requirements:
 		t.Fatalf("Harness run failed: %v", err)
 	}
 
-	// Verify final state
+	// Verify final state.
 	RequireState(t, harness, coderID, proto.StateDone)
 
-	// Verify architect received exactly one RESULT message
+	// Verify architect received exactly one RESULT message.
 	messages := architect.GetReceivedMessages()
 	resultCount := 0
 	requestCount := 0
@@ -79,7 +79,7 @@ Requirements:
 		t.Errorf("Expected at least 1 RESULT message to architect, got %d", resultCount)
 	}
 
-	// Verify the coder actually processed the task
+	// Verify the coder actually processed the task.
 	stateData := coderDriver.GetStateData()
 	if taskContentData, exists := stateData["task_content"]; !exists {
 		t.Error("Expected task_content in coder state data")
@@ -92,21 +92,21 @@ Requirements:
 		len(messages), requestCount, resultCount)
 }
 
-// TestStory1MultipleCodersIndependent tests that multiple coders can run independently
+// TestStory1MultipleCodersIndependent tests that multiple coders can run independently.
 func TestStory1MultipleCodersIndependent(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Create test harness
+	// Create test harness.
 	harness := NewTestHarness(t)
 	timeouts := GetTestTimeouts()
 	timeouts.Global = 10 * time.Second // Allow more time for multiple coders
 	harness.SetTimeouts(timeouts)
 
-	// Create always-approval architect
+	// Create always-approval architect.
 	architect := NewAlwaysApprovalMockArchitect("architect")
 	harness.SetArchitect(architect)
 
-	// Create multiple coders
+	// Create multiple coders.
 	coderIDs := []string{"coder-1", "coder-2", "coder-3"}
 	taskContents := []string{
 		"Create a simple HTTP health endpoint",
@@ -118,7 +118,7 @@ func TestStory1MultipleCodersIndependent(t *testing.T) {
 		coderDriver := CreateTestCoder(t, coderID)
 		harness.AddCoder(coderID, coderDriver)
 
-		// Start each coder with a different task
+		// Start each coder with a different task.
 		StartCoderWithTask(t, harness, coderID, taskContents[i])
 	}
 
@@ -127,7 +127,7 @@ func TestStory1MultipleCodersIndependent(t *testing.T) {
 		RequireState(t, harness, coderID, coder.StatePlanning)
 	}
 
-	// Run until all coders complete
+	// Run until all coders complete.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -136,12 +136,12 @@ func TestStory1MultipleCodersIndependent(t *testing.T) {
 		t.Fatalf("Harness run failed: %v", err)
 	}
 
-	// Verify all coders reached DONE state
+	// Verify all coders reached DONE state.
 	for _, coderID := range coderIDs {
 		RequireState(t, harness, coderID, proto.StateDone)
 	}
 
-	// Verify architect received messages from all coders
+	// Verify architect received messages from all coders.
 	messages := architect.GetReceivedMessages()
 	coderMessageCounts := make(map[string]int)
 
@@ -161,19 +161,19 @@ func TestStory1MultipleCodersIndependent(t *testing.T) {
 	t.Logf("Total messages to architect: %d", len(messages))
 }
 
-// TestStory1ChannelIsolation verifies that per-coder channels prevent blocking
+// TestStory1ChannelIsolation verifies that per-coder channels prevent blocking.
 func TestStory1ChannelIsolation(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Create test harness
+	// Create test harness.
 	harness := NewTestHarness(t)
 	harness.SetTimeouts(GetTestTimeouts())
 
-	// Create an architect with artificial delay for one coder
+	// Create an architect with artificial delay for one coder.
 	architect := NewAlwaysApprovalMockArchitect("architect")
 	harness.SetArchitect(architect)
 
-	// Create two coders
+	// Create two coders.
 	fastCoderID := "fast-coder"
 	slowCoderID := "slow-coder"
 
@@ -183,15 +183,15 @@ func TestStory1ChannelIsolation(t *testing.T) {
 	harness.AddCoder(fastCoderID, fastDriver)
 	harness.AddCoder(slowCoderID, slowDriver)
 
-	// Start both coders
+	// Start both coders.
 	StartCoderWithTask(t, harness, fastCoderID, "Simple task")
 	StartCoderWithTask(t, harness, slowCoderID, "Another simple task")
 
-	// Run for a short time to let both coders start processing
+	// Run for a short time to let both coders start processing.
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	// Run until at least one coder makes progress
+	// Run until at least one coder makes progress.
 	initialFastState := harness.GetCoderState(fastCoderID)
 	initialSlowState := harness.GetCoderState(slowCoderID)
 
@@ -199,7 +199,7 @@ func TestStory1ChannelIsolation(t *testing.T) {
 		fastState := h.GetCoderState(fastCoderID)
 		slowState := h.GetCoderState(slowCoderID)
 
-		// Stop when either coder changes state
+		// Stop when either coder changes state.
 		return fastState != initialFastState || slowState != initialSlowState
 	})
 
@@ -210,8 +210,8 @@ func TestStory1ChannelIsolation(t *testing.T) {
 		t.Log("Timeout occurred (expected)")
 	}
 
-	// Both coders should be able to make independent progress
-	// The key assertion is that we don't deadlock
+	// Both coders should be able to make independent progress.
+	// The key assertion is that we don't deadlock.
 
 	t.Log("Channel isolation test completed - no deadlock detected")
 }

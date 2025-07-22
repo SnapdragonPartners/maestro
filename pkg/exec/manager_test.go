@@ -40,7 +40,7 @@ func TestExecutorManager_Initialize(t *testing.T) {
 				},
 			},
 			expectErr: false,
-			// expectType depends on Docker availability
+			// expectType depends on Docker availability.
 		},
 		{
 			name: "Auto executor with unavailable Docker",
@@ -166,7 +166,7 @@ func TestExecutorManager_GetStatus(t *testing.T) {
 
 	status := manager.GetStatus()
 
-	// Should have at least local executor
+	// Should have at least local executor.
 	if _, ok := status["local"]; !ok {
 		t.Error("Expected local executor in status")
 	}
@@ -176,7 +176,7 @@ func TestExecutorManager_GetStatus(t *testing.T) {
 		t.Error("Expected docker executor in status")
 	}
 
-	// Local should always be available
+	// Local should always be available.
 	if !status["local"] {
 		t.Error("Expected local executor to be available")
 	}
@@ -201,22 +201,22 @@ func TestExecutorManager_GetStartupInfo(t *testing.T) {
 
 	info := manager.GetStartupInfo()
 
-	// Should contain type information
+	// Should contain type information.
 	if !contains(info, "Type: auto") {
 		t.Errorf("Expected startup info to contain 'Type: auto', got: %s", info)
 	}
 
-	// Should contain Docker information
+	// Should contain Docker information.
 	if !contains(info, "Docker:") {
 		t.Errorf("Expected startup info to contain Docker information, got: %s", info)
 	}
 
-	// Should contain Local information
+	// Should contain Local information.
 	if !contains(info, "Local:") {
 		t.Errorf("Expected startup info to contain Local information, got: %s", info)
 	}
 
-	// Should contain default executor
+	// Should contain default executor.
 	if !contains(info, "Default:") {
 		t.Errorf("Expected startup info to contain Default information, got: %s", info)
 	}
@@ -235,14 +235,14 @@ func TestExecutorManager_IsDockerAvailable(t *testing.T) {
 	ctx := context.Background()
 	available := manager.isDockerAvailable(ctx)
 
-	// This test depends on environment, so just verify it returns a boolean
+	// This test depends on environment, so just verify it returns a boolean.
 	t.Logf("Docker available: %v", available)
 
-	// Test with short timeout
+	// Test with short timeout.
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
 
-	// This should complete quickly regardless of Docker availability
+	// This should complete quickly regardless of Docker availability.
 	result := manager.isDockerAvailable(timeoutCtx)
 	t.Logf("Docker available with timeout: %v", result)
 }
@@ -261,7 +261,7 @@ func TestExecutorManager_IsDockerImageAvailable(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Skip this test if Docker is not available
+	// Skip this test if Docker is not available.
 	if !manager.isDockerAvailable(ctx) {
 		t.Skip("Docker not available, skipping image availability test")
 	}
@@ -287,7 +287,7 @@ func TestExecutorManager_GetExecutor(t *testing.T) {
 		t.Fatalf("Failed to initialize manager: %v", err)
 	}
 
-	// Test getting executor with preferences
+	// Test getting executor with preferences.
 	executor, err := manager.GetExecutor([]string{"docker", "local"})
 	if err != nil {
 		t.Fatalf("Failed to get executor: %v", err)
@@ -297,7 +297,7 @@ func TestExecutorManager_GetExecutor(t *testing.T) {
 		t.Error("Expected non-nil executor")
 	}
 
-	// Should get local executor if docker not available
+	// Should get local executor if docker not available.
 	localExec, err := manager.GetExecutor([]string{"local"})
 	if err != nil {
 		t.Fatalf("Failed to get local executor: %v", err)
@@ -308,7 +308,7 @@ func TestExecutorManager_GetExecutor(t *testing.T) {
 	}
 }
 
-// Test Story 073 acceptance criteria
+// Test Story 073 acceptance criteria.
 func TestStory073AcceptanceCriteria(t *testing.T) {
 	t.Run("executor type configuration", func(t *testing.T) {
 		testCases := []struct {
@@ -395,7 +395,7 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 			t.Fatalf("Failed to initialize manager: %v", err)
 		}
 
-		// Should use local executor with warning
+		// Should use local executor with warning.
 		defaultExec, err := manager.GetDefaultExecutor()
 		if err != nil {
 			t.Fatalf("Failed to get default executor: %v", err)
@@ -426,7 +426,7 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 			t.Fatalf("Failed to initialize manager: %v", err)
 		}
 
-		// Verify configuration is properly loaded
+		// Verify configuration is properly loaded.
 		if config.Docker.CPUs != "4" {
 			t.Errorf("Expected CPUs '4', got '%s'", config.Docker.CPUs)
 		}
@@ -439,8 +439,8 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 	})
 
 	t.Run("environment variable override", func(t *testing.T) {
-		// This would need integration with the config loader
-		// For now, just verify the structure supports it
+		// This would need integration with the config loader.
+		// For now, just verify the structure supports it.
 		config := &config.ExecutorConfig{
 			Type:     "auto",
 			Fallback: "local",
@@ -457,7 +457,7 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 			t.Fatalf("Failed to initialize manager: %v", err)
 		}
 
-		// Just verify the manager can be created and initialized
+		// Just verify the manager can be created and initialized.
 		status := manager.GetStatus()
 		if len(status) == 0 {
 			t.Error("Expected executor status to be populated")
@@ -465,7 +465,7 @@ func TestStory073AcceptanceCriteria(t *testing.T) {
 	})
 }
 
-// Helper function to check if a string contains a substring
+// Helper function to check if a string contains a substring.
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }

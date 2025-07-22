@@ -9,7 +9,7 @@ import (
 )
 
 func TestNullBackend(t *testing.T) {
-	// Create a temporary empty directory
+	// Create a temporary empty directory.
 	tempDir, err := os.MkdirTemp("", "null-backend-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -18,12 +18,12 @@ func TestNullBackend(t *testing.T) {
 
 	backend := NewNullBackend()
 
-	// Test that it detects empty directories
+	// Test that it detects empty directories.
 	if !backend.Detect(tempDir) {
 		t.Error("NullBackend should detect empty directories")
 	}
 
-	// Test that all operations succeed
+	// Test that all operations succeed.
 	ctx := context.Background()
 	var buf strings.Builder
 
@@ -43,7 +43,7 @@ func TestNullBackend(t *testing.T) {
 		t.Errorf("Run failed: %v", err)
 	}
 
-	// Create a project file and verify it no longer detects as empty
+	// Create a project file and verify it no longer detects as empty.
 	os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module test"), 0644)
 	if backend.Detect(tempDir) {
 		t.Error("NullBackend should not detect directories with project files")
@@ -51,14 +51,14 @@ func TestNullBackend(t *testing.T) {
 }
 
 func TestGoBackend(t *testing.T) {
-	// Create a temporary directory with go.mod
+	// Create a temporary directory with go.mod.
 	tempDir, err := os.MkdirTemp("", "go-backend-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create go.mod
+	// Create go.mod.
 	goModContent := `module test
 go 1.19
 `
@@ -68,12 +68,12 @@ go 1.19
 
 	backend := NewGoBackend()
 
-	// Test detection
+	// Test detection.
 	if !backend.Detect(tempDir) {
 		t.Error("GoBackend should detect directories with go.mod")
 	}
 
-	// Test name
+	// Test name.
 	if backend.Name() != "go" {
 		t.Errorf("Expected name 'go', got '%s'", backend.Name())
 	}
@@ -88,14 +88,14 @@ go 1.19
 }
 
 func TestMakeBackend(t *testing.T) {
-	// Create a temporary directory with Makefile
+	// Create a temporary directory with Makefile.
 	tempDir, err := os.MkdirTemp("", "make-backend-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create Makefile
+	// Create Makefile.
 	makefileContent := `build:
 	@echo "Building..."
 
@@ -114,23 +114,23 @@ run:
 
 	backend := NewMakeBackend()
 
-	// Test detection
+	// Test detection.
 	if !backend.Detect(tempDir) {
 		t.Error("MakeBackend should detect directories with Makefile")
 	}
 
-	// Test name
+	// Test name.
 	if backend.Name() != "make" {
 		t.Errorf("Expected name 'make', got '%s'", backend.Name())
 	}
 
-	// Test target validation
+	// Test target validation.
 	requiredTargets := []string{"build", "test", "lint", "run"}
 	if err := backend.ValidateTargets(tempDir, requiredTargets); err != nil {
 		t.Errorf("ValidateTargets failed: %v", err)
 	}
 
-	// Test with missing target
+	// Test with missing target.
 	missingTargets := []string{"build", "test", "lint", "run", "nonexistent"}
 	if err := backend.ValidateTargets(tempDir, missingTargets); err == nil {
 		t.Error("ValidateTargets should fail for missing targets")
@@ -140,7 +140,7 @@ run:
 func TestRegistry(t *testing.T) {
 	registry := NewRegistry()
 
-	// Test that backends are registered
+	// Test that backends are registered.
 	backends := registry.List()
 	if len(backends) == 0 {
 		t.Error("Registry should have default backends")
@@ -153,7 +153,7 @@ func TestRegistry(t *testing.T) {
 		}
 	}
 
-	// Test GetByName
+	// Test GetByName.
 	nullBackend, err := registry.GetByName("null")
 	if err != nil {
 		t.Errorf("Failed to get null backend: %v", err)
@@ -162,7 +162,7 @@ func TestRegistry(t *testing.T) {
 		t.Errorf("Expected null backend, got %s", nullBackend.Name())
 	}
 
-	// Test GetByName with non-existent backend
+	// Test GetByName with non-existent backend.
 	_, err = registry.GetByName("nonexistent")
 	if err == nil {
 		t.Error("GetByName should fail for non-existent backend")
@@ -208,7 +208,7 @@ func TestRegistryDetection(t *testing.T) {
 	}
 }
 
-// discardWriter is a writer that discards all input
+// discardWriter is a writer that discards all input.
 type discardWriter struct{}
 
 func (d discardWriter) Write(p []byte) (n int, err error) {
@@ -216,7 +216,7 @@ func (d discardWriter) Write(p []byte) (n int, err error) {
 }
 
 func TestBackendOperations(t *testing.T) {
-	// Test that all backend operations have consistent interfaces
+	// Test that all backend operations have consistent interfaces.
 	backends := []BuildBackend{
 		NewNullBackend(),
 		NewMakeBackend(),
@@ -232,7 +232,7 @@ func TestBackendOperations(t *testing.T) {
 		// Test that Detect() doesn't panic
 		backend.Detect("/nonexistent")
 
-		// Test that operations don't panic with discard writer
+		// Test that operations don't panic with discard writer.
 		ctx := context.Background()
 		writer := discardWriter{}
 

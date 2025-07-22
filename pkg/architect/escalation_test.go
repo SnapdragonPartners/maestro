@@ -33,7 +33,7 @@ func TestEscalateBusinessQuestion(t *testing.T) {
 	tmpDir := "/tmp/escalation_test"
 	defer os.RemoveAll(tmpDir)
 
-	// Create test queue with a story
+	// Create test queue with a story.
 	queue := NewQueue(tmpDir + "/stories")
 	queue.stories["001"] = &QueuedStory{
 		ID:     "001",
@@ -43,7 +43,7 @@ func TestEscalateBusinessQuestion(t *testing.T) {
 
 	handler := NewEscalationHandler(tmpDir+"/logs", queue)
 
-	// Create a test pending question
+	// Create a test pending question.
 	pendingQ := &PendingQuestion{
 		ID:       "test-question-001",
 		StoryID:  "001",
@@ -60,12 +60,12 @@ func TestEscalateBusinessQuestion(t *testing.T) {
 		t.Fatalf("Failed to escalate business question: %v", err)
 	}
 
-	// Check that escalation was created
+	// Check that escalation was created.
 	if len(handler.escalations) != 1 {
 		t.Errorf("Expected 1 escalation, got %d", len(handler.escalations))
 	}
 
-	// Check that story status was updated
+	// Check that story status was updated.
 	story, exists := queue.GetStory("001")
 	if !exists {
 		t.Fatal("Story 001 not found")
@@ -75,7 +75,7 @@ func TestEscalateBusinessQuestion(t *testing.T) {
 		t.Errorf("Expected story status %s, got %s", StatusAwaitHumanFeedback, story.Status)
 	}
 
-	// Check escalation details
+	// Check escalation details.
 	var escalation *EscalationEntry
 	for _, e := range handler.escalations {
 		escalation = e
@@ -99,7 +99,7 @@ func TestEscalateReviewFailure(t *testing.T) {
 	tmpDir := "/tmp/escalation_test"
 	defer os.RemoveAll(tmpDir)
 
-	// Create test queue with a story
+	// Create test queue with a story.
 	queue := NewQueue(tmpDir + "/stories")
 	queue.stories["002"] = &QueuedStory{
 		ID:     "002",
@@ -115,12 +115,12 @@ func TestEscalateReviewFailure(t *testing.T) {
 		t.Fatalf("Failed to escalate review failure: %v", err)
 	}
 
-	// Check that escalation was created
+	// Check that escalation was created.
 	if len(handler.escalations) != 1 {
 		t.Errorf("Expected 1 escalation, got %d", len(handler.escalations))
 	}
 
-	// Check that story status was updated
+	// Check that story status was updated.
 	story, exists := queue.GetStory("002")
 	if !exists {
 		t.Fatal("Story 002 not found")
@@ -130,7 +130,7 @@ func TestEscalateReviewFailure(t *testing.T) {
 		t.Errorf("Expected story status %s, got %s", StatusAwaitHumanFeedback, story.Status)
 	}
 
-	// Check escalation details
+	// Check escalation details.
 	var escalation *EscalationEntry
 	for _, e := range handler.escalations {
 		escalation = e
@@ -186,7 +186,7 @@ func TestGetEscalations(t *testing.T) {
 	queue := NewQueue(tmpDir + "/stories")
 	handler := NewEscalationHandler(tmpDir+"/logs", queue)
 
-	// Add test escalations
+	// Add test escalations.
 	handler.escalations["esc1"] = &EscalationEntry{
 		ID:          "esc1",
 		Status:      "pending",
@@ -208,13 +208,13 @@ func TestGetEscalations(t *testing.T) {
 		EscalatedAt: time.Now().UTC().Add(-2 * time.Hour),
 	}
 
-	// Test getting all escalations
+	// Test getting all escalations.
 	allEscalations := handler.GetEscalations("")
 	if len(allEscalations) != 3 {
 		t.Errorf("Expected 3 escalations, got %d", len(allEscalations))
 	}
 
-	// Test filtering by status
+	// Test filtering by status.
 	pendingEscalations := handler.GetEscalations("pending")
 	if len(pendingEscalations) != 2 {
 		t.Errorf("Expected 2 pending escalations, got %d", len(pendingEscalations))
@@ -238,7 +238,7 @@ func TestGetEscalationSummary(t *testing.T) {
 	queue := NewQueue(tmpDir + "/stories")
 	handler := NewEscalationHandler(tmpDir+"/logs", queue)
 
-	// Add test escalations
+	// Add test escalations.
 	handler.escalations["esc1"] = &EscalationEntry{
 		ID:       "esc1",
 		Status:   "pending",
@@ -294,19 +294,19 @@ func TestLogEscalation(t *testing.T) {
 		Priority:    "medium",
 	}
 
-	// Test logging escalation
+	// Test logging escalation.
 	err := handler.logEscalation(escalation)
 	if err != nil {
 		t.Fatalf("Failed to log escalation: %v", err)
 	}
 
-	// Check that log file was created
+	// Check that log file was created.
 	logFile := filepath.Join(tmpDir, "logs", "escalations.jsonl")
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		t.Fatalf("Escalation log file was not created: %s", logFile)
 	}
 
-	// Read and verify log content
+	// Read and verify log content.
 	content, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("Failed to read escalation log file: %v", err)
@@ -329,19 +329,19 @@ func TestResolveEscalation(t *testing.T) {
 	queue := NewQueue(tmpDir + "/stories")
 	handler := NewEscalationHandler(tmpDir+"/logs", queue)
 
-	// Add test escalation
+	// Add test escalation.
 	handler.escalations["esc1"] = &EscalationEntry{
 		ID:     "esc1",
 		Status: "pending",
 	}
 
-	// Resolve escalation
+	// Resolve escalation.
 	err := handler.ResolveEscalation("esc1", "Issue resolved by manual intervention", "human-operator")
 	if err != nil {
 		t.Fatalf("Failed to resolve escalation: %v", err)
 	}
 
-	// Check escalation status
+	// Check escalation status.
 	escalation := handler.escalations["esc1"]
 	if escalation.Status != "resolved" {
 		t.Errorf("Expected escalation status 'resolved', got %s", escalation.Status)
@@ -364,7 +364,7 @@ func TestEscalationIntegration(t *testing.T) {
 	tmpDir := "/tmp/escalation_integration_test"
 	defer os.RemoveAll(tmpDir)
 
-	// Create stories directory and test story
+	// Create stories directory and test story.
 	storiesDir := filepath.Join(tmpDir, "stories")
 	err := os.MkdirAll(storiesDir, 0755)
 	if err != nil {
@@ -385,7 +385,7 @@ Test story for escalation integration.`
 		t.Fatalf("Failed to create test story: %v", err)
 	}
 
-	// Set up escalation handler
+	// Set up escalation handler.
 	queue := NewQueue(storiesDir)
 	err = queue.LoadFromDirectory()
 	if err != nil {
@@ -394,7 +394,7 @@ Test story for escalation integration.`
 
 	handler := NewEscalationHandler(tmpDir+"/logs", queue)
 
-	// Test business question escalation
+	// Test business question escalation.
 	pendingQ := &PendingQuestion{
 		ID:       "test-q-001",
 		StoryID:  "001",
@@ -411,7 +411,7 @@ Test story for escalation integration.`
 		t.Fatalf("Failed to escalate business question: %v", err)
 	}
 
-	// Verify story status changed
+	// Verify story status changed.
 	story, exists := queue.GetStory("001")
 	if !exists {
 		t.Fatal("Test story not found")
@@ -421,13 +421,13 @@ Test story for escalation integration.`
 		t.Errorf("Expected story status %s, got %s", StatusAwaitHumanFeedback, story.Status)
 	}
 
-	// Verify escalation was logged
+	// Verify escalation was logged.
 	logFile := filepath.Join(tmpDir, "logs", "escalations.jsonl")
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		t.Fatalf("Escalation log file was not created")
 	}
 
-	// Get escalation summary
+	// Get escalation summary.
 	summary := handler.GetEscalationSummary()
 	if summary.PendingEscalations != 1 {
 		t.Errorf("Expected 1 pending escalation, got %d", summary.PendingEscalations)

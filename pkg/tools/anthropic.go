@@ -5,7 +5,13 @@ import (
 	"fmt"
 )
 
-// AnthropicMessageContent represents a content block in an Anthropic message
+const (
+	// Anthropic content types.
+	contentTypeToolUse    = "tool_use"
+	contentTypeToolResult = "tool_result"
+)
+
+// AnthropicMessageContent represents a content block in an Anthropic message.
 type AnthropicMessageContent struct {
 	Type       string            `json:"type"`
 	Text       string            `json:"text,omitempty"`
@@ -13,13 +19,13 @@ type AnthropicMessageContent struct {
 	ToolResult *ToolResult       `json:"tool_result,omitempty"`
 }
 
-// AnthropicMessage represents a message in the Anthropic API format
+// AnthropicMessage represents a message in the Anthropic API format.
 type AnthropicMessage struct {
 	Role    string                    `json:"role"`
 	Content []AnthropicMessageContent `json:"content"`
 }
 
-// AnthropicToolResponse represents a Claude response with tool_use
+// AnthropicToolResponse represents a Claude response with tool_use.
 type AnthropicToolResponse struct {
 	ID         string                    `json:"id"`
 	Model      string                    `json:"model"`
@@ -28,9 +34,9 @@ type AnthropicToolResponse struct {
 	Content    []AnthropicMessageContent `json:"content"`
 }
 
-// AnthropicToolRequest creates a properly formatted tool request for Claude
+// AnthropicToolRequest creates a properly formatted tool request for Claude.
 func AnthropicToolRequest(tools []ToolDefinition, prompt string) (map[string]interface{}, error) {
-	// Base request structure
+	// Base request structure.
 	request := map[string]interface{}{
 		"model":      "claude-3-opus-20240229", // Default model, can be made configurable
 		"max_tokens": 4000,                     // Default max tokens
@@ -51,7 +57,7 @@ func AnthropicToolRequest(tools []ToolDefinition, prompt string) (map[string]int
 	return request, nil
 }
 
-// ParseAnthropicResponse parses a raw JSON response from Claude into a structured format
+// ParseAnthropicResponse parses a raw JSON response from Claude into a structured format.
 func ParseAnthropicResponse(responseJSON string) (*AnthropicToolResponse, error) {
 	var response AnthropicToolResponse
 	if err := json.Unmarshal([]byte(responseJSON), &response); err != nil {
@@ -60,7 +66,7 @@ func ParseAnthropicResponse(responseJSON string) (*AnthropicToolResponse, error)
 	return &response, nil
 }
 
-// ExtractToolUses extracts any tool_use blocks from an Anthropic response
+// ExtractToolUses extracts any tool_use blocks from an Anthropic response.
 func ExtractToolUses(response *AnthropicToolResponse) []AnthropicToolUse {
 	var toolUses []AnthropicToolUse
 
@@ -68,8 +74,9 @@ func ExtractToolUses(response *AnthropicToolResponse) []AnthropicToolUse {
 		return toolUses
 	}
 
-	for _, content := range response.Content {
-		if content.Type == "tool_use" && content.ToolUse != nil {
+	for i := range response.Content {
+		content := &response.Content[i]
+		if content.Type == contentTypeToolUse && content.ToolUse != nil {
 			toolUses = append(toolUses, *content.ToolUse)
 		}
 	}
@@ -77,19 +84,20 @@ func ExtractToolUses(response *AnthropicToolResponse) []AnthropicToolUse {
 	return toolUses
 }
 
-// FormatToolResults creates a properly formatted user message with tool results
+// FormatToolResults creates a properly formatted user message with tool results.
 func FormatToolResults(toolResults []ToolResult) (map[string]interface{}, error) {
-	// Create content blocks for each tool result
+	// Create content blocks for each tool result.
 	contentBlocks := make([]map[string]interface{}, len(toolResults))
-	for i, result := range toolResults {
+	for i := range toolResults {
+		result := &toolResults[i]
 		contentBlocks[i] = map[string]interface{}{
-			"type":        "tool_result",
+			"type":        contentTypeToolResult,
 			"tool_use_id": result.ToolUseID,
 			"content":     result.Content,
 		}
 	}
 
-	// Create the user message with tool results
+	// Create the user message with tool results.
 	message := map[string]interface{}{
 		"role":    "user",
 		"content": contentBlocks,
@@ -98,18 +106,18 @@ func FormatToolResults(toolResults []ToolResult) (map[string]interface{}, error)
 	return message, nil
 }
 
-// FormatContinuationRequest creates a request to continue a conversation with tool results
+// FormatContinuationRequest creates a request to continue a conversation with tool results.
 func FormatContinuationRequest(tools []ToolDefinition, messages []interface{}, toolResults []ToolResult) (map[string]interface{}, error) {
-	// Convert tool results to a properly formatted user message
+	// Convert tool results to a properly formatted user message.
 	toolResultsMessage, err := FormatToolResults(toolResults)
 	if err != nil {
 		return nil, err
 	}
 
-	// Append the tool results message to the conversation
+	// Append the tool results message to the conversation.
 	updatedMessages := append(messages, toolResultsMessage)
 
-	// Create the continuation request
+	// Create the continuation request.
 	request := map[string]interface{}{
 		"model":      "claude-3-opus-20240229", // Default model, can be made configurable
 		"max_tokens": 4000,                     // Default max tokens

@@ -12,7 +12,7 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// BenchmarkContainerLifecycle benchmarks container readonly→readwrite transitions
+// BenchmarkContainerLifecycle benchmarks container readonly→readwrite transitions.
 func BenchmarkContainerLifecycle(b *testing.B) {
 	tempDir, err := os.MkdirTemp("", "perf-container-test")
 	if err != nil {
@@ -45,7 +45,7 @@ func BenchmarkContainerLifecycle(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Test readonly container startup
+		// Test readonly container startup.
 		startTime := time.Now()
 		err := driver.configureWorkspaceMount(ctx, true, "benchmark-readonly")
 		if err != nil {
@@ -53,7 +53,7 @@ func BenchmarkContainerLifecycle(b *testing.B) {
 		}
 		readonlyTime := time.Since(startTime)
 
-		// Test readwrite container reconfiguration
+		// Test readwrite container reconfiguration.
 		startTime = time.Now()
 		err = driver.configureWorkspaceMount(ctx, false, "benchmark-readwrite")
 		if err != nil {
@@ -61,7 +61,7 @@ func BenchmarkContainerLifecycle(b *testing.B) {
 		}
 		readwriteTime := time.Since(startTime)
 
-		// Log timing for analysis
+		// Log timing for analysis.
 		if i == 0 {
 			b.Logf("Container lifecycle timings:")
 			b.Logf("  Readonly setup: %v", readonlyTime)
@@ -71,7 +71,7 @@ func BenchmarkContainerLifecycle(b *testing.B) {
 	}
 }
 
-// BenchmarkContextPreservation benchmarks context save/restore operations
+// BenchmarkContextPreservation benchmarks context save/restore operations.
 func BenchmarkContextPreservation(b *testing.B) {
 	tempDir, err := os.MkdirTemp("", "perf-context-test")
 	if err != nil {
@@ -102,17 +102,17 @@ func BenchmarkContextPreservation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Benchmark planning context save
+		// Benchmark planning context save.
 		startTime := time.Now()
 		driver.storePlanningContext(driver.BaseStateMachine)
 		saveTime := time.Since(startTime)
 
-		// Benchmark planning context restore
+		// Benchmark planning context restore.
 		startTime = time.Now()
 		driver.restorePlanningContext(driver.BaseStateMachine)
 		restoreTime := time.Since(startTime)
 
-		// Test other context types
+		// Test other context types.
 		startTime = time.Now()
 		driver.storeCodingContext(driver.BaseStateMachine)
 		driver.restoreCodingContext(driver.BaseStateMachine)
@@ -127,7 +127,7 @@ func BenchmarkContextPreservation(b *testing.B) {
 	}
 }
 
-// BenchmarkHelperMethods benchmarks the helper methods used in enhanced planning
+// BenchmarkHelperMethods benchmarks the helper methods used in enhanced planning.
 func BenchmarkHelperMethods(b *testing.B) {
 	tempDir, err := os.MkdirTemp("", "perf-helpers-test")
 	if err != nil {
@@ -158,20 +158,20 @@ func BenchmarkHelperMethods(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Benchmark helper methods
+		// Benchmark helper methods.
 		startTime := time.Now()
 
-		// Planning helpers
+		// Planning helpers.
 		_ = driver.getExplorationHistory()
 		_ = driver.getFilesExamined()
 		_ = driver.getCurrentFindings()
 
-		// Coding helpers
+		// Coding helpers.
 		_ = driver.getCodingProgress()
 		_ = driver.getFilesCreated()
 		_ = driver.getCurrentTask()
 
-		// Fixing helpers
+		// Fixing helpers.
 		_ = driver.getFixingProgress()
 		_ = driver.getTestFailures()
 		_ = driver.getCurrentFixes()
@@ -185,7 +185,7 @@ func BenchmarkHelperMethods(b *testing.B) {
 	}
 }
 
-// BenchmarkToolDefinitions benchmarks tool definition creation and access
+// BenchmarkToolDefinitions benchmarks tool definition creation and access.
 func BenchmarkToolDefinitions(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -195,7 +195,7 @@ func BenchmarkToolDefinitions(b *testing.B) {
 		askQuestionTool := tools.NewAskQuestionTool()
 		submitPlanTool := tools.NewSubmitPlanTool()
 
-		// Access tool definitions
+		// Access tool definitions.
 		_ = askQuestionTool.Definition()
 		_ = submitPlanTool.Definition()
 
@@ -207,7 +207,7 @@ func BenchmarkToolDefinitions(b *testing.B) {
 	}
 }
 
-// BenchmarkStateDataOperations benchmarks state data set/get operations
+// BenchmarkStateDataOperations benchmarks state data set/get operations.
 func BenchmarkStateDataOperations(b *testing.B) {
 	tempDir, err := os.MkdirTemp("", "perf-state-test")
 	if err != nil {
@@ -248,12 +248,12 @@ func BenchmarkStateDataOperations(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		startTime := time.Now()
 
-		// Benchmark SetStateData operations
+		// Benchmark SetStateData operations.
 		for key, value := range testData {
 			driver.BaseStateMachine.SetStateData(key, value)
 		}
 
-		// Benchmark GetStateValue operations
+		// Benchmark GetStateValue operations.
 		for key := range testData {
 			_, _ = driver.BaseStateMachine.GetStateValue(key)
 		}

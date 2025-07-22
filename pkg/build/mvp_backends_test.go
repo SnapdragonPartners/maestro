@@ -10,7 +10,7 @@ import (
 )
 
 func TestPythonBackend(t *testing.T) {
-	// Test with pyproject.toml
+	// Test with pyproject.toml.
 	t.Run("pyproject.toml detection", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "python-backend-test")
 		if err != nil {
@@ -18,7 +18,7 @@ func TestPythonBackend(t *testing.T) {
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create pyproject.toml
+		// Create pyproject.toml.
 		pyprojectToml := `[build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -42,7 +42,7 @@ version = "0.1.0"
 		}
 	})
 
-	// Test with requirements.txt
+	// Test with requirements.txt.
 	t.Run("requirements.txt detection", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "python-backend-test")
 		if err != nil {
@@ -50,7 +50,7 @@ version = "0.1.0"
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create requirements.txt
+		// Create requirements.txt.
 		requirements := `requests>=2.25.0
 flask>=2.0.0
 `
@@ -65,7 +65,7 @@ flask>=2.0.0
 		}
 	})
 
-	// Test with Python files
+	// Test with Python files.
 	t.Run("Python files detection", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "python-backend-test")
 		if err != nil {
@@ -73,7 +73,7 @@ flask>=2.0.0
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create main.py
+		// Create main.py.
 		mainPy := `def main():
     print("Hello, World!")
 
@@ -91,7 +91,7 @@ if __name__ == "__main__":
 		}
 	})
 
-	// Test build operation
+	// Test build operation.
 	t.Run("build operation", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "python-backend-test")
 		if err != nil {
@@ -99,7 +99,7 @@ if __name__ == "__main__":
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create minimal project
+		// Create minimal project.
 		os.WriteFile(filepath.Join(tempDir, "requirements.txt"), []byte("# No dependencies"), 0644)
 
 		backend := NewPythonBackend()
@@ -119,7 +119,7 @@ if __name__ == "__main__":
 }
 
 func TestNodeBackend(t *testing.T) {
-	// Test with package.json
+	// Test with package.json.
 	t.Run("package.json detection", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "node-backend-test")
 		if err != nil {
@@ -127,8 +127,8 @@ func TestNodeBackend(t *testing.T) {
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create package.json
-		packageJson := `{
+		// Create package.json.
+		packageJSON := `{
   "name": "test-project",
   "version": "1.0.0",
   "description": "Test project",
@@ -143,7 +143,7 @@ func TestNodeBackend(t *testing.T) {
   }
 }
 `
-		if err := os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJson), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJSON), 0644); err != nil {
 			t.Fatalf("Failed to create package.json: %v", err)
 		}
 
@@ -158,7 +158,7 @@ func TestNodeBackend(t *testing.T) {
 		}
 	})
 
-	// Test with JavaScript files
+	// Test with JavaScript files.
 	t.Run("JavaScript files detection", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "node-backend-test")
 		if err != nil {
@@ -166,7 +166,7 @@ func TestNodeBackend(t *testing.T) {
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create index.js
+		// Create index.js.
 		indexJs := `const express = require('express');
 const app = express();
 
@@ -195,9 +195,9 @@ app.listen(3000);
 		}
 		defer os.RemoveAll(tempDir)
 
-		// Create package.json
-		packageJson := `{"name": "test"}`
-		os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJson), 0644)
+		// Create package.json.
+		packageJSON := `{"name": "test"}`
+		os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJSON), 0644)
 
 		backend := NewNodeBackend()
 
@@ -218,7 +218,7 @@ app.listen(3000);
 func TestRegistryWithMVPBackends(t *testing.T) {
 	registry := NewRegistry()
 
-	// Test that all MVP backends are registered
+	// Test that all MVP backends are registered.
 	backends := registry.List()
 	expectedBackends := []string{"go", "python", "node", "make", "null"}
 
@@ -226,7 +226,7 @@ func TestRegistryWithMVPBackends(t *testing.T) {
 		t.Errorf("Expected %d backends, got %d", len(expectedBackends), len(backends))
 	}
 
-	// Check that all expected backends are present
+	// Check that all expected backends are present.
 	foundBackends := make(map[string]bool)
 	for _, registration := range backends {
 		foundBackends[registration.Backend.Name()] = true
@@ -238,7 +238,7 @@ func TestRegistryWithMVPBackends(t *testing.T) {
 		}
 	}
 
-	// Test priority ordering
+	// Test priority ordering.
 	for i := 1; i < len(backends); i++ {
 		if backends[i-1].Priority < backends[i].Priority {
 			t.Error("Backends should be sorted by priority (highest first)")
@@ -247,14 +247,14 @@ func TestRegistryWithMVPBackends(t *testing.T) {
 }
 
 func TestMultiBackendDetection(t *testing.T) {
-	// Test project with multiple backend indicators
+	// Test project with multiple backend indicators.
 	tempDir, err := os.MkdirTemp("", "multi-backend-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create files for multiple backends
+	// Create files for multiple backends.
 	os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module test"), 0644)
 	os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(`{"name": "test"}`), 0644)
 	os.WriteFile(filepath.Join(tempDir, "requirements.txt"), []byte("# Test"), 0644)
@@ -274,7 +274,7 @@ func TestMultiBackendDetection(t *testing.T) {
 }
 
 func TestBackendFallbacks(t *testing.T) {
-	// Test that operations gracefully handle missing tools
+	// Test that operations gracefully handle missing tools.
 	backends := []BuildBackend{
 		NewGoBackend(),
 		NewPythonBackend(),
@@ -294,7 +294,7 @@ func TestBackendFallbacks(t *testing.T) {
 
 			var buf strings.Builder
 
-			// Operations should not panic even if tools are missing
+			// Operations should not panic even if tools are missing.
 			backend.Build(ctx, tempDir, &buf)
 			backend.Test(ctx, tempDir, &buf)
 			backend.Lint(ctx, tempDir, &buf)

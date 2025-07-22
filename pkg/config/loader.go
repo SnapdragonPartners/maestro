@@ -1,3 +1,5 @@
+// Package config provides configuration loading, validation, and management for the orchestrator.
+// It handles JSON config files, environment variable substitution, and agent configuration.
 package config
 
 import (
@@ -9,23 +11,31 @@ import (
 	"strings"
 )
 
-// Default iteration budgets for coder agents
+// Agent type constants.
+const (
+	AgentTypeArchitect = "architect"
+	AgentTypeCoder     = "coder"
+)
+
+// Default iteration budgets for coder agents.
 const (
 	DefaultCodingBudget = 8 // Default from existing hardcoded value
 	DefaultFixingBudget = 3 // Default from story requirements
 )
 
-// Default Docker images for different project types
+// Default Docker images for different project types.
 const (
 	DefaultGoDockerImage     = "golang:1.24-alpine"
 	DefaultUbuntuDockerImage = "ubuntu:22.04"
 )
 
+// IterationBudgets defines the retry limits for coding operations.
 type IterationBudgets struct {
 	CodingBudget int `json:"coding_budget"`
 	FixingBudget int `json:"fixing_budget"`
 }
 
+// Agent represents a single agent configuration with its type and execution parameters.
 type Agent struct {
 	Name             string           `json:"name"`
 	ID               string           `json:"id"`
@@ -35,6 +45,7 @@ type Agent struct {
 	DockerImage      string           `json:"docker_image,omitempty"` // Optional Docker image override
 }
 
+// ModelCfg defines the configuration for an LLM model including rate limits and API settings.
 type ModelCfg struct {
 	MaxTokensPerMinute int     `json:"max_tokens_per_minute"`
 	MaxBudgetPerDayUSD float64 `json:"max_budget_per_day_usd"`
@@ -42,20 +53,20 @@ type ModelCfg struct {
 	CpmTokensOut       float64 `json:"cpm_tokens_out"`
 	APIKey             string  `json:"api_key"`
 	Agents             []Agent `json:"agents"`
-	// Context management settings
+	// Context management settings.
 	MaxContextTokens int `json:"max_context_tokens"` // Maximum total context size
 	MaxReplyTokens   int `json:"max_reply_tokens"`   // Maximum tokens for model reply
 	CompactionBuffer int `json:"compaction_buffer"`  // Buffer tokens before compaction
 }
 
-// ExecutorConfig contains executor-specific configuration
+// ExecutorConfig contains executor-specific configuration.
 type ExecutorConfig struct {
 	Type     string       `json:"type"`     // "auto", "docker", "local"
 	Docker   DockerConfig `json:"docker"`   // Docker-specific settings
 	Fallback string       `json:"fallback"` // Fallback executor when preferred unavailable
 }
 
-// DockerConfig contains Docker executor configuration
+// DockerConfig contains Docker executor configuration.
 type DockerConfig struct {
 	Image       string            `json:"image"`        // Docker image to use
 	Network     string            `json:"network"`      // Network mode: "none", "bridge", "host"
@@ -70,6 +81,7 @@ type DockerConfig struct {
 	PullTimeout int               `json:"pull_timeout"` // Timeout for image pull in seconds
 }
 
+// Config represents the main configuration for the orchestrator system.
 type Config struct {
 	Models                     map[string]ModelCfg `json:"models"`
 	GracefulShutdownTimeoutSec int                 `json:"graceful_shutdown_timeout_sec"`
@@ -78,25 +90,26 @@ type Config struct {
 	RetryBackoffMultiplier     float64             `json:"retry_backoff_multiplier"`
 	StoryChannelFactor         int                 `json:"story_channel_factor"`   // Buffer factor for storyCh: factor × numCoders
 	QuestionsChannelSize       int                 `json:"questions_channel_size"` // Buffer size for questionsCh
-	// Git worktree settings
+	// Git worktree settings.
 	RepoURL         string `json:"repo_url"`         // Git repository URL for SSH clone/push
 	BaseBranch      string `json:"base_branch"`      // Base branch name (default: main)
 	MirrorDir       string `json:"mirror_dir"`       // Mirror directory path (default: $WORKDIR/.mirrors)
 	WorktreePattern string `json:"worktree_pattern"` // Worktree path pattern (default: {$WORKDIR}/{AGENT_ID}/{STORY_ID})
 	BranchPattern   string `json:"branch_pattern"`   // Branch name pattern (default: story-{STORY_ID})
-	// Executor configuration
+	// Executor configuration.
 	Executor ExecutorConfig `json:"executor"` // Executor settings
 }
 
 var envVarRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
 
+// LoadConfig loads and validates configuration from a JSON file with environment variable substitution.
 func LoadConfig(configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Replace environment variable placeholders
+	// Replace environment variable placeholders.
 	dataStr := string(data)
 	dataStr = envVarRegex.ReplaceAllStringFunc(dataStr, func(match string) string {
 		envVar := match[2 : len(match)-1] // Remove ${ and }
@@ -111,13 +124,13 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	// Apply environment variable overrides
+	// Apply environment variable overrides.
 	applyEnvOverrides(&config)
 
-	// Apply defaults
+	// Apply defaults.
 	applyDefaults(&config)
 
-	// Validate config
+	// Validate config.
 	if err := validateConfig(&config); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
@@ -150,7 +163,7 @@ func applyEnvOverridesRecursive(v reflect.Value, t reflect.Type, prefix string) 
 		}
 
 		if field.Kind() == reflect.Map && field.Type().Key().Kind() == reflect.String {
-			// Handle map fields like Models
+			// Handle map fields like Models.
 			if field.IsNil() {
 				field.Set(reflect.MakeMap(field.Type()))
 			}
@@ -190,18 +203,24 @@ func setFieldFromEnv(field reflect.Value, envValue string) {
 func parseInt(s string) (int, error) {
 	var result int
 	_, err := fmt.Sscanf(s, "%d", &result)
-	return result, err
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse int from '%s': %w", s, err)
+	}
+	return result, nil
 }
 
 func parseFloat(s string) (float64, error) {
 	var result float64
 	_, err := fmt.Sscanf(s, "%f", &result)
-	return result, err
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse float from '%s': %w", s, err)
+	}
+	return result, nil
 }
 
-// applyDefaults sets default values for missing configuration
+// applyDefaults sets default values for missing configuration.
 func applyDefaults(config *Config) {
-	// Set executor defaults if not specified
+	// Set executor defaults if not specified.
 	if config.Executor.Type == "" {
 		config.Executor.Type = "docker"
 	}
@@ -209,7 +228,7 @@ func applyDefaults(config *Config) {
 		config.Executor.Fallback = "local"
 	}
 
-	// Set Docker defaults
+	// Set Docker defaults.
 	if config.Executor.Docker.Image == "" {
 		config.Executor.Docker.Image = DefaultGoDockerImage
 	}
@@ -232,7 +251,7 @@ func applyDefaults(config *Config) {
 		config.Executor.Docker.PullTimeout = 300 // 5 minutes
 	}
 
-	// Initialize empty maps if nil
+	// Initialize empty maps if nil.
 	if config.Executor.Docker.Env == nil {
 		config.Executor.Docker.Env = make(map[string]string)
 	}
@@ -246,7 +265,7 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("no models configured")
 	}
 
-	// Validate executor configuration
+	// Validate executor configuration.
 	if err := validateExecutorConfig(&config.Executor); err != nil {
 		return fmt.Errorf("executor config validation failed: %w", err)
 	}
@@ -273,9 +292,9 @@ func validateConfig(config *Config) error {
 			return fmt.Errorf("model %s: at least one agent must be configured", name)
 		}
 
-		// Set defaults for context management if not specified
+		// Set defaults for context management if not specified.
 		if model.MaxContextTokens <= 0 {
-			// Default context sizes based on common model limits
+			// Default context sizes based on common model limits.
 			if strings.Contains(strings.ToLower(name), "claude") {
 				model.MaxContextTokens = 200000 // Claude 3.5 Sonnet context limit
 			} else if strings.Contains(strings.ToLower(name), "gpt") || strings.Contains(strings.ToLower(name), "o3") {
@@ -286,7 +305,7 @@ func validateConfig(config *Config) error {
 		}
 
 		if model.MaxReplyTokens <= 0 {
-			// Default reply limits
+			// Default reply limits.
 			if strings.Contains(strings.ToLower(name), "claude") {
 				model.MaxReplyTokens = 8192 // Claude max output tokens
 			} else {
@@ -298,7 +317,7 @@ func validateConfig(config *Config) error {
 			model.CompactionBuffer = 2000 // Default buffer before compaction
 		}
 
-		// Validate context management settings
+		// Validate context management settings.
 		if model.MaxReplyTokens >= model.MaxContextTokens {
 			return fmt.Errorf("model %s: max_reply_tokens (%d) must be less than max_context_tokens (%d)",
 				name, model.MaxReplyTokens, model.MaxContextTokens)
@@ -309,10 +328,10 @@ func validateConfig(config *Config) error {
 				name, model.CompactionBuffer, model.MaxContextTokens)
 		}
 
-		// Update the model in the config with defaults
+		// Update the model in the config with defaults.
 		config.Models[name] = model
 
-		// Validate each agent
+		// Validate each agent.
 		for i, agent := range model.Agents {
 			if agent.Name == "" {
 				return fmt.Errorf("model %s, agent %d: name is required", name, i)
@@ -320,26 +339,26 @@ func validateConfig(config *Config) error {
 			if agent.ID == "" {
 				return fmt.Errorf("model %s, agent %s: id is required", name, agent.Name)
 			}
-			if agent.Type != "architect" && agent.Type != "coder" {
-				return fmt.Errorf("model %s, agent %s: type must be 'architect' or 'coder', got '%s'", name, agent.Name, agent.Type)
+			if agent.Type != AgentTypeArchitect && agent.Type != AgentTypeCoder {
+				return fmt.Errorf("model %s, agent %s: type must be '%s' or '%s', got '%s'", name, agent.Name, AgentTypeArchitect, AgentTypeCoder, agent.Type)
 			}
 			if agent.WorkDir == "" {
 				return fmt.Errorf("model %s, agent %s: workdir is required", name, agent.Name)
 			}
 
-			// Set default iteration budgets for coder agents
-			if agent.Type == "coder" {
+			// Set default iteration budgets for coder agents.
+			if agent.Type == AgentTypeCoder {
 				if agent.IterationBudgets.CodingBudget <= 0 {
 					agent.IterationBudgets.CodingBudget = DefaultCodingBudget
 				}
 				if agent.IterationBudgets.FixingBudget <= 0 {
 					agent.IterationBudgets.FixingBudget = DefaultFixingBudget
 				}
-				// Update the agent in the slice with defaults
+				// Update the agent in the slice with defaults.
 				model.Agents[i] = agent
 			}
 
-			// Check for duplicate agent IDs across all models using new format
+			// Check for duplicate agent IDs across all models using new format.
 			logID := agent.GetLogID(name)
 			if agentIDs[logID] {
 				return fmt.Errorf("duplicate agent ID: %s (model %s, agent %s)", logID, name, agent.Name)
@@ -367,7 +386,7 @@ func validateConfig(config *Config) error {
 		config.QuestionsChannelSize = config.CountCoders() // default to number of coders
 	}
 
-	// Set Git worktree defaults
+	// Set Git worktree defaults.
 	if config.BaseBranch == "" {
 		config.BaseBranch = "main"
 	}
@@ -381,9 +400,9 @@ func validateConfig(config *Config) error {
 		config.BranchPattern = "story-{STORY_ID}"
 	}
 
-	// Validate Git settings (RepoURL is optional - may not be using Git worktrees yet)
+	// Validate Git settings (RepoURL is optional - may not be using Git worktrees yet).
 	if config.RepoURL != "" {
-		// Basic URL validation
+		// Basic URL validation.
 		if !strings.HasPrefix(config.RepoURL, "git@") && !strings.HasPrefix(config.RepoURL, "https://") {
 			return fmt.Errorf("repo_url must start with 'git@' or 'https://'")
 		}
@@ -392,9 +411,9 @@ func validateConfig(config *Config) error {
 	return nil
 }
 
-// validateExecutorConfig validates the executor configuration
+// validateExecutorConfig validates the executor configuration.
 func validateExecutorConfig(executor *ExecutorConfig) error {
-	// Validate executor type
+	// Validate executor type.
 	validTypes := []string{"auto", "docker", "local"}
 	found := false
 	for _, t := range validTypes {
@@ -407,7 +426,7 @@ func validateExecutorConfig(executor *ExecutorConfig) error {
 		return fmt.Errorf("invalid executor type '%s', must be one of: %s", executor.Type, strings.Join(validTypes, ", "))
 	}
 
-	// Validate fallback executor
+	// Validate fallback executor.
 	if executor.Fallback != "" {
 		validFallbacks := []string{"docker", "local"}
 		found = false
@@ -422,7 +441,7 @@ func validateExecutorConfig(executor *ExecutorConfig) error {
 		}
 	}
 
-	// Validate Docker configuration
+	// Validate Docker configuration.
 	if executor.Docker.Image == "" {
 		return fmt.Errorf("docker.image is required")
 	}
@@ -441,7 +460,7 @@ func validateExecutorConfig(executor *ExecutorConfig) error {
 		}
 	}
 
-	// Validate resource limits
+	// Validate resource limits.
 	if executor.Docker.PIDs < 0 {
 		return fmt.Errorf("docker.pids cannot be negative")
 	}
@@ -452,12 +471,12 @@ func validateExecutorConfig(executor *ExecutorConfig) error {
 	return nil
 }
 
-// GetLogID returns the log ID for an agent (agentType-id format)
-func (a *Agent) GetLogID(modelName string) string {
+// GetLogID returns the log ID for an agent (agentType-id format).
+func (a *Agent) GetLogID(_ string) string {
 	return fmt.Sprintf("%s-%s", a.Type, a.ID)
 }
 
-// GetAllAgents returns all agents from all models
+// GetAllAgents returns all agents from all models.
 func (c *Config) GetAllAgents() []AgentWithModel {
 	var agents []AgentWithModel
 	for modelName, model := range c.Models {
@@ -472,7 +491,7 @@ func (c *Config) GetAllAgents() []AgentWithModel {
 	return agents
 }
 
-// GetAgentByLogID finds an agent by its log ID (type-id format)
+// GetAgentByLogID finds an agent by its log ID (type-id format).
 func (c *Config) GetAgentByLogID(logID string) (*AgentWithModel, error) {
 	parts := strings.Split(logID, "-")
 	if len(parts) != 2 {
@@ -480,8 +499,8 @@ func (c *Config) GetAgentByLogID(logID string) (*AgentWithModel, error) {
 	}
 
 	agentType, agentID := parts[0], parts[1]
-	
-	// Search through all models to find the agent with matching type and ID
+
+	// Search through all models to find the agent with matching type and ID.
 	for modelName, model := range c.Models {
 		for _, agent := range model.Agents {
 			if agent.Type == agentType && agent.ID == agentID {
@@ -497,19 +516,19 @@ func (c *Config) GetAgentByLogID(logID string) (*AgentWithModel, error) {
 	return nil, fmt.Errorf("agent not found: %s", logID)
 }
 
-// AgentWithModel combines an agent with its model information
+// AgentWithModel combines an agent with its model information.
 type AgentWithModel struct {
 	Agent     Agent
 	ModelName string
 	Model     ModelCfg
 }
 
-// CountCoders returns the total number of coder agents across all models
+// CountCoders returns the total number of coder agents across all models.
 func (c *Config) CountCoders() int {
 	count := 0
 	for _, model := range c.Models {
 		for _, agent := range model.Agents {
-			if agent.Type == "coder" {
+			if agent.Type == AgentTypeCoder {
 				count++
 			}
 		}
@@ -517,12 +536,12 @@ func (c *Config) CountCoders() int {
 	return count
 }
 
-// CountArchitects returns the total number of architect agents across all models
+// CountArchitects returns the total number of architect agents across all models.
 func (c *Config) CountArchitects() int {
 	count := 0
 	for _, model := range c.Models {
 		for _, agent := range model.Agents {
-			if agent.Type == "architect" {
+			if agent.Type == AgentTypeArchitect {
 				count++
 			}
 		}

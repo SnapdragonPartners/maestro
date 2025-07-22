@@ -27,8 +27,9 @@ func TestLocalExec_Run_Success(t *testing.T) {
 	exec := NewLocalExec()
 	ctx := context.Background()
 
-	// Test simple command
-	result, err := exec.Run(ctx, []string{"echo", "hello world"}, DefaultExecOpts())
+	// Test simple command.
+	opts := DefaultExecOpts()
+	result, err := exec.Run(ctx, []string{"echo", "hello world"}, &opts)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -54,8 +55,9 @@ func TestLocalExec_Run_Failure(t *testing.T) {
 	exec := NewLocalExec()
 	ctx := context.Background()
 
-	// Test command that fails
-	result, err := exec.Run(ctx, []string{"false"}, DefaultExecOpts())
+	// Test command that fails.
+	opts := DefaultExecOpts()
+	result, err := exec.Run(ctx, []string{"false"}, &opts)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -69,7 +71,8 @@ func TestLocalExec_Run_EmptyCommand(t *testing.T) {
 	exec := NewLocalExec()
 	ctx := context.Background()
 
-	_, err := exec.Run(ctx, []string{}, DefaultExecOpts())
+	opts := DefaultExecOpts()
+	_, err := exec.Run(ctx, []string{}, &opts)
 	if err == nil {
 		t.Error("Expected error for empty command")
 	}
@@ -79,20 +82,20 @@ func TestLocalExec_Run_WorkingDirectory(t *testing.T) {
 	exec := NewLocalExec()
 	ctx := context.Background()
 
-	// Create a temporary directory
+	// Create a temporary directory.
 	tempDir := t.TempDir()
 
-	// Create a test file in the temp directory
+	// Create a test file in the temp directory.
 	testFile := filepath.Join(tempDir, "test.txt")
 	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	// Test command with working directory
+	// Test command with working directory.
 	opts := DefaultExecOpts()
 	opts.WorkDir = tempDir
 
-	result, err := exec.Run(ctx, []string{"ls", "test.txt"}, opts)
+	result, err := exec.Run(ctx, []string{"ls", "test.txt"}, &opts)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -113,7 +116,7 @@ func TestLocalExec_Run_NonExistentWorkingDirectory(t *testing.T) {
 	opts := DefaultExecOpts()
 	opts.WorkDir = "/nonexistent/directory"
 
-	_, err := exec.Run(ctx, []string{"echo", "test"}, opts)
+	_, err := exec.Run(ctx, []string{"echo", "test"}, &opts)
 	if err == nil {
 		t.Error("Expected error for non-existent working directory")
 	}
@@ -130,7 +133,7 @@ func TestLocalExec_Run_Environment(t *testing.T) {
 	opts := DefaultExecOpts()
 	opts.Env = []string{"TEST_VAR=hello world"}
 
-	result, err := exec.Run(ctx, []string{"sh", "-c", "echo $TEST_VAR"}, opts)
+	result, err := exec.Run(ctx, []string{"sh", "-c", "echo $TEST_VAR"}, &opts)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -151,18 +154,18 @@ func TestLocalExec_Run_Timeout(t *testing.T) {
 	opts := DefaultExecOpts()
 	opts.Timeout = 100 * time.Millisecond
 
-	// Command that sleeps longer than timeout
-	result, err := exec.Run(ctx, []string{"sleep", "1"}, opts)
+	// Command that sleeps longer than timeout.
+	result, err := exec.Run(ctx, []string{"sleep", "1"}, &opts)
 
 	// For timeout, we expect either:
 	// 1. An error is returned (context deadline exceeded)
-	// 2. The command is killed and returns with exit code -1
-	// The exact behavior depends on timing and OS
+	// 2. The command is killed and returns with exit code -1.
+	// The exact behavior depends on timing and OS.
 
 	timeoutOccurred := false
 
 	if err != nil {
-		// Check if it's a timeout-related error
+		// Check if it's a timeout-related error.
 		if strings.Contains(err.Error(), "context deadline exceeded") ||
 			strings.Contains(err.Error(), "signal: killed") {
 			timeoutOccurred = true
@@ -176,7 +179,7 @@ func TestLocalExec_Run_Timeout(t *testing.T) {
 		t.Errorf("Expected timeout to occur (error or exit code -1), got exit code %d", result.ExitCode)
 	}
 
-	// Duration should be roughly the timeout duration
+	// Duration should be roughly the timeout duration.
 	if result.Duration > 2*opts.Timeout {
 		t.Errorf("Expected duration to be around %v, got %v", opts.Timeout, result.Duration)
 	}
@@ -186,8 +189,9 @@ func TestLocalExec_Run_Stderr(t *testing.T) {
 	exec := NewLocalExec()
 	ctx := context.Background()
 
-	// Command that writes to stderr
-	result, err := exec.Run(ctx, []string{"sh", "-c", "echo 'error message' >&2"}, DefaultExecOpts())
+	// Command that writes to stderr.
+	opts := DefaultExecOpts()
+	result, err := exec.Run(ctx, []string{"sh", "-c", "echo 'error message' >&2"}, &opts)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}

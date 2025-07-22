@@ -10,7 +10,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestBaseStateMachineRaceConditions verifies thread safety of BaseStateMachine
+// TestBaseStateMachineRaceConditions verifies thread safety of BaseStateMachine.
 func TestBaseStateMachineRaceConditions(t *testing.T) {
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
@@ -20,52 +20,52 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 
 	sm := NewBaseStateMachine("race-test-agent", proto.StateWaiting, store, nil)
 
-	// Number of goroutines and operations per goroutine
+	// Number of goroutines and operations per goroutine.
 	numGoroutines := 10
 	operationsPerGoroutine := 100
 
 	var wg sync.WaitGroup
 
-	// Start multiple goroutines that read and write state data concurrently
+	// Start multiple goroutines that read and write state data concurrently.
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 
 			for j := 0; j < operationsPerGoroutine; j++ {
-				// Concurrent state data operations
+				// Concurrent state data operations.
 				key := "test_key"
 				value := goroutineID*1000 + j
 
-				// Write operation
+				// Write operation.
 				sm.SetStateData(key, value)
 
-				// Read operation
+				// Read operation.
 				if readValue, exists := sm.GetStateValue(key); exists {
 					if readValue != value {
 						t.Logf("Race condition detected: expected %v, got %v", value, readValue)
 					}
 				}
 
-				// Get state data copy
+				// Get state data copy.
 				stateData := sm.GetStateData()
 				if len(stateData) == 0 {
 					t.Log("Empty state data encountered")
 				}
 
-				// Get current state
+				// Get current state.
 				currentState := sm.GetCurrentState()
 				if currentState == "" {
 					t.Log("Empty state encountered")
 				}
 
-				// Small delay to increase chance of race conditions
+				// Small delay to increase chance of race conditions.
 				time.Sleep(time.Microsecond)
 			}
 		}(i)
 	}
 
-	// Start a goroutine that performs state transitions
+	// Start a goroutine that performs state transitions.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -75,7 +75,7 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 			targetState := states[i%len(states)]
 			ctx := context.Background()
 
-			// Perform state transition
+			// Perform state transition.
 			err := sm.TransitionTo(ctx, targetState, map[string]any{
 				"transition_id": i,
 				"timestamp":     time.Now(),
@@ -89,10 +89,10 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 		}
 	}()
 
-	// Wait for all goroutines to complete
+	// Wait for all goroutines to complete.
 	wg.Wait()
 
-	// Verify final state is consistent
+	// Verify final state is consistent.
 	finalStateData := sm.GetStateData()
 	if len(finalStateData) == 0 {
 		t.Error("Expected state data to be present after concurrent operations")
@@ -102,7 +102,7 @@ func TestBaseStateMachineRaceConditions(t *testing.T) {
 		numGoroutines, operationsPerGoroutine)
 }
 
-// TestStateDataConcurrency specifically tests concurrent SetStateData and GetStateValue calls
+// TestStateDataConcurrency specifically tests concurrent SetStateData and GetStateValue calls.
 func TestStateDataConcurrency(t *testing.T) {
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
@@ -118,7 +118,7 @@ func TestStateDataConcurrency(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// Start writer goroutines
+	// Start writer goroutines.
 	for i := 0; i < numWriters; i++ {
 		wg.Add(1)
 		go func(writerID int) {
@@ -131,13 +131,13 @@ func TestStateDataConcurrency(t *testing.T) {
 		}(i)
 	}
 
-	// Start reader goroutines
+	// Start reader goroutines.
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
-		go func(readerID int) {
+		go func(_ int) {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
-				// Read operations
+				// Read operations.
 				sm.GetStateValue("writer_key")
 				sm.GetStateData()
 				sm.GetCurrentState()

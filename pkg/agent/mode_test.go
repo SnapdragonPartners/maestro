@@ -6,7 +6,7 @@ import (
 )
 
 func TestSystemMode(t *testing.T) {
-	// Reset SystemMode after each test
+	// Reset SystemMode after each test.
 	defer resetMode()
 
 	t.Run("InitMode sets mode", func(t *testing.T) {
@@ -36,7 +36,7 @@ func TestSystemMode(t *testing.T) {
 }
 
 func TestClaudeClientModes(t *testing.T) {
-	// Reset SystemMode before each subtest
+	// Reset SystemMode before each subtest.
 	defer resetMode()
 
 	t.Run("Returns mock client in mock mode", func(t *testing.T) {
@@ -52,11 +52,11 @@ func TestClaudeClientModes(t *testing.T) {
 		resetMode()
 		InitMode(ModeLive)
 		client := NewClaudeClient("test-key")
-		// In live mode, we get a resilient client that's not a mock
+		// In live mode, we get a resilient client that's not a mock.
 		if _, ok := client.(*MockLLMClient); ok {
 			t.Error("expected non-mock client in live mode")
 		}
-		// Verify it implements LLMClient interface
+		// Verify it implements LLMClient interface.
 		if client == nil {
 			t.Error("expected non-nil client")
 		}
@@ -64,7 +64,7 @@ func TestClaudeClientModes(t *testing.T) {
 }
 
 func TestClaudeClientResponses(t *testing.T) {
-	// Reset SystemMode and use mock mode for tests
+	// Reset SystemMode and use mock mode for tests.
 	defer resetMode()
 	InitMode(ModeMock)
 
@@ -81,7 +81,7 @@ func TestClaudeClientResponses(t *testing.T) {
 		},
 	}
 
-	// Test Complete
+	// Test Complete.
 	resp, err := client.Complete(ctx, req)
 	if err != nil {
 		t.Errorf("Complete() error = %v", err)
@@ -90,7 +90,7 @@ func TestClaudeClientResponses(t *testing.T) {
 		t.Errorf("Complete() = %v, want %v", resp.Content, "response1")
 	}
 
-	// Test Stream
+	// Test Stream.
 	ch, err := client.Stream(ctx, req)
 	if err != nil {
 		t.Errorf("Stream() error = %v", err)

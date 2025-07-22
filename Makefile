@@ -1,4 +1,4 @@
-.PHONY: build test lint run clean agentctl replayer ui-dev build-css
+.PHONY: build test lint run clean agentctl replayer ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
 
 # Build all binaries
 build:
@@ -25,6 +25,30 @@ install-lint:
 		echo "Installing golangci-lint..."; \
 		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
 	}
+
+# Install goimports if not present
+install-goimports:
+	@which goimports > /dev/null || { \
+		echo "Installing goimports..."; \
+		go install golang.org/x/tools/cmd/goimports@latest; \
+	}
+
+# Fix import formatting automatically
+fix-imports: install-goimports
+	@echo "Fixing import formatting with goimports..."
+	goimports -w .
+	@echo "Import formatting fixed"
+
+# Fix godot comment period issues automatically
+fix-godot:
+	@echo "Fixing godot comment period issues..."
+	@find . -name "*.go" -not -path "./vendor/*" -not -path "./.git/*" | \
+		xargs sed -i '' -E 's|^(\s*//\s*[A-Z][^.]*[a-zA-Z0-9)])\s*$$|\1.|g'
+	@echo "Godot comment issues fixed"
+
+# Run all automatic fixes
+fix: fix-imports fix-godot
+	@echo "All automatic fixes applied"
 
 # Run linting tools
 lint: install-lint

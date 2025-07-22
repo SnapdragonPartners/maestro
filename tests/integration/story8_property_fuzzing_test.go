@@ -13,7 +13,7 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// FuzzInput represents randomized input for property-based testing
+// FuzzInput represents randomized input for property-based testing.
 type FuzzInput struct {
 	ResponseType  string
 	Status        string
@@ -24,8 +24,8 @@ type FuzzInput struct {
 	ResponseCount int
 }
 
-// Generate implements quick.Generator for FuzzInput
-func (f FuzzInput) Generate(rand *rand.Rand, size int) reflect.Value {
+// Generate implements quick.Generator for FuzzInput.
+func (f FuzzInput) Generate(rand *rand.Rand, _ int) reflect.Value {
 	responseTypes := []string{"approved", "changes_requested", "malformed", "empty"}
 	statuses := []string{"approved", "changes_requested", "rejected", "invalid", ""}
 	approvalTypes := []string{"plan", "code", "unknown", "YEP", "123", ""}
@@ -51,11 +51,11 @@ func (f FuzzInput) Generate(rand *rand.Rand, size int) reflect.Value {
 	return reflect.ValueOf(input)
 }
 
-// TestStory8PropertyBasedFuzzing tests random interleavings of messages
+// TestStory8PropertyBasedFuzzing tests random interleavings of messages.
 func TestStory8PropertyBasedFuzzing(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Property: The coder should never panic or deadlock, regardless of architect responses
+	// Property: The coder should never panic or deadlock, regardless of architect responses.
 	property := func(input FuzzInput) bool {
 		return testCoderStability(t, input)
 	}
@@ -70,42 +70,42 @@ func TestStory8PropertyBasedFuzzing(t *testing.T) {
 	}
 }
 
-// testCoderStability tests that a coder remains stable with given fuzz input
+// testCoderStability tests that a coder remains stable with given fuzz input.
 func testCoderStability(t *testing.T, input FuzzInput) bool {
-	// Create test harness with short timeout for fuzzing
+	// Create test harness with short timeout for fuzzing.
 	harness := NewTestHarness(t)
 	timeouts := GetTestTimeouts()
 	timeouts.Global = 2 * time.Second // Short timeout for fuzzing
 	timeouts.Plan = 100 * time.Millisecond
 	harness.SetTimeouts(timeouts)
 
-	// Create fuzz architect that follows the input pattern
+	// Create fuzz architect that follows the input pattern.
 	architect := createFuzzArchitect(input)
 	harness.SetArchitect(architect)
 
-	// Create coder
+	// Create coder.
 	coderID := fmt.Sprintf("fuzz-coder-%d", time.Now().UnixNano())
 	coderDriver := CreateTestCoder(t, coderID)
 	harness.AddCoder(coderID, coderDriver)
 
-	// Start with simple task
+	// Start with simple task.
 	StartCoderWithTask(t, harness, coderID, "Create a simple test function")
 
-	// Run with timeout
+	// Run with timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	// The test passes if:
-	// 1. No panic occurs
+	// 1. No panic occurs.
 	// 2. No deadlock occurs (timeout is acceptable)
 	// 3. Coder ends in a valid state (DONE, ERROR, or valid waiting state)
 	err := harness.Run(ctx, func(h *TestHarness) bool {
 		state := h.GetCoderState(coderID)
-		// Stop early if we reach a terminal state
+		// Stop early if we reach a terminal state.
 		return state == proto.StateDone || state == proto.StateError
 	})
 
-	// Check final state is valid
+	// Check final state is valid.
 	finalState := harness.GetCoderState(coderID)
 	validFinalStates := []proto.State{
 		proto.StateDone,
@@ -128,7 +128,7 @@ func testCoderStability(t *testing.T, input FuzzInput) bool {
 		return false
 	}
 
-	// Timeout is acceptable for fuzzing
+	// Timeout is acceptable for fuzzing.
 	if err != nil {
 		t.Logf("Fuzz test ended with timeout/error (acceptable): %v, final state: %s", err, finalState)
 	}
@@ -136,24 +136,24 @@ func testCoderStability(t *testing.T, input FuzzInput) bool {
 	return true
 }
 
-// createFuzzArchitect creates an architect that behaves according to fuzz input
+// createFuzzArchitect creates an architect that behaves according to fuzz input.
 func createFuzzArchitect(input FuzzInput) ArchitectAgent {
 	responseCount := 0
 
 	return NewMalformedResponseMockArchitect("fuzz-architect", func(msg *proto.AgentMsg) *proto.AgentMsg {
 		responseCount++
 
-		// Apply delay if specified
+		// Apply delay if specified.
 		if input.DelayMs > 0 {
 			time.Sleep(time.Duration(input.DelayMs) * time.Millisecond)
 		}
 
-		// Sometimes don't respond to simulate timeout
+		// Sometimes don't respond to simulate timeout.
 		if input.ShouldTimeout && responseCount <= 1 {
 			return nil
 		}
 
-		// Create response based on input type
+		// Create response based on input type.
 		response := proto.NewAgentMsg(proto.MsgTypeRESULT, "fuzz-architect", msg.FromAgent)
 		response.ParentMsgID = msg.ID
 
@@ -171,7 +171,7 @@ func createFuzzArchitect(input FuzzInput) ArchitectAgent {
 			response.SetPayload(proto.KeyFeedback, input.Feedback)
 
 		case "malformed":
-			// Create malformed response
+			// Create malformed response.
 			response.SetPayload("invalid_field", input.Status)
 			response.SetPayload("another_invalid", input.ApprovalType)
 
@@ -180,7 +180,7 @@ func createFuzzArchitect(input FuzzInput) ArchitectAgent {
 			break
 
 		default:
-			// Random response
+			// Random response.
 			response.SetPayload(proto.KeyStatus, input.Status)
 			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 			response.SetPayload(proto.KeyApprovalType, input.ApprovalType)
@@ -191,11 +191,11 @@ func createFuzzArchitect(input FuzzInput) ArchitectAgent {
 	})
 }
 
-// TestStory8ConcurrentFuzzing tests multiple coders with random responses
+// TestStory8ConcurrentFuzzing tests multiple coders with random responses.
 func TestStory8ConcurrentFuzzing(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Property: Multiple coders should handle random responses without interference
+	// Property: Multiple coders should handle random responses without interference.
 	property := func() bool {
 		return testConcurrentStability(t)
 	}
@@ -210,22 +210,26 @@ func TestStory8ConcurrentFuzzing(t *testing.T) {
 	}
 }
 
-// testConcurrentStability tests stability with multiple concurrent coders
+// testConcurrentStability tests stability with multiple concurrent coders.
 func testConcurrentStability(t *testing.T) bool {
-	// Create test harness
+	// Create test harness.
 	harness := NewTestHarness(t)
 	timeouts := GetTestTimeouts()
 	timeouts.Global = 3 * time.Second
 	timeouts.Pump = 2 * time.Millisecond
 	harness.SetTimeouts(timeouts)
 
-	// Create random architect
+	// Create random architect.
 	rand := rand.New(rand.NewSource(time.Now().UnixNano()))
-	fuzzInput := FuzzInput{}.Generate(rand, 10).Interface().(FuzzInput)
+	fuzzInputInterface := FuzzInput{}.Generate(rand, 10).Interface()
+	fuzzInput, ok := fuzzInputInterface.(FuzzInput)
+	if !ok {
+		t.Fatalf("Failed to generate FuzzInput: got type %T", fuzzInputInterface)
+	}
 	architect := createFuzzArchitect(fuzzInput)
 	harness.SetArchitect(architect)
 
-	// Create 3 coders
+	// Create 3 coders.
 	const coderCount = 3
 	for i := 0; i < coderCount; i++ {
 		coderID := fmt.Sprintf("concurrent-fuzz-%d-%d", time.Now().UnixNano(), i)
@@ -234,12 +238,12 @@ func testConcurrentStability(t *testing.T) bool {
 		StartCoderWithTask(t, harness, coderID, fmt.Sprintf("Task %d", i))
 	}
 
-	// Run briefly
+	// Run briefly.
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {
-		// Stop if all coders reach terminal states
+		// Stop if all coders reach terminal states.
 		states := h.GetAllCoderStates()
 		for _, state := range states {
 			if state != proto.StateDone && state != proto.StateError {
@@ -249,7 +253,7 @@ func testConcurrentStability(t *testing.T) bool {
 		return len(states) == coderCount
 	})
 
-	// Check all coders are in valid states
+	// Check all coders are in valid states.
 	finalStates := harness.GetAllCoderStates()
 	for coderID, state := range finalStates {
 		if state == proto.State("") { // Invalid/uninitialized state
@@ -265,11 +269,11 @@ func testConcurrentStability(t *testing.T) bool {
 	return true
 }
 
-// TestStory8MessageSequenceFuzzing tests random message sequences
+// TestStory8MessageSequenceFuzzing tests random message sequences.
 func TestStory8MessageSequenceFuzzing(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Test various message sequence patterns
+	// Test various message sequence patterns.
 	sequences := [][]string{
 		{"approved", "changes_requested", "approved"},
 		{"malformed", "approved"},
@@ -287,9 +291,9 @@ func TestStory8MessageSequenceFuzzing(t *testing.T) {
 	}
 }
 
-// testMessageSequence tests a specific sequence of architect responses
+// testMessageSequence tests a specific sequence of architect responses.
 func testMessageSequence(t *testing.T, sequence []string) bool {
-	// Create test harness
+	// Create test harness.
 	harness := NewTestHarness(t)
 	timeouts := GetTestTimeouts()
 	timeouts.Global = 5 * time.Second
@@ -297,10 +301,10 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 
 	sequenceIndex := 0
 
-	// Create architect that follows the sequence
+	// Create architect that follows the sequence.
 	architect := NewMalformedResponseMockArchitect("sequence-architect", func(msg *proto.AgentMsg) *proto.AgentMsg {
 		if sequenceIndex >= len(sequence) {
-			// Default to approval after sequence
+			// Default to approval after sequence.
 			response := proto.NewAgentMsg(proto.MsgTypeRESULT, "sequence-architect", msg.FromAgent)
 			response.ParentMsgID = msg.ID
 			response.SetPayload(proto.KeyStatus, "approved")
@@ -343,7 +347,7 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 			return response
 
 		default:
-			// Unknown response type, treat as malformed
+			// Unknown response type, treat as malformed.
 			response := proto.NewAgentMsg(proto.MsgTypeRESULT, "sequence-architect", msg.FromAgent)
 			response.ParentMsgID = msg.ID
 			response.SetPayload("unknown_response", responseType)
@@ -352,13 +356,13 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 	})
 	harness.SetArchitect(architect)
 
-	// Create coder
+	// Create coder.
 	coderID := "sequence-coder"
 	coderDriver := CreateTestCoder(t, coderID)
 	harness.AddCoder(coderID, coderDriver)
 	StartCoderWithTask(t, harness, coderID, "Handle message sequence")
 
-	// Run with timeout
+	// Run with timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
@@ -367,10 +371,10 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 		return state == proto.StateDone || state == proto.StateError
 	})
 
-	// Check final state is reasonable
+	// Check final state is reasonable.
 	finalState := harness.GetCoderState(coderID)
 
-	// The coder should handle the sequence gracefully
+	// The coder should handle the sequence gracefully.
 	if finalState == proto.State("") {
 		t.Logf("Message sequence test failed: invalid final state for sequence %v", sequence)
 		return false

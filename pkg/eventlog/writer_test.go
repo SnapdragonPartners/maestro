@@ -17,12 +17,12 @@ func TestNewWriter(t *testing.T) {
 	}
 	defer writer.Close()
 
-	// Check that log directory was created
+	// Check that log directory was created.
 	if _, err := os.Stat(tmpDir); os.IsNotExist(err) {
 		t.Error("Log directory was not created")
 	}
 
-	// Check that current log file exists
+	// Check that current log file exists.
 	currentFile := writer.GetCurrentLogFile()
 	if currentFile == "" {
 		t.Error("No current log file set")
@@ -42,19 +42,19 @@ func TestWriteMessage(t *testing.T) {
 	}
 	defer writer.Close()
 
-	// Create test message
+	// Create test message.
 	msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg.SetPayload("story_id", "001")
 	msg.SetPayload("content", "Implement health endpoint")
 	msg.SetMetadata("priority", "high")
 
-	// Write message
+	// Write message.
 	err = writer.WriteMessage(msg)
 	if err != nil {
 		t.Fatalf("Failed to write message: %v", err)
 	}
 
-	// Verify file was written
+	// Verify file was written.
 	currentFile := writer.GetCurrentLogFile()
 	data, err := os.ReadFile(currentFile)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestWriteMessage(t *testing.T) {
 		t.Error("Log file is empty")
 	}
 
-	// Verify it's valid JSON with newline
+	// Verify it's valid JSON with newline.
 	if data[len(data)-1] != '\n' {
 		t.Error("Log line should end with newline")
 	}
@@ -80,7 +80,7 @@ func TestWriteMultipleMessages(t *testing.T) {
 	}
 	defer writer.Close()
 
-	// Write multiple messages
+	// Write multiple messages.
 	messages := []*proto.AgentMsg{
 		proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude"),
 		proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect"),
@@ -95,7 +95,7 @@ func TestWriteMultipleMessages(t *testing.T) {
 		}
 	}
 
-	// Read back and verify
+	// Read back and verify.
 	currentFile := writer.GetCurrentLogFile()
 	readMessages, err := ReadMessages(currentFile)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestWriteMultipleMessages(t *testing.T) {
 		t.Errorf("Expected %d messages, got %d", len(messages), len(readMessages))
 	}
 
-	// Verify message content
+	// Verify message content.
 	for i, readMsg := range readMessages {
 		originalSeq, _ := messages[i].GetPayload("sequence")
 		readSeq, _ := readMsg.GetPayload("sequence")
@@ -134,7 +134,7 @@ func TestDailyRotation(t *testing.T) {
 	}
 	defer writer.Close()
 
-	// Write a message to the initial file
+	// Write a message to the initial file.
 	msg1 := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg1.SetPayload("day", "today")
 
@@ -143,10 +143,10 @@ func TestDailyRotation(t *testing.T) {
 		t.Fatalf("Failed to write first message: %v", err)
 	}
 
-	// Get initial file after write
+	// Get initial file after write.
 	initialFile := writer.GetCurrentLogFile()
 
-	// Manually rotate to a different date
+	// Manually rotate to a different date.
 	writer.mu.Lock()
 	err = writer.rotate("2025-12-25") // Christmas day
 	writer.mu.Unlock()
@@ -155,11 +155,11 @@ func TestDailyRotation(t *testing.T) {
 		t.Fatalf("Failed to manually rotate: %v", err)
 	}
 
-	// Write another message directly to test rotation behavior
+	// Write another message directly to test rotation behavior.
 	msg2 := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
 	msg2.SetPayload("day", "christmas")
 
-	// Write directly without going through WriteMessage to avoid auto-rotation
+	// Write directly without going through WriteMessage to avoid auto-rotation.
 	writer.mu.Lock()
 	jsonData, err := msg2.ToJSON()
 	if err != nil {
@@ -185,13 +185,13 @@ func TestDailyRotation(t *testing.T) {
 		t.Fatalf("Failed to sync file: %v", err)
 	}
 
-	// Check that file rotated
+	// Check that file rotated.
 	newFile := writer.GetCurrentLogFile()
 	if initialFile == newFile {
 		t.Errorf("Expected file to rotate from %s, but still using same file", initialFile)
 	}
 
-	// Verify original file still exists and has first message
+	// Verify original file still exists and has first message.
 	originalMessages, err := ReadMessages(initialFile)
 	if err != nil {
 		t.Fatalf("Failed to read original file: %v", err)
@@ -206,7 +206,7 @@ func TestDailyRotation(t *testing.T) {
 		t.Errorf("Expected 'today' in original file, got %v", originalDay)
 	}
 
-	// Verify new file has second message
+	// Verify new file has second message.
 	newMessages, err := ReadMessages(newFile)
 	if err != nil {
 		t.Fatalf("Failed to read new file: %v", err)
@@ -225,17 +225,17 @@ func TestDailyRotation(t *testing.T) {
 func TestReadMessages(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a test log file manually
+	// Create a test log file manually.
 	logFile := filepath.Join(tmpDir, "test-events.jsonl")
 
-	// Create test messages
+	// Create test messages.
 	msg1 := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg1.SetPayload("task", "test1")
 
 	msg2 := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
 	msg2.SetPayload("result", "success")
 
-	// Write manually to file
+	// Write manually to file.
 	file, err := os.Create(logFile)
 	if err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
@@ -250,7 +250,7 @@ func TestReadMessages(t *testing.T) {
 	file.WriteString("\n")
 	file.Close()
 
-	// Read back
+	// Read back.
 	messages, err := ReadMessages(logFile)
 	if err != nil {
 		t.Fatalf("Failed to read messages: %v", err)
@@ -260,13 +260,13 @@ func TestReadMessages(t *testing.T) {
 		t.Errorf("Expected 2 messages, got %d", len(messages))
 	}
 
-	// Verify first message
+	// Verify first message.
 	task, exists := messages[0].GetPayload("task")
 	if !exists || task != "test1" {
 		t.Errorf("Expected task 'test1', got %v", task)
 	}
 
-	// Verify second message
+	// Verify second message.
 	result, exists := messages[1].GetPayload("result")
 	if !exists || result != "success" {
 		t.Errorf("Expected result 'success', got %v", result)
@@ -277,7 +277,7 @@ func TestReadEmptyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	logFile := filepath.Join(tmpDir, "empty.jsonl")
 
-	// Create empty file
+	// Create empty file.
 	file, err := os.Create(logFile)
 	if err != nil {
 		t.Fatalf("Failed to create empty file: %v", err)
@@ -297,7 +297,7 @@ func TestReadEmptyFile(t *testing.T) {
 func TestListLogFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create some test log files
+	// Create some test log files.
 	testFiles := []string{
 		"events-2025-01-01.jsonl",
 		"events-2025-01-02.jsonl",
@@ -314,7 +314,7 @@ func TestListLogFiles(t *testing.T) {
 		file.Close()
 	}
 
-	// List log files
+	// List log files.
 	logFiles, err := ListLogFiles(tmpDir)
 	if err != nil {
 		t.Fatalf("Failed to list log files: %v", err)
@@ -325,7 +325,7 @@ func TestListLogFiles(t *testing.T) {
 		t.Errorf("Expected 3 log files, got %d", len(logFiles))
 	}
 
-	// Verify all files match the pattern
+	// Verify all files match the pattern.
 	for _, file := range logFiles {
 		filename := filepath.Base(file)
 		matched, err := filepath.Match("events-*.jsonl", filename)
@@ -346,20 +346,20 @@ func TestWriterClose(t *testing.T) {
 		t.Fatalf("Failed to create writer: %v", err)
 	}
 
-	// Write a message
+	// Write a message.
 	msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "test", "test")
 	err = writer.WriteMessage(msg)
 	if err != nil {
 		t.Fatalf("Failed to write message: %v", err)
 	}
 
-	// Close writer
+	// Close writer.
 	err = writer.Close()
 	if err != nil {
 		t.Fatalf("Failed to close writer: %v", err)
 	}
 
-	// Verify writer is closed
+	// Verify writer is closed.
 	if writer.currentFile != nil {
 		t.Error("Expected current file to be nil after close")
 	}
@@ -380,7 +380,7 @@ func TestConcurrentWrites(t *testing.T) {
 	}
 	defer writer.Close()
 
-	// Write messages concurrently
+	// Write messages concurrently.
 	done := make(chan bool, 10)
 
 	for i := 0; i < 10; i++ {
@@ -388,21 +388,21 @@ func TestConcurrentWrites(t *testing.T) {
 			msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "test", "test")
 			msg.SetPayload("id", id)
 
-			err := writer.WriteMessage(msg)
-			if err != nil {
-				t.Errorf("Failed to write message %d: %v", id, err)
+			writeErr := writer.WriteMessage(msg)
+			if writeErr != nil {
+				t.Errorf("Failed to write message %d: %v", id, writeErr)
 			}
 
 			done <- true
 		}(i)
 	}
 
-	// Wait for all writes to complete
+	// Wait for all writes to complete.
 	for i := 0; i < 10; i++ {
 		<-done
 	}
 
-	// Verify all messages were written
+	// Verify all messages were written.
 	currentFile := writer.GetCurrentLogFile()
 	messages, err := ReadMessages(currentFile)
 	if err != nil {

@@ -41,20 +41,20 @@ func TestAgentMsg_ToJSON_FromJSON(t *testing.T) {
 	original.RetryCount = 1
 	original.ParentMsgID = "parent_123"
 
-	// Test ToJSON
+	// Test ToJSON.
 	jsonData, err := original.ToJSON()
 	if err != nil {
 		t.Fatalf("Failed to convert to JSON: %v", err)
 	}
 
-	// Test FromJSON
+	// Test FromJSON.
 	var restored AgentMsg
 	err = restored.FromJSON(jsonData)
 	if err != nil {
 		t.Fatalf("Failed to restore from JSON: %v", err)
 	}
 
-	// Compare fields
+	// Compare fields.
 	if restored.ID != original.ID {
 		t.Errorf("ID mismatch: expected %s, got %s", original.ID, restored.ID)
 	}
@@ -74,7 +74,7 @@ func TestAgentMsg_ToJSON_FromJSON(t *testing.T) {
 		t.Errorf("ParentMsgID mismatch: expected %s, got %s", original.ParentMsgID, restored.ParentMsgID)
 	}
 
-	// Test payload
+	// Test payload.
 	storyID, exists := restored.GetPayload("story_id")
 	if !exists || storyID != "001" {
 		t.Errorf("Payload story_id mismatch: expected '001', got %v", storyID)
@@ -85,7 +85,7 @@ func TestAgentMsg_ToJSON_FromJSON(t *testing.T) {
 		t.Errorf("Payload content mismatch: expected 'Implement health endpoint', got %v", content)
 	}
 
-	// Test metadata
+	// Test metadata.
 	priority, exists := restored.GetMetadata("priority")
 	if !exists || priority != "high" {
 		t.Errorf("Metadata priority mismatch: expected 'high', got %s", priority)
@@ -135,7 +135,7 @@ func TestFromJSON(t *testing.T) {
 func TestAgentMsg_SetGetPayload(t *testing.T) {
 	msg := NewAgentMsg(MsgTypeSTORY, "test", "test")
 
-	// Test setting and getting payload
+	// Test setting and getting payload.
 	msg.SetPayload("key1", "value1")
 	msg.SetPayload("key2", 42)
 	msg.SetPayload("key3", true)
@@ -155,7 +155,7 @@ func TestAgentMsg_SetGetPayload(t *testing.T) {
 		t.Errorf("Expected payload key3 true, got %v", val3)
 	}
 
-	// Test non-existent key
+	// Test non-existent key.
 	_, exists = msg.GetPayload("nonexistent")
 	if exists {
 		t.Error("Expected non-existent key to return false")
@@ -165,7 +165,7 @@ func TestAgentMsg_SetGetPayload(t *testing.T) {
 func TestAgentMsg_SetGetMetadata(t *testing.T) {
 	msg := NewAgentMsg(MsgTypeSTORY, "test", "test")
 
-	// Test setting and getting metadata
+	// Test setting and getting metadata.
 	msg.SetMetadata("env", "production")
 	msg.SetMetadata("version", "1.0.0")
 
@@ -179,7 +179,7 @@ func TestAgentMsg_SetGetMetadata(t *testing.T) {
 		t.Errorf("Expected metadata version '1.0.0', got %s", version)
 	}
 
-	// Test non-existent key
+	// Test non-existent key.
 	_, exists = msg.GetMetadata("nonexistent")
 	if exists {
 		t.Error("Expected non-existent key to return false")
@@ -195,7 +195,7 @@ func TestAgentMsg_Clone(t *testing.T) {
 
 	clone := original.Clone()
 
-	// Test that clone has same values
+	// Test that clone has same values.
 	if clone.ID != original.ID {
 		t.Errorf("Clone ID mismatch: expected %s, got %s", original.ID, clone.ID)
 	}
@@ -209,19 +209,19 @@ func TestAgentMsg_Clone(t *testing.T) {
 		t.Errorf("Clone ParentMsgID mismatch: expected %s, got %s", original.ParentMsgID, clone.ParentMsgID)
 	}
 
-	// Test payload clone
+	// Test payload clone.
 	val, exists := clone.GetPayload("key")
 	if !exists || val != "value" {
 		t.Errorf("Clone payload mismatch: expected 'value', got %v", val)
 	}
 
-	// Test metadata clone
+	// Test metadata clone.
 	meta, exists := clone.GetMetadata("meta")
 	if !exists || meta != "data" {
 		t.Errorf("Clone metadata mismatch: expected 'data', got %s", meta)
 	}
 
-	// Test that modifying clone doesn't affect original
+	// Test that modifying clone doesn't affect original.
 	clone.SetPayload("key", "modified")
 	originalVal, _ := original.GetPayload("key")
 	if originalVal != "value" {
@@ -314,7 +314,7 @@ func TestAgentMsg_Validate(t *testing.T) {
 }
 
 func TestMsgType_Constants(t *testing.T) {
-	// Test that all message types are defined correctly
+	// Test that all message types are defined correctly.
 	expectedTypes := []MsgType{
 		MsgTypeSTORY,
 		MsgTypeRESULT,
@@ -339,7 +339,7 @@ func TestMsgType_Constants(t *testing.T) {
 }
 
 func TestAgentMsg_JSONRoundTrip(t *testing.T) {
-	// Test all message types
+	// Test all message types.
 	msgTypes := []MsgType{
 		MsgTypeSTORY,
 		MsgTypeRESULT,
@@ -354,30 +354,30 @@ func TestAgentMsg_JSONRoundTrip(t *testing.T) {
 			original.SetPayload("test_key", "test_value")
 			original.SetMetadata("test_meta", "test_meta_value")
 
-			// Convert to JSON
+			// Convert to JSON.
 			jsonData, err := original.ToJSON()
 			if err != nil {
 				t.Fatalf("Failed to convert to JSON: %v", err)
 			}
 
-			// Ensure JSON is valid
+			// Ensure JSON is valid.
 			var jsonCheck map[string]any
 			if err := json.Unmarshal(jsonData, &jsonCheck); err != nil {
 				t.Fatalf("Generated invalid JSON: %v", err)
 			}
 
-			// Convert back from JSON
+			// Convert back from JSON.
 			restored, err := FromJSON(jsonData)
 			if err != nil {
 				t.Fatalf("Failed to restore from JSON: %v", err)
 			}
 
-			// Validate restored message
+			// Validate restored message.
 			if err := restored.Validate(); err != nil {
 				t.Fatalf("Restored message is invalid: %v", err)
 			}
 
-			// Check type preserved
+			// Check type preserved.
 			if restored.Type != msgType {
 				t.Errorf("Message type not preserved: expected %s, got %s", msgType, restored.Type)
 			}
@@ -386,7 +386,7 @@ func TestAgentMsg_JSONRoundTrip(t *testing.T) {
 }
 
 func TestGenerateID(t *testing.T) {
-	// Test that generateID creates non-empty, unique IDs
+	// Test that generateID creates non-empty, unique IDs.
 	id1 := generateID()
 	id2 := generateID()
 
@@ -400,13 +400,13 @@ func TestGenerateID(t *testing.T) {
 		t.Error("generateID returned duplicate IDs")
 	}
 
-	// Test that ID has expected prefix
+	// Test that ID has expected prefix.
 	if !strings.HasPrefix(id1, "msg_") {
 		t.Errorf("Expected ID to start with 'msg_', got %s", id1)
 	}
 }
 
-// TestAutoAction tests the BUDGET_REVIEW command types for inter-agent communication
+// TestAutoAction tests the BUDGET_REVIEW command types for inter-agent communication.
 func TestAutoAction(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -446,16 +446,16 @@ func TestAutoAction(t *testing.T) {
 	}
 }
 
-// TestQuestionReasonBudgetReview tests the BUDGET_REVIEW question reason constant
+// TestQuestionReasonBudgetReview tests the BUDGET_REVIEW question reason constant.
 func TestQuestionReasonBudgetReview(t *testing.T) {
 	if QuestionReasonBudgetReview != "BUDGET_REVIEW" {
 		t.Errorf("Expected QuestionReasonBudgetReview to be 'BUDGET_REVIEW', got %q", QuestionReasonBudgetReview)
 	}
 }
 
-// TestEnumParsing tests the new enum parsing functions
+// TestEnumParsing tests the new enum parsing functions.
 func TestEnumParsing(t *testing.T) {
-	// Test ParseMsgType
+	// Test ParseMsgType.
 	t.Run("ParseMsgType", func(t *testing.T) {
 		tests := []struct {
 			input    string
@@ -487,7 +487,7 @@ func TestEnumParsing(t *testing.T) {
 		}
 	})
 
-	// Test ParseApprovalStatus
+	// Test ParseApprovalStatus.
 	t.Run("ParseApprovalStatus", func(t *testing.T) {
 		tests := []struct {
 			input    string
@@ -518,7 +518,7 @@ func TestEnumParsing(t *testing.T) {
 		}
 	})
 
-	// Test ParseApprovalType
+	// Test ParseApprovalType.
 	t.Run("ParseApprovalType", func(t *testing.T) {
 		tests := []struct {
 			input    string
@@ -551,11 +551,11 @@ func TestEnumParsing(t *testing.T) {
 	})
 }
 
-// TestSafeExtractFromPayload tests the generic enum extraction utility
+// TestSafeExtractFromPayload tests the generic enum extraction utility.
 func TestSafeExtractFromPayload(t *testing.T) {
 	msg := NewAgentMsg(MsgTypeREQUEST, "test", "test")
 
-	// Test successful extraction
+	// Test successful extraction.
 	msg.SetPayload("approval_type", "plan")
 	result, err := SafeExtractFromPayload(msg, "approval_type", ParseApprovalType)
 	if err != nil {
@@ -565,13 +565,13 @@ func TestSafeExtractFromPayload(t *testing.T) {
 		t.Errorf("SafeExtractFromPayload = %q, expected %q", result, ApprovalTypePlan)
 	}
 
-	// Test missing key
+	// Test missing key.
 	_, err = SafeExtractFromPayload(msg, "missing_key", ParseApprovalType)
 	if err == nil {
 		t.Error("SafeExtractFromPayload should fail for missing key")
 	}
 
-	// Test invalid value
+	// Test invalid value.
 	msg.SetPayload("invalid_type", "invalid")
 	_, err = SafeExtractFromPayload(msg, "invalid_type", ParseApprovalType)
 	if err == nil {
@@ -579,9 +579,9 @@ func TestSafeExtractFromPayload(t *testing.T) {
 	}
 }
 
-// TestCorrelationIDGeneration tests the correlation ID generation functions
+// TestCorrelationIDGeneration tests the correlation ID generation functions.
 func TestCorrelationIDGeneration(t *testing.T) {
-	// Test that all generators produce unique, non-empty IDs
+	// Test that all generators produce unique, non-empty IDs.
 	questionID1 := GenerateQuestionID()
 	questionID2 := GenerateQuestionID()
 	approvalID1 := GenerateApprovalID()
@@ -589,7 +589,7 @@ func TestCorrelationIDGeneration(t *testing.T) {
 	correlationID1 := GenerateCorrelationID()
 	correlationID2 := GenerateCorrelationID()
 
-	// Check all IDs are non-empty
+	// Check all IDs are non-empty.
 	ids := []string{questionID1, questionID2, approvalID1, approvalID2, correlationID1, correlationID2}
 	for i, id := range ids {
 		if id == "" {
@@ -597,7 +597,7 @@ func TestCorrelationIDGeneration(t *testing.T) {
 		}
 	}
 
-	// Check all IDs are unique
+	// Check all IDs are unique.
 	seen := make(map[string]bool)
 	for i, id := range ids {
 		if seen[id] {
@@ -606,7 +606,7 @@ func TestCorrelationIDGeneration(t *testing.T) {
 		seen[id] = true
 	}
 
-	// Check ID prefixes
+	// Check ID prefixes.
 	if !strings.HasPrefix(questionID1, "q_") {
 		t.Errorf("Question ID should start with 'q_', got %s", questionID1)
 	}
@@ -618,11 +618,11 @@ func TestCorrelationIDGeneration(t *testing.T) {
 	}
 }
 
-// TestCorrelationHelpers tests the correlation helper methods on AgentMsg
+// TestCorrelationHelpers tests the correlation helper methods on AgentMsg.
 func TestCorrelationHelpers(t *testing.T) {
 	msg := NewAgentMsg(MsgTypeQUESTION, "coder", "architect")
 
-	// Test question correlation
+	// Test question correlation.
 	questionID := GenerateQuestionID()
 	msg.SetQuestionCorrelation(questionID)
 
@@ -642,7 +642,7 @@ func TestCorrelationHelpers(t *testing.T) {
 		t.Errorf("Expected correlation ID to match question ID %s, got %s", questionID, retrievedCorrelationID)
 	}
 
-	// Test approval correlation
+	// Test approval correlation.
 	msg2 := NewAgentMsg(MsgTypeREQUEST, "coder", "architect")
 	approvalID := GenerateApprovalID()
 	msg2.SetApprovalCorrelation(approvalID)
@@ -663,7 +663,7 @@ func TestCorrelationHelpers(t *testing.T) {
 		t.Errorf("Expected correlation ID to match approval ID %s, got %s", approvalID, retrievedCorrelationID2)
 	}
 
-	// Test missing IDs
+	// Test missing IDs.
 	msg3 := NewAgentMsg(MsgTypeSTORY, "architect", "coder")
 	if _, exists := msg3.GetQuestionID(); exists {
 		t.Error("Should not have question ID when none set")

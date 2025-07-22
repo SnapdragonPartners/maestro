@@ -1,3 +1,5 @@
+// Package bootstrap provides project scaffolding and artifact generation for different platform types.
+// It includes Dockerfile generation, dependency management, and platform-specific configuration.
 package bootstrap
 
 import (
@@ -11,14 +13,22 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// ArtifactGenerator generates bootstrap artifacts based on the detected backend
+const (
+	languagePython = "python"
+	languageNode   = "node"
+	languageGo     = "go"
+	versionPython  = "3.11"
+	versionGo      = "1.21"
+)
+
+// ArtifactGenerator generates bootstrap artifacts based on the detected backend.
 type ArtifactGenerator struct {
 	projectRoot string
 	config      *Config
 	logger      *logx.Logger
 }
 
-// NewArtifactGenerator creates a new artifact generator
+// NewArtifactGenerator creates a new artifact generator.
 func NewArtifactGenerator(projectRoot string, config *Config) *ArtifactGenerator {
 	return &ArtifactGenerator{
 		projectRoot: projectRoot,
@@ -27,36 +37,36 @@ func NewArtifactGenerator(projectRoot string, config *Config) *ArtifactGenerator
 	}
 }
 
-// Generate creates bootstrap artifacts for the given backend
+// Generate creates bootstrap artifacts for the given backend.
 func (g *ArtifactGenerator) Generate(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	g.logger.Info("Generating bootstrap artifacts for %s backend", backend.Name())
 
 	var generatedFiles []string
 
-	// Core artifacts (always generated)
+	// Core artifacts (always generated).
 	coreArtifacts, err := g.generateCoreArtifacts(ctx, backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate core artifacts: %w", err)
 	}
 	generatedFiles = append(generatedFiles, coreArtifacts...)
 
-	// Makefile artifacts (unless disabled)
+	// Makefile artifacts (unless disabled).
 	if !g.config.SkipMakefile {
-		makefileArtifacts, err := g.generateMakefileArtifacts(ctx, backend)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate Makefile artifacts: %w", err)
+		makefileArtifacts, makefileErr := g.generateMakefileArtifacts(ctx, backend)
+		if makefileErr != nil {
+			return nil, fmt.Errorf("failed to generate Makefile artifacts: %w", makefileErr)
 		}
 		generatedFiles = append(generatedFiles, makefileArtifacts...)
 	}
 
-	// Backend-specific artifacts
+	// Backend-specific artifacts.
 	backendArtifacts, err := g.generateBackendArtifacts(ctx, backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate backend artifacts: %w", err)
 	}
 	generatedFiles = append(generatedFiles, backendArtifacts...)
 
-	// Additional artifacts (from configuration)
+	// Additional artifacts (from configuration).
 	additionalArtifacts, err := g.generateAdditionalArtifacts(ctx, backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate additional artifacts: %w", err)
@@ -67,47 +77,47 @@ func (g *ArtifactGenerator) Generate(ctx context.Context, backend build.BuildBac
 	return generatedFiles, nil
 }
 
-// generateCoreArtifacts generates core bootstrap artifacts (always created)
+// generateCoreArtifacts generates core bootstrap artifacts (always created).
 func (g *ArtifactGenerator) generateCoreArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
 
-	// Create .maestro directory first
+	// Create .maestro directory first.
 	maestroDir := filepath.Join(g.projectRoot, ".maestro")
 	if err := os.MkdirAll(maestroDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create .maestro directory: %w", err)
 	}
 
-	// Create .maestro/makefiles subdirectory
+	// Create .maestro/makefiles subdirectory.
 	makefilesDir := filepath.Join(maestroDir, "makefiles")
 	if err := os.MkdirAll(makefilesDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create .maestro/makefiles directory: %w", err)
 	}
 
-	// .gitignore
+	// .gitignore.
 	if err := g.generateGitignore(backend); err != nil {
 		return nil, fmt.Errorf("failed to generate .gitignore: %w", err)
 	}
 	files = append(files, ".gitignore")
 
-	// .gitattributes (for union merge strategy)
+	// .gitattributes (for union merge strategy).
 	if err := g.generateGitattributes(); err != nil {
 		return nil, fmt.Errorf("failed to generate .gitattributes: %w", err)
 	}
 	files = append(files, ".gitattributes")
 
-	// .editorconfig
+	// .editorconfig.
 	if err := g.generateEditorconfig(); err != nil {
 		return nil, fmt.Errorf("failed to generate .editorconfig: %w", err)
 	}
 	files = append(files, ".editorconfig")
 
-	// Dockerfile (for Docker sandboxing support)
+	// Dockerfile (for Docker sandboxing support).
 	if err := g.GenerateDockerfile(backend); err != nil {
 		return nil, fmt.Errorf("failed to generate Dockerfile: %w", err)
 	}
 	files = append(files, "Dockerfile")
 
-	// .dockerignore
+	// .dockerignore.
 	if err := g.GenerateDockerignore(backend); err != nil {
 		return nil, fmt.Errorf("failed to generate .dockerignore: %w", err)
 	}
@@ -116,23 +126,23 @@ func (g *ArtifactGenerator) generateCoreArtifacts(ctx context.Context, backend b
 	return files, nil
 }
 
-// generateMakefileArtifacts generates Makefile-related artifacts
+// generateMakefileArtifacts generates Makefile-related artifacts.
 func (g *ArtifactGenerator) generateMakefileArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
 
-	// Root Makefile with include pattern
+	// Root Makefile with include pattern.
 	if err := g.generateRootMakefile(); err != nil {
 		return nil, fmt.Errorf("failed to generate root Makefile: %w", err)
 	}
 	files = append(files, "Makefile")
 
-	// Generate core makefile in .maestro/makefiles/
+	// Generate core makefile in .maestro/makefiles/.
 	if err := g.generateCoreMakefile(); err != nil {
 		return nil, fmt.Errorf("failed to generate core makefile: %w", err)
 	}
 	files = append(files, ".maestro/makefiles/core.mk")
 
-	// Generate platform-specific makefiles based on architect recommendation
+	// Generate platform-specific makefiles based on architect recommendation.
 	platformFiles, err := g.generatePlatformMakefiles(backend)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate platform makefiles: %w", err)
@@ -142,26 +152,26 @@ func (g *ArtifactGenerator) generateMakefileArtifacts(ctx context.Context, backe
 	return files, nil
 }
 
-// generateBackendArtifacts generates backend-specific artifacts
+// generateBackendArtifacts generates backend-specific artifacts.
 func (g *ArtifactGenerator) generateBackendArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
 
 	switch backend.Name() {
-	case "go":
+	case languageGo:
 		goFiles, err := g.generateGoArtifacts()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate Go artifacts: %w", err)
 		}
 		files = append(files, goFiles...)
 
-	case "python":
+	case languagePython:
 		pythonFiles, err := g.generatePythonArtifacts()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate Python artifacts: %w", err)
 		}
 		files = append(files, pythonFiles...)
 
-	case "node":
+	case languageNode:
 		nodeFiles, err := g.generateNodeArtifacts()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate Node.js artifacts: %w", err)
@@ -169,7 +179,7 @@ func (g *ArtifactGenerator) generateBackendArtifacts(ctx context.Context, backen
 		files = append(files, nodeFiles...)
 
 	case "null":
-		// No backend-specific artifacts for null backend
+		// No backend-specific artifacts for null backend.
 		g.logger.Info("No backend-specific artifacts for null backend")
 
 	default:
@@ -179,7 +189,7 @@ func (g *ArtifactGenerator) generateBackendArtifacts(ctx context.Context, backen
 	return files, nil
 }
 
-// generateAdditionalArtifacts generates additional artifacts from configuration
+// generateAdditionalArtifacts generates additional artifacts from configuration.
 func (g *ArtifactGenerator) generateAdditionalArtifacts(ctx context.Context, backend build.BuildBackend) ([]string, error) {
 	var files []string
 
@@ -223,11 +233,11 @@ func (g *ArtifactGenerator) generateAdditionalArtifacts(ctx context.Context, bac
 	return files, nil
 }
 
-// generateGitignore generates a .gitignore file appropriate for the backend
+// generateGitignore generates a .gitignore file appropriate for the backend.
 func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error {
 	var content strings.Builder
 
-	// Common ignores
+	// Common ignores.
 	content.WriteString("# Generated by Claude Code Bootstrap\n")
 	content.WriteString("# OS-specific files\n")
 	content.WriteString(".DS_Store\n")
@@ -247,9 +257,9 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 	content.WriteString("*.log\n")
 	content.WriteString("\n")
 
-	// Backend-specific ignores
+	// Backend-specific ignores.
 	switch backend.Name() {
-	case "go":
+	case languageGo:
 		content.WriteString("# Go\n")
 		content.WriteString("*.exe\n")
 		content.WriteString("*.exe~\n")
@@ -260,7 +270,7 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 		content.WriteString("*.out\n")
 		content.WriteString("go.work\n")
 
-	case "python":
+	case languagePython:
 		content.WriteString("# Python\n")
 		content.WriteString("__pycache__/\n")
 		content.WriteString("*.py[cod]\n")
@@ -291,7 +301,7 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 		content.WriteString("env.bak/\n")
 		content.WriteString("venv.bak/\n")
 
-	case "node":
+	case languageNode:
 		content.WriteString("# Node.js\n")
 		content.WriteString("node_modules/\n")
 		content.WriteString("npm-debug.log*\n")
@@ -343,7 +353,7 @@ func (g *ArtifactGenerator) generateGitignore(backend build.BuildBackend) error 
 	return g.writeFile(".gitignore", content.String())
 }
 
-// generateGitattributes generates .gitattributes for union merge strategy
+// generateGitattributes generates .gitattributes for union merge strategy.
 func (g *ArtifactGenerator) generateGitattributes() error {
 	content := `# Generated by Claude Code Bootstrap
 # Union merge strategy for build files to prevent conflicts
@@ -354,7 +364,7 @@ agent.mk merge=union
 	return g.writeFile(".gitattributes", content)
 }
 
-// generateEditorconfig generates .editorconfig for consistent formatting
+// generateEditorconfig generates .editorconfig for consistent formatting.
 func (g *ArtifactGenerator) generateEditorconfig() error {
 	content := `# Generated by Claude Code Bootstrap
 root = true
@@ -386,7 +396,7 @@ indent_style = tab
 	return g.writeFile(".editorconfig", content)
 }
 
-// generateRootMakefile generates the root Makefile with include pattern
+// generateRootMakefile generates the root Makefile with include pattern.
 func (g *ArtifactGenerator) generateRootMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # This Makefile uses the include pattern to prevent merge conflicts
@@ -443,7 +453,7 @@ help:
 	return g.writeFile("Makefile", content)
 }
 
-// generateCoreMakefile generates the core makefile with common targets
+// generateCoreMakefile generates the core makefile with common targets.
 func (g *ArtifactGenerator) generateCoreMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # Core makefile with common targets and utilities
@@ -498,28 +508,28 @@ help:
 	return g.writeFile(".maestro/makefiles/core.mk", content)
 }
 
-// generatePlatformMakefiles generates platform-specific makefiles based on architect recommendation
+// generatePlatformMakefiles generates platform-specific makefiles based on architect recommendation.
 func (g *ArtifactGenerator) generatePlatformMakefiles(backend build.BuildBackend) ([]string, error) {
 	var files []string
 
-	// Get platforms from architect recommendation
+	// Get platforms from architect recommendation.
 	platforms := g.getPlatformsFromRecommendation(backend)
 
 	for _, platform := range platforms {
 		switch platform {
-		case "go":
+		case languageGo:
 			if err := g.generateGoMakefile(); err != nil {
 				return nil, fmt.Errorf("failed to generate Go makefile: %w", err)
 			}
 			files = append(files, ".maestro/makefiles/go.mk")
 
-		case "node":
+		case languageNode:
 			if err := g.generateNodeMakefile(); err != nil {
 				return nil, fmt.Errorf("failed to generate Node.js makefile: %w", err)
 			}
 			files = append(files, ".maestro/makefiles/node.mk")
 
-		case "python":
+		case languagePython:
 			if err := g.generatePythonMakefile(); err != nil {
 				return nil, fmt.Errorf("failed to generate Python makefile: %w", err)
 			}
@@ -545,9 +555,9 @@ func (g *ArtifactGenerator) generatePlatformMakefiles(backend build.BuildBackend
 	return files, nil
 }
 
-// getPlatformsFromRecommendation extracts platforms from architect recommendation
+// getPlatformsFromRecommendation extracts platforms from architect recommendation.
 func (g *ArtifactGenerator) getPlatformsFromRecommendation(backend build.BuildBackend) []string {
-	// If we have architect recommendation, use it
+	// If we have architect recommendation, use it.
 	if g.config.ArchitectRecommendation != nil {
 		if g.config.ArchitectRecommendation.MultiStack {
 			return g.config.ArchitectRecommendation.Platforms
@@ -555,11 +565,11 @@ func (g *ArtifactGenerator) getPlatformsFromRecommendation(backend build.BuildBa
 		return []string{g.config.ArchitectRecommendation.Platform}
 	}
 
-	// Fallback to backend name
+	// Fallback to backend name.
 	return []string{backend.Name()}
 }
 
-// generateGoMakefile generates Go-specific makefile
+// generateGoMakefile generates Go-specific makefile.
 func (g *ArtifactGenerator) generateGoMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # Go-specific build targets
@@ -626,7 +636,7 @@ go-help:
 	return g.writeFile(".maestro/makefiles/go.mk", content)
 }
 
-// generateNodeMakefile generates Node.js-specific makefile
+// generateNodeMakefile generates Node.js-specific makefile.
 func (g *ArtifactGenerator) generateNodeMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # Node.js-specific build targets
@@ -683,7 +693,7 @@ node-help:
 	return g.writeFile(".maestro/makefiles/node.mk", content)
 }
 
-// generatePythonMakefile generates Python-specific makefile
+// generatePythonMakefile generates Python-specific makefile.
 func (g *ArtifactGenerator) generatePythonMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # Python-specific build targets
@@ -741,7 +751,7 @@ python-help:
 	return g.writeFile(".maestro/makefiles/python.mk", content)
 }
 
-// generateReactMakefile generates React-specific makefile
+// generateReactMakefile generates React-specific makefile.
 func (g *ArtifactGenerator) generateReactMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # React-specific build targets
@@ -792,7 +802,7 @@ react-help:
 	return g.writeFile(".maestro/makefiles/react.mk", content)
 }
 
-// generateDockerMakefile generates Docker-specific makefile
+// generateDockerMakefile generates Docker-specific makefile.
 func (g *ArtifactGenerator) generateDockerMakefile() error {
 	content := `# Generated by Claude Code Bootstrap
 # Docker-specific build targets
@@ -842,11 +852,11 @@ docker-help:
 	return g.writeFile(".maestro/makefiles/docker.mk", content)
 }
 
-// Backend-specific artifact generators
+// Backend-specific artifact generators.
 func (g *ArtifactGenerator) generateGoArtifacts() ([]string, error) {
 	var files []string
 
-	// golangci-lint.yaml
+	// golangci-lint.yaml.
 	if err := g.generateGolangciLintConfig(); err != nil {
 		return nil, err
 	}
@@ -858,7 +868,7 @@ func (g *ArtifactGenerator) generateGoArtifacts() ([]string, error) {
 func (g *ArtifactGenerator) generatePythonArtifacts() ([]string, error) {
 	var files []string
 
-	// pyproject.toml (if it doesn't exist)
+	// pyproject.toml (if it doesn't exist).
 	if _, err := os.Stat(filepath.Join(g.projectRoot, "pyproject.toml")); os.IsNotExist(err) {
 		if err := g.generatePyprojectToml(); err != nil {
 			return nil, err
@@ -866,7 +876,7 @@ func (g *ArtifactGenerator) generatePythonArtifacts() ([]string, error) {
 		files = append(files, "pyproject.toml")
 	}
 
-	// ruff.toml
+	// ruff.toml.
 	if err := g.generateRuffConfig(); err != nil {
 		return nil, err
 	}
@@ -878,13 +888,13 @@ func (g *ArtifactGenerator) generatePythonArtifacts() ([]string, error) {
 func (g *ArtifactGenerator) generateNodeArtifacts() ([]string, error) {
 	var files []string
 
-	// .eslintrc.js
+	// .eslintrc.js.
 	if err := g.generateEslintConfig(); err != nil {
 		return nil, err
 	}
 	files = append(files, ".eslintrc.js")
 
-	// .nvmrc
+	// .nvmrc.
 	if err := g.generateNvmrc(); err != nil {
 		return nil, err
 	}
@@ -893,16 +903,16 @@ func (g *ArtifactGenerator) generateNodeArtifacts() ([]string, error) {
 	return files, nil
 }
 
-// Helper method to write files
+// Helper method to write files.
 func (g *ArtifactGenerator) writeFile(filename, content string) error {
 	fullPath := filepath.Join(g.projectRoot, filename)
 
-	// Create directory if it doesn't exist
+	// Create directory if it doesn't exist.
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory for %s: %w", filename, err)
 	}
 
-	// Write file
+	// Write file.
 	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write %s: %w", filename, err)
 	}
@@ -911,7 +921,7 @@ func (g *ArtifactGenerator) writeFile(filename, content string) error {
 	return nil
 }
 
-// Additional artifact generators (stubs for now)
+// Additional artifact generators (stubs for now).
 func (g *ArtifactGenerator) generateGolangciLintConfig() error {
 	content := `# Generated by Claude Code Bootstrap
 run:
@@ -1118,16 +1128,17 @@ SOFTWARE.
 	return g.writeFile("LICENSE", content)
 }
 
+// GenerateDockerfile creates a Dockerfile based on the build backend.
 func (g *ArtifactGenerator) GenerateDockerfile(backend build.BuildBackend) error {
 	var content strings.Builder
 
 	switch backend.Name() {
-	case "go":
-		// Detect Go version
+	case languageGo:
+		// Detect Go version.
 		goVersion, err := g.detectGoVersion()
 		if err != nil {
 			g.logger.Warn("Failed to detect Go version, using default: %v", err)
-			goVersion = "1.21"
+			goVersion = versionGo
 		}
 
 		content.WriteString(fmt.Sprintf(`# Generated by Claude Code Bootstrap
@@ -1185,12 +1196,12 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 CMD ["./main"]
 `, goVersion))
 
-	case "python":
-		// Detect Python version
+	case languagePython:
+		// Detect Python version.
 		pythonVersion, err := g.detectPythonVersion()
 		if err != nil {
 			g.logger.Warn("Failed to detect Python version, using default: %v", err)
-			pythonVersion = "3.11"
+			pythonVersion = versionPython
 		}
 
 		content.WriteString(fmt.Sprintf(`# Generated by Claude Code Bootstrap
@@ -1239,8 +1250,8 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 CMD ["python", "main.py"]
 `, pythonVersion))
 
-	case "node":
-		// Detect Node version
+	case languageNode:
+		// Detect Node version.
 		nodeVersion, err := g.detectNodeVersion()
 		if err != nil {
 			g.logger.Warn("Failed to detect Node version, using default: %v", err)
@@ -1325,7 +1336,7 @@ func (g *ArtifactGenerator) generateCIWorkflow(backend build.BuildBackend) error
 	var content string
 
 	switch backend.Name() {
-	case "go":
+	case languageGo:
 		content = `# Generated by Claude Code Bootstrap
 name: CI
 
@@ -1356,7 +1367,7 @@ jobs:
     - name: Lint
       run: make lint
 `
-	case "python":
+	case languagePython:
 		content = `# Generated by Claude Code Bootstrap
 name: CI
 
@@ -1390,7 +1401,7 @@ jobs:
     - name: Lint
       run: make lint
 `
-	case "node":
+	case languageNode:
 		content = `# Generated by Claude Code Bootstrap
 name: CI
 
@@ -1450,7 +1461,7 @@ jobs:
 `
 	}
 
-	// Create .github/workflows directory
+	// Create .github/workflows directory.
 	workflowDir := filepath.Join(g.projectRoot, ".github", "workflows")
 	if err := os.MkdirAll(workflowDir, 0755); err != nil {
 		return fmt.Errorf("failed to create .github/workflows directory: %w", err)

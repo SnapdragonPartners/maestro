@@ -7,7 +7,7 @@ import (
 func TestMCPParser_ParseToolCalls(t *testing.T) {
 	parser := NewMCPParser()
 
-	// Test empty text
+	// Test empty text.
 	calls, err := parser.ParseToolCalls("")
 	if err != nil {
 		t.Errorf("Expected no error parsing empty text, got %v", err)
@@ -16,7 +16,7 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 		t.Errorf("Expected 0 tool calls, got %d", len(calls))
 	}
 
-	// Test text with no tool calls
+	// Test text with no tool calls.
 	calls, err = parser.ParseToolCalls("This is regular text with no tools")
 	if err != nil {
 		t.Errorf("Expected no error parsing regular text, got %v", err)
@@ -25,7 +25,7 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 		t.Errorf("Expected 0 tool calls, got %d", len(calls))
 	}
 
-	// Test single tool call
+	// Test single tool call.
 	text := `<tool name="shell">ls -la</tool>`
 	calls, err = parser.ParseToolCalls(text)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 		t.Errorf("Expected raw args 'ls -la', got '%s'", cmdStr)
 	}
 
-	// Test multiple tool calls
+	// Test multiple tool calls.
 	text = `Some text <tool name="shell">echo hello</tool> more text <tool name="other">test args</tool>`
 	calls, err = parser.ParseToolCalls(text)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 		t.Errorf("Expected second tool name 'other', got '%s'", calls[1].Name)
 	}
 
-	// Test tool call with whitespace
+	// Test tool call with whitespace.
 	text = `<tool name="shell">  
 		echo "hello world"  
 	</tool>`
@@ -76,7 +76,7 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 		t.Errorf("Expected 1 tool call, got %d", len(calls))
 	}
 
-	// The raw args should be trimmed
+	// The raw args should be trimmed.
 	if calls[0].Args["cmd"] == "" {
 		t.Error("Expected non-empty raw args after trimming")
 	}
@@ -85,17 +85,17 @@ func TestMCPParser_ParseToolCalls(t *testing.T) {
 func TestMCPParser_HasToolCalls(t *testing.T) {
 	parser := NewMCPParser()
 
-	// Test text without tool calls
+	// Test text without tool calls.
 	if parser.HasToolCalls("Regular text") {
 		t.Error("Expected HasToolCalls to return false for regular text")
 	}
 
-	// Test text with tool calls
+	// Test text with tool calls.
 	if !parser.HasToolCalls(`<tool name="shell">ls</tool>`) {
 		t.Error("Expected HasToolCalls to return true for text with tool call")
 	}
 
-	// Test mixed text
+	// Test mixed text.
 	if !parser.HasToolCalls(`Some text <tool name="test">args</tool> more text`) {
 		t.Error("Expected HasToolCalls to return true for mixed text with tool call")
 	}
@@ -104,19 +104,19 @@ func TestMCPParser_HasToolCalls(t *testing.T) {
 func TestMCPParser_ExtractToolNames(t *testing.T) {
 	parser := NewMCPParser()
 
-	// Test empty text
+	// Test empty text.
 	names := parser.ExtractToolNames("")
 	if len(names) != 0 {
 		t.Errorf("Expected 0 tool names, got %d", len(names))
 	}
 
-	// Test text without tools
+	// Test text without tools.
 	names = parser.ExtractToolNames("Regular text")
 	if len(names) != 0 {
 		t.Errorf("Expected 0 tool names, got %d", len(names))
 	}
 
-	// Test single tool
+	// Test single tool.
 	names = parser.ExtractToolNames(`<tool name="shell">ls</tool>`)
 	if len(names) != 1 {
 		t.Errorf("Expected 1 tool name, got %d", len(names))
@@ -125,7 +125,7 @@ func TestMCPParser_ExtractToolNames(t *testing.T) {
 		t.Errorf("Expected tool name 'shell', got '%s'", names[0])
 	}
 
-	// Test multiple tools
+	// Test multiple tools.
 	names = parser.ExtractToolNames(`<tool name="shell">ls</tool> text <tool name="other">args</tool>`)
 	if len(names) != 2 {
 		t.Errorf("Expected 2 tool names, got %d", len(names))
@@ -141,7 +141,7 @@ func TestMCPParser_ExtractToolNames(t *testing.T) {
 func TestGlobalParserFunctions(t *testing.T) {
 	text := `<tool name="shell">echo test</tool>`
 
-	// Test global ParseToolCalls
+	// Test global ParseToolCalls.
 	calls, err := ParseToolCalls(text)
 	if err != nil {
 		t.Errorf("Expected no error with global ParseToolCalls, got %v", err)
@@ -150,12 +150,12 @@ func TestGlobalParserFunctions(t *testing.T) {
 		t.Errorf("Expected 1 tool call, got %d", len(calls))
 	}
 
-	// Test global HasToolCalls
+	// Test global HasToolCalls.
 	if !HasToolCalls(text) {
 		t.Error("Expected global HasToolCalls to return true")
 	}
 
-	// Test global ExtractToolNames
+	// Test global ExtractToolNames.
 	names := ExtractToolNames(text)
 	if len(names) != 1 {
 		t.Errorf("Expected 1 tool name, got %d", len(names))

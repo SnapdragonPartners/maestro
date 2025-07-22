@@ -9,17 +9,17 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// Mock implementations are defined in escalation_timeout_test.go
+// Mock implementations are defined in escalation_timeout_test.go.
 
 func TestArchitectDriverBasics(t *testing.T) {
-	// Create a driver with all required parameters
+	// Create a driver with all required parameters.
 	stateStore, _ := state.NewStore("test_data")
 	mockConfig := &config.ModelCfg{}
 	mockLLM := &mockLLMClient{}
 	mockOrchestratorConfig := &config.Config{}
 	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "test_work", "test_stories", mockOrchestratorConfig)
 
-	// Initialize the driver
+	// Initialize the driver.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -30,14 +30,14 @@ func TestArchitectDriverBasics(t *testing.T) {
 	defer driver.Shutdown(ctx)
 
 	t.Run("Driver initialized successfully", func(t *testing.T) {
-		// Test that driver initializes without error
+		// Test that driver initializes without error.
 		if driver == nil {
 			t.Error("Expected driver to be non-nil")
 		}
 	})
 
 	t.Run("Driver has valid ID", func(t *testing.T) {
-		// Test that driver has the expected ID
+		// Test that driver has the expected ID.
 		expectedID := "test-architect"
 		if driver.architectID != expectedID {
 			t.Errorf("Expected architect ID %s, got %s", expectedID, driver.architectID)
@@ -46,7 +46,7 @@ func TestArchitectDriverBasics(t *testing.T) {
 }
 
 func TestArchitectDriverCreation(t *testing.T) {
-	// Test creating multiple drivers
+	// Test creating multiple drivers.
 	stateStore, _ := state.NewStore("test_data")
 	mockConfig := &config.ModelCfg{}
 	mockLLM := &mockLLMClient{}

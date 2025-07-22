@@ -1,3 +1,4 @@
+// Package eventlog provides structured logging and event tracking for the orchestrator system.
 package eventlog
 
 import (
@@ -10,6 +11,7 @@ import (
 	"orchestrator/pkg/proto"
 )
 
+// Writer handles structured logging of agent messages to daily rotated JSON log files.
 type Writer struct {
 	logDir       string
 	currentFile  *os.File
@@ -18,8 +20,9 @@ type Writer struct {
 	rotationHour int // Hour of day to rotate (0-23)
 }
 
+// NewWriter creates a new event log writer with daily rotation in the specified directory.
 func NewWriter(logDir string, rotationHours int) (*Writer, error) {
-	// Create logs directory if it doesn't exist
+	// Create logs directory if it doesn't exist.
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
@@ -34,7 +37,7 @@ func NewWriter(logDir string, rotationHours int) (*Writer, error) {
 		rotationHour: rotationHours,
 	}
 
-	// Initialize with current log file
+	// Initialize with current log file.
 	if err := writer.rotateIfNeeded(); err != nil {
 		return nil, fmt.Errorf("failed to initialize log file: %w", err)
 	}
@@ -42,32 +45,33 @@ func NewWriter(logDir string, rotationHours int) (*Writer, error) {
 	return writer, nil
 }
 
+// WriteMessage writes an agent message to the current log file with automatic rotation.
 func (w *Writer) WriteMessage(msg *proto.AgentMsg) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Check if we need to rotate
+	// Check if we need to rotate.
 	if err := w.rotateIfNeeded(); err != nil {
 		return fmt.Errorf("failed to rotate log file: %w", err)
 	}
 
-	// Convert message to JSON
+	// Convert message to JSON.
 	jsonData, err := msg.ToJSON()
 	if err != nil {
 		return fmt.Errorf("failed to serialize message: %w", err)
 	}
 
-	// Write JSON line
+	// Write JSON line.
 	if _, err := w.currentFile.Write(jsonData); err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
-	// Add newline for JSONL format
+	// Add newline for JSONL format.
 	if _, err := w.currentFile.WriteString("\n"); err != nil {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
 
-	// Ensure data is written to disk
+	// Ensure data is written to disk.
 	if err := w.currentFile.Sync(); err != nil {
 		return fmt.Errorf("failed to sync file: %w", err)
 	}
@@ -88,14 +92,14 @@ func (w *Writer) rotateIfNeeded() error {
 }
 
 func (w *Writer) rotate(newDate string) error {
-	// Close current file if open
+	// Close current file if open.
 	if w.currentFile != nil {
 		if err := w.currentFile.Close(); err != nil {
 			return fmt.Errorf("failed to close current log file: %w", err)
 		}
 	}
 
-	// Create new log file
+	// Create new log file.
 	filename := fmt.Sprintf("events-%s.jsonl", newDate)
 	filepath := filepath.Join(w.logDir, filename)
 
@@ -110,6 +114,7 @@ func (w *Writer) rotate(newDate string) error {
 	return nil
 }
 
+// Close closes the current log file and cleans up resources.
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -117,12 +122,15 @@ func (w *Writer) Close() error {
 	if w.currentFile != nil {
 		err := w.currentFile.Close()
 		w.currentFile = nil
-		return err
+		if err != nil {
+			return fmt.Errorf("failed to close event log file: %w", err)
+		}
 	}
 
 	return nil
 }
 
+// GetCurrentLogFile returns the path of the currently active log file.
 func (w *Writer) GetCurrentLogFile() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -134,7 +142,7 @@ func (w *Writer) GetCurrentLogFile() string {
 	return filepath.Join(w.logDir, fmt.Sprintf("events-%s.jsonl", w.currentDate))
 }
 
-// ReadMessages reads and parses messages from a specific log file
+// ReadMessages reads and parses messages from a specific log file.
 func ReadMessages(logFilePath string) ([]*proto.AgentMsg, error) {
 	data, err := os.ReadFile(logFilePath)
 	if err != nil {
@@ -145,7 +153,7 @@ func ReadMessages(logFilePath string) ([]*proto.AgentMsg, error) {
 		return []*proto.AgentMsg{}, nil
 	}
 
-	// Split by newlines to get individual JSON records
+	// Split by newlines to get individual JSON records.
 	lines := []byte{}
 	var messages []*proto.AgentMsg
 
@@ -164,7 +172,7 @@ func ReadMessages(logFilePath string) ([]*proto.AgentMsg, error) {
 		}
 	}
 
-	// Handle last line if no trailing newline
+	// Handle last line if no trailing newline.
 	if len(lines) > 0 {
 		msg, err := proto.FromJSON(lines)
 		if err != nil {
@@ -176,7 +184,7 @@ func ReadMessages(logFilePath string) ([]*proto.AgentMsg, error) {
 	return messages, nil
 }
 
-// ListLogFiles returns all event log files in the log directory
+// ListLogFiles returns all event log files in the log directory.
 func ListLogFiles(logDir string) ([]string, error) {
 	files, err := filepath.Glob(filepath.Join(logDir, "events-*.jsonl"))
 	if err != nil {

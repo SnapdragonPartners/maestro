@@ -15,14 +15,14 @@ func TestNewRenderer(t *testing.T) {
 		t.Fatal("Expected non-nil renderer")
 	}
 
-	// Check that all expected templates are loaded
+	// Check that all expected templates are loaded.
 	expectedTemplates := []StateTemplate{
-		// Coding agent templates
+		// Coding agent templates.
 		PlanningTemplate,
 		CodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
-		// Architect agent templates
+		// Architect agent templates.
 		SpecAnalysisTemplate,
 		StoryGenerationTemplate,
 		TechnicalQATemplate,
@@ -57,7 +57,7 @@ func TestRenderPlanningTemplate(t *testing.T) {
 		t.Fatalf("Failed to render planning template: %v", err)
 	}
 
-	// Verify all placeholders were replaced
+	// Verify all placeholders were replaced.
 	if strings.Contains(result, "{{.TaskContent}}") {
 		t.Error("Template placeholder {{.TaskContent}} was not replaced")
 	}
@@ -65,7 +65,7 @@ func TestRenderPlanningTemplate(t *testing.T) {
 		t.Error("Template placeholder {{.Context}} was not replaced")
 	}
 
-	// Verify content insertion
+	// Verify content insertion.
 	if !strings.Contains(result, data.TaskContent) {
 		t.Error("Template should contain task content")
 	}
@@ -73,7 +73,7 @@ func TestRenderPlanningTemplate(t *testing.T) {
 		t.Error("Template should contain context")
 	}
 
-	// Verify template contains MCP tools guidance
+	// Verify template contains MCP tools guidance.
 	if !strings.Contains(result, "MCP tools") {
 		t.Error("Template should mention MCP tools")
 	}
@@ -99,7 +99,7 @@ func TestRenderCodingTemplate(t *testing.T) {
 		t.Fatalf("Failed to render coding template: %v", err)
 	}
 
-	// Verify all placeholders were replaced
+	// Verify all placeholders were replaced.
 	if strings.Contains(result, "{{.Plan}}") {
 		t.Error("Template placeholder {{.Plan}} was not replaced")
 	}
@@ -107,7 +107,7 @@ func TestRenderCodingTemplate(t *testing.T) {
 		t.Error("Template placeholder {{.TaskContent}} was not replaced")
 	}
 
-	// Verify content insertion
+	// Verify content insertion.
 	if !strings.Contains(result, data.Plan) {
 		t.Error("Template should contain plan content")
 	}
@@ -133,7 +133,7 @@ func TestRenderApprovalTemplate(t *testing.T) {
 		t.Fatalf("Failed to render approval template: %v", err)
 	}
 
-	// Verify content insertion
+	// Verify content insertion.
 	if !strings.Contains(result, data.Implementation) {
 		t.Error("Template should contain implementation content")
 	}
@@ -163,7 +163,7 @@ func TestRenderArchitectTemplates(t *testing.T) {
 			t.Errorf("Failed to render architect template %s: %v", templateName, err)
 		}
 
-		// Basic verification that template was processed
+		// Basic verification that template was processed.
 		if strings.Contains(result, "{{.TaskContent}}") {
 			t.Errorf("Template %s still contains unprocessed placeholder", templateName)
 		}
@@ -176,7 +176,7 @@ func TestRenderWithCompleteData(t *testing.T) {
 		t.Fatalf("Failed to create renderer: %v", err)
 	}
 
-	// Test with comprehensive data
+	// Test with comprehensive data.
 	data := &TemplateData{
 		TaskContent:    "Create a comprehensive REST API",
 		Context:        "Go microservice with PostgreSQL",
@@ -190,7 +190,7 @@ func TestRenderWithCompleteData(t *testing.T) {
 		},
 	}
 
-	// Test each template can handle complete data
+	// Test each template can handle complete data.
 	templates := []StateTemplate{
 		PlanningTemplate,
 		CodingTemplate,
@@ -204,7 +204,7 @@ func TestRenderWithCompleteData(t *testing.T) {
 			t.Errorf("Template %s failed with complete data: %v", templateName, err)
 		}
 
-		// Verify no unprocessed placeholders remain
+		// Verify no unprocessed placeholders remain.
 		if strings.Contains(result, "{{.") {
 			t.Errorf("Template %s contains unprocessed placeholders", templateName)
 		}

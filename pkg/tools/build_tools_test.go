@@ -7,17 +7,18 @@ import (
 	"testing"
 
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/utils"
 )
 
 func TestBuildTools(t *testing.T) {
-	// Create temporary directory for testing
+	// Create temporary directory for testing.
 	tempDir, err := os.MkdirTemp("", "build-tools-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create minimal Go project
+	// Create minimal Go project.
 	goMod := `module test-project
 go 1.21
 `
@@ -34,20 +35,20 @@ func main() {
 		t.Fatalf("Failed to create main.go: %v", err)
 	}
 
-	// Create build service
+	// Create build service.
 	buildService := build.NewBuildService()
 
-	// Test BackendInfoTool
+	// Test BackendInfoTool.
 	t.Run("BackendInfoTool", func(t *testing.T) {
 		tool := NewBackendInfoTool(buildService)
 
-		// Test tool definition
+		// Test tool definition.
 		def := tool.Definition()
 		if def.Name != "backend_info" {
 			t.Errorf("Expected name 'backend_info', got '%s'", def.Name)
 		}
 
-		// Test execution
+		// Test execution.
 		args := map[string]any{
 			"cwd": tempDir,
 		}
@@ -57,31 +58,39 @@ func main() {
 			t.Errorf("Tool execution failed: %v", err)
 		}
 
-		resultMap, ok := result.(map[string]any)
-		if !ok {
-			t.Error("Expected result to be map[string]any")
+		resultMap, err := utils.AssertMapStringAny(result)
+		if err != nil {
+			t.Errorf("Expected result to be map[string]any: %v", err)
 		}
 
-		if !resultMap["success"].(bool) {
+		success, err := utils.GetMapField[bool](resultMap, "success")
+		if err != nil {
+			t.Errorf("Expected success field: %v", err)
+		}
+		if !success {
 			t.Error("Expected success=true")
 		}
 
-		if resultMap["backend"].(string) != "go" {
-			t.Errorf("Expected backend 'go', got '%s'", resultMap["backend"])
+		backend, err := utils.GetMapField[string](resultMap, "backend")
+		if err != nil {
+			t.Errorf("Expected backend field: %v", err)
+		}
+		if backend != "go" {
+			t.Errorf("Expected backend 'go', got '%s'", backend)
 		}
 	})
 
-	// Test BuildTool
+	// Test BuildTool.
 	t.Run("BuildTool", func(t *testing.T) {
 		tool := NewBuildTool(buildService)
 
-		// Test tool definition
+		// Test tool definition.
 		def := tool.Definition()
 		if def.Name != "build" {
 			t.Errorf("Expected name 'build', got '%s'", def.Name)
 		}
 
-		// Test execution
+		// Test execution.
 		args := map[string]any{
 			"cwd":     tempDir,
 			"timeout": 30.0,
@@ -97,30 +106,42 @@ func main() {
 			t.Error("Expected result to be map[string]any")
 		}
 
-		if !resultMap["success"].(bool) {
-			t.Errorf("Expected success=true, got error: %v", resultMap["error"])
+		if success, err := utils.GetMapField[bool](resultMap, "success"); err != nil || !success {
+			if err != nil {
+				t.Errorf("Expected success field: %v", err)
+			} else {
+				t.Errorf("Expected success=true, got error: %v", resultMap["error"])
+			}
 		}
 
-		if resultMap["backend"].(string) != "go" {
-			t.Errorf("Expected backend 'go', got '%s'", resultMap["backend"])
+		if backend, err := utils.GetMapField[string](resultMap, "backend"); err != nil || backend != "go" {
+			if err != nil {
+				t.Errorf("Expected backend field: %v", err)
+			} else {
+				t.Errorf("Expected backend 'go', got '%s'", backend)
+			}
 		}
 
-		if resultMap["output"].(string) == "" {
-			t.Error("Expected non-empty output")
+		if output, err := utils.GetMapField[string](resultMap, "output"); err != nil || output == "" {
+			if err != nil {
+				t.Errorf("Expected output field: %v", err)
+			} else {
+				t.Error("Expected non-empty output")
+			}
 		}
 	})
 
-	// Test TestTool
+	// Test TestTool.
 	t.Run("TestTool", func(t *testing.T) {
 		tool := NewTestTool(buildService)
 
-		// Test tool definition
+		// Test tool definition.
 		def := tool.Definition()
 		if def.Name != "test" {
 			t.Errorf("Expected name 'test', got '%s'", def.Name)
 		}
 
-		// Test execution
+		// Test execution.
 		args := map[string]any{
 			"cwd":     tempDir,
 			"timeout": 30.0,
@@ -136,27 +157,35 @@ func main() {
 			t.Error("Expected result to be map[string]any")
 		}
 
-		// Tests might pass or fail, but tool execution should succeed
-		if resultMap["backend"].(string) != "go" {
-			t.Errorf("Expected backend 'go', got '%s'", resultMap["backend"])
+		// Tests might pass or fail, but tool execution should succeed.
+		if backend, err := utils.GetMapField[string](resultMap, "backend"); err != nil || backend != "go" {
+			if err != nil {
+				t.Errorf("Expected backend field: %v", err)
+			} else {
+				t.Errorf("Expected backend 'go', got '%s'", backend)
+			}
 		}
 
-		if resultMap["output"].(string) == "" {
-			t.Error("Expected non-empty output")
+		if output, err := utils.GetMapField[string](resultMap, "output"); err != nil || output == "" {
+			if err != nil {
+				t.Errorf("Expected output field: %v", err)
+			} else {
+				t.Error("Expected non-empty output")
+			}
 		}
 	})
 
-	// Test LintTool
+	// Test LintTool.
 	t.Run("LintTool", func(t *testing.T) {
 		tool := NewLintTool(buildService)
 
-		// Test tool definition
+		// Test tool definition.
 		def := tool.Definition()
 		if def.Name != "lint" {
 			t.Errorf("Expected name 'lint', got '%s'", def.Name)
 		}
 
-		// Test execution
+		// Test execution.
 		args := map[string]any{
 			"cwd":     tempDir,
 			"timeout": 30.0,
@@ -172,21 +201,29 @@ func main() {
 			t.Error("Expected result to be map[string]any")
 		}
 
-		// Lint might pass or fail, but tool execution should succeed
-		if resultMap["backend"].(string) != "go" {
-			t.Errorf("Expected backend 'go', got '%s'", resultMap["backend"])
+		// Lint might pass or fail, but tool execution should succeed.
+		if backend, err := utils.GetMapField[string](resultMap, "backend"); err != nil || backend != "go" {
+			if err != nil {
+				t.Errorf("Expected backend field: %v", err)
+			} else {
+				t.Errorf("Expected backend 'go', got '%s'", backend)
+			}
 		}
 
-		if resultMap["output"].(string) == "" {
-			t.Error("Expected non-empty output")
+		if output, err := utils.GetMapField[string](resultMap, "output"); err != nil || output == "" {
+			if err != nil {
+				t.Errorf("Expected output field: %v", err)
+			} else {
+				t.Error("Expected non-empty output")
+			}
 		}
 	})
 
-	// Test error handling
+	// Test error handling.
 	t.Run("ErrorHandling", func(t *testing.T) {
 		tool := NewBuildTool(buildService)
 
-		// Test with non-existent directory
+		// Test with non-existent directory.
 		args := map[string]any{
 			"cwd": "/non/existent/path",
 		}
@@ -201,7 +238,7 @@ func main() {
 			t.Error("Expected result to be map[string]any")
 		}
 
-		// The null backend might succeed, so let's just check that we got a valid response
+		// The null backend might succeed, so let's just check that we got a valid response.
 		if resultMap["backend"] == nil {
 			t.Error("Expected backend to be set")
 		}
@@ -214,7 +251,7 @@ func main() {
 func TestBuildToolsDefinitions(t *testing.T) {
 	buildService := build.NewBuildService()
 
-	// Test all tool definitions
+	// Test all tool definitions.
 	tools := []ToolChannel{
 		NewBuildTool(buildService),
 		NewTestTool(buildService),
@@ -239,7 +276,7 @@ func TestBuildToolsDefinitions(t *testing.T) {
 			t.Errorf("Tool %s should have object input schema", def.Name)
 		}
 
-		// All tools should have optional cwd parameter
+		// All tools should have optional cwd parameter.
 		if _, hasCwd := def.InputSchema.Properties["cwd"]; !hasCwd {
 			t.Errorf("Tool %s missing 'cwd' property", def.Name)
 		}

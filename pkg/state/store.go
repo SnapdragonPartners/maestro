@@ -1,3 +1,4 @@
+// Package state provides persistent state storage for agents.
 package state
 
 import (
@@ -8,14 +9,14 @@ import (
 	"time"
 )
 
-// Transition represents a state transition event
+// Transition represents a state transition event.
 type Transition struct {
+	TS   time.Time `json:"ts"`
 	From string    `json:"from"`
 	To   string    `json:"to"`
-	TS   time.Time `json:"ts"`
 }
 
-// AgentState represents the current state of an agent
+// AgentState represents the current state of an agent.
 type AgentState struct {
 	Version         string         `json:"version"`
 	State           string         `json:"state"`
@@ -23,13 +24,13 @@ type AgentState struct {
 	ContextSnapshot map[string]any `json:"context_snapshot"`
 	Data            map[string]any `json:"data,omitempty"`
 
-	// UI-specific fields
+	// UI-specific fields.
 	Plan        *string      `json:"plan,omitempty"`
 	TaskContent *string      `json:"task_content,omitempty"`
 	Transitions []Transition `json:"transitions,omitempty"`
 }
 
-// AppendTransition adds a new state transition to the agent state
+// AppendTransition adds a new state transition to the agent state.
 func (as *AgentState) AppendTransition(from, to string) {
 	transition := Transition{
 		From: from,
@@ -39,14 +40,14 @@ func (as *AgentState) AppendTransition(from, to string) {
 	as.Transitions = append(as.Transitions, transition)
 }
 
-// Store manages persistent state storage for agents
+// Store manages persistent state storage for agents.
 type Store struct {
 	baseDir string
 }
 
-// NewStore creates a new state store with the given base directory
+// NewStore creates a new state store with the given base directory.
 func NewStore(baseDir string) (*Store, error) {
-	// Create base directory if it doesn't exist
+	// Create base directory if it doesn't exist.
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create state directory %s: %w", baseDir, err)
 	}
@@ -56,7 +57,7 @@ func NewStore(baseDir string) (*Store, error) {
 	}, nil
 }
 
-// SaveState persists the current state for the given agent
+// SaveState persists the current state for the given agent.
 func (s *Store) SaveState(agentID, state string, data map[string]any) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
@@ -74,18 +75,18 @@ func (s *Store) SaveState(agentID, state string, data map[string]any) error {
 		Data:            data,
 	}
 
-	// Add some basic context information
+	// Add some basic context information.
 	agentState.ContextSnapshot["agent_id"] = agentID
 	agentState.ContextSnapshot["saved_at"] = agentState.LastTimestamp
 	agentState.ContextSnapshot["state"] = state
 
-	// Marshal to JSON
+	// Marshal to JSON.
 	jsonData, err := json.MarshalIndent(agentState, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state for agent %s: %w", agentID, err)
 	}
 
-	// Write to file
+	// Write to file.
 	filename := s.getStateFilename(agentID)
 	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
 		return fmt.Errorf("failed to write state file for agent %s: %w", agentID, err)
@@ -94,7 +95,7 @@ func (s *Store) SaveState(agentID, state string, data map[string]any) error {
 	return nil
 }
 
-// Load retrieves a value by ID into the provided destination
+// Load retrieves a value by ID into the provided destination.
 func (s *Store) Load(id string, dest any) error {
 	if id == "" {
 		return fmt.Errorf("id cannot be empty")
@@ -102,19 +103,19 @@ func (s *Store) Load(id string, dest any) error {
 
 	filename := s.getStateFilename(id)
 
-	// Check if file exists
+	// Check if file exists.
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		// Return empty state if file doesn't exist
+		// Return empty state if file doesn't exist.
 		return nil
 	}
 
-	// Read file
+	// Read file.
 	fileData, err := os.ReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("failed to read state file for id %s: %w", id, err)
 	}
 
-	// Unmarshal JSON into destination
+	// Unmarshal JSON into destination.
 	if err := json.Unmarshal(fileData, dest); err != nil {
 		return fmt.Errorf("failed to unmarshal state for id %s: %w", id, err)
 	}
@@ -122,19 +123,19 @@ func (s *Store) Load(id string, dest any) error {
 	return nil
 }
 
-// Save persists a value with the given ID
+// Save persists a value with the given ID.
 func (s *Store) Save(id string, value any) error {
 	if id == "" {
 		return fmt.Errorf("id cannot be empty")
 	}
 
-	// Marshal to JSON
+	// Marshal to JSON.
 	jsonData, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state for id %s: %w", id, err)
 	}
 
-	// Write to file
+	// Write to file.
 	filename := s.getStateFilename(id)
 	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
 		return fmt.Errorf("failed to write state file for id %s: %w", id, err)
@@ -143,7 +144,7 @@ func (s *Store) Save(id string, value any) error {
 	return nil
 }
 
-// LoadState retrieves the persisted state for the given agent
+// LoadState retrieves the persisted state for the given agent.
 func (s *Store) LoadState(agentID string) (string, map[string]any, error) {
 	if agentID == "" {
 		return "", nil, fmt.Errorf("agentID cannot be empty")
@@ -151,25 +152,25 @@ func (s *Store) LoadState(agentID string) (string, map[string]any, error) {
 
 	filename := s.getStateFilename(agentID)
 
-	// Check if file exists
+	// Check if file exists.
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		// Return empty state if file doesn't exist
+		// Return empty state if file doesn't exist.
 		return "", make(map[string]any), nil
 	}
 
-	// Read file
+	// Read file.
 	fileData, err := os.ReadFile(filename)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to read state file for agent %s: %w", agentID, err)
 	}
 
-	// Unmarshal JSON
+	// Unmarshal JSON.
 	var agentState AgentState
 	if err := json.Unmarshal(fileData, &agentState); err != nil {
 		return "", nil, fmt.Errorf("failed to unmarshal state for agent %s: %w", agentID, err)
 	}
 
-	// Return state and data
+	// Return state and data.
 	data := agentState.Data
 	if data == nil {
 		data = make(map[string]any)
@@ -178,7 +179,7 @@ func (s *Store) LoadState(agentID string) (string, map[string]any, error) {
 	return agentState.State, data, nil
 }
 
-// GetStateInfo returns metadata about the agent's persisted state
+// GetStateInfo returns metadata about the agent's persisted state.
 func (s *Store) GetStateInfo(agentID string) (*AgentState, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -186,18 +187,18 @@ func (s *Store) GetStateInfo(agentID string) (*AgentState, error) {
 
 	filename := s.getStateFilename(agentID)
 
-	// Check if file exists
+	// Check if file exists.
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no state file found for agent %s", agentID)
 	}
 
-	// Read file
+	// Read file.
 	fileData, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read state file for agent %s: %w", agentID, err)
 	}
 
-	// Unmarshal JSON
+	// Unmarshal JSON.
 	var agentState AgentState
 	if err := json.Unmarshal(fileData, &agentState); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal state for agent %s: %w", agentID, err)
@@ -206,7 +207,7 @@ func (s *Store) GetStateInfo(agentID string) (*AgentState, error) {
 	return &agentState, nil
 }
 
-// DeleteState removes the persisted state for the given agent
+// DeleteState removes the persisted state for the given agent.
 func (s *Store) DeleteState(agentID string) error {
 	if agentID == "" {
 		return fmt.Errorf("agentID cannot be empty")
@@ -214,13 +215,13 @@ func (s *Store) DeleteState(agentID string) error {
 
 	filename := s.getStateFilename(agentID)
 
-	// Check if file exists
+	// Check if file exists.
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		// File doesn't exist, nothing to delete
+		// File doesn't exist, nothing to delete.
 		return nil
 	}
 
-	// Remove file
+	// Remove file.
 	if err := os.Remove(filename); err != nil {
 		return fmt.Errorf("failed to delete state file for agent %s: %w", agentID, err)
 	}
@@ -228,9 +229,9 @@ func (s *Store) DeleteState(agentID string) error {
 	return nil
 }
 
-// ListAgents returns a list of agent IDs that have persisted state
+// ListAgents returns a list of agent IDs that have persisted state.
 func (s *Store) ListAgents() ([]string, error) {
-	// Read directory
+	// Read directory.
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read state directory: %w", err)
@@ -243,7 +244,7 @@ func (s *Store) ListAgents() ([]string, error) {
 		}
 
 		name := entry.Name()
-		// Check if it matches our filename pattern: STATUS_<agentID>.json
+		// Check if it matches our filename pattern: STATUS_<agentID>.json.
 		if len(name) > 12 && name[:7] == "STATUS_" && name[len(name)-5:] == ".json" {
 			agentID := name[7 : len(name)-5]
 			agentIDs = append(agentIDs, agentID)
@@ -253,15 +254,17 @@ func (s *Store) ListAgents() ([]string, error) {
 	return agentIDs, nil
 }
 
-// getStateFilename returns the filename for the given agent's state
+// getStateFilename returns the filename for the given agent's state.
 func (s *Store) getStateFilename(agentID string) string {
 	return filepath.Join(s.baseDir, fmt.Sprintf("STATUS_%s.json", agentID))
 }
 
-// Global store instance (can be initialized later)
+// Global store instance (can be initialized later).
+//
+//nolint:gochecknoglobals // Global store is needed for convenience functions
 var globalStore *Store
 
-// InitGlobalStore initializes the global state store
+// InitGlobalStore initializes the global state store.
 func InitGlobalStore(baseDir string) error {
 	store, err := NewStore(baseDir)
 	if err != nil {
@@ -271,12 +274,12 @@ func InitGlobalStore(baseDir string) error {
 	return nil
 }
 
-// GetGlobalStore returns the global state store instance
+// GetGlobalStore returns the global state store instance.
 func GetGlobalStore() *Store {
 	return globalStore
 }
 
-// SaveState is a convenience function using the global store
+// SaveState is a convenience function using the global store.
 func SaveState(agentID, state string, data map[string]any) error {
 	if globalStore == nil {
 		return fmt.Errorf("global store not initialized")
@@ -284,7 +287,7 @@ func SaveState(agentID, state string, data map[string]any) error {
 	return globalStore.SaveState(agentID, state, data)
 }
 
-// LoadState is a convenience function using the global store
+// LoadState is a convenience function using the global store.
 func LoadState(agentID string) (string, map[string]any, error) {
 	if globalStore == nil {
 		return "", nil, fmt.Errorf("global store not initialized")

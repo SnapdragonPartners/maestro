@@ -6,17 +6,19 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"orchestrator/pkg/utils"
 )
 
 func TestBuildService(t *testing.T) {
-	// Create temporary directory for test
+	// Create temporary directory for test.
 	tempDir, err := os.MkdirTemp("", "build-service-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create minimal Go project
+	// Create minimal Go project.
 	goMod := `module test-project
 go 1.21
 `
@@ -24,7 +26,7 @@ go 1.21
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
 
-	// Create main.go
+	// Create main.go.
 	mainGo := `package main
 import "fmt"
 func main() {
@@ -34,10 +36,10 @@ func main() {
 		t.Fatalf("Failed to create main.go: %v", err)
 	}
 
-	// Create build service
+	// Create build service.
 	service := NewBuildService()
 
-	// Test backend detection
+	// Test backend detection.
 	t.Run("Backend Detection", func(t *testing.T) {
 		info, err := service.GetBackendInfo(tempDir)
 		if err != nil {
@@ -58,7 +60,7 @@ func main() {
 		}
 	})
 
-	// Test build operation
+	// Test build operation.
 	t.Run("Build Operation", func(t *testing.T) {
 		req := &BuildRequest{
 			ProjectRoot: tempDir,
@@ -90,13 +92,13 @@ func main() {
 			t.Error("Expected positive duration")
 		}
 
-		// Check that output contains expected build commands
+		// Check that output contains expected build commands.
 		if response.Success && response.Output != "" {
 			t.Logf("Build output: %s", response.Output)
 		}
 	})
 
-	// Test test operation
+	// Test test operation.
 	t.Run("Test Operation", func(t *testing.T) {
 		req := &BuildRequest{
 			ProjectRoot: tempDir,
@@ -120,11 +122,11 @@ func main() {
 			t.Errorf("Expected operation 'test', got '%s'", response.Operation)
 		}
 
-		// Tests might fail due to no test files, but should not error
+		// Tests might fail due to no test files, but should not error.
 		t.Logf("Test result: success=%t, output=%s", response.Success, response.Output)
 	})
 
-	// Test invalid operation
+	// Test invalid operation.
 	t.Run("Invalid Operation", func(t *testing.T) {
 		req := &BuildRequest{
 			ProjectRoot: tempDir,
@@ -149,18 +151,18 @@ func main() {
 		}
 	})
 
-	// Test cache functionality
+	// Test cache functionality.
 	t.Run("Cache Functionality", func(t *testing.T) {
-		// Clear cache
+		// Clear cache.
 		service.ClearCache()
 
-		// First detection should populate cache
+		// First detection should populate cache.
 		info1, err := service.GetBackendInfo(tempDir)
 		if err != nil {
 			t.Fatalf("Failed to get backend info: %v", err)
 		}
 
-		// Second detection should use cache
+		// Second detection should use cache.
 		info2, err := service.GetBackendInfo(tempDir)
 		if err != nil {
 			t.Fatalf("Failed to get backend info: %v", err)
@@ -170,10 +172,13 @@ func main() {
 			t.Errorf("Cache inconsistency: %s != %s", info1.Name, info2.Name)
 		}
 
-		// Check cache status
+		// Check cache status.
 		status := service.GetCacheStatus()
-		if status["cache_size"].(int) != 1 {
-			t.Errorf("Expected cache size 1, got %v", status["cache_size"])
+		cacheSize, err := utils.GetMapField[int](status, "cache_size")
+		if err != nil {
+			t.Errorf("Failed to get cache_size: %v", err)
+		} else if cacheSize != 1 {
+			t.Errorf("Expected cache size 1, got %v", cacheSize)
 		}
 	})
 }
@@ -181,7 +186,7 @@ func main() {
 func TestBuildRequestValidation(t *testing.T) {
 	service := NewBuildService()
 
-	// Test empty project root
+	// Test empty project root.
 	req := &BuildRequest{
 		ProjectRoot: "",
 		Operation:   "build",
@@ -197,7 +202,7 @@ func TestBuildRequestValidation(t *testing.T) {
 		t.Error("Expected success=false for empty project root")
 	}
 
-	// Test empty operation
+	// Test empty operation.
 	req = &BuildRequest{
 		ProjectRoot: "/tmp",
 		Operation:   "",

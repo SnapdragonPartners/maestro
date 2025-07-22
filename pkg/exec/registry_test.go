@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Mock executor for testing
+// Mock executor for testing.
 type mockExecutor struct {
 	name      string
 	available bool
@@ -20,7 +20,7 @@ func (m *mockExecutor) Available() bool {
 	return m.available
 }
 
-func (m *mockExecutor) Run(ctx context.Context, cmd []string, opts ExecOpts) (ExecResult, error) {
+func (m *mockExecutor) Run(_ context.Context, _ []string, _ *ExecOpts) (ExecResult, error) {
 	return ExecResult{
 		ExitCode:     0,
 		Stdout:       "mock output",
@@ -40,7 +40,7 @@ func TestRegistry_Register(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// Test getting the registered executor
+	// Test getting the registered executor.
 	executor, err := registry.Get("test")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -83,11 +83,11 @@ func TestRegistry_Get_NotFound(t *testing.T) {
 func TestRegistry_GetDefault(t *testing.T) {
 	registry := NewRegistry()
 
-	// Register local executor first
+	// Register local executor first.
 	localExec := NewLocalExec()
 	registry.Register(localExec)
 
-	// Should have local executor by default
+	// Should have local executor by default.
 	executor, err := registry.GetDefault()
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -131,7 +131,7 @@ func TestRegistry_SetDefault_NotFound(t *testing.T) {
 func TestRegistry_List(t *testing.T) {
 	registry := NewRegistry()
 
-	// Register local executor first
+	// Register local executor first.
 	localExec := NewLocalExec()
 	registry.Register(localExec)
 
@@ -143,7 +143,7 @@ func TestRegistry_List(t *testing.T) {
 
 	names := registry.List()
 
-	// Should have local, test1, test2
+	// Should have local, test1, test2.
 	if len(names) != 3 {
 		t.Errorf("Expected 3 executors, got %d", len(names))
 	}
@@ -164,7 +164,7 @@ func TestRegistry_List(t *testing.T) {
 func TestRegistry_GetAvailable(t *testing.T) {
 	registry := NewRegistry()
 
-	// Register local executor first
+	// Register local executor first.
 	localExec := NewLocalExec()
 	registry.Register(localExec)
 
@@ -197,7 +197,7 @@ func TestRegistry_GetBest(t *testing.T) {
 	registry.Register(mock1)
 	registry.Register(mock2)
 
-	// Test with preferences
+	// Test with preferences.
 	preferences := []string{"docker", "local"}
 	executor, err := registry.GetBest(preferences)
 	if err != nil {
@@ -218,7 +218,7 @@ func TestRegistry_GetBest_Fallback(t *testing.T) {
 	registry.Register(mock1)
 	registry.Register(mock2)
 
-	// Test with preferences where first is unavailable
+	// Test with preferences where first is unavailable.
 	preferences := []string{"docker", "local"}
 	executor, err := registry.GetBest(preferences)
 	if err != nil {
@@ -236,7 +236,7 @@ func TestRegistry_GetBest_NoAvailable(t *testing.T) {
 	mock1 := &mockExecutor{name: "test", available: false}
 	registry.Register(mock1)
 
-	// Remove local executor to test no available executors
+	// Remove local executor to test no available executors.
 	registry.executors = map[string]Executor{
 		"test": mock1,
 	}
@@ -249,7 +249,7 @@ func TestRegistry_GetBest_NoAvailable(t *testing.T) {
 }
 
 func TestGlobalRegistry(t *testing.T) {
-	// Test that global registry functions work
+	// Test that global registry functions work.
 	mock := &mockExecutor{name: "global_test", available: true}
 
 	err := Register(mock)
@@ -266,7 +266,7 @@ func TestGlobalRegistry(t *testing.T) {
 		t.Errorf("Expected 'global_test', got %s", string(executor.Name()))
 	}
 
-	// Test that local executor is registered by default
+	// Test that local executor is registered by default.
 	names := List()
 	found := false
 	for _, name := range names {

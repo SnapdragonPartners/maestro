@@ -9,7 +9,7 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// ApprovalResponse defines how the mock architect should respond to approval requests
+// ApprovalResponse defines how the mock architect should respond to approval requests.
 type ApprovalResponse struct {
 	Status       string        // "approved" or "changes_requested"
 	ApprovalType string        // "plan" or "code"
@@ -17,7 +17,7 @@ type ApprovalResponse struct {
 	Delay        time.Duration // Optional delay before responding
 }
 
-// AlwaysApprovalMockArchitect always approves requests
+// AlwaysApprovalMockArchitect always approves requests.
 type AlwaysApprovalMockArchitect struct {
 	id       string
 	response ApprovalResponse
@@ -25,14 +25,14 @@ type AlwaysApprovalMockArchitect struct {
 	messages []ReceivedMessage // Track received messages for assertions
 }
 
-// ReceivedMessage tracks messages received by the mock architect
+// ReceivedMessage tracks messages received by the mock architect.
 type ReceivedMessage struct {
 	Timestamp time.Time
 	Message   *proto.AgentMsg
 	FromCoder string
 }
 
-// NewAlwaysApprovalMockArchitect creates a mock architect that always approves
+// NewAlwaysApprovalMockArchitect creates a mock architect that always approves.
 func NewAlwaysApprovalMockArchitect(id string) *AlwaysApprovalMockArchitect {
 	return &AlwaysApprovalMockArchitect{
 		id: id,
@@ -45,24 +45,24 @@ func NewAlwaysApprovalMockArchitect(id string) *AlwaysApprovalMockArchitect {
 	}
 }
 
-// GetID returns the architect's ID
+// GetID returns the architect's ID.
 func (m *AlwaysApprovalMockArchitect) GetID() string {
 	return m.id
 }
 
-// ProcessMessage handles incoming messages and returns appropriate responses
-func (m *AlwaysApprovalMockArchitect) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+// ProcessMessage handles incoming messages and returns appropriate responses.
+func (m *AlwaysApprovalMockArchitect) ProcessMessage(_ context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Record the message
+	// Record the message.
 	m.messages = append(m.messages, ReceivedMessage{
 		Timestamp: time.Now(),
 		Message:   msg,
 		FromCoder: msg.FromAgent,
 	})
 
-	// Add delay if specified
+	// Add delay if specified.
 	if m.response.Delay > 0 {
 		time.Sleep(m.response.Delay)
 	}
@@ -73,16 +73,16 @@ func (m *AlwaysApprovalMockArchitect) ProcessMessage(ctx context.Context, msg *p
 	case proto.MsgTypeQUESTION:
 		return m.handleQuestion(msg)
 	case proto.MsgTypeRESULT:
-		// Just acknowledge result messages
+		// Just acknowledge result messages.
 		return m.createAcknowledgment(msg), nil
 	default:
 		return nil, fmt.Errorf("unsupported message type: %s", msg.Type)
 	}
 }
 
-// handleApprovalRequest processes approval requests
+// handleApprovalRequest processes approval requests.
 func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract approval type from the request
+	// Extract approval type from the request.
 	approvalType := "plan" // default
 	if reqApprovalType, exists := msg.GetPayload(proto.KeyApprovalType); exists {
 		if approvalTypeStr, ok := reqApprovalType.(string); ok {
@@ -90,7 +90,7 @@ func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg)
 		}
 	}
 
-	// Create approval response
+	// Create approval response.
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyStatus, m.response.Status)
@@ -101,9 +101,9 @@ func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg)
 	return response, nil
 }
 
-// handleQuestion processes question messages
+// handleQuestion processes question messages.
 func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// For simplicity, always provide a helpful answer
+	// For simplicity, always provide a helpful answer.
 	response := proto.NewAgentMsg(proto.MsgTypeANSWER, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyAnswer, "Please continue with your current approach. It looks good.")
@@ -111,7 +111,7 @@ func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*prot
 	return response, nil
 }
 
-// createAcknowledgment creates a simple acknowledgment response
+// createAcknowledgment creates a simple acknowledgment response.
 func (m *AlwaysApprovalMockArchitect) createAcknowledgment(msg *proto.AgentMsg) *proto.AgentMsg {
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
@@ -119,18 +119,18 @@ func (m *AlwaysApprovalMockArchitect) createAcknowledgment(msg *proto.AgentMsg) 
 	return response
 }
 
-// GetReceivedMessages returns all messages received by this architect
+// GetReceivedMessages returns all messages received by this architect.
 func (m *AlwaysApprovalMockArchitect) GetReceivedMessages() []ReceivedMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Return a copy to prevent race conditions
+	// Return a copy to prevent race conditions.
 	messages := make([]ReceivedMessage, len(m.messages))
 	copy(messages, m.messages)
 	return messages
 }
 
-// CountMessagesByType returns the count of messages by type
+// CountMessagesByType returns the count of messages by type.
 func (m *AlwaysApprovalMockArchitect) CountMessagesByType(msgType proto.MsgType) int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -144,14 +144,14 @@ func (m *AlwaysApprovalMockArchitect) CountMessagesByType(msgType proto.MsgType)
 	return count
 }
 
-// SetResponseDelay sets a delay for all responses
+// SetResponseDelay sets a delay for all responses.
 func (m *AlwaysApprovalMockArchitect) SetResponseDelay(delay time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.response.Delay = delay
 }
 
-// ChangesRequestedMockArchitect rejects the first N requests, then approves
+// ChangesRequestedMockArchitect rejects the first N requests, then approves.
 type ChangesRequestedMockArchitect struct {
 	id                string
 	rejectCount       int
@@ -161,7 +161,7 @@ type ChangesRequestedMockArchitect struct {
 	messages          []ReceivedMessage
 }
 
-// NewChangesRequestedMockArchitect creates a mock that requests changes N times
+// NewChangesRequestedMockArchitect creates a mock that requests changes N times.
 func NewChangesRequestedMockArchitect(id string, rejectCount int, feedback string) *ChangesRequestedMockArchitect {
 	return &ChangesRequestedMockArchitect{
 		id:          id,
@@ -171,17 +171,17 @@ func NewChangesRequestedMockArchitect(id string, rejectCount int, feedback strin
 	}
 }
 
-// GetID returns the architect's ID
+// GetID returns the architect's ID.
 func (m *ChangesRequestedMockArchitect) GetID() string {
 	return m.id
 }
 
-// ProcessMessage handles incoming messages with rejection logic
-func (m *ChangesRequestedMockArchitect) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+// ProcessMessage handles incoming messages with rejection logic.
+func (m *ChangesRequestedMockArchitect) ProcessMessage(_ context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Record the message
+	// Record the message.
 	m.messages = append(m.messages, ReceivedMessage{
 		Timestamp: time.Now(),
 		Message:   msg,
@@ -200,9 +200,9 @@ func (m *ChangesRequestedMockArchitect) ProcessMessage(ctx context.Context, msg 
 	}
 }
 
-// handleApprovalRequest processes approval requests with rejection logic
+// handleApprovalRequest processes approval requests with rejection logic.
 func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract approval type
+	// Extract approval type.
 	approvalType := "plan"
 	if reqApprovalType, exists := msg.GetPayload(proto.KeyApprovalType); exists {
 		if approvalTypeStr, ok := reqApprovalType.(string); ok {
@@ -210,7 +210,7 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 		}
 	}
 
-	// Determine status based on rejection count
+	// Determine status based on rejection count.
 	status := "approved"
 	feedback := "Plan looks good!"
 
@@ -220,7 +220,7 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 		m.currentRejections++
 	}
 
-	// Create response
+	// Create response.
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyStatus, status)
@@ -231,7 +231,7 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 	return response, nil
 }
 
-// handleQuestion processes questions
+// handleQuestion processes questions.
 func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	response := proto.NewAgentMsg(proto.MsgTypeANSWER, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
@@ -240,7 +240,7 @@ func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*pr
 	return response, nil
 }
 
-// createAcknowledgment creates a simple acknowledgment
+// createAcknowledgment creates a simple acknowledgment.
 func (m *ChangesRequestedMockArchitect) createAcknowledgment(msg *proto.AgentMsg) *proto.AgentMsg {
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
@@ -248,7 +248,7 @@ func (m *ChangesRequestedMockArchitect) createAcknowledgment(msg *proto.AgentMsg
 	return response
 }
 
-// GetReceivedMessages returns all received messages
+// GetReceivedMessages returns all received messages.
 func (m *ChangesRequestedMockArchitect) GetReceivedMessages() []ReceivedMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -258,7 +258,7 @@ func (m *ChangesRequestedMockArchitect) GetReceivedMessages() []ReceivedMessage 
 	return messages
 }
 
-// MalformedResponseMockArchitect sends malformed responses for testing error handling
+// MalformedResponseMockArchitect sends malformed responses for testing error handling.
 type MalformedResponseMockArchitect struct {
 	id       string
 	response func(*proto.AgentMsg) *proto.AgentMsg
@@ -266,7 +266,7 @@ type MalformedResponseMockArchitect struct {
 	messages []ReceivedMessage
 }
 
-// NewMalformedResponseMockArchitect creates a mock that sends malformed responses
+// NewMalformedResponseMockArchitect creates a mock that sends malformed responses.
 func NewMalformedResponseMockArchitect(id string, responseFunc func(*proto.AgentMsg) *proto.AgentMsg) *MalformedResponseMockArchitect {
 	return &MalformedResponseMockArchitect{
 		id:       id,
@@ -275,36 +275,36 @@ func NewMalformedResponseMockArchitect(id string, responseFunc func(*proto.Agent
 	}
 }
 
-// GetID returns the architect's ID
+// GetID returns the architect's ID.
 func (m *MalformedResponseMockArchitect) GetID() string {
 	return m.id
 }
 
-// ProcessMessage handles messages with custom malformed responses
-func (m *MalformedResponseMockArchitect) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+// ProcessMessage handles messages with custom malformed responses.
+func (m *MalformedResponseMockArchitect) ProcessMessage(_ context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Record the message
+	// Record the message.
 	m.messages = append(m.messages, ReceivedMessage{
 		Timestamp: time.Now(),
 		Message:   msg,
 		FromCoder: msg.FromAgent,
 	})
 
-	// Use custom response function
+	// Use custom response function.
 	if m.response != nil {
 		return m.response(msg), nil
 	}
 
-	// Default malformed response
+	// Default malformed response.
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload("invalid_field", "malformed_value")
 	return response, nil
 }
 
-// GetReceivedMessages returns all received messages
+// GetReceivedMessages returns all received messages.
 func (m *MalformedResponseMockArchitect) GetReceivedMessages() []ReceivedMessage {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

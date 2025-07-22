@@ -1,6 +1,7 @@
 package coder
 
 import (
+	"context"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -11,9 +12,9 @@ import (
 )
 
 func TestRobustApprovalMessageHandling(t *testing.T) {
-	// Test Case 1: Invalid approval type should return error
+	// Test Case 1: Invalid approval type should return error.
 	t.Run("InvalidApprovalType", func(t *testing.T) {
-		// Create minimal coder just for testing message parsing logic
+		// Create minimal coder just for testing message parsing logic.
 		tempDir := t.TempDir()
 		stateStore, _ := state.NewStore(tempDir)
 		mockLLM := agent.NewMockLLMClient([]agent.CompletionResponse{{Content: "mock"}}, nil)
@@ -24,8 +25,8 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 		resultMsg.SetPayload(proto.KeyApprovalType, "unknown")
 
-		// Since handleResultMessage is not exported, we'll test via ProcessApprovalResult
-		err := coder.ProcessApprovalResult("APPROVED", "unknown")
+		// Since handleResultMessage is not exported, we'll test via ProcessApprovalResult.
+		err := coder.ProcessApprovalResult(context.Background(), "APPROVED", "unknown")
 		if err == nil {
 			t.Error("Should return error for invalid approval type")
 		}
@@ -34,7 +35,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		}
 	})
 
-	// Test Case 2: Missing approval type should return error
+	// Test Case 2: Missing approval type should return error.
 	t.Run("MissingApprovalType", func(t *testing.T) {
 		tempDir := t.TempDir()
 		stateStore, _ := state.NewStore(tempDir)
@@ -44,10 +45,10 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
 		resultMsg.SetPayload(proto.KeyStatus, proto.ApprovalStatusApproved.String())
 		resultMsg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-		// No approval_type set
+		// No approval_type set.
 
-		// Since handleResultMessage is not exported, we'll test via ProcessApprovalResult
-		err := coder.ProcessApprovalResult("APPROVED", "unknown")
+		// Since handleResultMessage is not exported, we'll test via ProcessApprovalResult.
+		err := coder.ProcessApprovalResult(context.Background(), "APPROVED", "unknown")
 		if err == nil {
 			t.Error("Should return error for missing approval type")
 		}
@@ -95,7 +96,7 @@ func TestNormaliseApprovalType(t *testing.T) {
 }
 
 func TestCoderCreation(t *testing.T) {
-	// Create a temporary coder for testing
+	// Create a temporary coder for testing.
 	tempDir := t.TempDir()
 	stateStore, _ := state.NewStore(tempDir)
 	mockLLM := agent.NewMockLLMClient([]agent.CompletionResponse{{Content: "mock"}}, nil)

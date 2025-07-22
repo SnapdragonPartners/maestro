@@ -7,9 +7,10 @@ import (
 	"time"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
-// ShutdownManager handles graceful shutdown of agent components
+// ShutdownManager handles graceful shutdown of agent components.
 type ShutdownManager struct {
 	mu          sync.RWMutex
 	components  []ShutdownComponent
@@ -20,13 +21,13 @@ type ShutdownManager struct {
 	once        sync.Once
 }
 
-// ShutdownComponent defines interface for components that need graceful shutdown
+// ShutdownComponent defines interface for components that need graceful shutdown.
 type ShutdownComponent interface {
 	Shutdown(ctx context.Context) error
 	Name() string
 }
 
-// NewShutdownManager creates a new shutdown manager
+// NewShutdownManager creates a new shutdown manager.
 func NewShutdownManager() *ShutdownManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ShutdownManager{
@@ -38,7 +39,7 @@ func NewShutdownManager() *ShutdownManager {
 	}
 }
 
-// Register adds a component for graceful shutdown
+// Register adds a component for graceful shutdown.
 func (sm *ShutdownManager) Register(component ShutdownComponent, timeout time.Duration) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -47,14 +48,14 @@ func (sm *ShutdownManager) Register(component ShutdownComponent, timeout time.Du
 	sm.timeouts[component.Name()] = timeout
 }
 
-// Shutdown performs graceful shutdown of all registered components
+// Shutdown performs graceful shutdown of all registered components.
 func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	sm.once.Do(func() {
 		defer close(sm.done)
 
-		// Signal all components to start shutdown
+		// Signal all components to start shutdown.
 		sm.shutdownFn()
 
 		sm.mu.RLock()
@@ -75,7 +76,7 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 				timeout = DefaultTimeoutConfig.ShutdownTimeout
 			}
 
-			// Create timeout context for this component
+			// Create timeout context for this component.
 			componentCtx, cancel := context.WithTimeout(ctx, timeout)
 
 			if err := component.Shutdown(componentCtx); err != nil {
@@ -85,22 +86,22 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 			cancel()
 		}
 
-		// Combine errors if any
+		// Combine errors if any.
 		if len(errors) > 0 {
 			shutdownErr = fmt.Errorf("shutdown errors: %v", errors)
 		}
 	})
 
-	// Wait for shutdown completion
+	// Wait for shutdown completion.
 	select {
 	case <-sm.done:
 		return shutdownErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("shutdown wait cancelled: %w", ctx.Err())
 	}
 }
 
-// IsShuttingDown returns true if shutdown has been initiated
+// IsShuttingDown returns true if shutdown has been initiated.
 func (sm *ShutdownManager) IsShuttingDown() bool {
 	select {
 	case <-sm.shutdownCtx.Done():
@@ -110,24 +111,24 @@ func (sm *ShutdownManager) IsShuttingDown() bool {
 	}
 }
 
-// Wait blocks until shutdown is complete
+// Wait blocks until shutdown is complete.
 func (sm *ShutdownManager) Wait() {
 	<-sm.done
 }
 
-// ShutdownContext returns a context that is cancelled when shutdown begins
+// ShutdownContext returns a context that is cancelled when shutdown begins.
 func (sm *ShutdownManager) ShutdownContext() context.Context {
 	return sm.shutdownCtx
 }
 
-// Enhanced BaseDriver with shutdown handling
+// Enhanced BaseDriver with shutdown handling.
 type ShutdownableDriver struct {
 	*BaseDriver
 	shutdownMgr *ShutdownManager
 	name        string
 }
 
-// NewShutdownableDriver creates a driver with shutdown management
+// NewShutdownableDriver creates a driver with shutdown management.
 func NewShutdownableDriver(config *AgentConfig, initialState proto.State, shutdownMgr *ShutdownManager) (*ShutdownableDriver, error) {
 	baseDriver, err := NewBaseDriver(config, initialState)
 	if err != nil {
@@ -140,7 +141,7 @@ func NewShutdownableDriver(config *AgentConfig, initialState proto.State, shutdo
 		name:        fmt.Sprintf("driver-%s", config.ID),
 	}
 
-	// Register with shutdown manager
+	// Register with shutdown manager.
 	if shutdownMgr != nil {
 		shutdownMgr.Register(driver, DefaultTimeoutConfig.ShutdownTimeout)
 	}
@@ -148,16 +149,16 @@ func NewShutdownableDriver(config *AgentConfig, initialState proto.State, shutdo
 	return driver, nil
 }
 
-// Name returns the component name for shutdown management
+// Name returns the component name for shutdown management.
 func (d *ShutdownableDriver) Name() string {
 	return d.name
 }
 
-// Run executes the driver's main loop with shutdown handling
+// Run executes the driver's main loop with shutdown handling.
 func (d *ShutdownableDriver) Run(ctx context.Context) error {
-	// Use shutdown-aware context if available
+	// Use shutdown-aware context if available.
 	if d.shutdownMgr != nil {
-		// Combine contexts - cancel if either parent or shutdown context is cancelled
+		// Combine contexts - cancel if either parent or shutdown context is cancelled.
 		shutdownCtx := d.shutdownMgr.ShutdownContext()
 		combinedCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -176,16 +177,16 @@ func (d *ShutdownableDriver) Run(ctx context.Context) error {
 		ctx = combinedCtx
 	}
 
-	// Initialize if not already done
+	// Initialize if not already done.
 	if err := d.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize driver: %w", err)
 	}
 
-	// Run the state machine loop with shutdown awareness
+	// Run the state machine loop with shutdown awareness.
 	for {
 		select {
 		case <-ctx.Done():
-			// Graceful shutdown initiated
+			// Graceful shutdown initiated.
 			return d.handleShutdown(ctx)
 		default:
 			done, err := d.Step(ctx)
@@ -199,16 +200,16 @@ func (d *ShutdownableDriver) Run(ctx context.Context) error {
 	}
 }
 
-// handleShutdown performs graceful shutdown procedures
+// handleShutdown performs graceful shutdown procedures.
 func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
-	// Try to transition to a safe state before shutting down
+	// Try to transition to a safe state before shutting down.
 	if d.GetCurrentState() != proto.StateDone && d.GetCurrentState() != proto.StateError {
-		// Attempt to save current work
+		// Attempt to save current work.
 		if err := d.Persist(); err != nil {
 			d.config.Context.Logger.Printf("Warning: failed to persist state during shutdown: %v", err)
 		}
 
-		// Mark state as interrupted for later resume
+		// Mark state as interrupted for later resume.
 		metadata := map[string]any{
 			"shutdown_reason": "graceful_shutdown",
 			"shutdown_time":   time.Now().UTC(),
@@ -220,36 +221,40 @@ func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
 		}
 	}
 
-	return ctx.Err()
+	return fmt.Errorf("shutdown context cancelled: %w", ctx.Err())
 }
 
-// Shutdown implements ShutdownComponent interface
+// Shutdown implements ShutdownComponent interface.
 func (d *ShutdownableDriver) Shutdown(ctx context.Context) error {
-	// Persist final state
+	// Persist final state.
 	if err := d.Persist(); err != nil {
 		return fmt.Errorf("failed to persist final state: %w", err)
 	}
 
-	// Mark as cleanly shutdown
+	// Mark as cleanly shutdown.
 	metadata := map[string]any{
 		"shutdown_clean": true,
 		"shutdown_time":  time.Now().UTC(),
 	}
 
 	if err := d.TransitionTo(ctx, proto.StateDone, metadata); err != nil {
-		// Don't fail shutdown for transition errors
+		// Don't fail shutdown for transition errors.
 		d.config.Context.Logger.Printf("Warning: failed to mark clean shutdown: %v", err)
 	}
 
 	return nil
 }
 
-// CanResume checks if the driver can resume from its current state
+// CanResume checks if the driver can resume from its current state.
 func (d *ShutdownableDriver) CanResume() bool {
-	data := d.StateMachine.(*BaseStateMachine).GetStateData()
+	baseStateMachine, ok := utils.SafeAssert[*BaseStateMachine](d.StateMachine)
+	if !ok {
+		return false
+	}
+	data := baseStateMachine.GetStateData()
 
-	// Check if marked as resumable
-	if canResume, ok := data["can_resume"].(bool); ok && canResume {
+	// Check if marked as resumable.
+	if canResume := utils.GetMapFieldOr[bool](data, "can_resume", false); canResume {
 		return true
 	}
 
@@ -258,17 +263,20 @@ func (d *ShutdownableDriver) CanResume() bool {
 	return state == proto.StateWaiting // Only generic states are resumable at the agent level
 }
 
-// Resume attempts to resume operations from a previous state
-func (d *ShutdownableDriver) Resume(ctx context.Context) error {
+// Resume attempts to resume operations from a previous state.
+func (d *ShutdownableDriver) Resume(_ context.Context) error {
 	if !d.CanResume() {
 		return fmt.Errorf("driver cannot be resumed from current state")
 	}
 
-	// Clear shutdown markers
-	sm := d.StateMachine.(*BaseStateMachine)
-	sm.SetStateData("shutdown_reason", nil)
-	sm.SetStateData("can_resume", false)
+	// Clear shutdown markers.
+	baseStateMachine2, ok2 := utils.SafeAssert[*BaseStateMachine](d.StateMachine)
+	if !ok2 {
+		return fmt.Errorf("state machine is not a BaseStateMachine")
+	}
+	baseStateMachine2.SetStateData("shutdown_reason", nil)
+	baseStateMachine2.SetStateData("can_resume", false)
 
-	// Persist the clean state
+	// Persist the clean state.
 	return d.Persist()
 }

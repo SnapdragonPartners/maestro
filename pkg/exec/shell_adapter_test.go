@@ -10,7 +10,7 @@ func TestShellCommandAdapter_ExecuteShellCommand(t *testing.T) {
 	adapter := NewShellCommandAdapter(NewLocalExec())
 	ctx := context.Background()
 
-	// Test simple command
+	// Test simple command.
 	result, err := adapter.ExecuteShellCommand(ctx, "echo hello", "")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -39,10 +39,10 @@ func TestShellCommandAdapter_ExecuteShellCommand_WithCwd(t *testing.T) {
 	adapter := NewShellCommandAdapter(NewLocalExec())
 	ctx := context.Background()
 
-	// Create temporary directory
+	// Create temporary directory.
 	tempDir := t.TempDir()
 
-	// Test command with working directory
+	// Test command with working directory.
 	result, err := adapter.ExecuteShellCommand(ctx, "pwd", tempDir)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
@@ -81,7 +81,7 @@ func TestShellCommandAdapter_ExecuteShellCommand_Failure(t *testing.T) {
 	adapter := NewShellCommandAdapter(NewLocalExec())
 	ctx := context.Background()
 
-	// Test command that fails
+	// Test command that fails.
 	result, err := adapter.ExecuteShellCommand(ctx, "false", "")
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)

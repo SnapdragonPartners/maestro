@@ -24,7 +24,7 @@ func TestSetupStateHandler(t *testing.T) {
 			name:    "successful setup",
 			storyID: "050",
 			setupMock: func(mock *MockGitRunner) {
-				// Mock successful Git operations
+				// Mock successful Git operations.
 				mock.SetCommand("", []byte("mock output"), "clone", "--bare")
 				mock.SetCommand("", []byte("mock output"), "remote", "update", "--prune")
 				mock.SetCommand("", []byte("mock output"), "worktree", "add", "--detach")
@@ -36,8 +36,8 @@ func TestSetupStateHandler(t *testing.T) {
 		{
 			name:    "missing story ID",
 			storyID: "", // Will not be set in state
-			setupMock: func(mock *MockGitRunner) {
-				// No setup needed
+			setupMock: func(_ *MockGitRunner) {
+				// No setup needed.
 			},
 			expectedState: proto.StateError,
 			expectedError: true,
@@ -46,7 +46,7 @@ func TestSetupStateHandler(t *testing.T) {
 			name:    "workspace setup failure",
 			storyID: "050",
 			setupMock: func(mock *MockGitRunner) {
-				// Mock failed Git operation
+				// Mock failed Git operation.
 				mock.SetError("", fmt.Errorf("git clone failed"), "clone", "--bare")
 			},
 			expectedState: proto.StateError,
@@ -56,8 +56,8 @@ func TestSetupStateHandler(t *testing.T) {
 			name:          "no workspace manager",
 			storyID:       "050",
 			skipWorkspace: true,
-			setupMock: func(mock *MockGitRunner) {
-				// No setup needed
+			setupMock: func(_ *MockGitRunner) {
+				// No setup needed.
 			},
 			expectedState: StatePlanning,
 			expectedError: false,
@@ -66,7 +66,7 @@ func TestSetupStateHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create test coder
+			// Create test coder.
 			tempDir := t.TempDir()
 			stateStore, _ := state.NewStore(tempDir)
 
@@ -75,7 +75,7 @@ func TestSetupStateHandler(t *testing.T) {
 				t.Fatal("Failed to create coder:", err)
 			}
 
-			// Setup workspace manager if not skipping
+			// Setup workspace manager if not skipping.
 			if !tt.skipWorkspace {
 				mockGit := NewMockGitRunner()
 				tt.setupMock(mockGit)
@@ -89,19 +89,19 @@ func TestSetupStateHandler(t *testing.T) {
 					"story-{STORY_ID}",
 					"{AGENT_ID}/{STORY_ID}",
 				)
-				// Note: SetWorkspaceManager method not available, skipping workspace setup
+				// Note: SetWorkspaceManager method not available, skipping workspace setup.
 			}
 
-			// Set story ID in state if provided
+			// Set story ID in state if provided.
 			if tt.storyID != "" {
 				coder.BaseStateMachine.SetStateData(KeyStoryID, tt.storyID)
 			}
 
-			// Test the setup handler
+			// Test the setup handler.
 			ctx := context.Background()
 			nextState, done, err := coder.handleSetup(ctx, coder.BaseStateMachine)
 
-			// Check error expectation
+			// Check error expectation.
 			if tt.expectedError {
 				if err == nil {
 					t.Error("Expected error but got none")
@@ -112,7 +112,7 @@ func TestSetupStateHandler(t *testing.T) {
 				}
 			}
 
-			// Check state transition
+			// Check state transition.
 			if nextState != tt.expectedState {
 				t.Errorf("Expected next state %s, got %s", tt.expectedState, nextState)
 			}
@@ -122,7 +122,7 @@ func TestSetupStateHandler(t *testing.T) {
 				t.Error("Setup state should never be terminal")
 			}
 
-			// Verify worktree path is set on success
+			// Verify worktree path is set on success.
 			if !tt.expectedError && !tt.skipWorkspace && tt.storyID != "" {
 				worktreePath, exists := coder.BaseStateMachine.GetStateValue(KeyWorktreePath)
 				if !exists {
@@ -161,7 +161,7 @@ func TestDoneStateHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create test coder
+			// Create test coder.
 			tempDir := t.TempDir()
 			stateStore, _ := state.NewStore(tempDir)
 
@@ -170,11 +170,11 @@ func TestDoneStateHandler(t *testing.T) {
 				t.Fatal("Failed to create coder:", err)
 			}
 
-			// Setup workspace manager if not skipping
+			// Setup workspace manager if not skipping.
 			if !tt.skipWorkspace {
 				mockGit := NewMockGitRunner()
 				if tt.setupCleanup {
-					// Mock successful cleanup operations
+					// Mock successful cleanup operations.
 					mockGit.SetCommand("", []byte("mock output"), "worktree", "remove")
 					mockGit.SetCommand("", []byte("mock output"), "worktree", "prune")
 				}
@@ -188,21 +188,21 @@ func TestDoneStateHandler(t *testing.T) {
 					"story-{STORY_ID}",
 					"{AGENT_ID}/{STORY_ID}",
 				)
-				// Note: SetWorkspaceManager method not available, skipping workspace setup
+				// Note: SetWorkspaceManager method not available, skipping workspace setup.
 			}
 
-			// Set up state data
+			// Set up state data.
 			if tt.storyID != "" {
 				coder.BaseStateMachine.SetStateData(KeyStoryID, tt.storyID)
 			}
 			coder.BaseStateMachine.SetStateData(KeyTaskContent, "test task")
 			coder.BaseStateMachine.SetStateData(KeyWorktreePath, "/some/path")
 
-			// Test the done handler
+			// Test the done handler.
 			ctx := context.Background()
 			nextState, done, err := coder.handleDone(ctx, coder.BaseStateMachine)
 
-			// Should not error
+			// Should not error.
 			if err != nil {
 				t.Errorf("Unexpected error: %v", err)
 			}
@@ -212,12 +212,12 @@ func TestDoneStateHandler(t *testing.T) {
 				t.Errorf("Expected next state %s, got %s", proto.StateDone, nextState)
 			}
 
-			// Should be terminal
+			// Should be terminal.
 			if !done {
 				t.Error("Done state should be terminal")
 			}
 
-			// Verify state data is cleared
+			// Verify state data is cleared.
 			storyIDCleared, _ := coder.BaseStateMachine.GetStateValue(KeyStoryID)
 			if storyIDCleared != "" {
 				t.Error("story_id should be cleared after done")
@@ -232,7 +232,7 @@ func TestDoneStateHandler(t *testing.T) {
 }
 
 func TestErrorStateHandler(t *testing.T) {
-	// Create test coder
+	// Create test coder.
 	tempDir := t.TempDir()
 	stateStore, _ := state.NewStore(tempDir)
 
@@ -241,7 +241,7 @@ func TestErrorStateHandler(t *testing.T) {
 		t.Fatal("Failed to create coder:", err)
 	}
 
-	// Setup workspace manager
+	// Setup workspace manager.
 	mockGit := NewMockGitRunner()
 	mockGit.SetCommand("", []byte("mock output"), "worktree", "remove")
 	mockGit.SetCommand("", []byte("mock output"), "worktree", "prune")
@@ -255,18 +255,18 @@ func TestErrorStateHandler(t *testing.T) {
 		"story-{STORY_ID}",
 		"{AGENT_ID}/{STORY_ID}",
 	)
-	// Note: SetWorkspaceManager method not available, skipping workspace setup
+	// Note: SetWorkspaceManager method not available, skipping workspace setup.
 
-	// Set up state data
+	// Set up state data.
 	coder.BaseStateMachine.SetStateData(KeyStoryID, "050")
 	coder.BaseStateMachine.SetStateData(KeyErrorMessage, "test error")
 	coder.BaseStateMachine.SetStateData(KeyTaskContent, "test task")
 
-	// Test the error handler
+	// Test the error handler.
 	ctx := context.Background()
 	nextState, done, err := coder.handleError(ctx, coder.BaseStateMachine)
 
-	// Should not error
+	// Should not error.
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestErrorStateHandler(t *testing.T) {
 		t.Errorf("Expected next state %s, got %s", proto.StateError, nextState)
 	}
 
-	// Should be terminal
+	// Should be terminal.
 	if !done {
 		t.Error("Error state should be terminal")
 	}
@@ -293,16 +293,16 @@ func TestErrorStateHandler(t *testing.T) {
 	}
 }
 
-// Mock LLM client for testing
+// Mock LLM client for testing.
 type mockLLMClient struct{}
 
-func (m *mockLLMClient) Complete(ctx context.Context, req agent.CompletionRequest) (agent.CompletionResponse, error) {
+func (m *mockLLMClient) Complete(_ context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
 	return agent.CompletionResponse{
 		Content: "Mock response",
 	}, nil
 }
 
-func (m *mockLLMClient) Stream(ctx context.Context, req agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
+func (m *mockLLMClient) Stream(_ context.Context, _ agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
 	ch := make(chan agent.StreamChunk, 1)
 	ch <- agent.StreamChunk{Content: "Mock response", Done: true}
 	close(ch)

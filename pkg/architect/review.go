@@ -11,7 +11,12 @@ import (
 	"orchestrator/pkg/templates"
 )
 
-// ReviewEvaluator manages code review processing for the REVIEWING state
+const (
+	reviewStatusApproved   = "approved"
+	reviewStatusNeedsFixes = "needs_fixes"
+)
+
+// ReviewEvaluator manages code review processing for the REVIEWING state.
 type ReviewEvaluator struct {
 	llmClient         LLMClient
 	renderer          *templates.Renderer
@@ -20,11 +25,11 @@ type ReviewEvaluator struct {
 	escalationHandler *EscalationHandler
 	mergeCh           chan<- string // Channel to signal completed merges
 
-	// Track pending reviews
+	// Track pending reviews.
 	pendingReviews map[string]*PendingReview // reviewID -> PendingReview
 }
 
-// PendingReview represents a code submission awaiting review
+// PendingReview represents a code submission awaiting review.
 type PendingReview struct {
 	ID             string          `json:"id"`
 	StoryID        string          `json:"story_id"`
@@ -33,7 +38,7 @@ type PendingReview struct {
 	CodeContent    string          `json:"code_content"`
 	Context        map[string]any  `json:"context"`
 	SubmittedAt    time.Time       `json:"submitted_at"`
-	Status         string          `json:"status"` // "pending", "approved", "rejected", "needs_fixes", "escalated"
+	Status         string          `json:"status"` // "pending", reviewStatusApproved, "rejected", reviewStatusNeedsFixes, "escalated"
 	ReviewNotes    string          `json:"review_notes,omitempty"`
 	ReviewedAt     *time.Time      `json:"reviewed_at,omitempty"`
 	ChecksRun      []string        `json:"checks_run,omitempty"`
@@ -42,16 +47,16 @@ type PendingReview struct {
 	ReviewHistory  []ReviewAttempt `json:"review_history,omitempty"` // Track all review attempts
 }
 
-// ReviewAttempt represents a single review attempt
+// ReviewAttempt represents a single review attempt.
 type ReviewAttempt struct {
 	AttemptNumber int       `json:"attempt_number"`
 	ReviewedAt    time.Time `json:"reviewed_at"`
-	Result        string    `json:"result"` // "approved", "needs_fixes"
+	Result        string    `json:"result"` // reviewStatusApproved, reviewStatusNeedsFixes
 	ReviewNotes   string    `json:"review_notes"`
 	ChecksPassed  bool      `json:"checks_passed"`
 }
 
-// NewReviewEvaluator creates a new review evaluator
+// NewReviewEvaluator creates a new review evaluator.
 func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string) *ReviewEvaluator {
 	return &ReviewEvaluator{
 		llmClient:         llmClient,
@@ -64,9 +69,9 @@ func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue
 	}
 }
 
-// HandleResult processes a RESULT message from a coding agent (code submission)
+// HandleResult processes a RESULT message from a coding agent (code submission).
 func (re *ReviewEvaluator) HandleResult(ctx context.Context, msg *proto.AgentMsg) error {
-	// Extract submission details from message
+	// Extract submission details from message.
 	storyID, _ := msg.Payload["story_id"].(string)
 	codePath, _ := msg.Payload["code_path"].(string)
 	codeContent, _ := msg.Payload["code_content"].(string)
@@ -75,7 +80,7 @@ func (re *ReviewEvaluator) HandleResult(ctx context.Context, msg *proto.AgentMsg
 		return fmt.Errorf("invalid result message: missing story_id")
 	}
 
-	// Create pending review record
+	// Create pending review record.
 	pendingReview := &PendingReview{
 		ID:           msg.ID, // Use message ID as review ID
 		StoryID:      storyID,
@@ -89,51 +94,52 @@ func (re *ReviewEvaluator) HandleResult(ctx context.Context, msg *proto.AgentMsg
 		CheckResults: make(map[string]bool),
 	}
 
-	// Copy relevant context from message payload
+	// Copy relevant context from message payload.
 	for key, value := range msg.Payload {
 		if key != "story_id" && key != "code_path" && key != "code_content" {
 			pendingReview.Context[key] = value
 		}
 	}
 
-	// Store pending review
+	// Store pending review.
 	re.pendingReviews[pendingReview.ID] = pendingReview
 
-	// Start automated review process
+	// Start automated review process.
 	return re.performAutomatedReview(ctx, pendingReview)
 }
 
-// performAutomatedReview runs automated checks and LLM review
+// performAutomatedReview runs automated checks and LLM review.
 func (re *ReviewEvaluator) performAutomatedReview(ctx context.Context, pendingReview *PendingReview) error {
 	fmt.Printf("🔍 Starting automated review for story %s (agent %s)\n",
 		pendingReview.StoryID, pendingReview.AgentID)
 
-	// Step 1: Run automated checks (formatting, linting, tests)
+	// Step 1: Run automated checks (formatting, linting, tests).
 	checksPass, err := re.runAutomatedChecks(ctx, pendingReview)
 	if err != nil {
 		return fmt.Errorf("automated checks failed: %w", err)
 	}
 
-	// Step 2: If checks fail, generate feedback and request fixes
+	// Step 2: If checks fail, generate feedback and request fixes.
 	if !checksPass {
 		return re.requestCodeFixes(ctx, pendingReview)
 	}
 
-	// Step 3: Run LLM-based code review
+	// Step 3: Run LLM-based code review.
 	if re.llmClient != nil {
 		err = re.performLLMReview(ctx, pendingReview)
 		if err != nil {
 			return fmt.Errorf("LLM review failed: %w", err)
 		}
 	} else {
-		// Mock mode - approve automatically if checks pass
+		// Mock mode - approve automatically if checks pass.
 		return re.approveSubmission(ctx, pendingReview, "Mock approval - automated checks passed")
 	}
 
 	return nil
 }
 
-// runAutomatedChecks performs formatting, linting, and test checks
+// runAutomatedChecks performs formatting, linting, and test checks.
+//nolint:unparam // error return kept for future extensibility
 func (re *ReviewEvaluator) runAutomatedChecks(ctx context.Context, pendingReview *PendingReview) (bool, error) {
 	checks := []string{"format", "lint", "test"}
 	allPassed := true
@@ -159,15 +165,15 @@ func (re *ReviewEvaluator) runAutomatedChecks(ctx context.Context, pendingReview
 	return allPassed, nil
 }
 
-// runSingleCheck runs a specific automated check
+// runSingleCheck runs a specific automated check.
 func (re *ReviewEvaluator) runSingleCheck(ctx context.Context, checkType string, pendingReview *PendingReview) (bool, error) {
-	// Get story context for workspace determination
+	// Get story context for workspace determination.
 	story, exists := re.queue.GetStory(pendingReview.StoryID)
 	if !exists {
 		return false, fmt.Errorf("story %s not found", pendingReview.StoryID)
 	}
 
-	// Determine workspace directory - use story-specific workspace if available
+	// Determine workspace directory - use story-specific workspace if available.
 	workDir := re.workspaceDir
 	if storyWorkspace, ok := pendingReview.Context["workspace_dir"].(string); ok && storyWorkspace != "" {
 		workDir = storyWorkspace
@@ -185,115 +191,101 @@ func (re *ReviewEvaluator) runSingleCheck(ctx context.Context, checkType string,
 	}
 }
 
-// runFormatCheck checks code formatting using language-agnostic make targets
+// checkConfig holds configuration for different check types.
+type checkConfig struct {
+	checkType    string
+	llmToolType  string
+	commands     [][]string
+	failMessage  string
+	errorMessage string
+	skipMessage  string
+}
+
+// runMakeCheck runs a generic make-based check (format, lint, test).
+func (re *ReviewEvaluator) runMakeCheck(ctx context.Context, workDir string, story *QueuedStory, config *checkConfig) (bool, error) {
+	// Use LLM to determine and execute commands.
+	if re.llmClient != nil {
+		return re.runLLMToolInvocation(ctx, workDir, config.llmToolType, story)
+	}
+
+	// Fallback to standard make targets for mock mode.
+	for _, cmdArgs := range config.commands {
+		if !re.commandExists("make") || !re.makeTargetExists(workDir, cmdArgs[1]) {
+			continue
+		}
+		cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
+		cmd.Dir = workDir
+
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("%s: %s\n", config.failMessage, string(output))
+			return false, fmt.Errorf(config.errorMessage, string(output))
+		}
+
+		fmt.Printf("✅ %s passed using %s\n", config.checkType, strings.Join(cmdArgs, " "))
+		return true, nil
+	}
+
+	// If no make targets available, warn and assume pass.
+	fmt.Printf("⚠️ %s\n", config.skipMessage)
+	return true, nil
+}
+
+// runFormatCheck checks code formatting using language-agnostic make targets.
 func (re *ReviewEvaluator) runFormatCheck(ctx context.Context, workDir string, story *QueuedStory) (bool, error) {
-	// Use LLM to determine and execute formatting commands
-	if re.llmClient != nil {
-		return re.runLLMToolInvocation(ctx, workDir, "format", story)
+	config := checkConfig{
+		checkType:   "Format check",
+		llmToolType: "format",
+		commands: [][]string{
+			{"make", "format"},
+			{"make", "fmt"},
+		},
+		failMessage:  "Format check failed",
+		errorMessage: "format check failed: %s",
+		skipMessage:  "No format make targets available, skipping format check",
 	}
-
-	// Fallback to standard make targets for mock mode
-	formatCommands := [][]string{
-		{"make", "format"},
-		{"make", "fmt"},
-	}
-
-	for _, cmdArgs := range formatCommands {
-		if re.commandExists("make") && re.makeTargetExists(workDir, cmdArgs[1]) {
-			cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
-			cmd.Dir = workDir
-
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Printf("Format check failed: %s\n", string(output))
-				return false, fmt.Errorf("format check failed: %s", string(output))
-			}
-
-			fmt.Printf("✅ Format check passed using %s\n", strings.Join(cmdArgs, " "))
-			return true, nil
-		}
-	}
-
-	// If no make targets available, warn and assume pass
-	fmt.Printf("⚠️ No format make targets available, skipping format check\n")
-	return true, nil
+	return re.runMakeCheck(ctx, workDir, story, &config)
 }
 
-// runLintCheck runs linting checks using language-agnostic make targets
+// runLintCheck runs linting checks using language-agnostic make targets.
 func (re *ReviewEvaluator) runLintCheck(ctx context.Context, workDir string, story *QueuedStory) (bool, error) {
-	// Use LLM to determine and execute linting commands
-	if re.llmClient != nil {
-		return re.runLLMToolInvocation(ctx, workDir, "lint", story)
+	config := checkConfig{
+		checkType:   "Lint check",
+		llmToolType: "lint",
+		commands: [][]string{
+			{"make", "lint"},
+			{"make", "check"},
+		},
+		failMessage:  "Lint check failed",
+		errorMessage: "lint issues found: %s",
+		skipMessage:  "No lint make targets available, skipping lint check",
 	}
-
-	// Fallback to standard make targets for mock mode
-	lintCommands := [][]string{
-		{"make", "lint"},
-		{"make", "check"},
-	}
-
-	for _, cmdArgs := range lintCommands {
-		if re.commandExists("make") && re.makeTargetExists(workDir, cmdArgs[1]) {
-			cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
-			cmd.Dir = workDir
-
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Printf("Lint check failed: %s\n", string(output))
-				return false, fmt.Errorf("lint issues found: %s", string(output))
-			}
-
-			fmt.Printf("✅ Lint check passed using %s\n", strings.Join(cmdArgs, " "))
-			return true, nil
-		}
-	}
-
-	// If no linting tools available, assume pass
-	fmt.Printf("⚠️ No lint make targets available, skipping lint check\n")
-	return true, nil
+	return re.runMakeCheck(ctx, workDir, story, &config)
 }
 
-// runTestCheck runs tests using language-agnostic make targets
+// runTestCheck runs tests using language-agnostic make targets.
 func (re *ReviewEvaluator) runTestCheck(ctx context.Context, workDir string, story *QueuedStory) (bool, error) {
-	// Use LLM to determine and execute test commands
-	if re.llmClient != nil {
-		return re.runLLMToolInvocation(ctx, workDir, "test", story)
+	config := checkConfig{
+		checkType:   "Test check",
+		llmToolType: "test",
+		commands: [][]string{
+			{"make", "test"},
+			{"make", "tests"},
+		},
+		failMessage:  "Test check failed",
+		errorMessage: "tests failed: %s",
+		skipMessage:  "No test make targets available, skipping test check",
 	}
-
-	// Fallback to standard make targets for mock mode
-	testCommands := [][]string{
-		{"make", "test"},
-		{"make", "tests"},
-	}
-
-	for _, cmdArgs := range testCommands {
-		if re.commandExists("make") && re.makeTargetExists(workDir, cmdArgs[1]) {
-			cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
-			cmd.Dir = workDir
-
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Printf("Test check failed: %s\n", string(output))
-				return false, fmt.Errorf("tests failed: %s", string(output))
-			}
-
-			fmt.Printf("✅ Test check passed using %s\n", strings.Join(cmdArgs, " "))
-			return true, nil
-		}
-	}
-
-	// If no test commands available, assume pass
-	fmt.Printf("⚠️ No test make targets available, skipping test check\n")
-	return true, nil
+	return re.runMakeCheck(ctx, workDir, story, &config)
 }
 
-// commandExists checks if a command is available in PATH
+// commandExists checks if a command is available in PATH.
 func (re *ReviewEvaluator) commandExists(cmd string) bool {
 	_, err := exec.LookPath(cmd)
 	return err == nil
 }
 
-// makeTargetExists checks if a make target exists in the Makefile
+// makeTargetExists checks if a make target exists in the Makefile.
 func (re *ReviewEvaluator) makeTargetExists(workDir, target string) bool {
 	cmd := exec.Command("make", "-n", target)
 	cmd.Dir = workDir
@@ -301,9 +293,9 @@ func (re *ReviewEvaluator) makeTargetExists(workDir, target string) bool {
 	return err == nil
 }
 
-// runLLMToolInvocation uses LLM to determine and execute appropriate development tools
+// runLLMToolInvocation uses LLM to determine and execute appropriate development tools.
 func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, checkType string, story *QueuedStory) (bool, error) {
-	// Prepare template data for tool invocation prompt
+	// Prepare template data for tool invocation prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: fmt.Sprintf("Execute %s check for story %s", checkType, story.ID),
 		Context:     re.formatToolInvocationContext(workDir, checkType, story),
@@ -315,23 +307,23 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 		},
 	}
 
-	// Use code review template for automated checks
+	// Use code review template for automated checks.
 	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
 	if err != nil {
 		return false, fmt.Errorf("failed to render code review template: %w", err)
 	}
 
-	// Get LLM response with tool commands
+	// Get LLM response with tool commands.
 	response, err := re.llmClient.GenerateResponse(ctx, prompt)
 	if err != nil {
 		return false, fmt.Errorf("failed to get LLM response for tool invocation: %w", err)
 	}
 
-	// Parse and execute the LLM's tool recommendations
+	// Parse and execute the LLM's tool recommendations.
 	return re.executeLLMToolResponse(ctx, workDir, checkType, response)
 }
 
-// formatToolInvocationContext creates context for LLM tool invocation
+// formatToolInvocationContext creates context for LLM tool invocation.
 func (re *ReviewEvaluator) formatToolInvocationContext(workDir, checkType string, story *QueuedStory) string {
 	context := fmt.Sprintf(`Tool Invocation Context:
 - Check Type: %s
@@ -342,14 +334,14 @@ func (re *ReviewEvaluator) formatToolInvocationContext(workDir, checkType string
 Available Make Targets:`,
 		checkType, workDir, story.ID, story.Title)
 
-	// List available make targets
+	// List available make targets.
 	targets := re.getAvailableMakeTargets(workDir)
 	for _, target := range targets {
 		context += fmt.Sprintf("\n- %s", target)
 	}
 
 	context += "\n\nProject Structure Detection:"
-	// Add basic project structure info
+	// Add basic project structure info.
 	if re.fileExists(workDir + "/go.mod") {
 		context += "\n- Go project detected (go.mod found)"
 	}
@@ -366,7 +358,7 @@ Available Make Targets:`,
 	return context
 }
 
-// getAvailableMakeTargets lists available make targets
+// getAvailableMakeTargets lists available make targets.
 func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 	cmd := exec.Command("make", "-qp")
 	cmd.Dir = workDir
@@ -375,7 +367,7 @@ func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 		return []string{"No Makefile found"}
 	}
 
-	// Parse make output to extract targets (simplified)
+	// Parse make output to extract targets (simplified).
 	lines := strings.Split(string(output), "\n")
 	var targets []string
 	for _, line := range lines {
@@ -398,16 +390,16 @@ func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 	return targets
 }
 
-// fileExists checks if a file exists
+// fileExists checks if a file exists.
 func (re *ReviewEvaluator) fileExists(path string) bool {
 	_, err := exec.Command("test", "-f", path).Output()
 	return err == nil
 }
 
-// executeLLMToolResponse parses and executes LLM tool recommendations
+// executeLLMToolResponse parses and executes LLM tool recommendations.
 func (re *ReviewEvaluator) executeLLMToolResponse(ctx context.Context, workDir, checkType, response string) (bool, error) {
-	// For now, simple parsing - in production this would parse structured JSON responses
-	// Look for make commands in the response
+	// For now, simple parsing - in production this would parse structured JSON responses.
+	// Look for make commands in the response.
 	lines := strings.Split(response, "\n")
 
 	for _, line := range lines {
@@ -430,20 +422,20 @@ func (re *ReviewEvaluator) executeLLMToolResponse(ctx context.Context, workDir, 
 		}
 	}
 
-	// If no make commands found, fall back to default behavior
+	// If no make commands found, fall back to default behavior.
 	fmt.Printf("⚠️ No executable commands found in LLM response, using fallback\n")
 	return true, nil
 }
 
-// performLLMReview uses LLM to review the code submission
+// performLLMReview uses LLM to review the code submission.
 func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *PendingReview) error {
-	// Get story context for better review
+	// Get story context for better review.
 	story, exists := re.queue.GetStory(pendingReview.StoryID)
 	if !exists {
 		return fmt.Errorf("story %s not found in queue", pendingReview.StoryID)
 	}
 
-	// Prepare template data for code review prompt
+	// Prepare template data for code review prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: pendingReview.CodeContent,
 		Context:     re.formatReviewContext(pendingReview, story),
@@ -459,23 +451,23 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 		},
 	}
 
-	// Render code review prompt template
+	// Render code review prompt template.
 	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
 	if err != nil {
 		return fmt.Errorf("failed to render code review template: %w", err)
 	}
 
-	// Get LLM response
+	// Get LLM response.
 	review, err := re.llmClient.GenerateResponse(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to get LLM response for code review: %w", err)
 	}
 
-	// Parse LLM review response
+	// Parse LLM review response.
 	return re.processLLMReviewResponse(ctx, pendingReview, review)
 }
 
-// formatReviewContext creates a context string for the LLM review prompt
+// formatReviewContext creates a context string for the LLM review prompt.
 func (re *ReviewEvaluator) formatReviewContext(pendingReview *PendingReview, story *QueuedStory) string {
 	context := fmt.Sprintf(`Code Review Context:
 - Story ID: %s
@@ -511,7 +503,7 @@ Automated Checks Results:`,
 		story.FilePath,
 	)
 
-	// Add check results
+	// Add check results.
 	for _, check := range pendingReview.ChecksRun {
 		result := "❌ FAILED"
 		if passed, exists := pendingReview.CheckResults[check]; exists && passed {
@@ -520,7 +512,7 @@ Automated Checks Results:`,
 		context += fmt.Sprintf("\n- %s: %s", check, result)
 	}
 
-	// Add review history if this is not the first attempt
+	// Add review history if this is not the first attempt.
 	if len(pendingReview.ReviewHistory) > 0 {
 		context += "\n\nPrevious Review History:"
 		for _, attempt := range pendingReview.ReviewHistory {
@@ -532,7 +524,7 @@ Automated Checks Results:`,
 		}
 	}
 
-	// Add any additional context from the submission
+	// Add any additional context from the submission.
 	if len(pendingReview.Context) > 0 {
 		context += "\n\nSubmission Context:"
 		for key, value := range pendingReview.Context {
@@ -543,34 +535,34 @@ Automated Checks Results:`,
 	return context
 }
 
-// processLLMReviewResponse processes the LLM's review response with 3-strikes rule
+// processLLMReviewResponse processes the LLM's review response with 3-strikes rule.
 func (re *ReviewEvaluator) processLLMReviewResponse(ctx context.Context, pendingReview *PendingReview, review string) error {
-	// Parse review response - in production this would parse structured JSON
+	// Parse review response - in production this would parse structured JSON.
 	reviewLower := strings.ToLower(review)
 	now := time.Now().UTC()
 
-	// Create review attempt record
+	// Create review attempt record.
 	attemptNumber := len(pendingReview.ReviewHistory) + 1
 	checksPassed := re.allChecksPass(pendingReview.CheckResults)
 
-	// Determine review result based on LLM response and acceptance criteria
+	// Determine review result based on LLM response and acceptance criteria.
 	var result string
 	var reviewNotes string
 
-	if strings.Contains(reviewLower, "approved") || strings.Contains(reviewLower, "looks good") || strings.Contains(reviewLower, "lgtm") {
-		result = "approved"
+	if strings.Contains(reviewLower, reviewStatusApproved) || strings.Contains(reviewLower, "looks good") || strings.Contains(reviewLower, "lgtm") {
+		result = reviewStatusApproved
 		reviewNotes = review
 	} else {
-		result = "needs_fixes"
+		result = reviewStatusNeedsFixes
 		reviewNotes = review
 
-		// Check 3-strikes rule before rejecting
+		// Check 3-strikes rule before rejecting.
 		if pendingReview.RejectionCount >= 2 { // This would be the 3rd rejection
 			return re.escalateToHuman(ctx, pendingReview, review)
 		}
 	}
 
-	// Record this review attempt
+	// Record this review attempt.
 	attempt := ReviewAttempt{
 		AttemptNumber: attemptNumber,
 		ReviewedAt:    now,
@@ -580,8 +572,8 @@ func (re *ReviewEvaluator) processLLMReviewResponse(ctx context.Context, pending
 	}
 	pendingReview.ReviewHistory = append(pendingReview.ReviewHistory, attempt)
 
-	// Process based on result
-	if result == "approved" {
+	// Process based on result.
+	if result == reviewStatusApproved {
 		return re.approveSubmission(ctx, pendingReview, review)
 	} else {
 		pendingReview.RejectionCount++
@@ -589,7 +581,7 @@ func (re *ReviewEvaluator) processLLMReviewResponse(ctx context.Context, pending
 	}
 }
 
-// allChecksPass returns true if all automated checks passed
+// allChecksPass returns true if all automated checks passed.
 func (re *ReviewEvaluator) allChecksPass(checkResults map[string]bool) bool {
 	for _, passed := range checkResults {
 		if !passed {
@@ -599,22 +591,22 @@ func (re *ReviewEvaluator) allChecksPass(checkResults map[string]bool) bool {
 	return len(checkResults) > 0 // At least one check must have run
 }
 
-// escalateToHuman escalates the review to human intervention after 3 strikes
+// escalateToHuman escalates the review to human intervention after 3 strikes.
 func (re *ReviewEvaluator) escalateToHuman(ctx context.Context, pendingReview *PendingReview, review string) error {
-	// Update review record
+	// Update review record.
 	now := time.Now().UTC()
 	pendingReview.Status = "escalated"
 	pendingReview.ReviewNotes = fmt.Sprintf("Escalated to human after 3 rejections. Latest review: %s", review)
 	pendingReview.ReviewedAt = &now
 
-	// Use the escalation handler to properly escalate the review failure
+	// Use the escalation handler to properly escalate the review failure.
 	if re.escalationHandler != nil {
 		err := re.escalationHandler.EscalateReviewFailure(ctx, pendingReview.StoryID, pendingReview.AgentID, pendingReview.RejectionCount+1, review)
 		if err != nil {
 			return fmt.Errorf("failed to escalate review failure: %w", err)
 		}
 	} else {
-		// Fallback: mark story as requiring human feedback
+		// Fallback: mark story as requiring human feedback.
 		err := re.queue.MarkAwaitHumanFeedback(pendingReview.StoryID)
 		if err != nil {
 			return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", pendingReview.StoryID, err)
@@ -624,7 +616,7 @@ func (re *ReviewEvaluator) escalateToHuman(ctx context.Context, pendingReview *P
 			pendingReview.StoryID)
 	}
 
-	// Send escalation message back to agent
+	// Send escalation message back to agent.
 	err := re.sendReviewResult(ctx, pendingReview, "ESCALATED")
 	if err != nil {
 		return fmt.Errorf("failed to send escalation message: %w", err)
@@ -633,29 +625,29 @@ func (re *ReviewEvaluator) escalateToHuman(ctx context.Context, pendingReview *P
 	return nil
 }
 
-// approveSubmission marks the code as approved (story completion happens after successful merge)
+// approveSubmission marks the code as approved (story completion happens after successful merge).
 func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview *PendingReview, reviewNotes string) error {
-	// Update review record
+	// Update review record.
 	now := time.Now().UTC()
-	pendingReview.Status = "approved"
+	pendingReview.Status = reviewStatusApproved
 	pendingReview.ReviewNotes = reviewNotes
 	pendingReview.ReviewedAt = &now
 
-	// Story completion is now deferred until after successful PR merge
-	// This aligns with the new merge workflow where only successful merges mark stories as complete
+	// Story completion is now deferred until after successful PR merge.
+	// This aligns with the new merge workflow where only successful merges mark stories as complete.
 
-	// Signal merge channel for completed story
+	// Signal merge channel for completed story.
 	if re.mergeCh != nil {
 		select {
 		case re.mergeCh <- pendingReview.StoryID:
-			// Successfully signaled merge
+			// Successfully signaled merge.
 		default:
-			// Channel full, log warning but don't fail
+			// Channel full, log warning but don't fail.
 			fmt.Printf("⚠️ Warning: merge channel full for story %s\n", pendingReview.StoryID)
 		}
 	}
 
-	// Send approval message back to agent
+	// Send approval message back to agent.
 	err := re.sendReviewResult(ctx, pendingReview, proto.ApprovalStatusApproved.String())
 	if err != nil {
 		return fmt.Errorf("failed to send approval message: %w", err)
@@ -667,24 +659,24 @@ func (re *ReviewEvaluator) approveSubmission(ctx context.Context, pendingReview 
 	return nil
 }
 
-// requestCodeFixes sends feedback requesting code changes
+// requestCodeFixes sends feedback requesting code changes.
 func (re *ReviewEvaluator) requestCodeFixes(ctx context.Context, pendingReview *PendingReview) error {
-	// Update review record
+	// Update review record.
 	now := time.Now().UTC()
-	pendingReview.Status = "needs_fixes"
+	pendingReview.Status = reviewStatusNeedsFixes
 	pendingReview.ReviewedAt = &now
 
-	// Generate feedback based on failed checks
+	// Generate feedback based on failed checks.
 	feedback := re.generateFixFeedback(pendingReview)
 	pendingReview.ReviewNotes = feedback
 
-	// Mark story as waiting_review (still needs work)
+	// Mark story as waiting_review (still needs work).
 	err := re.queue.MarkWaitingReview(pendingReview.StoryID)
 	if err != nil {
 		return fmt.Errorf("failed to mark story %s as waiting review: %w", pendingReview.StoryID, err)
 	}
 
-	// Send feedback message back to agent
+	// Send feedback message back to agent.
 	err = re.sendReviewResult(ctx, pendingReview, "NEEDS_FIXES")
 	if err != nil {
 		return fmt.Errorf("failed to send feedback message: %w", err)
@@ -696,11 +688,11 @@ func (re *ReviewEvaluator) requestCodeFixes(ctx context.Context, pendingReview *
 	return nil
 }
 
-// generateFixFeedback creates feedback based on failed checks
+// generateFixFeedback creates feedback based on failed checks.
 func (re *ReviewEvaluator) generateFixFeedback(pendingReview *PendingReview) string {
 	feedback := "Code review feedback:\n\n"
 
-	// Add feedback for failed checks
+	// Add feedback for failed checks.
 	hasFailures := false
 	for check, passed := range pendingReview.CheckResults {
 		if !passed {
@@ -727,19 +719,19 @@ func (re *ReviewEvaluator) generateFixFeedback(pendingReview *PendingReview) str
 	return feedback
 }
 
-// sendReviewResult sends the review result back to the agent
+// sendReviewResult sends the review result back to the agent.
 func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *PendingReview, result string) error {
-	// Create RESULT message
+	// Create RESULT message.
 	resultMsg := proto.NewAgentMsg(
 		proto.MsgTypeRESULT,
 		"architect",           // from
 		pendingReview.AgentID, // to
 	)
 
-	// Set parent message ID to link back to the original submission
+	// Set parent message ID to link back to the original submission.
 	resultMsg.ParentMsgID = pendingReview.ID
 
-	// Set review result payload
+	// Set review result payload.
 	resultMsg.Payload["review_id"] = pendingReview.ID
 	resultMsg.Payload["story_id"] = pendingReview.StoryID
 	resultMsg.Payload["review_result"] = result
@@ -748,23 +740,23 @@ func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *
 	resultMsg.Payload["checks_run"] = pendingReview.ChecksRun
 	resultMsg.Payload["check_results"] = pendingReview.CheckResults
 
-	// Add metadata
+	// Add metadata.
 	resultMsg.SetMetadata("review_type", "automated")
 	resultMsg.SetMetadata("review_status", strings.ToLower(result))
 
-	// Log the review result for debugging
+	// Log the review result for debugging.
 	fmt.Printf("📋 Review result for story %s: %s\n",
 		pendingReview.StoryID, result)
 
-	// In a real implementation, this would be sent via the dispatcher
-	// For now, we simulate sending the message
+	// In a real implementation, this would be sent via the dispatcher.
+	// For now, we simulate sending the message.
 	fmt.Printf("📤 Sending review RESULT message to agent %s for story %s\n",
 		pendingReview.AgentID, pendingReview.StoryID)
 
 	return nil
 }
 
-// GetPendingReviews returns all pending reviews
+// GetPendingReviews returns all pending reviews.
 func (re *ReviewEvaluator) GetPendingReviews() []*PendingReview {
 	reviews := make([]*PendingReview, 0, len(re.pendingReviews))
 	for _, review := range re.pendingReviews {
@@ -773,7 +765,7 @@ func (re *ReviewEvaluator) GetPendingReviews() []*PendingReview {
 	return reviews
 }
 
-// GetReviewStatus returns statistics about review processing
+// GetReviewStatus returns statistics about review processing.
 func (re *ReviewEvaluator) GetReviewStatus() *ReviewStatus {
 	status := &ReviewStatus{
 		TotalReviews:      len(re.pendingReviews),
@@ -790,11 +782,11 @@ func (re *ReviewEvaluator) GetReviewStatus() *ReviewStatus {
 		switch review.Status {
 		case "pending":
 			status.PendingReviews++
-		case "approved":
+		case reviewStatusApproved:
 			status.ApprovedReviews++
 		case "rejected":
 			status.RejectedReviews++
-		case "needs_fixes":
+		case reviewStatusNeedsFixes:
 			status.NeedsFixesReviews++
 		}
 	}
@@ -802,11 +794,11 @@ func (re *ReviewEvaluator) GetReviewStatus() *ReviewStatus {
 	return status
 }
 
-// ClearCompletedReviews removes completed reviews from memory (cleanup)
+// ClearCompletedReviews removes completed reviews from memory (cleanup).
 func (re *ReviewEvaluator) ClearCompletedReviews() int {
 	cleared := 0
 	for id, review := range re.pendingReviews {
-		if review.Status == "approved" || review.Status == "rejected" {
+		if review.Status == reviewStatusApproved || review.Status == "rejected" {
 			delete(re.pendingReviews, id)
 			cleared++
 		}
@@ -814,7 +806,7 @@ func (re *ReviewEvaluator) ClearCompletedReviews() int {
 	return cleared
 }
 
-// ReviewStatus represents the current state of code review processing
+// ReviewStatus represents the current state of code review processing.
 type ReviewStatus struct {
 	TotalReviews      int              `json:"total_reviews"`
 	PendingReviews    int              `json:"pending_reviews"`

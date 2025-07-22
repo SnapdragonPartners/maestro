@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"orchestrator/pkg/exec"
+	"orchestrator/pkg/utils"
 )
 
 func TestShellTool_WithLocalExecutor(t *testing.T) {
@@ -41,7 +42,7 @@ func TestShellTool_WithLocalExecutor(t *testing.T) {
 }
 
 func TestShellTool_WithDockerExecutor(t *testing.T) {
-	// This test requires Docker to be available
+	// This test requires Docker to be available.
 	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine", "")
 	if !dockerExec.Available() {
 		t.Skip("Docker not available, skipping Docker executor test")
@@ -79,16 +80,16 @@ func TestShellTool_WithDockerExecutor(t *testing.T) {
 }
 
 func TestUpdateShellToolExecutor(t *testing.T) {
-	// Clear registry for clean test
+	// Clear registry for clean test.
 	globalRegistry.Clear()
 
-	// Start with local executor
+	// Start with local executor.
 	localExec := exec.NewLocalExec()
 	if err := InitializeShellTool(localExec); err != nil {
 		t.Fatalf("Failed to initialize shell tool executor: %v", err)
 	}
 
-	// Get the tool and verify it's using local executor
+	// Get the tool and verify it's using local executor.
 	tool, err := Get("shell")
 	if err != nil {
 		t.Fatalf("Failed to get shell tool: %v", err)
@@ -99,7 +100,7 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 		t.Fatalf("Expected *ShellTool, got %T", tool)
 	}
 
-	// Test with local executor
+	// Test with local executor.
 	ctx := context.Background()
 	args := map[string]any{
 		"cmd": "echo 'local test'",
@@ -110,19 +111,22 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 		t.Fatalf("Failed to execute with local executor: %v", err)
 	}
 
-	resultMap := result.(map[string]any)
+	resultMap, err := utils.AssertMapStringAny(result)
+	if err != nil {
+		t.Fatalf("Result assertion failed: %v", err)
+	}
 	if resultMap["exit_code"] != 0 {
 		t.Errorf("Expected exit_code 0, got %v", resultMap["exit_code"])
 	}
 
-	// Now switch to docker executor if available
+	// Now switch to docker executor if available.
 	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine", "")
 	if dockerExec.Available() {
 		if err := UpdateShellToolExecutor(dockerExec); err != nil {
 			t.Fatalf("Failed to update to docker executor: %v", err)
 		}
 
-		// Get the tool again and verify it's using docker executor
+		// Get the tool again and verify it's using docker executor.
 		tool, err = Get("shell")
 		if err != nil {
 			t.Fatalf("Failed to get shell tool after docker update: %v", err)
@@ -133,13 +137,16 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 			t.Fatalf("Expected *ShellTool after docker update, got %T", tool)
 		}
 
-		// Test with docker executor
+		// Test with docker executor.
 		result, err = shellTool.Exec(ctx, args)
 		if err != nil {
 			t.Fatalf("Failed to execute with docker executor: %v", err)
 		}
 
-		resultMap = result.(map[string]any)
+		resultMap, err = utils.AssertMapStringAny(result)
+		if err != nil {
+			t.Fatalf("Docker result assertion failed: %v", err)
+		}
 		if resultMap["exit_code"] != 0 {
 			t.Errorf("Expected exit_code 0 with docker, got %v", resultMap["exit_code"])
 		}

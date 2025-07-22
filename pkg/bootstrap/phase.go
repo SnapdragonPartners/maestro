@@ -12,7 +12,7 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// Phase represents the PROJECT_BOOTSTRAP orchestrator phase
+// Phase represents the PROJECT_BOOTSTRAP orchestrator phase.
 type Phase struct {
 	projectRoot      string
 	buildRegistry    *build.Registry
@@ -21,7 +21,7 @@ type Phase struct {
 	workspaceManager *coder.WorkspaceManager
 }
 
-// Config holds bootstrap configuration options
+// Config holds bootstrap configuration options.
 type Config struct {
 	Enabled                 bool                    `json:"enabled"`
 	ForceBackend            string                  `json:"force_backend"`            // Override auto-detection
@@ -35,7 +35,7 @@ type Config struct {
 	ArchitectRecommendation *PlatformRecommendation `json:"architect_recommendation"` // Architect's stack recommendation
 }
 
-// DefaultConfig returns default bootstrap configuration
+// DefaultConfig returns default bootstrap configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		Enabled:                 true,
@@ -50,13 +50,13 @@ func DefaultConfig() *Config {
 	}
 }
 
-// NewPhase creates a new bootstrap phase
+// NewPhase creates a new bootstrap phase.
 func NewPhase(projectRoot string, config *Config) *Phase {
 	if config == nil {
 		config = DefaultConfig()
 	}
 
-	// Create workspace manager for git operations using the same pattern as coder
+	// Create workspace manager for git operations using the same pattern as coder.
 	gitRunner := coder.NewDefaultGitRunner()
 	workspaceManager := coder.NewWorkspaceManager(
 		gitRunner,
@@ -77,7 +77,7 @@ func NewPhase(projectRoot string, config *Config) *Phase {
 	}
 }
 
-// PhaseResult represents the result of bootstrap phase execution
+// PhaseResult represents the result of bootstrap phase execution.
 type PhaseResult struct {
 	Success        bool              `json:"success"`
 	Backend        string            `json:"backend"`
@@ -89,7 +89,7 @@ type PhaseResult struct {
 	Metadata       map[string]string `json:"metadata"`
 }
 
-// Execute runs the PROJECT_BOOTSTRAP phase
+// Execute runs the PROJECT_BOOTSTRAP phase.
 func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 	if !p.config.Enabled {
 		p.logger.Info("Bootstrap phase disabled in configuration")
@@ -126,14 +126,14 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 	result.Metadata["backend_detected"] = backend.Name()
 	p.logger.Info("Detected backend: %s", backend.Name())
 
-	// Step 3: Check if bootstrap artifacts already exist
+	// Step 3: Check if bootstrap artifacts already exist.
 	if p.bootstrapArtifactsExist(workDir) {
 		p.logger.Info("Bootstrap artifacts already exist, skipping generation")
 		result.GeneratedFiles = []string{}
 		result.Metadata["artifacts_count"] = "0"
 		result.Metadata["artifacts_skipped"] = "already_exist"
 	} else {
-		// Generate bootstrap artifacts in workspace
+		// Generate bootstrap artifacts in workspace.
 		artifacts, err := p.generateArtifacts(ctx, backend, workDir)
 		if err != nil {
 			return p.failureResult(startTime, fmt.Errorf("artifact generation failed: %w", err))
@@ -153,7 +153,7 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 		p.logger.Info("No new artifacts to commit")
 	}
 
-	// Step 6: Success
+	// Step 6: Success.
 	result.Success = true
 	result.Duration = time.Since(startTime)
 	result.Metadata["duration_ms"] = fmt.Sprintf("%d", result.Duration.Milliseconds())
@@ -162,9 +162,9 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 	return result, nil
 }
 
-// detectBackend detects the appropriate build backend for the project
+// detectBackend detects the appropriate build backend for the project.
 func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildBackend, error) {
-	// Check for forced backend override
+	// Check for forced backend override.
 	if p.config.ForceBackend != "" {
 		backend, err := p.buildRegistry.GetByName(p.config.ForceBackend)
 		if err != nil {
@@ -174,7 +174,7 @@ func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildB
 		return backend, nil
 	}
 
-	// Check for architect recommendation
+	// Check for architect recommendation.
 	if p.config.ArchitectRecommendation != nil {
 		platformName := p.config.ArchitectRecommendation.Platform
 		backend, err := p.buildRegistry.GetByName(platformName)
@@ -187,7 +187,7 @@ func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildB
 		}
 	}
 
-	// Auto-detect backend using workspace directory
+	// Auto-detect backend using workspace directory.
 	backend, err := p.buildRegistry.Detect(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("auto-detection failed: %w", err)
@@ -196,7 +196,7 @@ func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildB
 	return backend, nil
 }
 
-// generateArtifacts generates bootstrap artifacts based on the detected backend
+// generateArtifacts generates bootstrap artifacts based on the detected backend.
 func (p *Phase) generateArtifacts(ctx context.Context, backend build.BuildBackend, workDir string) ([]string, error) {
 	generator := NewArtifactGenerator(workDir, p.config)
 
@@ -208,14 +208,14 @@ func (p *Phase) generateArtifacts(ctx context.Context, backend build.BuildBacken
 	return artifacts, nil
 }
 
-// setupWorkspace uses WorkspaceManager to create a workspace for bootstrap operations
+// setupWorkspace uses WorkspaceManager to create a workspace for bootstrap operations.
 func (p *Phase) setupWorkspace(ctx context.Context) (string, error) {
-	// For bootstrap, we'll use a dummy story ID since we're working directly on main
-	// The important thing is that we get a proper worktree from the mirror
+	// For bootstrap, we'll use a dummy story ID since we're working directly on main.
+	// The important thing is that we get a proper worktree from the mirror.
 	dummyStoryID := "bootstrap"
 	agentID := "bootstrap"
 
-	// Use projectRoot as the agent work directory for bootstrap
+	// Use projectRoot as the agent work directory for bootstrap.
 	workspaceResult, err := p.workspaceManager.SetupWorkspace(ctx, agentID, dummyStoryID, p.projectRoot)
 	if err != nil {
 		return "", fmt.Errorf("failed to setup workspace: %w", err)
@@ -224,23 +224,23 @@ func (p *Phase) setupWorkspace(ctx context.Context) (string, error) {
 	return workspaceResult.WorkDir, nil
 }
 
-// commitToMain commits the bootstrap artifacts directly to the main branch
+// commitToMain commits the bootstrap artifacts directly to the main branch.
 func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []string) error {
 	gitRunner := coder.NewDefaultGitRunner()
 
-	// Ensure we're on the main branch
+	// Ensure we're on the main branch.
 	if _, err := gitRunner.Run(ctx, workDir, "checkout", p.config.BaseBranch); err != nil {
 		return fmt.Errorf("failed to checkout %s: %w", p.config.BaseBranch, err)
 	}
 
-	// Add all artifacts to staging
+	// Add all artifacts to staging.
 	for _, artifact := range artifacts {
 		if _, err := gitRunner.Run(ctx, workDir, "add", artifact); err != nil {
 			return fmt.Errorf("failed to add %s to staging: %w", artifact, err)
 		}
 	}
 
-	// Check if there are any changes to commit
+	// Check if there are any changes to commit.
 	output, err := gitRunner.Run(ctx, workDir, "diff", "--cached", "--name-only")
 	if err != nil {
 		return fmt.Errorf("failed to check staging area: %w", err)
@@ -251,7 +251,7 @@ func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []st
 		return nil
 	}
 
-	// Commit changes
+	// Commit changes.
 	commitMessage := "Bootstrap project build system\n\nGenerated bootstrap artifacts:\n"
 	for _, artifact := range artifacts {
 		commitMessage += "- " + artifact + "\n"
@@ -264,7 +264,7 @@ func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []st
 
 	p.logger.Info("Committed bootstrap artifacts to %s", p.config.BaseBranch)
 
-	// Push the changes to remote to ensure other agents see the bootstrap artifacts
+	// Push the changes to remote to ensure other agents see the bootstrap artifacts.
 	p.logger.Info("Pushing bootstrap artifacts to remote %s", p.config.BaseBranch)
 	if _, err := gitRunner.Run(ctx, workDir, "push", "origin", p.config.BaseBranch); err != nil {
 		return fmt.Errorf("failed to push bootstrap artifacts to remote: %w", err)
@@ -274,7 +274,7 @@ func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []st
 	return nil
 }
 
-// failureResult creates a failure result with timing information
+// failureResult creates a failure result with timing information.
 func (p *Phase) failureResult(startTime time.Time, err error) (*PhaseResult, error) {
 	duration := time.Since(startTime)
 
@@ -292,7 +292,7 @@ func (p *Phase) failureResult(startTime time.Time, err error) (*PhaseResult, err
 	return result, err
 }
 
-// GetStatus returns the current status of the bootstrap phase
+// GetStatus returns the current status of the bootstrap phase.
 func (p *Phase) GetStatus() map[string]interface{} {
 	return map[string]interface{}{
 		"enabled":      p.config.Enabled,
@@ -302,16 +302,16 @@ func (p *Phase) GetStatus() map[string]interface{} {
 	}
 }
 
-// bootstrapArtifactsExist checks if key bootstrap artifacts already exist in the work directory
+// bootstrapArtifactsExist checks if key bootstrap artifacts already exist in the work directory.
 func (p *Phase) bootstrapArtifactsExist(workDir string) bool {
-	// Check for key bootstrap artifacts that indicate bootstrap has already run
+	// Check for key bootstrap artifacts that indicate bootstrap has already run.
 	keyArtifacts := []string{
 		"Makefile",       // Root Makefile is always generated unless explicitly skipped
 		".gitignore",     // Git ignore file
 		".gitattributes", // Git attributes file
 	}
 
-	// Skip Makefile check if it's disabled in config
+	// Skip Makefile check if it's disabled in config.
 	if p.config.SkipMakefile {
 		keyArtifacts = keyArtifacts[1:] // Remove Makefile from the list
 	}

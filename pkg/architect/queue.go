@@ -14,20 +14,27 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// StoryStatus represents the status of a story in the queue
+// StoryStatus represents the status of a story in the queue.
 type StoryStatus string
 
 const (
-	StatusPending            StoryStatus = "pending"
-	StatusInProgress         StoryStatus = "in_progress"
-	StatusWaitingReview      StoryStatus = "waiting_review"
-	StatusCompleted          StoryStatus = "completed"
-	StatusBlocked            StoryStatus = "blocked"
-	StatusCancelled          StoryStatus = "cancelled"
+	// StatusPending indicates a story is waiting to be started.
+	StatusPending StoryStatus = "pending"
+	// StatusInProgress indicates a story is being actively worked on.
+	StatusInProgress StoryStatus = "in_progress"
+	// StatusWaitingReview indicates a story is waiting for review.
+	StatusWaitingReview StoryStatus = "waiting_review"
+	// StatusCompleted indicates a story has been completed successfully.
+	StatusCompleted StoryStatus = "completed"
+	// StatusBlocked indicates a story is blocked and cannot proceed.
+	StatusBlocked StoryStatus = "blocked"
+	// StatusCancelled indicates a story has been cancelled.
+	StatusCancelled StoryStatus = "cancelled"
+	// StatusAwaitHumanFeedback indicates a story is waiting for human input.
 	StatusAwaitHumanFeedback StoryStatus = "await_human_feedback"
 )
 
-// QueuedStory represents a story in the architect's queue
+// QueuedStory represents a story in the architect's queue.
 type QueuedStory struct {
 	ID              string      `json:"id"`
 	Title           string      `json:"title"`
@@ -41,31 +48,31 @@ type QueuedStory struct {
 	LastUpdated     time.Time   `json:"last_updated"`
 }
 
-// Queue manages the architect's story queue with dependency resolution
+// Queue manages the architect's story queue with dependency resolution.
 type Queue struct {
 	stories      map[string]*QueuedStory
 	storiesDir   string
 	readyStoryCh chan<- string // Channel to notify when stories become ready
 }
 
-// NewQueue creates a new queue manager
+// NewQueue creates a new queue manager.
 func NewQueue(storiesDir string) *Queue {
 	return &Queue{
 		stories:    make(map[string]*QueuedStory),
 		storiesDir: storiesDir,
-		// readyStoryCh will be set by SetReadyChannel
+		// readyStoryCh will be set by SetReadyChannel.
 	}
 }
 
-// SetReadyChannel sets the channel for ready story notifications
+// SetReadyChannel sets the channel for ready story notifications.
 func (q *Queue) SetReadyChannel(ch chan<- string) {
 	q.readyStoryCh = ch
 }
 
-// LoadFromDirectory scans the stories directory and loads all story files
+// LoadFromDirectory scans the stories directory and loads all story files.
 func (q *Queue) LoadFromDirectory() error {
 	if _, err := os.Stat(q.storiesDir); os.IsNotExist(err) {
-		// Stories directory doesn't exist yet, start with empty queue
+		// Stories directory doesn't exist yet, start with empty queue.
 		return nil
 	}
 
@@ -77,18 +84,18 @@ func (q *Queue) LoadFromDirectory() error {
 	for _, file := range files {
 		story, err := q.parseStoryFile(file)
 		if err != nil {
-			// Log warning but continue with other files
+			// Log warning but continue with other files.
 			logx.Warnf("failed to parse story file %s: %v", file, err)
 			continue
 		}
 
-		// Initialize as pending if not already tracked
+		// Initialize as pending if not already tracked.
 		if existing, exists := q.stories[story.ID]; !exists {
 			story.Status = StatusPending
 			story.LastUpdated = time.Now().UTC()
 			q.stories[story.ID] = story
 		} else {
-			// Update metadata but preserve status and tracking info
+			// Update metadata but preserve status and tracking info.
 			existing.Title = story.Title
 			existing.DependsOn = story.DependsOn
 			existing.EstimatedPoints = story.EstimatedPoints
@@ -97,13 +104,13 @@ func (q *Queue) LoadFromDirectory() error {
 		}
 	}
 
-	// After loading all stories, check for initially ready ones
+	// After loading all stories, check for initially ready ones.
 	q.checkAndNotifyReady()
 
 	return nil
 }
 
-// parseStoryFile reads a story markdown file and extracts metadata
+// parseStoryFile reads a story markdown file and extracts metadata.
 func (q *Queue) parseStoryFile(filePath string) (*QueuedStory, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -114,7 +121,7 @@ func (q *Queue) parseStoryFile(filePath string) (*QueuedStory, error) {
 		FilePath: filePath,
 	}
 
-	// Parse front-matter
+	// Parse front-matter.
 	if err := q.parseFrontMatter(string(content), story); err != nil {
 		return nil, fmt.Errorf("failed to parse front-matter: %w", err)
 	}
@@ -122,9 +129,9 @@ func (q *Queue) parseStoryFile(filePath string) (*QueuedStory, error) {
 	return story, nil
 }
 
-// parseFrontMatter extracts front-matter from markdown content
+// parseFrontMatter extracts front-matter from markdown content.
 func (q *Queue) parseFrontMatter(content string, story *QueuedStory) error {
-	// Look for front-matter block
+	// Look for front-matter block.
 	frontMatterRegex := regexp.MustCompile(`(?s)^---\n(.*?)\n---`)
 	matches := frontMatterRegex.FindStringSubmatch(content)
 	if len(matches) < 2 {
@@ -140,7 +147,7 @@ func (q *Queue) parseFrontMatter(content string, story *QueuedStory) error {
 			continue
 		}
 
-		// Parse key-value pairs
+		// Parse key-value pairs.
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
 			continue
@@ -153,7 +160,7 @@ func (q *Queue) parseFrontMatter(content string, story *QueuedStory) error {
 		case "id":
 			story.ID = value
 		case "title":
-			// Remove quotes if present
+			// Remove quotes if present.
 			story.Title = strings.Trim(value, `"`)
 		case "depends_on":
 			story.DependsOn = q.parseStringArray(value)
@@ -164,7 +171,7 @@ func (q *Queue) parseFrontMatter(content string, story *QueuedStory) error {
 		}
 	}
 
-	// Validate required fields
+	// Validate required fields.
 	if story.ID == "" {
 		return fmt.Errorf("missing required field: id")
 	}
@@ -175,16 +182,16 @@ func (q *Queue) parseFrontMatter(content string, story *QueuedStory) error {
 	return nil
 }
 
-// parseStringArray parses a YAML-style array from a string
+// parseStringArray parses a YAML-style array from a string.
 func (q *Queue) parseStringArray(value string) []string {
 	value = strings.TrimSpace(value)
 
-	// Handle empty array
+	// Handle empty array.
 	if value == "[]" || value == "" {
 		return []string{}
 	}
 
-	// Remove brackets and split by comma
+	// Remove brackets and split by comma.
 	value = strings.Trim(value, "[]")
 	parts := strings.Split(value, ",")
 
@@ -200,14 +207,14 @@ func (q *Queue) parseStringArray(value string) []string {
 	return result
 }
 
-// NextReadyStory returns the next story that's ready to be worked on
+// NextReadyStory returns the next story that's ready to be worked on.
 func (q *Queue) NextReadyStory() *QueuedStory {
 	ready := q.GetReadyStories()
 	if len(ready) == 0 {
 		return nil
 	}
 
-	// Sort by estimated points (smaller first) then by ID for deterministic ordering
+	// Sort by estimated points (smaller first) then by ID for deterministic ordering.
 	sort.Slice(ready, func(i, j int) bool {
 		if ready[i].EstimatedPoints == ready[j].EstimatedPoints {
 			return ready[i].ID < ready[j].ID
@@ -218,7 +225,7 @@ func (q *Queue) NextReadyStory() *QueuedStory {
 	return ready[0]
 }
 
-// GetReadyStories returns all stories that are ready to be worked on
+// GetReadyStories returns all stories that are ready to be worked on.
 func (q *Queue) GetReadyStories() []*QueuedStory {
 	var ready []*QueuedStory
 
@@ -227,7 +234,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 			continue
 		}
 
-		// Check if all dependencies are completed
+		// Check if all dependencies are completed.
 		if q.areDependenciesMet(story) {
 			ready = append(ready, story)
 		}
@@ -236,7 +243,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 	return ready
 }
 
-// AllStoriesCompleted checks if all stories in the queue are completed
+// AllStoriesCompleted checks if all stories in the queue are completed.
 func (q *Queue) AllStoriesCompleted() bool {
 	for _, story := range q.stories {
 		if story.Status != StatusCompleted && story.Status != StatusCancelled {
@@ -246,12 +253,12 @@ func (q *Queue) AllStoriesCompleted() bool {
 	return true
 }
 
-// areDependenciesMet checks if all dependencies for a story are completed
+// areDependenciesMet checks if all dependencies for a story are completed.
 func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
 	for _, depID := range story.DependsOn {
 		dep, exists := q.stories[depID]
 		if !exists {
-			// Dependency doesn't exist - consider it as not met
+			// Dependency doesn't exist - consider it as not met.
 			return false
 		}
 		if dep.Status != StatusCompleted {
@@ -261,7 +268,7 @@ func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
 	return true
 }
 
-// MarkInProgress marks a story as in progress and assigns it to an agent
+// MarkInProgress marks a story as in progress and assigns it to an agent.
 func (q *Queue) MarkInProgress(storyID, agentID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
@@ -281,7 +288,7 @@ func (q *Queue) MarkInProgress(storyID, agentID string) error {
 	return nil
 }
 
-// MarkWaitingReview marks a story as waiting for review
+// MarkWaitingReview marks a story as waiting for review.
 func (q *Queue) MarkWaitingReview(storyID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
@@ -298,7 +305,7 @@ func (q *Queue) MarkWaitingReview(storyID string) error {
 	return nil
 }
 
-// MarkCompleted marks a story as completed
+// MarkCompleted marks a story as completed.
 func (q *Queue) MarkCompleted(storyID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
@@ -323,13 +330,13 @@ func (q *Queue) MarkCompleted(storyID string) error {
 	story.CompletedAt = &now
 	story.LastUpdated = now
 
-	// Check if any pending stories became ready due to this completion
+	// Check if any pending stories became ready due to this completion.
 	q.checkAndNotifyReady()
 
 	return nil
 }
 
-// checkAndNotifyReady checks for stories that became ready and notifies via channel
+// checkAndNotifyReady checks for stories that became ready and notifies via channel.
 func (q *Queue) checkAndNotifyReady() {
 	if q.readyStoryCh == nil {
 		return // Channel not set, skip notifications
@@ -337,18 +344,18 @@ func (q *Queue) checkAndNotifyReady() {
 
 	for _, story := range q.stories {
 		if story.Status == StatusPending && q.areDependenciesMet(story) {
-			// Try to notify (non-blocking)
+			// Try to notify (non-blocking).
 			select {
 			case q.readyStoryCh <- story.ID:
 				logx.Infof("queue: notified that story %s is ready", story.ID)
 			default:
-				// Channel full, that's OK - the dispatcher will check again
+				// Channel full, that's OK - the dispatcher will check again.
 			}
 		}
 	}
 }
 
-// MarkBlocked marks a story as blocked
+// MarkBlocked marks a story as blocked.
 func (q *Queue) MarkBlocked(storyID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
@@ -361,7 +368,7 @@ func (q *Queue) MarkBlocked(storyID string) error {
 	return nil
 }
 
-// MarkAwaitHumanFeedback marks a story as awaiting human feedback/intervention
+// MarkAwaitHumanFeedback marks a story as awaiting human feedback/intervention.
 func (q *Queue) MarkAwaitHumanFeedback(storyID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
@@ -374,14 +381,14 @@ func (q *Queue) MarkAwaitHumanFeedback(storyID string) error {
 	return nil
 }
 
-// MarkPending resets a story to pending status for reassignment (used for requeuing)
+// MarkPending resets a story to pending status for reassignment (used for requeuing).
 func (q *Queue) MarkPending(storyID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	// Clear assignment and reset to pending
+	// Clear assignment and reset to pending.
 	story.Status = StatusPending
 	story.AssignedAgent = ""
 	story.StartedAt = nil
@@ -390,20 +397,20 @@ func (q *Queue) MarkPending(storyID string) error {
 	return nil
 }
 
-// GetStory returns a story by ID
+// GetStory returns a story by ID.
 func (q *Queue) GetStory(storyID string) (*QueuedStory, bool) {
 	story, exists := q.stories[storyID]
 	return story, exists
 }
 
-// GetAllStories returns all stories in the queue
+// GetAllStories returns all stories in the queue.
 func (q *Queue) GetAllStories() []*QueuedStory {
 	stories := make([]*QueuedStory, 0, len(q.stories))
 	for _, story := range q.stories {
 		stories = append(stories, story)
 	}
 
-	// Sort by ID for consistent ordering
+	// Sort by ID for consistent ordering.
 	sort.Slice(stories, func(i, j int) bool {
 		return stories[i].ID < stories[j].ID
 	})
@@ -411,7 +418,7 @@ func (q *Queue) GetAllStories() []*QueuedStory {
 	return stories
 }
 
-// GetStoriesByStatus returns all stories with a specific status
+// GetStoriesByStatus returns all stories with a specific status.
 func (q *Queue) GetStoriesByStatus(status StoryStatus) []*QueuedStory {
 	var filtered []*QueuedStory
 	for _, story := range q.stories {
@@ -420,7 +427,7 @@ func (q *Queue) GetStoriesByStatus(status StoryStatus) []*QueuedStory {
 		}
 	}
 
-	// Sort by ID for consistent ordering
+	// Sort by ID for consistent ordering.
 	sort.Slice(filtered, func(i, j int) bool {
 		return filtered[i].ID < filtered[j].ID
 	})
@@ -428,7 +435,7 @@ func (q *Queue) GetStoriesByStatus(status StoryStatus) []*QueuedStory {
 	return filtered
 }
 
-// DetectCycles detects circular dependencies in the story queue
+// DetectCycles detects circular dependencies in the story queue.
 func (q *Queue) DetectCycles() [][]string {
 	var cycles [][]string
 	visited := make(map[string]bool)
@@ -445,7 +452,7 @@ func (q *Queue) DetectCycles() [][]string {
 	return cycles
 }
 
-// detectCyclesDFS performs depth-first search to detect cycles
+// detectCyclesDFS performs depth-first search to detect cycles.
 func (q *Queue) detectCyclesDFS(storyID string, visited, recStack map[string]bool, path []string) []string {
 	visited[storyID] = true
 	recStack[storyID] = true
@@ -462,7 +469,7 @@ func (q *Queue) detectCyclesDFS(storyID string, visited, recStack map[string]boo
 				return cycle
 			}
 		} else if recStack[depID] {
-			// Found a cycle
+			// Found a cycle.
 			cycleStart := -1
 			for i, id := range path {
 				if id == depID {
@@ -480,13 +487,17 @@ func (q *Queue) detectCyclesDFS(storyID string, visited, recStack map[string]boo
 	return nil
 }
 
-// ToJSON serializes the queue to JSON
+// ToJSON serializes the queue to JSON.
 func (q *Queue) ToJSON() ([]byte, error) {
 	stories := q.GetAllStories()
-	return json.MarshalIndent(stories, "", "  ")
+	data, err := json.MarshalIndent(stories, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal queue to JSON: %w", err)
+	}
+	return data, nil
 }
 
-// FromJSON deserializes the queue from JSON
+// FromJSON deserializes the queue from JSON.
 func (q *Queue) FromJSON(data []byte) error {
 	var stories []*QueuedStory
 	if err := json.Unmarshal(data, &stories); err != nil {
@@ -501,7 +512,7 @@ func (q *Queue) FromJSON(data []byte) error {
 	return nil
 }
 
-// GetQueueSummary returns a summary of the queue state
+// GetQueueSummary returns a summary of the queue state.
 func (q *Queue) GetQueueSummary() map[string]any {
 	summary := make(map[string]any)
 
@@ -530,7 +541,7 @@ func (q *Queue) GetQueueSummary() map[string]any {
 	return summary
 }
 
-// parseEstimatedPoints parses estimated points from a string value
+// parseEstimatedPoints parses estimated points from a string value.
 func parseEstimatedPoints(value string) (int, error) {
 	value = strings.TrimSpace(value)
 	points, err := strconv.Atoi(value)
@@ -538,7 +549,7 @@ func parseEstimatedPoints(value string) (int, error) {
 		return 0, fmt.Errorf("invalid estimated points value: %s", value)
 	}
 
-	// Validate range (1-5 points typical for story estimation)
+	// Validate range (1-5 points typical for story estimation).
 	if points < 1 || points > 5 {
 		return 2, nil // Default to 2 points for out-of-range values
 	}

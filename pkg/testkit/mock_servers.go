@@ -7,22 +7,22 @@ import (
 	"strings"
 )
 
-// MockAnthropicServer creates an httptest server that emulates Anthropic Claude API
+// MockAnthropicServer creates an httptest server that emulates Anthropic Claude API.
 func MockAnthropicServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify it's a messages endpoint
+		// Verify it's a messages endpoint.
 		if !strings.HasSuffix(r.URL.Path, "/messages") {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
 
-		// Verify method
+		// Verify method.
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Parse the request to understand what's being asked
+		// Parse the request to understand what's being asked.
 		var request struct {
 			Model    string `json:"model"`
 			Messages []struct {
@@ -41,7 +41,7 @@ func MockAnthropicServer() *httptest.Server {
 			return
 		}
 
-		// Generate mock response based on the prompt content
+		// Generate mock response based on the prompt content.
 		var generatedText string
 		if len(request.Messages) > 0 && len(request.Messages[0].Content) > 0 {
 			prompt := request.Messages[0].Content[0].Text
@@ -50,7 +50,7 @@ func MockAnthropicServer() *httptest.Server {
 			generatedText = generateDefaultMockCode()
 		}
 
-		// Create mock Anthropic response
+		// Create mock Anthropic response.
 		response := map[string]any{
 			"id":    "msg_mock_12345",
 			"type":  "message",
@@ -71,26 +71,26 @@ func MockAnthropicServer() *httptest.Server {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response) // Error ignored for test mock
 	}))
 }
 
-// MockOpenAIServer creates an httptest server that emulates OpenAI API
+// MockOpenAIServer creates an httptest server that emulates OpenAI API.
 func MockOpenAIServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify it's a chat completions endpoint
+		// Verify it's a chat completions endpoint.
 		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
 
-		// Verify method
+		// Verify method.
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Parse the request
+		// Parse the request.
 		var request struct {
 			Model    string `json:"model"`
 			Messages []struct {
@@ -106,7 +106,7 @@ func MockOpenAIServer() *httptest.Server {
 			return
 		}
 
-		// Generate mock task based on the prompt content
+		// Generate mock task based on the prompt content.
 		var generatedContent string
 		if len(request.Messages) > 0 {
 			prompt := request.Messages[len(request.Messages)-1].Content
@@ -115,7 +115,7 @@ func MockOpenAIServer() *httptest.Server {
 			generatedContent = generateDefaultMockTask()
 		}
 
-		// Create mock OpenAI response
+		// Create mock OpenAI response.
 		response := map[string]any{
 			"id":      "chatcmpl-mock12345",
 			"object":  "chat.completion",
@@ -139,7 +139,7 @@ func MockOpenAIServer() *httptest.Server {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response) // Error ignored for test mock
 	}))
 }
 

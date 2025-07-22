@@ -8,21 +8,82 @@ import (
 	"time"
 
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/logx"
 )
 
-// BuildTool provides MCP interface for build operations
+// extractExecArgs extracts common arguments from tool execution.
+func extractExecArgs(args map[string]any) (cwd string, timeout int, err error) {
+	// Extract working directory.
+	if cwdVal, hasCwd := args["cwd"]; hasCwd {
+		if cwdStr, ok := cwdVal.(string); ok {
+			cwd = cwdStr
+		}
+	}
+
+	// Use current directory if not specified.
+	if cwd == "" {
+		cwd, err = os.Getwd()
+		if err != nil {
+			return "", 0, fmt.Errorf("failed to get working directory: %w", err)
+		}
+	}
+
+	// Make path absolute.
+	cwd, err = filepath.Abs(cwd)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+
+	// Extract timeout.
+	timeout = 300 // Default 5 minutes
+	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
+		if timeoutFloat, ok := timeoutVal.(float64); ok {
+			timeout = int(timeoutFloat)
+		}
+	}
+
+	return cwd, timeout, nil
+}
+
+// executeBuildOperation executes a build operation with common error handling.
+func executeBuildOperation(ctx context.Context, buildService *build.BuildService, operation, absPath string, timeout int, errorMsg string) (any, error) {
+	req := &build.BuildRequest{
+		ProjectRoot: absPath,
+		Operation:   operation,
+		Timeout:     timeout,
+		Context:     make(map[string]string),
+	}
+
+	response, err := buildService.ExecuteBuild(ctx, req)
+	if err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   err.Error(),
+		}, logx.Wrap(err, errorMsg)
+	}
+
+	return map[string]any{
+		"success":     response.Success,
+		"backend":     response.Backend,
+		"output":      response.Output,
+		"duration_ms": response.Duration.Milliseconds(),
+		"error":       response.Error,
+	}, nil
+}
+
+// BuildTool provides MCP interface for build operations.
 type BuildTool struct {
 	buildService *build.BuildService
 }
 
-// NewBuildTool creates a new build tool instance
+// NewBuildTool creates a new build tool instance.
 func NewBuildTool(buildService *build.BuildService) *BuildTool {
 	return &BuildTool{
 		buildService: buildService,
 	}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (b *BuildTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "build",
@@ -44,83 +105,34 @@ func (b *BuildTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (b *BuildTool) Name() string {
 	return "build"
 }
 
-// Exec executes the build operation
+// Exec executes the build operation.
 func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract working directory
-	cwd := ""
-	if cwdVal, hasCwd := args["cwd"]; hasCwd {
-		if cwdStr, ok := cwdVal.(string); ok {
-			cwd = cwdStr
-		}
-	}
-
-	// Use current directory if not specified
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get working directory: %w", err)
-		}
-	}
-
-	// Make path absolute
-	absPath, err := filepath.Abs(cwd)
+	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
+		return nil, err
 	}
 
-	// Extract timeout
-	timeout := 300 // Default 5 minutes
-	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
-		if timeoutFloat, ok := timeoutVal.(float64); ok {
-			timeout = int(timeoutFloat)
-		}
-	}
-
-	// Create build request
-	req := &build.BuildRequest{
-		ProjectRoot: absPath,
-		Operation:   "build",
-		Timeout:     timeout,
-		Context:     make(map[string]string),
-	}
-
-	// Execute build
-	response, err := b.buildService.ExecuteBuild(ctx, req)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		}, nil
-	}
-
-	return map[string]any{
-		"success":     response.Success,
-		"backend":     response.Backend,
-		"output":      response.Output,
-		"duration_ms": response.Duration.Milliseconds(),
-		"error":       response.Error,
-	}, nil
+	return executeBuildOperation(ctx, b.buildService, "build", cwd, timeout, "build execution failed")
 }
 
-// TestTool provides MCP interface for test operations
+// TestTool provides MCP interface for test operations.
 type TestTool struct {
 	buildService *build.BuildService
 }
 
-// NewTestTool creates a new test tool instance
+// NewTestTool creates a new test tool instance.
 func NewTestTool(buildService *build.BuildService) *TestTool {
 	return &TestTool{
 		buildService: buildService,
 	}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (t *TestTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "test",
@@ -142,83 +154,34 @@ func (t *TestTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (t *TestTool) Name() string {
 	return "test"
 }
 
-// Exec executes the test operation
+// Exec executes the test operation.
 func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract working directory
-	cwd := ""
-	if cwdVal, hasCwd := args["cwd"]; hasCwd {
-		if cwdStr, ok := cwdVal.(string); ok {
-			cwd = cwdStr
-		}
-	}
-
-	// Use current directory if not specified
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get working directory: %w", err)
-		}
-	}
-
-	// Make path absolute
-	absPath, err := filepath.Abs(cwd)
+	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
+		return nil, err
 	}
 
-	// Extract timeout
-	timeout := 300 // Default 5 minutes
-	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
-		if timeoutFloat, ok := timeoutVal.(float64); ok {
-			timeout = int(timeoutFloat)
-		}
-	}
-
-	// Create test request
-	req := &build.BuildRequest{
-		ProjectRoot: absPath,
-		Operation:   "test",
-		Timeout:     timeout,
-		Context:     make(map[string]string),
-	}
-
-	// Execute test
-	response, err := t.buildService.ExecuteBuild(ctx, req)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		}, nil
-	}
-
-	return map[string]any{
-		"success":     response.Success,
-		"backend":     response.Backend,
-		"output":      response.Output,
-		"duration_ms": response.Duration.Milliseconds(),
-		"error":       response.Error,
-	}, nil
+	return executeBuildOperation(ctx, t.buildService, "test", cwd, timeout, "test execution failed")
 }
 
-// LintTool provides MCP interface for linting operations
+// LintTool provides MCP interface for linting operations.
 type LintTool struct {
 	buildService *build.BuildService
 }
 
-// NewLintTool creates a new lint tool instance
+// NewLintTool creates a new lint tool instance.
 func NewLintTool(buildService *build.BuildService) *LintTool {
 	return &LintTool{
 		buildService: buildService,
 	}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (l *LintTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "lint",
@@ -240,79 +203,30 @@ func (l *LintTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (l *LintTool) Name() string {
 	return "lint"
 }
 
-// Exec executes the lint operation
+// Exec executes the lint operation.
 func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract working directory
-	cwd := ""
-	if cwdVal, hasCwd := args["cwd"]; hasCwd {
-		if cwdStr, ok := cwdVal.(string); ok {
-			cwd = cwdStr
-		}
-	}
-
-	// Use current directory if not specified
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get working directory: %w", err)
-		}
-	}
-
-	// Make path absolute
-	absPath, err := filepath.Abs(cwd)
+	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
+		return nil, err
 	}
 
-	// Extract timeout
-	timeout := 300 // Default 5 minutes
-	if timeoutVal, hasTimeout := args["timeout"]; hasTimeout {
-		if timeoutFloat, ok := timeoutVal.(float64); ok {
-			timeout = int(timeoutFloat)
-		}
-	}
-
-	// Create lint request
-	req := &build.BuildRequest{
-		ProjectRoot: absPath,
-		Operation:   "lint",
-		Timeout:     timeout,
-		Context:     make(map[string]string),
-	}
-
-	// Execute lint
-	response, err := l.buildService.ExecuteBuild(ctx, req)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		}, nil
-	}
-
-	return map[string]any{
-		"success":     response.Success,
-		"backend":     response.Backend,
-		"output":      response.Output,
-		"duration_ms": response.Duration.Milliseconds(),
-		"error":       response.Error,
-	}, nil
+	return executeBuildOperation(ctx, l.buildService, "lint", cwd, timeout, "lint execution failed")
 }
 
-// DoneTool provides MCP interface for signaling task completion
+// DoneTool provides MCP interface for signaling task completion.
 type DoneTool struct{}
 
-// NewDoneTool creates a new done tool instance
+// NewDoneTool creates a new done tool instance.
 func NewDoneTool() *DoneTool {
 	return &DoneTool{}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (d *DoneTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "done",
@@ -325,32 +239,32 @@ func (d *DoneTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (d *DoneTool) Name() string {
 	return "done"
 }
 
-// Exec executes the done operation
-func (d *DoneTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+// Exec executes the done operation.
+func (d *DoneTool) Exec(_ context.Context, _ map[string]any) (any, error) {
 	return map[string]any{
 		"success": true,
 		"message": "Task marked as complete, advancing to TESTING state",
 	}, nil
 }
 
-// BackendInfoTool provides MCP interface for backend information
+// BackendInfoTool provides MCP interface for backend information.
 type BackendInfoTool struct {
 	buildService *build.BuildService
 }
 
-// NewBackendInfoTool creates a new backend info tool instance
+// NewBackendInfoTool creates a new backend info tool instance.
 func NewBackendInfoTool(buildService *build.BuildService) *BackendInfoTool {
 	return &BackendInfoTool{
 		buildService: buildService,
 	}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (b *BackendInfoTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "backend_info",
@@ -368,43 +282,25 @@ func (b *BackendInfoTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (b *BackendInfoTool) Name() string {
 	return "backend_info"
 }
 
-// Exec executes the backend info operation
-func (b *BackendInfoTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract working directory
-	cwd := ""
-	if cwdVal, hasCwd := args["cwd"]; hasCwd {
-		if cwdStr, ok := cwdVal.(string); ok {
-			cwd = cwdStr
-		}
-	}
-
-	// Use current directory if not specified
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get working directory: %w", err)
-		}
-	}
-
-	// Make path absolute
-	absPath, err := filepath.Abs(cwd)
+// Exec executes the backend info operation.
+func (b *BackendInfoTool) Exec(_ context.Context, args map[string]any) (any, error) {
+	cwd, _, err := extractExecArgs(args)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve absolute path: %w", err)
+		return nil, err
 	}
 
-	// Get backend info
-	info, err := b.buildService.GetBackendInfo(absPath)
+	// Get backend info.
+	info, err := b.buildService.GetBackendInfo(cwd)
 	if err != nil {
 		return map[string]any{
 			"success": false,
 			"error":   err.Error(),
-		}, nil
+		}, logx.Wrap(err, "failed to get backend info")
 	}
 
 	return map[string]any{

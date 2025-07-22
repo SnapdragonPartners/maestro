@@ -10,7 +10,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestStepExecutesAtomicTransitions verifies that Step() executes exactly one state transition
+// TestStepExecutesAtomicTransitions verifies that Step() executes exactly one state transition.
 func TestStepExecutesAtomicTransitions(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -28,15 +28,15 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Set up task content to trigger state transitions
+	// Set up task content to trigger state transitions.
 	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Test task for atomic transitions")
 
-	// Initial state should be WAITING
-	if state := driver.GetCurrentState(); state.String() != "WAITING" {
+	// Initial state should be WAITING.
+	if state := driver.BaseStateMachine.GetCurrentState(); state.String() != "WAITING" {
 		t.Errorf("Expected initial state WAITING, got %s", state)
 	}
 
-	// Execute first step - should transition to PLANNING
+	// Execute first step - should transition to PLANNING.
 	done, err := driver.Step(ctx)
 	if err != nil {
 		t.Fatalf("Step failed: %v", err)
@@ -45,24 +45,24 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 		t.Error("Expected processing not to be done after first step")
 	}
 
-	// Verify state changed to PLANNING
-	if state := driver.GetCurrentState(); state != StatePlanning {
+	// Verify state changed to PLANNING.
+	if state := driver.BaseStateMachine.GetCurrentState(); state != StatePlanning {
 		t.Errorf("Expected state PLANNING after first step, got %s", state)
 	}
 
-	// Execute second step - should process planning and transition
+	// Execute second step - should process planning and transition.
 	_, err = driver.Step(ctx)
 	if err != nil {
 		t.Fatalf("Second step failed: %v", err)
 	}
 
-	// Should have moved to PLAN_REVIEW
-	if state := driver.GetCurrentState(); state != StatePlanReview {
+	// Should have moved to PLAN_REVIEW.
+	if state := driver.BaseStateMachine.GetCurrentState(); state != StatePlanReview {
 		t.Errorf("Expected state PLAN_REVIEW after second step, got %s", state)
 	}
 }
 
-// TestIdleCPUUsage verifies that the state machine doesn't consume CPU when idle
+// TestIdleCPUUsage verifies that the state machine doesn't consume CPU when idle.
 func TestIdleCPUUsage(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -80,11 +80,11 @@ func TestIdleCPUUsage(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Force into a waiting state by not providing task content
+	// Force into a waiting state by not providing task content.
 	startTime := time.Now()
 	stepCount := 0
 
-	// Try several steps - they should all be no-ops in WAITING state
+	// Try several steps - they should all be no-ops in WAITING state.
 	for i := 0; i < 5; i++ {
 		done, err := driver.Step(ctx)
 		if err != nil {
@@ -92,12 +92,12 @@ func TestIdleCPUUsage(t *testing.T) {
 		}
 		stepCount++
 
-		// Should remain in WAITING state
-		if state := driver.GetCurrentState(); state.String() != "WAITING" {
+		// Should remain in WAITING state.
+		if state := driver.BaseStateMachine.GetCurrentState(); state.String() != "WAITING" {
 			t.Errorf("Expected state WAITING during idle, got %s on step %d", state, i)
 		}
 
-		// Should not be done (there's no work to do)
+		// Should not be done (there's no work to do).
 		if done {
 			t.Errorf("Step reported done during idle state on step %d", i)
 		}
@@ -105,7 +105,7 @@ func TestIdleCPUUsage(t *testing.T) {
 
 	duration := time.Since(startTime)
 
-	// All steps should complete very quickly since they're no-ops
+	// All steps should complete very quickly since they're no-ops.
 	if duration > 100*time.Millisecond {
 		t.Errorf("Idle steps took too long: %v (expected < 100ms)", duration)
 	}
@@ -113,7 +113,7 @@ func TestIdleCPUUsage(t *testing.T) {
 	t.Logf("Executed %d idle steps in %v", stepCount, duration)
 }
 
-// TestNoNestedLoops verifies that external events don't create nested processing loops
+// TestNoNestedLoops verifies that external events don't create nested processing loops.
 func TestNoNestedLoops(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -131,10 +131,10 @@ func TestNoNestedLoops(t *testing.T) {
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
-	// Set up a task that will reach approval phase
+	// Set up a task that will reach approval phase.
 	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Test approval flow")
 
-	// Process until we reach an approval state
+	// Process until we reach an approval state.
 	maxSteps := 10
 	for step := 0; step < maxSteps; step++ {
 		done, err := driver.Step(ctx)
@@ -145,15 +145,15 @@ func TestNoNestedLoops(t *testing.T) {
 			break
 		}
 
-		// Check if we have pending approval (which would normally trigger external message)
+		// Check if we have pending approval (which would normally trigger external message).
 		if hasPending, _, _, _, _ := driver.GetPendingApprovalRequest(); hasPending {
-			// Simulate external approval result processing
-			err := driver.ProcessApprovalResult(proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String())
+			// Simulate external approval result processing.
+			err := driver.ProcessApprovalResult(context.Background(), proto.ApprovalStatusApproved.String(), proto.ApprovalTypePlan.String())
 			if err != nil {
 				t.Fatalf("Failed to process approval result: %v", err)
 			}
 
-			// Process the approval with a single step (not a full Run() loop)
+			// Process the approval with a single step (not a full Run() loop).
 			_, err = driver.Step(ctx)
 			if err != nil {
 				t.Fatalf("Failed to process approval step: %v", err)
@@ -164,7 +164,7 @@ func TestNoNestedLoops(t *testing.T) {
 		}
 	}
 
-	// Verify no hanging state
-	currentState := driver.GetCurrentState()
+	// Verify no hanging state.
+	currentState := driver.BaseStateMachine.GetCurrentState()
 	t.Logf("Final state after approval processing: %s", currentState)
 }

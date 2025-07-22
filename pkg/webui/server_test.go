@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -21,17 +22,18 @@ import (
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
+	"orchestrator/pkg/utils"
 )
 
 func TestHandleAgents(t *testing.T) {
-	// Create temporary store
+	// Create temporary store.
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Create test agents
+	// Create test agents.
 	testAgents := []struct {
 		id    string
 		state string
@@ -47,33 +49,33 @@ func TestHandleAgents(t *testing.T) {
 		}
 	}
 
-	// Create server
+	// Create server.
 	server := NewServer(nil, store, tempDir)
 
-	// Create test request
+	// Create test request.
 	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 	w := httptest.NewRecorder()
 
-	// Call handler
+	// Call handler.
 	server.handleAgents(w, req)
 
-	// Check response
+	// Check response.
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	// Parse response
+	// Parse response.
 	var agents []AgentListItem
 	if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	// Verify we got all agents
+	// Verify we got all agents.
 	if len(agents) != 3 {
 		t.Errorf("Expected 3 agents, got %d", len(agents))
 	}
 
-	// Check that agents are sorted by ID
+	// Check that agents are sorted by ID.
 	expectedOrder := []string{"architect:001", "coder:001", "coder:002"}
 	for i, agent := range agents {
 		if agent.ID != expectedOrder[i] {
@@ -81,7 +83,7 @@ func TestHandleAgents(t *testing.T) {
 		}
 	}
 
-	// Check role extraction
+	// Check role extraction.
 	if agents[0].Role != "architect" {
 		t.Errorf("Expected architect role, got %s", agents[0].Role)
 	}
@@ -89,7 +91,7 @@ func TestHandleAgents(t *testing.T) {
 		t.Errorf("Expected coder role, got %s", agents[1].Role)
 	}
 
-	// Check states
+	// Check states.
 	if agents[0].State != "WAITING" {
 		t.Errorf("Expected WAITING state, got %s", agents[0].State)
 	}
@@ -100,7 +102,7 @@ func TestHandleAgents(t *testing.T) {
 		t.Errorf("Expected CODING state, got %s", agents[2].State)
 	}
 
-	// Check timestamps are recent
+	// Check timestamps are recent.
 	for i, agent := range agents {
 		if time.Since(agent.LastTS) > time.Minute {
 			t.Errorf("Expected recent timestamp for agent %d", i)
@@ -109,20 +111,20 @@ func TestHandleAgents(t *testing.T) {
 }
 
 func TestHandleAgent(t *testing.T) {
-	// Create temporary store
+	// Create temporary store.
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Create test agent with full state
+	// Create test agent with full state.
 	agentID := "test-agent"
-	if err := store.SaveState(agentID, "TESTING", map[string]any{"test": "data"}); err != nil {
-		t.Fatalf("Failed to save agent: %v", err)
+	if saveErr := store.SaveState(agentID, "TESTING", map[string]any{"test": "data"}); saveErr != nil {
+		t.Fatalf("Failed to save agent: %v", saveErr)
 	}
 
-	// Add some additional fields
+	// Add some additional fields.
 	agentState, err := store.GetStateInfo(agentID)
 	if err != nil {
 		t.Fatalf("Failed to get agent state: %v", err)
@@ -138,10 +140,10 @@ func TestHandleAgent(t *testing.T) {
 		t.Fatalf("Failed to save updated agent: %v", err)
 	}
 
-	// Create server
+	// Create server.
 	server := NewServer(nil, store, tempDir)
 
-	// Test valid agent
+	// Test valid agent.
 	req := httptest.NewRequest(http.MethodGet, "/api/agent/test-agent", nil)
 	w := httptest.NewRecorder()
 
@@ -151,13 +153,13 @@ func TestHandleAgent(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	// Parse response
+	// Parse response.
 	var responseState state.AgentState
 	if err := json.NewDecoder(w.Body).Decode(&responseState); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	// Verify fields
+	// Verify fields.
 	if responseState.State != "TESTING" {
 		t.Errorf("Expected state TESTING, got %s", responseState.State)
 	}
@@ -174,7 +176,7 @@ func TestHandleAgent(t *testing.T) {
 		t.Errorf("Expected 1 transition, got %d", len(responseState.Transitions))
 	}
 
-	// Test non-existent agent
+	// Test non-existent agent.
 	req = httptest.NewRequest(http.MethodGet, "/api/agent/nonexistent", nil)
 	w = httptest.NewRecorder()
 
@@ -184,7 +186,7 @@ func TestHandleAgent(t *testing.T) {
 		t.Errorf("Expected status 404, got %d", w.Code)
 	}
 
-	// Test empty agent ID
+	// Test empty agent ID.
 	req = httptest.NewRequest(http.MethodGet, "/api/agent/", nil)
 	w = httptest.NewRecorder()
 
@@ -207,7 +209,7 @@ func TestHandleHealth(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	// Parse response
+	// Parse response.
 	var response map[string]string
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
@@ -225,7 +227,7 @@ func TestHandleHealth(t *testing.T) {
 func TestHandleMethodNotAllowed(t *testing.T) {
 	server := NewServer(nil, nil, "")
 
-	// Test POST to agents endpoint
+	// Test POST to agents endpoint.
 	req := httptest.NewRequest(http.MethodPost, "/api/agents", nil)
 	w := httptest.NewRecorder()
 
@@ -235,7 +237,7 @@ func TestHandleMethodNotAllowed(t *testing.T) {
 		t.Errorf("Expected status 405, got %d", w.Code)
 	}
 
-	// Test POST to health endpoint
+	// Test POST to health endpoint.
 	req = httptest.NewRequest(http.MethodPost, "/api/healthz", nil)
 	w = httptest.NewRecorder()
 
@@ -247,7 +249,7 @@ func TestHandleMethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleQueues(t *testing.T) {
-	// We'll test with nil dispatcher first
+	// We'll test with nil dispatcher first.
 	server := NewServer(nil, nil, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/queues", nil)
@@ -259,7 +261,7 @@ func TestHandleQueues(t *testing.T) {
 		t.Errorf("Expected status 503 with nil dispatcher, got %d", w.Code)
 	}
 
-	// Test method not allowed
+	// Test method not allowed.
 	req = httptest.NewRequest(http.MethodPost, "/api/queues", nil)
 	w = httptest.NewRecorder()
 
@@ -271,7 +273,7 @@ func TestHandleQueues(t *testing.T) {
 }
 
 func TestHandleUpload(t *testing.T) {
-	// Create temporary store and work directory
+	// Create temporary store and work directory.
 	tempDir := t.TempDir()
 	store, err := state.NewStore(tempDir)
 	if err != nil {
@@ -280,10 +282,10 @@ func TestHandleUpload(t *testing.T) {
 
 	workDir := t.TempDir()
 
-	// Create server with nil dispatcher first
+	// Create server with nil dispatcher first.
 	server := NewServer(nil, store, workDir)
 
-	// Test with nil dispatcher
+	// Test with nil dispatcher.
 	req := createUploadRequest(t, "test.md", "# Test content")
 	w := httptest.NewRecorder()
 
@@ -293,7 +295,7 @@ func TestHandleUpload(t *testing.T) {
 		t.Errorf("Expected status 503 with nil dispatcher, got %d", w.Code)
 	}
 
-	// Test method not allowed
+	// Test method not allowed.
 	req = httptest.NewRequest(http.MethodGet, "/api/upload", nil)
 	w = httptest.NewRecorder()
 
@@ -303,7 +305,7 @@ func TestHandleUpload(t *testing.T) {
 		t.Errorf("Expected status 405 for GET, got %d", w.Code)
 	}
 
-	// Test file too large
+	// Test file too large.
 	largeContent := strings.Repeat("x", 101*1024) // 101 KB
 	req = createUploadRequest(t, "large.md", largeContent)
 	w = httptest.NewRecorder()
@@ -314,7 +316,7 @@ func TestHandleUpload(t *testing.T) {
 		t.Errorf("Expected status 400 for large file, got %d", w.Code)
 	}
 
-	// Test invalid file extension
+	// Test invalid file extension.
 	req = createUploadRequest(t, "test.txt", "content")
 	w = httptest.NewRecorder()
 
@@ -324,11 +326,11 @@ func TestHandleUpload(t *testing.T) {
 		t.Errorf("Expected status 400 for .txt file, got %d", w.Code)
 	}
 
-	// Now test with a real dispatcher for architect state checks
+	// Now test with a real dispatcher for architect state checks.
 	dispatcher := createTestDispatcher(t)
 	server = NewServer(dispatcher, store, workDir)
 
-	// Test architect not in WAITING state (no architect)
+	// Test architect not in WAITING state (no architect).
 	req = createUploadRequest(t, "test.md", "# Content")
 	w = httptest.NewRecorder()
 
@@ -338,7 +340,7 @@ func TestHandleUpload(t *testing.T) {
 		t.Errorf("Expected status 409 when no architect, got %d", w.Code)
 	}
 
-	// Create architect in non-WAITING state
+	// Create architect in non-WAITING state.
 	if err := store.SaveState("architect:001", "BUSY", nil); err != nil {
 		t.Fatalf("Failed to save architect state: %v", err)
 	}
@@ -362,7 +364,7 @@ func TestFindArchitectState(t *testing.T) {
 
 	server := NewServer(nil, store, "")
 
-	// Test with no agents
+	// Test with no agents.
 	state, err := server.findArchitectState()
 	if err != nil {
 		t.Errorf("Expected no error with empty store, got %v", err)
@@ -371,7 +373,7 @@ func TestFindArchitectState(t *testing.T) {
 		t.Error("Expected nil state with no agents")
 	}
 
-	// Create non-architect agents
+	// Create non-architect agents.
 	if err := store.SaveState("coder:001", "CODING", nil); err != nil {
 		t.Fatalf("Failed to save coder state: %v", err)
 	}
@@ -384,7 +386,7 @@ func TestFindArchitectState(t *testing.T) {
 		t.Error("Expected nil state with no architect")
 	}
 
-	// Create architect
+	// Create architect.
 	if err := store.SaveState("architect:001", "WAITING", nil); err != nil {
 		t.Fatalf("Failed to save architect state: %v", err)
 	}
@@ -400,7 +402,7 @@ func TestFindArchitectState(t *testing.T) {
 	}
 }
 
-// Helper function to create multipart upload request
+// Helper function to create multipart upload request.
 func createUploadRequest(t *testing.T, filename, content string) *http.Request {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -424,25 +426,25 @@ func createUploadRequest(t *testing.T, filename, content string) *http.Request {
 	return req
 }
 
-// Helper function to create test dispatcher
+// Helper function to create test dispatcher.
 func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
-	// Create minimal config
+	// Create minimal config.
 	cfg := &config.Config{
 		MaxRetryAttempts:       3,
 		RetryBackoffMultiplier: 2.0,
 	}
 
-	// Create rate limiter
+	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(cfg)
 
-	// Create event log
+	// Create event log.
 	tmpDir := t.TempDir()
 	eventLog, err := eventlog.NewWriter(tmpDir, 24)
 	if err != nil {
 		t.Fatalf("Failed to create event log: %v", err)
 	}
 
-	// Create dispatcher
+	// Create dispatcher.
 	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
@@ -455,13 +457,13 @@ func TestHandleLogs(t *testing.T) {
 	tempDir := t.TempDir()
 	workDir := t.TempDir()
 
-	// Create test log files
+	// Create test log files.
 	logsDir := filepath.Join(workDir, "logs")
 	if err := os.MkdirAll(logsDir, 0755); err != nil {
 		t.Fatalf("Failed to create logs dir: %v", err)
 	}
 
-	// Create test log content
+	// Create test log content.
 	logContent := `[2025-01-01T10:00:00.000Z] [architect:001] INFO: Starting architect
 [2025-01-01T10:00:01.000Z] [coder:001] DEBUG: [coder] Starting coding task
 [2025-01-01T10:00:02.000Z] [coder:002] WARN: Task failed
@@ -480,7 +482,7 @@ func TestHandleLogs(t *testing.T) {
 
 	server := NewServer(nil, store, workDir)
 
-	// Test basic logs endpoint
+	// Test basic logs endpoint.
 	req := httptest.NewRequest(http.MethodGet, "/api/logs", nil)
 	w := httptest.NewRecorder()
 
@@ -490,7 +492,7 @@ func TestHandleLogs(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 
-	// Parse response
+	// Parse response.
 	var logs []logx.LogEntry
 	if err := json.NewDecoder(w.Body).Decode(&logs); err != nil {
 		t.Fatalf("Failed to decode logs response: %v", err)
@@ -500,7 +502,7 @@ func TestHandleLogs(t *testing.T) {
 		t.Errorf("Expected 4 log entries, got %d", len(logs))
 	}
 
-	// Test domain filtering
+	// Test domain filtering.
 	req = httptest.NewRequest(http.MethodGet, "/api/logs?domain=coder", nil)
 	w = httptest.NewRecorder()
 
@@ -515,12 +517,12 @@ func TestHandleLogs(t *testing.T) {
 		t.Fatalf("Failed to decode filtered logs: %v", err)
 	}
 
-	// Should have 2 coder entries
+	// Should have 2 coder entries.
 	if len(logs) != 2 {
 		t.Errorf("Expected 2 coder log entries, got %d", len(logs))
 	}
 
-	// Test since filtering
+	// Test since filtering.
 	since := "2025-01-01T10:00:01.500Z"
 	req = httptest.NewRequest(http.MethodGet, "/api/logs?since="+since, nil)
 	w = httptest.NewRecorder()
@@ -536,12 +538,12 @@ func TestHandleLogs(t *testing.T) {
 		t.Fatalf("Failed to decode since-filtered logs: %v", err)
 	}
 
-	// Should have entries after 10:00:01.500Z (so 10:00:02 and 10:00:03)
+	// Should have entries after 10:00:01.500Z (so 10:00:02 and 10:00:03).
 	if len(logs) != 2 {
 		t.Errorf("Expected 2 log entries after since time, got %d", len(logs))
 	}
 
-	// Test invalid since parameter
+	// Test invalid since parameter.
 	req = httptest.NewRequest(http.MethodGet, "/api/logs?since=invalid", nil)
 	w = httptest.NewRecorder()
 
@@ -551,7 +553,7 @@ func TestHandleLogs(t *testing.T) {
 		t.Errorf("Expected status 400 for invalid since, got %d", w.Code)
 	}
 
-	// Test method not allowed
+	// Test method not allowed.
 	req = httptest.NewRequest(http.MethodPost, "/api/logs", nil)
 	w = httptest.NewRecorder()
 
@@ -565,7 +567,7 @@ func TestHandleLogs(t *testing.T) {
 func TestParseLogLine(t *testing.T) {
 	server := &Server{}
 
-	// Test valid log line
+	// Test valid log line.
 	line := "[2025-01-01T10:00:00.000Z] [architect:001] INFO: Starting system"
 	entry := server.parseLogLine(line)
 
@@ -589,7 +591,7 @@ func TestParseLogLine(t *testing.T) {
 		t.Errorf("Expected message 'Starting system', got '%s'", entry.Message)
 	}
 
-	// Test log line with domain
+	// Test log line with domain.
 	line = "[2025-01-01T10:00:00.000Z] [coder:001] DEBUG: [coder] Task started"
 	entry = server.parseLogLine(line)
 
@@ -605,7 +607,7 @@ func TestParseLogLine(t *testing.T) {
 		t.Errorf("Expected message 'Task started', got '%s'", entry.Message)
 	}
 
-	// Test invalid log line
+	// Test invalid log line.
 	invalidLines := []string{
 		"invalid line",
 		"[timestamp] missing agentID",
@@ -620,7 +622,7 @@ func TestParseLogLine(t *testing.T) {
 	}
 }
 
-// MockDriver implements the agent.Driver interface for testing
+// MockDriver implements the agent.Driver interface for testing.
 type MockDriver struct {
 	id        string
 	agentType agent.AgentType
@@ -640,24 +642,24 @@ func (m *MockDriver) GetAgentType() agent.AgentType { return m.agentType }
 func (m *MockDriver) GetCurrentState() proto.State  { return m.state }
 func (m *MockDriver) SetState(state proto.State)    { m.state = state }
 
-// Minimal implementations for interface compliance (using context.Context)
-func (m *MockDriver) Initialize(ctx context.Context) error   { return nil }
-func (m *MockDriver) Run(ctx context.Context) error          { return nil }
-func (m *MockDriver) Step(ctx context.Context) (bool, error) { return false, nil }
-func (m *MockDriver) GetStateData() map[string]any           { return make(map[string]any) }
-func (m *MockDriver) ValidateState(state proto.State) error  { return nil }
-func (m *MockDriver) GetValidStates() []proto.State          { return []proto.State{} }
-func (m *MockDriver) Shutdown(ctx context.Context) error     { return nil }
+// Minimal implementations for interface compliance (using context.Context).
+func (m *MockDriver) Initialize(_ context.Context) error    { return nil }
+func (m *MockDriver) Run(_ context.Context) error           { return nil }
+func (m *MockDriver) Step(_ context.Context) (bool, error)  { return false, nil }
+func (m *MockDriver) GetStateData() map[string]any          { return make(map[string]any) }
+func (m *MockDriver) ValidateState(state proto.State) error { return nil }
+func (m *MockDriver) GetValidStates() []proto.State         { return []proto.State{} }
+func (m *MockDriver) Shutdown(ctx context.Context) error    { return nil }
 func (m *MockDriver) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	return nil, nil
+	return nil, fmt.Errorf("mock driver - no message processing implemented")
 }
 
-// TestAgentRestartMonitoring tests that the web UI properly handles agent restart scenarios
+// TestAgentRestartMonitoring tests that the web UI properly handles agent restart scenarios.
 func TestAgentRestartMonitoring(t *testing.T) {
-	// Create temporary directory and stores
+	// Create temporary directory and stores.
 	tempDir := t.TempDir()
 
-	// Create config for dispatcher
+	// Create config for dispatcher.
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
 			"test_model": {
@@ -667,7 +669,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		},
 	}
 
-	// Create rate limiter and event log
+	// Create rate limiter and event log.
 	rateLimiter := limiter.NewLimiter(cfg)
 	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
 	if err != nil {
@@ -675,28 +677,28 @@ func TestAgentRestartMonitoring(t *testing.T) {
 	}
 	defer eventLog.Close()
 
-	// Create dispatcher
+	// Create dispatcher.
 	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 
-	// Create state store for web UI
+	// Create state store for web UI.
 	store, err := state.NewStore(filepath.Join(tempDir, "states"))
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	// Create web UI server
+	// Create web UI server.
 	server := NewServer(dispatcher, store, tempDir)
 
-	// Test 1: Initial agent registration
+	// Test 1: Initial agent registration.
 	t.Run("InitialAgentRegistration", func(t *testing.T) {
-		// Create and register a mock coder agent
+		// Create and register a mock coder agent.
 		mockCoder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
 		dispatcher.Attach(mockCoder)
 
-		// Get agents from web UI
+		// Get agents from web UI.
 		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w := httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -710,7 +712,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 			t.Fatalf("Failed to decode agents response: %v", err)
 		}
 
-		// Verify agent is present
+		// Verify agent is present.
 		if len(agents) != 1 {
 			t.Fatalf("Expected 1 agent, got %d", len(agents))
 		}
@@ -726,18 +728,18 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		t.Logf("✅ Initial agent registration verified: %s in state %s", agents[0].ID, agents[0].State)
 	})
 
-	// Test 2: Agent state progression
+	// Test 2: Agent state progression.
 	t.Run("AgentStateProgression", func(t *testing.T) {
-		// Get the mock agent and change its state to DONE (triggering restart)
+		// Get the mock agent and change its state to DONE (triggering restart).
 		registeredAgents := dispatcher.GetRegisteredAgents()
 		if len(registeredAgents) != 1 {
 			t.Fatalf("Expected 1 registered agent, got %d", len(registeredAgents))
 		}
 
-		mockDriver := registeredAgents[0].Driver.(*MockDriver)
+		mockDriver := utils.MustAssert[*MockDriver](registeredAgents[0].Driver, "mock driver")
 		mockDriver.SetState(proto.StateDone)
 
-		// Get agents from web UI to verify state change
+		// Get agents from web UI to verify state change.
 		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w := httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -751,7 +753,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 			t.Fatalf("Failed to decode agents response: %v", err)
 		}
 
-		// Verify agent state changed to DONE
+		// Verify agent state changed to DONE.
 		if len(agents) != 1 {
 			t.Fatalf("Expected 1 agent, got %d", len(agents))
 		}
@@ -763,14 +765,14 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		t.Logf("✅ Agent state progression verified: %s now in state %s", agents[0].ID, agents[0].State)
 	})
 
-	// Test 3: Agent restart simulation (detach and reattach)
+	// Test 3: Agent restart simulation (detach and reattach).
 	t.Run("AgentRestartSimulation", func(t *testing.T) {
 		agentID := "claude_sonnet4:001"
 
-		// Step 1: Detach the agent (simulating shutdown)
+		// Step 1: Detach the agent (simulating shutdown).
 		dispatcher.Detach(agentID)
 
-		// Verify agent is no longer listed
+		// Verify agent is no longer listed.
 		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w := httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -784,18 +786,18 @@ func TestAgentRestartMonitoring(t *testing.T) {
 			t.Fatalf("Failed to decode agents response: %v", err)
 		}
 
-		// Agent should be gone during restart
+		// Agent should be gone during restart.
 		if len(agents) != 0 {
 			t.Errorf("Expected 0 agents during restart, got %d", len(agents))
 		}
 
 		t.Logf("✅ Agent detachment verified: agent list is empty during restart")
 
-		// Step 2: Reattach a new agent instance (simulating restart completion)
+		// Step 2: Reattach a new agent instance (simulating restart completion).
 		newMockCoder := NewMockDriver(agentID, agent.AgentTypeCoder, proto.StateWaiting)
 		dispatcher.Attach(newMockCoder)
 
-		// Verify agent reappears
+		// Verify agent reappears.
 		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w = httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -808,7 +810,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 			t.Fatalf("Failed to decode agents response: %v", err)
 		}
 
-		// Agent should be back with fresh state
+		// Agent should be back with fresh state.
 		if len(agents) != 1 {
 			t.Fatalf("Expected 1 agent after restart, got %d", len(agents))
 		}
@@ -824,13 +826,13 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		t.Logf("✅ Agent restart verified: %s reappeared in state %s", agents[0].ID, agents[0].State)
 	})
 
-	// Test 4: Multiple agent restart scenario
+	// Test 4: Multiple agent restart scenario.
 	t.Run("MultipleAgentHandling", func(t *testing.T) {
-		// Add a second agent (architect)
+		// Add a second agent (architect).
 		architect := NewMockDriver("openai_o3:001", agent.AgentTypeArchitect, proto.StateWaiting)
 		dispatcher.Attach(architect)
 
-		// Verify both agents are present
+		// Verify both agents are present.
 		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w := httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -842,7 +844,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 			t.Fatalf("Expected 2 agents, got %d", len(agents))
 		}
 
-		// Restart just the coder agent
+		// Restart just the coder agent.
 		dispatcher.Detach("claude_sonnet4:001")
 
 		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
@@ -850,7 +852,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		server.handleAgents(w, req)
 		json.NewDecoder(w.Body).Decode(&agents)
 
-		// Should have only architect now
+		// Should have only architect now.
 		if len(agents) != 1 {
 			t.Fatalf("Expected 1 agent during coder restart, got %d", len(agents))
 		}
@@ -859,7 +861,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 			t.Errorf("Expected architect to remain, got agent %s", agents[0].ID)
 		}
 
-		// Reattach coder
+		// Reattach coder.
 		newCoder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
 		dispatcher.Attach(newCoder)
 
@@ -868,7 +870,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		server.handleAgents(w, req)
 		json.NewDecoder(w.Body).Decode(&agents)
 
-		// Both should be present again
+		// Both should be present again.
 		if len(agents) != 2 {
 			t.Fatalf("Expected 2 agents after coder restart, got %d", len(agents))
 		}
@@ -879,12 +881,12 @@ func TestAgentRestartMonitoring(t *testing.T) {
 	t.Log("🎉 Agent restart monitoring continuity tests passed")
 }
 
-// TestArchitectMonitoringDuringRestart tests that architect monitoring remains stable during coder restarts
+// TestArchitectMonitoringDuringRestart tests that architect monitoring remains stable during coder restarts.
 func TestArchitectMonitoringDuringRestart(t *testing.T) {
-	// Create temporary directory and stores
+	// Create temporary directory and stores.
 	tempDir := t.TempDir()
 
-	// Create config for dispatcher
+	// Create config for dispatcher.
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
 			"test_model": {
@@ -894,7 +896,7 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 		},
 	}
 
-	// Create rate limiter and event log
+	// Create rate limiter and event log.
 	rateLimiter := limiter.NewLimiter(cfg)
 	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
 	if err != nil {
@@ -902,31 +904,31 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 	}
 	defer eventLog.Close()
 
-	// Create dispatcher
+	// Create dispatcher.
 	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 
-	// Create state store for web UI
+	// Create state store for web UI.
 	store, err := state.NewStore(filepath.Join(tempDir, "states"))
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	// Create web UI server
+	// Create web UI server.
 	server := NewServer(dispatcher, store, tempDir)
 
-	// Test scenario: Architect monitoring stability during coder restart cycles
+	// Test scenario: Architect monitoring stability during coder restart cycles.
 	t.Run("ArchitectStabilityDuringCoderRestart", func(t *testing.T) {
-		// Step 1: Register architect and coder agents
+		// Step 1: Register architect and coder agents.
 		architect := NewMockDriver("openai_o3:001", agent.AgentTypeArchitect, proto.StateWaiting)
 		coder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
 
 		dispatcher.Attach(architect)
 		dispatcher.Attach(coder)
 
-		// Verify both agents are registered
+		// Verify both agents are registered.
 		req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w := httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -938,7 +940,7 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 			t.Fatalf("Expected 2 agents initially, got %d", len(agents))
 		}
 
-		// Find architect and coder in response
+		// Find architect and coder in response.
 		var architectAgent, coderAgent *AgentListItem
 		for i := range agents {
 			if agents[i].ID == "openai_o3:001" {
@@ -955,30 +957,30 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 		t.Logf("✅ Initial setup: architect=%s (%s), coder=%s (%s)",
 			architectAgent.ID, architectAgent.State, coderAgent.ID, coderAgent.State)
 
-		// Step 2: Change architect to PROCESSING state (simulating work)
+		// Step 2: Change architect to PROCESSING state (simulating work).
 		registeredAgents := dispatcher.GetRegisteredAgents()
 		var mockArchitect *MockDriver
 		for _, regAgent := range registeredAgents {
 			if regAgent.ID == "openai_o3:001" {
-				mockArchitect = regAgent.Driver.(*MockDriver)
+				mockArchitect = utils.MustAssert[*MockDriver](regAgent.Driver, "architect mock driver")
 				break
 			}
 		}
 		mockArchitect.SetState(proto.State("MONITORING"))
 
-		// Step 3: Simulate coder restart cycle while architect is working
+		// Step 3: Simulate coder restart cycle while architect is working.
 		originalCoderID := "claude_sonnet4:001"
 
-		// Detach coder (simulating restart)
+		// Detach coder (simulating restart).
 		dispatcher.Detach(originalCoderID)
 
-		// Check architect is still visible and state unchanged
+		// Check architect is still visible and state unchanged.
 		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w = httptest.NewRecorder()
 		server.handleAgents(w, req)
 		json.NewDecoder(w.Body).Decode(&agents)
 
-		// Should have only architect now
+		// Should have only architect now.
 		if len(agents) != 1 {
 			t.Fatalf("Expected 1 agent during coder restart, got %d", len(agents))
 		}
@@ -993,11 +995,11 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 
 		t.Logf("✅ Coder restart: architect remains stable in %s state", agents[0].State)
 
-		// Step 4: Reattach new coder instance
+		// Step 4: Reattach new coder instance.
 		newCoder := NewMockDriver(originalCoderID, agent.AgentTypeCoder, proto.StateWaiting)
 		dispatcher.Attach(newCoder)
 
-		// Check both agents are visible again
+		// Check both agents are visible again.
 		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 		w = httptest.NewRecorder()
 		server.handleAgents(w, req)
@@ -1007,7 +1009,7 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 			t.Fatalf("Expected 2 agents after coder restart, got %d", len(agents))
 		}
 
-		// Verify architect state persisted and coder was recreated
+		// Verify architect state persisted and coder was recreated.
 		var newArchitectAgent, newCoderAgent *AgentListItem
 		for i := range agents {
 			if agents[i].ID == "openai_o3:001" {
@@ -1028,17 +1030,17 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 		t.Logf("✅ Post-restart verification: architect=%s (%s), coder=%s (%s)",
 			newArchitectAgent.ID, newArchitectAgent.State, newCoderAgent.ID, newCoderAgent.State)
 
-		// Step 5: Test multiple restart cycles
+		// Step 5: Test multiple restart cycles.
 		for cycle := 1; cycle <= 3; cycle++ {
 			t.Logf("Testing restart cycle %d", cycle)
 
-			// Change architect state to show it's actively working
+			// Change architect state to show it's actively working.
 			mockArchitect.SetState(proto.State("DISPATCHING"))
 
-			// Restart coder again
+			// Restart coder again.
 			dispatcher.Detach(originalCoderID)
 
-			// Quick check that architect is unaffected
+			// Quick check that architect is unaffected.
 			req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 			w = httptest.NewRecorder()
 			server.handleAgents(w, req)
@@ -1048,11 +1050,11 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 				t.Errorf("Cycle %d: architect should remain stable during coder restart", cycle)
 			}
 
-			// Reattach coder
+			// Reattach coder.
 			anotherCoder := NewMockDriver(originalCoderID, agent.AgentTypeCoder, proto.StateWaiting)
 			dispatcher.Attach(anotherCoder)
 
-			// Verify both agents present
+			// Verify both agents present.
 			req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 			w = httptest.NewRecorder()
 			server.handleAgents(w, req)

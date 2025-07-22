@@ -11,7 +11,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestPlanningContextManagement tests context save/restore functionality
+// TestPlanningContextManagement tests context save/restore functionality.
 func TestPlanningContextManagement(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "context-management-test")
 	if err != nil {
@@ -40,17 +40,17 @@ func TestPlanningContextManagement(t *testing.T) {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
 
-	// Test context storage
+	// Test context storage.
 	driver.storePlanningContext(driver.BaseStateMachine)
 
-	// Verify context was saved
+	// Verify context was saved.
 	if saved, exists := driver.BaseStateMachine.GetStateValue(KeyPlanningContextSaved); !exists {
 		t.Error("Expected planning context to be saved")
 	} else {
 		if contextData, ok := saved.(map[string]any); !ok {
 			t.Error("Expected planning context to be a map")
 		} else {
-			// Verify required fields exist
+			// Verify required fields exist.
 			expectedFields := []string{"exploration_history", "files_examined", "current_findings", "timestamp"}
 			for _, field := range expectedFields {
 				if _, exists := contextData[field]; !exists {
@@ -60,14 +60,14 @@ func TestPlanningContextManagement(t *testing.T) {
 		}
 	}
 
-	// Test context restoration
+	// Test context restoration.
 	driver.restorePlanningContext(driver.BaseStateMachine)
-	// Context restoration calls placeholder methods, so we just verify no panics occur
+	// Context restoration calls placeholder methods, so we just verify no panics occur.
 
 	t.Log("Planning context management works correctly")
 }
 
-// TestCodingContextManagement tests coding context save/restore functionality
+// TestCodingContextManagement tests coding context save/restore functionality.
 func TestCodingContextManagement(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "coding-context-test")
 	if err != nil {
@@ -96,17 +96,17 @@ func TestCodingContextManagement(t *testing.T) {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
 
-	// Test coding context storage
+	// Test coding context storage.
 	driver.storeCodingContext(driver.BaseStateMachine)
 
-	// Verify context was saved
+	// Verify context was saved.
 	if saved, exists := driver.BaseStateMachine.GetStateValue(KeyCodingContextSaved); !exists {
 		t.Error("Expected coding context to be saved")
 	} else {
 		if contextData, ok := saved.(map[string]any); !ok {
 			t.Error("Expected coding context to be a map")
 		} else {
-			// Verify required fields exist
+			// Verify required fields exist.
 			expectedFields := []string{"coding_progress", "files_created", "current_task", "timestamp"}
 			for _, field := range expectedFields {
 				if _, exists := contextData[field]; !exists {
@@ -116,14 +116,14 @@ func TestCodingContextManagement(t *testing.T) {
 		}
 	}
 
-	// Test context restoration
+	// Test context restoration.
 	driver.restoreCodingContext(driver.BaseStateMachine)
-	// Context restoration calls placeholder methods, so we just verify no panics occur
+	// Context restoration calls placeholder methods, so we just verify no panics occur.
 
 	t.Log("Coding context management works correctly")
 }
 
-// TestQuestionTransitionLogic tests question transition handlers
+// TestQuestionTransitionLogic tests question transition handlers.
 func TestQuestionTransitionLogic(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "question-transition-test")
 	if err != nil {
@@ -154,7 +154,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test planning question transition
+	// Test planning question transition.
 	questionData := map[string]any{
 		"question": "How should I implement this feature?",
 		"context":  "Found existing patterns in codebase",
@@ -170,7 +170,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 		t.Errorf("Expected transition to QUESTION, got %s", nextState)
 	}
 
-	// Verify question data was set correctly
+	// Verify question data was set correctly.
 	if content, exists := driver.BaseStateMachine.GetStateValue(string(stateDataKeyQuestionContent)); !exists || content != "How should I implement this feature?" {
 		t.Error("Question content not set correctly")
 	}
@@ -179,7 +179,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 		t.Error("Question origin not set correctly")
 	}
 
-	// Test coding question transition
+	// Test coding question transition.
 	driver.BaseStateMachine.SetStateData(KeyQuestionSubmitted, nil) // Reset
 	nextState, _, err = driver.handleCodingQuestionTransition(ctx, driver.BaseStateMachine, questionData)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestQuestionTransitionLogic(t *testing.T) {
 	t.Log("Question transition logic works correctly across all states")
 }
 
-// TestPlanSubmissionHandling tests plan submission workflow
+// TestPlanSubmissionHandling tests plan submission workflow.
 func TestPlanSubmissionHandling(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "plan-submission-test")
 	if err != nil {
@@ -228,7 +228,7 @@ func TestPlanSubmissionHandling(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test plan submission handling
+	// Test plan submission handling.
 	planData := map[string]any{
 		KeyPlan:               "Comprehensive implementation plan for JWT auth system",
 		"confidence":          "HIGH",
@@ -245,7 +245,7 @@ func TestPlanSubmissionHandling(t *testing.T) {
 		t.Errorf("Expected transition to PLAN_REVIEW, got %s", nextState)
 	}
 
-	// Verify plan data was stored correctly
+	// Verify plan data was stored correctly.
 	if plan, exists := driver.BaseStateMachine.GetStateValue(KeyPlan); !exists || plan != planData[KeyPlan] {
 		t.Error("Plan content not stored correctly")
 	}
@@ -262,12 +262,12 @@ func TestPlanSubmissionHandling(t *testing.T) {
 		t.Error("Plan risks not stored correctly")
 	}
 
-	// Verify completion timestamp was set
+	// Verify completion timestamp was set.
 	if _, exists := driver.BaseStateMachine.GetStateValue(KeyPlanningCompletedAt); !exists {
 		t.Error("Planning completion timestamp not set")
 	}
 
-	// Verify plan submission trigger was cleared
+	// Verify plan submission trigger was cleared.
 	if trigger, exists := driver.BaseStateMachine.GetStateValue(KeyPlanSubmitted); exists && trigger != nil {
 		t.Error("Plan submission trigger should be cleared after processing")
 	}
@@ -275,7 +275,7 @@ func TestPlanSubmissionHandling(t *testing.T) {
 	t.Log("Plan submission handling works correctly")
 }
 
-// TestContainerConfigurationMethods tests container mount configuration
+// TestContainerConfigurationMethods tests container mount configuration.
 func TestContainerConfigurationMethods(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "container-config-test")
 	if err != nil {
@@ -306,9 +306,9 @@ func TestContainerConfigurationMethods(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test container configuration method exists and doesn't panic
-	// In mock mode, this will likely fail due to no actual container runtime
-	// but we're testing that the method signature and basic logic works
+	// Test container configuration method exists and doesn't panic.
+	// In mock mode, this will likely fail due to no actual container runtime.
+	// but we're testing that the method signature and basic logic works.
 	err = driver.configureWorkspaceMount(ctx, true, "unit-test-readonly")
 	if err != nil {
 		t.Logf("Container configuration failed in mock mode (expected): %v", err)
@@ -319,7 +319,7 @@ func TestContainerConfigurationMethods(t *testing.T) {
 		t.Logf("Container configuration failed in mock mode (expected): %v", err)
 	}
 
-	// Test that the method doesn't panic with various inputs
+	// Test that the method doesn't panic with various inputs.
 	testCases := []struct {
 		readonly bool
 		purpose  string
@@ -334,7 +334,7 @@ func TestContainerConfigurationMethods(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.purpose, func(t *testing.T) {
 			err := driver.configureWorkspaceMount(ctx, tc.readonly, tc.purpose)
-			// We expect this to fail in mock mode, but not panic
+			// We expect this to fail in mock mode, but not panic.
 			if err != nil {
 				t.Logf("Container config for %s failed in mock mode (expected): %v", tc.purpose, err)
 			}
@@ -344,7 +344,7 @@ func TestContainerConfigurationMethods(t *testing.T) {
 	t.Log("Container configuration methods work correctly")
 }
 
-// TestHelperMethods tests various helper methods used in enhanced planning
+// TestHelperMethods tests various helper methods used in enhanced planning.
 func TestHelperMethods(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "helper-methods-test")
 	if err != nil {
@@ -373,7 +373,7 @@ func TestHelperMethods(t *testing.T) {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
 
-	// Test placeholder helper methods don't panic
+	// Test placeholder helper methods don't panic.
 	explorationHistory := driver.getExplorationHistory()
 	if explorationHistory == nil {
 		t.Error("Expected exploration history to not be nil")
@@ -419,7 +419,7 @@ func TestHelperMethods(t *testing.T) {
 		t.Error("Expected current fixes to not be nil")
 	}
 
-	// Test restore methods don't panic
+	// Test restore methods don't panic.
 	driver.restoreExplorationHistory(explorationHistory)
 	driver.restoreFilesExamined(filesExamined)
 	driver.restoreCurrentFindings(currentFindings)
@@ -433,7 +433,7 @@ func TestHelperMethods(t *testing.T) {
 	t.Log("Helper methods work correctly")
 }
 
-// TestStateDataPreservation tests that state data is properly preserved across transitions
+// TestStateDataPreservation tests that state data is properly preserved across transitions.
 func TestStateDataPreservation(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "state-preservation-test")
 	if err != nil {
@@ -462,7 +462,7 @@ func TestStateDataPreservation(t *testing.T) {
 		t.Fatalf("Failed to create driver: %v", err)
 	}
 
-	// Set up initial state data
+	// Set up initial state data.
 	testData := map[string]any{
 		"task_content":         "Test task for state preservation",
 		KeyPlan:                "Test implementation plan",
@@ -475,7 +475,7 @@ func TestStateDataPreservation(t *testing.T) {
 		driver.BaseStateMachine.SetStateData(key, value)
 	}
 
-	// Verify all data is preserved
+	// Verify all data is preserved.
 	for key, expectedValue := range testData {
 		if actualValue, exists := driver.BaseStateMachine.GetStateValue(key); !exists {
 			t.Errorf("Expected state data key %s not found", key)
@@ -484,10 +484,10 @@ func TestStateDataPreservation(t *testing.T) {
 		}
 	}
 
-	// Test that context preservation doesn't overwrite core state data
+	// Test that context preservation doesn't overwrite core state data.
 	driver.storePlanningContext(driver.BaseStateMachine)
 
-	// Verify original data is still there
+	// Verify original data is still there.
 	for key, expectedValue := range testData {
 		if actualValue, exists := driver.BaseStateMachine.GetStateValue(key); !exists {
 			t.Errorf("State data key %s was lost after context preservation", key)

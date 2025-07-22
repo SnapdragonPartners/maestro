@@ -12,7 +12,7 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// EscalationHandler manages business question escalations and ESCALATED state
+// EscalationHandler manages business question escalations and ESCALATED state.
 type EscalationHandler struct {
 	logsDir         string
 	escalationsFile string
@@ -20,7 +20,7 @@ type EscalationHandler struct {
 	queue           *Queue
 }
 
-// EscalationEntry represents an escalated business question requiring human intervention
+// EscalationEntry represents an escalated business question requiring human intervention.
 type EscalationEntry struct {
 	ID            string         `json:"id"`
 	StoryID       string         `json:"story_id"`
@@ -36,7 +36,7 @@ type EscalationEntry struct {
 	HumanOperator string         `json:"human_operator,omitempty"`
 }
 
-// EscalationSummary provides an overview of escalation status
+// EscalationSummary provides an overview of escalation status.
 type EscalationSummary struct {
 	TotalEscalations      int                `json:"total_escalations"`
 	PendingEscalations    int                `json:"pending_escalations"`
@@ -46,7 +46,7 @@ type EscalationSummary struct {
 	Escalations           []*EscalationEntry `json:"escalations"`
 }
 
-// NewEscalationHandler creates a new escalation handler
+// NewEscalationHandler creates a new escalation handler.
 func NewEscalationHandler(logsDir string, queue *Queue) *EscalationHandler {
 	escalationsFile := filepath.Join(logsDir, "escalations.jsonl")
 
@@ -57,15 +57,15 @@ func NewEscalationHandler(logsDir string, queue *Queue) *EscalationHandler {
 		queue:           queue,
 	}
 
-	// Load existing escalations
-	handler.loadEscalations()
+	// Load existing escalations.
+	_ = handler.loadEscalations() // Ignore error for initialization
 
 	return handler
 }
 
-// EscalateBusinessQuestion escalates a business question to human intervention
+// EscalateBusinessQuestion escalates a business question to human intervention.
 func (eh *EscalationHandler) EscalateBusinessQuestion(ctx context.Context, pendingQ *PendingQuestion) error {
-	// Create escalation entry
+	// Create escalation entry.
 	escalation := &EscalationEntry{
 		ID:          fmt.Sprintf("esc_%s_%d", pendingQ.ID, time.Now().Unix()),
 		StoryID:     pendingQ.StoryID,
@@ -78,15 +78,15 @@ func (eh *EscalationHandler) EscalateBusinessQuestion(ctx context.Context, pendi
 		Priority:    eh.determinePriority(pendingQ.Question, pendingQ.Context),
 	}
 
-	// Store escalation
+	// Store escalation.
 	eh.escalations[escalation.ID] = escalation
 
-	// Log to escalations.jsonl
+	// Log to escalations.jsonl.
 	if err := eh.logEscalation(escalation); err != nil {
 		return fmt.Errorf("failed to log escalation: %w", err)
 	}
 
-	// Update story status to await human feedback
+	// Update story status to await human feedback.
 	if err := eh.queue.MarkAwaitHumanFeedback(escalation.StoryID); err != nil {
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
@@ -98,9 +98,9 @@ func (eh *EscalationHandler) EscalateBusinessQuestion(ctx context.Context, pendi
 	return nil
 }
 
-// EscalateReviewFailure escalates repeated code review failures to human intervention
+// EscalateReviewFailure escalates repeated code review failures to human intervention.
 func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID, agentID string, failureCount int, lastReview string) error {
-	// Create escalation entry for review failure
+	// Create escalation entry for review failure.
 	escalation := &EscalationEntry{
 		ID:       fmt.Sprintf("esc_review_%s_%d", storyID, time.Now().Unix()),
 		StoryID:  storyID,
@@ -117,15 +117,15 @@ func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID,
 		Priority:    "high", // Review failures are high priority
 	}
 
-	// Store escalation
+	// Store escalation.
 	eh.escalations[escalation.ID] = escalation
 
-	// Log to escalations.jsonl
+	// Log to escalations.jsonl.
 	if err := eh.logEscalation(escalation); err != nil {
 		return fmt.Errorf("failed to log escalation: %w", err)
 	}
 
-	// Update story status to await human feedback
+	// Update story status to await human feedback.
 	if err := eh.queue.MarkAwaitHumanFeedback(escalation.StoryID); err != nil {
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
@@ -136,9 +136,9 @@ func (eh *EscalationHandler) EscalateReviewFailure(ctx context.Context, storyID,
 	return nil
 }
 
-// EscalateSystemError escalates system errors that require human intervention
+// EscalateSystemError escalates system errors that require human intervention.
 func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, agentID, errorMsg string, errorContext map[string]any) error {
-	// Create escalation entry for system error
+	// Create escalation entry for system error.
 	escalation := &EscalationEntry{
 		ID:          fmt.Sprintf("esc_error_%s_%d", storyID, time.Now().Unix()),
 		StoryID:     storyID,
@@ -151,15 +151,15 @@ func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, a
 		Priority:    "critical", // System errors are critical
 	}
 
-	// Store escalation
+	// Store escalation.
 	eh.escalations[escalation.ID] = escalation
 
-	// Log to escalations.jsonl
+	// Log to escalations.jsonl.
 	if err := eh.logEscalation(escalation); err != nil {
 		return fmt.Errorf("failed to log escalation: %w", err)
 	}
 
-	// Update story status to await human feedback
+	// Update story status to await human feedback.
 	if err := eh.queue.MarkAwaitHumanFeedback(escalation.StoryID); err != nil {
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
@@ -171,27 +171,29 @@ func (eh *EscalationHandler) EscalateSystemError(ctx context.Context, storyID, a
 	return nil
 }
 
-// logEscalation appends an escalation entry to logs/escalations.jsonl
+// logEscalation appends an escalation entry to logs/escalations.jsonl.
 func (eh *EscalationHandler) logEscalation(escalation *EscalationEntry) error {
-	// Ensure logs directory exists
+	// Ensure logs directory exists.
 	if err := os.MkdirAll(eh.logsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	// Convert escalation to JSON
+	// Convert escalation to JSON.
 	jsonData, err := json.Marshal(escalation)
 	if err != nil {
 		return fmt.Errorf("failed to marshal escalation to JSON: %w", err)
 	}
 
-	// Append to escalations.jsonl
+	// Append to escalations.jsonl.
 	file, err := os.OpenFile(eh.escalationsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open escalations log file: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
-	// Write JSON line with newline
+	// Write JSON line with newline.
 	if _, err := file.WriteString(string(jsonData) + "\n"); err != nil {
 		return fmt.Errorf("failed to write escalation to log: %w", err)
 	}
@@ -199,32 +201,32 @@ func (eh *EscalationHandler) logEscalation(escalation *EscalationEntry) error {
 	return nil
 }
 
-// loadEscalations loads existing escalations from logs/escalations.jsonl
+// loadEscalations loads existing escalations from logs/escalations.jsonl.
 func (eh *EscalationHandler) loadEscalations() error {
-	// Check if escalations file exists
+	// Check if escalations file exists.
 	if _, err := os.Stat(eh.escalationsFile); os.IsNotExist(err) {
-		// No existing escalations file, start with empty set
+		// No existing escalations file, start with empty set.
 		return nil
 	}
 
-	// Read the file
+	// Read the file.
 	data, err := os.ReadFile(eh.escalationsFile)
 	if err != nil {
 		return fmt.Errorf("failed to read escalations file: %w", err)
 	}
 
-	// Parse JSONL format (one JSON object per line)
+	// Parse JSONL format (one JSON object per line).
 	content := string(data)
 	if content == "" {
 		return nil
 	}
 
-	// Split by newlines and parse each line
+	// Split by newlines and parse each line.
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
-		if line := strings.TrimSpace(line); line != "" {
+		if trimmedLine := strings.TrimSpace(line); trimmedLine != "" {
 			var escalation EscalationEntry
-			if err := json.Unmarshal([]byte(line), &escalation); err != nil {
+			if err := json.Unmarshal([]byte(trimmedLine), &escalation); err != nil {
 				logx.Warnf("failed to parse escalation line %d: %v", i+1, err)
 				continue
 			}
@@ -235,11 +237,11 @@ func (eh *EscalationHandler) loadEscalations() error {
 	return nil
 }
 
-// determinePriority determines the priority of a business question
+// determinePriority determines the priority of a business question.
 func (eh *EscalationHandler) determinePriority(question string, context map[string]any) string {
 	questionLower := strings.ToLower(question)
 
-	// Critical priority keywords
+	// Critical priority keywords.
 	criticalKeywords := []string{
 		"critical", "urgent", "emergency", "blocker", "security",
 		"data loss", "outage", "production", "customer impact",
@@ -251,7 +253,7 @@ func (eh *EscalationHandler) determinePriority(question string, context map[stri
 		}
 	}
 
-	// High priority keywords
+	// High priority keywords.
 	highKeywords := []string{
 		"important", "asap", "deadline", "revenue", "compliance",
 		"legal", "regulation", "audit", "risk",
@@ -263,7 +265,7 @@ func (eh *EscalationHandler) determinePriority(question string, context map[stri
 		}
 	}
 
-	// Medium priority keywords
+	// Medium priority keywords.
 	mediumKeywords := []string{
 		"business", "requirement", "stakeholder", "customer",
 		"policy", "strategy", "roadmap", "feature",
@@ -275,11 +277,11 @@ func (eh *EscalationHandler) determinePriority(question string, context map[stri
 		}
 	}
 
-	// Default to low priority
+	// Default to low priority.
 	return "low"
 }
 
-// GetEscalations returns all escalations, optionally filtered by status
+// GetEscalations returns all escalations, optionally filtered by status.
 func (eh *EscalationHandler) GetEscalations(status string) []*EscalationEntry {
 	var escalations []*EscalationEntry
 
@@ -289,7 +291,7 @@ func (eh *EscalationHandler) GetEscalations(status string) []*EscalationEntry {
 		}
 	}
 
-	// Sort by escalated time (newest first)
+	// Sort by escalated time (newest first).
 	for i := 0; i < len(escalations)-1; i++ {
 		for j := i + 1; j < len(escalations); j++ {
 			if escalations[i].EscalatedAt.Before(escalations[j].EscalatedAt) {
@@ -301,7 +303,7 @@ func (eh *EscalationHandler) GetEscalations(status string) []*EscalationEntry {
 	return escalations
 }
 
-// GetEscalationSummary returns a summary of all escalations
+// GetEscalationSummary returns a summary of all escalations.
 func (eh *EscalationHandler) GetEscalationSummary() *EscalationSummary {
 	summary := &EscalationSummary{
 		TotalEscalations:      len(eh.escalations),
@@ -313,7 +315,7 @@ func (eh *EscalationHandler) GetEscalationSummary() *EscalationSummary {
 	}
 
 	for _, escalation := range eh.escalations {
-		// Count by status
+		// Count by status.
 		switch escalation.Status {
 		case "pending":
 			summary.PendingEscalations++
@@ -321,31 +323,31 @@ func (eh *EscalationHandler) GetEscalationSummary() *EscalationSummary {
 			summary.ResolvedEscalations++
 		}
 
-		// Count by type
+		// Count by type.
 		summary.EscalationsByType[escalation.Type]++
 
-		// Count by priority
+		// Count by priority.
 		summary.EscalationsByPriority[escalation.Priority]++
 	}
 
 	return summary
 }
 
-// ResolveEscalation marks an escalation as resolved
+// ResolveEscalation marks an escalation as resolved.
 func (eh *EscalationHandler) ResolveEscalation(escalationID, resolution, humanOperator string) error {
 	escalation, exists := eh.escalations[escalationID]
 	if !exists {
 		return fmt.Errorf("escalation %s not found", escalationID)
 	}
 
-	// Update escalation status
+	// Update escalation status.
 	now := time.Now().UTC()
 	escalation.Status = "resolved"
 	escalation.Resolution = resolution
 	escalation.HumanOperator = humanOperator
 	escalation.ResolvedAt = &now
 
-	// Log the resolution
+	// Log the resolution.
 	if err := eh.logEscalation(escalation); err != nil {
 		return fmt.Errorf("failed to log escalation resolution: %w", err)
 	}
@@ -355,18 +357,18 @@ func (eh *EscalationHandler) ResolveEscalation(escalationID, resolution, humanOp
 	return nil
 }
 
-// AcknowledgeEscalation marks an escalation as acknowledged (seen by human)
+// AcknowledgeEscalation marks an escalation as acknowledged (seen by human).
 func (eh *EscalationHandler) AcknowledgeEscalation(escalationID, humanOperator string) error {
 	escalation, exists := eh.escalations[escalationID]
 	if !exists {
 		return fmt.Errorf("escalation %s not found", escalationID)
 	}
 
-	// Update escalation status
+	// Update escalation status.
 	escalation.Status = "acknowledged"
 	escalation.HumanOperator = humanOperator
 
-	// Log the acknowledgment
+	// Log the acknowledgment.
 	if err := eh.logEscalation(escalation); err != nil {
 		return fmt.Errorf("failed to log escalation acknowledgment: %w", err)
 	}
@@ -376,9 +378,9 @@ func (eh *EscalationHandler) AcknowledgeEscalation(escalationID, humanOperator s
 	return nil
 }
 
-// LogTimeout logs when an escalation times out (used by the timeout guard)
+// LogTimeout logs when an escalation times out (used by the timeout guard).
 func (eh *EscalationHandler) LogTimeout(escalatedAt time.Time, duration time.Duration) error {
-	// Create a special timeout escalation entry for logging purposes
+	// Create a special timeout escalation entry for logging purposes.
 	resolvedTime := time.Now().UTC()
 	timeoutEscalation := &EscalationEntry{
 		ID:       fmt.Sprintf("timeout_%d", time.Now().Unix()),
@@ -398,7 +400,7 @@ func (eh *EscalationHandler) LogTimeout(escalatedAt time.Time, duration time.Dur
 		ResolvedAt:    &resolvedTime,
 	}
 
-	// Log the timeout event
+	// Log the timeout event.
 	if err := eh.logEscalation(timeoutEscalation); err != nil {
 		return fmt.Errorf("failed to log escalation timeout: %w", err)
 	}

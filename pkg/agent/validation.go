@@ -5,18 +5,18 @@ import (
 	"strings"
 )
 
-// MessageValidationError represents a validation error for completion messages
+// MessageValidationError represents a validation error for completion messages.
 type MessageValidationError struct {
-	Field   string
-	Value   string
-	Reason  string
+	Field  string
+	Value  string
+	Reason string
 }
 
 func (e MessageValidationError) Error() string {
 	return fmt.Sprintf("message validation error - %s: '%s' (%s)", e.Field, e.Value, e.Reason)
 }
 
-// ValidateMessages validates a slice of completion messages
+// ValidateMessages validates a slice of completion messages.
 func ValidateMessages(messages []CompletionMessage) error {
 	if len(messages) == 0 {
 		return MessageValidationError{
@@ -35,14 +35,14 @@ func ValidateMessages(messages []CompletionMessage) error {
 	return nil
 }
 
-// ValidateMessage validates a single completion message
+// ValidateMessage validates a single completion message.
 func ValidateMessage(msg CompletionMessage) error {
-	// Validate role
+	// Validate role.
 	if err := ValidateRole(msg.Role); err != nil {
 		return err
 	}
 
-	// Validate content
+	// Validate content.
 	if err := ValidateContent(msg.Content); err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func ValidateMessage(msg CompletionMessage) error {
 	return nil
 }
 
-// ValidateRole validates that a role is valid and non-empty
+// ValidateRole validates that a role is valid and non-empty.
 func ValidateRole(role CompletionRole) error {
 	roleStr := string(role)
 	if strings.TrimSpace(roleStr) == "" {
@@ -61,7 +61,7 @@ func ValidateRole(role CompletionRole) error {
 		}
 	}
 
-	// Check against known valid roles
+	// Check against known valid roles.
 	if role != RoleUser && role != RoleAssistant && role != RoleSystem {
 		return MessageValidationError{
 			Field:  "role",
@@ -73,7 +73,7 @@ func ValidateRole(role CompletionRole) error {
 	return nil
 }
 
-// ValidateContent validates that content is meaningful and not empty
+// ValidateContent validates that content is meaningful and not empty.
 func ValidateContent(content string) error {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
@@ -84,7 +84,7 @@ func ValidateContent(content string) error {
 		}
 	}
 
-	// Check for common malformed patterns
+	// Check for common malformed patterns.
 	if strings.HasPrefix(trimmed, "[]") {
 		return MessageValidationError{
 			Field:  "content",
@@ -93,17 +93,18 @@ func ValidateContent(content string) error {
 		}
 	}
 
-	// Soft limit check - warn about very long content
-	const SOFT_LIMIT = 50000 // ~50KB
-	if len(content) > SOFT_LIMIT {
-		// This is not an error, just a warning condition
-		// Callers can check the length if they need to handle this
+	// Soft limit check - warn about very long content.
+	const softLimit = 50000 // ~50KB
+	if len(content) > softLimit {
+		// This is not an error, just a warning condition.
+		// Callers can check the length if they need to handle this.
+		_ = softLimit // Mark as used for warning threshold
 	}
 
 	return nil
 }
 
-// ValidateTokenCount provides a rough validation of token limits
+// ValidateTokenCount provides a rough validation of token limits.
 func ValidateTokenCount(messages []CompletionMessage, maxTokens int) error {
 	if maxTokens <= 0 {
 		return nil // Skip validation if no limit specified
@@ -111,12 +112,12 @@ func ValidateTokenCount(messages []CompletionMessage, maxTokens int) error {
 
 	totalLength := 0
 	for _, msg := range messages {
-		// Rough approximation: 1 token ≈ 4 characters
+		// Rough approximation: 1 token ≈ 4 characters.
 		totalLength += len(msg.Role) + len(msg.Content)
 	}
-	
+
 	estimatedTokens := totalLength / 4
-	
+
 	if estimatedTokens > maxTokens {
 		return MessageValidationError{
 			Field:  "token_count",
@@ -128,23 +129,23 @@ func ValidateTokenCount(messages []CompletionMessage, maxTokens int) error {
 	return nil
 }
 
-// SanitizeMessage cleans up a message to make it valid
+// SanitizeMessage cleans up a message to make it valid.
 func SanitizeMessage(msg CompletionMessage) CompletionMessage {
-	// Clean up role
+	// Clean up role.
 	roleStr := strings.TrimSpace(string(msg.Role))
 	role := CompletionRole(roleStr)
 	if roleStr == "" || (role != RoleUser && role != RoleAssistant && role != RoleSystem) {
 		role = RoleUser // Default to user role
 	}
 
-	// Clean up content
+	// Clean up content.
 	content := strings.TrimSpace(msg.Content)
-	
-	// Remove malformed role prefixes
+
+	// Remove malformed role prefixes.
 	if strings.HasPrefix(content, "[]") {
 		content = strings.TrimSpace(content[2:])
 	}
-	
+
 	// Remove other common bracket prefixes like "[assistant]", "[user]", etc.
 	for _, prefix := range []string{"[assistant]", "[user]", "[system]", "[tool]"} {
 		if strings.HasPrefix(strings.ToLower(content), prefix) {
@@ -152,7 +153,7 @@ func SanitizeMessage(msg CompletionMessage) CompletionMessage {
 		}
 	}
 
-	// Ensure we have some content
+	// Ensure we have some content.
 	if content == "" {
 		content = "(empty message)"
 	}
@@ -163,7 +164,7 @@ func SanitizeMessage(msg CompletionMessage) CompletionMessage {
 	}
 }
 
-// ValidateAndSanitizeMessages validates and cleans up a slice of messages
+// ValidateAndSanitizeMessages validates and cleans up a slice of messages.
 func ValidateAndSanitizeMessages(messages []CompletionMessage) ([]CompletionMessage, error) {
 	if len(messages) == 0 {
 		return nil, MessageValidationError{
@@ -174,15 +175,15 @@ func ValidateAndSanitizeMessages(messages []CompletionMessage) ([]CompletionMess
 	}
 
 	sanitized := make([]CompletionMessage, 0, len(messages))
-	
+
 	for _, msg := range messages {
 		cleaned := SanitizeMessage(msg)
-		
-		// Validate the cleaned message
+
+		// Validate the cleaned message.
 		if err := ValidateMessage(cleaned); err != nil {
 			return nil, fmt.Errorf("failed to sanitize message: %w", err)
 		}
-		
+
 		sanitized = append(sanitized, cleaned)
 	}
 

@@ -15,12 +15,12 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// MockLLMClient provides simple LLM responses for testing
+// MockLLMClient provides simple LLM responses for testing.
 type MockLLMClient struct{}
 
-// Complete implements the LLMClient interface with simple mock responses
-func (m *MockLLMClient) Complete(ctx context.Context, req agent.CompletionRequest) (agent.CompletionResponse, error) {
-	// Simple mock responses based on request context
+// Complete implements the LLMClient interface with simple mock responses.
+func (m *MockLLMClient) Complete(_ context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
+	// Simple mock responses based on request context.
 	content := "Mock LLM response: I understand the task and will proceed accordingly."
 
 	return agent.CompletionResponse{
@@ -28,8 +28,8 @@ func (m *MockLLMClient) Complete(ctx context.Context, req agent.CompletionReques
 	}, nil
 }
 
-// Stream implements the LLMClient interface (required but not used in tests)
-func (m *MockLLMClient) Stream(ctx context.Context, req agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
+// Stream implements the LLMClient interface (required but not used in tests).
+func (m *MockLLMClient) Stream(_ context.Context, _ agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
 	ch := make(chan agent.StreamChunk, 1)
 	ch <- agent.StreamChunk{
 		Content: "Mock LLM response: I understand the task and will proceed accordingly.",
@@ -39,15 +39,15 @@ func (m *MockLLMClient) Stream(ctx context.Context, req agent.CompletionRequest)
 	return ch, nil
 }
 
-// Test flags for configurable timeouts
-var (
+// Test flags for configurable timeouts.
+var ( //nolint:gochecknoglobals
 	flagPlanTimeout   = flag.Duration("timeout-plan", 100*time.Millisecond, "Timeout for plan approval")
 	flagGlobalTimeout = flag.Duration("timeout-global", 2*time.Second, "Global test timeout")
 	flagPumpInterval  = flag.Duration("pump-interval", 10*time.Millisecond, "Message pump interval")
 	flagCoderStep     = flag.Duration("timeout-coder-step", 50*time.Millisecond, "Individual coder step timeout")
 )
 
-// GetTestTimeouts returns timeouts configured via command-line flags
+// GetTestTimeouts returns timeouts configured via command-line flags.
 func GetTestTimeouts() TestTimeouts {
 	return TestTimeouts{
 		Plan:      *flagPlanTimeout,
@@ -57,7 +57,7 @@ func GetTestTimeouts() TestTimeouts {
 	}
 }
 
-// RequireState asserts that a coder is in the expected state
+// RequireState asserts that a coder is in the expected state.
 func RequireState(t *testing.T, harness *TestHarness, coderID string, want proto.State) {
 	t.Helper()
 
@@ -67,7 +67,7 @@ func RequireState(t *testing.T, harness *TestHarness, coderID string, want proto
 	}
 }
 
-// ExpectMessage waits for a message on the channel that satisfies the matcher function
+// ExpectMessage waits for a message on the channel that satisfies the matcher function.
 func ExpectMessage(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duration, matcher func(*proto.AgentMsg) bool) *proto.AgentMsg {
 	t.Helper()
 
@@ -80,7 +80,7 @@ func ExpectMessage(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duratio
 			if matcher(msg) {
 				return msg
 			}
-			// Message didn't match, keep waiting
+			// Message didn't match, keep waiting.
 		case <-timeoutTimer.C:
 			t.Fatalf("Timeout waiting for expected message after %v", timeout)
 			return nil
@@ -88,39 +88,39 @@ func ExpectMessage(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duratio
 	}
 }
 
-// CreateTestCoder creates a coder driver for testing
+// CreateTestCoder creates a coder driver for testing.
 func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	t.Helper()
 
-	// Create temporary directory for this coder
+	// Create temporary directory for this coder.
 	tempDir := t.TempDir()
 
-	// Create state store
+	// Create state store.
 	stateStore, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
 	}
 
-	// Create minimal model config
+	// Create minimal model config.
 	modelCfg := &config.ModelCfg{
 		MaxContextTokens: 8192,
 		MaxReplyTokens:   4096,
 	}
 
-	// Create a simple mock LLM client for testing
-	// This allows coders to follow the full REQUEST→RESULT communication pattern
+	// Create a simple mock LLM client for testing.
+	// This allows coders to follow the full REQUEST→RESULT communication pattern.
 	mockLLM := &MockLLMClient{}
 
-	// Create BuildService for MCP tools
+	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
-	// Create coder driver
+	// Create coder driver.
 	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
 
-	// Initialize the driver
+	// Initialize the driver.
 	if err := driver.Initialize(context.Background()); err != nil {
 		t.Fatalf("Failed to initialize coder driver %s: %v", coderID, err)
 	}
@@ -128,38 +128,38 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	return driver
 }
 
-// CreateTestCoderWithAgent creates a coder driver with specific agent configuration for testing
+// CreateTestCoderWithAgent creates a coder driver with specific agent configuration for testing.
 func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.Agent) *coder.Coder {
 	t.Helper()
 
-	// Create temporary directory for this coder
+	// Create temporary directory for this coder.
 	tempDir := t.TempDir()
 
-	// Create state store
+	// Create state store.
 	stateStore, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
 	}
 
-	// Create minimal model config
+	// Create minimal model config.
 	modelCfg := &config.ModelCfg{
 		MaxContextTokens: 8192,
 		MaxReplyTokens:   4096,
 	}
 
-	// Create a simple mock LLM client for testing
+	// Create a simple mock LLM client for testing.
 	mockLLM := &MockLLMClient{}
 
-	// Create BuildService for MCP tools
+	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
-	// Create coder driver with agent configuration
+	// Create coder driver with agent configuration.
 	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
 
-	// Initialize the driver
+	// Initialize the driver.
 	err = driver.Initialize(context.Background())
 	if err != nil {
 		t.Fatalf("Failed to initialize coder driver %s: %v", coderID, err)
@@ -168,10 +168,10 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 	return driver
 }
 
-// MessageMatchers contains common message matching functions
+// MessageMatchers contains common message matching functions.
 type MessageMatchers struct{}
 
-// MatchRequestType returns a matcher that checks for a specific request type
+// MatchRequestType returns a matcher that checks for a specific request type.
 func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*proto.AgentMsg) bool {
 	return func(msg *proto.AgentMsg) bool {
 		if msg.Type != proto.MsgTypeREQUEST {
@@ -197,7 +197,7 @@ func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*pro
 	}
 }
 
-// MatchResultWithStatus returns a matcher that checks for a RESULT message with specific status
+// MatchResultWithStatus returns a matcher that checks for a RESULT message with specific status.
 func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg) bool {
 	return func(msg *proto.AgentMsg) bool {
 		if msg.Type != proto.MsgTypeRESULT {
@@ -218,31 +218,31 @@ func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg
 	}
 }
 
-// MatchApprovalRequest returns a matcher for approval requests
+// MatchApprovalRequest returns a matcher for approval requests.
 func (MessageMatchers) MatchApprovalRequest() func(*proto.AgentMsg) bool {
 	return MessageMatchers{}.MatchRequestType(proto.RequestApproval)
 }
 
-// Common message matchers instance
-var Match = MessageMatchers{}
+// Common message matchers instance.
+var Match = MessageMatchers{} //nolint:gochecknoglobals
 
-// SetupTestEnvironment sets up common test environment settings
+// SetupTestEnvironment sets up common test environment settings.
 func SetupTestEnvironment(t *testing.T) {
 	t.Helper()
 
-	// Ensure we're in test mode
-	os.Setenv("GO_TEST", "1")
+	// Ensure we're in test mode.
+	_ = os.Setenv("GO_TEST", "1")
 
-	// Disable debug logging by default for cleaner test output
-	// Individual tests can re-enable if needed
-	os.Unsetenv("DEBUG")
+	// Disable debug logging by default for cleaner test output.
+	// Individual tests can re-enable if needed.
+	_ = os.Unsetenv("DEBUG")
 
-	// Set a temporary log directory for this test
+	// Set a temporary log directory for this test.
 	logDir := t.TempDir()
-	os.Setenv("DEBUG_LOG_DIR", logDir)
+	_ = os.Setenv("DEBUG_LOG_DIR", logDir)
 }
 
-// AssertNoChannelMessages verifies that a channel has no pending messages
+// AssertNoChannelMessages verifies that a channel has no pending messages.
 func AssertNoChannelMessages(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duration) {
 	t.Helper()
 
@@ -250,11 +250,11 @@ func AssertNoChannelMessages(t *testing.T, ch <-chan *proto.AgentMsg, timeout ti
 	case msg := <-ch:
 		t.Fatalf("Expected no messages on channel, but got: %+v", msg)
 	case <-time.After(timeout):
-		// Good - no messages received
+		// Good - no messages received.
 	}
 }
 
-// DrainChannel removes all pending messages from a channel
+// DrainChannel removes all pending messages from a channel.
 func DrainChannel(ch <-chan *proto.AgentMsg) int {
 	count := 0
 	for {
@@ -267,7 +267,7 @@ func DrainChannel(ch <-chan *proto.AgentMsg) int {
 	}
 }
 
-// WaitForCoderState is a helper that waits for a coder to reach a specific state
+// WaitForCoderState is a helper that waits for a coder to reach a specific state.
 func WaitForCoderState(t *testing.T, harness *TestHarness, coderID string, targetState proto.State, timeout time.Duration) {
 	t.Helper()
 
@@ -279,7 +279,7 @@ func WaitForCoderState(t *testing.T, harness *TestHarness, coderID string, targe
 	}
 }
 
-// StartCoderWithTask prepares a coder with a specific task content for TestHarness control
+// StartCoderWithTask prepares a coder with a specific task content for TestHarness control.
 func StartCoderWithTask(t *testing.T, harness *TestHarness, coderID, taskContent string) {
 	t.Helper()
 
@@ -288,17 +288,17 @@ func StartCoderWithTask(t *testing.T, harness *TestHarness, coderID, taskContent
 		t.Fatalf("Coder %s not found in harness", coderID)
 	}
 
-	// Set up the task data without running the full state machine
-	// The TestHarness will control the stepping
+	// Set up the task data without running the full state machine.
+	// The TestHarness will control the stepping.
 	coderAgent.Driver.SetStateData("task_content", taskContent)
 	coderAgent.Driver.SetStateData("started_at", time.Now().UTC())
 
-	// Initialize the coder if needed
+	// Initialize the coder if needed.
 	if err := coderAgent.Driver.Initialize(context.Background()); err != nil {
 		t.Fatalf("Failed to initialize coder %s: %v", coderID, err)
 	}
 
-	// Transition to SETUP state first, then the state machine will naturally transition to PLANNING
+	// Transition to SETUP state first, then the state machine will naturally transition to PLANNING.
 	if err := coderAgent.Driver.TransitionTo(context.Background(), coder.StateSetup, nil); err != nil {
 		t.Fatalf("Failed to transition coder %s to SETUP: %v", coderID, err)
 	}

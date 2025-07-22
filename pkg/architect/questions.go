@@ -10,18 +10,23 @@ import (
 	"orchestrator/pkg/templates"
 )
 
-// QuestionHandler manages technical question processing for the ANSWERING state
+const (
+	questionStatusAnswered  = "answered"
+	questionStatusEscalated = "escalated"
+)
+
+// QuestionHandler manages technical question processing for the ANSWERING state.
 type QuestionHandler struct {
 	llmClient         LLMClient
 	renderer          *templates.Renderer
 	queue             *Queue
 	escalationHandler *EscalationHandler
 
-	// Track pending questions
+	// Track pending questions.
 	pendingQuestions map[string]*PendingQuestion // questionID -> PendingQuestion
 }
 
-// PendingQuestion represents a question awaiting response
+// PendingQuestion represents a question awaiting response.
 type PendingQuestion struct {
 	ID         string         `json:"id"`
 	StoryID    string         `json:"story_id"`
@@ -34,7 +39,7 @@ type PendingQuestion struct {
 	AnsweredAt *time.Time     `json:"answered_at,omitempty"`
 }
 
-// NewQuestionHandler creates a new question handler
+// NewQuestionHandler creates a new question handler.
 func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler) *QuestionHandler {
 	return &QuestionHandler{
 		llmClient:         llmClient,
@@ -45,12 +50,12 @@ func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue
 	}
 }
 
-// HandleQuestion processes an incoming QUESTION message from a coding agent
+// HandleQuestion processes an incoming QUESTION message from a coding agent.
 func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentMsg) error {
-	// Extract question details from message - handle different formats
+	// Extract question details from message - handle different formats.
 	var storyID, question string
 
-	// Try the expected format first
+	// Try the expected format first.
 	if id, ok := msg.Payload["story_id"].(string); ok {
 		storyID = id
 	}
@@ -58,14 +63,14 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 		question = q
 	}
 
-	// If that didn't work, try the format that Claude agents actually send
+	// If that didn't work, try the format that Claude agents actually send.
 	if storyID == "" || question == "" {
-		// Claude agents send the full task content as "question"
+		// Claude agents send the full task content as "question".
 		if taskContent, ok := msg.Payload[proto.KeyQuestion].(string); ok {
-			// Extract story ID from the task content (front matter)
+			// Extract story ID from the task content (front matter).
 			if extractedID := qh.extractStoryIDFromContent(taskContent); extractedID != "" {
 				storyID = extractedID
-				// Use the reason as the actual question
+				// Use the reason as the actual question.
 				if reason, ok := msg.Payload[proto.KeyReason].(string); ok {
 					question = reason
 				} else {
@@ -79,7 +84,7 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 		return fmt.Errorf("invalid question message: missing story_id or question (storyID='%s', question='%s')", storyID, question)
 	}
 
-	// Create pending question record
+	// Create pending question record.
 	pendingQ := &PendingQuestion{
 		ID:       msg.ID, // Use message ID as question ID
 		StoryID:  storyID,
@@ -90,39 +95,39 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 		Status:   "pending",
 	}
 
-	// Copy relevant context from message payload
+	// Copy relevant context from message payload.
 	for key, value := range msg.Payload {
 		if key != proto.KeyStoryID && key != proto.KeyQuestion {
 			pendingQ.Context[key] = value
 		}
 	}
 
-	// Store pending question
+	// Store pending question.
 	qh.pendingQuestions[pendingQ.ID] = pendingQ
 
-	// Check if this is a business question that should be escalated
+	// Check if this is a business question that should be escalated.
 	if qh.isBusinessQuestion(question, pendingQ.Context) {
 		return qh.escalateQuestion(ctx, pendingQ)
 	}
 
-	// Process technical question with LLM
+	// Process technical question with LLM.
 	return qh.answerTechnicalQuestion(ctx, pendingQ)
 }
 
-// answerTechnicalQuestion uses the LLM to answer a technical question
+// answerTechnicalQuestion uses the LLM to answer a technical question.
 func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ *PendingQuestion) error {
 	if qh.llmClient == nil {
-		// Mock mode - provide a simple answer
+		// Mock mode - provide a simple answer.
 		return qh.sendMockAnswer(ctx, pendingQ)
 	}
 
-	// Get story context for better answers
+	// Get story context for better answers.
 	story, exists := qh.queue.GetStory(pendingQ.StoryID)
 	if !exists {
 		return fmt.Errorf("story %s not found in queue", pendingQ.StoryID)
 	}
 
-	// Prepare template data for Q&A prompt
+	// Prepare template data for Q&A prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: pendingQ.Question,
 		Context:     qh.formatQuestionContext(pendingQ, story),
@@ -136,79 +141,79 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 		},
 	}
 
-	// Render Q&A prompt template
+	// Render Q&A prompt template.
 	prompt, err := qh.renderer.Render(templates.TechnicalQATemplate, templateData)
 	if err != nil {
 		return fmt.Errorf("failed to render Q&A template: %w", err)
 	}
 
-	// Get LLM response
+	// Get LLM response.
 	answer, err := qh.llmClient.GenerateResponse(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to get LLM response for question: %w", err)
 	}
 
-	// Update question record
+	// Update question record.
 	now := time.Now().UTC()
 	pendingQ.Answer = answer
-	pendingQ.Status = "answered"
+	pendingQ.Status = questionStatusAnswered
 	pendingQ.AnsweredAt = &now
 
-	// Send RESULT message back to the requesting agent
+	// Send RESULT message back to the requesting agent.
 	return qh.sendAnswerToAgent(ctx, pendingQ)
 }
 
-// sendMockAnswer provides a mock answer for testing
+// sendMockAnswer provides a mock answer for testing.
 func (qh *QuestionHandler) sendMockAnswer(ctx context.Context, pendingQ *PendingQuestion) error {
 	mockAnswer := fmt.Sprintf("Mock answer for question: %s\n\nThis is a simulated technical response that would normally be generated by the LLM based on the question context and story details.", pendingQ.Question)
 
-	// Update question record
+	// Update question record.
 	now := time.Now().UTC()
 	pendingQ.Answer = mockAnswer
-	pendingQ.Status = "answered"
+	pendingQ.Status = questionStatusAnswered
 	pendingQ.AnsweredAt = &now
 
-	// Send answer back to agent
+	// Send answer back to agent.
 	return qh.sendAnswerToAgent(ctx, pendingQ)
 }
 
-// sendAnswerToAgent sends a RESULT message with the answer back to the requesting agent
+// sendAnswerToAgent sends a RESULT message with the answer back to the requesting agent.
 func (qh *QuestionHandler) sendAnswerToAgent(ctx context.Context, pendingQ *PendingQuestion) error {
-	// Create RESULT message
+	// Create RESULT message.
 	resultMsg := proto.NewAgentMsg(
 		proto.MsgTypeRESULT,
 		"architect",      // from
 		pendingQ.AgentID, // to
 	)
 
-	// Set parent message ID to link back to the question
+	// Set parent message ID to link back to the question.
 	resultMsg.ParentMsgID = pendingQ.ID
 
-	// Set answer payload
+	// Set answer payload.
 	resultMsg.Payload["question_id"] = pendingQ.ID
 	resultMsg.Payload["story_id"] = pendingQ.StoryID
 	resultMsg.Payload[proto.KeyAnswer] = pendingQ.Answer
 	resultMsg.Payload["answered_at"] = pendingQ.AnsweredAt.Format(time.RFC3339)
 
-	// Add metadata
+	// Add metadata.
 	resultMsg.SetMetadata("question_type", "technical")
 	resultMsg.SetMetadata("answer_method", qh.getAnswerMethod())
 
-	// Log the answer for debugging
+	// Log the answer for debugging.
 	fmt.Printf("📝 Answered question %s for story %s: %s\n",
 		pendingQ.ID, pendingQ.StoryID, truncateString(pendingQ.Answer, 100))
 
-	// In a real implementation, this would be sent via the dispatcher
-	// For now, we simulate sending the message
+	// In a real implementation, this would be sent via the dispatcher.
+	// For now, we simulate sending the message.
 	fmt.Printf("📤 Sending RESULT message to agent %s for question %s\n",
 		pendingQ.AgentID, pendingQ.ID)
 
 	return nil
 }
 
-// isBusinessQuestion determines if a question requires business-level escalation
+// isBusinessQuestion determines if a question requires business-level escalation.
 func (qh *QuestionHandler) isBusinessQuestion(question string, context map[string]any) bool {
-	// Check for business-related keywords or flags
+	// Check for business-related keywords or flags.
 	businessKeywords := []string{
 		"business", "requirement", "stakeholder", "customer",
 		"revenue", "pricing", "policy", "compliance",
@@ -222,7 +227,7 @@ func (qh *QuestionHandler) isBusinessQuestion(question string, context map[strin
 		}
 	}
 
-	// Check for explicit business flag in context
+	// Check for explicit business flag in context.
 	if businessFlag, exists := context["is_business_question"]; exists {
 		if business, ok := businessFlag.(bool); ok && business {
 			return true
@@ -232,18 +237,18 @@ func (qh *QuestionHandler) isBusinessQuestion(question string, context map[strin
 	return false
 }
 
-// escalateQuestion handles business questions that need human intervention
+// escalateQuestion handles business questions that need human intervention.
 func (qh *QuestionHandler) escalateQuestion(ctx context.Context, pendingQ *PendingQuestion) error {
-	// Update question status
-	pendingQ.Status = "escalated"
+	// Update question status.
+	pendingQ.Status = questionStatusEscalated
 
-	// Use the escalation handler to properly escalate the business question
+	// Use the escalation handler to properly escalate the business question.
 	if qh.escalationHandler != nil {
 		if err := qh.escalationHandler.EscalateBusinessQuestion(ctx, pendingQ); err != nil {
 			return fmt.Errorf("failed to escalate business question: %w", err)
 		}
 	} else {
-		// Fallback for when no escalation handler is available
+		// Fallback for when no escalation handler is available.
 		fmt.Printf("🚨 Escalated business question %s for story %s: %s\n",
 			pendingQ.ID, pendingQ.StoryID, truncateString(pendingQ.Question, 100))
 	}
@@ -251,7 +256,7 @@ func (qh *QuestionHandler) escalateQuestion(ctx context.Context, pendingQ *Pendi
 	return nil
 }
 
-// formatQuestionContext creates a context string for the LLM prompt
+// formatQuestionContext creates a context string for the LLM prompt.
 func (qh *QuestionHandler) formatQuestionContext(pendingQ *PendingQuestion, story *QueuedStory) string {
 	context := fmt.Sprintf(`Question Context:
 - Story ID: %s
@@ -278,7 +283,7 @@ Additional Context:`,
 		story.FilePath,
 	)
 
-	// Add any additional context from the question
+	// Add any additional context from the question.
 	for key, value := range pendingQ.Context {
 		context += fmt.Sprintf("\n- %s: %v", key, value)
 	}
@@ -286,7 +291,7 @@ Additional Context:`,
 	return context
 }
 
-// getAnswerMethod returns the method used to answer questions
+// getAnswerMethod returns the method used to answer questions.
 func (qh *QuestionHandler) getAnswerMethod() string {
 	if qh.llmClient == nil {
 		return "mock"
@@ -294,7 +299,7 @@ func (qh *QuestionHandler) getAnswerMethod() string {
 	return "llm"
 }
 
-// GetPendingQuestions returns all pending questions
+// GetPendingQuestions returns all pending questions.
 func (qh *QuestionHandler) GetPendingQuestions() []*PendingQuestion {
 	questions := make([]*PendingQuestion, 0, len(qh.pendingQuestions))
 	for _, q := range qh.pendingQuestions {
@@ -303,7 +308,7 @@ func (qh *QuestionHandler) GetPendingQuestions() []*PendingQuestion {
 	return questions
 }
 
-// GetQuestionStatus returns statistics about question handling
+// GetQuestionStatus returns statistics about question handling.
 func (qh *QuestionHandler) GetQuestionStatus() *QuestionStatus {
 	status := &QuestionStatus{
 		TotalQuestions:     len(qh.pendingQuestions),
@@ -319,9 +324,9 @@ func (qh *QuestionHandler) GetQuestionStatus() *QuestionStatus {
 		switch q.Status {
 		case "pending":
 			status.PendingQuestions++
-		case "answered":
+		case questionStatusAnswered:
 			status.AnsweredQuestions++
-		case "escalated":
+		case questionStatusEscalated:
 			status.EscalatedQuestions++
 		}
 	}
@@ -329,11 +334,11 @@ func (qh *QuestionHandler) GetQuestionStatus() *QuestionStatus {
 	return status
 }
 
-// ClearAnsweredQuestions removes answered questions from memory (cleanup)
+// ClearAnsweredQuestions removes answered questions from memory (cleanup).
 func (qh *QuestionHandler) ClearAnsweredQuestions() int {
 	cleared := 0
 	for id, q := range qh.pendingQuestions {
-		if q.Status == "answered" {
+		if q.Status == questionStatusAnswered {
 			delete(qh.pendingQuestions, id)
 			cleared++
 		}
@@ -341,7 +346,7 @@ func (qh *QuestionHandler) ClearAnsweredQuestions() int {
 	return cleared
 }
 
-// QuestionStatus represents the current state of question handling
+// QuestionStatus represents the current state of question handling.
 type QuestionStatus struct {
 	TotalQuestions     int                `json:"total_questions"`
 	PendingQuestions   int                `json:"pending_questions"`
@@ -350,7 +355,7 @@ type QuestionStatus struct {
 	Questions          []*PendingQuestion `json:"questions"`
 }
 
-// extractStoryIDFromContent extracts the story ID from task content front matter
+// extractStoryIDFromContent extracts the story ID from task content front matter.
 func (qh *QuestionHandler) extractStoryIDFromContent(content string) string {
 	lines := strings.Split(content, "\n")
 	inFrontMatter := false
@@ -360,7 +365,7 @@ func (qh *QuestionHandler) extractStoryIDFromContent(content string) string {
 
 		if line == "---" {
 			if inFrontMatter {
-				// End of front matter, didn't find ID
+				// End of front matter, didn't find ID.
 				break
 			}
 			inFrontMatter = true
@@ -368,7 +373,7 @@ func (qh *QuestionHandler) extractStoryIDFromContent(content string) string {
 		}
 
 		if inFrontMatter && strings.HasPrefix(line, "id:") {
-			// Extract ID value
+			// Extract ID value.
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				return strings.TrimSpace(parts[1])
@@ -379,7 +384,7 @@ func (qh *QuestionHandler) extractStoryIDFromContent(content string) string {
 	return ""
 }
 
-// truncateString truncates a string to the specified length
+// truncateString truncates a string to the specified length.
 func truncateString(s string, maxLength int) string {
 	if len(s) <= maxLength {
 		return s

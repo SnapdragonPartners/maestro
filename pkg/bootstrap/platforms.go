@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// SupportedPlatform represents a platform that Maestro can bootstrap
+// SupportedPlatform represents a platform that Maestro can bootstrap.
 type SupportedPlatform struct {
 	Name        string   `json:"name"`
 	DisplayName string   `json:"display_name"`
@@ -16,7 +16,7 @@ type SupportedPlatform struct {
 	Versions    []string `json:"versions"`    // Supported versions
 }
 
-// PlatformRecommendation represents an architect's platform recommendation
+// PlatformRecommendation represents an architect's platform recommendation.
 type PlatformRecommendation struct {
 	Platform   string            `json:"platform"`
 	Confidence float64           `json:"confidence"`
@@ -26,8 +26,8 @@ type PlatformRecommendation struct {
 	Platforms  []string          `json:"platforms"`   // All platforms for multi-stack projects
 }
 
-// PlatformWhitelist contains all supported platforms
-var PlatformWhitelist = map[string]SupportedPlatform{
+// PlatformWhitelist contains all supported platforms.
+var PlatformWhitelist = map[string]SupportedPlatform{ //nolint:gochecknoglobals // Platform configuration data used throughout package
 	"go": {
 		Name:        "go",
 		DisplayName: "Go",
@@ -112,12 +112,12 @@ var PlatformWhitelist = map[string]SupportedPlatform{
 	},
 }
 
-// GetSupportedPlatforms returns all supported platforms
+// GetSupportedPlatforms returns all supported platforms.
 func GetSupportedPlatforms() map[string]SupportedPlatform {
 	return PlatformWhitelist
 }
 
-// GetStablePlatforms returns only stable platforms
+// GetStablePlatforms returns only stable platforms.
 func GetStablePlatforms() map[string]SupportedPlatform {
 	stable := make(map[string]SupportedPlatform)
 	for name, platform := range PlatformWhitelist {
@@ -128,19 +128,19 @@ func GetStablePlatforms() map[string]SupportedPlatform {
 	return stable
 }
 
-// IsSupportedPlatform checks if a platform is in the whitelist
+// IsSupportedPlatform checks if a platform is in the whitelist.
 func IsSupportedPlatform(platform string) bool {
 	_, exists := PlatformWhitelist[platform]
 	return exists
 }
 
-// IsStablePlatform checks if a platform is stable
+// IsStablePlatform checks if a platform is stable.
 func IsStablePlatform(platform string) bool {
 	p, exists := PlatformWhitelist[platform]
 	return exists && p.Stable
 }
 
-// ValidatePlatformRecommendation validates an architect's platform recommendation
+// ValidatePlatformRecommendation validates an architect's platform recommendation.
 func ValidatePlatformRecommendation(rec *PlatformRecommendation) error {
 	if rec.Platform == "" {
 		return fmt.Errorf("platform is required")
@@ -172,8 +172,8 @@ func ValidatePlatformRecommendation(rec *PlatformRecommendation) error {
 	return nil
 }
 
-// ScorePlatformKeywords scores how well a platform matches keywords in text
-func ScorePlatformKeywords(platform string, text string) float64 {
+// ScorePlatformKeywords scores how well a platform matches keywords in text.
+func ScorePlatformKeywords(platform, text string) float64 {
 	p, exists := PlatformWhitelist[platform]
 	if !exists {
 		return 0.0
@@ -199,7 +199,7 @@ func ScorePlatformKeywords(platform string, text string) float64 {
 	return 0.0
 }
 
-// RecommendPlatformsFromText analyzes text and recommends platforms based on keywords
+// RecommendPlatformsFromText analyzes text and recommends platforms based on keywords.
 func RecommendPlatformsFromText(text string) []PlatformRecommendation {
 	var recommendations []PlatformRecommendation
 
@@ -229,12 +229,12 @@ func RecommendPlatformsFromText(text string) []PlatformRecommendation {
 	return recommendations
 }
 
-// GetDefaultPlatform returns the default platform for low-confidence situations
+// GetDefaultPlatform returns the default platform for low-confidence situations.
 func GetDefaultPlatform() string {
 	return "null"
 }
 
-// RequiresHumanApproval determines if a platform recommendation requires human approval
+// RequiresHumanApproval determines if a platform recommendation requires human approval.
 func RequiresHumanApproval(rec *PlatformRecommendation) bool {
 	// Require approval for low confidence
 	if rec.Confidence < 0.3 {
@@ -254,7 +254,7 @@ func RequiresHumanApproval(rec *PlatformRecommendation) bool {
 	return false
 }
 
-// GetPlatformDisplayName returns the human-readable name for a platform
+// GetPlatformDisplayName returns the human-readable name for a platform.
 func GetPlatformDisplayName(platform string) string {
 	if p, exists := PlatformWhitelist[platform]; exists {
 		return p.DisplayName

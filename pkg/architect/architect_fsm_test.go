@@ -35,45 +35,45 @@ func TestArchitectStateString(t *testing.T) {
 }
 
 func TestIsValidArchitectTransition(t *testing.T) {
-	// Test all valid transitions as defined in STATES.md
+	// Test all valid transitions as defined in STATES.md.
 	validTransitions := []struct {
 		from proto.State
 		to   proto.State
 		name string
 	}{
-		// WAITING transitions
+		// WAITING transitions.
 		{StateWaiting, StateScoping, "WAITING -> SCOPING (spec received)"},
 
-		// SCOPING transitions
+		// SCOPING transitions.
 		{StateScoping, StateDispatching, "SCOPING -> DISPATCHING (stories queued)"},
 		{StateScoping, StateError, "SCOPING -> ERROR (unrecoverable error)"},
 
-		// DISPATCHING transitions
+		// DISPATCHING transitions.
 		{StateDispatching, StateMonitoring, "DISPATCHING -> MONITORING (stories on work-queue)"},
 		{StateDispatching, StateDone, "DISPATCHING -> DONE (no stories left)"},
 
-		// MONITORING transitions
+		// MONITORING transitions.
 		{StateMonitoring, StateRequest, "MONITORING -> REQUEST (coder request)"},
 		{StateMonitoring, StateMerging, "MONITORING -> MERGING (approved code-review)"},
 
-		// REQUEST transitions
+		// REQUEST transitions.
 		{StateRequest, StateMonitoring, "REQUEST -> MONITORING (approve non-code/request changes)"},
 		{StateRequest, StateMerging, "REQUEST -> MERGING (approve code-review)"},
 		{StateRequest, StateEscalated, "REQUEST -> ESCALATED (cannot answer)"},
 		{StateRequest, StateError, "REQUEST -> ERROR (abandon/unrecoverable)"},
 
-		// ESCALATED transitions
+		// ESCALATED transitions.
 		{StateEscalated, StateRequest, "ESCALATED -> REQUEST (human answer supplied)"},
 		{StateEscalated, StateError, "ESCALATED -> ERROR (timeout/no answer)"},
 
-		// MERGING transitions
+		// MERGING transitions.
 		{StateMerging, StateDispatching, "MERGING -> DISPATCHING (merge succeeds)"},
 		{StateMerging, StateError, "MERGING -> ERROR (merge failure)"},
 
-		// DONE transitions
+		// DONE transitions.
 		{StateDone, StateWaiting, "DONE -> WAITING (new spec arrives)"},
 
-		// ERROR transitions
+		// ERROR transitions.
 		{StateError, StateWaiting, "ERROR -> WAITING (recovery/restart)"},
 	}
 
@@ -87,13 +87,13 @@ func TestIsValidArchitectTransition(t *testing.T) {
 }
 
 func TestInvalidArchitectTransitions(t *testing.T) {
-	// Test a comprehensive set of invalid transitions
+	// Test a comprehensive set of invalid transitions.
 	invalidTransitions := []struct {
 		from proto.State
 		to   proto.State
 		name string
 	}{
-		// Invalid WAITING transitions
+		// Invalid WAITING transitions.
 		{StateWaiting, StateDispatching, "WAITING -> DISPATCHING (invalid)"},
 		{StateWaiting, StateMonitoring, "WAITING -> MONITORING (invalid)"},
 		{StateWaiting, StateRequest, "WAITING -> REQUEST (invalid)"},
@@ -102,7 +102,7 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateWaiting, StateDone, "WAITING -> DONE (invalid)"},
 		{StateWaiting, StateError, "WAITING -> ERROR (invalid)"},
 
-		// Invalid SCOPING transitions
+		// Invalid SCOPING transitions.
 		{StateScoping, StateWaiting, "SCOPING -> WAITING (invalid)"},
 		{StateScoping, StateMonitoring, "SCOPING -> MONITORING (invalid)"},
 		{StateScoping, StateRequest, "SCOPING -> REQUEST (invalid)"},
@@ -110,7 +110,7 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateScoping, StateMerging, "SCOPING -> MERGING (invalid)"},
 		{StateScoping, StateDone, "SCOPING -> DONE (invalid)"},
 
-		// Invalid DISPATCHING transitions
+		// Invalid DISPATCHING transitions.
 		{StateDispatching, StateWaiting, "DISPATCHING -> WAITING (invalid)"},
 		{StateDispatching, StateScoping, "DISPATCHING -> SCOPING (invalid)"},
 		{StateDispatching, StateRequest, "DISPATCHING -> REQUEST (invalid)"},
@@ -118,7 +118,7 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateDispatching, StateMerging, "DISPATCHING -> MERGING (invalid)"},
 		{StateDispatching, StateError, "DISPATCHING -> ERROR (invalid)"},
 
-		// Invalid MONITORING transitions
+		// Invalid MONITORING transitions.
 		{StateMonitoring, StateWaiting, "MONITORING -> WAITING (invalid)"},
 		{StateMonitoring, StateScoping, "MONITORING -> SCOPING (invalid)"},
 		{StateMonitoring, StateDispatching, "MONITORING -> DISPATCHING (invalid)"},
@@ -132,7 +132,7 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateRequest, StateDispatching, "REQUEST -> DISPATCHING (invalid)"},
 		{StateRequest, StateDone, "REQUEST -> DONE (invalid)"},
 
-		// Invalid ESCALATED transitions
+		// Invalid ESCALATED transitions.
 		{StateEscalated, StateWaiting, "ESCALATED -> WAITING (invalid)"},
 		{StateEscalated, StateScoping, "ESCALATED -> SCOPING (invalid)"},
 		{StateEscalated, StateDispatching, "ESCALATED -> DISPATCHING (invalid)"},
@@ -140,7 +140,7 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateEscalated, StateMerging, "ESCALATED -> MERGING (invalid)"},
 		{StateEscalated, StateDone, "ESCALATED -> DONE (invalid)"},
 
-		// Invalid MERGING transitions
+		// Invalid MERGING transitions.
 		{StateMerging, StateWaiting, "MERGING -> WAITING (invalid)"},
 		{StateMerging, StateScoping, "MERGING -> SCOPING (invalid)"},
 		{StateMerging, StateMonitoring, "MERGING -> MONITORING (invalid)"},
@@ -235,7 +235,7 @@ func TestIsTerminalState(t *testing.T) {
 }
 
 func TestIsValidArchitectState(t *testing.T) {
-	// Test all valid states
+	// Test all valid states.
 	validStates := []proto.State{
 		StateWaiting,
 		StateScoping,
@@ -256,7 +256,7 @@ func TestIsValidArchitectState(t *testing.T) {
 		})
 	}
 
-	// Test invalid states
+	// Test invalid states.
 	invalidStates := []proto.State{
 		proto.State("INVALID"),
 		proto.State("UNKNOWN"),
@@ -287,7 +287,7 @@ func TestTransitionMapCompleteness(t *testing.T) {
 }
 
 func TestValidNextStates(t *testing.T) {
-	// Test the ValidNextStates helper function
+	// Test the ValidNextStates helper function.
 	tests := []struct {
 		from     proto.State
 		expected []proto.State
@@ -310,7 +310,7 @@ func TestValidNextStates(t *testing.T) {
 				t.Errorf("Expected %d next states, got %d", len(test.expected), len(result))
 			}
 
-			// Check that all expected states are present
+			// Check that all expected states are present.
 			resultSet := make(map[proto.State]bool)
 			for _, state := range result {
 				resultSet[state] = true
@@ -326,7 +326,7 @@ func TestValidNextStates(t *testing.T) {
 }
 
 func TestTransitionMapIntegrity(t *testing.T) {
-	// Verify that all target states in the transition map are valid states
+	// Verify that all target states in the transition map are valid states.
 	allStates := GetAllArchitectStates()
 	stateSet := make(map[proto.State]bool)
 	for _, state := range allStates {
@@ -343,7 +343,7 @@ func TestTransitionMapIntegrity(t *testing.T) {
 	}
 }
 
-// Benchmarks for performance validation
+// Benchmarks for performance validation.
 func BenchmarkIsValidArchitectTransition(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		IsValidArchitectTransition(StateWaiting, StateScoping)

@@ -7,7 +7,7 @@ import (
 func TestPathConstruction(t *testing.T) {
 	gitRunner := NewDefaultGitRunner()
 
-	// Test path construction
+	// Test path construction.
 	wm := NewWorkspaceManager(
 		gitRunner,
 		"/Users/dratner/Code/maestro/work/test",   // projectWorkDir

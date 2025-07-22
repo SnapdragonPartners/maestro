@@ -7,31 +7,39 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"orchestrator/pkg/utils"
 )
 
-// TestStory070AcceptanceCriteria tests that LocalExec passes all existing unit tests
-// This is the acceptance criteria for Story 070
+// TestStory070AcceptanceCriteria tests that LocalExec passes all existing unit tests.
+// This is the acceptance criteria for Story 070.
 func TestStory070AcceptanceCriteria(t *testing.T) {
 	t.Run("LocalExec preserves shell tool behavior", func(t *testing.T) {
-		// Create a shell adapter using LocalExec
+		// Create a shell adapter using LocalExec.
 		adapter := NewShellCommandAdapter(NewLocalExec())
 
-		// Test 1: Basic command execution
+		// Test 1: Basic command execution.
 		result, err := adapter.ExecuteShellCommand(context.Background(), "echo 'Hello World'", "")
 		if err != nil {
 			t.Fatalf("Basic command failed: %v", err)
 		}
 
-		resultMap := result.(map[string]any)
+		resultMap, err := utils.AssertMapStringAny(result)
+		if err != nil {
+			t.Fatalf("Result assertion failed: %v", err)
+		}
 		if resultMap["exit_code"] != 0 {
 			t.Errorf("Expected exit code 0, got %v", resultMap["exit_code"])
 		}
 
-		if !strings.Contains(resultMap["stdout"].(string), "Hello World") {
-			t.Errorf("Expected stdout to contain 'Hello World', got %s", resultMap["stdout"])
+		stdout, err := utils.GetMapField[string](resultMap, "stdout")
+		if err != nil {
+			t.Errorf("Failed to get stdout: %v", err)
+		} else if !strings.Contains(stdout, "Hello World") {
+			t.Errorf("Expected stdout to contain 'Hello World', got %s", stdout)
 		}
 
-		// Test 2: Working directory behavior
+		// Test 2: Working directory behavior.
 		tempDir := t.TempDir()
 		testFile := filepath.Join(tempDir, "test.txt")
 		if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
@@ -43,44 +51,59 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 			t.Fatalf("Working directory command failed: %v", err)
 		}
 
-		resultMap = result.(map[string]any)
+		resultMap, err = utils.AssertMapStringAny(result)
+		if err != nil {
+			t.Fatalf("Result assertion failed: %v", err)
+		}
 		if resultMap["exit_code"] != 0 {
 			t.Errorf("Expected exit code 0, got %v", resultMap["exit_code"])
 		}
 
-		if !strings.Contains(resultMap["stdout"].(string), "test.txt") {
-			t.Errorf("Expected stdout to contain 'test.txt', got %s", resultMap["stdout"])
+		stdout, err = utils.GetMapField[string](resultMap, "stdout")
+		if err != nil {
+			t.Errorf("Failed to get stdout: %v", err)
+		} else if !strings.Contains(stdout, "test.txt") {
+			t.Errorf("Expected stdout to contain 'test.txt', got %s", stdout)
 		}
 
-		// Test 3: Error handling
+		// Test 3: Error handling.
 		result, err = adapter.ExecuteShellCommand(context.Background(), "false", "")
 		if err != nil {
 			t.Fatalf("Error handling test failed: %v", err)
 		}
 
-		resultMap = result.(map[string]any)
+		resultMap, err = utils.AssertMapStringAny(result)
+		if err != nil {
+			t.Fatalf("Result assertion failed: %v", err)
+		}
 		if resultMap["exit_code"] != 1 {
 			t.Errorf("Expected exit code 1, got %v", resultMap["exit_code"])
 		}
 
-		// Test 4: stderr capture
+		// Test 4: stderr capture.
 		result, err = adapter.ExecuteShellCommand(context.Background(), "echo 'error message' >&2", "")
 		if err != nil {
 			t.Fatalf("stderr capture test failed: %v", err)
 		}
 
-		resultMap = result.(map[string]any)
+		resultMap, err = utils.AssertMapStringAny(result)
+		if err != nil {
+			t.Fatalf("Result assertion failed: %v", err)
+		}
 		if resultMap["exit_code"] != 0 {
 			t.Errorf("Expected exit code 0, got %v", resultMap["exit_code"])
 		}
 
-		if !strings.Contains(resultMap["stderr"].(string), "error message") {
-			t.Errorf("Expected stderr to contain 'error message', got %s", resultMap["stderr"])
+		stderr, err := utils.GetMapField[string](resultMap, "stderr")
+		if err != nil {
+			t.Errorf("Failed to get stderr: %v", err)
+		} else if !strings.Contains(stderr, "error message") {
+			t.Errorf("Expected stderr to contain 'error message', got %s", stderr)
 		}
 	})
 
 	t.Run("Registry provides local executor by default", func(t *testing.T) {
-		// Test global registry has local executor
+		// Test global registry has local executor.
 		names := List()
 		found := false
 		for _, name := range names {
@@ -94,7 +117,7 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 			t.Error("Global registry should have local executor by default")
 		}
 
-		// Test we can get the default executor
+		// Test we can get the default executor.
 		defaultExec, err := GetDefault()
 		if err != nil {
 			t.Fatalf("Failed to get default executor: %v", err)
@@ -104,7 +127,7 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 			t.Errorf("Expected default executor to be 'local', got %s", defaultExec.Name())
 		}
 
-		// Test it's available
+		// Test it's available.
 		if !defaultExec.Available() {
 			t.Error("Default executor should be available")
 		}
@@ -113,7 +136,7 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 	t.Run("Executor interface provides consistent API", func(t *testing.T) {
 		localExec := NewLocalExec()
 
-		// Test interface methods
+		// Test interface methods.
 		if localExec.Name() != "local" {
 			t.Errorf("Expected name 'local', got %s", localExec.Name())
 		}
@@ -122,11 +145,11 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 			t.Error("Local executor should always be available")
 		}
 
-		// Test execution with proper options
+		// Test execution with proper options.
 		opts := DefaultExecOpts()
 		opts.Timeout = 5 * time.Second
 
-		result, err := localExec.Run(context.Background(), []string{"echo", "test"}, opts)
+		result, err := localExec.Run(context.Background(), []string{"echo", "test"}, &opts)
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
 		}
@@ -149,12 +172,12 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 	})
 }
 
-// TestBackwardCompatibility ensures the new executor system doesn't break existing code
+// TestBackwardCompatibility ensures the new executor system doesn't break existing code.
 func TestBackwardCompatibility(t *testing.T) {
-	// Test that shell adapter maintains the same interface as the original shell tool
+	// Test that shell adapter maintains the same interface as the original shell tool.
 	adapter := NewShellCommandAdapter(NewLocalExec())
 
-	// These are the exact patterns used by the original shell tool
+	// These are the exact patterns used by the original shell tool.
 	testCases := []struct {
 		name    string
 		command string
@@ -200,7 +223,7 @@ func TestBackwardCompatibility(t *testing.T) {
 			}
 
 			if !tc.wantErr {
-				// Check result format matches original shell tool
+				// Check result format matches original shell tool.
 				resultMap, ok := result.(map[string]any)
 				if !ok {
 					t.Fatalf("Expected result to be map[string]any, got %T", result)
@@ -213,7 +236,7 @@ func TestBackwardCompatibility(t *testing.T) {
 					}
 				}
 
-				// Check types
+				// Check types.
 				if _, ok := resultMap["stdout"].(string); !ok {
 					t.Error("stdout should be string")
 				}

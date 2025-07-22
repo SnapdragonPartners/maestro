@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// MockLLMClient provides a controllable implementation of LLMClient for testing
+// MockLLMClient provides a controllable implementation of LLMClient for testing.
 type MockLLMClient struct {
 	responses     []CompletionResponse
 	responseIndex int
@@ -13,7 +13,7 @@ type MockLLMClient struct {
 	errorIndex    int
 }
 
-// NewMockLLMClient creates a new mock client with predefined responses
+// NewMockLLMClient creates a new mock client with predefined responses.
 func NewMockLLMClient(responses []CompletionResponse, errors []error) *MockLLMClient {
 	return &MockLLMClient{
 		responses: responses,
@@ -21,7 +21,7 @@ func NewMockLLMClient(responses []CompletionResponse, errors []error) *MockLLMCl
 	}
 }
 
-// Complete returns the next predefined response or error
+// Complete returns the next predefined response or error.
 func (m *MockLLMClient) Complete(_ context.Context, _ CompletionRequest) (CompletionResponse, error) {
 	if m.errorIndex < len(m.errors) && m.errors[m.errorIndex] != nil {
 		err := m.errors[m.errorIndex]
@@ -38,7 +38,7 @@ func (m *MockLLMClient) Complete(_ context.Context, _ CompletionRequest) (Comple
 	return resp, nil
 }
 
-// Stream returns a channel that will receive predefined responses
+// Stream returns a channel that will receive predefined responses.
 func (m *MockLLMClient) Stream(_ context.Context, _ CompletionRequest) (<-chan StreamChunk, error) {
 	if m.errorIndex < len(m.errors) && m.errors[m.errorIndex] != nil {
 		err := m.errors[m.errorIndex]

@@ -9,11 +9,11 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// TestStory5UnknownApprovalTypeFallback tests handling of unknown approval_type values
+// TestStory5UnknownApprovalTypeFallback tests handling of unknown approval_type values.
 func TestStory5UnknownApprovalTypeFallback(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Create test harness
+	// Create test harness.
 	harness := NewTestHarness(t)
 	timeouts := GetTestTimeouts()
 	timeouts.Global = 15 * time.Second // Allow time for fallback handling
@@ -21,14 +21,14 @@ func TestStory5UnknownApprovalTypeFallback(t *testing.T) {
 
 	responseCount := 0
 
-	// Create architect that sends unknown approval_type first, then valid response
+	// Create architect that sends unknown approval_type first, then valid response.
 	architect := NewMalformedResponseMockArchitect("architect", func(msg *proto.AgentMsg) *proto.AgentMsg {
 		responseCount++
 		response := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", msg.FromAgent)
 		response.ParentMsgID = msg.ID
 
 		if responseCount == 1 {
-			// First response: unknown approval_type
+			// First response: unknown approval_type.
 			response.SetPayload(proto.KeyStatus, "approved")
 			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 			response.SetPayload(proto.KeyApprovalType, "YEP") // Invalid approval type
@@ -36,7 +36,7 @@ func TestStory5UnknownApprovalTypeFallback(t *testing.T) {
 			return response
 		}
 
-		// Subsequent responses: valid approval
+		// Subsequent responses: valid approval.
 		response.SetPayload(proto.KeyStatus, "approved")
 		response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 		response.SetPayload(proto.KeyApprovalType, "plan") // Valid approval type
@@ -46,12 +46,12 @@ func TestStory5UnknownApprovalTypeFallback(t *testing.T) {
 	})
 	harness.SetArchitect(architect)
 
-	// Create coder
+	// Create coder.
 	coderID := "coder-unknown-approval"
 	coderDriver := CreateTestCoder(t, coderID)
 	harness.AddCoder(coderID, coderDriver)
 
-	// Start with task
+	// Start with task.
 	taskContent := `Create a function that validates user input.
 
 Requirements:
@@ -61,10 +61,10 @@ Requirements:
 
 	StartCoderWithTask(t, harness, coderID, taskContent)
 
-	// Verify initial state
+	// Verify initial state.
 	RequireState(t, harness, coderID, coder.StatePlanning)
 
-	// Run until completion
+	// Run until completion.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -76,10 +76,10 @@ Requirements:
 		t.Fatalf("Harness run failed: %v", err)
 	}
 
-	// Verify final state
+	// Verify final state.
 	RequireState(t, harness, coderID, proto.StateDone)
 
-	// Verify that multiple requests were made due to unknown approval_type handling
+	// Verify that multiple requests were made due to unknown approval_type handling.
 	messages := architect.GetReceivedMessages()
 	requestCount := 0
 
@@ -89,7 +89,7 @@ Requirements:
 		}
 	}
 
-	// Should have at least 2 requests due to the unknown approval_type fallback
+	// Should have at least 2 requests due to the unknown approval_type fallback.
 	if requestCount < 2 {
 		t.Errorf("Expected at least 2 REQUEST messages due to unknown approval_type fallback, got %d", requestCount)
 	}
@@ -98,7 +98,7 @@ Requirements:
 	t.Logf("Total REQUEST messages: %d (expected >= 2 due to fallback)", requestCount)
 }
 
-// TestStory5MultipleUnknownApprovalTypes tests various unknown approval_type values
+// TestStory5MultipleUnknownApprovalTypes tests various unknown approval_type values.
 func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 	unknownTypes := []string{
 		"YEP",
@@ -114,7 +114,7 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 		t.Run("unknown_type_"+unknownType, func(t *testing.T) {
 			SetupTestEnvironment(t)
 
-			// Create test harness
+			// Create test harness.
 			harness := NewTestHarness(t)
 			timeouts := GetTestTimeouts()
 			timeouts.Global = 10 * time.Second
@@ -122,14 +122,14 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 
 			responseCount := 0
 
-			// Create architect that sends the specific unknown type
+			// Create architect that sends the specific unknown type.
 			architect := NewMalformedResponseMockArchitect("architect", func(msg *proto.AgentMsg) *proto.AgentMsg {
 				responseCount++
 				response := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", msg.FromAgent)
 				response.ParentMsgID = msg.ID
 
 				if responseCount == 1 {
-					// First response: unknown approval_type
+					// First response: unknown approval_type.
 					response.SetPayload(proto.KeyStatus, "approved")
 					response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 					response.SetPayload(proto.KeyApprovalType, unknownType)
@@ -137,7 +137,7 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 					return response
 				}
 
-				// Valid response
+				// Valid response.
 				response.SetPayload(proto.KeyStatus, "approved")
 				response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 				response.SetPayload(proto.KeyApprovalType, "plan")
@@ -147,15 +147,15 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 			})
 			harness.SetArchitect(architect)
 
-			// Create coder
+			// Create coder.
 			coderID := "coder-unknown-" + unknownType
 			coderDriver := CreateTestCoder(t, coderID)
 			harness.AddCoder(coderID, coderDriver)
 
-			// Start with simple task
+			// Start with simple task.
 			StartCoderWithTask(t, harness, coderID, "Create a simple logging function")
 
-			// Run until completion or timeout
+			// Run until completion or timeout.
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 
@@ -164,15 +164,15 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 				return state == proto.StateDone || state == proto.StateError
 			})
 
-			// The coder should handle unknown types gracefully
+			// The coder should handle unknown types gracefully.
 			finalState := harness.GetCoderState(coderID)
 
-			// Should not crash or enter error state due to unknown approval type
+			// Should not crash or enter error state due to unknown approval type.
 			if finalState == proto.StateError {
 				t.Errorf("Coder entered error state for unknown approval_type '%s'", unknownType)
 			}
 
-			// Verify messages were exchanged
+			// Verify messages were exchanged.
 			messages := architect.GetReceivedMessages()
 			if len(messages) == 0 {
 				t.Errorf("No messages received for unknown approval_type '%s'", unknownType)
@@ -183,11 +183,11 @@ func TestStory5MultipleUnknownApprovalTypes(t *testing.T) {
 	}
 }
 
-// TestStory5ApprovalTypeValidation tests the approval type validation logic
+// TestStory5ApprovalTypeValidation tests the approval type validation logic.
 func TestStory5ApprovalTypeValidation(t *testing.T) {
 	SetupTestEnvironment(t)
 
-	// Test cases for approval type validation
+	// Test cases for approval type validation.
 	testCases := []struct {
 		name         string
 		approvalType string
@@ -228,7 +228,7 @@ func TestStory5ApprovalTypeValidation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Create test harness
+			// Create test harness.
 			harness := NewTestHarness(t)
 			timeouts := GetTestTimeouts()
 			timeouts.Global = 8 * time.Second
@@ -236,7 +236,7 @@ func TestStory5ApprovalTypeValidation(t *testing.T) {
 
 			requestCount := 0
 
-			// Create architect that tracks requests and responds appropriately
+			// Create architect that tracks requests and responds appropriately.
 			architect := NewMalformedResponseMockArchitect("architect", func(msg *proto.AgentMsg) *proto.AgentMsg {
 				if msg.Type == proto.MsgTypeREQUEST {
 					requestCount++
@@ -246,13 +246,13 @@ func TestStory5ApprovalTypeValidation(t *testing.T) {
 				response.ParentMsgID = msg.ID
 
 				if requestCount == 1 {
-					// First response uses the test case values
+					// First response uses the test case values.
 					response.SetPayload(proto.KeyStatus, tc.status)
 					response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 					response.SetPayload(proto.KeyApprovalType, tc.approvalType)
 					response.SetPayload(proto.KeyFeedback, "Test response")
 				} else {
-					// Subsequent responses are valid
+					// Subsequent responses are valid.
 					response.SetPayload(proto.KeyStatus, "approved")
 					response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
 					response.SetPayload(proto.KeyApprovalType, "plan")
@@ -263,15 +263,15 @@ func TestStory5ApprovalTypeValidation(t *testing.T) {
 			})
 			harness.SetArchitect(architect)
 
-			// Create coder
+			// Create coder.
 			coderID := "coder-validation-" + tc.name
 			coderDriver := CreateTestCoder(t, coderID)
 			harness.AddCoder(coderID, coderDriver)
 
-			// Start with task
+			// Start with task.
 			StartCoderWithTask(t, harness, coderID, "Create a validation test function")
 
-			// Run for limited time
+			// Run for limited time.
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 			defer cancel()
 
@@ -280,7 +280,7 @@ func TestStory5ApprovalTypeValidation(t *testing.T) {
 				return state == proto.StateDone || requestCount >= 3 // Limit requests
 			})
 
-			// Check if behavior matches expectations
+			// Check if behavior matches expectations.
 			if tc.expectResend {
 				if requestCount < 2 {
 					t.Errorf("Expected resend for %s (approval_type: '%s'), but only got %d requests",

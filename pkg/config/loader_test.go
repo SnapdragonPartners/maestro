@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
-	// Create temporary config file
+	// Create temporary config file.
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
 
@@ -40,7 +40,7 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	// Set environment variable
+	// Set environment variable.
 	os.Setenv("CLAUDE_API_KEY", "test-key-123")
 	defer os.Unsetenv("CLAUDE_API_KEY")
 
@@ -49,12 +49,12 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Test placeholder substitution
+	// Test placeholder substitution.
 	if config.Models["claude_sonnet4"].APIKey != "test-key-123" {
 		t.Errorf("Expected API key 'test-key-123', got '%s'", config.Models["claude_sonnet4"].APIKey)
 	}
 
-	// Test other values
+	// Test other values.
 	if config.Models["claude_sonnet4"].MaxTokensPerMinute != 1000 {
 		t.Errorf("Expected MaxTokensPerMinute 1000, got %d", config.Models["claude_sonnet4"].MaxTokensPerMinute)
 	}
@@ -110,7 +110,7 @@ func TestEnvOverride(t *testing.T) {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	// Set environment override
+	// Set environment override.
 	os.Setenv("GRACEFUL_SHUTDOWN_TIMEOUT_SEC", "60")
 	defer os.Unsetenv("GRACEFUL_SHUTDOWN_TIMEOUT_SEC")
 
@@ -119,7 +119,7 @@ func TestEnvOverride(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Test environment override
+	// Test environment override.
 	if config.GracefulShutdownTimeoutSec != 60 {
 		t.Errorf("Expected GracefulShutdownTimeoutSec 60, got %d", config.GracefulShutdownTimeoutSec)
 	}
@@ -279,7 +279,7 @@ func TestGetAllAgents(t *testing.T) {
 		t.Errorf("Expected 3 agents, got %d", len(agents))
 	}
 
-	// Test agent lookup by log ID
+	// Test agent lookup by log ID.
 	agentWithModel, err := config.GetAgentByLogID("claude_sonnet4:001")
 	if err != nil {
 		t.Fatalf("Failed to get agent by log ID: %v", err)

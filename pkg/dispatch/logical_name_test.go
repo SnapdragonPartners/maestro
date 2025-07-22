@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -11,7 +12,7 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// MockDriverAgent implements both Agent and Driver interfaces for testing
+// MockDriverAgent implements both Agent and Driver interfaces for testing.
 type MockDriverAgent struct {
 	id        string
 	agentType agent.AgentType
@@ -28,11 +29,11 @@ func (a *MockDriverAgent) GetID() string {
 	return a.id
 }
 
-func (a *MockDriverAgent) ProcessMessage(ctx context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	return nil, nil
+func (a *MockDriverAgent) ProcessMessage(_ context.Context, _ *proto.AgentMsg) (*proto.AgentMsg, error) {
+	return nil, fmt.Errorf("mock agent - no processing implemented")
 }
 
-func (a *MockDriverAgent) Shutdown(ctx context.Context) error {
+func (a *MockDriverAgent) Shutdown(_ context.Context) error {
 	return nil
 }
 
@@ -45,7 +46,7 @@ func (a *MockDriverAgent) GetCurrentState() proto.State {
 }
 
 func TestLogicalNameResolution(t *testing.T) {
-	// Create test config with realistic agent types
+	// Create test config with realistic agent types.
 	cfg := &config.Config{
 		Models: map[string]config.ModelCfg{
 			"claude_sonnet4": {
@@ -83,7 +84,7 @@ func TestLogicalNameResolution(t *testing.T) {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 
-	// Attach mock agents to simulate real system
+	// Attach mock agents to simulate real system.
 	architectAgent := NewMockDriverAgent("openai_o3:001", agent.AgentTypeArchitect)
 	coderAgent := NewMockDriverAgent("claude_sonnet4:001", agent.AgentTypeCoder)
 

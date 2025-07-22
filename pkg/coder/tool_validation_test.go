@@ -7,11 +7,11 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// TestAskQuestionToolValidation tests the AskQuestionTool validation and execution
+// TestAskQuestionToolValidation tests the AskQuestionTool validation and execution.
 func TestAskQuestionToolValidation(t *testing.T) {
 	tool := tools.NewAskQuestionTool()
 
-	// Test tool definition
+	// Test tool definition.
 	def := tool.Definition()
 	if def.Name != "ask_question" {
 		t.Errorf("Expected tool name 'ask_question', got %s", def.Name)
@@ -21,12 +21,12 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Error("Expected non-empty description")
 	}
 
-	// Test required parameters
+	// Test required parameters.
 	if len(def.InputSchema.Required) != 1 || def.InputSchema.Required[0] != "question" {
 		t.Errorf("Expected required parameter 'question', got %v", def.InputSchema.Required)
 	}
 
-	// Test valid tool execution
+	// Test valid tool execution.
 	ctx := context.Background()
 	validArgs := map[string]any{
 		"question": "How should I implement this feature?",
@@ -44,7 +44,7 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Fatal("Expected result to be a map")
 	}
 
-	// Validate result structure
+	// Validate result structure.
 	if success, exists := resultMap["success"]; !exists || success != true {
 		t.Error("Expected success field to be true")
 	}
@@ -62,7 +62,7 @@ func TestAskQuestionToolValidation(t *testing.T) {
 	}
 }
 
-// TestAskQuestionToolErrorHandling tests error scenarios
+// TestAskQuestionToolErrorHandling tests error scenarios.
 func TestAskQuestionToolErrorHandling(t *testing.T) {
 	tool := tools.NewAskQuestionTool()
 	ctx := context.Background()
@@ -123,7 +123,7 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// Verify default values are set
+				// Verify default values are set.
 				if resultMap, ok := result.(map[string]any); ok {
 					if urgency, exists := resultMap["urgency"]; !exists || urgency != "MEDIUM" {
 						t.Error("Expected default urgency to be MEDIUM")
@@ -137,17 +137,17 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 	}
 }
 
-// TestSubmitPlanToolValidation tests the SubmitPlanTool validation and execution
+// TestSubmitPlanToolValidation tests the SubmitPlanTool validation and execution.
 func TestSubmitPlanToolValidation(t *testing.T) {
 	tool := tools.NewSubmitPlanTool()
 
-	// Test tool definition
+	// Test tool definition.
 	def := tool.Definition()
 	if def.Name != "submit_plan" {
 		t.Errorf("Expected tool name 'submit_plan', got %s", def.Name)
 	}
 
-	// Test required parameters
+	// Test required parameters.
 	expectedRequired := []string{"plan", "confidence"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
@@ -166,7 +166,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		}
 	}
 
-	// Test valid execution
+	// Test valid execution.
 	ctx := context.Background()
 	validArgs := map[string]any{
 		"plan":                "Detailed implementation plan...",
@@ -185,7 +185,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Fatal("Expected result to be a map")
 	}
 
-	// Validate result structure
+	// Validate result structure.
 	if success, exists := resultMap["success"]; !exists || success != true {
 		t.Error("Expected success field to be true")
 	}
@@ -203,7 +203,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 }
 
-// TestSubmitPlanToolErrorHandling tests error scenarios for submit_plan tool
+// TestSubmitPlanToolErrorHandling tests error scenarios for submit_plan tool.
 func TestSubmitPlanToolErrorHandling(t *testing.T) {
 	tool := tools.NewSubmitPlanTool()
 	ctx := context.Background()
@@ -277,7 +277,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// Verify optional fields default to empty string
+				// Verify optional fields default to empty string.
 				if resultMap, ok := result.(map[string]any); ok {
 					if exploration, exists := resultMap["exploration_summary"]; !exists || exploration != "" {
 						t.Error("Expected default exploration_summary to be empty string")
@@ -291,12 +291,12 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 	}
 }
 
-// TestToolDefinitionConsistency tests that tool definitions are consistent
+// TestToolDefinitionConsistency tests that tool definitions are consistent.
 func TestToolDefinitionConsistency(t *testing.T) {
 	askTool := tools.NewAskQuestionTool()
 	submitTool := tools.NewSubmitPlanTool()
 
-	// Test tool names match their functions
+	// Test tool names match their functions.
 	if askTool.Name() != askTool.Definition().Name {
 		t.Error("AskQuestionTool Name() method doesn't match Definition().Name")
 	}
@@ -305,7 +305,7 @@ func TestToolDefinitionConsistency(t *testing.T) {
 		t.Error("SubmitPlanTool Name() method doesn't match Definition().Name")
 	}
 
-	// Test all required parameters have property definitions
+	// Test all required parameters have property definitions.
 	askDef := askTool.Definition()
 	for _, required := range askDef.InputSchema.Required {
 		if _, exists := askDef.InputSchema.Properties[required]; !exists {
@@ -320,7 +320,7 @@ func TestToolDefinitionConsistency(t *testing.T) {
 		}
 	}
 
-	// Test enum validations exist for constrained fields
+	// Test enum validations exist for constrained fields.
 	if urgencyProp, exists := askDef.InputSchema.Properties["urgency"]; exists {
 		if len(urgencyProp.Enum) == 0 {
 			t.Error("AskQuestionTool urgency parameter should have enum constraints")

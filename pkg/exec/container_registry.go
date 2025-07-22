@@ -9,43 +9,43 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-// Global container registry instance - initialized by orchestrator at startup
-var globalContainerRegistry *ContainerRegistry
-var globalContainerRegistryMu sync.RWMutex
+// Global container registry instance - initialized by orchestrator at startup.
+var globalContainerRegistry *ContainerRegistry //nolint:gochecknoglobals
+var globalContainerRegistryMu sync.RWMutex //nolint:gochecknoglobals
 
-// SetGlobalRegistry initializes the global container registry (called by orchestrator)
+// SetGlobalRegistry initializes the global container registry (called by orchestrator).
 func SetGlobalRegistry(registry *ContainerRegistry) {
 	globalContainerRegistryMu.Lock()
 	defer globalContainerRegistryMu.Unlock()
 	globalContainerRegistry = registry
 }
 
-// GetGlobalRegistry returns the global container registry
+// GetGlobalRegistry returns the global container registry.
 func GetGlobalRegistry() *ContainerRegistry {
 	globalContainerRegistryMu.RLock()
 	defer globalContainerRegistryMu.RUnlock()
 	return globalContainerRegistry
 }
 
-// RegistryContainerInfo holds information about a registered container
+// RegistryContainerInfo holds information about a registered container.
 type RegistryContainerInfo struct {
+	StartTime     time.Time // When container was started
+	LastUsed      time.Time // Last activity timestamp
 	AgentID       string    // Agent that owns this container
 	ContainerName string    // Docker container name
 	Purpose       string    // "planning", "coding", "testing", etc.
-	StartTime     time.Time // When container was started
-	LastUsed      time.Time // Last activity timestamp
 }
 
-// ContainerRegistry manages all active containers for graceful shutdown and resource cleanup
+// ContainerRegistry manages all active containers for graceful shutdown and resource cleanup.
 type ContainerRegistry struct {
-	mu         sync.RWMutex
 	containers map[string]*RegistryContainerInfo // containerName -> info
 	logger     *logx.Logger
 	shutdown   chan struct{}
 	done       chan struct{}
+	mu         sync.RWMutex
 }
 
-// NewContainerRegistry creates a new container registry
+// NewContainerRegistry creates a new container registry.
 func NewContainerRegistry(logger *logx.Logger) *ContainerRegistry {
 	return &ContainerRegistry{
 		containers: make(map[string]*RegistryContainerInfo),
@@ -55,12 +55,12 @@ func NewContainerRegistry(logger *logx.Logger) *ContainerRegistry {
 	}
 }
 
-// Register adds a container to the registry for tracking
+// Register adds a container to the registry for tracking.
 func (r *ContainerRegistry) Register(agentID, containerName, purpose string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Sanitize the agent ID for consistent tracking
+	// Sanitize the agent ID for consistent tracking.
 	sanitizedAgentID := utils.SanitizeIdentifier(agentID)
 
 	info := &RegistryContainerInfo{
@@ -75,7 +75,7 @@ func (r *ContainerRegistry) Register(agentID, containerName, purpose string) {
 	r.logger.Info("📦 Container registered: %s (agent: %s, purpose: %s)", containerName, sanitizedAgentID, purpose)
 }
 
-// Unregister removes a container from the registry
+// Unregister removes a container from the registry.
 func (r *ContainerRegistry) Unregister(containerName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -86,7 +86,7 @@ func (r *ContainerRegistry) Unregister(containerName string) {
 	}
 }
 
-// UpdateLastUsed updates the last used timestamp for a container
+// UpdateLastUsed updates the last used timestamp for a container.
 func (r *ContainerRegistry) UpdateLastUsed(containerName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,7 +96,7 @@ func (r *ContainerRegistry) UpdateLastUsed(containerName string) {
 	}
 }
 
-// GetActiveContainers returns a copy of all active container info
+// GetActiveContainers returns a copy of all active container info.
 func (r *ContainerRegistry) GetActiveContainers() map[string]RegistryContainerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -108,7 +108,7 @@ func (r *ContainerRegistry) GetActiveContainers() map[string]RegistryContainerIn
 	return result
 }
 
-// GetContainersByAgent returns all containers for a specific agent
+// GetContainersByAgent returns all containers for a specific agent.
 func (r *ContainerRegistry) GetContainersByAgent(agentID string) []RegistryContainerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -124,14 +124,14 @@ func (r *ContainerRegistry) GetContainersByAgent(agentID string) []RegistryConta
 	return containers
 }
 
-// GetContainerCount returns the total number of registered containers
+// GetContainerCount returns the total number of registered containers.
 func (r *ContainerRegistry) GetContainerCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.containers)
 }
 
-// GetActiveAgents returns a list of all agents with active containers
+// GetActiveAgents returns a list of all agents with active containers.
 func (r *ContainerRegistry) GetActiveAgents() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -148,7 +148,7 @@ func (r *ContainerRegistry) GetActiveAgents() []string {
 	return agents
 }
 
-// GetStaleContainers returns containers that haven't been used for the specified duration
+// GetStaleContainers returns containers that haven't been used for the specified duration.
 func (r *ContainerRegistry) GetStaleContainers(staleDuration time.Duration) []RegistryContainerInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -164,8 +164,8 @@ func (r *ContainerRegistry) GetStaleContainers(staleDuration time.Duration) []Re
 	return stale
 }
 
-// StopAllContainers gracefully stops all registered containers
-// This should be called during application shutdown
+// StopAllContainers gracefully stops all registered containers.
+// This should be called during application shutdown.
 func (r *ContainerRegistry) StopAllContainers(ctx context.Context, executor Executor) error {
 	r.mu.Lock()
 	containers := make(map[string]*RegistryContainerInfo)
@@ -185,7 +185,7 @@ func (r *ContainerRegistry) StopAllContainers(ctx context.Context, executor Exec
 	for containerName, info := range containers {
 		r.logger.Info("📦 Stopping container %s (agent: %s, purpose: %s)", containerName, info.AgentID, info.Purpose)
 
-		// Try to stop the container gracefully
+		// Try to stop the container gracefully.
 		if longRunning, ok := executor.(*LongRunningDockerExec); ok {
 			if err := longRunning.StopContainer(ctx, containerName); err != nil {
 				r.logger.Error("Failed to stop container %s: %v", containerName, err)
@@ -205,7 +205,7 @@ func (r *ContainerRegistry) StopAllContainers(ctx context.Context, executor Exec
 	return nil
 }
 
-// StartCleanupRoutine starts a background routine that periodically cleans up stale containers
+// StartCleanupRoutine starts a background routine that periodically cleans up stale containers.
 func (r *ContainerRegistry) StartCleanupRoutine(ctx context.Context, executor Executor, cleanupInterval, staleThreshold time.Duration) {
 	go func() {
 		defer close(r.done)
@@ -228,7 +228,7 @@ func (r *ContainerRegistry) StartCleanupRoutine(ctx context.Context, executor Ex
 	}()
 }
 
-// cleanupStaleContainers removes containers that haven't been used recently
+// cleanupStaleContainers removes containers that haven't been used recently.
 func (r *ContainerRegistry) cleanupStaleContainers(ctx context.Context, executor Executor, staleThreshold time.Duration) {
 	staleContainers := r.GetStaleContainers(staleThreshold)
 	if len(staleContainers) == 0 {
@@ -251,7 +251,7 @@ func (r *ContainerRegistry) cleanupStaleContainers(ctx context.Context, executor
 	}
 }
 
-// Shutdown signals the cleanup routine to stop and waits for it to finish
+// Shutdown signals the cleanup routine to stop and waits for it to finish.
 func (r *ContainerRegistry) Shutdown() {
 	close(r.shutdown)
 	<-r.done

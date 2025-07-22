@@ -14,7 +14,7 @@ func TestMockAnthropicServer(t *testing.T) {
 	server := MockAnthropicServer()
 	defer server.Close()
 
-	// Test health endpoint request
+	// Test health endpoint request.
 	requestBody := `{
 		"model": "claude-3-sonnet-20240229",
 		"messages": [
@@ -51,7 +51,7 @@ func TestMockAnthropicServer(t *testing.T) {
 		t.Fatalf("Failed to parse JSON response: %v", err)
 	}
 
-	// Verify response structure
+	// Verify response structure.
 	if response["type"] != "message" {
 		t.Errorf("Expected type 'message', got %v", response["type"])
 	}
@@ -111,7 +111,7 @@ func TestMockOpenAIServer(t *testing.T) {
 		t.Fatalf("Failed to parse JSON response: %v", err)
 	}
 
-	// Verify response structure
+	// Verify response structure.
 	if response["object"] != "chat.completion" {
 		t.Errorf("Expected object 'chat.completion', got %v", response["object"])
 	}
@@ -142,7 +142,7 @@ func TestMockOpenAIServer(t *testing.T) {
 }
 
 func TestMessageHelpers(t *testing.T) {
-	// Test story message creation
+	// Test story message creation.
 	storyMsg := NewStoryMessage("architect", "claude").
 		WithContent("Create a health endpoint").
 		WithStoryID("001").
@@ -157,7 +157,7 @@ func TestMessageHelpers(t *testing.T) {
 	AssertPayloadString(t, storyMsg, "story_id", "001")
 	AssertMetadataValue(t, storyMsg, "story_type", "health")
 
-	// Test result message creation
+	// Test result message creation.
 	resultMsg := NewResultMessage("claude", "architect").
 		WithStatus("completed").
 		WithImplementation("package main\nfunc main() {}").
@@ -169,7 +169,7 @@ func TestMessageHelpers(t *testing.T) {
 	AssertTestResults(t, resultMsg, true)
 	AssertPayloadExists(t, resultMsg, "implementation")
 
-	// Test error message creation
+	// Test error message creation.
 	errorMsg := NewErrorMessage("claude", "architect").
 		WithError("Compilation failed").
 		WithMetadata("error_type", "build_error").
@@ -181,13 +181,13 @@ func TestMessageHelpers(t *testing.T) {
 }
 
 func TestPredefinedMessages(t *testing.T) {
-	// Test health endpoint story
+	// Test health endpoint story.
 	healthStory := HealthEndpointTask("architect", "claude")
 	AssertMessageType(t, healthStory, proto.MsgTypeSTORY)
 	AssertPayloadContains(t, healthStory, "content", "health")
 	AssertPayloadExists(t, healthStory, "requirements")
 
-	// Test successful code result
+	// Test successful code result.
 	implementation := `package main
 import "net/http"
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
@@ -198,19 +198,19 @@ func main() { http.HandleFunc("/health", healthHandler) }`
 	AssertPayloadString(t, successResult, "status", "completed")
 	AssertTestResults(t, successResult, true)
 
-	// Test failed code result
+	// Test failed code result.
 	failedResult := FailedCodeResult("claude", "architect", "Build failed")
 	AssertMessageType(t, failedResult, proto.MsgTypeERROR)
 	AssertPayloadString(t, failedResult, "error", "Build failed")
 
-	// Test shutdown acknowledgment
+	// Test shutdown acknowledgment.
 	shutdownAck := ShutdownAcknowledgment("claude", "orchestrator")
 	AssertMessageType(t, shutdownAck, proto.MsgTypeRESULT)
 	AssertPayloadString(t, shutdownAck, "status", "shutdown_acknowledged")
 }
 
 func TestAssertions(t *testing.T) {
-	// Create a test message for assertion testing
+	// Create a test message for assertion testing.
 	msg := NewResultMessage("claude", "architect").
 		WithStatus("completed").
 		WithImplementation(`package main
@@ -235,7 +235,7 @@ func main() {
 		WithTestResults(true, "All checks passed").
 		Build()
 
-	// Test all assertion types
+	// Test all assertion types.
 	AssertMessageType(t, msg, proto.MsgTypeRESULT)
 	AssertMessageFromAgent(t, msg, "claude")
 	AssertMessageToAgent(t, msg, "architect")
@@ -246,14 +246,14 @@ func main() {
 	AssertHealthEndpointCode(t, msg)
 	AssertNoAPICallsMade(t, msg)
 
-	// Test lint/test conditions
+	// Test lint/test conditions.
 	AssertLintTestConditions(t, msg, LintTestConditions{
 		ShouldPass: true,
 	})
 }
 
 func TestMessageFlow(t *testing.T) {
-	// Create a sequence of messages
+	// Create a sequence of messages.
 	story := HealthEndpointTask("architect", "claude")
 	result := SuccessfulCodeResult("claude", "architect", "mock implementation")
 	shutdown := NewShutdownMessage("orchestrator", "claude").Build()

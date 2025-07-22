@@ -10,7 +10,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// TestParseAndCreateFiles_FencedCodeBlocks tests traditional fenced code blocks
+// TestParseAndCreateFiles_FencedCodeBlocks tests traditional fenced code blocks.
 func TestParseAndCreateFiles_FencedCodeBlocks(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -52,7 +52,7 @@ if __name__ == "__main__":
 		t.Errorf("Expected 2 files created, got %d", filesCreated)
 	}
 
-	// Verify main.go was created
+	// Verify main.go was created.
 	mainGoPath := filepath.Join(tempDir, "main.go")
 	if _, err := os.Stat(mainGoPath); os.IsNotExist(err) {
 		t.Error("main.go was not created")
@@ -63,7 +63,7 @@ if __name__ == "__main__":
 		}
 	}
 
-	// Verify utils.py was created
+	// Verify utils.py was created.
 	utilsPyPath := filepath.Join(tempDir, "utils.py")
 	if _, err := os.Stat(utilsPyPath); os.IsNotExist(err) {
 		t.Error("utils.py was not created")
@@ -75,7 +75,7 @@ if __name__ == "__main__":
 	}
 }
 
-// TestParseAndCreateFiles_PlainCodeBlocks tests plain code blocks without language specifiers
+// TestParseAndCreateFiles_PlainCodeBlocks tests plain code blocks without language specifiers.
 func TestParseAndCreateFiles_PlainCodeBlocks(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -116,7 +116,7 @@ print(calculate(5, 3))
 		t.Errorf("Expected 2 files created, got %d", filesCreated)
 	}
 
-	// Check that Go code was detected and saved
+	// Check that Go code was detected and saved.
 	entries, _ := os.ReadDir(tempDir)
 	var goFileFound, pyFileFound bool
 	for _, entry := range entries {
@@ -144,7 +144,7 @@ print(calculate(5, 3))
 	}
 }
 
-// TestParseAndCreateFiles_UnfencedCode tests detection of code outside fences
+// TestParseAndCreateFiles_UnfencedCode tests detection of code outside fences.
 func TestParseAndCreateFiles_UnfencedCode(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -188,7 +188,7 @@ This creates a simple health endpoint.`
 		t.Errorf("Expected at least 1 file created, got %d", filesCreated)
 	}
 
-	// Check that Go code was detected and saved
+	// Check that Go code was detected and saved.
 	entries, _ := os.ReadDir(tempDir)
 	var goFileFound bool
 	for _, entry := range entries {
@@ -209,7 +209,7 @@ This creates a simple health endpoint.`
 	}
 }
 
-// TestLooksLikeCode tests the code detection heuristics
+// TestLooksLikeCode tests the code detection heuristics.
 func TestLooksLikeCode(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -253,7 +253,7 @@ func TestLooksLikeCode(t *testing.T) {
 	}
 }
 
-// TestGuessFilenameFromContent tests filename guessing from code content
+// TestGuessFilenameFromContent tests filename guessing from code content.
 func TestGuessFilenameFromContent(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -294,7 +294,7 @@ func TestGuessFilenameFromContent(t *testing.T) {
 	}
 }
 
-// TestMixedContent tests handling of mixed content with different formats
+// TestMixedContent tests handling of mixed content with different formats.
 func TestMixedContent(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, err := state.NewStore(tempDir)
@@ -338,7 +338,7 @@ And finally, a plain code block:
 		t.Fatalf("parseAndCreateFiles failed: %v", err)
 	}
 
-	// Log what files were actually created for debugging
+	// Log what files were actually created for debugging.
 	entries, _ := os.ReadDir(tempDir)
 	fileNames := make([]string, len(entries))
 	for i, entry := range entries {
@@ -360,7 +360,7 @@ And finally, a plain code block:
 		}
 	}
 
-	// More lenient test - we expect at least server.go to be created
+	// More lenient test - we expect at least server.go to be created.
 	if filesCreated < 1 {
 		t.Errorf("Expected at least 1 file created, got %d", filesCreated)
 	}
@@ -368,8 +368,8 @@ And finally, a plain code block:
 	if !hasGo {
 		t.Error("Expected Go file to be created")
 	}
-	// Note: Python and JS detection from mixed content may be challenging
-	// Let's focus on ensuring the basic functionality works
+	// Note: Python and JS detection from mixed content may be challenging.
+	// Let's focus on ensuring the basic functionality works.
 	if !hasPy {
 		t.Logf("Python file was not created from unfenced code (files: %v)", fileNames)
 	}

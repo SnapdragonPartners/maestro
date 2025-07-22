@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,37 +16,42 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// LongRunningDockerExec implements the Executor interface using long-running Docker containers
-// Each container persists for the duration of a story, allowing state to be preserved between commands
+const (
+	dockerCommand = "docker"
+	podmanCommand = "podman"
+)
+
+// LongRunningDockerExec implements the Executor interface using long-running Docker containers.
+// Each container persists for the duration of a story, allowing state to be preserved between commands.
 type LongRunningDockerExec struct {
 	logger           *logx.Logger
+	activeContainers map[string]*ContainerInfo // key: container ID, value: container info
 	image            string
 	dockerCmd        string
 	containerPrefix  string
+	agentID          string // Agent ID for registry tracking
 	mu               sync.RWMutex
-	activeContainers map[string]*ContainerInfo // key: container ID, value: container info
-	agentID          string                     // Agent ID for registry tracking
 }
 
-// ContainerInfo holds information about a running container
+// ContainerInfo holds information about a running container.
 type ContainerInfo struct {
+	CreatedAt time.Time
+	LastUsed  time.Time
 	ID        string
 	Name      string
 	WorkDir   string
-	CreatedAt time.Time
-	LastUsed  time.Time
 }
 
-// NewLongRunningDockerExec creates a new long-running Docker executor
-// agentID is optional - if empty, containers won't be tracked in global registry
+// NewLongRunningDockerExec creates a new long-running Docker executor.
+// agentID is optional - if empty, containers won't be tracked in global registry.
 func NewLongRunningDockerExec(image, agentID string) *LongRunningDockerExec {
 	logger := logx.NewLogger("docker-longrunning")
 
-	// Auto-detect Docker command
-	dockerCmd := "docker"
-	if _, err := exec.LookPath("podman"); err == nil {
-		if _, err := exec.LookPath("docker"); err != nil {
-			dockerCmd = "podman"
+	// Auto-detect Docker command.
+	dockerCmd := dockerCommand
+	if _, err := exec.LookPath(podmanCommand); err == nil {
+		if _, err := exec.LookPath(dockerCommand); err != nil {
+			dockerCmd = podmanCommand
 		}
 	}
 
@@ -59,20 +65,20 @@ func NewLongRunningDockerExec(image, agentID string) *LongRunningDockerExec {
 	}
 }
 
-// Name returns the executor type name
+// Name returns the executor type name.
 func (d *LongRunningDockerExec) Name() ExecutorType {
 	return ExecutorTypeDocker
 }
 
-// Available checks if Docker is available and the daemon is running
+// Available checks if Docker is available and the daemon is running.
 func (d *LongRunningDockerExec) Available() bool {
-	// Check if docker/podman command exists
+	// Check if docker/podman command exists.
 	if _, err := exec.LookPath(d.dockerCmd); err != nil {
 		d.logger.Debug("Docker command not found: %v", err)
 		return false
 	}
 
-	// Check if daemon is running by trying to list containers
+	// Check if daemon is running by trying to list containers.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -85,15 +91,15 @@ func (d *LongRunningDockerExec) Available() bool {
 	return true
 }
 
-// StartContainer creates and starts a new long-running container for a story
+// StartContainer creates and starts a new long-running container for a story.
 func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID string, opts ExecOpts) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Generate container name
+	// Generate container name.
 	containerName := fmt.Sprintf("%s%s", d.containerPrefix, storyID)
 
-	// Check if container already exists in our tracking
+	// Check if container already exists in our tracking.
 	if info, exists := d.activeContainers[containerName]; exists {
 		d.logger.Info("Container %s already exists, reusing", containerName)
 		info.LastUsed = time.Now()
@@ -101,31 +107,31 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	}
 
 	// Remove any existing container with the same name (from previous runs)
-	// This handles cases where the container exists in Docker but not in our tracking
+	// This handles cases where the container exists in Docker but not in our tracking.
 	d.logger.Debug("Removing any existing container with name %s", containerName)
 	rmCmd := exec.CommandContext(ctx, d.dockerCmd, "rm", "-f", containerName)
 	if err := rmCmd.Run(); err != nil {
-		// Log but don't fail - the container might not exist
+		// Log but don't fail - the container might not exist.
 		d.logger.Debug("Failed to remove existing container %s (this is normal if it doesn't exist): %v", containerName, err)
 	}
 
-	// Build docker run command for long-running container
+	// Build docker run command for long-running container.
 	args := []string{"run", "-d", "--name", containerName}
 
-	// Security hardening
+	// Security hardening.
 	args = append(args, "--security-opt", "no-new-privileges")
 
-	// Read-only root filesystem for additional security
+	// Read-only root filesystem for additional security.
 	if opts.ReadOnly {
 		args = append(args, "--read-only")
 	}
 
-	// Network configuration
+	// Network configuration.
 	if opts.NetworkDisabled {
 		args = append(args, "--network", "none")
 	}
 
-	// Resource limits
+	// Resource limits.
 	if opts.ResourceLimits != nil {
 		if opts.ResourceLimits.CPUs != "" {
 			args = append(args, "--cpus", opts.ResourceLimits.CPUs)
@@ -138,35 +144,35 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		}
 	}
 
-	// User configuration for rootless execution
+	// User configuration for rootless execution.
 	if opts.User != "" {
 		args = append(args, "--user", opts.User)
 	} else {
-		// Use current user UID:GID for rootless execution
+		// Use current user UID:GID for rootless execution.
 		uid := os.Getuid()
 		gid := os.Getgid()
 		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
 	}
 
-	// Working directory setup
+	// Working directory setup.
 	workspaceDir := "/workspace"
 	if opts.WorkDir != "" {
-		// Convert to absolute path if relative
+		// Convert to absolute path if relative.
 		absWorkDir, err := filepath.Abs(opts.WorkDir)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve working directory: %w", err)
 		}
 
-		// Mount working directory - mode determined by opts.ReadOnly
+		// Mount working directory - mode determined by opts.ReadOnly.
 		mountMode := "rw"
 		if opts.ReadOnly {
 			mountMode = "ro"
 		}
 
-		// Handle cross-platform path mapping
+		// Handle cross-platform path mapping.
 		hostPath := d.normalizePath(absWorkDir)
 
-		// Resolve any symlinks that might cause Docker Desktop issues
+		// Resolve any symlinks that might cause Docker Desktop issues.
 		if resolvedPath, err := filepath.EvalSymlinks(hostPath); err == nil {
 			if resolvedPath != hostPath {
 				d.logger.Info("Resolved symlink: %s -> %s", hostPath, resolvedPath)
@@ -179,11 +185,11 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		d.logger.Debug("Checking workspace directory: %s", hostPath)
 
 		// Ensure the workspace directory exists before mounting (critical for Docker Desktop)
-		// Docker Desktop will fail with "/host_mnt/" errors if the directory doesn't exist
+		// Docker Desktop will fail with "/host_mnt/" errors if the directory doesn't exist.
 		if stat, err := os.Stat(hostPath); os.IsNotExist(err) {
 			d.logger.Info("Directory does not exist, creating: %s", hostPath)
-			if err := os.MkdirAll(hostPath, 0755); err != nil {
-				return "", fmt.Errorf("failed to create workspace directory %s: %w", hostPath, err)
+			if mkdirErr := os.MkdirAll(hostPath, 0755); mkdirErr != nil {
+				return "", fmt.Errorf("failed to create workspace directory %s: %w", hostPath, mkdirErr)
 			}
 			d.logger.Info("Created workspace directory: %s", hostPath)
 		} else if err != nil {
@@ -192,25 +198,25 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 			d.logger.Debug("Directory exists: %s (mode: %v)", hostPath, stat.Mode())
 		}
 
-		// Wait for Docker Desktop's gRPC-FUSE layer to see the directory
-		// This fixes timing issues where newly created directories aren't immediately
-		// visible to Docker Desktop's VM, causing "/host_mnt/" mount failures
+		// Wait for Docker Desktop's gRPC-FUSE layer to see the directory.
+		// This fixes timing issues where newly created directories aren't immediately.
+		// visible to Docker Desktop's VM, causing "/host_mnt/" mount failures.
 		if err := d.waitUntilDockerCanMount(hostPath, 5*time.Second); err != nil {
 			return "", fmt.Errorf("directory not accessible to Docker Desktop: %w", err)
 		}
 
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode))
 
-		// Set working directory inside container
+		// Set working directory inside container.
 		args = append(args, "--workdir", workspaceDir)
 	}
 
-	// Add writable tmpfs directories
+	// Add writable tmpfs directories.
 	args = append(args, "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m")
 	args = append(args, "--tmpfs", "/home:exec,nodev,nosuid,size=100m")
 	args = append(args, "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
 
-	// Environment variables
+	// Environment variables.
 	for _, env := range opts.Env {
 		args = append(args, "--env", env)
 	}
@@ -218,17 +224,17 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	// Add image and command (sleep to keep container running)
 	args = append(args, d.image, "sleep", "infinity")
 
-	// Create and start container
+	// Create and start container.
 	cmd := exec.CommandContext(ctx, d.dockerCmd, args...)
 
-	// Ensure Docker has access to necessary environment variables
+	// Ensure Docker has access to necessary environment variables.
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
 
 	d.logger.Info("Starting long-running container: %s", strings.Join(cmd.Args, " "))
 
-	// Debug: Log working directory and environment
+	// Debug: Log working directory and environment.
 	workDir := cmd.Dir
 	if workDir == "" {
 		workDir = "<empty>"
@@ -246,7 +252,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		d.logger.Error("Docker command error: %v", err)
 		d.logger.Error("Docker command output: %s", string(output))
 
-		// Try to see if the container was created but failed
+		// Try to see if the container was created but failed.
 		checkCmd := exec.Command(d.dockerCmd, "ps", "-a", "--filter", "name="+containerName, "--format", "{{.Status}}")
 		if checkOutput, checkErr := checkCmd.CombinedOutput(); checkErr == nil {
 			d.logger.Info("Container status after failure: %s", string(checkOutput))
@@ -258,7 +264,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	containerID := strings.TrimSpace(string(output))
 	d.logger.Info("Started container %s with ID: %s", containerName, containerID)
 
-	// Store container info
+	// Store container info.
 	d.activeContainers[containerName] = &ContainerInfo{
 		ID:        containerID,
 		Name:      containerName,
@@ -277,7 +283,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	return containerName, nil
 }
 
-// StopContainer stops and removes a long-running container
+// StopContainer stops and removes a long-running container.
 func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -290,19 +296,19 @@ func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName
 
 	d.logger.Info("Stopping container %s", containerName)
 
-	// Stop the container
+	// Stop the container.
 	stopCmd := exec.CommandContext(ctx, d.dockerCmd, "stop", containerName)
 	if err := stopCmd.Run(); err != nil {
 		d.logger.Error("Failed to stop container %s: %v", containerName, err)
 	}
 
-	// Remove the container
+	// Remove the container.
 	rmCmd := exec.CommandContext(ctx, d.dockerCmd, "rm", "-f", containerName)
 	if err := rmCmd.Run(); err != nil {
 		d.logger.Error("Failed to remove container %s: %v", containerName, err)
 	}
 
-	// Remove from active containers
+	// Remove from active containers.
 	delete(d.activeContainers, containerName)
 
 	// Unregister from global registry (always clean up if registry exists)
@@ -316,23 +322,23 @@ func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName
 	return nil
 }
 
-// Run executes a command in an existing long-running container
-func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts ExecOpts) (ExecResult, error) {
+// Run executes a command in an existing long-running container.
+func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *ExecOpts) (ExecResult, error) {
 	start := time.Now()
 
 	if len(cmd) == 0 {
 		return ExecResult{}, fmt.Errorf("command cannot be empty")
 	}
 
-	// For long-running containers, we need a story ID to identify the container
-	// Try to get it from context first, then from active containers
+	// For long-running containers, we need a story ID to identify the container.
+	// Try to get it from context first, then from active containers.
 	storyID := d.getStoryIDFromContext(ctx)
 	var containerName string
 
 	if storyID != "" {
 		containerName = fmt.Sprintf("%s%s", d.containerPrefix, storyID)
 	} else {
-		// If no story ID in context, use the first available container
+		// If no story ID in context, use the first available container.
 		d.mu.RLock()
 		for name := range d.activeContainers {
 			containerName = name
@@ -345,7 +351,7 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts Exec
 		}
 	}
 
-	// Check if container exists
+	// Check if container exists.
 	d.mu.RLock()
 	info, exists := d.activeContainers[containerName]
 	d.mu.RUnlock()
@@ -354,12 +360,12 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts Exec
 		return ExecResult{}, fmt.Errorf("container %s not found - call StartContainer first", containerName)
 	}
 
-	// Update last used time
+	// Update last used time.
 	d.mu.Lock()
 	info.LastUsed = time.Now()
 	d.mu.Unlock()
 
-	// Set up context with timeout
+	// Set up context with timeout.
 	execCtx := ctx
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -367,19 +373,19 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts Exec
 		defer cancel()
 	}
 
-	// Build docker exec command
+	// Build docker exec command.
 	execArgs := []string{"exec", "-i"}
 
-	// Set working directory if specified
+	// Set working directory if specified.
 	if opts.WorkDir != "" {
 		execArgs = append(execArgs, "--workdir", "/workspace")
 	}
 
-	// Add container name and command
+	// Add container name and command.
 	execArgs = append(execArgs, containerName)
 	execArgs = append(execArgs, cmd...)
 
-	// Execute command
+	// Execute command.
 	dockerCmd := exec.CommandContext(execCtx, d.dockerCmd, execArgs...)
 	stdout, stderr, err := d.executeCommand(dockerCmd)
 
@@ -392,8 +398,9 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts Exec
 	}
 
 	if err != nil {
-		// Extract exit code from error
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		// Extract exit code from error.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
 		} else {
 			result.ExitCode = 1
@@ -402,14 +409,14 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts Exec
 	}
 
 	result.ExitCode = 0
-	
-	// Update container activity tracking
+
+	// Update container activity tracking.
 	d.updateContainerActivity(containerName)
-	
+
 	return result, nil
 }
 
-// executeCommand runs the docker command and captures output
+// executeCommand runs the docker command and captures output.
 func (d *LongRunningDockerExec) executeCommand(cmd *exec.Cmd) (string, string, error) {
 	var stdout, stderr strings.Builder
 
@@ -420,7 +427,7 @@ func (d *LongRunningDockerExec) executeCommand(cmd *exec.Cmd) (string, string, e
 
 	err := cmd.Run()
 
-	// Log stderr if command failed
+	// Log stderr if command failed.
 	if err != nil {
 		cmdString := strings.Join(cmd.Args, " ")
 		if cmdString == "" {
@@ -434,11 +441,11 @@ func (d *LongRunningDockerExec) executeCommand(cmd *exec.Cmd) (string, string, e
 	return stdout.String(), stderr.String(), err
 }
 
-// normalizePath handles cross-platform path normalization for Docker
+// normalizePath handles cross-platform path normalization for Docker.
 func (d *LongRunningDockerExec) normalizePath(path string) string {
-	// On Windows, convert path for Docker Desktop
+	// On Windows, convert path for Docker Desktop.
 	if runtime.GOOS == "windows" {
-		// Convert C:\path\to\dir to /c/path/to/dir
+		// Convert C:\path\to\dir to /c/path/to/dir.
 		if len(path) > 2 && path[1] == ':' {
 			drive := strings.ToLower(string(path[0]))
 			rest := strings.ReplaceAll(path[2:], "\\", "/")
@@ -446,13 +453,13 @@ func (d *LongRunningDockerExec) normalizePath(path string) string {
 		}
 	}
 
-	// On macOS with Docker Desktop, ensure path is absolute and clean
-	// Docker Desktop on macOS automatically maps /Users, /Volumes, /tmp, and /var/folders
+	// On macOS with Docker Desktop, ensure path is absolute and clean.
+	// Docker Desktop on macOS automatically maps /Users, /Volumes, /tmp, and /var/folders.
 	if runtime.GOOS == "darwin" {
-		// Clean the path to avoid Docker Desktop path resolution issues
+		// Clean the path to avoid Docker Desktop path resolution issues.
 		cleanPath := filepath.Clean(path)
 
-		// Ensure path starts with one of the shared directories Docker Desktop supports
+		// Ensure path starts with one of the shared directories Docker Desktop supports.
 		allowedPrefixes := []string{"/Users", "/Volumes", "/tmp", "/var/folders", "/private/tmp"}
 		for _, prefix := range allowedPrefixes {
 			if strings.HasPrefix(cleanPath, prefix) {
@@ -460,7 +467,7 @@ func (d *LongRunningDockerExec) normalizePath(path string) string {
 			}
 		}
 
-		// If path doesn't start with a shared directory, Docker Desktop won't be able to mount it
+		// If path doesn't start with a shared directory, Docker Desktop won't be able to mount it.
 		d.logger.Warn("Path %s may not be accessible to Docker Desktop on macOS. Ensure it's under /Users, /Volumes, /tmp, or /var/folders", cleanPath)
 		return cleanPath
 	}
@@ -468,17 +475,17 @@ func (d *LongRunningDockerExec) normalizePath(path string) string {
 	return path
 }
 
-// waitUntilDockerCanMount waits until Docker Desktop's gRPC-FUSE layer can see the directory
-// This prevents "/host_mnt/" errors when mounting newly created directories
+// waitUntilDockerCanMount waits until Docker Desktop's gRPC-FUSE layer can see the directory.
+// This prevents "/host_mnt/" errors when mounting newly created directories.
 func (d *LongRunningDockerExec) waitUntilDockerCanMount(hostPath string, timeout time.Duration) error {
 	d.logger.Debug("Waiting for Docker Desktop to see directory: %s", hostPath)
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		// Test if Docker can mount the directory by doing a quick test mount
+		// Test if Docker can mount the directory by doing a quick test mount.
 		testCmd := exec.Command(d.dockerCmd, "run", "--rm", "-v", hostPath+":/test:ro", "alpine", "true")
 
-		// Ensure test command has environment variables
+		// Ensure test command has environment variables.
 		if testCmd.Env == nil {
 			testCmd.Env = os.Environ()
 		}
@@ -490,9 +497,9 @@ func (d *LongRunningDockerExec) waitUntilDockerCanMount(hostPath string, timeout
 			d.logger.Debug("Docker mount test failed (expected while waiting): %s", strings.Join(testCmd.Args, " "))
 		}
 
-		// Also try touching parent directory to trigger gRPC-FUSE rescan
+		// Also try touching parent directory to trigger gRPC-FUSE rescan.
 		if parentDir := filepath.Dir(hostPath); parentDir != hostPath {
-			os.Chtimes(parentDir, time.Now(), time.Now())
+			_ = os.Chtimes(parentDir, time.Now(), time.Now()) // Best effort, ignore errors
 		}
 
 		time.Sleep(200 * time.Millisecond)
@@ -501,14 +508,14 @@ func (d *LongRunningDockerExec) waitUntilDockerCanMount(hostPath string, timeout
 	return fmt.Errorf("directory %s did not become mountable within %v", hostPath, timeout)
 }
 
-// Context key type for story ID
+// Context key type for story ID.
 type contextKey string
 
 const (
 	contextKeyStoryID contextKey = "story_id"
 )
 
-// getStoryIDFromContext extracts story ID from context
+// getStoryIDFromContext extracts story ID from context.
 func (d *LongRunningDockerExec) getStoryIDFromContext(ctx context.Context) string {
 	if storyID := ctx.Value(contextKeyStoryID); storyID != nil {
 		if id, ok := storyID.(string); ok {
@@ -518,7 +525,7 @@ func (d *LongRunningDockerExec) getStoryIDFromContext(ctx context.Context) strin
 	return ""
 }
 
-// Shutdown gracefully stops all running containers
+// Shutdown gracefully stops all running containers.
 func (d *LongRunningDockerExec) Shutdown(ctx context.Context) error {
 	d.mu.RLock()
 	containerNames := make([]string, 0, len(d.activeContainers))
@@ -540,7 +547,7 @@ func (d *LongRunningDockerExec) Shutdown(ctx context.Context) error {
 		}(containerName)
 	}
 
-	// Wait for cleanup with timeout
+	// Wait for cleanup with timeout.
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -553,21 +560,21 @@ func (d *LongRunningDockerExec) Shutdown(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		d.logger.Error("Container shutdown timed out")
-		return ctx.Err()
+		return fmt.Errorf("container shutdown timed out: %w", ctx.Err())
 	}
 }
 
-// GetImage returns the Docker image being used
+// GetImage returns the Docker image being used.
 func (d *LongRunningDockerExec) GetImage() string {
 	return d.image
 }
 
-// SetImage updates the Docker image
+// SetImage updates the Docker image.
 func (d *LongRunningDockerExec) SetImage(image string) {
 	d.image = image
 }
 
-// GetActiveContainers returns information about currently active containers
+// GetActiveContainers returns information about currently active containers.
 func (d *LongRunningDockerExec) GetActiveContainers() map[string]*ContainerInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -579,12 +586,12 @@ func (d *LongRunningDockerExec) GetActiveContainers() map[string]*ContainerInfo 
 	return result
 }
 
-// updateContainerActivity updates the LastUsed timestamp in both local and global registry
+// updateContainerActivity updates the LastUsed timestamp in both local and global registry.
 func (d *LongRunningDockerExec) updateContainerActivity(containerName string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Update local registry
+	// Update local registry.
 	if info, exists := d.activeContainers[containerName]; exists {
 		info.LastUsed = time.Now()
 	}

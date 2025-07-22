@@ -8,17 +8,17 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// TestGetAllCoderStates verifies that all states are correctly derived from ValidCoderTransitions
+// TestGetAllCoderStates verifies that all states are correctly derived from ValidCoderTransitions.
 func TestGetAllCoderStates(t *testing.T) {
 	derivedStates := GetAllCoderStates()
 
-	// Expected states based on current CoderTransitions map
+	// Expected states based on current CoderTransitions map.
 	expectedStates := []proto.State{
 		StateSetup, StatePlanning, StateCoding, StateTesting,
 		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion,
 	}
 
-	// Sort expected states for comparison
+	// Sort expected states for comparison.
 	sort.Slice(expectedStates, func(i, j int) bool {
 		return string(expectedStates[i]) < string(expectedStates[j])
 	})
@@ -29,7 +29,7 @@ func TestGetAllCoderStates(t *testing.T) {
 		t.Logf("Derived: %v", derivedStates)
 	}
 
-	// Convert to string slices for easier comparison
+	// Convert to string slices for easier comparison.
 	expectedStrings := make([]string, len(expectedStates))
 	derivedStrings := make([]string, len(derivedStates))
 
@@ -47,7 +47,7 @@ func TestGetAllCoderStates(t *testing.T) {
 	}
 }
 
-// TestGetAllCoderStates_Deterministic verifies that the function returns consistent results
+// TestGetAllCoderStates_Deterministic verifies that the function returns consistent results.
 func TestGetAllCoderStates_Deterministic(t *testing.T) {
 	states1 := GetAllCoderStates()
 	states2 := GetAllCoderStates()
@@ -64,7 +64,7 @@ func TestGetAllCoderStates_Deterministic(t *testing.T) {
 	}
 }
 
-// TestIsCoderState verifies state validation functionality
+// TestIsCoderState verifies state validation functionality.
 func TestIsCoderState(t *testing.T) {
 	testCases := []struct {
 		state    string
@@ -93,13 +93,13 @@ func TestIsCoderState(t *testing.T) {
 	}
 }
 
-// TestGetCoderStateConstants - REMOVED
-// This test is obsolete because GetCoderStateConstants function was removed
-// State constants are now directly defined in coder_fsm.go
+// TestGetCoderStateConstants - REMOVED.
+// This test is obsolete because GetCoderStateConstants function was removed.
+// State constants are now directly defined in coder_fsm.go.
 
-// TestDriverIsCoderState verifies the IsCoderState function uses dynamic derivation
+// TestDriverIsCoderState verifies the IsCoderState function uses dynamic derivation.
 func TestDriverIsCoderState(t *testing.T) {
-	// Test all dynamically derived states
+	// Test all dynamically derived states.
 	derivedStates := GetAllCoderStates()
 	for _, agentState := range derivedStates {
 		if !IsCoderState(agentState) {
@@ -107,7 +107,7 @@ func TestDriverIsCoderState(t *testing.T) {
 		}
 	}
 
-	// Test some non-coder states
+	// Test some non-coder states.
 	nonCoderStates := []string{"WAITING", "DONE", "ERROR", "INVALID"}
 	for _, stateStr := range nonCoderStates {
 		agentState := proto.State(stateStr)
@@ -117,17 +117,17 @@ func TestDriverIsCoderState(t *testing.T) {
 	}
 }
 
-// TestStateDerivation_NewStateAddition - REMOVED
-// This test is obsolete because CoderTransitions is now immutable and canonical
-// No longer supports runtime modification of transition map
+// TestStateDerivation_NewStateAddition - REMOVED.
+// This test is obsolete because CoderTransitions is now immutable and canonical.
+// No longer supports runtime modification of transition map.
 
-// TestStateDerivation_EmptyTransitions - REMOVED
-// This test is obsolete because CoderTransitions is now immutable and canonical
-// No longer supports runtime modification of transition map
+// TestStateDerivation_EmptyTransitions - REMOVED.
+// This test is obsolete because CoderTransitions is now immutable and canonical.
+// No longer supports runtime modification of transition map.
 
-// TestStateDerivation_Performance verifies the functions perform well
+// TestStateDerivation_Performance verifies the functions perform well.
 func TestStateDerivation_Performance(t *testing.T) {
-	// Run derivation multiple times to ensure it's reasonably fast
+	// Run derivation multiple times to ensure it's reasonably fast.
 	const iterations = 1000
 
 	for i := 0; i < iterations; i++ {
@@ -138,7 +138,7 @@ func TestStateDerivation_Performance(t *testing.T) {
 		}
 	}
 
-	// Test IsCoderState performance
+	// Test IsCoderState performance.
 	for i := 0; i < iterations; i++ {
 		if !IsCoderState(StatePlanning) {
 			t.Error("Should recognize PLANNING as coder state")

@@ -1,29 +1,35 @@
+// Package build provides a service for executing build commands across different backend types.
+// It supports Go, Node.js, Python, Make-based, and null backend implementations for MCP tools.
 package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os/exec"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/utils"
 )
 
-// BuildService provides orchestrator-level build execution endpoints
+// BuildService provides orchestrator-level build execution endpoints.
 type BuildService struct {
 	buildRegistry *Registry
 	logger        *logx.Logger
 	projectCache  map[string]*ProjectInfo // Cache for backend detection
 }
 
-// ProjectInfo caches backend information for a project
+// ProjectInfo caches backend information for a project.
 type ProjectInfo struct {
 	Backend     BuildBackend
 	DetectedAt  time.Time
 	ProjectRoot string
 }
 
-// BuildRequest represents a build operation request
+// BuildRequest represents a build operation request.
 type BuildRequest struct {
 	ProjectRoot string            `json:"project_root"`
 	Operation   string            `json:"operation"` // "build", "test", "lint", "run"
@@ -32,7 +38,7 @@ type BuildRequest struct {
 	Context     map[string]string `json:"context"`   // Additional context
 }
 
-// BuildResponse represents a build operation response
+// BuildResponse represents a build operation response.
 type BuildResponse struct {
 	Success   bool              `json:"success"`
 	Backend   string            `json:"backend"`
@@ -44,7 +50,7 @@ type BuildResponse struct {
 	RequestID string            `json:"request_id"`
 }
 
-// NewBuildService creates a new build service
+// NewBuildService creates a new build service.
 func NewBuildService() *BuildService {
 	return &BuildService{
 		buildRegistry: NewRegistry(),
@@ -53,14 +59,14 @@ func NewBuildService() *BuildService {
 	}
 }
 
-// ExecuteBuild executes a build operation and returns the result
+// ExecuteBuild executes a build operation and returns the result.
 func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*BuildResponse, error) {
 	startTime := time.Now()
 	requestID := fmt.Sprintf("build-%d", startTime.UnixNano())
 
 	s.logger.Info("Build request %s: %s operation for %s", requestID, req.Operation, req.ProjectRoot)
 
-	// Validate request
+	// Validate request.
 	if req.ProjectRoot == "" {
 		return &BuildResponse{
 			Success:   false,
@@ -83,7 +89,7 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 		}, fmt.Errorf("operation is required")
 	}
 
-	// Get or detect backend
+	// Get or detect backend.
 	backend, err := s.getBackend(req.ProjectRoot)
 	if err != nil {
 		return &BuildResponse{
@@ -96,7 +102,7 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 		}, err
 	}
 
-	// Set up context with timeout
+	// Set up context with timeout.
 	timeout := 5 * time.Minute // Default timeout
 	if req.Timeout > 0 {
 		timeout = time.Duration(req.Timeout) * time.Second
@@ -105,10 +111,10 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Capture output
+	// Capture output.
 	var outputBuffer strings.Builder
 
-	// Execute operation
+	// Execute operation.
 	var operationErr error
 	switch req.Operation {
 	case "build":
@@ -121,7 +127,7 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 		operationErr = backend.Run(execCtx, req.ProjectRoot, req.Args, &outputBuffer)
 	default:
 		operationErr = fmt.Errorf("unknown operation: %s", req.Operation)
-		// Return error immediately for invalid operations
+		// Return error immediately for invalid operations.
 		return &BuildResponse{
 			Success:   false,
 			Operation: req.Operation,
@@ -135,7 +141,7 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 	duration := time.Since(startTime)
 	output := outputBuffer.String()
 
-	// Build response
+	// Build response.
 	response := &BuildResponse{
 		Success:   operationErr == nil,
 		Backend:   backend.Name(),
@@ -154,7 +160,7 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 		response.Error = operationErr.Error()
 		response.Metadata["error_type"] = "operation_failed"
 
-		// Check for timeout
+		// Check for timeout.
 		if execCtx.Err() == context.DeadlineExceeded {
 			response.Metadata["error_type"] = "timeout"
 		}
@@ -164,25 +170,25 @@ func (s *BuildService) ExecuteBuild(ctx context.Context, req *BuildRequest) (*Bu
 	return response, nil
 }
 
-// getBackend gets or detects the backend for a project
+// getBackend gets or detects the backend for a project.
 func (s *BuildService) getBackend(projectRoot string) (BuildBackend, error) {
-	// Check cache first
+	// Check cache first.
 	if info, exists := s.projectCache[projectRoot]; exists {
-		// Cache is valid for 5 minutes
+		// Cache is valid for 5 minutes.
 		if time.Since(info.DetectedAt) < 5*time.Minute {
 			return info.Backend, nil
 		}
-		// Cache expired, remove it
+		// Cache expired, remove it.
 		delete(s.projectCache, projectRoot)
 	}
 
-	// Detect backend
+	// Detect backend.
 	backend, err := s.buildRegistry.Detect(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect backend for %s: %w", projectRoot, err)
 	}
 
-	// Cache the result
+	// Cache the result.
 	s.projectCache[projectRoot] = &ProjectInfo{
 		Backend:     backend,
 		DetectedAt:  time.Now(),
@@ -192,7 +198,7 @@ func (s *BuildService) getBackend(projectRoot string) (BuildBackend, error) {
 	return backend, nil
 }
 
-// GetBackendInfo returns information about the detected backend for a project
+// GetBackendInfo returns information about the detected backend for a project.
 func (s *BuildService) GetBackendInfo(projectRoot string) (*BackendInfo, error) {
 	backend, err := s.getBackend(projectRoot)
 	if err != nil {
@@ -207,7 +213,7 @@ func (s *BuildService) GetBackendInfo(projectRoot string) (*BackendInfo, error) 
 	}, nil
 }
 
-// BackendInfo provides information about a detected backend
+// BackendInfo provides information about a detected backend.
 type BackendInfo struct {
 	Name        string    `json:"name"`
 	ProjectRoot string    `json:"project_root"`
@@ -215,13 +221,13 @@ type BackendInfo struct {
 	Operations  []string  `json:"operations"`
 }
 
-// ClearCache clears the backend detection cache
+// ClearCache clears the backend detection cache.
 func (s *BuildService) ClearCache() {
 	s.projectCache = make(map[string]*ProjectInfo)
 	s.logger.Info("Backend cache cleared")
 }
 
-// GetCacheStatus returns the current cache status
+// GetCacheStatus returns the current cache status.
 func (s *BuildService) GetCacheStatus() map[string]interface{} {
 	status := map[string]interface{}{
 		"cache_size":    len(s.projectCache),
@@ -235,8 +241,30 @@ func (s *BuildService) GetCacheStatus() map[string]interface{} {
 			"detected_at":  info.DetectedAt.Format(time.RFC3339),
 			"age_seconds":  time.Since(info.DetectedAt).Seconds(),
 		}
-		status["cache_entries"] = append(status["cache_entries"].([]map[string]interface{}), entry)
+		if cacheEntries, err := utils.GetMapField[[]map[string]interface{}](status, "cache_entries"); err == nil {
+			status["cache_entries"] = append(cacheEntries, entry)
+		}
 	}
 
 	return status
+}
+
+// runMakeCommand executes a make command with the given target - shared utility for all backends.
+func runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
+	cmd := exec.CommandContext(ctx, "make", target)
+	cmd.Dir = root
+	cmd.Stdout = stream
+	cmd.Stderr = stream
+
+	_, _ = fmt.Fprintf(stream, "$ make %s\n", target)
+
+	if err := cmd.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return fmt.Errorf("make %s failed with exit code %d", target, exitError.ExitCode())
+		}
+		return fmt.Errorf("make %s failed: %w", target, err)
+	}
+
+	return nil
 }

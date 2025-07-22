@@ -39,7 +39,7 @@ func TestNewQuestionHandler(t *testing.T) {
 }
 
 func TestHandleQuestion(t *testing.T) {
-	// Create test setup
+	// Create test setup.
 	queue := NewQueue("/tmp/test")
 	queue.stories["001"] = &QueuedStory{
 		ID:              "001",
@@ -53,7 +53,7 @@ func TestHandleQuestion(t *testing.T) {
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler) // nil LLM = mock mode
 
-	// Create QUESTION message
+	// Create QUESTION message.
 	questionMsg := proto.NewAgentMsg(
 		proto.MsgTypeQUESTION,
 		"test-agent",
@@ -69,7 +69,7 @@ func TestHandleQuestion(t *testing.T) {
 		t.Fatalf("Failed to handle question: %v", err)
 	}
 
-	// Verify question was stored
+	// Verify question was stored.
 	if len(handler.pendingQuestions) != 1 {
 		t.Errorf("Expected 1 pending question, got %d", len(handler.pendingQuestions))
 	}
@@ -106,7 +106,7 @@ func TestHandleQuestionInvalid(t *testing.T) {
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
 
-	// Test missing story_id
+	// Test missing story_id.
 	questionMsg := proto.NewAgentMsg(
 		proto.MsgTypeQUESTION,
 		"test-agent",
@@ -120,7 +120,7 @@ func TestHandleQuestionInvalid(t *testing.T) {
 		t.Error("Expected error for missing story_id")
 	}
 
-	// Test missing question
+	// Test missing question.
 	questionMsg2 := proto.NewAgentMsg(
 		proto.MsgTypeQUESTION,
 		"test-agent",
@@ -168,7 +168,7 @@ func TestIsBusinessQuestion(t *testing.T) {
 		}
 	}
 
-	// Test explicit business flag
+	// Test explicit business flag.
 	context := map[string]any{
 		"is_business_question": true,
 	}
@@ -191,7 +191,7 @@ func TestBusinessQuestionEscalation(t *testing.T) {
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
 
-	// Create business question message
+	// Create business question message.
 	questionMsg := proto.NewAgentMsg(
 		proto.MsgTypeQUESTION,
 		"test-agent",
@@ -206,7 +206,7 @@ func TestBusinessQuestionEscalation(t *testing.T) {
 		t.Fatalf("Failed to handle business question: %v", err)
 	}
 
-	// Verify question was escalated
+	// Verify question was escalated.
 	pendingQ, exists := handler.pendingQuestions[questionMsg.ID]
 	if !exists {
 		t.Fatal("Question not found in pending questions")
@@ -223,7 +223,7 @@ func TestGetPendingQuestions(t *testing.T) {
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
 
-	// Add some pending questions
+	// Add some pending questions.
 	handler.pendingQuestions["q1"] = &PendingQuestion{
 		ID:      "q1",
 		StoryID: "001",
@@ -248,7 +248,7 @@ func TestGetQuestionStatus(t *testing.T) {
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
 
-	// Add questions with different statuses
+	// Add questions with different statuses.
 	handler.pendingQuestions["q1"] = &PendingQuestion{
 		ID:      "q1",
 		StoryID: "001",
@@ -290,7 +290,7 @@ func TestClearAnsweredQuestions(t *testing.T) {
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
 
-	// Add questions with different statuses
+	// Add questions with different statuses.
 	handler.pendingQuestions["q1"] = &PendingQuestion{
 		ID:      "q1",
 		StoryID: "001",
@@ -317,7 +317,7 @@ func TestClearAnsweredQuestions(t *testing.T) {
 		t.Errorf("Expected 1 question remaining, got %d", len(handler.pendingQuestions))
 	}
 
-	// Verify only pending question remains
+	// Verify only pending question remains.
 	if _, exists := handler.pendingQuestions["q1"]; !exists {
 		t.Error("Pending question should not be cleared")
 	}

@@ -13,7 +13,7 @@ import (
 	"orchestrator/pkg/templates"
 )
 
-// StackAnalyzer handles architect-based stack analysis for bootstrap
+// StackAnalyzer handles architect-based stack analysis for bootstrap.
 type StackAnalyzer struct {
 	specFilePath string
 	llmClient    agent.LLMClient
@@ -21,11 +21,11 @@ type StackAnalyzer struct {
 	logger       *logx.Logger
 }
 
-// NewStackAnalyzer creates a new stack analyzer
+// NewStackAnalyzer creates a new stack analyzer.
 func NewStackAnalyzer(specFilePath string, llmClient agent.LLMClient) *StackAnalyzer {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
-		// For now, panic - in production we'd handle this more gracefully
+		// For now, panic - in production we'd handle this more gracefully.
 		panic(fmt.Sprintf("failed to create template renderer: %v", err))
 	}
 
@@ -37,7 +37,7 @@ func NewStackAnalyzer(specFilePath string, llmClient agent.LLMClient) *StackAnal
 	}
 }
 
-// StackAnalysisResult represents the result of stack analysis
+// StackAnalysisResult represents the result of stack analysis.
 type StackAnalysisResult struct {
 	Analysis       string                 `json:"analysis"`
 	Recommendation PlatformRecommendation `json:"recommendation"`
@@ -47,9 +47,9 @@ type StackAnalysisResult struct {
 	NextAction     string                 `json:"next_action"`
 }
 
-// AnalyzeStack analyzes a specification file and returns stack recommendations
+// AnalyzeStack analyzes a specification file and returns stack recommendations.
 func (s *StackAnalyzer) AnalyzeStack(ctx context.Context) (*StackAnalysisResult, error) {
-	// Read specification file
+	// Read specification file.
 	specContent, err := s.readSpecFile()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read spec file: %w", err)
@@ -58,9 +58,9 @@ func (s *StackAnalyzer) AnalyzeStack(ctx context.Context) (*StackAnalysisResult,
 	return s.AnalyzeSpecContent(ctx, specContent)
 }
 
-// AnalyzeSpecContent analyzes specification content directly and returns stack recommendations
+// AnalyzeSpecContent analyzes specification content directly and returns stack recommendations.
 func (s *StackAnalyzer) AnalyzeSpecContent(ctx context.Context, specContent string) (*StackAnalysisResult, error) {
-	// Generate the stack analysis prompt
+	// Generate the stack analysis prompt.
 	prompt, err := s.generateStackAnalysisPrompt(specContent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate prompt: %w", err)
@@ -68,7 +68,7 @@ func (s *StackAnalyzer) AnalyzeSpecContent(ctx context.Context, specContent stri
 
 	s.logger.Info("Analyzing stack for specification content")
 
-	// Get architect's response
+	// Get architect's response.
 	completionReq := agent.CompletionRequest{
 		Messages: []agent.CompletionMessage{
 			{
@@ -85,13 +85,13 @@ func (s *StackAnalyzer) AnalyzeSpecContent(ctx context.Context, specContent stri
 
 	response := completionResp.Content
 
-	// Parse the JSON response
+	// Parse the JSON response.
 	result, err := s.parseStackAnalysisResponse(response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Validate the recommendation
+	// Validate the recommendation.
 	if err := ValidatePlatformRecommendation(&result.Recommendation); err != nil {
 		return nil, fmt.Errorf("invalid recommendation: %w", err)
 	}
@@ -102,18 +102,18 @@ func (s *StackAnalyzer) AnalyzeSpecContent(ctx context.Context, specContent stri
 	return result, nil
 }
 
-// readSpecFile reads the specification file content
+// readSpecFile reads the specification file content.
 func (s *StackAnalyzer) readSpecFile() (string, error) {
 	if s.specFilePath == "" {
 		return "", fmt.Errorf("spec file path is required")
 	}
 
-	// Check if file exists
+	// Check if file exists.
 	if _, err := os.Stat(s.specFilePath); os.IsNotExist(err) {
 		return "", fmt.Errorf("spec file not found: %s", s.specFilePath)
 	}
 
-	// Read file content
+	// Read file content.
 	content, err := os.ReadFile(s.specFilePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read spec file: %w", err)
@@ -122,9 +122,9 @@ func (s *StackAnalyzer) readSpecFile() (string, error) {
 	return string(content), nil
 }
 
-// generateStackAnalysisPrompt generates the LLM prompt for stack analysis
+// generateStackAnalysisPrompt generates the LLM prompt for stack analysis.
 func (s *StackAnalyzer) generateStackAnalysisPrompt(specContent string) (string, error) {
-	// Prepare template data
+	// Prepare template data.
 	templateData := &templates.TemplateData{
 		TaskContent: specContent,
 		Context:     "Bootstrap stack analysis for project initialization",
@@ -133,7 +133,7 @@ func (s *StackAnalyzer) generateStackAnalysisPrompt(specContent string) (string,
 		},
 	}
 
-	// Render the stack analysis template
+	// Render the stack analysis template.
 	prompt, err := s.renderer.Render(templates.StateTemplate("stack_analysis.tpl.md"), templateData)
 	if err != nil {
 		return "", fmt.Errorf("failed to render template: %w", err)
@@ -142,9 +142,9 @@ func (s *StackAnalyzer) generateStackAnalysisPrompt(specContent string) (string,
 	return prompt, nil
 }
 
-// parseStackAnalysisResponse parses the LLM response into a structured result
+// parseStackAnalysisResponse parses the LLM response into a structured result.
 func (s *StackAnalyzer) parseStackAnalysisResponse(response string) (*StackAnalysisResult, error) {
-	// Find JSON block in response
+	// Find JSON block in response.
 	jsonStart := strings.Index(response, "```json")
 	if jsonStart == -1 {
 		return nil, fmt.Errorf("no JSON block found in response")
@@ -158,7 +158,7 @@ func (s *StackAnalyzer) parseStackAnalysisResponse(response string) (*StackAnaly
 
 	jsonContent := strings.TrimSpace(response[jsonStart : jsonStart+jsonEnd])
 
-	// Parse JSON
+	// Parse JSON.
 	var result StackAnalysisResult
 	if err := json.Unmarshal([]byte(jsonContent), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
@@ -167,12 +167,12 @@ func (s *StackAnalyzer) parseStackAnalysisResponse(response string) (*StackAnaly
 	return &result, nil
 }
 
-// RequiresHumanApproval checks if the recommendation requires human approval
+// RequiresHumanApproval checks if the recommendation requires human approval.
 func (s *StackAnalyzer) RequiresHumanApproval(result *StackAnalysisResult) bool {
 	return RequiresHumanApproval(&result.Recommendation)
 }
 
-// GetFallbackRecommendation returns a safe fallback recommendation
+// GetFallbackRecommendation returns a safe fallback recommendation.
 func (s *StackAnalyzer) GetFallbackRecommendation(reason string) *PlatformRecommendation {
 	return &PlatformRecommendation{
 		Platform:   GetDefaultPlatform(),
@@ -184,7 +184,7 @@ func (s *StackAnalyzer) GetFallbackRecommendation(reason string) *PlatformRecomm
 	}
 }
 
-// StackAnalysisConfig holds configuration for stack analysis
+// StackAnalysisConfig holds configuration for stack analysis.
 type StackAnalysisConfig struct {
 	SpecFilePath     string  `json:"spec_file_path"`
 	MinConfidence    float64 `json:"min_confidence"`    // Minimum confidence to proceed
@@ -195,7 +195,7 @@ type StackAnalysisConfig struct {
 	TimeoutSeconds   int     `json:"timeout_seconds"`   // Timeout for LLM calls
 }
 
-// DefaultStackAnalysisConfig returns default configuration
+// DefaultStackAnalysisConfig returns default configuration.
 func DefaultStackAnalysisConfig() *StackAnalysisConfig {
 	return &StackAnalysisConfig{
 		SpecFilePath:     "",
@@ -208,9 +208,9 @@ func DefaultStackAnalysisConfig() *StackAnalysisConfig {
 	}
 }
 
-// FindSpecFile searches for a specification file in the project
+// FindSpecFile searches for a specification file in the project.
 func FindSpecFile(projectRoot string) (string, error) {
-	// Common spec file patterns
+	// Common spec file patterns.
 	patterns := []string{
 		"*spec*.md",
 		"*spec*.txt",
@@ -232,7 +232,7 @@ func FindSpecFile(projectRoot string) (string, error) {
 			return matches[0], nil
 		}
 
-		// Also search in common directories
+		// Also search in common directories.
 		for _, dir := range []string{"docs", "spec", "requirements"} {
 			matches, err := filepath.Glob(filepath.Join(projectRoot, dir, pattern))
 			if err != nil {
@@ -248,7 +248,7 @@ func FindSpecFile(projectRoot string) (string, error) {
 	return "", fmt.Errorf("no specification file found in project")
 }
 
-// ValidateStackAnalysisConfig validates the stack analysis configuration
+// ValidateStackAnalysisConfig validates the stack analysis configuration.
 func ValidateStackAnalysisConfig(config *StackAnalysisConfig) error {
 	if config.SpecFilePath == "" {
 		return fmt.Errorf("spec_file_path is required")

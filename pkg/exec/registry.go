@@ -5,14 +5,14 @@ import (
 	"sync"
 )
 
-// Registry manages available executors
+// Registry manages available executors.
 type Registry struct {
-	mu        sync.RWMutex
 	executors map[string]Executor
 	default_  string
+	mu        sync.RWMutex
 }
 
-// NewRegistry creates a new executor registry
+// NewRegistry creates a new executor registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		executors: make(map[string]Executor),
@@ -20,7 +20,7 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register adds an executor to the registry
+// Register adds an executor to the registry.
 func (r *Registry) Register(executor Executor) error {
 	if executor == nil {
 		return fmt.Errorf("executor cannot be nil")
@@ -38,7 +38,7 @@ func (r *Registry) Register(executor Executor) error {
 	return nil
 }
 
-// Get retrieves an executor by name
+// Get retrieves an executor by name.
 func (r *Registry) Get(name string) (Executor, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -51,12 +51,12 @@ func (r *Registry) Get(name string) (Executor, error) {
 	return executor, nil
 }
 
-// GetDefault returns the default executor
+// GetDefault returns the default executor.
 func (r *Registry) GetDefault() (Executor, error) {
 	return r.Get(r.default_)
 }
 
-// SetDefault sets the default executor
+// SetDefault sets the default executor.
 func (r *Registry) SetDefault(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -69,7 +69,7 @@ func (r *Registry) SetDefault(name string) error {
 	return nil
 }
 
-// List returns all registered executor names
+// List returns all registered executor names.
 func (r *Registry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -82,7 +82,7 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// GetAvailable returns all available executors
+// GetAvailable returns all available executors.
 func (r *Registry) GetAvailable() []Executor {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -97,24 +97,24 @@ func (r *Registry) GetAvailable() []Executor {
 	return available
 }
 
-// GetBest returns the best available executor based on preference order
+// GetBest returns the best available executor based on preference order.
 func (r *Registry) GetBest(preferences []string) (Executor, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	// Try preferences in order
+	// Try preferences in order.
 	for _, name := range preferences {
 		if executor, exists := r.executors[name]; exists && executor.Available() {
 			return executor, nil
 		}
 	}
 
-	// Fall back to default
+	// Fall back to default.
 	if executor, exists := r.executors[r.default_]; exists && executor.Available() {
 		return executor, nil
 	}
 
-	// Fall back to any available executor
+	// Fall back to any available executor.
 	for _, executor := range r.executors {
 		if executor.Available() {
 			return executor, nil
@@ -124,52 +124,52 @@ func (r *Registry) GetBest(preferences []string) (Executor, error) {
 	return nil, fmt.Errorf("no available executors found")
 }
 
-// Global registry instance
-var globalRegistry = NewRegistry()
+// Global registry instance.
+var globalRegistry = NewRegistry() //nolint:gochecknoglobals
 
-// Register adds an executor to the global registry
+// Register adds an executor to the global registry.
 func Register(executor Executor) error {
 	return globalRegistry.Register(executor)
 }
 
-// Get retrieves an executor from the global registry
+// Get retrieves an executor from the global registry.
 func Get(name string) (Executor, error) {
 	return globalRegistry.Get(name)
 }
 
-// GetDefault returns the default executor from the global registry
+// GetDefault returns the default executor from the global registry.
 func GetDefault() (Executor, error) {
 	return globalRegistry.GetDefault()
 }
 
-// SetDefault sets the default executor in the global registry
+// SetDefault sets the default executor in the global registry.
 func SetDefault(name string) error {
 	return globalRegistry.SetDefault(name)
 }
 
-// List returns all registered executor names from the global registry
+// List returns all registered executor names from the global registry.
 func List() []string {
 	return globalRegistry.List()
 }
 
-// GetAvailable returns all available executors from the global registry
+// GetAvailable returns all available executors from the global registry.
 func GetAvailable() []Executor {
 	return globalRegistry.GetAvailable()
 }
 
-// GetBest returns the best available executor from the global registry
+// GetBest returns the best available executor from the global registry.
 func GetBest(preferences []string) (Executor, error) {
 	return globalRegistry.GetBest(preferences)
 }
 
-// init registers the local executor by default
+// init registers the local executor by default.
 func init() {
 	if err := Register(NewLocalExec()); err != nil {
 		panic(fmt.Sprintf("Failed to register local executor: %v", err))
 	}
 
-	// Register Docker executor with a default image
-	// This will be configurable later via configuration
+	// Register Docker executor with a default image.
+	// This will be configurable later via configuration.
 	dockerExec := NewLongRunningDockerExec("alpine:latest", "")
 	if err := Register(dockerExec); err != nil {
 		panic(fmt.Sprintf("Failed to register docker executor: %v", err))

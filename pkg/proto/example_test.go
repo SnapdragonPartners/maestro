@@ -6,7 +6,7 @@ import (
 )
 
 func ExampleAgentMsg_usage() {
-	// Create a STORY message from architect to claude
+	// Create a STORY message from architect to claude.
 	storyMsg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
 	storyMsg.SetPayload("story_id", "001")
 	storyMsg.SetPayload("content", "Implement health endpoint")
@@ -14,7 +14,7 @@ func ExampleAgentMsg_usage() {
 	storyMsg.SetMetadata("priority", "high")
 	storyMsg.SetMetadata("estimated_points", "1")
 
-	// Convert to JSON for transmission
+	// Convert to JSON for transmission.
 	jsonData, err := storyMsg.ToJSON()
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -23,7 +23,7 @@ func ExampleAgentMsg_usage() {
 
 	fmt.Printf("STORY Message JSON:\n%s\n\n", jsonData)
 
-	// Claude receives and processes the story, then creates a RESULT message
+	// Claude receives and processes the story, then creates a RESULT message.
 	resultMsg := NewAgentMsg(MsgTypeRESULT, "claude", "architect")
 	resultMsg.ParentMsgID = storyMsg.ID
 	resultMsg.SetPayload("status", "completed")
@@ -55,7 +55,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("RESULT Message JSON:\n%s\n", resultJSON)
 }
 
-func TestExampleUsage(t *testing.T) {
-	// This test demonstrates the message protocol in action
+func TestExampleUsage(_ *testing.T) {
+	// This test demonstrates the message protocol in action.
 	ExampleAgentMsg_usage()
 }

@@ -1,3 +1,4 @@
+// Package templates provides template rendering functionality for agent prompts and workflows.
 package templates
 
 import (
@@ -11,8 +12,9 @@ import (
 //go:embed *.tpl.md
 var templateFS embed.FS
 
-// TemplateData holds the data for template rendering
+// TemplateData holds the data for template rendering.
 type TemplateData struct {
+	Extra          map[string]any `json:"extra,omitempty"`
 	TaskContent    string         `json:"task_content"`
 	Context        string         `json:"context"`
 	Plan           string         `json:"plan,omitempty"`
@@ -21,45 +23,50 @@ type TemplateData struct {
 	TestResults    string         `json:"test_results,omitempty"`
 	WorkDir        string         `json:"work_dir,omitempty"`
 	TreeOutput     string         `json:"tree_output,omitempty"`
-	Extra          map[string]any `json:"extra,omitempty"`
 }
 
-// StateTemplate represents a workflow state template
+// StateTemplate represents a workflow state template.
 type StateTemplate string
 
 const (
-	// Coding agent templates
+	// PlanningTemplate is the template for coder planning state.
 	PlanningTemplate StateTemplate = "planning.tpl.md"
-	CodingTemplate   StateTemplate = "coding.tpl.md"
-	TestingTemplate  StateTemplate = "testing.tpl.md"
+	// CodingTemplate is the template for coder coding state.
+	CodingTemplate StateTemplate = "coding.tpl.md"
+	// TestingTemplate is the template for coder testing state.
+	TestingTemplate StateTemplate = "testing.tpl.md"
+	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "approval.tpl.md"
 
-	// Architect agent templates
-	SpecAnalysisTemplate    StateTemplate = "spec_analysis.tpl.md"
+	// SpecAnalysisTemplate is the template for architect spec analysis state.
+	SpecAnalysisTemplate StateTemplate = "spec_analysis.tpl.md"
+	// StoryGenerationTemplate is the template for architect story generation state.
 	StoryGenerationTemplate StateTemplate = "story_generation.tpl.md"
-	TechnicalQATemplate     StateTemplate = "technical_qa.tpl.md"
-	CodeReviewTemplate      StateTemplate = "code_review.tpl.md"
+	// TechnicalQATemplate is the template for architect technical Q&A state.
+	TechnicalQATemplate StateTemplate = "technical_qa.tpl.md"
+	// CodeReviewTemplate is the template for architect code review state.
+	CodeReviewTemplate StateTemplate = "code_review.tpl.md"
 )
 
-// Renderer handles template rendering for workflow states
+// Renderer handles template rendering for workflow states.
 type Renderer struct {
 	templates map[StateTemplate]*template.Template
 }
 
-// NewRenderer creates a new template renderer
+// NewRenderer creates a new template renderer.
 func NewRenderer() (*Renderer, error) {
 	r := &Renderer{
 		templates: make(map[StateTemplate]*template.Template),
 	}
 
-	// Load all templates
+	// Load all templates.
 	templateNames := []StateTemplate{
-		// Coding agent templates
+		// Coding agent templates.
 		PlanningTemplate,
 		CodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
-		// Architect agent templates
+		// Architect agent templates.
 		SpecAnalysisTemplate,
 		StoryGenerationTemplate,
 		TechnicalQATemplate,
@@ -85,7 +92,7 @@ func NewRenderer() (*Renderer, error) {
 	return r, nil
 }
 
-// Render renders the specified template with the given data
+// Render renders the specified template with the given data.
 func (r *Renderer) Render(templateName StateTemplate, data *TemplateData) (string, error) {
 	tmpl, exists := r.templates[templateName]
 	if !exists {
@@ -100,7 +107,7 @@ func (r *Renderer) Render(templateName StateTemplate, data *TemplateData) (strin
 	return buf.String(), nil
 }
 
-// GetAvailableTemplates returns a list of all available templates
+// GetAvailableTemplates returns a list of all available templates.
 func (r *Renderer) GetAvailableTemplates() []StateTemplate {
 	templates := make([]StateTemplate, 0, len(r.templates))
 	for name := range r.templates {

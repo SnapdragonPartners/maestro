@@ -21,7 +21,7 @@ func TestNewLogger(t *testing.T) {
 }
 
 func TestLogFormat(t *testing.T) {
-	// Capture log output
+	// Capture log output.
 	var buf bytes.Buffer
 	logger := NewLogger("architect")
 	logger.logger = log.New(&buf, "", 0)
@@ -30,7 +30,7 @@ func TestLogFormat(t *testing.T) {
 
 	output := buf.String()
 
-	// Check for required components
+	// Check for required components.
 	if !strings.Contains(output, "[architect]") {
 		t.Errorf("Expected agent ID in output, got: %s", output)
 	}
@@ -69,7 +69,7 @@ func TestLogLevels(t *testing.T) {
 		t.Run(string(tt.level), func(t *testing.T) {
 			buf.Reset()
 
-			// Enable debug for DEBUG level test
+			// Enable debug for DEBUG level test.
 			if tt.level == LevelDebug {
 				SetDebugConfig(true, false, ".")
 				defer SetDebugConfig(false, false, ".")
@@ -97,7 +97,7 @@ func TestWithAgentID(t *testing.T) {
 		t.Errorf("Expected original agent ID unchanged, got '%s'", originalLogger.GetAgentID())
 	}
 
-	// Both should share the same underlying logger
+	// Both should share the same underlying logger.
 	if newLogger.logger != originalLogger.logger {
 		t.Error("Expected loggers to share the same underlying log.Logger")
 	}
@@ -180,7 +180,7 @@ func TestTimestampFormat(t *testing.T) {
 
 	timestamp := output[start+1 : end]
 
-	// Try to parse the timestamp
+	// Try to parse the timestamp.
 	_, err := time.Parse("2006-01-02T15:04:05.000Z", timestamp)
 	if err != nil {
 		t.Errorf("Invalid timestamp format '%s': %v", timestamp, err)
@@ -188,11 +188,11 @@ func TestTimestampFormat(t *testing.T) {
 }
 
 func ExampleLogger_usage() {
-	// Create loggers for different agents
+	// Create loggers for different agents.
 	architect := NewLogger("architect")
 	claude := NewLogger("claude")
 
-	// Log different levels
+	// Log different levels.
 	architect.Info("Starting story processing")
 	architect.Debug("Reading story file: %s", "stories/001.md")
 
@@ -200,12 +200,12 @@ func ExampleLogger_usage() {
 	claude.Warn("High token usage detected: %d tokens", 950)
 	claude.Error("Failed to connect to API: %v", "timeout")
 
-	// Create a new logger with different agent ID
+	// Create a new logger with different agent ID.
 	o3 := architect.WithAgentID("o3")
 	o3.Info("Review task completed")
 }
 
 func TestExampleUsage(t *testing.T) {
-	// This test just ensures the example compiles and runs
+	// This test just ensures the example compiles and runs.
 	ExampleLogger_usage()
 }

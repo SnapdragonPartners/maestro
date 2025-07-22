@@ -3,17 +3,19 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"orchestrator/pkg/proto"
 )
 
-// AskQuestionTool provides structured communication with architect during planning
+// AskQuestionTool provides structured communication with architect during planning.
 type AskQuestionTool struct{}
 
-// NewAskQuestionTool creates a new ask question tool instance
+// NewAskQuestionTool creates a new ask question tool instance.
 func NewAskQuestionTool() *AskQuestionTool {
 	return &AskQuestionTool{}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (a *AskQuestionTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "ask_question",
@@ -32,7 +34,7 @@ func (a *AskQuestionTool) Definition() ToolDefinition {
 				"urgency": {
 					Type:        "string",
 					Description: "How critical this question is for proceeding",
-					Enum:        []string{"LOW", "MEDIUM", "HIGH"},
+					Enum:        []string{string(proto.PriorityLow), string(proto.PriorityMedium), string(proto.PriorityHigh)},
 				},
 			},
 			Required: []string{"question"},
@@ -40,13 +42,13 @@ func (a *AskQuestionTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (a *AskQuestionTool) Name() string {
 	return "ask_question"
 }
 
-// Exec executes the ask question operation
-func (a *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+// Exec executes the ask question operation.
+func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	question, ok := args["question"]
 	if !ok {
 		return nil, fmt.Errorf("question parameter is required")
@@ -61,7 +63,7 @@ func (a *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (any, e
 		return nil, fmt.Errorf("question cannot be empty")
 	}
 
-	// Extract optional context
+	// Extract optional context.
 	context := ""
 	if ctxVal, hasCtx := args["context"]; hasCtx {
 		if ctxStr, ok := ctxVal.(string); ok {
@@ -70,15 +72,15 @@ func (a *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (any, e
 	}
 
 	// Extract optional urgency (default to MEDIUM)
-	urgency := "MEDIUM"
+	urgency := string(proto.PriorityMedium)
 	if urgVal, hasUrg := args["urgency"]; hasUrg {
 		if urgStr, ok := urgVal.(string); ok {
-			// Validate urgency level
+			// Validate urgency level.
 			switch urgStr {
-			case "LOW", "MEDIUM", "HIGH":
+			case string(proto.PriorityLow), string(proto.PriorityMedium), string(proto.PriorityHigh):
 				urgency = urgStr
 			default:
-				return nil, fmt.Errorf("urgency must be LOW, MEDIUM, or HIGH")
+				return nil, fmt.Errorf("urgency must be %s, %s, or %s", proto.PriorityLow, proto.PriorityMedium, proto.PriorityHigh)
 			}
 		}
 	}
@@ -93,15 +95,15 @@ func (a *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (any, e
 	}, nil
 }
 
-// SubmitPlanTool finalizes planning and triggers review
+// SubmitPlanTool finalizes planning and triggers review.
 type SubmitPlanTool struct{}
 
-// NewSubmitPlanTool creates a new submit plan tool instance
+// NewSubmitPlanTool creates a new submit plan tool instance.
 func NewSubmitPlanTool() *SubmitPlanTool {
 	return &SubmitPlanTool{}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (s *SubmitPlanTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "submit_plan",
@@ -116,7 +118,7 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level based on codebase exploration",
-					Enum:        []string{"HIGH", "MEDIUM", "LOW"},
+					Enum:        []string{string(proto.PriorityHigh), string(proto.PriorityMedium), string(proto.PriorityLow)},
 				},
 				"exploration_summary": {
 					Type:        "string",
@@ -141,13 +143,13 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (s *SubmitPlanTool) Name() string {
 	return "submit_plan"
 }
 
-// Exec executes the submit plan operation
-func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+// Exec executes the submit plan operation.
+func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	plan, ok := args["plan"]
 	if !ok {
 		return nil, fmt.Errorf("plan parameter is required")
@@ -172,15 +174,15 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		return nil, fmt.Errorf("confidence must be a string")
 	}
 
-	// Validate confidence level
+	// Validate confidence level.
 	switch confidenceStr {
 	case "HIGH", "MEDIUM", "LOW":
-		// Valid confidence level
+		// Valid confidence level.
 	default:
 		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
 	}
 
-	// Extract optional exploration summary
+	// Extract optional exploration summary.
 	explorationSummary := ""
 	if expVal, hasExp := args["exploration_summary"]; hasExp {
 		if expStr, ok := expVal.(string); ok {
@@ -188,7 +190,7 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 	}
 
-	// Extract optional risks
+	// Extract optional risks.
 	risks := ""
 	if riskVal, hasRisk := args["risks"]; hasRisk {
 		if riskStr, ok := riskVal.(string); ok {
@@ -196,7 +198,7 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 	}
 
-	// Extract and validate todos
+	// Extract and validate todos.
 	todos, hasTodos := args["todos"]
 	if !hasTodos {
 		return nil, fmt.Errorf("todos parameter is required")
@@ -210,7 +212,7 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 
 		if len(todosArray) > 0 {
-			// Convert string todos to structured format
+			// Convert string todos to structured format.
 			validatedTodos = make([]map[string]any, len(todosArray))
 			for i, todoItem := range todosArray {
 				todoStr, ok := todoItem.(string)
@@ -230,7 +232,7 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 	}
 
-	// Create default todo if none provided
+	// Create default todo if none provided.
 	if len(validatedTodos) == 0 {
 		validatedTodos = []map[string]any{
 			{
@@ -253,15 +255,15 @@ func (s *SubmitPlanTool) Exec(ctx context.Context, args map[string]any) (any, er
 	}, nil
 }
 
-// MarkStoryCompleteTool signals that story requirements are already implemented
+// MarkStoryCompleteTool signals that story requirements are already implemented.
 type MarkStoryCompleteTool struct{}
 
-// NewMarkStoryCompleteTool creates a new mark story complete tool instance
+// NewMarkStoryCompleteTool creates a new mark story complete tool instance.
 func NewMarkStoryCompleteTool() *MarkStoryCompleteTool {
 	return &MarkStoryCompleteTool{}
 }
 
-// Definition returns the tool's definition in Claude API format
+// Definition returns the tool's definition in Claude API format.
 func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "mark_story_complete",
@@ -280,7 +282,7 @@ func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level in this assessment",
-					Enum:        []string{"HIGH", "MEDIUM", "LOW"},
+					Enum:        []string{string(proto.PriorityHigh), string(proto.PriorityMedium), string(proto.PriorityLow)},
 				},
 			},
 			Required: []string{"reason", "evidence", "confidence"},
@@ -288,13 +290,13 @@ func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 	}
 }
 
-// Name returns the tool identifier
+// Name returns the tool identifier.
 func (m *MarkStoryCompleteTool) Name() string {
 	return "mark_story_complete"
 }
 
-// Exec executes the mark story complete operation
-func (m *MarkStoryCompleteTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+// Exec executes the mark story complete operation.
+func (m *MarkStoryCompleteTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	reason, ok := args["reason"]
 	if !ok {
 		return nil, fmt.Errorf("reason parameter is required")
@@ -333,10 +335,10 @@ func (m *MarkStoryCompleteTool) Exec(ctx context.Context, args map[string]any) (
 		return nil, fmt.Errorf("confidence must be a string")
 	}
 
-	// Validate confidence level
+	// Validate confidence level.
 	switch confidenceStr {
 	case "HIGH", "MEDIUM", "LOW":
-		// Valid confidence level
+		// Valid confidence level.
 	default:
 		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
 	}

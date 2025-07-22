@@ -11,7 +11,7 @@ import (
 )
 
 func TestResourceRequestCreation(t *testing.T) {
-	// Create test setup
+	// Create test setup.
 	stateStore, _ := state.NewStore("test_data")
 	mockConfig := &config.ModelCfg{}
 	mockLLM := &mockLLMClient{}
@@ -28,7 +28,7 @@ func TestResourceRequestCreation(t *testing.T) {
 	defer driver.Shutdown(ctx)
 
 	t.Run("Valid resource request message creation", func(t *testing.T) {
-		// Create a resource request message
+		// Create a resource request message.
 		resourceMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "test-coder", "test-architect")
 		resourceMsg.SetPayload(proto.KeyRequestType, string(proto.RequestResource))
 		resourceMsg.SetPayload(proto.KeyRequestedTokens, 5000)
@@ -36,12 +36,12 @@ func TestResourceRequestCreation(t *testing.T) {
 		resourceMsg.SetPayload(proto.KeyJustification, "Need additional tokens for complex feature implementation")
 		resourceMsg.SetPayload(proto.KeyStoryID, "test-001")
 
-		// Test message creation
+		// Test message creation.
 		if resourceMsg.Type != proto.MsgTypeREQUEST {
 			t.Errorf("Expected message type REQUEST, got %s", resourceMsg.Type)
 		}
 
-		// Test payload extraction
+		// Test payload extraction.
 		requestType, exists := resourceMsg.GetPayload(proto.KeyRequestType)
 		if !exists || requestType != string(proto.RequestResource) {
 			t.Error("Expected resource request type")

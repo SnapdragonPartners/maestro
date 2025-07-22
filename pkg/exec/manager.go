@@ -11,14 +11,14 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// ExecutorManager handles executor initialization and selection
+// ExecutorManager handles executor initialization and selection.
 type ExecutorManager struct {
 	config   *config.ExecutorConfig
 	logger   *logx.Logger
 	registry *Registry
 }
 
-// NewExecutorManager creates a new executor manager
+// NewExecutorManager creates a new executor manager.
 func NewExecutorManager(config *config.ExecutorConfig) *ExecutorManager {
 	logger := logx.NewLogger("executor-manager")
 
@@ -29,7 +29,7 @@ func NewExecutorManager(config *config.ExecutorConfig) *ExecutorManager {
 	}
 }
 
-// Initialize sets up the executor registry based on configuration
+// Initialize sets up the executor registry based on configuration.
 func (m *ExecutorManager) Initialize(ctx context.Context) error {
 	m.logger.Info("Initializing executor manager with type: %s", m.config.Type)
 
@@ -39,13 +39,13 @@ func (m *ExecutorManager) Initialize(ctx context.Context) error {
 		return fmt.Errorf("failed to register local executor: %w", err)
 	}
 
-	// Register Docker executor if available
+	// Register Docker executor if available.
 	dockerExec := NewLongRunningDockerExec(m.config.Docker.Image, "")
 	if err := m.registry.Register(dockerExec); err != nil {
 		return fmt.Errorf("failed to register docker executor: %w", err)
 	}
 
-	// Determine default executor based on configuration
+	// Determine default executor based on configuration.
 	defaultExec, err := m.selectDefaultExecutor(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to select default executor: %w", err)
@@ -59,7 +59,7 @@ func (m *ExecutorManager) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// selectDefaultExecutor determines which executor to use based on configuration
+// selectDefaultExecutor determines which executor to use based on configuration.
 func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, error) {
 	switch m.config.Type {
 	case "local":
@@ -67,7 +67,7 @@ func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, er
 		return "local", nil
 
 	case "docker":
-		// Force Docker - fail if not available
+		// Force Docker - fail if not available.
 		if !m.isDockerAvailable(ctx) {
 			return "", fmt.Errorf("docker executor requested but Docker daemon is not available")
 		}
@@ -77,7 +77,7 @@ func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, er
 		return "docker", nil
 
 	case "auto":
-		// Auto-select Docker only - fail if not available
+		// Auto-select Docker only - fail if not available.
 		if !m.isDockerAvailable(ctx) {
 			return "", fmt.Errorf("docker daemon is not available (required for auto mode). Use 'local' explicitly if you want unsandboxed execution")
 		}
@@ -93,9 +93,9 @@ func (m *ExecutorManager) selectDefaultExecutor(ctx context.Context) (string, er
 	}
 }
 
-// isDockerAvailable checks if Docker daemon is available
+// isDockerAvailable checks if Docker daemon is available.
 func (m *ExecutorManager) isDockerAvailable(ctx context.Context) bool {
-	// Check if docker command exists
+	// Check if docker command exists.
 	dockerCmd := "docker"
 	if _, err := exec.LookPath("podman"); err == nil {
 		if _, err := exec.LookPath("docker"); err != nil {
@@ -108,7 +108,7 @@ func (m *ExecutorManager) isDockerAvailable(ctx context.Context) bool {
 		return false
 	}
 
-	// Check if daemon is running
+	// Check if daemon is running.
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -121,7 +121,7 @@ func (m *ExecutorManager) isDockerAvailable(ctx context.Context) bool {
 	return true
 }
 
-// isDockerImageAvailable checks if the configured Docker image is available
+// isDockerImageAvailable checks if the configured Docker image is available.
 func (m *ExecutorManager) isDockerImageAvailable(ctx context.Context) bool {
 	dockerCmd := "docker"
 	if _, err := exec.LookPath("podman"); err == nil {
@@ -130,7 +130,7 @@ func (m *ExecutorManager) isDockerImageAvailable(ctx context.Context) bool {
 		}
 	}
 
-	// Check if image exists locally
+	// Check if image exists locally.
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -146,7 +146,7 @@ func (m *ExecutorManager) isDockerImageAvailable(ctx context.Context) bool {
 		return true
 	}
 
-	// Try to pull image if auto-pull is enabled
+	// Try to pull image if auto-pull is enabled.
 	if m.config.Docker.AutoPull {
 		m.logger.Info("Attempting to pull Docker image: %s", m.config.Docker.Image)
 
@@ -167,22 +167,22 @@ func (m *ExecutorManager) isDockerImageAvailable(ctx context.Context) bool {
 	return false
 }
 
-// GetExecutor returns the best available executor
+// GetExecutor returns the best available executor.
 func (m *ExecutorManager) GetExecutor(preferences []string) (Executor, error) {
 	return m.registry.GetBest(preferences)
 }
 
-// GetDefaultExecutor returns the default executor
+// GetDefaultExecutor returns the default executor.
 func (m *ExecutorManager) GetDefaultExecutor() (Executor, error) {
 	return m.registry.GetDefault()
 }
 
-// GetRegistry returns the executor registry
+// GetRegistry returns the executor registry.
 func (m *ExecutorManager) GetRegistry() *Registry {
 	return m.registry
 }
 
-// GetStatus returns the status of all executors
+// GetStatus returns the status of all executors.
 func (m *ExecutorManager) GetStatus() map[string]bool {
 	status := make(map[string]bool)
 
@@ -195,16 +195,16 @@ func (m *ExecutorManager) GetStatus() map[string]bool {
 	return status
 }
 
-// GetStartupInfo returns information about executor configuration for startup banner
+// GetStartupInfo returns information about executor configuration for startup banner.
 func (m *ExecutorManager) GetStartupInfo() string {
 	status := m.GetStatus()
 
 	var parts []string
 
-	// Show configured type
+	// Show configured type.
 	parts = append(parts, fmt.Sprintf("Type: %s", m.config.Type))
 
-	// Show Docker status
+	// Show Docker status.
 	if dockerAvailable, ok := status["docker"]; ok {
 		if dockerAvailable {
 			parts = append(parts, fmt.Sprintf("Docker: available (%s)", m.config.Docker.Image))
@@ -213,7 +213,7 @@ func (m *ExecutorManager) GetStartupInfo() string {
 		}
 	}
 
-	// Show local status
+	// Show local status.
 	if localAvailable, ok := status["local"]; ok {
 		if localAvailable {
 			parts = append(parts, "Local: available")
@@ -222,7 +222,7 @@ func (m *ExecutorManager) GetStartupInfo() string {
 		}
 	}
 
-	// Show default executor
+	// Show default executor.
 	if defaultExec, err := m.GetDefaultExecutor(); err == nil {
 		parts = append(parts, fmt.Sprintf("Default: %s", defaultExec.Name()))
 	}

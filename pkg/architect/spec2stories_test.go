@@ -59,7 +59,7 @@ Set up database tables.
 		t.Errorf("Expected 3 requirements, got %d", len(requirements))
 	}
 
-	// Check first requirement
+	// Check first requirement.
 	req1 := requirements[0]
 	if req1.Title != "User Authentication" {
 		t.Errorf("Expected title 'User Authentication', got '%s'", req1.Title)
@@ -91,7 +91,7 @@ Set up database tables.
 		t.Error("Expected description for API Endpoints requirement")
 	}
 
-	// Check third requirement
+	// Check third requirement.
 	req3 := requirements[2]
 	if req3.Title != "Database Schema" {
 		t.Errorf("Expected title 'Database Schema', got '%s'", req3.Title)
@@ -147,7 +147,7 @@ func TestEstimatePoints(t *testing.T) {
 }
 
 func TestFindNextStoryID(t *testing.T) {
-	// Create temporary directory
+	// Create temporary directory.
 	tempDir, err := os.MkdirTemp("", "test_stories")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -156,7 +156,7 @@ func TestFindNextStoryID(t *testing.T) {
 
 	parser := NewSpecParser(tempDir)
 
-	// Test with no existing files
+	// Test with no existing files.
 	nextID, err := parser.findNextStoryID()
 	if err != nil {
 		t.Fatalf("Failed to find next story ID: %v", err)
@@ -166,7 +166,7 @@ func TestFindNextStoryID(t *testing.T) {
 		t.Errorf("Expected next ID 50 for empty directory, got %d", nextID)
 	}
 
-	// Create some story files
+	// Create some story files.
 	testFiles := []string{"001.md", "002.md", "055.md", "100.md"}
 	for _, filename := range testFiles {
 		filePath := filepath.Join(tempDir, filename)
@@ -176,7 +176,7 @@ func TestFindNextStoryID(t *testing.T) {
 		}
 	}
 
-	// Test with existing files
+	// Test with existing files.
 	nextID, err = parser.findNextStoryID()
 	if err != nil {
 		t.Fatalf("Failed to find next story ID: %v", err)
@@ -200,9 +200,9 @@ func TestGenerateStoryContent(t *testing.T) {
 		EstimatedPoints: 3,
 	}
 
-	content := parser.generateStoryContent("050", req)
+	content := parser.generateStoryContent("050", &req)
 
-	// Check front matter
+	// Check front matter.
 	if !strings.Contains(content, "id: 050") {
 		t.Error("Content should contain story ID")
 	}
@@ -215,7 +215,7 @@ func TestGenerateStoryContent(t *testing.T) {
 		t.Error("Content should contain estimated points")
 	}
 
-	// Check task section
+	// Check task section.
 	if !strings.Contains(content, "**Task**") {
 		t.Error("Content should contain Task section")
 	}
@@ -224,7 +224,7 @@ func TestGenerateStoryContent(t *testing.T) {
 		t.Error("Content should contain description")
 	}
 
-	// Check acceptance criteria
+	// Check acceptance criteria.
 	if !strings.Contains(content, "**Acceptance Criteria**") {
 		t.Error("Content should contain Acceptance Criteria section")
 	}
@@ -235,7 +235,7 @@ func TestGenerateStoryContent(t *testing.T) {
 }
 
 func TestGenerateStoryFiles(t *testing.T) {
-	// Create temporary directory
+	// Create temporary directory.
 	tempDir, err := os.MkdirTemp("", "test_stories")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -275,7 +275,7 @@ func TestGenerateStoryFiles(t *testing.T) {
 		t.Errorf("Expected 2 story files, got %d", len(storyFiles))
 	}
 
-	// Check first story file
+	// Check first story file.
 	story1 := storyFiles[0]
 	if story1.ID != "050" {
 		t.Errorf("Expected story ID '050', got '%s'", story1.ID)
@@ -285,12 +285,12 @@ func TestGenerateStoryFiles(t *testing.T) {
 		t.Errorf("Expected title 'Health Check Endpoint', got '%s'", story1.Title)
 	}
 
-	// Verify file was actually created
+	// Verify file was actually created.
 	if _, err := os.Stat(story1.FilePath); os.IsNotExist(err) {
 		t.Errorf("Story file was not created: %s", story1.FilePath)
 	}
 
-	// Check file content
+	// Check file content.
 	content, err := os.ReadFile(story1.FilePath)
 	if err != nil {
 		t.Fatalf("Failed to read story file: %v", err)
@@ -307,7 +307,7 @@ func TestGenerateStoryFiles(t *testing.T) {
 }
 
 func TestProcessSpecFile(t *testing.T) {
-	// Create temporary directories
+	// Create temporary directories.
 	tempDir, err := os.MkdirTemp("", "test_stories")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -320,7 +320,7 @@ func TestProcessSpecFile(t *testing.T) {
 	}
 	defer os.RemoveAll(specDir)
 
-	// Create test spec file
+	// Create test spec file.
 	specContent := `# Test Project
 
 ## Health Endpoint
@@ -355,14 +355,14 @@ Implement basic user authentication.
 		t.Errorf("Expected 2 story files, got %d", len(storyFiles))
 	}
 
-	// Verify both files were created
+	// Verify both files were created.
 	for _, story := range storyFiles {
 		if _, err := os.Stat(story.FilePath); os.IsNotExist(err) {
 			t.Errorf("Story file was not created: %s", story.FilePath)
 		}
 	}
 
-	// Check first story
+	// Check first story.
 	healthStory := storyFiles[0]
 	if healthStory.Title != "Health Endpoint" {
 		t.Errorf("Expected title 'Health Endpoint', got '%s'", healthStory.Title)

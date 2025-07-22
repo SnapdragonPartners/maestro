@@ -26,7 +26,7 @@ func TestNewQueue(t *testing.T) {
 func TestParseStoryFile(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 
-	// Create a test story file
+	// Create a test story file.
 	storyContent := `---
 id: 001
 title: "Test Story"
@@ -175,7 +175,7 @@ func TestLoadFromDirectory(t *testing.T) {
 	tmpDir := createTempDir(t)
 	defer os.RemoveAll(tmpDir)
 
-	// Create test story files
+	// Create test story files.
 	stories := []struct {
 		filename string
 		content  string
@@ -229,7 +229,7 @@ Content of third story.`,
 		t.Errorf("Expected 3 stories, got %d", len(queue.stories))
 	}
 
-	// Check each story
+	// Check each story.
 	story1, exists := queue.GetStory("001")
 	if !exists {
 		t.Error("Story 001 not found")
@@ -255,7 +255,7 @@ Content of third story.`,
 func TestGetReadyStories(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 
-	// Manually add stories to test dependency resolution
+	// Manually add stories to test dependency resolution.
 	queue.stories["001"] = &QueuedStory{
 		ID:        "001",
 		Title:     "Independent Story",
@@ -311,7 +311,7 @@ func TestGetReadyStories(t *testing.T) {
 func TestNextReadyStory(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 
-	// Add stories with different point values
+	// Add stories with different point values.
 	queue.stories["001"] = &QueuedStory{
 		ID:              "001",
 		Status:          StatusPending,
@@ -352,7 +352,7 @@ func TestStoryStatusTransitions(t *testing.T) {
 		Status: StatusPending,
 	}
 
-	// Test marking as in progress
+	// Test marking as in progress.
 	err := queue.MarkInProgress("001", "agent-123")
 	if err != nil {
 		t.Fatalf("Failed to mark in progress: %v", err)
@@ -371,7 +371,7 @@ func TestStoryStatusTransitions(t *testing.T) {
 		t.Error("StartedAt should be set")
 	}
 
-	// Test marking as waiting review
+	// Test marking as waiting review.
 	err = queue.MarkWaitingReview("001")
 	if err != nil {
 		t.Fatalf("Failed to mark waiting review: %v", err)
@@ -382,7 +382,7 @@ func TestStoryStatusTransitions(t *testing.T) {
 		t.Errorf("Expected status waiting_review, got %s", story.Status)
 	}
 
-	// Test marking as completed
+	// Test marking as completed.
 	err = queue.MarkCompleted("001")
 	if err != nil {
 		t.Fatalf("Failed to mark completed: %v", err)
@@ -401,7 +401,7 @@ func TestStoryStatusTransitions(t *testing.T) {
 func TestDetectCycles(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 
-	// Create a cycle: 001 -> 002 -> 003 -> 001
+	// Create a cycle: 001 -> 002 -> 003 -> 001.
 	queue.stories["001"] = &QueuedStory{
 		ID:        "001",
 		DependsOn: []string{"003"},
@@ -422,7 +422,7 @@ func TestDetectCycles(t *testing.T) {
 		t.Error("Expected to detect a cycle")
 	}
 
-	// Verify the cycle contains our stories
+	// Verify the cycle contains our stories.
 	if len(cycles[0]) < 3 {
 		t.Errorf("Expected cycle length >= 3, got %d", len(cycles[0]))
 	}
@@ -443,13 +443,13 @@ func TestQueueSerialization(t *testing.T) {
 		LastUpdated:     now,
 	}
 
-	// Test serialization
+	// Test serialization.
 	data, err := queue.ToJSON()
 	if err != nil {
 		t.Fatalf("Failed to serialize queue: %v", err)
 	}
 
-	// Test deserialization
+	// Test deserialization.
 	newQueue := NewQueue("/tmp/test")
 	err = newQueue.FromJSON(data)
 	if err != nil {
@@ -515,7 +515,7 @@ func TestGetQueueSummary(t *testing.T) {
 	}
 }
 
-// Helper function to create a temporary directory for tests
+// Helper function to create a temporary directory for tests.
 func createTempDir(t *testing.T) string {
 	tmpDir, err := os.MkdirTemp("", "queue_test_*")
 	if err != nil {

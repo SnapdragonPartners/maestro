@@ -1,3 +1,4 @@
+// Package limiter provides rate limiting and budget enforcement for LLM API calls with token bucket algorithms.
 package limiter
 
 import (
@@ -8,12 +9,14 @@ import (
 	"orchestrator/pkg/config"
 )
 
+// Limiter manages rate limiting and budget enforcement across multiple LLM models.
 type Limiter struct {
 	models     map[string]*ModelLimiter
 	mu         sync.RWMutex
 	resetTimer *time.Timer
 }
 
+// ModelLimiter enforces token, budget, and concurrency limits for a specific LLM model.
 type ModelLimiter struct {
 	name               string
 	maxTokensPerMinute int
@@ -27,18 +30,23 @@ type ModelLimiter struct {
 }
 
 var (
-	ErrRateLimit      = fmt.Errorf("rate limit exceeded")
+	// ErrRateLimit is returned when token rate limits are exceeded.
+	ErrRateLimit = fmt.Errorf("rate limit exceeded")
+	// ErrBudgetExceeded is returned when daily budget limits are exceeded.
 	ErrBudgetExceeded = fmt.Errorf("daily budget exceeded")
-	ErrAgentLimit     = fmt.Errorf("agent limit exceeded")
+	// ErrAgentLimit is returned when agent limits are exceeded.
+	ErrAgentLimit = fmt.Errorf("agent limit exceeded")
 )
 
+// NewLimiter creates a new rate limiter configured with the provided model limits.
 func NewLimiter(cfg *config.Config) *Limiter {
 	l := &Limiter{
 		models: make(map[string]*ModelLimiter),
 	}
 
-	// Initialize model limiters
-	for name, modelCfg := range cfg.Models {
+	// Initialize model limiters.
+	for name := range cfg.Models {
+		modelCfg := cfg.Models[name]
 		l.models[name] = &ModelLimiter{
 			name:               name,
 			maxTokensPerMinute: modelCfg.MaxTokensPerMinute,
@@ -51,12 +59,13 @@ func NewLimiter(cfg *config.Config) *Limiter {
 		}
 	}
 
-	// Schedule daily reset at midnight
+	// Schedule daily reset at midnight.
 	l.scheduleDailyReset()
 
 	return l
 }
 
+// Reserve attempts to reserve the specified number of tokens for the given model.
 func (l *Limiter) Reserve(model string, tokens int) error {
 	l.mu.RLock()
 	modelLimiter, exists := l.models[model]
@@ -69,6 +78,7 @@ func (l *Limiter) Reserve(model string, tokens int) error {
 	return modelLimiter.Reserve(tokens)
 }
 
+// ReserveBudget reserves budget for a model operation.
 func (l *Limiter) ReserveBudget(model string, costUSD float64) error {
 	l.mu.RLock()
 	modelLimiter, exists := l.models[model]
@@ -81,6 +91,7 @@ func (l *Limiter) ReserveBudget(model string, costUSD float64) error {
 	return modelLimiter.ReserveBudget(costUSD)
 }
 
+// ReserveAgent reserves an agent slot for a model.
 func (l *Limiter) ReserveAgent(model string) error {
 	l.mu.RLock()
 	modelLimiter, exists := l.models[model]
@@ -93,6 +104,7 @@ func (l *Limiter) ReserveAgent(model string) error {
 	return modelLimiter.ReserveAgent()
 }
 
+// ReleaseAgent releases an agent slot for a model.
 func (l *Limiter) ReleaseAgent(model string) error {
 	l.mu.RLock()
 	modelLimiter, exists := l.models[model]
@@ -105,6 +117,7 @@ func (l *Limiter) ReleaseAgent(model string) error {
 	return modelLimiter.ReleaseAgent()
 }
 
+// GetStatus returns the current status for a model's limits.
 func (l *Limiter) GetStatus(model string) (tokens int, budget float64, agents int, err error) {
 	l.mu.RLock()
 	modelLimiter, exists := l.models[model]
@@ -117,6 +130,7 @@ func (l *Limiter) GetStatus(model string) (tokens int, budget float64, agents in
 	return modelLimiter.GetStatus()
 }
 
+// ResetDaily resets daily limits for all models.
 func (l *Limiter) ResetDaily() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -126,17 +140,19 @@ func (l *Limiter) ResetDaily() {
 	}
 }
 
+// Close stops the limiter and releases resources.
 func (l *Limiter) Close() {
 	if l.resetTimer != nil {
 		l.resetTimer.Stop()
 	}
 }
 
+// Reserve reserves tokens from the rate limit bucket.
 func (ml *ModelLimiter) Reserve(tokens int) error {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
 
-	// Refill tokens based on time elapsed
+	// Refill tokens based on time elapsed.
 	ml.refillTokens()
 
 	if ml.currentTokens < tokens {
@@ -147,6 +163,7 @@ func (ml *ModelLimiter) Reserve(tokens int) error {
 	return nil
 }
 
+// ReserveBudget reserves budget from the daily limit.
 func (ml *ModelLimiter) ReserveBudget(costUSD float64) error {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
@@ -159,6 +176,7 @@ func (ml *ModelLimiter) ReserveBudget(costUSD float64) error {
 	return nil
 }
 
+// ReserveAgent reserves an agent slot.
 func (ml *ModelLimiter) ReserveAgent() error {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
@@ -171,6 +189,7 @@ func (ml *ModelLimiter) ReserveAgent() error {
 	return nil
 }
 
+// ReleaseAgent releases an agent slot.
 func (ml *ModelLimiter) ReleaseAgent() error {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
@@ -183,6 +202,7 @@ func (ml *ModelLimiter) ReleaseAgent() error {
 	return nil
 }
 
+// GetStatus returns the current status of the model limiter.
 func (ml *ModelLimiter) GetStatus() (tokens int, budget float64, agents int, err error) {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
@@ -191,6 +211,7 @@ func (ml *ModelLimiter) GetStatus() (tokens int, budget float64, agents int, err
 	return ml.currentTokens, ml.currentBudgetUSD, ml.currentAgents, nil
 }
 
+// ResetDaily resets the daily budget and agent limits for this model.
 func (ml *ModelLimiter) ResetDaily() {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
@@ -206,17 +227,17 @@ func (ml *ModelLimiter) refillTokens() {
 	elapsed := now.Sub(ml.lastRefill)
 
 	if elapsed >= time.Minute {
-		// Refill tokens for each minute that has passed
+		// Refill tokens for each minute that has passed.
 		minutes := int(elapsed / time.Minute)
 		refillAmount := minutes * ml.maxTokensPerMinute
 
-		// Cap at maximum
+		// Cap at maximum.
 		ml.currentTokens += refillAmount
 		if ml.currentTokens > ml.maxTokensPerMinute {
 			ml.currentTokens = ml.maxTokensPerMinute
 		}
 
-		// Update refill time to the last complete minute
+		// Update refill time to the last complete minute.
 		ml.lastRefill = ml.lastRefill.Add(time.Duration(minutes) * time.Minute)
 	}
 }
@@ -224,7 +245,7 @@ func (ml *ModelLimiter) refillTokens() {
 func (l *Limiter) scheduleDailyReset() {
 	now := time.Now()
 
-	// Calculate next midnight in local time
+	// Calculate next midnight in local time.
 	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 	timeUntilMidnight := time.Until(nextMidnight)
 

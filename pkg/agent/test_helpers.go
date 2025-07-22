@@ -12,7 +12,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// isTestMode returns true if the code is running in a test environment
+// isTestMode returns true if the code is running in a test environment.
 func isTestMode() bool {
 	if strings.HasSuffix(os.Args[0], ".test") {
 		return true
@@ -23,12 +23,12 @@ func isTestMode() bool {
 	return false
 }
 
-// resetModeForTest resets the system mode for testing
+// resetModeForTest resets the system mode for testing.
 func resetModeForTest() {
 	SystemMode = 0 // Reset to uninitialized
 }
 
-// TestHelper provides utilities for testing agent components
+// TestHelper provides utilities for testing agent components.
 type TestHelper struct {
 	t       *testing.T
 	tempDir string
@@ -36,7 +36,7 @@ type TestHelper struct {
 	cleanup []func()
 }
 
-// NewTestHelper creates a new test helper
+// NewTestHelper creates a new test helper.
 func NewTestHelper(t *testing.T) *TestHelper {
 	t.Helper()
 
@@ -46,7 +46,7 @@ func NewTestHelper(t *testing.T) *TestHelper {
 		t.Fatalf("Failed to create test state store: %v", err)
 	}
 
-	// Reset mode for clean test environment
+	// Reset mode for clean test environment.
 	resetModeForTest()
 	InitMode(ModeMock)
 
@@ -58,7 +58,7 @@ func NewTestHelper(t *testing.T) *TestHelper {
 	}
 }
 
-// CreateTestDriver creates a driver with test configuration
+// CreateTestDriver creates a driver with test configuration.
 func (h *TestHelper) CreateTestDriver(id string, initialState proto.State) *BaseDriver {
 	h.t.Helper()
 
@@ -92,7 +92,7 @@ func (h *TestHelper) CreateTestDriver(id string, initialState proto.State) *Base
 	return driver
 }
 
-// CreateMockLLMClient creates a mock client with predefined responses
+// CreateMockLLMClient creates a mock client with predefined responses.
 func (h *TestHelper) CreateMockLLMClient(responses []string, errors []error) LLMClient {
 	h.t.Helper()
 
@@ -106,7 +106,7 @@ func (h *TestHelper) CreateMockLLMClient(responses []string, errors []error) LLM
 	return NewMockLLMClient(compResponses, errors)
 }
 
-// CreateStateMachine creates a state machine for testing
+// CreateStateMachine creates a state machine for testing.
 func (h *TestHelper) CreateStateMachine(id string, initialState proto.State) *BaseStateMachine {
 	h.t.Helper()
 
@@ -118,7 +118,7 @@ func (h *TestHelper) CreateStateMachine(id string, initialState proto.State) *Ba
 	return sm
 }
 
-// AssertState verifies that a state machine is in the expected state
+// AssertState verifies that a state machine is in the expected state.
 func (h *TestHelper) AssertState(sm StateMachine, expected proto.State) {
 	h.t.Helper()
 
@@ -128,7 +128,7 @@ func (h *TestHelper) AssertState(sm StateMachine, expected proto.State) {
 	}
 }
 
-// AssertStateTransition verifies a state transition works as expected
+// AssertStateTransition verifies a state transition works as expected.
 func (h *TestHelper) AssertStateTransition(sm StateMachine, to proto.State, metadata map[string]any) {
 	h.t.Helper()
 
@@ -142,7 +142,7 @@ func (h *TestHelper) AssertStateTransition(sm StateMachine, to proto.State, meta
 	h.AssertState(sm, to)
 }
 
-// AssertInvalidTransition verifies that an invalid transition is rejected
+// AssertInvalidTransition verifies that an invalid transition is rejected.
 func (h *TestHelper) AssertInvalidTransition(sm StateMachine, to proto.State) {
 	h.t.Helper()
 
@@ -153,11 +153,11 @@ func (h *TestHelper) AssertInvalidTransition(sm StateMachine, to proto.State) {
 		return
 	}
 
-	// State should remain unchanged
+	// State should remain unchanged.
 	h.AssertState(sm, from)
 }
 
-// MockFailingClient creates a client that fails after a certain number of calls
+// MockFailingClient creates a client that fails after a certain number of calls.
 type MockFailingClient struct {
 	callCount    int
 	failAfter    int
@@ -165,7 +165,7 @@ type MockFailingClient struct {
 	responses    []CompletionResponse
 }
 
-// NewMockFailingClient creates a client that fails after failAfter successful calls
+// NewMockFailingClient creates a client that fails after failAfter successful calls.
 func NewMockFailingClient(failAfter int, responses []CompletionResponse) *MockFailingClient {
 	return &MockFailingClient{
 		failAfter: failAfter,
@@ -173,8 +173,8 @@ func NewMockFailingClient(failAfter int, responses []CompletionResponse) *MockFa
 	}
 }
 
-// Complete implements LLMClient interface with controlled failures
-func (m *MockFailingClient) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
+// Complete implements LLMClient interface with controlled failures.
+func (m *MockFailingClient) Complete(_ context.Context, _ CompletionRequest) (CompletionResponse, error) {
 	m.callCount++
 
 	if m.callCount > m.failAfter {
@@ -190,7 +190,7 @@ func (m *MockFailingClient) Complete(ctx context.Context, req CompletionRequest)
 	return CompletionResponse{Content: fmt.Sprintf("Mock response #%d", m.callCount)}, nil
 }
 
-// Stream implements LLMClient interface
+// Stream implements LLMClient interface.
 func (m *MockFailingClient) Stream(ctx context.Context, req CompletionRequest) (<-chan StreamChunk, error) {
 	resp, err := m.Complete(ctx, req)
 	if err != nil {
@@ -207,17 +207,17 @@ func (m *MockFailingClient) Stream(ctx context.Context, req CompletionRequest) (
 	return ch, nil
 }
 
-// GetCallCount returns the number of calls made
+// GetCallCount returns the number of calls made.
 func (m *MockFailingClient) GetCallCount() int {
 	return m.callCount
 }
 
-// GetFailureCount returns the number of failures
+// GetFailureCount returns the number of failures.
 func (m *MockFailingClient) GetFailureCount() int {
 	return m.failureCount
 }
 
-// Reset resets the client state
+// Reset resets the client state.
 func (m *MockFailingClient) Reset() {
 	m.callCount = 0
 	m.failureCount = 0

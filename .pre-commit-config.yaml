@@ -1,0 +1,16 @@
+# Pre-commit configuration for maestro orchestrator  
+repos:
+  - repo: local
+    hooks:
+      - id: build-check
+        name: Build Check
+        entry: make build
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: test-check
+        name: Test Check (with timeout)
+        entry: timeout 120s make test
+        language: system
+        pass_filenames: false
+        always_run: true

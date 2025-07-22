@@ -14,7 +14,7 @@ func TestParseSpecAnalysisJSON(t *testing.T) {
 	mockOrchestratorConfig := &config.Config{}
 	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "/tmp/test", "/tmp/stories", mockOrchestratorConfig)
 
-	// Test valid LLM response
+	// Test valid LLM response.
 	validResponse := `
 Here is my analysis of the specification:
 
@@ -59,7 +59,7 @@ This analysis extracts the core requirements for implementation.
 		t.Errorf("Expected 2 requirements, got %d", len(requirements))
 	}
 
-	// Check first requirement
+	// Check first requirement.
 	req1 := requirements[0]
 	if req1.Title != "User Registration" {
 		t.Errorf("Expected title 'User Registration', got '%s'", req1.Title)
@@ -73,7 +73,7 @@ This analysis extracts the core requirements for implementation.
 		t.Errorf("Expected 3 acceptance criteria, got %d", len(req1.AcceptanceCriteria))
 	}
 
-	// Check second requirement
+	// Check second requirement.
 	req2 := requirements[1]
 	if req2.Title != "User Login" {
 		t.Errorf("Expected title 'User Login', got '%s'", req2.Title)
@@ -130,7 +130,7 @@ func TestParseSpecAnalysisJSONDefaults(t *testing.T) {
 	mockOrchestratorConfig := &config.Config{}
 	driver := NewDriver("test-architect", stateStore, mockConfig, mockLLM, nil, "/tmp/test", "/tmp/stories", mockOrchestratorConfig)
 
-	// Test response with edge cases that should get defaults
+	// Test response with edge cases that should get defaults.
 	responseWithDefaults := `{
   "analysis": "Test analysis",
   "requirements": [
@@ -161,24 +161,24 @@ func TestParseSpecAnalysisJSONDefaults(t *testing.T) {
 		t.Errorf("Expected 2 requirements, got %d", len(requirements))
 	}
 
-	// Check that invalid points got defaulted
+	// Check that invalid points got defaulted.
 	req1 := requirements[0]
 	if req1.EstimatedPoints != 2 {
 		t.Errorf("Expected invalid points (10) to default to 2, got %d", req1.EstimatedPoints)
 	}
 
-	// Check that empty acceptance criteria got defaults
+	// Check that empty acceptance criteria got defaults.
 	if len(req1.AcceptanceCriteria) != 3 {
 		t.Errorf("Expected default acceptance criteria (3), got %d", len(req1.AcceptanceCriteria))
 	}
 
-	// Check that negative points got defaulted
+	// Check that negative points got defaulted.
 	req2 := requirements[1]
 	if req2.EstimatedPoints != 2 {
 		t.Errorf("Expected invalid points (-1) to default to 2, got %d", req2.EstimatedPoints)
 	}
 
-	// Check that existing acceptance criteria is preserved
+	// Check that existing acceptance criteria is preserved.
 	if len(req2.AcceptanceCriteria) != 1 {
 		t.Errorf("Expected existing acceptance criteria (1) to be preserved, got %d", len(req2.AcceptanceCriteria))
 	}

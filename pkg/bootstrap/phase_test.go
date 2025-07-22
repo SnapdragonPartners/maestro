@@ -9,27 +9,27 @@ import (
 )
 
 func TestPhaseExecution(t *testing.T) {
-	// Create temporary directory for test
+	// Create temporary directory for test.
 	tempDir, err := os.MkdirTemp("", "bootstrap-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create minimal Go project
+	// Create minimal Go project.
 	goMod := `module test-project
 go 1.21
 `
-	if err := os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte(goMod), 0644); err != nil {
-		t.Fatalf("Failed to create go.mod: %v", err)
+	if writeErr := os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte(goMod), 0644); writeErr != nil {
+		t.Fatalf("Failed to create go.mod: %v", writeErr)
 	}
 
-	// Create bootstrap phase
+	// Create bootstrap phase.
 	config := DefaultConfig()
 	config.AutoMerge = false // Disable auto-merge for testing
 	phase := NewPhase(tempDir, config)
 
-	// Execute bootstrap phase
+	// Execute bootstrap phase.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -38,7 +38,7 @@ go 1.21
 		t.Fatalf("Bootstrap phase execution failed: %v", err)
 	}
 
-	// Verify results
+	// Verify results.
 	if !result.Success {
 		t.Errorf("Expected success=true, got %v", result.Success)
 	}
@@ -51,7 +51,7 @@ go 1.21
 		t.Error("Expected generated files, got none")
 	}
 
-	// Verify core files were created
+	// Verify core files were created.
 	expectedFiles := []string{".gitignore", ".gitattributes", ".editorconfig", "Makefile", "agent.mk"}
 	for _, expectedFile := range expectedFiles {
 		found := false
@@ -65,7 +65,7 @@ go 1.21
 			t.Errorf("Expected file %s not found in generated files", expectedFile)
 		}
 
-		// Verify file actually exists
+		// Verify file actually exists.
 		if _, err := os.Stat(filepath.Join(tempDir, expectedFile)); os.IsNotExist(err) {
 			t.Errorf("Generated file %s does not exist on disk", expectedFile)
 		}
@@ -111,16 +111,16 @@ func TestPhaseWithForcedBackend(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create Node.js project
-	packageJson := `{
+	// Create Node.js project.
+	packageJSON := `{
   "name": "test-project",
   "version": "1.0.0"
 }`
-	if err := os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJson), 0644); err != nil {
-		t.Fatalf("Failed to create package.json: %v", err)
+	if writeErr := os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJSON), 0644); writeErr != nil {
+		t.Fatalf("Failed to create package.json: %v", writeErr)
 	}
 
-	// Force Python backend
+	// Force Python backend.
 	config := DefaultConfig()
 	config.ForceBackend = "python"
 	config.AutoMerge = false
@@ -170,7 +170,7 @@ func TestPhaseWithSkipMakefile(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create minimal project
+	// Create minimal project.
 	os.WriteFile(filepath.Join(tempDir, "main.py"), []byte("print('hello')"), 0644)
 
 	config := DefaultConfig()
@@ -186,7 +186,7 @@ func TestPhaseWithSkipMakefile(t *testing.T) {
 		t.Fatalf("Bootstrap phase execution failed: %v", err)
 	}
 
-	// Verify Makefile was not created
+	// Verify Makefile was not created.
 	makefileFound := false
 	agentMkFound := false
 	for _, file := range result.GeneratedFiles {
@@ -213,12 +213,12 @@ func TestPhaseWithAdditionalArtifacts(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create minimal Go project
+	// Create minimal Go project.
 	goMod := `module test-project
 go 1.21
 `
-	if err := os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte(goMod), 0644); err != nil {
-		t.Fatalf("Failed to create go.mod: %v", err)
+	if writeErr := os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte(goMod), 0644); writeErr != nil {
+		t.Fatalf("Failed to create go.mod: %v", writeErr)
 	}
 
 	config := DefaultConfig()
@@ -234,7 +234,7 @@ go 1.21
 		t.Fatalf("Bootstrap phase execution failed: %v", err)
 	}
 
-	// Verify additional artifacts were created
+	// Verify additional artifacts were created.
 	expectedAdditional := []string{"README.md", "LICENSE", "Dockerfile"}
 	for _, expected := range expectedAdditional {
 		found := false
@@ -248,7 +248,7 @@ go 1.21
 			t.Errorf("Expected additional artifact %s not found", expected)
 		}
 
-		// Verify file exists
+		// Verify file exists.
 		if _, err := os.Stat(filepath.Join(tempDir, expected)); os.IsNotExist(err) {
 			t.Errorf("Additional artifact %s does not exist on disk", expected)
 		}
@@ -267,7 +267,7 @@ func TestPhaseGetStatus(t *testing.T) {
 
 	status := phase.GetStatus()
 
-	// Verify status contains expected keys
+	// Verify status contains expected keys.
 	expectedKeys := []string{"enabled", "project_root", "config", "backends"}
 	for _, key := range expectedKeys {
 		if _, exists := status[key]; !exists {
@@ -275,7 +275,7 @@ func TestPhaseGetStatus(t *testing.T) {
 		}
 	}
 
-	// Verify values
+	// Verify values.
 	if status["enabled"] != true {
 		t.Errorf("Expected enabled=true, got %v", status["enabled"])
 	}

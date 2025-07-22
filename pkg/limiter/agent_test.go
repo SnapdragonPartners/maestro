@@ -1,6 +1,7 @@
 package limiter
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -9,7 +10,7 @@ func TestAgentReservation(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test initial agent count
+	// Test initial agent count.
 	_, _, agents, err := limiter.GetStatus("claude")
 	if err != nil {
 		t.Fatalf("Failed to get status: %v", err)
@@ -18,7 +19,7 @@ func TestAgentReservation(t *testing.T) {
 		t.Errorf("Expected 0 agents initially, got %d", agents)
 	}
 
-	// Test successful agent reservation
+	// Test successful agent reservation.
 	err = limiter.ReserveAgent("claude")
 	if err != nil {
 		t.Fatalf("Failed to reserve agent: %v", err)
@@ -32,7 +33,7 @@ func TestAgentReservation(t *testing.T) {
 		t.Errorf("Expected 1 agent after reservation, got %d", agents)
 	}
 
-	// Reserve more agents up to limit
+	// Reserve more agents up to limit.
 	err = limiter.ReserveAgent("claude")
 	if err != nil {
 		t.Fatalf("Failed to reserve second agent: %v", err)
@@ -51,9 +52,9 @@ func TestAgentReservation(t *testing.T) {
 		t.Errorf("Expected 3 agents after reservations, got %d", agents)
 	}
 
-	// Test agent limit exceeded
+	// Test agent limit exceeded.
 	err = limiter.ReserveAgent("claude")
-	if err != ErrAgentLimit {
+	if !errors.Is(err, ErrAgentLimit) {
 		t.Errorf("Expected agent limit error, got %v", err)
 	}
 }
@@ -63,7 +64,7 @@ func TestAgentRelease(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Reserve some agents first
+	// Reserve some agents first.
 	err := limiter.ReserveAgent("claude")
 	if err != nil {
 		t.Fatalf("Failed to reserve agent: %v", err)
@@ -82,7 +83,7 @@ func TestAgentRelease(t *testing.T) {
 		t.Errorf("Expected 2 agents, got %d", agents)
 	}
 
-	// Test successful release
+	// Test successful release.
 	err = limiter.ReleaseAgent("claude")
 	if err != nil {
 		t.Fatalf("Failed to release agent: %v", err)
@@ -96,7 +97,7 @@ func TestAgentRelease(t *testing.T) {
 		t.Errorf("Expected 1 agent after release, got %d", agents)
 	}
 
-	// Release remaining agent
+	// Release remaining agent.
 	err = limiter.ReleaseAgent("claude")
 	if err != nil {
 		t.Fatalf("Failed to release remaining agent: %v", err)
@@ -110,7 +111,7 @@ func TestAgentRelease(t *testing.T) {
 		t.Errorf("Expected 0 agents after final release, got %d", agents)
 	}
 
-	// Test releasing when no agents are reserved
+	// Test releasing when no agents are reserved.
 	err = limiter.ReleaseAgent("claude")
 	if err == nil {
 		t.Error("Expected error when releasing with no agents reserved")
@@ -122,7 +123,7 @@ func TestAgentLimitsPerModel(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Claude has max 3 agents
+	// Claude has max 3 agents.
 	for i := 0; i < 3; i++ {
 		err := limiter.ReserveAgent("claude")
 		if err != nil {
@@ -130,24 +131,24 @@ func TestAgentLimitsPerModel(t *testing.T) {
 		}
 	}
 
-	// O3 has max 1 agent
+	// O3 has max 1 agent.
 	err := limiter.ReserveAgent("o3")
 	if err != nil {
 		t.Fatalf("Failed to reserve o3 agent: %v", err)
 	}
 
-	// Both should now be at limit
+	// Both should now be at limit.
 	err = limiter.ReserveAgent("claude")
-	if err != ErrAgentLimit {
+	if !errors.Is(err, ErrAgentLimit) {
 		t.Errorf("Expected claude agent limit error, got %v", err)
 	}
 
 	err = limiter.ReserveAgent("o3")
-	if err != ErrAgentLimit {
+	if !errors.Is(err, ErrAgentLimit) {
 		t.Errorf("Expected o3 agent limit error, got %v", err)
 	}
 
-	// Check status
+	// Check status.
 	_, _, claudeAgents, err := limiter.GetStatus("claude")
 	if err != nil {
 		t.Fatalf("Failed to get claude status: %v", err)
@@ -170,7 +171,7 @@ func TestAgentResetDaily(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Reserve all agents
+	// Reserve all agents.
 	for i := 0; i < 3; i++ {
 		err := limiter.ReserveAgent("claude")
 		if err != nil {
@@ -186,7 +187,7 @@ func TestAgentResetDaily(t *testing.T) {
 		t.Errorf("Expected 3 agents before reset, got %d", agents)
 	}
 
-	// Trigger daily reset
+	// Trigger daily reset.
 	limiter.ResetDaily()
 
 	_, _, agents, err = limiter.GetStatus("claude")
@@ -203,7 +204,7 @@ func TestConcurrentAgentReservation(t *testing.T) {
 	limiter := NewLimiter(cfg)
 	defer limiter.Close()
 
-	// Test concurrent agent reservations
+	// Test concurrent agent reservations.
 	done := make(chan bool, 5)
 	successCount := 0
 	errorCount := 0
@@ -213,7 +214,7 @@ func TestConcurrentAgentReservation(t *testing.T) {
 			err := limiter.ReserveAgent("claude")
 			if err == nil {
 				successCount++
-			} else if err == ErrAgentLimit {
+			} else if errors.Is(err, ErrAgentLimit) {
 				errorCount++
 			} else {
 				t.Errorf("Unexpected error: %v", err)
@@ -222,12 +223,12 @@ func TestConcurrentAgentReservation(t *testing.T) {
 		}()
 	}
 
-	// Wait for all goroutines to complete
+	// Wait for all goroutines to complete.
 	for i := 0; i < 5; i++ {
 		<-done
 	}
 
-	// Check final state
+	// Check final state.
 	_, _, agents, err := limiter.GetStatus("claude")
 	if err != nil {
 		t.Fatalf("Failed to get final status: %v", err)
@@ -238,7 +239,7 @@ func TestConcurrentAgentReservation(t *testing.T) {
 		t.Errorf("Expected 3 agents reserved, got %d", agents)
 	}
 
-	// Should have exactly 3 successes and 2 failures
+	// Should have exactly 3 successes and 2 failures.
 	if successCount != 3 {
 		t.Errorf("Expected 3 successful reservations, got %d", successCount)
 	}

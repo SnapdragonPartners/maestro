@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewStore(t *testing.T) {
-	// Create temporary directory
+	// Create temporary directory.
 	tempDir := t.TempDir()
 
 	store, err := NewStore(tempDir)
@@ -24,7 +24,7 @@ func TestNewStore(t *testing.T) {
 		t.Errorf("Expected baseDir %s, got %s", tempDir, store.baseDir)
 	}
 
-	// Check that directory was created
+	// Check that directory was created.
 	if _, err := os.Stat(tempDir); os.IsNotExist(err) {
 		t.Error("Expected base directory to be created")
 	}
@@ -37,32 +37,32 @@ func TestStore_SaveState(t *testing.T) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Test invalid parameters
-	if err := store.SaveState("", "state", nil); err == nil {
+	// Test invalid parameters.
+	if saveErr := store.SaveState("", "state", nil); saveErr == nil {
 		t.Error("Expected error for empty agentID")
 	}
 
-	if err := store.SaveState("agent1", "", nil); err == nil {
+	if saveErr := store.SaveState("agent1", "", nil); saveErr == nil {
 		t.Error("Expected error for empty state")
 	}
 
-	// Test valid save
+	// Test valid save.
 	data := map[string]any{
 		"key1": "value1",
 		"key2": 42,
 	}
 
-	if err := store.SaveState("agent1", "PLANNING", data); err != nil {
-		t.Errorf("Expected no error saving state, got %v", err)
+	if saveErr := store.SaveState("agent1", "PLANNING", data); saveErr != nil {
+		t.Errorf("Expected no error saving state, got %v", saveErr)
 	}
 
-	// Check that file was created
+	// Check that file was created.
 	filename := filepath.Join(tempDir, "STATUS_agent1.json")
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
+	if _, statErr := os.Stat(filename); os.IsNotExist(statErr) {
 		t.Error("Expected state file to be created")
 	}
 
-	// Check file content is valid JSON
+	// Check file content is valid JSON.
 	fileData, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatalf("Failed to read state file: %v", err)
@@ -80,12 +80,12 @@ func TestStore_LoadState(t *testing.T) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Test invalid parameters
-	if _, _, err := store.LoadState(""); err == nil {
+	// Test invalid parameters.
+	if _, _, loadErr := store.LoadState(""); loadErr == nil {
 		t.Error("Expected error for empty agentID")
 	}
 
-	// Test loading non-existent state
+	// Test loading non-existent state.
 	state, data, err := store.LoadState("nonexistent")
 	if err != nil {
 		t.Errorf("Expected no error for non-existent state, got %v", err)
@@ -100,18 +100,18 @@ func TestStore_LoadState(t *testing.T) {
 		t.Errorf("Expected empty data map, got %v", data)
 	}
 
-	// Save state first
+	// Save state first.
 	originalData := map[string]any{
 		"key1": "value1",
 		"key2": 42,
 		"key3": []string{"a", "b", "c"},
 	}
 
-	if err := store.SaveState("agent1", "CODING", originalData); err != nil {
-		t.Fatalf("Failed to save state: %v", err)
+	if saveErr := store.SaveState("agent1", "CODING", originalData); saveErr != nil {
+		t.Fatalf("Failed to save state: %v", saveErr)
 	}
 
-	// Load state
+	// Load state.
 	loadedState, loadedData, err := store.LoadState("agent1")
 	if err != nil {
 		t.Errorf("Expected no error loading state, got %v", err)
@@ -125,12 +125,12 @@ func TestStore_LoadState(t *testing.T) {
 		t.Error("Expected non-nil loaded data")
 	}
 
-	// Check data content
+	// Check data content.
 	if loadedData["key1"] != "value1" {
 		t.Errorf("Expected key1 value 'value1', got %v", loadedData["key1"])
 	}
 
-	// Note: JSON unmarshaling converts numbers to float64
+	// Note: JSON unmarshaling converts numbers to float64.
 	if loadedData["key2"] != float64(42) {
 		t.Errorf("Expected key2 value 42.0, got %v", loadedData["key2"])
 	}
@@ -143,18 +143,18 @@ func TestStore_GetStateInfo(t *testing.T) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Test non-existent agent
-	if _, err := store.GetStateInfo("nonexistent"); err == nil {
+	// Test non-existent agent.
+	if _, infoErr := store.GetStateInfo("nonexistent"); infoErr == nil {
 		t.Error("Expected error for non-existent agent")
 	}
 
-	// Save state first
+	// Save state first.
 	data := map[string]any{"test": "data"}
-	if err := store.SaveState("agent1", "TESTING", data); err != nil {
-		t.Fatalf("Failed to save state: %v", err)
+	if saveErr := store.SaveState("agent1", "TESTING", data); saveErr != nil {
+		t.Fatalf("Failed to save state: %v", saveErr)
 	}
 
-	// Get state info
+	// Get state info.
 	info, err := store.GetStateInfo("agent1")
 	if err != nil {
 		t.Errorf("Expected no error getting state info, got %v", err)
@@ -197,23 +197,23 @@ func TestStore_DeleteState(t *testing.T) {
 		t.Errorf("Expected no error deleting non-existent state, got %v", err)
 	}
 
-	// Save state first
+	// Save state first.
 	if err := store.SaveState("agent1", "DONE", nil); err != nil {
 		t.Fatalf("Failed to save state: %v", err)
 	}
 
-	// Verify file exists
+	// Verify file exists.
 	filename := filepath.Join(tempDir, "STATUS_agent1.json")
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		t.Error("Expected state file to exist before deletion")
 	}
 
-	// Delete state
+	// Delete state.
 	if err := store.DeleteState("agent1"); err != nil {
 		t.Errorf("Expected no error deleting state, got %v", err)
 	}
 
-	// Verify file is gone
+	// Verify file is gone.
 	if _, err := os.Stat(filename); !os.IsNotExist(err) {
 		t.Error("Expected state file to be deleted")
 	}
@@ -226,7 +226,7 @@ func TestStore_ListAgents(t *testing.T) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Test empty directory
+	// Test empty directory.
 	agents, err := store.ListAgents()
 	if err != nil {
 		t.Errorf("Expected no error listing agents, got %v", err)
@@ -235,25 +235,25 @@ func TestStore_ListAgents(t *testing.T) {
 		t.Errorf("Expected 0 agents in empty directory, got %d", len(agents))
 	}
 
-	// Save states for multiple agents
-	if err := store.SaveState("agent1", "PLANNING", nil); err != nil {
-		t.Fatalf("Failed to save state for agent1: %v", err)
+	// Save states for multiple agents.
+	if saveErr := store.SaveState("agent1", "PLANNING", nil); saveErr != nil {
+		t.Fatalf("Failed to save state for agent1: %v", saveErr)
 	}
 
-	if err := store.SaveState("agent2", "CODING", nil); err != nil {
-		t.Fatalf("Failed to save state for agent2: %v", err)
+	if saveErr := store.SaveState("agent2", "CODING", nil); saveErr != nil {
+		t.Fatalf("Failed to save state for agent2: %v", saveErr)
 	}
 
-	if err := store.SaveState("claude-test", "DONE", nil); err != nil {
-		t.Fatalf("Failed to save state for claude-test: %v", err)
+	if saveErr := store.SaveState("claude-test", "DONE", nil); saveErr != nil {
+		t.Fatalf("Failed to save state for claude-test: %v", saveErr)
 	}
 
 	// Create a non-state file (should be ignored)
-	if err := os.WriteFile(filepath.Join(tempDir, "other-file.txt"), []byte("test"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
+	if writeErr := os.WriteFile(filepath.Join(tempDir, "other-file.txt"), []byte("test"), 0644); writeErr != nil {
+		t.Fatalf("Failed to create test file: %v", writeErr)
 	}
 
-	// List agents
+	// List agents.
 	agents, err = store.ListAgents()
 	if err != nil {
 		t.Errorf("Expected no error listing agents, got %v", err)
@@ -263,7 +263,7 @@ func TestStore_ListAgents(t *testing.T) {
 		t.Errorf("Expected 3 agents, got %d", len(agents))
 	}
 
-	// Check that all expected agents are present
+	// Check that all expected agents are present.
 	expectedAgents := map[string]bool{
 		"agent1":      false,
 		"agent2":      false,
@@ -288,7 +288,7 @@ func TestStore_ListAgents(t *testing.T) {
 func TestGlobalStoreFunctions(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// Test uninitialized global store
+	// Test uninitialized global store.
 	if err := SaveState("agent1", "PLANNING", nil); err == nil {
 		t.Error("Expected error when global store not initialized")
 	}
@@ -297,12 +297,12 @@ func TestGlobalStoreFunctions(t *testing.T) {
 		t.Error("Expected error when global store not initialized")
 	}
 
-	// Initialize global store
+	// Initialize global store.
 	if err := InitGlobalStore(tempDir); err != nil {
 		t.Fatalf("Failed to initialize global store: %v", err)
 	}
 
-	// Test global store functions
+	// Test global store functions.
 	data := map[string]any{"global": "test"}
 
 	if err := SaveState("global-agent", "TESTING", data); err != nil {
@@ -322,7 +322,7 @@ func TestGlobalStoreFunctions(t *testing.T) {
 		t.Errorf("Expected global data 'test', got %v", loadedData["global"])
 	}
 
-	// Test GetGlobalStore
+	// Test GetGlobalStore.
 	store := GetGlobalStore()
 	if store == nil {
 		t.Error("Expected non-nil global store")
@@ -336,60 +336,60 @@ func TestAgentState_NewFields(t *testing.T) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Create AgentState with new fields
+	// Create AgentState with new fields.
 	plan := "Test implementation plan"
 	taskContent := "Implement feature X with Y"
 
-	// Test saving state with new fields
-	if err := store.SaveState("test-agent", "PLANNING", nil); err != nil {
-		t.Fatalf("Failed to save initial state: %v", err)
+	// Test saving state with new fields.
+	if saveErr := store.SaveState("test-agent", "PLANNING", nil); saveErr != nil {
+		t.Fatalf("Failed to save initial state: %v", saveErr)
 	}
 
-	// Load and modify the state
+	// Load and modify the state.
 	info, err := store.GetStateInfo("test-agent")
 	if err != nil {
 		t.Fatalf("Failed to get state info: %v", err)
 	}
 
-	// Test version field
+	// Test version field.
 	if info.Version != "v1" {
 		t.Errorf("Expected version 'v1', got '%s'", info.Version)
 	}
 
-	// Add plan and task content
+	// Add plan and task content.
 	info.Plan = &plan
 	info.TaskContent = &taskContent
 
-	// Test AppendTransition method
+	// Test AppendTransition method.
 	info.AppendTransition("WAITING", "PLANNING")
 	info.AppendTransition("PLANNING", "CODING")
 
-	// Save updated state
-	if err := store.Save("test-agent", info); err != nil {
-		t.Fatalf("Failed to save updated state: %v", err)
+	// Save updated state.
+	if saveErr := store.Save("test-agent", info); saveErr != nil {
+		t.Fatalf("Failed to save updated state: %v", saveErr)
 	}
 
-	// Load again and verify
+	// Load again and verify.
 	reloaded, err := store.GetStateInfo("test-agent")
 	if err != nil {
 		t.Fatalf("Failed to reload state: %v", err)
 	}
 
-	// Verify plan field
+	// Verify plan field.
 	if reloaded.Plan == nil {
 		t.Error("Expected non-nil plan")
 	} else if *reloaded.Plan != plan {
 		t.Errorf("Expected plan '%s', got '%s'", plan, *reloaded.Plan)
 	}
 
-	// Verify task content field
+	// Verify task content field.
 	if reloaded.TaskContent == nil {
 		t.Error("Expected non-nil task content")
 	} else if *reloaded.TaskContent != taskContent {
 		t.Errorf("Expected task content '%s', got '%s'", taskContent, *reloaded.TaskContent)
 	}
 
-	// Verify transitions
+	// Verify transitions.
 	if len(reloaded.Transitions) != 2 {
 		t.Errorf("Expected 2 transitions, got %d", len(reloaded.Transitions))
 	}
@@ -416,27 +416,27 @@ func TestAgentState_NewFields(t *testing.T) {
 }
 
 func TestAgentState_AppendTransition(t *testing.T) {
-	// Test multiple calls to AppendTransition
+	// Test multiple calls to AppendTransition.
 	state := &AgentState{}
 
-	// Initially no transitions
+	// Initially no transitions.
 	if len(state.Transitions) != 0 {
 		t.Errorf("Expected 0 initial transitions, got %d", len(state.Transitions))
 	}
 
-	// Add first transition
+	// Add first transition.
 	state.AppendTransition("IDLE", "WORKING")
 	if len(state.Transitions) != 1 {
 		t.Errorf("Expected 1 transition after first append, got %d", len(state.Transitions))
 	}
 
-	// Add second transition
+	// Add second transition.
 	state.AppendTransition("WORKING", "DONE")
 	if len(state.Transitions) != 2 {
 		t.Errorf("Expected 2 transitions after second append, got %d", len(state.Transitions))
 	}
 
-	// Verify order and content
+	// Verify order and content.
 	if state.Transitions[0].From != "IDLE" || state.Transitions[0].To != "WORKING" {
 		t.Errorf("Expected first transition IDLE->WORKING, got %s->%s",
 			state.Transitions[0].From, state.Transitions[0].To)
@@ -447,7 +447,7 @@ func TestAgentState_AppendTransition(t *testing.T) {
 			state.Transitions[1].From, state.Transitions[1].To)
 	}
 
-	// Verify timestamps are set and reasonable
+	// Verify timestamps are set and reasonable.
 	for i, tr := range state.Transitions {
 		if tr.TS.IsZero() {
 			t.Errorf("Expected non-zero timestamp for transition %d", i)

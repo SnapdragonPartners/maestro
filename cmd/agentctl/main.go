@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/bootstrap"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
@@ -15,7 +16,7 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// processWithApprovals handles the full workflow including auto-approvals in standalone mode
+// processWithApprovals handles the full workflow including auto-approvals in standalone mode.
 func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.AgentMsg, isLiveMode bool) (*proto.AgentMsg, error) {
 	maxIterations := 10 // Prevent infinite loops
 
@@ -27,75 +28,74 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 		if msg.Type == proto.MsgTypeSTORY {
 			taskContent, _ := msg.GetPayload("content")
 			if taskContentStr, ok := taskContent.(string); ok {
-				err := agent.ProcessTask(ctx, taskContentStr)
-				if err != nil {
-					return nil, err
+				if err := agent.ProcessTask(ctx, taskContentStr); err != nil {
+					return nil, fmt.Errorf("failed to process task: %w", err)
 				}
 			}
 		}
 
-		// Step the state machine
+		// Step the state machine.
 		completed, err := agent.Step(ctx)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to step agent: %w", err)
 		}
 
 		fmt.Fprintf(os.Stderr, "[DEBUG] After step, new state: %s, completed: %v\n", agent.GetCurrentState(), completed)
 
-		// Check if agent is done or completed
+		// Check if agent is done or completed.
 		if completed || agent.GetCurrentState() == "DONE" {
-			// Create a synthetic RESULT message for completion
+			// Create a synthetic RESULT message for completion.
 			result := proto.NewAgentMsg(proto.MsgTypeRESULT, agent.GetID(), "agentctl")
 			result.SetPayload("status", "completed")
 			return result, nil
 		}
 
-		// Handle pending approval requests in standalone mode
+		// Handle pending approval requests in standalone mode.
 		if isLiveMode {
 			if hasPending, _, _, _, approvalType := agent.GetPendingApprovalRequest(); hasPending {
 				fmt.Fprintf(os.Stderr, "[Auto-approving] %s request\n", approvalType)
 
-				// Process approval directly
-				if err := agent.ProcessApprovalResult("APPROVED", string(approvalType)); err != nil {
+				// Process approval directly.
+				if err := agent.ProcessApprovalResult(context.Background(), "APPROVED", string(approvalType)); err != nil {
 					return nil, fmt.Errorf("failed to process approval: %w", err)
 				}
 
-				// Clear the pending request
+				// Clear the pending request.
 				agent.ClearPendingApprovalRequest()
 
-				// Continue with next iteration to process the approval
+				// Continue with next iteration to process the approval.
 				continue
 			}
 		}
 
-		// Check for pending questions and auto-answer them
+		// Check for pending questions and auto-answer them.
 		if isLiveMode {
 			if hasPending, _, content, reason := agent.GetPendingQuestion(); hasPending {
 				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:min(100, len(content))])
 
-				// Provide a generic helpful answer
+				// Provide a generic helpful answer.
 				answer := "Please proceed with your best judgment. Focus on clean, well-documented code that follows best practices."
 				if err := agent.ProcessAnswer(answer); err != nil {
 					return nil, fmt.Errorf("failed to process answer: %w", err)
 				}
 
-				// Clear the pending question
+				// Clear the pending question.
 				agent.ClearPendingQuestion()
 
-				// Continue with next iteration
+				// Continue with next iteration.
 				continue
 			}
 		}
 
-		// If we reach here without completion, continue the loop
-		// unless we've exceeded our iteration limit
+		// If we reach here without completion, continue the loop.
+		// unless we've exceeded our iteration limit.
 	}
 
-	// If we've reached the maximum iterations, return an error
+	// If we've reached the maximum iterations, return an error.
 	return nil, fmt.Errorf("exceeded maximum iterations (%d) without completion", maxIterations)
 }
 
-// Helper functions
+// Helper functions.
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -103,22 +103,22 @@ func min(a, b int) int {
 	return b
 }
 
-// handleBootstrapDocker handles the bootstrap-docker command
+// handleBootstrapDocker handles the bootstrap-docker command.
 func handleBootstrapDocker() {
-	// Get current directory
+	// Get current directory.
 	currentDir, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to get current directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Create bootstrap configuration
+	// Create bootstrap configuration.
 	config := bootstrap.DefaultConfig()
 
-	// Create artifact generator
+	// Create artifact generator.
 	generator := bootstrap.NewArtifactGenerator(currentDir, config)
 
-	// Detect build backend
+	// Detect build backend.
 	goBackend := &build.GoBackend{}
 	nodeBackend := &build.NodeBackend{}
 	pythonBackend := &build.PythonBackend{}
@@ -131,18 +131,18 @@ func handleBootstrapDocker() {
 	} else if pythonBackend.Detect(currentDir) {
 		backend = pythonBackend
 	} else {
-		// Default to a null backend
+		// Default to a null backend.
 		backend = &build.NullBackend{}
 	}
 
-	// Generate Dockerfile
+	// Generate Dockerfile.
 	fmt.Printf("Generating Dockerfile for %s backend...\n", backend.Name())
 	if err := generator.GenerateDockerfile(backend); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate Dockerfile: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Generate .dockerignore
+	// Generate .dockerignore.
 	fmt.Printf("Generating .dockerignore...\n")
 	if err := generator.GenerateDockerignore(backend); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate .dockerignore: %v\n", err)
@@ -158,16 +158,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Handle bootstrap-docker command
+	// Handle bootstrap-docker command.
 	if os.Args[1] == "bootstrap-docker" {
 		handleBootstrapDocker()
 		return
 	}
 
-	// Parse agent type - default to coder if not specified
-	agentType := "coder"
+	// Parse agent type - default to coder if not specified.
+	agentType := string(agent.AgentTypeCoder)
 	if len(os.Args) >= 3 && os.Args[1] == "run" {
-		if os.Args[2] == "coder" || os.Args[2] == "architect" {
+		if os.Args[2] == string(agent.AgentTypeCoder) || os.Args[2] == string(agent.AgentTypeArchitect) {
 			agentType = os.Args[2]
 		} else if os.Args[2] != "--input" {
 			fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--cleanup]\n", os.Args[0])
@@ -180,15 +180,15 @@ func main() {
 
 	var inputFile string
 	var workDir string
-	var cleanup bool = false
+	var cleanup = false
 
-	// Determine starting index for flag parsing
+	// Determine starting index for flag parsing.
 	startIdx := 2
-	if len(os.Args) >= 3 && (os.Args[2] == "coder" || os.Args[2] == "architect") {
+	if len(os.Args) >= 3 && (os.Args[2] == string(agent.AgentTypeCoder) || os.Args[2] == string(agent.AgentTypeArchitect)) {
 		startIdx = 3
 	}
 
-	// Simple flag parsing
+	// Simple flag parsing.
 	for i := startIdx; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--input":
@@ -211,9 +211,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Mode auto-detection removed - always require API keys
+	// Mode auto-detection removed - always require API keys.
 
-	// Set up workspace
+	// Set up workspace.
 	if workDir == "" {
 		tmpDir, err := os.MkdirTemp("", "agentctl-*")
 		if err != nil {
@@ -222,13 +222,13 @@ func main() {
 		}
 		workDir = tmpDir
 		if cleanup {
-			defer os.RemoveAll(workDir)
+			defer func() { _ = os.RemoveAll(workDir) }()
 		} else {
 			fmt.Fprintf(os.Stderr, "Working directory preserved at: %s\n", workDir)
 		}
 	}
 
-	// Read and parse input
+	// Read and parse input.
 	inputData, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read input file: %v\n", err)
@@ -236,12 +236,12 @@ func main() {
 	}
 
 	var inputMsg proto.AgentMsg
-	if err := json.Unmarshal(inputData, &inputMsg); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse input JSON: %v\n", err)
+	if unmarshalErr := json.Unmarshal(inputData, &inputMsg); unmarshalErr != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse input JSON: %v\n", unmarshalErr)
 		os.Exit(1)
 	}
 
-	// Create coder
+	// Create coder.
 	stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create state store: %v\n", err)
@@ -254,12 +254,12 @@ func main() {
 		CompactionBuffer: 1000,
 	}
 
-	// Create agent based on type with auto-detection
+	// Create agent based on type with auto-detection.
 	switch agentType {
-	case "coder":
+	case string(agent.AgentTypeCoder):
 		var claudeAgent *coder.Coder
 
-		// Auto-detect mode based on API key availability
+		// Auto-detect mode based on API key availability.
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		if apiKey != "" {
 			fmt.Fprintf(os.Stderr, "ANTHROPIC_API_KEY detected, using live mode\n")
@@ -276,7 +276,7 @@ func main() {
 				"agentctl/{STORY_ID}",
 			)
 
-			// Create BuildService for MCP tools
+			// Create BuildService for MCP tools.
 			buildService := build.NewBuildService()
 
 			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager, buildService)
@@ -291,7 +291,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Process message with approval handling for standalone mode
+		// Process message with approval handling for standalone mode.
 		ctx := context.Background()
 		result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, true) // Always live mode now
 		if err != nil {
@@ -299,7 +299,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Output result
+		// Output result.
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to marshal result: %v\n", err)
@@ -307,7 +307,7 @@ func main() {
 		}
 		fmt.Println(string(jsonData))
 
-	case "architect":
+	case string(agent.AgentTypeArchitect):
 		// TODO: Implement architect processing workflow - requires dispatcher and full setup
 		fmt.Fprintf(os.Stderr, "Architect standalone mode not yet implemented\n")
 		os.Exit(1)

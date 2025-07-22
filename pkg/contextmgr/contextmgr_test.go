@@ -26,7 +26,7 @@ func TestNewContextManager(t *testing.T) {
 func TestAddMessage(t *testing.T) {
 	cm := NewContextManager()
 
-	// Add first message
+	// Add first message.
 	cm.AddMessage("user", "Hello world")
 
 	if cm.GetMessageCount() != 1 {
@@ -46,7 +46,7 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("Expected content 'Hello world', got '%s'", msg.Content)
 	}
 
-	// Add second message
+	// Add second message.
 	cm.AddMessage("assistant", "Hi there!")
 
 	if cm.GetMessageCount() != 2 {
@@ -58,7 +58,7 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("Expected 2 messages in GetMessages, got %d", len(messages))
 	}
 
-	// Check second message
+	// Check second message.
 	msg2 := messages[1]
 	if msg2.Role != "assistant" {
 		t.Errorf("Expected second role 'assistant', got '%s'", msg2.Role)
@@ -71,19 +71,19 @@ func TestAddMessage(t *testing.T) {
 func TestCountTokens(t *testing.T) {
 	cm := NewContextManager()
 
-	// Empty context should have 0 tokens
+	// Empty context should have 0 tokens.
 	if cm.CountTokens() != 0 {
 		t.Errorf("Expected 0 tokens for empty context, got %d", cm.CountTokens())
 	}
 
-	// Add a message and check token count
+	// Add a message and check token count.
 	cm.AddMessage("user", "test")
 	expectedTokens := len("user") + len("test") // 4 + 4 = 8
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens, got %d", expectedTokens, cm.CountTokens())
 	}
 
-	// Add another message
+	// Add another message.
 	cm.AddMessage("assistant", "response")
 	expectedTokens += len("assistant") + len("response") // 8 + 9 + 8 = 25
 	if cm.CountTokens() != expectedTokens {
@@ -94,21 +94,21 @@ func TestCountTokens(t *testing.T) {
 func TestCompactIfNeeded(t *testing.T) {
 	cm := NewContextManager()
 
-	// Add some messages
+	// Add some messages.
 	cm.AddMessage("user", "Hello")
 	cm.AddMessage("assistant", "Hi")
 
-	// CompactIfNeeded without model config should use legacy approach
+	// CompactIfNeeded without model config should use legacy approach.
 	if err := cm.CompactIfNeeded(); err != nil {
 		t.Errorf("Expected CompactIfNeeded to not return error, got %v", err)
 	}
 
-	// Messages should still be there since we're under legacy threshold
+	// Messages should still be there since we're under legacy threshold.
 	if cm.GetMessageCount() != 2 {
 		t.Errorf("Expected messages to remain after CompactIfNeeded, got %d", cm.GetMessageCount())
 	}
 
-	// Test legacy method directly
+	// Test legacy method directly.
 	if err := cm.CompactIfNeededLegacy(10); err != nil {
 		t.Errorf("Expected CompactIfNeededLegacy to not return error, got %v", err)
 	}
@@ -117,13 +117,13 @@ func TestCompactIfNeeded(t *testing.T) {
 func TestGetMessages(t *testing.T) {
 	cm := NewContextManager()
 
-	// Test empty messages
+	// Test empty messages.
 	messages := cm.GetMessages()
 	if len(messages) != 0 {
 		t.Errorf("Expected empty messages slice, got %d messages", len(messages))
 	}
 
-	// Add messages
+	// Add messages.
 	cm.AddMessage("user", "Hello")
 	cm.AddMessage("assistant", "Hi")
 
@@ -147,7 +147,7 @@ func TestGetMessages(t *testing.T) {
 func TestClear(t *testing.T) {
 	cm := NewContextManager()
 
-	// Add some messages
+	// Add some messages.
 	cm.AddMessage("user", "Hello")
 	cm.AddMessage("assistant", "Hi")
 
@@ -155,7 +155,7 @@ func TestClear(t *testing.T) {
 		t.Errorf("Expected 2 messages before clear, got %d", cm.GetMessageCount())
 	}
 
-	// Clear the context
+	// Clear the context.
 	cm.Clear()
 
 	if cm.GetMessageCount() != 0 {
@@ -175,17 +175,17 @@ func TestClear(t *testing.T) {
 func TestGetContextSummary(t *testing.T) {
 	cm := NewContextManager()
 
-	// Test empty context
+	// Test empty context.
 	summary := cm.GetContextSummary()
 	if summary != "Empty context" {
 		t.Errorf("Expected 'Empty context' for empty manager, got '%s'", summary)
 	}
 
-	// Add some messages
+	// Add some messages.
 	cm.AddMessage("user", "Hello")
 	summary = cm.GetContextSummary()
 
-	// Should contain message count and token count
+	// Should contain message count and token count.
 	if !contains(summary, "1 messages") {
 		t.Errorf("Expected summary to contain '1 messages', got '%s'", summary)
 	}
@@ -194,7 +194,7 @@ func TestGetContextSummary(t *testing.T) {
 		t.Errorf("Expected summary to contain role breakdown, got '%s'", summary)
 	}
 
-	// Add more messages
+	// Add more messages.
 	cm.AddMessage("assistant", "Hi")
 	cm.AddMessage("user", "How are you?")
 
@@ -212,7 +212,7 @@ func TestGetContextSummary(t *testing.T) {
 	}
 }
 
-// Helper function to check if a string contains a substring
+// Helper function to check if a string contains a substring.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr ||
 		(len(s) > len(substr) &&
@@ -261,7 +261,7 @@ func TestCompactIfNeededWithModel(t *testing.T) {
 
 	cm := NewContextManagerWithModel(modelConfig)
 
-	// Add messages that exceed the compaction threshold
+	// Add messages that exceed the compaction threshold.
 	// Threshold = MaxContext - MaxReply - Buffer = 100 - 20 - 10 = 70
 	cm.AddMessage("user", "This is a test message that is quite long and will help us exceed the compaction threshold")
 	cm.AddMessage("assistant", "This is another long message to push us over the threshold")
@@ -269,20 +269,20 @@ func TestCompactIfNeededWithModel(t *testing.T) {
 	initialCount := cm.GetMessageCount()
 	initialTokens := cm.CountTokens()
 
-	// Should trigger compaction since we're likely over 70 tokens
+	// Should trigger compaction since we're likely over 70 tokens.
 	if err := cm.CompactIfNeeded(); err != nil {
 		t.Errorf("Expected no error during compaction, got %v", err)
 	}
 
-	// If compaction occurred, we should have fewer tokens
+	// If compaction occurred, we should have fewer tokens.
 	if cm.CountTokens() >= initialTokens && cm.GetMessageCount() >= initialCount {
-		// This is expected if we weren't actually over threshold
+		// This is expected if we weren't actually over threshold.
 		t.Logf("No compaction needed - tokens: %d, messages: %d", cm.CountTokens(), cm.GetMessageCount())
 	}
 }
 
 func TestShouldCompact(t *testing.T) {
-	// Test without model config
+	// Test without model config.
 	cm := NewContextManager()
 	cm.AddMessage("user", "Short message")
 
@@ -290,7 +290,7 @@ func TestShouldCompact(t *testing.T) {
 		t.Error("Expected ShouldCompact to return false for short message without model config")
 	}
 
-	// Test with model config
+	// Test with model config.
 	modelConfig := &config.ModelCfg{
 		MaxContextTokens: 50, // Very small for testing
 		MaxReplyTokens:   10,
@@ -300,7 +300,7 @@ func TestShouldCompact(t *testing.T) {
 	cm2 := NewContextManagerWithModel(modelConfig)
 	cm2.AddMessage("user", "This is a longer message that should trigger compaction logic")
 
-	// This might or might not trigger compaction depending on exact token count
+	// This might or might not trigger compaction depending on exact token count.
 	result := cm2.ShouldCompact()
 	t.Logf("ShouldCompact result: %v, tokens: %d, threshold: %d",
 		result, cm2.CountTokens(), 50-10-5)
@@ -318,7 +318,7 @@ func TestGetCompactionInfo(t *testing.T) {
 
 	info := cm.GetCompactionInfo()
 
-	// Check required fields
+	// Check required fields.
 	if _, exists := info["current_tokens"]; !exists {
 		t.Error("Expected current_tokens in compaction info")
 	}
@@ -344,11 +344,11 @@ func TestGetCompactionInfo(t *testing.T) {
 	}
 }
 
-// TestCompactionPreservesSystemPrompt tests that compaction never removes the first message
+// TestCompactionPreservesSystemPrompt tests that compaction never removes the first message.
 func TestCompactionPreservesSystemPrompt(t *testing.T) {
 	cm := NewContextManager()
 
-	// Add system prompt and multiple messages
+	// Add system prompt and multiple messages.
 	cm.AddMessage("system", "You are a helpful assistant")
 	cm.AddMessage("user", "Hello")
 	cm.AddMessage("assistant", "Hi there!")
@@ -359,30 +359,30 @@ func TestCompactionPreservesSystemPrompt(t *testing.T) {
 		t.Errorf("Expected 5 messages initially, got %d", cm.GetMessageCount())
 	}
 
-	// Force aggressive compaction with very low target
+	// Force aggressive compaction with very low target.
 	err := cm.performCompaction(10) // Very low target to force maximum compaction
 	if err != nil {
 		t.Errorf("Compaction failed: %v", err)
 	}
 
-	// Should preserve at least system + 1 message
+	// Should preserve at least system + 1 message.
 	messages := cm.GetMessages()
 	if len(messages) < 2 {
 		t.Errorf("Compaction removed too many messages, got %d", len(messages))
 	}
 
-	// First message should still be the system prompt
+	// First message should still be the system prompt.
 	if messages[0].Role != "system" || messages[0].Content != "You are a helpful assistant" {
-		t.Errorf("System prompt was not preserved: got role=%s, content=%s", 
+		t.Errorf("System prompt was not preserved: got role=%s, content=%s",
 			messages[0].Role, messages[0].Content)
 	}
 }
 
-// TestSummarization tests the context summarization feature
+// TestSummarization tests the context summarization feature.
 func TestSummarization(t *testing.T) {
 	cm := NewContextManager()
 
-	// Add system prompt and conversation
+	// Add system prompt and conversation.
 	cm.AddMessage("system", "You are a coding assistant")
 	cm.AddMessage("user", "Create a file called hello.go")
 	cm.AddMessage("assistant", "I'll create the hello.go file for you")
@@ -393,58 +393,58 @@ func TestSummarization(t *testing.T) {
 
 	originalCount := cm.GetMessageCount()
 
-	// Test summarization directly
+	// Test summarization directly.
 	err := cm.performSummarization(50) // Low target to force summarization
 	if err != nil {
 		t.Errorf("Summarization failed: %v", err)
 	}
 
 	messages := cm.GetMessages()
-	
-	// Should have: system + summary + recent exchange
+
+	// Should have: system + summary + recent exchange.
 	if len(messages) < 3 {
 		t.Errorf("Summarization didn't preserve enough context, got %d messages", len(messages))
 	}
 
-	// First message should still be system
+	// First message should still be system.
 	if messages[0].Role != "system" {
 		t.Errorf("System message not preserved in summarization")
 	}
 
-	// Second message should be a summary
+	// Second message should be a summary.
 	if !strings.Contains(messages[1].Content, "summary") && !strings.Contains(messages[1].Content, "conversation") {
 		t.Errorf("Summary message not found: %s", messages[1].Content)
 	}
 
-	// Should have fewer messages than original
+	// Should have fewer messages than original.
 	if len(messages) >= originalCount {
 		t.Errorf("Summarization didn't reduce message count: %d >= %d", len(messages), originalCount)
 	}
 }
 
-// TestAddMessageValidation tests input validation in AddMessage
+// TestAddMessageValidation tests input validation in AddMessage.
 func TestAddMessageValidation(t *testing.T) {
 	cm := NewContextManager()
 
 	initialCount := cm.GetMessageCount()
 
-	// Empty content should be ignored
+	// Empty content should be ignored.
 	cm.AddMessage("user", "")
 	cm.AddMessage("user", "   \n\t  ")
-	
+
 	if cm.GetMessageCount() != initialCount {
-		t.Errorf("Empty messages should be ignored, but count changed from %d to %d", 
+		t.Errorf("Empty messages should be ignored, but count changed from %d to %d",
 			initialCount, cm.GetMessageCount())
 	}
 
-	// Valid message should be added
+	// Valid message should be added.
 	cm.AddMessage("user", "Hello world")
 	if cm.GetMessageCount() != initialCount+1 {
-		t.Errorf("Valid message should be added, expected count %d, got %d", 
+		t.Errorf("Valid message should be added, expected count %d, got %d",
 			initialCount+1, cm.GetMessageCount())
 	}
 
-	// Empty role should default to "assistant"
+	// Empty role should default to "assistant".
 	cm.AddMessage("", "Test message")
 	messages := cm.GetMessages()
 	lastMsg := messages[len(messages)-1]
@@ -452,7 +452,7 @@ func TestAddMessageValidation(t *testing.T) {
 		t.Errorf("Empty role should default to 'assistant', got '%s'", lastMsg.Role)
 	}
 
-	// Content should be trimmed
+	// Content should be trimmed.
 	cm.AddMessage("user", "  trimmed content  ")
 	messages = cm.GetMessages()
 	lastMsg = messages[len(messages)-1]
@@ -461,17 +461,17 @@ func TestAddMessageValidation(t *testing.T) {
 	}
 }
 
-// TestCreateConversationSummary tests the summarization logic
+// TestCreateConversationSummary tests the summarization logic.
 func TestCreateConversationSummary(t *testing.T) {
 	cm := NewContextManager()
 
-	// Test empty messages
+	// Test empty messages.
 	summary := cm.createConversationSummary([]Message{})
 	if summary != "" {
 		t.Errorf("Empty messages should return empty summary, got '%s'", summary)
 	}
 
-	// Test messages with different patterns
+	// Test messages with different patterns.
 	messages := []Message{
 		{Role: "user", Content: "Create a file called test.go"},
 		{Role: "assistant", Content: "I'll create the test.go file for you"},
@@ -481,12 +481,12 @@ func TestCreateConversationSummary(t *testing.T) {
 	}
 
 	summary = cm.createConversationSummary(messages)
-	
+
 	if summary == "" {
 		t.Error("Summary should not be empty for valid messages")
 	}
 
-	// Should contain key information
+	// Should contain key information.
 	if !strings.Contains(strings.ToLower(summary), "create") && !strings.Contains(strings.ToLower(summary), "file") {
 		t.Errorf("Summary should mention file creation: %s", summary)
 	}
@@ -495,7 +495,7 @@ func TestCreateConversationSummary(t *testing.T) {
 		t.Errorf("Summary should mention errors: %s", summary)
 	}
 
-	// Should be reasonably short
+	// Should be reasonably short.
 	if len(summary) > 1000 {
 		t.Errorf("Summary should be concise, got %d characters", len(summary))
 	}

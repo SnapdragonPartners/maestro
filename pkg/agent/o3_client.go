@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,13 +10,13 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-// O3Client wraps the OpenAI API client to implement LLMClient interface
+// O3Client wraps the OpenAI API client to implement LLMClient interface.
 type O3Client struct {
 	client *openai.Client
 	model  string
 }
 
-// NewO3Client creates a new OpenAI o3 client wrapper with default retry logic
+// NewO3Client creates a new OpenAI o3 client wrapper with default retry logic.
 func NewO3Client(apiKey string) LLMClient {
 	if SystemMode == ModeMock {
 		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
@@ -25,12 +26,12 @@ func NewO3Client(apiKey string) LLMClient {
 		model:  "o3-mini", // Default o3 model
 	}
 
-	// Wrap with both circuit breaker and retry logic
+	// Wrap with both circuit breaker and retry logic.
 	return NewResilientClient(baseClient)
 }
 
-// NewO3ClientWithModel creates a new OpenAI client with specific model and retry logic
-func NewO3ClientWithModel(apiKey string, model string) LLMClient {
+// NewO3ClientWithModel creates a new OpenAI client with specific model and retry logic.
+func NewO3ClientWithModel(apiKey, model string) LLMClient {
 	if SystemMode == ModeMock {
 		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
 	}
@@ -39,11 +40,11 @@ func NewO3ClientWithModel(apiKey string, model string) LLMClient {
 		model:  model,
 	}
 
-	// Wrap with both circuit breaker and retry logic
+	// Wrap with both circuit breaker and retry logic.
 	return NewResilientClient(baseClient)
 }
 
-// Complete implements the LLMClient interface
+// Complete implements the LLMClient interface.
 func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (CompletionResponse, error) {
 	if SystemMode == ModeDebug {
 		log.Printf("O3 completing request with %d messages", len(in.Messages))
@@ -52,8 +53,8 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 		o.model = "o3-mini"
 	}
 
-	// Convert to OpenAI messages
-	var messages []openai.ChatCompletionMessage
+	// Convert to OpenAI messages.
+	messages := make([]openai.ChatCompletionMessage, 0, len(in.Messages))
 	for _, msg := range in.Messages {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    string(msg.Role),
@@ -61,12 +62,12 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 		})
 	}
 
-	// Make API request
+	// Make API request.
 	resp, err := o.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:               o.model,
 		Messages:            messages,
 		MaxCompletionTokens: in.MaxTokens,
-		// Note: O3 models have beta limitations - temperature is fixed at 1
+		// Note: O3 models have beta limitations - temperature is fixed at 1.
 	})
 
 	if err != nil {
@@ -80,7 +81,7 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 	return CompletionResponse{Content: resp.Choices[0].Message.Content}, nil
 }
 
-// Stream implements the LLMClient interface
+// Stream implements the LLMClient interface.
 func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error) {
 	if SystemMode == ModeDebug {
 		log.Printf("O3 starting stream with %d messages", len(in.Messages))
@@ -89,8 +90,8 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 		o.model = "o3-mini"
 	}
 
-	// Convert to OpenAI messages
-	var messages []openai.ChatCompletionMessage
+	// Convert to OpenAI messages.
+	messages := make([]openai.ChatCompletionMessage, 0, len(in.Messages))
 	for _, msg := range in.Messages {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    string(msg.Role),
@@ -98,26 +99,32 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 		})
 	}
 
-	// Create streaming request
+	// Create streaming request.
 	stream, err := o.client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
 		Model:               o.model,
 		Messages:            messages,
 		MaxCompletionTokens: in.MaxTokens,
 		Stream:              true,
-		// Note: O3 models have beta limitations - temperature is fixed at 1
+		// Note: O3 models have beta limitations - temperature is fixed at 1.
 	})
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OpenAI stream: %w", err)
 	}
 
-	// Create output channel
+	// Create output channel.
 	ch := make(chan StreamChunk)
 
-	// Start goroutine to process stream
+	// Start goroutine to process stream.
 	go func() {
 		defer close(ch)
-		defer stream.Close()
+		defer func() {
+			if err := stream.Close(); err != nil {
+				// Log error but don't fail the stream processing.
+				// This is cleanup code in a streaming context.
+				_ = err // Ignore error in cleanup
+			}
+		}()
 
 		for {
 			select {
@@ -126,7 +133,7 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 				return
 			default:
 				response, err := stream.Recv()
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					ch <- StreamChunk{Done: true}
 					return
 				}
@@ -145,12 +152,12 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 	return ch, nil
 }
 
-// SetModel allows changing the model after client creation
+// SetModel allows changing the model after client creation.
 func (o *O3Client) SetModel(model string) {
 	o.model = model
 }
 
-// GetModel returns the current model being used
+// GetModel returns the current model being used.
 func (o *O3Client) GetModel() string {
 	return o.model
 }

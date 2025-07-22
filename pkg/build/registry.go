@@ -5,17 +5,17 @@ import (
 	"sort"
 )
 
-// Registry manages available build backends and performs detection
+// Registry manages available build backends and performs detection.
 type Registry struct {
 	backends []BackendRegistration
 }
 
-// NewRegistry creates a new registry with default MVP backends
+// NewRegistry creates a new registry with default MVP backends.
 func NewRegistry() *Registry {
 	r := &Registry{}
 
-	// Register MVP backends in priority order
-	// Higher priority backends are checked first
+	// Register MVP backends in priority order.
+	// Higher priority backends are checked first.
 	r.Register(NewGoBackend(), PriorityHigh)     // Go projects (go.mod)
 	r.Register(NewPythonBackend(), PriorityHigh) // Python projects (pyproject.toml, requirements.txt)
 	r.Register(NewNodeBackend(), PriorityHigh)   // Node.js projects (package.json)
@@ -25,7 +25,7 @@ func NewRegistry() *Registry {
 	return r
 }
 
-// Register adds a backend to the registry with the specified priority
+// Register adds a backend to the registry with the specified priority.
 func (r *Registry) Register(backend BuildBackend, priority BackendPriority) {
 	r.backends = append(r.backends, BackendRegistration{
 		Backend:  backend,
@@ -38,7 +38,7 @@ func (r *Registry) Register(backend BuildBackend, priority BackendPriority) {
 	})
 }
 
-// Detect finds the most appropriate backend for the given project root
+// Detect finds the most appropriate backend for the given project root.
 func (r *Registry) Detect(root string) (BuildBackend, error) {
 	for _, registration := range r.backends {
 		if registration.Backend.Detect(root) {
@@ -49,12 +49,12 @@ func (r *Registry) Detect(root string) (BuildBackend, error) {
 	return nil, fmt.Errorf("no suitable backend found for project at %s", root)
 }
 
-// List returns all registered backends in priority order
+// List returns all registered backends in priority order.
 func (r *Registry) List() []BackendRegistration {
 	return r.backends
 }
 
-// GetByName returns a backend by its name
+// GetByName returns a backend by its name.
 func (r *Registry) GetByName(name string) (BuildBackend, error) {
 	for _, registration := range r.backends {
 		if registration.Backend.Name() == name {
