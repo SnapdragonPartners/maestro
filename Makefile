@@ -1,18 +1,18 @@
 .PHONY: build test lint run clean agentctl replayer ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
 
 # Build all binaries
-build:
+build: lint
 	go generate ./...
 	go build -o bin/maestro ./cmd/orchestrator
 	go build -o bin/agentctl ./cmd/agentctl
 	go build -o bin/replayer ./cmd/replayer
 
 # Build the agentctl CLI tool
-agentctl:
+agentctl: lint
 	go build -o bin/agentctl ./cmd/agentctl
 
 # Build the replayer tool
-replayer:
+replayer: lint
 	go build -o bin/replayer ./cmd/replayer
 
 # Run all tests

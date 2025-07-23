@@ -48,11 +48,22 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
 Based on the project specification, the following commands should be available via Makefile:
 
 ```bash
-make build    # Build the orchestrator binary
+make build    # Build the orchestrator binary (includes linting)
 make test     # Run all tests (go test ./...)
 make lint     # Run golangci-lint
 make run      # Run the orchestrator with banner output
 ```
+
+**Important**: All build commands (`make build`, `make agentctl`, `make replayer`) now include linting as a prerequisite. This ensures code quality is maintained at all times.
+
+### Pre-commit Hooks
+
+The repository includes pre-commit hooks that enforce:
+- Build must pass
+- All linting issues must be resolved
+- Core tests should complete (with timeout)
+
+The pre-commit hooks are automatically installed and will prevent commits with linting issues.
 
 ## Project Structure
 
