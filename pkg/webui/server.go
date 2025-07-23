@@ -26,16 +26,16 @@ type Server struct {
 	dispatcher *dispatch.Dispatcher
 	store      *state.Store
 	logger     *logx.Logger
-	workDir    string
 	templates  *template.Template
+	workDir    string
 }
 
 // AgentListItem represents an agent in the list response.
 type AgentListItem struct {
+	LastTS time.Time `json:"last_ts"`
 	ID     string    `json:"id"`
 	Role   string    `json:"role"`
 	State  string    `json:"state"`
-	LastTS time.Time `json:"last_ts"`
 }
 
 // NewServer creates a new web UI server.

@@ -5,8 +5,8 @@ import (
 	"io"
 )
 
-// BuildBackend defines the interface for different build system backends.
-type BuildBackend interface {
+// Backend defines the interface for different build system backends.
+type Backend interface {
 	// Name returns the backend name for logging and identification.
 	Name() string
 
@@ -46,6 +46,6 @@ const (
 
 // BackendRegistration combines a backend with its priority.
 type BackendRegistration struct {
-	Backend  BuildBackend
+	Backend  Backend
 	Priority BackendPriority
 }

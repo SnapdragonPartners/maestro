@@ -55,7 +55,8 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 
 	// Convert to OpenAI messages.
 	messages := make([]openai.ChatCompletionMessage, 0, len(in.Messages))
-	for _, msg := range in.Messages {
+	for i := range in.Messages {
+		msg := &in.Messages[i]
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    string(msg.Role),
 			Content: msg.Content,
@@ -92,7 +93,8 @@ func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan Str
 
 	// Convert to OpenAI messages.
 	messages := make([]openai.ChatCompletionMessage, 0, len(in.Messages))
-	for _, msg := range in.Messages {
+	for i := range in.Messages {
+		msg := &in.Messages[i]
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    string(msg.Role),
 			Content: msg.Content,

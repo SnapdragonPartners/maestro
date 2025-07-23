@@ -27,6 +27,8 @@ type QuestionHandler struct {
 }
 
 // PendingQuestion represents a question awaiting response.
+//
+//nolint:govet // Large complex struct, logical grouping preferred
 type PendingQuestion struct {
 	ID         string         `json:"id"`
 	StoryID    string         `json:"story_id"`
@@ -347,6 +349,8 @@ func (qh *QuestionHandler) ClearAnsweredQuestions() int {
 }
 
 // QuestionStatus represents the current state of question handling.
+//
+//nolint:govet // JSON serialization struct, logical order preferred
 type QuestionStatus struct {
 	TotalQuestions     int                `json:"total_questions"`
 	PendingQuestions   int                `json:"pending_questions"`

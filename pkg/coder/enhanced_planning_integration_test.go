@@ -57,13 +57,13 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
 	// Test task that should trigger enhanced planning.
 	planningTask := "Implement user authentication system with JWT tokens and password hashing"
-	if err := driver.ProcessTask(ctx, planningTask); err != nil {
+	if err := driver.ProcessTask(ctx, planningTask); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to process planning task: %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestEnhancedPlanningWorkflow(t *testing.T) {
 	driver.BaseStateMachine.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
 	// Transition to PLAN_REVIEW.
-	if err := driver.BaseStateMachine.TransitionTo(ctx, StatePlanReview, nil); err != nil {
+	if err := driver.BaseStateMachine.TransitionTo(ctx, StatePlanReview, nil); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
@@ -248,13 +248,13 @@ func TestPlanningContextPreservation(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
 	// Start with a task.
 	task := "Implement complex distributed system with microservices"
-	if err := driver.ProcessTask(ctx, task); err != nil {
+	if err := driver.ProcessTask(ctx, task); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to process task: %v", err)
 	}
 
@@ -355,13 +355,13 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
 	// Test ask_question tool integration in PLANNING state.
 	task := "Implement OAuth2 authentication"
-	if err := driver.ProcessTask(ctx, task); err != nil {
+	if err := driver.ProcessTask(ctx, task); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to process task: %v", err)
 	}
 
@@ -400,7 +400,7 @@ func TestToolBasedQuestionFlow(t *testing.T) {
 	// Test question handling in CODING state.
 	driver.BaseStateMachine.SetStateData(KeyTaskContent, task)
 	driver.BaseStateMachine.SetStateData(KeyPlan, "Mock plan for OAuth2")
-	if err := driver.BaseStateMachine.TransitionTo(ctx, StateCoding, nil); err != nil {
+	if err := driver.BaseStateMachine.TransitionTo(ctx, StateCoding, nil); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to transition to CODING: %v", err)
 	}
 
@@ -462,13 +462,13 @@ func TestEnhancedPlanningErrorHandling(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
 	// Test invalid question data format.
 	task := "Create API endpoint"
-	if err := driver.ProcessTask(ctx, task); err != nil {
+	if err := driver.ProcessTask(ctx, task); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to process task: %v", err)
 	}
 

@@ -92,7 +92,7 @@ func (g *ArtifactGenerator) detectPythonVersion() (string, error) {
 }
 
 // GenerateDockerignore generates a .dockerignore file based on the backend.
-func (g *ArtifactGenerator) GenerateDockerignore(backend build.BuildBackend) error {
+func (g *ArtifactGenerator) GenerateDockerignore(backend build.Backend) error {
 	var content strings.Builder
 
 	// Common ignores.

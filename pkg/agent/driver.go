@@ -26,7 +26,7 @@ type Driver interface {
 	GetStateData() map[string]any
 
 	// GetAgentType returns the type of the agent (architect, coder, etc.)
-	GetAgentType() AgentType
+	GetAgentType() Type
 
 	// ValidateState checks if a state is valid for this agent type.
 	ValidateState(state proto.State) error
@@ -38,26 +38,26 @@ type Driver interface {
 	Shutdown(ctx context.Context) error
 }
 
-// AgentContext contains shared context for all agents.
-type AgentContext struct {
+// Context contains shared context for all agents.
+type Context struct {
 	Context   context.Context //nolint:containedctx // Shared context container by design
 	Logger    *log.Logger
-	WorkDir   string
 	LLMClient LLMClient
 	Store     StateStore
+	WorkDir   string
 }
 
-// AgentConfig represents configuration for an agent.
-type AgentConfig struct {
+// Config represents configuration for an agent.
+type Config struct {
+	Context   Context
+	LLMConfig *LLMConfig // Optional LLM configuration
 	ID        string
 	Type      string
-	Context   AgentContext
-	LLMConfig *LLMConfig // Optional LLM configuration
 }
 
-// NewAgentConfig creates a new agent configuration.
-func NewAgentConfig(id, agentType string, ctx AgentContext) *AgentConfig {
-	return &AgentConfig{
+// NewConfig creates a new agent configuration.
+func NewConfig(id, agentType string, ctx Context) *Config {
+	return &Config{
 		ID:      id,
 		Type:    agentType,
 		Context: ctx,
@@ -65,7 +65,7 @@ func NewAgentConfig(id, agentType string, ctx AgentContext) *AgentConfig {
 }
 
 // WithLLM sets the LLM configuration for the agent.
-func (ac *AgentConfig) WithLLM(config *LLMConfig) *AgentConfig {
+func (ac *Config) WithLLM(config *LLMConfig) *Config {
 	ac.LLMConfig = config
 	return ac
 }

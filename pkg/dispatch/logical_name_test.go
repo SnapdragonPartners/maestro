@@ -15,10 +15,10 @@ import (
 // MockDriverAgent implements both Agent and Driver interfaces for testing.
 type MockDriverAgent struct {
 	id        string
-	agentType agent.AgentType
+	agentType agent.Type
 }
 
-func NewMockDriverAgent(id string, agentType agent.AgentType) *MockDriverAgent {
+func NewMockDriverAgent(id string, agentType agent.Type) *MockDriverAgent {
 	return &MockDriverAgent{
 		id:        id,
 		agentType: agentType,
@@ -37,7 +37,7 @@ func (a *MockDriverAgent) Shutdown(_ context.Context) error {
 	return nil
 }
 
-func (a *MockDriverAgent) GetAgentType() agent.AgentType {
+func (a *MockDriverAgent) GetAgentType() agent.Type {
 	return a.agentType
 }
 
@@ -85,8 +85,8 @@ func TestLogicalNameResolution(t *testing.T) {
 	}
 
 	// Attach mock agents to simulate real system.
-	architectAgent := NewMockDriverAgent("openai_o3:001", agent.AgentTypeArchitect)
-	coderAgent := NewMockDriverAgent("claude_sonnet4:001", agent.AgentTypeCoder)
+	architectAgent := NewMockDriverAgent("openai_o3:001", agent.TypeArchitect)
+	coderAgent := NewMockDriverAgent("claude_sonnet4:001", agent.TypeCoder)
 
 	dispatcher.Attach(architectAgent)
 	dispatcher.Attach(coderAgent)

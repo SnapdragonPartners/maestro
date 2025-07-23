@@ -180,14 +180,14 @@ func TestCoderApprovalFlow(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 
 	// Manually set state to PLAN_REVIEW to test approval flow.
 	driver.BaseStateMachine.SetStateData(KeyTaskContent, "Create API endpoint")
 	driver.BaseStateMachine.SetStateData(KeyPlan, "Mock plan: Create REST API with proper error handling")
-	if err := driver.BaseStateMachine.TransitionTo(ctx, StatePlanReview, nil); err != nil {
+	if err := driver.BaseStateMachine.TransitionTo(ctx, StatePlanReview, nil); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to transition to PLAN_REVIEW: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestCoderStateManagement(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 

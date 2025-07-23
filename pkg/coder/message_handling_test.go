@@ -18,7 +18,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		tempDir := t.TempDir()
 		stateStore, _ := state.NewStore(tempDir)
 		mockLLM := agent.NewMockLLMClient([]agent.CompletionResponse{{Content: "mock"}}, nil)
-		coder, _ := NewCoder("test-coder", stateStore, &config.ModelCfg{}, mockLLM, tempDir, &config.Agent{Name: "test-coder"}, &build.BuildService{}, nil)
+		coder, _ := NewCoder("test-coder", stateStore, &config.ModelCfg{}, mockLLM, tempDir, &config.Agent{Name: "test-coder"}, &build.Service{}, nil)
 
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
 		resultMsg.SetPayload(proto.KeyStatus, proto.ApprovalStatusApproved.String())
@@ -40,7 +40,7 @@ func TestRobustApprovalMessageHandling(t *testing.T) {
 		tempDir := t.TempDir()
 		stateStore, _ := state.NewStore(tempDir)
 		mockLLM := agent.NewMockLLMClient([]agent.CompletionResponse{{Content: "mock"}}, nil)
-		coder, _ := NewCoder("test-coder", stateStore, &config.ModelCfg{}, mockLLM, tempDir, &config.Agent{Name: "test-coder"}, &build.BuildService{}, nil)
+		coder, _ := NewCoder("test-coder", stateStore, &config.ModelCfg{}, mockLLM, tempDir, &config.Agent{Name: "test-coder"}, &build.Service{}, nil)
 
 		resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "architect", "test-coder")
 		resultMsg.SetPayload(proto.KeyStatus, proto.ApprovalStatusApproved.String())
@@ -100,7 +100,7 @@ func TestCoderCreation(t *testing.T) {
 	tempDir := t.TempDir()
 	stateStore, _ := state.NewStore(tempDir)
 	mockLLM := agent.NewMockLLMClient([]agent.CompletionResponse{{Content: "mock"}}, nil)
-	coder, err := NewCoder("test", stateStore, &config.ModelCfg{}, mockLLM, tempDir, &config.Agent{Name: "test"}, &build.BuildService{}, nil)
+	coder, err := NewCoder("test", stateStore, &config.ModelCfg{}, mockLLM, tempDir, &config.Agent{Name: "test"}, &build.Service{}, nil)
 
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)

@@ -222,6 +222,7 @@ func TestLooksLikeCode(t *testing.T) {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
 
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		line     string
 		expected bool
@@ -266,6 +267,7 @@ func TestGuessFilenameFromContent(t *testing.T) {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
 
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		line     string
 		expected string

@@ -10,6 +10,8 @@ import (
 )
 
 // Requirement represents a parsed requirement from the spec.
+//
+//nolint:govet // JSON parsing struct, logical order preferred
 type Requirement struct {
 	Title              string   `json:"title"`
 	Description        string   `json:"description"`
@@ -19,6 +21,8 @@ type Requirement struct {
 }
 
 // StoryFile represents a generated story file.
+//
+//nolint:govet // JSON serialization struct, logical order preferred
 type StoryFile struct {
 	ID        string   `json:"id"`
 	Title     string   `json:"title"`
@@ -263,11 +267,12 @@ func (sp *SpecParser) GenerateStoryFiles(requirements []Requirement) ([]StoryFil
 
 	storyFiles := make([]StoryFile, 0, len(requirements))
 
-	for i, req := range requirements {
+	for i := range requirements {
+		req := &requirements[i]
 		storyID := fmt.Sprintf("%03d", nextID+i)
 
 		// Generate story content.
-		storyContent := sp.generateStoryContent(storyID, &req)
+		storyContent := sp.generateStoryContent(storyID, req)
 
 		// Create file path.
 		fileName := fmt.Sprintf("%s.md", storyID)

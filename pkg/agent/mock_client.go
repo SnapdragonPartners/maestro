@@ -8,8 +8,8 @@ import (
 // MockLLMClient provides a controllable implementation of LLMClient for testing.
 type MockLLMClient struct {
 	responses     []CompletionResponse
-	responseIndex int
 	errors        []error
+	responseIndex int
 	errorIndex    int
 }
 

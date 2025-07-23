@@ -24,19 +24,19 @@ func (m *mockBuildBackend) Detect(_ string) bool {
 	return true
 }
 
-func (m *mockBuildBackend) Build(ctx context.Context, root string, stream io.Writer) error {
+func (m *mockBuildBackend) Build(_ /* ctx */ context.Context, _ /* root */ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBuildBackend) Test(ctx context.Context, root string, stream io.Writer) error {
+func (m *mockBuildBackend) Test(_ context.Context, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBuildBackend) Lint(ctx context.Context, root string, stream io.Writer) error {
+func (m *mockBuildBackend) Lint(_ context.Context, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBuildBackend) Run(ctx context.Context, root string, args []string, stream io.Writer) error {
+func (m *mockBuildBackend) Run(_ context.Context, _ string, _ []string, _ io.Writer) error {
 	return nil
 }
 
@@ -53,7 +53,7 @@ func TestDockerfileGeneration(t *testing.T) {
 
 	testCases := []struct {
 		name          string
-		backend       build.BuildBackend
+		backend       build.Backend
 		expectedParts []string
 		expectError   bool
 	}{
@@ -159,7 +159,7 @@ func TestDockerignoreGeneration(t *testing.T) {
 
 	testCases := []struct {
 		name          string
-		backend       build.BuildBackend
+		backend       build.Backend
 		expectedParts []string
 		expectError   bool
 	}{

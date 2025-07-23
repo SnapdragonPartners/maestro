@@ -320,6 +320,7 @@ func TestContainerConfigurationMethods(t *testing.T) {
 	}
 
 	// Test that the method doesn't panic with various inputs.
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		readonly bool
 		purpose  string

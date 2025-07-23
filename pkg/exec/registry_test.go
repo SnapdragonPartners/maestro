@@ -20,8 +20,8 @@ func (m *mockExecutor) Available() bool {
 	return m.available
 }
 
-func (m *mockExecutor) Run(_ context.Context, _ []string, _ *ExecOpts) (ExecResult, error) {
-	return ExecResult{
+func (m *mockExecutor) Run(_ context.Context, _ []string, _ *Opts) (Result, error) {
+	return Result{
 		ExitCode:     0,
 		Stdout:       "mock output",
 		Stderr:       "",

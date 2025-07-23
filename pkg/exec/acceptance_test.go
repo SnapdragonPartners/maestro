@@ -42,8 +42,8 @@ func TestStory070AcceptanceCriteria(t *testing.T) {
 		// Test 2: Working directory behavior.
 		tempDir := t.TempDir()
 		testFile := filepath.Join(tempDir, "test.txt")
-		if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
+		if writeErr := os.WriteFile(testFile, []byte("test content"), 0644); writeErr != nil {
+			t.Fatalf("Failed to create test file: %v", writeErr)
 		}
 
 		result, err = adapter.ExecuteShellCommand(context.Background(), "ls test.txt", tempDir)
@@ -237,16 +237,16 @@ func TestBackwardCompatibility(t *testing.T) {
 				}
 
 				// Check types.
-				if _, ok := resultMap["stdout"].(string); !ok {
+				if _, okStdout := resultMap["stdout"].(string); !okStdout {
 					t.Error("stdout should be string")
 				}
-				if _, ok := resultMap["stderr"].(string); !ok {
+				if _, okStderr := resultMap["stderr"].(string); !okStderr {
 					t.Error("stderr should be string")
 				}
-				if _, ok := resultMap["exit_code"].(int); !ok {
+				if _, okExitCode := resultMap["exit_code"].(int); !okExitCode {
 					t.Error("exit_code should be int")
 				}
-				if _, ok := resultMap["cwd"].(string); !ok {
+				if _, okCwd := resultMap["cwd"].(string); !okCwd {
 					t.Error("cwd should be string")
 				}
 			}

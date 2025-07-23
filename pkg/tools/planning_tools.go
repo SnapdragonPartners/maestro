@@ -149,6 +149,8 @@ func (s *SubmitPlanTool) Name() string {
 }
 
 // Exec executes the submit plan operation.
+//
+//nolint:cyclop // Complex plan validation logic, acceptable for this use case
 func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	plan, ok := args["plan"]
 	if !ok {

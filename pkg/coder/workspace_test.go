@@ -11,6 +11,7 @@ import (
 
 // Unit tests with mocked GitRunner.
 func TestWorkspaceManagerSetup_Unit(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	tests := []struct {
 		name          string
 		repoURL       string
@@ -322,7 +323,7 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	}
 
 	readmePath := filepath.Join(workspaceResult.WorkDir, "README.md")
-	if _, err := os.Stat(readmePath); os.IsNotExist(err) {
+	if _, err := os.Stat(readmePath); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Error("README.md should exist in worktree")
 	}
 
@@ -345,10 +346,10 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	}
 
 	// Verify both worktrees exist.
-	if _, err := os.Stat(workspaceResult.WorkDir); os.IsNotExist(err) {
+	if _, err := os.Stat(workspaceResult.WorkDir); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Error("First worktree should still exist")
 	}
-	if _, err := os.Stat(secondWorkspaceResult.WorkDir); os.IsNotExist(err) {
+	if _, err := os.Stat(secondWorkspaceResult.WorkDir); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Error("Second worktree should exist")
 	}
 
@@ -372,7 +373,7 @@ func TestWorkspaceManagerFunctional(t *testing.T) {
 	}
 
 	// Verify worktree is removed.
-	if _, err := os.Stat(workspaceResult.WorkDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(workspaceResult.WorkDir); !os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Error("Worktree should be removed after cleanup")
 	}
 

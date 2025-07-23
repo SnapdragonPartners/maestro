@@ -66,6 +66,7 @@ func TestGetAllCoderStates_Deterministic(t *testing.T) {
 
 // TestIsCoderState verifies state validation functionality.
 func TestIsCoderState(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		state    string
 		expected bool

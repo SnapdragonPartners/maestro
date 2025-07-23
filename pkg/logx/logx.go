@@ -13,8 +13,8 @@ import (
 )
 
 type Logger struct {
-	agentID string
 	logger  *log.Logger
+	agentID string
 }
 
 type Level string
@@ -28,10 +28,10 @@ const (
 
 // DebugConfig controls debug logging behavior.
 type DebugConfig struct {
+	Domains     map[string]bool // Which domains to enable debug for (nil = all)
+	LogDir      string
 	Enabled     bool
 	FileLogging bool
-	LogDir      string
-	Domains     map[string]bool // Which domains to enable debug for (nil = all)
 }
 
 // LogEntry represents a structured log entry for web UI.

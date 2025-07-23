@@ -6,6 +6,7 @@ import (
 )
 
 func TestValidateMessage(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	tests := []struct {
 		name    string
 		msg     CompletionMessage
@@ -185,6 +186,7 @@ func TestSanitizeMessage(t *testing.T) {
 }
 
 func TestValidateAndSanitizeMessages(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	tests := []struct {
 		name     string
 		input    []CompletionMessage

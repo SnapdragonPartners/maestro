@@ -30,8 +30,8 @@ const (
 
 // AgentError represents an error reported by an agent.
 type AgentError struct {
-	ID  string
 	Err error
+	ID  string
 	Sev Severity
 }
 
@@ -51,6 +51,8 @@ type ChannelReceiver interface {
 }
 
 // Dispatcher coordinates message passing and work distribution between agents.
+//
+//nolint:govet // Large complex struct, logical grouping preferred over memory optimization
 type Dispatcher struct {
 	agents      map[string]Agent
 	rateLimiter *limiter.Limiter
@@ -59,8 +61,8 @@ type Dispatcher struct {
 	config      *config.Config
 	inputChan   chan *proto.AgentMsg
 	shutdown    chan struct{}
-	wg          sync.WaitGroup
 	mu          sync.RWMutex
+	wg          sync.WaitGroup
 	running     bool
 
 	// Phase 1: Channel-based queues.
@@ -93,8 +95,8 @@ type Dispatcher struct {
 	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
 }
 
-// DispatchResult represents the result of a message dispatch operation.
-type DispatchResult struct {
+// Result represents the result of a message dispatch operation.
+type Result struct {
 	Message *proto.AgentMsg
 	Error   error
 }
@@ -150,12 +152,12 @@ func (d *Dispatcher) Attach(ag Agent) {
 		// Determine agent type to provide appropriate channels.
 		if agentDriver, ok := ag.(agent.Driver); ok {
 			switch agentDriver.GetAgentType() {
-			case agent.AgentTypeArchitect:
+			case agent.TypeArchitect:
 				d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
 				channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
 				channelReceiver.SetDispatcher(d)
 				return
-			case agent.AgentTypeCoder:
+			case agent.TypeCoder:
 				d.logger.Info("Attached coder agent: %s with direct channel setup", agentID)
 				// Coders receive story messages via storyCh.
 				channelReceiver.SetChannels(d.storyCh, nil, replyCh)
@@ -168,9 +170,9 @@ func (d *Dispatcher) Attach(ag Agent) {
 	// For other agents, log the attachment.
 	if agentDriver, ok := ag.(agent.Driver); ok {
 		switch agentDriver.GetAgentType() {
-		case agent.AgentTypeArchitect:
+		case agent.TypeArchitect:
 			d.logger.Info("Attached architect agent: %s", agentID)
-		case agent.AgentTypeCoder:
+		case agent.TypeCoder:
 			d.logger.Info("Attached coder agent: %s", agentID)
 		}
 	} else {
@@ -425,9 +427,9 @@ func (d *Dispatcher) checkZeroAgentCondition() {
 	for _, ag := range d.agents {
 		if agentDriver, ok := ag.(agent.Driver); ok {
 			switch agentDriver.GetAgentType() {
-			case agent.AgentTypeArchitect:
+			case agent.TypeArchitect:
 				architectCount++
-			case agent.AgentTypeCoder:
+			case agent.TypeCoder:
 				coderCount++
 			}
 		}
@@ -453,6 +455,7 @@ func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
 	}
 }
 
+//nolint:cyclop // Complex message routing logic, acceptable for dispatcher
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
@@ -547,7 +550,7 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	}
 }
 
-func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ Agent) *DispatchResult {
+func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ Agent) *Result {
 	// Extract model name from agent logID (format: "model:id").
 	modelName := msg.ToAgent
 	if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
@@ -557,7 +560,7 @@ func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ 
 	// Check rate limiting before processing.
 	if err := d.checkRateLimit(modelName); err != nil {
 		d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
-		return &DispatchResult{Error: err}
+		return &Result{Error: err}
 	}
 
 	// Process message - NOTE: ProcessMessage removed from Agent interface.
@@ -571,7 +574,7 @@ func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ 
 
 	// Messages flow through channels - no direct processing or retry needed here.
 	// The retry logic would be handled at a higher level if needed.
-	return &DispatchResult{Message: nil}
+	return &Result{Message: nil}
 }
 
 func (d *Dispatcher) checkRateLimit(agentModel string) error {
@@ -830,6 +833,8 @@ type QueueHead struct {
 }
 
 // QueueInfo represents queue information.
+//
+//nolint:govet // JSON serialization struct, logical order preferred
 type QueueInfo struct {
 	Name   string      `json:"name"`
 	Length int         `json:"length"`
@@ -867,10 +872,10 @@ func (d *Dispatcher) DumpHeads(_ int) map[string]any {
 
 // AgentInfo represents information about a registered agent.
 type AgentInfo struct {
-	ID     string
-	Type   agent.AgentType
-	State  string
 	Driver agent.Driver
+	ID     string
+	Type   agent.Type
+	State  string
 }
 
 // GetRegisteredAgents returns information about all registered agents.
@@ -893,7 +898,7 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 			// Default to coder type (all new agents should implement Driver interface).
 			agentInfos = append(agentInfos, AgentInfo{
 				ID:     id,
-				Type:   agent.AgentTypeCoder, // Default fallback
+				Type:   agent.TypeCoder, // Default fallback
 				State:  "UNKNOWN",
 				Driver: nil,
 			})

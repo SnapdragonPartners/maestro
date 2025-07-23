@@ -160,8 +160,8 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 	// Run cleanup every 10th story to avoid overhead.
 	if strings.HasSuffix(storyID, "0") {
 		w.logger.Debug("Running worktree cleanup for story %s", storyID)
-		if err := w.cleanupWorktrees(ctx, mirrorPath); err != nil {
-			w.logger.Warn("Worktree cleanup failed: %v", err)
+		if cleanupErr := w.cleanupWorktrees(ctx, mirrorPath); cleanupErr != nil {
+			w.logger.Warn("Worktree cleanup failed: %v", cleanupErr)
 		}
 	}
 
@@ -170,13 +170,13 @@ func (w *WorkspaceManager) SetupWorkspace(ctx context.Context, agentID, storyID,
 	w.logger.Debug("Agent work directory: %s", agentWorkDirPath)
 
 	// Step 3: Create fresh agent work directory (remove existing if present).
-	if err := w.createFreshWorktree(ctx, mirrorPath, agentWorkDirPath); err != nil {
-		return nil, logx.Wrap(err, fmt.Sprintf("failed to create fresh worktree at %s", agentWorkDirPath))
+	if freshErr := w.createFreshWorktree(ctx, mirrorPath, agentWorkDirPath); freshErr != nil {
+		return nil, logx.Wrap(freshErr, fmt.Sprintf("failed to create fresh worktree at %s", agentWorkDirPath))
 	}
 
 	// Verify the worktree exists.
-	if _, err := os.Stat(agentWorkDirPath); err != nil {
-		w.logger.Error("Agent work directory does not exist after worktree setup: %s (error: %v)", agentWorkDirPath, err)
+	if _, statErr := os.Stat(agentWorkDirPath); statErr != nil {
+		w.logger.Error("Agent work directory does not exist after worktree setup: %s (error: %v)", agentWorkDirPath, statErr)
 		return nil, logx.Wrap(err, fmt.Sprintf("agent work directory was not created at %s", agentWorkDirPath))
 	}
 	w.logger.Debug("Verified agent work directory exists at: %s", agentWorkDirPath)
@@ -361,8 +361,8 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 	}
 
 	// Step 3: Create parent directory if needed.
-	if err := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); err != nil {
-		return logx.Wrap(err, "failed to create parent directory")
+	if mkdirErr := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); mkdirErr != nil {
+		return logx.Wrap(mkdirErr, "failed to create parent directory")
 	}
 
 	// Step 4: Create the fresh worktree.
@@ -508,7 +508,7 @@ func (w *WorkspaceManager) BuildMirrorPath() string {
 }
 
 // BuildAgentWorkDir returns the agent work directory as an absolute path.
-func (w *WorkspaceManager) BuildAgentWorkDir(agentID, agentWorkDir string) string {
+func (w *WorkspaceManager) BuildAgentWorkDir(_ /* agentID */, agentWorkDir string) string {
 	// Convert agentWorkDir to absolute path.
 	absAgentWorkDir, err := filepath.Abs(agentWorkDir)
 	if err != nil {

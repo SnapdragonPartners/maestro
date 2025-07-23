@@ -26,8 +26,9 @@ func ValidateMessages(messages []CompletionMessage) error {
 		}
 	}
 
-	for i, msg := range messages {
-		if err := ValidateMessage(msg); err != nil {
+	for i := range messages {
+		msg := &messages[i]
+		if err := ValidateMessage(*msg); err != nil {
 			return fmt.Errorf("message %d: %w", i, err)
 		}
 	}
@@ -111,7 +112,8 @@ func ValidateTokenCount(messages []CompletionMessage, maxTokens int) error {
 	}
 
 	totalLength := 0
-	for _, msg := range messages {
+	for i := range messages {
+		msg := &messages[i]
 		// Rough approximation: 1 token ≈ 4 characters.
 		totalLength += len(msg.Role) + len(msg.Content)
 	}
@@ -176,8 +178,9 @@ func ValidateAndSanitizeMessages(messages []CompletionMessage) ([]CompletionMess
 
 	sanitized := make([]CompletionMessage, 0, len(messages))
 
-	for _, msg := range messages {
-		cleaned := SanitizeMessage(msg)
+	for i := range messages {
+		msg := &messages[i]
+		cleaned := SanitizeMessage(*msg)
 
 		// Validate the cleaned message.
 		if err := ValidateMessage(cleaned); err != nil {

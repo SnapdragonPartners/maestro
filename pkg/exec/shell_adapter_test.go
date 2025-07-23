@@ -25,8 +25,8 @@ func TestShellCommandAdapter_ExecuteShellCommand(t *testing.T) {
 		t.Errorf("Expected exit code 0, got %v", resultMap["exit_code"])
 	}
 
-	stdout, ok := resultMap["stdout"].(string)
-	if !ok {
+	stdout, okStdout := resultMap["stdout"].(string)
+	if !okStdout {
 		t.Fatalf("Expected stdout to be string, got %T", resultMap["stdout"])
 	}
 
@@ -48,8 +48,8 @@ func TestShellCommandAdapter_ExecuteShellCommand_WithCwd(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
+	resultMap, okResult := result.(map[string]any)
+	if !okResult {
 		t.Fatalf("Expected result to be map[string]any, got %T", result)
 	}
 
@@ -57,8 +57,8 @@ func TestShellCommandAdapter_ExecuteShellCommand_WithCwd(t *testing.T) {
 		t.Errorf("Expected exit code 0, got %v", resultMap["exit_code"])
 	}
 
-	stdout, ok := resultMap["stdout"].(string)
-	if !ok {
+	stdout, okStdout := resultMap["stdout"].(string)
+	if !okStdout {
 		t.Fatalf("Expected stdout to be string, got %T", resultMap["stdout"])
 	}
 
@@ -87,8 +87,8 @@ func TestShellCommandAdapter_ExecuteShellCommand_Failure(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
+	resultMap, okResult := result.(map[string]any)
+	if !okResult {
 		t.Fatalf("Expected result to be map[string]any, got %T", result)
 	}
 

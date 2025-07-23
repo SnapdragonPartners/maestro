@@ -217,7 +217,7 @@ func (d discardWriter) Write(p []byte) (n int, err error) {
 
 func TestBackendOperations(t *testing.T) {
 	// Test that all backend operations have consistent interfaces.
-	backends := []BuildBackend{
+	backends := []Backend{
 		NewNullBackend(),
 		NewMakeBackend(),
 		NewGoBackend(),

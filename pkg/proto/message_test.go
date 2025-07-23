@@ -362,8 +362,8 @@ func TestAgentMsg_JSONRoundTrip(t *testing.T) {
 
 			// Ensure JSON is valid.
 			var jsonCheck map[string]any
-			if err := json.Unmarshal(jsonData, &jsonCheck); err != nil {
-				t.Fatalf("Generated invalid JSON: %v", err)
+			if jsonErr := json.Unmarshal(jsonData, &jsonCheck); jsonErr != nil {
+				t.Fatalf("Generated invalid JSON: %v", jsonErr)
 			}
 
 			// Convert back from JSON.

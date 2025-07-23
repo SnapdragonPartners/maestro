@@ -24,7 +24,7 @@ func TestStepExecutesAtomicTransitions(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := driver.Initialize(ctx); err != nil {
+	if err := driver.Initialize(ctx); err != nil { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Failed to initialize driver: %v", err)
 	}
 

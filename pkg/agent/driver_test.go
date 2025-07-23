@@ -25,14 +25,14 @@ func setupTestDriver(t *testing.T) *BaseDriver {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	ctx := &AgentContext{
+	ctx := &Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, "", log.LstdFlags),
 		WorkDir: tempDir,
 		Store:   store,
 	}
 
-	cfg := &AgentConfig{
+	cfg := &Config{
 		ID:      "test-agent",
 		Type:    "test",
 		Context: *ctx,
@@ -110,14 +110,14 @@ func TestBaseDriverWithModelConfig(t *testing.T) {
 		CompactionBuffer: 1000,
 	}
 
-	ctx := &AgentContext{
+	ctx := &Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, "", log.LstdFlags),
 		WorkDir: tempDir,
 		Store:   store,
 	}
 
-	cfg := &AgentConfig{
+	cfg := &Config{
 		ID:      "test-agent",
 		Type:    "test",
 		Context: *ctx,
@@ -180,10 +180,10 @@ func TestBaseDriverContextCancellation(t *testing.T) {
 	if !ok {
 		t.Fatal("StateMachine is not a BaseStateMachine")
 	}
-	newCfg := &AgentConfig{
+	newCfg := &Config{
 		ID:   "test-agent",
 		Type: "test",
-		Context: AgentContext{
+		Context: Context{
 			Context: ctx,
 			Store:   baseStateMachine.store,
 		},
@@ -227,10 +227,10 @@ func TestBaseDriverPersistence(t *testing.T) {
 	if !ok2 {
 		t.Fatal("StateMachine is not a BaseStateMachine")
 	}
-	newCfg := &AgentConfig{
+	newCfg := &Config{
 		ID:   "test-agent",
 		Type: "test",
-		Context: AgentContext{
+		Context: Context{
 			Context: context.Background(),
 			Store:   baseStateMachine2.store,
 		},
@@ -273,14 +273,14 @@ func TestBaseDriverWithMockLLM(t *testing.T) {
 
 	mockClient := NewMockLLMClient(mockResponses, nil)
 
-	ctx := &AgentContext{
+	ctx := &Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, "", log.LstdFlags),
 		WorkDir: tempDir,
 		Store:   store,
 	}
 
-	cfg := &AgentConfig{
+	cfg := &Config{
 		ID:      "test-agent-mock",
 		Type:    "mock-test",
 		Context: *ctx,
@@ -403,10 +403,10 @@ func TestBaseDriverShutdown(t *testing.T) {
 
 	// Verify state was persisted during shutdown.
 	baseStateMachine2 := utils.MustAssert[*BaseStateMachine](driver.StateMachine, "state machine")
-	newDriver, err := NewBaseDriver(&AgentConfig{
+	newDriver, err := NewBaseDriver(&Config{
 		ID:   "test-agent",
 		Type: "test",
-		Context: AgentContext{
+		Context: Context{
 			Context: context.Background(),
 			Store:   baseStateMachine2.store,
 		},
@@ -428,10 +428,10 @@ func TestBaseDriverShutdown(t *testing.T) {
 
 func TestBaseDriverErrorHandling(t *testing.T) {
 	// Test driver creation with invalid config.
-	invalidCfg := &AgentConfig{
+	invalidCfg := &Config{
 		ID:   "", // Invalid: empty ID
 		Type: "test",
-		Context: AgentContext{
+		Context: Context{
 			Context: context.Background(),
 		},
 	}

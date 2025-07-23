@@ -12,6 +12,8 @@ const (
 )
 
 // AnthropicMessageContent represents a content block in an Anthropic message.
+//
+//nolint:govet // Struct layout matches JSON serialization requirements
 type AnthropicMessageContent struct {
 	Type       string            `json:"type"`
 	Text       string            `json:"text,omitempty"`
@@ -115,14 +117,14 @@ func FormatContinuationRequest(tools []ToolDefinition, messages []interface{}, t
 	}
 
 	// Append the tool results message to the conversation.
-	updatedMessages := append(messages, toolResultsMessage)
+	messages = append(messages, toolResultsMessage)
 
 	// Create the continuation request.
 	request := map[string]interface{}{
 		"model":      "claude-3-opus-20240229", // Default model, can be made configurable
 		"max_tokens": 4000,                     // Default max tokens
 		"tools":      tools,
-		"messages":   updatedMessages,
+		"messages":   messages,
 	}
 
 	return request, nil

@@ -271,8 +271,8 @@ func AssertValidMessageFlow(t *testing.T, messages []*proto.AgentMsg, expectedFl
 
 // LintTestConditions provides assertions for lint/test conditions.
 type LintTestConditions struct {
-	ShouldPass bool
 	ErrorText  string
+	ShouldPass bool
 }
 
 // AssertLintTestConditions verifies lint/test pass/fail conditions.

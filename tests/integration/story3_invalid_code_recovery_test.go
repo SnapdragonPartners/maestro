@@ -105,6 +105,7 @@ Requirements:
 func TestStory3MalformedResponseHandling(t *testing.T) {
 	SetupTestEnvironment(t)
 
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name         string
 		responseFunc func(*proto.AgentMsg) *proto.AgentMsg

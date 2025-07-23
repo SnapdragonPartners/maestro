@@ -6,30 +6,30 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// AgentType represents the type of an agent.
-type AgentType string
+// Type represents the type of an agent.
+type Type string
 
 const (
-	// AgentTypeArchitect represents an architect agent that processes specifications and manages workflow.
-	AgentTypeArchitect AgentType = "architect"
+	// TypeArchitect represents an architect agent that processes specifications and manages workflow.
+	TypeArchitect Type = "architect"
 
-	// AgentTypeCoder represents a coder agent that implements code based on tasks.
-	AgentTypeCoder AgentType = "coder"
+	// TypeCoder represents a coder agent that implements code based on tasks.
+	TypeCoder Type = "coder"
 )
 
 // IsValid checks if the agent type is valid.
-func (t AgentType) IsValid() bool {
-	return t == AgentTypeArchitect || t == AgentTypeCoder
+func (t Type) IsValid() bool {
+	return t == TypeArchitect || t == TypeCoder
 }
 
 // String returns the string representation of the agent type.
-func (t AgentType) String() string {
+func (t Type) String() string {
 	return string(t)
 }
 
-// ParseAgentType parses a string into an AgentType.
-func ParseAgentType(s string) (AgentType, error) {
-	t := AgentType(s)
+// Parse parses a string into a Type.
+func Parse(s string) (Type, error) {
+	t := Type(s)
 	if !t.IsValid() {
 		return "", fmt.Errorf("invalid agent type: %s (must be 'architect' or 'coder')", s)
 	}

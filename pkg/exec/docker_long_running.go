@@ -92,7 +92,9 @@ func (d *LongRunningDockerExec) Available() bool {
 }
 
 // StartContainer creates and starts a new long-running container for a story.
-func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID string, opts ExecOpts) (string, error) {
+//
+//nolint:cyclop // Complex container setup logic, acceptable for this use case
+func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID string, opts *Opts) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -205,16 +207,11 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 			return "", fmt.Errorf("directory not accessible to Docker Desktop: %w", err)
 		}
 
-		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode))
-
-		// Set working directory inside container.
-		args = append(args, "--workdir", workspaceDir)
+		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode), "--workdir", workspaceDir)
 	}
 
 	// Add writable tmpfs directories.
-	args = append(args, "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m")
-	args = append(args, "--tmpfs", "/home:exec,nodev,nosuid,size=100m")
-	args = append(args, "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
+	args = append(args, "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m", "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
 
 	// Environment variables.
 	for _, env := range opts.Env {
@@ -323,11 +320,11 @@ func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName
 }
 
 // Run executes a command in an existing long-running container.
-func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *ExecOpts) (ExecResult, error) {
+func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opts) (Result, error) {
 	start := time.Now()
 
 	if len(cmd) == 0 {
-		return ExecResult{}, fmt.Errorf("command cannot be empty")
+		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
 	// For long-running containers, we need a story ID to identify the container.
@@ -347,7 +344,7 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Exe
 		d.mu.RUnlock()
 
 		if containerName == "" {
-			return ExecResult{}, fmt.Errorf("no active containers found and no story ID in context")
+			return Result{}, fmt.Errorf("no active containers found and no story ID in context")
 		}
 	}
 
@@ -357,7 +354,7 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Exe
 	d.mu.RUnlock()
 
 	if !exists {
-		return ExecResult{}, fmt.Errorf("container %s not found - call StartContainer first", containerName)
+		return Result{}, fmt.Errorf("container %s not found - call StartContainer first", containerName)
 	}
 
 	// Update last used time.
@@ -390,7 +387,7 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Exe
 	stdout, stderr, err := d.executeCommand(dockerCmd)
 
 	duration := time.Since(start)
-	result := ExecResult{
+	result := Result{
 		Stdout:       stdout,
 		Stderr:       stderr,
 		Duration:     duration,

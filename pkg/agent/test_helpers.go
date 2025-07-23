@@ -62,14 +62,14 @@ func NewTestHelper(t *testing.T) *TestHelper {
 func (h *TestHelper) CreateTestDriver(id string, initialState proto.State) *BaseDriver {
 	h.t.Helper()
 
-	ctx := &AgentContext{
+	ctx := &Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, "", log.LstdFlags),
 		WorkDir: h.tempDir,
 		Store:   h.store,
 	}
 
-	cfg := &AgentConfig{
+	cfg := &Config{
 		ID:      id,
 		Type:    "test",
 		Context: *ctx,
@@ -158,6 +158,8 @@ func (h *TestHelper) AssertInvalidTransition(sm StateMachine, to proto.State) {
 }
 
 // MockFailingClient creates a client that fails after a certain number of calls.
+//
+//nolint:govet // Test mock struct, optimization not critical
 type MockFailingClient struct {
 	callCount    int
 	failAfter    int

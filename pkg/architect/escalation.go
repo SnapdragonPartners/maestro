@@ -13,6 +13,8 @@ import (
 )
 
 // EscalationHandler manages business question escalations and ESCALATED state.
+//
+//nolint:govet // Complex management struct, logical grouping preferred
 type EscalationHandler struct {
 	logsDir         string
 	escalationsFile string
@@ -37,6 +39,8 @@ type EscalationEntry struct {
 }
 
 // EscalationSummary provides an overview of escalation status.
+//
+//nolint:govet // JSON serialization struct, logical order preferred
 type EscalationSummary struct {
 	TotalEscalations      int                `json:"total_escalations"`
 	PendingEscalations    int                `json:"pending_escalations"`
@@ -238,7 +242,7 @@ func (eh *EscalationHandler) loadEscalations() error {
 }
 
 // determinePriority determines the priority of a business question.
-func (eh *EscalationHandler) determinePriority(question string, context map[string]any) string {
+func (eh *EscalationHandler) determinePriority(question string, _ map[string]any) string {
 	questionLower := strings.ToLower(question)
 
 	// Critical priority keywords.

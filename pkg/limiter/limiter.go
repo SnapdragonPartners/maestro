@@ -12,21 +12,23 @@ import (
 // Limiter manages rate limiting and budget enforcement across multiple LLM models.
 type Limiter struct {
 	models     map[string]*ModelLimiter
-	mu         sync.RWMutex
 	resetTimer *time.Timer
+	mu         sync.RWMutex
 }
 
 // ModelLimiter enforces token, budget, and concurrency limits for a specific LLM model.
+//
+//nolint:govet // Struct layout optimization not critical for this use case
 type ModelLimiter struct {
-	name               string
-	maxTokensPerMinute int
 	maxBudgetPerDayUSD float64
-	maxAgents          int
-	currentTokens      int
 	currentBudgetUSD   float64
-	currentAgents      int
 	lastRefill         time.Time
 	mu                 sync.Mutex
+	name               string
+	maxTokensPerMinute int
+	maxAgents          int
+	currentTokens      int
+	currentAgents      int
 }
 
 var (

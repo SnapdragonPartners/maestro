@@ -170,7 +170,7 @@ func TestFindNextStoryID(t *testing.T) {
 	testFiles := []string{"001.md", "002.md", "055.md", "100.md"}
 	for _, filename := range testFiles {
 		filePath := filepath.Join(tempDir, filename)
-		err := os.WriteFile(filePath, []byte("test content"), 0644)
+		err := os.WriteFile(filePath, []byte("test content"), 0644) //nolint:govet // Shadow variable acceptable in test context
 		if err != nil {
 			t.Fatalf("Failed to create test file %s: %v", filename, err)
 		}
@@ -286,7 +286,7 @@ func TestGenerateStoryFiles(t *testing.T) {
 	}
 
 	// Verify file was actually created.
-	if _, err := os.Stat(story1.FilePath); os.IsNotExist(err) {
+	if _, err := os.Stat(story1.FilePath); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Errorf("Story file was not created: %s", story1.FilePath)
 	}
 

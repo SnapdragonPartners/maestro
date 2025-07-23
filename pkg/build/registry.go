@@ -26,7 +26,7 @@ func NewRegistry() *Registry {
 }
 
 // Register adds a backend to the registry with the specified priority.
-func (r *Registry) Register(backend BuildBackend, priority BackendPriority) {
+func (r *Registry) Register(backend Backend, priority BackendPriority) {
 	r.backends = append(r.backends, BackendRegistration{
 		Backend:  backend,
 		Priority: priority,
@@ -39,7 +39,7 @@ func (r *Registry) Register(backend BuildBackend, priority BackendPriority) {
 }
 
 // Detect finds the most appropriate backend for the given project root.
-func (r *Registry) Detect(root string) (BuildBackend, error) {
+func (r *Registry) Detect(root string) (Backend, error) {
 	for _, registration := range r.backends {
 		if registration.Backend.Detect(root) {
 			return registration.Backend, nil
@@ -55,7 +55,7 @@ func (r *Registry) List() []BackendRegistration {
 }
 
 // GetByName returns a backend by its name.
-func (r *Registry) GetByName(name string) (BuildBackend, error) {
+func (r *Registry) GetByName(name string) (Backend, error) {
 	for _, registration := range r.backends {
 		if registration.Backend.Name() == name {
 			return registration.Backend, nil

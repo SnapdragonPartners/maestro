@@ -374,6 +374,7 @@ func TestFormatQuestionContext(t *testing.T) {
 }
 
 func TestTruncateString(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	tests := []struct {
 		input     string
 		maxLength int

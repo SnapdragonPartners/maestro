@@ -46,8 +46,8 @@ func extractExecArgs(args map[string]any) (cwd string, timeout int, err error) {
 }
 
 // executeBuildOperation executes a build operation with common error handling.
-func executeBuildOperation(ctx context.Context, buildService *build.BuildService, operation, absPath string, timeout int, errorMsg string) (any, error) {
-	req := &build.BuildRequest{
+func executeBuildOperation(ctx context.Context, buildService *build.Service, operation, absPath string, timeout int, errorMsg string) (any, error) {
+	req := &build.Request{
 		ProjectRoot: absPath,
 		Operation:   operation,
 		Timeout:     timeout,
@@ -73,11 +73,11 @@ func executeBuildOperation(ctx context.Context, buildService *build.BuildService
 
 // BuildTool provides MCP interface for build operations.
 type BuildTool struct {
-	buildService *build.BuildService
+	buildService *build.Service
 }
 
 // NewBuildTool creates a new build tool instance.
-func NewBuildTool(buildService *build.BuildService) *BuildTool {
+func NewBuildTool(buildService *build.Service) *BuildTool {
 	return &BuildTool{
 		buildService: buildService,
 	}
@@ -122,11 +122,11 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 
 // TestTool provides MCP interface for test operations.
 type TestTool struct {
-	buildService *build.BuildService
+	buildService *build.Service
 }
 
 // NewTestTool creates a new test tool instance.
-func NewTestTool(buildService *build.BuildService) *TestTool {
+func NewTestTool(buildService *build.Service) *TestTool {
 	return &TestTool{
 		buildService: buildService,
 	}
@@ -171,11 +171,11 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 
 // LintTool provides MCP interface for linting operations.
 type LintTool struct {
-	buildService *build.BuildService
+	buildService *build.Service
 }
 
 // NewLintTool creates a new lint tool instance.
-func NewLintTool(buildService *build.BuildService) *LintTool {
+func NewLintTool(buildService *build.Service) *LintTool {
 	return &LintTool{
 		buildService: buildService,
 	}
@@ -254,11 +254,11 @@ func (d *DoneTool) Exec(_ context.Context, _ map[string]any) (any, error) {
 
 // BackendInfoTool provides MCP interface for backend information.
 type BackendInfoTool struct {
-	buildService *build.BuildService
+	buildService *build.Service
 }
 
 // NewBackendInfoTool creates a new backend info tool instance.
-func NewBackendInfoTool(buildService *build.BuildService) *BackendInfoTool {
+func NewBackendInfoTool(buildService *build.Service) *BackendInfoTool {
 	return &BackendInfoTool{
 		buildService: buildService,
 	}

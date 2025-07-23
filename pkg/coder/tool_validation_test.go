@@ -67,6 +67,7 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 	tool := tools.NewAskQuestionTool()
 	ctx := context.Background()
 
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name        string
 		args        map[string]any
@@ -208,6 +209,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 	tool := tools.NewSubmitPlanTool()
 	ctx := context.Background()
 
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name        string
 		args        map[string]any

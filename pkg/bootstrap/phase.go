@@ -13,6 +13,8 @@ import (
 )
 
 // Phase represents the PROJECT_BOOTSTRAP orchestrator phase.
+//
+//nolint:govet // Configuration struct, logical grouping preferred
 type Phase struct {
 	projectRoot      string
 	buildRegistry    *build.Registry
@@ -22,6 +24,8 @@ type Phase struct {
 }
 
 // Config holds bootstrap configuration options.
+//
+//nolint:govet // Large configuration struct, logical grouping preferred over memory optimization
 type Config struct {
 	Enabled                 bool                    `json:"enabled"`
 	ForceBackend            string                  `json:"force_backend"`            // Override auto-detection
@@ -78,6 +82,8 @@ func NewPhase(projectRoot string, config *Config) *Phase {
 }
 
 // PhaseResult represents the result of bootstrap phase execution.
+//
+//nolint:govet // Result struct, logical grouping preferred
 type PhaseResult struct {
 	Success        bool              `json:"success"`
 	Backend        string            `json:"backend"`
@@ -163,7 +169,7 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 }
 
 // detectBackend detects the appropriate build backend for the project.
-func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildBackend, error) {
+func (p *Phase) detectBackend(_ /* ctx */ context.Context, workDir string) (build.Backend, error) {
 	// Check for forced backend override.
 	if p.config.ForceBackend != "" {
 		backend, err := p.buildRegistry.GetByName(p.config.ForceBackend)
@@ -197,7 +203,7 @@ func (p *Phase) detectBackend(ctx context.Context, workDir string) (build.BuildB
 }
 
 // generateArtifacts generates bootstrap artifacts based on the detected backend.
-func (p *Phase) generateArtifacts(ctx context.Context, backend build.BuildBackend, workDir string) ([]string, error) {
+func (p *Phase) generateArtifacts(ctx context.Context, backend build.Backend, workDir string) ([]string, error) {
 	generator := NewArtifactGenerator(workDir, p.config)
 
 	artifacts, err := generator.Generate(ctx, backend)

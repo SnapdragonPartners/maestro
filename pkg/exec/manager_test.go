@@ -10,6 +10,7 @@ import (
 )
 
 func TestExecutorManager_Initialize(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name       string
 		config     *config.ExecutorConfig
@@ -89,6 +90,7 @@ func TestExecutorManager_Initialize(t *testing.T) {
 }
 
 func TestExecutorManager_SelectDefaultExecutor(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name       string
 		config     *config.ExecutorConfig
@@ -167,12 +169,12 @@ func TestExecutorManager_GetStatus(t *testing.T) {
 	status := manager.GetStatus()
 
 	// Should have at least local executor.
-	if _, ok := status["local"]; !ok {
+	if _, okLocal := status["local"]; !okLocal {
 		t.Error("Expected local executor in status")
 	}
 
 	// Should have Docker executor (may or may not be available)
-	if _, ok := status["docker"]; !ok {
+	if _, okDocker := status["docker"]; !okDocker {
 		t.Error("Expected docker executor in status")
 	}
 
@@ -311,6 +313,7 @@ func TestExecutorManager_GetExecutor(t *testing.T) {
 // Test Story 073 acceptance criteria.
 func TestStory073AcceptanceCriteria(t *testing.T) {
 	t.Run("executor type configuration", func(t *testing.T) {
+		//nolint:govet // Test struct, optimization not critical
 		testCases := []struct {
 			name        string
 			configType  string

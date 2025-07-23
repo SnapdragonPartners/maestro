@@ -258,6 +258,7 @@ func TestContainerMountModeValidation(t *testing.T) {
 	ctx := context.Background()
 
 	// Test different mount mode configurations.
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name     string
 		readonly bool

@@ -54,6 +54,8 @@ func DefaultTimeouts() TestTimeouts {
 }
 
 // CoderAgent wraps a coder driver with channel communication.
+//
+//nolint:govet // fieldalignment: Test struct, optimization not critical
 type CoderAgent struct {
 	ID     string
 	Driver *coder.Coder

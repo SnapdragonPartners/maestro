@@ -12,11 +12,11 @@ import (
 // BaseDriver provides common functionality for agent drivers.
 type BaseDriver struct {
 	StateMachine
-	config *AgentConfig
+	config *Config
 }
 
 // NewBaseDriver creates a new base driver.
-func NewBaseDriver(config *AgentConfig, initialState proto.State) (*BaseDriver, error) {
+func NewBaseDriver(config *Config, initialState proto.State) (*BaseDriver, error) {
 	// Validate config.
 	if err := config.Validate(); err != nil {
 		return nil, err

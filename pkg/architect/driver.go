@@ -83,25 +83,23 @@ func (a *LLMClientToAgentAdapter) Stream(ctx context.Context, req agent.Completi
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	architectID        string
 	stateStore         *state.Store
 	contextManager     *contextmgr.ContextManager
-	currentState       proto.State
 	stateData          map[string]any
-	llmClient          LLMClient            // LLM for intelligent responses
-	renderer           *templates.Renderer  // Template renderer for prompts
-	workDir            string               // Workspace directory
-	storiesDir         string               // Directory for story files
-	queue              *Queue               // Story queue manager
-	escalationHandler  *EscalationHandler   // Escalation handler
-	dispatcher         *dispatch.Dispatcher // Dispatcher for sending messages
-	logger             *logx.Logger         // Logger with proper agent prefixing
-	orchestratorConfig *config.Config       // Orchestrator configuration for repo access
-
-	// Channel-based architecture - channels provided by dispatcher.Attach()
-	specCh      <-chan *proto.AgentMsg // Read-only channel for spec messages
-	questionsCh chan *proto.AgentMsg   // Bi-directional channel for questions/requests
-	replyCh     <-chan *proto.AgentMsg // Read-only channel for replies
+	llmClient          LLMClient              // LLM for intelligent responses
+	renderer           *templates.Renderer    // Template renderer for prompts
+	queue              *Queue                 // Story queue manager
+	escalationHandler  *EscalationHandler     // Escalation handler
+	dispatcher         *dispatch.Dispatcher   // Dispatcher for sending messages
+	logger             *logx.Logger           // Logger with proper agent prefixing
+	orchestratorConfig *config.Config         // Orchestrator configuration for repo access
+	specCh             <-chan *proto.AgentMsg // Read-only channel for spec messages
+	questionsCh        chan *proto.AgentMsg   // Bi-directional channel for questions/requests
+	replyCh            <-chan *proto.AgentMsg // Read-only channel for replies
+	architectID        string
+	workDir            string // Workspace directory
+	storiesDir         string // Directory for story files
+	currentState       proto.State
 }
 
 // NewDriver creates a new architect driver instance.
@@ -153,14 +151,14 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
-func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
+func (d *Driver) SetStateNotificationChannel(_ /* stateNotifCh */ chan<- *proto.StateChangeNotification) {
 	// TODO: Implement state change notifications for architect
 	// For now, just log that it's set - architect uses different state management.
 	d.logger.Info("🏗️ Architect %s state notification channel set", d.architectID)
 }
 
 // Initialize sets up the driver and loads any existing state.
-func (d *Driver) Initialize(ctx context.Context) error {
+func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
 	// Load existing state if available.
 	d.logger.Info("Loading architect state for ID: %s", d.architectID)
 	savedState, savedData, err := d.stateStore.LoadState(d.architectID)
@@ -206,7 +204,7 @@ func (d *Driver) GetID() string {
 }
 
 // Shutdown implements Agent interface with context.
-func (d *Driver) Shutdown(ctx context.Context) error {
+func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
 	// Call the original shutdown method.
 	d.shutdown()
 	return nil
@@ -443,8 +441,8 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 		}
 
 		// Execute bootstrap with platform recommendation.
-		if err := d.executeBootstrap(ctx, platformRecommendation); err != nil {
-			return StateError, fmt.Errorf("bootstrap execution failed: %w", err)
+		if bootstrapErr := d.executeBootstrap(ctx, platformRecommendation); bootstrapErr != nil {
+			return StateError, fmt.Errorf("bootstrap execution failed: %w", bootstrapErr)
 		}
 
 		d.stateData["bootstrap_completed"] = true
@@ -556,7 +554,7 @@ func (d *Driver) parseSpecDeterministic(specFile string) ([]Requirement, error) 
 }
 
 // handleDispatching processes the dispatching phase (queue management and story assignment).
-func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
+func (d *Driver) handleDispatching(_ /* ctx */ context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Dispatching phase: managing queue and assigning stories")
 
 	// Initialize queue if not already done.
@@ -863,7 +861,7 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 }
 
 // handleRequeueRequest processes a REQUEUE message (fire-and-forget).
-func (d *Driver) handleRequeueRequest(ctx context.Context, requeueMsg *proto.AgentMsg) error {
+func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *proto.AgentMsg) error {
 	storyID, _ := requeueMsg.GetPayload("story_id")
 	reason, _ := requeueMsg.GetPayload("reason")
 
@@ -944,6 +942,8 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 }
 
 // MergeAttemptResult represents the result of a merge attempt.
+//
+//nolint:govet // Simple result struct, logical grouping preferred
 type MergeAttemptResult struct {
 	HasConflicts bool
 	ConflictInfo string
@@ -1101,7 +1101,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 }
 
 // handleMerging processes the merging phase (merging approved code).
-func (d *Driver) handleMerging(ctx context.Context) (proto.State, error) {
+func (d *Driver) handleMerging(_ context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Merging phase: processing completed stories")
 
 	// TODO: Implement proper merging logic without RequestWorker
@@ -1111,7 +1111,7 @@ func (d *Driver) handleMerging(ctx context.Context) (proto.State, error) {
 }
 
 // transitionTo moves the driver to a new state and persists it.
-func (d *Driver) transitionTo(ctx context.Context, newState proto.State, additionalData map[string]any) error {
+func (d *Driver) transitionTo(_ context.Context, newState proto.State, additionalData map[string]any) error {
 	oldState := d.currentState
 	d.currentState = newState
 
@@ -1161,8 +1161,8 @@ func (d *Driver) GetStateData() map[string]any {
 }
 
 // GetAgentType returns the type of the agent.
-func (d *Driver) GetAgentType() agent.AgentType {
-	return agent.AgentTypeArchitect
+func (d *Driver) GetAgentType() agent.Type {
+	return agent.TypeArchitect
 }
 
 // ValidateState checks if a state is valid for this architect agent.
@@ -1247,8 +1247,10 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 	jsonStr := response[jsonStart : jsonEnd+1]
 
 	// Define the expected LLM response structure.
+	//nolint:govet // JSON parsing struct, field order must match expected JSON
 	var llmResponse struct {
-		Analysis     string `json:"analysis"`
+		Analysis string `json:"analysis"`
+		//nolint:govet // JSON parsing struct, field order must match expected JSON
 		Requirements []struct {
 			Title              string   `json:"title"`
 			Description        string   `json:"description"`
@@ -1346,7 +1348,7 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 }
 
 // sendStoryToDispatcher sends a story to the dispatcher.
-func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) error {
+func (d *Driver) sendStoryToDispatcher(_ context.Context, storyID string) error {
 	d.logger.Info("🏗️ Sending story %s to dispatcher", storyID)
 
 	// Mark story as dispatched (no specific agent yet).
@@ -1402,7 +1404,7 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 }
 
 // sendAbandonAndRequeue sends an ABANDON review response and re-queues the story.
-func (d *Driver) sendAbandonAndRequeue(ctx context.Context) error {
+func (d *Driver) sendAbandonAndRequeue(_ context.Context) error {
 	// Get the escalated story ID from escalation handler.
 	if d.escalationHandler == nil {
 		return fmt.Errorf("no escalation handler available")
@@ -1714,7 +1716,8 @@ func (d *Driver) simpleLLMPlatformDetection(ctx context.Context, specContent str
 
 	// Build platform list with descriptions.
 	platformDescriptions := make([]string, 0, len(supportedPlatformsMap))
-	for _, platform := range supportedPlatformsMap {
+	for name := range supportedPlatformsMap {
+		platform := supportedPlatformsMap[name]
 		desc := fmt.Sprintf("- %s: %s", platform.Name, platform.Description)
 		platformDescriptions = append(platformDescriptions, desc)
 	}
@@ -1861,7 +1864,7 @@ func (d *Driver) executeBootstrap(ctx context.Context, platformRecommendation in
 }
 
 // saveApprovedPlanArtifact saves approved plans as JSON artifacts for traceability.
-func (d *Driver) saveApprovedPlanArtifact(ctx context.Context, requestMsg *proto.AgentMsg, content interface{}) error {
+func (d *Driver) saveApprovedPlanArtifact(_ context.Context, requestMsg *proto.AgentMsg, content interface{}) error {
 	// Create stories/plans directory in work directory if it doesn't exist.
 	storiesDir := filepath.Join(d.workDir, "stories", "plans")
 	if err := os.MkdirAll(storiesDir, 0755); err != nil {
@@ -1912,7 +1915,7 @@ func (d *Driver) saveApprovedPlanArtifact(ctx context.Context, requestMsg *proto
 }
 
 // saveCompletionArtifact saves completion approval artifacts for traceability.
-func (d *Driver) saveCompletionArtifact(ctx context.Context, requestMsg *proto.AgentMsg) error {
+func (d *Driver) saveCompletionArtifact(_ context.Context, requestMsg *proto.AgentMsg) error {
 	// Create stories/completions directory in work directory if it doesn't exist.
 	completionsDir := filepath.Join(d.workDir, "stories", "completions")
 	if err := os.MkdirAll(completionsDir, 0755); err != nil {

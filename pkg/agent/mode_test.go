@@ -17,6 +17,7 @@ func TestSystemMode(t *testing.T) {
 	})
 
 	t.Run("Mode strings", func(t *testing.T) {
+		//nolint:govet // Test struct, optimization not critical
 		tests := []struct {
 			mode Mode
 			want string

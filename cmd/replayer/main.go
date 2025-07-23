@@ -42,12 +42,14 @@ type StoryResultPair struct {
 }
 
 // ComparisonResult represents the result of comparing two RESULT messages.
+//
+//nolint:govet // Struct layout optimization not critical for this use case
 type ComparisonResult struct {
+	Error       error
+	Differences []string
 	StoryID     string
 	AgentType   string
-	Error       error
 	Matched     bool
-	Differences []string
 }
 
 func main() {
@@ -98,11 +100,6 @@ func main() {
 			os.Exit(1)
 		}
 		config.OutputDir = tmpDir
-		defer func() {
-			if err := os.RemoveAll(tmpDir); err != nil {
-				fmt.Printf("Warning: failed to remove temp directory: %v\n", err)
-			}
-		}()
 	}
 
 	// Run the replayer.
@@ -111,7 +108,14 @@ func main() {
 		mustFprintf(os.Stderr, "Error: %v\n", err)
 	}
 
-	// Let defers run, then exit with proper code
+	// Cleanup temp directory if needed before exit
+	if config.OutputDir != "" && strings.HasPrefix(config.OutputDir, os.TempDir()) {
+		if cleanupErr := os.RemoveAll(config.OutputDir); cleanupErr != nil {
+			fmt.Printf("Warning: failed to remove temp directory: %v\n", cleanupErr)
+		}
+	}
+
+	// Exit with proper code
 	if exitCode != 0 || err != nil {
 		os.Exit(exitCode)
 	}

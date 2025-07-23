@@ -27,8 +27,8 @@ func TestShellTool_WithLocalExecutor(t *testing.T) {
 		t.Fatalf("Expected result to be map[string]any, got %T", result)
 	}
 
-	stdout, ok := resultMap["stdout"].(string)
-	if !ok {
+	stdout, okStdout := resultMap["stdout"].(string)
+	if !okStdout {
 		t.Fatal("Expected stdout to be string")
 	}
 
@@ -60,13 +60,13 @@ func TestShellTool_WithDockerExecutor(t *testing.T) {
 		t.Fatalf("Failed to execute command with docker executor: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
+	resultMap, okResult := result.(map[string]any)
+	if !okResult {
 		t.Fatalf("Expected result to be map[string]any, got %T", result)
 	}
 
-	stdout, ok := resultMap["stdout"].(string)
-	if !ok {
+	stdout, okStdout := resultMap["stdout"].(string)
+	if !okStdout {
 		t.Fatal("Expected stdout to be string")
 	}
 
@@ -95,8 +95,8 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 		t.Fatalf("Failed to get shell tool: %v", err)
 	}
 
-	shellTool, ok := tool.(*ShellTool)
-	if !ok {
+	shellTool, okShellTool := tool.(*ShellTool)
+	if !okShellTool {
 		t.Fatalf("Expected *ShellTool, got %T", tool)
 	}
 
@@ -122,7 +122,7 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 	// Now switch to docker executor if available.
 	dockerExec := exec.NewLongRunningDockerExec("golang:1.24-alpine", "")
 	if dockerExec.Available() {
-		if err := UpdateShellToolExecutor(dockerExec); err != nil {
+		if err := UpdateShellToolExecutor(dockerExec); err != nil { //nolint:govet // Shadow variable acceptable in test context
 			t.Fatalf("Failed to update to docker executor: %v", err)
 		}
 
@@ -132,8 +132,8 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 			t.Fatalf("Failed to get shell tool after docker update: %v", err)
 		}
 
-		shellTool, ok = tool.(*ShellTool)
-		if !ok {
+		shellTool, okShellTool = tool.(*ShellTool)
+		if !okShellTool {
 			t.Fatalf("Expected *ShellTool after docker update, got %T", tool)
 		}
 

@@ -18,6 +18,8 @@ type ApprovalResponse struct {
 }
 
 // AlwaysApprovalMockArchitect always approves requests.
+//
+//nolint:govet // fieldalignment: Test struct, optimization not critical
 type AlwaysApprovalMockArchitect struct {
 	id       string
 	response ApprovalResponse
@@ -152,6 +154,8 @@ func (m *AlwaysApprovalMockArchitect) SetResponseDelay(delay time.Duration) {
 }
 
 // ChangesRequestedMockArchitect rejects the first N requests, then approves.
+//
+//nolint:govet // fieldalignment: Test struct, optimization not critical
 type ChangesRequestedMockArchitect struct {
 	id                string
 	rejectCount       int
@@ -259,6 +263,8 @@ func (m *ChangesRequestedMockArchitect) GetReceivedMessages() []ReceivedMessage 
 }
 
 // MalformedResponseMockArchitect sends malformed responses for testing error handling.
+//
+//nolint:govet // fieldalignment: Test struct, optimization not critical
 type MalformedResponseMockArchitect struct {
 	id       string
 	response func(*proto.AgentMsg) *proto.AgentMsg

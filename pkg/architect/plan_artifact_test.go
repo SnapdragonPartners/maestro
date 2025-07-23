@@ -51,7 +51,7 @@ func TestSaveApprovedPlanArtifact(t *testing.T) {
 
 	// Verify stories/plans directory was created.
 	storiesDir := filepath.Join(tempDir, "stories", "plans")
-	if _, err := os.Stat(storiesDir); os.IsNotExist(err) {
+	if _, err := os.Stat(storiesDir); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Error("Expected stories/plans directory to be created")
 	}
 

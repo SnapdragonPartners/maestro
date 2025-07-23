@@ -57,14 +57,13 @@ func (e *CircuitBreakerError) Error() string {
 
 // CircuitBreakerClient wraps an LLMClient with circuit breaker pattern.
 type CircuitBreakerClient struct {
-	client LLMClient
-	config CircuitBreakerConfig
-
+	client          LLMClient
+	lastFailureTime time.Time
+	config          CircuitBreakerConfig
 	mu              sync.RWMutex
 	state           CircuitState
 	failureCount    int
 	successCount    int
-	lastFailureTime time.Time
 	halfOpenCalls   int
 }
 
@@ -227,11 +226,11 @@ func (cb *CircuitBreakerClient) onFailure() {
 
 // CircuitBreakerStats provides statistics about circuit breaker state.
 type CircuitBreakerStats struct {
+	LastFailure  *time.Time   `json:"last_failure,omitempty"`
+	OpenSince    *time.Time   `json:"open_since,omitempty"`
 	State        CircuitState `json:"state"`
 	FailureCount int          `json:"failure_count"`
 	SuccessCount int          `json:"success_count"`
-	LastFailure  *time.Time   `json:"last_failure,omitempty"`
-	OpenSince    *time.Time   `json:"open_since,omitempty"`
 }
 
 // GetStats returns current statistics.

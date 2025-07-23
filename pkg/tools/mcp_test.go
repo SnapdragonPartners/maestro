@@ -176,21 +176,21 @@ func TestShellTool_Exec(t *testing.T) {
 		t.Fatalf("Expected result to be map[string]any, got %T", result)
 	}
 
-	if stdout, ok := resultMap["stdout"]; !ok {
+	if stdout, okStdout := resultMap["stdout"]; !okStdout {
 		t.Error("Expected stdout in result")
-	} else if stdoutStr, ok := stdout.(string); !ok {
+	} else if stdoutStr, okStdout := stdout.(string); !okStdout {
 		t.Error("Expected stdout to be string")
 	} else if stdoutStr == "" {
 		t.Error("Expected non-empty stdout")
 	}
 
-	if _, ok := resultMap["stderr"]; !ok {
+	if _, okStderr := resultMap["stderr"]; !okStderr {
 		t.Error("Expected stderr in result")
 	}
 
-	if exitCode, ok := resultMap["exit_code"]; !ok {
+	if exitCode, okExitCode := resultMap["exit_code"]; !okExitCode {
 		t.Error("Expected exit_code in result")
-	} else if code, ok := exitCode.(int); !ok {
+	} else if code, okExitCode := exitCode.(int); !okExitCode {
 		t.Error("Expected exit_code to be int")
 	} else if code != 0 {
 		t.Errorf("Expected exit_code 0, got %d", code)

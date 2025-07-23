@@ -29,9 +29,9 @@ func (e *LocalExec) Available() bool {
 }
 
 // Run executes a command locally with the given options.
-func (e *LocalExec) Run(ctx context.Context, cmd []string, opts *ExecOpts) (ExecResult, error) {
+func (e *LocalExec) Run(ctx context.Context, cmd []string, opts *Opts) (Result, error) {
 	if len(cmd) == 0 {
-		return ExecResult{}, fmt.Errorf("command cannot be empty")
+		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
 	startTime := time.Now()
@@ -50,7 +50,7 @@ func (e *LocalExec) Run(ctx context.Context, cmd []string, opts *ExecOpts) (Exec
 	if opts.WorkDir != "" {
 		// Validate that the directory exists.
 		if _, err := os.Stat(opts.WorkDir); os.IsNotExist(err) {
-			return ExecResult{}, fmt.Errorf("working directory does not exist: %s", opts.WorkDir)
+			return Result{}, fmt.Errorf("working directory does not exist: %s", opts.WorkDir)
 		}
 		execCmd.Dir = opts.WorkDir
 	}
@@ -68,7 +68,7 @@ func (e *LocalExec) Run(ctx context.Context, cmd []string, opts *ExecOpts) (Exec
 
 	duration := time.Since(startTime)
 
-	result := ExecResult{
+	result := Result{
 		ExitCode:     exitCode,
 		Stdout:       stdout,
 		Stderr:       stderr,

@@ -374,8 +374,8 @@ func TestFindArchitectState(t *testing.T) {
 	}
 
 	// Create non-architect agents.
-	if err := store.SaveState("coder:001", "CODING", nil); err != nil {
-		t.Fatalf("Failed to save coder state: %v", err)
+	if coderErr := store.SaveState("coder:001", "CODING", nil); coderErr != nil {
+		t.Fatalf("Failed to save coder state: %v", coderErr)
 	}
 
 	state, err = server.findArchitectState()
@@ -387,8 +387,8 @@ func TestFindArchitectState(t *testing.T) {
 	}
 
 	// Create architect.
-	if err := store.SaveState("architect:001", "WAITING", nil); err != nil {
-		t.Fatalf("Failed to save architect state: %v", err)
+	if archErr := store.SaveState("architect:001", "WAITING", nil); archErr != nil {
+		t.Fatalf("Failed to save architect state: %v", archErr)
 	}
 
 	state, err = server.findArchitectState()
@@ -625,11 +625,11 @@ func TestParseLogLine(t *testing.T) {
 // MockDriver implements the agent.Driver interface for testing.
 type MockDriver struct {
 	id        string
-	agentType agent.AgentType
+	agentType agent.Type
 	state     proto.State
 }
 
-func NewMockDriver(id string, agentType agent.AgentType, state proto.State) *MockDriver {
+func NewMockDriver(id string, agentType agent.Type, state proto.State) *MockDriver {
 	return &MockDriver{
 		id:        id,
 		agentType: agentType,
@@ -637,20 +637,20 @@ func NewMockDriver(id string, agentType agent.AgentType, state proto.State) *Moc
 	}
 }
 
-func (m *MockDriver) GetID() string                 { return m.id }
-func (m *MockDriver) GetAgentType() agent.AgentType { return m.agentType }
-func (m *MockDriver) GetCurrentState() proto.State  { return m.state }
-func (m *MockDriver) SetState(state proto.State)    { m.state = state }
+func (m *MockDriver) GetID() string                { return m.id }
+func (m *MockDriver) GetAgentType() agent.Type     { return m.agentType }
+func (m *MockDriver) GetCurrentState() proto.State { return m.state }
+func (m *MockDriver) SetState(state proto.State)   { m.state = state }
 
 // Minimal implementations for interface compliance (using context.Context).
-func (m *MockDriver) Initialize(_ context.Context) error    { return nil }
-func (m *MockDriver) Run(_ context.Context) error           { return nil }
-func (m *MockDriver) Step(_ context.Context) (bool, error)  { return false, nil }
-func (m *MockDriver) GetStateData() map[string]any          { return make(map[string]any) }
-func (m *MockDriver) ValidateState(state proto.State) error { return nil }
-func (m *MockDriver) GetValidStates() []proto.State         { return []proto.State{} }
-func (m *MockDriver) Shutdown(_ context.Context) error      { return nil }
-func (m *MockDriver) ProcessMessage(_ context.Context, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+func (m *MockDriver) Initialize(_ context.Context) error            { return nil }
+func (m *MockDriver) Run(_ context.Context) error                   { return nil }
+func (m *MockDriver) Step(_ context.Context) (bool, error)          { return false, nil }
+func (m *MockDriver) GetStateData() map[string]any                  { return make(map[string]any) }
+func (m *MockDriver) ValidateState(_ /* state */ proto.State) error { return nil }
+func (m *MockDriver) GetValidStates() []proto.State                 { return []proto.State{} }
+func (m *MockDriver) Shutdown(_ context.Context) error              { return nil }
+func (m *MockDriver) ProcessMessage(_ context.Context, _ /* msg */ *proto.AgentMsg) (*proto.AgentMsg, error) {
 	return nil, fmt.Errorf("mock driver - no message processing implemented")
 }
 
@@ -695,7 +695,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 	// Test 1: Initial agent registration.
 	t.Run("InitialAgentRegistration", func(t *testing.T) {
 		// Create and register a mock coder agent.
-		mockCoder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
+		mockCoder := NewMockDriver("claude_sonnet4:001", agent.TypeCoder, proto.StateWaiting)
 		dispatcher.Attach(mockCoder)
 
 		// Get agents from web UI.
@@ -794,7 +794,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		t.Logf("✅ Agent detachment verified: agent list is empty during restart")
 
 		// Step 2: Reattach a new agent instance (simulating restart completion).
-		newMockCoder := NewMockDriver(agentID, agent.AgentTypeCoder, proto.StateWaiting)
+		newMockCoder := NewMockDriver(agentID, agent.TypeCoder, proto.StateWaiting)
 		dispatcher.Attach(newMockCoder)
 
 		// Verify agent reappears.
@@ -829,7 +829,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 	// Test 4: Multiple agent restart scenario.
 	t.Run("MultipleAgentHandling", func(t *testing.T) {
 		// Add a second agent (architect).
-		architect := NewMockDriver("openai_o3:001", agent.AgentTypeArchitect, proto.StateWaiting)
+		architect := NewMockDriver("openai_o3:001", agent.TypeArchitect, proto.StateWaiting)
 		dispatcher.Attach(architect)
 
 		// Verify both agents are present.
@@ -862,7 +862,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		}
 
 		// Reattach coder.
-		newCoder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
+		newCoder := NewMockDriver("claude_sonnet4:001", agent.TypeCoder, proto.StateWaiting)
 		dispatcher.Attach(newCoder)
 
 		req = httptest.NewRequest(http.MethodGet, "/api/agents", nil)
@@ -922,8 +922,8 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 	// Test scenario: Architect monitoring stability during coder restart cycles.
 	t.Run("ArchitectStabilityDuringCoderRestart", func(t *testing.T) {
 		// Step 1: Register architect and coder agents.
-		architect := NewMockDriver("openai_o3:001", agent.AgentTypeArchitect, proto.StateWaiting)
-		coder := NewMockDriver("claude_sonnet4:001", agent.AgentTypeCoder, proto.StateWaiting)
+		architect := NewMockDriver("openai_o3:001", agent.TypeArchitect, proto.StateWaiting)
+		coder := NewMockDriver("claude_sonnet4:001", agent.TypeCoder, proto.StateWaiting)
 
 		dispatcher.Attach(architect)
 		dispatcher.Attach(coder)
@@ -996,7 +996,7 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 		t.Logf("✅ Coder restart: architect remains stable in %s state", agents[0].State)
 
 		// Step 4: Reattach new coder instance.
-		newCoder := NewMockDriver(originalCoderID, agent.AgentTypeCoder, proto.StateWaiting)
+		newCoder := NewMockDriver(originalCoderID, agent.TypeCoder, proto.StateWaiting)
 		dispatcher.Attach(newCoder)
 
 		// Check both agents are visible again.
@@ -1051,7 +1051,7 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 			}
 
 			// Reattach coder.
-			anotherCoder := NewMockDriver(originalCoderID, agent.AgentTypeCoder, proto.StateWaiting)
+			anotherCoder := NewMockDriver(originalCoderID, agent.TypeCoder, proto.StateWaiting)
 			dispatcher.Attach(anotherCoder)
 
 			// Verify both agents present.

@@ -3,7 +3,7 @@ package agent
 import "fmt"
 
 // Validate validates the agent configuration.
-func (ac *AgentConfig) Validate() error {
+func (ac *Config) Validate() error {
 	if ac.ID == "" {
 		return fmt.Errorf("%w: ID cannot be empty", ErrInvalidConfig)
 	}

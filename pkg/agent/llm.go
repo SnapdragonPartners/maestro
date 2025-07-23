@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"io"
+
 	"orchestrator/pkg/tools"
 )
 
@@ -28,17 +29,17 @@ type CompletionMessage struct {
 
 // ToolCall represents a tool call made by the LLM.
 type ToolCall struct {
+	Parameters map[string]any `json:"parameters"`
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
-	Parameters map[string]any `json:"parameters"`
 }
 
 // CompletionRequest represents a request to generate a completion.
 type CompletionRequest struct {
 	Messages    []CompletionMessage
-	MaxTokens   int
-	Temperature float32
 	Tools       []tools.ToolDefinition
+	Temperature float32
+	MaxTokens   int
 }
 
 // CompletionResponse represents a response from a completion request.
@@ -49,9 +50,9 @@ type CompletionResponse struct {
 
 // StreamChunk represents a chunk of streamed completion response.
 type StreamChunk struct {
+	Error   error
 	Content string
 	Done    bool
-	Error   error
 }
 
 // LLMClient defines the interface for language model interactions.

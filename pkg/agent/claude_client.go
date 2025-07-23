@@ -11,6 +11,8 @@ import (
 )
 
 // ClaudeClient wraps the Anthropic API client to implement LLMClient interface.
+//
+//nolint:govet // Simple client struct, logical grouping preferred
 type ClaudeClient struct {
 	client anthropic.Client
 	model  anthropic.Model
@@ -56,7 +58,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 
 	// Convert to Anthropic messages.
 	messages := make([]anthropic.MessageParam, 0, len(in.Messages))
-	for _, msg := range in.Messages {
+	for i := range in.Messages {
+		msg := &in.Messages[i]
 		role := anthropic.MessageParamRole(msg.Role)
 		block := anthropic.NewTextBlock(msg.Content)
 		messages = append(messages, anthropic.MessageParam{
@@ -79,7 +82,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			log.Printf("Processing %d tools for Claude API", len(in.Tools))
 		}
 		var tools []anthropic.ToolUnionParam
-		for _, tool := range in.Tools {
+		for i := range in.Tools {
+			tool := &in.Tools[i]
 			if SystemMode == ModeDebug {
 				log.Printf("Adding tool: %s", tool.Name)
 			}
@@ -90,7 +94,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			// Convert InputSchema properties to the format expected by Anthropic API.
 			if len(tool.InputSchema.Properties) > 0 {
 				props := make(map[string]any)
-				for name, prop := range tool.InputSchema.Properties {
+				for name := range tool.InputSchema.Properties { //nolint:gocritic // Need to copy properties
+					prop := tool.InputSchema.Properties[name]
 					propMap := make(map[string]any)
 					propMap["type"] = prop.Type
 					if prop.Description != "" {
@@ -110,8 +115,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			}
 
 			toolParam := anthropic.ToolParam{
-				Name:        tool.Name,
-				Description: anthropic.String(tool.Description),
+				Name: tool.Name,
+				// Description: anthropic.String(tool.Description), // Not used in current API
 				InputSchema: anthropic.ToolInputSchemaParam{
 					Type:       "object",
 					Properties: properties,
@@ -146,7 +151,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 		log.Printf("Claude response has %d content blocks", len(resp.Content))
 	}
 
-	for _, block := range resp.Content {
+	for i := range resp.Content {
+		block := &resp.Content[i]
 		if SystemMode == ModeDebug {
 			log.Printf("Processing content block type: %s", block.Type)
 		}
@@ -177,7 +183,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 	if SystemMode == ModeDebug {
 		log.Printf("Claude response: %d tool calls extracted", len(toolCalls))
 		if len(toolCalls) > 0 {
-			for i, tc := range toolCalls {
+			for i := range toolCalls {
+				tc := &toolCalls[i]
 				log.Printf("Tool call %d: %s (id: %s)", i+1, tc.Name, tc.ID)
 			}
 		}

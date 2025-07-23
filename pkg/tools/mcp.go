@@ -27,6 +27,8 @@ type InputSchema struct {
 }
 
 // Property defines a single property in the input schema.
+//
+//nolint:govet // fieldalignment: JSON serialization order requirements
 type Property struct {
 	Type        string               `json:"type"`
 	Description string               `json:"description,omitempty"`
@@ -39,6 +41,8 @@ type Property struct {
 }
 
 // ToolUse represents a Claude tool use request.
+//
+//nolint:govet // fieldalignment: JSON serialization order requirements
 type ToolUse struct {
 	ID    string         `json:"id"`
 	Name  string         `json:"name"`
@@ -46,6 +50,8 @@ type ToolUse struct {
 }
 
 // ToolResult represents a result from executing a tool.
+//
+//nolint:govet // fieldalignment: JSON serialization order requirements
 type ToolResult struct {
 	ToolUseID string `json:"tool_use_id"`
 	Content   any    `json:"content"`
@@ -62,6 +68,8 @@ type ToolChannel interface {
 }
 
 // Registry manages registered MCP tools.
+//
+//nolint:govet // fieldalignment: Simple registry struct, optimization not critical
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]ToolChannel
@@ -144,6 +152,8 @@ func (r *Registry) Clear() {
 }
 
 // ShellTool implements ToolChannel for shell command execution.
+//
+//nolint:govet // fieldalignment: Logical grouping preferred over memory optimization
 type ShellTool struct {
 	executor        exec.Executor
 	readOnly        bool
@@ -230,7 +240,7 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 // executeShellCommand performs actual shell command execution using the executor interface.
 func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (any, error) {
 	// Create ExecOpts with the shell command and security settings.
-	opts := exec.ExecOpts{
+	opts := exec.Opts{
 		WorkDir:         cwd,
 		Timeout:         30 * time.Second, // Default timeout
 		ReadOnly:        s.readOnly,

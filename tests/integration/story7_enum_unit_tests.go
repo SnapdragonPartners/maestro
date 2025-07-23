@@ -9,6 +9,7 @@ import (
 
 // TestStory7ParseRequestType tests the ParseRequestType function with various inputs.
 func TestStory7ParseRequestType(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name          string
 		input         string
@@ -111,6 +112,7 @@ func TestStory7ParseRequestType(t *testing.T) {
 
 // TestStory7ParseApprovalType tests the ParseApprovalType function.
 func TestStory7ParseApprovalType(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name          string
 		input         string
@@ -208,6 +210,7 @@ func TestStory7ParseApprovalType(t *testing.T) {
 
 // TestStory7StateTransitionValidation tests agent state transition validation.
 func TestStory7StateTransitionValidation(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name     string
 		from     proto.State
@@ -295,6 +298,7 @@ func TestStory7StateTransitionValidation(t *testing.T) {
 
 // TestStory7MessageTypeValidation tests message type validation and parsing.
 func TestStory7MessageTypeValidation(t *testing.T) {
+	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
 		name        string
 		msgType     proto.MsgType

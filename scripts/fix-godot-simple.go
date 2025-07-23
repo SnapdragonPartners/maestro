@@ -1,3 +1,4 @@
+//nolint:cyclop // Utility script, complexity acceptable
 package main
 
 import (

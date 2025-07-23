@@ -14,6 +14,8 @@ import (
 )
 
 // StackAnalyzer handles architect-based stack analysis for bootstrap.
+//
+//nolint:govet // Analysis struct, logical grouping preferred
 type StackAnalyzer struct {
 	specFilePath string
 	llmClient    agent.LLMClient
@@ -38,6 +40,8 @@ func NewStackAnalyzer(specFilePath string, llmClient agent.LLMClient) *StackAnal
 }
 
 // StackAnalysisResult represents the result of stack analysis.
+//
+//nolint:govet // Large complex result struct, logical grouping preferred over memory optimization
 type StackAnalysisResult struct {
 	Analysis       string                 `json:"analysis"`
 	Recommendation PlatformRecommendation `json:"recommendation"`
@@ -185,6 +189,8 @@ func (s *StackAnalyzer) GetFallbackRecommendation(reason string) *PlatformRecomm
 }
 
 // StackAnalysisConfig holds configuration for stack analysis.
+//
+//nolint:govet // Configuration struct, logical grouping preferred
 type StackAnalysisConfig struct {
 	SpecFilePath     string  `json:"spec_file_path"`
 	MinConfidence    float64 `json:"min_confidence"`    // Minimum confidence to proceed

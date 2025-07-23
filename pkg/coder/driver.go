@@ -28,6 +28,30 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// Coder implements the v2 FSM using agent foundation.
+type Coder struct {
+	*agent.BaseStateMachine // Directly embed state machine
+	agentConfig             *agent.Config
+	configAgent             *config.Agent
+	contextManager          *contextmgr.ContextManager
+	llmClient               agent.LLMClient
+	renderer                *templates.Renderer
+	logger                  *logx.Logger
+	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
+	workspaceManager        *WorkspaceManager              // Git worktree management
+	buildRegistry           *build.Registry                // Build backend registry
+	buildService            *build.Service                 // Build service for MCP tools
+	longRunningExecutor     *execpkg.LongRunningDockerExec // Long-running Docker executor for container per story
+	pendingApprovalRequest  *ApprovalRequest               // REQUEST→RESULT flow state
+	pendingQuestion         *Question
+	storyCh                 <-chan *proto.AgentMsg // Channel to receive story messages
+	replyCh                 <-chan *proto.AgentMsg // Channel to receive replies (for future use)
+	workDir                 string                 // Current working directory (may be story-specific)
+	originalWorkDir         string                 // Original agent work directory (for cleanup)
+	containerName           string                 // Current story container name
+	codingBudget            int                    // Iteration budgets
+}
+
 // getTools returns specific tools by name (variadic for clean handler usage).
 func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
 	if len(toolNames) == 0 {
@@ -40,9 +64,10 @@ func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
 	// Filter to only requested tools.
 	var requestedTools []tools.ToolDefinition
 	for _, toolName := range toolNames {
-		for _, tool := range allTools {
+		for i := range allTools {
+			tool := &allTools[i]
 			if tool.Name == toolName {
-				requestedTools = append(requestedTools, tool)
+				requestedTools = append(requestedTools, *tool)
 				break
 			}
 		}
@@ -50,8 +75,9 @@ func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
 
 	c.logger.Debug("Retrieved %d tools: %v", len(requestedTools), toolNames)
 	// Debug: Log tool definitions to identify potential issues.
-	for _, tool := range requestedTools {
-		c.logger.Debug("Tool %s: %+v", tool.Name, tool)
+	for i := range requestedTools {
+		tool := &requestedTools[i]
+		c.logger.Debug("Tool %s: %+v", tool.Name, *tool)
 	}
 	return requestedTools
 }
@@ -77,7 +103,8 @@ func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.Completio
 
 	// Add conversation history from context manager (critical for tool results).
 	contextMessages := c.contextManager.GetMessages()
-	for _, msg := range contextMessages {
+	for i := range contextMessages {
+		msg := &contextMessages[i]
 		// Skip empty messages to prevent malformed prompts.
 		if strings.TrimSpace(msg.Content) == "" {
 			continue
@@ -182,36 +209,6 @@ const (
 	maxPlainBlockSize = 50         // Maximum lines for plain content before saving as file
 )
 
-// Coder implements the v2 FSM using agent foundation.
-type Coder struct {
-	*agent.BaseStateMachine // Directly embed state machine
-	agentConfig             *agent.AgentConfig
-	configAgent             *config.Agent
-	contextManager          *contextmgr.ContextManager
-	llmClient               agent.LLMClient
-	renderer                *templates.Renderer
-	workDir                 string // Current working directory (may be story-specific)
-	originalWorkDir         string // Original agent work directory (for cleanup)
-	logger                  *logx.Logger
-	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
-	workspaceManager        *WorkspaceManager              // Git worktree management
-	buildRegistry           *build.Registry                // Build backend registry
-	buildService            *build.BuildService            // Build service for MCP tools
-	longRunningExecutor     *execpkg.LongRunningDockerExec // Long-running Docker executor for container per story
-	containerName           string                         // Current story container name
-
-	// Iteration budgets.
-	codingBudget int
-
-	// REQUEST→RESULT flow state.
-	pendingApprovalRequest *ApprovalRequest
-	pendingQuestion        *Question
-
-	// Channels for dispatcher communication.
-	storyCh <-chan *proto.AgentMsg // Channel to receive story messages
-	replyCh <-chan *proto.AgentMsg // Channel to receive replies (for future use)
-}
-
 // ApprovalRequest represents a pending approval request.
 type ApprovalRequest struct {
 	ID      string // Correlation ID for tracking responses
@@ -299,7 +296,7 @@ func convertApprovalData(data any) (*proto.ApprovalResult, error) {
 }
 
 // NewCoder creates a new coder using agent foundation.
-func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.BuildService, logger *logx.Logger) (*Coder, error) {
+func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.Service, logger *logx.Logger) (*Coder, error) {
 	if llmClient == nil {
 		return nil, logx.Errorf("LLM client is required")
 	}
@@ -319,7 +316,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 	}
 
 	// Create agent context with logger.
-	agentCtx := &agent.AgentContext{
+	agentCtx := &agent.Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, fmt.Sprintf("[%s] ", agentID), log.LstdFlags),
 		Store:   stateStore,
@@ -327,7 +324,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 	}
 
 	// Create agent config.
-	agentCfg := &agent.AgentConfig{
+	agentCfg := &agent.Config{
 		ID:      agentID,
 		Type:    "coder",
 		Context: *agentCtx,
@@ -375,7 +372,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 }
 
 // NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode).
-func NewCoderWithClaude(agentID, _, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.BuildService) (*Coder, error) {
+func NewCoderWithClaude(agentID, _, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
 	// Create Claude LLM client.
 	llmClient := agent.NewClaudeClient(apiKey)
 
@@ -1057,7 +1054,8 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 
 	filesCreated := 0
 
-	for i, toolCall := range toolCalls {
+	for i := range toolCalls {
+		toolCall := &toolCalls[i]
 		c.logger.Info("Processing tool call %d: name=%s, id=%s", i+1, toolCall.Name, toolCall.ID)
 
 		if toolCall.Name == tools.ToolDone {
@@ -2083,7 +2081,8 @@ func (c *Coder) formatContextAsString() string {
 	}
 
 	parts := make([]string, 0, len(messages))
-	for _, msg := range messages {
+	for i := range messages {
+		msg := &messages[i]
 		parts = append(parts, fmt.Sprintf("%s: %s", msg.Role, msg.Content))
 	}
 
@@ -2185,8 +2184,8 @@ func (c *Coder) GetStateData() map[string]any {
 }
 
 // GetAgentType returns the type of the agent.
-func (c *Coder) GetAgentType() agent.AgentType {
-	return agent.AgentTypeCoder
+func (c *Coder) GetAgentType() agent.Type {
+	return agent.TypeCoder
 }
 
 // ValidateState checks if a state is valid for this coder agent.
@@ -2343,7 +2342,7 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	}
 
 	// Create execution options for the new container.
-	execOpts := execpkg.ExecOpts{
+	execOpts := execpkg.Opts{
 		WorkDir:         c.workDir,
 		ReadOnly:        readonly,
 		NetworkDisabled: readonly,    // Disable network during planning for security
@@ -2370,7 +2369,7 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	sanitizedAgentID := utils.SanitizeContainerName(agentID)
 
 	// Start new container with appropriate configuration.
-	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, execOpts)
+	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
 	if err != nil {
 		return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
 	}
@@ -2412,7 +2411,7 @@ func (c *Coder) cleanupContainer(ctx context.Context, reason string) {
 }
 
 // updateShellToolForStory updates the shell tool to use the story-specific container context.
-func (c *Coder) updateShellToolForStory(storyCtx context.Context) error {
+func (c *Coder) updateShellToolForStory(_ /* storyCtx */ context.Context) error {
 	// Update the shell tool to use the long-running executor.
 	if err := tools.UpdateShellToolExecutor(c.longRunningExecutor); err != nil {
 		return logx.Wrap(err, "failed to update shell tool with long-running executor")
@@ -2427,7 +2426,7 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 		return "", logx.Errorf("no active container for shell execution")
 	}
 
-	opts := execpkg.ExecOpts{
+	opts := execpkg.Opts{
 		WorkDir: "/workspace",
 		Timeout: 30 * time.Second,
 	}
@@ -2584,7 +2583,7 @@ func (c *Coder) handlePlanSubmission(_ context.Context, sm *agent.BaseStateMachi
 }
 
 // handleCompletionSubmission processes completion signal from mark_story_complete tool.
-func (c *Coder) handleCompletionSubmission(ctx context.Context, sm *agent.BaseStateMachine, completionData any) (proto.State, bool, error) {
+func (c *Coder) handleCompletionSubmission(_ /* ctx */ context.Context, sm *agent.BaseStateMachine, completionData any) (proto.State, bool, error) {
 	c.logger.Debug("Processing completion submission, data type: %T", completionData)
 
 	if completionData == nil {
@@ -2725,7 +2724,7 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM planning response")
 	}
 
-	if len(resp.Content) == 0 && len(resp.ToolCalls) == 0 {
+	if resp.Content == "" && len(resp.ToolCalls) == 0 {
 		return proto.StateError, false, logx.Errorf("empty response from Claude")
 	}
 
@@ -2809,7 +2808,8 @@ func (c *Coder) restoreCurrentFixes(any)       {}
 func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
 	c.logger.Info("🧑‍💻 Processing %d tool calls in planning state", len(toolCalls))
 
-	for _, toolCall := range toolCalls {
+	for i := range toolCalls {
+		toolCall := &toolCalls[i]
 		c.logger.Info("Executing planning tool: %s", toolCall.Name)
 
 		// Get tool from registry and execute.
@@ -2836,7 +2836,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 
 		// No state transition requested - continue in current state.
 		// Add tool execution results to context so Claude can see them.
-		c.addToolResultToContext(toolCall, result)
+		c.addToolResultToContext(*toolCall, result)
 		c.logger.Info("Tool %s executed successfully, continuing in planning", toolCall.Name)
 	}
 
@@ -2844,7 +2844,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 }
 
 // handleToolStateTransition processes generic tool state transitions.
-func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
+func (c *Coder) handleToolStateTransition(_ /* ctx */ context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
 	// Store all result data in state machine (let the tool decide what to store).
 	for key, value := range resultMap {
 		if key != "next_state" && key != "success" && key != "message" {
@@ -2893,8 +2893,8 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 	}
 }
 
-// handleDone implements terminal logic for DONE state.
-func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+//nolint:unparam // Error return required for interface consistency
+func (c *Coder) handleDone(_ /* ctx */ context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// DONE is terminal - orchestrator will handle all cleanup and restart.
 	// Only log once when entering DONE state to avoid spam.
 	if val, exists := sm.GetStateValue(KeyDoneLogged); !exists || val != true {
@@ -2906,8 +2906,8 @@ func (c *Coder) handleDone(ctx context.Context, sm *agent.BaseStateMachine) (pro
 	return proto.StateDone, true, nil
 }
 
-// handleError implements terminal logic for ERROR state.
-func (c *Coder) handleError(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+//nolint:unparam // Error return required for interface consistency
+func (c *Coder) handleError(_ context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// ERROR is truly terminal - orchestrator handles all cleanup and story requeue.
 	// Only log once when entering ERROR state to avoid spam.
 	if val, exists := sm.GetStateValue(KeyDoneLogged); !exists || val != true {
@@ -2971,7 +2971,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 	defer cancel()
 
 	// Create test request.
-	req := &build.BuildRequest{
+	req := &build.Request{
 		ProjectRoot: worktreePath,
 		Operation:   "test",
 		Timeout:     300, // 5 minutes
@@ -3016,7 +3016,7 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 	filesCreated, _ := sm.GetStateValue(KeyFilesCreated)
 
 	// Check if we have any actual changes to review.
-	if gitDiff == "" || len(strings.TrimSpace(gitDiff)) == 0 {
+	if gitDiff == "" || strings.TrimSpace(gitDiff) == "" {
 		// No changes - send completion approval instead of code approval.
 		c.logger.Info("🧑‍💻 No file changes detected, requesting story completion approval")
 
@@ -3063,7 +3063,7 @@ func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMach
 }
 
 // generateGitDiff generates a git diff showing changes made to the story branch.
-func (c *Coder) generateGitDiff(ctx context.Context, sm *agent.BaseStateMachine) (string, error) {
+func (c *Coder) generateGitDiff(ctx context.Context, _ *agent.BaseStateMachine) (string, error) {
 	// Get the shell tool from registry.
 	tool, err := tools.Get("shell")
 	if err != nil {
@@ -3212,7 +3212,7 @@ func (c *Coder) pushBranchAndCreatePR(ctx context.Context, sm *agent.BaseStateMa
 		return logx.Errorf("failed to check git status: %w\nOutput: %s", err, string(statusOutput))
 	}
 
-	if len(strings.TrimSpace(string(statusOutput))) == 0 {
+	if strings.TrimSpace(string(statusOutput)) == "" {
 		c.logger.Info("No changes to commit for story %s", storyIDStr)
 		return nil // No changes, skip push and PR creation
 	}
@@ -3308,7 +3308,7 @@ func (c *Coder) createPullRequest(ctx context.Context, worktreePath, branchName,
 }
 
 // sendMergeRequest sends a merge request to the architect for PR merging.
-func (c *Coder) sendMergeRequest(ctx context.Context, sm *agent.BaseStateMachine) error {
+func (c *Coder) sendMergeRequest(_ context.Context, sm *agent.BaseStateMachine) error {
 	storyID, _ := sm.GetStateValue(KeyStoryID)
 	prURL, _ := sm.GetStateValue(KeyPRURL)
 	branchName, _ := sm.GetStateValue(KeyPushedBranch)

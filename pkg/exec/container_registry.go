@@ -237,7 +237,8 @@ func (r *ContainerRegistry) cleanupStaleContainers(ctx context.Context, executor
 
 	r.logger.Info("📦 Found %d stale containers, cleaning up", len(staleContainers))
 
-	for _, container := range staleContainers {
+	for i := range staleContainers {
+		container := &staleContainers[i]
 		r.logger.Info("📦 Cleaning up stale container %s (agent: %s, idle for %v)",
 			container.ContainerName, container.AgentID, time.Since(container.LastUsed))
 

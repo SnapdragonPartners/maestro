@@ -62,7 +62,7 @@ func main() {
 
 	// Test build operation.
 	t.Run("Build Operation", func(t *testing.T) {
-		req := &BuildRequest{
+		req := &Request{
 			ProjectRoot: tempDir,
 			Operation:   "build",
 			Timeout:     30,
@@ -100,7 +100,7 @@ func main() {
 
 	// Test test operation.
 	t.Run("Test Operation", func(t *testing.T) {
-		req := &BuildRequest{
+		req := &Request{
 			ProjectRoot: tempDir,
 			Operation:   "test",
 			Timeout:     30,
@@ -128,7 +128,7 @@ func main() {
 
 	// Test invalid operation.
 	t.Run("Invalid Operation", func(t *testing.T) {
-		req := &BuildRequest{
+		req := &Request{
 			ProjectRoot: tempDir,
 			Operation:   "invalid",
 			Timeout:     30,
@@ -187,7 +187,7 @@ func TestBuildRequestValidation(t *testing.T) {
 	service := NewBuildService()
 
 	// Test empty project root.
-	req := &BuildRequest{
+	req := &Request{
 		ProjectRoot: "",
 		Operation:   "build",
 	}
@@ -203,7 +203,7 @@ func TestBuildRequestValidation(t *testing.T) {
 	}
 
 	// Test empty operation.
-	req = &BuildRequest{
+	req = &Request{
 		ProjectRoot: "/tmp",
 		Operation:   "",
 	}

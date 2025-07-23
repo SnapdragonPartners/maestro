@@ -35,6 +35,8 @@ const (
 )
 
 // QueuedStory represents a story in the architect's queue.
+//
+//nolint:govet // Large complex struct, logical grouping preferred
 type QueuedStory struct {
 	ID              string      `json:"id"`
 	Title           string      `json:"title"`
@@ -49,6 +51,8 @@ type QueuedStory struct {
 }
 
 // Queue manages the architect's story queue with dependency resolution.
+//
+//nolint:govet // Simple management struct, logical grouping preferred
 type Queue struct {
 	stories      map[string]*QueuedStory
 	storiesDir   string

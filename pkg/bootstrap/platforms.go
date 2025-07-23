@@ -6,6 +6,8 @@ import (
 )
 
 // SupportedPlatform represents a platform that Maestro can bootstrap.
+//
+//nolint:govet // Configuration struct, logical grouping preferred
 type SupportedPlatform struct {
 	Name        string   `json:"name"`
 	DisplayName string   `json:"display_name"`
@@ -17,6 +19,8 @@ type SupportedPlatform struct {
 }
 
 // PlatformRecommendation represents an architect's platform recommendation.
+//
+//nolint:govet // Recommendation struct, logical grouping preferred
 type PlatformRecommendation struct {
 	Platform   string            `json:"platform"`
 	Confidence float64           `json:"confidence"`
@@ -120,9 +124,9 @@ func GetSupportedPlatforms() map[string]SupportedPlatform {
 // GetStablePlatforms returns only stable platforms.
 func GetStablePlatforms() map[string]SupportedPlatform {
 	stable := make(map[string]SupportedPlatform)
-	for name, platform := range PlatformWhitelist {
-		if platform.Stable {
-			stable[name] = platform
+	for name := range PlatformWhitelist {
+		if PlatformWhitelist[name].Stable {
+			stable[name] = PlatformWhitelist[name]
 		}
 	}
 	return stable
@@ -204,13 +208,14 @@ func RecommendPlatformsFromText(text string) []PlatformRecommendation {
 	var recommendations []PlatformRecommendation
 
 	// Score all stable platforms
-	for name, platform := range GetStablePlatforms() {
+	stablePlatforms := GetStablePlatforms()
+	for name := range stablePlatforms {
 		score := ScorePlatformKeywords(name, text)
 		if score > 0.1 { // Only include platforms with some confidence
 			recommendations = append(recommendations, PlatformRecommendation{
 				Platform:   name,
 				Confidence: score,
-				Rationale:  fmt.Sprintf("Keywords matched: %v", platform.Keywords),
+				Rationale:  fmt.Sprintf("Keywords matched: %v", stablePlatforms[name].Keywords),
 				MultiStack: false,
 				Platforms:  []string{name},
 			})

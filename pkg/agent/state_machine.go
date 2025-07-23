@@ -18,10 +18,10 @@ const (
 
 // StateTransition represents a transition between states.
 type StateTransition struct {
+	Metadata  map[string]any
+	Timestamp time.Time
 	FromState proto.State
 	ToState   proto.State
-	Timestamp time.Time
-	Metadata  map[string]any
 }
 
 // StateMachine defines the interface for state machine implementations.
@@ -61,6 +61,8 @@ type StateStore interface {
 }
 
 // BaseStateMachine provides common state machine functionality.
+//
+//nolint:govet // Large complex state machine struct, logical grouping preferred over memory optimization
 type BaseStateMachine struct {
 	agentID      string
 	currentState proto.State

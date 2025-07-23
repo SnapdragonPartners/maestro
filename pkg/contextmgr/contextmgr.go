@@ -15,6 +15,8 @@ type Message struct {
 }
 
 // ContextManager manages conversation context and token counting.
+//
+//nolint:govet // Simple struct, optimization not needed
 type ContextManager struct {
 	messages    []Message
 	modelConfig *config.ModelCfg
@@ -59,7 +61,8 @@ func (cm *ContextManager) AddMessage(role, content string) {
 // This is a stub implementation that counts characters as a proxy for tokens.
 func (cm *ContextManager) CountTokens() int {
 	totalLength := 0
-	for _, message := range cm.messages {
+	for i := range cm.messages {
+		message := &cm.messages[i]
 		// Count both role and content characters.
 		totalLength += len(message.Role) + len(message.Content)
 	}
@@ -169,7 +172,7 @@ func (cm *ContextManager) performSummarization(_ int) error {
 	return nil
 }
 
-// createConversationSummary generates a concise summary of conversation messages.
+//nolint:cyclop // Complex summarization logic, acceptable for this use case
 func (cm *ContextManager) createConversationSummary(messages []Message) string {
 	if len(messages) == 0 {
 		return ""
@@ -181,7 +184,8 @@ func (cm *ContextManager) createConversationSummary(messages []Message) string {
 	var codeActions []string
 	var issues []string
 
-	for _, msg := range messages {
+	for i := range messages {
+		msg := &messages[i]
 		content := strings.TrimSpace(msg.Content)
 		if content == "" {
 			continue
@@ -288,7 +292,8 @@ func (cm *ContextManager) GetContextSummary() string {
 
 	roleCounts := make(map[string]int)
 
-	for _, message := range cm.messages {
+	for i := range cm.messages {
+		message := &cm.messages[i]
 		roleCounts[message.Role]++
 	}
 

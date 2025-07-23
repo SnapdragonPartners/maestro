@@ -1,3 +1,4 @@
+//nolint:cyclop // Package contains CLI parsing logic, complexity acceptable
 package main
 
 import (
@@ -123,7 +124,7 @@ func handleBootstrapDocker() {
 	nodeBackend := &build.NodeBackend{}
 	pythonBackend := &build.PythonBackend{}
 
-	var backend build.BuildBackend
+	var backend build.Backend
 	if goBackend.Detect(currentDir) {
 		backend = goBackend
 	} else if nodeBackend.Detect(currentDir) {
@@ -152,6 +153,7 @@ func handleBootstrapDocker() {
 	fmt.Printf("Successfully generated Dockerfile and .dockerignore for %s project\n", backend.Name())
 }
 
+//nolint:cyclop,maintidx // Main function with CLI parsing, complexity acceptable
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s [bootstrap-docker|run] ...\n", os.Args[0])
@@ -165,9 +167,9 @@ func main() {
 	}
 
 	// Parse agent type - default to coder if not specified.
-	agentType := string(agent.AgentTypeCoder)
+	agentType := string(agent.TypeCoder)
 	if len(os.Args) >= 3 && os.Args[1] == "run" {
-		if os.Args[2] == string(agent.AgentTypeCoder) || os.Args[2] == string(agent.AgentTypeArchitect) {
+		if os.Args[2] == string(agent.TypeCoder) || os.Args[2] == string(agent.TypeArchitect) {
 			agentType = os.Args[2]
 		} else if os.Args[2] != "--input" {
 			fmt.Fprintf(os.Stderr, "Usage: %s run [coder|architect] --input <file.json> [--workdir <dir>] [--cleanup]\n", os.Args[0])
@@ -184,7 +186,7 @@ func main() {
 
 	// Determine starting index for flag parsing.
 	startIdx := 2
-	if len(os.Args) >= 3 && (os.Args[2] == string(agent.AgentTypeCoder) || os.Args[2] == string(agent.AgentTypeArchitect)) {
+	if len(os.Args) >= 3 && (os.Args[2] == string(agent.TypeCoder) || os.Args[2] == string(agent.TypeArchitect)) {
 		startIdx = 3
 	}
 
@@ -232,12 +234,18 @@ func main() {
 	inputData, err := os.ReadFile(inputFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read input file: %v\n", err)
-		os.Exit(1)
+		if cleanup && workDir != "" {
+			_ = os.RemoveAll(workDir)
+		}
+		os.Exit(1) //nolint:gocritic // Explicit cleanup before exit
 	}
 
 	var inputMsg proto.AgentMsg
 	if unmarshalErr := json.Unmarshal(inputData, &inputMsg); unmarshalErr != nil {
 		fmt.Fprintf(os.Stderr, "Failed to parse input JSON: %v\n", unmarshalErr)
+		if cleanup && workDir != "" {
+			_ = os.RemoveAll(workDir)
+		}
 		os.Exit(1)
 	}
 
@@ -245,6 +253,9 @@ func main() {
 	stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create state store: %v\n", err)
+		if cleanup && workDir != "" {
+			_ = os.RemoveAll(workDir)
+		}
 		os.Exit(1)
 	}
 
@@ -256,7 +267,7 @@ func main() {
 
 	// Create agent based on type with auto-detection.
 	switch agentType {
-	case string(agent.AgentTypeCoder):
+	case string(agent.TypeCoder):
 		var claudeAgent *coder.Coder
 
 		// Auto-detect mode based on API key availability.
@@ -283,11 +294,17 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "No ANTHROPIC_API_KEY found, would use mock mode (but mocks removed)\n")
 			fmt.Fprintf(os.Stderr, "Please set ANTHROPIC_API_KEY environment variable\n")
+			if cleanup && workDir != "" {
+				_ = os.RemoveAll(workDir)
+			}
 			os.Exit(1)
 		}
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to create coder: %v\n", err)
+			if cleanup && workDir != "" {
+				_ = os.RemoveAll(workDir)
+			}
 			os.Exit(1)
 		}
 
@@ -296,6 +313,9 @@ func main() {
 		result, err := processWithApprovals(ctx, claudeAgent, &inputMsg, true) // Always live mode now
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to process message: %v\n", err)
+			if cleanup && workDir != "" {
+				_ = os.RemoveAll(workDir)
+			}
 			os.Exit(1)
 		}
 
@@ -303,17 +323,26 @@ func main() {
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to marshal result: %v\n", err)
+			if cleanup && workDir != "" {
+				_ = os.RemoveAll(workDir)
+			}
 			os.Exit(1)
 		}
 		fmt.Println(string(jsonData))
 
-	case string(agent.AgentTypeArchitect):
+	case string(agent.TypeArchitect):
 		// TODO: Implement architect processing workflow - requires dispatcher and full setup
 		fmt.Fprintf(os.Stderr, "Architect standalone mode not yet implemented\n")
+		if cleanup && workDir != "" {
+			_ = os.RemoveAll(workDir)
+		}
 		os.Exit(1)
 
 	default:
 		fmt.Fprintf(os.Stderr, "Invalid agent type '%s', must be 'coder' or 'architect'\n", agentType)
+		if cleanup && workDir != "" {
+			_ = os.RemoveAll(workDir)
+		}
 		os.Exit(1)
 	}
 }

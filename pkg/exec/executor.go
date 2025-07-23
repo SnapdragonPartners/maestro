@@ -19,7 +19,7 @@ const (
 // Executor defines the interface for executing commands in different environments.
 type Executor interface {
 	// Run executes a command with the given options and returns the result.
-	Run(ctx context.Context, cmd []string, opts *ExecOpts) (ExecResult, error)
+	Run(ctx context.Context, cmd []string, opts *Opts) (Result, error)
 
 	// Name returns the executor type name for logging/debugging.
 	Name() ExecutorType
@@ -28,16 +28,21 @@ type Executor interface {
 	Available() bool
 }
 
-// ExecOpts contains options for command execution.
-type ExecOpts struct {
-	// WorkDir is the working directory for the command.
-	WorkDir string
-
+// Opts contains options for command execution.
+//
+//nolint:govet // Configuration struct, logical grouping preferred
+type Opts struct {
 	// Env contains environment variables (KEY=VALUE format)
 	Env []string
 
+	// ResourceLimits contains resource constraints.
+	ResourceLimits *ResourceLimits
+
 	// Timeout is the maximum duration for command execution.
 	Timeout time.Duration
+
+	// WorkDir is the working directory for the command.
+	WorkDir string
 
 	// User is the user to run the command as (for Docker/container executors)
 	User string
@@ -47,9 +52,6 @@ type ExecOpts struct {
 
 	// NetworkDisabled indicates if network access should be disabled.
 	NetworkDisabled bool
-
-	// ResourceLimits contains resource constraints.
-	ResourceLimits *ResourceLimits
 }
 
 // ResourceLimits defines resource constraints for command execution.
@@ -64,27 +66,27 @@ type ResourceLimits struct {
 	PIDs int64
 }
 
-// ExecResult contains the result of command execution.
-type ExecResult struct {
-	// ExitCode is the exit code of the command.
-	ExitCode int
-
+// Result contains the result of command execution.
+type Result struct {
 	// Stdout contains the standard output.
 	Stdout string
 
 	// Stderr contains the standard error output.
 	Stderr string
 
+	// ExecutorUsed indicates which executor was used (for debugging)
+	ExecutorUsed string
+
 	// Duration is how long the command took to execute.
 	Duration time.Duration
 
-	// ExecutorUsed indicates which executor was used (for debugging)
-	ExecutorUsed string
+	// ExitCode is the exit code of the command.
+	ExitCode int
 }
 
 // DefaultExecOpts returns default execution options.
-func DefaultExecOpts() ExecOpts {
-	return ExecOpts{
+func DefaultExecOpts() Opts {
+	return Opts{
 		Timeout:         5 * time.Minute, // Default 5 minute timeout
 		ReadOnly:        false,
 		NetworkDisabled: false,

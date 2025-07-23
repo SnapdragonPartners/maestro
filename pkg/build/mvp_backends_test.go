@@ -275,7 +275,7 @@ func TestMultiBackendDetection(t *testing.T) {
 
 func TestBackendFallbacks(t *testing.T) {
 	// Test that operations gracefully handle missing tools.
-	backends := []BuildBackend{
+	backends := []Backend{
 		NewGoBackend(),
 		NewPythonBackend(),
 		NewNodeBackend(),

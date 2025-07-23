@@ -17,6 +17,8 @@ const (
 )
 
 // ReviewEvaluator manages code review processing for the REVIEWING state.
+//
+//nolint:govet // Complex management struct, logical grouping preferred
 type ReviewEvaluator struct {
 	llmClient         LLMClient
 	renderer          *templates.Renderer
@@ -30,6 +32,8 @@ type ReviewEvaluator struct {
 }
 
 // PendingReview represents a code submission awaiting review.
+//
+//nolint:govet // Large complex struct, logical grouping preferred
 type PendingReview struct {
 	ID             string          `json:"id"`
 	StoryID        string          `json:"story_id"`
@@ -48,6 +52,8 @@ type PendingReview struct {
 }
 
 // ReviewAttempt represents a single review attempt.
+//
+//nolint:govet // Review tracking struct, logical grouping preferred
 type ReviewAttempt struct {
 	AttemptNumber int       `json:"attempt_number"`
 	ReviewedAt    time.Time `json:"reviewed_at"`
@@ -193,6 +199,8 @@ func (re *ReviewEvaluator) runSingleCheck(ctx context.Context, checkType string,
 }
 
 // checkConfig holds configuration for different check types.
+//
+//nolint:govet // Configuration struct, logical grouping preferred
 type checkConfig struct {
 	checkType    string
 	llmToolType  string
@@ -516,7 +524,8 @@ Automated Checks Results:`,
 	// Add review history if this is not the first attempt.
 	if len(pendingReview.ReviewHistory) > 0 {
 		context += "\n\nPrevious Review History:"
-		for _, attempt := range pendingReview.ReviewHistory {
+		for i := range pendingReview.ReviewHistory {
+			attempt := &pendingReview.ReviewHistory[i]
 			context += fmt.Sprintf("\nAttempt %d (%s): %s - %s",
 				attempt.AttemptNumber,
 				attempt.ReviewedAt.Format("2006-01-02 15:04:05"),
@@ -721,6 +730,8 @@ func (re *ReviewEvaluator) generateFixFeedback(pendingReview *PendingReview) str
 }
 
 // sendReviewResult sends the review result back to the agent.
+//
+//nolint:unparam // error return kept for future implementation when message sending could fail
 func (re *ReviewEvaluator) sendReviewResult(_ context.Context, pendingReview *PendingReview, result string) error {
 	// Create RESULT message.
 	resultMsg := proto.NewAgentMsg(
@@ -808,6 +819,8 @@ func (re *ReviewEvaluator) ClearCompletedReviews() int {
 }
 
 // ReviewStatus represents the current state of code review processing.
+//
+//nolint:govet // JSON serialization struct, logical order preferred
 type ReviewStatus struct {
 	TotalReviews      int              `json:"total_reviews"`
 	PendingReviews    int              `json:"pending_reviews"`

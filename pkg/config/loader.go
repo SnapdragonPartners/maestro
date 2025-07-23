@@ -272,7 +272,8 @@ func validateConfig(config *Config) error {
 
 	agentIDs := make(map[string]bool)
 
-	for name, model := range config.Models {
+	for name := range config.Models {
+		model := config.Models[name]
 		if model.MaxTokensPerMinute <= 0 {
 			return fmt.Errorf("model %s: max_tokens_per_minute must be positive", name)
 		}
@@ -332,7 +333,8 @@ func validateConfig(config *Config) error {
 		config.Models[name] = model
 
 		// Validate each agent.
-		for i, agent := range model.Agents {
+		for i := range model.Agents {
+			agent := &model.Agents[i]
 			if agent.Name == "" {
 				return fmt.Errorf("model %s, agent %d: name is required", name, i)
 			}
@@ -355,7 +357,7 @@ func validateConfig(config *Config) error {
 					agent.IterationBudgets.FixingBudget = DefaultFixingBudget
 				}
 				// Update the agent in the slice with defaults.
-				model.Agents[i] = agent
+				model.Agents[i] = *agent
 			}
 
 			// Check for duplicate agent IDs across all models using new format.
@@ -479,10 +481,12 @@ func (a *Agent) GetLogID(_ string) string {
 // GetAllAgents returns all agents from all models.
 func (c *Config) GetAllAgents() []AgentWithModel {
 	var agents []AgentWithModel
-	for modelName, model := range c.Models {
-		for _, agent := range model.Agents {
+	for modelName := range c.Models {
+		model := c.Models[modelName]
+		for i := range model.Agents {
+			agent := &model.Agents[i]
 			agents = append(agents, AgentWithModel{
-				Agent:     agent,
+				Agent:     *agent,
 				ModelName: modelName,
 				Model:     model,
 			})
@@ -501,11 +505,13 @@ func (c *Config) GetAgentByLogID(logID string) (*AgentWithModel, error) {
 	agentType, agentID := parts[0], parts[1]
 
 	// Search through all models to find the agent with matching type and ID.
-	for modelName, model := range c.Models {
-		for _, agent := range model.Agents {
+	for modelName := range c.Models {
+		model := c.Models[modelName]
+		for i := range model.Agents {
+			agent := &model.Agents[i]
 			if agent.Type == agentType && agent.ID == agentID {
 				return &AgentWithModel{
-					Agent:     agent,
+					Agent:     *agent,
 					ModelName: modelName,
 					Model:     model,
 				}, nil
@@ -526,8 +532,10 @@ type AgentWithModel struct {
 // CountCoders returns the total number of coder agents across all models.
 func (c *Config) CountCoders() int {
 	count := 0
-	for _, model := range c.Models {
-		for _, agent := range model.Agents {
+	for modelName := range c.Models {
+		model := c.Models[modelName]
+		for i := range model.Agents {
+			agent := &model.Agents[i]
 			if agent.Type == AgentTypeCoder {
 				count++
 			}
@@ -539,8 +547,10 @@ func (c *Config) CountCoders() int {
 // CountArchitects returns the total number of architect agents across all models.
 func (c *Config) CountArchitects() int {
 	count := 0
-	for _, model := range c.Models {
-		for _, agent := range model.Agents {
+	for modelName := range c.Models {
+		model := c.Models[modelName]
+		for i := range model.Agents {
+			agent := &model.Agents[i]
 			if agent.Type == AgentTypeArchitect {
 				count++
 			}

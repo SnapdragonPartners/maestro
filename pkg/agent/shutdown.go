@@ -11,13 +11,15 @@ import (
 )
 
 // ShutdownManager handles graceful shutdown of agent components.
+//
+//nolint:govet // Management struct, logical grouping preferred
 type ShutdownManager struct {
-	mu          sync.RWMutex
 	components  []ShutdownComponent
 	timeouts    map[string]time.Duration
 	shutdownCtx context.Context //nolint:containedctx // Shutdown coordinator needs stored context
 	shutdownFn  context.CancelFunc
 	done        chan struct{}
+	mu          sync.RWMutex
 	once        sync.Once
 }
 
@@ -129,7 +131,7 @@ type ShutdownableDriver struct {
 }
 
 // NewShutdownableDriver creates a driver with shutdown management.
-func NewShutdownableDriver(config *AgentConfig, initialState proto.State, shutdownMgr *ShutdownManager) (*ShutdownableDriver, error) {
+func NewShutdownableDriver(config *Config, initialState proto.State, shutdownMgr *ShutdownManager) (*ShutdownableDriver, error) {
 	baseDriver, err := NewBaseDriver(config, initialState)
 	if err != nil {
 		return nil, err

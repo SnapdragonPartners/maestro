@@ -302,7 +302,7 @@ func TestLogEscalation(t *testing.T) {
 
 	// Check that log file was created.
 	logFile := filepath.Join(tmpDir, "logs", "escalations.jsonl")
-	if _, err := os.Stat(logFile); os.IsNotExist(err) {
+	if _, err := os.Stat(logFile); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
 		t.Fatalf("Escalation log file was not created: %s", logFile)
 	}
 
