@@ -279,8 +279,8 @@ func TestGetAllAgents(t *testing.T) {
 		t.Errorf("Expected 3 agents, got %d", len(agents))
 	}
 
-	// Test agent lookup by log ID.
-	agentWithModel, err := config.GetAgentByLogID("claude_sonnet4:001")
+	// Test agent lookup by log ID (format: type-id).
+	agentWithModel, err := config.GetAgentByLogID("coder-001")
 	if err != nil {
 		t.Fatalf("Failed to get agent by log ID: %v", err)
 	}

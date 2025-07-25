@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// contextKey is a custom type for context keys to avoid collisions.
+type contextKey string
+
+const agentIDKey contextKey = "agent_id"
+
 type Logger struct {
 	logger  *log.Logger
 	agentID string
@@ -313,7 +318,7 @@ func Debug(ctx context.Context, domain, format string, args ...any) {
 	// Get agent ID from context if available.
 	agentID := "unknown"
 	if ctx != nil {
-		if id := ctx.Value("agent_id"); id != nil {
+		if id := ctx.Value(agentIDKey); id != nil {
 			if idStr, ok := id.(string); ok {
 				agentID = idStr
 			}
@@ -407,7 +412,7 @@ func DebugToFile(ctx context.Context, domain, filename, format string, args ...a
 		// Get agent ID from context if available.
 		agentID := "unknown"
 		if ctx != nil {
-			if id := ctx.Value("agent_id"); id != nil {
+			if id := ctx.Value(agentIDKey); id != nil {
 				if idStr, ok := id.(string); ok {
 					agentID = idStr
 				}

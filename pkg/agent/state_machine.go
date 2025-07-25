@@ -194,6 +194,7 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.Sta
 	sm.logger.Info("🔄 State machine transition: %s → %s", oldState, newState)
 
 	// Send state change notification (non-blocking)
+	// Use a goroutine with recovery to prevent panics if channel is closed during shutdown.
 	if sm.stateNotifCh != nil {
 		notification := &proto.StateChangeNotification{
 			AgentID:   sm.agentID,
@@ -203,14 +204,24 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.Sta
 			Metadata:  metadata,
 		}
 
-		select {
-		case sm.stateNotifCh <- notification:
-			// Notification sent successfully.
-		default:
-			// Channel full, log warning but don't block.
-			sm.logger.Warn("State notification channel full, dropping notification for %s: %s->%s",
-				sm.agentID, oldState, newState)
-		}
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Channel was closed during shutdown, which is expected.
+					sm.logger.Debug("State notification channel closed during shutdown for %s: %s->%s",
+						sm.agentID, oldState, newState)
+				}
+			}()
+
+			select {
+			case sm.stateNotifCh <- notification:
+				// Notification sent successfully.
+			default:
+				// Channel full, log warning but don't block.
+				sm.logger.Debug("State notification channel full, dropping notification for %s: %s->%s",
+					sm.agentID, oldState, newState)
+			}
+		}()
 	}
 
 	// Update state data with transition metadata.

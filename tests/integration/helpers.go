@@ -15,28 +15,17 @@ import (
 	"orchestrator/pkg/state"
 )
 
-// MockLLMClient provides simple LLM responses for testing.
-type MockLLMClient struct{}
-
-// Complete implements the LLMClient interface with simple mock responses.
-func (m *MockLLMClient) Complete(_ context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
-	// Simple mock responses based on request context.
-	content := "Mock LLM response: I understand the task and will proceed accordingly."
-
-	return agent.CompletionResponse{
-		Content: content,
-	}, nil
-}
-
-// Stream implements the LLMClient interface (required but not used in tests).
-func (m *MockLLMClient) Stream(_ context.Context, _ agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
-	ch := make(chan agent.StreamChunk, 1)
-	ch <- agent.StreamChunk{
-		Content: "Mock LLM response: I understand the task and will proceed accordingly.",
-		Done:    true,
+// Helper function to get API key for tests.
+func getTestAPIKey(t *testing.T) string {
+	// Try ANTHROPIC_API_KEY first (standard), then CLAUDE_API_KEY (legacy)
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		return apiKey
 	}
-	close(ch)
-	return ch, nil
+	if apiKey := os.Getenv("CLAUDE_API_KEY"); apiKey != "" {
+		return apiKey
+	}
+	t.Skip("Skipping test: ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable not set")
+	return "" // Never reached due to t.Skip()
 }
 
 // Test flags for configurable timeouts.
@@ -116,15 +105,15 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 		MaxReplyTokens:   4096,
 	}
 
-	// Create a simple mock LLM client for testing.
-	// This allows coders to follow the full REQUEST→RESULT communication pattern.
-	mockLLM := &MockLLMClient{}
+	// Create real Claude LLM client for testing.
+	apiKey := getTestAPIKey(t)
+	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
 	// Create coder driver.
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil, buildService, nil)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, llmClient, tempDir, nil, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -156,14 +145,15 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 		MaxReplyTokens:   4096,
 	}
 
-	// Create a simple mock LLM client for testing.
-	mockLLM := &MockLLMClient{}
+	// Create real Claude LLM client for testing.
+	apiKey := getTestAPIKey(t)
+	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
 	// Create coder driver with agent configuration.
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig, buildService, nil)
+	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, llmClient, tempDir, agentConfig, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}

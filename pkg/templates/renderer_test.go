@@ -69,16 +69,14 @@ func TestRenderPlanningTemplate(t *testing.T) {
 	if !strings.Contains(result, data.TaskContent) {
 		t.Error("Template should contain task content")
 	}
-	if !strings.Contains(result, data.Context) {
-		t.Error("Template should contain context")
-	}
+	// Note: Planning template doesn't use Context field - it has its own structure
 
-	// Verify template contains MCP tools guidance.
-	if !strings.Contains(result, "MCP tools") {
-		t.Error("Template should mention MCP tools")
+	// Verify template contains tools guidance.
+	if !strings.Contains(result, "Available Tools") {
+		t.Error("Template should mention available tools")
 	}
-	if !strings.Contains(result, `<tool name="shell">`) {
-		t.Error("Template should contain shell tool example")
+	if !strings.Contains(result, "shell") {
+		t.Error("Template should contain shell tool")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -125,6 +126,33 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				LastTS: lastTS,
 			})
 		}
+	} else if s.store != nil {
+		// Fallback: get agents from store when dispatcher is nil
+		agentIDs, err := s.store.ListAgents()
+		if err != nil {
+			s.logger.Error("Failed to list agents from store: %v", err)
+		} else {
+			for _, agentID := range agentIDs {
+				agentState, err := s.store.GetStateInfo(agentID)
+				if err != nil {
+					s.logger.Warn("Failed to get state for agent %s: %v", agentID, err)
+					continue
+				}
+
+				// Extract role from agent ID (format: "role:number")
+				role := "unknown"
+				if colonIndex := strings.Index(agentID, ":"); colonIndex != -1 {
+					role = agentID[:colonIndex]
+				}
+
+				agents = append(agents, AgentListItem{
+					ID:     agentID,
+					Role:   role,
+					State:  agentState.State,
+					LastTS: agentState.LastTimestamp,
+				})
+			}
+		}
 	}
 
 	// Sort by ID for consistent ordering.
@@ -225,16 +253,66 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpload implements POST /api/upload.
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+// validateUploadRequest validates the basic upload request.
+func (s *Server) validateUploadRequest(r *http.Request) error {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+		return fmt.Errorf("method not allowed")
 	}
 
 	// Parse multipart form first (validate request format)
 	if err := r.ParseMultipartForm(100 << 10); err != nil { // 100 KB limit
-		s.logger.Warn("Failed to parse multipart form: %v", err)
-		http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		return fmt.Errorf("invalid multipart form: %w", err)
+	}
+
+	return nil
+}
+
+// validateUploadFile validates the uploaded file.
+func (s *Server) validateUploadFile(_ multipart.File, header *multipart.FileHeader) error {
+	// Check file size (100 KB limit)
+	if header.Size > 100*1024 {
+		return fmt.Errorf("file too large: %d bytes", header.Size)
+	}
+
+	// Check file extension.
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".md") {
+		return fmt.Errorf("invalid file extension: %s", header.Filename)
+	}
+
+	return nil
+}
+
+// checkArchitectAvailability checks if architect is available.
+func (s *Server) checkArchitectAvailability() error {
+	if s.dispatcher == nil {
+		return fmt.Errorf("dispatcher not available")
+	}
+
+	architectState, err := s.findArchitectState()
+	if err != nil {
+		return fmt.Errorf("failed to check architect state: %w", err)
+	}
+
+	if architectState == nil {
+		return fmt.Errorf("no architect available")
+	}
+
+	if architectState.State != "WAITING" {
+		return fmt.Errorf("architect is busy")
+	}
+
+	return nil
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	// Validate request
+	if err := s.validateUploadRequest(r); err != nil {
+		s.logger.Warn("Upload request validation failed: %v", err)
+		if err.Error() == "method not allowed" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		} else {
+			http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		}
 		return
 	}
 
@@ -251,27 +329,25 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Check file size (100 KB limit)
-	if header.Size > 100*1024 {
-		s.logger.Warn("File too large: %d bytes", header.Size)
-		http.Error(w, "File too large (max 100 KB)", http.StatusBadRequest)
+	// Validate file
+	if validateErr := s.validateUploadFile(file, header); validateErr != nil {
+		s.logger.Warn("Upload file validation failed: %v", validateErr)
+		http.Error(w, validateErr.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Check file extension.
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".md") {
-		s.logger.Warn("Invalid file extension: %s", header.Filename)
-		http.Error(w, "Only .md files are allowed", http.StatusBadRequest)
+	// Check architect availability
+	if availErr := s.checkArchitectAvailability(); availErr != nil {
+		s.logger.Warn("Architect availability check failed: %v", availErr)
+		if availErr.Error() == "dispatcher not available" {
+			http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
+		} else if availErr.Error() == "architect is busy" {
+			http.Error(w, "Architect is busy", http.StatusConflict)
+		} else {
+			http.Error(w, "Architect not available", http.StatusConflict)
+		}
 		return
 	}
-
-	// Check if we have a dispatcher (only after validating file)
-	if s.dispatcher == nil {
-		http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	// No need to check architect state - let the dispatcher handle routing.
 
 	// Create stories directory if it doesn't exist.
 	storiesDir := filepath.Join(s.workDir, "stories")
@@ -421,10 +497,38 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	// Get logs from in-memory buffer first.
 	logs := logx.GetRecentLogEntries(domain, since)
 
-	// If no current logs, fall back to log files.
-	if len(logs) == 0 {
-		logs = s.readLogFiles(domain, since)
+	// Also read from log files and merge (for testing and completeness)
+	fileLogs := s.readLogFiles(domain, since)
+
+	// Merge logs from both sources, avoiding duplicates by timestamp+message
+	logMap := make(map[string]logx.LogEntry)
+
+	// Add in-memory logs first
+	for i := range logs {
+		log := &logs[i]
+		key := log.Timestamp + "|" + log.Message
+		logMap[key] = *log
 	}
+
+	// Add file logs (will not overwrite existing keys)
+	for i := range fileLogs {
+		log := &fileLogs[i]
+		key := log.Timestamp + "|" + log.Message
+		if _, exists := logMap[key]; !exists {
+			logMap[key] = *log
+		}
+	}
+
+	// Convert back to slice
+	logs = make([]logx.LogEntry, 0, len(logMap))
+	for key := range logMap {
+		logs = append(logs, logMap[key])
+	}
+
+	// Sort by timestamp
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].Timestamp < logs[j].Timestamp
+	})
 
 	// If still no logs, create some sample logs to show the UI is working.
 	if len(logs) == 0 {

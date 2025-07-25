@@ -6,22 +6,39 @@ import (
 	"strings"
 	"testing"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/state"
 )
 
-// TestParseAndCreateFiles_FencedCodeBlocks tests traditional fenced code blocks.
-func TestParseAndCreateFiles_FencedCodeBlocks(t *testing.T) {
-	tempDir := t.TempDir()
+// createTestCoder creates a coder with live LLM client for testing.
+func createTestCoder(t *testing.T, tempDir string) *Coder {
+	// Skip test if no API key available
+	apiKey := os.Getenv("CLAUDE_API_KEY")
+	if apiKey == "" {
+		t.Skip("Skipping test: CLAUDE_API_KEY environment variable not set")
+	}
+
 	stateStore, err := state.NewStore(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
+	// Create live Claude client for testing
+	llmClient := agent.NewClaudeClient(apiKey)
+
+	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, llmClient, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}
+
+	return driver
+}
+
+// TestParseAndCreateFiles_FencedCodeBlocks tests traditional fenced code blocks.
+func TestParseAndCreateFiles_FencedCodeBlocks(t *testing.T) {
+	tempDir := t.TempDir()
+	driver := createTestCoder(t, tempDir)
 
 	content := `Here's the implementation:
 
@@ -78,15 +95,7 @@ if __name__ == "__main__":
 // TestParseAndCreateFiles_PlainCodeBlocks tests plain code blocks without language specifiers.
 func TestParseAndCreateFiles_PlainCodeBlocks(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver: %v", err)
-	}
+	driver := createTestCoder(t, tempDir)
 
 	content := `I'll create a Go program:
 
@@ -147,15 +156,7 @@ print(calculate(5, 3))
 // TestParseAndCreateFiles_UnfencedCode tests detection of code outside fences.
 func TestParseAndCreateFiles_UnfencedCode(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver: %v", err)
-	}
+	driver := createTestCoder(t, tempDir)
 
 	content := `Here's the solution:
 
@@ -212,15 +213,7 @@ This creates a simple health endpoint.`
 // TestLooksLikeCode tests the code detection heuristics.
 func TestLooksLikeCode(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver: %v", err)
-	}
+	driver := createTestCoder(t, tempDir)
 
 	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
@@ -257,15 +250,7 @@ func TestLooksLikeCode(t *testing.T) {
 // TestGuessFilenameFromContent tests filename guessing from code content.
 func TestGuessFilenameFromContent(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver: %v", err)
-	}
+	driver := createTestCoder(t, tempDir)
 
 	//nolint:govet // Test struct, optimization not critical
 	testCases := []struct {
@@ -299,15 +284,7 @@ func TestGuessFilenameFromContent(t *testing.T) {
 // TestMixedContent tests handling of mixed content with different formats.
 func TestMixedContent(t *testing.T) {
 	tempDir := t.TempDir()
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, nil, tempDir, &config.Agent{}, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver: %v", err)
-	}
+	driver := createTestCoder(t, tempDir)
 
 	content := `I'll create several files for you:
 

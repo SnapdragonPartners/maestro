@@ -505,11 +505,14 @@ func (d *LongRunningDockerExec) waitUntilDockerCanMount(hostPath string, timeout
 	return fmt.Errorf("directory %s did not become mountable within %v", hostPath, timeout)
 }
 
-// Context key type for story ID.
-type contextKey string
+// ContextKey is the type for context keys to avoid collisions.
+type ContextKey string
 
 const (
-	contextKeyStoryID contextKey = "story_id"
+	// ContextKeyStoryID is the context key for story ID.
+	ContextKeyStoryID ContextKey = "story_id"
+	// For backward compatibility, keep the old unexported key.
+	contextKeyStoryID = ContextKeyStoryID
 )
 
 // getStoryIDFromContext extracts story ID from context.

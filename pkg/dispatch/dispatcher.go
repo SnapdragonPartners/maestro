@@ -334,7 +334,11 @@ func (d *Dispatcher) messageProcessor(ctx context.Context) {
 		case <-d.shutdown:
 			d.logger.Info("Message processor stopped by shutdown signal")
 			return
-		case msg := <-d.inputChan:
+		case msg, ok := <-d.inputChan:
+			if !ok {
+				d.logger.Info("Input channel closed, stopping message processor")
+				return
+			}
 			d.processMessage(ctx, msg)
 		}
 	}
@@ -401,7 +405,11 @@ func (d *Dispatcher) supervisor(ctx context.Context) {
 		case <-d.shutdown:
 			d.logger.Info("Supervisor stopped by shutdown signal")
 			return
-		case agentErr := <-d.errCh:
+		case agentErr, ok := <-d.errCh:
+			if !ok {
+				d.logger.Info("Error channel closed, stopping supervisor")
+				return
+			}
 			// Log every error.
 			d.logger.Warn("Agent error reported - ID: %s, Error: %s, Severity: %v",
 				agentErr.ID, agentErr.Err.Error(), agentErr.Sev)
@@ -551,25 +559,35 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 }
 
 func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ Agent) *Result {
-	// Extract model name from agent logID (format: "model:id").
-	modelName := msg.ToAgent
-	if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
-		modelName = parts[0]
-	}
+	// SHUTDOWN messages bypass rate limiting
+	if msg.Type != proto.MsgTypeSHUTDOWN {
+		// Extract model name from agent logID (format: "model:id").
+		modelName := msg.ToAgent
+		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
+			modelName = parts[0]
+		}
 
-	// Check rate limiting before processing.
-	if err := d.checkRateLimit(modelName); err != nil {
-		d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
-		return &Result{Error: err}
+		// Check rate limiting before processing.
+		if err := d.checkRateLimit(modelName); err != nil {
+			d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
+			return &Result{Error: err}
+		}
 	}
 
 	// Process message - NOTE: ProcessMessage removed from Agent interface.
 	// Agents now receive messages via channels exclusively.
 	d.logger.Debug("Processing message %s for agent %s", msg.ID, msg.ToAgent)
 
-	// Release agent slot after processing.
-	if err := d.rateLimiter.ReleaseAgent(modelName); err != nil {
-		d.logger.Warn("Failed to release agent slot for model %s: %v", modelName, err)
+	// Release agent slot after processing (only for non-SHUTDOWN messages).
+	if msg.Type != proto.MsgTypeSHUTDOWN {
+		// Extract model name for agent slot release
+		modelName := msg.ToAgent
+		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
+			modelName = parts[0]
+		}
+		if err := d.rateLimiter.ReleaseAgent(modelName); err != nil {
+			d.logger.Warn("Failed to release agent slot for model %s: %v", modelName, err)
+		}
 	}
 
 	// Messages flow through channels - no direct processing or retry needed here.

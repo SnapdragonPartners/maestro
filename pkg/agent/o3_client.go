@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -18,9 +17,6 @@ type O3Client struct {
 
 // NewO3Client creates a new OpenAI o3 client wrapper with default retry logic.
 func NewO3Client(apiKey string) LLMClient {
-	if SystemMode == ModeMock {
-		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
-	}
 	baseClient := &O3Client{
 		client: openai.NewClient(apiKey),
 		model:  "o3-mini", // Default o3 model
@@ -32,9 +28,6 @@ func NewO3Client(apiKey string) LLMClient {
 
 // NewO3ClientWithModel creates a new OpenAI client with specific model and retry logic.
 func NewO3ClientWithModel(apiKey, model string) LLMClient {
-	if SystemMode == ModeMock {
-		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
-	}
 	baseClient := &O3Client{
 		client: openai.NewClient(apiKey),
 		model:  model,
@@ -46,9 +39,6 @@ func NewO3ClientWithModel(apiKey, model string) LLMClient {
 
 // Complete implements the LLMClient interface.
 func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (CompletionResponse, error) {
-	if SystemMode == ModeDebug {
-		log.Printf("O3 completing request with %d messages", len(in.Messages))
-	}
 	if o.model == "" {
 		o.model = "o3-mini"
 	}
@@ -84,9 +74,6 @@ func (o *O3Client) Complete(ctx context.Context, in CompletionRequest) (Completi
 
 // Stream implements the LLMClient interface.
 func (o *O3Client) Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error) {
-	if SystemMode == ModeDebug {
-		log.Printf("O3 starting stream with %d messages", len(in.Messages))
-	}
 	if o.model == "" {
 		o.model = "o3-mini"
 	}

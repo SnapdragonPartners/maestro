@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -20,10 +19,6 @@ type ClaudeClient struct {
 
 // NewClaudeClient creates a new Claude client wrapper with default retry logic.
 func NewClaudeClient(apiKey string) LLMClient {
-	if SystemMode == ModeMock {
-		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
-	}
-
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	baseClient := &ClaudeClient{
 		client: client,
@@ -36,10 +31,6 @@ func NewClaudeClient(apiKey string) LLMClient {
 
 // NewClaudeClientWithModel creates a new Claude client with specific model and retry logic.
 func NewClaudeClientWithModel(apiKey, model string) LLMClient {
-	if SystemMode == ModeMock {
-		return NewMockLLMClient([]CompletionResponse{{Content: "mock response"}}, nil)
-	}
-
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	baseClient := &ClaudeClient{
 		client: client,
@@ -52,10 +43,6 @@ func NewClaudeClientWithModel(apiKey, model string) LLMClient {
 
 // Complete implements the LLMClient interface.
 func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (CompletionResponse, error) {
-	if SystemMode == ModeDebug {
-		log.Printf("Claude completing request with %d messages, %d tools", len(in.Messages), len(in.Tools))
-	}
-
 	// Convert to Anthropic messages.
 	messages := make([]anthropic.MessageParam, 0, len(in.Messages))
 	for i := range in.Messages {
@@ -78,15 +65,9 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 
 	// Add tools if provided using correct v1.5.0 API.
 	if len(in.Tools) > 0 {
-		if SystemMode == ModeDebug {
-			log.Printf("Processing %d tools for Claude API", len(in.Tools))
-		}
 		var tools []anthropic.ToolUnionParam
 		for i := range in.Tools {
 			tool := &in.Tools[i]
-			if SystemMode == ModeDebug {
-				log.Printf("Adding tool: %s", tool.Name)
-			}
 			// Convert tools.ToolDefinition directly to Anthropic format.
 			var properties any
 			var required []string
@@ -147,24 +128,14 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 	var responseText string
 	var toolCalls []ToolCall
 
-	if SystemMode == ModeDebug {
-		log.Printf("Claude response has %d content blocks", len(resp.Content))
-	}
-
 	for i := range resp.Content {
 		block := &resp.Content[i]
-		if SystemMode == ModeDebug {
-			log.Printf("Processing content block type: %s", block.Type)
-		}
 		switch block.Type {
 		case "text":
 			textBlock := block.AsText()
 			responseText += textBlock.Text
 		case "tool_use":
 			toolUseBlock := block.AsToolUse()
-			if SystemMode == ModeDebug {
-				log.Printf("Found tool use: %s", toolUseBlock.Name)
-			}
 			// Parse the input parameters from RawMessage.
 			var params map[string]any
 			if err := json.Unmarshal(toolUseBlock.Input, &params); err != nil {
@@ -178,17 +149,6 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 			}
 			toolCalls = append(toolCalls, toolCall)
 		}
-	}
-
-	if SystemMode == ModeDebug {
-		log.Printf("Claude response: %d tool calls extracted", len(toolCalls))
-		if len(toolCalls) > 0 {
-			for i := range toolCalls {
-				tc := &toolCalls[i]
-				log.Printf("Tool call %d: %s (id: %s)", i+1, tc.Name, tc.ID)
-			}
-		}
-		log.Printf("Claude response text length: %d characters", len(responseText))
 	}
 
 	return CompletionResponse{

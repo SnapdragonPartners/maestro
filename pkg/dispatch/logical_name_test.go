@@ -45,6 +45,31 @@ func (a *MockDriverAgent) GetCurrentState() proto.State {
 	return proto.StateWaiting
 }
 
+// Additional Driver interface methods.
+func (a *MockDriverAgent) Initialize(_ context.Context) error {
+	return nil
+}
+
+func (a *MockDriverAgent) Run(_ context.Context) error {
+	return nil
+}
+
+func (a *MockDriverAgent) Step(_ context.Context) (bool, error) {
+	return false, nil
+}
+
+func (a *MockDriverAgent) GetStateData() map[string]any {
+	return make(map[string]any)
+}
+
+func (a *MockDriverAgent) ValidateState(_ proto.State) error {
+	return nil
+}
+
+func (a *MockDriverAgent) GetValidStates() []proto.State {
+	return []proto.State{proto.StateWaiting}
+}
+
 func TestLogicalNameResolution(t *testing.T) {
 	// Create test config with realistic agent types.
 	cfg := &config.Config{
@@ -85,8 +110,9 @@ func TestLogicalNameResolution(t *testing.T) {
 	}
 
 	// Attach mock agents to simulate real system.
-	architectAgent := NewMockDriverAgent("openai_o3:001", agent.TypeArchitect)
-	coderAgent := NewMockDriverAgent("claude_sonnet4:001", agent.TypeCoder)
+	// Use the LogID format that matches the config: "type-id"
+	architectAgent := NewMockDriverAgent("architect-001", agent.TypeArchitect)
+	coderAgent := NewMockDriverAgent("coder-001", agent.TypeCoder)
 
 	dispatcher.Attach(architectAgent)
 	dispatcher.Attach(coderAgent)
@@ -96,11 +122,11 @@ func TestLogicalNameResolution(t *testing.T) {
 		expected string
 		desc     string
 	}{
-		{"architect", "openai_o3:001", "architect should resolve to openai_o3:001"},
-		{"coder", "claude_sonnet4:001", "coder should resolve to claude_sonnet4:001"},
+		{"architect", "architect-001", "architect should resolve to architect-001"},
+		{"coder", "coder-001", "coder should resolve to coder-001"},
 		{"claude", "claude", "claude should NOT be resolved (not a logical name)"},
 		{"nonexistent", "nonexistent", "unknown names should pass through unchanged"},
-		{"openai_o3:001", "openai_o3:001", "actual agent IDs should pass through unchanged"},
+		{"architect-001", "architect-001", "actual agent IDs should pass through unchanged"},
 	}
 
 	for _, tc := range testCases {

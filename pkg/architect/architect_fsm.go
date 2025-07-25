@@ -62,8 +62,8 @@ func GetValidStates() []proto.State {
 // This is the single source of truth, derived directly from STATES.md.
 // Any code, tests, or diagrams must match this specification exactly.
 var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
-	// WAITING can transition to SCOPING when spec received, or REQUEST when question received.
-	StateWaiting: {StateScoping, StateRequest},
+	// WAITING can transition to SCOPING when spec received, REQUEST when question received, or ERROR during abnormal shutdown.
+	StateWaiting: {StateScoping, StateRequest, StateError},
 
 	// SCOPING can transition to DISPATCHING when stories queued, or ERROR on unrecoverable error.
 	StateScoping: {StateDispatching, StateError},
@@ -71,10 +71,10 @@ var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglob
 	// DISPATCHING can transition to MONITORING when stories placed on work-queue, or DONE when no stories left.
 	StateDispatching: {StateMonitoring, StateDone},
 
-	// MONITORING can transition to REQUEST for any coder request, or MERGING when approved code-review arrives.
-	StateMonitoring: {StateRequest, StateMerging},
+	// MONITORING can transition to REQUEST for any coder request, MERGING when approved code-review arrives, or ERROR on channel closure.
+	StateMonitoring: {StateRequest, StateMerging, StateError},
 
-	// REQUEST can transition to MONITORING (approve non-code/request changes), MERGING (approve code-review),.
+	// REQUEST can transition to MONITORING (approve non-code/request changes), MERGING (approve code-review),
 	// ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
 	StateRequest: {StateMonitoring, StateMerging, StateEscalated, StateError},
 

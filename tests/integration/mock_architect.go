@@ -39,7 +39,7 @@ func NewAlwaysApprovalMockArchitect(id string) *AlwaysApprovalMockArchitect {
 	return &AlwaysApprovalMockArchitect{
 		id: id,
 		response: ApprovalResponse{
-			Status:       "approved",
+			Status:       "APPROVED",
 			ApprovalType: "plan", // Will be overridden based on request
 			Feedback:     "Plan looks good!",
 		},
@@ -95,10 +95,19 @@ func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg)
 	// Create approval response.
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, m.response.Status)
-	response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-	response.SetPayload(proto.KeyApprovalType, approvalType)
-	response.SetPayload(proto.KeyFeedback, m.response.Feedback)
+
+	// Create approval result
+	approvalResult := &proto.ApprovalResult{
+		ID:         response.ID + "_approval",
+		RequestID:  msg.ID,
+		Type:       proto.ApprovalType(approvalType),
+		Status:     proto.ApprovalStatus(m.response.Status),
+		Feedback:   m.response.Feedback,
+		ReviewedBy: m.id,
+		ReviewedAt: time.Now(),
+	}
+
+	response.SetPayload("approval_result", approvalResult)
 
 	return response, nil
 }
@@ -215,11 +224,11 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 	}
 
 	// Determine status based on rejection count.
-	status := "approved"
+	status := "APPROVED"
 	feedback := "Plan looks good!"
 
 	if m.currentRejections < m.rejectCount {
-		status = "changes_requested"
+		status = "NEEDS_CHANGES"
 		feedback = m.feedback
 		m.currentRejections++
 	}
@@ -227,10 +236,19 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 	// Create response.
 	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, status)
-	response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-	response.SetPayload(proto.KeyApprovalType, approvalType)
-	response.SetPayload(proto.KeyFeedback, feedback)
+
+	// Create approval result
+	approvalResult := &proto.ApprovalResult{
+		ID:         response.ID + "_approval",
+		RequestID:  msg.ID,
+		Type:       proto.ApprovalType(approvalType),
+		Status:     proto.ApprovalStatus(status),
+		Feedback:   feedback,
+		ReviewedBy: m.id,
+		ReviewedAt: time.Now(),
+	}
+
+	response.SetPayload("approval_result", approvalResult)
 
 	return response, nil
 }

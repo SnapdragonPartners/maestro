@@ -119,8 +119,8 @@ func GetValidStates() []proto.State {
 // This is the single source of truth, derived directly from STATES.md and worktree MVP stories.
 // Any code, tests, or diagrams must match this specification exactly.
 var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
-	// WAITING can transition to SETUP when receiving task assignment.
-	proto.StateWaiting: {StateSetup},
+	// WAITING can transition to SETUP when receiving task assignment, ERROR during shutdown, or DONE for clean shutdown.
+	proto.StateWaiting: {StateSetup, proto.StateError, proto.StateDone},
 
 	// SETUP prepares workspace (mirror clone, worktree, branch) then goes to PLANNING.
 	StateSetup: {StatePlanning, proto.StateError},
@@ -143,8 +143,8 @@ var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// BUDGET_REVIEW can continue (→CODING), pivot (→PLANNING), or abandon (→ERROR).
 	StateBudgetReview: {StatePlanning, StateCoding, proto.StateError},
 
-	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→CODING).
-	StateAwaitMerge: {proto.StateDone, StateCoding},
+	// AWAIT_MERGE can complete successfully (→DONE), encounter merge conflicts (→CODING), or have channel closure (→ERROR).
+	StateAwaitMerge: {proto.StateDone, StateCoding, proto.StateError},
 
 	// QUESTION can return to origin state or escalate to error based on answer type.
 	StateQuestion: {StatePlanning, StateCoding, proto.StateError},

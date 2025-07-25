@@ -149,7 +149,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 
 	// Test required parameters.
-	expectedRequired := []string{"plan", "confidence"}
+	expectedRequired := []string{"plan", "confidence", "todos"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
 	}
@@ -174,6 +174,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		"confidence":          "HIGH",
 		"exploration_summary": "Explored 15 files, found 3 patterns",
 		"risks":               "Potential performance impact on auth flow",
+		"todos":               []any{"Implement authentication logic", "Add validation", "Update tests"},
 	}
 
 	result, err := tool.Exec(ctx, validArgs)
@@ -251,6 +252,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 			args: map[string]any{
 				"plan":       "Valid plan",
 				"confidence": "INVALID",
+				"todos":      []any{"Some task"},
 			},
 			expectError: true,
 			errorMsg:    "confidence must be HIGH, MEDIUM, or LOW",
@@ -260,6 +262,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 			args: map[string]any{
 				"plan":       "Minimal valid plan",
 				"confidence": "MEDIUM",
+				"todos":      []any{"Implement feature"},
 			},
 			expectError: false,
 		},

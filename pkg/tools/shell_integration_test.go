@@ -48,9 +48,25 @@ func TestShellTool_WithDockerExecutor(t *testing.T) {
 		t.Skip("Docker not available, skipping Docker executor test")
 	}
 
+	// Start a container for the test
+	storyID := "test-story-001"
+	opts := &exec.Opts{}
+	containerName, err := dockerExec.StartContainer(context.Background(), storyID, opts)
+	if err != nil {
+		t.Fatalf("Failed to start container: %v", err)
+	}
+	defer func() {
+		// Clean up the container after test
+		if stopErr := dockerExec.StopContainer(context.Background(), storyID); stopErr != nil {
+			t.Logf("Failed to stop container %s: %v", containerName, stopErr)
+		}
+	}()
+
 	tool := NewShellTool(dockerExec)
 
-	ctx := context.Background()
+	// Add story ID to context for Docker executor
+	ctx := context.WithValue(context.Background(), exec.ContextKeyStoryID, storyID)
+
 	args := map[string]any{
 		"cmd": "echo 'Hello from docker executor'",
 	}
@@ -137,8 +153,22 @@ func TestUpdateShellToolExecutor(t *testing.T) {
 			t.Fatalf("Expected *ShellTool after docker update, got %T", tool)
 		}
 
-		// Test with docker executor.
-		result, err = shellTool.Exec(ctx, args)
+		// Start a container for the docker executor test
+		dockerStoryID := "test-story-docker"
+		dockerOpts := &exec.Opts{}
+		_, dockerStartErr := dockerExec.StartContainer(context.Background(), dockerStoryID, dockerOpts)
+		if dockerStartErr != nil {
+			t.Fatalf("Failed to start docker container: %v", dockerStartErr)
+		}
+		defer func() {
+			if stopErr := dockerExec.StopContainer(context.Background(), dockerStoryID); stopErr != nil {
+				t.Logf("Failed to stop docker container: %v", stopErr)
+			}
+		}()
+
+		// Test with docker executor - add story ID to context.
+		dockerCtx := context.WithValue(ctx, exec.ContextKeyStoryID, dockerStoryID)
+		result, err = shellTool.Exec(dockerCtx, args)
 		if err != nil {
 			t.Fatalf("Failed to execute with docker executor: %v", err)
 		}

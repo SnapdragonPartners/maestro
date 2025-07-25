@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package integration
 
 import (
@@ -13,6 +16,25 @@ import (
 	"orchestrator/pkg/proto"
 )
 
+// createApprovalResponse creates a proper approval response with ApprovalResult.
+func createApprovalResponse(architectID, fromAgent, msgID, status, approvalType, feedback string) *proto.AgentMsg {
+	response := proto.NewAgentMsg(proto.MsgTypeRESULT, architectID, fromAgent)
+	response.ParentMsgID = msgID
+
+	approvalResult := &proto.ApprovalResult{
+		ID:         response.ID + "_approval",
+		RequestID:  msgID,
+		Type:       proto.ApprovalType(approvalType),
+		Status:     proto.ApprovalStatus(status),
+		Feedback:   feedback,
+		ReviewedBy: architectID,
+		ReviewedAt: time.Now(),
+	}
+
+	response.SetPayload("approval_result", approvalResult)
+	return response
+}
+
 // FuzzInput represents randomized input for property-based testing.
 type FuzzInput struct {
 	ResponseType  string
@@ -27,7 +49,7 @@ type FuzzInput struct {
 // Generate implements quick.Generator for FuzzInput.
 func (f FuzzInput) Generate(rand *rand.Rand, _ int) reflect.Value {
 	responseTypes := []string{"approved", "changes_requested", "malformed", "empty"}
-	statuses := []string{"approved", "changes_requested", "rejected", "invalid", ""}
+	statuses := []string{"APPROVED", "NEEDS_CHANGES", "REJECTED", "invalid", ""}
 	approvalTypes := []string{"plan", "code", "unknown", "YEP", "123", ""}
 	feedbacks := []string{
 		"Good work!",
@@ -159,16 +181,10 @@ func createFuzzArchitect(input FuzzInput) ArchitectAgent {
 
 		switch input.ResponseType {
 		case "approved":
-			response.SetPayload(proto.KeyStatus, "approved")
-			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-			response.SetPayload(proto.KeyApprovalType, "plan")
-			response.SetPayload(proto.KeyFeedback, input.Feedback)
+			return createApprovalResponse("fuzz-architect", msg.FromAgent, msg.ID, "APPROVED", "plan", input.Feedback)
 
 		case "changes_requested":
-			response.SetPayload(proto.KeyStatus, "changes_requested")
-			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-			response.SetPayload(proto.KeyApprovalType, input.ApprovalType)
-			response.SetPayload(proto.KeyFeedback, input.Feedback)
+			return createApprovalResponse("fuzz-architect", msg.FromAgent, msg.ID, "NEEDS_CHANGES", input.ApprovalType, input.Feedback)
 
 		case "malformed":
 			// Create malformed response.
@@ -180,11 +196,13 @@ func createFuzzArchitect(input FuzzInput) ArchitectAgent {
 			break
 
 		default:
-			// Random response.
-			response.SetPayload(proto.KeyStatus, input.Status)
-			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-			response.SetPayload(proto.KeyApprovalType, input.ApprovalType)
-			response.SetPayload(proto.KeyFeedback, input.Feedback)
+			// Random response using proper format if status is valid
+			if input.Status == "APPROVED" || input.Status == "NEEDS_CHANGES" || input.Status == "REJECTED" {
+				return createApprovalResponse("fuzz-architect", msg.FromAgent, msg.ID, input.Status, input.ApprovalType, input.Feedback)
+			}
+			// Otherwise create malformed response
+			response.SetPayload("invalid_status", input.Status)
+			response.SetPayload("invalid_type", input.ApprovalType)
 		}
 
 		return response
@@ -305,13 +323,7 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 	architect := NewMalformedResponseMockArchitect("sequence-architect", func(msg *proto.AgentMsg) *proto.AgentMsg {
 		if sequenceIndex >= len(sequence) {
 			// Default to approval after sequence.
-			response := proto.NewAgentMsg(proto.MsgTypeRESULT, "sequence-architect", msg.FromAgent)
-			response.ParentMsgID = msg.ID
-			response.SetPayload(proto.KeyStatus, "approved")
-			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-			response.SetPayload(proto.KeyApprovalType, "plan")
-			response.SetPayload(proto.KeyFeedback, "Sequence complete")
-			return response
+			return createApprovalResponse("sequence-architect", msg.FromAgent, msg.ID, "APPROVED", "plan", "Sequence complete")
 		}
 
 		responseType := sequence[sequenceIndex]
@@ -329,22 +341,10 @@ func testMessageSequence(t *testing.T, sequence []string) bool {
 			return response
 
 		case "approved":
-			response := proto.NewAgentMsg(proto.MsgTypeRESULT, "sequence-architect", msg.FromAgent)
-			response.ParentMsgID = msg.ID
-			response.SetPayload(proto.KeyStatus, "approved")
-			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-			response.SetPayload(proto.KeyApprovalType, "plan")
-			response.SetPayload(proto.KeyFeedback, "Approved in sequence")
-			return response
+			return createApprovalResponse("sequence-architect", msg.FromAgent, msg.ID, "APPROVED", "plan", "Approved in sequence")
 
 		case "changes_requested":
-			response := proto.NewAgentMsg(proto.MsgTypeRESULT, "sequence-architect", msg.FromAgent)
-			response.ParentMsgID = msg.ID
-			response.SetPayload(proto.KeyStatus, "changes_requested")
-			response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-			response.SetPayload(proto.KeyApprovalType, "plan")
-			response.SetPayload(proto.KeyFeedback, "Changes requested in sequence")
-			return response
+			return createApprovalResponse("sequence-architect", msg.FromAgent, msg.ID, "NEEDS_CHANGES", "plan", "Changes requested in sequence")
 
 		default:
 			// Unknown response type, treat as malformed.

@@ -249,6 +249,14 @@ func (c *Coder) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChan
 	c.logger.Info("🧑‍💻 Coder %s state notification channel set", c.GetID())
 }
 
+// SetWorkspaceManager sets the workspace manager (for testing).
+func (c *Coder) SetWorkspaceManager(wm *WorkspaceManager) {
+	c.workspaceManager = wm
+	if wm != nil && c.longRunningExecutor != nil {
+		wm.SetContainerManager(c.longRunningExecutor)
+	}
+}
+
 // convertApprovalData converts approval data from various formats to *proto.ApprovalResult.
 // Handles both direct struct pointers and map[string]any from JSON deserialization.
 func convertApprovalData(data any) (*proto.ApprovalResult, error) {
@@ -423,6 +431,12 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 		// Store origin state for later use.
 		sm.SetStateData(KeyOrigin, string(origin))
 
+		// Set the expected state data for BUDGET_REVIEW questions.
+		sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
+		sm.SetStateData(string(stateDataKeyQuestionOrigin), string(origin))
+		sm.SetStateData(string(stateDataKeyLoops), iterationCount)
+		sm.SetStateData(string(stateDataKeyMaxLoops), budget)
+
 		if c.dispatcher != nil {
 			requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 			requestMsg.SetPayload("request_type", proto.RequestApproval.String())
@@ -572,9 +586,16 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 	select {
 	case <-ctx.Done():
 		return proto.StateError, false, fmt.Errorf("coder waiting cancelled: %w", ctx.Err())
-	case storyMsg := <-c.storyCh:
+	case storyMsg, ok := <-c.storyCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			logx.Infof("🧑‍💻 Story channel closed, transitioning to ERROR")
+			return proto.StateError, true, fmt.Errorf("story channel closed unexpectedly")
+		}
+
 		if storyMsg == nil {
-			logx.Warnf("🧑‍💻 Received nil story message")
+			// This shouldn't happen with proper channel management, but handle gracefully
+			logx.Warnf("🧑‍💻 Received nil story message on open channel")
 			return proto.StateWaiting, false, nil
 		}
 
@@ -623,11 +644,6 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	logx.DebugState(ctx, "coder", "enter", string(StatePlanning))
 	c.contextManager.AddMessage("assistant", "Enhanced planning phase: exploring codebase and creating comprehensive plan")
 
-	// Check and increment planning iterations for budget control.
-	iterations := utils.GetStateValueOr[int](sm, string(stateDataKeyPlanningIterations), 0)
-	iterations++
-	sm.SetStateData(string(stateDataKeyPlanningIterations), iterations)
-
 	// Check planning budget using unified budget review mechanism.
 	const maxPlanningIterations = 10
 	if c.checkLoopBudget(sm, string(stateDataKeyPlanningIterations), maxPlanningIterations, StatePlanning) {
@@ -662,9 +678,16 @@ func (c *Coder) handleRequestBlocking(ctx context.Context, sm *agent.BaseStateMa
 	select {
 	case <-ctx.Done():
 		return proto.StateError, false, fmt.Errorf("coder request blocking cancelled: %w", ctx.Err())
-	case resultMsg := <-c.replyCh:
+	case resultMsg, ok := <-c.replyCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			c.logger.Info("🧑‍💻 Reply channel closed, transitioning to ERROR")
+			return proto.StateError, true, fmt.Errorf("reply channel closed unexpectedly")
+		}
+
 		if resultMsg == nil {
-			c.logger.Warn("🧑‍💻 Received nil RESULT message")
+			// This shouldn't happen with proper channel management, but handle gracefully
+			c.logger.Warn("🧑‍💻 Received nil RESULT message on open channel")
 			return currentState, false, nil
 		}
 
@@ -1783,8 +1806,78 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		return c.handleCodeReviewApproval(ctx, sm, approvalData)
 	}
 
+	// Send approval request if we haven't already sent one
+	if c.pendingApprovalRequest == nil {
+		if err := c.sendCodeReviewRequest(ctx, sm); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to send code review request")
+		}
+	}
+
 	// Block waiting for RESULT message from architect.
 	return c.handleRequestBlocking(ctx, sm, stateDataKeyCodeApprovalResult, StateCodeReview)
+}
+
+// sendCodeReviewRequest sends an approval request to the architect for code review.
+func (c *Coder) sendCodeReviewRequest(ctx context.Context, sm *agent.BaseStateMachine) error {
+	// Generate git diff to check if any files actually changed.
+	gitDiff, err := c.generateGitDiff(ctx, sm)
+	if err != nil {
+		c.logger.Warn("Failed to generate git diff, proceeding with normal code review: %v", err)
+		gitDiff = "" // Continue with normal flow if diff fails
+	}
+
+	// Tests passed, send REQUEST message to architect for approval.
+	filesCreated, _ := sm.GetStateValue(KeyFilesCreated)
+
+	// Check if we have any actual changes to review.
+	if gitDiff == "" || strings.TrimSpace(gitDiff) == "" {
+		// No changes - send completion approval instead of code approval.
+		c.logger.Info("🧑‍💻 No file changes detected, requesting story completion approval")
+
+		codeContent := fmt.Sprintf("Story completed during implementation phase: %v files processed, tests passed, no changes needed", filesCreated)
+
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: codeContent,
+			Reason:  "Story requirements already satisfied, requesting completion approval",
+			Type:    proto.ApprovalTypeCompletion,
+		}
+	} else {
+		// Normal code approval with diff included.
+		c.logger.Info("🧑‍💻 File changes detected, requesting code review approval")
+
+		// Get original story and plan from state data
+		originalStory := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
+		plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
+
+		codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed\n\nOriginal Story:\n%s\n\nImplementation Plan:\n%s\n\nChanges:\n%s", filesCreated, originalStory, plan, gitDiff)
+
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: codeContent,
+			Reason:  "Code requires architect approval before completion",
+			Type:    proto.ApprovalTypeCode,
+		}
+	}
+
+	if c.dispatcher != nil {
+		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
+		requestMsg.SetPayload("approval_type", c.pendingApprovalRequest.Type.String())
+		requestMsg.SetPayload("content", c.pendingApprovalRequest.Content)
+		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
+		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+
+		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+			return logx.Wrap(err, "failed to send approval request")
+		}
+
+		c.logger.Info("🧑‍💻 Sent %s approval request %s to architect during CODE_REVIEW state entry", c.pendingApprovalRequest.Type, c.pendingApprovalRequest.ID)
+	} else {
+		return logx.Errorf("dispatcher not set")
+	}
+
+	return nil
 }
 
 // handleCodeReviewApproval processes code review approval results.
@@ -1875,7 +1968,12 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 	select {
 	case <-ctx.Done():
 		return proto.StateError, false, fmt.Errorf("coder await merge cancelled: %w", ctx.Err())
-	case resultMsg := <-c.replyCh:
+	case resultMsg, ok := <-c.replyCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			c.logger.Info("🧑‍💻 Reply channel closed in AWAIT_MERGE, transitioning to ERROR")
+			return proto.StateError, true, fmt.Errorf("reply channel closed unexpectedly during merge")
+		}
 		if resultMsg == nil {
 			c.logger.Warn("🧑‍💻 Received nil RESULT message")
 			return StateAwaitMerge, false, nil
@@ -1965,9 +2063,10 @@ func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStat
 			return StateCoding, false, nil // default fallback
 		}
 	case proto.ApprovalStatusNeedsChanges:
-		// ESCALATE - move to CODE_REVIEW.
-		c.logger.Info("🧑‍💻 Budget review needs changes, escalating to CODE_REVIEW")
-		return StateCodeReview, false, nil
+		// PIVOT - return to PLANNING and reset counter.
+		c.logger.Info("🧑‍💻 Budget review needs changes, pivoting to PLANNING")
+		sm.SetStateData(string(stateDataKeyPlanningIterations), 0)
+		return StatePlanning, false, nil
 	case proto.ApprovalStatusRejected:
 		// ABANDON - move to ERROR.
 		c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
@@ -2138,6 +2237,8 @@ func (c *Coder) ProcessApprovalResult(ctx context.Context, approvalStatus, appro
 		c.BaseStateMachine.SetStateData(string(stateDataKeyPlanApprovalResult), result)
 	case proto.ApprovalTypeCode:
 		c.BaseStateMachine.SetStateData(string(stateDataKeyCodeApprovalResult), result)
+	case proto.ApprovalTypeBudgetReview:
+		c.BaseStateMachine.SetStateData(string(stateDataKeyBudgetApprovalResult), result)
 	default:
 		return logx.Errorf("unknown approval type: %s", approvalType)
 	}
@@ -2791,18 +2892,12 @@ func (c *Coder) getCurrentFindings() any       { return map[string]any{} }
 func (c *Coder) getCodingProgress() any        { return map[string]any{} }
 func (c *Coder) getFilesCreated() any          { return []string{} }
 func (c *Coder) getCurrentTask() any           { return map[string]any{} }
-func (c *Coder) getFixingProgress() any        { return map[string]any{} }
-func (c *Coder) getTestFailures() any          { return []string{} }
-func (c *Coder) getCurrentFixes() any          { return map[string]any{} }
 func (c *Coder) restoreExplorationHistory(any) {}
 func (c *Coder) restoreFilesExamined(any)      {}
 func (c *Coder) restoreCurrentFindings(any)    {}
 func (c *Coder) restoreCodingProgress(any)     {}
 func (c *Coder) restoreFilesCreated(any)       {}
 func (c *Coder) restoreCurrentTask(any)        {}
-func (c *Coder) restoreFixingProgress(any)     {}
-func (c *Coder) restoreTestFailures(any)       {}
-func (c *Coder) restoreCurrentFixes(any)       {}
 
 // processPlanningToolCalls handles tool execution during planning.
 func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
@@ -3004,61 +3099,10 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 }
 
 // proceedToCodeReview handles the common logic for transitioning to CODE_REVIEW after successful testing.
-func (c *Coder) proceedToCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Generate git diff to check if any files actually changed.
-	gitDiff, err := c.generateGitDiff(ctx, sm)
-	if err != nil {
-		c.logger.Warn("Failed to generate git diff, proceeding with normal code review: %v", err)
-		gitDiff = "" // Continue with normal flow if diff fails
-	}
-
-	// Tests passed, send REQUEST message to architect for approval.
-	filesCreated, _ := sm.GetStateValue(KeyFilesCreated)
-
-	// Check if we have any actual changes to review.
-	if gitDiff == "" || strings.TrimSpace(gitDiff) == "" {
-		// No changes - send completion approval instead of code approval.
-		c.logger.Info("🧑‍💻 No file changes detected, requesting story completion approval")
-
-		codeContent := fmt.Sprintf("Story completed during implementation phase: %v files processed, tests passed, no changes needed", filesCreated)
-
-		c.pendingApprovalRequest = &ApprovalRequest{
-			ID:      proto.GenerateApprovalID(),
-			Content: codeContent,
-			Reason:  "Story requirements already satisfied, requesting completion approval",
-			Type:    proto.ApprovalTypeCompletion,
-		}
-	} else {
-		// Normal code approval with diff included.
-		c.logger.Info("🧑‍💻 File changes detected, requesting code review approval")
-
-		codeContent := fmt.Sprintf("Code implementation and testing completed: %v files created, tests passed\n\nChanges:\n%s", filesCreated, gitDiff)
-
-		c.pendingApprovalRequest = &ApprovalRequest{
-			ID:      proto.GenerateApprovalID(),
-			Content: codeContent,
-			Reason:  "Code requires architect approval before completion",
-			Type:    proto.ApprovalTypeCode,
-		}
-	}
-
-	if c.dispatcher != nil {
-		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
-		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
-		requestMsg.SetPayload("approval_type", c.pendingApprovalRequest.Type.String())
-		requestMsg.SetPayload("content", c.pendingApprovalRequest.Content)
-		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
-		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-
-		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to send approval request")
-		}
-
-		c.logger.Info("🧑‍💻 Sent %s approval request %s to architect during TESTING->CODE_REVIEW transition", c.pendingApprovalRequest.Type, c.pendingApprovalRequest.ID)
-	} else {
-		return proto.StateError, false, logx.Errorf("dispatcher not set")
-	}
-
+func (c *Coder) proceedToCodeReview(_ context.Context, _ *agent.BaseStateMachine) (proto.State, bool, error) {
+	// Tests passed, transition to CODE_REVIEW state.
+	// The approval request will be sent when entering the CODE_REVIEW state.
+	c.logger.Info("🧑‍💻 Tests completed successfully, transitioning to CODE_REVIEW")
 	return StateCodeReview, false, nil
 }
 

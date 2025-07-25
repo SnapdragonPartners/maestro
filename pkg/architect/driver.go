@@ -325,10 +325,17 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	case <-ctx.Done():
 		d.logger.Info("🏗️ Architect WAITING state context cancelled")
 		return StateError, fmt.Errorf("architect waiting cancelled: %w", ctx.Err())
-	case specMsg := <-d.specCh:
+	case specMsg, ok := <-d.specCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			d.logger.Info("🏗️ Spec channel closed, transitioning to ERROR")
+			return StateError, fmt.Errorf("spec channel closed unexpectedly")
+		}
+
 		if specMsg == nil {
-			d.logger.Warn("🏗️ Architect received nil spec message, likely due to shutdown")
-			return StateError, fmt.Errorf("received nil spec message")
+			// This shouldn't happen with proper channel management, but handle gracefully
+			d.logger.Warn("🏗️ Received nil spec message on open channel")
+			return StateWaiting, nil
 		}
 		d.logger.Info("🏗️ Architect received spec message %s, transitioning to SCOPING", specMsg.ID)
 
@@ -336,10 +343,17 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 		d.stateData["spec_message"] = specMsg
 
 		return StateScoping, nil
-	case questionMsg := <-d.questionsCh:
+	case questionMsg, ok := <-d.questionsCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			d.logger.Info("🏗️ Questions channel closed, transitioning to ERROR")
+			return StateError, fmt.Errorf("questions channel closed unexpectedly")
+		}
+
 		if questionMsg == nil {
-			d.logger.Warn("🏗️ Architect received nil question message, likely due to shutdown")
-			return StateError, fmt.Errorf("received nil question message")
+			// This shouldn't happen with proper channel management, but handle gracefully
+			d.logger.Warn("🏗️ Received nil question message on open channel")
+			return StateWaiting, nil
 		}
 		d.logger.Info("🏗️ Architect received question message %s in WAITING state, transitioning to REQUEST", questionMsg.ID)
 
@@ -627,7 +641,16 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 	// 1. Coder questions/requests (transition to REQUEST).
 	// 2. Heartbeat to check for new ready stories.
 	select {
-	case questionMsg := <-d.questionsCh:
+	case questionMsg, ok := <-d.questionsCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			d.logger.Info("🏗️ Questions channel closed in MONITORING, transitioning to ERROR")
+			return StateError, fmt.Errorf("questions channel closed unexpectedly")
+		}
+		if questionMsg == nil {
+			d.logger.Warn("🏗️ Received nil question message in MONITORING")
+			return StateMonitoring, nil
+		}
 		d.logger.Info("🏗️ Architect received question in MONITORING state, transitioning to REQUEST")
 		// Store the question for processing in REQUEST state.
 		d.stateData["current_request"] = questionMsg

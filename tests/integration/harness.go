@@ -110,6 +110,10 @@ func (h *TestHarness) AddCoder(coderID string, driver *coder.Coder) {
 	// Create dedicated channels for this coder.
 	fromArch := make(chan *proto.AgentMsg, 100)
 	toArch := make(chan *proto.AgentMsg, 100)
+	storyCh := make(chan *proto.AgentMsg, 100) // Not used in tests but needed for SetChannels
+
+	// Set up the coder driver channels properly
+	driver.SetChannels(storyCh, toArch, fromArch)
 
 	coderAgent := &CoderAgent{
 		ID:       coderID,
@@ -263,131 +267,42 @@ func (h *TestHarness) pumpMessages(ctx context.Context) error {
 
 // stepCoder advances a single coder by one step.
 func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent *CoderAgent) error {
-	// Check for incoming messages from architect.
-	select {
-	case msg := <-coderAgent.FromArch:
-		// Process message using the coder's ProcessMessage method.
-		if response, err := h.processCoderMessage(ctx, coderAgent, msg); err != nil {
-			return fmt.Errorf("coder %s failed to process message: %w", coderID, err)
-		} else if response != nil {
-			// Send response to architect.
-			select {
-			case coderAgent.ToArch <- response:
-				// Message sent successfully.
-			default:
-				return fmt.Errorf("coder %s response channel full", coderID)
-			}
-		}
-	default:
-		// No incoming message, just step the coder's state machine.
-		stepCtx, cancel := context.WithTimeout(ctx, h.timeouts.CoderStep)
-		defer cancel()
+	stepCtx, cancel := context.WithTimeout(ctx, h.timeouts.CoderStep)
+	defer cancel()
 
-		// Let the coder advance its state machine.
-		if _, err := coderAgent.Driver.Step(stepCtx); err != nil {
-			// Note: Some errors (like invalid transitions) are expected during testing
-			h.t.Logf("Coder %s step resulted in: %v", coderID, err)
-		}
+	// Let the coder advance its state machine.
+	// The coder will handle incoming messages from its channels internally.
+	if _, err := coderAgent.Driver.Step(stepCtx); err != nil {
+		// Note: Some errors (like invalid transitions) are expected during testing
+		h.t.Logf("Coder %s step resulted in: %v", coderID, err)
+	}
 
-		// Check for pending approval requests and send them to architect.
-		if hasPending, _, content, reason, _ := coderAgent.Driver.GetPendingApprovalRequest(); hasPending {
-			requestMsg := h.createApprovalRequestMessage(coderID, content, reason)
-			select {
-			case coderAgent.ToArch <- requestMsg:
-				// Clear the pending request since we've sent it.
-				coderAgent.Driver.ClearPendingApprovalRequest()
-				h.t.Logf("Sent approval request from coder %s to architect", coderID)
-			default:
-				h.t.Logf("Warning: Could not send approval request from coder %s (channel full)", coderID)
-			}
-		}
-
-		// Check for pending questions and send them to architect.
-		if hasPending, _, content, reason := coderAgent.Driver.GetPendingQuestion(); hasPending {
-			questionMsg := h.createQuestionMessage(coderID, content, reason)
-			select {
-			case coderAgent.ToArch <- questionMsg:
-				// Clear the pending question since we've sent it.
-				coderAgent.Driver.ClearPendingQuestion()
-				h.t.Logf("Sent question from coder %s to architect", coderID)
-			default:
-				h.t.Logf("Warning: Could not send question from coder %s (channel full)", coderID)
-			}
+	// Check for pending approval requests and send them to architect.
+	if hasPending, _, content, reason, _ := coderAgent.Driver.GetPendingApprovalRequest(); hasPending {
+		requestMsg := h.createApprovalRequestMessage(coderID, content, reason)
+		select {
+		case coderAgent.ToArch <- requestMsg:
+			// Clear the pending request since we've sent it.
+			coderAgent.Driver.ClearPendingApprovalRequest()
+			h.t.Logf("Sent approval request from coder %s to architect", coderID)
+		default:
+			h.t.Logf("Warning: Could not send approval request from coder %s (channel full)", coderID)
 		}
 	}
 
-	return nil
-}
-
-// processCoderMessage simulates the coder processing an incoming message.
-//
-//nolint:unparam // first return always nil by design in test harness
-func (h *TestHarness) processCoderMessage(ctx context.Context, coderAgent *CoderAgent, msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// This is where we'd normally call the coder's ProcessMessage method.
-	// For now, we'll implement a simplified version based on message type.
-
-	switch msg.Type {
-	case proto.MsgTypeRESULT:
-		// This is an approval result from the architect.
-		if err := h.processApprovalResult(ctx, coderAgent, msg); err != nil {
-			return nil, err
+	// Check for pending questions and send them to architect.
+	if hasPending, _, content, reason := coderAgent.Driver.GetPendingQuestion(); hasPending {
+		questionMsg := h.createQuestionMessage(coderID, content, reason)
+		select {
+		case coderAgent.ToArch <- questionMsg:
+			// Clear the pending question since we've sent it.
+			coderAgent.Driver.ClearPendingQuestion()
+			h.t.Logf("Sent question from coder %s to architect", coderID)
+		default:
+			h.t.Logf("Warning: Could not send question from coder %s (channel full)", coderID)
 		}
-
-		// Step the coder to let it process the approval.
-		if _, err := coderAgent.Driver.Step(ctx); err != nil {
-			h.t.Logf("Coder step after approval: %v", err)
-		}
-
-		// No response needed for this message type.
-		return nil, fmt.Errorf("test harness: no response for this message type")
-
-	case proto.MsgTypeANSWER:
-		// This is an answer to a question from the architect.
-		if answer, exists := msg.GetPayload(proto.KeyAnswer); exists {
-			if answerStr, ok := answer.(string); ok {
-				if err := coderAgent.Driver.ProcessAnswer(answerStr); err != nil {
-					return nil, fmt.Errorf("failed to process answer: %w", err)
-				}
-			}
-		}
-		// No response needed for this message type.
-		return nil, fmt.Errorf("test harness: no response for this message type")
-
-	default:
-		h.t.Logf("Unexpected message type for coder: %s", msg.Type)
-		// No response needed for this message type.
-		return nil, fmt.Errorf("test harness: no response for this message type")
-	}
-}
-
-// processApprovalResult handles approval results from the architect.
-func (h *TestHarness) processApprovalResult(ctx context.Context, coderAgent *CoderAgent, msg *proto.AgentMsg) error {
-	// Extract status.
-	status, exists := msg.GetPayload(proto.KeyStatus)
-	if !exists {
-		return fmt.Errorf("missing status in approval result")
 	}
 
-	statusStr, ok := status.(string)
-	if !ok {
-		return fmt.Errorf("status must be a string")
-	}
-
-	// Extract approval type.
-	approvalTypeRaw, exists := msg.GetPayload(proto.KeyApprovalType)
-	if !exists {
-		return fmt.Errorf("missing approval_type in approval result")
-	}
-
-	approvalTypeStr, ok := approvalTypeRaw.(string)
-	if !ok {
-		return fmt.Errorf("approval_type must be a string")
-	}
-
-	// Process the approval result.
-	if err := coderAgent.Driver.ProcessApprovalResult(ctx, statusStr, approvalTypeStr); err != nil {
-		return fmt.Errorf("failed to process approval result: %w", err)
-	}
 	return nil
 }
 

@@ -107,11 +107,21 @@ func TestReviewHandleResult(t *testing.T) {
 		t.Errorf("Expected status 'approved' or 'needs_fixes', got '%s'", pendingReview.Status)
 	}
 
-	// Verify story status changed appropriately.
+	// Verify story status behavior based on new merge workflow.
 	story, _ := queue.GetStory("001")
 	if pendingReview.Status == "approved" {
-		if story.Status != StatusCompleted {
-			t.Errorf("Expected story status completed for approved review, got %s", story.Status)
+		// After approval, story remains in_progress until merge completes
+		if story.Status != StatusInProgress {
+			t.Errorf("Expected story status in_progress for approved review (awaiting merge), got %s", story.Status)
+		}
+		// Verify merge channel was signaled
+		select {
+		case mergedStoryID := <-mergeCh:
+			if mergedStoryID != "001" {
+				t.Errorf("Expected story ID '001' in merge channel, got '%s'", mergedStoryID)
+			}
+		default:
+			t.Error("Expected story ID to be sent to merge channel after approval")
 		}
 	} else if pendingReview.Status == "needs_fixes" {
 		if story.Status != StatusWaitingReview {
@@ -460,10 +470,20 @@ func TestProcessLLMReviewResponse(t *testing.T) {
 		t.Errorf("Expected status 'approved', got '%s'", pendingReview.Status)
 	}
 
-	// Verify story was marked as completed.
+	// Verify story remains in waiting_review status (awaiting merge).
 	story, _ := queue.GetStory("001")
-	if story.Status != StatusCompleted {
-		t.Errorf("Expected story status completed, got %s", story.Status)
+	if story.Status != StatusWaitingReview {
+		t.Errorf("Expected story status waiting_review (awaiting merge), got %s", story.Status)
+	}
+
+	// Verify merge channel was signaled.
+	select {
+	case mergedStoryID := <-mergeCh:
+		if mergedStoryID != "001" {
+			t.Errorf("Expected story ID '001' in merge channel, got '%s'", mergedStoryID)
+		}
+	default:
+		t.Error("Expected story ID to be sent to merge channel after approval")
 	}
 
 	// Test rejection response with a new review.

@@ -66,6 +66,27 @@ go 1.19
 		t.Fatalf("Failed to create go.mod: %v", err)
 	}
 
+	// Create minimal Makefile with required targets
+	makefileContent := `build:
+	@echo "Building Go project"
+	go build ./...
+
+test:
+	@echo "Testing Go project"
+	go test ./...
+
+lint:
+	@echo "Linting Go project"
+	@echo "No linter configured"
+
+run:
+	@echo "Running Go project"
+	@echo "No run target configured"
+`
+	if err := os.WriteFile(filepath.Join(tempDir, "Makefile"), []byte(makefileContent), 0644); err != nil {
+		t.Fatalf("Failed to create Makefile: %v", err)
+	}
+
 	backend := NewGoBackend()
 
 	// Test detection.
@@ -78,7 +99,7 @@ go 1.19
 		t.Errorf("Expected name 'go', got '%s'", backend.Name())
 	}
 
-	// Test build (should succeed even with no source files)
+	// Test build (should succeed with basic Makefile)
 	ctx := context.Background()
 	var buf strings.Builder
 

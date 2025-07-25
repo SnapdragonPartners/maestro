@@ -16,8 +16,6 @@ func TestStory7Implementation(t *testing.T) {
 	SetDebugDomains([]string{"coder", "architect", "dispatch"})
 
 	// Create context with agent ID using typed key to avoid collisions.
-	type contextKey string
-	const agentIDKey contextKey = "agent_id"
 	ctx := context.WithValue(context.Background(), agentIDKey, "claude-001")
 
 	// Demonstrate the new Debug(ctx, domain, format, args...) pattern
