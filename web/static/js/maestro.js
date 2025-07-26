@@ -41,8 +41,10 @@ class MaestroUI {
 
     async startPolling() {
         this.pollAgents();
+        this.pollStories();
         this.pollLogs();
         setInterval(() => this.pollAgents(), this.pollingInterval);
+        setInterval(() => this.pollStories(), this.pollingInterval);
         setInterval(() => this.pollLogs(), this.pollingInterval);
         setInterval(() => this.updateLastUpdated(), 1000);
     }
@@ -59,6 +61,21 @@ class MaestroUI {
             
         } catch (error) {
             console.error('Error polling agents:', error);
+            this.handleConnectionError();
+        }
+    }
+
+    async pollStories() {
+        try {
+            const response = await fetch('/api/stories');
+            if (!response.ok) throw new Error('Failed to fetch stories');
+            
+            const stories = await response.json();
+            this.updateStories(stories);
+            this.setConnectionStatus(true);
+            
+        } catch (error) {
+            console.error('Error polling stories:', error);
             this.handleConnectionError();
         }
     }
@@ -125,6 +142,102 @@ class MaestroUI {
             'ESCALATED': 'state-escalated'
         };
         return stateMap[state] || 'bg-gray-100 text-gray-800';
+    }
+
+    updateStories(stories) {
+        const container = document.getElementById('stories-container');
+        const loading = document.getElementById('stories-loading');
+        const empty = document.getElementById('stories-empty');
+        const list = document.getElementById('stories-list');
+
+        // Hide loading state
+        loading.classList.add('hidden');
+
+        if (!stories || stories.length === 0) {
+            empty.classList.remove('hidden');
+            list.classList.add('hidden');
+            return;
+        }
+
+        empty.classList.add('hidden');
+        list.classList.remove('hidden');
+
+        // Sort stories by ID for consistent display
+        stories.sort((a, b) => a.id.localeCompare(b.id));
+
+        list.innerHTML = stories.map(story => this.createStoryCard(story)).join('');
+    }
+
+    createStoryCard(story) {
+        const statusClass = this.getStoryStatusClass(story.status);
+        const statusIcon = this.getStoryStatusIcon(story.status);
+        const timeInfo = this.getStoryTimeInfo(story);
+
+        return `
+            <div class="border border-gray-200 rounded-lg p-4 mb-3">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center space-x-3">
+                        <div class="flex-shrink-0">
+                            ${statusIcon}
+                        </div>
+                        <div>
+                            <h3 class="font-medium text-gray-900">${story.id}</h3>
+                            <p class="text-sm text-gray-600">${story.title || 'Untitled Story'}</p>
+                        </div>
+                    </div>
+                    <span class="px-2 py-1 text-xs rounded-full ${statusClass}">${story.status}</span>
+                </div>
+                <div class="text-sm text-gray-500 flex items-center justify-between">
+                    <div class="flex items-center space-x-4">
+                        ${story.estimated_points ? `<span>📊 ${story.estimated_points} pts</span>` : ''}
+                        ${story.assigned_agent ? `<span>👤 ${story.assigned_agent}</span>` : ''}
+                        ${story.depends_on && story.depends_on.length > 0 ? `<span>🔗 Depends on: ${story.depends_on.join(', ')}</span>` : ''}
+                    </div>
+                    <div class="text-xs text-gray-400">
+                        ${timeInfo}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    getStoryStatusClass(status) {
+        const statusMap = {
+            'pending': 'bg-gray-100 text-gray-800',
+            'in_progress': 'bg-blue-100 text-blue-800',
+            'waiting_review': 'bg-yellow-100 text-yellow-800',
+            'completed': 'bg-green-100 text-green-800',
+            'blocked': 'bg-red-100 text-red-800',
+            'cancelled': 'bg-gray-100 text-gray-800',
+            'await_human_feedback': 'bg-purple-100 text-purple-800'
+        };
+        return statusMap[status] || 'bg-gray-100 text-gray-800';
+    }
+
+    getStoryStatusIcon(status) {
+        const iconMap = {
+            'pending': '<div class="w-4 h-4 bg-gray-300 rounded-full"></div>',
+            'in_progress': '<div class="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>',
+            'waiting_review': '<div class="w-4 h-4 bg-yellow-500 rounded-full"></div>',
+            'completed': '<div class="w-4 h-4 bg-green-500 rounded-full"><svg class="w-3 h-3 text-white ml-0.5 mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg></div>',
+            'blocked': '<div class="w-4 h-4 bg-red-500 rounded-full flex items-center justify-center"><span class="text-white text-xs">!</span></div>',
+            'cancelled': '<div class="w-4 h-4 bg-gray-400 rounded-full flex items-center justify-center"><span class="text-white text-xs">×</span></div>',
+            'await_human_feedback': '<div class="w-4 h-4 bg-purple-500 rounded-full flex items-center justify-center"><span class="text-white text-xs">?</span></div>'
+        };
+        return iconMap[status] || '<div class="w-4 h-4 bg-gray-300 rounded-full"></div>';
+    }
+
+    getStoryTimeInfo(story) {
+        if (story.completed_at) {
+            return `Completed ${this.getTimeSince(story.completed_at)}`;
+        }
+        if (story.started_at) {
+            return `Started ${this.getTimeSince(story.started_at)}`;
+        }
+        if (story.last_updated) {
+            return `Updated ${this.getTimeSince(story.last_updated)}`;
+        }
+        return '';
     }
 
     getTimeSince(timestamp) {

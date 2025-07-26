@@ -15,7 +15,7 @@ func TestNewQuestionHandler(t *testing.T) {
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
 
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	if handler == nil {
 		t.Fatal("NewQuestionHandler returned nil")
@@ -51,7 +51,7 @@ func TestHandleQuestion(t *testing.T) {
 
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler) // nil LLM = mock mode
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test") // nil LLM = mock mode
 
 	// Create QUESTION message.
 	questionMsg := proto.NewAgentMsg(
@@ -104,7 +104,7 @@ func TestHandleQuestionInvalid(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	// Test missing story_id.
 	questionMsg := proto.NewAgentMsg(
@@ -138,7 +138,7 @@ func TestIsBusinessQuestion(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	// Test technical questions (should not be business)
 	technicalQuestions := []string{
@@ -189,7 +189,7 @@ func TestBusinessQuestionEscalation(t *testing.T) {
 
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	// Create business question message.
 	questionMsg := proto.NewAgentMsg(
@@ -221,7 +221,7 @@ func TestGetPendingQuestions(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	// Add some pending questions.
 	handler.pendingQuestions["q1"] = &PendingQuestion{
@@ -246,7 +246,7 @@ func TestGetQuestionStatus(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	// Add questions with different statuses.
 	handler.pendingQuestions["q1"] = &PendingQuestion{
@@ -288,7 +288,7 @@ func TestClearAnsweredQuestions(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	// Add questions with different statuses.
 	handler.pendingQuestions["q1"] = &PendingQuestion{
@@ -327,7 +327,7 @@ func TestFormatQuestionContext(t *testing.T) {
 	queue := NewQueue("/tmp/test")
 	renderer, _ := templates.NewRenderer()
 	escalationHandler := NewEscalationHandler("/tmp/test/logs", queue)
-	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler)
+	handler := NewQuestionHandler(nil, renderer, queue, escalationHandler, "/tmp/test")
 
 	story := &QueuedStory{
 		ID:              "001",

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 )
@@ -510,5 +511,86 @@ func TestProcessLLMReviewResponse(t *testing.T) {
 
 	if pendingReview2.Status != "needs_fixes" {
 		t.Errorf("Expected status 'needs_fixes', got '%s'", pendingReview2.Status)
+	}
+}
+
+func TestHandleCompletionApprovalRequest(t *testing.T) {
+	// Create test setup with queue
+	queue := NewQueue("/tmp/test")
+
+	// Add a story to the queue
+	queue.stories["001"] = &QueuedStory{
+		ID:              "001",
+		Title:           "Test Story",
+		Status:          StatusInProgress,
+		EstimatedPoints: 2,
+		FilePath:        "/tmp/test/001.md",
+	}
+
+	// Create driver with mock LLM client (nil = auto-approve mode)
+	logger := logx.NewLogger("test-architect")
+	driver := &Driver{
+		architectID: "test-architect",
+		queue:       queue,
+		llmClient:   nil, // nil means auto-approve mode
+		logger:      logger,
+	}
+
+	// Create completion approval request message
+	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "test-coder", "test-architect")
+	requestMsg.SetPayload("request_type", proto.RequestApproval.String())
+	requestMsg.SetPayload("approval_type", proto.ApprovalTypeCompletion.String())
+	requestMsg.SetPayload("content", "Story completion claim:\n\nReason: Feature already implemented\n\nEvidence: Tests pass, functionality works")
+	requestMsg.SetPayload("reason", "Story appears to be already implemented")
+	requestMsg.SetPayload("approval_id", "test-approval-123")
+	requestMsg.SetPayload("original_story", "Implement test feature")
+	requestMsg.SetPayload(proto.KeyStoryID, "001") // Include story ID
+	requestMsg.SetPayload("completion_reason", "Feature already implemented")
+	requestMsg.SetPayload("completion_evidence", "Tests pass, functionality works")
+	requestMsg.SetPayload("completion_confidence", "high")
+
+	// Handle the approval request
+	ctx := context.Background()
+	response, err := driver.handleApprovalRequest(ctx, requestMsg)
+	if err != nil {
+		t.Fatalf("Failed to handle completion approval request: %v", err)
+	}
+
+	// Verify response structure
+	if response == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if response.Type != proto.MsgTypeRESULT {
+		t.Errorf("Expected RESULT message type, got %s", response.Type)
+	}
+
+	// Verify approval result payload
+	approvalResultPayload, exists := response.GetPayload("approval_result")
+	if !exists {
+		t.Fatal("Expected approval_result payload in response")
+	}
+
+	approvalResult, ok := approvalResultPayload.(*proto.ApprovalResult)
+	if !ok {
+		t.Fatalf("Expected *proto.ApprovalResult, got %T", approvalResultPayload)
+	}
+
+	if approvalResult.Type != proto.ApprovalTypeCompletion {
+		t.Errorf("Expected completion approval type, got %s", approvalResult.Type)
+	}
+
+	if approvalResult.Status != proto.ApprovalStatusApproved {
+		t.Errorf("Expected approved status, got %s", approvalResult.Status)
+	}
+
+	// Most importantly, verify that the story was marked as completed in the queue
+	story, exists := queue.GetStory("001")
+	if !exists {
+		t.Fatal("Story should still exist in queue")
+	}
+
+	if story.Status != StatusCompleted {
+		t.Errorf("Expected story status to be completed after approval, got %s", story.Status)
 	}
 }

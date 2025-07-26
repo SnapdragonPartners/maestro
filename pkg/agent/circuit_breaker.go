@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
 // CircuitState represents the state of a circuit breaker.
@@ -262,13 +264,24 @@ type ResilientClient struct {
 
 // NewResilientClient creates a client with both retry and circuit breaker patterns.
 func NewResilientClient(baseClient LLMClient) LLMClient {
+	return NewResilientClientWithLogger(baseClient, nil)
+}
+
+// NewResilientClientWithLogger creates a client with retry, circuit breaker, and prompt logging.
+func NewResilientClientWithLogger(baseClient LLMClient, logger *logx.Logger) LLMClient {
 	// First wrap with circuit breaker (inner layer)
 	cbClient := NewCircuitBreakerClient(baseClient, DefaultCircuitBreakerConfig)
+
+	// Create prompt logger if logger is provided
+	var promptLogger *PromptLogger
+	if logger != nil {
+		promptLogger = NewPromptLogger(DefaultPromptLogConfig, logger)
+	}
 
 	// Then wrap with retry logic (outer layer)
 	// This way, circuit breaker failures won't be retried.
 	retryConfig := DefaultRetryConfig
 	retryConfig.MaxRetries = 2 // Reduce retries when using circuit breaker
 
-	return NewRetryableClient(cbClient, retryConfig)
+	return NewRetryableClientWithLogger(cbClient, retryConfig, promptLogger)
 }

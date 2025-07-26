@@ -32,7 +32,6 @@ func TestNewRenderer(t *testing.T) {
 	for _, templateName := range expectedTemplates {
 		data := &TemplateData{
 			TaskContent: "Test task",
-			Context:     "Test context",
 		}
 		_, err := renderer.Render(templateName, data)
 		if err != nil {
@@ -49,7 +48,6 @@ func TestRenderPlanningTemplate(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent: "Create a health endpoint",
-		Context:     "Go web service",
 	}
 
 	result, err := renderer.Render(PlanningTemplate, data)
@@ -88,7 +86,6 @@ func TestRenderCodingTemplate(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent: "Create a health endpoint",
-		Context:     "Go web service",
 		Plan:        "1. Create handler function 2. Add route 3. Test endpoint",
 	}
 
@@ -122,7 +119,6 @@ func TestRenderApprovalTemplate(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent:    "Create a health endpoint",
-		Context:        "Go web service",
 		Implementation: "func healthHandler(w http.ResponseWriter, r *http.Request) { ... }",
 	}
 
@@ -152,7 +148,6 @@ func TestRenderArchitectTemplates(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent: "Analyze requirements for health endpoint",
-		Context:     "Go microservice architecture",
 	}
 
 	for _, templateName := range architectTemplates {
@@ -177,7 +172,6 @@ func TestRenderWithCompleteData(t *testing.T) {
 	// Test with comprehensive data.
 	data := &TemplateData{
 		TaskContent:    "Create a comprehensive REST API",
-		Context:        "Go microservice with PostgreSQL",
 		Plan:           "1. Set up database models 2. Create handlers 3. Add middleware 4. Write tests",
 		ToolResults:    "Database connected, tables created successfully",
 		Implementation: "Complete REST API with CRUD operations",

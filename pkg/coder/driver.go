@@ -913,16 +913,15 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	tplData := &templates.TemplateData{
 		TaskContent: fmt.Sprintf("%v", templateData["TaskContent"]),
 		Plan:        fmt.Sprintf("%v", templateData["Plan"]),
-		Context:     fmt.Sprintf("%v", templateData["Context"]),
 		WorkDir:     fmt.Sprintf("%v", templateData["WorkDir"]),
 	}
 
-	// Add specialized data based on work type.
+	// Add specialized data to the context manager instead
 	if conflictData, exists := templateData["ConflictData"]; exists {
-		tplData.Context += fmt.Sprintf("\n\nMerge Conflict Details: %v", conflictData)
+		c.contextManager.AddMessage("system", fmt.Sprintf("Merge Conflict Details: %v", conflictData))
 	}
 	if reviewFeedback, exists := templateData["ReviewFeedback"]; exists {
-		tplData.Context += fmt.Sprintf("\n\nCode Review Feedback: %v", reviewFeedback)
+		c.contextManager.AddMessage("system", fmt.Sprintf("Code Review Feedback: %v", reviewFeedback))
 	}
 	if testOutput, exists := templateData["TestOutput"]; exists {
 		// Set TestResults field which the template expects.
@@ -933,7 +932,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	if c.renderer == nil {
 		return proto.StateError, false, logx.Errorf("template renderer not available")
 	}
-	prompt, err := c.renderer.Render(templateName, tplData)
+	prompt, err := c.renderer.RenderWithUserInstructions(templateName, tplData, c.workDir, "CODER")
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to render coding template")
 	}
@@ -2796,7 +2795,6 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 	// Create enhanced template data.
 	templateData := &templates.TemplateData{
 		TaskContent: taskContent,
-		Context:     c.formatContextAsString(),
 		TreeOutput:  utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
 	}
 
@@ -2804,7 +2802,7 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 	if c.renderer == nil {
 		return proto.StateError, false, logx.Errorf("template renderer not available for planning")
 	}
-	prompt, err := c.renderer.Render(templates.PlanningTemplate, templateData)
+	prompt, err := c.renderer.RenderWithUserInstructions(templates.PlanningTemplate, templateData, c.workDir, "CODER")
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to render planning template")
 	}

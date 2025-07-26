@@ -3,10 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"orchestrator/pkg/agent/llmerrors"
+	"orchestrator/pkg/logx"
 )
 
 // ClaudeClient wraps the Anthropic API client to implement LLMClient interface.
@@ -19,26 +25,36 @@ type ClaudeClient struct {
 
 // NewClaudeClient creates a new Claude client wrapper with default retry logic.
 func NewClaudeClient(apiKey string) LLMClient {
+	return NewClaudeClientWithLogger(apiKey, nil)
+}
+
+// NewClaudeClientWithLogger creates a new Claude client wrapper with logging support.
+func NewClaudeClientWithLogger(apiKey string, logger *logx.Logger) LLMClient {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	baseClient := &ClaudeClient{
 		client: client,
 		model:  "claude-3-5-sonnet-20241022", // Default model
 	}
 
-	// Wrap with both circuit breaker and retry logic.
-	return NewResilientClient(baseClient)
+	// Wrap with circuit breaker, retry logic, and prompt logging.
+	return NewResilientClientWithLogger(baseClient, logger)
 }
 
 // NewClaudeClientWithModel creates a new Claude client with specific model and retry logic.
 func NewClaudeClientWithModel(apiKey, model string) LLMClient {
+	return NewClaudeClientWithModelAndLogger(apiKey, model, nil)
+}
+
+// NewClaudeClientWithModelAndLogger creates a new Claude client with specific model and logging.
+func NewClaudeClientWithModelAndLogger(apiKey, model string, logger *logx.Logger) LLMClient {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
 	baseClient := &ClaudeClient{
 		client: client,
 		model:  anthropic.Model(model),
 	}
 
-	// Wrap with both circuit breaker and retry logic.
-	return NewResilientClient(baseClient)
+	// Wrap with circuit breaker, retry logic, and prompt logging.
+	return NewResilientClientWithLogger(baseClient, logger)
 }
 
 // Complete implements the LLMClient interface.
@@ -117,11 +133,15 @@ func (c *ClaudeClient) Complete(ctx context.Context, in CompletionRequest) (Comp
 	resp, err := c.client.Messages.New(ctx, params)
 
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("failed to generate response from Claude: %w", err)
+		// Classify the error for proper retry handling
+		classifiedErr := c.classifyError(err, nil)
+		return CompletionResponse{}, classifiedErr
 	}
 
 	if resp == nil || len(resp.Content) == 0 {
-		return CompletionResponse{}, fmt.Errorf("empty response from Claude")
+		// Empty response is a specific type of retryable error
+		emptyErr := llmerrors.NewError(llmerrors.ErrorTypeEmptyResponse, "received empty or nil response from Claude API")
+		return CompletionResponse{}, emptyErr
 	}
 
 	// Extract text content and tool calls from the response using v1.5.0 API.
@@ -172,4 +192,121 @@ func (c *ClaudeClient) Stream(ctx context.Context, in CompletionRequest) (<-chan
 		ch <- StreamChunk{Done: true}
 	}()
 	return ch, nil
+}
+
+// classifyError maps Anthropic SDK errors to our structured error types.
+func (c *ClaudeClient) classifyError(err error, _ *http.Response) *llmerrors.Error {
+	if err == nil {
+		return nil
+	}
+
+	errStr := err.Error()
+
+	// Check for context-related errors first
+	if errors.Is(err, context.DeadlineExceeded) {
+		return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeTransient, err, "request timeout")
+	}
+	if errors.Is(err, context.Canceled) {
+		return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeTransient, err, "request canceled")
+	}
+
+	// Parse HTTP status codes if available in error message
+	// Anthropic SDK typically includes status codes in error messages
+	statusCode := extractStatusCode(errStr)
+
+	switch statusCode {
+	case 401:
+		return llmerrors.NewErrorWithStatus(llmerrors.ErrorTypeAuth, statusCode, "authentication failed - check API key")
+	case 403:
+		return llmerrors.NewErrorWithStatus(llmerrors.ErrorTypeAuth, statusCode, "permission denied - check API access")
+	case 429:
+		return llmerrors.NewErrorWithStatus(llmerrors.ErrorTypeRateLimit, statusCode, "rate limit exceeded")
+	case 400:
+		return llmerrors.NewErrorWithStatus(llmerrors.ErrorTypeBadPrompt, statusCode, "bad request - check prompt format and parameters")
+	case 500, 502, 503, 504:
+		return llmerrors.NewErrorWithStatus(llmerrors.ErrorTypeTransient, statusCode, "server error")
+	}
+
+	// Check for common network and connection errors
+	if strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "network") ||
+		strings.Contains(errStr, "temporary") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "reset") {
+		return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeTransient, err, "network or connection error")
+	}
+
+	// Check for rate limiting text patterns
+	if strings.Contains(strings.ToLower(errStr), "rate") ||
+		strings.Contains(strings.ToLower(errStr), "quota") ||
+		strings.Contains(strings.ToLower(errStr), "limit") {
+		return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeRateLimit, err, "rate limiting detected")
+	}
+
+	// Check for authentication-related text patterns
+	if strings.Contains(strings.ToLower(errStr), "auth") ||
+		strings.Contains(strings.ToLower(errStr), "key") ||
+		strings.Contains(strings.ToLower(errStr), "unauthorized") {
+		return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeAuth, err, "authentication error")
+	}
+
+	// Check for prompt/request issues
+	if strings.Contains(strings.ToLower(errStr), "invalid") ||
+		strings.Contains(strings.ToLower(errStr), "malformed") ||
+		strings.Contains(strings.ToLower(errStr), "too large") ||
+		strings.Contains(strings.ToLower(errStr), "token") {
+		return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeBadPrompt, err, "prompt or request error")
+	}
+
+	// Default to unknown error type
+	return llmerrors.NewErrorWithCause(llmerrors.ErrorTypeUnknown, err, "unclassified error")
+}
+
+// extractStatusCode attempts to extract HTTP status code from error string.
+// Anthropic SDK often includes status codes in error messages.
+func extractStatusCode(errStr string) int {
+	// Common patterns in error messages
+	patterns := []string{
+		"status code: ",
+		"status: ",
+		"HTTP ",
+		"code ",
+	}
+
+	for _, pattern := range patterns {
+		if idx := strings.Index(strings.ToLower(errStr), pattern); idx != -1 {
+			start := idx + len(pattern)
+			if start < len(errStr) {
+				// Extract next 3 characters and try to parse as int
+				end := start + 3
+				if end > len(errStr) {
+					end = len(errStr)
+				}
+				statusStr := errStr[start:end]
+
+				// Try to parse common status codes
+				switch {
+				case strings.HasPrefix(statusStr, "400"):
+					return 400
+				case strings.HasPrefix(statusStr, "401"):
+					return 401
+				case strings.HasPrefix(statusStr, "403"):
+					return 403
+				case strings.HasPrefix(statusStr, "429"):
+					return 429
+				case strings.HasPrefix(statusStr, "500"):
+					return 500
+				case strings.HasPrefix(statusStr, "502"):
+					return 502
+				case strings.HasPrefix(statusStr, "503"):
+					return 503
+				case strings.HasPrefix(statusStr, "504"):
+					return 504
+				}
+			}
+		}
+	}
+
+	return 0 // No status code found
 }

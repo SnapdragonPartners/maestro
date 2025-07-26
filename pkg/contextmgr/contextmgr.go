@@ -14,6 +14,26 @@ type Message struct {
 	Content string
 }
 
+// ContextManagerInterface defines the new context management contract.
+type ContextManagerInterface interface {
+	// SystemPrompt returns the system prompt (always index 0)
+	SystemPrompt() *Message
+	// Conversation returns the rolling conversation window (index 1+)
+	Conversation() []Message
+	// ResetSystemPrompt sets a new system prompt, clearing conversation history
+	ResetSystemPrompt(content string)
+	// Append adds a message to the conversation with specified role
+	Append(role, content string)
+	// Compact performs context compaction if needed
+	Compact(maxTokens int) error
+	// CountTokens returns current token count
+	CountTokens() int
+	// Clear removes all messages
+	Clear()
+	// GetMessages returns all messages for backward compatibility
+	GetMessages() []Message
+}
+
 // ContextManager manages conversation context and token counting.
 //
 //nolint:govet // Simple struct, optimization not needed
@@ -55,6 +75,45 @@ func (cm *ContextManager) AddMessage(role, content string) {
 		Content: strings.TrimSpace(content),
 	}
 	cm.messages = append(cm.messages, message)
+}
+
+// SystemPrompt returns the system prompt (always index 0).
+func (cm *ContextManager) SystemPrompt() *Message {
+	if len(cm.messages) == 0 {
+		return nil
+	}
+	return &cm.messages[0]
+}
+
+// Conversation returns the rolling conversation window (index 1+).
+func (cm *ContextManager) Conversation() []Message {
+	if len(cm.messages) <= 1 {
+		return []Message{}
+	}
+	// Return a copy to prevent external modification
+	conversation := make([]Message, len(cm.messages)-1)
+	copy(conversation, cm.messages[1:])
+	return conversation
+}
+
+// ResetSystemPrompt sets a new system prompt, clearing conversation history.
+func (cm *ContextManager) ResetSystemPrompt(content string) {
+	// Clear all messages and set new system prompt
+	cm.messages = []Message{{
+		Role:    "system",
+		Content: strings.TrimSpace(content),
+	}}
+}
+
+// Append adds a message to the conversation with specified role.
+func (cm *ContextManager) Append(role, content string) {
+	// Use existing AddMessage logic for validation and cleanup
+	cm.AddMessage(role, content)
+}
+
+// Compact performs context compaction if needed.
+func (cm *ContextManager) Compact(maxTokens int) error {
+	return cm.performCompaction(maxTokens)
 }
 
 // CountTokens returns a simple token count based on message lengths.
@@ -269,6 +328,11 @@ func (cm *ContextManager) GetMessages() []Message {
 	result := make([]Message, len(cm.messages))
 	copy(result, cm.messages)
 	return result
+}
+
+// GetModelConfig returns the model configuration.
+func (cm *ContextManager) GetModelConfig() *config.ModelCfg {
+	return cm.modelConfig
 }
 
 // Clear removes all messages from the context.

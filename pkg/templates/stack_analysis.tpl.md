@@ -10,7 +10,7 @@ You are an Architect AI analyzing a project specification to determine the inten
 ```
 
 ## Context
-{{.Context}}
+Context is provided via conversation history.
 
 ## Supported Platforms
 You can recommend from these supported platforms:

@@ -6,7 +6,7 @@ You are an Architect AI reviewing code implementation from a coding agent.
 {{.TaskContent}}
 
 ## Review Context
-{{.Context}}
+Context is provided via conversation history.
 
 {{if .Implementation}}
 ## Code Implementation

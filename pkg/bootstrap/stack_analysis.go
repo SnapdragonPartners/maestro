@@ -131,7 +131,6 @@ func (s *StackAnalyzer) generateStackAnalysisPrompt(specContent string) (string,
 	// Prepare template data.
 	templateData := &templates.TemplateData{
 		TaskContent: specContent,
-		Context:     "Bootstrap stack analysis for project initialization",
 		Extra: map[string]any{
 			"spec_file_path": s.specFilePath,
 		},

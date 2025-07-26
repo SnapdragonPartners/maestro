@@ -307,7 +307,6 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 	// Prepare template data for tool invocation prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: fmt.Sprintf("Execute %s check for story %s", checkType, story.ID),
-		Context:     re.formatToolInvocationContext(workDir, checkType, story),
 		Extra: map[string]any{
 			"check_type":    checkType,
 			"workspace_dir": workDir,
@@ -317,7 +316,7 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 	}
 
 	// Use code review template for automated checks.
-	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
+	prompt, err := re.renderer.RenderWithUserInstructions(templates.CodeReviewTemplate, templateData, re.workspaceDir, "ARCHITECT")
 	if err != nil {
 		return false, fmt.Errorf("failed to render code review template: %w", err)
 	}
@@ -333,6 +332,8 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 }
 
 // formatToolInvocationContext creates context for LLM tool invocation.
+//
+//nolint:unused // Keep for future context management redesign
 func (re *ReviewEvaluator) formatToolInvocationContext(workDir, checkType string, story *QueuedStory) string {
 	context := fmt.Sprintf(`Tool Invocation Context:
 - Check Type: %s
@@ -368,6 +369,8 @@ Available Make Targets:`,
 }
 
 // getAvailableMakeTargets lists available make targets.
+//
+//nolint:unused // Keep for future context management redesign
 func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 	cmd := exec.Command("make", "-qp")
 	cmd.Dir = workDir
@@ -400,6 +403,8 @@ func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 }
 
 // fileExists checks if a file exists.
+//
+//nolint:unused // Keep for future context management redesign
 func (re *ReviewEvaluator) fileExists(path string) bool {
 	_, err := exec.Command("test", "-f", path).Output()
 	return err == nil
@@ -447,7 +452,6 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 	// Prepare template data for code review prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: pendingReview.CodeContent,
-		Context:     re.formatReviewContext(pendingReview, story),
 		Extra: map[string]any{
 			"story_id":           pendingReview.StoryID,
 			"story_title":        story.Title,
@@ -461,7 +465,7 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 	}
 
 	// Render code review prompt template.
-	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
+	prompt, err := re.renderer.RenderWithUserInstructions(templates.CodeReviewTemplate, templateData, re.workspaceDir, "ARCHITECT")
 	if err != nil {
 		return fmt.Errorf("failed to render code review template: %w", err)
 	}

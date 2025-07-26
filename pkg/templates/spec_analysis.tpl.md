@@ -10,7 +10,7 @@ You are an Architect AI analyzing a project specification to extract implementab
 ```
 
 ## Context
-{{.Context}}
+Context is provided via conversation history.
 
 ## Instructions
 

@@ -21,9 +21,9 @@ type QuestionHandler struct {
 	renderer          *templates.Renderer
 	queue             *Queue
 	escalationHandler *EscalationHandler
-
 	// Track pending questions.
 	pendingQuestions map[string]*PendingQuestion // questionID -> PendingQuestion
+	workDir          string                      // Working directory for user instructions
 }
 
 // PendingQuestion represents a question awaiting response.
@@ -42,12 +42,13 @@ type PendingQuestion struct {
 }
 
 // NewQuestionHandler creates a new question handler.
-func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler) *QuestionHandler {
+func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler, workDir string) *QuestionHandler {
 	return &QuestionHandler{
 		llmClient:         llmClient,
 		renderer:          renderer,
 		queue:             queue,
 		escalationHandler: escalationHandler,
+		workDir:           workDir,
 		pendingQuestions:  make(map[string]*PendingQuestion),
 	}
 }
@@ -132,7 +133,6 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 	// Prepare template data for Q&A prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: pendingQ.Question,
-		Context:     qh.formatQuestionContext(pendingQ, story),
 		Extra: map[string]any{
 			"story_id":         pendingQ.StoryID,
 			"story_title":      story.Title,
@@ -144,7 +144,7 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 	}
 
 	// Render Q&A prompt template.
-	prompt, err := qh.renderer.Render(templates.TechnicalQATemplate, templateData)
+	prompt, err := qh.renderer.RenderWithUserInstructions(templates.TechnicalQATemplate, templateData, qh.workDir, "ARCHITECT")
 	if err != nil {
 		return fmt.Errorf("failed to render Q&A template: %w", err)
 	}

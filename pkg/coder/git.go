@@ -212,7 +212,7 @@ func (w *WorkspaceManager) CleanupWorkspace(ctx context.Context, agentID, storyI
 
 	// Remove worktree registration from git (ignore errors since directory is gone).
 	mirrorPath := w.BuildMirrorPath()
-	if _, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDirPath); err != nil {
+	if _, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDirPath); err != nil {
 		w.logger.Debug("Worktree remove failed (expected): %v", err)
 	}
 

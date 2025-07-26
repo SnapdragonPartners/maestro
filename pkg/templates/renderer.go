@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+
+	"orchestrator/pkg/utils"
 )
 
 //go:embed *.tpl.md
@@ -16,7 +18,6 @@ var templateFS embed.FS
 type TemplateData struct {
 	Extra          map[string]any `json:"extra,omitempty"`
 	TaskContent    string         `json:"task_content"`
-	Context        string         `json:"context"`
 	Plan           string         `json:"plan,omitempty"`
 	ToolResults    string         `json:"tool_results,omitempty"`
 	Implementation string         `json:"implementation,omitempty"`
@@ -105,6 +106,33 @@ func (r *Renderer) Render(templateName StateTemplate, data *TemplateData) (strin
 	}
 
 	return buf.String(), nil
+}
+
+// RenderWithUserInstructions renders the specified template with user instruction files appended.
+// workDir is the working directory containing the .maestro directory.
+// agentType should be "CODER" or "ARCHITECT".
+func (r *Renderer) RenderWithUserInstructions(templateName StateTemplate, data *TemplateData, workDir, agentType string) (string, error) {
+	// First render the base template
+	basePrompt, err := r.Render(templateName, data)
+	if err != nil {
+		return "", err
+	}
+
+	// Load user instructions
+	instructions, err := utils.LoadUserInstructions(workDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to load user instructions: %w", err)
+	}
+
+	// Format user instructions for the agent type
+	userInstructionsFormatted := utils.FormatUserInstructions(instructions, agentType)
+
+	// Append user instructions if they exist
+	if userInstructionsFormatted != "" {
+		return basePrompt + userInstructionsFormatted, nil
+	}
+
+	return basePrompt, nil
 }
 
 // GetAvailableTemplates returns a list of all available templates.

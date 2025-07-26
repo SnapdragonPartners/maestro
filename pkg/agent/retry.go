@@ -7,6 +7,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"orchestrator/pkg/agent/llmerrors"
 )
 
 // RetryConfig defines configuration for retry behavior.
@@ -62,26 +64,36 @@ func NewTransientError(err error) *TransientError {
 
 // RetryableClient wraps an LLMClient with retry logic.
 type RetryableClient struct {
-	client LLMClient
-	config RetryConfig
+	client       LLMClient
+	promptLogger *PromptLogger
+	config       RetryConfig
 }
 
 // NewRetryableClient creates a new retryable LLM client.
 func NewRetryableClient(client LLMClient, config RetryConfig) *RetryableClient {
+	return NewRetryableClientWithLogger(client, config, nil)
+}
+
+// NewRetryableClientWithLogger creates a new retryable LLM client with prompt logging.
+func NewRetryableClientWithLogger(client LLMClient, config RetryConfig, promptLogger *PromptLogger) *RetryableClient {
 	return &RetryableClient{
-		client: client,
-		config: config,
+		client:       client,
+		config:       config,
+		promptLogger: promptLogger,
 	}
 }
 
 // Complete implements LLMClient with retry logic.
 func (r *RetryableClient) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	var lastErr error
+	var retryConfig llmerrors.RetryConfig
+	var errorType llmerrors.ErrorType
+	startTime := time.Now()
 
-	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			// Calculate delay with exponential backoff.
-			delay := r.calculateDelay(attempt)
+			// Calculate delay with error-type-specific exponential backoff
+			delay := r.calculateDelayForError(attempt, retryConfig)
 
 			// Check if context is still valid before sleeping.
 			select {
@@ -92,34 +104,51 @@ func (r *RetryableClient) Complete(ctx context.Context, req CompletionRequest) (
 			}
 		}
 
+		attemptStart := time.Now()
 		resp, err := r.client.Complete(ctx, req)
+		attemptDuration := time.Since(attemptStart)
+
 		if err == nil {
+			// Log successful request
+			if r.promptLogger != nil {
+				r.promptLogger.LogSuccess(ctx, req, resp, attempt, attemptDuration)
+			}
 			return resp, nil
 		}
 
 		lastErr = err
 
-		// Check if error should be retried.
-		if !r.shouldRetry(err) {
-			break
+		// Get retry configuration based on error type
+		retryConfig, errorType = r.getRetryConfigForError(err)
+
+		// Determine if this is the final attempt
+		isFinalAttempt := !r.shouldRetry(err) || attempt >= retryConfig.MaxRetries
+
+		// Log prompt if configured to do so
+		if r.promptLogger != nil {
+			r.promptLogger.LogRequest(ctx, req, err, attempt, isFinalAttempt, attemptDuration)
 		}
 
-		// Check if we've reached max attempts.
-		if attempt == r.config.MaxRetries {
+		// Check if error should be retried and we haven't exceeded max attempts
+		if isFinalAttempt {
 			break
 		}
 	}
 
-	return CompletionResponse{}, fmt.Errorf("failed after %d retries: %w", r.config.MaxRetries, lastErr)
+	totalDuration := time.Since(startTime)
+	return CompletionResponse{}, fmt.Errorf("failed after %d retries (%s) in %v: %w",
+		retryConfig.MaxRetries, errorType.String(), totalDuration, lastErr)
 }
 
 // Stream implements LLMClient with retry logic for streaming.
 func (r *RetryableClient) Stream(ctx context.Context, req CompletionRequest) (<-chan StreamChunk, error) {
 	var lastErr error
+	var retryConfig llmerrors.RetryConfig
+	var errorType llmerrors.ErrorType
 
-	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			delay := r.calculateDelay(attempt)
+			delay := r.calculateDelayForError(attempt, retryConfig)
 			select {
 			case <-ctx.Done():
 				return nil, fmt.Errorf("stream retry cancelled: %w", ctx.Err())
@@ -134,49 +163,33 @@ func (r *RetryableClient) Stream(ctx context.Context, req CompletionRequest) (<-
 
 		lastErr = err
 
-		if !r.shouldRetry(err) {
+		// Get retry configuration based on error type
+		retryConfig, errorType = r.getRetryConfigForError(err)
+
+		// Check if error should be retried and we haven't exceeded max attempts
+		if !r.shouldRetry(err) || attempt >= retryConfig.MaxRetries {
 			break
 		}
-
-		if attempt == r.config.MaxRetries {
-			break
-		}
 	}
 
-	return nil, fmt.Errorf("failed to establish stream after %d retries: %w", r.config.MaxRetries, lastErr)
+	return nil, fmt.Errorf("failed to establish stream after %d retries (%s): %w", retryConfig.MaxRetries, errorType.String(), lastErr)
 }
 
-// calculateDelay computes the delay for the given retry attempt.
-func (r *RetryableClient) calculateDelay(attempt int) time.Duration {
-	delay := time.Duration(float64(r.config.InitialDelay) * math.Pow(r.config.BackoffFactor, float64(attempt-1)))
-
-	// Cap at maximum delay.
-	if delay > r.config.MaxDelay {
-		delay = r.config.MaxDelay
-	}
-
-	// Add jitter if enabled.
-	if r.config.Jitter {
-		jitterFactor := (2*time.Now().UnixNano()%2 - 1) // -1 or 1
-		jitter := time.Duration(float64(delay) * 0.1 * float64(jitterFactor))
-		delay += jitter
-		if delay < 0 {
-			delay = r.config.InitialDelay
-		}
-	}
-
-	return delay
-}
-
-// shouldRetry determines if an error should be retried.
+// shouldRetry determines if an error should be retried based on its classified type.
 func (r *RetryableClient) shouldRetry(err error) bool {
-	// Check if error implements RetryableError.
+	// Check if error implements RetryableError interface first
 	var retryableErr RetryableError
 	if errors.As(err, &retryableErr) {
 		return retryableErr.ShouldRetry()
 	}
 
-	// Default retry logic for common error patterns.
+	// Check if it's our classified LLM error
+	var llmErr *llmerrors.Error
+	if errors.As(err, &llmErr) {
+		return llmErr.IsRetryable()
+	}
+
+	// Fallback to old string-based logic for unclassified errors
 	errStr := err.Error()
 
 	// Retry on network/timeout errors.
@@ -215,4 +228,49 @@ func (r *RetryableClient) shouldRetry(err error) bool {
 
 	// Default to not retrying for unknown errors.
 	return false
+}
+
+// getRetryConfigForError returns the appropriate retry configuration for an error.
+func (r *RetryableClient) getRetryConfigForError(err error) (llmerrors.RetryConfig, llmerrors.ErrorType) {
+	// Check if it's our classified LLM error
+	var llmErr *llmerrors.Error
+	if errors.As(err, &llmErr) {
+		return llmErr.GetRetryConfig(), llmErr.Type
+	}
+
+	// Convert our legacy config to the new format for unclassified errors
+	legacyConfig := llmerrors.RetryConfig{
+		MaxRetries:    r.config.MaxRetries,
+		InitialDelay:  r.config.InitialDelay,
+		MaxDelay:      r.config.MaxDelay,
+		BackoffFactor: r.config.BackoffFactor,
+		Jitter:        r.config.Jitter,
+	}
+	return legacyConfig, llmerrors.ErrorTypeUnknown
+}
+
+// calculateDelayForError computes the delay for the given retry attempt using error-specific config.
+func (r *RetryableClient) calculateDelayForError(attempt int, config llmerrors.RetryConfig) time.Duration {
+	if attempt == 0 {
+		return 0
+	}
+
+	delay := time.Duration(float64(config.InitialDelay) * math.Pow(config.BackoffFactor, float64(attempt-1)))
+
+	// Cap at maximum delay.
+	if delay > config.MaxDelay {
+		delay = config.MaxDelay
+	}
+
+	// Add jitter if enabled.
+	if config.Jitter {
+		jitterFactor := (2*time.Now().UnixNano()%2 - 1) // -1 or 1
+		jitter := time.Duration(float64(delay) * 0.1 * float64(jitterFactor))
+		delay += jitter
+		if delay < 0 {
+			delay = config.InitialDelay
+		}
+	}
+
+	return delay
 }

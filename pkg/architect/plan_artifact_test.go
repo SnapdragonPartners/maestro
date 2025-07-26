@@ -49,16 +49,16 @@ func TestSaveApprovedPlanArtifact(t *testing.T) {
 		t.Fatalf("Failed to save plan artifact: %v", err)
 	}
 
-	// Verify stories/plans directory was created.
-	storiesDir := filepath.Join(tempDir, "stories", "plans")
+	// Verify .maestro/stories/plans directory was created.
+	storiesDir := filepath.Join(tempDir, ".maestro", "stories", "plans")
 	if _, err := os.Stat(storiesDir); os.IsNotExist(err) { //nolint:govet // Shadow variable acceptable in test context
-		t.Error("Expected stories/plans directory to be created")
+		t.Error("Expected .maestro/stories/plans directory to be created")
 	}
 
 	// Verify artifact file was created.
 	files, err := os.ReadDir(storiesDir)
 	if err != nil {
-		t.Fatalf("Failed to read stories/plans directory: %v", err)
+		t.Fatalf("Failed to read .maestro/stories/plans directory: %v", err)
 	}
 
 	if len(files) != 1 {
@@ -159,7 +159,7 @@ func TestPlanArtifactWithMissingFields(t *testing.T) {
 	storiesDir := filepath.Join(tempDir, "stories", "plans")
 	files, err := os.ReadDir(storiesDir)
 	if err != nil {
-		t.Fatalf("Failed to read stories/plans directory: %v", err)
+		t.Fatalf("Failed to read .maestro/stories/plans directory: %v", err)
 	}
 
 	if len(files) != 1 {

@@ -6,7 +6,7 @@ You are an Architect AI converting analyzed requirements into development story 
 {{.TaskContent}}
 
 ## Context
-{{.Context}}
+Context is provided via conversation history.
 
 {{if .Plan}}
 ## Analysis Results

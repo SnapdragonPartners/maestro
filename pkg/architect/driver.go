@@ -535,14 +535,13 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile 
 	// LLM-first approach: send raw content directly to LLM.
 	templateData := &templates.TemplateData{
 		TaskContent: rawSpecContent,
-		Context:     d.formatContextAsString(),
 		Extra: map[string]any{
 			"spec_file_path": specFile,
 			"mode":           "llm_analysis",
 		},
 	}
 
-	prompt, err := d.renderer.Render(templates.SpecAnalysisTemplate, templateData)
+	prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, templateData, d.workDir, "ARCHITECT")
 	if err != nil {
 		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
 	}
@@ -850,11 +849,29 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 		}
 	}
 
-	// Save approved completion claims as artifacts.
+	// Save approved completion claims as artifacts and mark story as completed.
 	if approved && approvalType == proto.ApprovalTypeCompletion {
 		if err := d.saveCompletionArtifact(ctx, requestMsg); err != nil {
 			d.logger.Warn("🏗️ Failed to save completion artifact: %v", err)
 			// Continue with approval - saving artifacts shouldn't block workflow.
+		}
+
+		// Extract story ID and mark as completed in queue.
+		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
+			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
+				if d.queue != nil {
+					d.logger.Info("🏗️ Marking story %s as completed in queue", storyIDStr)
+					if err := d.queue.MarkCompleted(storyIDStr); err != nil {
+						d.logger.Warn("🏗️ Failed to mark story %s as completed: %v", storyIDStr, err)
+					}
+				} else {
+					d.logger.Warn("🏗️ Queue is nil, cannot mark story %s as completed", storyIDStr)
+				}
+			} else {
+				d.logger.Warn("🏗️ Story ID is not a string or is empty: %v", storyIDPayload)
+			}
+		} else {
+			d.logger.Warn("🏗️ No story ID found in completion approval request")
 		}
 	}
 
@@ -1204,20 +1221,6 @@ func (d *Driver) GetContextSummary() string {
 }
 
 // formatContextAsString formats the context messages as a string for LLM prompts.
-func (d *Driver) formatContextAsString() string {
-	messages := d.contextManager.GetMessages()
-	if len(messages) == 0 {
-		return "No previous context"
-	}
-
-	contextParts := make([]string, 0, len(messages))
-	for i := range messages {
-		msg := &messages[i]
-		contextParts = append(contextParts, fmt.Sprintf("%s: %s", msg.Role, msg.Content))
-	}
-
-	return strings.Join(contextParts, "\n")
-}
 
 // convertToRequirements converts state data back to Requirements slice.
 func (d *Driver) convertToRequirements(data any) ([]Requirement, error) {
@@ -1343,6 +1346,14 @@ func (d *Driver) persistQueueState() error {
 // GetQueue returns the queue manager for external access.
 func (d *Driver) GetQueue() *Queue {
 	return d.queue
+}
+
+// GetStoryList returns all stories with their current status for external access.
+func (d *Driver) GetStoryList() []*QueuedStory {
+	if d.queue == nil {
+		return []*QueuedStory{}
+	}
+	return d.queue.GetAllStories()
 }
 
 // GetEscalationHandler returns the escalation handler for external access.
@@ -1888,10 +1899,10 @@ func (d *Driver) executeBootstrap(ctx context.Context, platformRecommendation in
 
 // saveApprovedPlanArtifact saves approved plans as JSON artifacts for traceability.
 func (d *Driver) saveApprovedPlanArtifact(_ context.Context, requestMsg *proto.AgentMsg, content interface{}) error {
-	// Create stories/plans directory in work directory if it doesn't exist.
-	storiesDir := filepath.Join(d.workDir, "stories", "plans")
+	// Create .maestro/stories/plans directory in work directory if it doesn't exist.
+	storiesDir := filepath.Join(d.workDir, ".maestro", "stories", "plans")
 	if err := os.MkdirAll(storiesDir, 0755); err != nil {
-		return fmt.Errorf("failed to create stories/plans directory: %w", err)
+		return fmt.Errorf("failed to create .maestro/stories/plans directory: %w", err)
 	}
 
 	// Helper function to safely get string payload.
@@ -1939,10 +1950,10 @@ func (d *Driver) saveApprovedPlanArtifact(_ context.Context, requestMsg *proto.A
 
 // saveCompletionArtifact saves completion approval artifacts for traceability.
 func (d *Driver) saveCompletionArtifact(_ context.Context, requestMsg *proto.AgentMsg) error {
-	// Create stories/completions directory in work directory if it doesn't exist.
-	completionsDir := filepath.Join(d.workDir, "stories", "completions")
+	// Create .maestro/stories/completions directory in work directory if it doesn't exist.
+	completionsDir := filepath.Join(d.workDir, ".maestro", "stories", "completions")
 	if err := os.MkdirAll(completionsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create stories/completions directory: %w", err)
+		return fmt.Errorf("failed to create .maestro/stories/completions directory: %w", err)
 	}
 
 	// Helper function to safely get string payload.

@@ -16,11 +16,18 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent"
+	"orchestrator/pkg/architect"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
+
+// StoryProvider interface for agents that can provide stories.
+type StoryProvider interface {
+	GetStoryList() []*architect.QueuedStory
+}
 
 // Server represents the web UI HTTP server.
 type Server struct {
@@ -77,6 +84,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agent/", s.handleAgent)
 	mux.HandleFunc("/api/queues", s.handleQueues)
+	mux.HandleFunc("/api/stories", s.handleStories)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/answer", s.handleAnswer)
 	mux.HandleFunc("/api/shutdown", s.handleShutdown)
@@ -250,6 +258,47 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Debug("Served queue information")
+}
+
+// handleStories implements GET /api/stories.
+func (s *Server) handleStories(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if architect is available.
+	_, err := s.findArchitectState()
+	if err != nil {
+		s.logger.Warn("Failed to find architect for stories: %v", err)
+		http.Error(w, "Architect not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get the architect agent from dispatcher to access its stories.
+	registeredAgents := s.dispatcher.GetRegisteredAgents()
+	var stories []*architect.QueuedStory
+
+	for i := range registeredAgents {
+		agentInfo := &registeredAgents[i]
+		if agentInfo.Type == agent.TypeArchitect {
+			// Cast to StoryProvider interface to access GetStoryList.
+			if storyProvider, ok := agentInfo.Driver.(StoryProvider); ok {
+				stories = storyProvider.GetStoryList()
+				break
+			}
+		}
+	}
+
+	// Send JSON response.
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(stories); err != nil {
+		s.logger.Error("Failed to encode stories response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Debug("Served story information: %d stories", len(stories))
 }
 
 // handleUpload implements POST /api/upload.
@@ -805,13 +854,40 @@ func (s *Server) StartServer(ctx context.Context, port int) error {
 
 // findArchitectState finds the state of the architect agent.
 func (s *Server) findArchitectState() (*state.AgentState, error) {
-	// List all agents.
+	// First try dispatcher approach if available.
+	if s.dispatcher != nil {
+		// Get registered agents from dispatcher using proper type checking.
+		registeredAgents := s.dispatcher.GetRegisteredAgents()
+
+		// Find the architect agent by type.
+		for i := range registeredAgents {
+			agentInfo := &registeredAgents[i]
+			if agentInfo.Type == agent.TypeArchitect {
+				// First try to get state from store.
+				agentState, err := s.store.GetStateInfo(agentInfo.ID)
+				if err == nil {
+					return agentState, nil
+				}
+
+				// If state not found in store, use live agent state from dispatcher.
+				// This handles the case where agent is running but hasn't saved state yet.
+				liveState := &state.AgentState{
+					State:           agentInfo.State,
+					LastTimestamp:   time.Now(),
+					ContextSnapshot: make(map[string]any),
+				}
+				return liveState, nil
+			}
+		}
+	}
+
+	// Fallback to old behavior: scan state store for agents with "architect:" prefix.
 	agents, err := s.store.ListAgents()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)
 	}
 
-	// Find the architect agent.
+	// Find the architect agent by prefix (legacy behavior).
 	for _, agentID := range agents {
 		if strings.HasPrefix(agentID, "architect:") {
 			agentState, err := s.store.GetStateInfo(agentID)
