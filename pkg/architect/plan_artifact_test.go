@@ -10,7 +10,6 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 )
 
 // TestSaveApprovedPlanArtifact tests the plan artifact saving functionality.
@@ -22,14 +21,8 @@ func TestSaveApprovedPlanArtifact(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create state store.
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	// Create architect driver.
-	driver := NewDriver("test-architect", stateStore, &config.ModelCfg{}, nil, nil, tempDir, "", nil)
+	// Create architect driver (no state store needed).
+	driver := NewDriver("test-architect", &config.ModelCfg{}, nil, nil, tempDir, "", &config.Config{}, nil)
 
 	ctx := context.Background()
 
@@ -130,14 +123,8 @@ func TestPlanArtifactWithMissingFields(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create state store.
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
-	// Create architect driver.
-	driver := NewDriver("test-architect", stateStore, &config.ModelCfg{}, nil, nil, tempDir, "", nil)
+	// Create architect driver (no state store needed).
+	driver := NewDriver("test-architect", &config.ModelCfg{}, nil, nil, tempDir, "", &config.Config{}, nil)
 
 	ctx := context.Background()
 
@@ -156,7 +143,7 @@ func TestPlanArtifactWithMissingFields(t *testing.T) {
 	}
 
 	// Verify artifact was created.
-	storiesDir := filepath.Join(tempDir, "stories", "plans")
+	storiesDir := filepath.Join(tempDir, ".maestro", "stories", "plans")
 	files, err := os.ReadDir(storiesDir)
 	if err != nil {
 		t.Fatalf("Failed to read .maestro/stories/plans directory: %v", err)

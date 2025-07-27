@@ -189,6 +189,16 @@ func (sp *SpecParser) shouldSkipHeader(title string) bool {
 		"version",
 		"project specification",
 		"test project",
+		// Add structural/organizational headers that aren't actual requirements
+		"project structure",
+		"build and run",
+		"out of scope",
+		"go version",
+		"requirements",
+		"scope",
+		"non-functional requirements",
+		"constraints",
+		"architecture",
 	}
 
 	lowerTitle := strings.ToLower(title)

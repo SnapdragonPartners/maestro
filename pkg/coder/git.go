@@ -83,7 +83,7 @@ func (g *DefaultGitRunner) RunQuiet(ctx context.Context, dir string, args ...str
 
 	// Don't log errors - caller will handle them if needed.
 	if err != nil {
-		return output, logx.Errorf("git %s failed in %s: %w\nOutput: %s",
+		return output, fmt.Errorf("git %s failed in %s: %w\nOutput: %s",
 			strings.Join(args, " "), dir, err, string(output))
 	}
 
@@ -210,10 +210,15 @@ func (w *WorkspaceManager) CleanupWorkspace(ctx context.Context, agentID, storyI
 		w.logger.Debug("Agent work directory does not exist, nothing to clean up: %s", agentWorkDirPath)
 	}
 
-	// Remove worktree registration from git (ignore errors since directory is gone).
+	// Remove worktree registration from git (only if it exists).
 	mirrorPath := w.BuildMirrorPath()
-	if _, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDirPath); err != nil {
-		w.logger.Debug("Worktree remove failed (expected): %v", err)
+
+	// Check if the worktree is registered first
+	if _, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "list"); err == nil {
+		// Only attempt removal if worktree list succeeded
+		if _, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDirPath); err != nil {
+			w.logger.Debug("Worktree remove failed (expected): %v", err)
+		}
 	}
 
 	w.logger.Debug("Completed cleanup for story %s", storyID)
@@ -354,10 +359,14 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 	}
 
 	// Step 2: Remove any lingering worktree registration (ignore errors).
-	// This command is expected to fail if no worktree exists - that's fine.
-	_, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDir)
-	if err != nil {
-		w.logger.Debug("Worktree remove failed (expected): %v", err)
+	// Check if worktree is registered first to avoid unnecessary error output.
+	if output, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "list"); err == nil {
+		// Only attempt removal if the worktree is listed
+		if strings.Contains(string(output), agentWorkDir) {
+			if _, err := w.gitRunner.RunQuiet(ctx, mirrorPath, "worktree", "remove", "--force", agentWorkDir); err != nil {
+				w.logger.Debug("Worktree remove failed (expected): %v", err)
+			}
+		}
 	}
 
 	// Step 3: Create parent directory if needed.
@@ -367,7 +376,7 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 
 	// Step 4: Create the fresh worktree.
 	w.logger.Debug("Creating fresh worktree at: %s", agentWorkDir)
-	_, err = w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", agentWorkDir, w.baseBranch)
+	_, err := w.gitRunner.Run(ctx, mirrorPath, "worktree", "add", "--detach", agentWorkDir, w.baseBranch)
 	if err != nil {
 		return logx.Wrap(err, fmt.Sprintf("git worktree add --detach %s %s failed from %s", agentWorkDir, w.baseBranch, mirrorPath))
 	}

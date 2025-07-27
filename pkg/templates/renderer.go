@@ -16,14 +16,15 @@ var templateFS embed.FS
 
 // TemplateData holds the data for template rendering.
 type TemplateData struct {
-	Extra          map[string]any `json:"extra,omitempty"`
-	TaskContent    string         `json:"task_content"`
-	Plan           string         `json:"plan,omitempty"`
-	ToolResults    string         `json:"tool_results,omitempty"`
-	Implementation string         `json:"implementation,omitempty"`
-	TestResults    string         `json:"test_results,omitempty"`
-	WorkDir        string         `json:"work_dir,omitempty"`
-	TreeOutput     string         `json:"tree_output,omitempty"`
+	Extra             map[string]any `json:"extra,omitempty"`
+	TaskContent       string         `json:"task_content"`
+	Plan              string         `json:"plan,omitempty"`
+	ToolResults       string         `json:"tool_results,omitempty"`
+	Implementation    string         `json:"implementation,omitempty"`
+	TestResults       string         `json:"test_results,omitempty"`
+	WorkDir           string         `json:"work_dir,omitempty"`
+	TreeOutput        string         `json:"tree_output,omitempty"`
+	ToolDocumentation string         `json:"tool_documentation,omitempty"`
 }
 
 // StateTemplate represents a workflow state template.

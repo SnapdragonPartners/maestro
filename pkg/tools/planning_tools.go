@@ -47,6 +47,14 @@ func (a *AskQuestionTool) Name() string {
 	return "ask_question"
 }
 
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (a *AskQuestionTool) PromptDocumentation() string {
+	return `- **ask_question** - Ask architect for clarification during planning
+  - Parameters: question (required), context, urgency
+  - Transitions to QUESTION state, returns with architect's answer
+  - Use when you need guidance on requirements or technical decisions`
+}
+
 // Exec executes the ask question operation.
 func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	question, ok := args["question"]
@@ -146,6 +154,14 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (s *SubmitPlanTool) Name() string {
 	return "submit_plan"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (s *SubmitPlanTool) PromptDocumentation() string {
+	return `- **submit_plan** - Submit your final implementation plan
+  - Parameters: plan, confidence, exploration_summary, risks, todos (required)
+  - Advances to PLAN_REVIEW state for architect approval
+  - Required todos must be ordered list of implementation tasks (1-25 items)`
 }
 
 // Exec executes the submit plan operation.
@@ -295,6 +311,14 @@ func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (m *MarkStoryCompleteTool) Name() string {
 	return "mark_story_complete"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (m *MarkStoryCompleteTool) PromptDocumentation() string {
+	return `- **mark_story_complete** - Mark story as complete if already fully implemented
+  - Parameters: reason, evidence, confidence (all required)
+  - Use when exploration reveals the story is already FULLY implemented
+  - Transitions directly to completion without coding phase`
 }
 
 // Exec executes the mark story complete operation.

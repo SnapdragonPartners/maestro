@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent/llmerrors"
+	"orchestrator/pkg/utils"
 )
 
 // RetryConfig defines configuration for retry behavior.
@@ -124,6 +125,64 @@ func (r *RetryableClient) Complete(ctx context.Context, req CompletionRequest) (
 		// Determine if this is the final attempt
 		isFinalAttempt := !r.shouldRetry(err) || attempt >= retryConfig.MaxRetries
 
+		// Add aggressive logging for unknown and empty response errors to help debug circuit breaker issues
+		if errorType == llmerrors.ErrorTypeUnknown || errorType == llmerrors.ErrorTypeEmptyResponse {
+			// Build complete prompt content for analysis
+			promptContent := ""
+			totalChars := 0
+			for i := range req.Messages {
+				if i > 0 {
+					promptContent += "\n---\n"
+				}
+				msgContent := fmt.Sprintf("Role: %s\nContent: %s", req.Messages[i].Role, req.Messages[i].Content)
+				promptContent += msgContent
+				totalChars += len(req.Messages[i].Content)
+			}
+
+			// Log aggressively to understand what's failing
+			logLevel := "WARN"
+			errorTypeDesc := "UNKNOWN ERROR"
+			if errorType == llmerrors.ErrorTypeEmptyResponse {
+				errorTypeDesc = "EMPTY RESPONSE ERROR"
+			}
+			if isFinalAttempt {
+				logLevel = "ERROR"
+			}
+
+			// Log with detailed debugging information
+			fmt.Printf("\n=== [%s] %s - Circuit breaker debugging ===\n", logLevel, errorTypeDesc)
+			fmt.Printf("Error Type: %T\n", err)
+			fmt.Printf("Error Message: %s\n", err.Error())
+			fmt.Printf("Classified As: %s\n", errorType.String())
+			fmt.Printf("Attempt: %d/%d\n", attempt+1, retryConfig.MaxRetries)
+			fmt.Printf("Is Final: %v\n", isFinalAttempt)
+			fmt.Printf("Request MaxTokens: %d\n", req.MaxTokens)
+			fmt.Printf("Request Temperature: %.2f\n", req.Temperature)
+			fmt.Printf("Messages Count: %d\n", len(req.Messages))
+			fmt.Printf("Total Content Length: %d chars\n", totalChars)
+			fmt.Printf("Full Prompt Length: %d chars\n", len(promptContent))
+
+			// Add token count estimation for better debugging
+			estimatedTokens := utils.CountTokensSimple(promptContent)
+			fmt.Printf("Estimated Tokens: %d\n", estimatedTokens)
+
+			// Show prompt content with better truncation
+			const maxDisplayChars = 2000
+			if len(promptContent) <= maxDisplayChars {
+				fmt.Printf("Full Prompt:\n%s\n", promptContent)
+			} else {
+				// Show first and last portions for better debugging
+				firstChars := maxDisplayChars / 2
+				lastChars := maxDisplayChars / 2
+				fmt.Printf("Prompt (first %d chars):\n%s\n", firstChars, promptContent[:firstChars])
+				fmt.Printf("... [TRUNCATED %d chars] ...\n", len(promptContent)-maxDisplayChars)
+				fmt.Printf("Prompt (last %d chars):\n%s\n", lastChars, promptContent[len(promptContent)-lastChars:])
+			}
+
+			fmt.Printf("Full Error Details: %+v\n", err)
+			fmt.Printf("=========================================================================\n\n")
+		}
+
 		// Log prompt if configured to do so
 		if r.promptLogger != nil {
 			r.promptLogger.LogRequest(ctx, req, err, attempt, isFinalAttempt, attemptDuration)
@@ -237,6 +296,8 @@ func (r *RetryableClient) getRetryConfigForError(err error) (llmerrors.RetryConf
 	if errors.As(err, &llmErr) {
 		return llmErr.GetRetryConfig(), llmErr.Type
 	}
+
+	// Log unknown errors aggressively for debugging - we'll add better logging where the error occurs
 
 	// Convert our legacy config to the new format for unclassified errors
 	legacyConfig := llmerrors.RetryConfig{

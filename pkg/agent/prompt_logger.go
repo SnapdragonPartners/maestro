@@ -95,19 +95,19 @@ func (pl *PromptLogger) LogRequest(
 	approxTokens := len(promptContent) / 4
 
 	// Log with structured information
-	pl.logger.Warn("LLM request failed - prompt logged for debugging",
-		"error_type", errorType.String(),
-		"status_code", statusCode,
-		"attempt", attempt,
-		"final_attempt", isFinalAttempt,
-		"duration_ms", duration.Milliseconds(),
-		"prompt_chars", len(promptContent),
-		"approx_tokens", approxTokens,
-		"max_tokens", req.MaxTokens,
-		"tools_count", len(req.Tools),
-		"messages_count", len(req.Messages),
-		"error", err.Error(),
-		"prompt", sanitizedPrompt,
+	pl.logger.Warn("LLM request failed - prompt logged for debugging: error_type=%s status_code=%d attempt=%d final_attempt=%t duration_ms=%d prompt_chars=%d approx_tokens=%d max_tokens=%d tools_count=%d messages_count=%d error=%s prompt=%s",
+		errorType.String(),
+		statusCode,
+		attempt,
+		isFinalAttempt,
+		duration.Milliseconds(),
+		len(promptContent),
+		approxTokens,
+		req.MaxTokens,
+		len(req.Tools),
+		len(req.Messages),
+		err.Error(),
+		sanitizedPrompt,
 	)
 }
 
@@ -123,14 +123,14 @@ func (pl *PromptLogger) LogSuccess(
 	promptLength := pl.calculatePromptLength(req)
 	approxTokens := promptLength / 4
 
-	pl.logger.Debug("LLM request succeeded",
-		"attempt", attempt,
-		"duration_ms", duration.Milliseconds(),
-		"prompt_chars", promptLength,
-		"approx_tokens", approxTokens,
-		"response_chars", len(resp.Content),
-		"tool_calls", len(resp.ToolCalls),
-		"max_tokens", req.MaxTokens,
+	pl.logger.Debug("LLM request succeeded: attempt=%d duration_ms=%d prompt_chars=%d approx_tokens=%d response_chars=%d tool_calls=%d max_tokens=%d",
+		attempt,
+		duration.Milliseconds(),
+		promptLength,
+		approxTokens,
+		len(resp.Content),
+		len(resp.ToolCalls),
+		req.MaxTokens,
 	)
 }
 

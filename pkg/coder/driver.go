@@ -22,7 +22,6 @@ import (
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
@@ -304,7 +303,7 @@ func convertApprovalData(data any) (*proto.ApprovalResult, error) {
 }
 
 // NewCoder creates a new coder using agent foundation.
-func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.Service, logger *logx.Logger) (*Coder, error) {
+func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.Service, logger *logx.Logger) (*Coder, error) {
 	if llmClient == nil {
 		return nil, logx.Errorf("LLM client is required")
 	}
@@ -327,7 +326,7 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 	agentCtx := &agent.Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, fmt.Sprintf("[%s] ", agentID), log.LstdFlags),
-		Store:   stateStore,
+		Store:   nil, // REMOVED: Filesystem state store - state persistence is now handled by SQLite
 		WorkDir: workDir,
 	}
 
@@ -345,7 +344,9 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 
 	// Use canonical transition table from fsm package - single source of truth.
 	// This ensures driver behavior exactly matches STATES.md specification.
-	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, stateStore, CoderTransitions)
+	// IMPORTANT: Use nil state store to prevent loading stale state on agent restarts.
+	// Agent state will be managed by SQLite for system-level resume functionality.
+	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, nil, CoderTransitions)
 
 	// Set iteration budgets from agent config, with fallback to defaults.
 	codingBudget := config.DefaultCodingBudget
@@ -380,12 +381,12 @@ func NewCoder(agentID string, stateStore *state.Store, modelConfig *config.Model
 }
 
 // NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode).
-func NewCoderWithClaude(agentID, _, workDir string, stateStore *state.Store, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
+func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
 	// Create Claude LLM client.
 	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create coder with LLM integration.
-	coder, err := NewCoder(agentID, stateStore, modelConfig, llmClient, workDir, nil, buildService, nil)
+	coder, err := NewCoder(agentID, modelConfig, llmClient, workDir, nil, buildService, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -642,7 +643,7 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 // handlePlanning processes the PLANNING state with enhanced codebase exploration.
 func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", string(StatePlanning))
-	c.contextManager.AddMessage("assistant", "Enhanced planning phase: exploring codebase and creating comprehensive plan")
+	// Note: Don't add assistant message here - the LLM response will be the assistant message
 
 	// Check planning budget using unified budget review mechanism.
 	const maxPlanningIterations = 10
@@ -2533,7 +2534,7 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 
 	result, err := c.longRunningExecutor.Run(ctx, args, &opts)
 	if err != nil {
-		return "", logx.Wrap(err, "shell command failed")
+		return "", fmt.Errorf("shell command failed: %w", err)
 	}
 
 	return result.Stdout, nil
@@ -2723,6 +2724,16 @@ func (c *Coder) handleCompletionSubmission(_ /* ctx */ context.Context, sm *agen
 	}
 
 	if c.dispatcher != nil {
+		// Get story ID from state data
+		storyID, exists := sm.GetStateValue(KeyStoryID)
+		if !exists {
+			return proto.StateError, false, logx.Errorf("no story_id found in state data for completion approval request")
+		}
+		storyIDStr, ok := storyID.(string)
+		if !ok {
+			return proto.StateError, false, logx.Errorf("story_id is not a string in completion approval request: %v (type: %T)", storyID, storyID)
+		}
+
 		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
 		requestMsg.SetPayload("request_type", proto.RequestApproval.String())
 		requestMsg.SetPayload("approval_type", proto.ApprovalTypeCompletion.String())
@@ -2730,6 +2741,7 @@ func (c *Coder) handleCompletionSubmission(_ /* ctx */ context.Context, sm *agen
 		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
 		requestMsg.SetPayload("original_story", originalStoryStr)
+		requestMsg.SetPayload("story_id", storyIDStr)
 		requestMsg.SetPayload(KeyCompletionReason, reason)
 		requestMsg.SetPayload(KeyCompletionEvidence, evidence)
 		requestMsg.SetPayload(KeyCompletionConfidence, confidence)
@@ -2794,8 +2806,9 @@ func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseState
 
 	// Create enhanced template data.
 	templateData := &templates.TemplateData{
-		TaskContent: taskContent,
-		TreeOutput:  utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
+		TaskContent:       taskContent,
+		TreeOutput:        utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
+		ToolDocumentation: tools.GenerateToolDocumentation(),
 	}
 
 	// Render enhanced planning template.
@@ -2914,9 +2927,9 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 
 		result, err := tool.Exec(ctx, toolCall.Parameters)
 		if err != nil {
-			// Tool execution failures are recoverable - add error to context for LLM to react.
+			// Tool execution failures are recoverable - add comprehensive error to context for LLM to react.
 			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			c.contextManager.AddMessage("tool", fmt.Sprintf("Tool %s execution failed: %s", toolCall.Name, err.Error()))
+			c.addComprehensiveToolFailureToContext(*toolCall, err)
 			continue // Continue processing other tool calls
 		}
 
@@ -3386,25 +3399,9 @@ func (c *Coder) sendMergeRequest(_ context.Context, sm *agent.BaseStateMachine) 
 func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 	// Handle shell tool results specifically (most common case).
 	if toolCall.Name == tools.ToolShell {
-		if cmd, ok := toolCall.Parameters["cmd"].(string); ok {
-			c.logger.Info("Shell command: %s", cmd)
-			c.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
-		}
-
-		// Add shell output to context (reuse existing CODING logic).
+		// Add comprehensive shell execution details to context.
 		if resultMap, ok := result.(map[string]any); ok {
-			if output, ok := resultMap["stdout"].(string); ok && output != "" {
-				c.logger.Debug("Shell stdout: %s", output)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("Output: %s", output))
-			}
-			if stderr, ok := resultMap["stderr"].(string); ok && stderr != "" {
-				c.logger.Debug("Shell stderr: %s", stderr)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("Error: %s", stderr))
-			}
-			if exitCode, ok := resultMap["exit_code"].(int); ok && exitCode != 0 {
-				c.logger.Debug("Shell exit code: %d", exitCode)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("Command failed with exit code: %d", exitCode))
-			}
+			c.addShellResultToContext(resultMap)
 		}
 		return
 	}
@@ -3431,4 +3428,65 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 			c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
 		}
 	}
+}
+
+// addShellResultToContext adds comprehensive shell execution results to context.
+func (c *Coder) addShellResultToContext(resultMap map[string]any) {
+	// Extract command details
+	command, _ := resultMap["command"].(string)
+	exitCode, _ := resultMap["exit_code"].(int)
+	stdout, _ := resultMap["stdout"].(string)
+	stderr, _ := resultMap["stderr"].(string)
+	cwd, _ := resultMap["cwd"].(string)
+	duration, _ := resultMap["duration"].(string)
+
+	// Create comprehensive feedback message
+	var feedback strings.Builder
+	feedback.WriteString(fmt.Sprintf("Command: %s\n", command))
+	feedback.WriteString(fmt.Sprintf("Exit Code: %d\n", exitCode))
+
+	if cwd != "" {
+		feedback.WriteString(fmt.Sprintf("Working Directory: %s\n", cwd))
+	}
+	if duration != "" {
+		feedback.WriteString(fmt.Sprintf("Duration: %s\n", duration))
+	}
+
+	if stdout != "" {
+		feedback.WriteString(fmt.Sprintf("Stdout:\n%s\n", stdout))
+	} else {
+		feedback.WriteString("Stdout: (empty)\n")
+	}
+
+	if stderr != "" {
+		feedback.WriteString(fmt.Sprintf("Stderr:\n%s\n", stderr))
+	} else {
+		feedback.WriteString("Stderr: (empty)\n")
+	}
+
+	// Add to context with appropriate status
+	if exitCode == 0 {
+		c.logger.Info("Shell command succeeded: %s", command)
+	} else {
+		c.logger.Info("Shell command failed with exit code %d: %s", exitCode, command)
+	}
+
+	c.contextManager.AddMessage("tool", feedback.String())
+}
+
+// addComprehensiveToolFailureToContext adds detailed tool failure information to context.
+func (c *Coder) addComprehensiveToolFailureToContext(toolCall agent.ToolCall, err error) {
+	var feedback strings.Builder
+	feedback.WriteString(fmt.Sprintf("Tool: %s\n", toolCall.Name))
+	feedback.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
+
+	// Add parameters for context
+	if len(toolCall.Parameters) > 0 {
+		feedback.WriteString("Parameters:\n")
+		for key, value := range toolCall.Parameters {
+			feedback.WriteString(fmt.Sprintf("  %s: %v\n", key, value))
+		}
+	}
+
+	c.contextManager.AddMessage("tool", feedback.String())
 }

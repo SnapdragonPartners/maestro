@@ -12,7 +12,6 @@ import (
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 )
 
 // Helper function to get API key for tests.
@@ -93,11 +92,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	// Create temporary directory for this coder.
 	tempDir := t.TempDir()
 
-	// Create state store.
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
-	}
+	// No state store needed for integration tests
 
 	// Create minimal model config.
 	modelCfg := &config.ModelCfg{
@@ -113,7 +108,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	buildService := build.NewBuildService()
 
 	// Create coder driver.
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, llmClient, tempDir, nil, buildService, nil)
+	driver, err := coder.NewCoder(coderID, modelCfg, llmClient, tempDir, nil, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -133,11 +128,7 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 	// Create temporary directory for this coder.
 	tempDir := t.TempDir()
 
-	// Create state store.
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
-	}
+	// No state store needed for integration tests
 
 	// Create minimal model config.
 	modelCfg := &config.ModelCfg{
@@ -153,7 +144,7 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 	buildService := build.NewBuildService()
 
 	// Create coder driver with agent configuration.
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, llmClient, tempDir, agentConfig, buildService, nil)
+	driver, err := coder.NewCoder(coderID, modelCfg, llmClient, tempDir, agentConfig, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}

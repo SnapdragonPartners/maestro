@@ -117,13 +117,19 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				lastTS = time.Now() // Use current time for live agents
 			} else {
 				// Fallback to store if driver not available.
-				agentState, err := s.store.GetStateInfo(agentInfo.ID)
-				if err != nil {
-					currentState = "WAITING"
-					lastTS = time.Now()
+				if s.store != nil {
+					agentState, err := s.store.GetStateInfo(agentInfo.ID)
+					if err != nil {
+						currentState = proto.StateWaiting.String()
+						lastTS = time.Now()
+					} else {
+						currentState = agentState.State
+						lastTS = agentState.LastTimestamp
+					}
 				} else {
-					currentState = agentState.State
-					lastTS = agentState.LastTimestamp
+					// No state store available
+					currentState = proto.StateWaiting.String()
+					lastTS = time.Now()
 				}
 			}
 
@@ -196,6 +202,11 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	agentID := path
 
 	// Get agent state.
+	if s.store == nil {
+		s.logger.Warn("State store not available for agent: %s", agentID)
+		http.Error(w, "Agent state not available", http.StatusNotFound)
+		return
+	}
 	agentState, err := s.store.GetStateInfo(agentID)
 	if err != nil {
 		s.logger.Warn("Agent not found: %s", agentID)
@@ -346,7 +357,7 @@ func (s *Server) checkArchitectAvailability() error {
 		return fmt.Errorf("no architect available")
 	}
 
-	if architectState.State != "WAITING" {
+	if architectState.State != proto.StateWaiting.String() {
 		return fmt.Errorf("architect is busy")
 	}
 
@@ -864,9 +875,11 @@ func (s *Server) findArchitectState() (*state.AgentState, error) {
 			agentInfo := &registeredAgents[i]
 			if agentInfo.Type == agent.TypeArchitect {
 				// First try to get state from store.
-				agentState, err := s.store.GetStateInfo(agentInfo.ID)
-				if err == nil {
-					return agentState, nil
+				if s.store != nil {
+					agentState, err := s.store.GetStateInfo(agentInfo.ID)
+					if err == nil {
+						return agentState, nil
+					}
 				}
 
 				// If state not found in store, use live agent state from dispatcher.
@@ -882,6 +895,9 @@ func (s *Server) findArchitectState() (*state.AgentState, error) {
 	}
 
 	// Fallback to old behavior: scan state store for agents with "architect:" prefix.
+	if s.store == nil {
+		return nil, fmt.Errorf("no state store available and no architect found in dispatcher")
+	}
 	agents, err := s.store.ListAgents()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)

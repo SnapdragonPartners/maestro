@@ -88,6 +88,13 @@ func (cb *CircuitBreakerClient) Complete(ctx context.Context, req CompletionRequ
 	// Execute the request.
 	resp, err := cb.client.Complete(ctx, req)
 
+	// Log the actual underlying error before recording the result
+	if err != nil {
+		_ = logx.Errorf("🔧 Circuit breaker recording FAILURE - underlying error: %T: %v", err, err)
+	} else {
+		logx.Infof("🔧 Circuit breaker recording SUCCESS")
+	}
+
 	// Record the result.
 	cb.recordResult(err == nil)
 
@@ -106,6 +113,13 @@ func (cb *CircuitBreakerClient) Stream(ctx context.Context, req CompletionReques
 
 	// Execute the request.
 	ch, err := cb.client.Stream(ctx, req)
+
+	// Log the actual underlying error before recording the result
+	if err != nil {
+		_ = logx.Errorf("🔧 Circuit breaker recording FAILURE (stream) - underlying error: %T: %v", err, err)
+	} else {
+		logx.Infof("🔧 Circuit breaker recording SUCCESS (stream)")
+	}
 
 	// For streaming, we consider the initial establishment as success/failure.
 	// Individual chunks are not tracked for circuit breaker state.
@@ -213,16 +227,23 @@ func (cb *CircuitBreakerClient) onFailure() {
 	cb.failureCount++
 	cb.lastFailureTime = time.Now()
 
+	// Log circuit breaker state changes for debugging
+	logx.Infof("🔧 Circuit breaker failure recorded: count=%d, threshold=%d, state=%s",
+		cb.failureCount, cb.config.FailureThreshold, cb.state.String())
+
 	switch cb.state {
 	case CircuitClosed:
 		if cb.failureCount >= cb.config.FailureThreshold {
 			cb.state = CircuitOpen
+			_ = logx.Errorf("⚡ Circuit breaker OPENED after %d failures (threshold: %d)",
+				cb.failureCount, cb.config.FailureThreshold)
 		}
 
 	case CircuitHalfOpen:
 		// Any failure in half-open immediately opens the circuit.
 		cb.state = CircuitOpen
 		cb.successCount = 0
+		_ = logx.Errorf("⚡ Circuit breaker OPENED immediately from HALF_OPEN state")
 	}
 }
 

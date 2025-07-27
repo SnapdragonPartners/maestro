@@ -43,19 +43,7 @@ grep -r "similar_pattern" /workspace --include="*.go" -A 3 -B 3
 
 After thorough exploration, create a comprehensive implementation plan.
 
-## Available Tools
-
-- **`shell`** - Execute read-only shell commands for exploration
-  - All write operations will fail (filesystem is mounted read-only)
-  - Use for: find, grep, cat, ls, tree, etc.
-  
-- **`ask_question`** - Ask architect for clarification
-  - Parameters: question, context, urgency
-  - Transitions to QUESTION state, returns with architect's answer
-  
-- **`submit_plan`** - Submit your final implementation plan
-  - Parameters: plan, confidence, exploration_summary, risks, **todos** (required)
-  - Advances to PLAN_REVIEW state for architect approval
+{{.ToolDocumentation}}
 
 ## Expected Plan Format
 

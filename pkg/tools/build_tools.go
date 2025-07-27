@@ -110,6 +110,14 @@ func (b *BuildTool) Name() string {
 	return "build"
 }
 
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (b *BuildTool) PromptDocumentation() string {
+	return `- **build** - Build the project using detected backend (go, python, node, etc.)
+  - Parameters: cwd (optional), timeout (default 300s)
+  - Auto-detects project type and runs appropriate build commands
+  - Returns: success status, backend used, output, duration`
+}
+
 // Exec executes the build operation.
 func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	cwd, timeout, err := extractExecArgs(args)
@@ -157,6 +165,14 @@ func (t *TestTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (t *TestTool) Name() string {
 	return "test"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (t *TestTool) PromptDocumentation() string {
+	return `- **test** - Run tests for the project using detected backend
+  - Parameters: cwd (optional), timeout (default 300s)
+  - Executes appropriate test commands based on project type
+  - Returns: success status, test output, duration`
 }
 
 // Exec executes the test operation.
@@ -208,6 +224,14 @@ func (l *LintTool) Name() string {
 	return "lint"
 }
 
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (l *LintTool) PromptDocumentation() string {
+	return `- **lint** - Run linting checks on the project using detected backend
+  - Parameters: cwd (optional), timeout (default 300s)
+  - Executes appropriate linting commands based on project type
+  - Returns: success status, lint output, duration`
+}
+
 // Exec executes the lint operation.
 func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	cwd, timeout, err := extractExecArgs(args)
@@ -242,6 +266,14 @@ func (d *DoneTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (d *DoneTool) Name() string {
 	return "done"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (d *DoneTool) PromptDocumentation() string {
+	return `- **done** - Signal that the coding task is complete
+  - No parameters required
+  - Advances FSM to TESTING state for verification
+  - Use when all implementation work is finished`
 }
 
 // Exec executes the done operation.
@@ -285,6 +317,14 @@ func (b *BackendInfoTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (b *BackendInfoTool) Name() string {
 	return "backend_info"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (b *BackendInfoTool) PromptDocumentation() string {
+	return `- **backend_info** - Get information about detected build backend
+  - Parameters: cwd (optional)
+  - Returns: backend type, project root, available operations
+  - Use to understand project structure and available build commands`
 }
 
 // Exec executes the backend info operation.

@@ -47,7 +47,8 @@ func TestRenderPlanningTemplate(t *testing.T) {
 	}
 
 	data := &TemplateData{
-		TaskContent: "Create a health endpoint",
+		TaskContent:       "Create a health endpoint",
+		ToolDocumentation: "## Available Tools\n\n### shell\nExecute shell commands in the workspace.",
 	}
 
 	result, err := renderer.Render(PlanningTemplate, data)

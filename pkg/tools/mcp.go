@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +66,8 @@ type ToolChannel interface {
 	Name() string
 	// Exec executes the tool with the given arguments.
 	Exec(ctx context.Context, args map[string]any) (any, error)
+	// PromptDocumentation returns markdown documentation for LLM prompts.
+	PromptDocumentation() string
 }
 
 // Registry manages registered MCP tools.
@@ -208,6 +211,15 @@ func (s *ShellTool) Name() string {
 	return "shell"
 }
 
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (s *ShellTool) PromptDocumentation() string {
+	return `- **shell** - Execute shell commands for exploration and file operations
+  - Parameters: cmd (required), cwd (optional working directory)
+  - Read-only filesystem with network disabled for security
+  - Returns: stdout, stderr, exit_code, duration, and command details
+  - Use for: find, grep, cat, ls, tree, exploration commands`
+}
+
 // Exec executes a shell command with proper validation.
 func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Validate required cmd argument.
@@ -255,11 +267,14 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 	}
 
 	// Return result in a format consistent with Claude API.
+	// Note: We return success even for non-zero exit codes - the LLM can handle exit codes.
 	return map[string]any{
 		"stdout":    result.Stdout,
 		"stderr":    result.Stderr,
 		"exit_code": result.ExitCode,
 		"cwd":       cwd,
+		"command":   cmdStr,
+		"duration":  result.Duration.String(),
 	}, nil
 }
 
@@ -273,6 +288,24 @@ func GetToolDefinitions() []ToolDefinition {
 	}
 
 	return definitions
+}
+
+// GenerateToolDocumentation creates markdown documentation for all registered tools.
+func GenerateToolDocumentation() string {
+	tools := GetAll()
+	if len(tools) == 0 {
+		return "No tools registered"
+	}
+
+	var doc strings.Builder
+	doc.WriteString("## Available Tools\n\n")
+
+	for _, tool := range tools {
+		doc.WriteString(tool.PromptDocumentation())
+		doc.WriteString("\n\n")
+	}
+
+	return doc.String()
 }
 
 // UpdateShellToolExecutor updates the executor for the registered shell tool.

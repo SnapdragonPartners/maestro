@@ -18,15 +18,19 @@ import (
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/utils"
 )
 
 const (
 	buildSystemMake   = "make"
 	buildSystemPython = "python"
 	buildSystemNode   = "node"
+
+	// Story content constants.
+	acceptanceCriteriaHeader = "## Acceptance Criteria\n"
 )
 
 // LLMClient defines the interface for language model interactions.
@@ -83,38 +87,43 @@ func (a *LLMClientToAgentAdapter) Stream(ctx context.Context, req agent.Completi
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	stateStore         *state.Store
-	contextManager     *contextmgr.ContextManager
+	currentState       proto.State
 	stateData          map[string]any
-	llmClient          LLMClient              // LLM for intelligent responses
-	renderer           *templates.Renderer    // Template renderer for prompts
-	queue              *Queue                 // Story queue manager
-	escalationHandler  *EscalationHandler     // Escalation handler
-	dispatcher         *dispatch.Dispatcher   // Dispatcher for sending messages
-	logger             *logx.Logger           // Logger with proper agent prefixing
-	orchestratorConfig *config.Config         // Orchestrator configuration for repo access
-	specCh             <-chan *proto.AgentMsg // Read-only channel for spec messages
-	questionsCh        chan *proto.AgentMsg   // Bi-directional channel for questions/requests
-	replyCh            <-chan *proto.AgentMsg // Read-only channel for replies
+	contextManager     *contextmgr.ContextManager
+	llmClient          LLMClient                   // LLM for intelligent responses
+	renderer           *templates.Renderer         // Template renderer for prompts
+	queue              *Queue                      // Story queue manager
+	escalationHandler  *EscalationHandler          // Escalation handler
+	dispatcher         *dispatch.Dispatcher        // Dispatcher for sending messages
+	logger             *logx.Logger                // Logger with proper agent prefixing
+	orchestratorConfig *config.Config              // Orchestrator configuration for repo access
+	specCh             <-chan *proto.AgentMsg      // Read-only channel for spec messages
+	questionsCh        chan *proto.AgentMsg        // Bi-directional channel for questions/requests
+	replyCh            <-chan *proto.AgentMsg      // Read-only channel for replies
+	persistenceChannel chan<- *persistence.Request // Channel for database operations
 	architectID        string
 	workDir            string // Workspace directory
-	storiesDir         string // Directory for story files
-	currentState       proto.State
+	storiesDir         string // Directory for story files (deprecated - will use database)
 }
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID string, stateStore *state.Store, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string, orchestratorConfig *config.Config) *Driver {
+func NewDriver(architectID string, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
 		fmt.Printf("ERROR: Failed to initialize template renderer: %v\n", err)
 	}
-	queue := NewQueue(storiesDir)
+	// Create queue with persistence if available, otherwise use regular queue
+	var queue *Queue
+	if persistenceChannel != nil {
+		queue = NewQueueWithPersistence(storiesDir, persistenceChannel)
+	} else {
+		queue = NewQueue(storiesDir)
+	}
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 
 	return &Driver{
 		architectID:        architectID,
-		stateStore:         stateStore,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelConfig),
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
@@ -127,6 +136,7 @@ func NewDriver(architectID string, stateStore *state.Store, modelConfig *config.
 		dispatcher:         dispatcher,
 		logger:             logx.NewLogger(architectID),
 		orchestratorConfig: orchestratorConfig,
+		persistenceChannel: persistenceChannel,
 		// Channels will be set during Attach()
 		specCh:      nil,
 		questionsCh: nil,
@@ -159,13 +169,11 @@ func (d *Driver) SetStateNotificationChannel(_ /* stateNotifCh */ chan<- *proto.
 
 // Initialize sets up the driver and loads any existing state.
 func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
-	// Load existing state if available.
-	d.logger.Info("Loading architect state for ID: %s", d.architectID)
-	savedState, savedData, err := d.stateStore.LoadState(d.architectID)
-	if err != nil {
-		d.logger.Info("No previous state found for architect %s: %v", d.architectID, err)
-		return fmt.Errorf("failed to load state for architect %s: %w", d.architectID, err)
-	}
+	// Start fresh - no filesystem state persistence
+	// State management is now handled by SQLite for system-level resume functionality
+	d.logger.Info("Starting architect fresh for ID: %s (filesystem state persistence removed)", d.architectID)
+	savedState := ""
+	savedData := make(map[string]any)
 
 	// If we have saved state, restore it.
 	if savedState != "" {
@@ -212,12 +220,8 @@ func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
 
 // shutdown is the internal shutdown method.
 func (d *Driver) shutdown() {
-	// Persist current state to disk before shutting down.
-	if err := d.stateStore.SaveState(d.architectID, d.currentState.String(), d.stateData); err != nil {
-		d.logger.Error("failed to persist state during shutdown: %v", err)
-	} else {
-		d.logger.Info("state persisted successfully during shutdown")
-	}
+	// No filesystem state persistence - clean shutdown
+	d.logger.Info("🏗️ Architect %s shutting down cleanly (no state persistence)", d.architectID)
 
 	// Channels are owned by dispatcher, no cleanup needed here.
 	d.logger.Info("🏗️ Architect %s shutdown completed", d.architectID)
@@ -242,9 +246,7 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 	}
 
 	// Transition to next state.
-	if err := d.transitionTo(ctx, nextState, nil); err != nil {
-		return false, fmt.Errorf("state transition error %s -> %s: %w", d.currentState, nextState, err)
-	}
+	d.transitionTo(ctx, nextState, nil)
 
 	return false, nil
 }
@@ -291,20 +293,15 @@ func (d *Driver) Run(ctx context.Context) error {
 		if err != nil {
 			d.logger.Error("🏗️ Architect state processing error in %s: %v", d.currentState, err)
 			// Transition to error state.
-			if transErr := d.transitionTo(ctx, StateError, map[string]any{
+			d.transitionTo(ctx, StateError, map[string]any{
 				"error":        err.Error(),
 				"failed_state": d.currentState.String(),
-			}); transErr != nil {
-				d.logger.Error("Failed to transition to error state: %v", transErr)
-			}
+			})
 			return err
 		}
 
 		// Transition to next state (always call transitionTo - let it handle self-transitions).
-		if err := d.transitionTo(ctx, nextState, nil); err != nil {
-			d.logger.Error("🏗️ Architect state transition failed: %s -> %s: %v", d.currentState, nextState, err)
-			return fmt.Errorf("failed to transition to state %s: %w", nextState, err)
-		}
+		d.transitionTo(ctx, nextState, nil)
 
 		// Compact context if needed.
 		if err := d.contextManager.CompactIfNeeded(); err != nil {
@@ -466,28 +463,16 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	// STEP 3: Spec Analysis - check if spec already parsed.
 	var requirements []Requirement
 	if _, exists := d.stateData["spec_parsing_completed_at"]; !exists {
-		// Use LLM for spec analysis if available.
-		if d.llmClient != nil {
-			requirements, err = d.parseSpecWithLLM(ctx, string(rawSpecContent), specFile)
-			if err != nil {
-				// Graceful fallback to deterministic parsing.
-				d.logger.Warn("LLM parsing failed (%v), falling back to deterministic parser", err)
-				requirements, err = d.parseSpecDeterministic(specFile)
-				if err != nil {
-					return StateError, fmt.Errorf("both LLM and deterministic parsing failed: %w", err)
-				}
-				d.stateData["parsing_method"] = "deterministic_fallback"
-			} else {
-				d.stateData["parsing_method"] = "llm_primary"
-			}
-		} else {
-			// Use deterministic parsing only.
-			requirements, err = d.parseSpecDeterministic(specFile)
-			if err != nil {
-				return StateError, fmt.Errorf("deterministic parsing failed: %w", err)
-			}
-			d.stateData["parsing_method"] = "deterministic_only"
+		// LLM parsing is required - no fallback.
+		if d.llmClient == nil {
+			return StateError, fmt.Errorf("LLM client not available - spec analysis requires LLM")
 		}
+
+		requirements, err = d.parseSpecWithLLM(ctx, string(rawSpecContent), specFile)
+		if err != nil {
+			return StateError, fmt.Errorf("LLM spec analysis failed: %w", err)
+		}
+		d.stateData["parsing_method"] = "llm_primary"
 
 		// Store parsed requirements.
 		d.stateData["requirements"] = requirements
@@ -505,18 +490,23 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 
 	// STEP 4: Story Generation - check if stories already generated.
 	if _, exists := d.stateData["stories_generated"]; !exists {
-		// Generate story files immediately in the scoping phase.
-		specParser := NewSpecParser(d.storiesDir)
-		storyFiles, err := specParser.GenerateStoryFiles(requirements)
-		if err != nil {
-			return StateError, fmt.Errorf("failed to generate story files: %w", err)
+		// Generate stories from LLM-analyzed requirements.
+		if d.persistenceChannel != nil {
+			// Use database-aware story generation from requirements.
+			specID, storyIDs, err := d.generateStoriesFromRequirements(requirements, string(rawSpecContent))
+			if err != nil {
+				return StateError, fmt.Errorf("failed to generate stories from requirements: %w", err)
+			}
+
+			d.stateData["spec_id"] = specID
+			d.stateData["story_ids"] = storyIDs
+			d.stateData["stories_generated"] = true
+			d.stateData["stories_count"] = len(storyIDs)
+
+			d.logger.Info("🏗️ Story generation completed: %d stories generated and stored in database (spec ID: %s)", len(storyIDs), specID)
+		} else {
+			return StateError, fmt.Errorf("persistence channel not available - database storage is required for story generation")
 		}
-
-		d.stateData["story_files"] = storyFiles
-		d.stateData["stories_generated"] = true
-		d.stateData["stories_count"] = len(storyFiles)
-
-		d.logger.Info("🏗️ Story generation completed: %d stories generated", len(storyFiles))
 	}
 
 	d.logger.Info("🏗️ Scoping completed using %s method, extracted %d requirements and generated %d stories",
@@ -560,10 +550,145 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile 
 	return d.parseSpecAnalysisJSON(response)
 }
 
-// parseSpecDeterministic uses the deterministic parser.
-func (d *Driver) parseSpecDeterministic(specFile string) ([]Requirement, error) {
-	specParser := NewSpecParser(d.storiesDir)
-	return specParser.ParseSpecFile(specFile)
+// generateStoriesFromRequirements converts LLM-analyzed requirements into database stories.
+func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, specContent string) (string, []string, error) {
+	// Generate spec ID and create spec record
+	specID := persistence.GenerateSpecID()
+	spec := &persistence.Spec{
+		ID:        specID,
+		Content:   specContent,
+		CreatedAt: time.Now(),
+	}
+
+	// Store spec in database (fire-and-forget)
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpUpsertSpec,
+		Data:      spec,
+		Response:  nil, // Fire-and-forget
+	}
+
+	// Convert requirements to database stories
+	storyIDs := make([]string, 0, len(requirements))
+
+	for i := range requirements {
+		req := &requirements[i]
+		// Generate story ID (8-char hex)
+		storyID, err := persistence.GenerateStoryID()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
+		}
+
+		// Convert requirement to story with rich content
+		story := d.requirementToStory(storyID, specID, req)
+
+		// Store story in database (fire-and-forget)
+		d.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpsertStory,
+			Data:      story,
+			Response:  nil, // Fire-and-forget
+		}
+
+		storyIDs = append(storyIDs, storyID)
+	}
+
+	// Handle dependencies between stories (simplified for now)
+	d.processDependencies(requirements, storyIDs)
+
+	// Mark spec as processed
+	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpUpsertSpec,
+		Data:      spec,
+		Response:  nil, // Fire-and-forget
+	}
+
+	return specID, storyIDs, nil
+}
+
+// requirementToStory converts a LLM-analyzed requirement to a database story.
+func (d *Driver) requirementToStory(storyID, specID string, req *Requirement) *persistence.Story {
+	// Generate rich story content from LLM-analyzed requirement
+	content := d.generateRichStoryContent(req)
+
+	return &persistence.Story{
+		ID:         storyID,
+		SpecID:     specID,
+		Title:      req.Title,
+		Content:    content,
+		Status:     persistence.StatusNew,
+		Priority:   req.EstimatedPoints, // Use points as priority
+		CreatedAt:  time.Now(),
+		TokensUsed: 0,
+		CostUSD:    0.0,
+	}
+}
+
+// generateRichStoryContent creates detailed markdown content for a story from LLM-analyzed requirement.
+func (d *Driver) generateRichStoryContent(req *Requirement) string {
+	content := fmt.Sprintf("# %s\n\n", req.Title)
+
+	// Add detailed description from LLM analysis
+	if req.Description != "" {
+		content += fmt.Sprintf("## Description\n%s\n\n", req.Description)
+	}
+
+	// Add acceptance criteria from LLM analysis or provide defaults
+	if len(req.AcceptanceCriteria) > 0 {
+		content += acceptanceCriteriaHeader
+		for _, criterion := range req.AcceptanceCriteria {
+			content += fmt.Sprintf("- %s\n", criterion)
+		}
+		content += "\n"
+	} else {
+		content += acceptanceCriteriaHeader
+		content += "- Implementation completes successfully\n"
+		content += "- All tests pass\n"
+		content += "- Code follows project conventions\n\n"
+	}
+
+	// Add dependencies if any
+	if len(req.Dependencies) > 0 {
+		content += "## Dependencies\n"
+		for _, dep := range req.Dependencies {
+			content += fmt.Sprintf("- %s\n", dep)
+		}
+		content += "\n"
+	}
+
+	content += fmt.Sprintf("**Estimated Points:** %d\n", req.EstimatedPoints)
+
+	return content
+}
+
+// processDependencies handles story dependencies by storing them in the database.
+func (d *Driver) processDependencies(requirements []Requirement, storyIDs []string) {
+	// For now, implement a simple dependency model where dependencies
+	// are based on the order of requirements (earlier requirements are dependencies)
+	// This could be enhanced to parse actual dependencies from LLM analysis
+	for i := range requirements {
+		req := &requirements[i]
+		if len(req.Dependencies) == 0 {
+			continue
+		}
+
+		storyID := storyIDs[i]
+
+		// Simple implementation: add dependency to previous story
+		for j := 0; j < i; j++ {
+			dependsOnStoryID := storyIDs[j]
+
+			dependency := &persistence.StoryDependency{
+				StoryID:   storyID,
+				DependsOn: dependsOnStoryID,
+			}
+
+			d.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpAddStoryDependency,
+				Data:      dependency,
+				Response:  nil, // Fire-and-forget
+			}
+		}
+	}
 }
 
 // handleDispatching processes the dispatching phase (queue management and story assignment).
@@ -572,9 +697,9 @@ func (d *Driver) handleDispatching(_ /* ctx */ context.Context) (proto.State, er
 
 	// Initialize queue if not already done.
 	if _, exists := d.stateData["queue_initialized"]; !exists {
-		// Load stories from the stories directory.
-		if err := d.queue.LoadFromDirectory(); err != nil {
-			return StateError, fmt.Errorf("failed to load stories from directory: %w", err)
+		// Load stories from the database (or fallback to directory if no persistence).
+		if err := d.queue.LoadFromDatabase(); err != nil {
+			return StateError, fmt.Errorf("failed to load stories from database: %w", err)
 		}
 
 		// Detect cycles in dependencies.
@@ -1151,7 +1276,7 @@ func (d *Driver) handleMerging(_ context.Context) (proto.State, error) {
 }
 
 // transitionTo moves the driver to a new state and persists it.
-func (d *Driver) transitionTo(_ context.Context, newState proto.State, additionalData map[string]any) error {
+func (d *Driver) transitionTo(_ context.Context, newState proto.State, additionalData map[string]any) {
 	oldState := d.currentState
 	d.currentState = newState
 
@@ -1171,10 +1296,7 @@ func (d *Driver) transitionTo(_ context.Context, newState proto.State, additiona
 		d.stateData[k] = v
 	}
 
-	// Persist state.
-	if err := d.stateStore.SaveState(d.architectID, newState.String(), d.stateData); err != nil {
-		return fmt.Errorf("failed to persist state transition from %s to %s: %w", oldState, newState, err)
-	}
+	// No filesystem state persistence - state transitions are tracked in memory only
 
 	// Enhanced logging for debugging.
 	if oldState != newState {
@@ -1182,8 +1304,6 @@ func (d *Driver) transitionTo(_ context.Context, newState proto.State, additiona
 	} else {
 		d.logger.Info("🏗️ Architect staying in state: %s", oldState)
 	}
-
-	return nil
 }
 
 // GetCurrentState returns the current state of the driver.
@@ -1288,7 +1408,41 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 	}
 
 	if err := json.Unmarshal([]byte(jsonStr), &llmResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse LLM JSON response: %w", err)
+		// Enhanced error reporting with truncation detection
+		baseErr := fmt.Errorf("failed to parse LLM JSON response: %w", err)
+
+		// Check if this might be a truncation issue by comparing response length to token limits
+		// Using tiktoken to get accurate token count for O3 model (approximated with GPT-4 encoding)
+		responseTokens := utils.CountTokensSimple(response)
+		maxTokens := agent.ArchitectMaxTokens // Current MaxTokens limit from LLMClientAdapter
+
+		// If we're within 10% of the token limit, likely truncation
+		if float64(responseTokens) >= float64(maxTokens)*0.9 {
+			d.logger.Error("🏗️ JSON parsing failed - likely due to response truncation")
+			d.logger.Error("🏗️ Response tokens: %d, MaxTokens limit: %d (%.1f%% of limit)",
+				responseTokens, maxTokens, float64(responseTokens)/float64(maxTokens)*100)
+			d.logger.Error("🏗️ Consider increasing MaxTokens in LLMClientAdapter")
+			d.logger.Error("🏗️ Response length: %d characters", len(response))
+			if len(response) > 1000 {
+				d.logger.Error("🏗️ Response end (last 500 chars): ...%s", response[len(response)-500:])
+			} else {
+				d.logger.Error("🏗️ Full response: %s", response)
+			}
+			return nil, fmt.Errorf("JSON parsing failed - likely truncated due to token limit (%d tokens, %.1f%% of %d limit): %w",
+				responseTokens, float64(responseTokens)/float64(maxTokens)*100, maxTokens, err)
+		}
+
+		// Not a truncation issue, provide standard error with response details
+		d.logger.Error("🏗️ JSON parsing failed - response tokens: %d, limit: %d (%.1f%%)",
+			responseTokens, maxTokens, float64(responseTokens)/float64(maxTokens)*100)
+		if len(response) > 2000 {
+			d.logger.Error("🏗️ Response preview (first 1000 chars): %s...", response[:1000])
+			d.logger.Error("🏗️ Response preview (last 1000 chars): ...%s", response[len(response)-1000:])
+		} else {
+			d.logger.Error("🏗️ Full response: %s", response)
+		}
+
+		return nil, baseErr
 	}
 
 	// Convert to internal Requirement format.

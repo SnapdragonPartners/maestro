@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/bootstrap"
@@ -14,7 +13,6 @@ import (
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 )
 
 // processWithApprovals handles the full workflow including auto-approvals in standalone mode.
@@ -249,15 +247,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create coder.
-	stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create state store: %v\n", err)
-		if cleanup && workDir != "" {
-			_ = os.RemoveAll(workDir)
-		}
-		os.Exit(1)
-	}
+	// Create coder (no state store needed).
 
 	modelConfig := &config.ModelCfg{
 		MaxContextTokens: 32000,
@@ -290,7 +280,7 @@ func main() {
 			// Create BuildService for MCP tools.
 			buildService := build.NewBuildService()
 
-			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager, buildService)
+			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, modelConfig, apiKey, workspaceManager, buildService)
 		} else {
 			fmt.Fprintf(os.Stderr, "No ANTHROPIC_API_KEY found, would use mock mode (but mocks removed)\n")
 			fmt.Fprintf(os.Stderr, "Please set ANTHROPIC_API_KEY environment variable\n")

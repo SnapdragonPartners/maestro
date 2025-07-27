@@ -8,7 +8,6 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/state"
 )
 
 // createTestCoder creates a coder with live LLM client for testing.
@@ -19,15 +18,10 @@ func createTestCoder(t *testing.T, tempDir string) *Coder {
 		t.Skip("Skipping test: CLAUDE_API_KEY environment variable not set")
 	}
 
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store: %v", err)
-	}
-
 	// Create live Claude client for testing
 	llmClient := agent.NewClaudeClient(apiKey)
 
-	driver, err := NewCoder("test-coder", stateStore, &config.ModelCfg{}, llmClient, tempDir, &config.Agent{}, nil, nil)
+	driver, err := NewCoder("test-coder", &config.ModelCfg{}, llmClient, tempDir, &config.Agent{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver: %v", err)
 	}

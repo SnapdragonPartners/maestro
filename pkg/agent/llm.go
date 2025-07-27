@@ -19,6 +19,12 @@ const (
 	RoleAssistant CompletionRole = "assistant"
 )
 
+const (
+	// ArchitectMaxTokens defines the maximum tokens for architect LLM responses.
+	// Used for comprehensive spec analysis and story generation with O3.
+	ArchitectMaxTokens = 30000
+)
+
 // CompletionMessage represents a message in a completion request.
 type CompletionMessage struct {
 	Role    CompletionRole
