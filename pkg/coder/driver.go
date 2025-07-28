@@ -180,24 +180,43 @@ const (
 	DefaultDockerImage = config.DefaultUbuntuDockerImage // Fallback for unknown project types
 )
 
-// getDockerImageForAgent returns the appropriate Docker image based on agent configuration and detected backend.
-func getDockerImageForAgent(agentConfig *config.Agent, buildRegistry *build.Registry, workDir string) string {
+// getDockerImageForAgent returns the appropriate Docker image based on agent configuration and project config.
+func getDockerImageForAgent(agentConfig *config.Agent, workDir string) string {
 	// 1. Use agent-specific Docker image if specified in config.
 	if agentConfig != nil && agentConfig.DockerImage != "" {
 		return agentConfig.DockerImage
 	}
 
-	// 2. Use backend-specific default based on detected project type.
-	if buildRegistry != nil && workDir != "" {
-		if backend, err := buildRegistry.Detect(workDir); err == nil {
-			return backend.GetDockerImage(workDir)
+	// 2. Use project configuration from .maestro/config.json
+	if workDir != "" {
+		if projectConfig, err := config.LoadProjectConfig(workDir); err == nil {
+			// Use custom built image if available
+			if projectConfig.Container.ImageTag != "" {
+				return projectConfig.Container.ImageTag
+			}
+
+			// Use pre-built image if specified
+			if projectConfig.Container.Image != "" {
+				return projectConfig.Container.Image
+			}
+
+			// Fall back to platform-specific default
+			platform := projectConfig.Project.Platform
+			switch platform {
+			case "go":
+				return config.DefaultGoDockerImage
+			case "node":
+				return "node:18-alpine"
+			case "python":
+				return "python:3.11-alpine"
+			default:
+				return config.DefaultUbuntuDockerImage
+			}
 		}
 	}
 
-	// 3. No universal fallback - each backend must define its own default.
-	// This should not happen in normal operation since we don't support generic backends.
-	// If we reach here, it means backend detection failed.
-	return ""
+	// 3. Final fallback if no config available
+	return config.DefaultUbuntuDockerImage
 }
 
 // Removed unused context keys - simplified container management.
@@ -373,7 +392,7 @@ func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMC
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
 		codingBudget:        codingBudget,
-		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(agentConfig, buildRegistry, workDir), agentID),
+		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(agentConfig, workDir), agentID),
 		containerName:       "", // Will be set during setup
 	}
 
@@ -1075,6 +1094,21 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		c.logger.Info("Done tool registered successfully")
 	}
 
+	// Register bootstrap/config tools.
+	modifyConfigTool := tools.NewModifyConfigTool()
+	if err := tools.Register(modifyConfigTool); err != nil {
+		c.logger.Info("Modify config tool registration: %v (likely already registered)", err)
+	} else {
+		c.logger.Info("Modify config tool registered successfully")
+	}
+
+	createMakefileTool := tools.NewCreateMakefileTool()
+	if err := tools.Register(createMakefileTool); err != nil {
+		c.logger.Info("Create makefile tool registration: %v (likely already registered)", err)
+	} else {
+		c.logger.Info("Create makefile tool registered successfully")
+	}
+
 	filesCreated := 0
 
 	for i := range toolCalls {
@@ -1753,16 +1787,24 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		return c.proceedToCodeReview(ctx, sm)
 	}
 
-	// Fallback to original implementation if no build service.
-	backend, err := c.buildRegistry.Detect(worktreePathStr)
+	// Fallback to original implementation if no build service - use project config.
+	projectConfig, err := config.LoadProjectConfig(worktreePathStr)
 	if err != nil {
-		c.logger.Error("Failed to detect build backend: %v", err)
-		return proto.StateError, false, logx.Wrap(err, "failed to detect build backend")
+		c.logger.Error("Failed to load project config: %v", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to load project config")
 	}
 
-	// Store backend information for context.
-	sm.SetStateData(KeyBuildBackend, backend.Name())
-	c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backend.Name()))
+	// Store platform information for context.
+	platform := projectConfig.Project.Platform
+	sm.SetStateData(KeyBuildBackend, platform)
+	c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s platform", platform))
+
+	// Get build command from config
+	testCommand := projectConfig.GetBuildCommand("test")
+	if testCommand == "" {
+		testCommand = "make test" // fallback
+	}
+	_ = testCommand // Used in runMakeTest below
 
 	// Run tests using the detected backend.
 	testsPassed, testOutput, err := c.runMakeTest(ctx, worktreePathStr)
@@ -3034,32 +3076,44 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Detect the appropriate build backend.
-	backend, err := c.buildRegistry.Detect(worktreePath)
+	// Load project configuration for test command.
+	projectConfig, err := config.LoadProjectConfig(worktreePath)
 	if err != nil {
-		return false, "", logx.Wrap(err, "failed to detect build backend")
+		return false, "", logx.Wrap(err, "failed to load project config")
 	}
 
-	c.logger.Info("Using %s backend for testing", backend.Name())
+	platform := projectConfig.Project.Platform
+	testCommand := projectConfig.GetBuildCommand("test")
+	if testCommand == "" {
+		testCommand = "make test" // fallback
+	}
 
-	// Capture output with a buffer.
-	var outputBuffer strings.Builder
+	c.logger.Info("Using %s platform for testing with command: %s", platform, testCommand)
 
-	// Run tests using the detected backend.
-	err = backend.Test(testCtx, worktreePath, &outputBuffer)
-	outputStr := outputBuffer.String()
+	// Execute test command using shell.
+	opts := execpkg.Opts{
+		WorkDir: worktreePath,
+		Timeout: 5 * time.Minute,
+	}
+
+	result, err := c.longRunningExecutor.Run(testCtx, []string{"sh", "-c", testCommand}, &opts)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to execute test command: %w", err)
+	}
+	outputStr := result.Stdout + result.Stderr
 
 	// Log the test output for debugging.
 	c.logger.Info("Test output: %s", outputStr)
 
-	if err != nil {
-		// Check if it's a timeout.
-		if testCtx.Err() == context.DeadlineExceeded {
-			return false, outputStr, logx.Errorf("tests timed out after 5 minutes")
-		}
+	// Check if it's a timeout.
+	if testCtx.Err() == context.DeadlineExceeded {
+		return false, outputStr, logx.Errorf("tests timed out after 5 minutes")
+	}
 
+	// Check test result based on exit code.
+	if result.ExitCode != 0 {
 		// Tests failed - this is expected when tests fail.
-		c.logger.Info("Tests failed: %v", err)
+		c.logger.Info("Tests failed with exit code: %d", result.ExitCode)
 		return false, outputStr, nil
 	}
 

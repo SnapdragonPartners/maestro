@@ -1,4 +1,4 @@
-.PHONY: build test lint run clean agentctl replayer ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
+.PHONY: build test lint run clean agentctl replayer maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
 
 # Build all binaries
 build: lint
@@ -10,6 +10,10 @@ build: lint
 # Build the agentctl CLI tool
 agentctl: lint
 	go build -o bin/agentctl ./cmd/agentctl
+
+# Build the maestro CLI tool
+maestro: lint
+	go build -o bin/maestro ./cmd/orchestrator
 
 # Build the replayer tool
 replayer: lint
@@ -67,7 +71,7 @@ lint-docs:
 
 # Run the orchestrator with banner
 run: build-css build
-	clear && rm -rf ~/Code/maestro-work/test && ./bin/maestro -workdir ~/Code/maestro-work/test -ui 2>&1 | tee logs/run.log
+	clear && rm -rf ~/Code/maestro-work/test && ./bin/orchestrator -workdir ~/Code/maestro-work/test -ui 2>&1 | tee logs/run.log
 
 # Build Tailwind CSS
 build-css:

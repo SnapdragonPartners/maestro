@@ -3,12 +3,17 @@
 package config
 
 import (
+	"crypto/md5" //nolint:gosec // MD5 is acceptable for non-cryptographic file change detection
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Agent type constants.
@@ -27,6 +32,14 @@ const (
 const (
 	DefaultGoDockerImage     = "golang:1.24-alpine"
 	DefaultUbuntuDockerImage = "ubuntu:22.04"
+)
+
+// Project config constants.
+const (
+	ProjectConfigFilename = "config.json"
+	UserConfigDir         = ".maestro"
+	ProjectConfigDir      = ".maestro"
+	SchemaVersion         = "1.0"
 )
 
 // IterationBudgets defines the retry limits for coding operations.
@@ -98,6 +111,67 @@ type Config struct {
 	BranchPattern   string `json:"branch_pattern"`   // Branch name pattern (default: story-{STORY_ID})
 	// Executor configuration.
 	Executor ExecutorConfig `json:"executor"` // Executor settings
+}
+
+// ProjectInfo contains basic project metadata.
+type ProjectInfo struct {
+	Name               string    `json:"name"`
+	GitRepo            string    `json:"git_repo"`
+	TargetBranch       string    `json:"target_branch"`
+	Platform           string    `json:"platform"`
+	PlatformConfidence float64   `json:"platform_confidence"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// ContainerConfig defines container settings for the project.
+type ContainerConfig struct {
+	Image          string            `json:"image,omitempty"`           // Pre-built image name
+	Dockerfile     string            `json:"dockerfile,omitempty"`      // Custom dockerfile path
+	DockerfileHash string            `json:"dockerfile_hash,omitempty"` // MD5 hash of dockerfile
+	ImageTag       string            `json:"image_tag,omitempty"`       // Built image tag
+	NeedsRebuild   bool              `json:"needs_rebuild"`             // Whether container needs rebuilding
+	LastBuilt      time.Time         `json:"last_built,omitempty"`      // When container was last built
+	Environment    map[string]string `json:"environment,omitempty"`     // Environment variables
+}
+
+// BuildConfig defines build targets and commands.
+type BuildConfig struct {
+	// Required targets (must exist)
+	Build string `json:"build"` // Build command (default: "make build")
+	Test  string `json:"test"`  // Test command (default: "make test")
+	Lint  string `json:"lint"`  // Lint command (default: "make lint")
+	Run   string `json:"run"`   // Run command (default: "make run")
+
+	// Optional targets
+	Clean   string `json:"clean,omitempty"`   // Clean command
+	Install string `json:"install,omitempty"` // Install command
+}
+
+// BootstrapInfo tracks bootstrap completion status.
+type BootstrapInfo struct {
+	Completed        bool            `json:"completed"`
+	LastRun          time.Time       `json:"last_run,omitempty"`
+	RequirementsMet  map[string]bool `json:"requirements_met"`
+	ValidationErrors []string        `json:"validation_errors,omitempty"`
+}
+
+// ProjectConfig represents the project-specific configuration stored in .maestro/config.json.
+type ProjectConfig struct {
+	SchemaVersion string          `json:"schema_version"`
+	Project       ProjectInfo     `json:"project"`
+	Container     ContainerConfig `json:"container"`
+	Build         BuildConfig     `json:"build"`
+	Bootstrap     BootstrapInfo   `json:"bootstrap"`
+	mu            sync.RWMutex    `json:"-"` // Mutex for thread-safe access
+}
+
+// UserConfig represents user-level defaults stored in ~/.maestro/config.json.
+type UserConfig struct {
+	SchemaVersion    string                 `json:"schema_version"`
+	DefaultPlatform  string                 `json:"default_platform,omitempty"`
+	DefaultContainer ContainerConfig        `json:"default_container,omitempty"`
+	DefaultBuild     BuildConfig            `json:"default_build,omitempty"`
+	UserPreferences  map[string]interface{} `json:"user_preferences,omitempty"`
 }
 
 var envVarRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -382,7 +456,7 @@ func validateConfig(config *Config) error {
 		config.RetryBackoffMultiplier = 2.0 // default
 	}
 	if config.StoryChannelFactor <= 0 {
-		config.StoryChannelFactor = 8 // default factor as per S-5
+		config.StoryChannelFactor = 16 // increased from 8 to reduce backlog warnings
 	}
 	if config.QuestionsChannelSize <= 0 {
 		config.QuestionsChannelSize = config.CountCoders() // default to number of coders
@@ -557,4 +631,156 @@ func (c *Config) CountArchitects() int {
 		}
 	}
 	return count
+}
+
+// GetBuildCommand returns the command for the specified build target.
+func (p *ProjectConfig) GetBuildCommand(target string) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	switch target {
+	case "build":
+		return p.Build.Build
+	case "test":
+		return p.Build.Test
+	case "lint":
+		return p.Build.Lint
+	case "run":
+		return p.Build.Run
+	case "clean":
+		return p.Build.Clean
+	case "install":
+		return p.Build.Install
+	default:
+		return ""
+	}
+}
+
+// SetContainerNeedsRebuild marks the container as needing rebuild.
+func (p *ProjectConfig) SetContainerNeedsRebuild() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Container.NeedsRebuild = true
+}
+
+// ContainerNeedsRebuild checks if the container needs rebuilding based on Dockerfile changes.
+func (p *ProjectConfig) ContainerNeedsRebuild() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.Container.Dockerfile == "" {
+		return false // Using pre-built image
+	}
+
+	// Check if Dockerfile exists and get its hash
+	if _, err := os.Stat(p.Container.Dockerfile); err != nil {
+		return true // Dockerfile missing, needs rebuild
+	}
+
+	currentHash, err := calculateDockerfileHash(p.Container.Dockerfile)
+	if err != nil {
+		return true // Error calculating hash, assume rebuild needed
+	}
+
+	return currentHash != p.Container.DockerfileHash
+}
+
+// LoadProjectConfig loads project configuration from .maestro/config.json.
+func LoadProjectConfig(projectRoot string) (*ProjectConfig, error) {
+	configPath := filepath.Join(projectRoot, ProjectConfigDir, ProjectConfigFilename)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read project config file: %w", err)
+	}
+
+	var config ProjectConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse project config JSON: %w", err)
+	}
+
+	return &config, nil
+}
+
+// Save writes the project configuration to .maestro/config.json.
+func (p *ProjectConfig) Save(projectRoot string) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	configDir := filepath.Join(projectRoot, ProjectConfigDir)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	configPath := filepath.Join(configDir, ProjectConfigFilename)
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal project config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write project config file: %w", err)
+	}
+
+	return nil
+}
+
+// LoadUserConfig loads user-level defaults from ~/.maestro/config.json.
+func LoadUserConfig() (*UserConfig, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	}
+
+	configPath := filepath.Join(homeDir, UserConfigDir, ProjectConfigFilename)
+
+	// User config is optional
+	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+		return &UserConfig{
+			SchemaVersion: SchemaVersion,
+		}, nil
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read user config file: %w", err)
+	}
+
+	var config UserConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse user config JSON: %w", err)
+	}
+
+	return &config, nil
+}
+
+// calculateDockerfileHash computes MD5 hash of a Dockerfile.
+func calculateDockerfileHash(dockerfilePath string) (string, error) {
+	file, err := os.Open(dockerfilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open dockerfile: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	hash := md5.New() //nolint:gosec // MD5 is acceptable for non-cryptographic file change detection
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", fmt.Errorf("failed to read dockerfile: %w", err)
+	}
+
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+// LoadProjectConfigFromPath loads project configuration from a specific file path.
+func LoadProjectConfigFromPath(configPath string) (*ProjectConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read project config file: %w", err)
+	}
+
+	var config ProjectConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse project config JSON: %w", err)
+	}
+
+	return &config, nil
 }

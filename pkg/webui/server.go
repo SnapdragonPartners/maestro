@@ -409,11 +409,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create stories directory if it doesn't exist.
-	storiesDir := filepath.Join(s.workDir, "stories")
-	if mkdirErr := os.MkdirAll(storiesDir, 0755); mkdirErr != nil {
-		s.logger.Error("Failed to create stories directory: %v", mkdirErr)
-		http.Error(w, "Failed to create stories directory", http.StatusInternalServerError)
+	// Create specs directory if it doesn't exist.
+	specsDir := filepath.Join(s.workDir, ".maestro", "specs")
+	if mkdirErr := os.MkdirAll(specsDir, 0755); mkdirErr != nil {
+		s.logger.Error("Failed to create specs directory: %v", mkdirErr)
+		http.Error(w, "Failed to create specs directory", http.StatusInternalServerError)
 		return
 	}
 
@@ -425,8 +425,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save file to stories directory.
-	filePath := filepath.Join(storiesDir, header.Filename)
+	// Save file to specs directory.
+	filePath := filepath.Join(specsDir, header.Filename)
 	if err := os.WriteFile(filePath, content, 0644); err != nil {
 		s.logger.Error("Failed to save file: %v", err)
 		http.Error(w, "Failed to save file", http.StatusInternalServerError)

@@ -314,6 +314,15 @@ func (d *Dispatcher) DispatchMessage(msg *proto.AgentMsg) error {
 	// Note: Event logging will happen after name resolution in processMessage.
 	// to ensure the logged message reflects the actual target agent.
 
+	// For STORY messages, check if story channel has capacity first
+	if msg.Type == proto.MsgTypeSTORY {
+		// Check if story channel is full (non-blocking check)
+		if len(d.storyCh) >= cap(d.storyCh) {
+			d.logger.Warn("⚠️  Story channel full (%d/%d), could not deliver story %s", len(d.storyCh), cap(d.storyCh), msg.ID)
+			return fmt.Errorf("story channel full, could not deliver story %s", msg.ID)
+		}
+	}
+
 	select {
 	case d.inputChan <- msg:
 		d.logger.Debug("Queued message %s: %s → %s", msg.ID, msg.FromAgent, msg.ToAgent)

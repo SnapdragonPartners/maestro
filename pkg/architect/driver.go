@@ -423,21 +423,28 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 		return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
 	}
 
-	// STEP 1: Platform Detection - check if platform already detected.
+	// STEP 1: Platform Configuration - load platform from project config.
 	if _, exists := d.stateData["platform_detected"]; !exists {
-		d.logger.Info("🏗️ Starting platform detection for project")
+		d.logger.Info("🏗️ Loading platform configuration from project config")
 
-		// Run platform detection on existing code first.
-		platformRecommendation, detectErr := d.detectOrRecommendPlatform(ctx, string(rawSpecContent))
-		if detectErr != nil {
-			return StateError, fmt.Errorf("platform detection failed: %w", detectErr)
+		// Load project configuration.
+		projectConfig, configErr := config.LoadProjectConfig(d.workDir)
+		if configErr != nil {
+			return StateError, fmt.Errorf("failed to load project config: %w", configErr)
+		}
+
+		// Create platform recommendation from config.
+		platformRecommendation := bootstrap.PlatformRecommendation{
+			Platform:   projectConfig.Project.Platform,
+			Confidence: projectConfig.Project.PlatformConfidence,
+			Rationale:  fmt.Sprintf("Platform '%s' loaded from project configuration", projectConfig.Project.Platform),
 		}
 
 		// Store platform recommendation.
 		d.stateData["platform_recommendation"] = platformRecommendation
 		d.stateData["platform_detected"] = true
 
-		d.logger.Info("🏗️ Platform detection completed: %s (confidence: %.2f)",
+		d.logger.Info("🏗️ Platform configuration loaded: %s (confidence: %.2f)",
 			platformRecommendation.Platform, platformRecommendation.Confidence)
 	}
 
@@ -692,7 +699,7 @@ func (d *Driver) processDependencies(requirements []Requirement, storyIDs []stri
 }
 
 // handleDispatching processes the dispatching phase (queue management and story assignment).
-func (d *Driver) handleDispatching(_ /* ctx */ context.Context) (proto.State, error) {
+func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Dispatching phase: managing queue and assigning stories")
 
 	// Initialize queue if not already done.
@@ -725,7 +732,15 @@ func (d *Driver) handleDispatching(_ /* ctx */ context.Context) (proto.State, er
 
 	// Check if there are ready stories to dispatch.
 	if story := d.queue.NextReadyStory(); story != nil {
-		// Transition to MONITORING to wait for coder requests.
+		d.logger.Info("🏗️ Found ready story %s, dispatching to coder", story.ID)
+		if err := d.dispatchReadyStory(ctx, story.ID); err != nil {
+			// Dispatch failed - dispatcher already logged the details
+			// Just note we'll retry later (story remains ready in queue)
+			d.logger.Debug("🏗️ Story %s dispatch failed, will retry later", story.ID)
+		} else {
+			d.logger.Info("🏗️ Successfully dispatched story %s", story.ID)
+		}
+		// Transition to MONITORING after dispatch attempt (successful or not)
 		return StateMonitoring, nil
 	}
 
@@ -742,18 +757,6 @@ func (d *Driver) handleDispatching(_ /* ctx */ context.Context) (proto.State, er
 // handleMonitoring processes the monitoring phase (waiting for coder requests).
 func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 	d.contextManager.AddMessage("assistant", "Monitoring phase: waiting for coder requests and review completions")
-
-	// First, check if we need to dispatch any ready stories.
-	if story := d.queue.NextReadyStory(); story != nil {
-		d.logger.Info("🏗️ Found ready story %s, dispatching to coder", story.ID)
-		if err := d.dispatchReadyStory(ctx, story.ID); err != nil {
-			d.logger.Error("🏗️ Failed to dispatch story %s: %v", story.ID, err)
-		} else {
-			d.logger.Info("🏗️ Successfully dispatched story %s", story.ID)
-		}
-		// Stay in monitoring to handle more stories or wait for responses.
-		return StateMonitoring, nil
-	}
 
 	// Check if all stories are completed.
 	if d.queue.AllStoriesCompleted() {
@@ -1539,11 +1542,6 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 func (d *Driver) sendStoryToDispatcher(_ context.Context, storyID string) error {
 	d.logger.Info("🏗️ Sending story %s to dispatcher", storyID)
 
-	// Mark story as dispatched (no specific agent yet).
-	if err := d.queue.MarkInProgress(storyID, "dispatcher"); err != nil {
-		return fmt.Errorf("failed to mark story as dispatched: %w", err)
-	}
-
 	// Create story message for the dispatcher ("coder" targets any available coder).
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
 	storyMsg.SetPayload(proto.KeyStoryID, storyID)
@@ -1585,6 +1583,11 @@ func (d *Driver) sendStoryToDispatcher(_ context.Context, storyID string) error 
 	if err := d.dispatcher.DispatchMessage(storyMsg); err != nil {
 		d.logger.Error("🏗️ Failed to dispatch STORY message %s: %v", storyMsg.ID, err)
 		return fmt.Errorf("failed to dispatch STORY message %s: %w", storyMsg.ID, err)
+	}
+
+	// Only mark story as dispatched AFTER successful channel send.
+	if err := d.queue.MarkInProgress(storyID, "dispatcher"); err != nil {
+		return fmt.Errorf("failed to mark story as dispatched: %w", err)
 	}
 
 	d.logger.Info("🏗️ Successfully dispatched STORY message %s to dispatcher", storyMsg.ID)
@@ -1848,148 +1851,6 @@ func (d *Driver) getSpecFileFromMessage() string {
 
 	d.logger.Error("🏗️ Spec file path is not a string: %T = %v", specFile, specFile)
 	return ""
-}
-
-// detectOrRecommendPlatform runs platform detection on existing code, then spec analysis, then LLM recommendation.
-func (d *Driver) detectOrRecommendPlatform(ctx context.Context, rawSpecContent string) (*bootstrap.PlatformRecommendation, error) {
-	d.logger.Info("🏗️ Starting platform detection and recommendation")
-
-	// Step 1: Check if platform already exists in project.
-	existingPlatform, err := d.detectExistingPlatform()
-	if err != nil {
-		d.logger.Info("🏗️ No existing platform detected: %v", err)
-	} else if existingPlatform != "" {
-		d.logger.Info("🏗️ Detected existing platform: %s", existingPlatform)
-
-		// Return high-confidence recommendation for existing platform.
-		return &bootstrap.PlatformRecommendation{
-			Platform:   existingPlatform,
-			Confidence: 0.9,
-			Rationale:  fmt.Sprintf("Existing %s project files detected in workspace", existingPlatform),
-			MultiStack: false,
-			Platforms:  []string{existingPlatform},
-		}, nil
-	}
-
-	// Step 2: Use LLM to analyze spec content.
-	if d.llmClient != nil {
-		d.logger.Info("🏗️ No existing platform detected, using LLM to analyze spec content")
-
-		llmPlatform, err := d.simpleLLMPlatformDetection(ctx, rawSpecContent)
-		if err != nil {
-			d.logger.Error("🏗️ LLM analysis failed: %v", err)
-			return nil, fmt.Errorf("failed to detect platform: no existing platform files and LLM analysis failed: %w", err)
-		}
-
-		if llmPlatform != "" {
-			d.logger.Info("🏗️ LLM detected platform: %s", llmPlatform)
-			return &bootstrap.PlatformRecommendation{
-				Platform:   llmPlatform,
-				Confidence: 0.8,
-				Rationale:  fmt.Sprintf("Platform '%s' detected by LLM analysis of specification", llmPlatform),
-				MultiStack: false,
-				Platforms:  []string{llmPlatform},
-			}, nil
-		}
-	}
-
-	// Step 3: Hard error - we must determine a platform.
-	return nil, fmt.Errorf("failed to detect platform: no existing platform files, no LLM available, and cannot proceed without platform determination")
-}
-
-// simpleLLMPlatformDetection uses a simple text prompt to detect platform.
-func (d *Driver) simpleLLMPlatformDetection(ctx context.Context, specContent string) (string, error) {
-	// Get supported platforms from bootstrap package.
-	supportedPlatformsMap := bootstrap.GetSupportedPlatforms()
-
-	// Build platform list with descriptions.
-	platformDescriptions := make([]string, 0, len(supportedPlatformsMap))
-	for name := range supportedPlatformsMap {
-		platform := supportedPlatformsMap[name]
-		desc := fmt.Sprintf("- %s: %s", platform.Name, platform.Description)
-		platformDescriptions = append(platformDescriptions, desc)
-	}
-
-	// Create prompt with supported platforms.
-	prompt := fmt.Sprintf(`Analyze this project specification and determine the primary technology platform.
-
-SUPPORTED PLATFORMS:
-%s
-
-SPECIFICATION:
-%s
-
-INSTRUCTIONS:
-- Analyze the specification for technology indicators
-- Look for language names, version numbers, package managers, build tools, dependencies
-- Choose the BEST MATCHING platform from the supported platforms list above
-- If multiple platforms are mentioned, choose the PRIMARY one
-- If no platform is clearly specified, make your best recommendation based on the project requirements
-
-RESPOND WITH ONLY THE PLATFORM NAME (e.g., "go", "node", "python", etc.)
-
-Platform:`, strings.Join(platformDescriptions, "\n"), specContent)
-
-	// Call LLM.
-	response, err := d.llmClient.GenerateResponse(ctx, prompt)
-	if err != nil {
-		return "", fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	// Extract platform from response.
-	platform := strings.TrimSpace(strings.ToLower(response))
-
-	// Validate platform against supported platforms.
-	for name := range supportedPlatformsMap {
-		if platform == name {
-			return platform, nil
-		}
-	}
-
-	return "", fmt.Errorf("LLM returned unsupported platform: %s (supported: %v)", platform, d.getSupportedPlatformNames())
-}
-
-// getSupportedPlatformNames returns a list of supported platform names.
-func (d *Driver) getSupportedPlatformNames() []string {
-	supportedPlatformsMap := bootstrap.GetSupportedPlatforms()
-	names := make([]string, 0, len(supportedPlatformsMap))
-	for name := range supportedPlatformsMap {
-		names = append(names, name)
-	}
-	return names
-}
-
-// detectExistingPlatform checks for existing platform files in the workspace.
-func (d *Driver) detectExistingPlatform() (string, error) {
-	workspaceRoot := d.workDir
-
-	// Check for Go files.
-	if d.hasFile(workspaceRoot, "go.mod") || d.hasFile(workspaceRoot, "main.go") {
-		return "go", nil
-	}
-
-	// Check for Node.js files.
-	if d.hasFile(workspaceRoot, "package.json") || d.hasFile(workspaceRoot, "package-lock.json") {
-		return buildSystemNode, nil
-	}
-
-	// Check for Python files.
-	if d.hasFile(workspaceRoot, "requirements.txt") || d.hasFile(workspaceRoot, "pyproject.toml") || d.hasFile(workspaceRoot, "setup.py") {
-		return buildSystemPython, nil
-	}
-
-	// Check for Makefile.
-	if d.hasFile(workspaceRoot, "Makefile") || d.hasFile(workspaceRoot, "makefile") {
-		return buildSystemMake, nil
-	}
-
-	return "", fmt.Errorf("no existing platform detected")
-}
-
-// hasFile checks if a file exists in the given directory.
-func (d *Driver) hasFile(dir, filename string) bool {
-	_, err := os.Stat(fmt.Sprintf("%s/%s", dir, filename))
-	return err == nil
 }
 
 // executeBootstrap runs the bootstrap process with the given platform recommendation.
