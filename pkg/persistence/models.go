@@ -106,3 +106,89 @@ type SpecSummary struct {
 	TotalStories     int        `json:"total_stories"`
 	CompletedStories int        `json:"completed_stories"`
 }
+
+// AgentRequest represents a request (question or approval) from one agent to another.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type AgentRequest struct {
+	CreatedAt     time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	RequestType   string    `json:"request_type"` // "question" or "approval"
+	FromAgent     string    `json:"from_agent"`
+	ToAgent       string    `json:"to_agent"`
+	Content       string    `json:"content"`
+	StoryID       *string   `json:"story_id,omitempty"`
+	ApprovalType  *string   `json:"approval_type,omitempty"` // "plan", "code", "budget_review", "completion"
+	Context       *string   `json:"context,omitempty"`
+	Reason        *string   `json:"reason,omitempty"`
+	CorrelationID *string   `json:"correlation_id,omitempty"`
+	ParentMsgID   *string   `json:"parent_msg_id,omitempty"`
+}
+
+// AgentResponse represents a response (answer or result) to an agent request.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type AgentResponse struct {
+	CreatedAt     time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	ResponseType  string    `json:"response_type"` // "answer" or "result"
+	FromAgent     string    `json:"from_agent"`
+	ToAgent       string    `json:"to_agent"`
+	Content       string    `json:"content"`
+	RequestID     *string   `json:"request_id,omitempty"`
+	StoryID       *string   `json:"story_id,omitempty"`
+	Status        *string   `json:"status,omitempty"` // "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
+	Feedback      *string   `json:"feedback,omitempty"`
+	CorrelationID *string   `json:"correlation_id,omitempty"`
+}
+
+// AgentPlan represents a plan submitted by an agent for a story.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type AgentPlan struct {
+	CreatedAt  time.Time  `json:"created_at"`
+	ReviewedAt *time.Time `json:"reviewed_at,omitempty"`
+	ID         string     `json:"id"`
+	StoryID    string     `json:"story_id"`
+	FromAgent  string     `json:"from_agent"`
+	Content    string     `json:"content"`
+	Status     string     `json:"status"`               // "submitted", "approved", "rejected", "needs_changes"
+	Confidence *string    `json:"confidence,omitempty"` // "high", "medium", "low"
+	ReviewedBy *string    `json:"reviewed_by,omitempty"`
+	Feedback   *string    `json:"feedback,omitempty"`
+}
+
+// Request type constants.
+const (
+	RequestTypeQuestion = "question"
+	RequestTypeApproval = "approval"
+)
+
+// Response type constants.
+const (
+	ResponseTypeAnswer = "answer"
+	ResponseTypeResult = "result"
+)
+
+// Plan status constants.
+const (
+	PlanStatusSubmitted    = "submitted"
+	PlanStatusApproved     = "approved"
+	PlanStatusRejected     = "rejected"
+	PlanStatusNeedsChanges = "needs_changes"
+)
+
+// GenerateAgentRequestID generates a new UUID for an agent request.
+func GenerateAgentRequestID() string {
+	return uuid.New().String()
+}
+
+// GenerateAgentResponseID generates a new UUID for an agent response.
+func GenerateAgentResponseID() string {
+	return uuid.New().String()
+}
+
+// GenerateAgentPlanID generates a new UUID for an agent plan.
+func GenerateAgentPlanID() string {
+	return uuid.New().String()
+}

@@ -791,6 +791,84 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	d.logger.Info("🏗️ Processing %s request %s from %s", requestMsg.Type, requestMsg.ID, requestMsg.FromAgent)
 
+	// Persist request to database (fire-and-forget)
+	if d.persistenceChannel != nil {
+		agentRequest := &persistence.AgentRequest{
+			ID:        requestMsg.ID,
+			FromAgent: requestMsg.FromAgent,
+			ToAgent:   requestMsg.ToAgent,
+			CreatedAt: requestMsg.Timestamp,
+		}
+
+		// Extract story_id if present
+		if storyID, exists := requestMsg.GetPayload("story_id"); exists {
+			if storyIDStr, ok := storyID.(string); ok {
+				agentRequest.StoryID = &storyIDStr
+			}
+		}
+
+		// Set request type and content based on message type
+		switch requestMsg.Type {
+		case proto.MsgTypeQUESTION:
+			agentRequest.RequestType = persistence.RequestTypeQuestion
+			if content, exists := requestMsg.GetPayload("question"); exists {
+				if contentStr, ok := content.(string); ok {
+					agentRequest.Content = contentStr
+				}
+			}
+			if reason, exists := requestMsg.GetPayload("reason"); exists {
+				if reasonStr, ok := reason.(string); ok {
+					agentRequest.Reason = &reasonStr
+				}
+			}
+		case proto.MsgTypeREQUEST:
+			agentRequest.RequestType = persistence.RequestTypeApproval
+			if content, exists := requestMsg.GetPayload("content"); exists {
+				if contentStr, ok := content.(string); ok {
+					agentRequest.Content = contentStr
+				}
+			}
+			if approvalType, exists := requestMsg.GetPayload("approval_type"); exists {
+				if approvalTypeStr, ok := approvalType.(string); ok {
+					agentRequest.ApprovalType = &approvalTypeStr
+				}
+			}
+			if reason, exists := requestMsg.GetPayload("reason"); exists {
+				if reasonStr, ok := reason.(string); ok {
+					agentRequest.Reason = &reasonStr
+				}
+			}
+		}
+
+		// Set correlation ID if present
+		if correlationID, exists := requestMsg.GetPayload("correlation_id"); exists {
+			if correlationIDStr, ok := correlationID.(string); ok {
+				agentRequest.CorrelationID = &correlationIDStr
+			}
+		}
+		if correlationID, exists := requestMsg.GetPayload("question_id"); exists {
+			if correlationIDStr, ok := correlationID.(string); ok {
+				agentRequest.CorrelationID = &correlationIDStr
+			}
+		}
+		if correlationID, exists := requestMsg.GetPayload("approval_id"); exists {
+			if correlationIDStr, ok := correlationID.(string); ok {
+				agentRequest.CorrelationID = &correlationIDStr
+			}
+		}
+
+		// Set parent message ID
+		if requestMsg.ParentMsgID != "" {
+			agentRequest.ParentMsgID = &requestMsg.ParentMsgID
+		}
+
+		d.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpsertAgentRequest,
+			Data:      agentRequest,
+			Response:  nil, // Fire-and-forget
+		}
+	}
+
 	// Process the request based on type.
 	var response *proto.AgentMsg
 	var err error
@@ -819,6 +897,100 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		if err := d.dispatcher.DispatchMessage(response); err != nil {
 			d.logger.Error("🏗️ Failed to send response %s: %v", response.ID, err)
 			return StateError, fmt.Errorf("failed to dispatch response %s: %w", response.ID, err)
+		}
+
+		// Persist response to database (fire-and-forget)
+		if d.persistenceChannel != nil {
+			agentResponse := &persistence.AgentResponse{
+				ID:        response.ID,
+				FromAgent: response.FromAgent,
+				ToAgent:   response.ToAgent,
+				CreatedAt: response.Timestamp,
+			}
+
+			// Set request ID for correlation
+			agentResponse.RequestID = &requestMsg.ID
+
+			// Extract story_id if present
+			if storyID, exists := response.GetPayload("story_id"); exists {
+				if storyIDStr, ok := storyID.(string); ok {
+					agentResponse.StoryID = &storyIDStr
+				}
+			} else if storyID, exists := requestMsg.GetPayload("story_id"); exists {
+				// Fallback to request message story_id
+				if storyIDStr, ok := storyID.(string); ok {
+					agentResponse.StoryID = &storyIDStr
+				}
+			}
+
+			// Set response type and content based on message type
+			switch response.Type {
+			case proto.MsgTypeANSWER:
+				agentResponse.ResponseType = persistence.ResponseTypeAnswer
+				if content, exists := response.GetPayload("answer"); exists {
+					if contentStr, ok := content.(string); ok {
+						agentResponse.Content = contentStr
+					}
+				}
+			case proto.MsgTypeRESULT:
+				agentResponse.ResponseType = persistence.ResponseTypeResult
+
+				// Extract approval_result struct if present
+				if approvalResult, exists := response.GetPayload("approval_result"); exists {
+					if result, ok := approvalResult.(*proto.ApprovalResult); ok {
+						agentResponse.Content = result.Feedback
+						statusStr := string(result.Status)
+						agentResponse.Status = &statusStr
+						agentResponse.Feedback = &result.Feedback
+					}
+				}
+
+				// Fallback to individual fields if approval_result not found
+				if agentResponse.Content == "" {
+					if content, exists := response.GetPayload("content"); exists {
+						if contentStr, ok := content.(string); ok {
+							agentResponse.Content = contentStr
+						}
+					}
+				}
+				if agentResponse.Status == nil {
+					if status, exists := response.GetPayload("status"); exists {
+						if statusStr, ok := status.(string); ok {
+							agentResponse.Status = &statusStr
+						}
+					}
+				}
+				if agentResponse.Feedback == nil {
+					if feedback, exists := response.GetPayload("feedback"); exists {
+						if feedbackStr, ok := feedback.(string); ok {
+							agentResponse.Feedback = &feedbackStr
+						}
+					}
+				}
+			}
+
+			// Set correlation ID if present
+			if correlationID, exists := response.GetPayload("correlation_id"); exists {
+				if correlationIDStr, ok := correlationID.(string); ok {
+					agentResponse.CorrelationID = &correlationIDStr
+				}
+			}
+			if correlationID, exists := response.GetPayload("question_id"); exists {
+				if correlationIDStr, ok := correlationID.(string); ok {
+					agentResponse.CorrelationID = &correlationIDStr
+				}
+			}
+			if correlationID, exists := response.GetPayload("approval_id"); exists {
+				if correlationIDStr, ok := correlationID.(string); ok {
+					agentResponse.CorrelationID = &correlationIDStr
+				}
+			}
+
+			d.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpUpsertAgentResponse,
+				Data:      agentResponse,
+				Response:  nil, // Fire-and-forget
+			}
 		}
 		d.logger.Info("🏗️ Sent %s response %s to %s", response.Type, response.ID, response.ToAgent)
 	}
@@ -897,6 +1069,43 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	if err != nil {
 		d.logger.Warn("🏗️ Invalid approval type %s, defaulting to plan", approvalTypeString)
 		approvalType = proto.ApprovalTypePlan
+	}
+
+	// Persist plan to database if this is a plan approval request
+	if approvalType == proto.ApprovalTypePlan && d.persistenceChannel != nil {
+		if contentStr, ok := content.(string); ok {
+			// Extract story_id
+			var storyIDStr string
+			if storyID, exists := requestMsg.GetPayload("story_id"); exists {
+				if storyID, ok := storyID.(string); ok {
+					storyIDStr = storyID
+				}
+			}
+
+			// Extract confidence if present
+			var confidenceStr *string
+			if confidence, exists := requestMsg.GetPayload("confidence"); exists {
+				if conf, ok := confidence.(string); ok {
+					confidenceStr = &conf
+				}
+			}
+
+			agentPlan := &persistence.AgentPlan{
+				ID:         persistence.GenerateAgentPlanID(),
+				StoryID:    storyIDStr,
+				FromAgent:  requestMsg.FromAgent,
+				Content:    contentStr,
+				Confidence: confidenceStr,
+				Status:     persistence.PlanStatusSubmitted,
+				CreatedAt:  requestMsg.Timestamp,
+			}
+
+			d.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpUpsertAgentPlan,
+				Data:      agentPlan,
+				Response:  nil, // Fire-and-forget
+			}
+		}
 	}
 
 	// For now, auto-approve all requests until LLM integration.

@@ -9,7 +9,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -107,6 +107,51 @@ func createSchema(db *sql.DB) error {
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
+
+		// Agent requests table (unified questions and approval requests)
+		`CREATE TABLE IF NOT EXISTS agent_requests (
+			id TEXT PRIMARY KEY,
+			story_id TEXT REFERENCES stories(id),
+			request_type TEXT NOT NULL CHECK (request_type IN ('question', 'approval')),
+			approval_type TEXT CHECK (approval_type IN ('plan', 'code', 'budget_review', 'completion')),
+			from_agent TEXT NOT NULL,
+			to_agent TEXT NOT NULL,
+			content TEXT NOT NULL,
+			context TEXT,
+			reason TEXT,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			correlation_id TEXT,
+			parent_msg_id TEXT
+		)`,
+
+		// Agent responses table (unified answers and approval results)
+		`CREATE TABLE IF NOT EXISTS agent_responses (
+			id TEXT PRIMARY KEY,
+			request_id TEXT REFERENCES agent_requests(id),
+			story_id TEXT REFERENCES stories(id),
+			response_type TEXT NOT NULL CHECK (response_type IN ('answer', 'result')),
+			from_agent TEXT NOT NULL,
+			to_agent TEXT NOT NULL,
+			content TEXT NOT NULL,
+			status TEXT CHECK (status IN ('APPROVED', 'REJECTED', 'NEEDS_CHANGES', 'PENDING')),
+			feedback TEXT,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			correlation_id TEXT
+		)`,
+
+		// Agent plans table (extracted from stories.approved_plan)
+		`CREATE TABLE IF NOT EXISTS agent_plans (
+			id TEXT PRIMARY KEY,
+			story_id TEXT NOT NULL REFERENCES stories(id),
+			from_agent TEXT NOT NULL,
+			content TEXT NOT NULL,
+			confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
+			status TEXT DEFAULT 'submitted' CHECK (status IN ('submitted', 'approved', 'rejected', 'needs_changes')),
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			reviewed_at DATETIME,
+			reviewed_by TEXT,
+			feedback TEXT
+		)`,
 	}
 
 	// Create indices
@@ -117,6 +162,14 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_stories_spec ON stories(spec_id)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_states_type ON agent_states(agent_type)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_states_story ON agent_states(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_requests_story ON agent_requests(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_requests_type ON agent_requests(request_type)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_requests_correlation ON agent_requests(correlation_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_responses_request ON agent_responses(request_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_responses_story ON agent_responses(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_responses_correlation ON agent_responses(correlation_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_plans_story ON agent_plans(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_plans_status ON agent_plans(status)",
 	}
 
 	// Execute table creation

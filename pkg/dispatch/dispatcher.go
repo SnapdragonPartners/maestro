@@ -476,10 +476,12 @@ func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
-	// Log message.
-	if err := d.eventLog.WriteMessage(msg); err != nil {
-		d.logger.Error("Failed to log incoming message: %v", err)
-		// Continue processing even if logging fails.
+	// Log message (skip if eventLog is nil - using database logging instead).
+	if d.eventLog != nil {
+		if err := d.eventLog.WriteMessage(msg); err != nil {
+			d.logger.Error("Failed to log incoming message: %v", err)
+			// Continue processing even if logging fails.
+		}
 	}
 
 	// Resolve logical agent name to actual agent ID for all messages.
@@ -629,8 +631,10 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 	// Route response to appropriate queue based on message type.
 	d.logger.Info("Routing response %s: %s → %s (%s)", response.ID, response.FromAgent, response.ToAgent, response.Type)
 
-	if err := d.eventLog.WriteMessage(response); err != nil {
-		d.logger.Error("Failed to log response message: %v", err)
+	if d.eventLog != nil {
+		if err := d.eventLog.WriteMessage(response); err != nil {
+			d.logger.Error("Failed to log response message: %v", err)
+		}
 	}
 
 	// Resolve logical agent name to actual agent ID.
@@ -682,8 +686,10 @@ func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) {
 
 	d.logger.Error("Sending error response for message %s: %v", originalMsg.ID, err)
 
-	if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil {
-		d.logger.Error("Failed to log error message: %v", logErr)
+	if d.eventLog != nil {
+		if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil {
+			d.logger.Error("Failed to log error message: %v", logErr)
+		}
 	}
 }
 

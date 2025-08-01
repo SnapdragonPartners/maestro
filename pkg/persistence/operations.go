@@ -24,14 +24,23 @@ const (
 	OpAddStoryDependency    = "add_story_dependency"
 	OpRemoveStoryDependency = "remove_story_dependency"
 
+	// Agent interaction operations.
+	OpUpsertAgentRequest  = "upsert_agent_request"
+	OpUpsertAgentResponse = "upsert_agent_response"
+	OpUpsertAgentPlan     = "upsert_agent_plan"
+	OpUpdateAgentPlan     = "update_agent_plan"
+
 	// Query operations (with response).
-	OpQueryStoriesByStatus = "query_stories_by_status"
-	OpQueryPendingStories  = "query_pending_stories"
-	OpGetStoryDependencies = "get_story_dependencies"
-	OpGetSpecSummary       = "get_spec_summary"
-	OpGetStoryByID         = "get_story_by_id"
-	OpGetSpecByID          = "get_spec_by_id"
-	OpGetAllStories        = "get_all_stories"
+	OpQueryStoriesByStatus     = "query_stories_by_status"
+	OpQueryPendingStories      = "query_pending_stories"
+	OpGetStoryDependencies     = "get_story_dependencies"
+	OpGetSpecSummary           = "get_spec_summary"
+	OpGetStoryByID             = "get_story_by_id"
+	OpGetSpecByID              = "get_spec_by_id"
+	OpGetAllStories            = "get_all_stories"
+	OpGetAgentRequestsByStory  = "get_agent_requests_by_story"
+	OpGetAgentResponsesByStory = "get_agent_responses_by_story"
+	OpGetAgentPlansByStory     = "get_agent_plans_by_story"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -411,4 +420,203 @@ func (ops *DatabaseOperations) GetAllStories() ([]*Story, error) {
 		       tokens_used, cost_usd, metadata
 		FROM stories ORDER BY priority DESC, created_at ASC
 	`, "all stories")
+}
+
+// UpsertAgentRequest inserts or updates an agent request record.
+func (ops *DatabaseOperations) UpsertAgentRequest(request *AgentRequest) error {
+	query := `
+		INSERT INTO agent_requests (
+			id, story_id, request_type, approval_type, from_agent, to_agent, 
+			content, context, reason, created_at, correlation_id, parent_msg_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			story_id = excluded.story_id,
+			request_type = excluded.request_type,
+			approval_type = excluded.approval_type,
+			from_agent = excluded.from_agent,
+			to_agent = excluded.to_agent,
+			content = excluded.content,
+			context = excluded.context,
+			reason = excluded.reason,
+			correlation_id = excluded.correlation_id,
+			parent_msg_id = excluded.parent_msg_id
+	`
+
+	_, err := ops.db.Exec(query,
+		request.ID, request.StoryID, request.RequestType, request.ApprovalType,
+		request.FromAgent, request.ToAgent, request.Content, request.Context,
+		request.Reason, request.CreatedAt, request.CorrelationID, request.ParentMsgID)
+	if err != nil {
+		return fmt.Errorf("failed to upsert agent request %s: %w", request.ID, err)
+	}
+	return nil
+}
+
+// UpsertAgentResponse inserts or updates an agent response record.
+func (ops *DatabaseOperations) UpsertAgentResponse(response *AgentResponse) error {
+	query := `
+		INSERT INTO agent_responses (
+			id, request_id, story_id, response_type, from_agent, to_agent,
+			content, status, feedback, created_at, correlation_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			request_id = excluded.request_id,
+			story_id = excluded.story_id,
+			response_type = excluded.response_type,
+			from_agent = excluded.from_agent,
+			to_agent = excluded.to_agent,
+			content = excluded.content,
+			status = excluded.status,
+			feedback = excluded.feedback,
+			correlation_id = excluded.correlation_id
+	`
+
+	_, err := ops.db.Exec(query,
+		response.ID, response.RequestID, response.StoryID, response.ResponseType,
+		response.FromAgent, response.ToAgent, response.Content, response.Status,
+		response.Feedback, response.CreatedAt, response.CorrelationID)
+	if err != nil {
+		return fmt.Errorf("failed to upsert agent response %s: %w", response.ID, err)
+	}
+	return nil
+}
+
+// UpsertAgentPlan inserts or updates an agent plan record.
+func (ops *DatabaseOperations) UpsertAgentPlan(plan *AgentPlan) error {
+	query := `
+		INSERT INTO agent_plans (
+			id, story_id, from_agent, content, confidence, status,
+			created_at, reviewed_at, reviewed_by, feedback
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			story_id = excluded.story_id,
+			from_agent = excluded.from_agent,
+			content = excluded.content,
+			confidence = excluded.confidence,
+			status = excluded.status,
+			reviewed_at = excluded.reviewed_at,
+			reviewed_by = excluded.reviewed_by,
+			feedback = excluded.feedback
+	`
+
+	_, err := ops.db.Exec(query,
+		plan.ID, plan.StoryID, plan.FromAgent, plan.Content, plan.Confidence,
+		plan.Status, plan.CreatedAt, plan.ReviewedAt, plan.ReviewedBy, plan.Feedback)
+	if err != nil {
+		return fmt.Errorf("failed to upsert agent plan %s: %w", plan.ID, err)
+	}
+	return nil
+}
+
+// GetAgentRequestsByStory returns all agent requests for a specific story.
+func (ops *DatabaseOperations) GetAgentRequestsByStory(storyID string) ([]*AgentRequest, error) {
+	query := `
+		SELECT id, story_id, request_type, approval_type, from_agent, to_agent,
+		       content, context, reason, created_at, correlation_id, parent_msg_id
+		FROM agent_requests
+		WHERE story_id = ?
+		ORDER BY created_at ASC
+	`
+
+	rows, err := ops.db.Query(query, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query agent requests for story %s: %w", storyID, err)
+	}
+	defer func() {
+		_ = rows.Close() // Ignore error - operation should not fail due to close error
+	}()
+
+	var requests []*AgentRequest
+	for rows.Next() {
+		var request AgentRequest
+		err := rows.Scan(
+			&request.ID, &request.StoryID, &request.RequestType, &request.ApprovalType,
+			&request.FromAgent, &request.ToAgent, &request.Content, &request.Context,
+			&request.Reason, &request.CreatedAt, &request.CorrelationID, &request.ParentMsgID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan agent request: %w", err)
+		}
+		requests = append(requests, &request)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return requests, nil
+}
+
+// GetAgentResponsesByStory returns all agent responses for a specific story.
+func (ops *DatabaseOperations) GetAgentResponsesByStory(storyID string) ([]*AgentResponse, error) {
+	query := `
+		SELECT id, request_id, story_id, response_type, from_agent, to_agent,
+		       content, status, feedback, created_at, correlation_id
+		FROM agent_responses
+		WHERE story_id = ?
+		ORDER BY created_at ASC
+	`
+
+	rows, err := ops.db.Query(query, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query agent responses for story %s: %w", storyID, err)
+	}
+	defer func() {
+		_ = rows.Close() // Ignore error - operation should not fail due to close error
+	}()
+
+	var responses []*AgentResponse
+	for rows.Next() {
+		var response AgentResponse
+		err := rows.Scan(
+			&response.ID, &response.RequestID, &response.StoryID, &response.ResponseType,
+			&response.FromAgent, &response.ToAgent, &response.Content, &response.Status,
+			&response.Feedback, &response.CreatedAt, &response.CorrelationID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan agent response: %w", err)
+		}
+		responses = append(responses, &response)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return responses, nil
+}
+
+// GetAgentPlansByStory returns all agent plans for a specific story.
+func (ops *DatabaseOperations) GetAgentPlansByStory(storyID string) ([]*AgentPlan, error) {
+	query := `
+		SELECT id, story_id, from_agent, content, confidence, status,
+		       created_at, reviewed_at, reviewed_by, feedback
+		FROM agent_plans
+		WHERE story_id = ?
+		ORDER BY created_at ASC
+	`
+
+	rows, err := ops.db.Query(query, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query agent plans for story %s: %w", storyID, err)
+	}
+	defer func() {
+		_ = rows.Close() // Ignore error - operation should not fail due to close error
+	}()
+
+	var plans []*AgentPlan
+	for rows.Next() {
+		var plan AgentPlan
+		err := rows.Scan(
+			&plan.ID, &plan.StoryID, &plan.FromAgent, &plan.Content, &plan.Confidence,
+			&plan.Status, &plan.CreatedAt, &plan.ReviewedAt, &plan.ReviewedBy, &plan.Feedback)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan agent plan: %w", err)
+		}
+		plans = append(plans, &plan)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return plans, nil
 }
