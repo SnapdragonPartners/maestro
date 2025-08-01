@@ -259,39 +259,6 @@ func (qh *QuestionHandler) escalateQuestion(ctx context.Context, pendingQ *Pendi
 }
 
 // formatQuestionContext creates a context string for the LLM prompt.
-func (qh *QuestionHandler) formatQuestionContext(pendingQ *PendingQuestion, story *QueuedStory) string {
-	context := fmt.Sprintf(`Question Context:
-- Story ID: %s
-- Story Title: %s
-- Agent ID: %s
-- Question: %s
-- Asked At: %s
-
-Story Details:
-- Status: %s
-- Estimated Points: %d
-- Dependencies: %v
-- File Path: %s
-
-Additional Context:`,
-		pendingQ.StoryID,
-		story.Title,
-		pendingQ.AgentID,
-		pendingQ.Question,
-		pendingQ.AskedAt.Format(time.RFC3339),
-		story.Status,
-		story.EstimatedPoints,
-		story.DependsOn,
-		story.FilePath,
-	)
-
-	// Add any additional context from the question.
-	for key, value := range pendingQ.Context {
-		context += fmt.Sprintf("\n- %s: %v", key, value)
-	}
-
-	return context
-}
 
 // getAnswerMethod returns the method used to answer questions.
 func (qh *QuestionHandler) getAnswerMethod() string {

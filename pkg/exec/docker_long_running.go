@@ -210,8 +210,8 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode), "--workdir", workspaceDir)
 	}
 
-	// Add writable tmpfs directories.
-	args = append(args, "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m", "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
+	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
+	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m", "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
 
 	// Environment variables.
 	for _, env := range opts.Env {

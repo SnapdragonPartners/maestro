@@ -18,6 +18,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/dockerfiles"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
@@ -31,7 +32,7 @@ import (
 type Coder struct {
 	*agent.BaseStateMachine // Directly embed state machine
 	agentConfig             *agent.Config
-	configAgent             *config.Agent
+	agentID                 string
 	contextManager          *contextmgr.ContextManager
 	llmClient               agent.LLMClient
 	renderer                *templates.Renderer
@@ -180,43 +181,138 @@ const (
 	DefaultDockerImage = config.DefaultUbuntuDockerImage // Fallback for unknown project types
 )
 
-// getDockerImageForAgent returns the appropriate Docker image based on agent configuration and project config.
-func getDockerImageForAgent(agentConfig *config.Agent, workDir string) string {
-	// 1. Use agent-specific Docker image if specified in config.
-	if agentConfig != nil && agentConfig.DockerImage != "" {
-		return agentConfig.DockerImage
+// getMaxContextTokens returns context limits based on model name.
+func getMaxContextTokens(modelName string) int {
+	modelName = strings.ToLower(modelName)
+	if strings.Contains(modelName, "claude") {
+		return 200000 // Claude 3.5 Sonnet context limit
+	} else if strings.Contains(modelName, "gpt") || strings.Contains(modelName, "o3") {
+		return 128000 // GPT-4 Turbo / o3 context limit
+	} else {
+		return 32000 // Conservative default
 	}
+}
 
-	// 2. Use project configuration from .maestro/config.json
-	if workDir != "" {
-		if projectConfig, err := config.LoadProjectConfig(workDir); err == nil {
-			// Use custom built image if available
-			if projectConfig.Container.ImageTag != "" {
-				return projectConfig.Container.ImageTag
-			}
+// getMaxReplyTokens returns reply limits based on model name.
+func getMaxReplyTokens(modelName string) int {
+	modelName = strings.ToLower(modelName)
+	if strings.Contains(modelName, "claude") {
+		return 8192 // Claude max output tokens
+	} else {
+		return 4096 // Conservative default
+	}
+}
 
-			// Use pre-built image if specified
-			if projectConfig.Container.Image != "" {
-				return projectConfig.Container.Image
-			}
+const (
+	bootstrapContainerTag = "maestro-bootstrap:latest"
+)
 
-			// Fall back to platform-specific default
-			platform := projectConfig.Project.Platform
-			switch platform {
-			case "go":
-				return config.DefaultGoDockerImage
-			case "node":
-				return "node:18-alpine"
-			case "python":
-				return "python:3.11-alpine"
-			default:
-				return config.DefaultUbuntuDockerImage
+// getDockerImageForAgent returns the appropriate Docker image based on global config.
+func getDockerImageForAgent(_ string) string {
+	// Use global config singleton
+	globalConfig, err := config.GetConfig()
+	if err != nil {
+		logx.Infof("🐳 No global config available, using fallback: %s", config.DefaultUbuntuDockerImage)
+		return config.DefaultUbuntuDockerImage
+	}
+	logx.Infof("🐳 getDockerImageForAgent: globalConfig loaded")
+
+	if globalConfig.Container != nil {
+		logx.Infof("🐳 Container config - Name='%s', Dockerfile='%s'",
+			globalConfig.Container.Name,
+			globalConfig.Container.Dockerfile)
+
+		// Use final tagged container name if available (new schema)
+		if globalConfig.Container.Name != "" {
+			logx.Infof("🐳 Using final container name: %s", globalConfig.Container.Name)
+			return globalConfig.Container.Name
+		}
+
+		// If dockerfile mode but no container built yet, build and use bootstrap container
+		if globalConfig.Container.Dockerfile != "" {
+			logx.Infof("🐳 Dockerfile mode detected, building bootstrap container...")
+			// Build bootstrap container if needed
+			if err := ensureBootstrapContainer(); err != nil {
+				_ = logx.Errorf("❌ Failed to build bootstrap container: %v", err)
+				return config.DefaultUbuntuDockerImage // Fallback
 			}
+			logx.Infof("✅ Using bootstrap container: %s", bootstrapContainerTag)
+			return bootstrapContainerTag
+		}
+
+		// Fall back to platform-specific default
+		platform := globalConfig.Project.PrimaryPlatform
+		logx.Infof("🐳 Using platform-specific fallback for platform: %s", platform)
+		switch platform {
+		case "go":
+			logx.Infof("🐳 Selected Go default image: %s", config.DefaultGoDockerImage)
+			return config.DefaultGoDockerImage
+		case "node":
+			logx.Infof("🐳 Selected Node default image: node:18-alpine")
+			return "node:18-alpine"
+		case "python":
+			logx.Infof("🐳 Selected Python default image: python:3.11-alpine")
+			return "python:3.11-alpine"
+		default:
+			logx.Infof("🐳 Selected generic default image: %s", config.DefaultUbuntuDockerImage)
+			return config.DefaultUbuntuDockerImage
 		}
 	}
 
 	// 3. Final fallback if no config available
+	logx.Infof("🐳 No global config available, using final fallback: %s", config.DefaultUbuntuDockerImage)
 	return config.DefaultUbuntuDockerImage
+}
+
+// ensureBootstrapContainer builds the bootstrap container if it doesn't exist or if force rebuild is needed.
+func ensureBootstrapContainer() error {
+	// Get project directory to write the Dockerfile
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	// Ensure .maestro directory exists
+	maestroDir := filepath.Join(projectDir, config.ProjectConfigDir)
+	if mkdirErr := os.MkdirAll(maestroDir, 0755); mkdirErr != nil {
+		return fmt.Errorf("failed to create .maestro directory: %w", mkdirErr)
+	}
+
+	// Write bootstrap Dockerfile to .maestro/Dockerfile.bootstrap
+	dockerfilePath := filepath.Join(maestroDir, "Dockerfile.bootstrap")
+	dockerfileContent := dockerfiles.GetBootstrapDockerfile()
+	if writeErr := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); writeErr != nil {
+		return fmt.Errorf("failed to write bootstrap Dockerfile: %w", writeErr)
+	}
+
+	// Build the bootstrap container (Docker handles caching automatically)
+	logx.Infof("🔨 Building bootstrap container: %s", bootstrapContainerTag)
+	logx.Infof("📋 Using Dockerfile: %s", dockerfilePath)
+	logx.Infof("📁 Build context: %s", maestroDir)
+
+	cmd := exec.Command("docker", "build", "-t", bootstrapContainerTag, "-f", dockerfilePath, maestroDir)
+	cmd.Dir = projectDir
+
+	// Capture output for debugging
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	if err != nil {
+		_ = logx.Errorf("❌ Bootstrap container build failed: %v", err)
+		_ = logx.Errorf("📋 Docker build output:\n%s", outputStr)
+		return fmt.Errorf("failed to build bootstrap container: %w (output: %s)", err, outputStr)
+	}
+
+	logx.Infof("✅ Bootstrap container built successfully: %s", bootstrapContainerTag)
+
+	// Log some build details
+	if strings.Contains(outputStr, "Successfully tagged") {
+		logx.Infof("🏷️  Container tagged and ready for use")
+	}
+	if strings.Contains(outputStr, "CACHED") {
+		logx.Infof("🗂️  Used cached layers for faster build")
+	}
+	return nil
 }
 
 // Removed unused context keys - simplified container management.
@@ -322,7 +418,7 @@ func convertApprovalData(data any) (*proto.ApprovalResult, error) {
 }
 
 // NewCoder creates a new coder using agent foundation.
-func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMClient, workDir string, agentConfig *config.Agent, buildService *build.Service, logger *logx.Logger) (*Coder, error) {
+func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClient, workDir string, buildService *build.Service, logger *logx.Logger) (*Coder, error) {
 	if llmClient == nil {
 		return nil, logx.Errorf("LLM client is required")
 	}
@@ -355,9 +451,9 @@ func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMC
 		Type:    "coder",
 		Context: *agentCtx,
 		LLMConfig: &agent.LLMConfig{
-			MaxContextTokens: modelConfig.MaxContextTokens,
-			MaxOutputTokens:  modelConfig.MaxReplyTokens,
-			CompactIfOver:    modelConfig.CompactionBuffer,
+			MaxContextTokens: getMaxContextTokens(modelConfig.Name),
+			MaxOutputTokens:  getMaxReplyTokens(modelConfig.Name),
+			CompactIfOver:    2000, // Default buffer
 		},
 	}
 
@@ -367,13 +463,8 @@ func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMC
 	// Agent state will be managed by SQLite for system-level resume functionality.
 	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, nil, CoderTransitions)
 
-	// Set iteration budgets from agent config, with fallback to defaults.
-	codingBudget := config.DefaultCodingBudget
-	if agentConfig != nil {
-		if agentConfig.IterationBudgets.CodingBudget > 0 {
-			codingBudget = agentConfig.IterationBudgets.CodingBudget
-		}
-	}
+	// Use default coding budget
+	codingBudget := 8 // Default coding budget
 
 	// Create build registry first so we can use it for Docker image selection.
 	buildRegistry := build.NewRegistry()
@@ -381,7 +472,7 @@ func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMC
 	coder := &Coder{
 		BaseStateMachine:    sm,
 		agentConfig:         agentCfg,
-		configAgent:         agentConfig,
+		agentID:             agentID,
 		contextManager:      contextmgr.NewContextManagerWithModel(modelConfig),
 		llmClient:           llmClient,
 		renderer:            renderer,
@@ -392,7 +483,7 @@ func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMC
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
 		codingBudget:        codingBudget,
-		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(agentConfig, workDir), agentID),
+		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(workDir), agentID),
 		containerName:       "", // Will be set during setup
 	}
 
@@ -400,12 +491,12 @@ func NewCoder(agentID string, modelConfig *config.ModelCfg, llmClient agent.LLMC
 }
 
 // NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode).
-func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.ModelCfg, apiKey string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
+func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, apiKey string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
 	// Create Claude LLM client.
 	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create coder with LLM integration.
-	coder, err := NewCoder(agentID, modelConfig, llmClient, workDir, nil, buildService, nil)
+	coder, err := NewCoder(agentID, modelConfig, llmClient, workDir, buildService, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1094,12 +1185,13 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		c.logger.Info("Done tool registered successfully")
 	}
 
-	// Register bootstrap/config tools.
-	modifyConfigTool := tools.NewModifyConfigTool()
-	if err := tools.Register(modifyConfigTool); err != nil {
-		c.logger.Info("Modify config tool registration: %v (likely already registered)", err)
+	// Register bootstrap/config tools (modify_config removed - use update_container instead)
+
+	updateContainerTool := tools.NewUpdateContainerTool()
+	if err := tools.Register(updateContainerTool); err != nil {
+		c.logger.Info("Update container tool registration: %v (likely already registered)", err)
 	} else {
-		c.logger.Info("Modify config tool registered successfully")
+		c.logger.Info("Update container tool registered successfully")
 	}
 
 	createMakefileTool := tools.NewCreateMakefileTool()
@@ -1787,20 +1879,20 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		return c.proceedToCodeReview(ctx, sm)
 	}
 
-	// Fallback to original implementation if no build service - use project config.
-	projectConfig, err := config.LoadProjectConfig(worktreePathStr)
+	// Use global config singleton.
+	globalConfig, err := config.GetConfig()
 	if err != nil {
-		c.logger.Error("Failed to load project config: %v", err)
-		return proto.StateError, false, logx.Wrap(err, "failed to load project config")
+		c.logger.Error("Global config not available")
+		return proto.StateError, false, fmt.Errorf("global config not available: %w", err)
 	}
 
 	// Store platform information for context.
-	platform := projectConfig.Project.Platform
+	platform := globalConfig.Project.PrimaryPlatform
 	sm.SetStateData(KeyBuildBackend, platform)
 	c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s platform", platform))
 
 	// Get build command from config
-	testCommand := projectConfig.GetBuildCommand("test")
+	testCommand := globalConfig.Build.Test
 	if testCommand == "" {
 		testCommand = "make test" // fallback
 	}
@@ -2127,7 +2219,7 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 }
 
 // handleRegularQuestion handles regular QUESTION→ANSWER flow.
-func (c *Coder) handleRegularQuestion(_ context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Check if we have an answer.
 	if _, exists := sm.GetStateValue(string(stateDataKeyArchitectAnswer)); exists {
 		answerStr := utils.GetStateValueOr[string](sm, string(stateDataKeyArchitectAnswer), "")
@@ -2207,8 +2299,59 @@ func (c *Coder) handleRegularQuestion(_ context.Context, sm *agent.BaseStateMach
 		}
 	}
 
-	// Stay in QUESTION state until we get an answer.
-	return StateQuestion, false, nil
+	// Block waiting for ANSWER message from architect.
+	c.logger.Debug("🧑‍💻 Blocking in QUESTION state, waiting for architect ANSWER...")
+	select {
+	case <-ctx.Done():
+		return proto.StateError, false, fmt.Errorf("coder question cancelled: %w", ctx.Err())
+	case answerMsg, ok := <-c.replyCh:
+		if !ok {
+			// Channel closed by dispatcher - abnormal shutdown
+			c.logger.Info("🧑‍💻 Reply channel closed in QUESTION state, transitioning to ERROR")
+			return proto.StateError, true, fmt.Errorf("reply channel closed unexpectedly during question")
+		}
+		if answerMsg == nil {
+			c.logger.Warn("🧑‍💻 Received nil ANSWER message")
+			return StateQuestion, false, nil
+		}
+
+		// Verify this is an ANSWER message
+		if answerMsg.Type != proto.MsgTypeANSWER {
+			c.logger.Warn("🧑‍💻 Expected ANSWER but received %s message, ignoring", answerMsg.Type)
+			return StateQuestion, false, nil
+		}
+
+		// Process the answer
+		answerContent := utils.GetMapFieldOr[string](answerMsg.Payload, "answer", "")
+		if answerContent == "" {
+			c.logger.Warn("🧑‍💻 Received empty ANSWER content")
+			return StateQuestion, false, nil
+		}
+
+		c.logger.Info("🧑‍💻 Received ANSWER message %s from architect", answerMsg.ID)
+
+		// Store answer in state data and process like the existing logic
+		sm.SetStateData(string(stateDataKeyArchitectAnswer), answerContent)
+		sm.SetStateData(string(stateDataKeyQuestionAnswered), true)
+		sm.SetStateData(KeyArchitectResponse, answerContent)
+		sm.SetStateData(string(stateDataKeyQuestionCompletedAt), time.Now().UTC())
+
+		// Clear pending question
+		c.pendingQuestion = nil
+
+		// Return to origin state using metadata.
+		originStr := utils.GetStateValueOr[string](sm, string(stateDataKeyQuestionOrigin), "")
+		switch originStr {
+		case string(StatePlanning):
+			return StatePlanning, false, nil
+		case string(StateCoding):
+			return StateCoding, false, nil
+		case string(StatePlanReview):
+			return StatePlanReview, false, nil
+		default:
+			return StatePlanning, false, nil
+		}
+	}
 }
 
 // Helper methods.
@@ -3076,14 +3219,14 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Load project configuration for test command.
-	projectConfig, err := config.LoadProjectConfig(worktreePath)
+	// Use global config singleton for test command.
+	globalConfig, err := config.GetConfig()
 	if err != nil {
-		return false, "", logx.Wrap(err, "failed to load project config")
+		return false, "", fmt.Errorf("global config not available: %w", err)
 	}
 
-	platform := projectConfig.Project.Platform
-	testCommand := projectConfig.GetBuildCommand("test")
+	platform := globalConfig.Project.PrimaryPlatform
+	testCommand := globalConfig.Build.Test
 	if testCommand == "" {
 		testCommand = "make test" // fallback
 	}

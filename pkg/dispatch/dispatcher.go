@@ -112,14 +112,14 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:          make(chan struct{}),
 		running:           false,
-		specCh:            make(chan *proto.AgentMsg, 10),                                       // Buffered channel for spec messages
-		storyCh:           make(chan *proto.AgentMsg, cfg.StoryChannelFactor*cfg.CountCoders()), // S-5: Buffer size = factor × numCoders
-		questionsCh:       make(chan *proto.AgentMsg, cfg.QuestionsChannelSize),                 // Buffer size from config
-		replyChannels:     make(map[string]chan *proto.AgentMsg),                                // Per-agent reply channels
-		errCh:             make(chan AgentError, 10),                                            // Buffered channel for error reporting
-		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                       // Buffered channel for state change notifications
-		leases:            make(map[string]string),                                              // Story lease tracking
-		containerRegistry: exec.NewContainerRegistry(logx.NewLogger("container-registry")),      // Container tracking registry
+		specCh:            make(chan *proto.AgentMsg, 10),                                             // Buffered channel for spec messages
+		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
+		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
+		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
+		errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
+		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
+		leases:            make(map[string]string),                                                    // Story lease tracking
+		containerRegistry: exec.NewContainerRegistry(logx.NewLogger("container-registry")),            // Container tracking registry
 	}, nil
 }
 
@@ -713,14 +713,11 @@ func (d *Dispatcher) resolveAgentName(logicalName string) string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	allAgents := d.config.GetAllAgents()
-	for i := range allAgents {
-		agentWithModel := &allAgents[i]
-		if agentWithModel.Agent.Type == targetType {
-			agentID := agentWithModel.Agent.GetLogID(agentWithModel.ModelName)
-			if _, exists := d.agents[agentID]; exists {
-				return agentID
-			}
+	// Look through registered agents to find one of the target type
+	for agentID := range d.agents {
+		// Agent IDs follow the pattern "type-id" (e.g., "architect-001", "coder-001")
+		if strings.HasPrefix(agentID, targetType+"-") {
+			return agentID
 		}
 	}
 

@@ -8,12 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
-	"orchestrator/pkg/bootstrap"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -103,22 +101,22 @@ type Driver struct {
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
 	architectID        string
 	workDir            string // Workspace directory
-	storiesDir         string // Directory for story files (deprecated - will use database)
 }
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID string, modelConfig *config.ModelCfg, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir, storiesDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID string, modelConfig *config.Model, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
 		fmt.Printf("ERROR: Failed to initialize template renderer: %v\n", err)
 	}
-	// Create queue with persistence if available, otherwise use regular queue
+	// Create queue with persistence if available, otherwise fail
 	var queue *Queue
 	if persistenceChannel != nil {
-		queue = NewQueueWithPersistence(storiesDir, persistenceChannel)
+		queue = NewQueue(persistenceChannel)
 	} else {
-		queue = NewQueue(storiesDir)
+		// Fallback queue without persistence is no longer supported
+		panic("persistence channel is required - database storage is mandatory")
 	}
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 
@@ -130,7 +128,6 @@ func NewDriver(architectID string, modelConfig *config.ModelCfg, llmClient LLMCl
 		llmClient:          llmClient,
 		renderer:           renderer,
 		workDir:            workDir,
-		storiesDir:         storiesDir,
 		queue:              queue,
 		escalationHandler:  escalationHandler,
 		dispatcher:         dispatcher,
@@ -417,57 +414,37 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 
 	d.logger.Info("🏗️ Architect reading spec file: %s", specFile)
 
-	// Read raw spec file content.
-	rawSpecContent, err := os.ReadFile(specFile)
-	if err != nil {
-		return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
+	// Get spec content - either from file or direct content
+	var rawSpecContent []byte
+	var err error
+
+	// Check if we have direct content from bootstrap
+	// Get the stored spec message first
+	var contentPayload interface{}
+	var hasContent bool
+	if specMsgData, exists := d.stateData["spec_message"]; exists {
+		if currentSpecMsg, ok := specMsgData.(*proto.AgentMsg); ok {
+			contentPayload, hasContent = currentSpecMsg.GetPayload("spec_content")
+		}
 	}
 
-	// STEP 1: Platform Configuration - load platform from project config.
-	if _, exists := d.stateData["platform_detected"]; !exists {
-		d.logger.Info("🏗️ Loading platform configuration from project config")
-
-		// Load project configuration.
-		projectConfig, configErr := config.LoadProjectConfig(d.workDir)
-		if configErr != nil {
-			return StateError, fmt.Errorf("failed to load project config: %w", configErr)
+	if hasContent {
+		if contentStr, ok := contentPayload.(string); ok {
+			rawSpecContent = []byte(contentStr)
+			d.logger.Info("🏗️ Using direct spec content from bootstrap (%d bytes)", len(rawSpecContent))
+		} else {
+			return StateError, fmt.Errorf("spec_content payload is not a string: %T", contentPayload)
 		}
-
-		// Create platform recommendation from config.
-		platformRecommendation := bootstrap.PlatformRecommendation{
-			Platform:   projectConfig.Project.Platform,
-			Confidence: projectConfig.Project.PlatformConfidence,
-			Rationale:  fmt.Sprintf("Platform '%s' loaded from project configuration", projectConfig.Project.Platform),
+	} else {
+		// Fallback to file-based spec reading
+		d.logger.Info("🏗️ Reading spec from file: %s", specFile)
+		rawSpecContent, err = os.ReadFile(specFile)
+		if err != nil {
+			return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
 		}
-
-		// Store platform recommendation.
-		d.stateData["platform_recommendation"] = platformRecommendation
-		d.stateData["platform_detected"] = true
-
-		d.logger.Info("🏗️ Platform configuration loaded: %s (confidence: %.2f)",
-			platformRecommendation.Platform, platformRecommendation.Confidence)
 	}
 
-	// STEP 2: Bootstrap - check if bootstrap already executed.
-	if _, exists := d.stateData["bootstrap_completed"]; !exists {
-		d.logger.Info("🏗️ Starting bootstrap phase")
-
-		// Get platform recommendation.
-		platformRecommendation, exists := d.stateData["platform_recommendation"]
-		if !exists {
-			return StateError, fmt.Errorf("platform recommendation not found in state data")
-		}
-
-		// Execute bootstrap with platform recommendation.
-		if bootstrapErr := d.executeBootstrap(ctx, platformRecommendation); bootstrapErr != nil {
-			return StateError, fmt.Errorf("bootstrap execution failed: %w", bootstrapErr)
-		}
-
-		d.stateData["bootstrap_completed"] = true
-		d.logger.Info("🏗️ Bootstrap phase completed successfully")
-	}
-
-	// STEP 3: Spec Analysis - check if spec already parsed.
+	// Spec Analysis - check if spec already parsed.
 	var requirements []Requirement
 	if _, exists := d.stateData["spec_parsing_completed_at"]; !exists {
 		// LLM parsing is required - no fallback.
@@ -969,21 +946,10 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 		}
 	}
 
-	// Save approved plans as artifacts for traceability.
-	if approved && approvalType == proto.ApprovalTypePlan {
-		if err := d.saveApprovedPlanArtifact(ctx, requestMsg, content); err != nil {
-			d.logger.Warn("🏗️ Failed to save plan artifact: %v", err)
-			// Continue with approval - saving artifacts shouldn't block workflow.
-		}
-	}
+	// Plan approval completed - artifacts now tracked in database
 
-	// Save approved completion claims as artifacts and mark story as completed.
+	// Mark story as completed for approved completions.
 	if approved && approvalType == proto.ApprovalTypeCompletion {
-		if err := d.saveCompletionArtifact(ctx, requestMsg); err != nil {
-			d.logger.Warn("🏗️ Failed to save completion artifact: %v", err)
-			// Continue with approval - saving artifacts shouldn't block workflow.
-		}
-
 		// Extract story ID and mark as completed in queue.
 		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
 			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
@@ -1829,6 +1795,12 @@ func (d *Driver) getSpecFileFromMessage() string {
 	}
 	d.logger.Info("🏗️ SPEC message payload keys: %v", payloadKeys)
 
+	// Check if we have spec_content (bootstrap mode) - no file needed
+	if _, hasContent := specMsg.GetPayload("spec_content"); hasContent {
+		d.logger.Info("🏗️ Bootstrap mode detected - using spec_content")
+		return "<bootstrap-content>" // Return placeholder since actual content is handled elsewhere
+	}
+
 	// Extract spec file path from payload - try different keys.
 	specFile, exists := specMsg.GetPayload("spec_file")
 	if !exists {
@@ -1851,167 +1823,4 @@ func (d *Driver) getSpecFileFromMessage() string {
 
 	d.logger.Error("🏗️ Spec file path is not a string: %T = %v", specFile, specFile)
 	return ""
-}
-
-// executeBootstrap runs the bootstrap process with the given platform recommendation.
-func (d *Driver) executeBootstrap(ctx context.Context, platformRecommendation interface{}) error {
-	d.logger.Info("🏗️ Starting bootstrap execution")
-
-	// Convert platform recommendation to the expected type.
-	var recommendation *bootstrap.PlatformRecommendation
-	if rec, ok := platformRecommendation.(*bootstrap.PlatformRecommendation); ok {
-		recommendation = rec
-	} else {
-		return fmt.Errorf("invalid platform recommendation type: %T", platformRecommendation)
-	}
-
-	// Create bootstrap configuration.
-	bootstrapConfig := &bootstrap.Config{
-		Enabled:                 true,
-		ForceBackend:            "",
-		SkipMakefile:            false,
-		AdditionalArtifacts:     []string{},
-		TemplateOverrides:       make(map[string]string),
-		BranchName:              "bootstrap-init",
-		AutoMerge:               true,
-		BaseBranch:              "main",
-		RepoURL:                 d.orchestratorConfig.RepoURL,
-		ArchitectRecommendation: recommendation,
-	}
-
-	// Create bootstrap phase.
-	phase := bootstrap.NewPhase(d.workDir, bootstrapConfig)
-
-	// Execute bootstrap.
-	result, err := phase.Execute(ctx)
-	if err != nil {
-		return fmt.Errorf("bootstrap execution failed: %w", err)
-	}
-
-	// Store bootstrap results in state data.
-	d.stateData["bootstrap_result"] = result
-	d.stateData["bootstrap_backend"] = result.Backend
-	d.stateData["bootstrap_duration"] = result.Duration
-	d.stateData["bootstrap_files_count"] = len(result.GeneratedFiles)
-
-	if result.Success {
-		d.logger.Info("🏗️ Bootstrap completed successfully: backend=%s, files=%d, duration=%v",
-			result.Backend, len(result.GeneratedFiles), result.Duration)
-
-		if result.BranchCreated != "" {
-			d.logger.Info("🏗️ Created bootstrap branch: %s", result.BranchCreated)
-		}
-
-		if result.MergeCompleted {
-			d.logger.Info("🏗️ Bootstrap artifacts merged to main branch")
-		}
-	} else {
-		return fmt.Errorf("bootstrap failed: %s", result.Error)
-	}
-
-	return nil
-}
-
-// saveApprovedPlanArtifact saves approved plans as JSON artifacts for traceability.
-func (d *Driver) saveApprovedPlanArtifact(_ context.Context, requestMsg *proto.AgentMsg, content interface{}) error {
-	// Create .maestro/stories/plans directory in work directory if it doesn't exist.
-	storiesDir := filepath.Join(d.workDir, ".maestro", "stories", "plans")
-	if err := os.MkdirAll(storiesDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .maestro/stories/plans directory: %w", err)
-	}
-
-	// Helper function to safely get string payload.
-	getStringPayload := func(key string) string {
-		if val, exists := requestMsg.GetPayload(key); exists {
-			if str, ok := val.(string); ok {
-				return str
-			}
-		}
-		return ""
-	}
-
-	// Create artifact data structure with message and metadata.
-	artifact := map[string]interface{}{
-		"timestamp":           time.Now().UTC(),
-		"architect_id":        d.architectID,
-		"agent_id":            requestMsg.FromAgent,
-		"approval_id":         getStringPayload("approval_id"),
-		"message":             requestMsg,
-		"plan_content":        content,
-		"confidence":          getStringPayload("confidence"),
-		"exploration_summary": getStringPayload("exploration_summary"),
-		"risks":               getStringPayload("risks"),
-	}
-
-	// Generate filename with timestamp and agent ID.
-	timestamp := time.Now().Format("20060102-150405")
-	filename := fmt.Sprintf("approved-plan-%s-%s.json", requestMsg.FromAgent, timestamp)
-	filePath := filepath.Join(storiesDir, filename)
-
-	// Serialize to JSON with pretty printing.
-	jsonData, err := json.MarshalIndent(artifact, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal plan artifact: %w", err)
-	}
-
-	// Write to file.
-	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
-		return fmt.Errorf("failed to write plan artifact: %w", err)
-	}
-
-	d.logger.Info("🏗️ Saved approved plan artifact: %s", filename)
-	return nil
-}
-
-// saveCompletionArtifact saves completion approval artifacts for traceability.
-func (d *Driver) saveCompletionArtifact(_ context.Context, requestMsg *proto.AgentMsg) error {
-	// Create .maestro/stories/completions directory in work directory if it doesn't exist.
-	completionsDir := filepath.Join(d.workDir, ".maestro", "stories", "completions")
-	if err := os.MkdirAll(completionsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .maestro/stories/completions directory: %w", err)
-	}
-
-	// Helper function to safely get string payload.
-	getStringPayload := func(key string) string {
-		if val, exists := requestMsg.GetPayload(key); exists {
-			if str, ok := val.(string); ok {
-				return str
-			}
-		}
-		return ""
-	}
-
-	// Create completion artifact data structure.
-	artifact := map[string]interface{}{
-		"timestamp":             time.Now().UTC(),
-		"architect_id":          d.architectID,
-		"completion_reason":     getStringPayload("completion_reason"),
-		"completion_evidence":   getStringPayload("completion_evidence"),
-		"completion_confidence": getStringPayload("completion_confidence"),
-		"original_story":        getStringPayload("original_story"),
-		"approval_id":           getStringPayload("approval_id"),
-		"coder_id":              requestMsg.FromAgent,
-		"content":               getStringPayload("content"),
-	}
-
-	// Generate filename with timestamp and approval ID.
-	approvalID := getStringPayload("approval_id")
-	if approvalID == "" {
-		approvalID = "unknown"
-	}
-	filename := fmt.Sprintf("completion_%s_%d.json", approvalID, time.Now().Unix())
-	filePath := filepath.Join(completionsDir, filename)
-
-	// Write artifact to file.
-	artifactJSON, err := json.MarshalIndent(artifact, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal completion artifact: %w", err)
-	}
-
-	if err := os.WriteFile(filePath, artifactJSON, 0644); err != nil {
-		return fmt.Errorf("failed to write completion artifact: %w", err)
-	}
-
-	d.logger.Info("🏗️ Saved completion artifact: %s", filePath)
-	return nil
 }

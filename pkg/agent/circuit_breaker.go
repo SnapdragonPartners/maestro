@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
 
@@ -276,6 +277,11 @@ func (cb *CircuitBreakerClient) GetStats() CircuitBreakerStats {
 	}
 
 	return stats
+}
+
+// GetDefaultConfig delegates to the underlying client.
+func (cb *CircuitBreakerClient) GetDefaultConfig() config.Model {
+	return cb.client.GetDefaultConfig()
 }
 
 // ResilientClient is a combined client that includes both retry logic and circuit breaker.

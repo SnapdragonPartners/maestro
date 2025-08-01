@@ -12,6 +12,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"orchestrator/pkg/agent/llmerrors"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
 
@@ -192,6 +193,17 @@ func (c *ClaudeClient) Stream(ctx context.Context, in CompletionRequest) (<-chan
 		ch <- StreamChunk{Done: true}
 	}()
 	return ch, nil
+}
+
+// GetDefaultConfig returns default model configuration for Claude.
+func (c *ClaudeClient) GetDefaultConfig() config.Model {
+	return config.Model{
+		Name:           "claude-3-5-sonnet-20241022",
+		MaxTPM:         50000, // 50k tokens per minute for Claude 3.5 Sonnet
+		DailyBudget:    200.0, // $200 daily budget
+		MaxConnections: 4,     // 4 concurrent connections
+		CPM:            3.0,   // $3 per million tokens (average)
+	}
 }
 
 // classifyError maps Anthropic SDK errors to our structured error types.

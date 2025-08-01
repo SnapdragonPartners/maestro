@@ -19,6 +19,35 @@ import (
 	"orchestrator/pkg/persistence"
 )
 
+// BootstrapFailureType categorizes verification failures for bootstrap generation.
+type BootstrapFailureType string
+
+const (
+	// BootstrapFailureBuildSystem indicates missing or invalid Makefile targets.
+	BootstrapFailureBuildSystem BootstrapFailureType = "build_system"
+	// BootstrapFailureContainer indicates container validation failures.
+	BootstrapFailureContainer BootstrapFailureType = "container"
+	// BootstrapFailureBinarySize indicates large file violations.
+	BootstrapFailureBinarySize BootstrapFailureType = "binary_size"
+	// BootstrapFailureGitAccess indicates git mirror or worktree issues.
+	BootstrapFailureGitAccess BootstrapFailureType = "git_access"
+	// BootstrapFailureInfrastructure indicates maestro directory, config, or database issues.
+	BootstrapFailureInfrastructure BootstrapFailureType = "infrastructure"
+	// BootstrapFailureExternalTools indicates missing required tools.
+	BootstrapFailureExternalTools BootstrapFailureType = "external_tools"
+)
+
+// BootstrapFailure represents a structured failure that can be used for bootstrap spec generation.
+//
+//nolint:govet // Logical field grouping preferred over memory optimization
+type BootstrapFailure struct {
+	Type        BootstrapFailureType `json:"type"`        // Category of failure
+	Component   string               `json:"component"`   // Specific component that failed (e.g., "makefile", "docker_image")
+	Description string               `json:"description"` // Human-readable description
+	Details     map[string]string    `json:"details"`     // Additional structured data for remediation
+	Priority    int                  `json:"priority"`    // Priority for fix ordering (1=highest)
+}
+
 // VerifyOptions configures workspace verification behavior.
 type VerifyOptions struct {
 	Logger  *logx.Logger  // Logger for verification process
@@ -27,11 +56,16 @@ type VerifyOptions struct {
 }
 
 // VerifyReport contains the results of workspace verification.
+//
+//nolint:govet // Logical field grouping preferred over memory optimization
 type VerifyReport struct {
-	Durations map[string]time.Duration // Step timings for performance telemetry
-	Warnings  []string                 // Non-fatal diagnostics (missing gh, docker, etc.)
-	Failures  []string                 // Fatal errors with context
-	OK        bool                     // High-level success flag
+	Durations         map[string]time.Duration   // Step timings for performance telemetry
+	Warnings          []string                   // Non-fatal diagnostics (missing gh, docker, etc.)
+	Failures          []string                   // Fatal errors with context (legacy)
+	BootstrapFailures []BootstrapFailure         `json:"bootstrap_failures"`           // Structured failures for bootstrap generation
+	BinarySizeResult  *BinarySizeCheckResult     `json:"binary_size_result,omitempty"` // Binary size check results
+	ContainerResult   *ContainerValidationResult `json:"container_result,omitempty"`   // Container validation results
+	OK                bool                       // High-level success flag
 }
 
 // VerifyWorkspace performs comprehensive workspace verification.
@@ -46,10 +80,11 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 	}
 
 	rep := &VerifyReport{
-		OK:        true,
-		Warnings:  []string{},
-		Failures:  []string{},
-		Durations: map[string]time.Duration{},
+		OK:                true,
+		Warnings:          []string{},
+		Failures:          []string{},
+		BootstrapFailures: []BootstrapFailure{},
+		Durations:         map[string]time.Duration{},
 	}
 
 	// Helper functions for reporting
@@ -58,6 +93,19 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 		rep.Failures = append(rep.Failures, formatted)
 		rep.OK = false
 		opts.Logger.Error("Verification failure: %s", formatted)
+	}
+
+	bootstrapFail := func(failureType BootstrapFailureType, component, description string, details map[string]string, priority int) {
+		failure := BootstrapFailure{
+			Type:        failureType,
+			Component:   component,
+			Description: description,
+			Details:     details,
+			Priority:    priority,
+		}
+		rep.BootstrapFailures = append(rep.BootstrapFailures, failure)
+		// Also add to legacy failures for backward compatibility
+		fail(description)
 	}
 
 	warn := func(msg string, args ...interface{}) {
@@ -70,14 +118,14 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 
 	// 1. Maestro Infrastructure
 	start := time.Now()
-	if err := verifyMaestroInfrastructure(projectDir, fail); err != nil {
+	if err := verifyMaestroInfrastructure(projectDir, fail, bootstrapFail); err != nil {
 		return rep, fmt.Errorf("maestro infrastructure check failed: %w", err)
 	}
 	rep.Durations["infra"] = time.Since(start)
 
 	// 2. Git Mirror
 	start = time.Now()
-	if err := verifyGitMirror(ctx, projectDir, opts.Timeout, fail); err != nil {
+	if err := verifyGitMirror(ctx, projectDir, opts.Timeout, fail, bootstrapFail); err != nil {
 		return rep, fmt.Errorf("git mirror check failed: %w", err)
 	}
 	rep.Durations["mirror"] = time.Since(start)
@@ -85,13 +133,25 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 	// 3. Build System (optional for fast mode, and only if infrastructure is OK)
 	if !opts.Fast && len(rep.Failures) == 0 {
 		start = time.Now()
-		if err := verifyBuildSystem(ctx, projectDir, opts.Timeout, fail); err != nil {
+		if err := verifyBuildSystem(ctx, projectDir, opts.Timeout, fail, bootstrapFail); err != nil {
 			return rep, fmt.Errorf("build system check failed: %w", err)
 		}
 		rep.Durations["build"] = time.Since(start)
 	}
 
-	// 4. External Tools (warnings only, never fatal)
+	// 4. Binary Size Check (Phase 1 extension)
+	start = time.Now()
+	verifyBinarySizes(projectDir, rep, fail, warn, bootstrapFail, opts.Logger)
+	rep.Durations["binary_size"] = time.Since(start)
+
+	// 5. Container Validation (Phase 1 extension) - only if not in fast mode
+	if !opts.Fast {
+		start = time.Now()
+		verifyContainerSetup(ctx, rep, fail, bootstrapFail, opts)
+		rep.Durations["container"] = time.Since(start)
+	}
+
+	// 6. External Tools (warnings only, never fatal)
 	start = time.Now()
 	verifyExternalTools(warn)
 	rep.Durations["tools"] = time.Since(start)
@@ -102,8 +162,12 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 	return rep, nil
 }
 
+// BootstrapFailFunc represents a function that reports structured bootstrap failures.
+type BootstrapFailFunc func(BootstrapFailureType, string, string, map[string]string, int)
+
 // verifyMaestroInfrastructure checks .maestro directory, config, and database.
-func verifyMaestroInfrastructure(projectDir string, fail func(string, ...interface{})) error {
+
+func verifyMaestroInfrastructure(projectDir string, fail func(string, ...interface{}), bootstrapFail BootstrapFailFunc) error {
 	maestroDir := filepath.Join(projectDir, config.ProjectConfigDir)
 
 	// Check .maestro directory exists
@@ -114,13 +178,13 @@ func verifyMaestroInfrastructure(projectDir string, fail func(string, ...interfa
 
 	// Check config.json exists and is valid
 	configPath := filepath.Join(maestroDir, config.ProjectConfigFilename)
-	if err := validateConfigJSON(configPath, fail); err != nil {
+	if err := validateConfigJSON(configPath, fail, bootstrapFail); err != nil {
 		return err // Runtime error during validation
 	}
 
 	// Check database exists and has correct schema
-	dbPath := filepath.Join(maestroDir, "database.db")
-	if err := validateDatabaseSchema(dbPath, fail); err != nil {
+	dbPath := filepath.Join(maestroDir, config.DatabaseFilename)
+	if err := validateDatabaseSchema(dbPath, fail, bootstrapFail); err != nil {
 		return err // Runtime error during validation
 	}
 
@@ -128,7 +192,7 @@ func verifyMaestroInfrastructure(projectDir string, fail func(string, ...interfa
 }
 
 // validateConfigJSON checks if the config file exists and contains valid JSON.
-func validateConfigJSON(configPath string, fail func(string, ...interface{})) error {
+func validateConfigJSON(configPath string, fail func(string, ...interface{}), _ BootstrapFailFunc) error {
 	if _, err := os.Stat(configPath); err != nil {
 		fail("missing config file: %s", configPath)
 		return fmt.Errorf("config file not found: %w", err)
@@ -140,32 +204,33 @@ func validateConfigJSON(configPath string, fail func(string, ...interface{})) er
 		return fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var projectConfig config.ProjectConfig
-	if err := json.Unmarshal(data, &projectConfig); err != nil {
+	var config config.Config
+	if err := json.Unmarshal(data, &config); err != nil {
 		fail("invalid JSON in config file %s: %v", configPath, err)
 		return nil
 	}
 
 	// Basic validation - check required fields
-	if projectConfig.SchemaVersion == "" {
+	if config.SchemaVersion == "" {
 		fail("config missing schema_version field")
 	}
-	if projectConfig.Project.GitRepo == "" {
-		fail("config missing project.git_repo field")
+	// Check for git repository URL in new structure
+	if config.Git != nil && config.Git.RepoURL == "" {
+		fail("config missing git.repo_url field")
 	}
 
 	return nil
 }
 
 // validateDatabaseSchema checks if the database exists and has the correct schema.
-func validateDatabaseSchema(dbPath string, fail func(string, ...interface{})) error {
+func validateDatabaseSchema(dbPath string, fail func(string, ...interface{}), _ BootstrapFailFunc) error {
 	if _, err := os.Stat(dbPath); err != nil {
 		fail("missing database file: %s", dbPath)
 		return nil
 	}
 
-	// Open database and check schema version
-	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=ON", dbPath))
+	// Open database and check schema version (using same connection string as persistence layer)
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=ON&_journal_mode=WAL", dbPath))
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -192,7 +257,7 @@ func validateDatabaseSchema(dbPath string, fail func(string, ...interface{})) er
 }
 
 // verifyGitMirror checks git mirror infrastructure and connectivity.
-func verifyGitMirror(ctx context.Context, projectDir string, timeout time.Duration, fail func(string, ...interface{})) error {
+func verifyGitMirror(ctx context.Context, projectDir string, timeout time.Duration, fail func(string, ...interface{}), bootstrapFail BootstrapFailFunc) error {
 	mirrorDir := filepath.Join(projectDir, ".mirrors")
 
 	if _, err := os.Stat(mirrorDir); err != nil {
@@ -229,6 +294,11 @@ func verifyGitMirror(ctx context.Context, projectDir string, timeout time.Durati
 		return nil
 	}
 
+	// Check if target branch exists
+	if err := verifyTargetBranch(gitCtx, gitMirrorPath, bootstrapFail); err != nil {
+		return err
+	}
+
 	// Check if we can create and remove a temporary worktree
 	tempWorktreePath := filepath.Join(gitMirrorPath, "tmp-verify")
 
@@ -248,13 +318,8 @@ func verifyGitMirror(ctx context.Context, projectDir string, timeout time.Durati
 }
 
 // verifyBuildSystem checks build targets in a temporary worktree.
-func verifyBuildSystem(ctx context.Context, projectDir string, timeout time.Duration, fail func(string, ...interface{})) error {
-	// Load config to get expected build commands
-	configPath := filepath.Join(projectDir, config.ProjectConfigDir, config.ProjectConfigFilename)
-	_, err := config.LoadProjectConfigFromPath(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load project config: %w", err)
-	}
+func verifyBuildSystem(ctx context.Context, projectDir string, timeout time.Duration, fail func(string, ...interface{}), bootstrapFail BootstrapFailFunc) error {
+	// Config should already be loaded
 
 	// Find git mirror
 	mirrorDir := filepath.Join(projectDir, ".mirrors")
@@ -307,7 +372,13 @@ func verifyBuildSystem(ctx context.Context, projectDir string, timeout time.Dura
 	buildTargets := []string{"build", "test", "lint", "run"}
 	for _, target := range buildTargets {
 		if err := runMakeTarget(buildCtx, tempWorktreePath, target, true); err != nil {
-			fail("Makefile missing or invalid '%s' target: %v", target, err)
+			bootstrapFail(BootstrapFailureBuildSystem, "makefile",
+				fmt.Sprintf("Makefile missing or invalid '%s' target: %v", target, err),
+				map[string]string{
+					"target": target,
+					"error":  err.Error(),
+					"action": "create_makefile_target",
+				}, 1) // High priority - blocking development
 		}
 	}
 
@@ -415,4 +486,213 @@ func RetryWithBackoff(ctx context.Context, maxRetries int, operation func() erro
 	}
 
 	return lastErr
+}
+
+// verifyBinarySizes performs binary size checking and reports results.
+func verifyBinarySizes(projectDir string, rep *VerifyReport, _, warn func(string, ...interface{}), bootstrapFail BootstrapFailFunc, logger *logx.Logger) {
+	binarySizeResult, err := CheckBinarySizes(projectDir)
+	if err != nil {
+		logger.Error("Binary size check failed: %v", err)
+		// Don't fail verification for binary size check errors, just warn
+		warn("Binary size check failed: %v", err)
+		return
+	}
+
+	rep.BinarySizeResult = binarySizeResult
+	// Report violations as structured failures
+	if binarySizeResult.HasViolations() {
+		for _, file := range binarySizeResult.OversizeFiles {
+			bootstrapFail(BootstrapFailureBinarySize, "large_file",
+				fmt.Sprintf("File %s (%s) exceeds 100MB limit - use Git LFS or remove", file.Path, FormatFileSize(file.Size)),
+				map[string]string{
+					"file_path":  file.Path,
+					"file_size":  FormatFileSize(file.Size),
+					"size_bytes": fmt.Sprintf("%d", file.Size),
+					"action":     "setup_git_lfs",
+					"threshold":  "100MB",
+				}, 2) // Medium priority - doesn't block development but blocks deployment
+		}
+	}
+	// Report warnings for large files
+	if binarySizeResult.HasWarnings() {
+		for _, file := range binarySizeResult.LargeFiles {
+			warn("Large file %s (%s) - consider Git LFS",
+				file.Path, FormatFileSize(file.Size))
+		}
+	}
+}
+
+// verifyContainerSetup performs container validation and reports results.
+func verifyContainerSetup(ctx context.Context, rep *VerifyReport, _ func(string, ...interface{}), bootstrapFail BootstrapFailFunc, opts VerifyOptions) {
+	containerResult, containerErr := ValidateContainer(ctx, opts.Timeout)
+	if containerErr != nil {
+		bootstrapFail(BootstrapFailureContainer, "container_setup",
+			fmt.Sprintf("Container validation failed: %v", containerErr),
+			map[string]string{
+				"error":  containerErr.Error(),
+				"action": "fix_container_config",
+			}, 1) // High priority - blocks all development
+		return
+	}
+
+	rep.ContainerResult = containerResult
+
+	// Handle different validation states
+	switch containerResult.State {
+	case ValidationPass:
+		opts.Logger.Info("Container validation passed: %s", containerResult.ValidationMethod)
+
+	case ValidationNeedBootstrap:
+		// Bootstrap needed - this is expected for detect/dockerfile modes
+		details := map[string]string{
+			"reason": containerResult.Reason,
+			"action": "bootstrap_container",
+		}
+		if containerResult.Details != nil {
+			details["details"] = containerResult.Details.Error()
+		}
+
+		bootstrapFail(BootstrapFailureContainer, "container_bootstrap",
+			fmt.Sprintf("Container bootstrap required: %s", containerResult.Reason),
+			details, 1) // High priority - container setup needed
+
+	case ValidationConfigError:
+		// Configuration error - user needs to fix config
+		details := map[string]string{
+			"reason": containerResult.Reason,
+			"action": "fix_container_config",
+		}
+		if containerResult.Details != nil {
+			details["error"] = containerResult.Details.Error()
+		}
+
+		bootstrapFail(BootstrapFailureContainer, "container_config_error",
+			fmt.Sprintf("Container configuration error: %s", containerResult.Reason),
+			details, 1) // High priority - blocks all development
+
+	case ValidationTransientError:
+		// Transient error - may be retryable
+		details := map[string]string{
+			"reason": containerResult.Reason,
+			"action": "retry_container_validation",
+		}
+		if containerResult.Details != nil {
+			details["error"] = containerResult.Details.Error()
+		}
+
+		bootstrapFail(BootstrapFailureContainer, "container_transient_error",
+			fmt.Sprintf("Container transient error: %s", containerResult.Reason),
+			details, 2) // Medium priority - may resolve on retry
+	}
+}
+
+// GetBootstrapFailuresByType groups bootstrap failures by type for easier processing.
+func (r *VerifyReport) GetBootstrapFailuresByType() map[BootstrapFailureType][]BootstrapFailure {
+	grouped := make(map[BootstrapFailureType][]BootstrapFailure)
+	for i := range r.BootstrapFailures {
+		failure := &r.BootstrapFailures[i]
+		grouped[failure.Type] = append(grouped[failure.Type], *failure)
+	}
+	return grouped
+}
+
+// GetBootstrapFailuresByPriority returns bootstrap failures sorted by priority (1=highest).
+func (r *VerifyReport) GetBootstrapFailuresByPriority() []BootstrapFailure {
+	failures := make([]BootstrapFailure, len(r.BootstrapFailures))
+	copy(failures, r.BootstrapFailures)
+
+	// Sort by priority (1=highest priority first)
+	for i := 0; i < len(failures); i++ {
+		for j := i + 1; j < len(failures); j++ {
+			if failures[i].Priority > failures[j].Priority {
+				failures[i], failures[j] = failures[j], failures[i]
+			}
+		}
+	}
+	return failures
+}
+
+// RequiresBootstrap returns true if there are any bootstrap failures that require remediation.
+func (r *VerifyReport) RequiresBootstrap() bool {
+	return len(r.BootstrapFailures) > 0
+}
+
+// GenerateBootstrapSummary creates a human-readable summary of bootstrap requirements.
+func (r *VerifyReport) GenerateBootstrapSummary() string {
+	if !r.RequiresBootstrap() {
+		return "✅ No bootstrap required - all verifications passed"
+	}
+
+	var summary strings.Builder
+	summary.WriteString("🔧 Bootstrap Required - Infrastructure Issues Found\n\n")
+
+	grouped := r.GetBootstrapFailuresByType()
+	priorities := r.GetBootstrapFailuresByPriority()
+
+	// Summary by priority
+	summary.WriteString("## Issues by Priority\n\n")
+	for i := range priorities {
+		failure := &priorities[i]
+		priority := "Low"
+		if failure.Priority == 1 {
+			priority = "🔴 Critical"
+		} else if failure.Priority == 2 {
+			priority = "🟡 High"
+		} else if failure.Priority == 3 {
+			priority = "🟢 Medium"
+		}
+
+		summary.WriteString(fmt.Sprintf("**%s**: %s (%s)\n", priority, failure.Description, failure.Component))
+	}
+
+	// Details by category
+	summary.WriteString("\n## Remediation Details\n\n")
+	for failureType, failures := range grouped {
+		typeName := string(failureType)
+		summary.WriteString(fmt.Sprintf("### %s\n\n", strings.Title(strings.ReplaceAll(typeName, "_", " "))))
+
+		for i := range failures {
+			failure := &failures[i]
+			summary.WriteString(fmt.Sprintf("- **Component**: %s\n", failure.Component))
+			summary.WriteString(fmt.Sprintf("  **Issue**: %s\n", failure.Description))
+			if action, ok := failure.Details["action"]; ok {
+				summary.WriteString(fmt.Sprintf("  **Action**: %s\n", action))
+			}
+			summary.WriteString("\n")
+		}
+	}
+
+	return summary.String()
+}
+
+// verifyTargetBranch checks if the target branch specified in project config exists in the git repository.
+func verifyTargetBranch(ctx context.Context, gitMirrorPath string, bootstrapFail BootstrapFailFunc) error {
+	// Get target branch from config (should already be loaded)
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("config not loaded for branch verification: %w", err)
+	}
+
+	targetBranch := ""
+	if cfg.Git != nil {
+		targetBranch = cfg.Git.TargetBranch
+	}
+	if targetBranch == "" {
+		targetBranch = "main" // Default fallback
+	}
+
+	// Check if branch exists in the mirror (bare repos don't have remotes, check heads directly)
+	if err := runGitCommand(ctx, gitMirrorPath, "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch); err != nil {
+		// Branch doesn't exist - this requires bootstrap
+		bootstrapFail(BootstrapFailureGitAccess, "missing_branch",
+			fmt.Sprintf("Target branch '%s' does not exist in repository. Branch must be created and pushed.", targetBranch),
+			map[string]string{
+				"branch": targetBranch,
+				"action": "create_branch",
+				"remote": "origin",
+			}, 1) // High priority - blocks development
+		// Don't return error - this is handled by bootstrapFail
+	}
+
+	return nil
 }

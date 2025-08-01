@@ -39,7 +39,7 @@ type ContextManagerInterface interface {
 //nolint:govet // Simple struct, optimization not needed
 type ContextManager struct {
 	messages    []Message
-	modelConfig *config.ModelCfg
+	modelConfig *config.Model
 }
 
 // NewContextManager creates a new context manager instance.
@@ -50,7 +50,7 @@ func NewContextManager() *ContextManager {
 }
 
 // NewContextManagerWithModel creates a context manager with model configuration.
-func NewContextManagerWithModel(modelConfig *config.ModelCfg) *ContextManager {
+func NewContextManagerWithModel(modelConfig *config.Model) *ContextManager {
 	return &ContextManager{
 		messages:    make([]Message, 0),
 		modelConfig: modelConfig,
@@ -137,9 +137,8 @@ func (cm *ContextManager) CompactIfNeeded() error {
 	}
 
 	currentTokens := cm.CountTokens()
-	maxContext := cm.modelConfig.MaxContextTokens
-	maxReply := cm.modelConfig.MaxReplyTokens
-	buffer := cm.modelConfig.CompactionBuffer
+	maxContext, maxReply := cm.getContextLimits()
+	buffer := 2000 // Fixed buffer size
 
 	// Check if current + max reply + buffer > max context.
 	if currentTokens+maxReply+buffer > maxContext {
@@ -331,8 +330,26 @@ func (cm *ContextManager) GetMessages() []Message {
 }
 
 // GetModelConfig returns the model configuration.
-func (cm *ContextManager) GetModelConfig() *config.ModelCfg {
+func (cm *ContextManager) GetModelConfig() *config.Model {
 	return cm.modelConfig
+}
+
+// getContextLimits returns context management limits based on model name.
+func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {
+	if cm.modelConfig == nil {
+		return 32000, 4096 // Conservative defaults
+	}
+
+	modelName := strings.ToLower(cm.modelConfig.Name)
+
+	// Set limits based on model name
+	if strings.Contains(modelName, "claude") {
+		return 200000, 8192 // Claude 3.5 Sonnet limits
+	} else if strings.Contains(modelName, "gpt") || strings.Contains(modelName, "o3") {
+		return 128000, 4096 // GPT-4 Turbo / o3 limits
+	} else {
+		return 32000, 4096 // Conservative defaults
+	}
 }
 
 // Clear removes all messages from the context.
@@ -373,18 +390,14 @@ func (cm *ContextManager) GetContextSummary() string {
 
 // GetMaxReplyTokens returns the maximum reply tokens for this model.
 func (cm *ContextManager) GetMaxReplyTokens() int {
-	if cm.modelConfig == nil {
-		return 4096 // Default fallback
-	}
-	return cm.modelConfig.MaxReplyTokens
+	_, maxReply := cm.getContextLimits()
+	return maxReply
 }
 
 // GetMaxContextTokens returns the maximum context tokens for this model.
 func (cm *ContextManager) GetMaxContextTokens() int {
-	if cm.modelConfig == nil {
-		return 32000 // Default fallback
-	}
-	return cm.modelConfig.MaxContextTokens
+	maxContext, _ := cm.getContextLimits()
+	return maxContext
 }
 
 // ShouldCompact checks if compaction is needed without performing it.
@@ -394,9 +407,8 @@ func (cm *ContextManager) ShouldCompact() bool {
 	}
 
 	currentTokens := cm.CountTokens()
-	maxContext := cm.modelConfig.MaxContextTokens
-	maxReply := cm.modelConfig.MaxReplyTokens
-	buffer := cm.modelConfig.CompactionBuffer
+	maxContext, maxReply := cm.getContextLimits()
+	buffer := 2000 // Fixed buffer size
 
 	return currentTokens+maxReply+buffer > maxContext
 }
@@ -410,15 +422,13 @@ func (cm *ContextManager) GetCompactionInfo() map[string]any {
 	}
 
 	if cm.modelConfig != nil {
-		info["max_context_tokens"] = cm.modelConfig.MaxContextTokens
-		info["max_reply_tokens"] = cm.modelConfig.MaxReplyTokens
-		info["compaction_buffer"] = cm.modelConfig.CompactionBuffer
+		maxContext, maxReply := cm.getContextLimits()
+		buffer := 2000 // Fixed buffer size
+		info["max_context_tokens"] = maxContext
+		info["max_reply_tokens"] = maxReply
+		info["compaction_buffer"] = buffer
 
 		currentTokens := cm.CountTokens()
-		maxContext := cm.modelConfig.MaxContextTokens
-		maxReply := cm.modelConfig.MaxReplyTokens
-		buffer := cm.modelConfig.CompactionBuffer
-
 		info["available_for_reply"] = maxContext - currentTokens
 		info["compaction_threshold"] = maxContext - maxReply - buffer
 		info["tokens_over_threshold"] = currentTokens - (maxContext - maxReply - buffer)

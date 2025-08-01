@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent/llmerrors"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/utils"
 )
 
@@ -334,4 +335,9 @@ func (r *RetryableClient) calculateDelayForError(attempt int, config llmerrors.R
 	}
 
 	return delay
+}
+
+// GetDefaultConfig delegates to the underlying client.
+func (r *RetryableClient) GetDefaultConfig() config.Model {
+	return r.client.GetDefaultConfig()
 }

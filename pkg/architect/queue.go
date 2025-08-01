@@ -38,6 +38,7 @@ type QueuedStory struct {
 	Title           string      `json:"title"`
 	FilePath        string      `json:"file_path"`
 	Status          StoryStatus `json:"status"`
+	Priority        int         `json:"priority"`
 	DependsOn       []string    `json:"depends_on"`
 	EstimatedPoints int         `json:"estimated_points"`
 	AssignedAgent   string      `json:"assigned_agent,omitempty"`
@@ -51,26 +52,14 @@ type QueuedStory struct {
 //nolint:govet // Simple management struct, logical grouping preferred
 type Queue struct {
 	stories            map[string]*QueuedStory
-	storiesDir         string
 	readyStoryCh       chan<- string               // Channel to notify when stories become ready
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
 }
 
-// NewQueue creates a new queue manager.
-func NewQueue(storiesDir string) *Queue {
-	return &Queue{
-		stories:    make(map[string]*QueuedStory),
-		storiesDir: storiesDir,
-		// readyStoryCh will be set by SetReadyChannel.
-		// persistenceChannel will be set by SetPersistenceChannel.
-	}
-}
-
-// NewQueueWithPersistence creates a new queue manager with database persistence.
-func NewQueueWithPersistence(storiesDir string, persistenceChannel chan<- *persistence.Request) *Queue {
+// NewQueue creates a new queue manager with database persistence.
+func NewQueue(persistenceChannel chan<- *persistence.Request) *Queue {
 	return &Queue{
 		stories:            make(map[string]*QueuedStory),
-		storiesDir:         storiesDir,
 		persistenceChannel: persistenceChannel,
 		// readyStoryCh will be set by SetReadyChannel.
 	}
@@ -165,8 +154,9 @@ func (q *Queue) convertDatabaseStoryToQueueStory(dbStory *persistence.Story) *Qu
 		Title:           dbStory.Title,
 		FilePath:        "", // No file path for database stories
 		Status:          queueStatus,
+		Priority:        dbStory.Priority, // Map priority field
 		DependsOn:       dependencies,
-		EstimatedPoints: dbStory.Priority,  // Use priority as estimated points
+		EstimatedPoints: 1,                 // Default estimated points (could be improved later)
 		AssignedAgent:   "",                // Not tracked in database yet
 		StartedAt:       nil,               // Not tracked in database yet
 		CompletedAt:     nil,               // Not tracked in database yet
@@ -216,12 +206,15 @@ func (q *Queue) NextReadyStory() *QueuedStory {
 		return nil
 	}
 
-	// Sort by estimated points (smaller first) then by ID for deterministic ordering.
+	// Sort by priority (higher first), then by estimated points (smaller first), then by ID for deterministic ordering.
 	sort.Slice(ready, func(i, j int) bool {
-		if ready[i].EstimatedPoints == ready[j].EstimatedPoints {
-			return ready[i].ID < ready[j].ID
+		if ready[i].Priority == ready[j].Priority {
+			if ready[i].EstimatedPoints == ready[j].EstimatedPoints {
+				return ready[i].ID < ready[j].ID
+			}
+			return ready[i].EstimatedPoints < ready[j].EstimatedPoints
 		}
-		return ready[i].EstimatedPoints < ready[j].EstimatedPoints
+		return ready[i].Priority > ready[j].Priority // Higher priority first
 	})
 
 	return ready[0]

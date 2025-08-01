@@ -71,7 +71,7 @@ lint-docs:
 
 # Run the orchestrator with banner
 run: build-css build
-	clear && rm -rf ~/Code/maestro-work/test && ./bin/orchestrator -workdir ~/Code/maestro-work/test -ui 2>&1 | tee logs/run.log
+	clear && rm -rf ~/Code/maestro-work/test && ./bin/maestro -workdir ~/Code/maestro-work/test -ui 2>&1 | tee logs/run.log
 
 # Build Tailwind CSS
 build-css:
@@ -83,7 +83,7 @@ build-css:
 ui-dev: build build-css
 	@echo "🚀 Starting Maestro Web UI in development mode..."
 	@TEMP_DIR=$$(mktemp -d) && echo "📁 Using temporary workdir: $$TEMP_DIR" && \
-	./bin/orchestrator -ui -workdir=$$TEMP_DIR
+	./bin/maestro -ui -workdir=$$TEMP_DIR
 
 # Clean build artifacts
 clean:

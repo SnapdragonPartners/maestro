@@ -231,10 +231,12 @@ func containsAt(s, substr string) bool {
 }
 
 func TestNewContextManagerWithModel(t *testing.T) {
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 1000,
-		MaxReplyTokens:   100,
-		CompactionBuffer: 50,
+	modelConfig := &config.Model{
+		Name:           "claude-3-5-sonnet-20241022",
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
 	cm := NewContextManagerWithModel(modelConfig)
@@ -253,10 +255,12 @@ func TestNewContextManagerWithModel(t *testing.T) {
 }
 
 func TestCompactIfNeededWithModel(t *testing.T) {
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 100, // Very small for testing
-		MaxReplyTokens:   20,
-		CompactionBuffer: 10,
+	modelConfig := &config.Model{
+		Name:           "claude-3-5-sonnet-20241022",
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
 	cm := NewContextManagerWithModel(modelConfig)
@@ -291,10 +295,12 @@ func TestShouldCompact(t *testing.T) {
 	}
 
 	// Test with model config.
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 50, // Very small for testing
-		MaxReplyTokens:   10,
-		CompactionBuffer: 5,
+	modelConfig := &config.Model{
+		Name:           "claude-3-5-sonnet-20241022",
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
 	cm2 := NewContextManagerWithModel(modelConfig)
@@ -307,10 +313,12 @@ func TestShouldCompact(t *testing.T) {
 }
 
 func TestGetCompactionInfo(t *testing.T) {
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 1000,
-		MaxReplyTokens:   200,
-		CompactionBuffer: 100,
+	modelConfig := &config.Model{
+		Name:           "claude-3-5-sonnet-20241022",
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
 	cm := NewContextManagerWithModel(modelConfig)

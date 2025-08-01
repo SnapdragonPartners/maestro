@@ -249,10 +249,12 @@ func main() {
 
 	// Create coder (no state store needed).
 
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 32000,
-		MaxReplyTokens:   4096,
-		CompactionBuffer: 1000,
+	modelConfig := &config.Model{
+		Name:           "claude-3-5-sonnet-20241022",
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
 	// Create agent based on type with auto-detection.

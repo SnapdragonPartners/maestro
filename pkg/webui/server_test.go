@@ -430,10 +430,7 @@ func createUploadRequest(t *testing.T, filename, content string) *http.Request {
 // Helper function to create test dispatcher.
 func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	// Create minimal config.
-	cfg := &config.Config{
-		MaxRetryAttempts:       3,
-		RetryBackoffMultiplier: 2.0,
-	}
+	cfg := &config.Config{}
 
 	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(cfg)
@@ -709,10 +706,15 @@ func TestAgentRestartMonitoring(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
-		Models: map[string]config.ModelCfg{
-			"test_model": {
-				MaxTokensPerMinute: 1000,
-				MaxBudgetPerDayUSD: 10.0,
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "test_model",
+					MaxTPM:         1000,
+					DailyBudget:    10.0,
+					MaxConnections: 2,
+					CPM:            3.0,
+				},
 			},
 		},
 	}
@@ -936,10 +938,15 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
-		Models: map[string]config.ModelCfg{
-			"test_model": {
-				MaxTokensPerMinute: 1000,
-				MaxBudgetPerDayUSD: 10.0,
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "test_model",
+					MaxTPM:         1000,
+					DailyBudget:    10.0,
+					MaxConnections: 2,
+					CPM:            3.0,
+				},
 			},
 		},
 	}
@@ -1148,10 +1155,15 @@ func TestHandleStories(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
-		Models: map[string]config.ModelCfg{
-			"test_model": {
-				MaxTokensPerMinute: 1000,
-				MaxBudgetPerDayUSD: 10.0,
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "test_model",
+					MaxTPM:         1000,
+					DailyBudget:    10.0,
+					MaxConnections: 2,
+					CPM:            3.0,
+				},
 			},
 		},
 	}

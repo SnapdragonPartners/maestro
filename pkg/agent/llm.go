@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/tools"
 )
 
@@ -68,6 +69,9 @@ type LLMClient interface {
 
 	// Stream generates a completion as a stream of chunks.
 	Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error)
+
+	// GetDefaultConfig returns default model configuration for this LLM client.
+	GetDefaultConfig() config.Model
 }
 
 // LLMConfig represents configuration for an LLM client.
