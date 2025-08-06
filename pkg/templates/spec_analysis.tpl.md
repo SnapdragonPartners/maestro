@@ -32,6 +32,10 @@ For each requirement you identify:
    - 4 points: Major integrations, security features
    - 5 points: Complex systems, architectural changes
 5. **Identify logical dependencies** between requirements (use requirement titles)
+6. **Classify story type** as either:
+   - **"devops"**: Infrastructure, containers, deployment, configuration - minimally scoped to infrastructure tasks ONLY
+   - **"app"**: Application code, features, business logic, algorithms, data processing
+   - **Default to "app"** when uncertain - app containers provide full development environments
 
 ## Output Format
 
@@ -50,7 +54,8 @@ You MUST return valid JSON in exactly this format:
         "Specific, testable criterion 3"
       ],
       "estimated_points": 3,
-      "dependencies": []
+      "dependencies": [],
+      "story_type": "app"
     }
   ],
   "next_action": "STORY_GENERATION"
@@ -64,3 +69,10 @@ You MUST return valid JSON in exactly this format:
 - Dependencies should reference other requirement titles in this analysis
 - If the spec is unclear, make reasonable assumptions and note them in the description
 - Extract value even from poorly formatted or incomplete specifications
+
+**Story Classification Guidelines:**
+- **DevOps stories** should be minimally scoped to pure infrastructure tasks that don't require language-specific toolchains
+- **DevOps examples**: Raw Docker container building/copying, Dockerfile creation, deployment scripts, CI/CD pipeline setup, infrastructure configuration, container registry operations
+- **App examples**: Language module setup (go.mod, package.json, requirements.txt), build system configuration (Makefiles, build.gradle), linting setup (golangci-lint, eslint), language-specific tools, feature implementation, bug fixes, algorithm development, API endpoints, business logic, data processing
+- **Key distinction**: If a task requires language-specific knowledge or toolchain (Go, Node.js, Python, etc.), classify as "app"
+- **When in doubt, classify as "app"** since app containers provide full development environments with language toolchains

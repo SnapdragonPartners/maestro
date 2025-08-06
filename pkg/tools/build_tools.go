@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/proto"
 )
 
 // extractExecArgs extracts common arguments from tool execution.
@@ -43,6 +45,71 @@ func extractExecArgs(args map[string]any) (cwd string, timeout int, err error) {
 	}
 
 	return cwd, timeout, nil
+}
+
+// validateBuildRequirements validates build requirements based on story type.
+func validateBuildRequirements(cwd, storyType string) error {
+	// Check for Makefile (preferred)
+	makefilePath := filepath.Join(cwd, "Makefile")
+	if !fileExists(makefilePath) {
+		makefilePath = filepath.Join(cwd, "makefile")
+	}
+
+	if fileExists(makefilePath) {
+		return validateMakefileTargets(makefilePath, storyType)
+	}
+
+	// Check for other build systems
+	if fileExists(filepath.Join(cwd, "go.mod")) ||
+		fileExists(filepath.Join(cwd, "package.json")) ||
+		fileExists(filepath.Join(cwd, "pyproject.toml")) ||
+		fileExists(filepath.Join(cwd, "Cargo.toml")) {
+		// These build systems have built-in targets, so validation is less strict
+		if storyType == string(proto.StoryTypeApp) {
+			// App stories should have proper project structure
+			return nil // Build service will handle validation
+		}
+		return nil // DevOps stories are flexible
+	}
+
+	// No recognized build system
+	if storyType == string(proto.StoryTypeApp) {
+		return fmt.Errorf("no build system detected - app stories require Makefile, go.mod, package.json, pyproject.toml, or Cargo.toml")
+	}
+	return fmt.Errorf("no build system detected (devops story - consider adding build files)")
+}
+
+// validateMakefileTargets validates that required Makefile targets exist.
+func validateMakefileTargets(makefilePath, storyType string) error {
+	content, err := os.ReadFile(makefilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read Makefile: %w", err)
+	}
+
+	makefileContent := string(content)
+	requiredTargets := []string{"build"}
+
+	if storyType == string(proto.StoryTypeApp) {
+		// App stories require standard targets
+		requiredTargets = []string{"build", "test", "lint"}
+	}
+
+	var missingTargets []string
+	for _, target := range requiredTargets {
+		targetPattern := target + ":"
+		if !strings.Contains(makefileContent, targetPattern) {
+			missingTargets = append(missingTargets, target)
+		}
+	}
+
+	if len(missingTargets) > 0 {
+		if storyType == string(proto.StoryTypeApp) {
+			return fmt.Errorf("makefile missing required targets for app story: %s", strings.Join(missingTargets, ", "))
+		}
+		return fmt.Errorf("makefile missing targets: %s (devops story - consider adding these targets)", strings.Join(missingTargets, ", "))
+	}
+
+	return nil
 }
 
 // executeBuildOperation executes a build operation with common error handling.
@@ -87,7 +154,7 @@ func NewBuildTool(buildService *build.Service) *BuildTool {
 func (b *BuildTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "build",
-		Description: "Build the project using the detected backend (go, python, node, etc.)",
+		Description: "Build the project using the detected backend with story-type awareness",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -98,6 +165,10 @@ func (b *BuildTool) Definition() ToolDefinition {
 				"timeout": {
 					Type:        "number",
 					Description: "Timeout in seconds (default: 300)",
+				},
+				"story_type": {
+					Type:        "string",
+					Description: "Type of story: 'devops' or 'app' - affects validation requirements",
 				},
 			},
 			Required: []string{},
@@ -112,9 +183,10 @@ func (b *BuildTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (b *BuildTool) PromptDocumentation() string {
-	return `- **build** - Build the project using detected backend (go, python, node, etc.)
-  - Parameters: cwd (optional), timeout (default 300s)
+	return `- **build** - Build the project using detected backend with story-type awareness
+  - Parameters: cwd (optional), timeout (default 300s), story_type (optional)
   - Auto-detects project type and runs appropriate build commands
+  - Story-type aware: stricter validation for app stories, flexible for devops
   - Returns: success status, backend used, output, duration`
 }
 
@@ -123,6 +195,19 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
 		return nil, err
+	}
+
+	// Extract story type for validation
+	storyType := string(proto.StoryTypeApp) // Default to app
+	if storyTypeVal, hasStoryType := args["story_type"]; hasStoryType {
+		if storyTypeStr, ok := storyTypeVal.(string); ok && proto.IsValidStoryType(storyTypeStr) {
+			storyType = storyTypeStr
+		}
+	}
+
+	// Validate build requirements based on story type
+	if err := validateBuildRequirements(cwd, storyType); err != nil {
+		return nil, fmt.Errorf("build validation failed: %w", err)
 	}
 
 	return executeBuildOperation(ctx, b.buildService, "build", cwd, timeout, "build execution failed")

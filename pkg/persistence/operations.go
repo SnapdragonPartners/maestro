@@ -84,8 +84,8 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 		INSERT INTO stories (
 			id, spec_id, title, content, status, priority, approved_plan,
 			created_at, started_at, completed_at, assigned_agent,
-			tokens_used, cost_usd, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tokens_used, cost_usd, metadata, story_type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			spec_id = excluded.spec_id,
 			title = excluded.title,
@@ -98,14 +98,15 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 			assigned_agent = excluded.assigned_agent,
 			tokens_used = excluded.tokens_used,
 			cost_usd = excluded.cost_usd,
-			metadata = excluded.metadata
+			metadata = excluded.metadata,
+			story_type = excluded.story_type
 	`
 
 	_, err := ops.db.Exec(query,
 		story.ID, story.SpecID, story.Title, story.Content, story.Status,
 		story.Priority, story.ApprovedPlan, story.CreatedAt, story.StartedAt,
 		story.CompletedAt, story.AssignedAgent, story.TokensUsed,
-		story.CostUSD, story.Metadata,
+		story.CostUSD, story.Metadata, story.StoryType,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to upsert story %s: %w", story.ID, err)

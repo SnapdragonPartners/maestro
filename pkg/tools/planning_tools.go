@@ -126,7 +126,7 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level based on codebase exploration",
-					Enum:        []string{string(proto.PriorityHigh), string(proto.PriorityMedium), string(proto.PriorityLow)},
+					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
 				},
 				"exploration_summary": {
 					Type:        "string",
@@ -193,11 +193,11 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 	}
 
 	// Validate confidence level.
-	switch confidenceStr {
-	case "HIGH", "MEDIUM", "LOW":
+	switch proto.Confidence(confidenceStr) {
+	case proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow:
 		// Valid confidence level.
 	default:
-		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
+		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
 	}
 
 	// Extract optional exploration summary.
@@ -300,7 +300,7 @@ func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level in this assessment",
-					Enum:        []string{string(proto.PriorityHigh), string(proto.PriorityMedium), string(proto.PriorityLow)},
+					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
 				},
 			},
 			Required: []string{"reason", "evidence", "confidence"},
@@ -362,11 +362,11 @@ func (m *MarkStoryCompleteTool) Exec(_ context.Context, args map[string]any) (an
 	}
 
 	// Validate confidence level.
-	switch confidenceStr {
-	case "HIGH", "MEDIUM", "LOW":
+	switch proto.Confidence(confidenceStr) {
+	case proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow:
 		// Valid confidence level.
 	default:
-		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
+		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
 	}
 
 	return map[string]any{

@@ -35,6 +35,7 @@ const (
 //nolint:govet // Large complex struct, logical grouping preferred
 type QueuedStory struct {
 	ID              string      `json:"id"`
+	SpecID          string      `json:"spec_id"` // Foreign key to spec
 	Title           string      `json:"title"`
 	FilePath        string      `json:"file_path"`
 	Status          StoryStatus `json:"status"`
@@ -45,6 +46,7 @@ type QueuedStory struct {
 	StartedAt       *time.Time  `json:"started_at,omitempty"`
 	CompletedAt     *time.Time  `json:"completed_at,omitempty"`
 	LastUpdated     time.Time   `json:"last_updated"`
+	StoryType       string      `json:"story_type"` // "devops" or "app"
 }
 
 // Queue manages the architect's story queue with dependency resolution.
@@ -75,8 +77,75 @@ func (q *Queue) SetReadyChannel(ch chan<- string) {
 	q.readyStoryCh = ch
 }
 
+// AddStory adds a story directly to the in-memory queue.
+// This should be used when stories are generated during normal operation.
+func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies []string, estimatedPoints int) {
+	queuedStory := &QueuedStory{
+		ID:              storyID,
+		Title:           title,
+		FilePath:        "", // No file path for generated stories
+		Status:          StatusPending,
+		Priority:        estimatedPoints,
+		DependsOn:       dependencies,
+		EstimatedPoints: estimatedPoints,
+		AssignedAgent:   "",
+		StartedAt:       nil,
+		CompletedAt:     nil,
+		LastUpdated:     time.Now(),
+		StoryType:       storyType, // This is the key fix!
+		SpecID:          specID,    // Add SpecID for database foreign key
+	}
+
+	q.stories[storyID] = queuedStory
+
+	// Check if this story or others became ready
+	q.checkAndNotifyReady()
+}
+
+// FlushToDatabase writes all in-memory stories to the database for persistence.
+func (q *Queue) FlushToDatabase() {
+	if q.persistenceChannel == nil {
+		return
+	}
+
+	for _, queuedStory := range q.stories {
+		// Convert queue status to database status
+		var dbStatus string
+		switch queuedStory.Status {
+		case StatusPending:
+			dbStatus = persistence.StatusNew
+		case StatusInProgress:
+			dbStatus = persistence.StatusCoding
+		case StatusCompleted:
+			dbStatus = persistence.StatusCommitted
+		default:
+			dbStatus = persistence.StatusNew
+		}
+
+		// Convert QueuedStory back to persistence.Story for database
+		dbStory := &persistence.Story{
+			ID:         queuedStory.ID,
+			SpecID:     queuedStory.SpecID, // Include SpecID for foreign key
+			Title:      queuedStory.Title,
+			Status:     dbStatus,
+			Priority:   queuedStory.Priority,
+			CreatedAt:  queuedStory.LastUpdated,
+			StoryType:  queuedStory.StoryType, // Preserve story type
+			TokensUsed: 0,
+			CostUSD:    0.0,
+		}
+
+		// Send to database (fire-and-forget)
+		q.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpsertStory,
+			Data:      dbStory,
+			Response:  nil,
+		}
+	}
+}
+
 // LoadFromDatabase loads stories from the database.
-// This is the only method for story loading - filesystem fallback removed to ensure single source of truth.
+// This should only be used for recovery/restart scenarios.
 func (q *Queue) LoadFromDatabase() error {
 	if q.persistenceChannel == nil {
 		return fmt.Errorf("persistence channel not available - database storage is required for story loading")
@@ -151,6 +220,7 @@ func (q *Queue) convertDatabaseStoryToQueueStory(dbStory *persistence.Story) *Qu
 
 	return &QueuedStory{
 		ID:              dbStory.ID,
+		SpecID:          dbStory.SpecID, // Include SpecID
 		Title:           dbStory.Title,
 		FilePath:        "", // No file path for database stories
 		Status:          queueStatus,
@@ -161,6 +231,7 @@ func (q *Queue) convertDatabaseStoryToQueueStory(dbStory *persistence.Story) *Qu
 		StartedAt:       nil,               // Not tracked in database yet
 		CompletedAt:     nil,               // Not tracked in database yet
 		LastUpdated:     dbStory.CreatedAt, // Use CreatedAt since UpdatedAt doesn't exist
+		StoryType:       dbStory.StoryType, // Pass through story type from database
 	}
 }
 

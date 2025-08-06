@@ -1197,6 +1197,7 @@ func TestHandleStories(t *testing.T) {
 			EstimatedPoints: 5,
 			DependsOn:       []string{},
 			LastUpdated:     time.Now(),
+			StoryType:       "app",
 		},
 		{
 			ID:              "story-002",
@@ -1207,6 +1208,7 @@ func TestHandleStories(t *testing.T) {
 			AssignedAgent:   "coder-001",
 			StartedAt:       &[]time.Time{time.Now().Add(-1 * time.Hour)}[0],
 			LastUpdated:     time.Now(),
+			StoryType:       "app",
 		},
 		{
 			ID:              "story-003",
@@ -1218,6 +1220,7 @@ func TestHandleStories(t *testing.T) {
 			StartedAt:       &[]time.Time{time.Now().Add(-2 * time.Hour)}[0],
 			CompletedAt:     &[]time.Time{time.Now().Add(-30 * time.Minute)}[0],
 			LastUpdated:     time.Now(),
+			StoryType:       "app",
 		},
 	}
 

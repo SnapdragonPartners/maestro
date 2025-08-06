@@ -17,10 +17,14 @@ type Spec struct {
 }
 
 // Story represents a development story generated from a spec.
+//
+//nolint:govet // struct alignment optimization not critical for this type
 type Story struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	StartedAt     *time.Time `json:"started_at,omitempty"`
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	TokensUsed    int64      `json:"tokens_used"`
+	CostUSD       float64    `json:"cost_usd"`
 	ID            string     `json:"id"`
 	SpecID        string     `json:"spec_id"`
 	Title         string     `json:"title"`
@@ -29,8 +33,7 @@ type Story struct {
 	ApprovedPlan  string     `json:"approved_plan,omitempty"`
 	AssignedAgent string     `json:"assigned_agent,omitempty"`
 	Metadata      string     `json:"metadata,omitempty"` // JSON blob for extensibility
-	TokensUsed    int64      `json:"tokens_used"`
-	CostUSD       float64    `json:"cost_usd"`
+	StoryType     string     `json:"story_type"`         // "devops" or "app"
 	Priority      int        `json:"priority"`
 }
 

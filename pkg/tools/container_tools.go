@@ -10,25 +10,41 @@ import (
 	"orchestrator/pkg/config"
 )
 
-// UpdateContainerTool provides MCP interface for building and updating container configuration.
-type UpdateContainerTool struct{}
+// ContainerBuildTool provides MCP interface for building Docker containers from Dockerfile.
+type ContainerBuildTool struct{}
 
-// NewUpdateContainerTool creates a new update container tool instance.
-func NewUpdateContainerTool() *UpdateContainerTool {
-	return &UpdateContainerTool{}
+// ContainerUpdateTool provides MCP interface for updating container configuration.
+type ContainerUpdateTool struct{}
+
+// ContainerRunTool provides MCP interface for running containers on host.
+type ContainerRunTool struct{}
+
+// NewContainerBuildTool creates a new container build tool instance.
+func NewContainerBuildTool() *ContainerBuildTool {
+	return &ContainerBuildTool{}
+}
+
+// NewContainerUpdateTool creates a new container update tool instance.
+func NewContainerUpdateTool() *ContainerUpdateTool {
+	return &ContainerUpdateTool{}
+}
+
+// NewContainerRunTool creates a new container run tool instance.
+func NewContainerRunTool() *ContainerRunTool {
+	return &ContainerRunTool{}
 }
 
 // Definition returns the tool's definition in Claude API format.
-func (u *UpdateContainerTool) Definition() ToolDefinition {
+func (c *ContainerBuildTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name:        "update_container",
-		Description: "Build container from dockerfile and update project configuration with the new container name",
+		Name:        "container_build",
+		Description: "Build Docker container from Dockerfile with proper validation and testing",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"cwd": {
 					Type:        "string",
-					Description: "Working directory containing .maestro/Dockerfile and .maestro/config.json (defaults to current directory)",
+					Description: "Working directory containing Dockerfile (defaults to current directory)",
 				},
 				"container_name": {
 					Type:        "string",
@@ -36,7 +52,11 @@ func (u *UpdateContainerTool) Definition() ToolDefinition {
 				},
 				"dockerfile_path": {
 					Type:        "string",
-					Description: "Path to dockerfile relative to cwd (defaults to '.maestro/Dockerfile')",
+					Description: "Path to dockerfile relative to cwd (defaults to 'Dockerfile')",
+				},
+				"platform": {
+					Type:        "string",
+					Description: "Target platform for multi-arch builds (e.g., 'linux/amd64', 'linux/arm64')",
 				},
 			},
 			Required: []string{"container_name"},
@@ -45,19 +65,20 @@ func (u *UpdateContainerTool) Definition() ToolDefinition {
 }
 
 // Name returns the tool identifier.
-func (u *UpdateContainerTool) Name() string {
-	return "update_container"
+func (c *ContainerBuildTool) Name() string {
+	return "container_build"
 }
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
-func (u *UpdateContainerTool) PromptDocumentation() string {
-	return `- **update_container** - Build container from dockerfile and update project configuration
+func (c *ContainerBuildTool) PromptDocumentation() string {
+	return `- **container_build** - Build Docker container from Dockerfile
   - Parameters:
     - container_name (required): name to tag the built container
-    - cwd (optional): working directory containing dockerfile and config
-    - dockerfile_path (optional): path to dockerfile (defaults to '.maestro/Dockerfile')
-  - Builds container using Docker, tests it works, then updates project config
-  - Use after copying dockerfile to .maestro/Dockerfile and making any necessary edits`
+    - cwd (optional): working directory containing dockerfile
+    - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
+    - platform (optional): target platform for multi-arch builds
+  - Builds container using Docker with validation and testing
+  - Use for DevOps stories that need to build platform-specific containers`
 }
 
 // extractWorkingDirectory extracts and validates the working directory from args.
@@ -80,8 +101,8 @@ func extractWorkingDirectory(args map[string]any) (string, error) {
 	return cwd, nil
 }
 
-// Exec executes the container build and update operation.
-func (u *UpdateContainerTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+// Exec executes the container build operation.
+func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Extract working directory
 	cwd, err := extractWorkingDirectory(args)
 	if err != nil {
@@ -95,9 +116,15 @@ func (u *UpdateContainerTool) Exec(ctx context.Context, args map[string]any) (an
 	}
 
 	// Extract dockerfile path
-	dockerfilePath := ".maestro/Dockerfile"
+	dockerfilePath := "Dockerfile"
 	if path, ok := args["dockerfile_path"].(string); ok && path != "" {
 		dockerfilePath = path
+	}
+
+	// Extract platform
+	platform := ""
+	if p, ok := args["platform"].(string); ok && p != "" {
+		platform = p
 	}
 
 	// Make dockerfile path absolute
@@ -107,32 +134,33 @@ func (u *UpdateContainerTool) Exec(ctx context.Context, args map[string]any) (an
 	}
 
 	// Build the container
-	if err := u.buildContainer(ctx, cwd, containerName, dockerfilePath); err != nil {
+	if err := c.buildContainer(ctx, cwd, containerName, dockerfilePath, platform); err != nil {
 		return nil, fmt.Errorf("failed to build container: %w", err)
 	}
 
 	// Test the container
-	if err := u.testContainer(ctx, containerName); err != nil {
+	if err := c.testContainer(ctx, containerName); err != nil {
 		return nil, fmt.Errorf("container build succeeded but failed testing: %w", err)
-	}
-
-	// Update project configuration with new container name
-	if err := u.updateProjectConfig(cwd, containerName); err != nil {
-		return nil, fmt.Errorf("failed to update project config: %w", err)
 	}
 
 	return map[string]any{
 		"success":        true,
 		"container_name": containerName,
 		"dockerfile":     dockerfilePath,
-		"message":        fmt.Sprintf("Successfully built and configured container '%s'", containerName),
+		"platform":       platform,
+		"message":        fmt.Sprintf("Successfully built container '%s'", containerName),
 	}, nil
 }
 
 // buildContainer builds the Docker container from the specified dockerfile.
-func (u *UpdateContainerTool) buildContainer(ctx context.Context, cwd, containerName, dockerfilePath string) error {
-	// Build command: docker build -t {containerName} -f {dockerfilePath} .
-	cmd := exec.CommandContext(ctx, "docker", "build", "-t", containerName, "-f", dockerfilePath, ".")
+func (c *ContainerBuildTool) buildContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) error {
+	// Build command with optional platform support
+	args := []string{"build", "-t", containerName, "-f", dockerfilePath}
+	if platform != "" {
+		args = append(args, "--platform", platform)
+	}
+	args = append(args, ".")
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = cwd
 
 	// Capture output for debugging
@@ -145,7 +173,7 @@ func (u *UpdateContainerTool) buildContainer(ctx context.Context, cwd, container
 }
 
 // testContainer performs basic validation that the container works.
-func (u *UpdateContainerTool) testContainer(ctx context.Context, containerName string) error {
+func (c *ContainerBuildTool) testContainer(ctx context.Context, containerName string) error {
 	// Test 1: Basic container startup test
 	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", containerName, "echo", "test")
 	if err := cmd.Run(); err != nil {
@@ -162,8 +190,73 @@ func (u *UpdateContainerTool) testContainer(ctx context.Context, containerName s
 	return nil
 }
 
+// ContainerUpdateTool Implementation
+
+// Definition returns the tool's definition in Claude API format.
+func (c *ContainerUpdateTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "container_update",
+		Description: "Update project configuration with new container settings",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"cwd": {
+					Type:        "string",
+					Description: "Working directory containing .maestro/config.json (defaults to current directory)",
+				},
+				"container_name": {
+					Type:        "string",
+					Description: "Name of the container to register in configuration",
+				},
+			},
+			Required: []string{"container_name"},
+		},
+	}
+}
+
+// Name returns the tool identifier.
+func (c *ContainerUpdateTool) Name() string {
+	return "container_update"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (c *ContainerUpdateTool) PromptDocumentation() string {
+	return `- **container_update** - Update project configuration with container settings
+  - Parameters:
+    - container_name (required): name of container to register
+    - cwd (optional): working directory containing config
+  - Updates project configuration to use the specified container
+  - Use after successfully building a container with container_build`
+}
+
+// Exec executes the container configuration update operation.
+func (c *ContainerUpdateTool) Exec(_ context.Context, args map[string]any) (any, error) {
+	// Extract working directory
+	cwd, err := extractWorkingDirectory(args)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract container name
+	containerName, ok := args["container_name"].(string)
+	if !ok || containerName == "" {
+		return nil, fmt.Errorf("container_name is required")
+	}
+
+	// Update project configuration with new container name
+	if err := c.updateProjectConfig(cwd, containerName); err != nil {
+		return nil, fmt.Errorf("failed to update project config: %w", err)
+	}
+
+	return map[string]any{
+		"success":        true,
+		"container_name": containerName,
+		"message":        fmt.Sprintf("Successfully updated configuration to use container '%s'", containerName),
+	}, nil
+}
+
 // updateProjectConfig updates the project configuration with the new container name.
-func (u *UpdateContainerTool) updateProjectConfig(cwd, containerName string) error {
+func (c *ContainerUpdateTool) updateProjectConfig(cwd, containerName string) error {
 	// Get current config
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -191,4 +284,133 @@ func (u *UpdateContainerTool) updateProjectConfig(cwd, containerName string) err
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
 	return nil
+}
+
+// ContainerRunTool Implementation
+
+// Definition returns the tool's definition in Claude API format.
+func (c *ContainerRunTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "container_run",
+		Description: "Run container with command on host system",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"container_name": {
+					Type:        "string",
+					Description: "Name of container to run",
+				},
+				"command": {
+					Type:        "string",
+					Description: "Command to execute in container (defaults to container's default command)",
+				},
+				"working_dir": {
+					Type:        "string",
+					Description: "Working directory inside container",
+				},
+				"env_vars": {
+					Type:        "object",
+					Description: "Environment variables to set in container",
+				},
+				"volumes": {
+					Type:        "array",
+					Description: "Volume mounts in format 'host_path:container_path'",
+				},
+				"remove_after": {
+					Type:        "boolean",
+					Description: "Remove container after execution (default: true)",
+				},
+			},
+			Required: []string{"container_name"},
+		},
+	}
+}
+
+// Name returns the tool identifier.
+func (c *ContainerRunTool) Name() string {
+	return "container_run"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (c *ContainerRunTool) PromptDocumentation() string {
+	return `- **container_run** - Run container with command on host system
+  - Parameters:
+    - container_name (required): name of container to run
+    - command (optional): command to execute in container
+    - working_dir (optional): working directory inside container
+    - env_vars (optional): environment variables to set
+    - volumes (optional): volume mounts for host access
+    - remove_after (optional): remove container after execution (default: true)
+  - Executes container on host system with proper isolation and resource limits
+  - Use for running built containers with specific commands or workflows`
+}
+
+// Exec executes the container run operation.
+func (c *ContainerRunTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+	// Extract container name
+	containerName, ok := args["container_name"].(string)
+	if !ok || containerName == "" {
+		return nil, fmt.Errorf("container_name is required")
+	}
+
+	// Build docker run command
+	dockerArgs := c.buildDockerRunArgs(args, containerName)
+
+	// Execute docker run
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("container run failed: %w (output: %s)", err, string(output))
+	}
+
+	command, _ := args["command"].(string)
+	return map[string]any{
+		"success":        true,
+		"container_name": containerName,
+		"command":        command,
+		"output":         string(output),
+		"message":        fmt.Sprintf("Successfully ran container '%s'", containerName),
+	}, nil
+}
+
+// buildDockerRunArgs builds the docker run command arguments from the tool inputs.
+func (c *ContainerRunTool) buildDockerRunArgs(args map[string]any, containerName string) []string {
+	dockerArgs := []string{"run"}
+
+	// Add basic options
+	if removeAfter, ok := args["remove_after"].(bool); !ok || removeAfter {
+		dockerArgs = append(dockerArgs, "--rm")
+	}
+
+	if workingDir, ok := args["working_dir"].(string); ok && workingDir != "" {
+		dockerArgs = append(dockerArgs, "-w", workingDir)
+	}
+
+	// Add environment variables
+	if envVars, ok := args["env_vars"].(map[string]any); ok {
+		for key, value := range envVars {
+			if strValue, ok := value.(string); ok {
+				dockerArgs = append(dockerArgs, "-e", fmt.Sprintf("%s=%s", key, strValue))
+			}
+		}
+	}
+
+	// Add volume mounts
+	if volumes, ok := args["volumes"].([]any); ok {
+		for _, volume := range volumes {
+			if volumeStr, ok := volume.(string); ok {
+				dockerArgs = append(dockerArgs, "-v", volumeStr)
+			}
+		}
+	}
+
+	// Add container name
+	dockerArgs = append(dockerArgs, containerName)
+
+	// Add command if specified
+	if command, ok := args["command"].(string); ok && command != "" {
+		dockerArgs = append(dockerArgs, "sh", "-c", command)
+	}
+
+	return dockerArgs
 }

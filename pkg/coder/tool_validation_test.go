@@ -2,8 +2,10 @@ package coder
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
 
@@ -171,7 +173,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	ctx := context.Background()
 	validArgs := map[string]any{
 		"plan":                "Detailed implementation plan...",
-		"confidence":          "HIGH",
+		"confidence":          string(proto.ConfidenceHigh),
 		"exploration_summary": "Explored 15 files, found 3 patterns",
 		"risks":               "Potential performance impact on auth flow",
 		"todos":               []any{"Implement authentication logic", "Add validation", "Update tests"},
@@ -196,7 +198,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Error("Expected plan to be preserved in result")
 	}
 
-	if confidence, exists := resultMap["confidence"]; !exists || confidence != "HIGH" {
+	if confidence, exists := resultMap["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
 		t.Error("Expected confidence to be preserved")
 	}
 
@@ -219,7 +221,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 	}{
 		{
 			name:        "Missing plan parameter",
-			args:        map[string]any{"confidence": "HIGH"},
+			args:        map[string]any{"confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan parameter is required",
 		},
@@ -231,13 +233,13 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		},
 		{
 			name:        "Empty plan",
-			args:        map[string]any{"plan": "", "confidence": "HIGH"},
+			args:        map[string]any{"plan": "", "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan cannot be empty",
 		},
 		{
 			name:        "Invalid plan type",
-			args:        map[string]any{"plan": 123, "confidence": "HIGH"},
+			args:        map[string]any{"plan": 123, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan must be a string",
 		},
@@ -255,7 +257,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 				"todos":      []any{"Some task"},
 			},
 			expectError: true,
-			errorMsg:    "confidence must be HIGH, MEDIUM, or LOW",
+			errorMsg:    fmt.Sprintf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow),
 		},
 		{
 			name: "Valid with minimal parameters",

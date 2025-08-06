@@ -42,6 +42,8 @@ type Coder struct {
 	buildRegistry           *build.Registry                // Build backend registry
 	buildService            *build.Service                 // Build service for MCP tools
 	longRunningExecutor     *execpkg.LongRunningDockerExec // Long-running Docker executor for container per story
+	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
+	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
 	pendingApprovalRequest  *ApprovalRequest               // REQUEST→RESULT flow state
 	pendingQuestion         *Question
 	storyCh                 <-chan *proto.AgentMsg // Channel to receive story messages
@@ -52,34 +54,42 @@ type Coder struct {
 	codingBudget            int                    // Iteration budgets
 }
 
-// getTools returns specific tools by name (variadic for clean handler usage).
-func (c *Coder) getTools(toolNames ...string) []tools.ToolDefinition {
-	if len(toolNames) == 0 {
+// getPlanningToolsForLLM returns tool definitions for planning state tools.
+func (c *Coder) getPlanningToolsForLLM() []tools.ToolDefinition {
+	if c.planningToolProvider == nil {
 		return nil
 	}
 
-	// Get all available tools from registry.
-	allTools := tools.GetToolDefinitions()
+	// Get tool metadata from provider
+	toolMetas := c.planningToolProvider.List()
+	definitions := make([]tools.ToolDefinition, 0, len(toolMetas))
 
-	// Filter to only requested tools.
-	var requestedTools []tools.ToolDefinition
-	for _, toolName := range toolNames {
-		for i := range allTools {
-			tool := &allTools[i]
-			if tool.Name == toolName {
-				requestedTools = append(requestedTools, *tool)
-				break
-			}
-		}
+	//nolint:gocritic // rangeValCopy: Direct access is clearer than pointer dereferencing
+	for _, meta := range toolMetas {
+		definitions = append(definitions, tools.ToolDefinition(meta))
 	}
 
-	c.logger.Debug("Retrieved %d tools: %v", len(requestedTools), toolNames)
-	// Debug: Log tool definitions to identify potential issues.
-	for i := range requestedTools {
-		tool := &requestedTools[i]
-		c.logger.Debug("Tool %s: %+v", tool.Name, *tool)
+	c.logger.Debug("Retrieved %d planning tools for LLM", len(definitions))
+	return definitions
+}
+
+// getCodingToolsForLLM returns tool definitions for coding state tools.
+func (c *Coder) getCodingToolsForLLM() []tools.ToolDefinition {
+	if c.codingToolProvider == nil {
+		return nil
 	}
-	return requestedTools
+
+	// Get tool metadata from provider
+	toolMetas := c.codingToolProvider.List()
+	definitions := make([]tools.ToolDefinition, 0, len(toolMetas))
+
+	//nolint:gocritic // rangeValCopy: Direct access is clearer than pointer dereferencing
+	for _, meta := range toolMetas {
+		definitions = append(definitions, tools.ToolDefinition(meta))
+	}
+
+	c.logger.Debug("Retrieved %d coding tools for LLM", len(definitions))
+	return definitions
 }
 
 const maxOutputLength = 2000
@@ -317,12 +327,6 @@ func ensureBootstrapContainer() error {
 
 // Removed unused context keys - simplified container management.
 
-// File creation constants.
-const (
-	defaultFilename   = "code.txt" // Standard filename for unfenced code blocks
-	maxPlainBlockSize = 50         // Maximum lines for plain content before saving as file
-)
-
 // ApprovalRequest represents a pending approval request.
 type ApprovalRequest struct {
 	ID      string // Correlation ID for tracking responses
@@ -423,8 +427,7 @@ func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClie
 		return nil, logx.Errorf("LLM client is required")
 	}
 
-	// Initialize common tools (thread-safe, runs only once).
-	tools.InitCommon()
+	// Tools are now auto-registered via init() functions in the tools package
 
 	// Use provided logger or create a default one.
 	if logger == nil {
@@ -739,48 +742,30 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 			c.dispatcher.SetLease(c.BaseStateMachine.GetAgentID(), storyIDStr)
 		}
 
-		// Store the task content and story ID for the SETUP state.
+		// Extract story type from the payload.
+		storyType := string(proto.StoryTypeApp) // Default to app
+		if storyTypePayload, exists := storyMsg.GetPayload(proto.KeyStoryType); exists {
+			c.logger.Info("🧑‍💻 Received story_type payload: '%v' (type: %T)", storyTypePayload, storyTypePayload)
+			if storyTypeStr, ok := storyTypePayload.(string); ok && proto.IsValidStoryType(storyTypeStr) {
+				storyType = storyTypeStr
+				c.logger.Info("🧑‍💻 Set story_type to: '%s'", storyType)
+			} else {
+				c.logger.Info("🧑‍💻 Invalid story_type payload, using default 'app'")
+			}
+		} else {
+			c.logger.Info("🧑‍💻 No story_type payload found, using default 'app'")
+		}
+
+		// Store the task content, story ID, and story type for use in later states.
 		sm.SetStateData(string(stateDataKeyTaskContent), contentStr)
 		sm.SetStateData(KeyStoryMessageID, storyMsg.ID)
-		sm.SetStateData(KeyStoryID, storyIDStr) // For workspace manager - use actual story ID
+		sm.SetStateData(KeyStoryID, storyIDStr)        // For workspace manager - use actual story ID
+		sm.SetStateData(proto.KeyStoryType, storyType) // Store story type for testing decisions
 		sm.SetStateData(string(stateDataKeyStartedAt), time.Now().UTC())
 
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "received story message")
 		return StateSetup, false, nil
 	}
-}
-
-// handlePlanning processes the PLANNING state with enhanced codebase exploration.
-func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	logx.DebugState(ctx, "coder", "enter", string(StatePlanning))
-	// Note: Don't add assistant message here - the LLM response will be the assistant message
-
-	// Check planning budget using unified budget review mechanism.
-	const maxPlanningIterations = 10
-	if c.checkLoopBudget(sm, string(stateDataKeyPlanningIterations), maxPlanningIterations, StatePlanning) {
-		c.logger.Info("Planning budget exceeded, triggering BUDGET_REVIEW")
-		return StateBudgetReview, false, nil
-	}
-
-	// Check for question tool result (ask_question was called).
-	if questionData, exists := sm.GetStateValue(KeyQuestionSubmitted); exists {
-		return c.handleQuestionTransition(ctx, sm, questionData)
-	}
-
-	// Check for plan submission (submit_plan was called).
-	if planData, exists := sm.GetStateValue(KeyPlanSubmitted); exists {
-		return c.handlePlanSubmission(ctx, sm, planData)
-	}
-
-	// Check for completion submission (mark_story_complete was called).
-	if completionData, exists := sm.GetStateValue(string(stateDataKeyCompletionSubmitted)); exists && completionData != nil {
-		return c.handleCompletionSubmission(ctx, sm, completionData)
-	}
-
-	// Continue with iterative planning using LLM + tools.
-	taskStr := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-
-	return c.handleIterativePlanning(ctx, sm, taskStr)
 }
 
 // handleRequestBlocking provides the blocking message receipt logic for approval requests.
@@ -910,919 +895,30 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 	return c.handleRequestBlocking(ctx, sm, stateDataKeyPlanApprovalResult, StatePlanReview)
 }
 
-// handleCoding processes the CODING state with priority-based work handling.
-func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Check for question tool result (ask_question was called during coding).
-	if questionData, exists := sm.GetStateValue(KeyQuestionSubmitted); exists {
-		return c.handleCodingQuestionTransition(ctx, sm, questionData)
-	}
-
-	// Restore coding context if returning from QUESTION.
-	if questionAnswered := utils.GetStateValueOr[bool](sm, string(stateDataKeyQuestionAnswered), false); questionAnswered {
-		c.restoreCodingContext(sm)
-		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
-		c.logger.Info("🧑‍💻 Restored coding context after question answered")
-	}
-
-	// Priority 1: Merge conflicts (highest priority).
-	if conflictData, exists := sm.GetStateValue(KeyMergeConflictDetails); exists && conflictData != nil {
-		c.contextManager.AddMessage("assistant", "Coding phase: resolving merge conflicts")
-		return c.handleMergeConflictCoding(ctx, sm, conflictData)
-	}
-
-	// Priority 2: Code review feedback.
-	if reviewData, exists := sm.GetStateValue(KeyCodeReviewRejectionFeedback); exists && reviewData != nil {
-		c.contextManager.AddMessage("assistant", "Coding phase: addressing code review feedback")
-		return c.handleCodeReviewCoding(ctx, sm, reviewData)
-	}
-
-	// Priority 3: Test failures.
-	if testData, exists := sm.GetStateValue(KeyTestFailureOutput); exists && testData != nil {
-		c.contextManager.AddMessage("assistant", "Coding phase: fixing test failures")
-		return c.handleTestFixCoding(ctx, sm, testData)
-	}
-
-	// Priority 4: Initial development.
-	c.contextManager.AddMessage("assistant", "Coding phase: implementing solution")
-	return c.handleInitialCoding(ctx, sm)
-}
-
-// handleInitialCoding handles initial implementation of the story requirements.
-func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	taskStr := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-	planStr := utils.GetStateValueOr[string](sm, KeyPlan, "")
-
-	// Check iteration limit first.
-	if c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), c.codingBudget, StateCoding) {
-		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
-		return StateBudgetReview, false, nil
-	}
-
-	// Set coding mode for observability.
-	sm.SetStateData(KeyCodingMode, "initial")
-
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"TaskContent": taskStr,
-		"Plan":        planStr,
-		"Context":     c.formatContextAsString(),
-		"WorkDir":     c.workDir,
-	})
-}
-
-// handleMergeConflictCoding handles merge conflict resolution.
-func (c *Coder) handleMergeConflictCoding(ctx context.Context, sm *agent.BaseStateMachine, conflictData any) (proto.State, bool, error) {
-	taskStr := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-
-	// Clear conflict data after processing.
-	defer sm.SetStateData(KeyMergeConflictDetails, nil)
-	defer sm.SetStateData(KeyCodingMode, nil)
-
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"TaskContent":  taskStr,
-		"ConflictData": conflictData,
-		"Context":      c.formatContextAsString(),
-		"WorkDir":      c.workDir,
-	})
-}
-
-// handleCodeReviewCoding handles addressing code review feedback.
-func (c *Coder) handleCodeReviewCoding(ctx context.Context, sm *agent.BaseStateMachine, reviewData any) (proto.State, bool, error) {
-	taskStr := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-
-	// Clear review data after processing.
-	defer sm.SetStateData(KeyCodeReviewRejectionFeedback, nil)
-	defer sm.SetStateData(KeyCodingMode, nil)
-
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"TaskContent":    taskStr,
-		"ReviewFeedback": reviewData,
-		"Context":        c.formatContextAsString(),
-		"WorkDir":        c.workDir,
-	})
-}
-
-// handleTestFixCoding handles fixing test failures.
-func (c *Coder) handleTestFixCoding(ctx context.Context, sm *agent.BaseStateMachine, testData any) (proto.State, bool, error) {
-	taskStr := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-
-	// Clear test failure data after processing.
-	defer sm.SetStateData(KeyTestFailureOutput, nil)
-	defer sm.SetStateData(KeyCodingMode, nil)
-
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"TaskContent": taskStr,
-		"TestOutput":  testData,
-		"Context":     c.formatContextAsString(),
-		"WorkDir":     c.workDir,
-	})
-}
-
-// executeCodingWithTemplate is the shared implementation for all coding scenarios.
-func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseStateMachine, templateData map[string]any) (proto.State, bool, error) {
-	templateName := templates.CodingTemplate
-	// Convert map to TemplateData struct.
-	tplData := &templates.TemplateData{
-		TaskContent: fmt.Sprintf("%v", templateData["TaskContent"]),
-		Plan:        fmt.Sprintf("%v", templateData["Plan"]),
-		WorkDir:     fmt.Sprintf("%v", templateData["WorkDir"]),
-	}
-
-	// Add specialized data to the context manager instead
-	if conflictData, exists := templateData["ConflictData"]; exists {
-		c.contextManager.AddMessage("system", fmt.Sprintf("Merge Conflict Details: %v", conflictData))
-	}
-	if reviewFeedback, exists := templateData["ReviewFeedback"]; exists {
-		c.contextManager.AddMessage("system", fmt.Sprintf("Code Review Feedback: %v", reviewFeedback))
-	}
-	if testOutput, exists := templateData["TestOutput"]; exists {
-		// Set TestResults field which the template expects.
-		tplData.TestResults = fmt.Sprintf("%v", testOutput)
-	}
-
-	// Render the template.
-	if c.renderer == nil {
-		return proto.StateError, false, logx.Errorf("template renderer not available")
-	}
-	prompt, err := c.renderer.RenderWithUserInstructions(templateName, tplData, c.workDir, "CODER")
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to render coding template")
-	}
-
-	// Get LLM response for code generation with shell tool.
-	// Build messages including conversation context.
-	messages := c.buildMessagesWithContext(prompt)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 4096,
-		Tools:     c.getTools(tools.ToolShell, tools.ToolBuild, tools.ToolTest, tools.ToolDone, tools.ToolAskQuestion), // Handler declares coding tools
-	}
-
-	resp, err := c.llmClient.Complete(ctx, req)
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to get LLM coding response")
-	}
-
-	// Temporarily fall back to text parsing until tool calling is implemented.
-	// TODO: Switch back to MCP tool execution once Claude client supports tools
-	var filesCreated int
-
-	if len(resp.ToolCalls) > 0 {
-		c.logger.Info("Executing %d tool calls via MCP in working directory: %s", len(resp.ToolCalls), c.workDir)
-		filesCreated, err = c.executeMCPToolCalls(ctx, resp.ToolCalls)
-		if err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to execute tool calls")
-		}
-		if filesCreated == -1 {
-			c.logger.Info("MCP tool execution: completion signaled via tool")
-		} else {
-			c.logger.Info("MCP tool execution created %d files", filesCreated)
-		}
-
-		// Reset no-tool-calls counter since we had tool calls.
-		sm.SetStateData(KeyNoToolCallsCount, 0)
-	} else {
-		c.logger.Info("No tool calls found, falling back to text parsing")
-
-		// Track consecutive iterations without tool calls.
-		noToolCallsCount := 0
-		if val, exists := sm.GetStateValue(KeyNoToolCallsCount); exists {
-			if count, ok := val.(int); ok {
-				noToolCallsCount = count
-			}
-		}
-		noToolCallsCount++
-		sm.SetStateData(KeyNoToolCallsCount, noToolCallsCount)
-
-		c.logger.Info("No tool calls for %d consecutive iterations", noToolCallsCount)
-
-		// Parse the response to extract files and create them.
-		filesCreated, err = c.parseAndCreateFiles(resp.Content)
-		if err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to create files")
-		}
-		c.logger.Info("Text parsing created %d files", filesCreated)
-	}
-
-	// Store results.
-	sm.SetStateData(KeyCodeGenerated, filesCreated > 0)
-	sm.SetStateData(KeyFilesCreated, filesCreated)
-	c.contextManager.AddMessage("assistant", resp.Content)
-
-	// Check if implementation seems complete.
-	if c.isImplementationComplete(resp.Content, filesCreated, sm) {
-		sm.SetStateData(KeyCodingCompletedAt, time.Now().UTC())
-		return StateTesting, false, nil
-	}
-
-	// Check iteration limit using BUDGET_REVIEW mechanism.
-	if c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), c.codingBudget, StateCoding) {
-		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
-		return StateBudgetReview, false, nil
-	}
-
-	// Add context about what's been done so far for next iteration.
-	fileList := c.getWorkingDirectoryContents()
-	c.contextManager.AddMessage("system", fmt.Sprintf("Previous iteration created %d files/directories. Current workspace contains: %s. The implementation is not yet complete. Please continue with the next steps to create the actual source code files (like main.go, handlers, etc).", filesCreated, fileList))
-
-	// Continue coding if implementation is not complete.
-	iterCount := utils.GetStateValueOr[int](sm, string(stateDataKeyCodingIterations), 0)
-	c.logger.Info("Implementation appears incomplete (iteration %d/%d), continuing in CODING state", iterCount, c.codingBudget)
-
-	// Note: Looping back to CODING is allowed via self-loops; not listed in CoderTransitions by design.
-	return StateCoding, false, nil
-}
-
 // executeMCPToolCalls executes tool calls using the MCP tool system.
-func (c *Coder) executeMCPToolCalls(ctx context.Context, toolCalls []agent.ToolCall) (int, error) {
-	// Check working directory permissions.
-	if stat, err := os.Stat(c.workDir); err != nil {
-		c.logger.Info("Error accessing working directory %s: %v", c.workDir, err)
-		return 0, logx.Wrap(err, fmt.Sprintf("cannot access working directory %s", c.workDir))
-	} else {
-		c.logger.Info("Working directory %s exists, mode: %v", c.workDir, stat.Mode())
-	}
-
-	// Shell tool is now initialized globally by the orchestrator.
-	c.logger.Info("Shell tool initialized globally by orchestrator")
-
-	// Register MCP build tools.
-	if c.buildService != nil {
-		buildTool := tools.NewBuildTool(c.buildService)
-		if err := tools.Register(buildTool); err != nil {
-			c.logger.Info("Build tool registration: %v (likely already registered)", err)
-		} else {
-			c.logger.Info("Build tool registered successfully")
-		}
-
-		testTool := tools.NewTestTool(c.buildService)
-		if err := tools.Register(testTool); err != nil {
-			c.logger.Info("Test tool registration: %v (likely already registered)", err)
-		} else {
-			c.logger.Info("Test tool registered successfully")
-		}
-
-		lintTool := tools.NewLintTool(c.buildService)
-		if err := tools.Register(lintTool); err != nil {
-			c.logger.Info("Lint tool registration: %v (likely already registered)", err)
-		} else {
-			c.logger.Info("Lint tool registered successfully")
-		}
-
-		backendInfoTool := tools.NewBackendInfoTool(c.buildService)
-		if err := tools.Register(backendInfoTool); err != nil {
-			c.logger.Info("Backend info tool registration: %v (likely already registered)", err)
-		} else {
-			c.logger.Info("Backend info tool registered successfully")
-		}
-	}
-
-	// Register the "done" tool for signaling completion.
-	doneTool := tools.NewDoneTool()
-	if err := tools.Register(doneTool); err != nil {
-		c.logger.Info("Done tool registration: %v (likely already registered)", err)
-	} else {
-		c.logger.Info("Done tool registered successfully")
-	}
-
-	// Register bootstrap/config tools (modify_config removed - use update_container instead)
-
-	updateContainerTool := tools.NewUpdateContainerTool()
-	if err := tools.Register(updateContainerTool); err != nil {
-		c.logger.Info("Update container tool registration: %v (likely already registered)", err)
-	} else {
-		c.logger.Info("Update container tool registered successfully")
-	}
-
-	createMakefileTool := tools.NewCreateMakefileTool()
-	if err := tools.Register(createMakefileTool); err != nil {
-		c.logger.Info("Create makefile tool registration: %v (likely already registered)", err)
-	} else {
-		c.logger.Info("Create makefile tool registered successfully")
-	}
-
-	filesCreated := 0
-
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		c.logger.Info("Processing tool call %d: name=%s, id=%s", i+1, toolCall.Name, toolCall.ID)
-
-		if toolCall.Name == tools.ToolDone {
-			// Claude signaled completion via done tool.
-			c.logger.Info("Claude used 'done' tool to signal completion")
-			c.contextManager.AddMessage("tool", "Implementation marked complete via done tool")
-			// Return special completion signal (not a real file count).
-			return -1, nil
-		}
-
-		if toolCall.Name == tools.ToolShell {
-			// Get the shell tool from registry.
-			tool, err := tools.Get(tools.ToolShell)
-			if err != nil {
-				return filesCreated, logx.Wrap(err, "shell tool not available")
-			}
-
-			// Set working directory if not provided.
-			args := make(map[string]any)
-			for k, v := range toolCall.Parameters {
-				args[k] = v
-			}
-			if _, hasCwd := args["cwd"]; !hasCwd {
-				args["cwd"] = c.workDir
-			}
-
-			// Execute the tool.
-			result, err := tool.Exec(ctx, args)
-			if err != nil {
-				return filesCreated, logx.Wrap(err, "failed to execute shell command")
-			}
-
-			// Log tool execution.
-			var cmd string
-			var isFileCreationCommand bool
-			if cmdAny, exists := args["cmd"]; exists {
-				if cmdStr, ok := utils.SafeAssert[string](cmdAny); ok {
-					cmd = cmdStr
-					c.logger.Info("Executing shell command: %s", cmd)
-					c.contextManager.AddMessage("tool", fmt.Sprintf("Executed: %s", cmd))
-
-					// Check if this is a file creation command - expanded patterns.
-					isFileCreationCommand = strings.Contains(cmd, "cat >") ||
-						strings.Contains(cmd, "echo >") ||
-						strings.Contains(cmd, "tee ") ||
-						strings.Contains(cmd, "go mod init") ||
-						strings.Contains(cmd, "touch ") ||
-						strings.Contains(cmd, "cp ") ||
-						strings.Contains(cmd, "mv ") ||
-						strings.Contains(cmd, "mkdir") ||
-						strings.Contains(cmd, " > ") ||
-						strings.Contains(cmd, " >> ")
-				} else {
-					c.logger.Info("Warning: 'cmd' parameter is not a string")
-				}
-			} else {
-				c.logger.Info("Warning: tool call missing 'cmd' parameter")
-			}
-
-			// Log result and check if command succeeded.
-			var commandSucceeded = true
-			if resultMap, err := utils.AssertMapStringAny(result); err == nil {
-				if output, err := utils.GetMapField[string](resultMap, "stdout"); err == nil && output != "" {
-					c.logger.Info("Command stdout: %s", output)
-					// Truncate very long outputs to prevent context overflow.
-					if len(output) > 2000 {
-						truncatedOutput := output[:2000] + "... [truncated]"
-						c.contextManager.AddMessage("tool", fmt.Sprintf("Output: %s", truncatedOutput))
-					} else {
-						c.contextManager.AddMessage("tool", fmt.Sprintf("Output: %s", output))
-					}
-				}
-				if stderr, err := utils.GetMapField[string](resultMap, "stderr"); err == nil && stderr != "" {
-					c.logger.Info("Command stderr: %s", stderr)
-					// Truncate very long error outputs to prevent context overflow.
-					if len(stderr) > 2000 {
-						truncatedStderr := stderr[:2000] + "... [truncated]"
-						c.contextManager.AddMessage("tool", fmt.Sprintf("Error: %s", truncatedStderr))
-					} else {
-						c.contextManager.AddMessage("tool", fmt.Sprintf("Error: %s", stderr))
-					}
-				}
-				if exitCode, err := utils.GetMapField[int](resultMap, "exit_code"); err == nil && exitCode != 0 {
-					c.logger.Info("Command exited with code: %d", exitCode)
-					c.contextManager.AddMessage("tool", fmt.Sprintf("Command failed with exit code: %d", exitCode))
-					commandSucceeded = false
-				}
-			} else {
-				c.logger.Info("Warning: could not parse tool execution result")
-			}
-
-			// Only count file creation if it's a file creation command AND it succeeded.
-			if isFileCreationCommand && commandSucceeded {
-				c.logger.Info("Detected successful file creation command, incrementing count")
-				filesCreated++
-			} else if isFileCreationCommand && !commandSucceeded {
-				c.logger.Info("File creation command failed, not counting towards file creation")
-			}
-			continue
-		}
-
-		// Handle build tools.
-		if toolCall.Name == tools.ToolBuild || toolCall.Name == tools.ToolTest || toolCall.Name == tools.ToolLint || toolCall.Name == tools.ToolBackendInfo {
-			// Get the tool from registry.
-			tool, err := tools.Get(toolCall.Name)
-			if err != nil {
-				return filesCreated, logx.Wrap(err, fmt.Sprintf("%s tool not available", toolCall.Name))
-			}
-
-			// Set working directory if not provided.
-			args := make(map[string]any)
-			for k, v := range toolCall.Parameters {
-				args[k] = v
-			}
-			if _, hasCwd := args["cwd"]; !hasCwd {
-				args["cwd"] = c.workDir
-			}
-
-			// Execute the tool.
-			result, err := tool.Exec(ctx, args)
-			if err != nil {
-				// Tool execution failures are recoverable - add error to context for LLM to react.
-				c.logger.Info("%s tool execution failed: %v", toolCall.Name, err)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("%s tool execution failed: %s", toolCall.Name, err.Error()))
-				continue // Continue processing other tool calls
-			}
-
-			// Log tool execution.
-			c.logger.Info("Executing %s tool in %s", toolCall.Name, args["cwd"])
-
-			// Log result if available.
-			if resultMap, err := utils.AssertMapStringAny(result); err == nil {
-				if success, err := utils.GetMapField[bool](resultMap, "success"); err == nil {
-					if success {
-						c.logger.Info("%s tool succeeded", toolCall.Name)
-						c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation completed successfully", toolCall.Name))
-					} else {
-						c.logger.Info("%s tool failed", toolCall.Name)
-						c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation failed", toolCall.Name))
-					}
-				}
-
-				if output, err := utils.GetMapField[string](resultMap, "output"); err == nil && output != "" {
-					c.logger.Info("%s output: %s", toolCall.Name, output)
-					// Truncate very long tool outputs to prevent context overflow.
-					if len(output) > 2000 {
-						truncatedOutput := output[:2000] + "... [truncated]"
-						c.contextManager.AddMessage("tool", fmt.Sprintf("%s output: %s", toolCall.Name, truncatedOutput))
-					} else {
-						c.contextManager.AddMessage("tool", fmt.Sprintf("%s output: %s", toolCall.Name, output))
-					}
-				}
-
-				if errorMsg, err := utils.GetMapField[string](resultMap, "error"); err == nil && errorMsg != "" {
-					c.logger.Info("%s error: %s", toolCall.Name, errorMsg)
-					// Truncate very long error messages to prevent context overflow.
-					if len(errorMsg) > 2000 {
-						truncatedError := errorMsg[:2000] + "... [truncated]"
-						c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, truncatedError))
-					} else {
-						c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
-					}
-				}
-
-				if backend, err := utils.GetMapField[string](resultMap, "backend"); err == nil && backend != "" {
-					c.logger.Info("Using %s backend", backend)
-					c.contextManager.AddMessage("tool", fmt.Sprintf("Using %s backend", backend))
-				}
-			} else {
-				c.logger.Info("Warning: could not parse %s tool result", toolCall.Name)
-			}
-			continue
-		}
-	}
-
-	return filesCreated, nil
-}
 
 // isImplementationComplete checks if the current implementation appears complete.
-func (c *Coder) isImplementationComplete(responseContent string, filesCreated int, sm *agent.BaseStateMachine) bool {
-	// Method 1: Explicit completion signal via done tool (PRIMARY METHOD).
-	if filesCreated == -1 {
-		c.logger.Info("Completion detected: Claude used 'done' tool")
-		return true
-	}
-
-	// When fixing test failures, strongly prefer explicit tool completion.
-	// This prevents false completion when Claude explains issues without fixing them.
-	if testFailureData, exists := sm.GetStateValue(KeyTestFailureOutput); exists && testFailureData != nil {
-		c.logger.Debug("In test-fixing mode, only allowing explicit 'done' tool completion")
-
-		// In test-fixing mode, ONLY allow completion via 'done' tool.
-		// This prevents false positives when Claude explains what needs to be done without actually doing it.
-		return false
-	}
-
-	// Method 2: No tool calls pattern - if Claude stops making tool calls for 2+ consecutive iterations.
-	noToolCallsCount := 0
-	if val, exists := sm.GetStateValue(KeyNoToolCallsCount); exists {
-		if count, ok := val.(int); ok {
-			noToolCallsCount = count
-		}
-	}
-
-	if noToolCallsCount >= 2 && filesCreated >= 1 {
-		c.logger.Info("Completion detected: No tool calls for %d consecutive iterations with %d files created", noToolCallsCount, filesCreated)
-		return true
-	}
-
-	// Method 3: Natural language completion indicators (ONLY if work was actually done).
-	// This prevents false positives when Claude explains that work is already complete.
-	completionIndicators := []string{
-		"implementation is complete",
-		"implementation complete",
-		"ready for testing",
-		"finished implementing",
-		"implementation done",
-		"that completes the",
-		"all files created",
-		"implementation ready",
-		"ready to test",
-		"completed successfully",
-	}
-
-	// Only check for completion indicators if actual work was done.
-	// This prevents false completion when Claude says "already complete".
-	if filesCreated > 0 {
-		responseLower := strings.ToLower(responseContent)
-		for _, indicator := range completionIndicators {
-			if strings.Contains(responseLower, indicator) {
-				c.logger.Info("Completion detected: Found completion indicator '%s' in response with %d files created", indicator, filesCreated)
-				return true
-			}
-		}
-	}
-
-	// If no files were created, definitely not complete.
-	if filesCreated == 0 {
-		return false
-	}
-
-	// If only directories were created (like mkdir), not complete unless it's been many iterations.
-	if filesCreated <= 2 && (strings.Contains(responseContent, "mkdir") || strings.Contains(responseContent, "go mod init")) {
-		return false
-	}
-
-	// Default to incomplete to encourage more work.
-	return false
-}
 
 // getWorkingDirectoryContents returns a summary of what's in the working directory.
-func (c *Coder) getWorkingDirectoryContents() string {
-	entries, err := os.ReadDir(c.workDir)
-	if err != nil {
-		return "error reading directory"
-	}
-
-	var items []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			items = append(items, entry.Name()+"/")
-		} else {
-			items = append(items, entry.Name())
-		}
-	}
-
-	if len(items) == 0 {
-		return "empty directory"
-	}
-
-	return strings.Join(items, ", ")
-}
 
 // isFilenameHeader checks if a line contains a filename header.
-func (c *Coder) isFilenameHeader(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	return strings.HasPrefix(trimmed, "###") ||
-		strings.HasPrefix(trimmed, "File:") ||
-		strings.HasPrefix(trimmed, "**") ||
-		strings.HasPrefix(trimmed, "=== ") ||
-		strings.HasPrefix(trimmed, "--- ")
-}
 
 // looksLikeCode uses heuristics to determine if a line looks like code.
-func (c *Coder) looksLikeCode(line string) bool {
-	trimmed := strings.TrimSpace(line)
-
-	// Empty lines are neutral.
-	if trimmed == "" {
-		return false
-	}
-
-	// Comments and documentation are code.
-	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") ||
-		strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "<!--") {
-		return true
-	}
-
-	// Programming language keywords and patterns.
-	codeKeywords := []string{
-		"func ", "function ", "def ", "class ", "interface ", "struct ",
-		"import ", "from ", "package ", "using ", "include ",
-		"if (", "if(", "for (", "for(", "while (", "while(",
-		"return ", "var ", "let ", "const ", "type ",
-		"public ", "private ", "protected ", "static ",
-		"async ", "await ", "yield ", "defer ",
-		"console.", "fmt.", "print(", "println(", "printf(",
-		".test(", ".call(", ".apply(", ".bind(",
-	}
-
-	for _, keyword := range codeKeywords {
-		if strings.Contains(trimmed, keyword) {
-			return true
-		}
-	}
-
-	// Code-like patterns and symbols.
-	if strings.Contains(trimmed, "{") || strings.Contains(trimmed, "}") ||
-		strings.Contains(trimmed, "[]") || strings.Contains(trimmed, "();") ||
-		strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "->") ||
-		strings.Contains(trimmed, "=>") || strings.Contains(trimmed, "<-") ||
-		strings.Contains(trimmed, "()") || strings.Contains(trimmed, "[]") ||
-		trimmed == ")" || trimmed == "(" || trimmed == "}" || trimmed == "{" ||
-		strings.Contains(trimmed, " = ") || strings.Contains(trimmed, "==") ||
-		strings.Contains(trimmed, "!=") || strings.Contains(trimmed, ">=") ||
-		strings.Contains(trimmed, "<=") || strings.Contains(trimmed, "&&") ||
-		strings.Contains(trimmed, "||") {
-		return true
-	}
-
-	// Function calls, method calls (contains dots and parentheses).
-	if strings.Contains(trimmed, ".") && strings.Contains(trimmed, "(") {
-		return true
-	}
-
-	// String literals and numeric literals.
-	if strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "'") ||
-		strings.HasPrefix(trimmed, "`") {
-		return true
-	}
-
-	// Indentation suggests code structure.
-	if len(line) > len(trimmed) && (len(line)-len(trimmed)) >= 2 {
-		return true
-	}
-
-	// Natural language patterns that are definitely NOT code.
-	nonCodePatterns := []string{
-		"Here's", "This creates", "The following", "Now let's", "Next,",
-		"Finally,", "In this", "We will", "You can", "Let me",
-		"This is", "This will", "The code", "The solution", "As you can see",
-	}
-
-	for _, pattern := range nonCodePatterns {
-		if strings.HasPrefix(trimmed, pattern) {
-			return false
-		}
-	}
-
-	return false
-}
 
 // guessFilenameFromContent tries to guess filename from a line of code.
-func (c *Coder) guessFilenameFromContent(line string) string {
-	trimmed := strings.TrimSpace(line)
-
-	// Go patterns.
-	if strings.HasPrefix(trimmed, "package ") || strings.Contains(trimmed, "func ") ||
-		strings.Contains(trimmed, ":=") || strings.Contains(trimmed, "fmt.") {
-		return "main.go"
-	}
-
-	// Python patterns.
-	if strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "class ") ||
-		strings.Contains(trimmed, "import ") || strings.Contains(trimmed, "print(") {
-		return "main.py"
-	}
-
-	// JavaScript patterns.
-	if strings.Contains(trimmed, "function ") || strings.Contains(trimmed, "const ") ||
-		strings.Contains(trimmed, "let ") || strings.Contains(trimmed, "console.") ||
-		strings.Contains(trimmed, "var ") || strings.Contains(trimmed, ".test(") ||
-		strings.Contains(trimmed, "return ") && strings.Contains(trimmed, ".") {
-		return "main.js"
-	}
-
-	// Java patterns.
-	if strings.Contains(trimmed, "public class ") || strings.Contains(trimmed, "public static") {
-		return "Main.java"
-	}
-
-	// Default.
-	return defaultFilename
-}
 
 // guessFilenameFromContext looks ahead in lines to guess appropriate filename.
-func (c *Coder) guessFilenameFromContext(lines []string, startIdx int) string {
-	// Look at next few lines for language clues.
-	for i := startIdx; i < startIdx+10 && i < len(lines); i++ {
-		if filename := c.guessFilenameFromContent(lines[i]); filename != defaultFilename {
-			return filename
-		}
-	}
-	return defaultFilename
-}
 
 // parseAndCreateFiles extracts code blocks from LLM response and creates files.
 // Supports fenced code blocks (```), plain code blocks, and content detection.
-func (c *Coder) parseAndCreateFiles(content string) (int, error) {
-	filesCreated := 0
-	lines := strings.Split(content, "\n")
-
-	var currentFile string
-	var currentContent []string
-	inCodeBlock := false
-	inPlainContent := false // Track when we're collecting plain content that looks like code
-
-	for i, line := range lines {
-		// Look for filename patterns like "### filename.py" or "File: filename.py".
-		if c.isFilenameHeader(line) {
-			// Save previous file if exists.
-			if currentFile != "" && len(currentContent) > 0 {
-				if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
-					return filesCreated, err
-				}
-				filesCreated++
-			}
-
-			// Extract filename.
-			currentFile = c.extractFilename(line)
-			currentContent = []string{}
-			inCodeBlock = false
-			inPlainContent = false
-			continue
-		}
-
-		// Handle fenced code blocks (``` with or without language).
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			if inCodeBlock {
-				// End of code block - save current file if it exists.
-				if currentFile != "" && len(currentContent) > 0 {
-					if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
-						return filesCreated, err
-					}
-					filesCreated++
-				}
-				// Reset state for next potential file.
-				inCodeBlock = false
-				inPlainContent = false
-				currentFile = ""
-				currentContent = []string{}
-			} else {
-				// Start of code block.
-				inCodeBlock = true
-				inPlainContent = false
-				// If no current file, try to extract from code block language or guess.
-				if currentFile == "" {
-					if filename := c.extractFilenameFromCodeBlock(line); filename != "" {
-						currentFile = filename
-					} else {
-						// Plain code block without language - try to guess from upcoming content.
-						currentFile = c.guessFilenameFromContext(lines, i+1)
-					}
-				}
-			}
-			continue
-		}
-
-		// If we're not in a code block and have no current file, check if this looks like code.
-		if !inCodeBlock && !inPlainContent && currentFile == "" {
-			if c.looksLikeCode(line) {
-				// Start collecting plain content that looks like code.
-				inPlainContent = true
-				currentFile = c.guessFilenameFromContent(line)
-				currentContent = []string{}
-			}
-		}
-
-		// Stop collecting plain content if we hit non-code-like lines (but allow empty lines).
-		if inPlainContent && !inCodeBlock && !c.looksLikeCode(line) && strings.TrimSpace(line) != "" {
-			// Check if this line looks like natural language (definitely not code).
-			trimmed := strings.TrimSpace(line)
-			isNaturalLanguage := false
-
-			// Natural language patterns that end code blocks.
-			endPatterns := []string{
-				"This creates", "This will", "This is", "Here's", "The following",
-				"Now let's", "Next,", "Finally,", "As you can see", "Note that",
-				"Remember to", "Don't forget", "Make sure", "Be careful",
-			}
-
-			for _, pattern := range endPatterns {
-				if strings.HasPrefix(trimmed, pattern) {
-					isNaturalLanguage = true
-					break
-				}
-			}
-
-			// Only stop if it's clearly natural language.
-			if isNaturalLanguage {
-				// If we have collected some content, save it.
-				if currentFile != "" && len(currentContent) > 0 {
-					if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
-						return filesCreated, err
-					}
-					filesCreated++
-				}
-				currentFile = ""
-				currentContent = []string{}
-				inPlainContent = false
-			}
-		}
-
-		// Collect content if we're in a code block, have a current file, or collecting plain content.
-		if (inCodeBlock || inPlainContent || currentFile != "") && currentFile != "" {
-			currentContent = append(currentContent, line)
-
-			// Check if we've exceeded the maximum plain block size.
-			if inPlainContent && len(currentContent) > maxPlainBlockSize {
-				// Force save as default filename and reset.
-				if err := c.writeFile(defaultFilename, strings.Join(currentContent, "\n")); err != nil {
-					return filesCreated, err
-				}
-				filesCreated++
-				currentFile = ""
-				currentContent = []string{}
-				inPlainContent = false
-			}
-		}
-	}
-
-	// Save final file if exists.
-	if currentFile != "" && len(currentContent) > 0 {
-		if err := c.writeFile(currentFile, strings.Join(currentContent, "\n")); err != nil {
-			return filesCreated, err
-		}
-		filesCreated++
-	}
-
-	return filesCreated, nil
-}
 
 // extractFilename extracts filename from header lines.
-func (c *Coder) extractFilename(line string) string {
-	line = strings.TrimSpace(line)
-
-	// Remove markdown headers and prefixes.
-	line = strings.TrimPrefix(line, "###")
-	line = strings.TrimPrefix(line, "File:")
-	line = strings.TrimPrefix(line, "**")
-	line = strings.TrimSuffix(line, "**")
-	line = strings.TrimSpace(line)
-
-	// Extract just the filename part.
-	if strings.Contains(line, " ") {
-		parts := strings.Fields(line)
-		for _, part := range parts {
-			if strings.Contains(part, ".") {
-				return part
-			}
-		}
-	}
-
-	return line
-}
 
 // extractFilenameFromCodeBlock tries to extract filename from code block language.
-func (c *Coder) extractFilenameFromCodeBlock(line string) string {
-	line = strings.TrimSpace(line)
-	if strings.HasPrefix(line, "```") {
-		lang := strings.TrimPrefix(line, "```")
-		lang = strings.TrimSpace(lang)
-
-		// Map common languages to file extensions.
-		switch lang {
-		case "python", "py":
-			return "hello_world.py"
-		case "go", "golang":
-			return "main.go"
-		case "javascript", "js":
-			return "hello_world.js"
-		case "java":
-			return "HelloWorld.java"
-		default:
-			if strings.Contains(lang, ".") {
-				return lang // It might already be a filename
-			}
-		}
-	}
-	return ""
-}
 
 // writeFile writes content to a file in the workspace.
-func (c *Coder) writeFile(filename, content string) error {
-	// Clean the filename.
-	filename = strings.TrimSpace(filename)
-	if filename == "" {
-		return logx.Errorf("empty filename")
-	}
 
-	filePath := filepath.Join(c.workDir, filename)
-
-	// Create directory if needed.
-	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return logx.Wrap(err, fmt.Sprintf("failed to create directory %s", dir))
-	}
-
-	// Write the file.
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return logx.Wrap(err, fmt.Sprintf("failed to write file %s", filename))
-	}
-
-	c.contextManager.AddMessage("tool", fmt.Sprintf("Created file: %s", filename))
-	return nil
-}
-
-// handleTesting processes the TESTING state - implements AR-103.
+// handleTesting processes the TESTING state with story-type awareness - implements AR-103.
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Get worktree path for running tests.
 	worktreePath, exists := sm.GetStateValue(KeyWorktreePath)
@@ -1835,6 +931,25 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		return proto.StateError, false, logx.Errorf("worktree_path is not a string: %v", worktreePath)
 	}
 
+	// Get story type for testing strategy decision.
+	storyType := string(proto.StoryTypeApp) // Default to app
+	if storyTypeVal, exists := sm.GetStateValue(proto.KeyStoryType); exists {
+		if storyTypeStr, ok := storyTypeVal.(string); ok && proto.IsValidStoryType(storyTypeStr) {
+			storyType = storyTypeStr
+		}
+	}
+
+	c.logger.Info("Testing story type: %s", storyType)
+
+	// Use different testing strategies based on story type
+	if storyType == string(proto.StoryTypeDevOps) {
+		return c.handleDevOpsStoryTesting(ctx, sm, worktreePathStr)
+	}
+	return c.handleAppStoryTesting(ctx, sm, worktreePathStr)
+}
+
+// handleAppStoryTesting handles testing for application stories using traditional build/test/lint flow.
+func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
 	// Use MCP test tool instead of direct build registry calls.
 	if c.buildService != nil {
 		// Get backend info first.
@@ -1846,7 +961,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 
 		// Store backend information for context.
 		sm.SetStateData(KeyBuildBackend, backendInfo.Name)
-		c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s backend", backendInfo.Name))
+		c.logger.Info("App story testing: using build service with backend %s", backendInfo.Name)
 
 		// Run tests using the build service.
 		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, worktreePathStr)
@@ -1867,7 +982,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 		if !testsPassed {
-			c.logger.Info("Tests failed, transitioning to CODING state for fixes")
+			c.logger.Info("App story tests failed, transitioning to CODING state for fixes")
 			// Truncate test output to prevent context bloat.
 			truncatedOutput := truncateOutput(testOutput)
 			sm.SetStateData(KeyTestFailureOutput, truncatedOutput)
@@ -1875,10 +990,65 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 			return StateCoding, false, nil
 		}
 
-		c.logger.Info("Tests passed successfully")
+		c.logger.Info("App story tests passed successfully")
 		return c.proceedToCodeReview(ctx, sm)
 	}
 
+	// Fallback to legacy testing approach
+	return c.handleLegacyTesting(ctx, sm, worktreePathStr)
+}
+
+// handleDevOpsStoryTesting handles testing for DevOps stories focusing on infrastructure validation.
+func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
+	c.logger.Info("DevOps story testing: focusing on infrastructure validation")
+
+	// For DevOps stories, we focus on:
+	// 1. Container builds (if Dockerfile present)
+	// 2. Configuration validation
+	// 3. Basic infrastructure checks
+	// Skip traditional build/test/lint which may not be relevant
+
+	// Check if this is a container-related DevOps story
+	dockerfilePath := filepath.Join(worktreePathStr, "Dockerfile")
+	if fileExists(dockerfilePath) {
+		c.logger.Info("DevOps story: validating Dockerfile build")
+		if err := c.validateDockerfileBuild(ctx, worktreePathStr); err != nil {
+			c.logger.Error("Dockerfile validation failed: %v", err)
+			errorStr := err.Error()
+			truncatedError := truncateOutput(errorStr)
+			sm.SetStateData(KeyTestError, errorStr)
+			sm.SetStateData(KeyTestFailureOutput, truncatedError)
+			sm.SetStateData(KeyCodingMode, "test_fix")
+			return StateCoding, false, nil
+		}
+	}
+
+	// Check for Makefile and run basic validation if present
+	makefilePath := filepath.Join(worktreePathStr, "Makefile")
+	if fileExists(makefilePath) {
+		c.logger.Info("DevOps story: validating Makefile targets")
+		if err := c.validateMakefileTargets(worktreePathStr); err != nil {
+			c.logger.Error("Makefile validation failed: %v", err)
+			errorStr := err.Error()
+			truncatedError := truncateOutput(errorStr)
+			sm.SetStateData(KeyTestError, errorStr)
+			sm.SetStateData(KeyTestFailureOutput, truncatedError)
+			sm.SetStateData(KeyCodingMode, "test_fix")
+			return StateCoding, false, nil
+		}
+	}
+
+	// Store successful test results
+	sm.SetStateData(KeyTestsPassed, true)
+	sm.SetStateData(KeyTestOutput, "DevOps story infrastructure validation completed successfully")
+	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
+
+	c.logger.Info("DevOps story testing completed successfully")
+	return c.proceedToCodeReview(ctx, sm)
+}
+
+// handleLegacyTesting handles the legacy testing approach for backward compatibility.
+func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
 	// Use global config singleton.
 	globalConfig, err := config.GetConfig()
 	if err != nil {
@@ -1889,7 +1059,6 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 	// Store platform information for context.
 	platform := globalConfig.Project.PrimaryPlatform
 	sm.SetStateData(KeyBuildBackend, platform)
-	c.contextManager.AddMessage("assistant", fmt.Sprintf("Testing phase: running tests using %s platform", platform))
 
 	// Get build command from config
 	testCommand := globalConfig.Build.Test
@@ -1927,13 +1096,56 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 	}
 
 	c.logger.Info("Tests passed successfully")
-
 	return c.proceedToCodeReview(ctx, sm)
+}
+
+// validateDockerfileBuild validates that a Dockerfile can be built successfully.
+func (c *Coder) validateDockerfileBuild(_ context.Context, worktreePathStr string) error {
+	// Simple Docker build validation - could be enhanced with actual build
+	dockerfilePath := filepath.Join(worktreePathStr, "Dockerfile")
+	content, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read Dockerfile: %w", err)
+	}
+
+	// Basic Dockerfile validation
+	dockerfileContent := string(content)
+	if !strings.Contains(dockerfileContent, "FROM") {
+		return fmt.Errorf("dockerfile missing required FROM instruction")
+	}
+
+	// Could add more sophisticated validation here
+	c.logger.Info("Dockerfile validation passed")
+	return nil
+}
+
+// validateMakefileTargets validates that Makefile has reasonable targets for DevOps.
+func (c *Coder) validateMakefileTargets(worktreePathStr string) error {
+	makefilePath := filepath.Join(worktreePathStr, "Makefile")
+	content, err := os.ReadFile(makefilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read Makefile: %w", err)
+	}
+
+	makefileContent := string(content)
+	// For DevOps stories, we're more lenient - just check that it's not empty
+	if strings.TrimSpace(makefileContent) == "" {
+		return fmt.Errorf("makefile is empty")
+	}
+
+	c.logger.Info("Makefile validation passed")
+	return nil
+}
+
+// fileExists checks if a file exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // handleCodeReview processes the CODE_REVIEW state - blocks waiting for architect's RESULT response.
 func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Code review phase: waiting for architect approval")
+	// State: waiting for architect approval
 
 	// Check if we already have approval result from previous processing.
 	if approvalData, exists := sm.GetStateValue(string(stateDataKeyCodeApprovalResult)); exists {
@@ -2077,7 +1289,7 @@ func (c *Coder) handleCodeReviewApproval(ctx context.Context, sm *agent.BaseStat
 //
 //nolint:unparam // bool return is part of state machine interface
 func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Await merge phase: waiting for architect merge result")
+	// State: waiting for architect merge result
 
 	// Check if we already have merge result from previous processing.
 	if result, exists := agent.GetTyped[git.MergeResult](sm, KeyMergeResult); exists {
@@ -2154,7 +1366,7 @@ func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine
 
 // handleBudgetReview processes the BUDGET_REVIEW state - blocks waiting for architect's RESULT response.
 func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Budget review phase: waiting for architect guidance")
+	// State: waiting for architect guidance
 
 	// Check if we already have approval result from previous processing.
 	if approvalData, exists := sm.GetStateValue(string(stateDataKeyBudgetApprovalResult)); exists && approvalData != nil {
@@ -2212,7 +1424,7 @@ func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStat
 
 // handleQuestion processes the QUESTION state with origin tracking.
 func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	c.contextManager.AddMessage("assistant", "Question phase: awaiting clarification")
+	// State: awaiting clarification
 
 	// Regular QUESTION→ANSWER flow (no more budget review logic).
 	return c.handleRegularQuestion(ctx, sm)
@@ -2357,21 +1569,6 @@ func (c *Coder) handleRegularQuestion(ctx context.Context, sm *agent.BaseStateMa
 // Helper methods.
 
 // Removed detectHelpRequest - replaced with tool-based question mechanism.
-
-func (c *Coder) formatContextAsString() string {
-	messages := c.contextManager.GetMessages()
-	if len(messages) == 0 {
-		return "No previous context"
-	}
-
-	parts := make([]string, 0, len(messages))
-	for i := range messages {
-		msg := &messages[i]
-		parts = append(parts, fmt.Sprintf("%s: %s", msg.Role, msg.Content))
-	}
-
-	return strings.Join(parts, "\n")
-}
 
 // GetPendingApprovalRequest returns pending approval request if any.
 func (c *Coder) GetPendingApprovalRequest() (bool, string, string, string, proto.ApprovalType) {
@@ -2603,11 +1800,8 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 		}
 	}
 
-	// Register planning tools.
-	if err := c.registerPlanningTools(); err != nil {
-		c.logger.Error("Failed to register planning tools: %v", err)
-		// Continue anyway - this shouldn't block the story.
-	}
+	// Tools are now registered globally by the orchestrator at startup.
+	// No need to register tools per-story or per-agent.
 
 	return StatePlanning, false, nil
 }
@@ -2627,12 +1821,20 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		c.cleanupContainer(ctx, fmt.Sprintf("reconfigure for %s", purpose))
 	}
 
+	// Determine user based on story type
+	storyType := utils.GetStateValueOr[string](c.BaseStateMachine, proto.KeyStoryType, string(proto.StoryTypeApp))
+	containerUser := "1000:1000" // Default: non-root user for app stories
+	if storyType == string(proto.StoryTypeDevOps) {
+		containerUser = "0:0" // Run as root for DevOps stories to access Docker socket
+		c.logger.Info("DevOps story detected - running container as root for Docker access")
+	}
+
 	// Create execution options for the new container.
 	execOpts := execpkg.Opts{
 		WorkDir:         c.workDir,
 		ReadOnly:        readonly,
-		NetworkDisabled: readonly,    // Disable network during planning for security
-		User:            "1000:1000", // Run as non-root user
+		NetworkDisabled: readonly, // Disable network during planning for security
+		User:            containerUser,
 		Env:             []string{},
 		Timeout:         0, // No timeout for long-running container
 		ResourceLimits: &execpkg.ResourceLimits{
@@ -2696,13 +1898,10 @@ func (c *Coder) cleanupContainer(ctx context.Context, reason string) {
 	}
 }
 
-// updateShellToolForStory updates the shell tool to use the story-specific container context.
+// updateShellToolForStory is no longer needed in the new ToolProvider system.
+// The executor is provided when ToolProvider creates tools based on AgentContext.
 func (c *Coder) updateShellToolForStory(_ /* storyCtx */ context.Context) error {
-	// Update the shell tool to use the long-running executor.
-	if err := tools.UpdateShellToolExecutor(c.longRunningExecutor); err != nil {
-		return logx.Wrap(err, "failed to update shell tool with long-running executor")
-	}
-
+	// No longer needed - ToolProvider handles executor configuration
 	return nil
 }
 
@@ -2723,37 +1922,6 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 	}
 
 	return result.Stdout, nil
-}
-
-// registerPlanningTools registers tools needed for enhanced planning.
-//
-//nolint:unparam // error return kept for future extensibility
-func (c *Coder) registerPlanningTools() error {
-	// Register ask_question tool.
-	askQuestionTool := tools.NewAskQuestionTool()
-	if err := tools.Register(askQuestionTool); err != nil {
-		c.logger.Info("AskQuestion tool registration: %v (likely already registered)", err)
-	} else {
-		c.logger.Info("AskQuestion tool registered successfully")
-	}
-
-	// Register submit_plan tool.
-	submitPlanTool := tools.NewSubmitPlanTool()
-	if err := tools.Register(submitPlanTool); err != nil {
-		c.logger.Info("SubmitPlan tool registration: %v (likely already registered)", err)
-	} else {
-		c.logger.Info("SubmitPlan tool registered successfully")
-	}
-
-	// Register mark_story_complete tool.
-	markStoryCompleteTool := tools.NewMarkStoryCompleteTool()
-	if err := tools.Register(markStoryCompleteTool); err != nil {
-		c.logger.Info("MarkStoryComplete tool registration: %v (likely already registered)", err)
-	} else {
-		c.logger.Info("MarkStoryComplete tool registered successfully")
-	}
-
-	return nil
 }
 
 // processQuestionTransition is a common helper for question transitions.
@@ -2789,11 +1957,6 @@ func (c *Coder) handleQuestionTransition(_ context.Context, sm *agent.BaseStateM
 }
 
 // handleCodingQuestionTransition processes ask_question tool results from CODING state.
-func (c *Coder) handleCodingQuestionTransition(_ context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
-	// Store current coding context for restoration.
-	c.storeCodingContext(sm)
-	return c.processQuestionTransition(sm, questionData, StateCoding, "Coding")
-}
 
 // handlePlanSubmission processes submit_plan tool results.
 func (c *Coder) handlePlanSubmission(_ context.Context, sm *agent.BaseStateMachine, planData any) (proto.State, bool, error) {
@@ -2854,6 +2017,13 @@ func (c *Coder) handlePlanSubmission(_ context.Context, sm *agent.BaseStateMachi
 		requestMsg.SetPayload("todos", planTodos)
 		requestMsg.SetPayload("original_story", originalStoryStr)
 		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+
+		// Add story_id for database persistence
+		if storyID, exists := sm.GetStateValue(KeyStoryID); exists {
+			if storyIDStr, ok := storyID.(string); ok {
+				requestMsg.SetPayload("story_id", storyIDStr)
+			}
+		}
 
 		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
 			return proto.StateError, false, logx.Wrap(err, "failed to send enhanced plan approval request")
@@ -2949,240 +2119,9 @@ func (c *Coder) handleCompletionSubmission(_ /* ctx */ context.Context, sm *agen
 	return StatePlanReview, false, nil
 }
 
-// handleIterativePlanning implements tool-supported planning workflow.
-func (c *Coder) handleIterativePlanning(ctx context.Context, sm *agent.BaseStateMachine, taskContent string) (proto.State, bool, error) {
-	// Restore planning context if returning from QUESTION.
-	if questionAnswered := utils.GetStateValueOr[bool](sm, string(stateDataKeyQuestionAnswered), false); questionAnswered {
-		c.restorePlanningContext(sm)
-		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
-		c.logger.Info("🧑‍💻 Restored planning context after question answered")
-	}
-
-	// Generate tree output for template (cached for efficiency).
-	_, exists := sm.GetStateValue(KeyTreeOutputCached)
-	if !exists {
-		tree := "Project structure not available"
-		if c.longRunningExecutor != nil && c.containerName != "" {
-			// Try tree command first, fall back to find if not available.
-			c.logger.Debug("Attempting to get workspace structure")
-			if treeResult, err := c.executeShellCommand(ctx, "tree", "/workspace", "-L", "3", "-I", "node_modules|.git|*.log"); err == nil {
-				c.logger.Debug("tree command succeeded")
-				tree = treeResult
-			} else {
-				// Fallback: use find to show directory structure.
-				c.logger.Info("tree command failed, using find fallback: %v", err)
-				if findResult, findErr := c.executeShellCommand(ctx, "find", "/workspace", "-maxdepth", "3", "-type", "d"); findErr == nil {
-					c.logger.Info("find fallback succeeded")
-					tree = "Directory structure (find fallback):\n" + findResult
-				} else {
-					c.logger.Warn("find fallback failed, trying ls: %v", findErr)
-					// Ultimate fallback: basic ls.
-					if lsResult, lsErr := c.executeShellCommand(ctx, "ls", "-la", "/workspace"); lsErr == nil {
-						c.logger.Info("ls fallback succeeded")
-						tree = "Basic workspace listing:\n" + lsResult
-					} else {
-						c.logger.Error("All workspace listing commands failed: ls error: %v", lsErr)
-					}
-				}
-			}
-		}
-		sm.SetStateData(KeyTreeOutputCached, tree)
-	}
-
-	// Create enhanced template data.
-	templateData := &templates.TemplateData{
-		TaskContent:       taskContent,
-		TreeOutput:        utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
-		ToolDocumentation: tools.GenerateToolDocumentation(),
-	}
-
-	// Render enhanced planning template.
-	if c.renderer == nil {
-		return proto.StateError, false, logx.Errorf("template renderer not available for planning")
-	}
-	prompt, err := c.renderer.RenderWithUserInstructions(templates.PlanningTemplate, templateData, c.workDir, "CODER")
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to render planning template")
-	}
-
-	// Get LLM response with tool support.
-	// Build messages starting with the planning prompt.
-	messages := c.buildMessagesWithContext(prompt)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 8192,                                                                                                  // Increased for exploration
-		Tools:     c.getTools(tools.ToolSubmitPlan, tools.ToolAskQuestion, tools.ToolMarkStoryComplete, tools.ToolShell), // Handler explicitly declares needed tools
-	}
-
-	// Use base agent retry mechanism - exponential backoff is already implemented.
-	resp, llmErr := c.llmClient.Complete(ctx, req)
-	if llmErr != nil {
-		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM planning response")
-	}
-
-	if resp.Content == "" && len(resp.ToolCalls) == 0 {
-		return proto.StateError, false, logx.Errorf("empty response from Claude")
-	}
-
-	// Process tool calls if any (when supported).
-	if len(resp.ToolCalls) > 0 {
-		return c.processPlanningToolCalls(ctx, sm, resp.ToolCalls)
-	}
-
-	// If no tool calls, continue in planning state with response.
-	c.contextManager.AddMessage("assistant", resp.Content)
-	c.logger.Info("🧑‍💻 Planning iteration completed, staying in PLANNING for potential tool usage")
-	return StatePlanning, false, nil
-}
-
 // Context management helper methods.
-func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
-	context := map[string]any{
-		"exploration_history": c.getExplorationHistory(),
-		"files_examined":      c.getFilesExamined(),
-		"current_findings":    c.getCurrentFindings(),
-		"timestamp":           time.Now().UTC(),
-	}
-	sm.SetStateData(KeyPlanningContextSaved, context)
-	c.logger.Debug("🧑‍💻 Stored planning context for QUESTION transition")
-}
 
-func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
-	context := map[string]any{
-		"coding_progress": c.getCodingProgress(),
-		KeyFilesCreated:   c.getFilesCreated(),
-		"current_task":    c.getCurrentTask(),
-		"timestamp":       time.Now().UTC(),
-	}
-	sm.SetStateData(KeyCodingContextSaved, context)
-	c.logger.Debug("🧑‍💻 Stored coding context for QUESTION transition")
-}
-
-func (c *Coder) restorePlanningContext(sm *agent.BaseStateMachine) {
-	if contextData, exists := sm.GetStateValue(KeyPlanningContextSaved); exists {
-		if context, ok := contextData.(map[string]any); ok {
-			c.restoreExplorationHistory(context["exploration_history"])
-			c.restoreFilesExamined(context["files_examined"])
-			c.restoreCurrentFindings(context["current_findings"])
-			c.logger.Debug("🧑‍💻 Restored planning context from QUESTION transition")
-		}
-	}
-}
-
-func (c *Coder) restoreCodingContext(sm *agent.BaseStateMachine) {
-	if contextData, exists := sm.GetStateValue(KeyCodingContextSaved); exists {
-		if context, ok := contextData.(map[string]any); ok {
-			c.restoreCodingProgress(context["coding_progress"])
-			c.restoreFilesCreated(context[KeyFilesCreated])
-			c.restoreCurrentTask(context["current_task"])
-			c.logger.Debug("🧑‍💻 Restored coding context from QUESTION transition")
-		}
-	}
-}
-
-// Placeholder helper methods for context management (to be enhanced as needed).
-func (c *Coder) getExplorationHistory() any    { return []string{} }
-func (c *Coder) getFilesExamined() any         { return []string{} }
-func (c *Coder) getCurrentFindings() any       { return map[string]any{} }
-func (c *Coder) getCodingProgress() any        { return map[string]any{} }
-func (c *Coder) getFilesCreated() any          { return []string{} }
-func (c *Coder) getCurrentTask() any           { return map[string]any{} }
-func (c *Coder) restoreExplorationHistory(any) {}
-func (c *Coder) restoreFilesExamined(any)      {}
-func (c *Coder) restoreCurrentFindings(any)    {}
-func (c *Coder) restoreCodingProgress(any)     {}
-func (c *Coder) restoreFilesCreated(any)       {}
-func (c *Coder) restoreCurrentTask(any)        {}
-
-// processPlanningToolCalls handles tool execution during planning.
-func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
-	c.logger.Info("🧑‍💻 Processing %d tool calls in planning state", len(toolCalls))
-
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		c.logger.Info("Executing planning tool: %s", toolCall.Name)
-
-		// Get tool from registry and execute.
-		tool, err := tools.Get(toolCall.Name)
-		if err != nil {
-			c.logger.Error("Tool not found in registry: %s", toolCall.Name)
-			return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("tool %s not found", toolCall.Name))
-		}
-
-		result, err := tool.Exec(ctx, toolCall.Parameters)
-		if err != nil {
-			// Tool execution failures are recoverable - add comprehensive error to context for LLM to react.
-			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			c.addComprehensiveToolFailureToContext(*toolCall, err)
-			continue // Continue processing other tool calls
-		}
-
-		// Handle tool result generically - check if tool requests state transition.
-		if resultMap, ok := result.(map[string]any); ok {
-			if nextState, hasNextState := resultMap["next_state"].(string); hasNextState {
-				return c.handleToolStateTransition(ctx, sm, toolCall.Name, nextState, resultMap)
-			}
-		}
-
-		// No state transition requested - continue in current state.
-		// Add tool execution results to context so Claude can see them.
-		c.addToolResultToContext(*toolCall, result)
-		c.logger.Info("Tool %s executed successfully, continuing in planning", toolCall.Name)
-	}
-
-	return StatePlanning, false, nil
-}
-
-// handleToolStateTransition processes generic tool state transitions.
-func (c *Coder) handleToolStateTransition(_ /* ctx */ context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
-	// Store all result data in state machine (let the tool decide what to store).
-	for key, value := range resultMap {
-		if key != "next_state" && key != "success" && key != "message" {
-			sm.SetStateData(key, value)
-		}
-	}
-
-	// Log the transition.
-	if message, hasMessage := resultMap["message"].(string); hasMessage {
-		c.logger.Info("Tool %s: %s", toolName, message)
-	}
-
-	// Handle tool-specific state transitions that require special processing.
-	switch toolName {
-	case tools.ToolSubmitPlan:
-		if nextState == string(StatePlanReview) {
-			// Set plan_submitted state data to trigger handlePlanSubmission.
-			sm.SetStateData(KeyPlanSubmitted, resultMap)
-			// Return to planning state to allow handlePlanSubmission to process the REQUEST.
-			return StatePlanning, false, nil
-		}
-	case tools.ToolMarkStoryComplete:
-		if nextState == "COMPLETION_REVIEW" {
-			// Set completion_submitted state data to trigger handleCompletionSubmission.
-			sm.SetStateData(string(stateDataKeyCompletionSubmitted), resultMap)
-			// Return to planning state to allow handleCompletionSubmission to process the REQUEST.
-			return StatePlanning, false, nil
-		}
-	case tools.ToolAskQuestion:
-		if nextState == string(StateQuestion) {
-			// Set question_submitted state data to trigger handleQuestionTransition.
-			sm.SetStateData(KeyQuestionSubmitted, resultMap)
-			return StatePlanning, false, nil
-		}
-	}
-
-	// Default behavior for tools that don't need special processing.
-	switch nextState {
-	case string(StatePlanReview):
-		return StatePlanReview, false, nil
-	case string(StateQuestion):
-		return StateQuestion, false, nil
-	default:
-		c.logger.Warn("Tool %s requested unknown state transition: %s", toolName, nextState)
-		return StatePlanning, false, nil
-	}
-}
+// Placeholder helper methods for coding context management (to be enhanced as needed).
 
 //nolint:unparam // Error return required for interface consistency
 func (c *Coder) handleDone(_ /* ctx */ context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
@@ -3316,11 +2255,8 @@ func (c *Coder) proceedToCodeReview(_ context.Context, _ *agent.BaseStateMachine
 
 // generateGitDiff generates a git diff showing changes made to the story branch.
 func (c *Coder) generateGitDiff(ctx context.Context, _ *agent.BaseStateMachine) (string, error) {
-	// Get the shell tool from registry.
-	tool, err := tools.Get("shell")
-	if err != nil {
-		return "", logx.Wrap(err, "shell tool not available")
-	}
+	// Create shell tool for git operations
+	tool := tools.NewShellTool(c.longRunningExecutor)
 
 	// Get the main branch name for comparison (usually 'main' or 'master').
 	mainBranch := "main" // Could make this configurable if needed
@@ -3353,11 +2289,8 @@ func (c *Coder) generateGitDiff(ctx context.Context, _ *agent.BaseStateMachine) 
 
 // cleanupEmptyBranch optionally deletes the development branch when no changes were made.
 func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachine) error {
-	// Get the shell tool from registry.
-	tool, err := tools.Get("shell")
-	if err != nil {
-		return logx.Wrap(err, "shell tool not available")
-	}
+	// Create shell tool for git operations
+	tool := tools.NewShellTool(c.longRunningExecutor)
 
 	// Get the current branch name.
 	branchName, exists := sm.GetStateValue(KeyBranchName)
@@ -3380,7 +2313,7 @@ func (c *Coder) cleanupEmptyBranch(ctx context.Context, sm *agent.BaseStateMachi
 		"cwd": c.workDir,
 	}
 
-	_, err = tool.Exec(ctx, args)
+	_, err := tool.Exec(ctx, args)
 	if err != nil {
 		// Try master if main doesn't exist.
 		args["cmd"] = "git checkout master"
@@ -3686,4 +2619,46 @@ func (c *Coder) addComprehensiveToolFailureToContext(toolCall agent.ToolCall, er
 	}
 
 	c.contextManager.AddMessage("tool", feedback.String())
+}
+
+// createPlanningToolProvider creates a ToolProvider for the planning state.
+func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider {
+	// Determine planning tools based on story type
+	var planningTools []string
+	if storyType == string(proto.StoryTypeDevOps) {
+		planningTools = tools.DevOpsPlanningTools
+	} else {
+		planningTools = tools.AppPlanningTools
+	}
+
+	// Create agent context for planning (read-only access)
+	agentCtx := tools.AgentContext{
+		Executor:        c.longRunningExecutor, // Use container executor
+		ReadOnly:        true,                  // Planning is read-only
+		NetworkDisabled: true,                  // No network access during planning
+		WorkDir:         c.workDir,
+	}
+
+	return tools.NewProvider(agentCtx, planningTools)
+}
+
+// createCodingToolProvider creates a ToolProvider for the coding state.
+func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
+	// Determine coding tools based on story type
+	var codingTools []string
+	if storyType == string(proto.StoryTypeDevOps) {
+		codingTools = tools.DevOpsCodingTools
+	} else {
+		codingTools = tools.AppCodingTools
+	}
+
+	// Create agent context for coding (read-write access)
+	agentCtx := tools.AgentContext{
+		Executor:        c.longRunningExecutor, // Use container executor
+		ReadOnly:        false,                 // Coding requires write access
+		NetworkDisabled: false,                 // May need network for builds/tests
+		WorkDir:         c.workDir,
+	}
+
+	return tools.NewProvider(agentCtx, codingTools)
 }

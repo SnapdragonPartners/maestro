@@ -70,6 +70,8 @@ func (cm *ContextManager) AddMessage(role, content string) {
 		role = "assistant" // Default role for empty roles
 	}
 
+	// Note: Role alternation validation removed - state transition messages were the root cause
+
 	message := Message{
 		Role:    role,
 		Content: strings.TrimSpace(content),

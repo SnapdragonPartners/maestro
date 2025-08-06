@@ -28,7 +28,7 @@ const (
 	buildSystemNode   = "node"
 
 	// Story content constants.
-	acceptanceCriteriaHeader = "## Acceptance Criteria\n"
+	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
 )
 
 // LLMClient defines the interface for language model interactions.
@@ -404,7 +404,7 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 
 // handleScoping processes the scoping phase (platform detection, bootstrap, spec analysis and story generation).
 func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
-	d.contextManager.AddMessage("assistant", "Scoping phase: analyzing specification and generating stories")
+	// State: analyzing specification and generating stories
 
 	// Extract spec file path from the SPEC message.
 	specFile := d.getSpecFileFromMessage()
@@ -562,20 +562,16 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
 		}
 
-		// Convert requirement to story with rich content
-		story := d.requirementToStory(storyID, specID, req)
-
-		// Store story in database (fire-and-forget)
-		d.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpUpsertStory,
-			Data:      story,
-			Response:  nil, // Fire-and-forget
-		}
+		// Add story to in-memory queue (canonical state)
+		d.queue.AddStory(storyID, specID, req.Title, req.StoryType, req.Dependencies, req.EstimatedPoints)
 
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// Handle dependencies between stories (simplified for now)
+	// Flush in-memory queue to database for persistence/logging first
+	d.queue.FlushToDatabase()
+
+	// Handle dependencies between stories AFTER stories are in database
 	d.processDependencies(requirements, storyIDs)
 
 	// Mark spec as processed
@@ -590,6 +586,9 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 }
 
 // requirementToStory converts a LLM-analyzed requirement to a database story.
+// Currently unused but kept for potential future use.
+//
+//nolint:unused
 func (d *Driver) requirementToStory(storyID, specID string, req *Requirement) *persistence.Story {
 	// Generate rich story content from LLM-analyzed requirement
 	content := d.generateRichStoryContent(req)
@@ -604,10 +603,14 @@ func (d *Driver) requirementToStory(storyID, specID string, req *Requirement) *p
 		CreatedAt:  time.Now(),
 		TokensUsed: 0,
 		CostUSD:    0.0,
+		StoryType:  req.StoryType, // Use story type from requirement
 	}
 }
 
 // generateRichStoryContent creates detailed markdown content for a story from LLM-analyzed requirement.
+// Currently unused but kept for potential future use.
+//
+//nolint:unused
 func (d *Driver) generateRichStoryContent(req *Requirement) string {
 	content := fmt.Sprintf("# %s\n\n", req.Title)
 
@@ -677,14 +680,12 @@ func (d *Driver) processDependencies(requirements []Requirement, storyIDs []stri
 
 // handleDispatching processes the dispatching phase (queue management and story assignment).
 func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
-	d.contextManager.AddMessage("assistant", "Dispatching phase: managing queue and assigning stories")
+	// State: managing queue and assigning stories
 
 	// Initialize queue if not already done.
 	if _, exists := d.stateData["queue_initialized"]; !exists {
-		// Load stories from the database (or fallback to directory if no persistence).
-		if err := d.queue.LoadFromDatabase(); err != nil {
-			return StateError, fmt.Errorf("failed to load stories from database: %w", err)
-		}
+		// Queue should already be populated during SCOPING phase
+		// Only load from database if this is a recovery scenario
 
 		// Detect cycles in dependencies.
 		cycles := d.queue.DetectCycles()
@@ -702,7 +703,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 
 		// Get queue summary for logging.
 		summary := d.queue.GetQueueSummary()
-		d.logger.Info("queue loaded: %d stories (%d ready)",
+		d.logger.Info("queue ready: %d stories (%d ready)",
 			summary["total_stories"], summary["ready_stories"])
 		d.stateData["queue_summary"] = summary
 	}
@@ -733,7 +734,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 
 // handleMonitoring processes the monitoring phase (waiting for coder requests).
 func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
-	d.contextManager.AddMessage("assistant", "Monitoring phase: waiting for coder requests and review completions")
+	// State: waiting for coder requests and review completions
 
 	// Check if all stories are completed.
 	if d.queue.AllStoriesCompleted() {
@@ -780,7 +781,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	default:
 	}
 
-	d.contextManager.AddMessage("assistant", "Request phase: processing coder request")
+	// State: processing coder request
 
 	// Get the current request from state data.
 	requestMsg, exists := d.stateData["current_request"].(*proto.AgentMsg)
@@ -1073,7 +1074,24 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	// Persist plan to database if this is a plan approval request
 	if approvalType == proto.ApprovalTypePlan && d.persistenceChannel != nil {
-		if contentStr, ok := content.(string); ok {
+		// For plan requests, look for content in the "plan" field first, then "content"
+		var planContent string
+		var planContentFound bool
+
+		if planPayload, exists := requestMsg.GetPayload("plan"); exists {
+			if planStr, ok := planPayload.(string); ok {
+				planContent = planStr
+				planContentFound = true
+			}
+		}
+		if !planContentFound {
+			if contentStr, ok := content.(string); ok {
+				planContent = contentStr
+				planContentFound = true
+			}
+		}
+
+		if planContentFound {
 			// Extract story_id
 			var storyIDStr string
 			if storyID, exists := requestMsg.GetPayload("story_id"); exists {
@@ -1094,7 +1112,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 				ID:         persistence.GenerateAgentPlanID(),
 				StoryID:    storyIDStr,
 				FromAgent:  requestMsg.FromAgent,
-				Content:    contentStr,
+				Content:    planContent,
 				Confidence: confidenceStr,
 				Status:     persistence.PlanStatusSubmitted,
 				CreatedAt:  requestMsg.Timestamp,
@@ -1393,7 +1411,7 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 
 // handleEscalated processes the escalated phase (waiting for human intervention).
 func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
-	d.contextManager.AddMessage("assistant", "Escalated phase: waiting for human intervention")
+	// State: waiting for human intervention
 
 	// Check escalation timeout (2 hours).
 	if escalatedAt, exists := d.stateData["escalated_at"].(time.Time); exists {
@@ -1445,7 +1463,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 
 // handleMerging processes the merging phase (merging approved code).
 func (d *Driver) handleMerging(_ context.Context) (proto.State, error) {
-	d.contextManager.AddMessage("assistant", "Merging phase: processing completed stories")
+	// State: processing completed stories
 
 	// TODO: Implement proper merging logic without RequestWorker
 	// For now, immediately return to dispatching to check for new ready stories.
@@ -1581,9 +1599,13 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 			AcceptanceCriteria []string `json:"acceptance_criteria"`
 			EstimatedPoints    int      `json:"estimated_points"`
 			Dependencies       []string `json:"dependencies,omitempty"`
+			StoryType          string   `json:"story_type,omitempty"` // Add story type field
 		} `json:"requirements"`
 		NextAction string `json:"next_action"`
 	}
+
+	// Log the JSON response length for debugging without cluttering logs
+	d.logger.Info("🏗️ Parsing LLM JSON response (%d chars)", len(jsonStr))
 
 	if err := json.Unmarshal([]byte(jsonStr), &llmResponse); err != nil {
 		// Enhanced error reporting with truncation detection
@@ -1633,11 +1655,27 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 			AcceptanceCriteria: req.AcceptanceCriteria,
 			EstimatedPoints:    req.EstimatedPoints,
 			Dependencies:       req.Dependencies,
+			StoryType:          req.StoryType,
 		}
 
 		// Validate and set reasonable defaults.
 		if requirement.EstimatedPoints < 1 || requirement.EstimatedPoints > 5 {
 			requirement.EstimatedPoints = 2 // Default to medium complexity
+		}
+
+		// Log the raw story_type value from JSON for debugging
+		d.logger.Info("🏗️ Raw story_type from JSON for '%s': '%s' (empty: %t)", requirement.Title, req.StoryType, req.StoryType == "")
+
+		// Validate story type and set default if invalid or missing
+		if !proto.IsValidStoryType(requirement.StoryType) {
+			if requirement.StoryType == "" {
+				d.logger.Info("🏗️ Story '%s' has EMPTY story_type, defaulting to 'app'", requirement.Title)
+			} else {
+				d.logger.Info("🏗️ Story '%s' has INVALID story_type '%s', defaulting to 'app'", requirement.Title, requirement.StoryType)
+			}
+			requirement.StoryType = string(proto.StoryTypeApp) // Default to app when uncertain
+		} else {
+			d.logger.Info("🏗️ Story '%s' classified as '%s'", requirement.Title, requirement.StoryType)
 		}
 
 		if requirement.Title == "" {
@@ -1720,16 +1758,18 @@ func (d *Driver) sendStoryToDispatcher(_ context.Context, storyID string) error 
 	// Create story message for the dispatcher ("coder" targets any available coder).
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
 	storyMsg.SetPayload(proto.KeyStoryID, storyID)
-	storyMsg.SetPayload("story_type", "implement_story")
 
 	d.logger.Info("🏗️ Created STORY message %s for story %s -> dispatcher", storyMsg.ID, storyID)
 
 	// Get story details.
 	if story, exists := d.queue.stories[storyID]; exists {
+		d.logger.Info("🏗️ Queue story StoryType for %s: '%s'", storyID, story.StoryType)
 		storyMsg.SetPayload(proto.KeyTitle, story.Title)
 		storyMsg.SetPayload(proto.KeyFilePath, story.FilePath)
 		storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
 		storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
+		storyMsg.SetPayload(proto.KeyStoryType, story.StoryType) // Pass actual story type
+		d.logger.Info("🏗️ Set story_type payload to '%s' for story %s", story.StoryType, storyID)
 
 		// Read and parse story content for the coder.
 		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {

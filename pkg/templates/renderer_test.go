@@ -18,8 +18,10 @@ func TestNewRenderer(t *testing.T) {
 	// Check that all expected templates are loaded.
 	expectedTemplates := []StateTemplate{
 		// Coding agent templates.
-		PlanningTemplate,
-		CodingTemplate,
+		DevOpsPlanningTemplate,
+		AppPlanningTemplate,
+		DevOpsCodingTemplate,
+		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
 		// Architect agent templates.
@@ -40,7 +42,7 @@ func TestNewRenderer(t *testing.T) {
 	}
 }
 
-func TestRenderPlanningTemplate(t *testing.T) {
+func TestRenderAppPlanningTemplate(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
 		t.Fatalf("Failed to create renderer: %v", err)
@@ -51,26 +53,25 @@ func TestRenderPlanningTemplate(t *testing.T) {
 		ToolDocumentation: "## Available Tools\n\n### shell\nExecute shell commands in the workspace.",
 	}
 
-	result, err := renderer.Render(PlanningTemplate, data)
+	result, err := renderer.Render(AppPlanningTemplate, data)
 	if err != nil {
-		t.Fatalf("Failed to render planning template: %v", err)
+		t.Fatalf("Failed to render app planning template: %v", err)
 	}
 
 	// Verify all placeholders were replaced.
 	if strings.Contains(result, "{{.TaskContent}}") {
 		t.Error("Template placeholder {{.TaskContent}} was not replaced")
 	}
-	if strings.Contains(result, "{{.Context}}") {
-		t.Error("Template placeholder {{.Context}} was not replaced")
-	}
 
 	// Verify content insertion.
 	if !strings.Contains(result, data.TaskContent) {
 		t.Error("Template should contain task content")
 	}
-	// Note: Planning template doesn't use Context field - it has its own structure
 
-	// Verify template contains tools guidance.
+	// Verify template contains app-specific guidance.
+	if !strings.Contains(result, "Application Development Planning") {
+		t.Error("Template should contain app planning title")
+	}
 	if !strings.Contains(result, "Available Tools") {
 		t.Error("Template should mention available tools")
 	}
@@ -79,7 +80,41 @@ func TestRenderPlanningTemplate(t *testing.T) {
 	}
 }
 
-func TestRenderCodingTemplate(t *testing.T) {
+func TestRenderDevOpsPlanningTemplate(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	data := &TemplateData{
+		TaskContent:       "Build and validate Docker container",
+		ToolDocumentation: "## Available Tools\n\n### container_build\nBuild Docker containers.",
+	}
+
+	result, err := renderer.Render(DevOpsPlanningTemplate, data)
+	if err != nil {
+		t.Fatalf("Failed to render DevOps planning template: %v", err)
+	}
+
+	// Verify DevOps-specific content
+	if !strings.Contains(result, data.TaskContent) {
+		t.Error("Template should contain task content")
+	}
+
+	if !strings.Contains(result, "DevOps Infrastructure Planning") {
+		t.Error("Template should contain DevOps planning title")
+	}
+
+	if !strings.Contains(result, "container_build") {
+		t.Error("Template should mention container_build tool")
+	}
+
+	if !strings.Contains(result, "Infrastructure Exploration") {
+		t.Error("Template should contain infrastructure exploration section")
+	}
+}
+
+func TestRenderAppCodingTemplate(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
 		t.Fatalf("Failed to create renderer: %v", err)
@@ -90,7 +125,7 @@ func TestRenderCodingTemplate(t *testing.T) {
 		Plan:        "1. Create handler function 2. Add route 3. Test endpoint",
 	}
 
-	result, err := renderer.Render(CodingTemplate, data)
+	result, err := renderer.Render(AppCodingTemplate, data)
 	if err != nil {
 		t.Fatalf("Failed to render coding template: %v", err)
 	}
@@ -109,6 +144,40 @@ func TestRenderCodingTemplate(t *testing.T) {
 	}
 	if !strings.Contains(result, data.TaskContent) {
 		t.Error("Template should contain task content")
+	}
+}
+
+func TestRenderDevOpsCodingTemplate(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	data := &TemplateData{
+		TaskContent: "Build and validate Docker container",
+		Plan:        "1. Build container 2. Test container 3. Validate health check",
+	}
+
+	result, err := renderer.Render(DevOpsCodingTemplate, data)
+	if err != nil {
+		t.Fatalf("Failed to render DevOps coding template: %v", err)
+	}
+
+	// Verify DevOps-specific content
+	if !strings.Contains(result, data.TaskContent) {
+		t.Error("Template should contain task content")
+	}
+
+	if !strings.Contains(result, data.Plan) {
+		t.Error("Template should contain plan")
+	}
+
+	if !strings.Contains(result, "DevOps Implementation Guidelines") {
+		t.Error("Template should contain DevOps guidelines")
+	}
+
+	if !strings.Contains(result, "container_build") {
+		t.Error("Template should mention container_build tool")
 	}
 }
 
@@ -185,8 +254,10 @@ func TestRenderWithCompleteData(t *testing.T) {
 
 	// Test each template can handle complete data.
 	templates := []StateTemplate{
-		PlanningTemplate,
-		CodingTemplate,
+		DevOpsPlanningTemplate,
+		AppPlanningTemplate,
+		DevOpsCodingTemplate,
+		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
 	}

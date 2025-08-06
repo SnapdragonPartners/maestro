@@ -269,7 +269,7 @@ func TestBuildToolsDefinitions(t *testing.T) {
 	buildService := build.NewBuildService()
 
 	// Test all tool definitions.
-	tools := []ToolChannel{
+	tools := []Tool{
 		NewBuildTool(buildService),
 		NewTestTool(buildService),
 		NewLintTool(buildService),

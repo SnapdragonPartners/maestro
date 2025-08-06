@@ -6,10 +6,12 @@ import (
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
+
+	"orchestrator/pkg/proto"
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 4
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -86,7 +88,8 @@ func createSchema(db *sql.DB) error {
 			assigned_agent TEXT,
 			tokens_used BIGINT DEFAULT 0,
 			cost_usd DECIMAL(10,4) DEFAULT 0.0,
-			metadata TEXT
+			metadata TEXT,
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app'))
 		)`,
 
 		// Story dependencies junction table
@@ -145,7 +148,7 @@ func createSchema(db *sql.DB) error {
 			story_id TEXT NOT NULL REFERENCES stories(id),
 			from_agent TEXT NOT NULL,
 			content TEXT NOT NULL,
-			confidence TEXT CHECK (confidence IN ('high', 'medium', 'low')),
+			confidence TEXT CHECK (confidence IN ('` + string(proto.ConfidenceHigh) + `', '` + string(proto.ConfidenceMedium) + `', '` + string(proto.ConfidenceLow) + `')),
 			status TEXT DEFAULT 'submitted' CHECK (status IN ('submitted', 'approved', 'rejected', 'needs_changes')),
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			reviewed_at DATETIME,
@@ -158,6 +161,7 @@ func createSchema(db *sql.DB) error {
 	indices := []string{
 		"CREATE INDEX IF NOT EXISTS idx_stories_status ON stories(status)",
 		"CREATE INDEX IF NOT EXISTS idx_stories_agent ON stories(assigned_agent)",
+		"CREATE INDEX IF NOT EXISTS idx_stories_type ON stories(story_type)",
 		"CREATE INDEX IF NOT EXISTS idx_depends_on ON story_dependencies(depends_on)",
 		"CREATE INDEX IF NOT EXISTS idx_stories_spec ON stories(spec_id)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_states_type ON agent_states(agent_type)",

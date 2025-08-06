@@ -67,6 +67,31 @@ const (
 	PriorityHigh Priority = "HIGH"
 )
 
+// Confidence represents the confidence level for plans and completions.
+type Confidence string
+
+const (
+	// ConfidenceLow represents low confidence level.
+	ConfidenceLow Confidence = "LOW"
+
+	// ConfidenceMedium represents medium confidence level.
+	ConfidenceMedium Confidence = "MEDIUM"
+
+	// ConfidenceHigh represents high confidence level.
+	ConfidenceHigh Confidence = "HIGH"
+)
+
+// StoryType represents the type of story (DevOps or App).
+type StoryType string
+
+const (
+	// StoryTypeDevOps represents DevOps infrastructure stories.
+	StoryTypeDevOps StoryType = "devops"
+
+	// StoryTypeApp represents application development stories.
+	StoryTypeApp StoryType = "app"
+)
+
 // Common payload and metadata keys used in agent messages.
 const (
 	// Payload keys.
@@ -661,6 +686,24 @@ func ParseApprovalType(s string) (ApprovalType, error) {
 		}
 		return "", fmt.Errorf("unknown approval type: %s", s)
 	}
+}
+
+// ValidStoryTypes returns all valid story types.
+func ValidStoryTypes() []string {
+	return []string{
+		string(StoryTypeDevOps),
+		string(StoryTypeApp),
+	}
+}
+
+// IsValidStoryType checks if a story type string is valid.
+func IsValidStoryType(storyType string) bool {
+	for _, validType := range ValidStoryTypes() {
+		if storyType == validType {
+			return true
+		}
+	}
+	return false
 }
 
 // EnumExtractor provides a generic way to safely extract and validate enum values from payloads.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/proto"
 )
 
 // Requirement represents a parsed requirement from a specification.
@@ -22,6 +23,7 @@ type Requirement struct {
 	Dependencies       []string          `json:"dependencies"`
 	Tags               []string          `json:"tags"`
 	Details            map[string]string `json:"details"`
+	StoryType          string            `json:"story_type"` // "devops" or "app"
 }
 
 // DBSpecProcessor handles processing specifications into database-stored stories.
@@ -132,6 +134,7 @@ func (dsp *DBSpecProcessor) parseSpecContent(specContent string) ([]Requirement,
 		}
 	}
 
+	// Default to app story type - LLM will provide proper classification in JSON
 	requirement := Requirement{
 		ID:                 "bootstrap-001",
 		Title:              title,
@@ -142,6 +145,7 @@ func (dsp *DBSpecProcessor) parseSpecContent(specContent string) ([]Requirement,
 		Dependencies:       []string{},
 		Tags:               []string{"bootstrap", "infrastructure"},
 		Details:            map[string]string{"type": "bootstrap"},
+		StoryType:          string(proto.StoryTypeApp), // Default, will be overridden by LLM JSON
 	}
 
 	return []Requirement{requirement}, nil
@@ -162,6 +166,7 @@ func (dsp *DBSpecProcessor) requirementToStory(storyID, specID string, req *Requ
 		CreatedAt:  time.Now(),
 		TokensUsed: 0,
 		CostUSD:    0.0,
+		StoryType:  req.StoryType,
 	}
 }
 
@@ -187,6 +192,7 @@ func (dsp *DBSpecProcessor) generateStoryContent(req *Requirement) string {
 	}
 
 	content += fmt.Sprintf("**Estimated Points:** %d\n", req.EstimatedPoints)
+	content += fmt.Sprintf("**Story Type:** %s\n", req.StoryType)
 
 	return content
 }

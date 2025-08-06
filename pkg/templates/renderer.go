@@ -25,16 +25,25 @@ type TemplateData struct {
 	WorkDir           string         `json:"work_dir,omitempty"`
 	TreeOutput        string         `json:"tree_output,omitempty"`
 	ToolDocumentation string         `json:"tool_documentation,omitempty"`
+	// Build commands from project configuration
+	BuildCommand string `json:"build_command,omitempty"`
+	TestCommand  string `json:"test_command,omitempty"`
+	LintCommand  string `json:"lint_command,omitempty"`
+	RunCommand   string `json:"run_command,omitempty"`
 }
 
 // StateTemplate represents a workflow state template.
 type StateTemplate string
 
 const (
-	// PlanningTemplate is the template for coder planning state.
-	PlanningTemplate StateTemplate = "planning.tpl.md"
-	// CodingTemplate is the template for coder coding state.
-	CodingTemplate StateTemplate = "coding.tpl.md"
+	// DevOpsPlanningTemplate is the template for DevOps planning state.
+	DevOpsPlanningTemplate StateTemplate = "devops_planning.tpl.md"
+	// AppPlanningTemplate is the template for App planning state.
+	AppPlanningTemplate StateTemplate = "app_planning.tpl.md"
+	// DevOpsCodingTemplate is the template for DevOps coding tasks.
+	DevOpsCodingTemplate StateTemplate = "devops_coding.tpl.md"
+	// AppCodingTemplate is the template for App coding tasks.
+	AppCodingTemplate StateTemplate = "app_coding.tpl.md"
 	// TestingTemplate is the template for coder testing state.
 	TestingTemplate StateTemplate = "testing.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
@@ -64,8 +73,10 @@ func NewRenderer() (*Renderer, error) {
 	// Load all templates.
 	templateNames := []StateTemplate{
 		// Coding agent templates.
-		PlanningTemplate,
-		CodingTemplate,
+		DevOpsPlanningTemplate,
+		AppPlanningTemplate,
+		DevOpsCodingTemplate,
+		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
 		// Architect agent templates.

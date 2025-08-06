@@ -126,8 +126,47 @@ func (r *RetryableClient) Complete(ctx context.Context, req CompletionRequest) (
 		// Determine if this is the final attempt
 		isFinalAttempt := !r.shouldRetry(err) || attempt >= retryConfig.MaxRetries
 
-		// Add aggressive logging for unknown and empty response errors to help debug circuit breaker issues
-		if errorType == llmerrors.ErrorTypeUnknown || errorType == llmerrors.ErrorTypeEmptyResponse {
+		// Handle empty response errors by panicking with full context (fail-fast debugging)
+		if errorType == llmerrors.ErrorTypeEmptyResponse {
+			// Build complete prompt content for analysis
+			promptContent := ""
+			totalChars := 0
+			for i := range req.Messages {
+				if i > 0 {
+					promptContent += "\n---\n"
+				}
+				msgContent := fmt.Sprintf("Role: %s\nContent: %s", req.Messages[i].Role, req.Messages[i].Content)
+				promptContent += msgContent
+				totalChars += len(req.Messages[i].Content)
+			}
+
+			// Log with detailed debugging information before panicking
+			fmt.Printf("\n=== [FATAL] EMPTY RESPONSE ERROR - Panic for debugging ===\n")
+			fmt.Printf("Error Type: %T\n", err)
+			fmt.Printf("Error Message: %s\n", err.Error())
+			fmt.Printf("Classified As: %s\n", errorType.String())
+			fmt.Printf("Attempt: %d/%d\n", attempt+1, retryConfig.MaxRetries)
+			fmt.Printf("Request MaxTokens: %d\n", req.MaxTokens)
+			fmt.Printf("Request Temperature: %.2f\n", req.Temperature)
+			fmt.Printf("Messages Count: %d\n", len(req.Messages))
+			fmt.Printf("Total Content Length: %d chars\n", totalChars)
+			fmt.Printf("Full Prompt Length: %d chars\n", len(promptContent))
+
+			// Add token count estimation
+			estimatedTokens := utils.CountTokensSimple(promptContent)
+			fmt.Printf("Estimated Tokens: %d\n", estimatedTokens)
+
+			// Show complete prompt for debugging
+			fmt.Printf("Complete Prompt for Debugging:\n%s\n", promptContent)
+			fmt.Printf("Full Error Details: %+v\n", err)
+			fmt.Printf("=========================================================================\n\n")
+
+			// Panic with detailed context to force immediate debugging
+			panic(fmt.Sprintf("Empty response from Claude API - full context logged above. Error: %v", err))
+		}
+
+		// Add aggressive logging for unknown errors to help debug circuit breaker issues
+		if errorType == llmerrors.ErrorTypeUnknown {
 			// Build complete prompt content for analysis
 			promptContent := ""
 			totalChars := 0
@@ -273,9 +312,9 @@ func (r *RetryableClient) shouldRetry(err error) bool {
 		return true
 	}
 
-	// Retry on empty responses from LLM.
+	// Don't retry on empty responses - panic for immediate debugging instead
 	if strings.Contains(errStr, "empty response") {
-		return true
+		return false
 	}
 
 	// Don't retry on client errors (4xx) except rate limiting
