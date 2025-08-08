@@ -229,8 +229,8 @@ func parseEventLog(logFile string) ([]StoryResultPair, error) {
 			// Store STORY messages by their ID.
 			storyMap[msg.ID] = msg
 
-		case proto.MsgTypeRESULT:
-			// Find the corresponding STORY for this RESULT.
+		case proto.MsgTypeRESPONSE:
+			// Find the corresponding STORY for this RESPONSE.
 			if msg.ParentMsgID != "" {
 				if story, exists := storyMap[msg.ParentMsgID]; exists {
 					// Only include pairs where we can replay the agent.

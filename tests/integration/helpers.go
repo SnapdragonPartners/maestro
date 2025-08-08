@@ -96,7 +96,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 
 	// Create minimal model config.
 	modelCfg := &config.Model{
-		Name:           "claude-3-5-sonnet-20241022",
+		Name:           config.ModelClaudeSonnetLatest,
 		MaxTPM:         50000,
 		DailyBudget:    200.0,
 		MaxConnections: 4,
@@ -136,7 +136,7 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, modelConfig *config.
 	// Use provided model config or create default
 	if modelConfig == nil {
 		modelConfig = &config.Model{
-			Name:           "claude-3-5-sonnet-20241022",
+			Name:           config.ModelClaudeSonnetLatest,
 			MaxTPM:         50000,
 			DailyBudget:    200.0,
 			MaxConnections: 4,
@@ -170,13 +170,13 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, modelConfig *config.
 type MessageMatchers struct{}
 
 // MatchRequestType returns a matcher that checks for a specific request type.
-func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*proto.AgentMsg) bool {
+func (MessageMatchers) MatchRequestType(requestType string) func(*proto.AgentMsg) bool {
 	return func(msg *proto.AgentMsg) bool {
 		if msg.Type != proto.MsgTypeREQUEST {
 			return false
 		}
 
-		reqType, exists := msg.GetPayload(proto.KeyRequestType)
+		reqType, exists := msg.GetPayload("request_type")
 		if !exists {
 			return false
 		}
@@ -186,7 +186,7 @@ func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*pro
 			return false
 		}
 
-		parsedType, err := proto.ParseRequestType(reqTypeStr)
+		parsedType, err := func(s string) (string, error) { return s, nil }(reqTypeStr)
 		if err != nil {
 			return false
 		}
@@ -198,7 +198,7 @@ func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*pro
 // MatchResultWithStatus returns a matcher that checks for a RESULT message with specific status.
 func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg) bool {
 	return func(msg *proto.AgentMsg) bool {
-		if msg.Type != proto.MsgTypeRESULT {
+		if msg.Type != proto.MsgTypeRESPONSE {
 			return false
 		}
 
@@ -218,7 +218,7 @@ func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg
 
 // MatchApprovalRequest returns a matcher for approval requests.
 func (MessageMatchers) MatchApprovalRequest() func(*proto.AgentMsg) bool {
-	return MessageMatchers{}.MatchRequestType(proto.RequestApproval)
+	return MessageMatchers{}.MatchRequestType("approval")
 }
 
 // Match provides a common message matchers instance.

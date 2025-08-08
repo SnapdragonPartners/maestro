@@ -1,0 +1,1134 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>dispatch: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">orchestrator/pkg/dispatch/dispatcher.go (76.9%)</option>
+				
+				<option value="file1">orchestrator/pkg/dispatch/strategy_prod.go (100.0%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// Package dispatch provides message routing and agent coordination for the orchestrator.
+// It manages agent communication channels, rate limiting, and message processing workflows.
+package dispatch
+
+import (
+        "context"
+        "fmt"
+        "strings"
+        "sync"
+        "time"
+
+        "orchestrator/pkg/agent"
+        "orchestrator/pkg/config"
+        "orchestrator/pkg/eventlog"
+        "orchestrator/pkg/exec"
+        "orchestrator/pkg/limiter"
+        "orchestrator/pkg/logx"
+        "orchestrator/pkg/proto"
+)
+
+// Severity represents the severity level of agent errors.
+type Severity int
+
+const (
+        // Warn indicates a warning-level severity.
+        Warn Severity = iota
+        // Fatal indicates a fatal-level severity.
+        Fatal
+)
+
+// AgentError represents an error reported by an agent.
+type AgentError struct {
+        Err error
+        ID  string
+        Sev Severity
+}
+
+// AttachChannels removed - channels are now set directly via ChannelReceiver interface.
+
+// runStrategy defines how the dispatcher executes its core loops
+type runStrategy interface {
+        Run(d *Dispatcher, ctx context.Context) error
+        Stop() error
+}
+
+// Agent represents an agent that can be managed by the dispatcher.
+type Agent interface {
+        GetID() string
+        Shutdown(ctx context.Context) error
+}
+
+// ChannelReceiver is an optional interface for agents that need direct channel access.
+type ChannelReceiver interface {
+        SetChannels(specCh &lt;-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh &lt;-chan *proto.AgentMsg)
+        SetDispatcher(dispatcher *Dispatcher)
+        SetStateNotificationChannel(stateNotifCh chan&lt;- *proto.StateChangeNotification)
+}
+
+// Dispatcher coordinates message passing and work distribution between agents.
+//
+//nolint:govet // Large complex struct, logical grouping preferred over memory optimization
+type Dispatcher struct {
+        agents      map[string]Agent
+        rateLimiter *limiter.Limiter
+        eventLog    *eventlog.Writer
+        logger      *logx.Logger
+        config      *config.Config
+        inputChan   chan *proto.AgentMsg
+        shutdown    chan struct{}
+        mu          sync.RWMutex
+        wg          sync.WaitGroup
+        running     bool
+
+        // Phase 1: Channel-based queues.
+        storyCh     chan *proto.AgentMsg // Ready stories for any coder (replaces sharedWorkQueue)
+        questionsCh chan *proto.AgentMsg // Questions/requests for architect (replaces architectRequestQueue)
+
+        // Phase 2: Per-agent reply channels.
+        replyChannels map[string]chan *proto.AgentMsg // Per-agent reply channels for ANSWER/RESULT messages
+
+        // Channel-based notifications for architect.
+        specCh         chan *proto.AgentMsg // Delivers spec messages to architect
+        architectID    string               // ID of the architect to notify
+        notificationMu sync.RWMutex         // Protects notification channels
+
+        // S-5: Metrics monitoring.
+        highUtilizationStart time.Time    // Track when high utilization started
+        highUtilizationMu    sync.RWMutex // Protects high utilization tracking
+
+        // Supervisor pattern for error handling.
+        errCh chan AgentError // Channel for agent error reporting
+
+        // Story lease tracking.
+        leases      map[string]string // agent_id -&gt; story_id
+        leasesMutex sync.Mutex        // Protects lease map
+
+        // Container registry for centralized container tracking.
+        containerRegistry *exec.ContainerRegistry // Tracks all active containers
+
+        // State change notifications.
+        stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
+        
+        // Execution strategy for testing
+        runStrat runStrategy // Controls how dispatcher executes (goroutines vs step-by-step)
+}
+
+// Result represents the result of a message dispatch operation.
+type Result struct {
+        Message *proto.AgentMsg
+        Error   error
+}
+
+// NewDispatcher creates a new message dispatcher with the given configuration.
+func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *eventlog.Writer) (*Dispatcher, error) <span class="cov8" title="1">{
+        return &amp;Dispatcher{
+                agents:            make(map[string]Agent),
+                rateLimiter:       rateLimiter,
+                eventLog:          eventLog,
+                logger:            logx.NewLogger("dispatcher"),
+                config:            cfg,
+                inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
+                shutdown:          make(chan struct{}),
+                running:           false,
+                specCh:            make(chan *proto.AgentMsg, 10),                                             // Buffered channel for spec messages
+                storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
+                questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
+                replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
+                errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
+                stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
+                leases:            make(map[string]string),                                                    // Story lease tracking
+                containerRegistry: exec.NewContainerRegistry(logx.NewLogger("container-registry")),            // Container tracking registry
+                runStrat:          &amp;goroutineStrategy{}, // Default to production goroutine strategy
+        }, nil
+}</span>
+
+// RegisterAgent is deprecated - use Attach() instead.
+func (d *Dispatcher) RegisterAgent(agent Agent) error <span class="cov8" title="1">{
+        d.logger.Warn("RegisterAgent is deprecated, use Attach() instead for agent %s", agent.GetID())
+        d.Attach(agent)
+        return nil
+}</span>
+
+// Attach provides channels for agent communication based on agent type.
+func (d *Dispatcher) Attach(ag Agent) <span class="cov8" title="1">{
+        d.mu.Lock()
+        defer d.mu.Unlock()
+
+        agentID := ag.GetID()
+
+        // Store agent in map.
+        d.agents[agentID] = ag
+
+        // Create reply channel for this agent (buffer size = 1).
+        replyCh := make(chan *proto.AgentMsg, 1)
+        d.replyChannels[agentID] = replyCh
+
+        // Set up channels for agents that implement ChannelReceiver interface.
+        if channelReceiver, ok := ag.(ChannelReceiver); ok </span><span class="cov8" title="1">{
+                // Set up state notification channel for all ChannelReceiver agents.
+                channelReceiver.SetStateNotificationChannel(d.stateChangeCh)
+
+                // Determine agent type to provide appropriate channels.
+                if agentDriver, ok := ag.(agent.Driver); ok </span><span class="cov8" title="1">{
+                        switch agentDriver.GetAgentType() </span>{
+                        case agent.TypeArchitect:<span class="cov8" title="1">
+                                d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
+                                channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
+                                channelReceiver.SetDispatcher(d)
+                                return</span>
+                        case agent.TypeCoder:<span class="cov8" title="1">
+                                d.logger.Info("Attached coder agent: %s with direct channel setup", agentID)
+                                // Coders receive story messages via storyCh.
+                                channelReceiver.SetChannels(d.storyCh, nil, replyCh)
+                                channelReceiver.SetDispatcher(d)
+                                return</span>
+                        }
+                }
+        }
+
+        // For other agents, log the attachment.
+        <span class="cov8" title="1">if agentDriver, ok := ag.(agent.Driver); ok </span><span class="cov0" title="0">{
+                switch agentDriver.GetAgentType() </span>{
+                case agent.TypeArchitect:<span class="cov0" title="0">
+                        d.logger.Info("Attached architect agent: %s", agentID)</span>
+                case agent.TypeCoder:<span class="cov0" title="0">
+                        d.logger.Info("Attached coder agent: %s", agentID)</span>
+                }
+        } else<span class="cov8" title="1"> {
+                d.logger.Warn("Agent %s does not implement Driver interface", agentID)
+        }</span>
+}
+
+// Detach removes an agent and cleans up its channels (public method for orchestrator).
+func (d *Dispatcher) Detach(agentID string) <span class="cov8" title="1">{
+        d.detach(agentID)
+}</span>
+
+// detach removes an agent and cleans up its channels.
+func (d *Dispatcher) detach(agentID string) <span class="cov8" title="1">{
+        d.mu.Lock()
+        defer d.mu.Unlock()
+
+        // Remove from agents map.
+        delete(d.agents, agentID)
+
+        // Close and remove reply channel.
+        if replyCh, exists := d.replyChannels[agentID]; exists </span><span class="cov8" title="1">{
+                close(replyCh)
+                delete(d.replyChannels, agentID)
+                d.logger.Info("Detached agent: %s and closed reply channel", agentID)
+        }</span>
+}
+
+// UnregisterAgent is deprecated - agents should use defer d.detach() after Attach().
+func (d *Dispatcher) UnregisterAgent(agentID string) error <span class="cov8" title="1">{
+        d.logger.Warn("UnregisterAgent is deprecated, use defer detach() instead for agent %s", agentID)
+        d.detach(agentID)
+        return nil
+}</span>
+
+// routeToReplyCh routes ANSWER/RESULT messages to the appropriate coder's reply channel.
+func (d *Dispatcher) routeToReplyCh(msg *proto.AgentMsg, msgTypeStr string) <span class="cov8" title="1">{
+        targetAgent := msg.ToAgent
+
+        d.logger.Info("🔄 Routing %s %s to agent %s reply channel", msgTypeStr, msg.ID, targetAgent)
+
+        // Find the reply channel for this agent.
+        d.mu.RLock()
+        replyCh, exists := d.replyChannels[targetAgent]
+        d.mu.RUnlock()
+
+        if !exists </span><span class="cov8" title="1">{
+                d.logger.Warn("❌ No reply channel found for agent %s (message %s dropped)", targetAgent, msg.ID)
+                return
+        }</span>
+
+        // Send to reply channel (non-blocking with buffer size 1).
+        <span class="cov8" title="1">select </span>{
+        case replyCh &lt;- msg:<span class="cov8" title="1">
+                d.logger.Info("✅ %s %s delivered to agent %s reply channel", msgTypeStr, msg.ID, targetAgent)</span>
+        default:<span class="cov8" title="1">
+                d.logger.Warn("❌ Reply channel full for agent %s, dropping %s %s", targetAgent, msgTypeStr, msg.ID)</span>
+        }
+}
+
+// Start begins the dispatcher's message processing loop.
+func (d *Dispatcher) Start(ctx context.Context) error <span class="cov8" title="1">{
+        d.mu.Lock()
+        if d.running </span><span class="cov8" title="1">{
+                d.mu.Unlock()
+                return fmt.Errorf("dispatcher is already running")
+        }</span>
+        <span class="cov8" title="1">d.running = true
+        d.mu.Unlock()
+
+        d.logger.Info("Starting dispatcher")
+
+        // Use the run strategy to start execution
+        if d.runStrat != nil </span><span class="cov8" title="1">{
+                if err := d.runStrat.Run(d, ctx); err != nil </span><span class="cov0" title="0">{
+                        d.mu.Lock()
+                        d.running = false
+                        d.mu.Unlock()
+                        return err
+                }</span>
+        }
+
+        // Start container registry cleanup routine.
+        // Check every 5 minutes for containers idle &gt; 30 minutes.
+        <span class="cov8" title="1">executor := exec.NewLongRunningDockerExec("alpine:latest", "") // Empty agentID - for cleanup only
+        d.containerRegistry.StartCleanupRoutine(ctx, executor, 5*time.Minute, 30*time.Minute)
+
+        return nil</span>
+}
+
+// Stop gracefully shuts down the dispatcher.
+func (d *Dispatcher) Stop(ctx context.Context) error <span class="cov8" title="1">{
+        d.mu.Lock()
+        if !d.running </span><span class="cov8" title="1">{
+                d.mu.Unlock()
+                return nil
+        }</span>
+        <span class="cov8" title="1">d.running = false
+        d.mu.Unlock()
+
+        d.logger.Info("Stopping dispatcher")
+
+        // Signal shutdown to all goroutines.
+        close(d.shutdown)
+
+        // Shutdown container registry cleanup routine.
+        d.containerRegistry.Shutdown()
+
+        // Use the run strategy for stopping
+        if d.runStrat != nil </span><span class="cov8" title="1">{
+                if err := d.runStrat.Stop(); err != nil </span><span class="cov0" title="0">{
+                        d.logger.Warn("Run strategy stop returned error: %v", err)
+                }</span>
+        }
+
+        // Wait for workers to finish BEFORE closing channels to prevent race conditions.
+        <span class="cov8" title="1">done := make(chan struct{})
+        go func() </span><span class="cov8" title="1">{
+                d.wg.Wait()
+                close(done)
+        }</span>()
+
+        <span class="cov8" title="1">select </span>{
+        case &lt;-done:<span class="cov8" title="1">
+                d.logger.Info("All workers finished, now closing channels")
+                // Close all channels AFTER workers have finished.
+                d.closeAllChannels()
+                d.logger.Info("Dispatcher stopped successfully")
+                return nil</span>
+        case &lt;-ctx.Done():<span class="cov0" title="0">
+                d.logger.Warn("Dispatcher stop timed out, closing channels anyway")
+                // Close channels even on timeout to prevent resource leaks
+                d.closeAllChannels()
+                return logx.Wrap(ctx.Err(), "dispatcher stop timed out")</span>
+        }
+}
+
+// DispatchMessage routes a message to the appropriate agent or queue.
+func (d *Dispatcher) DispatchMessage(msg *proto.AgentMsg) error <span class="cov8" title="1">{
+        d.mu.RLock()
+        running := d.running
+        d.mu.RUnlock()
+
+        if !running </span><span class="cov8" title="1">{
+                return fmt.Errorf("dispatcher is not running")
+        }</span>
+
+        // Note: Event logging will happen after name resolution in processMessage.
+        // to ensure the logged message reflects the actual target agent.
+
+        // For STORY messages, check if story channel has capacity first
+        <span class="cov8" title="1">if msg.Type == proto.MsgTypeSTORY </span><span class="cov8" title="1">{
+                // Check if story channel is full (non-blocking check)
+                if len(d.storyCh) &gt;= cap(d.storyCh) </span><span class="cov0" title="0">{
+                        d.logger.Warn("⚠️  Story channel full (%d/%d), could not deliver story %s", len(d.storyCh), cap(d.storyCh), msg.ID)
+                        return fmt.Errorf("story channel full, could not deliver story %s", msg.ID)
+                }</span>
+        }
+
+        <span class="cov8" title="1">select </span>{
+        case d.inputChan &lt;- msg:<span class="cov8" title="1">
+                // Enhanced logging for unified protocol messages
+                kindInfo := ""
+                if msg.Type == proto.MsgTypeREQUEST || msg.Type == proto.MsgTypeRESPONSE </span><span class="cov0" title="0">{
+                        if kindRaw, hasKind := msg.GetPayload(proto.KeyKind); hasKind </span><span class="cov0" title="0">{
+                                if kindStr, ok := kindRaw.(string); ok </span><span class="cov0" title="0">{
+                                        kindInfo = fmt.Sprintf(" (kind: %s)", kindStr)
+                                }</span>
+                        }
+                }
+                <span class="cov8" title="1">d.logger.Debug("Queued message %s: %s → %s%s", msg.ID, msg.FromAgent, msg.ToAgent, kindInfo)
+                return nil</span>
+        default:<span class="cov0" title="0">
+                return fmt.Errorf("message queue is full")</span>
+        }
+}
+
+func (d *Dispatcher) messageProcessor(ctx context.Context) <span class="cov8" title="1">{
+        defer d.wg.Done()
+
+        for </span><span class="cov8" title="1">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov0" title="0">
+                        d.logger.Info("Message processor stopped by context")
+                        return</span>
+                case &lt;-d.shutdown:<span class="cov8" title="1">
+                        d.logger.Info("Message processor stopped by shutdown signal")
+                        return</span>
+                case msg, ok := &lt;-d.inputChan:<span class="cov8" title="1">
+                        if !ok </span><span class="cov0" title="0">{
+                                d.logger.Info("Input channel closed, stopping message processor")
+                                return
+                        }</span>
+                        <span class="cov8" title="1">d.processMessage(ctx, msg)</span>
+                }
+        }
+}
+
+// metricsMonitor checks storyCh utilization and logs warnings for sustained high utilization.
+func (d *Dispatcher) metricsMonitor(ctx context.Context) <span class="cov8" title="1">{
+        defer d.wg.Done()
+
+        ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
+        defer ticker.Stop()
+
+        for </span><span class="cov8" title="1">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov0" title="0">
+                        d.logger.Info("Metrics monitor stopped by context")
+                        return</span>
+                case &lt;-d.shutdown:<span class="cov8" title="1">
+                        d.logger.Info("Metrics monitor stopped by shutdown signal")
+                        return</span>
+                case &lt;-ticker.C:<span class="cov0" title="0">
+                        // Check storyCh utilization.
+                        if cap(d.storyCh) == 0 </span><span class="cov0" title="0">{
+                                continue</span> // Avoid division by zero
+                        }
+
+                        <span class="cov0" title="0">utilization := float64(len(d.storyCh)) / float64(cap(d.storyCh))
+
+                        d.highUtilizationMu.Lock()
+                        if utilization &gt; 0.8 </span><span class="cov0" title="0">{
+                                // High utilization detected.
+                                if d.highUtilizationStart.IsZero() </span><span class="cov0" title="0">{
+                                        // First time detecting high utilization.
+                                        d.highUtilizationStart = time.Now()
+                                        d.logger.Debug("High storyCh utilization detected: %.2f%% - monitoring started", utilization*100)
+                                }</span> else<span class="cov0" title="0"> {
+                                        // Check if sustained for more than 30 seconds.
+                                        duration := time.Since(d.highUtilizationStart)
+                                        if duration &gt; 30*time.Second </span><span class="cov0" title="0">{
+                                                d.logger.Warn("⚠️  SUSTAINED HIGH storyCh utilization: %.2f%% for %v (capacity: %d)", utilization*100, duration, cap(d.storyCh))
+                                        }</span>
+                                }
+                        } else<span class="cov0" title="0"> {
+                                // Normal utilization, reset tracking.
+                                if !d.highUtilizationStart.IsZero() </span><span class="cov0" title="0">{
+                                        d.logger.Debug("storyCh utilization back to normal: %.2f%%", utilization*100)
+                                        d.highUtilizationStart = time.Time{}
+                                }</span>
+                        }
+                        <span class="cov0" title="0">d.highUtilizationMu.Unlock()</span>
+                }
+        }
+}
+
+// supervisor handles agent error reporting and fatal error cleanup.
+func (d *Dispatcher) supervisor(ctx context.Context) <span class="cov8" title="1">{
+        defer d.wg.Done()
+
+        for </span><span class="cov8" title="1">{
+                select </span>{
+                case &lt;-ctx.Done():<span class="cov0" title="0">
+                        d.logger.Info("Supervisor stopped by context")
+                        return</span>
+                case &lt;-d.shutdown:<span class="cov8" title="1">
+                        d.logger.Info("Supervisor stopped by shutdown signal")
+                        return</span>
+                case agentErr, ok := &lt;-d.errCh:<span class="cov0" title="0">
+                        if !ok </span><span class="cov0" title="0">{
+                                d.logger.Info("Error channel closed, stopping supervisor")
+                                return
+                        }</span>
+                        // Log every error.
+                        <span class="cov0" title="0">d.logger.Warn("Agent error reported - ID: %s, Error: %s, Severity: %v",
+                                agentErr.ID, agentErr.Err.Error(), agentErr.Sev)
+
+                        // Handle fatal errors by detaching the agent.
+                        if agentErr.Sev == Fatal </span><span class="cov0" title="0">{
+                                d.logger.Error("Fatal error from agent %s, detaching", agentErr.ID)
+                                d.detach(agentErr.ID)
+
+                                // Check for zero-agent conditions.
+                                d.checkZeroAgentCondition()
+                        }</span>
+                }
+        }
+}
+
+// checkZeroAgentCondition warns if there are no agents of a certain type.
+func (d *Dispatcher) checkZeroAgentCondition() <span class="cov8" title="1">{
+        d.mu.RLock()
+        architectCount := 0
+        coderCount := 0
+
+        for _, ag := range d.agents </span><span class="cov8" title="1">{
+                if agentDriver, ok := ag.(agent.Driver); ok </span><span class="cov8" title="1">{
+                        switch agentDriver.GetAgentType() </span>{
+                        case agent.TypeArchitect:<span class="cov8" title="1">
+                                architectCount++</span>
+                        case agent.TypeCoder:<span class="cov8" title="1">
+                                coderCount++</span>
+                        }
+                }
+        }
+        <span class="cov8" title="1">d.mu.RUnlock()
+
+        if architectCount == 0 </span><span class="cov8" title="1">{
+                d.logger.Warn("Zero-agent condition: no architect agents remaining")
+        }</span>
+        <span class="cov8" title="1">if coderCount == 0 </span><span class="cov8" title="1">{
+                d.logger.Warn("Zero-agent condition: no coder agents remaining")
+        }</span>
+}
+
+// ReportError allows agents to report errors to the supervisor.
+func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) <span class="cov8" title="1">{
+        select </span>{
+        case d.errCh &lt;- AgentError{ID: agentID, Err: err, Sev: severity}:<span class="cov8" title="1"></span>
+                // Error reported successfully.
+        default:<span class="cov0" title="0">
+                // Error channel full, log directly.
+                d.logger.Error("Error channel full, dropping error report from agent %s: %v", agentID, err)</span>
+        }
+}
+
+//nolint:cyclop // Complex message routing logic, acceptable for dispatcher
+func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) <span class="cov8" title="1">{
+        d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
+
+        // Log message (skip if eventLog is nil - using database logging instead).
+        if d.eventLog != nil </span><span class="cov8" title="1">{
+                if err := d.eventLog.WriteMessage(msg); err != nil </span><span class="cov0" title="0">{
+                        d.logger.Error("Failed to log incoming message: %v", err)
+                        // Continue processing even if logging fails.
+                }</span>
+        }
+
+        // Resolve logical agent name to actual agent ID for all messages.
+        <span class="cov8" title="1">resolvedToAgent := d.resolveAgentName(msg.ToAgent)
+        if resolvedToAgent != msg.ToAgent </span><span class="cov0" title="0">{
+                d.logger.Debug("Resolved logical name %s to %s", msg.ToAgent, resolvedToAgent)
+                msg.ToAgent = resolvedToAgent
+        }</span>
+
+        // Route messages to appropriate queues based on type.
+        <span class="cov8" title="1">switch msg.Type </span>{
+        case proto.MsgTypeSTORY:<span class="cov8" title="1">
+                // STORY messages go to storyCh for coders to receive.
+                d.logger.Info("🔄 Sending STORY %s to storyCh", msg.ID)
+
+                // Send to storyCh (blocking send - buffer should prevent blocking).
+                d.storyCh &lt;- msg
+                d.logger.Info("✅ STORY %s delivered to storyCh", msg.ID)</span>
+
+        case proto.MsgTypeSPEC:<span class="cov8" title="1">
+                // SPEC messages go to architect via spec channel.
+                d.logger.Info("🔄 Dispatcher sending SPEC %s to architect via spec channel %p", msg.ID, d.specCh)
+                select </span>{
+                case d.specCh &lt;- msg:<span class="cov8" title="1">
+                        d.logger.Info("✅ SPEC %s delivered to architect spec channel", msg.ID)</span>
+                default:<span class="cov0" title="0">
+                        d.logger.Warn("❌ Architect spec channel full, dropping SPEC %s", msg.ID)</span>
+                }
+
+        case proto.MsgTypeREQUEST:<span class="cov8" title="1">
+                // Route unified REQUEST messages based on kind for optimized handling
+                kindRaw, hasKind := msg.GetPayload(proto.KeyKind)
+                kindStr := ""
+                if hasKind </span><span class="cov8" title="1">{
+                        kindStr, _ = kindRaw.(string)
+                }</span>
+
+                <span class="cov8" title="1">d.logger.Info("🔄 Sending REQUEST %s (kind: %s) to questionsCh", msg.ID, kindStr)
+
+                // All REQUEST kinds go to questionsCh for architect to process
+                // Architect will handle kind-based routing internally
+                d.questionsCh &lt;- msg
+                d.logger.Info("✅ REQUEST %s delivered to questionsCh", msg.ID)</span>
+
+        case proto.MsgTypeRESPONSE:<span class="cov8" title="1">
+                // RESPONSE messages go to specific coder's reply channel.
+                d.routeToReplyCh(msg, "RESPONSE")</span>
+
+        default:<span class="cov8" title="1">
+                // Other message types (ERROR, SHUTDOWN, etc.) still processed immediately.
+                d.logger.Info("Processing message type %s immediately (not queued)", msg.Type)
+
+                // Find target agent.
+                d.mu.RLock()
+                targetAgent, exists := d.agents[msg.ToAgent]
+                d.mu.RUnlock()
+
+                if !exists </span><span class="cov8" title="1">{
+                        d.sendErrorResponse(msg, fmt.Errorf("target agent %s not found", msg.ToAgent))
+                        return
+                }</span>
+
+                // Process immediately for non-STORY messages.
+                <span class="cov0" title="0">response := d.processWithRetry(ctx, msg, targetAgent)
+
+                // If there's a response, route it to appropriate queue.
+                if response.Message != nil </span><span class="cov0" title="0">{
+                        d.sendResponse(response.Message)
+                }</span> else<span class="cov0" title="0"> if response.Error != nil </span><span class="cov0" title="0">{
+                        d.sendErrorResponse(msg, response.Error)
+                }</span>
+        }
+}
+
+func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ Agent) *Result <span class="cov8" title="1">{
+        // SHUTDOWN messages bypass rate limiting
+        if msg.Type != proto.MsgTypeSHUTDOWN </span><span class="cov8" title="1">{
+                // Extract model name from agent logID (format: "model:id").
+                modelName := msg.ToAgent
+                if parts := strings.Split(msg.ToAgent, ":"); len(parts) &gt;= 2 </span><span class="cov0" title="0">{
+                        modelName = parts[0]
+                }</span>
+
+                // Check rate limiting before processing.
+                <span class="cov8" title="1">if err := d.checkRateLimit(modelName); err != nil </span><span class="cov8" title="1">{
+                        d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
+                        return &amp;Result{Error: err}
+                }</span>
+        }
+
+        // Process message - NOTE: ProcessMessage removed from Agent interface.
+        // Agents now receive messages via channels exclusively.
+        <span class="cov8" title="1">d.logger.Debug("Processing message %s for agent %s", msg.ID, msg.ToAgent)
+
+        // Release agent slot after processing (only for non-SHUTDOWN messages).
+        if msg.Type != proto.MsgTypeSHUTDOWN </span><span class="cov0" title="0">{
+                // Extract model name for agent slot release
+                modelName := msg.ToAgent
+                if parts := strings.Split(msg.ToAgent, ":"); len(parts) &gt;= 2 </span><span class="cov0" title="0">{
+                        modelName = parts[0]
+                }</span>
+                <span class="cov0" title="0">if err := d.rateLimiter.ReleaseAgent(modelName); err != nil </span><span class="cov0" title="0">{
+                        d.logger.Warn("Failed to release agent slot for model %s: %v", modelName, err)
+                }</span>
+        }
+
+        // Messages flow through channels - no direct processing or retry needed here.
+        // The retry logic would be handled at a higher level if needed.
+        <span class="cov8" title="1">return &amp;Result{Message: nil}</span>
+}
+
+func (d *Dispatcher) checkRateLimit(agentModel string) error <span class="cov8" title="1">{
+        // Reserve agent slot.
+        if err := d.rateLimiter.ReserveAgent(agentModel); err != nil </span><span class="cov8" title="1">{
+                return logx.Wrap(err, "failed to reserve agent slot")
+        }</span>
+
+        // For now, we don't know token count in advance, so we'll reserve a default amount.
+        // In a real implementation, this might be estimated or configured.
+        <span class="cov0" title="0">defaultTokenReservation := 100
+
+        if err := d.rateLimiter.Reserve(agentModel, defaultTokenReservation); err != nil </span><span class="cov0" title="0">{
+                // Release the agent slot if token reservation fails.
+                if releaseErr := d.rateLimiter.ReleaseAgent(agentModel); releaseErr != nil </span><span class="cov0" title="0">{
+                        d.logger.Warn("Failed to release agent slot for model %s: %v", agentModel, releaseErr)
+                }</span>
+                <span class="cov0" title="0">return logx.Wrap(err, "failed to reserve tokens")</span>
+        }
+
+        <span class="cov0" title="0">return nil</span>
+}
+
+func (d *Dispatcher) sendResponse(response *proto.AgentMsg) <span class="cov8" title="1">{
+        // Route response to appropriate queue based on message type.
+        d.logger.Info("Routing response %s: %s → %s (%s)", response.ID, response.FromAgent, response.ToAgent, response.Type)
+
+        if d.eventLog != nil </span><span class="cov8" title="1">{
+                if err := d.eventLog.WriteMessage(response); err != nil </span><span class="cov0" title="0">{
+                        d.logger.Error("Failed to log response message: %v", err)
+                }</span>
+        }
+
+        // Resolve logical agent name to actual agent ID.
+        <span class="cov8" title="1">resolvedToAgent := d.resolveAgentName(response.ToAgent)
+        if resolvedToAgent != response.ToAgent </span><span class="cov0" title="0">{
+                d.logger.Debug("Resolved logical name %s to %s", response.ToAgent, resolvedToAgent)
+                response.ToAgent = resolvedToAgent
+        }</span>
+
+        <span class="cov8" title="1">switch response.Type </span>{
+        case proto.MsgTypeREQUEST:<span class="cov0" title="0">
+                // Approval requests go to questionsCh.
+                select </span>{
+                case d.questionsCh &lt;- response:<span class="cov0" title="0">
+                        d.logger.Debug("Queued REQUEST %s for architect", response.ID)</span>
+                default:<span class="cov0" title="0">
+                        d.logger.Warn("Questions channel full, dropping REQUEST %s", response.ID)</span>
+                }
+
+        case proto.MsgTypeRESPONSE:<span class="cov8" title="1">
+                // Route unified RESPONSE messages with kind logging
+                kindRaw, hasKind := response.GetPayload(proto.KeyKind)
+                kindStr := ""
+                if hasKind </span><span class="cov8" title="1">{
+                        kindStr, _ = kindRaw.(string)
+                }</span>
+
+                <span class="cov8" title="1">d.logger.Debug("Routing RESPONSE %s (kind: %s) to reply channel", response.ID, kindStr)
+                d.routeToReplyCh(response, "RESPONSE")</span>
+
+        default:<span class="cov0" title="0">
+                // Other types logged only.
+                d.logger.Debug("Response message %s of type %s logged only", response.ID, response.Type)</span>
+        }
+}
+
+func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) <span class="cov8" title="1">{
+        errorMsg := proto.NewAgentMsg(proto.MsgTypeERROR, "dispatcher", originalMsg.FromAgent)
+        errorMsg.ParentMsgID = originalMsg.ID
+        errorMsg.SetPayload("error", err.Error())
+        errorMsg.SetPayload("original_message_id", originalMsg.ID)
+        errorMsg.SetMetadata("error_type", "processing_error")
+
+        d.logger.Error("Sending error response for message %s: %v", originalMsg.ID, err)
+
+        if d.eventLog != nil </span><span class="cov8" title="1">{
+                if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil </span><span class="cov0" title="0">{
+                        d.logger.Error("Failed to log error message: %v", logErr)
+                }</span>
+        }
+}
+
+// resolveAgentName resolves logical agent names to actual agent IDs.
+func (d *Dispatcher) resolveAgentName(logicalName string) string <span class="cov8" title="1">{
+        // If already an exact agent ID, return as-is.
+        d.mu.RLock()
+        if _, exists := d.agents[logicalName]; exists </span><span class="cov8" title="1">{
+                d.mu.RUnlock()
+                return logicalName
+        }</span>
+        <span class="cov8" title="1">d.mu.RUnlock()
+
+        // Map logical names to agent types.
+        targetType := ""
+        switch logicalName </span>{
+        case "architect":<span class="cov8" title="1">
+                targetType = "architect"</span>
+        case "coder":<span class="cov8" title="1">
+                targetType = "coder"</span>
+        default:<span class="cov8" title="1">
+                // Not a logical name, return as-is.
+                return logicalName</span>
+        }
+
+        // Find first agent of the target type.
+        <span class="cov8" title="1">d.mu.RLock()
+        defer d.mu.RUnlock()
+
+        // Look through registered agents to find one of the target type
+        for agentID := range d.agents </span><span class="cov8" title="1">{
+                // Agent IDs follow the pattern "type-id" (e.g., "architect-001", "coder-001")
+                if strings.HasPrefix(agentID, targetType+"-") </span><span class="cov8" title="1">{
+                        return agentID
+                }</span>
+        }
+
+        // No agent found for this type, return original name (will cause "not found" error).
+        <span class="cov8" title="1">return logicalName</span>
+}
+
+// GetStats returns dispatcher statistics and status information.
+func (d *Dispatcher) GetStats() map[string]any <span class="cov8" title="1">{
+        d.mu.RLock()
+        defer d.mu.RUnlock()
+
+        agentList := make([]string, 0, len(d.agents))
+        for agentID := range d.agents </span><span class="cov8" title="1">{
+                agentList = append(agentList, agentID)
+        }</span>
+
+        <span class="cov8" title="1">storyChUtilization := float64(len(d.storyCh)) / float64(cap(d.storyCh))
+
+        // S-5: WARN if storyCh utilization &gt; 0.8 (this should be logged separately for monitoring).
+        if storyChUtilization &gt; 0.8 </span><span class="cov0" title="0">{
+                d.logger.Warn("⚠️  storyCh utilization high: %.2f%% (%d/%d)", storyChUtilization*100, len(d.storyCh), cap(d.storyCh))
+        }</span>
+
+        <span class="cov8" title="1">return map[string]any{
+                "running":                      d.running,
+                "agents":                       agentList,
+                "queue_length":                 len(d.inputChan),
+                "queue_capacity":               cap(d.inputChan),
+                "architect_request_queue_size": 0, // Legacy field, now always 0
+                "story_ch_length":              len(d.storyCh),
+                "story_ch_capacity":            cap(d.storyCh),
+                "story_ch_utilization":         storyChUtilization,
+                "questions_ch_length":          len(d.questionsCh),
+                "questions_ch_capacity":        cap(d.questionsCh),
+        }</span>
+}
+
+// GetQuestionsCh returns the questions channel for architect to receive from.
+func (d *Dispatcher) GetQuestionsCh() &lt;-chan *proto.AgentMsg <span class="cov8" title="1">{
+        return d.questionsCh
+}</span>
+
+// GetReplyCh returns the reply channel for a specific coder agent.
+func (d *Dispatcher) GetReplyCh(agentID string) &lt;-chan *proto.AgentMsg <span class="cov8" title="1">{
+        d.mu.RLock()
+        defer d.mu.RUnlock()
+
+        if replyCh, exists := d.replyChannels[agentID]; exists </span><span class="cov8" title="1">{
+                return replyCh
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// GetStoryCh returns the story channel for coders to receive from.
+func (d *Dispatcher) GetStoryCh() &lt;-chan *proto.AgentMsg <span class="cov8" title="1">{
+        return d.storyCh
+}</span>
+
+// GetStateChangeChannel returns the state change notification channel.
+func (d *Dispatcher) GetStateChangeChannel() &lt;-chan *proto.StateChangeNotification <span class="cov8" title="1">{
+        return d.stateChangeCh
+}</span>
+
+// ArchitectChannels contains the channels returned to architects.
+type ArchitectChannels struct {
+        Specs &lt;-chan *proto.AgentMsg // Delivers spec messages
+}
+
+// SubscribeArchitect allows the architect to get the spec channel.
+func (d *Dispatcher) SubscribeArchitect(architectID string) ArchitectChannels <span class="cov8" title="1">{
+        d.notificationMu.Lock()
+        defer d.notificationMu.Unlock()
+
+        d.architectID = architectID
+        d.logger.Info("🔔 Architect %s subscribed to spec notifications", architectID)
+        d.logger.Info("🔔 Spec channel %p provided to architect %s", d.specCh, architectID)
+
+        return ArchitectChannels{
+                Specs: d.specCh,
+        }
+}</span>
+
+// closeAllChannels closes all dispatcher-owned channels for graceful shutdown.
+func (d *Dispatcher) closeAllChannels() <span class="cov8" title="1">{
+        d.notificationMu.Lock()
+        defer d.notificationMu.Unlock()
+
+        // Close specCh.
+        if d.specCh != nil </span><span class="cov8" title="1">{
+                close(d.specCh)
+                d.logger.Info("Closed spec channel")
+        }</span>
+
+        // Close storyCh.
+        <span class="cov8" title="1">if d.storyCh != nil </span><span class="cov8" title="1">{
+                close(d.storyCh)
+                d.logger.Info("Closed story channel")
+        }</span>
+
+        // Close questionsCh.
+        <span class="cov8" title="1">if d.questionsCh != nil </span><span class="cov8" title="1">{
+                close(d.questionsCh)
+                d.logger.Info("Closed questions channel")
+        }</span>
+
+        // Close all reply channels.
+        <span class="cov8" title="1">d.mu.Lock()
+        for agentID, replyCh := range d.replyChannels </span><span class="cov0" title="0">{
+                close(replyCh)
+                d.logger.Info("Closed reply channel for agent: %s", agentID)
+        }</span>
+        // Clear the map.
+        <span class="cov8" title="1">d.replyChannels = make(map[string]chan *proto.AgentMsg)
+        d.mu.Unlock()
+
+        // Close error reporting channel.
+        if d.errCh != nil </span><span class="cov8" title="1">{
+                close(d.errCh)
+                d.logger.Info("Closed error reporting channel")
+        }</span>
+
+        // Close state change notification channel.
+        <span class="cov8" title="1">if d.stateChangeCh != nil </span><span class="cov8" title="1">{
+                close(d.stateChangeCh)
+                d.logger.Info("Closed state change notification channel")
+        }</span>
+}
+
+// QueueHead represents a message head in a queue.
+type QueueHead struct {
+        ID   string `json:"id"`
+        Type string `json:"type"`
+        From string `json:"from"`
+        To   string `json:"to"`
+        TS   string `json:"ts"`
+}
+
+// QueueInfo represents queue information.
+//
+//nolint:govet // JSON serialization struct, logical order preferred
+type QueueInfo struct {
+        Name   string      `json:"name"`
+        Length int         `json:"length"`
+        Heads  []QueueHead `json:"heads"`
+}
+
+// DumpHeads returns queue information with up to n message heads from each queue.
+func (d *Dispatcher) DumpHeads(_ int) map[string]any <span class="cov8" title="1">{
+        return map[string]any{
+                "architect_legacy": QueueInfo{
+                        Name:   "architect_legacy",
+                        Length: 0,             // Legacy queue removed
+                        Heads:  []QueueHead{}, // Empty
+                },
+                "questions_ch": map[string]any{
+                        "length":   len(d.questionsCh),
+                        "capacity": cap(d.questionsCh),
+                        "blocked":  len(d.questionsCh) &gt;= cap(d.questionsCh),
+                },
+                "reply_channels": map[string]any{
+                        "count": len(d.replyChannels),
+                },
+                "story_ch": map[string]any{
+                        "length":   len(d.storyCh),
+                        "capacity": cap(d.storyCh),
+                        "blocked":  len(d.storyCh) &gt;= cap(d.storyCh),
+                },
+                "input_channel": map[string]any{
+                        "length":   len(d.inputChan),
+                        "capacity": cap(d.inputChan),
+                        "blocked":  len(d.inputChan) &gt;= cap(d.inputChan),
+                },
+        }
+}</span>
+
+// AgentInfo represents information about a registered agent.
+type AgentInfo struct {
+        Driver agent.Driver
+        ID     string
+        Type   agent.Type
+        State  string
+}
+
+// GetRegisteredAgents returns information about all registered agents.
+func (d *Dispatcher) GetRegisteredAgents() []AgentInfo <span class="cov8" title="1">{
+        d.mu.RLock()
+        defer d.mu.RUnlock()
+
+        var agentInfos []AgentInfo
+        for id, agentInterface := range d.agents </span><span class="cov8" title="1">{
+                // Try to cast to Driver interface to get more information.
+                if driver, ok := agentInterface.(agent.Driver); ok </span><span class="cov8" title="1">{
+                        agentInfos = append(agentInfos, AgentInfo{
+                                ID:     id,
+                                Type:   driver.GetAgentType(),
+                                State:  driver.GetCurrentState().String(),
+                                Driver: driver,
+                        })
+                }</span> else<span class="cov8" title="1"> {
+                        // Fallback for agents that don't implement Driver interface.
+                        // Default to coder type (all new agents should implement Driver interface).
+                        agentInfos = append(agentInfos, AgentInfo{
+                                ID:     id,
+                                Type:   agent.TypeCoder, // Default fallback
+                                State:  "UNKNOWN",
+                                Driver: nil,
+                        })
+                }</span>
+        }
+
+        <span class="cov8" title="1">return agentInfos</span>
+}
+
+// SetLease records that an agent is working on a specific story.
+func (d *Dispatcher) SetLease(agentID, storyID string) <span class="cov8" title="1">{
+        d.leasesMutex.Lock()
+        defer d.leasesMutex.Unlock()
+        d.leases[agentID] = storyID
+        d.logger.Debug("Set lease: agent %s -&gt; story %s", agentID, storyID)
+}</span>
+
+// GetLease returns the story ID that an agent is working on, or empty string if none.
+func (d *Dispatcher) GetLease(agentID string) string <span class="cov8" title="1">{
+        d.leasesMutex.Lock()
+        defer d.leasesMutex.Unlock()
+        storyID := d.leases[agentID]
+        return storyID
+}</span>
+
+// ClearLease removes an agent's story assignment.
+func (d *Dispatcher) ClearLease(agentID string) <span class="cov8" title="1">{
+        d.leasesMutex.Lock()
+        defer d.leasesMutex.Unlock()
+        if storyID, exists := d.leases[agentID]; exists </span><span class="cov8" title="1">{
+                delete(d.leases, agentID)
+                d.logger.Debug("Cleared lease: agent %s was working on story %s", agentID, storyID)
+        }</span>
+}
+
+// SendRequeue sends a requeue message for the story currently assigned to the given agent.
+func (d *Dispatcher) SendRequeue(agentID, reason string) error <span class="cov8" title="1">{
+        storyID := d.GetLease(agentID)
+        if storyID == "" </span><span class="cov8" title="1">{
+                return fmt.Errorf("no lease found for agent %s", agentID)
+        }</span>
+
+        // Create requeue message using unified REQUEST protocol.
+        <span class="cov8" title="1">requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "orchestrator", "architect")
+        requeueMsg.SetPayload(proto.KeyKind, string(proto.RequestKindRequeue))
+        requeueMsg.SetPayload(proto.KeyRequeue, proto.RequeueRequestPayload{
+                StoryID: storyID,
+                AgentID: agentID,
+                Reason:  reason,
+        })
+        requeueMsg.SetPayload(proto.KeyCorrelationID, proto.GenerateCorrelationID())
+
+        // Send to questions channel (same as existing requeue logic).
+        select </span>{
+        case d.questionsCh &lt;- requeueMsg:<span class="cov8" title="1">
+                d.logger.Info("Requeued story %s for agent %s (reason: %s)", storyID, agentID, reason)
+                return nil</span>
+        default:<span class="cov0" title="0">
+                return fmt.Errorf("questions channel full, could not requeue story %s", storyID)</span>
+        }
+}
+
+// GetContainerRegistry returns the container registry for orchestrator access.
+func (d *Dispatcher) GetContainerRegistry() *exec.ContainerRegistry <span class="cov8" title="1">{
+        return d.containerRegistry
+}</span>
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package dispatch
+
+import (
+        "context"
+)
+
+// goroutineStrategy runs the dispatcher with background goroutines (production mode)
+type goroutineStrategy struct{}
+
+func (g *goroutineStrategy) Run(d *Dispatcher, ctx context.Context) error <span class="cov8" title="1">{
+        // Use the dispatcher's WaitGroup, as the methods already call d.wg.Done()
+        d.wg.Add(3)
+        go d.messageProcessor(ctx)
+        go d.supervisor(ctx)
+        go d.metricsMonitor(ctx)
+        return nil
+}</span>
+
+func (g *goroutineStrategy) Stop() error <span class="cov8" title="1">{
+        // No need to wait here as the Stop method handles the WaitGroup
+        return nil
+}</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

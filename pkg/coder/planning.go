@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
 
@@ -24,30 +26,10 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return StateBudgetReview, false, nil
 	}
 
-	// Check for question tool result (ask_question was called).
-	if questionData, exists := sm.GetStateValue(KeyQuestionSubmitted); exists {
-		return c.handleQuestionTransition(ctx, sm, questionData)
-	}
-
-	// Check for plan submission (submit_plan was called).
-	if planData, exists := sm.GetStateValue(KeyPlanSubmitted); exists {
-		return c.handlePlanSubmission(ctx, sm, planData)
-	}
-
-	// Check for completion submission (mark_story_complete was called).
-	if completionData, exists := sm.GetStateValue(string(stateDataKeyCompletionSubmitted)); exists && completionData != nil {
-		return c.handleCompletionSubmission(ctx, sm, completionData)
-	}
+	// Two-phase checks removed - state transitions now happen directly in handleToolStateTransition
 
 	// Continue with iterative planning using LLM + tools.
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-
-	// Restore planning context if returning from QUESTION.
-	if questionAnswered := utils.GetStateValueOr[bool](sm, string(stateDataKeyQuestionAnswered), false); questionAnswered {
-		c.restorePlanningContext(sm)
-		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
-		c.logger.Info("🧑‍💻 Restored planning context after question answered")
-	}
 
 	// Generate tree output for template (cached for efficiency).
 	_, exists := sm.GetStateValue(KeyTreeOutputCached)
@@ -150,6 +132,90 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	return StatePlanning, false, nil
 }
 
+// processPlanningToolCalls processes tool calls during planning phase.
+func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
+	c.logger.Info("🧑‍💻 Processing %d planning tool calls", len(toolCalls))
+
+	for i := range toolCalls {
+		toolCall := &toolCalls[i]
+		c.logger.Info("Executing planning tool: %s", toolCall.Name)
+
+		// Handle ask_question tool using Effects pattern.
+		if toolCall.Name == tools.ToolAskQuestion {
+			// Extract question details from tool arguments.
+			question := utils.GetMapFieldOr[string](toolCall.Parameters, "question", "")
+			context := utils.GetMapFieldOr[string](toolCall.Parameters, "context", "")
+			urgency := utils.GetMapFieldOr[string](toolCall.Parameters, "urgency", "medium")
+
+			if question == "" {
+				c.logger.Error("Ask question tool called without question parameter")
+				continue
+			}
+
+			// Store planning context before asking question.
+			c.storePlanningContext(sm)
+
+			// Create question effect
+			eff := effect.NewQuestionEffect(question, context, urgency, string(StatePlanning))
+
+			c.logger.Info("🧑‍💻 Asking question during planning: %s", question)
+
+			// Execute the question effect (blocks until answer received)
+			result, err := c.ExecuteEffect(ctx, eff)
+			if err != nil {
+				c.logger.Error("🧑‍💻 Failed to get answer: %v", err)
+				// Add error to context for LLM to handle
+				errorMsg := fmt.Sprintf("Question failed: %v", err)
+				c.contextManager.AddMessage("user", errorMsg)
+				continue
+			}
+
+			// Process the answer
+			if questionResult, ok := result.(*effect.QuestionResult); ok {
+				c.logger.Info("🧑‍💻 Received answer from architect: %s", questionResult.Answer)
+
+				// Add the Q&A to context so the LLM can see it
+				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
+				c.contextManager.AddMessage("user", qaContent)
+
+				// Continue with planning using the answer
+			} else {
+				c.logger.Error("🧑‍💻 Invalid question result type: %T", result)
+			}
+			continue
+		}
+
+		// Get tool from ToolProvider and execute.
+		tool, err := c.planningToolProvider.Get(toolCall.Name)
+		if err != nil {
+			c.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
+			continue
+		}
+
+		result, err := tool.Exec(ctx, toolCall.Parameters)
+		if err != nil {
+			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			continue
+		}
+
+		// Handle tool results and state transitions.
+		if resultMap, ok := result.(map[string]any); ok {
+			if nextState, hasNextState := resultMap["next_state"]; hasNextState {
+				if nextStateStr, ok := nextState.(string); ok {
+					return c.handleToolStateTransition(ctx, sm, toolCall.Name, nextStateStr, resultMap)
+				}
+			}
+		}
+
+		// Add tool execution results to context using proper method.
+		c.addToolResultToContext(*toolCall, result)
+		c.logger.Info("Planning tool %s executed successfully", toolCall.Name)
+	}
+
+	// Continue planning after processing all tools
+	return StatePlanning, false, nil
+}
+
 // storePlanningContext stores the current planning context.
 func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
 	context := map[string]any{
@@ -162,97 +228,105 @@ func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
 	c.logger.Debug("🧑‍💻 Stored planning context for QUESTION transition")
 }
 
-// restorePlanningContext restores the planning context after returning from QUESTION.
-func (c *Coder) restorePlanningContext(sm *agent.BaseStateMachine) {
-	if contextData, exists := sm.GetStateValue(KeyPlanningContextSaved); exists {
-		if context, ok := contextData.(map[string]any); ok {
-			c.restoreExplorationHistory(context["exploration_history"])
-			c.restoreFilesExamined(context["files_examined"])
-			c.restoreCurrentFindings(context["current_findings"])
-			c.logger.Debug("🧑‍💻 Restored planning context from QUESTION transition")
-		}
-	}
-}
-
-// processPlanningToolCalls handles tool execution during planning.
-func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
-	c.logger.Info("🧑‍💻 Processing %d tool calls in planning state", len(toolCalls))
-
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		c.logger.Info("Executing planning tool: %s", toolCall.Name)
-
-		// Get tool from ToolProvider and execute.
-		tool, err := c.planningToolProvider.Get(toolCall.Name)
-		if err != nil {
-			c.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
-			return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("tool %s not found", toolCall.Name))
-		}
-
-		result, err := tool.Exec(ctx, toolCall.Parameters)
-		if err != nil {
-			// Tool execution failures are recoverable - add comprehensive error to context for LLM to react.
-			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			c.addComprehensiveToolFailureToContext(*toolCall, err)
-			continue // Continue processing other tool calls
-		}
-
-		// Handle tool result generically - check if tool requests state transition.
-		if resultMap, ok := result.(map[string]any); ok {
-			if nextState, hasNextState := resultMap["next_state"].(string); hasNextState {
-				return c.handleToolStateTransition(ctx, sm, toolCall.Name, nextState, resultMap)
-			}
-		}
-
-		// No state transition requested - continue in current state.
-		// Add tool execution results to context so Claude can see them.
-		c.addToolResultToContext(*toolCall, result)
-		c.logger.Info("Tool %s executed successfully, continuing in planning", toolCall.Name)
-	}
-
-	return StatePlanning, false, nil
-}
-
-// handleToolStateTransition processes generic tool state transitions.
-func (c *Coder) handleToolStateTransition(_ /* ctx */ context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
-	// Store all result data in state machine (let the tool decide what to store).
-	for key, value := range resultMap {
-		if key != "next_state" && key != "success" && key != "message" {
-			sm.SetStateData(key, value)
-		}
-	}
-
+// handleToolStateTransition processes tool state transitions directly (single-phase).
+func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
 	// Log the transition.
 	if message, hasMessage := resultMap["message"].(string); hasMessage {
 		c.logger.Info("Tool %s: %s", toolName, message)
 	}
 
-	if nextState == string(StatePlanReview) {
-		// Set plan submitted flag so handlePlanSubmission can process it on next iteration.
-		sm.SetStateData(KeyPlanSubmitted, resultMap)
+	// Handle tool-specific state transitions with embedded logic (eliminating two-phase approach).
+	switch toolName {
+	case tools.ToolSubmitPlan:
+		return c.handlePlanSubmissionDirect(ctx, sm, resultMap)
+
+	case tools.ToolMarkStoryComplete:
+		return c.handleCompletionSubmissionDirect(ctx, sm, resultMap)
+
+	case tools.ToolAskQuestion:
+		// Questions are now handled inline via Effects pattern, no state transition needed
+		c.logger.Info("🧑‍💻 Question handled inline via Effects pattern, continuing in PLANNING")
+		return StatePlanning, false, nil
+
+	default:
+		c.logger.Info("🧑‍💻 Tool %s requested unknown state transition: %s, staying in PLANNING", toolName, nextState)
 		return StatePlanning, false, nil
 	}
+}
 
-	if nextState == "COMPLETION_REVIEW" {
-		// Set completion submitted flag so handleCompletionSubmission can process it on next iteration.
-		sm.SetStateData(string(stateDataKeyCompletionSubmitted), resultMap)
-		return StatePlanning, false, nil
+// handlePlanSubmissionDirect processes submit_plan tool results directly (single-phase).
+func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStateMachine, resultMap map[string]any) (proto.State, bool, error) {
+	plan, _ := resultMap["plan"].(string)
+	confidence, _ := resultMap["confidence"].(string)
+	explorationSummary, _ := resultMap["exploration_summary"].(string)
+	risks, _ := resultMap["risks"].(string)
+	todos, _ := resultMap["todos"].([]any)
+
+	// Convert todos to structured format.
+	planTodos := make([]PlanTodo, len(todos))
+	for i, todoItem := range todos {
+		if todoMap, ok := utils.SafeAssert[map[string]any](todoItem); ok {
+			planTodos[i] = PlanTodo{
+				ID:          utils.GetMapFieldOr[string](todoMap, "id", ""),
+				Description: utils.GetMapFieldOr[string](todoMap, "description", ""),
+				Completed:   utils.GetMapFieldOr[bool](todoMap, "completed", false),
+			}
+		}
 	}
 
-	if nextState == "QUESTION" {
-		// Set question submitted flag so handleQuestionTransition can process it on next iteration.
-		sm.SetStateData(KeyQuestionSubmitted, resultMap)
-		return StatePlanning, false, nil
+	// Get original story content for reference (unused in Effects pattern)
+	_, _ = sm.GetStateValue(string(stateDataKeyTaskContent))
+
+	// Store plan data using typed constants.
+	sm.SetStateData(string(stateDataKeyPlan), plan)
+	sm.SetStateData(string(stateDataKeyPlanConfidence), confidence)
+	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
+	sm.SetStateData(string(stateDataKeyPlanRisks), risks)
+	sm.SetStateData(string(stateDataKeyPlanTodos), planTodos)
+	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
+
+	// Store plan approval request for PLAN_REVIEW state to handle
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: plan,
+		Reason:  fmt.Sprintf("Enhanced plan requires approval (confidence: %s)", confidence),
+		Type:    proto.ApprovalTypePlan,
 	}
 
-	c.logger.Info("🧑‍💻 Tool %s requested unknown state transition: %s, staying in PLANNING", toolName, nextState)
-	return StatePlanning, false, nil
+	c.logger.Info("🧑‍💻 Plan submitted, transitioning to PLAN_REVIEW for approval via Effects")
+
+	return StatePlanReview, false, nil
+}
+
+// handleCompletionSubmissionDirect processes mark_story_complete tool results directly (single-phase).
+func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.BaseStateMachine, resultMap map[string]any) (proto.State, bool, error) {
+	reason, _ := resultMap["reason"].(string)
+	evidence, _ := resultMap["evidence"].(string)
+	confidence, _ := resultMap["confidence"].(string)
+
+	// Get original story content for reference (unused in Effects pattern)
+	_, _ = sm.GetStateValue(string(stateDataKeyTaskContent))
+
+	// Store completion data.
+	sm.SetStateData(KeyCompletionReason, reason)
+	sm.SetStateData(KeyCompletionEvidence, evidence)
+	sm.SetStateData(KeyCompletionConfidence, confidence)
+	sm.SetStateData(KeyCompletionSubmittedAt, time.Now().UTC())
+
+	// Store completion approval request for PLAN_REVIEW state to handle
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: fmt.Sprintf("Story completion request:\n\nReason: %s\n\nEvidence: %s\n\nConfidence: %s", reason, evidence, confidence),
+		Reason:  fmt.Sprintf("Story completion requires approval (confidence: %s)", confidence),
+		Type:    proto.ApprovalTypeCompletion,
+	}
+
+	c.logger.Info("🧑‍💻 Completion submitted, transitioning to PLAN_REVIEW for approval via Effects")
+
+	return StatePlanReview, false, nil
 }
 
 // Context management placeholder helper methods for planning.
-func (c *Coder) getExplorationHistory() any    { return []string{} }
-func (c *Coder) getFilesExamined() any         { return []string{} }
-func (c *Coder) getCurrentFindings() any       { return map[string]any{} }
-func (c *Coder) restoreExplorationHistory(any) {}
-func (c *Coder) restoreFilesExamined(any)      {}
-func (c *Coder) restoreCurrentFindings(any)    {}
+func (c *Coder) getExplorationHistory() any { return []string{} }
+func (c *Coder) getFilesExamined() any      { return []string{} }
+func (c *Coder) getCurrentFindings() any    { return map[string]any{} }

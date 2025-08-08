@@ -83,7 +83,7 @@ func TestWriteMultipleMessages(t *testing.T) {
 	// Write multiple messages.
 	messages := []*proto.AgentMsg{
 		proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude"),
-		proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect"),
+		proto.NewAgentMsg(proto.MsgTypeRESPONSE, "claude", "architect"),
 		proto.NewAgentMsg(proto.MsgTypeERROR, "claude", "architect"),
 	}
 
@@ -156,7 +156,7 @@ func TestDailyRotation(t *testing.T) {
 	}
 
 	// Write another message directly to test rotation behavior.
-	msg2 := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
+	msg2 := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "claude", "architect")
 	msg2.SetPayload("day", "christmas")
 
 	// Write directly without going through WriteMessage to avoid auto-rotation.
@@ -232,7 +232,7 @@ func TestReadMessages(t *testing.T) {
 	msg1 := proto.NewAgentMsg(proto.MsgTypeSTORY, "architect", "claude")
 	msg1.SetPayload("task", "test1")
 
-	msg2 := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
+	msg2 := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "claude", "architect")
 	msg2.SetPayload("result", "success")
 
 	// Write manually to file.

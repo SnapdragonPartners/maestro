@@ -67,7 +67,7 @@ var (
 
 // Model represents an LLM model with its capabilities and limits.
 type Model struct {
-	Name           string  `json:"name"`            // e.g. "claude-3-5-sonnet"
+	Name           string  `json:"name"`            // e.g. "claude-sonnet-4-20250514"
 	MaxTPM         int     `json:"max_tpm"`         // tokens per minute
 	MaxConnections int     `json:"max_connections"` // max concurrent connections
 	CPM            float64 `json:"cpm"`             // cost per million tokens (USD)
@@ -78,16 +78,30 @@ type Model struct {
 //
 //nolint:gochecknoglobals // Intentional global for model definitions
 var ModelDefaults = map[string]Model{
-	ModelClaudeSonnet: {
-		Name:           ModelClaudeSonnet,
-		MaxTPM:         40000,
+	ModelClaudeSonnet3: {
+		Name:           ModelClaudeSonnet3,
+		MaxTPM:         300000,
 		MaxConnections: 5,
 		CPM:            3.0,
 		DailyBudget:    10.0,
 	},
-	ModelO3Mini: {
-		Name:           ModelO3Mini,
-		MaxTPM:         10000,
+	ModelClaudeSonnet4: {
+		Name:           ModelClaudeSonnet4,
+		MaxTPM:         3000000,
+		MaxConnections: 5,
+		CPM:            3.0,
+		DailyBudget:    10.0,
+	},
+	ModelOpenAIO3Mini: {
+		Name:           ModelOpenAIO3Mini,
+		MaxTPM:         100000,
+		MaxConnections: 3,
+		CPM:            0.6,
+		DailyBudget:    5.0,
+	},
+	ModelOpenAIO3: {
+		Name:           ModelOpenAIO3,
+		MaxTPM:         100000,
 		MaxConnections: 3,
 		CPM:            0.6,
 		DailyBudget:    5.0,
@@ -145,8 +159,14 @@ const (
 	BuildTargetInstall = "install"
 
 	// Model name constants.
-	ModelClaudeSonnet = "claude-3-5-sonnet-20241022"
-	ModelO3Mini       = "o3-mini"
+	ModelClaudeSonnet4      = "claude-sonnet-4-20250514"
+	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
+	ModelClaudeSonnetLatest = ModelClaudeSonnet4
+	ModelOpenAIO3           = "o3"
+	ModelOpenAIO3Mini       = "o3-mini"
+	ModelOpenAIO3Latest     = ModelOpenAIO3
+	DefaultCoderModel       = ModelClaudeSonnet4
+	DefaultArchitectModel   = ModelOpenAIO3
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -275,7 +295,6 @@ func LoadConfig(projectDir string) error {
 
 	// Apply defaults and migrate old model names
 	applyDefaults(loadedConfig)
-	migrateModelNames(loadedConfig)
 	if err := validateConfig(loadedConfig); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
@@ -418,8 +437,8 @@ func createDefaultConfig() *Config {
 		},
 		Agents: &AgentConfig{
 			MaxCoders:      2,
-			CoderModel:     ModelClaudeSonnet,
-			ArchitectModel: ModelO3Mini,
+			CoderModel:     DefaultCoderModel,
+			ArchitectModel: DefaultArchitectModel,
 		},
 		Git: &GitConfig{
 			TargetBranch:  DefaultTargetBranch,
@@ -502,36 +521,6 @@ func validateAgentConfigInternal(agents *AgentConfig, cfg *Config) error {
 	}
 
 	return nil
-}
-
-// migrateModelNames updates old model names to new supported names.
-func migrateModelNames(config *Config) {
-	if config.Agents == nil || config.Orchestrator == nil {
-		return
-	}
-
-	// Map of old name -> new name
-	modelMigrations := map[string]string{
-		"claude-3-5-sonnet": ModelClaudeSonnet,
-		"o3-mini":           ModelO3Mini, // This one is the same, but for completeness
-	}
-
-	// Migrate coder model name
-	if newName, exists := modelMigrations[config.Agents.CoderModel]; exists {
-		config.Agents.CoderModel = newName
-	}
-
-	// Migrate architect model name
-	if newName, exists := modelMigrations[config.Agents.ArchitectModel]; exists {
-		config.Agents.ArchitectModel = newName
-	}
-
-	// Migrate model names in the Orchestrator Models slice
-	for i := range config.Orchestrator.Models {
-		if newName, exists := modelMigrations[config.Orchestrator.Models[i].Name]; exists {
-			config.Orchestrator.Models[i].Name = newName
-		}
-	}
 }
 
 // applyDefaults sets default values for missing configuration.

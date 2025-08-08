@@ -32,5 +32,6 @@ agentctl
 work
 logs
 bin
+coverage
 config/config.json
 .maestro

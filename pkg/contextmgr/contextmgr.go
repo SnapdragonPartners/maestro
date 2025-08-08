@@ -346,7 +346,7 @@ func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {
 
 	// Set limits based on model name
 	if strings.Contains(modelName, "claude") {
-		return 200000, 8192 // Claude 3.5 Sonnet limits
+		return 200000, 8192 // Claude limits
 	} else if strings.Contains(modelName, "gpt") || strings.Contains(modelName, "o3") {
 		return 128000, 4096 // GPT-4 Turbo / o3 limits
 	} else {

@@ -11,7 +11,7 @@ func TestLimiter(t *testing.T) {
 		Orchestrator: &config.OrchestratorConfig{
 			Models: []config.Model{
 				{
-					Name:           "claude-3-5-sonnet-20241022",
+					Name:           config.ModelClaudeSonnetLatest,
 					MaxTPM:         50000,
 					DailyBudget:    200.0,
 					MaxConnections: 4,
@@ -24,31 +24,31 @@ func TestLimiter(t *testing.T) {
 	limiter := NewLimiter(cfg)
 
 	// Test token reservation
-	err := limiter.Reserve("claude-3-5-sonnet-20241022", 100)
+	err := limiter.Reserve(config.ModelClaudeSonnetLatest, 100)
 	if err != nil {
 		t.Errorf("Expected reserve to succeed, got error: %v", err)
 	}
 
 	// Test budget reservation
-	err = limiter.ReserveBudget("claude-3-5-sonnet-20241022", 1.0)
+	err = limiter.ReserveBudget(config.ModelClaudeSonnetLatest, 1.0)
 	if err != nil {
 		t.Errorf("Expected budget reserve to succeed, got error: %v", err)
 	}
 
 	// Test agent reservation
-	err = limiter.ReserveAgent("claude-3-5-sonnet-20241022")
+	err = limiter.ReserveAgent(config.ModelClaudeSonnetLatest)
 	if err != nil {
 		t.Errorf("Expected agent reserve to succeed, got error: %v", err)
 	}
 
 	// Test agent release
-	err = limiter.ReleaseAgent("claude-3-5-sonnet-20241022")
+	err = limiter.ReleaseAgent(config.ModelClaudeSonnetLatest)
 	if err != nil {
 		t.Errorf("Expected agent release to succeed, got error: %v", err)
 	}
 
 	// Test status
-	tokens, budget, agents, err := limiter.GetStatus("claude-3-5-sonnet-20241022")
+	tokens, budget, agents, err := limiter.GetStatus(config.ModelClaudeSonnetLatest)
 	if err != nil {
 		t.Errorf("Expected status to succeed, got error: %v", err)
 	}

@@ -51,7 +51,7 @@ func (a *AskQuestionTool) Name() string {
 func (a *AskQuestionTool) PromptDocumentation() string {
 	return `- **ask_question** - Ask architect for clarification during planning
   - Parameters: question (required), context, urgency
-  - Transitions to QUESTION state, returns with architect's answer
+  - Handled inline via Effects pattern, blocks until architect's answer received
   - Use when you need guidance on requirements or technical decisions`
 }
 
@@ -95,11 +95,11 @@ func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, err
 
 	return map[string]any{
 		"success":    true,
-		"message":    "Question submitted, transitioning to QUESTION state",
+		"message":    "Question handled inline via Effects pattern",
 		"question":   questionStr,
 		"context":    context,
 		"urgency":    urgency,
-		"next_state": "QUESTION",
+		"next_state": "INLINE_HANDLED",
 	}, nil
 }
 

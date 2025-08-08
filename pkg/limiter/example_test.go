@@ -11,7 +11,7 @@ func TestLimiterExample(t *testing.T) {
 		Orchestrator: &config.OrchestratorConfig{
 			Models: []config.Model{
 				{
-					Name:           "claude-3-5-sonnet-20241022",
+					Name:           config.ModelClaudeSonnetLatest,
 					MaxTPM:         50000,
 					DailyBudget:    200.0,
 					MaxConnections: 4,
@@ -27,7 +27,7 @@ func TestLimiterExample(t *testing.T) {
 	}
 
 	// Test basic functionality
-	err := limiter.Reserve("claude-3-5-sonnet-20241022", 100)
+	err := limiter.Reserve(config.ModelClaudeSonnetLatest, 100)
 	if err != nil {
 		t.Errorf("Expected reserve to succeed, got error: %v", err)
 	}

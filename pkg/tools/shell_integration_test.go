@@ -47,12 +47,3 @@ func TestShellTool_WithLocalExecutor(t *testing.T) {
 
 	t.Logf("Shell tool output: %s", stdout)
 }
-
-// LEGACY TESTS - TO BE REWRITTEN FOR NEW TOOLPROVIDER SYSTEM.
-func TestShellToolIntegration(t *testing.T) {
-	t.Skip("Skipping legacy test - to be rewritten for new ToolProvider system")
-}
-
-func TestShellToolExecutorUpdate(t *testing.T) {
-	t.Skip("Skipping legacy test - to be rewritten for new ToolProvider system")
-}

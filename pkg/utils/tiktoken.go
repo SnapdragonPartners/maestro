@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/tiktoken-go/tokenizer"
+
+	"orchestrator/pkg/config"
 )
 
 // TokenCounter provides accurate token counting for different models.
@@ -13,16 +15,15 @@ type TokenCounter struct {
 }
 
 // NewTokenCounter creates a new token counter for the specified model.
-// Common models: "gpt-4", "gpt-3.5-turbo", "claude-3-sonnet" (uses gpt-4 encoding).
+// Supported models are defined as constants in config package. All use GPT-4 encoding.
 func NewTokenCounter(model string) (*TokenCounter, error) {
 	// Map model names to tiktoken models, defaulting to GPT-4
 	var tikModel tokenizer.Model
 	switch model {
-	case "gpt-4", "gpt-4-turbo", "gpt-4o":
+	case config.ModelOpenAIO3, config.ModelOpenAIO3Mini:
+		// OpenAI O3 models use GPT-4 tokenizer
 		tikModel = tokenizer.GPT4
-	case "gpt-3.5-turbo":
-		tikModel = tokenizer.GPT35Turbo
-	case "claude-3-sonnet", "claude-3-haiku", "claude-3-opus", "claude-3.5-sonnet":
+	case config.ModelClaudeSonnet3, config.ModelClaudeSonnet4:
 		// Claude uses a similar tokenization, approximate with GPT-4 encoding
 		tikModel = tokenizer.GPT4
 	default:

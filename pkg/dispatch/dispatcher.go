@@ -37,6 +37,12 @@ type AgentError struct {
 
 // AttachChannels removed - channels are now set directly via ChannelReceiver interface.
 
+// runStrategy defines how the dispatcher executes its core loops.
+type runStrategy interface {
+	Run(d *Dispatcher, ctx context.Context) error
+	Stop() error
+}
+
 // Agent represents an agent that can be managed by the dispatcher.
 type Agent interface {
 	GetID() string
@@ -93,6 +99,9 @@ type Dispatcher struct {
 
 	// State change notifications.
 	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
+
+	// Execution strategy for testing
+	runStrat runStrategy // Controls how dispatcher executes (goroutines vs step-by-step)
 }
 
 // Result represents the result of a message dispatch operation.
@@ -120,6 +129,7 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *e
 		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
 		leases:            make(map[string]string),                                                    // Story lease tracking
 		containerRegistry: exec.NewContainerRegistry(logx.NewLogger("container-registry")),            // Container tracking registry
+		runStrat:          &goroutineStrategy{},                                                       // Default to production goroutine strategy
 	}, nil
 }
 
@@ -209,10 +219,10 @@ func (d *Dispatcher) UnregisterAgent(agentID string) error {
 }
 
 // routeToReplyCh routes ANSWER/RESULT messages to the appropriate coder's reply channel.
-func (d *Dispatcher) routeToReplyCh(msg *proto.AgentMsg, msgTypeStr string) {
+func (d *Dispatcher) routeToReplyCh(msg *proto.AgentMsg) {
 	targetAgent := msg.ToAgent
 
-	d.logger.Info("🔄 Routing %s %s to agent %s reply channel", msgTypeStr, msg.ID, targetAgent)
+	d.logger.Info("🔄 Routing %s %s to agent %s reply channel", msg.Type, msg.ID, targetAgent)
 
 	// Find the reply channel for this agent.
 	d.mu.RLock()
@@ -227,9 +237,9 @@ func (d *Dispatcher) routeToReplyCh(msg *proto.AgentMsg, msgTypeStr string) {
 	// Send to reply channel (non-blocking with buffer size 1).
 	select {
 	case replyCh <- msg:
-		d.logger.Info("✅ %s %s delivered to agent %s reply channel", msgTypeStr, msg.ID, targetAgent)
+		d.logger.Info("✅ %s %s delivered to agent %s reply channel", msg.Type, msg.ID, targetAgent)
 	default:
-		d.logger.Warn("❌ Reply channel full for agent %s, dropping %s %s", targetAgent, msgTypeStr, msg.ID)
+		d.logger.Warn("❌ Reply channel full for agent %s, dropping %s %s", targetAgent, msg.Type, msg.ID)
 	}
 }
 
@@ -245,19 +255,15 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 
 	d.logger.Info("Starting dispatcher")
 
-	// Start message processing worker.
-	d.wg.Add(1)
-	go d.messageProcessor(ctx)
-
-	// Channel readers removed - stories are delivered directly via Attach() channels.
-
-	// S-5: Start metrics monitoring worker.
-	d.wg.Add(1)
-	go d.metricsMonitor(ctx)
-
-	// Start supervisor goroutine for error handling.
-	d.wg.Add(1)
-	go d.supervisor(ctx)
+	// Use the run strategy to start execution
+	if d.runStrat != nil {
+		if err := d.runStrat.Run(d, ctx); err != nil {
+			d.mu.Lock()
+			d.running = false
+			d.mu.Unlock()
+			return fmt.Errorf("run strategy failed: %w", err)
+		}
+	}
 
 	// Start container registry cleanup routine.
 	// Check every 5 minutes for containers idle > 30 minutes.
@@ -279,12 +285,20 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 
 	d.logger.Info("Stopping dispatcher")
 
-	// Signal shutdown.
+	// Signal shutdown to all goroutines.
 	close(d.shutdown)
 
-	// Close all channels for graceful shutdown.
-	d.closeAllChannels()
-	// Wait for workers to finish.
+	// Shutdown container registry cleanup routine.
+	d.containerRegistry.Shutdown()
+
+	// Use the run strategy for stopping
+	if d.runStrat != nil {
+		if err := d.runStrat.Stop(); err != nil {
+			d.logger.Warn("Run strategy stop returned error: %v", err)
+		}
+	}
+
+	// Wait for workers to finish BEFORE closing channels to prevent race conditions.
 	done := make(chan struct{})
 	go func() {
 		d.wg.Wait()
@@ -293,10 +307,15 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
+		d.logger.Info("All workers finished, now closing channels")
+		// Close all channels AFTER workers have finished.
+		d.closeAllChannels()
 		d.logger.Info("Dispatcher stopped successfully")
 		return nil
 	case <-ctx.Done():
-		d.logger.Warn("Dispatcher stop timed out")
+		d.logger.Warn("Dispatcher stop timed out, closing channels anyway")
+		// Close channels even on timeout to prevent resource leaks
+		d.closeAllChannels()
 		return logx.Wrap(ctx.Err(), "dispatcher stop timed out")
 	}
 }
@@ -325,7 +344,16 @@ func (d *Dispatcher) DispatchMessage(msg *proto.AgentMsg) error {
 
 	select {
 	case d.inputChan <- msg:
-		d.logger.Debug("Queued message %s: %s → %s", msg.ID, msg.FromAgent, msg.ToAgent)
+		// Enhanced logging for unified protocol messages
+		kindInfo := ""
+		if msg.Type == proto.MsgTypeREQUEST || msg.Type == proto.MsgTypeRESPONSE {
+			if kindRaw, hasKind := msg.GetPayload(proto.KeyKind); hasKind {
+				if kindStr, ok := kindRaw.(string); ok {
+					kindInfo = fmt.Sprintf(" (kind: %s)", kindStr)
+				}
+			}
+		}
+		d.logger.Debug("Queued message %s: %s → %s%s", msg.ID, msg.FromAgent, msg.ToAgent, kindInfo)
 		return nil
 	default:
 		return fmt.Errorf("message queue is full")
@@ -511,37 +539,24 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			d.logger.Warn("❌ Architect spec channel full, dropping SPEC %s", msg.ID)
 		}
 
-	case proto.MsgTypeQUESTION:
-		// QUESTION messages go to questionsCh for architect to receive.
-		d.logger.Info("🔄 Sending QUESTION %s to questionsCh", msg.ID)
-
-		// Send to questionsCh (blocking).
-		d.questionsCh <- msg
-		d.logger.Info("✅ QUESTION %s delivered to questionsCh", msg.ID)
-
 	case proto.MsgTypeREQUEST:
-		// REQUEST messages go to questionsCh for architect to receive.
-		d.logger.Info("🔄 Sending REQUEST %s to questionsCh", msg.ID)
+		// Route unified REQUEST messages based on kind for optimized handling
+		kindRaw, hasKind := msg.GetPayload(proto.KeyKind)
+		kindStr := ""
+		if hasKind {
+			kindStr, _ = kindRaw.(string)
+		}
 
-		// Send to questionsCh (blocking).
+		d.logger.Info("🔄 Sending REQUEST %s (kind: %s) to questionsCh", msg.ID, kindStr)
+
+		// All REQUEST kinds go to questionsCh for architect to process
+		// Architect will handle kind-based routing internally
 		d.questionsCh <- msg
 		d.logger.Info("✅ REQUEST %s delivered to questionsCh", msg.ID)
 
-	case proto.MsgTypeRESULT:
-		// RESULT messages go to specific coder's reply channel.
-		d.routeToReplyCh(msg, "RESULT")
-
-	case proto.MsgTypeANSWER:
-		// ANSWER messages go to specific coder's reply channel.
-		d.routeToReplyCh(msg, "ANSWER")
-
-	case proto.MsgTypeREQUEUE:
-		// REQUEUE messages go to questionsCh for architect to handle.
-		d.logger.Info("🔄 Sending REQUEUE %s to questionsCh", msg.ID)
-
-		// Send to questionsCh (blocking).
-		d.questionsCh <- msg
-		d.logger.Info("✅ REQUEUE %s delivered to questionsCh", msg.ID)
+	case proto.MsgTypeRESPONSE:
+		// RESPONSE messages go to specific coder's reply channel.
+		d.routeToReplyCh(msg)
 
 	default:
 		// Other message types (ERROR, SHUTDOWN, etc.) still processed immediately.
@@ -645,15 +660,6 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 	}
 
 	switch response.Type {
-	case proto.MsgTypeQUESTION:
-		// Questions go to questionsCh.
-		select {
-		case d.questionsCh <- response:
-			d.logger.Debug("Queued QUESTION %s for architect", response.ID)
-		default:
-			d.logger.Warn("Questions channel full, dropping QUESTION %s", response.ID)
-		}
-
 	case proto.MsgTypeREQUEST:
 		// Approval requests go to questionsCh.
 		select {
@@ -663,13 +669,16 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 			d.logger.Warn("Questions channel full, dropping REQUEST %s", response.ID)
 		}
 
-	case proto.MsgTypeRESULT:
-		// Approval responses go to coder reply channel.
-		d.routeToReplyCh(response, "RESULT")
+	case proto.MsgTypeRESPONSE:
+		// Route unified RESPONSE messages with kind logging
+		kindRaw, hasKind := response.GetPayload(proto.KeyKind)
+		kindStr := ""
+		if hasKind {
+			kindStr, _ = kindRaw.(string)
+		}
 
-	case proto.MsgTypeANSWER:
-		// Information responses go to coder reply channel.
-		d.routeToReplyCh(response, "ANSWER")
+		d.logger.Debug("Routing RESPONSE %s (kind: %s) to reply channel", response.ID, kindStr)
+		d.routeToReplyCh(response)
 
 	default:
 		// Other types logged only.
@@ -715,16 +724,29 @@ func (d *Dispatcher) resolveAgentName(logicalName string) string {
 		return logicalName
 	}
 
-	// Find first agent of the target type.
+	// Find first agent of the target type (deterministically sorted).
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	// Look through registered agents to find one of the target type
+	// Collect matching agents and sort for consistent resolution
+	var matchingAgents []string
 	for agentID := range d.agents {
 		// Agent IDs follow the pattern "type-id" (e.g., "architect-001", "coder-001")
 		if strings.HasPrefix(agentID, targetType+"-") {
-			return agentID
+			matchingAgents = append(matchingAgents, agentID)
 		}
+	}
+
+	if len(matchingAgents) > 0 {
+		// Sort for deterministic resolution
+		for i := 0; i < len(matchingAgents)-1; i++ {
+			for j := i + 1; j < len(matchingAgents); j++ {
+				if matchingAgents[i] > matchingAgents[j] {
+					matchingAgents[i], matchingAgents[j] = matchingAgents[j], matchingAgents[i]
+				}
+			}
+		}
+		return matchingAgents[0]
 	}
 
 	// No agent found for this type, return original name (will cause "not found" error).
@@ -971,10 +993,15 @@ func (d *Dispatcher) SendRequeue(agentID, reason string) error {
 		return fmt.Errorf("no lease found for agent %s", agentID)
 	}
 
-	// Create requeue message (matches existing logic from coder ERROR handler).
-	requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEUE, "orchestrator", "architect")
-	requeueMsg.SetPayload("story_id", storyID)
-	requeueMsg.SetPayload("reason", reason)
+	// Create requeue message using unified REQUEST protocol.
+	requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "orchestrator", "architect")
+	requeueMsg.SetPayload(proto.KeyKind, string(proto.RequestKindRequeue))
+	requeueMsg.SetPayload(proto.KeyRequeue, proto.RequeueRequestPayload{
+		StoryID: storyID,
+		AgentID: agentID,
+		Reason:  reason,
+	})
+	requeueMsg.SetPayload(proto.KeyCorrelationID, proto.GenerateCorrelationID())
 
 	// Send to questions channel (same as existing requeue logic).
 	select {

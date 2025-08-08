@@ -247,7 +247,7 @@ lint:
 
 		result, err := tool.Exec(context.Background(), args)
 		if err != nil {
-			t.Errorf("Tool execution should not return error, got: %v", err)
+			t.Errorf("Tool execution should not return Go error, got: %v", err)
 		}
 
 		resultMap, ok := result.(map[string]any)
@@ -255,9 +255,13 @@ lint:
 			t.Error("Expected result to be map[string]any")
 		}
 
-		// The null backend might succeed, so let's just check that we got a valid response.
-		if resultMap["backend"] == nil {
-			t.Error("Expected backend to be set")
+		// Should have success=false and an error message for invalid path
+		if success, ok := resultMap["success"].(bool); !ok || success {
+			t.Error("Expected success to be false for non-existent path")
+		}
+
+		if errorMsg, ok := resultMap["error"].(string); !ok || errorMsg == "" {
+			t.Error("Expected error message for non-existent path")
 		}
 
 		t.Logf("Result for non-existent path: success=%v, backend=%v, error=%v",

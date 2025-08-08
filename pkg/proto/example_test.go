@@ -24,7 +24,7 @@ func ExampleAgentMsg_usage() {
 	fmt.Printf("STORY Message JSON:\n%s\n\n", jsonData)
 
 	// Claude receives and processes the story, then creates a RESULT message.
-	resultMsg := NewAgentMsg(MsgTypeRESULT, "claude", "architect")
+	resultMsg := NewAgentMsg(MsgTypeRESPONSE, "claude", "architect")
 	resultMsg.ParentMsgID = storyMsg.ID
 	resultMsg.SetPayload("status", "completed")
 	resultMsg.SetPayload("implementation", `

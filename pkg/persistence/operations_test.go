@@ -78,12 +78,13 @@ func TestDatabaseOperations(t *testing.T) {
 		}
 
 		story := &Story{
-			ID:       storyID,
-			SpecID:   specID,
-			Title:    "Test Story",
-			Content:  "Story content",
-			Status:   StatusNew,
-			Priority: 1,
+			ID:        storyID,
+			SpecID:    specID,
+			Title:     "Test Story",
+			Content:   "Story content",
+			Status:    StatusNew,
+			StoryType: "app",
+			Priority:  1,
 		}
 
 		// Upsert story
@@ -129,11 +130,12 @@ func TestDatabaseOperations(t *testing.T) {
 		}
 
 		story := &Story{
-			ID:      storyID,
-			SpecID:  specID,
-			Title:   "Status Test Story",
-			Content: "Content",
-			Status:  StatusNew,
+			ID:        storyID,
+			SpecID:    specID,
+			Title:     "Status Test Story",
+			Content:   "Content",
+			Status:    StatusNew,
+			StoryType: "app",
 		}
 
 		err = ops.UpsertStory(story)
@@ -188,19 +190,21 @@ func TestDatabaseOperations(t *testing.T) {
 		story2ID, _ := GenerateStoryID()
 
 		story1 := &Story{
-			ID:      story1ID,
-			SpecID:  specID,
-			Title:   "Story 1",
-			Content: "Content 1",
-			Status:  StatusNew,
+			ID:        story1ID,
+			SpecID:    specID,
+			Title:     "Story 1",
+			Content:   "Content 1",
+			Status:    StatusNew,
+			StoryType: "devops",
 		}
 
 		story2 := &Story{
-			ID:      story2ID,
-			SpecID:  specID,
-			Title:   "Story 2",
-			Content: "Content 2",
-			Status:  StatusNew,
+			ID:        story2ID,
+			SpecID:    specID,
+			Title:     "Story 2",
+			Content:   "Content 2",
+			Status:    StatusNew,
+			StoryType: "app",
 		}
 
 		err = ops.UpsertStory(story1)
@@ -279,9 +283,9 @@ func TestDatabaseOperations(t *testing.T) {
 
 		// Create stories with different statuses
 		stories := []*Story{
-			{ID: mustGenerateStoryID(), SpecID: specID, Title: "New Story", Content: "Content", Status: StatusNew},
-			{ID: mustGenerateStoryID(), SpecID: specID, Title: "Planning Story", Content: "Content", Status: StatusPlanning},
-			{ID: mustGenerateStoryID(), SpecID: specID, Title: "Coding Story", Content: "Content", Status: StatusCoding},
+			{ID: mustGenerateStoryID(), SpecID: specID, Title: "New Story", Content: "Content", Status: StatusNew, StoryType: "app"},
+			{ID: mustGenerateStoryID(), SpecID: specID, Title: "Planning Story", Content: "Content", Status: StatusPlanning, StoryType: "app"},
+			{ID: mustGenerateStoryID(), SpecID: specID, Title: "Coding Story", Content: "Content", Status: StatusCoding, StoryType: "devops"},
 		}
 
 		for _, story := range stories {

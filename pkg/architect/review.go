@@ -26,6 +26,7 @@ type ReviewEvaluator struct {
 	workspaceDir      string
 	escalationHandler *EscalationHandler
 	mergeCh           chan<- string // Channel to signal completed merges
+	driver            *Driver       // Reference to driver for Effects execution
 
 	// Track pending reviews.
 	pendingReviews map[string]*PendingReview // reviewID -> PendingReview
@@ -63,7 +64,7 @@ type ReviewAttempt struct {
 }
 
 // NewReviewEvaluator creates a new review evaluator.
-func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string) *ReviewEvaluator {
+func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string, driver *Driver) *ReviewEvaluator {
 	return &ReviewEvaluator{
 		llmClient:         llmClient,
 		renderer:          renderer,
@@ -71,6 +72,7 @@ func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue
 		workspaceDir:      workspaceDir,
 		escalationHandler: escalationHandler,
 		mergeCh:           mergeCh,
+		driver:            driver,
 		pendingReviews:    make(map[string]*PendingReview),
 	}
 }
@@ -666,13 +668,11 @@ func (re *ReviewEvaluator) generateFixFeedback(pendingReview *PendingReview) str
 	return feedback
 }
 
-// sendReviewResult sends the review result back to the agent.
-//
-//nolint:unparam // error return kept for future implementation when message sending could fail
-func (re *ReviewEvaluator) sendReviewResult(_ context.Context, pendingReview *PendingReview, result string) error {
-	// Create RESULT message.
+// sendReviewResult sends the review result back to the agent using Effects.
+func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *PendingReview, result string) error {
+	// Create RESPONSE message using unified protocol.
 	resultMsg := proto.NewAgentMsg(
-		proto.MsgTypeRESULT,
+		proto.MsgTypeRESPONSE,
 		"architect",           // from
 		pendingReview.AgentID, // to
 	)
@@ -697,12 +697,17 @@ func (re *ReviewEvaluator) sendReviewResult(_ context.Context, pendingReview *Pe
 	fmt.Printf("📋 Review result for story %s: %s\n",
 		pendingReview.StoryID, result)
 
-	// In a real implementation, this would be sent via the dispatcher.
-	// For now, we simulate sending the message.
-	fmt.Printf("📤 Sending review RESULT message to agent %s for story %s\n",
-		pendingReview.AgentID, pendingReview.StoryID)
+	// Send using Effects pattern.
+	return re.sendResponseEffect(ctx, resultMsg)
+}
 
-	return nil
+// sendResponseEffect sends a response message using the Effects pattern.
+func (re *ReviewEvaluator) sendResponseEffect(ctx context.Context, msg *proto.AgentMsg) error {
+	if re.driver == nil {
+		return fmt.Errorf("no driver available for Effects execution")
+	}
+	effect := &SendResponseEffect{Response: msg}
+	return re.driver.ExecuteEffect(ctx, effect)
 }
 
 // GetPendingReviews returns all pending reviews.

@@ -19,6 +19,13 @@ func createTestConfig() *config.Config {
 					MaxConnections: 3,
 					CPM:            3.0,
 				},
+				{
+					Name:           "o3",
+					MaxTPM:         5000,
+					DailyBudget:    50.0,
+					MaxConnections: 1,
+					CPM:            5.0,
+				},
 			},
 		},
 	}

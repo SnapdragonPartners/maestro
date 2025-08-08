@@ -11,7 +11,7 @@ func TestLogicalNaming(t *testing.T) {
 		Orchestrator: &config.OrchestratorConfig{
 			Models: []config.Model{
 				{
-					Name:           "claude-3-5-sonnet-20241022",
+					Name:           config.ModelClaudeSonnetLatest,
 					MaxTPM:         50000,
 					DailyBudget:    200.0,
 					MaxConnections: 4,
@@ -28,7 +28,7 @@ func TestLogicalNaming(t *testing.T) {
 		},
 		Agents: &config.AgentConfig{
 			MaxCoders:      2,
-			CoderModel:     "claude-3-5-sonnet-20241022",
+			CoderModel:     config.ModelClaudeSonnetLatest,
 			ArchitectModel: "o3-mini",
 		},
 	}
@@ -45,7 +45,7 @@ func TestLogicalNaming(t *testing.T) {
 	// Test model lookup by name
 	var claudeModel *config.Model
 	for i, model := range cfg.Orchestrator.Models {
-		if model.Name == "claude-3-5-sonnet-20241022" {
+		if model.Name == config.ModelClaudeSonnetLatest {
 			claudeModel = &cfg.Orchestrator.Models[i]
 			break
 		}

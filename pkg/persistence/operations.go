@@ -484,6 +484,10 @@ func (ops *DatabaseOperations) UpsertAgentResponse(response *AgentResponse) erro
 
 // UpsertAgentPlan inserts or updates an agent plan record.
 func (ops *DatabaseOperations) UpsertAgentPlan(plan *AgentPlan) error {
+	// Debug: Log the story_id being used
+	if plan.StoryID == "" {
+		return fmt.Errorf("cannot upsert agent plan %s: story_id is empty", plan.ID)
+	}
 	query := `
 		INSERT INTO agent_plans (
 			id, story_id, from_agent, content, confidence, status,

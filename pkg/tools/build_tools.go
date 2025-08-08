@@ -207,7 +207,13 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 
 	// Validate build requirements based on story type
 	if err := validateBuildRequirements(cwd, storyType); err != nil {
-		return nil, fmt.Errorf("build validation failed: %w", err)
+		return map[string]any{
+			"success":  false,
+			"backend":  "none",
+			"output":   "",
+			"duration": "0s",
+			"error":    fmt.Sprintf("build validation failed: %v", err),
+		}, nil
 	}
 
 	return executeBuildOperation(ctx, b.buildService, "build", cwd, timeout, "build execution failed")

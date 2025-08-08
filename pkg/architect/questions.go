@@ -21,6 +21,7 @@ type QuestionHandler struct {
 	renderer          *templates.Renderer
 	queue             *Queue
 	escalationHandler *EscalationHandler
+	driver            *Driver // Reference to driver for Effects execution
 	// Track pending questions.
 	pendingQuestions map[string]*PendingQuestion // questionID -> PendingQuestion
 	workDir          string                      // Working directory for user instructions
@@ -42,13 +43,14 @@ type PendingQuestion struct {
 }
 
 // NewQuestionHandler creates a new question handler.
-func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler, workDir string) *QuestionHandler {
+func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler, workDir string, driver *Driver) *QuestionHandler {
 	return &QuestionHandler{
 		llmClient:         llmClient,
 		renderer:          renderer,
 		queue:             queue,
 		escalationHandler: escalationHandler,
 		workDir:           workDir,
+		driver:            driver,
 		pendingQuestions:  make(map[string]*PendingQuestion),
 	}
 }
@@ -73,9 +75,16 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 			// Extract story ID from the task content (front matter).
 			if extractedID := qh.extractStoryIDFromContent(taskContent); extractedID != "" {
 				storyID = extractedID
-				// Use the reason as the actual question.
-				if reason, ok := msg.Payload[proto.KeyReason].(string); ok {
-					question = reason
+				// Extract question from unified protocol
+				if questionPayload, ok := msg.Payload[proto.KeyQuestion]; ok {
+					switch qp := questionPayload.(type) {
+					case proto.QuestionRequestPayload:
+						question = qp.Text
+					case string:
+						question = qp
+					default:
+						question = "Technical assistance requested during development"
+					}
 				} else {
 					question = "Technical assistance requested during development"
 				}
@@ -179,11 +188,11 @@ func (qh *QuestionHandler) sendMockAnswer(ctx context.Context, pendingQ *Pending
 	return qh.sendAnswerToAgent(ctx, pendingQ)
 }
 
-// sendAnswerToAgent sends a RESULT message with the answer back to the requesting agent.
-func (qh *QuestionHandler) sendAnswerToAgent(_ context.Context, pendingQ *PendingQuestion) error {
-	// Create RESULT message.
+// sendAnswerToAgent sends an ANSWER message with the answer back to the requesting agent using Effects.
+func (qh *QuestionHandler) sendAnswerToAgent(ctx context.Context, pendingQ *PendingQuestion) error {
+	// Create RESPONSE message.
 	resultMsg := proto.NewAgentMsg(
-		proto.MsgTypeRESULT,
+		proto.MsgTypeRESPONSE,
 		"architect",      // from
 		pendingQ.AgentID, // to
 	)
@@ -205,12 +214,17 @@ func (qh *QuestionHandler) sendAnswerToAgent(_ context.Context, pendingQ *Pendin
 	fmt.Printf("📝 Answered question %s for story %s: %s\n",
 		pendingQ.ID, pendingQ.StoryID, truncateString(pendingQ.Answer, 100))
 
-	// In a real implementation, this would be sent via the dispatcher.
-	// For now, we simulate sending the message.
-	fmt.Printf("📤 Sending RESULT message to agent %s for question %s\n",
-		pendingQ.AgentID, pendingQ.ID)
+	// Send using Effects pattern.
+	return qh.sendResponseEffect(ctx, resultMsg)
+}
 
-	return nil
+// sendResponseEffect sends a response message using the Effects pattern.
+func (qh *QuestionHandler) sendResponseEffect(ctx context.Context, msg *proto.AgentMsg) error {
+	if qh.driver == nil {
+		return fmt.Errorf("no driver available for Effects execution")
+	}
+	effect := &SendResponseEffect{Response: msg}
+	return qh.driver.ExecuteEffect(ctx, effect)
 }
 
 // isBusinessQuestion determines if a question requires business-level escalation.

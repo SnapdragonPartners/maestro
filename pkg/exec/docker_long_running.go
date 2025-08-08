@@ -45,7 +45,7 @@ type ContainerInfo struct {
 // NewLongRunningDockerExec creates a new long-running Docker executor.
 // agentID is optional - if empty, containers won't be tracked in global registry.
 func NewLongRunningDockerExec(image, agentID string) *LongRunningDockerExec {
-	logger := logx.NewLogger("docker-longrunning")
+	logger := logx.NewLogger("docker")
 
 	// Auto-detect Docker command.
 	dockerCmd := dockerCommand

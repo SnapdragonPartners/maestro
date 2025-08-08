@@ -59,8 +59,8 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Error("Expected urgency to be preserved")
 	}
 
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != string(StateQuestion) {
-		t.Error("Expected next_state to be QUESTION")
+	if nextState, exists := resultMap["next_state"]; !exists || nextState != "INLINE_HANDLED" {
+		t.Error("Expected next_state to be INLINE_HANDLED")
 	}
 }
 

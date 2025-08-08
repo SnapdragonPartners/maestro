@@ -290,18 +290,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 		}
 	}
 
-	// Check for pending questions and send them to architect.
-	if hasPending, _, content, reason := coderAgent.Driver.GetPendingQuestion(); hasPending {
-		questionMsg := h.createQuestionMessage(coderID, content, reason)
-		select {
-		case coderAgent.ToArch <- questionMsg:
-			// Clear the pending question since we've sent it.
-			coderAgent.Driver.ClearPendingQuestion()
-			h.t.Logf("Sent question from coder %s to architect", coderID)
-		default:
-			h.t.Logf("Warning: Could not send question from coder %s (channel full)", coderID)
-		}
-	}
+	// Questions are now handled inline via Effects pattern - no forwarding needed.
 
 	return nil
 }
@@ -309,7 +298,7 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 // createApprovalRequestMessage creates a REQUEST message for architect approval.
 func (h *TestHarness) createApprovalRequestMessage(coderID, content, reason string) *proto.AgentMsg {
 	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, coderID, h.architect.GetID())
-	msg.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
+	msg.SetPayload("request_type", "approval")
 
 	// Determine approval type based on coder state or reason.
 	approvalType := approvalTypePlan // Default
@@ -320,16 +309,8 @@ func (h *TestHarness) createApprovalRequestMessage(coderID, content, reason stri
 		}
 	}
 
-	msg.SetPayload(proto.KeyApprovalType, approvalType)
+	msg.SetPayload("approval_type", approvalType)
 	msg.SetPayload(proto.KeyContent, content)
-	msg.SetPayload(proto.KeyReason, reason)
-	return msg
-}
-
-// createQuestionMessage creates a QUESTION message for the architect.
-func (h *TestHarness) createQuestionMessage(coderID, content, reason string) *proto.AgentMsg {
-	msg := proto.NewAgentMsg(proto.MsgTypeQUESTION, coderID, h.architect.GetID())
-	msg.SetPayload(proto.KeyQuestion, content)
-	msg.SetPayload(proto.KeyReason, reason)
+	msg.SetPayload("reason", reason)
 	return msg
 }

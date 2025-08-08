@@ -7,24 +7,7 @@ import (
 	"orchestrator/pkg/exec"
 )
 
-// LEGACY TEST FILE - TO BE REWRITTEN FOR NEW IMMUTABLE REGISTRY SYSTEM
-// These tests use the old Registry methods that have been removed
-
-func TestRegistry_Register(t *testing.T) {
-	t.Skip("Skipping legacy test - to be rewritten for immutable registry system")
-}
-
-func TestRegistry_Get(t *testing.T) {
-	t.Skip("Skipping legacy test - to be rewritten for immutable registry system")
-}
-
-func TestRegistry_GetAll(t *testing.T) {
-	t.Skip("Skipping legacy test - to be rewritten for immutable registry system")
-}
-
-func TestGlobalRegistry(t *testing.T) {
-	t.Skip("Skipping legacy test - to be rewritten for immutable registry system")
-}
+// Tests for MCP tool system
 
 func TestShellTool_Name(t *testing.T) {
 	tool := NewShellTool(exec.NewLocalExec())

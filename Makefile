@@ -1,4 +1,4 @@
-.PHONY: build test lint run clean agentctl replayer maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
+.PHONY: build test test-coverage check-coverage lint run clean agentctl replayer maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
 
 # Build all binaries
 build: lint
@@ -19,9 +19,40 @@ maestro: lint
 replayer: lint
 	go build -o bin/replayer ./cmd/replayer
 
-# Run all tests
+# Run all tests with coverage
 test:
-	go test ./...
+	go test -cover ./...
+
+# Run tests and generate detailed coverage report
+test-coverage:
+	@echo "📊 Running tests with coverage reporting..."
+	@mkdir -p coverage
+	go test -coverprofile=coverage/coverage.out ./...
+	go tool cover -html=coverage/coverage.out -o coverage/coverage.html
+	@echo "✅ Coverage report generated: coverage/coverage.html"
+
+# Check coverage for key packages and fail if below 80%
+check-coverage:
+	@echo "🎯 Checking coverage for key packages..."
+	@COVERAGE_FAIL=0; \
+	for pkg in pkg/agent pkg/dispatch pkg/coder pkg/architect; do \
+		OUTPUT=$$(go test -cover ./$$pkg 2>&1); \
+		COVERAGE=$$(echo "$$OUTPUT" | grep -o '[0-9]\+\.[0-9]\+%' | tr -d '%' | head -1); \
+		if [ -z "$$COVERAGE" ]; then COVERAGE="0.0"; fi; \
+		echo "📈 $$pkg: $${COVERAGE}%"; \
+		if [ "$$(echo "$$COVERAGE < 80.0" | bc -l 2>/dev/null || python3 -c "print(1 if $$COVERAGE < 80.0 else 0)" 2>/dev/null || echo "1")" = "1" ]; then \
+			echo "❌ Coverage for $$pkg ($${COVERAGE}%) is below 80% threshold"; \
+			COVERAGE_FAIL=1; \
+		else \
+			echo "✅ Coverage for $$pkg ($${COVERAGE}%) meets 80% threshold"; \
+		fi; \
+	done; \
+	if [ $$COVERAGE_FAIL -eq 1 ]; then \
+		echo "💥 Coverage check failed - some packages below 80% threshold"; \
+		exit 1; \
+	else \
+		echo "🎉 All key packages meet 80% coverage threshold"; \
+	fi
 
 # Install golangci-lint if not present
 install-lint:

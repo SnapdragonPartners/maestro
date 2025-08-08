@@ -82,7 +82,7 @@ func (c *ContainerBuildTool) PromptDocumentation() string {
 }
 
 // extractWorkingDirectory extracts and validates the working directory from args.
-func extractWorkingDirectory(args map[string]any) (string, error) {
+func extractWorkingDirectory(args map[string]any) string {
 	cwd := ""
 	if cwdVal, hasCwd := args["cwd"]; hasCwd {
 		if cwdStr, ok := cwdVal.(string); ok {
@@ -91,23 +91,17 @@ func extractWorkingDirectory(args map[string]any) (string, error) {
 	}
 
 	if cwd == "" {
-		var err error
-		cwd, err = filepath.Abs(".")
-		if err != nil {
-			return "", fmt.Errorf("failed to get current directory: %w", err)
-		}
+		// Default to /workspace - all agent operations run inside containers
+		cwd = "/workspace"
 	}
 
-	return cwd, nil
+	return cwd
 }
 
 // Exec executes the container build operation.
 func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Extract working directory
-	cwd, err := extractWorkingDirectory(args)
-	if err != nil {
-		return nil, err
-	}
+	cwd := extractWorkingDirectory(args)
 
 	// Extract container name
 	containerName, ok := args["container_name"].(string)
@@ -127,12 +121,34 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 		platform = p
 	}
 
-	// Make dockerfile path absolute
-	absDockerfilePath := filepath.Join(cwd, dockerfilePath)
+	// Make dockerfile path absolute - handle both relative and absolute paths
+	var absDockerfilePath string
+	if filepath.IsAbs(dockerfilePath) {
+		absDockerfilePath = dockerfilePath
+	} else {
+		absDockerfilePath = filepath.Join(cwd, dockerfilePath)
+	}
+
+	// Validate dockerfile exists
 	if _, err := os.Stat(absDockerfilePath); err != nil {
+		// Try alternative path if the first fails
+		if !filepath.IsAbs(dockerfilePath) {
+			workspaceDir := "/workspace"
+			altPath := filepath.Join(workspaceDir, dockerfilePath)
+			if _, altErr := os.Stat(altPath); altErr == nil {
+				// Use the alternative path that was found
+				return c.buildAndTestContainer(ctx, workspaceDir, containerName, dockerfilePath, platform)
+			}
+			return nil, fmt.Errorf("dockerfile not found at %s or %s: %w", absDockerfilePath, altPath, err)
+		}
 		return nil, fmt.Errorf("dockerfile not found at %s: %w", absDockerfilePath, err)
 	}
 
+	return c.buildAndTestContainer(ctx, cwd, containerName, dockerfilePath, platform)
+}
+
+// buildAndTestContainer builds and tests a container, returning the result map.
+func (c *ContainerBuildTool) buildAndTestContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) (any, error) {
 	// Build the container
 	if err := c.buildContainer(ctx, cwd, containerName, dockerfilePath, platform); err != nil {
 		return nil, fmt.Errorf("failed to build container: %w", err)
@@ -232,10 +248,7 @@ func (c *ContainerUpdateTool) PromptDocumentation() string {
 // Exec executes the container configuration update operation.
 func (c *ContainerUpdateTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	// Extract working directory
-	cwd, err := extractWorkingDirectory(args)
-	if err != nil {
-		return nil, err
-	}
+	cwd := extractWorkingDirectory(args)
 
 	// Extract container name
 	containerName, ok := args["container_name"].(string)

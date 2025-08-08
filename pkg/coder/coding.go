@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -19,18 +20,6 @@ import (
 
 // handleCoding processes the CODING state with priority-based work handling.
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Check for question tool result (ask_question was called during coding).
-	if questionData, exists := sm.GetStateValue(KeyQuestionSubmitted); exists {
-		return c.handleCodingQuestionTransition(ctx, sm, questionData)
-	}
-
-	// Restore coding context if returning from QUESTION.
-	if questionAnswered := utils.GetStateValueOr[bool](sm, string(stateDataKeyQuestionAnswered), false); questionAnswered {
-		c.restoreCodingContext(sm)
-		sm.SetStateData(string(stateDataKeyQuestionAnswered), false) // Clear flag
-		c.logger.Info("🧑‍💻 Restored coding context after question answered")
-	}
-
 	// Check for merge conflict (highest priority).
 	if conflictData, exists := sm.GetStateValue(KeyMergeConflictDetails); exists {
 		c.logger.Info("🧑‍💻 Handling merge conflict in CODING state")
@@ -211,7 +200,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		toolCall := &toolCalls[i]
 		c.logger.Info("Executing MCP tool: %s", toolCall.Name)
 
-		// Handle ask_question tool separately as it requires state transitions.
+		// Handle ask_question tool using Effects pattern.
 		if toolCall.Name == tools.ToolAskQuestion {
 			// Extract question details from tool arguments.
 			question := utils.GetMapFieldOr[string](toolCall.Parameters, "question", "")
@@ -223,19 +212,35 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 				continue
 			}
 
-			// Store question data and trigger transition to QUESTION state.
-			questionData := map[string]any{
-				"question": question,
-				"context":  context,
-				"urgency":  urgency,
+			// Store coding context before asking question.
+			c.storeCodingContext(sm)
+
+			// Create question effect
+			eff := effect.NewQuestionEffect(question, context, urgency, string(StateCoding))
+
+			c.logger.Info("🧑‍💻 Asking question: %s", question)
+
+			// Execute the question effect (blocks until answer received)
+			result, err := c.ExecuteEffect(ctx, eff)
+			if err != nil {
+				c.logger.Error("🧑‍💻 Failed to get answer: %v", err)
+				// Add error to context for LLM to handle
+				c.addComprehensiveToolFailureToContext(*toolCall, err)
+				continue
 			}
 
-			// Set state data for question transition.
-			sm.SetStateData(KeyQuestionSubmitted, questionData)
-			c.logger.Info("🧑‍💻 Question submitted: %s", question)
+			// Process the answer
+			if questionResult, ok := result.(*effect.QuestionResult); ok {
+				c.logger.Info("🧑‍💻 Received answer from architect: %s", questionResult.Answer)
 
-			// Return early - handleCoding will detect the question and transition.
-			return filesCreated
+				// Add the Q&A to context so the LLM can see it
+				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
+				c.contextManager.AddMessage("user", qaContent)
+
+				// Continue with coding using the answer
+			} else {
+				c.logger.Error("🧑‍💻 Invalid question result type: %T", result)
+			}
 		}
 
 		// Get tool from ToolProvider and execute.
@@ -656,12 +661,7 @@ func (c *Coder) writeFile(filename, content string) error {
 	return nil
 }
 
-// handleCodingQuestionTransition processes ask_question tool results from CODING state.
-func (c *Coder) handleCodingQuestionTransition(_ context.Context, sm *agent.BaseStateMachine, questionData any) (proto.State, bool, error) {
-	// Store coding context before transition.
-	c.storeCodingContext(sm)
-	return c.processQuestionTransition(sm, questionData, StateCoding, "coding")
-}
+// handleCodingQuestionTransition - removed, now using single-phase approach via coding_question_pending flag
 
 // storeCodingContext stores the current coding context.
 func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
@@ -675,22 +675,7 @@ func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
 	c.logger.Debug("🧑‍💻 Stored coding context for QUESTION transition")
 }
 
-// restoreCodingContext restores the coding context after returning from QUESTION.
-func (c *Coder) restoreCodingContext(sm *agent.BaseStateMachine) {
-	if contextData, exists := sm.GetStateValue(KeyCodingContextSaved); exists {
-		if context, ok := contextData.(map[string]any); ok {
-			c.restoreCodingProgress(context["coding_progress"])
-			c.restoreFilesCreated(context[KeyFilesCreated])
-			c.restoreCurrentTask(context["current_task"])
-			c.logger.Debug("🧑‍💻 Restored coding context from QUESTION transition")
-		}
-	}
-}
-
 // Placeholder helper methods for coding context management (to be enhanced as needed).
-func (c *Coder) getCodingProgress() any    { return map[string]any{} }
-func (c *Coder) getFilesCreated() any      { return []string{} }
-func (c *Coder) getCurrentTask() any       { return map[string]any{} }
-func (c *Coder) restoreCodingProgress(any) {}
-func (c *Coder) restoreFilesCreated(any)   {}
-func (c *Coder) restoreCurrentTask(any)    {}
+func (c *Coder) getCodingProgress() any { return map[string]any{} }
+func (c *Coder) getFilesCreated() any   { return []string{} }
+func (c *Coder) getCurrentTask() any    { return map[string]any{} }

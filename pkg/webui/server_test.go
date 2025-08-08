@@ -429,11 +429,21 @@ func createUploadRequest(t *testing.T, filename, content string) *http.Request {
 
 // Helper function to create test dispatcher.
 func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
-	// Create minimal config.
-	cfg := &config.Config{}
+	// Create temporary directory and load config
+	tempDir := t.TempDir()
+
+	err := config.LoadConfig(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		t.Fatalf("Failed to get config: %v", err)
+	}
 
 	// Create rate limiter.
-	rateLimiter := limiter.NewLimiter(cfg)
+	rateLimiter := limiter.NewLimiter(&cfg)
 
 	// Create event log.
 	tmpDir := t.TempDir()
@@ -443,7 +453,7 @@ func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	}
 
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(&cfg, rateLimiter, eventLog)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -706,6 +716,11 @@ func TestAgentRestartMonitoring(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
+		Agents: &config.AgentConfig{
+			MaxCoders:      1,
+			CoderModel:     "test_model",
+			ArchitectModel: "test_model",
+		},
 		Orchestrator: &config.OrchestratorConfig{
 			Models: []config.Model{
 				{
@@ -938,6 +953,11 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
+		Agents: &config.AgentConfig{
+			MaxCoders:      1,
+			CoderModel:     "test_model",
+			ArchitectModel: "test_model",
+		},
 		Orchestrator: &config.OrchestratorConfig{
 			Models: []config.Model{
 				{
@@ -1155,6 +1175,11 @@ func TestHandleStories(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
+		Agents: &config.AgentConfig{
+			MaxCoders:      1,
+			CoderModel:     "test_model",
+			ArchitectModel: "test_model",
+		},
 		Orchestrator: &config.OrchestratorConfig{
 			Models: []config.Model{
 				{

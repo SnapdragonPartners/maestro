@@ -8,7 +8,7 @@ import (
 
 func TestCodeParsingConfig(t *testing.T) {
 	modelConfig := &config.Model{
-		Name:   "claude-3-5-sonnet-20241022",
+		Name:   config.ModelClaudeSonnetLatest,
 		MaxTPM: 50000,
 	}
 

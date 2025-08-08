@@ -71,11 +71,23 @@ func (m *AlwaysApprovalMockArchitect) ProcessMessage(_ context.Context, msg *pro
 
 	switch msg.Type {
 	case proto.MsgTypeREQUEST:
+		// Handle unified REQUEST protocol based on kind
+		if kindRaw, exists := msg.GetPayload(proto.KeyKind); exists {
+			if kindStr, ok := kindRaw.(string); ok {
+				switch proto.RequestKind(kindStr) {
+				case proto.RequestKindQuestion:
+					return m.handleQuestion(msg)
+				case proto.RequestKindApproval:
+					return m.handleApprovalRequest(msg)
+				default:
+					return nil, fmt.Errorf("unsupported request kind: %s", kindStr)
+				}
+			}
+		}
+		// Fallback for legacy REQUEST messages without kind
 		return m.handleApprovalRequest(msg)
-	case proto.MsgTypeQUESTION:
-		return m.handleQuestion(msg)
-	case proto.MsgTypeRESULT:
-		// Just acknowledge result messages.
+	case proto.MsgTypeRESPONSE:
+		// Just acknowledge response messages.
 		return m.createAcknowledgment(msg), nil
 	default:
 		return nil, fmt.Errorf("unsupported message type: %s", msg.Type)
@@ -86,14 +98,14 @@ func (m *AlwaysApprovalMockArchitect) ProcessMessage(_ context.Context, msg *pro
 func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// Extract approval type from the request.
 	approvalType := "plan" // default
-	if reqApprovalType, exists := msg.GetPayload(proto.KeyApprovalType); exists {
+	if reqApprovalType, exists := msg.GetPayload("approval_type"); exists {
 		if approvalTypeStr, ok := reqApprovalType.(string); ok {
 			approvalType = approvalTypeStr
 		}
 	}
 
 	// Create approval response.
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 
 	// Create approval result
@@ -115,7 +127,7 @@ func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg)
 // handleQuestion processes question messages.
 func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// For simplicity, always provide a helpful answer.
-	response := proto.NewAgentMsg(proto.MsgTypeANSWER, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyAnswer, "Please continue with your current approach. It looks good.")
 
@@ -124,7 +136,7 @@ func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*prot
 
 // createAcknowledgment creates a simple acknowledgment response.
 func (m *AlwaysApprovalMockArchitect) createAcknowledgment(msg *proto.AgentMsg) *proto.AgentMsg {
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyStatus, "acknowledged")
 	return response
@@ -203,10 +215,22 @@ func (m *ChangesRequestedMockArchitect) ProcessMessage(_ context.Context, msg *p
 
 	switch msg.Type {
 	case proto.MsgTypeREQUEST:
+		// Handle unified REQUEST protocol based on kind
+		if kindRaw, exists := msg.GetPayload(proto.KeyKind); exists {
+			if kindStr, ok := kindRaw.(string); ok {
+				switch proto.RequestKind(kindStr) {
+				case proto.RequestKindQuestion:
+					return m.handleQuestion(msg)
+				case proto.RequestKindApproval:
+					return m.handleApprovalRequest(msg)
+				default:
+					return nil, fmt.Errorf("unsupported request kind: %s", kindStr)
+				}
+			}
+		}
+		// Fallback for legacy REQUEST messages without kind
 		return m.handleApprovalRequest(msg)
-	case proto.MsgTypeQUESTION:
-		return m.handleQuestion(msg)
-	case proto.MsgTypeRESULT:
+	case proto.MsgTypeRESPONSE:
 		return m.createAcknowledgment(msg), nil
 	default:
 		return nil, fmt.Errorf("unsupported message type: %s", msg.Type)
@@ -217,7 +241,7 @@ func (m *ChangesRequestedMockArchitect) ProcessMessage(_ context.Context, msg *p
 func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// Extract approval type.
 	approvalType := "plan"
-	if reqApprovalType, exists := msg.GetPayload(proto.KeyApprovalType); exists {
+	if reqApprovalType, exists := msg.GetPayload("approval_type"); exists {
 		if approvalTypeStr, ok := reqApprovalType.(string); ok {
 			approvalType = approvalTypeStr
 		}
@@ -234,7 +258,7 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 	}
 
 	// Create response.
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 
 	// Create approval result
@@ -255,7 +279,7 @@ func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMs
 
 // handleQuestion processes questions.
 func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	response := proto.NewAgentMsg(proto.MsgTypeANSWER, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyAnswer, "Please revise based on the feedback provided.")
 
@@ -264,7 +288,7 @@ func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*pr
 
 // createAcknowledgment creates a simple acknowledgment.
 func (m *ChangesRequestedMockArchitect) createAcknowledgment(msg *proto.AgentMsg) *proto.AgentMsg {
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload(proto.KeyStatus, "acknowledged")
 	return response
@@ -322,7 +346,7 @@ func (m *MalformedResponseMockArchitect) ProcessMessage(_ context.Context, msg *
 	}
 
 	// Default malformed response.
-	response := proto.NewAgentMsg(proto.MsgTypeRESULT, m.id, msg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
 	response.SetPayload("invalid_field", "malformed_value")
 	return response, nil
