@@ -1,4 +1,4 @@
-.PHONY: build test test-coverage check-coverage lint run clean agentctl replayer maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
+.PHONY: build test test-integration test-all test-coverage check-coverage lint run clean agentctl replayer maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
 
 # Build all binaries
 build: lint
@@ -22,6 +22,16 @@ replayer: lint
 # Run all tests with coverage
 test:
 	go test -cover ./...
+
+# Run integration tests only (requires API keys and external services)
+test-integration:
+	@echo "🧪 Running integration tests..."
+	go test -tags=integration -cover ./...
+
+# Run all tests including integration tests (combines unit and integration)
+test-all:
+	@echo "🔬 Running all tests (unit + integration)..."
+	go test -tags=integration -cover ./...
 
 # Run tests and generate detailed coverage report
 test-coverage:

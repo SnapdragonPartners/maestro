@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package integration provides integration tests for the orchestrator multi-agent system.
 package integration
 
