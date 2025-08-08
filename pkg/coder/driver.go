@@ -482,10 +482,26 @@ func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClie
 	return coder, nil
 }
 
-// NewCoderWithClaude creates a new coder with Claude LLM integration (for live mode).
-func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, apiKey string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
-	// Create Claude LLM client.
-	llmClient := agent.NewClaudeClient(apiKey)
+// NewCoderWithClaude creates a new coder with LLM integration (for live mode).
+// The API key is automatically retrieved from environment variables.
+func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, _ string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
+	// Get the current configuration to build LLM client with middleware
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+
+	// Create LLM client factory
+	factory, err := agent.NewLLMClientFactory(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
+	}
+
+	// Create coder client with full middleware chain
+	llmClient, err := factory.CreateClient(agent.TypeCoder)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
+	}
 
 	// Create coder with LLM integration.
 	coder, err := NewCoder(agentID, modelConfig, llmClient, workDir, buildService, nil)

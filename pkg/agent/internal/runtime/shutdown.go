@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent/internal/core"
-	"orchestrator/pkg/agent/resilience"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
 )
@@ -77,7 +76,7 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 			component := components[i]
 			timeout := timeouts[component.Name()]
 			if timeout == 0 {
-				timeout = resilience.DefaultTimeoutConfig.ShutdownTimeout
+				timeout = 30 * time.Second // Default shutdown timeout
 			}
 
 			// Create timeout context for this component.
@@ -147,7 +146,7 @@ func NewShutdownableDriver(config *Config, initialState proto.State, shutdownMgr
 
 	// Register with shutdown manager.
 	if shutdownMgr != nil {
-		shutdownMgr.Register(driver, resilience.DefaultTimeoutConfig.ShutdownTimeout)
+		shutdownMgr.Register(driver, 30*time.Second) // Default shutdown timeout
 	}
 
 	return driver, nil

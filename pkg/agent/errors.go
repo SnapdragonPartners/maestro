@@ -4,7 +4,6 @@ import (
 	"orchestrator/pkg/agent/config"
 	"orchestrator/pkg/agent/internal/core"
 	"orchestrator/pkg/agent/internal/runtime"
-	"orchestrator/pkg/agent/resilience"
 )
 
 // Re-exported public errors from domain packages.
@@ -23,13 +22,4 @@ var (
 
 	// ErrInvalidConfig indicates an invalid configuration was provided.
 	ErrInvalidConfig = config.ErrInvalidConfig
-
-	// ErrCircuitOpen indicates the circuit breaker is open.
-	ErrCircuitOpen = resilience.ErrCircuitOpen
-
-	// ErrRetryExhausted indicates all retry attempts have been exhausted.
-	ErrRetryExhausted = resilience.ErrRetryExhausted
-
-	// ErrTimeout indicates an operation timed out.
-	ErrTimeout = resilience.ErrTimeout
 )

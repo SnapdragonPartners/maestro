@@ -9,7 +9,6 @@ import (
 	"orchestrator/pkg/agent/internal/runtime"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/msg"
-	"orchestrator/pkg/agent/resilience"
 	"orchestrator/pkg/proto"
 )
 
@@ -53,11 +52,6 @@ type (
 
 	// TransitionTable represents state machine transition rules.
 	TransitionTable = core.TransitionTable
-
-	// CircuitBreakerConfig provides circuit breaker configuration for tests.
-	CircuitBreakerConfig = resilience.CircuitBreakerConfig
-	// RetryConfig provides retry configuration for tests.
-	RetryConfig = resilience.RetryConfig
 )
 
 // Re-export essential constants.
@@ -66,9 +60,6 @@ const (
 	RoleUser           = llm.RoleUser
 	RoleAssistant      = llm.RoleAssistant
 	RoleSystem         = llm.RoleSystem
-
-	// Resilience constants for tests.
-	CircuitClosed = resilience.CircuitClosed
 )
 
 // GetTyped retrieves a typed value from the state machine.
@@ -114,30 +105,6 @@ func NewO3ClientWithModel(apiKey, model string) LLMClient {
 // NewConfig creates a new agent configuration.
 func NewConfig(id, agentType string, ctx Context) *Config {
 	return runtime.NewConfig(id, agentType, ctx)
-}
-
-// NewCircuitBreakerClient provides circuit breaker client creation.
-func NewCircuitBreakerClient(client LLMClient, config CircuitBreakerConfig) *resilience.CircuitBreakerClient {
-	return resilience.NewCircuitBreakerClient(client, config)
-}
-
-// NewRetryableClient provides retryable client creation.
-func NewRetryableClient(client LLMClient, config RetryConfig) LLMClient {
-	return resilience.NewRetryableClient(client, config)
-}
-
-// NewRetryableClientWithLogger provides retryable client with logger creation.
-func NewRetryableClientWithLogger(client LLMClient, config RetryConfig, _ interface{}) LLMClient {
-	// Simplified for tests
-	return resilience.NewRetryableClient(client, config)
-}
-
-// TransientError for tests.
-type TransientError = resilience.TransientError
-
-// NewTransientError provides transient error creation.
-func NewTransientError(err error) *TransientError {
-	return resilience.NewTransientError(err)
 }
 
 // ShutdownManager provides test stub for shutdown management - these should be migrated away from over time.
@@ -216,16 +183,6 @@ type PromptLogConfig struct {
 
 // PromptLogOnFailure provides legacy test stub prompt log mode.
 const PromptLogOnFailure = "on_failure"
-
-// NewResilientClient provides legacy test stub resilient client.
-func NewResilientClient(client LLMClient) LLMClient {
-	return client
-}
-
-// NewResilientClientWithLogger provides legacy test stub resilient client with logger.
-func NewResilientClientWithLogger(client LLMClient, _ interface{}) LLMClient {
-	return client
-}
 
 // NewClaudeClientWithLogger provides legacy test stub Claude client with logger.
 func NewClaudeClientWithLogger(apiKey string, _ interface{}) LLMClient {

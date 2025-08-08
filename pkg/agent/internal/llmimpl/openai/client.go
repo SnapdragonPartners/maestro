@@ -10,7 +10,6 @@ import (
 	"github.com/sashabaranov/go-openai"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/agent/resilience"
 	"orchestrator/pkg/config"
 )
 
@@ -20,26 +19,20 @@ type O3Client struct {
 	model  string
 }
 
-// NewO3Client creates a new OpenAI o3 client wrapper with default retry logic.
+// NewO3Client creates a new OpenAI o3 client wrapper (raw client, middleware applied at higher level).
 func NewO3Client(apiKey string) llm.LLMClient {
-	baseClient := &O3Client{
+	return &O3Client{
 		client: openai.NewClient(apiKey),
 		model:  "o3-mini", // Default o3 model
 	}
-
-	// Wrap with both circuit breaker and retry logic.
-	return resilience.NewResilientClient(baseClient)
 }
 
-// NewO3ClientWithModel creates a new OpenAI client with specific model and retry logic.
+// NewO3ClientWithModel creates a new OpenAI client with specific model (raw client, middleware applied at higher level).
 func NewO3ClientWithModel(apiKey, model string) llm.LLMClient {
-	baseClient := &O3Client{
+	return &O3Client{
 		client: openai.NewClient(apiKey),
 		model:  model,
 	}
-
-	// Wrap with both circuit breaker and retry logic.
-	return resilience.NewResilientClient(baseClient)
 }
 
 // Complete implements the llm.LLMClient interface.

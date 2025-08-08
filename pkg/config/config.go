@@ -55,6 +55,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Global config instance with mutex protection.
@@ -106,6 +107,26 @@ var ModelDefaults = map[string]Model{
 		CPM:            0.6,
 		DailyBudget:    5.0,
 	},
+	ModelGPT5: {
+		Name:           ModelGPT5,
+		MaxTPM:         150000, // Higher limits for GPT-5
+		MaxConnections: 5,      // More connections
+		CPM:            30.0,   // Premium pricing for GPT-5
+		DailyBudget:    100.0,  // Higher budget
+	},
+}
+
+// ModelProviders maps each model to its API provider for middleware configuration.
+// This mapping is immutable and not user-configurable.
+//
+//nolint:gochecknoglobals // Intentional global for model-to-provider mapping
+var ModelProviders = map[string]string{
+	ModelClaudeSonnet3: ProviderAnthropic,
+	ModelClaudeSonnet4: ProviderAnthropic,
+	ModelOpenAIO3:      ProviderOpenAI,
+	ModelOpenAIO3Mini:  ProviderOpenAI,
+	ModelGPT5:          ProviderOpenAIOfficial,
+	"gpt-4o":           ProviderOpenAIOfficial, // For testing
 }
 
 // IsModelSupported checks if we have defaults for this model.
@@ -114,11 +135,67 @@ func IsModelSupported(modelName string) bool {
 	return exists
 }
 
+// GetModelProvider returns the API provider for a given model.
+func GetModelProvider(modelName string) (string, error) {
+	provider, exists := ModelProviders[modelName]
+	if !exists {
+		return "", fmt.Errorf("unknown model: %s", modelName)
+	}
+	return provider, nil
+}
+
+// CircuitBreakerConfig defines configuration for circuit breaker behavior.
+type CircuitBreakerConfig struct {
+	FailureThreshold int           `json:"failure_threshold"` // Number of failures before opening circuit
+	SuccessThreshold int           `json:"success_threshold"` // Number of successes to close circuit from half-open
+	Timeout          time.Duration `json:"timeout"`           // Time to wait before trying half-open
+}
+
+// RetryConfig defines configuration for retry behavior.
+type RetryConfig struct {
+	MaxAttempts   int           `json:"max_attempts"`   // Maximum number of attempts (including initial)
+	InitialDelay  time.Duration `json:"initial_delay"`  // Initial delay before first retry
+	MaxDelay      time.Duration `json:"max_delay"`      // Maximum delay between retries
+	BackoffFactor float64       `json:"backoff_factor"` // Multiplier for exponential backoff
+	Jitter        bool          `json:"jitter"`         // Add random jitter to prevent thundering herd
+}
+
+// ProviderLimits defines rate limiting configuration for a specific API provider.
+type ProviderLimits struct {
+	TokensPerMinute int `json:"tokens_per_minute"` // Rate limit in tokens per minute
+	Burst           int `json:"burst"`             // Burst capacity
+	MaxConcurrency  int `json:"max_concurrency"`   // Maximum concurrent requests
+}
+
+// RateLimitConfig defines rate limiting configuration grouped by API provider.
+type RateLimitConfig struct {
+	Anthropic      ProviderLimits `json:"anthropic"`       // Rate limits for Anthropic models
+	OpenAI         ProviderLimits `json:"openai"`          // Rate limits for OpenAI models
+	OpenAIOfficial ProviderLimits `json:"openai_official"` // Rate limits for OpenAI Official models
+}
+
+// ResilienceConfig bundles all resilience-related middleware configuration.
+type ResilienceConfig struct {
+	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker"` // Circuit breaker settings
+	Retry          RetryConfig          `json:"retry"`           // Retry policy settings
+	RateLimit      RateLimitConfig      `json:"rate_limit"`      // Rate limiting settings
+	Timeout        time.Duration        `json:"timeout"`         // Per-request timeout
+}
+
+// MetricsConfig defines configuration for metrics collection.
+type MetricsConfig struct {
+	Enabled   bool   `json:"enabled"`   // Whether metrics collection is enabled
+	Exporter  string `json:"exporter"`  // Metrics exporter type ("prometheus", "noop")
+	Namespace string `json:"namespace"` // Metrics namespace for grouping
+}
+
 // AgentConfig defines which models to use and concurrency limits.
 type AgentConfig struct {
-	MaxCoders      int    `json:"max_coders"`      // must be <= CoderModel.MaxConnections
-	CoderModel     string `json:"coder_model"`     // must match a Model.Name
-	ArchitectModel string `json:"architect_model"` // must match a Model.Name
+	MaxCoders      int              `json:"max_coders"`      // must be <= CoderModel.MaxConnections
+	CoderModel     string           `json:"coder_model"`     // must match a Model.Name
+	ArchitectModel string           `json:"architect_model"` // must match a Model.Name
+	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
+	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
 }
 
 // All constants bundled together for easy maintenance.
@@ -165,6 +242,7 @@ const (
 	ModelOpenAIO3           = "o3"
 	ModelOpenAIO3Mini       = "o3-mini"
 	ModelOpenAIO3Latest     = ModelOpenAIO3
+	ModelGPT5               = "gpt-5"
 	DefaultCoderModel       = ModelClaudeSonnet4
 	DefaultArchitectModel   = ModelOpenAIO3
 
@@ -173,6 +251,11 @@ const (
 	ProjectConfigDir      = ".maestro"
 	DatabaseFilename      = "maestro.db"
 	SchemaVersion         = "1.0"
+
+	// Provider constants for middleware rate limiting.
+	ProviderAnthropic      = "anthropic"
+	ProviderOpenAI         = "openai"
+	ProviderOpenAIOfficial = "openai_official"
 )
 
 // GitConfig contains git repository settings for the project.
@@ -439,6 +522,38 @@ func createDefaultConfig() *Config {
 			MaxCoders:      2,
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
+			Metrics: MetricsConfig{
+				Enabled:   false,
+				Exporter:  "noop",
+				Namespace: "maestro",
+			},
+			Resilience: ResilienceConfig{
+				CircuitBreaker: CircuitBreakerConfig{
+					FailureThreshold: 5,
+					SuccessThreshold: 3,
+					Timeout:          30 * time.Second,
+				},
+				Retry: RetryConfig{
+					MaxAttempts:   3,
+					InitialDelay:  100 * time.Millisecond,
+					MaxDelay:      10 * time.Second,
+					BackoffFactor: 2.0,
+					Jitter:        true,
+				},
+				RateLimit: RateLimitConfig{
+					Anthropic: ProviderLimits{
+						TokensPerMinute: 300000,
+						Burst:           10000,
+						MaxConcurrency:  5,
+					},
+					OpenAI: ProviderLimits{
+						TokensPerMinute: 100000,
+						Burst:           5000,
+						MaxConcurrency:  3,
+					},
+				},
+				Timeout: 60 * time.Second,
+			},
 		},
 		Git: &GitConfig{
 			TargetBranch:  DefaultTargetBranch,
@@ -585,6 +700,84 @@ func applyDefaults(config *Config) {
 	}
 	if config.Git.BranchPattern == "" {
 		config.Git.BranchPattern = DefaultBranchPattern
+	}
+
+	// Apply agent defaults
+	if config.Agents.MaxCoders == 0 {
+		config.Agents.MaxCoders = 2
+	}
+	if config.Agents.CoderModel == "" {
+		config.Agents.CoderModel = DefaultCoderModel
+	}
+	if config.Agents.ArchitectModel == "" {
+		config.Agents.ArchitectModel = DefaultArchitectModel
+	}
+
+	// Apply metrics defaults
+	if config.Agents.Metrics.Exporter == "" {
+		config.Agents.Metrics.Exporter = "noop"
+	}
+	if config.Agents.Metrics.Namespace == "" {
+		config.Agents.Metrics.Namespace = "maestro"
+	}
+
+	// Apply resilience defaults
+	if config.Agents.Resilience.CircuitBreaker.FailureThreshold == 0 {
+		config.Agents.Resilience.CircuitBreaker.FailureThreshold = 5
+	}
+	if config.Agents.Resilience.CircuitBreaker.SuccessThreshold == 0 {
+		config.Agents.Resilience.CircuitBreaker.SuccessThreshold = 3
+	}
+	if config.Agents.Resilience.CircuitBreaker.Timeout == 0 {
+		config.Agents.Resilience.CircuitBreaker.Timeout = 30 * time.Second
+	}
+
+	if config.Agents.Resilience.Retry.MaxAttempts == 0 {
+		config.Agents.Resilience.Retry.MaxAttempts = 3
+	}
+	if config.Agents.Resilience.Retry.InitialDelay == 0 {
+		config.Agents.Resilience.Retry.InitialDelay = 100 * time.Millisecond
+	}
+	if config.Agents.Resilience.Retry.MaxDelay == 0 {
+		config.Agents.Resilience.Retry.MaxDelay = 10 * time.Second
+	}
+	if config.Agents.Resilience.Retry.BackoffFactor == 0 {
+		config.Agents.Resilience.Retry.BackoffFactor = 2.0
+	}
+
+	if config.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute == 0 {
+		config.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute = 300000
+	}
+	if config.Agents.Resilience.RateLimit.Anthropic.Burst == 0 {
+		config.Agents.Resilience.RateLimit.Anthropic.Burst = 10000
+	}
+	if config.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency == 0 {
+		config.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency = 5
+	}
+
+	if config.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute == 0 {
+		config.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute = 100000
+	}
+	if config.Agents.Resilience.RateLimit.OpenAI.Burst == 0 {
+		config.Agents.Resilience.RateLimit.OpenAI.Burst = 5000
+	}
+	if config.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency == 0 {
+		config.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency = 3
+	}
+
+	// Set defaults for OpenAI Official provider (higher limits for premium GPT-5)
+	if config.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute == 0 {
+		config.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute = 150000
+	}
+	if config.Agents.Resilience.RateLimit.OpenAIOfficial.Burst == 0 {
+		config.Agents.Resilience.RateLimit.OpenAIOfficial.Burst = 10000
+	}
+	if config.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency == 0 {
+		config.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency = 5
+	}
+
+	if config.Agents.Resilience.Timeout == 0 {
+		config.Agents.Resilience.Timeout = 60 * time.Second
 	}
 
 	// Apply orchestrator defaults
@@ -769,4 +962,57 @@ func GetArchitectModel() (*Model, error) {
 		}
 	}
 	return nil, fmt.Errorf("architect_model '%s' not found in config", cfg.Agents.ArchitectModel)
+}
+
+// GetAPIKey returns the API key for a given provider from environment variables.
+func GetAPIKey(provider string) (string, error) {
+	var envVar string
+	switch provider {
+	case ProviderAnthropic:
+		envVar = "ANTHROPIC_API_KEY"
+	case ProviderOpenAI, ProviderOpenAIOfficial:
+		envVar = "OPENAI_API_KEY" // Both use the same API key
+	default:
+		return "", fmt.Errorf("unknown provider: %s", provider)
+	}
+
+	key := os.Getenv(envVar)
+	if key == "" {
+		return "", fmt.Errorf("API key not found: %s environment variable is not set", envVar)
+	}
+	return key, nil
+}
+
+// ValidateAPIKeysForConfig validates that all required API keys are available for the configured models.
+func ValidateAPIKeysForConfig() error {
+	cfg, err := GetConfig()
+	if err != nil {
+		return fmt.Errorf("configuration not loaded: %w", err)
+	}
+
+	// Collect all providers used by configured models
+	requiredProviders := make(map[string]bool)
+
+	// Check coder model provider
+	coderProvider, err := GetModelProvider(cfg.Agents.CoderModel)
+	if err != nil {
+		return fmt.Errorf("failed to get provider for coder model: %w", err)
+	}
+	requiredProviders[coderProvider] = true
+
+	// Check architect model provider
+	architectProvider, err := GetModelProvider(cfg.Agents.ArchitectModel)
+	if err != nil {
+		return fmt.Errorf("failed to get provider for architect model: %w", err)
+	}
+	requiredProviders[architectProvider] = true
+
+	// Validate API keys for all required providers
+	for provider := range requiredProviders {
+		if _, err := GetAPIKey(provider); err != nil {
+			return fmt.Errorf("missing API key for provider %s: %w", provider, err)
+		}
+	}
+
+	return nil
 }

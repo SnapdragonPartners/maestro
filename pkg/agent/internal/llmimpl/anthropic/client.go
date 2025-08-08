@@ -14,9 +14,7 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
-	"orchestrator/pkg/agent/resilience"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/logx"
 )
 
 // ClaudeClient wraps the Anthropic API client to implement llm.LLMClient interface.
@@ -27,38 +25,22 @@ type ClaudeClient struct {
 	model  anthropic.Model
 }
 
-// NewClaudeClient creates a new Claude client wrapper with default retry logic.
+// NewClaudeClient creates a new Claude client wrapper (raw client, middleware applied at higher level).
 func NewClaudeClient(apiKey string) llm.LLMClient {
-	return NewClaudeClientWithLogger(apiKey, nil)
-}
-
-// NewClaudeClientWithLogger creates a new Claude client wrapper with logging support.
-func NewClaudeClientWithLogger(apiKey string, logger *logx.Logger) llm.LLMClient {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	baseClient := &ClaudeClient{
+	return &ClaudeClient{
 		client: client,
 		model:  config.ModelClaudeSonnetLatest, // Default model
 	}
-
-	// Wrap with circuit breaker, retry logic, and prompt logging.
-	return resilience.NewResilientClientWithLogger(baseClient, logger)
 }
 
-// NewClaudeClientWithModel creates a new Claude client with specific model and retry logic.
+// NewClaudeClientWithModel creates a new Claude client with specific model (raw client, middleware applied at higher level).
 func NewClaudeClientWithModel(apiKey, model string) llm.LLMClient {
-	return NewClaudeClientWithModelAndLogger(apiKey, model, nil)
-}
-
-// NewClaudeClientWithModelAndLogger creates a new Claude client with specific model and logging.
-func NewClaudeClientWithModelAndLogger(apiKey, model string, logger *logx.Logger) llm.LLMClient {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	baseClient := &ClaudeClient{
+	return &ClaudeClient{
 		client: client,
 		model:  anthropic.Model(model),
 	}
-
-	// Wrap with circuit breaker, retry logic, and prompt logging.
-	return resilience.NewResilientClientWithLogger(baseClient, logger)
 }
 
 // Complete implements the llm.LLMClient interface.
