@@ -103,6 +103,20 @@ func NewPlanApprovalEffect(planContent, taskContent string) *AwaitApprovalEffect
 	}
 }
 
+// NewPlanApprovalEffectWithStoryID creates an effect for plan approval requests with story_id.
+func NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID string) *AwaitApprovalEffect {
+	return &AwaitApprovalEffect{
+		ApprovalType: proto.ApprovalTypePlan,
+		TargetAgent:  "architect",
+		Timeout:      5 * time.Minute, // Configurable timeout
+		RequestPayload: map[string]any{
+			"plan":     planContent,
+			"content":  taskContent,
+			"story_id": storyID,
+		},
+	}
+}
+
 // NewCompletionApprovalEffect creates an effect for completion approval requests.
 func NewCompletionApprovalEffect(summary, filesCreated string) *AwaitApprovalEffect {
 	return &AwaitApprovalEffect{
@@ -112,6 +126,20 @@ func NewCompletionApprovalEffect(summary, filesCreated string) *AwaitApprovalEff
 		RequestPayload: map[string]any{
 			"summary":       summary,
 			"files_created": filesCreated,
+		},
+	}
+}
+
+// NewCompletionApprovalEffectWithStoryID creates an effect for completion approval requests with story_id.
+func NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID string) *AwaitApprovalEffect {
+	return &AwaitApprovalEffect{
+		ApprovalType: proto.ApprovalTypeCompletion,
+		TargetAgent:  "architect",
+		Timeout:      5 * time.Minute, // Configurable timeout
+		RequestPayload: map[string]any{
+			"summary":       summary,
+			"files_created": filesCreated,
+			"story_id":      storyID,
 		},
 	}
 }

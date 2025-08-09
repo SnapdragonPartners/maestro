@@ -24,6 +24,12 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
+)
+
+const (
+	// roleToolMessage represents tool message role in context manager.
+	roleToolMessage = "tool"
 )
 
 // Coder implements the v2 FSM using agent foundation.
@@ -159,7 +165,7 @@ func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.Completio
 		role := agent.RoleAssistant
 		if msg.Role == "user" || msg.Role == "system" {
 			role = agent.RoleUser
-		} else if msg.Role == "tool" {
+		} else if msg.Role == roleToolMessage {
 			role = agent.RoleUser // Tool messages appear as user messages to Claude
 		}
 
@@ -497,7 +503,7 @@ func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, _
 		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
 	}
 
-	// Create coder client with full middleware chain
+	// Create initial coder client without metrics context (circular dependency)
 	llmClient, err := factory.CreateClient(agent.TypeCoder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
@@ -509,6 +515,15 @@ func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, _
 		return nil, err
 	}
 
+	// Now that we have the coder (StateProvider), create enhanced client with metrics context
+	enhancedClient, err := factory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
+	}
+
+	// Replace the client with the enhanced version
+	coder.llmClient = enhancedClient
+
 	// Set the workspace manager.
 	coder.workspaceManager = workspaceManager
 
@@ -518,6 +533,132 @@ func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, _
 	}
 
 	return coder, nil
+}
+
+// getRecentToolActivity returns a summary of the last N tool calls and their results.
+func (c *Coder) getRecentToolActivity(limit int) string {
+	if c.contextManager == nil {
+		return "No context manager available"
+	}
+
+	messages := c.contextManager.GetMessages()
+	if len(messages) == 0 {
+		return "No recent activity"
+	}
+
+	var toolActivity []string
+	toolCount := 0
+
+	// Walk backwards through messages to find recent tool activity
+	for i := len(messages) - 1; i >= 0 && toolCount < limit; i-- {
+		msg := messages[i]
+		if msg.Role == roleToolMessage {
+			// Truncate long tool outputs for readability
+			content := msg.Content
+			if len(content) > 200 {
+				content = content[:197] + "..."
+			}
+			toolActivity = append([]string{fmt.Sprintf("- %s", content)}, toolActivity...)
+			toolCount++
+		}
+	}
+
+	if len(toolActivity) == 0 {
+		return "No recent tool activity found"
+	}
+
+	return fmt.Sprintf("Recent %d tool calls:\n%s", len(toolActivity), strings.Join(toolActivity, "\n"))
+}
+
+// detectIssuePattern analyzes recent activity to identify common problems.
+func (c *Coder) detectIssuePattern() string {
+	if c.contextManager == nil {
+		return "Cannot analyze - no context manager"
+	}
+
+	messages := c.contextManager.GetMessages()
+	if len(messages) < 3 {
+		return "Insufficient activity to analyze patterns"
+	}
+
+	var recentCommands []string
+	var recentErrors []string
+
+	// Look at last 10 messages for patterns
+	start := len(messages) - 10
+	if start < 0 {
+		start = 0
+	}
+
+	for i := start; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == roleToolMessage {
+			content := strings.ToLower(msg.Content)
+
+			// Extract command if it's a shell tool result
+			if strings.Contains(content, "command:") {
+				lines := strings.Split(content, "\n")
+				for _, line := range lines {
+					if strings.Contains(line, "command:") {
+						cmd := strings.TrimSpace(strings.Split(line, "command:")[1])
+						recentCommands = append(recentCommands, cmd)
+						break
+					}
+				}
+			}
+
+			// Check for error patterns
+			if strings.Contains(content, "exit_code: 1") ||
+				strings.Contains(content, "exit_code: 127") ||
+				strings.Contains(content, "error:") ||
+				strings.Contains(content, "failed") {
+				recentErrors = append(recentErrors, content)
+			}
+		}
+	}
+
+	// Analyze patterns
+	var issues []string
+
+	// Check for repeated implementation commands in planning
+	if len(recentCommands) > 2 {
+		implCmds := 0
+		for _, cmd := range recentCommands {
+			if strings.Contains(cmd, "go mod init") ||
+				strings.Contains(cmd, "npm install") ||
+				strings.Contains(cmd, "make build") ||
+				strings.Contains(cmd, "go build") {
+				implCmds++
+			}
+		}
+		if implCmds > 1 {
+			issues = append(issues, "Agent repeatedly trying implementation commands (may be in wrong state)")
+		}
+	}
+
+	// Check for repeated failures
+	if len(recentErrors) > 2 {
+		issues = append(issues, fmt.Sprintf("Agent experiencing repeated failures (%d recent errors)", len(recentErrors)))
+	}
+
+	// Check for "command not found" errors
+	commandNotFound := 0
+	for _, cmd := range recentCommands {
+		for _, err := range recentErrors {
+			if strings.Contains(err, "not found") && strings.Contains(err, cmd) {
+				commandNotFound++
+			}
+		}
+	}
+	if commandNotFound > 1 {
+		issues = append(issues, "Agent trying to use unavailable tools/commands")
+	}
+
+	if len(issues) == 0 {
+		return "No clear issue pattern detected - agent may need more specific guidance"
+	}
+
+	return strings.Join(issues, "; ")
 }
 
 // checkLoopBudget tracks loop counts and triggers BUDGET_REVIEW when budget is exceeded.
@@ -566,6 +707,21 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 			requestMsg.SetPayload(KeyOrigin, string(origin))
 			requestMsg.SetPayload("loops", iterationCount)
 			requestMsg.SetPayload("max_loops", budget)
+
+			// Add story context
+			if storyID := utils.GetStateValueOr[string](sm, KeyStoryID, ""); storyID != "" {
+				requestMsg.SetPayload("story_id", storyID)
+			}
+
+			// Add resource usage information
+			requestMsg.SetPayload("context_size", c.contextManager.CountTokens()) // Real data
+			requestMsg.SetPayload("phase_tokens", 0)                              // TODO: Track per-phase
+			requestMsg.SetPayload("phase_cost_usd", 0.0)                          // TODO: Track per-phase
+			requestMsg.SetPayload("total_llm_calls", 0)                           // TODO: Count calls
+
+			// Add activity analysis
+			requestMsg.SetPayload("recent_activity", c.getRecentToolActivity(5))
+			requestMsg.SetPayload("issue_pattern", c.detectIssuePattern())
 
 			if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
 				c.logger.Error("🧑‍💻 Failed to send BUDGET_REVIEW request: %v", err)
@@ -803,6 +959,12 @@ func (c *Coder) GetStateData() map[string]any {
 	return c.BaseStateMachine.GetStateData()
 }
 
+// GetStoryID returns the current story ID from agent state.
+// Implements StateProvider interface for metrics collection.
+func (c *Coder) GetStoryID() string {
+	return utils.GetStateValueOr[string](c.BaseStateMachine, KeyStoryID, "")
+}
+
 // GetAgentType returns the type of the agent.
 func (c *Coder) GetAgentType() agent.Type {
 	return agent.TypeCoder
@@ -913,21 +1075,21 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 		if success, ok := resultMap["success"].(bool); ok {
 			if success {
 				c.logger.Info("%s tool succeeded", toolCall.Name)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation completed successfully", toolCall.Name))
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s operation completed successfully", toolCall.Name))
 			} else {
 				c.logger.Info("%s tool failed", toolCall.Name)
-				c.contextManager.AddMessage("tool", fmt.Sprintf("%s operation failed", toolCall.Name))
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s operation failed", toolCall.Name))
 			}
 		}
 
 		if output, ok := resultMap["output"].(string); ok && output != "" {
 			c.logger.Debug("%s output: %s", toolCall.Name, output)
-			c.contextManager.AddMessage("tool", fmt.Sprintf("%s output: %s", toolCall.Name, output))
+			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s output: %s", toolCall.Name, output))
 		}
 
 		if errorMsg, ok := resultMap["error"].(string); ok && errorMsg != "" {
 			c.logger.Debug("%s error: %s", toolCall.Name, errorMsg)
-			c.contextManager.AddMessage("tool", fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
+			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
 		}
 	}
 }
@@ -973,7 +1135,7 @@ func (c *Coder) addShellResultToContext(resultMap map[string]any) {
 		c.logger.Info("Shell command failed with exit code %d: %s", exitCode, command)
 	}
 
-	c.contextManager.AddMessage("tool", feedback.String())
+	c.contextManager.AddMessage(roleToolMessage, feedback.String())
 }
 
 // addComprehensiveToolFailureToContext adds detailed tool failure information to context.
@@ -990,7 +1152,7 @@ func (c *Coder) addComprehensiveToolFailureToContext(toolCall agent.ToolCall, er
 		}
 	}
 
-	c.contextManager.AddMessage("tool", feedback.String())
+	c.contextManager.AddMessage(roleToolMessage, feedback.String())
 }
 
 // createPlanningToolProvider creates a ToolProvider for the planning state.

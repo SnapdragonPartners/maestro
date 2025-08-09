@@ -14,6 +14,7 @@ import (
 	"orchestrator/pkg/agent/middleware/resilience/retry"
 	"orchestrator/pkg/agent/middleware/resilience/timeout"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 )
 
 // LLMClientFactory creates LLM clients with properly configured middleware chains.
@@ -26,8 +27,8 @@ type LLMClientFactory struct {
 
 // NewLLMClientFactory creates a new LLM client factory with the given configuration.
 func NewLLMClientFactory(cfg config.Config) (*LLMClientFactory, error) {
-	// Create metrics recorder - always use noop recorder since we're in MVP phase
-	recorder := metrics.Nop()
+	// Create metrics recorder - use Prometheus for full metrics collection
+	recorder := metrics.NewPrometheusRecorder()
 
 	// Create per-provider circuit breakers
 	circuitBreakers := make(map[string]circuit.Breaker)
@@ -81,11 +82,26 @@ func (f *LLMClientFactory) CreateClient(agentType Type) (LLMClient, error) {
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
 
-	return f.createClientWithMiddleware(modelName, agentType.String())
+	return f.createClientWithMiddleware(modelName, agentType.String(), nil, nil)
+}
+
+// CreateClientWithContext creates an LLM client with StateProvider and logger for enhanced metrics.
+func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
+	var modelName string
+	switch agentType {
+	case TypeCoder:
+		modelName = f.config.Agents.CoderModel
+	case TypeArchitect:
+		modelName = f.config.Agents.ArchitectModel
+	default:
+		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
+	}
+
+	return f.createClientWithMiddleware(modelName, agentType.String(), stateProvider, logger)
 }
 
 // createClientWithMiddleware creates a client with the full middleware chain.
-func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentType string) (LLMClient, error) {
+func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	// Create the raw LLM client based on provider
 	provider, err := config.GetModelProvider(modelName)
 	if err != nil {
@@ -129,7 +145,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentType strin
 	// Build the middleware chain in the correct order:
 	// Metrics -> CircuitBreaker -> Retry -> RateLimit -> Timeout -> RawClient
 	client := llm.Chain(rawClient,
-		metrics.Middleware(f.metricsRecorder, nil, agentType), // Uses default token extraction
+		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger), // Enhanced metrics with state context
 		circuit.Middleware(circuitBreaker),
 		retry.Middleware(retryPolicy),
 		ratelimit.Middleware(f.rateLimitMap, nil, f.metricsRecorder), // Uses default token estimator

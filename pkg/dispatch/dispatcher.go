@@ -540,19 +540,10 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		}
 
 	case proto.MsgTypeREQUEST:
-		// Route unified REQUEST messages based on kind for optimized handling
-		kindRaw, hasKind := msg.GetPayload(proto.KeyKind)
-		kindStr := ""
-		if hasKind {
-			kindStr, _ = kindRaw.(string)
-		}
-
-		d.logger.Info("🔄 Sending REQUEST %s (kind: %s) to questionsCh", msg.ID, kindStr)
-
 		// All REQUEST kinds go to questionsCh for architect to process
 		// Architect will handle kind-based routing internally
 		d.questionsCh <- msg
-		d.logger.Info("✅ REQUEST %s delivered to questionsCh", msg.ID)
+		// Note: REQUEST processing and persistence handled by architect
 
 	case proto.MsgTypeRESPONSE:
 		// RESPONSE messages go to specific coder's reply channel.

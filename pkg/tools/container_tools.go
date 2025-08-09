@@ -136,7 +136,7 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 			workspaceDir := "/workspace"
 			altPath := filepath.Join(workspaceDir, dockerfilePath)
 			if _, altErr := os.Stat(altPath); altErr == nil {
-				// Use the alternative path that was found
+				// Use the alternative path that was found - dockerfile path stays relative to workspaceDir
 				return c.buildAndTestContainer(ctx, workspaceDir, containerName, dockerfilePath, platform)
 			}
 			return nil, fmt.Errorf("dockerfile not found at %s or %s: %w", absDockerfilePath, altPath, err)
@@ -144,7 +144,18 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 		return nil, fmt.Errorf("dockerfile not found at %s: %w", absDockerfilePath, err)
 	}
 
-	return c.buildAndTestContainer(ctx, cwd, containerName, dockerfilePath, platform)
+	// Calculate the dockerfile path relative to cwd for docker command
+	relDockerfilePath := dockerfilePath
+	if filepath.IsAbs(dockerfilePath) {
+		var err error
+		relDockerfilePath, err = filepath.Rel(cwd, dockerfilePath)
+		if err != nil {
+			// If we can't make it relative, use absolute path
+			relDockerfilePath = dockerfilePath
+		}
+	}
+
+	return c.buildAndTestContainer(ctx, cwd, containerName, relDockerfilePath, platform)
 }
 
 // buildAndTestContainer builds and tests a container, returning the result map.

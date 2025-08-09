@@ -9,6 +9,7 @@ import (
 
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 )
 
 // handleRequest processes the request phase (handling coder requests).
@@ -269,7 +270,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 				Response:  nil, // Fire-and-forget
 			}
 		}
-		d.logger.Info("🏗️ Sent %s response %s to %s", response.Type, response.ID, response.ToAgent)
+		// Response sent and persisted to database
 	}
 
 	// Clear the processed request and return to monitoring.
@@ -446,6 +447,8 @@ COMPLETION CLAIM:
 Please evaluate if the story requirements are truly satisfied based on the evidence provided. 
 Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback on what's missing]".`,
 				originalStory, reason, evidence, confidence)
+		case proto.ApprovalTypeBudgetReview:
+			prompt = d.generateBudgetReviewPrompt(requestMsg)
 		default:
 			prompt = fmt.Sprintf("Review this request: %v", content)
 		}
@@ -460,6 +463,19 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 				if strings.Contains(strings.ToUpper(llmResponse), "REJECTED") {
 					approved = false
 				}
+			}
+			// For budget review requests, parse structured response
+			if approvalType == proto.ApprovalTypeBudgetReview {
+				responseUpper := strings.ToUpper(llmResponse)
+				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
+					approved = false
+					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
+					feedback = llmResponse // Use the full LLM response as feedback
+				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
+					approved = false
+					feedback = llmResponse
+				}
+				// APPROVED or any other response defaults to approved = true
 			}
 			// For other types, always approve in LLM mode for now.
 		}
@@ -500,7 +516,19 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 	}
 
 	if !approved {
-		approvalResult.Status = proto.ApprovalStatusRejected
+		// For budget reviews, parse the LLM response to preserve NEEDS_CHANGES vs REJECTED
+		if approvalType == proto.ApprovalTypeBudgetReview && feedback != "" {
+			responseUpper := strings.ToUpper(feedback)
+			if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
+				approvalResult.Status = proto.ApprovalStatusNeedsChanges
+			} else {
+				// Default to rejected for REJECTED or unknown negative responses
+				approvalResult.Status = proto.ApprovalStatusRejected
+			}
+		} else {
+			// For non-budget reviews, default to rejected
+			approvalResult.Status = proto.ApprovalStatusRejected
+		}
 	}
 
 	// Create RESPONSE using unified protocol with proper approval_result payload.
@@ -699,4 +727,159 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 	result.CommitSHA = "merged" // Placeholder until we parse actual SHA
 
 	return result, nil
+}
+
+// generateBudgetReviewPrompt creates an enhanced prompt for budget review requests using templates.
+func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
+	// Extract data from request message
+	var storyID string
+	if val, exists := requestMsg.GetPayload("story_id"); exists {
+		storyID, _ = val.(string)
+	}
+
+	var origin string
+	if val, exists := requestMsg.GetPayload("origin"); exists {
+		origin, _ = val.(string)
+	}
+
+	var loops int
+	if val, exists := requestMsg.GetPayload("loops"); exists {
+		loops, _ = val.(int)
+	}
+
+	var maxLoops int
+	if val, exists := requestMsg.GetPayload("max_loops"); exists {
+		maxLoops, _ = val.(int)
+	}
+
+	var contextSize int
+	if val, exists := requestMsg.GetPayload("context_size"); exists {
+		contextSize, _ = val.(int)
+	}
+
+	var phaseTokens int
+	if val, exists := requestMsg.GetPayload("phase_tokens"); exists {
+		phaseTokens, _ = val.(int)
+	}
+
+	var phaseCostUSD float64
+	if val, exists := requestMsg.GetPayload("phase_cost_usd"); exists {
+		phaseCostUSD, _ = val.(float64)
+	}
+
+	var totalLLMCalls int
+	if val, exists := requestMsg.GetPayload("total_llm_calls"); exists {
+		totalLLMCalls, _ = val.(int)
+	}
+
+	var recentActivity string
+	if val, exists := requestMsg.GetPayload("recent_activity"); exists {
+		recentActivity, _ = val.(string)
+	}
+
+	var issuePattern string
+	if val, exists := requestMsg.GetPayload("issue_pattern"); exists {
+		issuePattern, _ = val.(string)
+	}
+
+	// Get story information from queue
+	var storyTitle, storyType, specContent string
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyTitle = story.Title
+			storyType = story.StoryType
+			// TODO: For now, we add a placeholder for spec content
+			// In a future enhancement, we could fetch the actual spec content
+			// using the story.SpecID and the persistence channel
+			specContent = fmt.Sprintf("Spec ID: %s (full context available on request)", story.SpecID)
+		}
+	}
+
+	// Fallback values
+	if storyTitle == "" {
+		storyTitle = "Unknown Story"
+	}
+	if storyType == "" {
+		storyType = "app" // default
+	}
+	if recentActivity == "" {
+		recentActivity = "No recent activity data available"
+	}
+	if issuePattern == "" {
+		issuePattern = "No issue pattern detected"
+	}
+	if specContent == "" {
+		specContent = "Spec context not available"
+	}
+
+	// Select template based on current state
+	var templateName templates.StateTemplate
+	if origin == "PLANNING" {
+		templateName = templates.BudgetReviewPlanningTemplate
+	} else {
+		templateName = templates.BudgetReviewCodingTemplate
+	}
+
+	// Create template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"StoryID":        storyID,
+			"StoryTitle":     storyTitle,
+			"StoryType":      storyType,
+			"CurrentState":   origin,
+			"Loops":          loops,
+			"MaxLoops":       maxLoops,
+			"ContextSize":    contextSize,
+			"PhaseTokens":    phaseTokens,
+			"PhaseCostUSD":   phaseCostUSD,
+			"TotalLLMCalls":  totalLLMCalls,
+			"RecentActivity": recentActivity,
+			"IssuePattern":   issuePattern,
+			"SpecContent":    specContent,
+		},
+	}
+
+	// Check if we have a renderer
+	if d.renderer == nil {
+		// Fallback to simple text if no renderer available
+		return fmt.Sprintf(`Budget Review Request
+
+Story: %s (ID: %s)
+Type: %s
+Current State: %s
+Budget Exceeded: %d/%d iterations
+
+Recent Activity:
+%s
+
+Issue Analysis:
+%s
+
+Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
+			storyTitle, storyID, storyType, origin, loops, maxLoops, recentActivity, issuePattern)
+	}
+
+	// Render template
+	prompt, err := d.renderer.Render(templateName, templateData)
+	if err != nil {
+		d.logger.Warn("🏗️ Failed to render budget review template: %v", err)
+		// Fallback to simple text
+		return fmt.Sprintf(`Budget Review Request
+
+Story: %s (ID: %s)  
+Type: %s
+Current State: %s
+Budget Exceeded: %d/%d iterations
+
+Recent Activity:
+%s
+
+Issue Analysis:
+%s
+
+Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
+			storyTitle, storyID, storyType, origin, loops, maxLoops, recentActivity, issuePattern)
+	}
+
+	return prompt
 }

@@ -55,9 +55,15 @@ func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStat
 			return StateCoding, false, nil // default fallback
 		}
 	case proto.ApprovalStatusNeedsChanges:
-		// PIVOT - return to PLANNING and reset counter.
-		c.logger.Info("🧑‍💻 Budget review needs changes, pivoting to PLANNING")
+		// PIVOT - return to PLANNING and reset ALL counters, inject feedback into context.
+		c.logger.Info("🧑‍💻 Budget review needs changes, pivoting to PLANNING with feedback")
+		// Reset both iteration counters since we're starting over with new guidance
 		sm.SetStateData(string(stateDataKeyPlanningIterations), 0)
+		sm.SetStateData(string(stateDataKeyCodingIterations), 0)
+		// Inject architect feedback into context to guide next attempt
+		if result.Feedback != "" {
+			c.injectArchitectFeedback(result.Feedback)
+		}
 		return StatePlanning, false, nil
 	case proto.ApprovalStatusRejected:
 		// ABANDON - move to ERROR.
@@ -65,5 +71,19 @@ func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStat
 		return proto.StateError, false, logx.Errorf("task abandoned by architect after budget review")
 	default:
 		return proto.StateError, false, logx.Errorf("unknown budget review approval status: %s", result.Status)
+	}
+}
+
+// injectArchitectFeedback adds architect guidance to the context as an assistant message
+// to maintain proper user/assistant alternation while providing course correction.
+func (c *Coder) injectArchitectFeedback(feedback string) {
+	// The feedback from ApprovalResult.Feedback is already the clean guidance text
+	assistantContent := "I understand the architect's feedback. Let me correct my approach: " + feedback +
+		"\n\nI'll now focus on the proper planning approach as guided."
+
+	// Inject into context manager
+	if c.contextManager != nil {
+		c.contextManager.AddMessage("assistant", assistantContent)
+		c.logger.Debug("🧑‍💻 Injected architect feedback into context")
 	}
 }

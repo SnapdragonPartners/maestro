@@ -145,6 +145,7 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 		Extra: map[string]any{
 			"story_id":         pendingQ.StoryID,
 			"story_title":      story.Title,
+			"story_type":       story.StoryType,
 			"story_file_path":  story.FilePath,
 			"agent_id":         pendingQ.AgentID,
 			"question_id":      pendingQ.ID,

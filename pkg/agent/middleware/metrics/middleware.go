@@ -7,7 +7,13 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/utils"
+)
+
+const (
+	statusSuccess = "success"
+	statusError   = "error"
 )
 
 // UsageExtractor is a function that extracts token usage from a request and response.
@@ -30,7 +36,7 @@ func DefaultUsageExtractor(req llm.CompletionRequest, resp llm.CompletionRespons
 
 // Middleware returns a middleware function that records metrics for LLM operations.
 // It tracks request latency, token usage, success/failure rates, and error types.
-func Middleware(recorder Recorder, usageExtractor UsageExtractor, agentType string) llm.Middleware {
+func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider StateProvider, logger *logx.Logger) llm.Middleware {
 	if usageExtractor == nil {
 		usageExtractor = DefaultUsageExtractor
 	}
@@ -59,17 +65,34 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, agentType stri
 					errorType = getErrorType(err)
 				}
 
+				// Get current agent state for metrics
+				storyID := stateProvider.GetStoryID()
+				agentID := stateProvider.GetID()
+				state := string(stateProvider.GetCurrentState())
+
 				// Record metrics
 				recorder.ObserveRequest(
 					modelConfig.Name,
-					"complete",
-					agentType,
+					storyID,
+					agentID,
+					state,
 					promptTokens,
 					completionTokens,
 					err == nil,
 					errorType,
 					duration,
 				)
+
+				// Debug logging for token usage
+				if logger != nil {
+					status := statusSuccess
+					if err != nil {
+						status = statusError
+					}
+					totalTokens := promptTokens + completionTokens
+					logger.Info("🎯 LLM Request: model=%s story=%s state=%s tokens=%d+%d=%d status=%s duration=%dms",
+						modelConfig.Name, storyID, state, promptTokens, completionTokens, totalTokens, status, duration.Milliseconds())
+				}
 
 				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
@@ -90,17 +113,33 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, agentType stri
 					errorType = getErrorType(err)
 				}
 
+				// Get current agent state for metrics
+				storyID := stateProvider.GetStoryID()
+				agentID := stateProvider.GetID()
+				state := string(stateProvider.GetCurrentState())
+
 				// Record metrics (no token counts for streaming)
 				recorder.ObserveRequest(
 					modelConfig.Name,
-					"stream",
-					agentType,
+					storyID,
+					agentID,
+					state,
 					0, // No prompt token count for streaming
 					0, // No completion token count for streaming
 					err == nil,
 					errorType,
 					duration,
 				)
+
+				// Debug logging for stream requests
+				if logger != nil {
+					status := statusSuccess
+					if err != nil {
+						status = statusError
+					}
+					logger.Info("🎯 LLM Stream: model=%s story=%s state=%s tokens=streaming status=%s duration=%dms",
+						modelConfig.Name, storyID, state, status, duration.Milliseconds())
+				}
 
 				return ch, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},

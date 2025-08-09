@@ -3,13 +3,25 @@ package metrics
 
 import (
 	"time"
+
+	"orchestrator/pkg/proto"
 )
+
+// StateProvider provides access to agent state for metrics collection.
+type StateProvider interface {
+	// GetCurrentState returns the agent's current state (PLANNING, CODING, etc).
+	GetCurrentState() proto.State
+	// GetStoryID returns the current story ID being worked on.
+	GetStoryID() string
+	// GetID returns the agent ID.
+	GetID() string
+}
 
 // Recorder defines the interface for recording LLM operation metrics.
 type Recorder interface {
 	// ObserveRequest records metrics for a completed LLM request.
 	ObserveRequest(
-		model, operation, agentType string,
+		model, storyID, agentID, state string,
 		promptTokens, completionTokens int,
 		success bool,
 		errorType string,
@@ -33,7 +45,7 @@ func Nop() Recorder {
 
 // ObserveRequest does nothing in the no-op recorder.
 func (n *NoopRecorder) ObserveRequest(
-	_, _, _ string,
+	_, _, _, _ string,
 	_, _ int,
 	_ bool,
 	_ string,

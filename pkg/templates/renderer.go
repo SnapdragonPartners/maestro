@@ -49,6 +49,11 @@ const (
 	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "approval.tpl.md"
 
+	// BudgetReviewPlanningTemplate is the template for architect budget review in planning state.
+	BudgetReviewPlanningTemplate StateTemplate = "budget_review_planning.tpl.md"
+	// BudgetReviewCodingTemplate is the template for architect budget review in coding state.
+	BudgetReviewCodingTemplate StateTemplate = "budget_review_coding.tpl.md"
+
 	// SpecAnalysisTemplate is the template for architect spec analysis state.
 	SpecAnalysisTemplate StateTemplate = "spec_analysis.tpl.md"
 	// StoryGenerationTemplate is the template for architect story generation state.
@@ -80,6 +85,8 @@ func NewRenderer() (*Renderer, error) {
 		TestingTemplate,
 		ApprovalTemplate,
 		// Architect agent templates.
+		BudgetReviewPlanningTemplate,
+		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,
 		StoryGenerationTemplate,
 		TechnicalQATemplate,

@@ -28,13 +28,15 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 	case proto.ApprovalTypePlan:
 		planContent := c.getPlanContentForReview(sm)
 		taskContent := c.getTaskContentForReview(sm)
-		eff = effect.NewPlanApprovalEffect(planContent, taskContent)
+		storyID := c.GetStoryID() // Use the getter method I created
+		eff = effect.NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID)
 		c.contextManager.AddMessage("assistant", "Plan review phase: requesting architect approval")
 
 	case proto.ApprovalTypeCompletion:
 		summary := c.getCompletionSummaryForReview(sm)
 		filesCreated := c.getFilesCreatedForReview(sm)
-		eff = effect.NewCompletionApprovalEffect(summary, filesCreated)
+		storyID := c.GetStoryID() // Use the getter method I created
+		eff = effect.NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID)
 		c.contextManager.AddMessage("assistant", "Completion review phase: requesting architect approval")
 
 	default:

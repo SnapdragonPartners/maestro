@@ -45,7 +45,7 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 			d.logger.Warn("🏗️ Received nil question message on open channel")
 			return StateWaiting, nil
 		}
-		d.logger.Info("🏗️ Architect received question message %s in WAITING state, transitioning to REQUEST", questionMsg.ID)
+		// Question message received, transitioning to REQUEST state for processing
 
 		// Store the question for processing in REQUEST state.
 		d.stateData["current_request"] = questionMsg
