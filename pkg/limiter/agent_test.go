@@ -3,7 +3,33 @@ package limiter
 import (
 	"errors"
 	"testing"
+
+	"orchestrator/pkg/config"
 )
+
+// createTestConfig creates a test configuration for limiter tests.
+func createTestConfig() *config.Config {
+	return &config.Config{
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "claude",
+					MaxTPM:         10000,
+					DailyBudget:    100.0,
+					MaxConnections: 3,
+					CPM:            3.0,
+				},
+				{
+					Name:           "o3",
+					MaxTPM:         5000,
+					DailyBudget:    50.0,
+					MaxConnections: 1,
+					CPM:            5.0,
+				},
+			},
+		},
+	}
+}
 
 func TestAgentReservation(t *testing.T) {
 	cfg := createTestConfig()

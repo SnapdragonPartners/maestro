@@ -47,16 +47,16 @@ func NewLimiter(cfg *config.Config) *Limiter {
 	}
 
 	// Initialize model limiters.
-	for name := range cfg.Models {
-		modelCfg := cfg.Models[name]
-		l.models[name] = &ModelLimiter{
-			name:               name,
-			maxTokensPerMinute: modelCfg.MaxTokensPerMinute,
-			maxBudgetPerDayUSD: modelCfg.MaxBudgetPerDayUSD,
-			maxAgents:          len(modelCfg.Agents),        // Use number of configured agents
-			currentTokens:      modelCfg.MaxTokensPerMinute, // Start with full bucket
-			currentBudgetUSD:   0,                           // Start with no spend
-			currentAgents:      0,                           // Start with no active agents
+	for i := range cfg.Orchestrator.Models {
+		model := &cfg.Orchestrator.Models[i]
+		l.models[model.Name] = &ModelLimiter{
+			name:               model.Name,
+			maxTokensPerMinute: model.MaxTPM,
+			maxBudgetPerDayUSD: model.DailyBudget,
+			maxAgents:          model.MaxConnections, // Use max connections as agent limit
+			currentTokens:      model.MaxTPM,         // Start with full bucket
+			currentBudgetUSD:   0,                    // Start with no spend
+			currentAgents:      0,                    // Start with no active agents
 			lastRefill:         time.Now(),
 		}
 	}

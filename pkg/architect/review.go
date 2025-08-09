@@ -26,6 +26,7 @@ type ReviewEvaluator struct {
 	workspaceDir      string
 	escalationHandler *EscalationHandler
 	mergeCh           chan<- string // Channel to signal completed merges
+	driver            *Driver       // Reference to driver for Effects execution
 
 	// Track pending reviews.
 	pendingReviews map[string]*PendingReview // reviewID -> PendingReview
@@ -63,7 +64,7 @@ type ReviewAttempt struct {
 }
 
 // NewReviewEvaluator creates a new review evaluator.
-func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string) *ReviewEvaluator {
+func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string, driver *Driver) *ReviewEvaluator {
 	return &ReviewEvaluator{
 		llmClient:         llmClient,
 		renderer:          renderer,
@@ -71,6 +72,7 @@ func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue
 		workspaceDir:      workspaceDir,
 		escalationHandler: escalationHandler,
 		mergeCh:           mergeCh,
+		driver:            driver,
 		pendingReviews:    make(map[string]*PendingReview),
 	}
 }
@@ -307,7 +309,6 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 	// Prepare template data for tool invocation prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: fmt.Sprintf("Execute %s check for story %s", checkType, story.ID),
-		Context:     re.formatToolInvocationContext(workDir, checkType, story),
 		Extra: map[string]any{
 			"check_type":    checkType,
 			"workspace_dir": workDir,
@@ -317,7 +318,7 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 	}
 
 	// Use code review template for automated checks.
-	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
+	prompt, err := re.renderer.RenderWithUserInstructions(templates.CodeReviewTemplate, templateData, re.workspaceDir, "ARCHITECT")
 	if err != nil {
 		return false, fmt.Errorf("failed to render code review template: %w", err)
 	}
@@ -333,6 +334,8 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 }
 
 // formatToolInvocationContext creates context for LLM tool invocation.
+//
+//nolint:unused // Keep for future context management redesign
 func (re *ReviewEvaluator) formatToolInvocationContext(workDir, checkType string, story *QueuedStory) string {
 	context := fmt.Sprintf(`Tool Invocation Context:
 - Check Type: %s
@@ -368,6 +371,8 @@ Available Make Targets:`,
 }
 
 // getAvailableMakeTargets lists available make targets.
+//
+//nolint:unused // Keep for future context management redesign
 func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 	cmd := exec.Command("make", "-qp")
 	cmd.Dir = workDir
@@ -400,6 +405,8 @@ func (re *ReviewEvaluator) getAvailableMakeTargets(workDir string) []string {
 }
 
 // fileExists checks if a file exists.
+//
+//nolint:unused // Keep for future context management redesign
 func (re *ReviewEvaluator) fileExists(path string) bool {
 	_, err := exec.Command("test", "-f", path).Output()
 	return err == nil
@@ -447,7 +454,6 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 	// Prepare template data for code review prompt.
 	templateData := &templates.TemplateData{
 		TaskContent: pendingReview.CodeContent,
-		Context:     re.formatReviewContext(pendingReview, story),
 		Extra: map[string]any{
 			"story_id":           pendingReview.StoryID,
 			"story_title":        story.Title,
@@ -461,7 +467,7 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 	}
 
 	// Render code review prompt template.
-	prompt, err := re.renderer.Render(templates.CodeReviewTemplate, templateData)
+	prompt, err := re.renderer.RenderWithUserInstructions(templates.CodeReviewTemplate, templateData, re.workspaceDir, "ARCHITECT")
 	if err != nil {
 		return fmt.Errorf("failed to render code review template: %w", err)
 	}
@@ -477,73 +483,6 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 }
 
 // formatReviewContext creates a context string for the LLM review prompt.
-func (re *ReviewEvaluator) formatReviewContext(pendingReview *PendingReview, story *QueuedStory) string {
-	context := fmt.Sprintf(`Code Review Context:
-- Story ID: %s
-- Story Title: %s
-- Agent ID: %s
-- Submitted At: %s
-- Code Path: %s
-- Rejection Count: %d/3 (escalates to human after 3 rejections)
-
-Original Story Details:
-- Status: %s
-- Estimated Points: %d
-- Dependencies: %v
-- File Path: %s
-
-Acceptance Requirements:
-1. Meets story acceptance criteria as defined in the original story
-2. Generally adheres to good coding practices and established patterns
-3. Has high levels of test coverage (>80%% unless not feasible)
-4. Doesn't change shared interfaces/design patterns without good reason
-5. Is deemed "production-ready" with appropriate error handling and documentation
-
-Automated Checks Results:`,
-		pendingReview.StoryID,
-		story.Title,
-		pendingReview.AgentID,
-		pendingReview.SubmittedAt.Format(time.RFC3339),
-		pendingReview.CodePath,
-		pendingReview.RejectionCount,
-		story.Status,
-		story.EstimatedPoints,
-		story.DependsOn,
-		story.FilePath,
-	)
-
-	// Add check results.
-	for _, check := range pendingReview.ChecksRun {
-		result := "❌ FAILED"
-		if passed, exists := pendingReview.CheckResults[check]; exists && passed {
-			result = "✅ PASSED"
-		}
-		context += fmt.Sprintf("\n- %s: %s", check, result)
-	}
-
-	// Add review history if this is not the first attempt.
-	if len(pendingReview.ReviewHistory) > 0 {
-		context += "\n\nPrevious Review History:"
-		for i := range pendingReview.ReviewHistory {
-			attempt := &pendingReview.ReviewHistory[i]
-			context += fmt.Sprintf("\nAttempt %d (%s): %s - %s",
-				attempt.AttemptNumber,
-				attempt.ReviewedAt.Format("2006-01-02 15:04:05"),
-				attempt.Result,
-				truncateString(attempt.ReviewNotes, 100))
-		}
-	}
-
-	// Add any additional context from the submission.
-	if len(pendingReview.Context) > 0 {
-		context += "\n\nSubmission Context:"
-		for key, value := range pendingReview.Context {
-			context += fmt.Sprintf("\n- %s: %v", key, value)
-		}
-	}
-
-	return context
-}
 
 // processLLMReviewResponse processes the LLM's review response with 3-strikes rule.
 func (re *ReviewEvaluator) processLLMReviewResponse(ctx context.Context, pendingReview *PendingReview, review string) error {
@@ -729,13 +668,11 @@ func (re *ReviewEvaluator) generateFixFeedback(pendingReview *PendingReview) str
 	return feedback
 }
 
-// sendReviewResult sends the review result back to the agent.
-//
-//nolint:unparam // error return kept for future implementation when message sending could fail
-func (re *ReviewEvaluator) sendReviewResult(_ context.Context, pendingReview *PendingReview, result string) error {
-	// Create RESULT message.
+// sendReviewResult sends the review result back to the agent using Effects.
+func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *PendingReview, result string) error {
+	// Create RESPONSE message using unified protocol.
 	resultMsg := proto.NewAgentMsg(
-		proto.MsgTypeRESULT,
+		proto.MsgTypeRESPONSE,
 		"architect",           // from
 		pendingReview.AgentID, // to
 	)
@@ -760,12 +697,17 @@ func (re *ReviewEvaluator) sendReviewResult(_ context.Context, pendingReview *Pe
 	fmt.Printf("📋 Review result for story %s: %s\n",
 		pendingReview.StoryID, result)
 
-	// In a real implementation, this would be sent via the dispatcher.
-	// For now, we simulate sending the message.
-	fmt.Printf("📤 Sending review RESULT message to agent %s for story %s\n",
-		pendingReview.AgentID, pendingReview.StoryID)
+	// Send using Effects pattern.
+	return re.sendResponseEffect(ctx, resultMsg)
+}
 
-	return nil
+// sendResponseEffect sends a response message using the Effects pattern.
+func (re *ReviewEvaluator) sendResponseEffect(ctx context.Context, msg *proto.AgentMsg) error {
+	if re.driver == nil {
+		return fmt.Errorf("no driver available for Effects execution")
+	}
+	effect := &SendResponseEffect{Response: msg}
+	return re.driver.ExecuteEffect(ctx, effect)
 }
 
 // GetPendingReviews returns all pending reviews.

@@ -38,11 +38,12 @@ type RegistryContainerInfo struct {
 
 // ContainerRegistry manages all active containers for graceful shutdown and resource cleanup.
 type ContainerRegistry struct {
-	containers map[string]*RegistryContainerInfo // containerName -> info
-	logger     *logx.Logger
-	shutdown   chan struct{}
-	done       chan struct{}
-	mu         sync.RWMutex
+	containers     map[string]*RegistryContainerInfo // containerName -> info
+	logger         *logx.Logger
+	shutdown       chan struct{}
+	done           chan struct{}
+	cleanupRunning bool // Tracks if cleanup routine is running
+	mu             sync.RWMutex
 }
 
 // NewContainerRegistry creates a new container registry.
@@ -207,8 +208,17 @@ func (r *ContainerRegistry) StopAllContainers(ctx context.Context, executor Exec
 
 // StartCleanupRoutine starts a background routine that periodically cleans up stale containers.
 func (r *ContainerRegistry) StartCleanupRoutine(ctx context.Context, executor Executor, cleanupInterval, staleThreshold time.Duration) {
+	r.mu.Lock()
+	r.cleanupRunning = true
+	r.mu.Unlock()
+
 	go func() {
-		defer close(r.done)
+		defer func() {
+			close(r.done)
+			r.mu.Lock()
+			r.cleanupRunning = false
+			r.mu.Unlock()
+		}()
 
 		ticker := time.NewTicker(cleanupInterval)
 		defer ticker.Stop()
@@ -254,6 +264,15 @@ func (r *ContainerRegistry) cleanupStaleContainers(ctx context.Context, executor
 
 // Shutdown signals the cleanup routine to stop and waits for it to finish.
 func (r *ContainerRegistry) Shutdown() {
+	r.mu.RLock()
+	running := r.cleanupRunning
+	r.mu.RUnlock()
+
+	if !running {
+		// Cleanup routine was never started, nothing to shutdown
+		return
+	}
+
 	close(r.shutdown)
 	<-r.done
 }

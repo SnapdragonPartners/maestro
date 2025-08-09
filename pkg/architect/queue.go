@@ -3,15 +3,11 @@ package architect
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 )
 
 // StoryStatus represents the status of a story in the queue.
@@ -39,33 +35,41 @@ const (
 //nolint:govet // Large complex struct, logical grouping preferred
 type QueuedStory struct {
 	ID              string      `json:"id"`
+	SpecID          string      `json:"spec_id"` // Foreign key to spec
 	Title           string      `json:"title"`
 	FilePath        string      `json:"file_path"`
 	Status          StoryStatus `json:"status"`
+	Priority        int         `json:"priority"`
 	DependsOn       []string    `json:"depends_on"`
 	EstimatedPoints int         `json:"estimated_points"`
 	AssignedAgent   string      `json:"assigned_agent,omitempty"`
 	StartedAt       *time.Time  `json:"started_at,omitempty"`
 	CompletedAt     *time.Time  `json:"completed_at,omitempty"`
 	LastUpdated     time.Time   `json:"last_updated"`
+	StoryType       string      `json:"story_type"` // "devops" or "app"
 }
 
 // Queue manages the architect's story queue with dependency resolution.
 //
 //nolint:govet // Simple management struct, logical grouping preferred
 type Queue struct {
-	stories      map[string]*QueuedStory
-	storiesDir   string
-	readyStoryCh chan<- string // Channel to notify when stories become ready
+	stories            map[string]*QueuedStory
+	readyStoryCh       chan<- string               // Channel to notify when stories become ready
+	persistenceChannel chan<- *persistence.Request // Channel for database operations
 }
 
-// NewQueue creates a new queue manager.
-func NewQueue(storiesDir string) *Queue {
+// NewQueue creates a new queue manager with database persistence.
+func NewQueue(persistenceChannel chan<- *persistence.Request) *Queue {
 	return &Queue{
-		stories:    make(map[string]*QueuedStory),
-		storiesDir: storiesDir,
+		stories:            make(map[string]*QueuedStory),
+		persistenceChannel: persistenceChannel,
 		// readyStoryCh will be set by SetReadyChannel.
 	}
+}
+
+// SetPersistenceChannel sets the persistence channel for database operations.
+func (q *Queue) SetPersistenceChannel(ch chan<- *persistence.Request) {
+	q.persistenceChannel = ch
 }
 
 // SetReadyChannel sets the channel for ready story notifications.
@@ -73,142 +77,197 @@ func (q *Queue) SetReadyChannel(ch chan<- string) {
 	q.readyStoryCh = ch
 }
 
-// LoadFromDirectory scans the stories directory and loads all story files.
-func (q *Queue) LoadFromDirectory() error {
-	if _, err := os.Stat(q.storiesDir); os.IsNotExist(err) {
-		// Stories directory doesn't exist yet, start with empty queue.
+// AddStory adds a story directly to the in-memory queue.
+// This should be used when stories are generated during normal operation.
+func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies []string, estimatedPoints int) {
+	queuedStory := &QueuedStory{
+		ID:              storyID,
+		Title:           title,
+		FilePath:        "", // No file path for generated stories
+		Status:          StatusPending,
+		Priority:        estimatedPoints,
+		DependsOn:       dependencies,
+		EstimatedPoints: estimatedPoints,
+		AssignedAgent:   "",
+		StartedAt:       nil,
+		CompletedAt:     nil,
+		LastUpdated:     time.Now(),
+		StoryType:       storyType, // This is the key fix!
+		SpecID:          specID,    // Add SpecID for database foreign key
+	}
+
+	q.stories[storyID] = queuedStory
+
+	// Check if this story or others became ready
+	q.checkAndNotifyReady()
+}
+
+// FlushToDatabase writes all in-memory stories to the database for persistence.
+func (q *Queue) FlushToDatabase() {
+	if q.persistenceChannel == nil {
+		return
+	}
+
+	for _, queuedStory := range q.stories {
+		// Convert queue status to database status
+		var dbStatus string
+		switch queuedStory.Status {
+		case StatusPending:
+			dbStatus = persistence.StatusNew
+		case StatusInProgress:
+			dbStatus = persistence.StatusCoding
+		case StatusCompleted:
+			dbStatus = persistence.StatusCommitted
+		default:
+			dbStatus = persistence.StatusNew
+		}
+
+		// Convert QueuedStory back to persistence.Story for database
+		dbStory := &persistence.Story{
+			ID:         queuedStory.ID,
+			SpecID:     queuedStory.SpecID, // Include SpecID for foreign key
+			Title:      queuedStory.Title,
+			Status:     dbStatus,
+			Priority:   queuedStory.Priority,
+			CreatedAt:  queuedStory.LastUpdated,
+			StoryType:  queuedStory.StoryType, // Preserve story type
+			TokensUsed: 0,
+			CostUSD:    0.0,
+		}
+
+		// Send to database (fire-and-forget)
+		q.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpsertStory,
+			Data:      dbStory,
+			Response:  nil,
+		}
+	}
+}
+
+// LoadFromDatabase loads stories from the database.
+// This should only be used for recovery/restart scenarios.
+func (q *Queue) LoadFromDatabase() error {
+	if q.persistenceChannel == nil {
+		return fmt.Errorf("persistence channel not available - database storage is required for story loading")
+	}
+
+	// Request all stories from database
+	responseCh := make(chan interface{}, 1)
+	req := &persistence.Request{
+		Operation: persistence.OpGetAllStories,
+		Data:      nil,
+		Response:  responseCh,
+	}
+
+	// Send request to persistence worker
+	q.persistenceChannel <- req
+
+	// Wait for response
+	response := <-responseCh
+	if response == nil {
+		// No stories in database yet, start with empty queue
 		return nil
 	}
 
-	files, err := filepath.Glob(filepath.Join(q.storiesDir, "*.md"))
-	if err != nil {
-		return fmt.Errorf("failed to scan stories directory: %w", err)
+	// Handle error response
+	if err, ok := response.(error); ok {
+		return fmt.Errorf("failed to load stories from database: %w", err)
 	}
 
-	for _, file := range files {
-		story, err := q.parseStoryFile(file)
-		if err != nil {
-			// Log warning but continue with other files.
-			logx.Warnf("failed to parse story file %s: %v", file, err)
-			continue
-		}
-
-		// Initialize as pending if not already tracked.
-		if existing, exists := q.stories[story.ID]; !exists {
-			story.Status = StatusPending
-			story.LastUpdated = time.Now().UTC()
-			q.stories[story.ID] = story
-		} else {
-			// Update metadata but preserve status and tracking info.
-			existing.Title = story.Title
-			existing.DependsOn = story.DependsOn
-			existing.EstimatedPoints = story.EstimatedPoints
-			existing.FilePath = story.FilePath
-			existing.LastUpdated = time.Now().UTC()
-		}
+	// Convert response to stories
+	stories, ok := response.([]*persistence.Story)
+	if !ok {
+		return fmt.Errorf("unexpected response type from database: %T", response)
 	}
 
-	// After loading all stories, check for initially ready ones.
+	// Convert database stories to queue stories
+	for _, dbStory := range stories {
+		queueStory := q.convertDatabaseStoryToQueueStory(dbStory)
+		q.stories[queueStory.ID] = queueStory
+	}
+
+	// After loading all stories, check for initially ready ones
 	q.checkAndNotifyReady()
 
 	return nil
 }
 
-// parseStoryFile reads a story markdown file and extracts metadata.
-func (q *Queue) parseStoryFile(filePath string) (*QueuedStory, error) {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+// convertDatabaseStoryToQueueStory converts a database story to a queue story.
+func (q *Queue) convertDatabaseStoryToQueueStory(dbStory *persistence.Story) *QueuedStory {
+	// Convert database status to queue status
+	var queueStatus StoryStatus
+	switch dbStory.Status {
+	case persistence.StatusNew:
+		queueStatus = StatusPending
+	case persistence.StatusPlanning:
+		queueStatus = StatusInProgress
+	case persistence.StatusCoding:
+		queueStatus = StatusInProgress
+	case persistence.StatusCommitted:
+		queueStatus = StatusCompleted
+	case persistence.StatusMerged:
+		queueStatus = StatusCompleted
+	case persistence.StatusError:
+		queueStatus = StatusBlocked
+	case persistence.StatusDuplicate:
+		queueStatus = StatusCancelled
+	default:
+		queueStatus = StatusPending // Default fallback
 	}
 
-	story := &QueuedStory{
-		FilePath: filePath,
-	}
+	// Get dependencies for this story
+	dependencies := q.getStoryDependencies(dbStory.ID)
 
-	// Parse front-matter.
-	if err := q.parseFrontMatter(string(content), story); err != nil {
-		return nil, fmt.Errorf("failed to parse front-matter: %w", err)
+	return &QueuedStory{
+		ID:              dbStory.ID,
+		SpecID:          dbStory.SpecID, // Include SpecID
+		Title:           dbStory.Title,
+		FilePath:        "", // No file path for database stories
+		Status:          queueStatus,
+		Priority:        dbStory.Priority, // Map priority field
+		DependsOn:       dependencies,
+		EstimatedPoints: 1,                 // Default estimated points (could be improved later)
+		AssignedAgent:   "",                // Not tracked in database yet
+		StartedAt:       nil,               // Not tracked in database yet
+		CompletedAt:     nil,               // Not tracked in database yet
+		LastUpdated:     dbStory.CreatedAt, // Use CreatedAt since UpdatedAt doesn't exist
+		StoryType:       dbStory.StoryType, // Pass through story type from database
 	}
-
-	return story, nil
 }
 
-// parseFrontMatter extracts front-matter from markdown content.
-func (q *Queue) parseFrontMatter(content string, story *QueuedStory) error {
-	// Look for front-matter block.
-	frontMatterRegex := regexp.MustCompile(`(?s)^---\n(.*?)\n---`)
-	matches := frontMatterRegex.FindStringSubmatch(content)
-	if len(matches) < 2 {
-		return fmt.Errorf("no front-matter found")
-	}
-
-	frontMatter := matches[1]
-	lines := strings.Split(frontMatter, "\n")
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// Parse key-value pairs.
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		switch key {
-		case "id":
-			story.ID = value
-		case "title":
-			// Remove quotes if present.
-			story.Title = strings.Trim(value, `"`)
-		case "depends_on":
-			story.DependsOn = q.parseStringArray(value)
-		case "est_points":
-			if points, err := parseEstimatedPoints(value); err == nil {
-				story.EstimatedPoints = points
-			}
-		}
-	}
-
-	// Validate required fields.
-	if story.ID == "" {
-		return fmt.Errorf("missing required field: id")
-	}
-	if story.Title == "" {
-		return fmt.Errorf("missing required field: title")
-	}
-
-	return nil
-}
-
-// parseStringArray parses a YAML-style array from a string.
-func (q *Queue) parseStringArray(value string) []string {
-	value = strings.TrimSpace(value)
-
-	// Handle empty array.
-	if value == "[]" || value == "" {
+// getStoryDependencies retrieves dependencies for a story from the database.
+func (q *Queue) getStoryDependencies(storyID string) []string {
+	if q.persistenceChannel == nil {
 		return []string{}
 	}
 
-	// Remove brackets and split by comma.
-	value = strings.Trim(value, "[]")
-	parts := strings.Split(value, ",")
-
-	var result []string
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		part = strings.Trim(part, `"'`) // Remove quotes
-		if part != "" {
-			result = append(result, part)
-		}
+	// Request dependencies from database
+	responseCh := make(chan interface{}, 1)
+	req := &persistence.Request{
+		Operation: persistence.OpGetStoryDependencies,
+		Data:      storyID,
+		Response:  responseCh,
 	}
 
-	return result
+	q.persistenceChannel <- req
+
+	// Wait for response
+	response := <-responseCh
+	if response == nil {
+		return []string{}
+	}
+
+	// Handle error response
+	if _, ok := response.(error); ok {
+		return []string{} // Return empty on error
+	}
+
+	// Convert response to dependencies
+	if deps, ok := response.([]string); ok {
+		return deps
+	}
+
+	return []string{}
 }
 
 // NextReadyStory returns the next story that's ready to be worked on.
@@ -218,12 +277,15 @@ func (q *Queue) NextReadyStory() *QueuedStory {
 		return nil
 	}
 
-	// Sort by estimated points (smaller first) then by ID for deterministic ordering.
+	// Sort by priority (higher first), then by estimated points (smaller first), then by ID for deterministic ordering.
 	sort.Slice(ready, func(i, j int) bool {
-		if ready[i].EstimatedPoints == ready[j].EstimatedPoints {
-			return ready[i].ID < ready[j].ID
+		if ready[i].Priority == ready[j].Priority {
+			if ready[i].EstimatedPoints == ready[j].EstimatedPoints {
+				return ready[i].ID < ready[j].ID
+			}
+			return ready[i].EstimatedPoints < ready[j].EstimatedPoints
 		}
-		return ready[i].EstimatedPoints < ready[j].EstimatedPoints
+		return ready[i].Priority > ready[j].Priority // Higher priority first
 	})
 
 	return ready[0]
@@ -289,6 +351,20 @@ func (q *Queue) MarkInProgress(storyID, agentID string) error {
 	story.StartedAt = &now
 	story.LastUpdated = now
 
+	// Update database status to coding (fire-and-forget)
+	if q.persistenceChannel != nil {
+		updateReq := &persistence.UpdateStoryStatusRequest{
+			StoryID:   storyID,
+			Status:    persistence.StatusCoding,
+			Timestamp: now,
+		}
+		q.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpdateStoryStatus,
+			Data:      updateReq,
+			Response:  nil, // Fire-and-forget
+		}
+	}
+
 	return nil
 }
 
@@ -303,8 +379,23 @@ func (q *Queue) MarkWaitingReview(storyID string) error {
 		return fmt.Errorf("story %s is not in progress (current: %s)", storyID, story.Status)
 	}
 
+	now := time.Now().UTC()
 	story.Status = StatusWaitingReview
-	story.LastUpdated = time.Now().UTC()
+	story.LastUpdated = now
+
+	// Update database status remains as coding since the story is still being worked on
+	if q.persistenceChannel != nil {
+		updateReq := &persistence.UpdateStoryStatusRequest{
+			StoryID:   storyID,
+			Status:    persistence.StatusCoding,
+			Timestamp: now,
+		}
+		q.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpdateStoryStatus,
+			Data:      updateReq,
+			Response:  nil, // Fire-and-forget
+		}
+	}
 
 	return nil
 }
@@ -333,6 +424,20 @@ func (q *Queue) MarkCompleted(storyID string) error {
 	story.Status = StatusCompleted
 	story.CompletedAt = &now
 	story.LastUpdated = now
+
+	// Update database status to committed (fire-and-forget)
+	if q.persistenceChannel != nil {
+		updateReq := &persistence.UpdateStoryStatusRequest{
+			StoryID:   storyID,
+			Status:    persistence.StatusCommitted,
+			Timestamp: now,
+		}
+		q.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpUpdateStoryStatus,
+			Data:      updateReq,
+			Response:  nil, // Fire-and-forget
+		}
+	}
 
 	// Check if any pending stories became ready due to this completion.
 	q.checkAndNotifyReady()
@@ -543,20 +648,4 @@ func (q *Queue) GetQueueSummary() map[string]any {
 	summary["cycles"] = cycles
 
 	return summary
-}
-
-// parseEstimatedPoints parses estimated points from a string value.
-func parseEstimatedPoints(value string) (int, error) {
-	value = strings.TrimSpace(value)
-	points, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, fmt.Errorf("invalid estimated points value: %s", value)
-	}
-
-	// Validate range (1-5 points typical for story estimation).
-	if points < 1 || points > 5 {
-		return 2, nil // Default to 2 points for out-of-range values
-	}
-
-	return points, nil
 }

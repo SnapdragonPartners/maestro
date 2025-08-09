@@ -17,9 +17,9 @@ func NewStoryMessage(fromAgent, toAgent string) *MessageBuilder {
 	return &MessageBuilder{msg: msg}
 }
 
-// NewResultMessage creates a new RESULT message builder.
-func NewResultMessage(fromAgent, toAgent string) *MessageBuilder {
-	msg := proto.NewAgentMsg(proto.MsgTypeRESULT, fromAgent, toAgent)
+// NewResponseMessage creates a new RESPONSE message builder.
+func NewResponseMessage(fromAgent, toAgent string) *MessageBuilder {
+	msg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, fromAgent, toAgent)
 	return &MessageBuilder{msg: msg}
 }
 
@@ -29,9 +29,9 @@ func NewErrorMessage(fromAgent, toAgent string) *MessageBuilder {
 	return &MessageBuilder{msg: msg}
 }
 
-// NewQuestionMessage creates a new QUESTION message builder.
-func NewQuestionMessage(fromAgent, toAgent string) *MessageBuilder {
-	msg := proto.NewAgentMsg(proto.MsgTypeQUESTION, fromAgent, toAgent)
+// NewRequestMessage creates a new REQUEST message builder.
+func NewRequestMessage(fromAgent, toAgent string) *MessageBuilder {
+	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, fromAgent, toAgent)
 	return &MessageBuilder{msg: msg}
 }
 
@@ -142,7 +142,7 @@ func HealthEndpointTask(fromAgent, toAgent string) *proto.AgentMsg {
 
 // SuccessfulCodeResult creates a standard successful coding result.
 func SuccessfulCodeResult(fromAgent, toAgent, implementation string) *proto.AgentMsg {
-	return NewResultMessage(fromAgent, toAgent).
+	return NewResponseMessage(fromAgent, toAgent).
 		WithStatus("completed").
 		WithImplementation(implementation).
 		WithTestResults(true, "All checks passed: go fmt, go build completed successfully").
@@ -160,7 +160,7 @@ func FailedCodeResult(fromAgent, toAgent, errorMsg string) *proto.AgentMsg {
 
 // ArchitectTaskResult creates a standard architect task creation result.
 func ArchitectTaskResult(fromAgent, toAgent, taskMsgID string) *proto.AgentMsg {
-	return NewResultMessage(fromAgent, toAgent).
+	return NewResponseMessage(fromAgent, toAgent).
 		WithStatus("task_created").
 		WithMetadata("task_message_id", taskMsgID).
 		WithMetadata("target_agent", "claude").
@@ -169,7 +169,7 @@ func ArchitectTaskResult(fromAgent, toAgent, taskMsgID string) *proto.AgentMsg {
 
 // ShutdownAcknowledgment creates a standard shutdown acknowledgment.
 func ShutdownAcknowledgment(fromAgent, toAgent string) *proto.AgentMsg {
-	return NewResultMessage(fromAgent, toAgent).
+	return NewResponseMessage(fromAgent, toAgent).
 		WithStatus("shutdown_acknowledged").
 		WithMetadata("agent_type", "test_agent").
 		Build()
@@ -177,7 +177,7 @@ func ShutdownAcknowledgment(fromAgent, toAgent string) *proto.AgentMsg {
 
 // QuestionAboutArchitecture creates a standard architecture question.
 func QuestionAboutArchitecture(fromAgent, toAgent string) *proto.AgentMsg {
-	return NewQuestionMessage(fromAgent, toAgent).
+	return NewRequestMessage(fromAgent, toAgent).
 		WithQuestion("What architecture pattern should I use for this API?").
 		WithMetadata("question_type", "architecture").
 		Build()
@@ -185,7 +185,7 @@ func QuestionAboutArchitecture(fromAgent, toAgent string) *proto.AgentMsg {
 
 // ArchitectureAnswer creates a standard architecture answer.
 func ArchitectureAnswer(fromAgent, toAgent string, originalMsg *proto.AgentMsg) *proto.AgentMsg {
-	return NewResultMessage(fromAgent, toAgent).
+	return NewResponseMessage(fromAgent, toAgent).
 		WithAnswer("Follow clean architecture principles with clear separation of concerns.").
 		WithMetadata("answer_type", "architect_guidance").
 		WithParentMessage(originalMsg).

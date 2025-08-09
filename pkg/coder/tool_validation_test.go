@@ -2,8 +2,10 @@ package coder
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
 
@@ -57,8 +59,8 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Error("Expected urgency to be preserved")
 	}
 
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != string(StateQuestion) {
-		t.Error("Expected next_state to be QUESTION")
+	if nextState, exists := resultMap["next_state"]; !exists || nextState != "INLINE_HANDLED" {
+		t.Error("Expected next_state to be INLINE_HANDLED")
 	}
 }
 
@@ -149,7 +151,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 
 	// Test required parameters.
-	expectedRequired := []string{"plan", "confidence"}
+	expectedRequired := []string{"plan", "confidence", "todos"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
 	}
@@ -171,9 +173,10 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	ctx := context.Background()
 	validArgs := map[string]any{
 		"plan":                "Detailed implementation plan...",
-		"confidence":          "HIGH",
+		"confidence":          string(proto.ConfidenceHigh),
 		"exploration_summary": "Explored 15 files, found 3 patterns",
 		"risks":               "Potential performance impact on auth flow",
+		"todos":               []any{"Implement authentication logic", "Add validation", "Update tests"},
 	}
 
 	result, err := tool.Exec(ctx, validArgs)
@@ -195,7 +198,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Error("Expected plan to be preserved in result")
 	}
 
-	if confidence, exists := resultMap["confidence"]; !exists || confidence != "HIGH" {
+	if confidence, exists := resultMap["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
 		t.Error("Expected confidence to be preserved")
 	}
 
@@ -218,7 +221,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 	}{
 		{
 			name:        "Missing plan parameter",
-			args:        map[string]any{"confidence": "HIGH"},
+			args:        map[string]any{"confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan parameter is required",
 		},
@@ -230,13 +233,13 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		},
 		{
 			name:        "Empty plan",
-			args:        map[string]any{"plan": "", "confidence": "HIGH"},
+			args:        map[string]any{"plan": "", "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan cannot be empty",
 		},
 		{
 			name:        "Invalid plan type",
-			args:        map[string]any{"plan": 123, "confidence": "HIGH"},
+			args:        map[string]any{"plan": 123, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan must be a string",
 		},
@@ -251,15 +254,17 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 			args: map[string]any{
 				"plan":       "Valid plan",
 				"confidence": "INVALID",
+				"todos":      []any{"Some task"},
 			},
 			expectError: true,
-			errorMsg:    "confidence must be HIGH, MEDIUM, or LOW",
+			errorMsg:    fmt.Sprintf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow),
 		},
 		{
 			name: "Valid with minimal parameters",
 			args: map[string]any{
 				"plan":       "Minimal valid plan",
 				"confidence": "MEDIUM",
+				"todos":      []any{"Implement feature"},
 			},
 			expectError: false,
 		},

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -12,31 +14,19 @@ import (
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 )
 
-// MockLLMClient provides simple LLM responses for testing.
-type MockLLMClient struct{}
-
-// Complete implements the LLMClient interface with simple mock responses.
-func (m *MockLLMClient) Complete(_ context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
-	// Simple mock responses based on request context.
-	content := "Mock LLM response: I understand the task and will proceed accordingly."
-
-	return agent.CompletionResponse{
-		Content: content,
-	}, nil
-}
-
-// Stream implements the LLMClient interface (required but not used in tests).
-func (m *MockLLMClient) Stream(_ context.Context, _ agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
-	ch := make(chan agent.StreamChunk, 1)
-	ch <- agent.StreamChunk{
-		Content: "Mock LLM response: I understand the task and will proceed accordingly.",
-		Done:    true,
+// Helper function to get API key for tests.
+func getTestAPIKey(t *testing.T) string {
+	// Try ANTHROPIC_API_KEY first (standard), then CLAUDE_API_KEY (legacy)
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		return apiKey
 	}
-	close(ch)
-	return ch, nil
+	if apiKey := os.Getenv("CLAUDE_API_KEY"); apiKey != "" {
+		return apiKey
+	}
+	t.Skip("Skipping test: ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable not set")
+	return "" // Never reached due to t.Skip()
 }
 
 // Test flags for configurable timeouts.
@@ -104,27 +94,26 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	// Create temporary directory for this coder.
 	tempDir := t.TempDir()
 
-	// Create state store.
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
-	}
+	// No state store needed for integration tests
 
 	// Create minimal model config.
-	modelCfg := &config.ModelCfg{
-		MaxContextTokens: 8192,
-		MaxReplyTokens:   4096,
+	modelCfg := &config.Model{
+		Name:           config.ModelClaudeSonnetLatest,
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
-	// Create a simple mock LLM client for testing.
-	// This allows coders to follow the full REQUEST→RESULT communication pattern.
-	mockLLM := &MockLLMClient{}
+	// Create real Claude LLM client for testing.
+	apiKey := getTestAPIKey(t)
+	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
 	// Create coder driver.
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, nil, buildService, nil)
+	driver, err := coder.NewCoder(coderID, modelCfg, llmClient, tempDir, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -137,33 +126,35 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 	return driver
 }
 
-// CreateTestCoderWithAgent creates a coder driver with specific agent configuration for testing.
-func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.Agent) *coder.Coder {
+// CreateTestCoderWithAgent creates a coder driver with specific model configuration for testing.
+func CreateTestCoderWithAgent(t *testing.T, coderID string, modelConfig *config.Model) *coder.Coder {
 	t.Helper()
 
 	// Create temporary directory for this coder.
 	tempDir := t.TempDir()
 
-	// Create state store.
-	stateStore, err := state.NewStore(tempDir)
-	if err != nil {
-		t.Fatalf("Failed to create state store for coder %s: %v", coderID, err)
+	// No state store needed for integration tests
+
+	// Use provided model config or create default
+	if modelConfig == nil {
+		modelConfig = &config.Model{
+			Name:           config.ModelClaudeSonnetLatest,
+			MaxTPM:         50000,
+			DailyBudget:    200.0,
+			MaxConnections: 4,
+			CPM:            3.0,
+		}
 	}
 
-	// Create minimal model config.
-	modelCfg := &config.ModelCfg{
-		MaxContextTokens: 8192,
-		MaxReplyTokens:   4096,
-	}
-
-	// Create a simple mock LLM client for testing.
-	mockLLM := &MockLLMClient{}
+	// Create real Claude LLM client for testing.
+	apiKey := getTestAPIKey(t)
+	llmClient := agent.NewClaudeClient(apiKey)
 
 	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
-	// Create coder driver with agent configuration.
-	driver, err := coder.NewCoder(coderID, stateStore, modelCfg, mockLLM, tempDir, agentConfig, buildService, nil)
+	// Create coder driver with model configuration.
+	driver, err := coder.NewCoder(coderID, modelConfig, llmClient, tempDir, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -181,13 +172,13 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, agentConfig *config.
 type MessageMatchers struct{}
 
 // MatchRequestType returns a matcher that checks for a specific request type.
-func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*proto.AgentMsg) bool {
+func (MessageMatchers) MatchRequestType(requestType string) func(*proto.AgentMsg) bool {
 	return func(msg *proto.AgentMsg) bool {
 		if msg.Type != proto.MsgTypeREQUEST {
 			return false
 		}
 
-		reqType, exists := msg.GetPayload(proto.KeyRequestType)
+		reqType, exists := msg.GetPayload("request_type")
 		if !exists {
 			return false
 		}
@@ -197,7 +188,7 @@ func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*pro
 			return false
 		}
 
-		parsedType, err := proto.ParseRequestType(reqTypeStr)
+		parsedType, err := func(s string) (string, error) { return s, nil }(reqTypeStr)
 		if err != nil {
 			return false
 		}
@@ -209,7 +200,7 @@ func (MessageMatchers) MatchRequestType(requestType proto.RequestType) func(*pro
 // MatchResultWithStatus returns a matcher that checks for a RESULT message with specific status.
 func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg) bool {
 	return func(msg *proto.AgentMsg) bool {
-		if msg.Type != proto.MsgTypeRESULT {
+		if msg.Type != proto.MsgTypeRESPONSE {
 			return false
 		}
 
@@ -229,7 +220,7 @@ func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg
 
 // MatchApprovalRequest returns a matcher for approval requests.
 func (MessageMatchers) MatchApprovalRequest() func(*proto.AgentMsg) bool {
-	return MessageMatchers{}.MatchRequestType(proto.RequestApproval)
+	return MessageMatchers{}.MatchRequestType("approval")
 }
 
 // Match provides a common message matchers instance.

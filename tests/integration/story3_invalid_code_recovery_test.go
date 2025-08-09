@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package integration
 
 import (
@@ -15,7 +18,7 @@ func TestStory3InvalidCodeBlockRecovery(t *testing.T) {
 	// Create test harness.
 	harness := NewTestHarness(t)
 	timeouts := GetTestTimeouts()
-	timeouts.Global = 15 * time.Second // Allow time for error handling and recovery
+	timeouts.Global = 30 * time.Second // Allow time for error handling and recovery
 	harness.SetTimeouts(timeouts)
 
 	responseCount := 0
@@ -27,25 +30,35 @@ func TestStory3InvalidCodeBlockRecovery(t *testing.T) {
 		response.ParentMsgID = msg.ID
 
 		if msg.Type == proto.MsgTypeREQUEST {
+			var status, feedback string
 			if responseCount == 1 {
-				// First response: invalid code block (no backticks)
-				response.SetPayload(proto.KeyStatus, "changes_requested")
-				response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-				response.SetPayload(proto.KeyApprovalType, "plan")
-				response.SetPayload(proto.KeyFeedback, `Please implement this function:
+				// First response: request changes with invalid code block (no backticks)
+				status = "NEEDS_CHANGES"
+				feedback = `Please implement this function:
 
 func AddNumbers(a, b int) int {
     return a + b
 }
 
-Make sure to include proper error handling.`)
+Make sure to include proper error handling.`
 			} else {
 				// Subsequent responses: valid approval.
-				response.SetPayload(proto.KeyStatus, "approved")
-				response.SetPayload(proto.KeyRequestType, proto.RequestApproval.String())
-				response.SetPayload(proto.KeyApprovalType, "plan")
-				response.SetPayload(proto.KeyFeedback, "Plan looks good!")
+				status = "APPROVED"
+				feedback = "Plan looks good!"
 			}
+
+			// Create proper approval result
+			approvalResult := &proto.ApprovalResult{
+				ID:         response.ID + "_approval",
+				RequestID:  msg.ID,
+				Type:       proto.ApprovalType("plan"),
+				Status:     proto.ApprovalStatus(status),
+				Feedback:   feedback,
+				ReviewedBy: "architect",
+				ReviewedAt: time.Now(),
+			}
+
+			response.SetPayload("approval_result", approvalResult)
 		}
 
 		return response
@@ -68,7 +81,7 @@ Requirements:
 	StartCoderWithTask(t, harness, coderID, taskContent)
 
 	// Run until completion or timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
 	err := harness.Run(ctx, func(h *TestHarness) bool {

@@ -40,7 +40,7 @@ func ExampleWriter_usage() {
 	fmt.Printf("📝 Logged TASK: architect → claude (story 001)\n")
 
 	// 2. Claude processes and returns result.
-	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESULT, "claude", "architect")
+	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "claude", "architect")
 	resultMsg.ParentMsgID = taskMsg.ID
 	resultMsg.SetPayload("status", "completed")
 	resultMsg.SetPayload("files_created", []string{"health.go", "health_test.go"})
@@ -60,7 +60,7 @@ func ExampleWriter_usage() {
 	fmt.Printf("📝 Logged ERROR: claude → architect (rate limit)\n")
 
 	// 4. Claude asks a question.
-	questionMsg := proto.NewAgentMsg(proto.MsgTypeQUESTION, "claude", "architect")
+	questionMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "claude", "architect")
 	questionMsg.SetPayload("question", "Should I use goroutines for concurrent request handling?")
 	questionMsg.SetPayload("context", "Health endpoint implementation")
 

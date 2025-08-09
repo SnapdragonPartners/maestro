@@ -1,6 +1,6 @@
 # Architect Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-07-13 (rev D - Merge Workflow)*
+*Last updated: 2025-07-24 (rev E - Shutdown Handling)*
 
 This document is the **single source of truth** for the architect agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -16,6 +16,8 @@ stateDiagram-v2
 
     %% ---------- SPEC INTAKE ----------
     WAITING       --> SCOPING            : spec received
+    WAITING       --> REQUEST            : question received  
+    WAITING       --> ERROR              : channel closed/abnormal shutdown
     SCOPING       --> DISPATCHING        : initial "ready" stories queued
     SCOPING       --> ERROR              : unrecoverable scoping error
 
@@ -25,9 +27,12 @@ stateDiagram-v2
 
     %% ---------- MAIN EVENT LOOP ----------
     MONITORING    --> REQUEST            : any coder request\n(question • plan • iter/tokens • code-review • merge)
+    MONITORING    --> MERGING            : approved code-review arrives
+    MONITORING    --> ERROR              : channel closed/abnormal shutdown
     
     %% ---------- REQUEST HANDLING ----------
-    REQUEST       --> MONITORING         : approve (non-code) • request changes • merge success
+    REQUEST       --> MONITORING         : approve (non-code) • request changes  
+    REQUEST       --> MERGING            : approve code-review
     REQUEST       --> ESCALATED          : cannot answer → ask human
     REQUEST       --> ERROR              : abandon / unrecoverable
 
@@ -36,8 +41,8 @@ stateDiagram-v2
     ESCALATED     --> ERROR              : timeout / no answer
 
     %% ---------- MERGE & UNBLOCK ----------
-    %% Note: MERGING state removed - merge operations now handled in REQUEST state
-    %% Story completion and dependency unlocking happens in REQUEST when merge succeeds
+    MERGING       --> DISPATCHING        : merge succeeds (may unblock more stories)
+    MERGING       --> ERROR              : merge failure
 
     %% ---------- TERMINALS ----------
     DONE          --> WAITING            : new spec arrives
@@ -57,8 +62,9 @@ stateDiagram-v2
 | **SCOPING**      | Parse specification and generate story files with dependencies.               |
 | **DISPATCHING**  | Load stories, check dependencies, and assign ready stories to coder agents.   |
 | **MONITORING**   | Monitor coder progress and wait for requests (questions, reviews, merges).    |
-| **REQUEST**      | Process coder requests: questions, plan/code reviews, merge operations.       |
+| **REQUEST**      | Process coder requests: questions, plan/code reviews.                         |
 | **ESCALATED**    | Waiting for human intervention on complex business questions.                 |
+| **MERGING**      | Handle merge operations after code approval.                                  |
 | **DONE**         | All stories completed successfully.                                           |
 | **ERROR**        | Unrecoverable error or workflow abandonment.                                  |
 
@@ -66,11 +72,40 @@ stateDiagram-v2
 
 ## Key workflow changes (Merge Workflow)
 
-- **MERGING state removed**: Merge operations now handled directly in REQUEST state
-- **Merge requests**: Coders send `REQUEST(type=merge)` after code approval  
+- **MERGING state**: Handles merge operations after code approval
+- **Merge requests**: Coders send merge requests after code approval  
 - **Story completion**: Only happens after successful PR merge (not code approval)
 - **Dependency unlocking**: Triggered by merge success, enabling dependent stories
-- **Conflict handling**: Merge conflicts returned to coder for resolution via FIXING state
+- **Conflict handling**: Merge conflicts returned to coder for resolution
+
+---
+
+## Error handling
+
+* The agent enters **ERROR** when:
+
+  1. It receives **ABANDON** from escalation or unrecoverable runtime errors.
+  2. Specification parsing fails with unrecoverable errors.
+  3. Any unrecoverable runtime error occurs (panic, out-of-retries, etc.).
+
+* **ERROR** is terminal until recovery/restart by orchestrator.
+
+## Shutdown handling
+
+* The agent enters **DONE** when:
+
+  1. All stories are completed successfully (normal completion via DISPATCHING state).
+
+* The agent enters **ERROR** when:
+
+  1. It receives **ABANDON** from escalation or unrecoverable runtime errors.
+  2. Specification parsing fails with unrecoverable errors.
+  3. Any unrecoverable runtime error occurs (panic, out-of-retries, etc.).
+  4. Channels are closed unexpectedly during shutdown (abnormal termination).
+
+* **Channel closure detection**: When channels are closed during shutdown, the architect detects this via the two-value receive pattern `msg, ok := <-ch`. When `!ok`, it transitions to **ERROR** state for proper cleanup.
+
+* **DONE** is terminal - the orchestrator handles agent cleanup and restart.
 
 ---
 

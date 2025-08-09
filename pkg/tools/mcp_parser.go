@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // ToolCall represents a parsed MCP tool invocation in Claude API format.
@@ -41,6 +43,8 @@ type MCPParser struct {
 	thinkingRegex *regexp.Regexp
 	// Tool blocks can also be represented in JSON format for compatibility.
 	jsonToolRegex *regexp.Regexp
+	// Regex to match XML-style tool calls.
+	xmlToolRegex *regexp.Regexp
 }
 
 // NewMCPParser creates a new MCP parser instance.
@@ -51,9 +55,13 @@ func NewMCPParser() *MCPParser {
 	// Regex to match JSON tool use blocks: {"type":"tool_use",...}
 	jsonToolRegex := regexp.MustCompile(`(?s)\{\s*"type"\s*:\s*"tool_use".*?\}`)
 
+	// Regex to match XML-style tool calls: <tool name="shell">command</tool>
+	xmlToolRegex := regexp.MustCompile(`(?s)<tool\s+name="([^"]+)"[^>]*>(.*?)</tool>`)
+
 	return &MCPParser{
 		thinkingRegex: thinkingRegex,
 		jsonToolRegex: jsonToolRegex,
+		xmlToolRegex:  xmlToolRegex,
 	}
 }
 
@@ -78,7 +86,26 @@ func (p *MCPParser) ParseToolCalls(text string) ([]ToolCall, error) {
 		}
 	}
 
-	// If no JSON tool blocks found, try a more forgiving approach to extract potential tool calls.
+	// If no JSON tool blocks found, try XML format.
+	if len(toolCalls) == 0 {
+		xmlMatches := p.xmlToolRegex.FindAllStringSubmatch(text, -1)
+		for _, match := range xmlMatches {
+			if len(match) >= 3 {
+				toolName := match[1]
+				toolContent := strings.TrimSpace(match[2])
+
+				toolCall := ToolCall{
+					ID:    generateToolCallID(),
+					Name:  toolName,
+					Args:  map[string]any{"cmd": toolContent},
+					Input: map[string]any{"cmd": toolContent},
+				}
+				toolCalls = append(toolCalls, toolCall)
+			}
+		}
+	}
+
+	// If no XML tool blocks found, try a more forgiving approach to extract potential tool calls.
 	if len(toolCalls) == 0 {
 		// Try to find content blocks in a more liberal format.
 		blocks := parseContentBlocks(text)
@@ -172,10 +199,20 @@ func parseContentBlocks(text string) []ContentBlock {
 	return blocks
 }
 
+// generateToolCallID generates a unique ID for XML-format tool calls.
+func generateToolCallID() string {
+	return fmt.Sprintf("xml_tool_%d", time.Now().UnixNano())
+}
+
 // HasToolCalls checks if the text contains any tool calls.
 func (p *MCPParser) HasToolCalls(text string) bool {
 	// Check for JSON tool use blocks.
 	if p.jsonToolRegex.MatchString(text) {
+		return true
+	}
+
+	// Check for XML tool blocks.
+	if p.xmlToolRegex.MatchString(text) {
 		return true
 	}
 

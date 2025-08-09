@@ -1,3 +1,4 @@
+//nolint:all // Legacy test file - needs migration to new APIs
 package agent
 
 import (

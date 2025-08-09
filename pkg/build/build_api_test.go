@@ -36,6 +36,27 @@ func main() {
 		t.Fatalf("Failed to create main.go: %v", err)
 	}
 
+	// Create Makefile with required targets
+	makefileContent := `build:
+	@echo "Building Go project"
+	go build ./...
+
+test:
+	@echo "Testing Go project"
+	go test ./...
+
+lint:
+	@echo "Linting Go project"
+	@echo "No linter configured"
+
+run:
+	@echo "Running Go project"
+	@echo "No run target configured"
+`
+	if err := os.WriteFile(filepath.Join(tempDir, "Makefile"), []byte(makefileContent), 0644); err != nil {
+		t.Fatalf("Failed to create Makefile: %v", err)
+	}
+
 	// Create build service.
 	service := NewBuildService()
 

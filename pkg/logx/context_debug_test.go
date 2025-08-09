@@ -7,11 +7,6 @@ import (
 	"testing"
 )
 
-// contextKey is a custom type for context keys to avoid collisions.
-type contextKey string
-
-const agentIDKey contextKey = "agent_id"
-
 func TestContextDebugLogging(t *testing.T) {
 	// Reset environment.
 	os.Unsetenv("DEBUG")

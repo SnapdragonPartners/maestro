@@ -16,41 +16,18 @@ import (
 type MsgType string
 
 const (
-	// MsgTypeSTORY represents work items for coders (stories to implement).
+	// MsgTypeSTORY represents a story assignment message.
 	MsgTypeSTORY MsgType = "STORY"
-	// MsgTypeSPEC represents specifications for architects to process.
+	// MsgTypeSPEC represents a specification message.
 	MsgTypeSPEC MsgType = "SPEC"
-	// MsgTypeQUESTION represents information requests.
-	MsgTypeQUESTION MsgType = "QUESTION"
-	// MsgTypeANSWER represents information responses.
-	MsgTypeANSWER MsgType = "ANSWER"
-	// MsgTypeREQUEST represents approval requests.
-	MsgTypeREQUEST MsgType = "REQUEST"
-	// MsgTypeRESULT represents approval responses.
-	MsgTypeRESULT MsgType = "RESULT"
-	// MsgTypeREQUEUE represents requeue requests for failed stories.
-	MsgTypeREQUEUE MsgType = "REQUEUE"
-	// MsgTypeERROR represents error messages.
+	// MsgTypeERROR represents an error message.
 	MsgTypeERROR MsgType = "ERROR"
-	// MsgTypeSHUTDOWN represents shutdown signals.
+	// MsgTypeSHUTDOWN represents a shutdown message.
 	MsgTypeSHUTDOWN MsgType = "SHUTDOWN"
-)
-
-// RequestType represents the type of request being made.
-type RequestType string
-
-const (
-	// RequestApproval indicates an approval request.
-	RequestApproval RequestType = "approval"
-
-	// RequestApprovalReview indicates an approval request review.
-	RequestApprovalReview RequestType = "approval_request"
-
-	// RequestQuestion indicates a question request.
-	RequestQuestion RequestType = "question"
-
-	// RequestResource indicates a resource request.
-	RequestResource RequestType = "resource"
+	// MsgTypeREQUEST represents a request message (unified protocol).
+	MsgTypeREQUEST MsgType = "REQUEST"
+	// MsgTypeRESPONSE represents a response message (unified protocol).
+	MsgTypeRESPONSE MsgType = "RESPONSE"
 )
 
 // Priority represents the priority level for messages.
@@ -67,24 +44,55 @@ const (
 	PriorityHigh Priority = "HIGH"
 )
 
+// Confidence represents the confidence level for plans and completions.
+type Confidence string
+
+const (
+	// ConfidenceLow represents low confidence level.
+	ConfidenceLow Confidence = "LOW"
+
+	// ConfidenceMedium represents medium confidence level.
+	ConfidenceMedium Confidence = "MEDIUM"
+
+	// ConfidenceHigh represents high confidence level.
+	ConfidenceHigh Confidence = "HIGH"
+)
+
+// StoryType represents the type of story (DevOps or App).
+type StoryType string
+
+const (
+	// StoryTypeDevOps represents DevOps infrastructure stories.
+	StoryTypeDevOps StoryType = "devops"
+
+	// StoryTypeApp represents application development stories.
+	StoryTypeApp StoryType = "app"
+)
+
 // Common payload and metadata keys used in agent messages.
 const (
-	// Payload keys.
-	KeyRequestType  = "request_type"
-	KeyApprovalType = "approval_type"
-	KeyAnswer       = "answer"
-	KeyReason       = "reason"
-	KeyQuestion     = "question"
+	// Core payload keys.
 	KeyContent      = "content"
 	KeyStatus       = "status"
-	KeyFeedback     = "feedback"
 	KeyCurrentState = "current_state"
-	KeyRequest      = "request"
 
-	// Correlation keys for QUESTION/ANSWER and REQUEST/RESULT pairs.
-	KeyQuestionID    = "question_id"    // Unique ID for each question
-	KeyApprovalID    = "approval_id"    // Unique ID for each approval request
-	KeyCorrelationID = "correlation_id" // Generic correlation ID for any request/response pair
+	// Unified protocol keys (NEW - preferred).
+	KeyKind          = "kind"           // Request/response kind (QUESTION, APPROVAL, etc.)
+	KeyCorrelationID = "correlation_id" // Universal correlation ID for request/response pairs
+	KeyRequestID     = "request_id"     // References the original request in responses
+
+	// Request-specific keys.
+	KeyQuestion = "question" // Question request payload
+	KeyApproval = "approval" // Approval request payload
+	KeyMerge    = "merge"    // Merge request payload
+	KeyRequeue  = "requeue"  // Requeue request payload
+
+	// Response-specific keys.
+	KeyAnswer       = "answer"        // Question response payload
+	KeyDecision     = "decision"      // Approval decision
+	KeyFeedback     = "feedback"      // General feedback/comments
+	KeySuccess      = "success"       // Whether operation was successful
+	KeyErrorMessage = "error_message" // Error details for failed operations
 
 	// Story-related keys.
 	KeyStoryType       = "story_type"
@@ -360,7 +368,7 @@ func generateID() string {
 // ValidateMsgType validates if a string is a valid message type.
 func ValidateMsgType(msgType string) (MsgType, bool) {
 	switch MsgType(msgType) {
-	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeQUESTION, MsgTypeANSWER, MsgTypeREQUEST, MsgTypeRESULT, MsgTypeREQUEUE, MsgTypeERROR, MsgTypeSHUTDOWN:
+	case MsgTypeSTORY, MsgTypeSPEC, MsgTypeREQUEST, MsgTypeRESPONSE, MsgTypeERROR, MsgTypeSHUTDOWN:
 		return MsgType(msgType), true
 	default:
 		return "", false
@@ -377,16 +385,10 @@ func ParseMsgType(s string) (MsgType, error) {
 		return MsgTypeSTORY, nil
 	case "SPEC":
 		return MsgTypeSPEC, nil
-	case "QUESTION":
-		return MsgTypeQUESTION, nil
-	case "ANSWER":
-		return MsgTypeANSWER, nil
 	case "REQUEST":
 		return MsgTypeREQUEST, nil
-	case "RESULT":
-		return MsgTypeRESULT, nil
-	case "REQUEUE":
-		return MsgTypeREQUEUE, nil
+	case "RESPONSE":
+		return MsgTypeRESPONSE, nil
 	case "ERROR":
 		return MsgTypeERROR, nil
 	case "SHUTDOWN":
@@ -403,46 +405,6 @@ func ParseMsgType(s string) (MsgType, error) {
 // String returns the string representation of MsgType.
 func (mt MsgType) String() string {
 	return string(mt)
-}
-
-// RequestType helper methods.
-
-// ValidateRequestType validates if a string is a valid request type.
-func ValidateRequestType(requestType string) (RequestType, bool) {
-	switch RequestType(requestType) {
-	case RequestApproval, RequestApprovalReview, RequestQuestion, RequestResource:
-		return RequestType(requestType), true
-	default:
-		return "", false
-	}
-}
-
-// ParseRequestType parses a string into a RequestType with validation.
-func ParseRequestType(s string) (RequestType, error) {
-	// Normalize to lowercase for comparison.
-	normalizedType := strings.ToLower(s)
-
-	switch normalizedType {
-	case "approval":
-		return RequestApproval, nil
-	case "approval_request":
-		return RequestApprovalReview, nil
-	case "question":
-		return RequestQuestion, nil
-	case "resource":
-		return RequestResource, nil
-	default:
-		// Check if it's already in the correct format.
-		if requestType, valid := ValidateRequestType(s); valid {
-			return requestType, nil
-		}
-		return "", fmt.Errorf("unknown request type: %s", s)
-	}
-}
-
-// String returns the string representation of RequestType.
-func (rt RequestType) String() string {
-	return string(rt)
 }
 
 // Approval helper methods.
@@ -572,36 +534,9 @@ func generateUniqueCounter() int64 {
 	return globalIDGen.NextCounter()
 }
 
-// SetQuestionCorrelation sets question correlation fields on a message.
-func (msg *AgentMsg) SetQuestionCorrelation(questionID string) {
-	msg.SetPayload(KeyQuestionID, questionID)
-	msg.SetPayload(KeyCorrelationID, questionID)
-}
-
-// SetApprovalCorrelation sets approval correlation fields on a message.
-func (msg *AgentMsg) SetApprovalCorrelation(approvalID string) {
-	msg.SetPayload(KeyApprovalID, approvalID)
-	msg.SetPayload(KeyCorrelationID, approvalID)
-}
-
-// GetQuestionID extracts the question ID from a message.
-func (msg *AgentMsg) GetQuestionID() (string, bool) {
-	if id, exists := msg.GetPayload(KeyQuestionID); exists {
-		if idStr, ok := id.(string); ok {
-			return idStr, true
-		}
-	}
-	return "", false
-}
-
-// GetApprovalID extracts the approval ID from a message.
-func (msg *AgentMsg) GetApprovalID() (string, bool) {
-	if id, exists := msg.GetPayload(KeyApprovalID); exists {
-		if idStr, ok := id.(string); ok {
-			return idStr, true
-		}
-	}
-	return "", false
+// SetCorrelation sets correlation ID on a message.
+func (msg *AgentMsg) SetCorrelation(correlationID string) {
+	msg.SetPayload(KeyCorrelationID, correlationID)
 }
 
 // GetCorrelationID extracts the correlation ID from a message.
@@ -661,6 +596,24 @@ func ParseApprovalType(s string) (ApprovalType, error) {
 		}
 		return "", fmt.Errorf("unknown approval type: %s", s)
 	}
+}
+
+// ValidStoryTypes returns all valid story types.
+func ValidStoryTypes() []string {
+	return []string{
+		string(StoryTypeDevOps),
+		string(StoryTypeApp),
+	}
+}
+
+// IsValidStoryType checks if a story type string is valid.
+func IsValidStoryType(storyType string) bool {
+	for _, validType := range ValidStoryTypes() {
+		if storyType == validType {
+			return true
+		}
+	}
+	return false
 }
 
 // EnumExtractor provides a generic way to safely extract and validate enum values from payloads.

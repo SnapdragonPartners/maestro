@@ -34,7 +34,7 @@ type Config struct {
 	TemplateOverrides       map[string]string       `json:"template_overrides"`       // Custom template paths
 	BranchName              string                  `json:"branch_name"`              // Bootstrap branch name
 	AutoMerge               bool                    `json:"auto_merge"`               // Auto-merge to main
-	BaseBranch              string                  `json:"base_branch"`              // Base branch for merge
+	TargetBranch            string                  `json:"target_branch"`            // Target branch for pull requests
 	RepoURL                 string                  `json:"repo_url"`                 // Git repository URL
 	ArchitectRecommendation *PlatformRecommendation `json:"architect_recommendation"` // Architect's stack recommendation
 }
@@ -49,7 +49,7 @@ func DefaultConfig() *Config {
 		TemplateOverrides:       make(map[string]string),
 		BranchName:              "bootstrap-init",
 		AutoMerge:               true,
-		BaseBranch:              "main",
+		TargetBranch:            "main",
 		ArchitectRecommendation: nil,
 	}
 }
@@ -66,7 +66,7 @@ func NewPhase(projectRoot string, config *Config) *Phase {
 		gitRunner,
 		filepath.Dir(projectRoot), // Use parent of projectRoot as projectWorkDir
 		config.RepoURL,
-		config.BaseBranch,
+		config.TargetBranch,
 		".mirrors",
 		"bootstrap-{STORY_ID}", // Won't be used since we commit to main
 		"{STORY_ID}",           // Won't be used since we use projectRoot directly
@@ -235,8 +235,8 @@ func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []st
 	gitRunner := coder.NewDefaultGitRunner()
 
 	// Ensure we're on the main branch.
-	if _, err := gitRunner.Run(ctx, workDir, "checkout", p.config.BaseBranch); err != nil {
-		return fmt.Errorf("failed to checkout %s: %w", p.config.BaseBranch, err)
+	if _, err := gitRunner.Run(ctx, workDir, "checkout", p.config.TargetBranch); err != nil {
+		return fmt.Errorf("failed to checkout %s: %w", p.config.TargetBranch, err)
 	}
 
 	// Add all artifacts to staging.
@@ -268,15 +268,15 @@ func (p *Phase) commitToMain(ctx context.Context, workDir string, artifacts []st
 		return fmt.Errorf("failed to commit artifacts: %w", err)
 	}
 
-	p.logger.Info("Committed bootstrap artifacts to %s", p.config.BaseBranch)
+	p.logger.Info("Committed bootstrap artifacts to %s", p.config.TargetBranch)
 
 	// Push the changes to remote to ensure other agents see the bootstrap artifacts.
-	p.logger.Info("Pushing bootstrap artifacts to remote %s", p.config.BaseBranch)
-	if _, err := gitRunner.Run(ctx, workDir, "push", "origin", p.config.BaseBranch); err != nil {
+	p.logger.Info("Pushing bootstrap artifacts to remote %s", p.config.TargetBranch)
+	if _, err := gitRunner.Run(ctx, workDir, "push", "origin", p.config.TargetBranch); err != nil {
 		return fmt.Errorf("failed to push bootstrap artifacts to remote: %w", err)
 	}
 
-	p.logger.Info("Successfully pushed bootstrap artifacts to remote %s", p.config.BaseBranch)
+	p.logger.Info("Successfully pushed bootstrap artifacts to remote %s", p.config.TargetBranch)
 	return nil
 }
 

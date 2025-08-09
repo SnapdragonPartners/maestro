@@ -95,7 +95,7 @@ func TestAgentMsg_ToJSON_FromJSON(t *testing.T) {
 func TestFromJSON(t *testing.T) {
 	jsonStr := `{
 		"id": "msg_123",
-		"type": "RESULT",
+		"type": "RESPONSE",
 		"from_agent": "claude",
 		"to_agent": "architect",
 		"timestamp": "2025-06-09T10:00:00Z",
@@ -117,8 +117,8 @@ func TestFromJSON(t *testing.T) {
 	if msg.ID != "msg_123" {
 		t.Errorf("Expected ID 'msg_123', got %s", msg.ID)
 	}
-	if msg.Type != MsgTypeRESULT {
-		t.Errorf("Expected type RESULT, got %s", msg.Type)
+	if msg.Type != MsgTypeRESPONSE {
+		t.Errorf("Expected type %s, got %s", MsgTypeRESPONSE, msg.Type)
 	}
 
 	status, exists := msg.GetPayload("status")
@@ -317,17 +317,17 @@ func TestMsgType_Constants(t *testing.T) {
 	// Test that all message types are defined correctly.
 	expectedTypes := []MsgType{
 		MsgTypeSTORY,
-		MsgTypeRESULT,
+		MsgTypeRESPONSE,
 		MsgTypeERROR,
-		MsgTypeQUESTION,
+		MsgTypeREQUEST,
 		MsgTypeSHUTDOWN,
 	}
 
 	expectedValues := []string{
 		"STORY",
-		"RESULT",
+		"RESPONSE",
 		"ERROR",
-		"QUESTION",
+		"REQUEST",
 		"SHUTDOWN",
 	}
 
@@ -342,9 +342,9 @@ func TestAgentMsg_JSONRoundTrip(t *testing.T) {
 	// Test all message types.
 	msgTypes := []MsgType{
 		MsgTypeSTORY,
-		MsgTypeRESULT,
+		MsgTypeRESPONSE,
 		MsgTypeERROR,
-		MsgTypeQUESTION,
+		MsgTypeREQUEST,
 		MsgTypeSHUTDOWN,
 	}
 
@@ -465,8 +465,8 @@ func TestEnumParsing(t *testing.T) {
 			{"story", MsgTypeSTORY, false},
 			{"STORY", MsgTypeSTORY, false},
 			{"request", MsgTypeREQUEST, false},
-			{"requeue", MsgTypeREQUEUE, false},
-			{"REQUEUE", MsgTypeREQUEUE, false},
+			{"REQUEST", MsgTypeREQUEST, false},
+			{"response", MsgTypeRESPONSE, false},
 			{"invalid", "", true},
 		}
 
@@ -618,59 +618,24 @@ func TestCorrelationIDGeneration(t *testing.T) {
 	}
 }
 
-// TestCorrelationHelpers tests the correlation helper methods on AgentMsg.
+// TestCorrelationHelpers tests the unified correlation helper methods on AgentMsg.
 func TestCorrelationHelpers(t *testing.T) {
-	msg := NewAgentMsg(MsgTypeQUESTION, "coder", "architect")
+	msg := NewAgentMsg(MsgTypeREQUEST, "coder", "architect")
 
-	// Test question correlation.
-	questionID := GenerateQuestionID()
-	msg.SetQuestionCorrelation(questionID)
-
-	retrievedQuestionID, exists := msg.GetQuestionID()
-	if !exists {
-		t.Error("Question ID should exist after setting")
-	}
-	if retrievedQuestionID != questionID {
-		t.Errorf("Expected question ID %s, got %s", questionID, retrievedQuestionID)
-	}
+	// Test unified correlation.
+	correlationID := GenerateCorrelationID()
+	msg.SetCorrelation(correlationID)
 
 	retrievedCorrelationID, exists := msg.GetCorrelationID()
 	if !exists {
-		t.Error("Correlation ID should exist after setting question correlation")
+		t.Error("Correlation ID should exist after setting")
 	}
-	if retrievedCorrelationID != questionID {
-		t.Errorf("Expected correlation ID to match question ID %s, got %s", questionID, retrievedCorrelationID)
-	}
-
-	// Test approval correlation.
-	msg2 := NewAgentMsg(MsgTypeREQUEST, "coder", "architect")
-	approvalID := GenerateApprovalID()
-	msg2.SetApprovalCorrelation(approvalID)
-
-	retrievedApprovalID, exists := msg2.GetApprovalID()
-	if !exists {
-		t.Error("Approval ID should exist after setting")
-	}
-	if retrievedApprovalID != approvalID {
-		t.Errorf("Expected approval ID %s, got %s", approvalID, retrievedApprovalID)
+	if retrievedCorrelationID != correlationID {
+		t.Errorf("Expected correlation ID %s, got %s", correlationID, retrievedCorrelationID)
 	}
 
-	retrievedCorrelationID2, exists := msg2.GetCorrelationID()
-	if !exists {
-		t.Error("Correlation ID should exist after setting approval correlation")
-	}
-	if retrievedCorrelationID2 != approvalID {
-		t.Errorf("Expected correlation ID to match approval ID %s, got %s", approvalID, retrievedCorrelationID2)
-	}
-
-	// Test missing IDs.
+	// Test missing correlation ID.
 	msg3 := NewAgentMsg(MsgTypeSTORY, "architect", "coder")
-	if _, exists := msg3.GetQuestionID(); exists {
-		t.Error("Should not have question ID when none set")
-	}
-	if _, exists := msg3.GetApprovalID(); exists {
-		t.Error("Should not have approval ID when none set")
-	}
 	if _, exists := msg3.GetCorrelationID(); exists {
 		t.Error("Should not have correlation ID when none set")
 	}

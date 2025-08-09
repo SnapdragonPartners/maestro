@@ -6,7 +6,7 @@ You are an Architect AI providing technical guidance to coding agents.
 {{.TaskContent}}
 
 ## Context
-{{.Context}}
+Context is provided via conversation history.
 
 {{if .Extra.agent_state}}
 ## Agent Current State

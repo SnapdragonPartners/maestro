@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+
+	"orchestrator/pkg/utils"
 )
 
 //go:embed *.tpl.md
@@ -14,29 +16,43 @@ var templateFS embed.FS
 
 // TemplateData holds the data for template rendering.
 type TemplateData struct {
-	Extra          map[string]any `json:"extra,omitempty"`
-	TaskContent    string         `json:"task_content"`
-	Context        string         `json:"context"`
-	Plan           string         `json:"plan,omitempty"`
-	ToolResults    string         `json:"tool_results,omitempty"`
-	Implementation string         `json:"implementation,omitempty"`
-	TestResults    string         `json:"test_results,omitempty"`
-	WorkDir        string         `json:"work_dir,omitempty"`
-	TreeOutput     string         `json:"tree_output,omitempty"`
+	Extra             map[string]any `json:"extra,omitempty"`
+	TaskContent       string         `json:"task_content"`
+	Plan              string         `json:"plan,omitempty"`
+	ToolResults       string         `json:"tool_results,omitempty"`
+	Implementation    string         `json:"implementation,omitempty"`
+	TestResults       string         `json:"test_results,omitempty"`
+	WorkDir           string         `json:"work_dir,omitempty"`
+	TreeOutput        string         `json:"tree_output,omitempty"`
+	ToolDocumentation string         `json:"tool_documentation,omitempty"`
+	// Build commands from project configuration
+	BuildCommand string `json:"build_command,omitempty"`
+	TestCommand  string `json:"test_command,omitempty"`
+	LintCommand  string `json:"lint_command,omitempty"`
+	RunCommand   string `json:"run_command,omitempty"`
 }
 
 // StateTemplate represents a workflow state template.
 type StateTemplate string
 
 const (
-	// PlanningTemplate is the template for coder planning state.
-	PlanningTemplate StateTemplate = "planning.tpl.md"
-	// CodingTemplate is the template for coder coding state.
-	CodingTemplate StateTemplate = "coding.tpl.md"
+	// DevOpsPlanningTemplate is the template for DevOps planning state.
+	DevOpsPlanningTemplate StateTemplate = "devops_planning.tpl.md"
+	// AppPlanningTemplate is the template for App planning state.
+	AppPlanningTemplate StateTemplate = "app_planning.tpl.md"
+	// DevOpsCodingTemplate is the template for DevOps coding tasks.
+	DevOpsCodingTemplate StateTemplate = "devops_coding.tpl.md"
+	// AppCodingTemplate is the template for App coding tasks.
+	AppCodingTemplate StateTemplate = "app_coding.tpl.md"
 	// TestingTemplate is the template for coder testing state.
 	TestingTemplate StateTemplate = "testing.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "approval.tpl.md"
+
+	// BudgetReviewPlanningTemplate is the template for architect budget review in planning state.
+	BudgetReviewPlanningTemplate StateTemplate = "budget_review_planning.tpl.md"
+	// BudgetReviewCodingTemplate is the template for architect budget review in coding state.
+	BudgetReviewCodingTemplate StateTemplate = "budget_review_coding.tpl.md"
 
 	// SpecAnalysisTemplate is the template for architect spec analysis state.
 	SpecAnalysisTemplate StateTemplate = "spec_analysis.tpl.md"
@@ -62,11 +78,15 @@ func NewRenderer() (*Renderer, error) {
 	// Load all templates.
 	templateNames := []StateTemplate{
 		// Coding agent templates.
-		PlanningTemplate,
-		CodingTemplate,
+		DevOpsPlanningTemplate,
+		AppPlanningTemplate,
+		DevOpsCodingTemplate,
+		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
 		// Architect agent templates.
+		BudgetReviewPlanningTemplate,
+		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,
 		StoryGenerationTemplate,
 		TechnicalQATemplate,
@@ -105,6 +125,33 @@ func (r *Renderer) Render(templateName StateTemplate, data *TemplateData) (strin
 	}
 
 	return buf.String(), nil
+}
+
+// RenderWithUserInstructions renders the specified template with user instruction files appended.
+// workDir is the working directory containing the .maestro directory.
+// agentType should be "CODER" or "ARCHITECT".
+func (r *Renderer) RenderWithUserInstructions(templateName StateTemplate, data *TemplateData, workDir, agentType string) (string, error) {
+	// First render the base template
+	basePrompt, err := r.Render(templateName, data)
+	if err != nil {
+		return "", err
+	}
+
+	// Load user instructions
+	instructions, err := utils.LoadUserInstructions(workDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to load user instructions: %w", err)
+	}
+
+	// Format user instructions for the agent type
+	userInstructionsFormatted := utils.FormatUserInstructions(instructions, agentType)
+
+	// Append user instructions if they exist
+	if userInstructionsFormatted != "" {
+		return basePrompt + userInstructionsFormatted, nil
+	}
+
+	return basePrompt, nil
 }
 
 // GetAvailableTemplates returns a list of all available templates.

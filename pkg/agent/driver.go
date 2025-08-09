@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"log"
 
 	"orchestrator/pkg/proto"
 )
@@ -25,7 +24,7 @@ type Driver interface {
 	// GetStateData returns a copy of the current state data.
 	GetStateData() map[string]any
 
-	// GetAgentType returns the type of the agent (architect, coder, etc.)
+	// GetAgentType returns the type of the agent.
 	GetAgentType() Type
 
 	// ValidateState checks if a state is valid for this agent type.
@@ -36,36 +35,4 @@ type Driver interface {
 
 	// Shutdown performs cleanup when the driver is stopping.
 	Shutdown(ctx context.Context) error
-}
-
-// Context contains shared context for all agents.
-type Context struct {
-	Context   context.Context //nolint:containedctx // Shared context container by design
-	Logger    *log.Logger
-	LLMClient LLMClient
-	Store     StateStore
-	WorkDir   string
-}
-
-// Config represents configuration for an agent.
-type Config struct {
-	Context   Context
-	LLMConfig *LLMConfig // Optional LLM configuration
-	ID        string
-	Type      string
-}
-
-// NewConfig creates a new agent configuration.
-func NewConfig(id, agentType string, ctx Context) *Config {
-	return &Config{
-		ID:      id,
-		Type:    agentType,
-		Context: ctx,
-	}
-}
-
-// WithLLM sets the LLM configuration for the agent.
-func (ac *Config) WithLLM(config *LLMConfig) *Config {
-	ac.LLMConfig = config
-	return ac
 }

@@ -9,7 +9,7 @@ You are a coding agent in the TESTING state. Your objective is to test the imple
 {{.TaskContent}}
 
 ## Current Context
-{{.Context}}
+Context is provided via conversation history.
 
 ## Instructions
 1. Run comprehensive tests on the implemented solution

@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"orchestrator/pkg/exec"
@@ -57,101 +56,20 @@ type ToolResult struct {
 	Content   any    `json:"content"`
 }
 
-// ToolChannel defines the interface for MCP tool implementations.
-type ToolChannel interface {
+// Tool represents an MCP tool.
+// Renamed from ToolChannel - has nothing to do with channels.
+type Tool interface {
 	// Definition returns the tool's definition.
 	Definition() ToolDefinition
 	// Name returns the tool's identifier.
 	Name() string
 	// Exec executes the tool with the given arguments.
 	Exec(ctx context.Context, args map[string]any) (any, error)
+	// PromptDocumentation returns markdown documentation for LLM prompts.
+	PromptDocumentation() string
 }
 
-// Registry manages registered MCP tools.
-//
-//nolint:govet // fieldalignment: Simple registry struct, optimization not critical
-type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]ToolChannel
-}
-
-// Global registry instance.
-var globalRegistry = &Registry{ //nolint:gochecknoglobals // Global registry pattern for tool management
-	tools: make(map[string]ToolChannel),
-}
-
-// Register adds a tool to the global registry.
-func Register(tool ToolChannel) error {
-	return globalRegistry.Register(tool)
-}
-
-// Get retrieves a tool from the global registry.
-func Get(name string) (ToolChannel, error) {
-	return globalRegistry.Get(name)
-}
-
-// GetAll returns all registered tools.
-func GetAll() map[string]ToolChannel {
-	return globalRegistry.GetAll()
-}
-
-// Register adds a tool to this registry.
-func (r *Registry) Register(tool ToolChannel) error {
-	if tool == nil {
-		return fmt.Errorf("tool cannot be nil")
-	}
-
-	name := tool.Name()
-	if name == "" {
-		return fmt.Errorf("tool name cannot be empty")
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, exists := r.tools[name]; exists {
-		return fmt.Errorf("tool %s already registered", name)
-	}
-
-	r.tools[name] = tool
-	return nil
-}
-
-// Get retrieves a tool from this registry.
-func (r *Registry) Get(name string) (ToolChannel, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	tool, exists := r.tools[name]
-	if !exists {
-		return nil, fmt.Errorf("tool %s not found", name)
-	}
-
-	return tool, nil
-}
-
-// GetAll returns a copy of all registered tools.
-func (r *Registry) GetAll() map[string]ToolChannel {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make(map[string]ToolChannel)
-	for name, tool := range r.tools {
-		result[name] = tool
-	}
-
-	return result
-}
-
-// Clear removes all tools from the registry (useful for testing).
-func (r *Registry) Clear() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.tools = make(map[string]ToolChannel)
-}
-
-// ShellTool implements ToolChannel for shell command execution.
+// ShellTool implements Tool for shell command execution.
 //
 //nolint:govet // fieldalignment: Logical grouping preferred over memory optimization
 type ShellTool struct {
@@ -208,6 +126,15 @@ func (s *ShellTool) Name() string {
 	return "shell"
 }
 
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (s *ShellTool) PromptDocumentation() string {
+	return `- **shell** - Execute shell commands for exploration and file operations
+  - Parameters: cmd (required), cwd (optional working directory)
+  - Read-only filesystem with network disabled for security
+  - Returns: stdout, stderr, exit_code, duration, and command details
+  - Use for: find, grep, cat, ls, tree, exploration commands`
+}
+
 // Exec executes a shell command with proper validation.
 func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Validate required cmd argument.
@@ -255,60 +182,13 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 	}
 
 	// Return result in a format consistent with Claude API.
+	// Note: We return success even for non-zero exit codes - the LLM can handle exit codes.
 	return map[string]any{
 		"stdout":    result.Stdout,
 		"stderr":    result.Stderr,
 		"exit_code": result.ExitCode,
 		"cwd":       cwd,
+		"command":   cmdStr,
+		"duration":  result.Duration.String(),
 	}, nil
-}
-
-// GetToolDefinitions returns all registered tool definitions in Claude API format.
-func GetToolDefinitions() []ToolDefinition {
-	tools := GetAll()
-	definitions := make([]ToolDefinition, 0, len(tools))
-
-	for _, tool := range tools {
-		definitions = append(definitions, tool.Definition())
-	}
-
-	return definitions
-}
-
-// UpdateShellToolExecutor updates the executor for the registered shell tool.
-func UpdateShellToolExecutor(executor exec.Executor) error {
-	// Clear the registry and re-register with the new executor.
-	globalRegistry.Clear()
-
-	// Re-register the shell tool with the new executor.
-	if err := Register(NewShellTool(executor)); err != nil {
-		return fmt.Errorf("failed to register shell tool with new executor: %w", err)
-	}
-
-	return nil
-}
-
-// InitializeShellTool registers the shell tool with the specified executor.
-// This should be called during application startup after the executor is configured.
-func InitializeShellTool(executor exec.Executor) error {
-	// Clear any existing tools and register the shell tool with the configured executor.
-	globalRegistry.Clear()
-
-	if err := Register(NewShellTool(executor)); err != nil {
-		return fmt.Errorf("failed to register shell tool: %w", err)
-	}
-
-	return nil
-}
-
-// InitializeShellToolWithConfig registers the shell tool with the specified executor and configuration.
-func InitializeShellToolWithConfig(executor exec.Executor, readOnly, networkDisabled bool, resourceLimits *exec.ResourceLimits) error {
-	// Clear any existing tools and register the shell tool with the configured executor.
-	globalRegistry.Clear()
-
-	if err := Register(NewShellToolWithConfig(executor, readOnly, networkDisabled, resourceLimits)); err != nil {
-		return fmt.Errorf("failed to register shell tool: %w", err)
-	}
-
-	return nil
 }

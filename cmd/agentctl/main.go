@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/bootstrap"
@@ -14,7 +13,6 @@ import (
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 )
 
 // processWithApprovals handles the full workflow including auto-approvals in standalone mode.
@@ -46,7 +44,7 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 		// Check if agent is done or completed.
 		if completed || agent.GetCurrentState() == "DONE" {
 			// Create a synthetic RESULT message for completion.
-			result := proto.NewAgentMsg(proto.MsgTypeRESULT, agent.GetID(), "agentctl")
+			result := proto.NewAgentMsg(proto.MsgTypeRESPONSE, agent.GetID(), "agentctl")
 			result.SetPayload("status", "completed")
 			return result, nil
 		}
@@ -69,27 +67,7 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 			}
 		}
 
-		// Check for pending questions and auto-answer them.
-		if isLiveMode {
-			if hasPending, _, content, reason := agent.GetPendingQuestion(); hasPending {
-				fmt.Fprintf(os.Stderr, "[Auto-answering] %s: %s\n", reason, content[:minInt(100, len(content))])
-
-				// Provide a generic helpful answer.
-				answer := "Please proceed with your best judgment. Focus on clean, well-documented code that follows best practices."
-				if err := agent.ProcessAnswer(answer); err != nil {
-					return nil, fmt.Errorf("failed to process answer: %w", err)
-				}
-
-				// Clear the pending question.
-				agent.ClearPendingQuestion()
-
-				// Continue with next iteration.
-				continue
-			}
-		}
-
-		// If we reach here without completion, continue the loop.
-		// unless we've exceeded our iteration limit.
+		// Questions are now handled inline via Effects pattern - no auto-answering needed.
 	}
 
 	// If we've reached the maximum iterations, return an error.
@@ -97,12 +75,6 @@ func processWithApprovals(ctx context.Context, agent *coder.Coder, msg *proto.Ag
 }
 
 // Helper functions.
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // handleBootstrapDocker handles the bootstrap-docker command.
 func handleBootstrapDocker() {
@@ -249,20 +221,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create coder.
-	stateStore, err := state.NewStore(filepath.Join(workDir, "state"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create state store: %v\n", err)
-		if cleanup && workDir != "" {
-			_ = os.RemoveAll(workDir)
-		}
-		os.Exit(1)
-	}
+	// Create coder (no state store needed).
 
-	modelConfig := &config.ModelCfg{
-		MaxContextTokens: 32000,
-		MaxReplyTokens:   4096,
-		CompactionBuffer: 1000,
+	modelConfig := &config.Model{
+		Name:           config.ModelClaudeSonnetLatest,
+		MaxTPM:         50000,
+		DailyBudget:    200.0,
+		MaxConnections: 4,
+		CPM:            3.0,
 	}
 
 	// Create agent based on type with auto-detection.
@@ -290,7 +256,7 @@ func main() {
 			// Create BuildService for MCP tools.
 			buildService := build.NewBuildService()
 
-			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, stateStore, modelConfig, apiKey, workspaceManager, buildService)
+			claudeAgent, err = coder.NewCoderWithClaude("agentctl-coder", "standalone-coder", workDir, modelConfig, apiKey, workspaceManager, buildService)
 		} else {
 			fmt.Fprintf(os.Stderr, "No ANTHROPIC_API_KEY found, would use mock mode (but mocks removed)\n")
 			fmt.Fprintf(os.Stderr, "Please set ANTHROPIC_API_KEY environment variable\n")

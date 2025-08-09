@@ -280,8 +280,8 @@ func AssertLintTestConditions(t *testing.T, msg *proto.AgentMsg, conditions Lint
 	t.Helper()
 
 	if conditions.ShouldPass {
-		// Verify it's a RESULT, not ERROR.
-		AssertMessageType(t, msg, proto.MsgTypeRESULT)
+		// Verify it's a RESPONSE, not ERROR.
+		AssertMessageType(t, msg, proto.MsgTypeRESPONSE)
 		AssertTestResults(t, msg, true)
 		AssertPayloadString(t, msg, "status", "completed")
 	} else {

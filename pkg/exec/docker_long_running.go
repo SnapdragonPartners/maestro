@@ -45,7 +45,7 @@ type ContainerInfo struct {
 // NewLongRunningDockerExec creates a new long-running Docker executor.
 // agentID is optional - if empty, containers won't be tracked in global registry.
 func NewLongRunningDockerExec(image, agentID string) *LongRunningDockerExec {
-	logger := logx.NewLogger("docker-longrunning")
+	logger := logx.NewLogger("docker")
 
 	// Auto-detect Docker command.
 	dockerCmd := dockerCommand
@@ -210,8 +210,8 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode), "--workdir", workspaceDir)
 	}
 
-	// Add writable tmpfs directories.
-	args = append(args, "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m", "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
+	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
+	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m", "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
 
 	// Environment variables.
 	for _, env := range opts.Env {
@@ -505,11 +505,14 @@ func (d *LongRunningDockerExec) waitUntilDockerCanMount(hostPath string, timeout
 	return fmt.Errorf("directory %s did not become mountable within %v", hostPath, timeout)
 }
 
-// Context key type for story ID.
-type contextKey string
+// ContextKey is the type for context keys to avoid collisions.
+type ContextKey string
 
 const (
-	contextKeyStoryID contextKey = "story_id"
+	// ContextKeyStoryID is the context key for story ID.
+	ContextKeyStoryID ContextKey = "story_id"
+	// For backward compatibility, keep the old unexported key.
+	contextKeyStoryID = ContextKeyStoryID
 )
 
 // getStoryIDFromContext extracts story ID from context.

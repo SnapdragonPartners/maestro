@@ -15,4 +15,64 @@ const (
 	ToolLint        = "lint"
 	ToolDone        = "done"
 	ToolBackendInfo = "backend_info"
+
+	// Container tools.
+	ToolContainerBuild  = "container_build"
+	ToolContainerUpdate = "container_update"
+	ToolContainerRun    = "container_run"
+	ToolContainerList   = "container_list"
+)
+
+// State-specific tool availability - defines which tools are available in each state.
+//
+//nolint:gochecknoglobals // These are constants that need to be globally accessible
+var (
+	// App planning tools - exploration and plan submission for application stories.
+	AppPlanningTools = []string{
+		ToolShell,
+		ToolSubmitPlan,
+		ToolAskQuestion,
+		ToolMarkStoryComplete,
+	}
+
+	// DevOps planning tools - exploration and plan submission for infrastructure stories.
+	// Includes container tools for verification of existing infrastructure.
+	DevOpsPlanningTools = []string{
+		ToolShell,
+		ToolSubmitPlan,
+		ToolAskQuestion,
+		ToolMarkStoryComplete,
+		ToolContainerRun,
+		// TODO: Add ToolContainerList when implemented
+	}
+
+	// DevOps coding tools - infrastructure focus, container operations.
+	DevOpsCodingTools = []string{
+		ToolShell,
+		ToolAskQuestion,
+		ToolDone,
+		ToolContainerBuild,
+		ToolContainerUpdate,
+		ToolContainerRun,
+		// TODO: Add ToolContainerList when implemented
+	}
+
+	// App coding tools - full development environment.
+	AppCodingTools = []string{
+		ToolShell,
+		ToolBuild,
+		ToolTest,
+		ToolLint,
+		ToolAskQuestion,
+		ToolDone,
+	}
+
+	// Testing tools - validation and verification.
+	TestingTools = []string{
+		ToolShell,
+		ToolBuild,
+		ToolTest,
+		ToolLint,
+		ToolBackendInfo,
+	}
 )

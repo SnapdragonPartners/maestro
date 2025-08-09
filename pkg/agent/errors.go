@@ -1,20 +1,25 @@
 package agent
 
-import "errors"
+import (
+	"orchestrator/pkg/agent/config"
+	"orchestrator/pkg/agent/internal/core"
+	"orchestrator/pkg/agent/internal/runtime"
+)
 
+// Re-exported public errors from domain packages.
 var (
 	// ErrStateNotFound indicates the requested state data was not found.
-	ErrStateNotFound = errors.New("state not found")
+	ErrStateNotFound = core.ErrStateNotFound
 
 	// ErrInvalidTransition indicates an invalid state transition was attempted.
-	ErrInvalidTransition = errors.New("invalid state transition")
-
-	// ErrMaxRetriesExceeded indicates the maximum number of retries has been exceeded.
-	ErrMaxRetriesExceeded = errors.New("maximum retries exceeded")
+	ErrInvalidTransition = core.ErrInvalidTransition
 
 	// ErrInvalidState indicates an invalid state was provided.
-	ErrInvalidState = errors.New("invalid state")
+	ErrInvalidState = core.ErrInvalidState
+
+	// ErrMaxRetriesExceeded indicates the maximum number of retries has been exceeded.
+	ErrMaxRetriesExceeded = runtime.ErrMaxRetriesExceeded
 
 	// ErrInvalidConfig indicates an invalid configuration was provided.
-	ErrInvalidConfig = errors.New("invalid configuration")
+	ErrInvalidConfig = config.ErrInvalidConfig
 )

@@ -43,6 +43,8 @@ func TestIsValidArchitectTransition(t *testing.T) {
 	}{
 		// WAITING transitions.
 		{StateWaiting, StateScoping, "WAITING -> SCOPING (spec received)"},
+		{StateWaiting, StateRequest, "WAITING -> REQUEST (question received)"},
+		{StateWaiting, StateError, "WAITING -> ERROR (channel closed/abnormal shutdown)"},
 
 		// SCOPING transitions.
 		{StateScoping, StateDispatching, "SCOPING -> DISPATCHING (stories queued)"},
@@ -55,6 +57,7 @@ func TestIsValidArchitectTransition(t *testing.T) {
 		// MONITORING transitions.
 		{StateMonitoring, StateRequest, "MONITORING -> REQUEST (coder request)"},
 		{StateMonitoring, StateMerging, "MONITORING -> MERGING (approved code-review)"},
+		{StateMonitoring, StateError, "MONITORING -> ERROR (channel closed/abnormal shutdown)"},
 
 		// REQUEST transitions.
 		{StateRequest, StateMonitoring, "REQUEST -> MONITORING (approve non-code/request changes)"},
@@ -96,11 +99,9 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		// Invalid WAITING transitions.
 		{StateWaiting, StateDispatching, "WAITING -> DISPATCHING (invalid)"},
 		{StateWaiting, StateMonitoring, "WAITING -> MONITORING (invalid)"},
-		{StateWaiting, StateRequest, "WAITING -> REQUEST (invalid)"},
 		{StateWaiting, StateEscalated, "WAITING -> ESCALATED (invalid)"},
 		{StateWaiting, StateMerging, "WAITING -> MERGING (invalid)"},
 		{StateWaiting, StateDone, "WAITING -> DONE (invalid)"},
-		{StateWaiting, StateError, "WAITING -> ERROR (invalid)"},
 
 		// Invalid SCOPING transitions.
 		{StateScoping, StateWaiting, "SCOPING -> WAITING (invalid)"},
@@ -124,7 +125,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateMonitoring, StateDispatching, "MONITORING -> DISPATCHING (invalid)"},
 		{StateMonitoring, StateEscalated, "MONITORING -> ESCALATED (invalid)"},
 		{StateMonitoring, StateDone, "MONITORING -> DONE (invalid)"},
-		{StateMonitoring, StateError, "MONITORING -> ERROR (invalid)"},
 
 		// Invalid REQUEST transitions (should not go directly to DISPATCHING)
 		{StateRequest, StateWaiting, "REQUEST -> WAITING (invalid)"},
@@ -292,10 +292,10 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateScoping}},
+		{StateWaiting, []proto.State{StateScoping, StateRequest, StateError}},
 		{StateScoping, []proto.State{StateDispatching, StateError}},
 		{StateDispatching, []proto.State{StateMonitoring, StateDone}},
-		{StateMonitoring, []proto.State{StateRequest, StateMerging}},
+		{StateMonitoring, []proto.State{StateRequest, StateMerging, StateError}},
 		{StateRequest, []proto.State{StateMonitoring, StateMerging, StateEscalated, StateError}},
 		{StateEscalated, []proto.State{StateRequest, StateError}},
 		{StateMerging, []proto.State{StateDispatching, StateError}},

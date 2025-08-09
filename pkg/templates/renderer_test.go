@@ -18,8 +18,10 @@ func TestNewRenderer(t *testing.T) {
 	// Check that all expected templates are loaded.
 	expectedTemplates := []StateTemplate{
 		// Coding agent templates.
-		PlanningTemplate,
-		CodingTemplate,
+		DevOpsPlanningTemplate,
+		AppPlanningTemplate,
+		DevOpsCodingTemplate,
+		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
 		// Architect agent templates.
@@ -32,7 +34,6 @@ func TestNewRenderer(t *testing.T) {
 	for _, templateName := range expectedTemplates {
 		data := &TemplateData{
 			TaskContent: "Test task",
-			Context:     "Test context",
 		}
 		_, err := renderer.Render(templateName, data)
 		if err != nil {
@@ -41,48 +42,79 @@ func TestNewRenderer(t *testing.T) {
 	}
 }
 
-func TestRenderPlanningTemplate(t *testing.T) {
+func TestRenderAppPlanningTemplate(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
 		t.Fatalf("Failed to create renderer: %v", err)
 	}
 
 	data := &TemplateData{
-		TaskContent: "Create a health endpoint",
-		Context:     "Go web service",
+		TaskContent:       "Create a health endpoint",
+		ToolDocumentation: "## Available Tools\n\n### shell\nExecute shell commands in the workspace.",
 	}
 
-	result, err := renderer.Render(PlanningTemplate, data)
+	result, err := renderer.Render(AppPlanningTemplate, data)
 	if err != nil {
-		t.Fatalf("Failed to render planning template: %v", err)
+		t.Fatalf("Failed to render app planning template: %v", err)
 	}
 
 	// Verify all placeholders were replaced.
 	if strings.Contains(result, "{{.TaskContent}}") {
 		t.Error("Template placeholder {{.TaskContent}} was not replaced")
 	}
-	if strings.Contains(result, "{{.Context}}") {
-		t.Error("Template placeholder {{.Context}} was not replaced")
-	}
 
 	// Verify content insertion.
 	if !strings.Contains(result, data.TaskContent) {
 		t.Error("Template should contain task content")
 	}
-	if !strings.Contains(result, data.Context) {
-		t.Error("Template should contain context")
-	}
 
-	// Verify template contains MCP tools guidance.
-	if !strings.Contains(result, "MCP tools") {
-		t.Error("Template should mention MCP tools")
+	// Verify template contains app-specific guidance.
+	if !strings.Contains(result, "Application Development Planning") {
+		t.Error("Template should contain app planning title")
 	}
-	if !strings.Contains(result, `<tool name="shell">`) {
-		t.Error("Template should contain shell tool example")
+	if !strings.Contains(result, "Available Tools") {
+		t.Error("Template should mention available tools")
+	}
+	if !strings.Contains(result, "shell") {
+		t.Error("Template should contain shell tool")
 	}
 }
 
-func TestRenderCodingTemplate(t *testing.T) {
+func TestRenderDevOpsPlanningTemplate(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	data := &TemplateData{
+		TaskContent:       "Build and validate Docker container",
+		ToolDocumentation: "## Available Tools\n\n### container_build\nBuild Docker containers.",
+	}
+
+	result, err := renderer.Render(DevOpsPlanningTemplate, data)
+	if err != nil {
+		t.Fatalf("Failed to render DevOps planning template: %v", err)
+	}
+
+	// Verify DevOps-specific content
+	if !strings.Contains(result, data.TaskContent) {
+		t.Error("Template should contain task content")
+	}
+
+	if !strings.Contains(result, "DevOps Infrastructure Planning") {
+		t.Error("Template should contain DevOps planning title")
+	}
+
+	if !strings.Contains(result, "container_build") {
+		t.Error("Template should mention container_build tool")
+	}
+
+	if !strings.Contains(result, "Infrastructure Exploration") {
+		t.Error("Template should contain infrastructure exploration section")
+	}
+}
+
+func TestRenderAppCodingTemplate(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
 		t.Fatalf("Failed to create renderer: %v", err)
@@ -90,11 +122,10 @@ func TestRenderCodingTemplate(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent: "Create a health endpoint",
-		Context:     "Go web service",
 		Plan:        "1. Create handler function 2. Add route 3. Test endpoint",
 	}
 
-	result, err := renderer.Render(CodingTemplate, data)
+	result, err := renderer.Render(AppCodingTemplate, data)
 	if err != nil {
 		t.Fatalf("Failed to render coding template: %v", err)
 	}
@@ -116,6 +147,40 @@ func TestRenderCodingTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderDevOpsCodingTemplate(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	data := &TemplateData{
+		TaskContent: "Build and validate Docker container",
+		Plan:        "1. Build container 2. Test container 3. Validate health check",
+	}
+
+	result, err := renderer.Render(DevOpsCodingTemplate, data)
+	if err != nil {
+		t.Fatalf("Failed to render DevOps coding template: %v", err)
+	}
+
+	// Verify DevOps-specific content
+	if !strings.Contains(result, data.TaskContent) {
+		t.Error("Template should contain task content")
+	}
+
+	if !strings.Contains(result, data.Plan) {
+		t.Error("Template should contain plan")
+	}
+
+	if !strings.Contains(result, "DevOps Implementation Guidelines") {
+		t.Error("Template should contain DevOps guidelines")
+	}
+
+	if !strings.Contains(result, "container_build") {
+		t.Error("Template should mention container_build tool")
+	}
+}
+
 func TestRenderApprovalTemplate(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
@@ -124,7 +189,6 @@ func TestRenderApprovalTemplate(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent:    "Create a health endpoint",
-		Context:        "Go web service",
 		Implementation: "func healthHandler(w http.ResponseWriter, r *http.Request) { ... }",
 	}
 
@@ -154,7 +218,6 @@ func TestRenderArchitectTemplates(t *testing.T) {
 
 	data := &TemplateData{
 		TaskContent: "Analyze requirements for health endpoint",
-		Context:     "Go microservice architecture",
 	}
 
 	for _, templateName := range architectTemplates {
@@ -179,7 +242,6 @@ func TestRenderWithCompleteData(t *testing.T) {
 	// Test with comprehensive data.
 	data := &TemplateData{
 		TaskContent:    "Create a comprehensive REST API",
-		Context:        "Go microservice with PostgreSQL",
 		Plan:           "1. Set up database models 2. Create handlers 3. Add middleware 4. Write tests",
 		ToolResults:    "Database connected, tables created successfully",
 		Implementation: "Complete REST API with CRUD operations",
@@ -192,8 +254,10 @@ func TestRenderWithCompleteData(t *testing.T) {
 
 	// Test each template can handle complete data.
 	templates := []StateTemplate{
-		PlanningTemplate,
-		CodingTemplate,
+		DevOpsPlanningTemplate,
+		AppPlanningTemplate,
+		DevOpsCodingTemplate,
+		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
 	}

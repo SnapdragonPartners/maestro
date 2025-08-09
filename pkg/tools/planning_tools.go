@@ -47,6 +47,14 @@ func (a *AskQuestionTool) Name() string {
 	return "ask_question"
 }
 
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (a *AskQuestionTool) PromptDocumentation() string {
+	return `- **ask_question** - Ask architect for clarification during planning
+  - Parameters: question (required), context, urgency
+  - Handled inline via Effects pattern, blocks until architect's answer received
+  - Use when you need guidance on requirements or technical decisions`
+}
+
 // Exec executes the ask question operation.
 func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	question, ok := args["question"]
@@ -87,11 +95,11 @@ func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, err
 
 	return map[string]any{
 		"success":    true,
-		"message":    "Question submitted, transitioning to QUESTION state",
+		"message":    "Question handled inline via Effects pattern",
 		"question":   questionStr,
 		"context":    context,
 		"urgency":    urgency,
-		"next_state": "QUESTION",
+		"next_state": "INLINE_HANDLED",
 	}, nil
 }
 
@@ -118,7 +126,7 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level based on codebase exploration",
-					Enum:        []string{string(proto.PriorityHigh), string(proto.PriorityMedium), string(proto.PriorityLow)},
+					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
 				},
 				"exploration_summary": {
 					Type:        "string",
@@ -146,6 +154,14 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (s *SubmitPlanTool) Name() string {
 	return "submit_plan"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (s *SubmitPlanTool) PromptDocumentation() string {
+	return `- **submit_plan** - Submit your final implementation plan
+  - Parameters: plan, confidence, exploration_summary, risks, todos (required)
+  - Advances to PLAN_REVIEW state for architect approval
+  - Required todos must be ordered list of implementation tasks (1-25 items)`
 }
 
 // Exec executes the submit plan operation.
@@ -177,11 +193,11 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 	}
 
 	// Validate confidence level.
-	switch confidenceStr {
-	case "HIGH", "MEDIUM", "LOW":
+	switch proto.Confidence(confidenceStr) {
+	case proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow:
 		// Valid confidence level.
 	default:
-		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
+		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
 	}
 
 	// Extract optional exploration summary.
@@ -284,7 +300,7 @@ func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level in this assessment",
-					Enum:        []string{string(proto.PriorityHigh), string(proto.PriorityMedium), string(proto.PriorityLow)},
+					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
 				},
 			},
 			Required: []string{"reason", "evidence", "confidence"},
@@ -295,6 +311,14 @@ func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
 // Name returns the tool identifier.
 func (m *MarkStoryCompleteTool) Name() string {
 	return "mark_story_complete"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (m *MarkStoryCompleteTool) PromptDocumentation() string {
+	return `- **mark_story_complete** - Mark story as complete if already fully implemented
+  - Parameters: reason, evidence, confidence (all required)
+  - Use when exploration reveals the story is already FULLY implemented
+  - Transitions directly to completion without coding phase`
 }
 
 // Exec executes the mark story complete operation.
@@ -338,11 +362,11 @@ func (m *MarkStoryCompleteTool) Exec(_ context.Context, args map[string]any) (an
 	}
 
 	// Validate confidence level.
-	switch confidenceStr {
-	case "HIGH", "MEDIUM", "LOW":
+	switch proto.Confidence(confidenceStr) {
+	case proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow:
 		// Valid confidence level.
 	default:
-		return nil, fmt.Errorf("confidence must be HIGH, MEDIUM, or LOW")
+		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
 	}
 
 	return map[string]any{

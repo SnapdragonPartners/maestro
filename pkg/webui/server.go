@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,11 +16,18 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent"
+	"orchestrator/pkg/architect"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 )
+
+// StoryProvider interface for agents that can provide stories.
+type StoryProvider interface {
+	GetStoryList() []*architect.QueuedStory
+}
 
 // Server represents the web UI HTTP server.
 type Server struct {
@@ -76,6 +84,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/agents", s.handleAgents)
 	mux.HandleFunc("/api/agent/", s.handleAgent)
 	mux.HandleFunc("/api/queues", s.handleQueues)
+	mux.HandleFunc("/api/stories", s.handleStories)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/answer", s.handleAnswer)
 	mux.HandleFunc("/api/shutdown", s.handleShutdown)
@@ -108,13 +117,19 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				lastTS = time.Now() // Use current time for live agents
 			} else {
 				// Fallback to store if driver not available.
-				agentState, err := s.store.GetStateInfo(agentInfo.ID)
-				if err != nil {
-					currentState = "WAITING"
-					lastTS = time.Now()
+				if s.store != nil {
+					agentState, err := s.store.GetStateInfo(agentInfo.ID)
+					if err != nil {
+						currentState = proto.StateWaiting.String()
+						lastTS = time.Now()
+					} else {
+						currentState = agentState.State
+						lastTS = agentState.LastTimestamp
+					}
 				} else {
-					currentState = agentState.State
-					lastTS = agentState.LastTimestamp
+					// No state store available
+					currentState = proto.StateWaiting.String()
+					lastTS = time.Now()
 				}
 			}
 
@@ -124,6 +139,33 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				State:  currentState,
 				LastTS: lastTS,
 			})
+		}
+	} else if s.store != nil {
+		// Fallback: get agents from store when dispatcher is nil
+		agentIDs, err := s.store.ListAgents()
+		if err != nil {
+			s.logger.Error("Failed to list agents from store: %v", err)
+		} else {
+			for _, agentID := range agentIDs {
+				agentState, err := s.store.GetStateInfo(agentID)
+				if err != nil {
+					s.logger.Warn("Failed to get state for agent %s: %v", agentID, err)
+					continue
+				}
+
+				// Extract role from agent ID (format: "role:number")
+				role := "unknown"
+				if colonIndex := strings.Index(agentID, ":"); colonIndex != -1 {
+					role = agentID[:colonIndex]
+				}
+
+				agents = append(agents, AgentListItem{
+					ID:     agentID,
+					Role:   role,
+					State:  agentState.State,
+					LastTS: agentState.LastTimestamp,
+				})
+			}
 		}
 	}
 
@@ -160,6 +202,11 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	agentID := path
 
 	// Get agent state.
+	if s.store == nil {
+		s.logger.Warn("State store not available for agent: %s", agentID)
+		http.Error(w, "Agent state not available", http.StatusNotFound)
+		return
+	}
 	agentState, err := s.store.GetStateInfo(agentID)
 	if err != nil {
 		s.logger.Warn("Agent not found: %s", agentID)
@@ -224,17 +271,108 @@ func (s *Server) handleQueues(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("Served queue information")
 }
 
-// handleUpload implements POST /api/upload.
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+// handleStories implements GET /api/stories.
+func (s *Server) handleStories(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// Check if architect is available.
+	_, err := s.findArchitectState()
+	if err != nil {
+		s.logger.Warn("Failed to find architect for stories: %v", err)
+		http.Error(w, "Architect not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get the architect agent from dispatcher to access its stories.
+	registeredAgents := s.dispatcher.GetRegisteredAgents()
+	var stories []*architect.QueuedStory
+
+	for i := range registeredAgents {
+		agentInfo := &registeredAgents[i]
+		if agentInfo.Type == agent.TypeArchitect {
+			// Cast to StoryProvider interface to access GetStoryList.
+			if storyProvider, ok := agentInfo.Driver.(StoryProvider); ok {
+				stories = storyProvider.GetStoryList()
+				break
+			}
+		}
+	}
+
+	// Send JSON response.
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(stories); err != nil {
+		s.logger.Error("Failed to encode stories response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Debug("Served story information: %d stories", len(stories))
+}
+
+// handleUpload implements POST /api/upload.
+// validateUploadRequest validates the basic upload request.
+func (s *Server) validateUploadRequest(r *http.Request) error {
+	if r.Method != http.MethodPost {
+		return fmt.Errorf("method not allowed")
+	}
+
 	// Parse multipart form first (validate request format)
 	if err := r.ParseMultipartForm(100 << 10); err != nil { // 100 KB limit
-		s.logger.Warn("Failed to parse multipart form: %v", err)
-		http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		return fmt.Errorf("invalid multipart form: %w", err)
+	}
+
+	return nil
+}
+
+// validateUploadFile validates the uploaded file.
+func (s *Server) validateUploadFile(_ multipart.File, header *multipart.FileHeader) error {
+	// Check file size (100 KB limit)
+	if header.Size > 100*1024 {
+		return fmt.Errorf("file too large: %d bytes", header.Size)
+	}
+
+	// Check file extension.
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".md") {
+		return fmt.Errorf("invalid file extension: %s", header.Filename)
+	}
+
+	return nil
+}
+
+// checkArchitectAvailability checks if architect is available.
+func (s *Server) checkArchitectAvailability() error {
+	if s.dispatcher == nil {
+		return fmt.Errorf("dispatcher not available")
+	}
+
+	architectState, err := s.findArchitectState()
+	if err != nil {
+		return fmt.Errorf("failed to check architect state: %w", err)
+	}
+
+	if architectState == nil {
+		return fmt.Errorf("no architect available")
+	}
+
+	if architectState.State != proto.StateWaiting.String() {
+		return fmt.Errorf("architect is busy")
+	}
+
+	return nil
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	// Validate request
+	if err := s.validateUploadRequest(r); err != nil {
+		s.logger.Warn("Upload request validation failed: %v", err)
+		if err.Error() == "method not allowed" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		} else {
+			http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		}
 		return
 	}
 
@@ -251,33 +389,31 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Check file size (100 KB limit)
-	if header.Size > 100*1024 {
-		s.logger.Warn("File too large: %d bytes", header.Size)
-		http.Error(w, "File too large (max 100 KB)", http.StatusBadRequest)
+	// Validate file
+	if validateErr := s.validateUploadFile(file, header); validateErr != nil {
+		s.logger.Warn("Upload file validation failed: %v", validateErr)
+		http.Error(w, validateErr.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Check file extension.
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".md") {
-		s.logger.Warn("Invalid file extension: %s", header.Filename)
-		http.Error(w, "Only .md files are allowed", http.StatusBadRequest)
+	// Check architect availability
+	if availErr := s.checkArchitectAvailability(); availErr != nil {
+		s.logger.Warn("Architect availability check failed: %v", availErr)
+		if availErr.Error() == "dispatcher not available" {
+			http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
+		} else if availErr.Error() == "architect is busy" {
+			http.Error(w, "Architect is busy", http.StatusConflict)
+		} else {
+			http.Error(w, "Architect not available", http.StatusConflict)
+		}
 		return
 	}
 
-	// Check if we have a dispatcher (only after validating file)
-	if s.dispatcher == nil {
-		http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	// No need to check architect state - let the dispatcher handle routing.
-
-	// Create stories directory if it doesn't exist.
-	storiesDir := filepath.Join(s.workDir, "stories")
-	if mkdirErr := os.MkdirAll(storiesDir, 0755); mkdirErr != nil {
-		s.logger.Error("Failed to create stories directory: %v", mkdirErr)
-		http.Error(w, "Failed to create stories directory", http.StatusInternalServerError)
+	// Create specs directory if it doesn't exist.
+	specsDir := filepath.Join(s.workDir, ".maestro", "specs")
+	if mkdirErr := os.MkdirAll(specsDir, 0755); mkdirErr != nil {
+		s.logger.Error("Failed to create specs directory: %v", mkdirErr)
+		http.Error(w, "Failed to create specs directory", http.StatusInternalServerError)
 		return
 	}
 
@@ -289,8 +425,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save file to stories directory.
-	filePath := filepath.Join(storiesDir, header.Filename)
+	// Save file to specs directory.
+	filePath := filepath.Join(specsDir, header.Filename)
 	if err := os.WriteFile(filePath, content, 0644); err != nil {
 		s.logger.Error("Failed to save file: %v", err)
 		http.Error(w, "Failed to save file", http.StatusInternalServerError)
@@ -421,10 +557,38 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	// Get logs from in-memory buffer first.
 	logs := logx.GetRecentLogEntries(domain, since)
 
-	// If no current logs, fall back to log files.
-	if len(logs) == 0 {
-		logs = s.readLogFiles(domain, since)
+	// Also read from log files and merge (for testing and completeness)
+	fileLogs := s.readLogFiles(domain, since)
+
+	// Merge logs from both sources, avoiding duplicates by timestamp+message
+	logMap := make(map[string]logx.LogEntry)
+
+	// Add in-memory logs first
+	for i := range logs {
+		log := &logs[i]
+		key := log.Timestamp + "|" + log.Message
+		logMap[key] = *log
 	}
+
+	// Add file logs (will not overwrite existing keys)
+	for i := range fileLogs {
+		log := &fileLogs[i]
+		key := log.Timestamp + "|" + log.Message
+		if _, exists := logMap[key]; !exists {
+			logMap[key] = *log
+		}
+	}
+
+	// Convert back to slice
+	logs = make([]logx.LogEntry, 0, len(logMap))
+	for key := range logMap {
+		logs = append(logs, logMap[key])
+	}
+
+	// Sort by timestamp
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].Timestamp < logs[j].Timestamp
+	})
 
 	// If still no logs, create some sample logs to show the UI is working.
 	if len(logs) == 0 {
@@ -701,13 +865,45 @@ func (s *Server) StartServer(ctx context.Context, port int) error {
 
 // findArchitectState finds the state of the architect agent.
 func (s *Server) findArchitectState() (*state.AgentState, error) {
-	// List all agents.
+	// First try dispatcher approach if available.
+	if s.dispatcher != nil {
+		// Get registered agents from dispatcher using proper type checking.
+		registeredAgents := s.dispatcher.GetRegisteredAgents()
+
+		// Find the architect agent by type.
+		for i := range registeredAgents {
+			agentInfo := &registeredAgents[i]
+			if agentInfo.Type == agent.TypeArchitect {
+				// First try to get state from store.
+				if s.store != nil {
+					agentState, err := s.store.GetStateInfo(agentInfo.ID)
+					if err == nil {
+						return agentState, nil
+					}
+				}
+
+				// If state not found in store, use live agent state from dispatcher.
+				// This handles the case where agent is running but hasn't saved state yet.
+				liveState := &state.AgentState{
+					State:           agentInfo.State,
+					LastTimestamp:   time.Now(),
+					ContextSnapshot: make(map[string]any),
+				}
+				return liveState, nil
+			}
+		}
+	}
+
+	// Fallback to old behavior: scan state store for agents with "architect:" prefix.
+	if s.store == nil {
+		return nil, fmt.Errorf("no state store available and no architect found in dispatcher")
+	}
 	agents, err := s.store.ListAgents()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list agents: %w", err)
 	}
 
-	// Find the architect agent.
+	// Find the architect agent by prefix (legacy behavior).
 	for _, agentID := range agents {
 		if strings.HasPrefix(agentID, "architect:") {
 			agentState, err := s.store.GetStateInfo(agentID)

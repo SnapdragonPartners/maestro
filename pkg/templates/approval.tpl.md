@@ -12,7 +12,7 @@ You are a coding agent in the AWAIT_APPROVAL state. Your objective is to present
 {{.TaskContent}}
 
 ## Current Context
-{{.Context}}
+Context is provided via conversation history.
 
 ## Instructions
 1. Present a clear summary of your implementation

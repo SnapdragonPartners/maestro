@@ -17,7 +17,6 @@ const (
 	StateCodeReview   proto.State = "CODE_REVIEW"
 	StateBudgetReview proto.State = "BUDGET_REVIEW"
 	StateAwaitMerge   proto.State = "AWAIT_MERGE"
-	StateQuestion     proto.State = "QUESTION"
 )
 
 // AutoAction imports AUTO_CHECKIN types from proto package for inter-agent communication.
@@ -111,7 +110,7 @@ func ValidateState(state proto.State) error {
 func GetValidStates() []proto.State {
 	return []proto.State{
 		proto.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting,
-		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, StateQuestion, proto.StateDone, proto.StateError,
+		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, proto.StateDone, proto.StateError,
 	}
 }
 
@@ -119,20 +118,20 @@ func GetValidStates() []proto.State {
 // This is the single source of truth, derived directly from STATES.md and worktree MVP stories.
 // Any code, tests, or diagrams must match this specification exactly.
 var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
-	// WAITING can transition to SETUP when receiving task assignment.
-	proto.StateWaiting: {StateSetup},
+	// WAITING can transition to SETUP when receiving task assignment, ERROR during shutdown, or DONE for clean shutdown.
+	proto.StateWaiting: {StateSetup, proto.StateError, proto.StateDone},
 
 	// SETUP prepares workspace (mirror clone, worktree, branch) then goes to PLANNING.
 	StateSetup: {StatePlanning, proto.StateError},
 
-	// PLANNING can submit plan for review, ask questions, or exceed budget (→BUDGET_REVIEW).
-	StatePlanning: {StatePlanReview, StateQuestion, StateBudgetReview},
+	// PLANNING can submit plan for review or exceed budget (→BUDGET_REVIEW). Questions are handled inline via Effects.
+	StatePlanning: {StatePlanReview, StateBudgetReview},
 
 	// PLAN_REVIEW can approve plan (→CODING), approve completion (→DONE), request changes (→PLANNING), or abandon (→ERROR).
 	StatePlanReview: {StatePlanning, StateCoding, proto.StateDone, proto.StateError},
 
-	// CODING can complete (→TESTING), ask questions, exceed budget (→BUDGET_REVIEW), or hit unrecoverable error.
-	StateCoding: {StateTesting, StateQuestion, StateBudgetReview, proto.StateError},
+	// CODING can complete (→TESTING), exceed budget (→BUDGET_REVIEW), or hit unrecoverable error. Questions are handled inline via Effects.
+	StateCoding: {StateTesting, StateBudgetReview, proto.StateError},
 
 	// TESTING can pass (→CODE_REVIEW) or fail (→CODING).
 	StateTesting: {StateCoding, StateCodeReview},
@@ -143,11 +142,8 @@ var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// BUDGET_REVIEW can continue (→CODING), pivot (→PLANNING), or abandon (→ERROR).
 	StateBudgetReview: {StatePlanning, StateCoding, proto.StateError},
 
-	// AWAIT_MERGE can complete successfully (→DONE) or encounter merge conflicts (→CODING).
-	StateAwaitMerge: {proto.StateDone, StateCoding},
-
-	// QUESTION can return to origin state or escalate to error based on answer type.
-	StateQuestion: {StatePlanning, StateCoding, proto.StateError},
+	// AWAIT_MERGE can complete successfully (→DONE), encounter merge conflicts (→CODING), or have channel closure (→ERROR).
+	StateAwaitMerge: {proto.StateDone, StateCoding, proto.StateError},
 
 	// ERROR is terminal (no transitions) - agent requeues story before terminating.
 	// DONE is terminal (no transitions).

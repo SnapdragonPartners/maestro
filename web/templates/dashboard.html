@@ -64,6 +64,27 @@
         </div>
     </div>
 
+    <!-- Stories -->
+    <div class="bg-white rounded-lg shadow-sm p-6">
+        <h2 class="text-xl font-semibold text-gray-900 mb-4">Development Stories</h2>
+        <div id="stories-container">
+            <div id="stories-loading" class="text-center py-8">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-maestro-blue mx-auto"></div>
+                <p class="mt-2 text-gray-600">Loading stories...</p>
+            </div>
+            <div id="stories-empty" class="text-center py-8 hidden">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                </svg>
+                <p class="mt-2 text-gray-600">No stories available</p>
+                <p class="text-sm text-gray-500">Upload a specification to generate stories</p>
+            </div>
+            <div id="stories-list" class="hidden">
+                <!-- Dynamic story items will be loaded here -->
+            </div>
+        </div>
+    </div>
+
     <!-- Queue Viewer -->
     <div class="bg-white rounded-lg shadow-sm p-6">
         <h2 class="text-xl font-semibold text-gray-900 mb-4">Message Queues</h2>

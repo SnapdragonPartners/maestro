@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/architect"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/eventlog"
@@ -366,8 +367,8 @@ func TestFindArchitectState(t *testing.T) {
 
 	// Test with no agents.
 	state, err := server.findArchitectState()
-	if err != nil {
-		t.Errorf("Expected no error with empty store, got %v", err)
+	if err == nil {
+		t.Error("Expected error with empty store")
 	}
 	if state != nil {
 		t.Error("Expected nil state with no agents")
@@ -379,8 +380,8 @@ func TestFindArchitectState(t *testing.T) {
 	}
 
 	state, err = server.findArchitectState()
-	if err != nil {
-		t.Errorf("Expected no error with no architect, got %v", err)
+	if err == nil {
+		t.Error("Expected error with no architect")
 	}
 	if state != nil {
 		t.Error("Expected nil state with no architect")
@@ -428,14 +429,21 @@ func createUploadRequest(t *testing.T, filename, content string) *http.Request {
 
 // Helper function to create test dispatcher.
 func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
-	// Create minimal config.
-	cfg := &config.Config{
-		MaxRetryAttempts:       3,
-		RetryBackoffMultiplier: 2.0,
+	// Create temporary directory and load config
+	tempDir := t.TempDir()
+
+	err := config.LoadConfig(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		t.Fatalf("Failed to get config: %v", err)
 	}
 
 	// Create rate limiter.
-	rateLimiter := limiter.NewLimiter(cfg)
+	rateLimiter := limiter.NewLimiter(&cfg)
 
 	// Create event log.
 	tmpDir := t.TempDir()
@@ -445,7 +453,7 @@ func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	}
 
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(&cfg, rateLimiter, eventLog)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -498,8 +506,25 @@ func TestHandleLogs(t *testing.T) {
 		t.Fatalf("Failed to decode logs response: %v", err)
 	}
 
-	if len(logs) != 4 {
-		t.Errorf("Expected 4 log entries, got %d", len(logs))
+	// Check that we have at least the 4 test log entries we created
+	// (there might be additional entries from the in-memory buffer from other tests)
+	if len(logs) < 4 {
+		t.Errorf("Expected at least 4 log entries, got %d", len(logs))
+	}
+
+	// Verify that our test entries are present by checking for specific messages
+	foundTestEntries := 0
+	testMessages := []string{"Starting architect", "Starting coding task", "Task failed", "System error"}
+	for _, log := range logs {
+		for _, testMsg := range testMessages {
+			if strings.Contains(log.Message, testMsg) {
+				foundTestEntries++
+				break
+			}
+		}
+	}
+	if foundTestEntries != 4 {
+		t.Errorf("Expected to find 4 test log entries, found %d", foundTestEntries)
 	}
 
 	// Test domain filtering.
@@ -517,9 +542,24 @@ func TestHandleLogs(t *testing.T) {
 		t.Fatalf("Failed to decode filtered logs: %v", err)
 	}
 
-	// Should have 2 coder entries.
-	if len(logs) != 2 {
-		t.Errorf("Expected 2 coder log entries, got %d", len(logs))
+	// Should have at least 2 coder entries from our test data
+	if len(logs) < 2 {
+		t.Errorf("Expected at least 2 coder log entries, got %d", len(logs))
+	}
+
+	// Verify coder entries are present
+	foundCoderEntries := 0
+	coderMessages := []string{"Starting coding task", "Task failed"}
+	for _, log := range logs {
+		for _, coderMsg := range coderMessages {
+			if strings.Contains(log.Message, coderMsg) {
+				foundCoderEntries++
+				break
+			}
+		}
+	}
+	if foundCoderEntries != 2 {
+		t.Errorf("Expected to find 2 coder log entries, found %d", foundCoderEntries)
 	}
 
 	// Test since filtering.
@@ -538,9 +578,24 @@ func TestHandleLogs(t *testing.T) {
 		t.Fatalf("Failed to decode since-filtered logs: %v", err)
 	}
 
-	// Should have entries after 10:00:01.500Z (so 10:00:02 and 10:00:03).
-	if len(logs) != 2 {
-		t.Errorf("Expected 2 log entries after since time, got %d", len(logs))
+	// Should have at least 2 entries after 10:00:01.500Z (so 10:00:02 and 10:00:03)
+	if len(logs) < 2 {
+		t.Errorf("Expected at least 2 log entries after since time, got %d", len(logs))
+	}
+
+	// Verify that the specific entries after the since time are present
+	foundSinceEntries := 0
+	sinceMessages := []string{"Task failed", "System error"}
+	for _, log := range logs {
+		for _, sinceMsg := range sinceMessages {
+			if strings.Contains(log.Message, sinceMsg) {
+				foundSinceEntries++
+				break
+			}
+		}
+	}
+	if foundSinceEntries != 2 {
+		t.Errorf("Expected to find 2 log entries after since time, found %d", foundSinceEntries)
 	}
 
 	// Test invalid since parameter.
@@ -661,10 +716,20 @@ func TestAgentRestartMonitoring(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
-		Models: map[string]config.ModelCfg{
-			"test_model": {
-				MaxTokensPerMinute: 1000,
-				MaxBudgetPerDayUSD: 10.0,
+		Agents: &config.AgentConfig{
+			MaxCoders:      1,
+			CoderModel:     "test_model",
+			ArchitectModel: "test_model",
+		},
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "test_model",
+					MaxTPM:         1000,
+					DailyBudget:    10.0,
+					MaxConnections: 2,
+					CPM:            3.0,
+				},
 			},
 		},
 	}
@@ -684,7 +749,7 @@ func TestAgentRestartMonitoring(t *testing.T) {
 	}
 
 	// Create state store for web UI.
-	store, err := state.NewStore(filepath.Join(tempDir, "states"))
+	store, err := state.NewStore(filepath.Join(tempDir, ".maestro", "states"))
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
@@ -888,10 +953,20 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 
 	// Create config for dispatcher.
 	cfg := &config.Config{
-		Models: map[string]config.ModelCfg{
-			"test_model": {
-				MaxTokensPerMinute: 1000,
-				MaxBudgetPerDayUSD: 10.0,
+		Agents: &config.AgentConfig{
+			MaxCoders:      1,
+			CoderModel:     "test_model",
+			ArchitectModel: "test_model",
+		},
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "test_model",
+					MaxTPM:         1000,
+					DailyBudget:    10.0,
+					MaxConnections: 2,
+					CPM:            3.0,
+				},
 			},
 		},
 	}
@@ -911,7 +986,7 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 	}
 
 	// Create state store for web UI.
-	store, err := state.NewStore(filepath.Join(tempDir, "states"))
+	store, err := state.NewStore(filepath.Join(tempDir, ".maestro", "states"))
 	if err != nil {
 		t.Fatalf("Failed to create state store: %v", err)
 	}
@@ -1069,4 +1144,213 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 	})
 
 	t.Log("🎉 Architect monitoring stability tests passed")
+}
+
+// MockArchitectDriver extends MockDriver to implement architect-specific methods.
+type MockArchitectDriver struct {
+	MockDriver
+	stories []*architect.QueuedStory
+}
+
+// NewMockArchitectDriver creates a new mock architect driver with test stories.
+func NewMockArchitectDriver(id string, state proto.State, stories []*architect.QueuedStory) *MockArchitectDriver {
+	return &MockArchitectDriver{
+		MockDriver: MockDriver{
+			id:        id,
+			agentType: agent.TypeArchitect,
+			state:     state,
+		},
+		stories: stories,
+	}
+}
+
+// GetStoryList implements the architect-specific method for returning stories.
+func (m *MockArchitectDriver) GetStoryList() []*architect.QueuedStory {
+	return m.stories
+}
+
+func TestHandleStories(t *testing.T) {
+	// Create temporary directory and stores.
+	tempDir := t.TempDir()
+
+	// Create config for dispatcher.
+	cfg := &config.Config{
+		Agents: &config.AgentConfig{
+			MaxCoders:      1,
+			CoderModel:     "test_model",
+			ArchitectModel: "test_model",
+		},
+		Orchestrator: &config.OrchestratorConfig{
+			Models: []config.Model{
+				{
+					Name:           "test_model",
+					MaxTPM:         1000,
+					DailyBudget:    10.0,
+					MaxConnections: 2,
+					CPM:            3.0,
+				},
+			},
+		},
+	}
+
+	// Create rate limiter and event log.
+	rateLimiter := limiter.NewLimiter(cfg)
+	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
+	if err != nil {
+		t.Fatalf("Failed to create event log: %v", err)
+	}
+	defer eventLog.Close()
+
+	// Create dispatcher.
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	if err != nil {
+		t.Fatalf("Failed to create dispatcher: %v", err)
+	}
+
+	// Create state store for web UI.
+	store, err := state.NewStore(filepath.Join(tempDir, ".maestro", "states"))
+	if err != nil {
+		t.Fatalf("Failed to create state store: %v", err)
+	}
+
+	// Create test stories.
+	testStories := []*architect.QueuedStory{
+		{
+			ID:              "story-001",
+			Title:           "Implement user authentication",
+			Status:          architect.StatusPending,
+			EstimatedPoints: 5,
+			DependsOn:       []string{},
+			LastUpdated:     time.Now(),
+			StoryType:       "app",
+		},
+		{
+			ID:              "story-002",
+			Title:           "Add database layer",
+			Status:          architect.StatusInProgress,
+			EstimatedPoints: 8,
+			DependsOn:       []string{"story-001"},
+			AssignedAgent:   "coder-001",
+			StartedAt:       &[]time.Time{time.Now().Add(-1 * time.Hour)}[0],
+			LastUpdated:     time.Now(),
+			StoryType:       "app",
+		},
+		{
+			ID:              "story-003",
+			Title:           "Create REST API endpoints",
+			Status:          architect.StatusCompleted,
+			EstimatedPoints: 3,
+			DependsOn:       []string{"story-002"},
+			AssignedAgent:   "coder-002",
+			StartedAt:       &[]time.Time{time.Now().Add(-2 * time.Hour)}[0],
+			CompletedAt:     &[]time.Time{time.Now().Add(-30 * time.Minute)}[0],
+			LastUpdated:     time.Now(),
+			StoryType:       "app",
+		},
+	}
+
+	// Create web UI server.
+	server := NewServer(dispatcher, store, tempDir)
+
+	t.Run("NoArchitectAgent", func(t *testing.T) {
+		// Test when no architect agent is registered.
+		req := httptest.NewRequest(http.MethodGet, "/api/stories", nil)
+		w := httptest.NewRecorder()
+
+		server.handleStories(w, req)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("Expected status 503, got %d", w.Code)
+		}
+	})
+
+	t.Run("ArchitectWithStories", func(t *testing.T) {
+		// Create and register mock architect with stories.
+		mockArchitect := NewMockArchitectDriver("architect-001", proto.StateWaiting, testStories)
+		dispatcher.Attach(mockArchitect)
+
+		// Save architect state so findArchitectState can find it.
+		if err := store.SaveState("architect-001", "WAITING", nil); err != nil {
+			t.Fatalf("Failed to save architect state: %v", err)
+		}
+
+		// Test getting stories.
+		req := httptest.NewRequest(http.MethodGet, "/api/stories", nil)
+		w := httptest.NewRecorder()
+
+		server.handleStories(w, req)
+
+		// Check response.
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", w.Code)
+		}
+
+		// Parse response.
+		var stories []*architect.QueuedStory
+		if err := json.NewDecoder(w.Body).Decode(&stories); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		// Verify we got all stories.
+		if len(stories) != 3 {
+			t.Errorf("Expected 3 stories, got %d", len(stories))
+		}
+
+		// Check story details.
+		if stories[0].ID != "story-001" {
+			t.Errorf("Expected first story ID to be story-001, got %s", stories[0].ID)
+		}
+		if stories[0].Status != architect.StatusPending {
+			t.Errorf("Expected first story status to be pending, got %s", stories[0].Status)
+		}
+		if stories[1].Status != architect.StatusInProgress {
+			t.Errorf("Expected second story status to be in_progress, got %s", stories[1].Status)
+		}
+		if stories[2].Status != architect.StatusCompleted {
+			t.Errorf("Expected third story status to be completed, got %s", stories[2].Status)
+		}
+	})
+
+	t.Run("ArchitectWithNoStories", func(t *testing.T) {
+		// Unregister the previous architect first.
+		dispatcher.UnregisterAgent("architect-001")
+
+		// Create and register mock architect with no stories.
+		mockArchitect := NewMockArchitectDriver("architect-002", proto.StateWaiting, []*architect.QueuedStory{})
+		dispatcher.Attach(mockArchitect)
+
+		// Test getting empty stories.
+		req := httptest.NewRequest(http.MethodGet, "/api/stories", nil)
+		w := httptest.NewRecorder()
+
+		server.handleStories(w, req)
+
+		// Check response.
+		if w.Code != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", w.Code)
+		}
+
+		// Parse response.
+		var stories []*architect.QueuedStory
+		if err := json.NewDecoder(w.Body).Decode(&stories); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		// Verify empty response.
+		if len(stories) != 0 {
+			t.Errorf("Expected 0 stories, got %d", len(stories))
+		}
+	})
+
+	t.Run("MethodNotAllowed", func(t *testing.T) {
+		// Test POST method (should be method not allowed).
+		req := httptest.NewRequest(http.MethodPost, "/api/stories", nil)
+		w := httptest.NewRecorder()
+
+		server.handleStories(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("Expected status 405, got %d", w.Code)
+		}
+	})
 }

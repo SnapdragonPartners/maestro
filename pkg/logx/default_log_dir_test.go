@@ -78,8 +78,6 @@ func TestDebugToFileWithDefaultDir(t *testing.T) {
 	SetDebugConfig(true, true, tempDir)
 
 	// Use typed context key to avoid collisions.
-	type contextKey string
-	const agentIDKey contextKey = "agent_id"
 	ctx := context.WithValue(context.Background(), agentIDKey, "test-agent")
 
 	// Test the global DebugToFile function.

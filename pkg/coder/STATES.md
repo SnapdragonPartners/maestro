@@ -20,6 +20,7 @@ stateDiagram-v2
 
     %% We got work
     WAITING --> SETUP                  : receive task
+    WAITING --> ERROR                  : shutdown/nil messages
     SETUP   --> PLANNING               : workspace ready
     SETUP   --> ERROR                  : workspace setup failed
 
@@ -90,7 +91,7 @@ stateDiagram-v2
 
 | From \ To           | WAITING | SETUP | PLAN\_REVIEW | PLANNING | CODING | TESTING | CODE\_REVIEW | BUDGET\_REVIEW | AWAIT\_MERGE | QUESTION | DONE | ERROR |
 | ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------------ | -------------- | ------------ | -------- | ---- | ----- |
-| **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
+| **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –            | –              | –            | –        | –    | ✔︎    |
 | **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –            | –              | –            | –        | –    | ✔︎    |
 | **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –            | ✔︎             | –            | ✔︎       | –    | –     |
 | **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | ✔︎   | ✔︎    |
@@ -98,7 +99,7 @@ stateDiagram-v2
 | **TESTING**         | –       | –     | –            | –        | ✔︎     | –       | ✔︎           | –              | –            | –        | –    | –     |
 | **CODE\_REVIEW**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | ✔︎           | –        | –    | ✔︎    |
 | **BUDGET\_REVIEW**  | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | –    | ✔︎    |
-| **AWAIT\_MERGE**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –            | –        | ✔︎   | –     |
+| **AWAIT\_MERGE**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –            | –        | ✔︎   | ✔︎    |
 | **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | –    | ✔︎    |
 | **DONE**            | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
 | **ERROR**           | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
@@ -135,6 +136,7 @@ Note: The architect uses standard approval status codes that map to budget revie
   1. It receives **ABANDON** from `PLAN_REVIEW`, `CODE_REVIEW`, `BUDGET_REVIEW`, or `QUESTION`.
   2. An **auto-approve** request is rejected with ABANDON.
   3. Any unrecoverable runtime error occurs (panic, out-of-retries, etc.).
+  4. Multiple consecutive nil messages are received in **WAITING** state (shutdown scenario).
 * **ERROR** is terminal - the orchestrator handles story requeue and agent restart via lease system.
 
 ---
