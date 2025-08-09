@@ -291,7 +291,7 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 		return nil, fmt.Errorf("no question payload in message")
 	}
 
-	d.logger.Info("🏗️ Processing question from %s", questionMsg.FromAgent)
+	// Question processing will be logged to database only
 
 	// For now, provide simple auto-response until LLM integration.
 	answer := "Auto-response: Question received and acknowledged. Please proceed with your implementation."
@@ -340,7 +340,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		approvalIDString, _ = approvalID.(string)
 	}
 
-	d.logger.Info("🏗️ Processing approval request: type=%v, approval_type=%v", requestType, approvalTypeString)
+	// Approval request processing will be logged to database only
 
 	// Parse approval type from request.
 	approvalType, err := proto.ParseApprovalType(approvalTypeString)
@@ -536,7 +536,7 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 	response.ParentMsgID = requestMsg.ID
 	response.SetPayload("approval_result", approvalResult)
 
-	d.logger.Info("🏗️ Sending approval result: status=%s", approvalResult.Status)
+	// Approval result will be logged to database only
 
 	return response, nil
 }

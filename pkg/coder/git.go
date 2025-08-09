@@ -381,6 +381,14 @@ func (w *WorkspaceManager) createFreshWorktree(ctx context.Context, mirrorPath, 
 		return logx.Wrap(err, fmt.Sprintf("git worktree add --detach %s %s failed from %s", agentWorkDir, w.baseBranch, mirrorPath))
 	}
 
+	// Step 5: Fix the remote origin to point to the actual repository for push operations.
+	// Worktrees inherit bare repository configuration which conflicts with branch pushing.
+	w.logger.Debug("Configuring origin remote for worktree: %s", w.repoURL)
+	_, err = w.gitRunner.Run(ctx, agentWorkDir, "remote", "set-url", "origin", w.repoURL)
+	if err != nil {
+		return logx.Wrap(err, "failed to configure origin remote for worktree - agent will not be able to push branches")
+	}
+
 	w.logger.Debug("Successfully created fresh worktree at: %s", agentWorkDir)
 	return nil
 }

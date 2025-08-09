@@ -164,6 +164,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	}
 
 	if resp.Content == "" && len(resp.ToolCalls) == 0 {
+		c.logEmptyLLMResponse(prompt, req)
 		return proto.StateError, false, logx.Errorf("empty response from Claude")
 	}
 
@@ -231,7 +232,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 
 			// Process the answer
 			if questionResult, ok := result.(*effect.QuestionResult); ok {
-				c.logger.Info("🧑‍💻 Received answer from architect: %s", questionResult.Answer)
+				// Answer received from architect (logged to database only)
 
 				// Add the Q&A to context so the LLM can see it
 				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)

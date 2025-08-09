@@ -90,7 +90,7 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 		}
 
 		c.logger.Info("App story tests passed successfully")
-		return c.proceedToCodeReview(ctx, sm)
+		return c.proceedToCodeReview()
 	}
 
 	// Fallback to legacy testing approach
@@ -98,28 +98,34 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 }
 
 // handleDevOpsStoryTesting handles testing for DevOps stories focusing on infrastructure validation.
-func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
+func (c *Coder) handleDevOpsStoryTesting(_ context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
 	c.logger.Info("DevOps story testing: focusing on infrastructure validation")
 
-	// For DevOps stories, we focus on:
-	// 1. Container builds (if Dockerfile present)
-	// 2. Configuration validation
-	// 3. Basic infrastructure checks
-	// Skip traditional build/test/lint which may not be relevant
-
+	// For DevOps stories, we need actual infrastructure validation, not just file checks
 	// Check if this is a container-related DevOps story
 	dockerfilePath := filepath.Join(worktreePathStr, "Dockerfile")
 	if fileExists(dockerfilePath) {
-		c.logger.Info("DevOps story: validating Dockerfile build")
-		if err := c.validateDockerfileBuild(ctx, worktreePathStr); err != nil {
-			c.logger.Error("Dockerfile validation failed: %v", err)
-			errorStr := err.Error()
-			truncatedError := truncateOutput(errorStr)
-			sm.SetStateData(KeyTestError, errorStr)
-			sm.SetStateData(KeyTestFailureOutput, truncatedError)
-			sm.SetStateData(KeyCodingMode, "test_fix")
-			return StateCoding, false, nil
-		}
+		c.logger.Info("DevOps story: Dockerfile present, delegating to CODING with container_build requirement")
+
+		// Instead of simple validation, delegate back to CODING state with specific instructions
+		// to use container_build tool for actual Docker build testing
+		testingInstruction := `DevOps Infrastructure Testing Required:
+
+MANDATORY: You must use the container_build tool to actually build and validate the Docker container.
+This is NOT optional - DevOps stories require real infrastructure testing, not just file validation.
+
+Required steps:
+1. Use container_build tool to build the Docker container
+2. Verify the build succeeds and container is properly created
+3. Use container_run tool if needed to test container functionality
+4. Only call 'done' tool after successful container build validation
+
+The container_build tool is specifically designed for this infrastructure validation.`
+
+		sm.SetStateData(KeyTestFailureOutput, testingInstruction)
+		sm.SetStateData(KeyCodingMode, "devops_container_testing")
+		c.logger.Info("DevOps story: transitioning to CODING for mandatory container_build testing")
+		return StateCoding, false, nil
 	}
 
 	// Check for Makefile and run basic validation if present
@@ -143,7 +149,7 @@ func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStat
 	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 	c.logger.Info("DevOps story testing completed successfully")
-	return c.proceedToCodeReview(ctx, sm)
+	return c.proceedToCodeReview()
 }
 
 // handleLegacyTesting handles the legacy testing approach for backward compatibility.
@@ -195,27 +201,7 @@ func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMach
 	}
 
 	c.logger.Info("Tests passed successfully")
-	return c.proceedToCodeReview(ctx, sm)
-}
-
-// validateDockerfileBuild validates that a Dockerfile can be built successfully.
-func (c *Coder) validateDockerfileBuild(_ context.Context, worktreePathStr string) error {
-	// Simple Docker build validation - could be enhanced with actual build
-	dockerfilePath := filepath.Join(worktreePathStr, "Dockerfile")
-	content, err := os.ReadFile(dockerfilePath)
-	if err != nil {
-		return fmt.Errorf("failed to read Dockerfile: %w", err)
-	}
-
-	// Basic Dockerfile validation
-	dockerfileContent := string(content)
-	if !strings.Contains(dockerfileContent, "FROM") {
-		return fmt.Errorf("dockerfile missing required FROM instruction")
-	}
-
-	// Could add more sophisticated validation here
-	c.logger.Info("Dockerfile validation passed")
-	return nil
+	return c.proceedToCodeReview()
 }
 
 // validateMakefileTargets validates that Makefile has reasonable targets for DevOps.
@@ -350,7 +336,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 }
 
 // proceedToCodeReview transitions to CODE_REVIEW state after successful testing.
-func (c *Coder) proceedToCodeReview(_ context.Context, _ *agent.BaseStateMachine) (proto.State, bool, error) {
+func (c *Coder) proceedToCodeReview() (proto.State, bool, error) {
 	// Tests passed, transition to CODE_REVIEW state.
 	// The approval request will be sent when entering the CODE_REVIEW state.
 	c.logger.Info("🧑‍💻 Tests completed successfully, transitioning to CODE_REVIEW")

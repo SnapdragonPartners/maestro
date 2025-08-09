@@ -3,6 +3,7 @@ package coder
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -118,6 +119,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	}
 
 	if resp.Content == "" && len(resp.ToolCalls) == 0 {
+		c.logEmptyLLMResponse(prompt, req)
 		return proto.StateError, false, logx.Errorf("empty response from Claude")
 	}
 
@@ -172,7 +174,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 
 			// Process the answer
 			if questionResult, ok := result.(*effect.QuestionResult); ok {
-				c.logger.Info("🧑‍💻 Received answer from architect: %s", questionResult.Answer)
+				// Answer received from architect (logged to database only)
 
 				// Add the Q&A to context so the LLM can see it
 				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
@@ -324,6 +326,33 @@ func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.Ba
 	c.logger.Info("🧑‍💻 Completion submitted, transitioning to PLAN_REVIEW for approval via Effects")
 
 	return StatePlanReview, false, nil
+}
+
+// logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
+func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) {
+	// Log the entire prompt and context for debugging empty responses
+	c.logger.Error("🚨 EMPTY RESPONSE FROM LLM - DEBUGGING INFO:")
+	c.logger.Error("📝 Complete prompt sent to LLM:")
+	c.logger.Error("%s", strings.Repeat("=", 80))
+	c.logger.Error("%s", prompt)
+	c.logger.Error("%s", strings.Repeat("=", 80))
+
+	if c.contextManager != nil {
+		messages := c.contextManager.GetMessages()
+		c.logger.Error("💬 Context Manager Messages (%d total):", len(messages))
+		for i := range messages {
+			msg := &messages[i]
+			c.logger.Error("  [%d] Role: %s, Content: %s", i, msg.Role, msg.Content)
+		}
+	} else {
+		c.logger.Error("💬 Context Manager: nil")
+	}
+
+	c.logger.Error("🔍 Request Details:")
+	c.logger.Error("  - Temperature: %v", req.Temperature)
+	c.logger.Error("  - Max Tokens: %v", req.MaxTokens)
+	c.logger.Error("  - Tools Count: %d", len(req.Tools))
+	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
 }
 
 // Context management placeholder helper methods for planning.
