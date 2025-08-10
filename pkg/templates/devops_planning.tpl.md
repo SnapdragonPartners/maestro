@@ -94,7 +94,7 @@ Create a comprehensive infrastructure plan based on your exploration:
   "testing_plan": {
     "container_tests": ["build validation", "runtime tests"],
     "infrastructure_tests": ["deployment test", "connectivity test"], 
-    "validation_commands": ["docker build", "container_run"]
+    "validation_commands": ["docker build", "container_exec", "container_boot_test"]
   },
   "risks_and_considerations": [
     "Container build failures due to missing dependencies",
@@ -139,7 +139,7 @@ When submitting your plan with `submit_plan`, you MUST provide:
 You may use the `mark_story_complete` tool **only if both conditions hold**:
 
 1. **All required infrastructure files/configs already exist** (static parity), **and**
-2. **The story's acceptance criteria do NOT include any executable commands** (container_build, container_run, deploy, etc.)
+2. **The story's acceptance criteria do NOT include any executable commands** (container_build, container_exec, container_boot_test, deploy, etc.)
 
 ```json
 {

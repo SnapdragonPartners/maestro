@@ -283,12 +283,20 @@ func createContainerUpdateTool(ctx AgentContext) (Tool, error) {
 	return NewContainerUpdateTool(ctx.Executor), nil
 }
 
-// createContainerRunTool creates a container run tool instance.
-func createContainerRunTool(ctx AgentContext) (Tool, error) {
+// createContainerExecTool creates a container exec tool instance.
+func createContainerExecTool(ctx AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container run tool requires an executor")
+		return nil, fmt.Errorf("container exec tool requires an executor")
 	}
-	return NewContainerRunTool(ctx.Executor), nil
+	return NewContainerExecTool(ctx.Executor), nil
+}
+
+// createContainerBootTestTool creates a container boot test tool instance.
+func createContainerBootTestTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("container boot test tool requires an executor")
+	}
+	return NewContainerBootTestTool(ctx.Executor), nil
 }
 
 // createContainerListTool creates a container list tool instance.
@@ -347,8 +355,12 @@ func getContainerUpdateSchema() InputSchema {
 	return NewContainerUpdateTool(nil).Definition().InputSchema
 }
 
-func getContainerRunSchema() InputSchema {
-	return NewContainerRunTool(nil).Definition().InputSchema
+func getContainerExecSchema() InputSchema {
+	return NewContainerExecTool(nil).Definition().InputSchema
+}
+
+func getContainerBootTestSchema() InputSchema {
+	return NewContainerBootTestTool(nil).Definition().InputSchema
 }
 
 func getContainerListSchema() InputSchema {
@@ -429,10 +441,16 @@ func init() {
 		InputSchema: getContainerUpdateSchema(),
 	})
 
-	Register(ToolContainerRun, createContainerRunTool, &ToolMeta{
-		Name:        ToolContainerRun,
-		Description: "Run a container for testing and validation",
-		InputSchema: getContainerRunSchema(),
+	Register(ToolContainerExec, createContainerExecTool, &ToolMeta{
+		Name:        ToolContainerExec,
+		Description: "Execute a specific command inside a container",
+		InputSchema: getContainerExecSchema(),
+	})
+
+	Register(ToolContainerBootTest, createContainerBootTestTool, &ToolMeta{
+		Name:        ToolContainerBootTest,
+		Description: "Test that a container boots successfully with its default command",
+		InputSchema: getContainerBootTestSchema(),
 	})
 
 	Register(ToolContainerList, createContainerListTool, &ToolMeta{

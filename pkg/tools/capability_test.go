@@ -35,7 +35,8 @@ func TestToolProviderDevOpsPlanningTools(t *testing.T) {
 		ToolSubmitPlan:        false,
 		ToolAskQuestion:       false,
 		ToolMarkStoryComplete: false,
-		ToolContainerRun:      false,
+		ToolContainerExec:     false,
+		ToolContainerBootTest: false,
 	}
 
 	for _, meta := range toolMetas {
@@ -165,7 +166,7 @@ func TestToolProviderGenerateDocumentation(t *testing.T) {
 	}
 
 	// Verify documentation contains expected tools
-	expectedTools := []string{ToolShell, ToolSubmitPlan, ToolAskQuestion, ToolMarkStoryComplete, ToolContainerRun}
+	expectedTools := []string{ToolShell, ToolSubmitPlan, ToolAskQuestion, ToolMarkStoryComplete, ToolContainerExec, ToolContainerBootTest}
 	for _, toolName := range expectedTools {
 		if !strings.Contains(doc, toolName) {
 			t.Errorf("Documentation should contain tool: %s", toolName)

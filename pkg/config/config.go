@@ -199,6 +199,7 @@ type AgentConfig struct {
 	ArchitectModel string           `json:"architect_model"` // must match a Model.Name
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
 	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
+	StateTimeout   time.Duration    `json:"state_timeout"`   // Global timeout for any state processing
 }
 
 // All constants bundled together for easy maintenance.
@@ -599,6 +600,7 @@ func createDefaultConfig() *Config {
 				},
 				Timeout: 60 * time.Second,
 			},
+			StateTimeout: 10 * time.Minute, // Global timeout for state processing
 		},
 		Git: &GitConfig{
 			TargetBranch:  DefaultTargetBranch,
@@ -830,6 +832,11 @@ func applyDefaults(config *Config) {
 
 	if config.Agents.Resilience.Timeout == 0 {
 		config.Agents.Resilience.Timeout = 60 * time.Second
+	}
+
+	// Apply state timeout default
+	if config.Agents.StateTimeout == 0 {
+		config.Agents.StateTimeout = 10 * time.Minute
 	}
 
 	// Apply orchestrator defaults

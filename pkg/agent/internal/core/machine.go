@@ -12,6 +12,12 @@ import (
 	"orchestrator/pkg/proto"
 )
 
+// StateTimeoutWrapper provides timeout functionality for state processing.
+// Forward reference to avoid circular imports.
+type StateTimeoutWrapper interface {
+	ProcessWithTimeout(ctx context.Context, currentState proto.State, processor func(context.Context) (proto.State, bool, error)) (proto.State, bool, error)
+}
+
 const (
 	// DefaultMaxRetries is the default maximum number of retries for operations.
 	DefaultMaxRetries = 3
@@ -78,6 +84,9 @@ type BaseStateMachine struct {
 
 	// State change notifications.
 	stateNotifCh chan<- *proto.StateChangeNotification // Channel for state change notifications
+
+	// Timeout wrapper for state processing (from agent package)
+	timeoutWrapper StateTimeoutWrapper
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table.
@@ -87,15 +96,18 @@ func NewBaseStateMachine(agentID string, initialState proto.State, store StateSt
 		table = ValidTransitions
 	}
 
+	// Timeout wrapper will be set later via SetTimeoutWrapper
+
 	return &BaseStateMachine{
-		agentID:      agentID,
-		currentState: initialState,
-		stateData:    make(StateData),
-		transitions:  make([]StateTransition, 0),
-		store:        store,
-		table:        table,
-		maxRetries:   DefaultMaxRetries,
-		logger:       logx.NewLogger(agentID),
+		agentID:        agentID,
+		currentState:   initialState,
+		stateData:      make(StateData),
+		transitions:    make([]StateTransition, 0),
+		store:          store,
+		table:          table,
+		maxRetries:     DefaultMaxRetries,
+		logger:         logx.NewLogger(agentID),
+		timeoutWrapper: nil, // Will be set later
 	}
 }
 
@@ -318,6 +330,36 @@ func (sm *BaseStateMachine) SetStateNotificationChannel(ch chan<- *proto.StateCh
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.stateNotifCh = ch
+}
+
+// SetTimeoutWrapper sets the timeout wrapper for state processing.
+func (sm *BaseStateMachine) SetTimeoutWrapper(wrapper StateTimeoutWrapper) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.timeoutWrapper = wrapper
+}
+
+// ProcessStateWithTimeout wraps state processing with timeout handling if configured.
+func (sm *BaseStateMachine) ProcessStateWithTimeout(
+	ctx context.Context,
+	processor func(context.Context) (proto.State, bool, error),
+) (proto.State, bool, error) {
+	sm.mu.Lock()
+	wrapper := sm.timeoutWrapper
+	currentState := sm.currentState
+	sm.mu.Unlock()
+
+	// If no timeout wrapper is configured, process directly
+	if wrapper == nil {
+		return processor(ctx)
+	}
+
+	// Use timeout wrapper
+	nextState, done, err := wrapper.ProcessWithTimeout(ctx, currentState, processor)
+	if err != nil {
+		return nextState, done, fmt.Errorf("state processing with timeout failed: %w", err)
+	}
+	return nextState, done, nil
 }
 
 // ProcessState provides a default implementation that derived types should override.

@@ -17,10 +17,11 @@ const (
 	ToolBackendInfo = "backend_info"
 
 	// Container tools.
-	ToolContainerBuild  = "container_build"
-	ToolContainerUpdate = "container_update"
-	ToolContainerRun    = "container_run"
-	ToolContainerList   = "container_list"
+	ToolContainerBuild    = "container_build"
+	ToolContainerUpdate   = "container_update"
+	ToolContainerExec     = "container_exec"
+	ToolContainerBootTest = "container_boot_test"
+	ToolContainerList     = "container_list"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -42,7 +43,8 @@ var (
 		ToolSubmitPlan,
 		ToolAskQuestion,
 		ToolMarkStoryComplete,
-		ToolContainerRun,
+		ToolContainerExec,
+		ToolContainerBootTest,
 		// TODO: Add ToolContainerList when implemented
 	}
 
@@ -53,7 +55,8 @@ var (
 		ToolDone,
 		ToolContainerBuild,
 		ToolContainerUpdate,
-		ToolContainerRun,
+		ToolContainerExec,
+		ToolContainerBootTest,
 		// TODO: Add ToolContainerList when implemented
 	}
 

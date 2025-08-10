@@ -27,7 +27,7 @@ You are reviewing a coder agent in the CODING state that has exceeded its iterat
 
 ### Available Coding Tools
 - **File operations**: Create, modify, delete files as needed
-- **Container operations**: `container_build`, `container_update`, `container_run`
+- **Container operations**: `container_build`, `container_update`, `container_exec`, `container_boot_test`
 - **Shell commands**: Build, test, validation commands
 - **Done/completion tools**: Mark story complete when requirements met
 
@@ -64,7 +64,7 @@ You are reviewing a coder agent in the CODING state that has exceeded its iterat
 
 **Issue**: Not using appropriate tools
 - **Wrong**: Using shell for operations that have dedicated tools
-- **Correct**: Use `container_build`, `container_update` for container operations
+- **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test` for container operations
 
 ## Decision Options
 
