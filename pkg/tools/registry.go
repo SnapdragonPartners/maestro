@@ -268,18 +268,27 @@ func createBackendInfoTool(_ AgentContext) (Tool, error) {
 }
 
 // createContainerBuildTool creates a container build tool instance.
-func createContainerBuildTool(_ AgentContext) (Tool, error) {
-	return NewContainerBuildTool(), nil
+func createContainerBuildTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("container build tool requires an executor")
+	}
+	return NewContainerBuildTool(ctx.Executor), nil
 }
 
 // createContainerUpdateTool creates a container update tool instance.
-func createContainerUpdateTool(_ AgentContext) (Tool, error) {
-	return NewContainerUpdateTool(), nil
+func createContainerUpdateTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("container update tool requires an executor")
+	}
+	return NewContainerUpdateTool(ctx.Executor), nil
 }
 
 // createContainerRunTool creates a container run tool instance.
-func createContainerRunTool(_ AgentContext) (Tool, error) {
-	return NewContainerRunTool(), nil
+func createContainerRunTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("container run tool requires an executor")
+	}
+	return NewContainerRunTool(ctx.Executor), nil
 }
 
 // createContainerListTool creates a container list tool instance.
@@ -331,15 +340,15 @@ func getBackendInfoSchema() InputSchema {
 }
 
 func getContainerBuildSchema() InputSchema {
-	return NewContainerBuildTool().Definition().InputSchema
+	return NewContainerBuildTool(nil).Definition().InputSchema
 }
 
 func getContainerUpdateSchema() InputSchema {
-	return NewContainerUpdateTool().Definition().InputSchema
+	return NewContainerUpdateTool(nil).Definition().InputSchema
 }
 
 func getContainerRunSchema() InputSchema {
-	return NewContainerRunTool().Definition().InputSchema
+	return NewContainerRunTool(nil).Definition().InputSchema
 }
 
 func getContainerListSchema() InputSchema {

@@ -219,7 +219,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 			// Create question effect
 			eff := effect.NewQuestionEffect(question, context, urgency, string(StateCoding))
 
-			c.logger.Info("🧑‍💻 Asking question: %s", question)
+			c.logger.Info("🧑‍💻 Asking question")
 
 			// Execute the question effect (blocks until answer received)
 			result, err := c.ExecuteEffect(ctx, eff)

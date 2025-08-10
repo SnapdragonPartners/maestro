@@ -358,10 +358,10 @@ func ensureBootstrapContainer() error {
 
 	// Log some build details
 	if strings.Contains(outputStr, "Successfully tagged") {
-		logx.Infof("🏷️  Container tagged and ready for use")
+		logx.Infof("🏷️ Container tagged and ready for use")
 	}
 	if strings.Contains(outputStr, "CACHED") {
-		logx.Infof("🗂️  Used cached layers for faster build")
+		logx.Infof("🗂️ Used cached layers for faster build")
 	}
 	return nil
 }

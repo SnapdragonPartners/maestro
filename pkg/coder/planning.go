@@ -160,7 +160,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 			// Create question effect
 			eff := effect.NewQuestionEffect(question, context, urgency, string(StatePlanning))
 
-			c.logger.Info("🧑‍💻 Asking question during planning: %s", question)
+			c.logger.Info("🧑‍💻 Asking question during planning")
 
 			// Execute the question effect (blocks until answer received)
 			result, err := c.ExecuteEffect(ctx, eff)

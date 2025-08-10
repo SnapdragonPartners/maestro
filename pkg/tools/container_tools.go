@@ -3,35 +3,48 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
+	"log"
 	"path/filepath"
+	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/exec"
+	"orchestrator/pkg/utils"
+)
+
+const (
+	// DefaultDockerfile is the standard Dockerfile name.
+	DefaultDockerfile = "Dockerfile"
 )
 
 // ContainerBuildTool provides MCP interface for building Docker containers from Dockerfile.
-type ContainerBuildTool struct{}
+type ContainerBuildTool struct {
+	executor exec.Executor
+}
 
 // ContainerUpdateTool provides MCP interface for updating container configuration.
-type ContainerUpdateTool struct{}
+type ContainerUpdateTool struct {
+	executor exec.Executor
+}
 
 // ContainerRunTool provides MCP interface for running containers on host.
-type ContainerRunTool struct{}
+type ContainerRunTool struct {
+	executor exec.Executor
+}
 
 // NewContainerBuildTool creates a new container build tool instance.
-func NewContainerBuildTool() *ContainerBuildTool {
-	return &ContainerBuildTool{}
+func NewContainerBuildTool(executor exec.Executor) *ContainerBuildTool {
+	return &ContainerBuildTool{executor: executor}
 }
 
 // NewContainerUpdateTool creates a new container update tool instance.
-func NewContainerUpdateTool() *ContainerUpdateTool {
-	return &ContainerUpdateTool{}
+func NewContainerUpdateTool(executor exec.Executor) *ContainerUpdateTool {
+	return &ContainerUpdateTool{executor: executor}
 }
 
 // NewContainerRunTool creates a new container run tool instance.
-func NewContainerRunTool() *ContainerRunTool {
-	return &ContainerRunTool{}
+func NewContainerRunTool(executor exec.Executor) *ContainerRunTool {
+	return &ContainerRunTool{executor: executor}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -91,14 +104,22 @@ func extractWorkingDirectory(args map[string]any) string {
 	}
 
 	if cwd == "" {
-		// Default to /workspace - all agent operations run inside containers
-		cwd = "/workspace"
+		// Default to configured workspace path - all agent operations run inside containers
+		workspacePath, err := config.GetContainerWorkspacePath()
+		if err != nil {
+			// Fallback to standard workspace path if config not available
+			cwd = "/workspace"
+		} else {
+			cwd = workspacePath
+		}
 	}
 
 	return cwd
 }
 
 // Exec executes the container build operation.
+//
+//nolint:cyclop // Temporary debugging code increases complexity
 func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Extract working directory
 	cwd := extractWorkingDirectory(args)
@@ -110,7 +131,7 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 	}
 
 	// Extract dockerfile path
-	dockerfilePath := "Dockerfile"
+	dockerfilePath := DefaultDockerfile
 	if path, ok := args["dockerfile_path"].(string); ok && path != "" {
 		dockerfilePath = path
 	}
@@ -121,28 +142,10 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 		platform = p
 	}
 
-	// Make dockerfile path absolute - handle both relative and absolute paths
-	var absDockerfilePath string
-	if filepath.IsAbs(dockerfilePath) {
-		absDockerfilePath = dockerfilePath
-	} else {
-		absDockerfilePath = filepath.Join(cwd, dockerfilePath)
-	}
+	log.Printf("DEBUG container_build: cwd=%s, dockerfilePath=%s, containerName=%s", cwd, dockerfilePath, containerName)
 
-	// Validate dockerfile exists
-	if _, err := os.Stat(absDockerfilePath); err != nil {
-		// Try alternative path if the first fails
-		if !filepath.IsAbs(dockerfilePath) {
-			workspaceDir := "/workspace"
-			altPath := filepath.Join(workspaceDir, dockerfilePath)
-			if _, altErr := os.Stat(altPath); altErr == nil {
-				// Use the alternative path that was found - dockerfile path stays relative to workspaceDir
-				return c.buildAndTestContainer(ctx, workspaceDir, containerName, dockerfilePath, platform)
-			}
-			return nil, fmt.Errorf("dockerfile not found at %s or %s: %w", absDockerfilePath, altPath, err)
-		}
-		return nil, fmt.Errorf("dockerfile not found at %s: %w", absDockerfilePath, err)
-	}
+	// Skip dockerfile existence check - docker build will validate and provide clear error messages
+	log.Printf("DEBUG container_build: skipping existence check, docker will validate dockerfile: %s", dockerfilePath)
 
 	// Calculate the dockerfile path relative to cwd for docker command
 	relDockerfilePath := dockerfilePath
@@ -182,18 +185,23 @@ func (c *ContainerBuildTool) buildAndTestContainer(ctx context.Context, cwd, con
 // buildContainer builds the Docker container from the specified dockerfile.
 func (c *ContainerBuildTool) buildContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) error {
 	// Build command with optional platform support
-	args := []string{"build", "-t", containerName, "-f", dockerfilePath}
+	args := []string{"docker", "build", "-t", containerName, "-f", dockerfilePath}
 	if platform != "" {
 		args = append(args, "--platform", platform)
 	}
 	args = append(args, ".")
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = cwd
 
-	// Capture output for debugging
-	output, err := cmd.CombinedOutput()
+	// Execute via executor interface
+	opts := &exec.Opts{
+		WorkDir: cwd,
+		Timeout: 5 * time.Minute, // Docker builds can take time
+	}
+	result, err := c.executor.Run(ctx, args, opts)
 	if err != nil {
-		return fmt.Errorf("docker build failed: %w (output: %s)", err, string(output))
+		return fmt.Errorf("docker build failed: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("docker build failed with exit code %d (stdout: %s, stderr: %s)", result.ExitCode, result.Stdout, result.Stderr)
 	}
 
 	return nil
@@ -202,16 +210,16 @@ func (c *ContainerBuildTool) buildContainer(ctx context.Context, cwd, containerN
 // testContainer performs basic validation that the container works.
 func (c *ContainerBuildTool) testContainer(ctx context.Context, containerName string) error {
 	// Test 1: Basic container startup test
-	cmd := exec.CommandContext(ctx, "docker", "run", "--rm", containerName, "echo", "test")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("container failed basic startup test: %w", err)
+	result, err := c.executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "echo", "test"}, &exec.Opts{})
+	if err != nil || result.ExitCode != 0 {
+		return fmt.Errorf("container failed basic startup test: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
 	}
 
 	// Test 2: Check if common tools are available (depending on what we need)
 	// This is a basic smoke test - more specific tests could be added based on platform
-	cmd = exec.CommandContext(ctx, "docker", "run", "--rm", containerName, "sh", "-c", "command -v sh")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("container missing basic shell: %w", err)
+	result, err = c.executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "sh", "-c", "command -v sh"}, &exec.Opts{})
+	if err != nil || result.ExitCode != 0 {
+		return fmt.Errorf("container missing basic shell: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
 	}
 
 	return nil
@@ -234,6 +242,10 @@ func (c *ContainerUpdateTool) Definition() ToolDefinition {
 				"container_name": {
 					Type:        "string",
 					Description: "Name of the container to register in configuration",
+				},
+				"dockerfile_path": {
+					Type:        "string",
+					Description: "Path to dockerfile relative to workspace root (defaults to 'Dockerfile')",
 				},
 			},
 			Required: []string{"container_name"},
@@ -258,29 +270,32 @@ func (c *ContainerUpdateTool) PromptDocumentation() string {
 
 // Exec executes the container configuration update operation.
 func (c *ContainerUpdateTool) Exec(_ context.Context, args map[string]any) (any, error) {
-	// Extract working directory
-	cwd := extractWorkingDirectory(args)
-
-	// Extract container name
-	containerName, ok := args["container_name"].(string)
-	if !ok || containerName == "" {
+	// Extract container name using utils pattern
+	containerName := utils.GetMapFieldOr(args, "container_name", "")
+	if containerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Update project configuration with new container name
-	if err := c.updateProjectConfig(cwd, containerName); err != nil {
+	// Use default dockerfile path - container_build will validate existence during actual build
+	dockerfilePath := utils.GetMapFieldOr(args, "dockerfile_path", DefaultDockerfile)
+
+	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s (container_build will validate)", containerName, dockerfilePath)
+
+	// Update project configuration with container name and dockerfile path
+	if err := c.updateProjectConfig(containerName, dockerfilePath); err != nil {
 		return nil, fmt.Errorf("failed to update project config: %w", err)
 	}
 
 	return map[string]any{
 		"success":        true,
 		"container_name": containerName,
-		"message":        fmt.Sprintf("Successfully updated configuration to use container '%s'", containerName),
+		"dockerfile":     dockerfilePath,
+		"message":        fmt.Sprintf("Successfully updated configuration to use container '%s' with dockerfile '%s'", containerName, dockerfilePath),
 	}, nil
 }
 
-// updateProjectConfig updates the project configuration with the new container name.
-func (c *ContainerUpdateTool) updateProjectConfig(cwd, containerName string) error {
+// updateProjectConfig updates the project configuration with the new container name and dockerfile path.
+func (c *ContainerUpdateTool) updateProjectConfig(containerName, dockerfilePath string) error {
 	// Get current config
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -293,8 +308,9 @@ func (c *ContainerUpdateTool) updateProjectConfig(cwd, containerName string) err
 	}
 
 	updatedContainer := &config.ContainerConfig{
-		Name:       containerName,
-		Dockerfile: cfg.Container.Dockerfile, // Preserve existing dockerfile if any
+		Name:          containerName,
+		Dockerfile:    dockerfilePath,              // Use repo-relative dockerfile path
+		WorkspacePath: cfg.Container.WorkspacePath, // Preserve existing workspace path
 		// Runtime settings preserved from existing config
 		Network:   cfg.Container.Network,
 		TmpfsSize: cfg.Container.TmpfsSize,
@@ -303,8 +319,8 @@ func (c *ContainerUpdateTool) updateProjectConfig(cwd, containerName string) err
 		PIDs:      cfg.Container.PIDs,
 	}
 
-	// Use atomic update function
-	if err := config.UpdateContainer(cwd, updatedContainer); err != nil {
+	// Use atomic update function (no path parameter needed now)
+	if err := config.UpdateContainer(updatedContainer); err != nil {
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
 	return nil
@@ -344,6 +360,10 @@ func (c *ContainerRunTool) Definition() ToolDefinition {
 					Type:        "boolean",
 					Description: "Remove container after execution (default: true)",
 				},
+				"timeout_seconds": {
+					Type:        "integer",
+					Description: "Maximum seconds to wait for container to complete (default: 30)",
+				},
 			},
 			Required: []string{"container_name"},
 		},
@@ -365,65 +385,78 @@ func (c *ContainerRunTool) PromptDocumentation() string {
     - env_vars (optional): environment variables to set
     - volumes (optional): volume mounts for host access
     - remove_after (optional): remove container after execution (default: true)
+    - timeout_seconds (optional): max seconds to wait for completion (default: 30)
   - Executes container on host system with proper isolation and resource limits
-  - Use for running built containers with specific commands or workflows`
+  - Use for testing built containers or running specific commands, not for long-running services
+  - For web services, use short commands like health checks rather than starting the full server`
 }
 
 // Exec executes the container run operation.
 func (c *ContainerRunTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract container name
-	containerName, ok := args["container_name"].(string)
-	if !ok || containerName == "" {
+	// Extract container name using utils pattern
+	containerName := utils.GetMapFieldOr(args, "container_name", "")
+	if containerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
 
 	// Build docker run command
 	dockerArgs := c.buildDockerRunArgs(args, containerName)
 
-	// Execute docker run
-	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	output, err := cmd.CombinedOutput()
+	// Execute docker run via executor with timeout for potentially long-running containers
+	timeout := utils.GetMapFieldOr(args, "timeout_seconds", 30)
+	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{
+		Timeout: time.Duration(timeout) * time.Second,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("container run failed: %w (output: %s)", err, string(output))
+		return nil, fmt.Errorf("container run failed: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("container run failed with exit code %d (stdout: %s, stderr: %s)", result.ExitCode, result.Stdout, result.Stderr)
 	}
 
-	command, _ := args["command"].(string)
+	command := utils.GetMapFieldOr(args, "command", "")
 	return map[string]any{
 		"success":        true,
 		"container_name": containerName,
 		"command":        command,
-		"output":         string(output),
+		"output":         result.Stdout,
 		"message":        fmt.Sprintf("Successfully ran container '%s'", containerName),
 	}, nil
 }
 
 // buildDockerRunArgs builds the docker run command arguments from the tool inputs.
 func (c *ContainerRunTool) buildDockerRunArgs(args map[string]any, containerName string) []string {
-	dockerArgs := []string{"run"}
+	dockerArgs := []string{"docker", "run"}
 
 	// Add basic options
-	if removeAfter, ok := args["remove_after"].(bool); !ok || removeAfter {
+	removeAfter := utils.GetMapFieldOr(args, "remove_after", true)
+	if removeAfter {
 		dockerArgs = append(dockerArgs, "--rm")
 	}
 
-	if workingDir, ok := args["working_dir"].(string); ok && workingDir != "" {
+	workingDir := utils.GetMapFieldOr(args, "working_dir", "")
+	if workingDir != "" {
 		dockerArgs = append(dockerArgs, "-w", workingDir)
 	}
 
 	// Add environment variables
-	if envVars, ok := args["env_vars"].(map[string]any); ok {
-		for key, value := range envVars {
-			if strValue, ok := value.(string); ok {
-				dockerArgs = append(dockerArgs, "-e", fmt.Sprintf("%s=%s", key, strValue))
+	if envVarsRaw, exists := args["env_vars"]; exists {
+		if envVars, ok := envVarsRaw.(map[string]any); ok {
+			for key, value := range envVars {
+				if strValue, ok := value.(string); ok {
+					dockerArgs = append(dockerArgs, "-e", fmt.Sprintf("%s=%s", key, strValue))
+				}
 			}
 		}
 	}
 
 	// Add volume mounts
-	if volumes, ok := args["volumes"].([]any); ok {
-		for _, volume := range volumes {
-			if volumeStr, ok := volume.(string); ok {
-				dockerArgs = append(dockerArgs, "-v", volumeStr)
+	if volumesRaw, exists := args["volumes"]; exists {
+		if volumes, ok := volumesRaw.([]any); ok {
+			for _, volume := range volumes {
+				if volumeStr, ok := volume.(string); ok {
+					dockerArgs = append(dockerArgs, "-v", volumeStr)
+				}
 			}
 		}
 	}
@@ -432,7 +465,8 @@ func (c *ContainerRunTool) buildDockerRunArgs(args map[string]any, containerName
 	dockerArgs = append(dockerArgs, containerName)
 
 	// Add command if specified
-	if command, ok := args["command"].(string); ok && command != "" {
+	command := utils.GetMapFieldOr(args, "command", "")
+	if command != "" {
 		dockerArgs = append(dockerArgs, "sh", "-c", command)
 	}
 

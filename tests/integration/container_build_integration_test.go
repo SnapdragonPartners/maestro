@@ -13,17 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/exec"
-	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
 )
 
-// TestContainerBuildIntegration tests the container_build tool in a real Docker environment.
-// This test simulates the actual agent workflow:
-// 1. Start maestro-bootstrap container (with Docker CLI and docker.sock mounted)
-// 2. Create a Dockerfile inside the container
-// 3. Run container_build tool from inside the container
-// 4. Verify target container is built on host Docker daemon
+// TestContainerBuildIntegration tests the container_build tool using the container test framework.
+// This test runs the real MCP tool inside a container environment to match production behavior.
 func TestContainerBuildIntegration(t *testing.T) {
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
@@ -31,7 +25,7 @@ func TestContainerBuildIntegration(t *testing.T) {
 	}
 
 	// Setup test environment
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	// Create temporary workspace
@@ -108,39 +102,42 @@ CMD ["echo", "Hello from test container"]
 				t.Fatalf("Failed to setup test case: %v", err)
 			}
 
-			// Start maestro-bootstrap container
-			logger := logx.NewLogger("test")
-			executor, containerName, err := startMaestroBootstrapContainer(ctx, t, logger, workspaceDir)
+			// Create container test framework
+			framework, err := NewContainerTestFramework(t, workspaceDir)
 			if err != nil {
-				t.Fatalf("Failed to start maestro-bootstrap container: %v", err)
+				t.Fatalf("Failed to create test framework: %v", err)
 			}
-			defer cleanupContainer(containerName)
+			defer framework.Cleanup(ctx)
+
+			// Start container
+			if err := framework.StartContainer(ctx); err != nil {
+				t.Fatalf("Failed to start container: %v", err)
+			}
 			
 			// Ensure target container is cleaned up regardless of test outcome
 			defer cleanupBuiltContainer(tc.containerName)
 
-			// Create container_build tool
-			tool := &tools.ContainerBuildTool{}
-
 			// Prepare tool arguments
-			args := map[string]any{
+			args := map[string]interface{}{
 				"container_name":   tc.containerName,
 				"dockerfile_path":  tc.dockerfilePath,
-				"cwd":             "/workspace", // Always use /workspace inside container
+				"cwd":             "/workspace",
 			}
 
-			// Execute container_build tool inside the maestro-bootstrap container
-			result, err := executeToolInContainer(ctx, executor, tool, args)
-
+			// Create container build tool with the container executor
+			tool := tools.NewContainerBuildTool(framework.GetExecutor())
+			
+			// Execute the tool and verify results  
 			if tc.expectSuccess {
+				result, err := tool.Exec(ctx, args)
 				if err != nil {
-					t.Fatalf("Expected success but got error: %v", err)
+					t.Fatalf("Tool execution failed: %v", err)
 				}
 				
 				// Verify result structure
-				resultMap, ok := result.(map[string]any)
+				resultMap, ok := result.(map[string]interface{})
 				if !ok {
-					t.Fatalf("Expected result to be map[string]any, got %T", result)
+					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
 				}
 				
 				success, ok := resultMap["success"].(bool)
@@ -156,8 +153,9 @@ CMD ["echo", "Hello from test container"]
 				t.Logf("✅ Successfully built container %s with dockerfile %s", tc.containerName, tc.dockerfilePath)
 				
 			} else {
+				_, err := tool.Exec(ctx, args)
 				if err == nil {
-					t.Fatalf("Expected error but got success: %v", result)
+					t.Fatalf("Tool was expected to fail but succeeded")
 				}
 				t.Logf("✅ Expected error occurred: %v", err)
 			}
@@ -171,97 +169,6 @@ func isDockerAvailable() bool {
 	return cmd.Run() == nil
 }
 
-// startMaestroBootstrapContainer starts a maestro-bootstrap container with docker.sock mounted
-func startMaestroBootstrapContainer(ctx context.Context, t *testing.T, logger *logx.Logger, workspaceDir string) (*exec.LongRunningDockerExec, string, error) {
-	// Create executor
-	executor := exec.NewLongRunningDockerExec("maestro-bootstrap:latest", "test-agent")
-	
-	// Configure container options using the correct types
-	opts := &exec.Opts{
-		WorkDir: workspaceDir, // Host directory to mount as /workspace inside container
-		User:    "0:0",        // Run as root for Docker access (like DevOps stories)
-		Env: []string{
-			"DOCKER_HOST=unix:///var/run/docker.sock", // Ensure Docker client uses mounted socket
-		},
-	}
-	
-	// Start container using the correct method
-	containerName, err := executor.StartContainer(ctx, "test-story", opts)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to start maestro-bootstrap container: %w", err)
-	}
-	
-	// Wait a moment for container to be ready
-	time.Sleep(1 * time.Second)
-	
-	// Verify Docker is available inside container
-	result, err := executor.Run(ctx, []string{"docker", "version"}, &exec.Opts{})
-	if err != nil || result.ExitCode != 0 {
-		executor.StopContainer(ctx, containerName) // Cleanup on failure
-		return nil, "", fmt.Errorf("Docker not available inside container: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
-	}
-	
-	return executor, containerName, nil
-}
-
-// executeToolInContainer executes a tool inside the running container
-// This simulates how tools are executed when agents run in containers
-func executeToolInContainer(ctx context.Context, executor *exec.LongRunningDockerExec, tool tools.Tool, args map[string]any) (any, error) {
-	// We need to execute the container_build tool inside the maestro-bootstrap container
-	// The tool uses exec.CommandContext to run docker commands, so we need to simulate this
-	
-	// Extract tool parameters
-	containerName, ok := args["container_name"].(string)
-	if !ok {
-		return nil, fmt.Errorf("container_name is required")
-	}
-	
-	dockerfilePath, ok := args["dockerfile_path"].(string)
-	if !ok {
-		dockerfilePath = "Dockerfile"
-	}
-	
-	cwd, ok := args["cwd"].(string) 
-	if !ok {
-		cwd = "/workspace"
-	}
-	
-	// Execute docker build command inside the maestro-bootstrap container
-	// This simulates what the ContainerBuildTool.buildContainer() method does
-	dockerArgs := []string{"docker", "build", "-t", containerName, "-f", dockerfilePath, "."}
-	
-	result, err := executor.Run(ctx, dockerArgs, &exec.Opts{
-		WorkDir: cwd,
-	})
-	
-	if err != nil {
-		return nil, fmt.Errorf("docker build failed: %w (output: %s)", err, result.Stdout)
-	}
-	
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("docker build failed with exit code %d (stdout: %s, stderr: %s)", result.ExitCode, result.Stdout, result.Stderr)
-	}
-	
-	// Test the built container (simulate ContainerBuildTool.testContainer())
-	testArgs := []string{"docker", "run", "--rm", containerName, "echo", "test"}
-	testResult, err := executor.Run(ctx, testArgs, &exec.Opts{})
-	if err != nil {
-		return nil, fmt.Errorf("container test failed: %w (output: %s)", err, testResult.Stdout)
-	}
-	
-	if testResult.ExitCode != 0 {
-		return nil, fmt.Errorf("container test failed with exit code %d (stdout: %s, stderr: %s)", testResult.ExitCode, testResult.Stdout, testResult.Stderr)
-	}
-	
-	// Return success result in the same format as ContainerBuildTool
-	return map[string]any{
-		"success":        true,
-		"container_name": containerName,
-		"dockerfile":     dockerfilePath,
-		"message":        fmt.Sprintf("Successfully built container '%s'", containerName),
-	}, nil
-}
-
 // isContainerBuilt checks if a container image exists on the host Docker daemon
 func isContainerBuilt(containerName string) bool {
 	cmd := osexec.Command("docker", "images", "-q", containerName)
@@ -272,17 +179,6 @@ func isContainerBuilt(containerName string) bool {
 	return len(strings.TrimSpace(string(output))) > 0
 }
 
-// cleanupContainer removes a running container
-func cleanupContainer(containerName string) {
-	if containerName == "" {
-		return
-	}
-	cmd := osexec.Command("docker", "rm", "-f", containerName)
-	if err := cmd.Run(); err != nil {
-		// Log but don't fail test - container might already be cleaned up
-		fmt.Printf("Warning: Failed to cleanup container %s: %v\n", containerName, err)
-	}
-}
 
 // cleanupBuiltContainer removes a built container image
 func cleanupBuiltContainer(imageName string) {

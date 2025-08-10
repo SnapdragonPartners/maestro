@@ -40,7 +40,7 @@ func (e *AwaitQuestionEffect) Execute(ctx context.Context, runtime Runtime) (any
 		questionMsg.SetPayload("origin", e.OriginState)
 	}
 
-	runtime.Info("📤 Sending question to %s from %s state: %s", e.TargetAgent, e.OriginState, e.Question)
+	runtime.Info("📤 Sending question to %s from %s state", e.TargetAgent, e.OriginState)
 
 	// Send the question
 	if err := runtime.SendMessage(questionMsg); err != nil {

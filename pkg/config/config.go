@@ -59,11 +59,14 @@ import (
 )
 
 // Global config instance with mutex protection.
+// projectDir is set once during LoadConfig and never changes - it defines where all
+// maestro files are stored relative to the project root.
 //
 //nolint:gochecknoglobals // Intentional singleton pattern for config management
 var (
-	config *Config
-	mu     sync.RWMutex
+	config     *Config
+	projectDir string // Immutable after LoadConfig - set once at startup
+	mu         sync.RWMutex
 )
 
 // Model represents an LLM model with its capabilities and limits.
@@ -308,8 +311,9 @@ type ProjectInfo struct {
 // ContainerConfig defines container settings for the project.
 // This contains only declarative configuration - no build state or metadata.
 type ContainerConfig struct {
-	Name       string `json:"name"`                 // Container name/tag (standard image or custom built image)
-	Dockerfile string `json:"dockerfile,omitempty"` // Path to dockerfile if building custom image
+	Name          string `json:"name"`                     // Container name/tag (standard image or custom built image)
+	Dockerfile    string `json:"dockerfile,omitempty"`     // Path to dockerfile if building custom image
+	WorkspacePath string `json:"workspace_path,omitempty"` // Path where project is mounted inside container (default: "/workspace")
 
 	// Docker runtime settings (command-line only, cannot be set in Dockerfile)
 	Network   string `json:"network,omitempty"`    // Docker --network setting
@@ -330,6 +334,45 @@ type BuildConfig struct {
 	// Optional targets
 	Clean   string `json:"clean,omitempty"`   // Clean command
 	Install string `json:"install,omitempty"` // Install command
+}
+
+// GetProjectMaestroDir returns the path to the .maestro directory containing all maestro files.
+// Must call LoadConfig first to initialize projectDir.
+func GetProjectMaestroDir() (string, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if projectDir == "" {
+		return "", fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+	return filepath.Join(projectDir, ProjectConfigDir), nil
+}
+
+// GetProjectDir returns the current project directory.
+// Must call LoadConfig first to initialize projectDir.
+func GetProjectDir() (string, error) {
+	mu.RLock()
+	defer mu.RUnlock()
+	if projectDir == "" {
+		return "", fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+	return projectDir, nil
+}
+
+// GetContainerWorkspacePath returns the workspace path used inside containers.
+// This is where the project directory gets mounted inside containers.
+// Must call LoadConfig first to initialize config.
+func GetContainerWorkspacePath() (string, error) {
+	cfg, err := GetConfig()
+	if err != nil {
+		return "", err
+	}
+
+	// Use configured workspace path or default to "/workspace"
+	if cfg.Container != nil && cfg.Container.WorkspacePath != "" {
+		return cfg.Container.WorkspacePath, nil
+	}
+
+	return "/workspace", nil
 }
 
 // GetConfig returns the current global config BY VALUE (copy, not reference).
@@ -354,17 +397,19 @@ func GetConfig() (Config, error) {
 // - Unparseable file: Returns error to avoid overwriting user changes
 //
 // This should typically be called once at application startup.
-func LoadConfig(projectDir string) error {
+func LoadConfig(inputProjectDir string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Store project directory - immutable after this point
+	projectDir = inputProjectDir
 	configPath := filepath.Join(projectDir, ProjectConfigDir, "config.json")
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Missing file - create new config with defaults
 		config = createDefaultConfig()
-		if err := saveConfigLocked(configPath); err != nil {
+		if err := saveConfigLocked(); err != nil {
 			return fmt.Errorf("failed to save initial config: %w", err)
 		}
 		return nil
@@ -387,7 +432,7 @@ func LoadConfig(projectDir string) error {
 }
 
 // UpdateAgents updates the agent configuration and persists to disk.
-func UpdateAgents(projectDir string, agents *AgentConfig) error {
+func UpdateAgents(_ string, agents *AgentConfig) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -406,34 +451,34 @@ func UpdateAgents(projectDir string, agents *AgentConfig) error {
 	}
 
 	// Validation passed, keep the new config (already set above)
-	return saveConfigLocked(filepath.Join(projectDir, ProjectConfigDir, "config.json"))
+	return saveConfigLocked()
 }
 
 // UpdateContainer updates the container configuration and persists to disk.
-func UpdateContainer(projectDir string, container *ContainerConfig) error {
+func UpdateContainer(container *ContainerConfig) error {
 	mu.Lock()
 	defer mu.Unlock()
 
 	config.Container = container
-	return saveConfigLocked(filepath.Join(projectDir, ProjectConfigDir, "config.json"))
+	return saveConfigLocked()
 }
 
 // UpdateBuild updates the build configuration and persists to disk.
-func UpdateBuild(projectDir string, build *BuildConfig) error {
+func UpdateBuild(build *BuildConfig) error {
 	mu.Lock()
 	defer mu.Unlock()
 
 	config.Build = build
-	return saveConfigLocked(filepath.Join(projectDir, ProjectConfigDir, "config.json"))
+	return saveConfigLocked()
 }
 
 // UpdateProject updates the project information and persists to disk.
-func UpdateProject(projectDir string, project *ProjectInfo) error {
+func UpdateProject(project *ProjectInfo) error {
 	mu.Lock()
 	defer mu.Unlock()
 
 	config.Project = project
-	return saveConfigLocked(filepath.Join(projectDir, ProjectConfigDir, "config.json"))
+	return saveConfigLocked()
 }
 
 // UpdateBootstrap is deprecated - bootstrap status is now tracked in database/logs.
@@ -445,12 +490,12 @@ func UpdateBootstrap(_ string, _ interface{}) error {
 
 // UpdateGit atomically updates the git configuration and persists to disk.
 // This ensures that git repository settings are correctly saved.
-func UpdateGit(projectDir string, git *GitConfig) error {
+func UpdateGit(git *GitConfig) error {
 	mu.Lock()
 	defer mu.Unlock()
 
 	config.Git = git
-	return saveConfigLocked(filepath.Join(projectDir, ProjectConfigDir, "config.json"))
+	return saveConfigLocked()
 }
 
 // loadConfigFromFile loads a config file and parses JSON.
@@ -568,8 +613,15 @@ func createDefaultConfig() *Config {
 	}
 }
 
-// saveConfigLocked saves config to disk. Must be called with mutex locked.
-func saveConfigLocked(configPath string) error {
+// saveConfigLocked saves config to disk using the stored project directory.
+// Must be called with mutex locked.
+func saveConfigLocked() error {
+	if projectDir == "" {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	configPath := filepath.Join(projectDir, ProjectConfigDir, ProjectConfigFilename)
+
 	// Create directory if needed
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0755); err != nil {

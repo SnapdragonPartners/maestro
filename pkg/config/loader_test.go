@@ -79,7 +79,7 @@ func TestUpdateContainer(t *testing.T) {
 		PIDs:      DefaultDockerPIDs,
 	}
 
-	err = UpdateContainer(tempDir, newContainer)
+	err = UpdateContainer(newContainer)
 	if err != nil {
 		t.Fatalf("Failed to update container config: %v", err)
 	}

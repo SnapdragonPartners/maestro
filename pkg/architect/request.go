@@ -52,9 +52,18 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Set request type and content based on unified REQUEST protocol
 		if requestMsg.Type == proto.MsgTypeREQUEST {
 			agentRequest.RequestType = persistence.RequestTypeApproval
+			// Extract content from different payload structures
 			if content, exists := requestMsg.GetPayload("content"); exists {
 				if contentStr, ok := content.(string); ok {
 					agentRequest.Content = contentStr
+				}
+			} else if questionPayload, exists := requestMsg.GetPayload("question"); exists {
+				// Handle question payload structure
+				switch q := questionPayload.(type) {
+				case proto.QuestionRequestPayload:
+					agentRequest.Content = q.Text
+				case string:
+					agentRequest.Content = q
 				}
 			}
 			if approvalType, exists := requestMsg.GetPayload("approval_type"); exists {
@@ -309,8 +318,18 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	// Create RESPONSE using unified protocol.
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, questionMsg.FromAgent)
 	response.ParentMsgID = questionMsg.ID
-	response.SetPayload("answer", answer)
-	response.SetPayload("status", "answered")
+	response.SetPayload(proto.KeyKind, string(proto.ResponseKindQuestion))
+	response.SetPayload(proto.KeyAnswer, answer) // Use proto.KeyAnswer instead of "answer"
+	response.SetPayload("content", answer)       // Also set content for fallback extraction
+
+	// Copy correlation ID from request for proper tracking
+	if correlationID, exists := questionMsg.GetPayload("correlation_id"); exists {
+		response.SetPayload("correlation_id", correlationID)
+	}
+	// Copy story_id if present
+	if storyID, exists := questionMsg.GetPayload("story_id"); exists {
+		response.SetPayload("story_id", storyID)
+	}
 
 	return response, nil
 }
