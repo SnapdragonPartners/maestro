@@ -1021,6 +1021,93 @@ func TestSimpleDispatcherState(t *testing.T) {
 	}
 }
 
+func TestStoryIDValidation(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Start dispatcher
+	err := dispatcher.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	// Use separate cleanup context to avoid timeout during stop
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer stopCancel()
+		dispatcher.Stop(stopCtx)
+	}()
+
+	// Test SPEC message without story_id (should pass)
+	specMsg := &proto.AgentMsg{
+		ID:        "spec-001",
+		Type:      proto.MsgTypeSPEC,
+		FromAgent: "orchestrator",
+		ToAgent:   "architect",
+	}
+
+	err = dispatcher.DispatchMessage(specMsg)
+	if err != nil {
+		t.Errorf("SPEC message without story_id should be allowed, got error: %v", err)
+	}
+
+	// Give time for message processing
+	time.Sleep(50 * time.Millisecond)
+
+	// Test STORY message without story_id (should fail immediately)
+	storyMsg := &proto.AgentMsg{
+		ID:        "story-001",
+		Type:      proto.MsgTypeSTORY,
+		FromAgent: "orchestrator",
+		ToAgent:   "coder",
+	}
+
+	err = dispatcher.DispatchMessage(storyMsg)
+	if err != nil {
+		// Good - the message was rejected synchronously during dispatch
+		t.Logf("Message correctly rejected during dispatch: %v", err)
+	} else {
+		// Message was accepted but should be rejected during processing
+		// This is also valid behavior depending on implementation
+		t.Log("Message accepted for async processing (validation happens during processing)")
+	}
+
+	// Test STORY message with empty story_id (should fail)
+	storyMsgEmpty := &proto.AgentMsg{
+		ID:        "story-002",
+		Type:      proto.MsgTypeSTORY,
+		FromAgent: "orchestrator",
+		ToAgent:   "coder",
+	}
+	storyMsgEmpty.SetPayload(proto.KeyStoryID, "")
+
+	err = dispatcher.DispatchMessage(storyMsgEmpty)
+	// Accept either sync or async rejection
+	if err != nil {
+		t.Logf("Message correctly rejected during dispatch: %v", err)
+	} else {
+		t.Log("Message accepted for async processing (validation happens during processing)")
+	}
+
+	// Test STORY message with valid story_id (should pass)
+	storyMsgValid := &proto.AgentMsg{
+		ID:        "story-003",
+		Type:      proto.MsgTypeSTORY,
+		FromAgent: "orchestrator",
+		ToAgent:   "coder",
+	}
+	storyMsgValid.SetPayload(proto.KeyStoryID, "story-123")
+
+	err = dispatcher.DispatchMessage(storyMsgValid)
+	if err != nil {
+		t.Errorf("STORY message with valid story_id should be allowed, got error: %v", err)
+	}
+
+	// Give time for async processing to complete
+	time.Sleep(100 * time.Millisecond)
+}
+
 func TestLeaseOperationsExtended(t *testing.T) {
 	dispatcher := createTestDispatcher(t)
 

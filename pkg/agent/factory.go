@@ -8,6 +8,7 @@ import (
 	"orchestrator/pkg/agent/internal/llmimpl/openai"
 	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/llm"
+	"orchestrator/pkg/agent/middleware/logging"
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/agent/middleware/resilience/circuit"
 	"orchestrator/pkg/agent/middleware/resilience/ratelimit"
@@ -143,11 +144,12 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, state
 	retryPolicy := retry.NewPolicy(retryConfig, nil) // Use default classifier
 
 	// Build the middleware chain in the correct order:
-	// Metrics -> CircuitBreaker -> Retry -> RateLimit -> Timeout -> RawClient
+	// Metrics -> CircuitBreaker -> Retry -> EmptyResponseLogging -> RateLimit -> Timeout -> RawClient
 	client := llm.Chain(rawClient,
 		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger), // Enhanced metrics with state context
 		circuit.Middleware(circuitBreaker),
 		retry.Middleware(retryPolicy),
+		logging.EmptyResponseLoggingMiddleware(),                     // Log empty responses after retry exhaustion
 		ratelimit.Middleware(f.rateLimitMap, nil, f.metricsRecorder), // Uses default token estimator
 		timeout.Middleware(f.config.Agents.Resilience.Timeout),
 	)

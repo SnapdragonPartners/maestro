@@ -550,10 +550,22 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 		}
 	}
 
-	// Create RESPONSE using unified protocol with proper approval_result payload.
+	// Create RESPONSE using unified protocol with individual approval fields.
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
+
+	// Set individual approval fields that ApprovalEffect expects
+	response.SetPayload("status", approvalResult.Status.String())
+	response.SetPayload("feedback", approvalResult.Feedback)
+	response.SetPayload("approval_id", approvalResult.ID)
+
+	// Also set approval_result struct for database storage
 	response.SetPayload("approval_result", approvalResult)
+
+	// Copy story_id from request for dispatcher validation
+	if storyID, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
+		response.SetPayload(proto.KeyStoryID, storyID)
+	}
 
 	// Approval result will be logged to database only
 
@@ -614,6 +626,11 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 	// Create RESPONSE using unified protocol.
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, request.FromAgent)
 	resultMsg.ParentMsgID = request.ID
+
+	// Copy story_id from request for dispatcher validation
+	if storyID, exists := request.GetPayload(proto.KeyStoryID); exists {
+		resultMsg.SetPayload(proto.KeyStoryID, storyID)
+	}
 
 	if err != nil || (mergeResult != nil && mergeResult.HasConflicts) {
 		if err != nil {

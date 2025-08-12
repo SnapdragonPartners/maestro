@@ -93,6 +93,8 @@ const (
 	KeyPlanConfidence              = "plan_confidence"
 	KeyExplorationSummary          = "exploration_summary"
 	KeyPlanRisks                   = "plan_risks"
+	KeyCompletionSignaled          = "completion_signaled"
+	KeyConsecutiveEmptyResponses   = "consecutive_empty_responses"
 )
 
 // ValidateState checks if a state is valid for coder agents.

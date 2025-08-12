@@ -21,7 +21,7 @@ const (
 	podmanCommand = "podman"
 )
 
-// LongRunningDockerExec implements the Executor interface using long-running Docker containers.
+// LongRunningDockerExec implements the Executor interface using Docker containers.
 // Each container persists for the duration of a story, allowing state to be preserved between commands.
 type LongRunningDockerExec struct {
 	logger           *logx.Logger
@@ -42,7 +42,7 @@ type ContainerInfo struct {
 	WorkDir   string
 }
 
-// NewLongRunningDockerExec creates a new long-running Docker executor.
+// NewLongRunningDockerExec creates a new Docker executor.
 // agentID is optional - if empty, containers won't be tracked in global registry.
 func NewLongRunningDockerExec(image, agentID string) *LongRunningDockerExec {
 	logger := logx.NewLogger("docker")
@@ -91,7 +91,7 @@ func (d *LongRunningDockerExec) Available() bool {
 	return true
 }
 
-// StartContainer creates and starts a new long-running container for a story.
+// StartContainer creates and starts a new container for a story.
 //
 //nolint:cyclop // Complex container setup logic, acceptable for this use case
 func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID string, opts *Opts) (string, error) {
@@ -117,7 +117,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		d.logger.Debug("Failed to remove existing container %s (this is normal if it doesn't exist): %v", containerName, err)
 	}
 
-	// Build docker run command for long-running container.
+	// Build docker run command for container.
 	args := []string{"run", "-d", "--name", containerName}
 
 	// Security hardening.
@@ -229,7 +229,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		cmd.Env = os.Environ()
 	}
 
-	d.logger.Info("Starting long-running container: %s", strings.Join(cmd.Args, " "))
+	d.logger.Info("Starting container: %s", strings.Join(cmd.Args, " "))
 
 	// Debug: Log working directory and environment.
 	workDir := cmd.Dir
@@ -280,7 +280,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	return containerName, nil
 }
 
-// StopContainer stops and removes a long-running container.
+// StopContainer stops and removes a container.
 func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -319,7 +319,7 @@ func (d *LongRunningDockerExec) StopContainer(ctx context.Context, containerName
 	return nil
 }
 
-// Run executes a command in an existing long-running container.
+// Run executes a command in an existing container.
 func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opts) (Result, error) {
 	start := time.Now()
 
@@ -327,7 +327,7 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
-	// For long-running containers, we need a story ID to identify the container.
+	// We need a story ID to identify the container.
 	// Try to get it from context first, then from active containers.
 	storyID := d.getStoryIDFromContext(ctx)
 	var containerName string

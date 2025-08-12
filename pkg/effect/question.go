@@ -14,6 +14,7 @@ type AwaitQuestionEffect struct {
 	Context     string
 	Urgency     string
 	OriginState string
+	StoryID     string // Story ID for message payload (required by dispatcher)
 	TargetAgent string
 	Timeout     time.Duration
 }
@@ -31,6 +32,7 @@ func (e *AwaitQuestionEffect) Execute(ctx context.Context, runtime Runtime) (any
 		Urgency: e.Urgency,
 	})
 	questionMsg.SetPayload(proto.KeyCorrelationID, proto.GenerateCorrelationID())
+	questionMsg.SetPayload(proto.KeyStoryID, e.StoryID) // Include story_id that dispatcher requires
 
 	if e.Context != "" {
 		questionMsg.SetPayload("context", e.Context)

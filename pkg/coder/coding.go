@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -120,9 +121,13 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	// Get task content.
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
 
+	// Get plan from state data (stored during PLANNING phase).
+	plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
+
 	// Create enhanced template data with state-specific tool documentation.
 	enhancedTemplateData := &templates.TemplateData{
 		TaskContent:       taskContent,
+		Plan:              plan, // Include plan from PLANNING state
 		WorkDir:           c.workDir,
 		ToolDocumentation: c.codingToolProvider.GenerateToolDocumentation(),
 		Extra: map[string]any{
@@ -160,13 +165,23 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	// Use base agent retry mechanism.
 	resp, llmErr := c.llmClient.Complete(ctx, req)
 	if llmErr != nil {
+		// Check if this is an empty response error that should trigger budget review
+		if c.isEmptyResponseError(llmErr) {
+			return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
+		}
+
+		// For other errors, continue with normal error handling
 		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM coding response")
 	}
 
 	if resp.Content == "" && len(resp.ToolCalls) == 0 {
-		c.logEmptyLLMResponse(prompt, req)
-		return proto.StateError, false, logx.Errorf("empty response from Claude")
+		// This is a fallback check for cases where the LLM client didn't catch empty response
+		return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
 	}
+
+	// Reset consecutive empty response counter on successful response
+	sm.SetStateData(KeyConsecutiveEmptyResponses, 0)
+	c.logger.Debug("🧑‍💻 Successful LLM response - reset consecutive empty counter")
 
 	// Execute tool calls if any (MCP tools).
 	var filesCreated int
@@ -180,6 +195,16 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Add assistant response to context.
 	c.contextManager.AddMessage("assistant", resp.Content)
+
+	// Check if completion was signaled via Effects pattern - highest priority completion signal.
+	if completionData, exists := sm.GetStateValue(KeyCompletionSignaled); exists {
+		if completionResult, ok := completionData.(*effect.CompletionResult); ok {
+			c.logger.Info("🧑‍💻 Completion signaled via Effects - transitioning to %s", completionResult.TargetState)
+			// Clear the completion signal for next iteration
+			sm.SetStateData(KeyCompletionSignaled, nil)
+			return completionResult.TargetState, false, nil
+		}
+	}
 
 	// Check for implementation completion.
 	if c.isImplementationComplete(resp.Content, filesCreated, sm) {
@@ -201,6 +226,36 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		toolCall := &toolCalls[i]
 		c.logger.Info("Executing MCP tool: %s", toolCall.Name)
 
+		// Handle done tool using Effects pattern.
+		if toolCall.Name == tools.ToolDone {
+			c.logger.Info("🧑‍💻 Done tool called - signaling task completion")
+
+			// Create completion effect to signal immediate transition to TESTING
+			completionEff := effect.NewCompletionEffect(
+				"Implementation complete - proceeding to testing phase",
+				StateTesting,
+			)
+
+			// Execute the completion effect
+			result, err := c.ExecuteEffect(ctx, completionEff)
+			if err != nil {
+				c.logger.Error("🧑‍💻 Failed to execute completion effect: %v", err)
+				c.addComprehensiveToolFailureToContext(*toolCall, err)
+				continue
+			}
+
+			// Process the completion result
+			if completionResult, ok := result.(*effect.CompletionResult); ok {
+				// Store the completion result for the state machine to use
+				sm.SetStateData(KeyCompletionSignaled, completionResult)
+				c.logger.Info("🧑‍💻 Completion effect executed successfully - target state: %s", completionResult.TargetState)
+			} else {
+				c.logger.Error("🧑‍💻 Invalid completion result type: %T", result)
+			}
+
+			// Still execute the done tool to return success message to LLM
+		}
+
 		// Handle ask_question tool using Effects pattern.
 		if toolCall.Name == tools.ToolAskQuestion {
 			// Extract question details from tool arguments.
@@ -218,6 +273,10 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 
 			// Create question effect
 			eff := effect.NewQuestionEffect(question, context, urgency, string(StateCoding))
+
+			// Set story_id for dispatcher validation
+			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+			eff.StoryID = storyID
 
 			c.logger.Info("🧑‍💻 Asking question")
 
@@ -680,3 +739,76 @@ func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
 func (c *Coder) getCodingProgress() any { return map[string]any{} }
 func (c *Coder) getFilesCreated() any   { return []string{} }
 func (c *Coder) getCurrentTask() any    { return map[string]any{} }
+
+// isEmptyResponseError checks if an error is an empty response error that should trigger budget review.
+func (c *Coder) isEmptyResponseError(err error) bool {
+	return llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse)
+}
+
+// handleEmptyResponseForBudgetReview handles empty LLM responses with two-tier approach.
+// First empty response: provide guidance and stay in CODING.
+// Second consecutive empty response: escalate to budget review.
+func (c *Coder) handleEmptyResponseForBudgetReview(_ context.Context, sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest) (proto.State, bool, error) {
+	c.logEmptyLLMResponse(prompt, req)
+
+	// Check consecutive empty response count
+	consecutiveCount := utils.GetStateValueOr[int](sm, KeyConsecutiveEmptyResponses, 0)
+
+	// Increment consecutive empty response counter
+	sm.SetStateData(KeyConsecutiveEmptyResponses, consecutiveCount+1)
+
+	if consecutiveCount == 0 {
+		// First empty response: provide guidance and continue in CODING
+		c.logger.Info("🧑‍💻 First empty response - providing guidance on completion")
+
+		// Add placeholder assistant message to maintain alternation
+		placeholderResponse := sanitizeEmptyResponse("")
+		c.contextManager.AddMessage("assistant", placeholderResponse)
+
+		// Add guidance user message
+		guidanceMessage := "If you are done working and ready for testing and review, use the 'done' tool. If you are stuck for any other reason, use the 'ask_question' tool to get guidance on how to proceed."
+		c.contextManager.AddMessage("user", guidanceMessage)
+
+		c.logger.Info("🧑‍💻 Added completion guidance, continuing in CODING state")
+		return StateCoding, false, nil
+	}
+
+	// Second or subsequent empty response: escalate to budget review
+	c.logger.Info("🧑‍💻 Consecutive empty response #%d - escalating to budget review", consecutiveCount+1)
+
+	// Instead of immediately failing, trigger budget review for architect guidance
+	content := "LLM returned multiple consecutive empty responses. The work may be complete but the agent is unable to proceed. How should I proceed?"
+
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: content,
+		Reason:  "BUDGET_REVIEW: Multiple empty LLM responses, requesting guidance",
+		Type:    proto.ApprovalTypeBudgetReview,
+	}
+
+	// Store origin state for later use
+	sm.SetStateData(KeyOrigin, string(StateCoding))
+	sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
+	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StateCoding))
+
+	// Add requesting permission message to preserve alternation
+	c.contextManager.AddMessage("assistant", "requesting permission to continue")
+
+	if c.dispatcher != nil {
+		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
+		requestMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
+		requestMsg.SetPayload("approval_type", proto.ApprovalTypeBudgetReview.String())
+		requestMsg.SetPayload("content", content)
+		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
+		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
+		requestMsg.SetPayload(KeyOrigin, string(StateCoding))
+
+		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
+			c.logger.Error("Failed to send budget review request: %v", err)
+			return proto.StateError, false, logx.Wrap(err, "failed to request budget review for empty response")
+		}
+	}
+
+	// Transition to BUDGET_REVIEW state to wait for architect response
+	return StateBudgetReview, false, nil
+}

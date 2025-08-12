@@ -45,7 +45,7 @@ type Coder struct {
 	workspaceManager        *WorkspaceManager              // Git worktree management
 	buildRegistry           *build.Registry                // Build backend registry
 	buildService            *build.Service                 // Build service for MCP tools
-	longRunningExecutor     *execpkg.LongRunningDockerExec // Long-running Docker executor for container per story
+	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
 	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
 	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
 	pendingApprovalRequest  *ApprovalRequest               // REQUEST→RESULT flow state
@@ -1036,13 +1036,13 @@ func (c *Coder) Step(ctx context.Context) (bool, error) {
 func (c *Coder) Shutdown(ctx context.Context) error {
 	c.logger.Info("Shutting down coder agent %s", c.BaseStateMachine.GetAgentID())
 
-	// Stop the long-running container if it exists.
+	// Stop the container if it exists.
 	c.cleanupContainer(ctx, "shutdown")
 
 	// Use the executor's shutdown method for comprehensive cleanup.
 	if c.longRunningExecutor != nil {
 		if err := c.longRunningExecutor.Shutdown(ctx); err != nil {
-			c.logger.Error("Failed to shutdown long-running executor: %v", err)
+			c.logger.Error("Failed to shutdown executor: %v", err)
 			// Continue with persist even if container cleanup fails.
 		}
 	}
@@ -1095,14 +1095,24 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 
 		if output, ok := resultMap["output"].(string); ok && output != "" {
 			c.logger.Debug("%s output: %s", toolCall.Name, output)
-			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s output: %s", toolCall.Name, output))
+			sanitizedOutput := sanitizeEmptyResponse(output)
+			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s output: %s", toolCall.Name, sanitizedOutput))
 		}
 
 		if errorMsg, ok := resultMap["error"].(string); ok && errorMsg != "" {
 			c.logger.Debug("%s error: %s", toolCall.Name, errorMsg)
-			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s error: %s", toolCall.Name, errorMsg))
+			sanitizedError := sanitizeEmptyResponse(errorMsg)
+			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s error: %s", toolCall.Name, sanitizedError))
 		}
 	}
+}
+
+// sanitizeEmptyResponse ensures no empty responses break agent/user alternation.
+func sanitizeEmptyResponse(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return "[no response available - try something else or try again]"
+	}
+	return content
 }
 
 // addShellResultToContext adds comprehensive shell execution results to context.

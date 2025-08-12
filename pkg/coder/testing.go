@@ -14,6 +14,7 @@ import (
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
 
@@ -98,34 +99,14 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 }
 
 // handleDevOpsStoryTesting handles testing for DevOps stories focusing on infrastructure validation.
-func (c *Coder) handleDevOpsStoryTesting(_ context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
+func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
 	c.logger.Info("DevOps story testing: focusing on infrastructure validation")
 
 	// For DevOps stories, we need actual infrastructure validation, not just file checks
 	// Check if this is a container-related DevOps story
 	dockerfilePath := filepath.Join(worktreePathStr, "Dockerfile")
 	if fileExists(dockerfilePath) {
-		c.logger.Info("DevOps story: Dockerfile present, delegating to CODING with container_build requirement")
-
-		// Instead of simple validation, delegate back to CODING state with specific instructions
-		// to use container_build tool for actual Docker build testing
-		testingInstruction := `DevOps Infrastructure Testing Required:
-
-MANDATORY: You must use the container_build tool to actually build and validate the Docker container.
-This is NOT optional - DevOps stories require real infrastructure testing, not just file validation.
-
-Required steps:
-1. Use container_build tool to build the Docker container
-2. Verify the build succeeds and container is properly created
-3. Use container_run tool if needed to test container functionality
-4. Only call 'done' tool after successful container build validation
-
-The container_build tool is specifically designed for this infrastructure validation.`
-
-		sm.SetStateData(KeyTestFailureOutput, testingInstruction)
-		sm.SetStateData(KeyCodingMode, "devops_container_testing")
-		c.logger.Info("DevOps story: transitioning to CODING for mandatory container_build testing")
-		return StateCoding, false, nil
+		return c.handleContainerTesting(ctx, sm, worktreePathStr, dockerfilePath)
 	}
 
 	// Check for Makefile and run basic validation if present
@@ -150,6 +131,151 @@ The container_build tool is specifically designed for this infrastructure valida
 
 	c.logger.Info("DevOps story testing completed successfully")
 	return c.proceedToCodeReview()
+}
+
+// handleContainerTesting performs actual container infrastructure testing for DevOps stories.
+func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr, _ string) (proto.State, bool, error) {
+	c.logger.Info("DevOps story: performing container infrastructure testing")
+
+	// Get global config to check container configuration
+	globalConfig, err := config.GetConfig()
+	if err != nil {
+		c.logger.Error("Failed to get global config: %v", err)
+		return proto.StateError, false, logx.Wrap(err, "failed to get global config")
+	}
+
+	// Check if container configuration is populated
+	if globalConfig.Container == nil {
+		c.logger.Info("Container config not found - sending back to CODING for container_update")
+		feedback := "Container configuration missing. Use the 'container_update' tool to set up container configuration (name, dockerfile path) before building."
+		sm.SetStateData(KeyTestFailureOutput, feedback)
+		sm.SetStateData(KeyCodingMode, "container_config_setup")
+		return StateCoding, false, nil
+	}
+
+	containerConfig := globalConfig.Container
+	if containerConfig.Name == "" || containerConfig.Dockerfile == "" {
+		c.logger.Info("Container config incomplete - sending back to CODING for container_update")
+		feedback := fmt.Sprintf("Container configuration incomplete. Missing: %s%s. Use 'container_update' tool to set container name and dockerfile path.",
+			func() string {
+				if containerConfig.Name == "" {
+					return "container name"
+				}
+				return ""
+			}(),
+			func() string {
+				if containerConfig.Dockerfile == "" {
+					if containerConfig.Name == "" {
+						return ", dockerfile path"
+					}
+					return "dockerfile path"
+				}
+				return ""
+			}())
+		sm.SetStateData(KeyTestFailureOutput, feedback)
+		sm.SetStateData(KeyCodingMode, "container_config_setup")
+		return StateCoding, false, nil
+	}
+
+	c.logger.Info("Container config found: name=%s, dockerfile=%s", containerConfig.Name, containerConfig.Dockerfile)
+
+	// Run container_build tool directly
+	buildSuccess, buildError := c.runContainerBuildTesting(ctx, worktreePathStr, containerConfig)
+	if !buildSuccess {
+		c.logger.Error("Container build failed: %v", buildError)
+		feedback := fmt.Sprintf("Container build failed: %s\n\nPlease fix the Dockerfile or build issues and try again.", buildError)
+		sm.SetStateData(KeyTestFailureOutput, feedback)
+		sm.SetStateData(KeyCodingMode, "container_build_fix")
+		return StateCoding, false, nil
+	}
+
+	c.logger.Info("Container build successful, running boot test")
+
+	// Run container_boot_test to validate the container actually works
+	bootSuccess, bootError := c.runContainerBootTesting(ctx, containerConfig.Name)
+	if !bootSuccess {
+		c.logger.Error("Container boot test failed: %v", bootError)
+		feedback := fmt.Sprintf("Container build succeeded but boot test failed: %s\n\nThe container builds but doesn't run properly. Please fix the application startup or Dockerfile configuration.", bootError)
+		sm.SetStateData(KeyTestFailureOutput, feedback)
+		sm.SetStateData(KeyCodingMode, "container_runtime_fix")
+		return StateCoding, false, nil
+	}
+
+	c.logger.Info("Container infrastructure testing completed successfully")
+
+	// Store successful test results
+	sm.SetStateData(KeyTestsPassed, true)
+	sm.SetStateData(KeyTestOutput, fmt.Sprintf("Container infrastructure validation completed successfully:\n- Container '%s' built successfully\n- Container boot test passed\n- Infrastructure is ready for deployment", containerConfig.Name))
+	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
+
+	return c.proceedToCodeReview()
+}
+
+// runContainerBuildTesting runs container_build tool directly for testing.
+func (c *Coder) runContainerBuildTesting(ctx context.Context, worktreePathStr string, containerConfig *config.ContainerConfig) (bool, string) {
+	c.logger.Info("Running container build test for container: %s", containerConfig.Name)
+
+	// Create container build tool instance using the coder's executor
+	buildTool := tools.NewContainerBuildTool(c.longRunningExecutor)
+
+	// Prepare arguments for container_build tool
+	args := map[string]any{
+		"container_name":    containerConfig.Name,
+		"dockerfile_path":   containerConfig.Dockerfile,
+		"working_directory": worktreePathStr,
+	}
+
+	// Execute container build
+	result, err := buildTool.Exec(ctx, args)
+	if err != nil {
+		return false, err.Error()
+	}
+
+	// Check if build was successful
+	if resultMap, ok := result.(map[string]any); ok {
+		if success, exists := resultMap["success"].(bool); exists && success {
+			c.logger.Info("Container build test successful")
+			return true, ""
+		}
+		if message, exists := resultMap["message"].(string); exists {
+			return false, message
+		}
+	}
+
+	return false, "Container build completed but success status unclear"
+}
+
+// runContainerBootTesting runs container_boot_test tool directly for testing.
+func (c *Coder) runContainerBootTesting(ctx context.Context, containerName string) (bool, string) {
+	c.logger.Info("Running container boot test for container: %s", containerName)
+
+	// Create container boot test tool instance using the coder's executor
+	bootTestTool := tools.NewContainerBootTestTool(c.longRunningExecutor)
+
+	// Prepare arguments for container_boot_test tool
+	args := map[string]any{
+		"container_name":  containerName,
+		"timeout_seconds": 30, // 30 second boot test
+	}
+
+	// Execute container boot test
+	result, err := bootTestTool.Exec(ctx, args)
+	if err != nil {
+		return false, err.Error()
+	}
+
+	// Check if boot test was successful
+	if resultMap, ok := result.(map[string]any); ok {
+		if success, exists := resultMap["success"].(bool); exists && success {
+			c.logger.Info("Container boot test successful")
+			return true, ""
+		}
+		if message, exists := resultMap["message"].(string); exists {
+			return false, message
+		}
+	}
+
+	return false, "Container boot test completed but success status unclear"
 }
 
 // handleLegacyTesting handles the legacy testing approach for backward compatibility.

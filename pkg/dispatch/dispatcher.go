@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // Severity represents the severity level of agent errors.
@@ -503,6 +504,26 @@ func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
 //nolint:cyclop // Complex message routing logic, acceptable for dispatcher
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
+
+	// Validate story_id presence - only SPEC messages are allowed without story_id
+	if msg.Type != proto.MsgTypeSPEC {
+		storyIDRaw, hasStoryID := msg.GetPayload(proto.KeyStoryID)
+		if !hasStoryID {
+			d.logger.Error("❌ Message %s (%s) missing required story_id - rejecting at dispatcher level", msg.ID, msg.Type)
+			d.sendErrorResponse(msg, fmt.Errorf("message %s (%s) missing required story_id", msg.ID, msg.Type))
+			return
+		}
+
+		// Validate story_id is not empty using generics pattern
+		storyIDStr, ok := utils.SafeAssert[string](storyIDRaw)
+		if !ok || strings.TrimSpace(storyIDStr) == "" {
+			d.logger.Error("❌ Message %s (%s) has empty story_id - rejecting at dispatcher level", msg.ID, msg.Type)
+			d.sendErrorResponse(msg, fmt.Errorf("message %s (%s) has empty story_id", msg.ID, msg.Type))
+			return
+		}
+
+		d.logger.Debug("✅ Message %s (%s) has valid story_id: %s", msg.ID, msg.Type, storyIDStr)
+	}
 
 	// Log message (skip if eventLog is nil - using database logging instead).
 	if d.eventLog != nil {

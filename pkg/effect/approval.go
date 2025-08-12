@@ -8,152 +8,132 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// AwaitApprovalEffect represents an async approval request effect.
-type AwaitApprovalEffect struct {
-	ApprovalType   proto.ApprovalType
-	RequestPayload map[string]any
-	TargetAgent    string
-	Timeout        time.Duration
+// ApprovalEffect represents an approval request effect that blocks until architect responds.
+type ApprovalEffect struct {
+	Content      string             // The content to be reviewed (code diff, plan, etc.)
+	Reason       string             // Human-readable reason for the approval request
+	ApprovalType proto.ApprovalType // Type of approval (CODE, PLAN, BUDGET_REVIEW, COMPLETION) - renamed to avoid method conflict
+	StoryID      string             // Story ID for this approval request (required by architect)
+	TargetAgent  string             // Target agent (typically "architect")
+	Timeout      time.Duration      // Timeout for waiting for response
 }
 
-// Execute sends an approval request and blocks waiting for the response.
-func (e *AwaitApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, error) {
+// Execute sends an approval request and blocks waiting for the architect's response.
+func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, error) {
 	agentID := runtime.GetAgentID()
+	approvalID := proto.GenerateApprovalID()
 
 	// Create REQUEST message with approval payload
-	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
-	requestMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
+	approvalMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
+	approvalMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
+	approvalMsg.SetPayload("approval_type", e.ApprovalType.String())
+	approvalMsg.SetPayload("content", e.Content)
+	approvalMsg.SetPayload("reason", e.Reason)
+	approvalMsg.SetPayload("approval_id", approvalID)
+	approvalMsg.SetPayload("story_id", e.StoryID) // Include story_id that architect expects
 
-	// Set approval type as flat field (architect expects this)
-	requestMsg.SetPayload("approval_type", string(e.ApprovalType))
+	runtime.Info("📤 Sending %s approval request %s to %s", e.ApprovalType.String(), approvalID, e.TargetAgent)
 
-	// Add all request payload fields as flat fields
-	for key, value := range e.RequestPayload {
-		requestMsg.SetPayload(key, value)
-	}
-
-	runtime.Info("📤 Sending %s approval request to %s", e.ApprovalType, e.TargetAgent)
-
-	// Send the request
-	if err := runtime.SendMessage(requestMsg); err != nil {
+	// Send the approval request
+	if err := runtime.SendMessage(approvalMsg); err != nil {
 		return nil, fmt.Errorf("failed to send approval request: %w", err)
 	}
 
 	// Create timeout context
-	timeoutCtx := ctx
-	if e.Timeout > 0 {
-		var cancel context.CancelFunc
-		timeoutCtx, cancel = context.WithTimeout(ctx, e.Timeout)
-		defer cancel()
-	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, e.Timeout)
+	defer cancel()
 
-	runtime.Debug("⏳ Blocking waiting for RESULT message from %s", e.TargetAgent)
+	// Block waiting for RESPONSE message
+	runtime.Info("⏳ Waiting for approval response (timeout: %v)", e.Timeout)
 
-	// Block waiting for RESPONSE message using the runtime's receive method
-	resultMsg, err := runtime.ReceiveMessage(timeoutCtx, proto.MsgTypeRESPONSE)
+	responseMsg, err := runtime.ReceiveMessage(timeoutCtx, proto.MsgTypeRESPONSE)
 	if err != nil {
-		return nil, fmt.Errorf("failed to receive approval result: %w", err)
+		return nil, fmt.Errorf("failed to receive approval response: %w", err)
 	}
 
-	// Parse the result message into ApprovalResult
-	// The architect sends approval data as an "approval_result" object
-	approvalResultRaw, exists := resultMsg.GetPayload("approval_result")
-	if !exists {
-		return nil, fmt.Errorf("missing approval_result in result message")
+	// Extract approval result from response payload
+	statusRaw, statusExists := responseMsg.GetPayload("status")
+	feedbackRaw, _ := responseMsg.GetPayload("feedback")
+	approvalIDRaw, _ := responseMsg.GetPayload("approval_id")
+
+	if !statusExists {
+		return nil, fmt.Errorf("approval response missing status field")
 	}
 
-	// Convert to ApprovalResult struct
-	approvalResult, ok := approvalResultRaw.(*proto.ApprovalResult)
+	status, ok := statusRaw.(string)
 	if !ok {
-		return nil, fmt.Errorf("invalid approval_result format in result message")
+		return nil, fmt.Errorf("approval status is not a string: %T", statusRaw)
 	}
+
+	// Parse status string to ApprovalStatus enum
+	approvalStatus, err := proto.ParseApprovalStatus(status)
+	if err != nil {
+		return nil, fmt.Errorf("invalid approval status: %w", err)
+	}
+
+	feedbackStr, _ := feedbackRaw.(string)
+	approvalIDStr, _ := approvalIDRaw.(string)
 
 	result := &ApprovalResult{
-		Status:   approvalResult.Status,
-		Feedback: approvalResult.Feedback,
-		Data:     resultMsg.Payload,
+		Status:     approvalStatus,
+		Feedback:   feedbackStr,
+		ApprovalID: approvalIDStr,
 	}
 
-	runtime.Info("✅ Received %s approval result: %s", e.ApprovalType, approvalResult.Status)
+	runtime.Info("📥 Received approval response: %s", result.Status)
 	return result, nil
 }
 
 // Type returns the effect type identifier.
-func (e *AwaitApprovalEffect) Type() string {
-	return "await_approval"
+func (e *ApprovalEffect) Type() string {
+	return "approval"
 }
 
-// ApprovalResult represents the result of an approval request.
+// ApprovalResult represents the result of an approval effect.
 type ApprovalResult struct {
-	Status   proto.ApprovalStatus `json:"status"`
-	Data     map[string]any       `json:"data,omitempty"`
-	Feedback string               `json:"feedback,omitempty"`
+	Status     proto.ApprovalStatus `json:"status"`      // "APPROVED", "REJECTED", "NEEDS_CHANGES"
+	Feedback   string               `json:"feedback"`    // Architect's feedback/reasoning
+	ApprovalID string               `json:"approval_id"` // Original approval request ID
 }
 
-// NewPlanApprovalEffect creates an effect for plan approval requests.
-func NewPlanApprovalEffect(planContent, taskContent string) *AwaitApprovalEffect {
-	return &AwaitApprovalEffect{
-		ApprovalType: proto.ApprovalTypePlan,
+// NewApprovalEffect creates an approval effect with default timeout.
+func NewApprovalEffect(content, reason string, approvalType proto.ApprovalType) *ApprovalEffect {
+	return &ApprovalEffect{
+		Content:      content,
+		Reason:       reason,
+		ApprovalType: approvalType,
+		StoryID:      "", // Empty by default - should be set by caller
 		TargetAgent:  "architect",
-		Timeout:      5 * time.Minute, // Configurable timeout
-		RequestPayload: map[string]any{
-			"plan":    planContent,
-			"content": taskContent,
-		},
+		Timeout:      5 * time.Minute, // Default 5 minute timeout
 	}
 }
 
-// NewPlanApprovalEffectWithStoryID creates an effect for plan approval requests with story_id.
-func NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID string) *AwaitApprovalEffect {
-	return &AwaitApprovalEffect{
-		ApprovalType: proto.ApprovalTypePlan,
+// NewApprovalEffectWithTimeout creates an approval effect with custom timeout.
+func NewApprovalEffectWithTimeout(content, reason string, approvalType proto.ApprovalType, timeout time.Duration) *ApprovalEffect {
+	return &ApprovalEffect{
+		Content:      content,
+		Reason:       reason,
+		ApprovalType: approvalType,
+		StoryID:      "", // Empty by default - should be set by caller
 		TargetAgent:  "architect",
-		Timeout:      5 * time.Minute, // Configurable timeout
-		RequestPayload: map[string]any{
-			"plan":     planContent,
-			"content":  taskContent,
-			"story_id": storyID,
-		},
+		Timeout:      timeout,
 	}
 }
 
-// NewCompletionApprovalEffect creates an effect for completion approval requests.
-func NewCompletionApprovalEffect(summary, filesCreated string) *AwaitApprovalEffect {
-	return &AwaitApprovalEffect{
-		ApprovalType: proto.ApprovalTypeCompletion,
-		TargetAgent:  "architect",
-		Timeout:      5 * time.Minute, // Configurable timeout
-		RequestPayload: map[string]any{
-			"summary":       summary,
-			"files_created": filesCreated,
-		},
-	}
+// NewPlanApprovalEffectWithStoryID creates a plan approval effect with story context.
+func NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID string) *ApprovalEffect {
+	content := fmt.Sprintf("Plan for Story %s:\n\nTask:\n%s\n\nProposed Plan:\n%s", storyID, taskContent, planContent)
+	reason := fmt.Sprintf("Plan requires architect approval before implementation (Story %s)", storyID)
+	effect := NewApprovalEffect(content, reason, proto.ApprovalTypePlan)
+	effect.StoryID = storyID // Set the story ID for the message payload
+	return effect
 }
 
-// NewCompletionApprovalEffectWithStoryID creates an effect for completion approval requests with story_id.
-func NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID string) *AwaitApprovalEffect {
-	return &AwaitApprovalEffect{
-		ApprovalType: proto.ApprovalTypeCompletion,
-		TargetAgent:  "architect",
-		Timeout:      5 * time.Minute, // Configurable timeout
-		RequestPayload: map[string]any{
-			"summary":       summary,
-			"files_created": filesCreated,
-			"story_id":      storyID,
-		},
-	}
-}
-
-// NewBudgetApprovalEffect creates an effect for budget approval requests.
-func NewBudgetApprovalEffect(requestType, details string, cost float64) *AwaitApprovalEffect {
-	return &AwaitApprovalEffect{
-		ApprovalType: proto.ApprovalTypeBudgetReview,
-		TargetAgent:  "architect",
-		Timeout:      2 * time.Minute, // Shorter timeout for budget requests
-		RequestPayload: map[string]any{
-			"request_type": requestType,
-			"details":      details,
-			"cost":         cost,
-		},
-	}
+// NewCompletionApprovalEffectWithStoryID creates a completion approval effect with story context.
+func NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID string) *ApprovalEffect {
+	content := fmt.Sprintf("Story %s Completion Summary:\n\nFiles Created: %s\n\nSummary:\n%s", storyID, filesCreated, summary)
+	reason := fmt.Sprintf("Story completion requires architect approval (Story %s)", storyID)
+	effect := NewApprovalEffect(content, reason, proto.ApprovalTypeCompletion)
+	effect.StoryID = storyID // Set the story ID for the message payload
+	return effect
 }

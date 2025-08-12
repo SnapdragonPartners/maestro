@@ -160,6 +160,10 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 			// Create question effect
 			eff := effect.NewQuestionEffect(question, context, urgency, string(StatePlanning))
 
+			// Set story_id for dispatcher validation
+			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+			eff.StoryID = storyID
+
 			c.logger.Info("🧑‍💻 Asking question during planning")
 
 			// Execute the question effect (blocks until answer received)

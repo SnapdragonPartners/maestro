@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,21 +41,12 @@ func (m *MockEffectRuntime) GetAgentRole() string {
 	return "coder"
 }
 
-func TestAwaitApprovalEffect_Execute_Success(t *testing.T) {
-	// Create the approval result structure that the architect sends
-	architectApprovalResult := &proto.ApprovalResult{
-		ID:         "approval-123",
-		RequestID:  "request-456",
-		Type:       proto.ApprovalTypePlan,
-		Status:     proto.ApprovalStatusApproved,
-		Feedback:   "Plan looks good",
-		ReviewedBy: "architect-001",
-		ReviewedAt: time.Now().UTC(),
-	}
-
-	// Create the RESULT message as the architect would send it
+func TestApprovalEffect_Execute_Success(t *testing.T) {
+	// Create the RESPONSE message as the architect would send it
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	resultMsg.SetPayload("approval_result", architectApprovalResult)
+	resultMsg.SetPayload("status", "APPROVED")
+	resultMsg.SetPayload("feedback", "Plan looks good")
+	resultMsg.SetPayload("approval_id", "approval-123")
 
 	// Mock runtime that returns this message
 	mockRuntime := &MockEffectRuntime{
@@ -62,12 +54,9 @@ func TestAwaitApprovalEffect_Execute_Success(t *testing.T) {
 	}
 
 	// Create the effect
-	eff := &effect.AwaitApprovalEffect{
-		ApprovalType:   proto.ApprovalTypePlan,
-		TargetAgent:    "architect-001",
-		Timeout:        1 * time.Minute,
-		RequestPayload: map[string]any{"plan": "test plan", "content": "test content"},
-	}
+	eff := effect.NewApprovalEffect("test plan content", "Plan requires approval", proto.ApprovalTypePlan)
+	eff.TargetAgent = "architect-001"
+	eff.Timeout = 1 * time.Minute
 
 	// Execute the effect
 	ctx := context.Background()
@@ -92,6 +81,10 @@ func TestAwaitApprovalEffect_Execute_Success(t *testing.T) {
 		t.Errorf("Expected feedback 'Plan looks good', got: %s", approvalResult.Feedback)
 	}
 
+	if approvalResult.ApprovalID != "approval-123" {
+		t.Errorf("Expected approval ID 'approval-123', got: %s", approvalResult.ApprovalID)
+	}
+
 	// Verify a REQUEST message was sent
 	if len(mockRuntime.sentMessages) != 1 {
 		t.Fatalf("Expected 1 sent message, got: %d", len(mockRuntime.sentMessages))
@@ -107,32 +100,20 @@ func TestAwaitApprovalEffect_Execute_Success(t *testing.T) {
 	}
 }
 
-func TestAwaitApprovalEffect_Execute_Rejected(t *testing.T) {
-	// Create rejected approval result
-	architectApprovalResult := &proto.ApprovalResult{
-		ID:         "approval-123",
-		RequestID:  "request-456",
-		Type:       proto.ApprovalTypePlan,
-		Status:     proto.ApprovalStatusRejected,
-		Feedback:   "Plan needs improvements",
-		ReviewedBy: "architect-001",
-		ReviewedAt: time.Now().UTC(),
-	}
-
-	// Create the RESULT message
+func TestApprovalEffect_Execute_Rejected(t *testing.T) {
+	// Create the RESPONSE message
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	resultMsg.SetPayload("approval_result", architectApprovalResult)
+	resultMsg.SetPayload("status", "REJECTED")
+	resultMsg.SetPayload("feedback", "Plan needs improvements")
+	resultMsg.SetPayload("approval_id", "approval-123")
 
 	mockRuntime := &MockEffectRuntime{
 		messageToReturn: resultMsg,
 	}
 
-	eff := &effect.AwaitApprovalEffect{
-		ApprovalType:   proto.ApprovalTypePlan,
-		TargetAgent:    "architect-001",
-		Timeout:        1 * time.Minute,
-		RequestPayload: map[string]any{"plan": "test plan"},
-	}
+	eff := effect.NewApprovalEffect("test plan content", "Plan requires approval", proto.ApprovalTypePlan)
+	eff.TargetAgent = "architect-001"
+	eff.Timeout = 1 * time.Minute
 
 	ctx := context.Background()
 	result, err := eff.Execute(ctx, mockRuntime)
@@ -155,37 +136,34 @@ func TestAwaitApprovalEffect_Execute_Rejected(t *testing.T) {
 	}
 }
 
-func TestAwaitApprovalEffect_Execute_MissingApprovalResult(t *testing.T) {
-	// Create a RESULT message without approval_result payload (should fail)
+func TestApprovalEffect_Execute_MissingStatus(t *testing.T) {
+	// Create a RESPONSE message without status payload (should fail)
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	resultMsg.SetPayload("status", "approved") // Wrong format - this is how it used to be
+	resultMsg.SetPayload("feedback", "some feedback") // Missing status field
 
 	mockRuntime := &MockEffectRuntime{
 		messageToReturn: resultMsg,
 	}
 
-	eff := &effect.AwaitApprovalEffect{
-		ApprovalType:   proto.ApprovalTypePlan,
-		TargetAgent:    "architect-001",
-		Timeout:        1 * time.Minute,
-		RequestPayload: map[string]any{"plan": "test plan"},
-	}
+	eff := effect.NewApprovalEffect("test plan content", "Plan requires approval", proto.ApprovalTypePlan)
+	eff.TargetAgent = "architect-001"
+	eff.Timeout = 1 * time.Minute
 
 	ctx := context.Background()
 	_, err := eff.Execute(ctx, mockRuntime)
 
 	if err == nil {
-		t.Fatal("Expected error for missing approval_result, got nil")
+		t.Fatal("Expected error for missing status, got nil")
 	}
 
-	expectedError := "missing approval_result in result message"
+	expectedError := "approval response missing status field"
 	if err.Error() != expectedError {
 		t.Errorf("Expected error '%s', got: '%s'", expectedError, err.Error())
 	}
 }
 
-func TestNewPlanApprovalEffect(t *testing.T) {
-	eff := effect.NewPlanApprovalEffect("my plan content", "my task content")
+func TestNewPlanApprovalEffectWithStoryID(t *testing.T) {
+	eff := effect.NewPlanApprovalEffectWithStoryID("my plan content", "my task content", "story-123")
 
 	if eff.ApprovalType != proto.ApprovalTypePlan {
 		t.Errorf("Expected ApprovalTypePlan, got: %s", eff.ApprovalType)
@@ -195,32 +173,44 @@ func TestNewPlanApprovalEffect(t *testing.T) {
 		t.Errorf("Expected target agent 'architect', got: %s", eff.TargetAgent)
 	}
 
-	planContent := eff.RequestPayload["plan"]
-	if planContent != "my plan content" {
-		t.Errorf("Expected plan content 'my plan content', got: %s", planContent)
+	if !strings.Contains(eff.Content, "my plan content") {
+		t.Errorf("Expected content to contain plan content, got: %s", eff.Content)
 	}
 
-	taskContent := eff.RequestPayload["content"]
-	if taskContent != "my task content" {
-		t.Errorf("Expected task content 'my task content', got: %s", taskContent)
+	if !strings.Contains(eff.Content, "my task content") {
+		t.Errorf("Expected content to contain task content, got: %s", eff.Content)
+	}
+
+	if !strings.Contains(eff.Content, "story-123") {
+		t.Errorf("Expected content to contain story ID, got: %s", eff.Content)
+	}
+
+	if eff.StoryID != "story-123" {
+		t.Errorf("Expected StoryID to be 'story-123', got: %s", eff.StoryID)
 	}
 }
 
-func TestNewCompletionApprovalEffect(t *testing.T) {
-	eff := effect.NewCompletionApprovalEffect("completion summary", "file1.go, file2.go")
+func TestNewCompletionApprovalEffectWithStoryID(t *testing.T) {
+	eff := effect.NewCompletionApprovalEffectWithStoryID("completion summary", "file1.go, file2.go", "story-123")
 
 	if eff.ApprovalType != proto.ApprovalTypeCompletion {
 		t.Errorf("Expected ApprovalTypeCompletion, got: %s", eff.ApprovalType)
 	}
 
-	summary := eff.RequestPayload["summary"]
-	if summary != "completion summary" {
-		t.Errorf("Expected summary 'completion summary', got: %s", summary)
+	if !strings.Contains(eff.Content, "completion summary") {
+		t.Errorf("Expected content to contain summary, got: %s", eff.Content)
 	}
 
-	files := eff.RequestPayload["files_created"]
-	if files != "file1.go, file2.go" {
-		t.Errorf("Expected files 'file1.go, file2.go', got: %s", files)
+	if !strings.Contains(eff.Content, "file1.go, file2.go") {
+		t.Errorf("Expected content to contain files, got: %s", eff.Content)
+	}
+
+	if !strings.Contains(eff.Content, "story-123") {
+		t.Errorf("Expected content to contain story ID, got: %s", eff.Content)
+	}
+
+	if eff.StoryID != "story-123" {
+		t.Errorf("Expected StoryID to be 'story-123', got: %s", eff.StoryID)
 	}
 }
 
