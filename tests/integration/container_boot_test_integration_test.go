@@ -27,15 +27,15 @@ func TestContainerBootTestIntegration(t *testing.T) {
 
 	// Create temporary workspace
 	tempDir := t.TempDir()
-	
+
 	// Test different container scenarios
 	testCases := []struct {
-		name             string
+		name              string
 		dockerfileContent string
-		containerName    string
-		expectSuccess    bool
-		timeout          int // optional timeout override
-		description      string
+		containerName     string
+		expectSuccess     bool
+		timeout           int // optional timeout override
+		description       string
 	}{
 		{
 			name: "simple_long_running_container",
@@ -95,7 +95,7 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Logf("Testing: %s", tc.description)
-			
+
 			// Create workspace for this test case
 			workspaceDir := filepath.Join(tempDir, tc.name)
 			if err := os.MkdirAll(workspaceDir, 0755); err != nil {
@@ -118,7 +118,7 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 			if err := framework.StartContainer(ctx); err != nil {
 				t.Fatalf("Failed to start container: %v", err)
 			}
-			
+
 			// Ensure target container is cleaned up regardless of test outcome
 			defer cleanupBuiltContainer(tc.containerName)
 
@@ -127,9 +127,9 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 			buildArgs := map[string]interface{}{
 				"container_name":  tc.containerName,
 				"dockerfile_path": "Dockerfile",
-				"cwd":            "/workspace",
+				"cwd":             "/workspace",
 			}
-			
+
 			_, err = buildTool.Exec(ctx, buildArgs)
 			if err != nil {
 				t.Fatalf("Failed to build test container: %v", err)
@@ -142,54 +142,54 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 
 			// Now test the boot test tool
 			bootTestTool := tools.NewContainerBootTestTool(framework.GetExecutor())
-			
+
 			// Prepare tool arguments
 			args := map[string]interface{}{
 				"container_name": tc.containerName,
 			}
-			
+
 			// Add custom timeout if specified
 			if tc.timeout > 0 {
 				args["timeout_seconds"] = tc.timeout
 			}
-			
+
 			// Execute the boot test
 			result, err := bootTestTool.Exec(ctx, args)
-			
+
 			if tc.expectSuccess {
 				if err != nil {
 					t.Fatalf("Boot test failed unexpectedly: %v", err)
 				}
-				
+
 				// Verify result structure
 				resultMap, ok := result.(map[string]interface{})
 				if !ok {
 					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
 				}
-				
+
 				// Check success field
 				success, ok := resultMap["success"].(bool)
 				if !ok || !success {
 					t.Fatalf("Expected success=true, got success=%v, result=%+v", resultMap["success"], resultMap)
 				}
-				
+
 				// Check that timeout field is present and reasonable
 				timeout, ok := resultMap["timeout"]
 				if !ok {
 					t.Fatalf("Expected timeout field in successful result")
 				}
-				
+
 				expectedTimeout := 30
 				if tc.timeout > 0 {
 					expectedTimeout = tc.timeout
 				}
-				
+
 				if timeoutInt, ok := timeout.(int); !ok || timeoutInt != expectedTimeout {
 					t.Fatalf("Expected timeout=%d, got timeout=%v", expectedTimeout, timeout)
 				}
-				
+
 				t.Logf("✅ Boot test passed: container %s stayed running for %d seconds", tc.containerName, expectedTimeout)
-				
+
 			} else {
 				// Boot test should fail
 				if err != nil {
@@ -201,16 +201,16 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 					if !ok {
 						t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
 					}
-					
+
 					success, ok := resultMap["success"].(bool)
 					if !ok {
 						t.Fatalf("Expected success field in result")
 					}
-					
+
 					if success {
 						t.Fatalf("Expected boot test to fail but it succeeded: %+v", resultMap)
 					}
-					
+
 					// Check that we have exit code information
 					if exitCode, ok := resultMap["exit_code"]; ok {
 						t.Logf("✅ Expected boot test failure with exit code: %v", exitCode)
@@ -255,9 +255,9 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 		args := map[string]interface{}{
 			"container_name": "nonexistent-container-xyz",
 		}
-		
+
 		result, err := bootTestTool.Exec(ctx, args)
-		
+
 		// Should fail because container doesn't exist
 		if err == nil {
 			if resultMap, ok := result.(map[string]interface{}); ok {
@@ -266,18 +266,18 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 				}
 			}
 		}
-		
+
 		t.Logf("✅ Correctly failed for nonexistent container")
 	})
 
 	t.Run("timeout_limit_enforcement", func(t *testing.T) {
 		args := map[string]interface{}{
-			"container_name":   "test-container",
-			"timeout_seconds":  100, // Above max limit of 60
+			"container_name":  "test-container",
+			"timeout_seconds": 100, // Above max limit of 60
 		}
-		
+
 		result, err := bootTestTool.Exec(ctx, args)
-		
+
 		// Should either limit timeout to 60 or fail cleanly
 		if err == nil {
 			if resultMap, ok := result.(map[string]interface{}); ok {
@@ -288,7 +288,7 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 				}
 			}
 		}
-		
+
 		t.Logf("✅ Timeout limit enforcement working correctly")
 	})
 }

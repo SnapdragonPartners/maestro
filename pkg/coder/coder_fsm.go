@@ -185,10 +185,10 @@ func GetAllCoderStates() []proto.State {
 		}
 	}
 
-	// Convert set to slice, filtering out base agent states to match legacy behavior.
+	// Convert set to slice, filtering out base agent states.
 	states := make([]proto.State, 0, len(stateSet))
 	for state := range stateSet {
-		// Exclude base agent states to match legacy GetAllCoderStates behavior.
+		// Exclude base agent states (WAITING, DONE, ERROR).
 		if state != proto.StateWaiting && state != proto.StateDone && state != proto.StateError {
 			states = append(states, state)
 		}

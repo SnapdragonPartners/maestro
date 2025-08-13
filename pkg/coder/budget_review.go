@@ -5,40 +5,59 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
 )
 
-// handleBudgetReview processes the BUDGET_REVIEW state - blocks waiting for architect's RESULT response.
+// handleBudgetReview processes the BUDGET_REVIEW state - executes stored BudgetReviewEffect.
 func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// State: waiting for architect guidance
+	logx.DebugState(ctx, "coder", "enter", string(StateBudgetReview))
 
-	// Check if we already have approval result from previous processing.
-	if approvalData, exists := sm.GetStateValue(string(stateDataKeyBudgetApprovalResult)); exists && approvalData != nil {
-		return c.handleBudgetReviewApproval(ctx, sm, approvalData)
+	// Check for stored budget review effect to execute
+	if effectData, exists := sm.GetStateValue("budget_review_effect"); exists {
+		if budgetReviewEff, ok := effectData.(*effect.BudgetReviewEffect); ok {
+			c.logger.Info("🧑‍💻 Executing stored BudgetReviewEffect")
+
+			// Execute the effect - this will send REQUEST and wait for RESULT
+			result, err := c.ExecuteEffect(ctx, budgetReviewEff)
+			if err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to execute budget review effect")
+			}
+
+			// Clear the stored effect
+			sm.SetStateData("budget_review_effect", nil)
+
+			// Process the result
+			if budgetReviewResult, ok := result.(*effect.BudgetReviewResult); ok {
+				return c.processBudgetReviewResult(ctx, sm, budgetReviewResult)
+			} else {
+				return proto.StateError, false, logx.Errorf("invalid budget review result type: %T", result)
+			}
+		}
 	}
 
-	// Block waiting for RESULT message from architect.
-	return c.handleRequestBlocking(ctx, sm, stateDataKeyBudgetApprovalResult, StateBudgetReview)
+	// No stored BudgetReviewEffect found - this indicates a bug in the calling code
+	return proto.StateError, false, logx.Errorf("no BudgetReviewEffect found in state data - BUDGET_REVIEW state should only be reached via Effects pattern")
 }
 
-// handleBudgetReviewApproval processes budget review approval results.
-func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStateMachine, approvalData any) (proto.State, bool, error) {
-	result, err := convertApprovalData(approvalData)
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to convert budget review approval data")
-	}
+// processBudgetReviewResult processes BudgetReviewResult from Effects pattern.
+func (c *Coder) processBudgetReviewResult(_ context.Context, sm *agent.BaseStateMachine, result *effect.BudgetReviewResult) (proto.State, bool, error) {
+	// Use shared budget review processing logic
+	return c.processBudgetReviewStatus(sm, result.Status, result.Feedback)
+}
 
+// processBudgetReviewStatus handles budget review status processing logic.
+func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status proto.ApprovalStatus, feedback string) (proto.State, bool, error) {
 	// Store result and clear.
-	sm.SetStateData(string(stateDataKeyBudgetApprovalResult), nil)
 	sm.SetStateData(KeyBudgetReviewCompletedAt, time.Now().UTC())
 	c.pendingApprovalRequest = nil // Clear since we have the result
 
 	// Get origin state from stored data.
 	originStr := utils.GetStateValueOr[string](sm, KeyOrigin, "")
 
-	switch result.Status {
+	switch status {
 	case proto.ApprovalStatusApproved:
 		// CONTINUE/PIVOT - return to origin state and reset counter.
 		c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
@@ -61,8 +80,8 @@ func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStat
 		sm.SetStateData(string(stateDataKeyPlanningIterations), 0)
 		sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 		// Inject architect feedback into context to guide next attempt
-		if result.Feedback != "" {
-			c.injectArchitectFeedback(result.Feedback)
+		if feedback != "" {
+			c.injectArchitectFeedback(feedback)
 		}
 		return StatePlanning, false, nil
 	case proto.ApprovalStatusRejected:
@@ -70,7 +89,7 @@ func (c *Coder) handleBudgetReviewApproval(_ context.Context, sm *agent.BaseStat
 		c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
 		return proto.StateError, false, logx.Errorf("task abandoned by architect after budget review")
 	default:
-		return proto.StateError, false, logx.Errorf("unknown budget review approval status: %s", result.Status)
+		return proto.StateError, false, logx.Errorf("unknown budget review approval status: %s", status)
 	}
 }
 
@@ -83,7 +102,7 @@ func (c *Coder) injectArchitectFeedback(feedback string) {
 
 	// Inject into context manager
 	if c.contextManager != nil {
-		c.contextManager.AddMessage("assistant", assistantContent)
+		c.contextManager.AddAssistantMessage(assistantContent)
 		c.logger.Debug("🧑‍💻 Injected architect feedback into context")
 	}
 }

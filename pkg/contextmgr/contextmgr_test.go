@@ -7,6 +7,26 @@ import (
 	"orchestrator/pkg/config"
 )
 
+// Helper function to add user message and flush buffer for testing.
+func addUserMessage(cm *ContextManager, content string) error {
+	cm.AddMessage("user", content)
+	return cm.FlushUserBuffer()
+}
+
+// Helper function to add any message role and flush buffer for testing.
+func addMessageWithFlush(cm *ContextManager, role, content string) error {
+	if role == "system" {
+		// Add system messages directly to avoid user buffer conversion
+		cm.messages = append(cm.messages, Message{
+			Role:    "system",
+			Content: strings.TrimSpace(content),
+		})
+		return nil
+	}
+	cm.AddMessage(role, content)
+	return cm.FlushUserBuffer()
+}
+
 func TestNewContextManager(t *testing.T) {
 	cm := NewContextManager()
 
@@ -26,11 +46,16 @@ func TestNewContextManager(t *testing.T) {
 func TestAddMessage(t *testing.T) {
 	cm := NewContextManager()
 
-	// Add first message.
+	// Add first message to user buffer.
 	cm.AddMessage("user", "Hello world")
 
+	// Messages go to user buffer first, need to flush to see them
+	if err := cm.FlushUserBuffer(); err != nil {
+		t.Errorf("FlushUserBuffer failed: %v", err)
+	}
+
 	if cm.GetMessageCount() != 1 {
-		t.Errorf("Expected 1 message after adding, got %d", cm.GetMessageCount())
+		t.Errorf("Expected 1 message after adding and flushing, got %d", cm.GetMessageCount())
 	}
 
 	messages := cm.GetMessages()
@@ -46,8 +71,8 @@ func TestAddMessage(t *testing.T) {
 		t.Errorf("Expected content 'Hello world', got '%s'", msg.Content)
 	}
 
-	// Add second message.
-	cm.AddMessage("assistant", "Hi there!")
+	// Add second message (assistant messages are added directly).
+	cm.AddAssistantMessage("Hi there!")
 
 	if cm.GetMessageCount() != 2 {
 		t.Errorf("Expected 2 messages after adding second, got %d", cm.GetMessageCount())
@@ -76,15 +101,17 @@ func TestCountTokens(t *testing.T) {
 		t.Errorf("Expected 0 tokens for empty context, got %d", cm.CountTokens())
 	}
 
-	// Add a message and check token count.
-	cm.AddMessage("user", "test")
+	// Add a user message (need to flush to see in token count).
+	if err := addUserMessage(cm, "test"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
 	expectedTokens := len("user") + len("test") // 4 + 4 = 8
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens, got %d", expectedTokens, cm.CountTokens())
 	}
 
-	// Add another message.
-	cm.AddMessage("assistant", "response")
+	// Add another message (assistant messages are added directly).
+	cm.AddAssistantMessage("response")
 	expectedTokens += len("assistant") + len("response") // 8 + 9 + 8 = 25
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens after second message, got %d", expectedTokens, cm.CountTokens())
@@ -95,8 +122,10 @@ func TestCompactIfNeeded(t *testing.T) {
 	cm := NewContextManager()
 
 	// Add some messages.
-	cm.AddMessage("user", "Hello")
-	cm.AddMessage("assistant", "Hi")
+	if err := addUserMessage(cm, "Hello"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
+	cm.AddAssistantMessage("Hi")
 
 	// CompactIfNeeded without model config should use legacy approach.
 	if err := cm.CompactIfNeeded(); err != nil {
@@ -124,8 +153,10 @@ func TestGetMessages(t *testing.T) {
 	}
 
 	// Add messages.
-	cm.AddMessage("user", "Hello")
-	cm.AddMessage("assistant", "Hi")
+	if err := addUserMessage(cm, "Hello"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
+	cm.AddAssistantMessage("Hi")
 
 	messages = cm.GetMessages()
 	if len(messages) != 2 {
@@ -148,8 +179,10 @@ func TestClear(t *testing.T) {
 	cm := NewContextManager()
 
 	// Add some messages.
-	cm.AddMessage("user", "Hello")
-	cm.AddMessage("assistant", "Hi")
+	if err := addUserMessage(cm, "Hello"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
+	cm.AddAssistantMessage("Hi")
 
 	if cm.GetMessageCount() != 2 {
 		t.Errorf("Expected 2 messages before clear, got %d", cm.GetMessageCount())
@@ -182,7 +215,9 @@ func TestGetContextSummary(t *testing.T) {
 	}
 
 	// Add some messages.
-	cm.AddMessage("user", "Hello")
+	if err := addUserMessage(cm, "Hello"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
 	summary = cm.GetContextSummary()
 
 	// Should contain message count and token count.
@@ -195,8 +230,10 @@ func TestGetContextSummary(t *testing.T) {
 	}
 
 	// Add more messages.
-	cm.AddMessage("assistant", "Hi")
-	cm.AddMessage("user", "How are you?")
+	cm.AddAssistantMessage("Hi")
+	if err := addUserMessage(cm, "How are you?"); err != nil {
+		t.Errorf("Failed to add second user message: %v", err)
+	}
 
 	summary = cm.GetContextSummary()
 	if !contains(summary, "3 messages") {
@@ -269,8 +306,10 @@ func TestCompactIfNeededWithModel(t *testing.T) {
 
 	// Add messages that exceed the compaction threshold.
 	// Threshold = MaxContext - MaxReply - Buffer = 100 - 20 - 10 = 70
-	cm.AddMessage("user", "This is a test message that is quite long and will help us exceed the compaction threshold")
-	cm.AddMessage("assistant", "This is another long message to push us over the threshold")
+	if err := addUserMessage(cm, "This is a test message that is quite long and will help us exceed the compaction threshold"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
+	cm.AddAssistantMessage("This is another long message to push us over the threshold")
 
 	initialCount := cm.GetMessageCount()
 	initialTokens := cm.CountTokens()
@@ -290,7 +329,9 @@ func TestCompactIfNeededWithModel(t *testing.T) {
 func TestShouldCompact(t *testing.T) {
 	// Test without model config.
 	cm := NewContextManager()
-	cm.AddMessage("user", "Short message")
+	if err := addUserMessage(cm, "Short message"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
 
 	if cm.ShouldCompact() {
 		t.Error("Expected ShouldCompact to return false for short message without model config")
@@ -306,7 +347,9 @@ func TestShouldCompact(t *testing.T) {
 	}
 
 	cm2 := NewContextManagerWithModel(modelConfig)
-	cm2.AddMessage("user", "This is a longer message that should trigger compaction logic")
+	if err := addUserMessage(cm2, "This is a longer message that should trigger compaction logic"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
 
 	// This might or might not trigger compaction depending on exact token count.
 	result := cm2.ShouldCompact()
@@ -324,7 +367,9 @@ func TestGetCompactionInfo(t *testing.T) {
 	}
 
 	cm := NewContextManagerWithModel(modelConfig)
-	cm.AddMessage("user", "Test message")
+	if err := addUserMessage(cm, "Test message"); err != nil {
+		t.Errorf("Failed to add user message: %v", err)
+	}
 
 	info := cm.GetCompactionInfo()
 
@@ -360,11 +405,17 @@ func TestCompactionPreservesSystemPrompt(t *testing.T) {
 	cm := NewContextManager()
 
 	// Add system prompt and multiple messages.
-	cm.AddMessage("system", "You are a helpful assistant")
-	cm.AddMessage("user", "Hello")
-	cm.AddMessage("assistant", "Hi there!")
-	cm.AddMessage("user", "How are you?")
-	cm.AddMessage("assistant", "I'm doing well!")
+	if err := addMessageWithFlush(cm, "system", "You are a helpful assistant"); err != nil {
+		t.Errorf("Failed to add system message: %v", err)
+	}
+	if err := addUserMessage(cm, "Hello"); err != nil {
+		t.Errorf("Failed to add first user message: %v", err)
+	}
+	cm.AddAssistantMessage("Hi there!")
+	if err := addUserMessage(cm, "How are you?"); err != nil {
+		t.Errorf("Failed to add second user message: %v", err)
+	}
+	cm.AddAssistantMessage("I'm doing well!")
 
 	if cm.GetMessageCount() != 5 {
 		t.Errorf("Expected 5 messages initially, got %d", cm.GetMessageCount())
@@ -394,13 +445,21 @@ func TestSummarization(t *testing.T) {
 	cm := NewContextManager()
 
 	// Add system prompt and conversation.
-	cm.AddMessage("system", "You are a coding assistant")
-	cm.AddMessage("user", "Create a file called hello.go")
-	cm.AddMessage("assistant", "I'll create the hello.go file for you")
-	cm.AddMessage("user", "There's an error in the code")
-	cm.AddMessage("assistant", "Let me fix that error")
-	cm.AddMessage("user", "Test the file")
-	cm.AddMessage("assistant", "Running tests now")
+	if err := addMessageWithFlush(cm, "system", "You are a coding assistant"); err != nil {
+		t.Errorf("Failed to add system message: %v", err)
+	}
+	if err := addUserMessage(cm, "Create a file called hello.go"); err != nil {
+		t.Errorf("Failed to add first user message: %v", err)
+	}
+	cm.AddAssistantMessage("I'll create the hello.go file for you")
+	if err := addUserMessage(cm, "There's an error in the code"); err != nil {
+		t.Errorf("Failed to add second user message: %v", err)
+	}
+	cm.AddAssistantMessage("Let me fix that error")
+	if err := addUserMessage(cm, "Test the file"); err != nil {
+		t.Errorf("Failed to add third user message: %v", err)
+	}
+	cm.AddAssistantMessage("Running tests now")
 
 	originalCount := cm.GetMessageCount()
 
@@ -449,26 +508,36 @@ func TestAddMessageValidation(t *testing.T) {
 	}
 
 	// Valid message should be added.
-	cm.AddMessage("user", "Hello world")
+	if err := addUserMessage(cm, "Hello world"); err != nil {
+		t.Errorf("Failed to add valid user message: %v", err)
+	}
 	if cm.GetMessageCount() != initialCount+1 {
 		t.Errorf("Valid message should be added, expected count %d, got %d",
 			initialCount+1, cm.GetMessageCount())
 	}
 
-	// Empty role should default to "assistant".
-	cm.AddMessage("", "Test message")
+	// Empty role gets set to "unknown" but FlushUserBuffer creates "user" messages.
+	if err := addMessageWithFlush(cm, "", "Test message"); err != nil {
+		t.Errorf("Failed to add message with empty role: %v", err)
+	}
 	messages := cm.GetMessages()
-	lastMsg := messages[len(messages)-1]
-	if lastMsg.Role != "assistant" {
-		t.Errorf("Empty role should default to 'assistant', got '%s'", lastMsg.Role)
+	if len(messages) > 0 {
+		lastMsg := messages[len(messages)-1]
+		if lastMsg.Role != "user" {
+			t.Errorf("Expected role to be 'user' after flush, got '%s'", lastMsg.Role)
+		}
 	}
 
 	// Content should be trimmed.
-	cm.AddMessage("user", "  trimmed content  ")
+	if err := addUserMessage(cm, "  trimmed content  "); err != nil {
+		t.Errorf("Failed to add message with whitespace: %v", err)
+	}
 	messages = cm.GetMessages()
-	lastMsg = messages[len(messages)-1]
-	if lastMsg.Content != "trimmed content" {
-		t.Errorf("Content should be trimmed, got '%s'", lastMsg.Content)
+	if len(messages) > 0 {
+		lastMsg := messages[len(messages)-1]
+		if lastMsg.Content != "trimmed content" {
+			t.Errorf("Content should be trimmed, got '%s'", lastMsg.Content)
+		}
 	}
 }
 

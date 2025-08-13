@@ -22,39 +22,39 @@ import (
 type LLMClientFactory struct {
 	config          config.Config
 	metricsRecorder metrics.Recorder
-	circuitBreakers map[string]circuit.Breaker // per-provider circuit breakers
+	circuitBreakers map[string]circuit.Breaker
 	rateLimitMap    *ratelimit.ProviderLimiterMap
 }
 
 // NewLLMClientFactory creates a new LLM client factory with the given configuration.
 func NewLLMClientFactory(cfg config.Config) (*LLMClientFactory, error) {
-	// Create metrics recorder - use Prometheus for full metrics collection
-	recorder := metrics.NewPrometheusRecorder()
+	// TODO: TEMPORARY FIX - use noop recorder to test if Prometheus is causing the hang
+	// recorder := metrics.NewPrometheusRecorder()
+	recorder := metrics.Nop()
 
-	// Create per-provider circuit breakers
+	// Initialize circuit breakers for each provider
 	circuitBreakers := make(map[string]circuit.Breaker)
-	circuitConfig := circuit.Config{
-		FailureThreshold: cfg.Agents.Resilience.CircuitBreaker.FailureThreshold,
-		SuccessThreshold: cfg.Agents.Resilience.CircuitBreaker.SuccessThreshold,
-		Timeout:          cfg.Agents.Resilience.CircuitBreaker.Timeout,
+	for _, provider := range []string{string(config.ProviderAnthropic), string(config.ProviderOpenAI), string(config.ProviderOpenAIOfficial)} {
+		circuitBreakers[provider] = circuit.New(circuit.Config{
+			FailureThreshold: cfg.Agents.Resilience.CircuitBreaker.FailureThreshold,
+			SuccessThreshold: cfg.Agents.Resilience.CircuitBreaker.SuccessThreshold,
+			Timeout:          cfg.Agents.Resilience.CircuitBreaker.Timeout,
+		})
 	}
-	circuitBreakers[config.ProviderAnthropic] = circuit.New(circuitConfig)
-	circuitBreakers[config.ProviderOpenAI] = circuit.New(circuitConfig)
-	circuitBreakers[config.ProviderOpenAIOfficial] = circuit.New(circuitConfig)
 
-	// Create rate limiter map
+	// Initialize rate limit map with provider configs
 	rateLimitConfigs := map[string]ratelimit.Config{
-		config.ProviderAnthropic: {
+		string(config.ProviderAnthropic): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute,
 			Burst:           cfg.Agents.Resilience.RateLimit.Anthropic.Burst,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency,
 		},
-		config.ProviderOpenAI: {
+		string(config.ProviderOpenAI): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute,
 			Burst:           cfg.Agents.Resilience.RateLimit.OpenAI.Burst,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency,
 		},
-		config.ProviderOpenAIOfficial: {
+		string(config.ProviderOpenAIOfficial): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute,
 			Burst:           cfg.Agents.Resilience.RateLimit.OpenAIOfficial.Burst,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency,
@@ -77,8 +77,12 @@ func (f *LLMClientFactory) CreateClient(agentType Type) (LLMClient, error) {
 	switch agentType {
 	case TypeCoder:
 		modelName = f.config.Agents.CoderModel
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for agent model selection
+		fmt.Printf("🏭 FACTORY: TypeCoder selected model: %s\n", modelName)
 	case TypeArchitect:
 		modelName = f.config.Agents.ArchitectModel
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for agent model selection
+		fmt.Printf("🏭 FACTORY: TypeArchitect selected model: %s\n", modelName)
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -92,8 +96,12 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 	switch agentType {
 	case TypeCoder:
 		modelName = f.config.Agents.CoderModel
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for agent model selection
+		fmt.Printf("🏭 FACTORY: TypeCoder (with context) selected model: %s\n", modelName)
 	case TypeArchitect:
 		modelName = f.config.Agents.ArchitectModel
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for agent model selection
+		fmt.Printf("🏭 FACTORY: TypeArchitect (with context) selected model: %s\n", modelName)
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -102,7 +110,7 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 }
 
 // createClientWithMiddleware creates a client with the full middleware chain.
-func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
+func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) { //nolint:revive,unparam // stateProvider temporarily unused due to metrics middleware removal
 	// Create the raw LLM client based on provider
 	provider, err := config.GetModelProvider(modelName)
 	if err != nil {
@@ -143,10 +151,12 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, state
 	}
 	retryPolicy := retry.NewPolicy(retryConfig, nil) // Use default classifier
 
-	// Build the middleware chain in the correct order:
-	// Metrics -> CircuitBreaker -> Retry -> EmptyResponseLogging -> RateLimit -> Timeout -> RawClient
+	// Build the full middleware chain
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	fmt.Printf("🏭 FACTORY: Building full middleware chain for %s\n", modelName)
+
 	client := llm.Chain(rawClient,
-		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger), // Enhanced metrics with state context
+		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger),
 		circuit.Middleware(circuitBreaker),
 		retry.Middleware(retryPolicy),
 		logging.EmptyResponseLoggingMiddleware(),                     // Log empty responses after retry exhaustion
@@ -154,5 +164,78 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, state
 		timeout.Middleware(f.config.Agents.Resilience.Timeout),
 	)
 
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	fmt.Printf("🏭 FACTORY: Middleware chain built successfully for %s\n", modelName)
+
 	return client, nil
+}
+
+// CreateLLMClientForAgent creates a basic LLM client for an agent type with middleware.
+// This is a helper function for agent constructors to avoid code duplication.
+func CreateLLMClientForAgent(agentType Type) (LLMClient, error) {
+	// TODO: REMOVE DEBUG LOGGING - aggressive validation
+	fmt.Printf("🏭 CREATE_CLIENT: Creating LLM client for agentType=%s\n", agentType)
+
+	// Get the current configuration to build LLM client with middleware
+	cfg, err := config.GetConfig()
+	if err != nil {
+		fmt.Printf("🏭 CREATE_CLIENT: Failed to get config: %v\n", err)
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+	fmt.Printf("🏭 CREATE_CLIENT: Got config successfully\n")
+
+	// Create LLM client factory
+	factory, err := NewLLMClientFactory(cfg)
+	if err != nil {
+		fmt.Printf("🏭 CREATE_CLIENT: Failed to create factory: %v\n", err)
+		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
+	}
+	fmt.Printf("🏭 CREATE_CLIENT: Factory created successfully\n")
+
+	// Create initial client without metrics context (circular dependency)
+	fmt.Printf("🏭 CREATE_CLIENT: Creating client via factory.CreateClient()\n")
+	llmClient, err := factory.CreateClient(agentType)
+	if err != nil {
+		fmt.Printf("🏭 CREATE_CLIENT: Failed to create client: %v\n", err)
+		return nil, fmt.Errorf("failed to create %s LLM client: %w", agentType, err)
+	}
+	fmt.Printf("🏭 CREATE_CLIENT: Client created successfully: %p\n", llmClient)
+
+	return llmClient, nil
+}
+
+// EnhanceLLMClientWithMetrics replaces a basic LLM client with an enhanced version that includes metrics context.
+// This is called after the agent is created to break circular dependencies.
+func EnhanceLLMClientWithMetrics(_ LLMClient, agentType Type, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
+	// TODO: REMOVE DEBUG LOGGING - aggressive validation
+	fmt.Printf("🏭 ENHANCE_CLIENT: Enhancing client for agentType=%s\n", agentType)
+	fmt.Printf("🏭 ENHANCE_CLIENT: stateProvider=%p\n", stateProvider)
+	fmt.Printf("🏭 ENHANCE_CLIENT: logger=%p\n", logger)
+
+	// Get the current configuration
+	cfg, err := config.GetConfig()
+	if err != nil {
+		fmt.Printf("🏭 ENHANCE_CLIENT: Failed to get config: %v\n", err)
+		return nil, fmt.Errorf("failed to get configuration: %w", err)
+	}
+	fmt.Printf("🏭 ENHANCE_CLIENT: Got config successfully\n")
+
+	// Create LLM client factory
+	factory, err := NewLLMClientFactory(cfg)
+	if err != nil {
+		fmt.Printf("🏭 ENHANCE_CLIENT: Failed to create factory: %v\n", err)
+		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
+	}
+	fmt.Printf("🏭 ENHANCE_CLIENT: Factory created successfully\n")
+
+	// Create enhanced client with metrics context
+	fmt.Printf("🏭 ENHANCE_CLIENT: Creating client with context via factory.CreateClientWithContext()\n")
+	enhancedClient, err := factory.CreateClientWithContext(agentType, stateProvider, logger)
+	if err != nil {
+		fmt.Printf("🏭 ENHANCE_CLIENT: Failed to create enhanced client: %v\n", err)
+		return nil, fmt.Errorf("failed to create enhanced %s LLM client: %w", agentType, err)
+	}
+	fmt.Printf("🏭 ENHANCE_CLIENT: Enhanced client created successfully: %p\n", enhancedClient)
+
+	return enhancedClient, nil
 }

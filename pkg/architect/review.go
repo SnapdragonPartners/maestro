@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 )
@@ -20,7 +21,7 @@ const (
 //
 //nolint:govet // Complex management struct, logical grouping preferred
 type ReviewEvaluator struct {
-	llmClient         LLMClient
+	llmClient         agent.LLMClient
 	renderer          *templates.Renderer
 	queue             *Queue
 	workspaceDir      string
@@ -64,7 +65,7 @@ type ReviewAttempt struct {
 }
 
 // NewReviewEvaluator creates a new review evaluator.
-func NewReviewEvaluator(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string, driver *Driver) *ReviewEvaluator {
+func NewReviewEvaluator(llmClient agent.LLMClient, renderer *templates.Renderer, queue *Queue, workspaceDir string, escalationHandler *EscalationHandler, mergeCh chan<- string, driver *Driver) *ReviewEvaluator {
 	return &ReviewEvaluator{
 		llmClient:         llmClient,
 		renderer:          renderer,
@@ -323,8 +324,8 @@ func (re *ReviewEvaluator) runLLMToolInvocation(ctx context.Context, workDir, ch
 		return false, fmt.Errorf("failed to render code review template: %w", err)
 	}
 
-	// Get LLM response with tool commands.
-	response, err := re.llmClient.GenerateResponse(ctx, prompt)
+	// Get LLM response using centralized helper
+	response, err := re.driver.callLLMWithTemplate(ctx, prompt)
 	if err != nil {
 		return false, fmt.Errorf("failed to get LLM response for tool invocation: %w", err)
 	}
@@ -472,8 +473,8 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 		return fmt.Errorf("failed to render code review template: %w", err)
 	}
 
-	// Get LLM response.
-	review, err := re.llmClient.GenerateResponse(ctx, prompt)
+	// Get LLM response using centralized helper
+	review, err := re.driver.callLLMWithTemplate(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to get LLM response for code review: %w", err)
 	}

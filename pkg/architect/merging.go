@@ -12,6 +12,5 @@ func (d *Driver) handleMerging(_ context.Context) (proto.State, error) {
 
 	// TODO: Implement proper merging logic without RequestWorker
 	// For now, immediately return to dispatching to check for new ready stories.
-	d.logger.Info("🏗️ Merging completed, returning to dispatching")
 	return StateDispatching, nil
 }

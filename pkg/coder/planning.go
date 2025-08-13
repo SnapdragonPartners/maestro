@@ -18,39 +18,41 @@ import (
 // handlePlanning processes the PLANNING state with enhanced codebase exploration.
 func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", string(StatePlanning))
-	// Note: Don't add assistant message here - the LLM response will be the assistant message
+	// LLM response will be the assistant message
 
-	// Check planning budget using unified budget review mechanism.
+	// Check planning budget using unified budget review mechanism
 	const maxPlanningIterations = 10
-	if c.checkLoopBudget(sm, string(stateDataKeyPlanningIterations), maxPlanningIterations, StatePlanning) {
+	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyPlanningIterations), maxPlanningIterations, StatePlanning); budgetExceeded {
 		c.logger.Info("Planning budget exceeded, triggering BUDGET_REVIEW")
+		// Store effect for BUDGET_REVIEW state to execute
+		sm.SetStateData("budget_review_effect", budgetReviewEff)
 		return StateBudgetReview, false, nil
 	}
 
-	// Two-phase checks removed - state transitions now happen directly in handleToolStateTransition
+	// State transitions handled in handleToolStateTransition
 
-	// Continue with iterative planning using LLM + tools.
+	// Continue with iterative planning using LLM + tools
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
 
-	// Generate tree output for template (cached for efficiency).
+	// Generate tree output for template (cached for efficiency)
 	_, exists := sm.GetStateValue(KeyTreeOutputCached)
 	if !exists {
 		tree := "Project structure not available"
 		if c.longRunningExecutor != nil && c.containerName != "" {
-			// Try tree command first, fall back to find if not available.
+			// Try tree command first, fallback to find
 			c.logger.Debug("Attempting to get workspace structure")
 			if treeResult, err := c.executeShellCommand(ctx, "tree", "/workspace", "-L", "3", "-I", "node_modules|.git|*.log"); err == nil {
 				c.logger.Debug("tree command succeeded")
 				tree = treeResult
 			} else {
-				// Fallback: use find to show directory structure.
+				// Fallback: use find to show directory structure
 				c.logger.Info("tree command failed, using find fallback: %v", err)
 				if findResult, findErr := c.executeShellCommand(ctx, "find", "/workspace", "-maxdepth", "3", "-type", "d"); findErr == nil {
 					c.logger.Info("find fallback succeeded")
 					tree = "Directory structure (find fallback):\n" + findResult
 				} else {
 					c.logger.Warn("find fallback failed, trying ls: %v", findErr)
-					// Ultimate fallback: basic ls.
+					// Ultimate fallback: basic ls
 					if lsResult, lsErr := c.executeShellCommand(ctx, "ls", "-la", "/workspace"); lsErr == nil {
 						c.logger.Info("ls fallback succeeded")
 						tree = "Basic workspace listing:\n" + lsResult
@@ -80,7 +82,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		planningTemplate = templates.AppPlanningTemplate
 	}
 
-	// Create enhanced template data with state-specific tool documentation.
+	// Create enhanced template data with state-specific tool documentation
 	templateData := &templates.TemplateData{
 		TaskContent:       taskContent,
 		TreeOutput:        utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
@@ -90,7 +92,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		},
 	}
 
-	// Render enhanced planning template.
+	// Render enhanced planning template
 	if c.renderer == nil {
 		return proto.StateError, false, logx.Errorf("template renderer not available for planning")
 	}
@@ -99,8 +101,17 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return proto.StateError, false, logx.Wrap(err, "failed to render planning template")
 	}
 
+	// Reset context for new template (only if template type changed)
+	templateName := fmt.Sprintf("planning-%s", storyType)
+	c.contextManager.ResetForNewTemplate(templateName, prompt)
+
 	// Log the rendered prompt for debugging
 	c.logger.Info("🧑‍💻 Starting planning phase for story_type '%s'", storyType)
+
+	// Flush user buffer before LLM request
+	if err := c.contextManager.FlushUserBuffer(); err != nil {
+		return proto.StateError, false, fmt.Errorf("failed to flush user buffer: %w", err)
+	}
 
 	// Get LLM response with tool support.
 	// Build messages starting with the planning prompt.
@@ -118,9 +129,10 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM planning response")
 	}
 
-	if resp.Content == "" && len(resp.ToolCalls) == 0 {
-		c.logEmptyLLMResponse(prompt, req)
-		return proto.StateError, false, logx.Errorf("empty response from Claude")
+	// Handle LLM response with proper empty response logic
+	if err := c.handleLLMResponse(resp); err != nil {
+		// True empty response - this is an error condition
+		return proto.StateError, false, err
 	}
 
 	// Process tool calls if any (when supported).
@@ -128,8 +140,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return c.processPlanningToolCalls(ctx, sm, resp.ToolCalls)
 	}
 
-	// If no tool calls, continue in planning state with response.
-	c.contextManager.AddMessage("assistant", resp.Content)
+	// If no tool calls, continue in planning state
 	c.logger.Info("🧑‍💻 Planning iteration completed, staying in PLANNING for potential tool usage")
 	return StatePlanning, false, nil
 }
@@ -172,7 +183,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 				c.logger.Error("🧑‍💻 Failed to get answer: %v", err)
 				// Add error to context for LLM to handle
 				errorMsg := fmt.Sprintf("Question failed: %v", err)
-				c.contextManager.AddMessage("user", errorMsg)
+				c.contextManager.AddMessage("question-error", errorMsg)
 				continue
 			}
 
@@ -182,7 +193,7 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 
 				// Add the Q&A to context so the LLM can see it
 				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
-				c.contextManager.AddMessage("user", qaContent)
+				c.contextManager.AddMessage("architect-answer", qaContent)
 
 				// Continue with planning using the answer
 			} else {
@@ -234,14 +245,14 @@ func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
 	c.logger.Debug("🧑‍💻 Stored planning context for QUESTION transition")
 }
 
-// handleToolStateTransition processes tool state transitions directly (single-phase).
+// handleToolStateTransition processes tool state transitions directly.
 func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
 	// Log the transition.
 	if message, hasMessage := resultMap["message"].(string); hasMessage {
 		c.logger.Info("Tool %s: %s", toolName, message)
 	}
 
-	// Handle tool-specific state transitions with embedded logic (eliminating two-phase approach).
+	// Handle tool-specific state transitions.
 	switch toolName {
 	case tools.ToolSubmitPlan:
 		return c.handlePlanSubmissionDirect(ctx, sm, resultMap)
@@ -250,7 +261,7 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 		return c.handleCompletionSubmissionDirect(ctx, sm, resultMap)
 
 	case tools.ToolAskQuestion:
-		// Questions are now handled inline via Effects pattern, no state transition needed
+		// Questions handled inline via Effects pattern
 		c.logger.Info("🧑‍💻 Question handled inline via Effects pattern, continuing in PLANNING")
 		return StatePlanning, false, nil
 
@@ -260,13 +271,13 @@ func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseSta
 	}
 }
 
-// handlePlanSubmissionDirect processes submit_plan tool results directly (single-phase).
+// handlePlanSubmissionDirect processes submit_plan tool results directly.
 func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStateMachine, resultMap map[string]any) (proto.State, bool, error) {
-	plan, _ := resultMap["plan"].(string)
-	confidence, _ := resultMap["confidence"].(string)
-	explorationSummary, _ := resultMap["exploration_summary"].(string)
-	risks, _ := resultMap["risks"].(string)
-	todos, _ := resultMap["todos"].([]any)
+	plan := utils.GetMapFieldOr[string](resultMap, "plan", "")
+	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
+	explorationSummary := utils.GetMapFieldOr[string](resultMap, "exploration_summary", "")
+	risks := utils.GetMapFieldOr[string](resultMap, "risks", "")
+	todos := utils.GetMapFieldOr[[]any](resultMap, "todos", []any{})
 
 	// Convert todos to structured format.
 	planTodos := make([]PlanTodo, len(todos))
@@ -279,9 +290,6 @@ func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStat
 			}
 		}
 	}
-
-	// Get original story content for reference (unused in Effects pattern)
-	_, _ = sm.GetStateValue(string(stateDataKeyTaskContent))
 
 	// Store plan data using typed constants.
 	sm.SetStateData(string(stateDataKeyPlan), plan)
@@ -304,14 +312,11 @@ func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStat
 	return StatePlanReview, false, nil
 }
 
-// handleCompletionSubmissionDirect processes mark_story_complete tool results directly (single-phase).
+// handleCompletionSubmissionDirect processes mark_story_complete tool results directly.
 func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.BaseStateMachine, resultMap map[string]any) (proto.State, bool, error) {
-	reason, _ := resultMap["reason"].(string)
-	evidence, _ := resultMap["evidence"].(string)
-	confidence, _ := resultMap["confidence"].(string)
-
-	// Get original story content for reference (unused in Effects pattern)
-	_, _ = sm.GetStateValue(string(stateDataKeyTaskContent))
+	reason := utils.GetMapFieldOr[string](resultMap, "reason", "")
+	evidence := utils.GetMapFieldOr[string](resultMap, "evidence", "")
+	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
 
 	// Store completion data.
 	sm.SetStateData(KeyCompletionReason, reason)

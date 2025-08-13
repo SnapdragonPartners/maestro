@@ -28,26 +28,26 @@ func TestContainerExecIntegration(t *testing.T) {
 
 	// Create temporary workspace
 	tempDir := t.TempDir()
-	
+
 	// Create a test Dockerfile with some utilities for testing commands
 	dockerfileContent := `FROM alpine:latest
 RUN apk add --no-cache curl wget bash
 RUN echo "test file content" > /test-file.txt
 CMD ["echo", "Hello from test container"]
 `
-	
+
 	// Build a test container first
 	testContainerName := "maestro-exec-test-container"
 	workspaceDir := filepath.Join(tempDir, "exec_test")
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
 		t.Fatalf("Failed to create workspace dir: %v", err)
 	}
-	
+
 	// Create Dockerfile
 	if err := os.WriteFile(filepath.Join(workspaceDir, "Dockerfile"), []byte(dockerfileContent), 0644); err != nil {
 		t.Fatalf("Failed to create Dockerfile: %v", err)
 	}
-	
+
 	// Build container for testing
 	framework, err := NewContainerTestFramework(t, workspaceDir)
 	if err != nil {
@@ -58,23 +58,23 @@ CMD ["echo", "Hello from test container"]
 	if err := framework.StartContainer(ctx); err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	
+
 	// Build test container
 	buildTool := tools.NewContainerBuildTool(framework.GetExecutor())
 	buildArgs := map[string]interface{}{
 		"container_name":  testContainerName,
 		"dockerfile_path": "Dockerfile",
-		"cwd":            "/workspace",
+		"cwd":             "/workspace",
 	}
-	
+
 	_, err = buildTool.Exec(ctx, buildArgs)
 	if err != nil {
 		t.Fatalf("Failed to build test container: %v", err)
 	}
-	
+
 	// Ensure test container is cleaned up
 	defer cleanupBuiltContainer(testContainerName)
-	
+
 	// Test different command scenarios
 	testCases := []struct {
 		name          string
@@ -142,7 +142,7 @@ CMD ["echo", "Hello from test container"]
 				"container_name": testContainerName,
 				"command":        tc.command,
 			}
-			
+
 			// Add custom timeout if specified
 			if tc.timeout > 0 {
 				args["timeout_seconds"] = tc.timeout
@@ -150,33 +150,33 @@ CMD ["echo", "Hello from test container"]
 
 			// Create container exec tool with the container executor
 			tool := tools.NewContainerExecTool(framework.GetExecutor())
-			
+
 			// Execute the tool
 			result, err := tool.Exec(ctx, args)
-			
+
 			if tc.expectSuccess {
 				if err != nil {
 					t.Fatalf("Tool execution failed unexpectedly: %v", err)
 				}
-				
+
 				// Verify result structure
 				resultMap, ok := result.(map[string]interface{})
 				if !ok {
 					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
 				}
-				
+
 				// Check success field
 				success, ok := resultMap["success"].(bool)
 				if !ok || !success {
 					t.Fatalf("Expected success=true, got success=%v, result=%+v", resultMap["success"], resultMap)
 				}
-				
+
 				// Check exit code
 				exitCode, ok := resultMap["exit_code"].(int)
 				if !ok || exitCode != 0 {
 					t.Fatalf("Expected exit_code=0, got exit_code=%v", resultMap["exit_code"])
 				}
-				
+
 				// Check expected output if specified
 				if tc.expectOutput != "" {
 					output, ok := resultMap["output"].(string)
@@ -187,9 +187,9 @@ CMD ["echo", "Hello from test container"]
 						t.Fatalf("Expected output to contain '%s', got: %s", tc.expectOutput, output)
 					}
 				}
-				
+
 				t.Logf("✅ Successfully executed command: %s", tc.command)
-				
+
 			} else {
 				// Command should fail
 				if err != nil {
@@ -201,16 +201,16 @@ CMD ["echo", "Hello from test container"]
 					if !ok {
 						t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
 					}
-					
+
 					success, ok := resultMap["success"].(bool)
 					if !ok {
 						t.Fatalf("Expected success field in result")
 					}
-					
+
 					if success {
 						t.Fatalf("Expected command to fail but it succeeded: %+v", resultMap)
 					}
-					
+
 					// Check exit code is non-zero
 					exitCode, ok := resultMap["exit_code"].(int)
 					if !ok {
@@ -219,10 +219,10 @@ CMD ["echo", "Hello from test container"]
 					if exitCode == 0 {
 						t.Fatalf("Expected non-zero exit code for failed command, got %d", exitCode)
 					}
-					
+
 					t.Logf("✅ Expected command failure occurred with exit code: %d", exitCode)
 				}
-				
+
 				// Check expected error output if specified
 				if tc.expectOutput != "" {
 					if err != nil {

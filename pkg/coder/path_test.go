@@ -8,19 +8,18 @@ func TestPathConstruction(t *testing.T) {
 	gitRunner := NewDefaultGitRunner()
 
 	// Test path construction.
-	wm := NewWorkspaceManager(
+	cm := NewCloneManager(
 		gitRunner,
 		"/Users/dratner/Code/maestro/work/test",   // projectWorkDir
 		"git@github.com:dratner/maestro-demo.git", // repoURL
 		"main",             // baseBranch
 		".mirrors",         // mirrorDir
 		"story-{STORY_ID}", // branchPattern
-		"{STORY_ID}",       // worktreePattern
 	)
 
 	agentWorkDir := "/Users/dratner/Code/maestro/work/test/claude_sonnet4-001"
-	actualAgentWorkDir := wm.BuildAgentWorkDir("claude_sonnet4-001", agentWorkDir)
-	mirrorPath := wm.BuildMirrorPath()
+	actualAgentWorkDir := cm.BuildAgentWorkDir("claude_sonnet4-001", agentWorkDir)
+	mirrorPath := cm.BuildMirrorPath()
 
 	expectedAgentWorkDir := "/Users/dratner/Code/maestro/work/test/claude_sonnet4-001"
 	expectedMirrorPath := "/Users/dratner/Code/maestro/work/test/.mirrors/maestro-demo.git"

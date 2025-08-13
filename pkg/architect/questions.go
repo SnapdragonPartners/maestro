@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 )
@@ -17,7 +18,7 @@ const (
 
 // QuestionHandler manages technical question processing for the ANSWERING state.
 type QuestionHandler struct {
-	llmClient         LLMClient
+	llmClient         agent.LLMClient
 	renderer          *templates.Renderer
 	queue             *Queue
 	escalationHandler *EscalationHandler
@@ -43,7 +44,7 @@ type PendingQuestion struct {
 }
 
 // NewQuestionHandler creates a new question handler.
-func NewQuestionHandler(llmClient LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler, workDir string, driver *Driver) *QuestionHandler {
+func NewQuestionHandler(llmClient agent.LLMClient, renderer *templates.Renderer, queue *Queue, escalationHandler *EscalationHandler, workDir string, driver *Driver) *QuestionHandler {
 	return &QuestionHandler{
 		llmClient:         llmClient,
 		renderer:          renderer,
@@ -159,8 +160,8 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 		return fmt.Errorf("failed to render Q&A template: %w", err)
 	}
 
-	// Get LLM response.
-	answer, err := qh.llmClient.GenerateResponse(ctx, prompt)
+	// Get LLM response using centralized helper
+	answer, err := qh.driver.callLLMWithTemplate(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to get LLM response for question: %w", err)
 	}

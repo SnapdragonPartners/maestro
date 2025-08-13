@@ -30,13 +30,13 @@ func TestContainerBuildIntegration(t *testing.T) {
 
 	// Create temporary workspace
 	tempDir := t.TempDir()
-	
+
 	// Create a simple test Dockerfile
 	dockerfileContent := `FROM alpine:latest
 RUN echo "test container built successfully"
 CMD ["echo", "Hello from test container"]
 `
-	
+
 	// Test different scenarios
 	testCases := []struct {
 		name           string
@@ -55,7 +55,7 @@ CMD ["echo", "Hello from test container"]
 			expectSuccess: true,
 		},
 		{
-			name:           "dockerfile_in_subdirectory", 
+			name:           "dockerfile_in_subdirectory",
 			dockerfilePath: "docker/Dockerfile",
 			containerName:  "maestro-test-subdir",
 			setupFunc: func(workspaceDir string) error {
@@ -69,7 +69,7 @@ CMD ["echo", "Hello from test container"]
 		},
 		{
 			name:           "absolute_dockerfile_path",
-			dockerfilePath: "/workspace/absolute/Dockerfile", 
+			dockerfilePath: "/workspace/absolute/Dockerfile",
 			containerName:  "maestro-test-absolute",
 			setupFunc: func(workspaceDir string) error {
 				absDir := filepath.Join(workspaceDir, "absolute")
@@ -113,45 +113,45 @@ CMD ["echo", "Hello from test container"]
 			if err := framework.StartContainer(ctx); err != nil {
 				t.Fatalf("Failed to start container: %v", err)
 			}
-			
+
 			// Ensure target container is cleaned up regardless of test outcome
 			defer cleanupBuiltContainer(tc.containerName)
 
 			// Prepare tool arguments
 			args := map[string]interface{}{
-				"container_name":   tc.containerName,
-				"dockerfile_path":  tc.dockerfilePath,
+				"container_name":  tc.containerName,
+				"dockerfile_path": tc.dockerfilePath,
 				"cwd":             "/workspace",
 			}
 
 			// Create container build tool with the container executor
 			tool := tools.NewContainerBuildTool(framework.GetExecutor())
-			
-			// Execute the tool and verify results  
+
+			// Execute the tool and verify results
 			if tc.expectSuccess {
 				result, err := tool.Exec(ctx, args)
 				if err != nil {
 					t.Fatalf("Tool execution failed: %v", err)
 				}
-				
+
 				// Verify result structure
 				resultMap, ok := result.(map[string]interface{})
 				if !ok {
 					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
 				}
-				
+
 				success, ok := resultMap["success"].(bool)
 				if !ok || !success {
 					t.Fatalf("Expected success=true, got success=%v", resultMap["success"])
 				}
-				
+
 				// Verify target container was actually built on host
 				if !isContainerBuilt(tc.containerName) {
 					t.Fatalf("Target container %s was not built on host", tc.containerName)
 				}
-				
+
 				t.Logf("✅ Successfully built container %s with dockerfile %s", tc.containerName, tc.dockerfilePath)
-				
+
 			} else {
 				_, err := tool.Exec(ctx, args)
 				if err == nil {
@@ -179,7 +179,6 @@ func isContainerBuilt(containerName string) bool {
 	return len(strings.TrimSpace(string(output))) > 0
 }
 
-
 // cleanupBuiltContainer removes a built container image
 func cleanupBuiltContainer(imageName string) {
 	if imageName == "" {
@@ -189,7 +188,7 @@ func cleanupBuiltContainer(imageName string) {
 	if !isContainerBuilt(imageName) {
 		return // Image doesn't exist, nothing to clean up
 	}
-	
+
 	cmd := osexec.Command("docker", "rmi", "-f", imageName)
 	if err := cmd.Run(); err != nil {
 		// Log but don't fail test - image might be in use or already removed

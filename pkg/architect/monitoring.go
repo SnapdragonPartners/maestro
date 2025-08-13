@@ -14,7 +14,6 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 
 	// Check if all stories are completed.
 	if d.queue.AllStoriesCompleted() {
-		d.logger.Info("🏗️ All stories completed, transitioning to DONE")
 		return StateDone, nil
 	}
 
@@ -25,21 +24,17 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 	case questionMsg, ok := <-d.questionsCh:
 		if !ok {
 			// Channel closed by dispatcher - abnormal shutdown
-			d.logger.Info("🏗️ Questions channel closed in MONITORING, transitioning to ERROR")
 			return StateError, fmt.Errorf("questions channel closed unexpectedly")
 		}
 		if questionMsg == nil {
-			d.logger.Warn("🏗️ Received nil question message in MONITORING")
 			return StateMonitoring, nil
 		}
-		d.logger.Info("🏗️ Architect received question in MONITORING state, transitioning to REQUEST")
 		// Store the question for processing in REQUEST state.
 		d.stateData["current_request"] = questionMsg
 		return StateRequest, nil
 
 	case <-time.After(HeartbeatInterval):
 		// Heartbeat debug logging.
-		d.logger.Debug("🏗️ Monitoring heartbeat: checking for ready stories")
 		return StateMonitoring, nil
 
 	case <-ctx.Done():

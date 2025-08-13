@@ -84,10 +84,10 @@ func (d *BaseDriver) Step(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("failed to transition to state %s: %w", nextState, err)
 	}
 
-	// Compact state data if needed.
-	if err := d.CompactIfNeeded(); err != nil {
+	// Truncate state transition history if needed (simple memory management).
+	if err := d.TruncateTransitionHistoryIfNeeded(); err != nil {
 		// Log warning but don't fail.
-		d.config.Context.Logger.Printf("Warning: state data compaction failed: %v", err)
+		d.config.Context.Logger.Printf("Warning: state transition history truncation failed: %v", err)
 	}
 
 	return false, nil

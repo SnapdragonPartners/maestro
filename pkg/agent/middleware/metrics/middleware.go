@@ -11,11 +11,6 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-const (
-	statusSuccess = "success"
-	statusError   = "error"
-)
-
 // UsageExtractor is a function that extracts token usage from a request and response.
 type UsageExtractor func(req llm.CompletionRequest, resp llm.CompletionResponse) (promptTokens, completionTokens int)
 
@@ -36,7 +31,7 @@ func DefaultUsageExtractor(req llm.CompletionRequest, resp llm.CompletionRespons
 
 // Middleware returns a middleware function that records metrics for LLM operations.
 // It tracks request latency, token usage, success/failure rates, and error types.
-func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider StateProvider, logger *logx.Logger) llm.Middleware {
+func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider StateProvider, _ /* logger */ *logx.Logger) llm.Middleware {
 	if usageExtractor == nil {
 		usageExtractor = DefaultUsageExtractor
 	}
@@ -66,6 +61,7 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				}
 
 				// Get current agent state for metrics
+
 				storyID := stateProvider.GetStoryID()
 				agentID := stateProvider.GetID()
 				state := string(stateProvider.GetCurrentState())
@@ -84,15 +80,7 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				)
 
 				// Debug logging for token usage
-				if logger != nil {
-					status := statusSuccess
-					if err != nil {
-						status = statusError
-					}
-					totalTokens := promptTokens + completionTokens
-					logger.Info("🎯 LLM Request: model=%s story=%s state=%s tokens=%d+%d=%d status=%s duration=%dms",
-						modelConfig.Name, storyID, state, promptTokens, completionTokens, totalTokens, status, duration.Milliseconds())
-				}
+				// Metrics recorded, no additional logging needed
 
 				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
@@ -131,15 +119,7 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 					duration,
 				)
 
-				// Debug logging for stream requests
-				if logger != nil {
-					status := statusSuccess
-					if err != nil {
-						status = statusError
-					}
-					logger.Info("🎯 LLM Stream: model=%s story=%s state=%s tokens=streaming status=%s duration=%dms",
-						modelConfig.Name, storyID, state, status, duration.Milliseconds())
-				}
+				// Metrics recorded, no additional logging needed
 
 				return ch, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},

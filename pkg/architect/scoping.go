@@ -25,8 +25,6 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 		return StateError, fmt.Errorf("no spec file path found in SPEC message")
 	}
 
-	d.logger.Info("🏗️ Architect reading spec file: %s", specFile)
-
 	// Get spec content - either from file or direct content
 	var rawSpecContent []byte
 	var err error
@@ -44,13 +42,11 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	if hasContent {
 		if contentStr, ok := contentPayload.(string); ok {
 			rawSpecContent = []byte(contentStr)
-			d.logger.Info("🏗️ Using direct spec content from bootstrap (%d bytes)", len(rawSpecContent))
 		} else {
 			return StateError, fmt.Errorf("spec_content payload is not a string: %T", contentPayload)
 		}
 	} else {
 		// Fallback to file-based spec reading
-		d.logger.Info("🏗️ Reading spec from file: %s", specFile)
 		rawSpecContent, err = os.ReadFile(specFile)
 		if err != nil {
 			return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
@@ -99,15 +95,12 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 			d.stateData["story_ids"] = storyIDs
 			d.stateData["stories_generated"] = true
 			d.stateData["stories_count"] = len(storyIDs)
-
-			d.logger.Info("🏗️ Story generation completed: %d stories generated and stored in database (spec ID: %s)", len(storyIDs), specID)
 		} else {
 			return StateError, fmt.Errorf("persistence channel not available - database storage is required for story generation")
 		}
 	}
 
-	d.logger.Info("🏗️ Scoping completed using %s method, extracted %d requirements and generated %d stories",
-		d.stateData["parsing_method"], len(requirements), d.stateData["stories_count"])
+	// Requirement parsing and story generation completed successfully
 
 	return StateDispatching, nil
 }
@@ -133,18 +126,16 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile 
 		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
 	}
 
-	// Get LLM response.
-	response, err := d.llmClient.GenerateResponse(ctx, prompt)
+	// Get LLM response using centralized helper
+	llmAnalysis, err := d.callLLMWithTemplate(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
 	}
 
-	// Add LLM response to context.
-	d.contextManager.AddMessage("assistant", response)
-	d.stateData["llm_analysis"] = response
+	d.stateData["llm_analysis"] = llmAnalysis
 
 	// Parse LLM response to extract requirements.
-	return d.parseSpecAnalysisJSON(response)
+	return d.parseSpecAnalysisJSON(llmAnalysis)
 }
 
 // generateStoriesFromRequirements converts LLM-analyzed requirements into database stories.
@@ -296,27 +287,19 @@ func (d *Driver) getSpecFileFromMessage() string {
 	// Get the stored spec message.
 	specMsgData, exists := d.stateData["spec_message"]
 	if !exists {
-		d.logger.Error("🏗️ No spec_message found in state data")
 		return ""
 	}
 
 	// Cast to AgentMsg.
 	specMsg, ok := specMsgData.(*proto.AgentMsg)
 	if !ok {
-		d.logger.Error("🏗️ spec_message is not an AgentMsg: %T", specMsgData)
 		return ""
 	}
 
-	// Debug: log all payload keys.
-	payloadKeys := make([]string, 0)
-	for key := range specMsg.Payload {
-		payloadKeys = append(payloadKeys, key)
-	}
-	d.logger.Info("🏗️ SPEC message payload keys: %v", payloadKeys)
+	// Debug: check payload structure (keys available for debugging if needed)
 
 	// Check if we have spec_content (bootstrap mode) - no file needed
 	if _, hasContent := specMsg.GetPayload("spec_content"); hasContent {
-		d.logger.Info("🏗️ Bootstrap mode detected - using spec_content")
 		return "<bootstrap-content>" // Return placeholder since actual content is handled elsewhere
 	}
 
@@ -328,7 +311,6 @@ func (d *Driver) getSpecFileFromMessage() string {
 		if !exists {
 			specFile, exists = specMsg.GetPayload("filepath")
 			if !exists {
-				d.logger.Error("🏗️ No spec file path found in payload with keys: %v", payloadKeys)
 				return ""
 			}
 		}
@@ -336,11 +318,9 @@ func (d *Driver) getSpecFileFromMessage() string {
 
 	// Convert to string.
 	if specFileStr, ok := specFile.(string); ok {
-		d.logger.Info("🏗️ Found spec file path: %s", specFileStr)
 		return specFileStr
 	}
 
-	d.logger.Error("🏗️ Spec file path is not a string: %T = %v", specFile, specFile)
 	return ""
 }
 
@@ -411,7 +391,6 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 	}
 
 	// Log the JSON response length for debugging without cluttering logs
-	d.logger.Info("🏗️ Parsing LLM JSON response (%d chars)", len(jsonStr))
 
 	if err := json.Unmarshal([]byte(jsonStr), &llmResponse); err != nil {
 		// Enhanced error reporting with truncation detection
@@ -424,29 +403,13 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 
 		// If we're within 10% of the token limit, likely truncation
 		if float64(responseTokens) >= float64(maxTokens)*0.9 {
-			d.logger.Error("🏗️ JSON parsing failed - likely due to response truncation")
-			d.logger.Error("🏗️ Response tokens: %d, MaxTokens limit: %d (%.1f%% of limit)",
-				responseTokens, maxTokens, float64(responseTokens)/float64(maxTokens)*100)
-			d.logger.Error("🏗️ Consider increasing MaxTokens in LLMClientAdapter")
-			d.logger.Error("🏗️ Response length: %d characters", len(response))
-			if len(response) > 1000 {
-				d.logger.Error("🏗️ Response end (last 500 chars): ...%s", response[len(response)-500:])
-			} else {
-				d.logger.Error("🏗️ Full response: %s", response)
-			}
+			// Likely response was truncated due to token limits
 			return nil, fmt.Errorf("JSON parsing failed - likely truncated due to token limit (%d tokens, %.1f%% of %d limit): %w",
 				responseTokens, float64(responseTokens)/float64(maxTokens)*100, maxTokens, err)
 		}
 
 		// Not a truncation issue, provide standard error with response details
-		d.logger.Error("🏗️ JSON parsing failed - response tokens: %d, limit: %d (%.1f%%)",
-			responseTokens, maxTokens, float64(responseTokens)/float64(maxTokens)*100)
-		if len(response) > 2000 {
-			d.logger.Error("🏗️ Response preview (first 1000 chars): %s...", response[:1000])
-			d.logger.Error("🏗️ Response preview (last 1000 chars): ...%s", response[len(response)-1000:])
-		} else {
-			d.logger.Error("🏗️ Full response: %s", response)
-		}
+		// Response analysis for debugging
 
 		return nil, baseErr
 	}
@@ -470,18 +433,11 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 		}
 
 		// Log the raw story_type value from JSON for debugging
-		d.logger.Info("🏗️ Raw story_type from JSON for '%s': '%s' (empty: %t)", requirement.Title, req.StoryType, req.StoryType == "")
 
 		// Validate story type and set default if invalid or missing
 		if !proto.IsValidStoryType(requirement.StoryType) {
-			if requirement.StoryType == "" {
-				d.logger.Info("🏗️ Story '%s' has EMPTY story_type, defaulting to 'app'", requirement.Title)
-			} else {
-				d.logger.Info("🏗️ Story '%s' has INVALID story_type '%s', defaulting to 'app'", requirement.Title, requirement.StoryType)
-			}
-			requirement.StoryType = string(proto.StoryTypeApp) // Default to app when uncertain
-		} else {
-			d.logger.Info("🏗️ Story '%s' classified as '%s'", requirement.Title, requirement.StoryType)
+			// Invalid or empty story type - default to app
+			requirement.StoryType = string(proto.StoryTypeApp)
 		}
 
 		if requirement.Title == "" {

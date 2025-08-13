@@ -15,7 +15,7 @@ import (
 
 // handlePlanReview processes the PLAN_REVIEW state using the Effects pattern.
 func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Determine the type of approval based on pending request.
+	// Determine approval type based on pending request
 	var approvalType proto.ApprovalType = proto.ApprovalTypePlan // default
 
 	if c.pendingApprovalRequest != nil {
@@ -30,14 +30,14 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		taskContent := c.getTaskContentForReview(sm)
 		storyID := c.GetStoryID() // Use the getter method I created
 		eff = effect.NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID)
-		c.contextManager.AddMessage("assistant", "Plan review phase: requesting architect approval")
+		c.contextManager.AddAssistantMessage("Plan review phase: requesting architect approval")
 
 	case proto.ApprovalTypeCompletion:
 		summary := c.getCompletionSummaryForReview(sm)
 		filesCreated := c.getFilesCreatedForReview(sm)
 		storyID := c.GetStoryID() // Use the getter method I created
 		eff = effect.NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID)
-		c.contextManager.AddMessage("assistant", "Completion review phase: requesting architect approval")
+		c.contextManager.AddAssistantMessage("Completion review phase: requesting architect approval")
 
 	default:
 		return proto.StateError, false, logx.Errorf("unsupported approval type: %s", approvalType)
@@ -83,10 +83,10 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStateMachine, approvalType proto.ApprovalType) (proto.State, bool, error) {
 	switch approvalType {
 	case proto.ApprovalTypePlan:
-		// Regular plan approved - configure container and proceed to coding.
+		// Regular plan approved - configure container and proceed to coding
 		c.logger.Info("🧑‍💻 Development plan approved, reconfiguring container for coding")
 
-		// Reconfigure container with read-write workspace for coding phase.
+		// Reconfigure container with read-write workspace for coding phase
 		if c.longRunningExecutor != nil {
 			if err := c.configureWorkspaceMount(ctx, false, "coding"); err != nil {
 				return proto.StateError, false, logx.Wrap(err, "failed to configure coding container")
@@ -97,10 +97,10 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 		return StateCoding, false, nil
 
 	case proto.ApprovalTypeCompletion:
-		// Completion request approved - story is complete.
+		// Completion request approved - story is complete
 		c.logger.Info("🧑‍💻 Story completion approved by architect, transitioning to DONE")
 
-		// Mark story as completed.
+		// Mark story as completed
 		sm.SetStateData(KeyStoryCompletedAt, time.Now().UTC())
 		sm.SetStateData(KeyCompletionStatus, "APPROVED")
 

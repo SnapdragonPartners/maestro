@@ -227,6 +227,8 @@ func (w *WorkspaceManager) CleanupWorkspace(ctx context.Context, agentID, storyI
 
 // CleanupAgentResources performs comprehensive cleanup of all agent resources.
 // This is the DRY method shared between orchestrator and agent SETUP state.
+//
+//nolint:dupl // TODO: Remove WorkspaceManager after migration is complete
 func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, containerName, agentWorkDir, stateDir string) error {
 	w.logger.Info("Starting comprehensive cleanup for agent %s", agentID)
 
@@ -280,6 +282,8 @@ func (w *WorkspaceManager) CleanupAgentResources(ctx context.Context, agentID, c
 }
 
 // ensureMirrorClone creates or updates the mirror clone.
+//
+//nolint:dupl // TODO: Remove WorkspaceManager after migration is complete
 func (w *WorkspaceManager) ensureMirrorClone(ctx context.Context) (string, error) {
 	mirrorPath := w.BuildMirrorPath()
 
@@ -483,6 +487,8 @@ func (w *WorkspaceManager) branchExists(branchName string, existingBranches []st
 }
 
 // createBranchWithRetry is the fallback method that uses trial-and-error (original approach).
+//
+//nolint:dupl // TODO: Remove WorkspaceManager after migration is complete
 func (w *WorkspaceManager) createBranchWithRetry(ctx context.Context, agentWorkDir, branchName string) (string, error) {
 	originalBranchName := branchName
 	attempt := 1

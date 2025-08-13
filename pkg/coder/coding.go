@@ -3,9 +3,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -21,37 +18,39 @@ import (
 
 // handleCoding processes the CODING state with priority-based work handling.
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Check for merge conflict (highest priority).
+	// Check for merge conflict (highest priority)
 	if conflictData, exists := sm.GetStateValue(KeyMergeConflictDetails); exists {
 		c.logger.Info("🧑‍💻 Handling merge conflict in CODING state")
 		return c.handleMergeConflictCoding(ctx, sm, conflictData)
 	}
 
-	// Check for code review feedback (second priority).
+	// Check for code review feedback (second priority)
 	if reviewData, exists := sm.GetStateValue(KeyCodeReviewRejectionFeedback); exists {
 		c.logger.Info("🧑‍💻 Handling code review feedback in CODING state")
 		return c.handleCodeReviewCoding(ctx, sm, reviewData)
 	}
 
-	// Check for test failures (third priority).
+	// Check for test failures (third priority)
 	if testData, exists := sm.GetStateValue(KeyTestFailureOutput); exists {
 		c.logger.Info("🧑‍💻 Handling test failures in CODING state")
 		return c.handleTestFixCoding(ctx, sm, testData)
 	}
 
-	// Default: Continue with initial coding.
+	// Default: Continue with initial coding
 	return c.handleInitialCoding(ctx, sm)
 }
 
 // handleInitialCoding handles the main coding workflow.
 func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	const maxCodingIterations = 8
-	if c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), maxCodingIterations, StateCoding) {
-		c.logger.Info("Coding budget exceeded, proceeding to testing")
-		return StateTesting, false, nil
+	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), maxCodingIterations, StateCoding); budgetExceeded {
+		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
+		// Store effect for BUDGET_REVIEW state to execute
+		sm.SetStateData("budget_review_effect", budgetReviewEff)
+		return StateBudgetReview, false, nil
 	}
 
-	// Continue coding with the main template.
+	// Continue coding with main template
 	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
 		"scenario": "initial_coding",
 		"message":  "Continue with code implementation based on your plan",
@@ -149,10 +148,19 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		return proto.StateError, false, logx.Wrap(err, "failed to render coding template")
 	}
 
+	// Reset context for new template (only if template type changed)
+	templateName := fmt.Sprintf("coding-%s", codingTemplate)
+	c.contextManager.ResetForNewTemplate(templateName, prompt)
+
 	// Log the rendered prompt for debugging
 	c.logger.Info("🧑‍💻 Starting coding phase for story_type '%s'", storyType)
 
 	// Get LLM response with MCP tool support.
+	// Flush user buffer before LLM request
+	if err := c.contextManager.FlushUserBuffer(); err != nil {
+		return proto.StateError, false, fmt.Errorf("failed to flush user buffer: %w", err)
+	}
+
 	// Build messages starting with the coding prompt.
 	messages := c.buildMessagesWithContext(prompt)
 
@@ -183,18 +191,22 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	sm.SetStateData(KeyConsecutiveEmptyResponses, 0)
 	c.logger.Debug("🧑‍💻 Successful LLM response - reset consecutive empty counter")
 
-	// Execute tool calls if any (MCP tools).
+	// Execute tool calls (MCP tools).
 	var filesCreated int
 	if len(resp.ToolCalls) > 0 {
 		filesCreated = c.executeMCPToolCalls(ctx, sm, resp.ToolCalls)
 	} else {
-		// Fallback: Parse response content for code blocks (legacy approach).
-		c.logger.Info("🧑‍💻 No tool calls found, attempting to parse code blocks from response")
-		filesCreated = c.parseAndCreateFiles(resp.Content)
+		// No tool calls found - this shouldn't happen with proper MCP tool usage
+		c.logger.Warn("🧑‍💻 No tool calls found in LLM response - expecting MCP tools for file operations")
+		filesCreated = 0
 	}
 
 	// Add assistant response to context.
-	c.contextManager.AddMessage("assistant", resp.Content)
+	// Handle LLM response with proper empty response logic
+	if err := c.handleLLMResponse(resp); err != nil {
+		// True empty response - this is an error condition
+		return proto.StateError, false, err
+	}
 
 	// Check if completion was signaled via Effects pattern - highest priority completion signal.
 	if completionData, exists := sm.GetStateValue(KeyCompletionSignaled); exists {
@@ -295,7 +307,7 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 
 				// Add the Q&A to context so the LLM can see it
 				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
-				c.contextManager.AddMessage("user", qaContent)
+				c.contextManager.AddMessage("architect-answer", qaContent)
 
 				// Continue with coding using the answer
 			} else {
@@ -396,333 +408,6 @@ func (c *Coder) isImplementationComplete(responseContent string, filesCreated in
 	return false
 }
 
-// File parsing and creation utilities for legacy code block parsing
-
-// isFilenameHeader checks if a line looks like a filename header.
-func (c *Coder) isFilenameHeader(line string) bool {
-	// Common patterns for filename headers.
-	patterns := []string{
-		`^#{1,6}\s+(.+\.(go|js|ts|py|java|cpp|h|c|rs|rb|php|swift|kt|scala|cs|dart|yaml|yml|json|xml|html|css|md|txt|sh|sql|Dockerfile|Makefile))`,
-		`^File:\s*(.+)`,
-		`^Filename:\s*(.+)`,
-		`^\*\*(.+\.(go|js|ts|py|java|cpp|h|c|rs|rb|php|swift|kt|scala|cs|dart|yaml|yml|json|xml|html|css|md|txt|sh|sql|Dockerfile|Makefile))\*\*`,
-	}
-
-	for _, pattern := range patterns {
-		if matched, _ := regexp.MatchString(pattern, line); matched {
-			return true
-		}
-	}
-	return false
-}
-
-// looksLikeCode performs heuristic analysis to determine if text looks like code.
-func (c *Coder) looksLikeCode(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		return false
-	}
-
-	// Programming language indicators.
-	codeIndicators := []string{
-		// Go
-		"package ", "func ", "import ", "type ", "var ", "const ", "defer ", "go ", "chan ", "select {",
-		// JavaScript/TypeScript
-		"function ", "const ", "let ", "var ", "import ", "export ", "class ", "{", "}", "=>",
-		// Python
-		"def ", "class ", "import ", "from ", "if __name__", "__init__", "self.", "return ",
-		// Java
-		"public class", "private ", "public ", "static ", "void ", "String ", "int ", "boolean ",
-		// C/C++
-		"#include", "int main", "printf", "struct ", "#define", "using namespace",
-		// Rust
-		"fn ", "let ", "mut ", "impl ", "struct ", "enum ", "use ", "mod ",
-		// Common patterns
-		"{", "}", "(", ")", ";", "//", "/*", "*/", "<!--", "-->",
-	}
-
-	for _, indicator := range codeIndicators {
-		if strings.Contains(trimmed, indicator) {
-			return true
-		}
-	}
-
-	// Check for indentation patterns common in code.
-	if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
-		return true
-	}
-
-	// Check for assignment operators.
-	assignmentOperators := []string{"=", "+=", "-=", "*=", "/=", ":=", "=>", "->"}
-	for _, op := range assignmentOperators {
-		if strings.Contains(trimmed, op) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// guessFilenameFromContent attempts to guess filename from code content.
-func (c *Coder) guessFilenameFromContent(line string) string {
-	// Look for language-specific patterns.
-	patterns := map[string]string{
-		`package\s+main`:                      "main.go",
-		`package\s+(\w+)`:                     "$1.go",
-		`class\s+(\w+)`:                       "$1.java",
-		`function\s+(\w+)`:                    "$1.js",
-		`def\s+(\w+)`:                         "$1.py",
-		`#include\s*<iostream>`:               "main.cpp",
-		`#include\s*<stdio.h>`:                "main.c",
-		`fn\s+main`:                           "main.rs",
-		`impl\s+(\w+)`:                        "$1.rs",
-		`struct\s+(\w+)`:                      "$1.h",
-		`interface\s+(\w+)`:                   "$1.ts",
-		`export\s+(default\s+)?class\s+(\w+)`: "$2.js",
-	}
-
-	for pattern, template := range patterns {
-		re := regexp.MustCompile(pattern)
-		if matches := re.FindStringSubmatch(line); matches != nil {
-			if len(matches) > 1 {
-				return strings.Replace(template, "$1", matches[1], 1)
-			}
-			return template
-		}
-	}
-
-	return ""
-}
-
-// guessFilenameFromContext looks at surrounding lines for context clues.
-func (c *Coder) guessFilenameFromContext(lines []string, startIdx int) string {
-	// Look in a window around the start index for filename clues.
-	start := startIdx - 5
-	if start < 0 {
-		start = 0
-	}
-	end := startIdx + 5
-	if end > len(lines) {
-		end = len(lines)
-	}
-
-	for i := start; i < end; i++ {
-		if filename := c.guessFilenameFromContent(lines[i]); filename != "" {
-			return filename
-		}
-	}
-
-	return "untitled.txt"
-}
-
-// parseAndCreateFiles extracts code blocks from LLM response and creates files.
-func (c *Coder) parseAndCreateFiles(content string) int {
-	lines := strings.Split(content, "\n")
-	filesCreated := 0
-
-	i := 0
-	for i < len(lines) {
-		line := strings.TrimSpace(lines[i])
-
-		// Skip empty lines.
-		if line == "" {
-			i++
-			continue
-		}
-
-		// Check for filename header.
-		if c.isFilenameHeader(line) {
-			filename := c.extractFilename(line)
-			if filename == "" {
-				i++
-				continue
-			}
-
-			// Look for code block start.
-			i++
-			var codeLines []string
-			inCodeBlock := false
-
-			// Skip to code block or start collecting code.
-			for i < len(lines) {
-				currentLine := lines[i]
-				trimmedLine := strings.TrimSpace(currentLine)
-
-				// Check for code block markers.
-				if strings.HasPrefix(trimmedLine, "```") {
-					if !inCodeBlock {
-						inCodeBlock = true
-						// Skip the opening marker.
-						i++
-						continue
-					}
-					// End of code block.
-					break
-				}
-
-				// If in code block or line looks like code, collect it.
-				if inCodeBlock || c.looksLikeCode(currentLine) {
-					codeLines = append(codeLines, currentLine)
-				} else if len(codeLines) > 0 {
-					// End of code section.
-					break
-				}
-
-				i++
-			}
-
-			// Create file if we have content.
-			if len(codeLines) > 0 {
-				fileContent := strings.Join(codeLines, "\n")
-				if err := c.writeFile(filename, fileContent); err != nil {
-					c.logger.Error("Failed to write file %s: %v", filename, err)
-				} else {
-					c.logger.Info("📝 Created file: %s (%d lines)", filename, len(codeLines))
-					filesCreated++
-				}
-			}
-		} else if strings.HasPrefix(line, "```") {
-			// Standalone code block without explicit filename.
-			filename := c.extractFilenameFromCodeBlock(line)
-			if filename == "" {
-				filename = c.guessFilenameFromContext(lines, i)
-			}
-
-			// Collect code block content.
-			i++
-			var codeLines []string
-			for i < len(lines) {
-				currentLine := lines[i]
-				if strings.HasPrefix(strings.TrimSpace(currentLine), "```") {
-					// End of code block.
-					break
-				}
-				codeLines = append(codeLines, currentLine)
-				i++
-			}
-
-			// Create file if we have content.
-			if len(codeLines) > 0 {
-				fileContent := strings.Join(codeLines, "\n")
-				if err := c.writeFile(filename, fileContent); err != nil {
-					c.logger.Error("Failed to write file %s: %v", filename, err)
-				} else {
-					c.logger.Info("📝 Created file: %s (%d lines)", filename, len(codeLines))
-					filesCreated++
-				}
-			}
-		}
-
-		i++
-	}
-
-	return filesCreated
-}
-
-// extractFilename extracts filename from a header line.
-func (c *Coder) extractFilename(line string) string {
-	// Try different patterns to extract filename.
-	patterns := []string{
-		`^#{1,6}\s+(.+)`,    // Markdown headers
-		`^File:\s*(.+)`,     // File: format
-		`^Filename:\s*(.+)`, // Filename: format
-		`^\*\*(.+)\*\*`,     // **filename**
-		`^(.+\.(go|js|ts|py|java|cpp|h|c|rs|rb|php|swift|kt|scala|cs|dart|yaml|yml|json|xml|html|css|md|txt|sh|sql|Dockerfile|Makefile))`, // Direct filename
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
-		if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-			filename := strings.TrimSpace(matches[1])
-			// Remove any remaining markdown formatting.
-			filename = strings.Trim(filename, "*`\"'")
-			return filename
-		}
-	}
-
-	return ""
-}
-
-// extractFilenameFromCodeBlock extracts filename from code block marker.
-func (c *Coder) extractFilenameFromCodeBlock(line string) string {
-	// Look for patterns like ```go:main.go or ```javascript:app.js
-	re := regexp.MustCompile(`^\s*` + "`" + `{3,}\s*\w*[:.](\S+)`)
-	if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-		return matches[1]
-	}
-
-	// Look for language hints to guess extension.
-	langMap := map[string]string{
-		"go":         ".go",
-		"javascript": ".js",
-		"js":         ".js",
-		"typescript": ".ts",
-		"ts":         ".ts",
-		"python":     ".py",
-		"py":         ".py",
-		"java":       ".java",
-		"cpp":        ".cpp",
-		"c":          ".c",
-		"rust":       ".rs",
-		"ruby":       ".rb",
-		"php":        ".php",
-		"swift":      ".swift",
-		"kotlin":     ".kt",
-		"scala":      ".scala",
-		"csharp":     ".cs",
-		"dart":       ".dart",
-		"yaml":       ".yml",
-		"json":       ".json",
-		"xml":        ".xml",
-		"html":       ".html",
-		"css":        ".css",
-		"markdown":   ".md",
-		"shell":      ".sh",
-		"bash":       ".sh",
-		"sql":        ".sql",
-		"dockerfile": "Dockerfile",
-		"makefile":   "Makefile",
-	}
-
-	re2 := regexp.MustCompile(`^\s*` + "`" + `{3,}\s*(\w+)`)
-	if matches := re2.FindStringSubmatch(line); len(matches) > 1 {
-		lang := strings.ToLower(matches[1])
-		if ext, exists := langMap[lang]; exists {
-			if strings.HasPrefix(ext, ".") {
-				return "main" + ext
-			}
-			return ext
-		}
-	}
-
-	return ""
-}
-
-// writeFile writes content to the specified file.
-func (c *Coder) writeFile(filename, content string) error {
-	// Ensure filename is safe and within workspace.
-	if strings.Contains(filename, "..") || filepath.IsAbs(filename) {
-		return fmt.Errorf("unsafe filename: %s", filename)
-	}
-
-	// Create full path within workspace.
-	fullPath := filepath.Join(c.workDir, filename)
-
-	// Create directory if needed.
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Write file.
-	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return nil
-}
-
-// handleCodingQuestionTransition - removed, now using single-phase approach via coding_question_pending flag
-
 // storeCodingContext stores the current coding context.
 func (c *Coder) storeCodingContext(sm *agent.BaseStateMachine) {
 	context := map[string]any{
@@ -763,11 +448,16 @@ func (c *Coder) handleEmptyResponseForBudgetReview(_ context.Context, sm *agent.
 
 		// Add placeholder assistant message to maintain alternation
 		placeholderResponse := sanitizeEmptyResponse("")
-		c.contextManager.AddMessage("assistant", placeholderResponse)
+		c.contextManager.AddAssistantMessage(placeholderResponse)
 
 		// Add guidance user message
 		guidanceMessage := "If you are done working and ready for testing and review, use the 'done' tool. If you are stuck for any other reason, use the 'ask_question' tool to get guidance on how to proceed."
-		c.contextManager.AddMessage("user", guidanceMessage)
+		c.contextManager.AddMessage("empty-response-guidance", guidanceMessage)
+
+		// Flush the user buffer so the guidance message is immediately available
+		if err := c.contextManager.FlushUserBuffer(); err != nil {
+			c.logger.Error("🧑‍💻 Failed to flush user buffer after adding guidance: %v", err)
+		}
 
 		c.logger.Info("🧑‍💻 Added completion guidance, continuing in CODING state")
 		return StateCoding, false, nil
@@ -776,38 +466,19 @@ func (c *Coder) handleEmptyResponseForBudgetReview(_ context.Context, sm *agent.
 	// Second or subsequent empty response: escalate to budget review
 	c.logger.Info("🧑‍💻 Consecutive empty response #%d - escalating to budget review", consecutiveCount+1)
 
-	// Instead of immediately failing, trigger budget review for architect guidance
-	content := "LLM returned multiple consecutive empty responses. The work may be complete but the agent is unable to proceed. How should I proceed?"
+	// Create empty response budget review effect
+	budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StateCoding), consecutiveCount+1)
 
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: content,
-		Reason:  "BUDGET_REVIEW: Multiple empty LLM responses, requesting guidance",
-		Type:    proto.ApprovalTypeBudgetReview,
-	}
+	// Set story ID for dispatcher validation
+	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+	budgetReviewEff.StoryID = storyID
 
-	// Store origin state for later use
+	// Store origin state and effect for BUDGET_REVIEW state to execute
 	sm.SetStateData(KeyOrigin, string(StateCoding))
-	sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
-	sm.SetStateData(string(stateDataKeyQuestionOrigin), string(StateCoding))
+	sm.SetStateData("budget_review_effect", budgetReviewEff)
 
 	// Add requesting permission message to preserve alternation
-	c.contextManager.AddMessage("assistant", "requesting permission to continue")
-
-	if c.dispatcher != nil {
-		requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
-		requestMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
-		requestMsg.SetPayload("approval_type", proto.ApprovalTypeBudgetReview.String())
-		requestMsg.SetPayload("content", content)
-		requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
-		requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-		requestMsg.SetPayload(KeyOrigin, string(StateCoding))
-
-		if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-			c.logger.Error("Failed to send budget review request: %v", err)
-			return proto.StateError, false, logx.Wrap(err, "failed to request budget review for empty response")
-		}
-	}
+	c.contextManager.AddAssistantMessage("requesting permission to continue")
 
 	// Transition to BUDGET_REVIEW state to wait for architect response
 	return StateBudgetReview, false, nil

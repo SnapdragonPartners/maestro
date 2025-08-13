@@ -4,6 +4,7 @@ package contextmgr
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"orchestrator/pkg/config"
 )
@@ -14,6 +15,13 @@ type Message struct {
 	Content string
 }
 
+// Fragment represents a piece of content with provenance tracking.
+type Fragment struct {
+	Timestamp  time.Time
+	Provenance string // Source of content: "tool-shell", "architect-feedback", etc.
+	Content    string
+}
+
 // ContextManagerInterface defines the new context management contract.
 type ContextManagerInterface interface {
 	// SystemPrompt returns the system prompt (always index 0)
@@ -22,8 +30,8 @@ type ContextManagerInterface interface {
 	Conversation() []Message
 	// ResetSystemPrompt sets a new system prompt, clearing conversation history
 	ResetSystemPrompt(content string)
-	// Append adds a message to the conversation with specified role
-	Append(role, content string)
+	// Append adds a message to the conversation with specified provenance
+	Append(provenance, content string)
 	// Compact performs context compaction if needed
 	Compact(maxTokens int) error
 	// CountTokens returns current token count
@@ -32,20 +40,34 @@ type ContextManagerInterface interface {
 	Clear()
 	// GetMessages returns all messages for backward compatibility
 	GetMessages() []Message
+	// FlushUserBuffer consolidates user buffer before LLM requests
+	FlushUserBuffer() error
+}
+
+// LLMContextManager extends ContextManagerInterface with LLM-specific methods.
+// This interface should only be used by LLM client implementations.
+type LLMContextManager interface {
+	ContextManagerInterface
+	// AddAssistantMessage adds assistant message directly to context (LLM layer only)
+	AddAssistantMessage(content string)
 }
 
 // ContextManager manages conversation context and token counting.
+// Each instance is owned by a single agent goroutine, so no synchronization is needed.
 //
-//nolint:govet // Simple struct, optimization not needed
+//nolint:govet // Field alignment less important than logical grouping
 type ContextManager struct {
-	messages    []Message
-	modelConfig *config.Model
+	messages        []Message     // Core conversation messages
+	userBuffer      []Fragment    // Buffer for user content with provenance
+	modelConfig     *config.Model // Model configuration for limits
+	currentTemplate string        // Current template name for change detection
 }
 
 // NewContextManager creates a new context manager instance.
 func NewContextManager() *ContextManager {
 	return &ContextManager{
-		messages: make([]Message, 0),
+		messages:   make([]Message, 0),
+		userBuffer: make([]Fragment, 0),
 	}
 }
 
@@ -53,30 +75,35 @@ func NewContextManager() *ContextManager {
 func NewContextManagerWithModel(modelConfig *config.Model) *ContextManager {
 	return &ContextManager{
 		messages:    make([]Message, 0),
+		userBuffer:  make([]Fragment, 0),
 		modelConfig: modelConfig,
 	}
 }
 
-// AddMessage stores a role/content pair in the context.
-func (cm *ContextManager) AddMessage(role, content string) {
-	// Basic validation - skip empty content to prevent context pollution.
+// AddMessage stores a provenance/content pair in the user buffer.
+// This replaces the old role-based API - all content goes to user buffer for later flushing.
+func (cm *ContextManager) AddMessage(provenance, content string) {
+	// Basic validation - skip empty content to prevent context pollution
 	if strings.TrimSpace(content) == "" {
 		return // Silently ignore empty messages
 	}
 
-	// Clean up role to prevent malformed context.
-	role = strings.TrimSpace(role)
-	if role == "" {
-		role = "assistant" // Default role for empty roles
+	// Clean up provenance to prevent malformed context
+	provenance = strings.TrimSpace(provenance)
+	if provenance == "" {
+		provenance = "unknown" // Default provenance for empty provenance
 	}
 
-	// Note: Role alternation validation removed - state transition messages were the root cause
+	// Universal tool output truncation to prevent context overload
+	content = cm.truncateOutputIfNeeded(strings.TrimSpace(content))
 
-	message := Message{
-		Role:    role,
-		Content: strings.TrimSpace(content),
+	// Add to user buffer with provenance tracking
+	fragment := Fragment{
+		Provenance: provenance,
+		Content:    content,
+		Timestamp:  time.Now(),
 	}
-	cm.messages = append(cm.messages, message)
+	cm.userBuffer = append(cm.userBuffer, fragment)
 }
 
 // SystemPrompt returns the system prompt (always index 0).
@@ -100,17 +127,18 @@ func (cm *ContextManager) Conversation() []Message {
 
 // ResetSystemPrompt sets a new system prompt, clearing conversation history.
 func (cm *ContextManager) ResetSystemPrompt(content string) {
-	// Clear all messages and set new system prompt
+	// Clear all messages and buffer, set new system prompt
 	cm.messages = []Message{{
 		Role:    "system",
 		Content: strings.TrimSpace(content),
 	}}
+	cm.userBuffer = cm.userBuffer[:0]
 }
 
-// Append adds a message to the conversation with specified role.
-func (cm *ContextManager) Append(role, content string) {
-	// Use existing AddMessage logic for validation and cleanup
-	cm.AddMessage(role, content)
+// Append adds a message to the conversation with specified provenance.
+func (cm *ContextManager) Append(provenance, content string) {
+	// Use existing AddMessage logic for validation, cleanup, and middleware
+	cm.AddMessage(provenance, content)
 }
 
 // Compact performs context compaction if needed.
@@ -127,6 +155,13 @@ func (cm *ContextManager) CountTokens() int {
 		// Count both role and content characters.
 		totalLength += len(message.Role) + len(message.Content)
 	}
+
+	// Also count buffered user content
+	for i := range cm.userBuffer {
+		fragment := &cm.userBuffer[i]
+		totalLength += len(fragment.Content)
+	}
+
 	return totalLength
 }
 
@@ -357,6 +392,7 @@ func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {
 // Clear removes all messages from the context.
 func (cm *ContextManager) Clear() {
 	cm.messages = cm.messages[:0]
+	cm.userBuffer = cm.userBuffer[:0]
 }
 
 // GetMessageCount returns the number of messages in the context.
@@ -434,6 +470,112 @@ func (cm *ContextManager) GetCompactionInfo() map[string]any {
 		info["available_for_reply"] = maxContext - currentTokens
 		info["compaction_threshold"] = maxContext - maxReply - buffer
 		info["tokens_over_threshold"] = currentTokens - (maxContext - maxReply - buffer)
+	}
+
+	return info
+}
+
+// ResetForNewTemplate resets the context and buffer when loading a new template.
+// This should be called when switching between template types (e.g., PLANNING ↔ CODING).
+func (cm *ContextManager) ResetForNewTemplate(templateName, systemPrompt string) {
+	// Only reset if this is actually a different template
+	if cm.currentTemplate == templateName {
+		return // Same template, preserve context
+	}
+
+	// Clear all messages and buffer, set new system prompt
+	cm.messages = []Message{{
+		Role:    "system",
+		Content: strings.TrimSpace(systemPrompt),
+	}}
+	cm.userBuffer = cm.userBuffer[:0]
+	cm.currentTemplate = templateName
+}
+
+// truncateOutputIfNeeded truncates verbose tool output to prevent context overload.
+// Implements centralized tool output truncation as recommended by expert guidance.
+func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
+	const maxOutputLength = 2000 // Maximum length for tool outputs
+
+	// Only truncate if content exceeds the limit
+	if len(content) <= maxOutputLength {
+		return content
+	}
+
+	// Truncate and add clear indicator
+	truncated := content[:maxOutputLength]
+	return truncated + "\n\n[... output truncated after " + fmt.Sprintf("%d", maxOutputLength) + " characters for context management ...]"
+}
+
+// FlushUserBuffer consolidates accumulated user messages into a single context message.
+// This should be called before each LLM request to ensure proper alternation.
+// Returns error if context compaction fails (indicating imminent token limit overflow).
+func (cm *ContextManager) FlushUserBuffer() error {
+	if len(cm.userBuffer) == 0 {
+		// Add fallback message for empty buffer
+		cm.messages = append(cm.messages, Message{
+			Role:    "user",
+			Content: "No response from user, please try something else",
+		})
+		// Still need to try compaction even with fallback message
+	}
+
+	// Consolidate buffer fragments into single user message (if any)
+	if len(cm.userBuffer) > 0 {
+		contentParts := make([]string, 0, len(cm.userBuffer))
+		for i := range cm.userBuffer {
+			fragment := &cm.userBuffer[i]
+			// Include provenance for debugging (optional)
+			contentParts = append(contentParts, fragment.Content)
+		}
+
+		combinedContent := strings.Join(contentParts, "\n\n")
+		cm.messages = append(cm.messages, Message{
+			Role:    "user",
+			Content: combinedContent,
+		})
+
+		// Clear the buffer
+		cm.userBuffer = cm.userBuffer[:0]
+	}
+
+	// Perform compaction after flushing but before LLM request
+	// Compaction failures indicate we would exceed LLM token limits, so fail fast
+	if err := cm.CompactIfNeeded(); err != nil {
+		return fmt.Errorf("context compaction failed before LLM request: %w", err)
+	}
+
+	return nil
+}
+
+// AddAssistantMessage adds an assistant message directly to context.
+// This method should only be called by LLM client implementations.
+func (cm *ContextManager) AddAssistantMessage(content string) {
+	// Assistant messages go directly to context (no mutex needed - single threaded per agent)
+	cm.messages = append(cm.messages, Message{
+		Role:    "assistant",
+		Content: strings.TrimSpace(content),
+	})
+	// Note: Compaction will be handled before the next LLM request, not here
+}
+
+// GetUserBufferInfo returns information about the current user buffer state.
+func (cm *ContextManager) GetUserBufferInfo() map[string]any {
+	info := map[string]any{
+		"fragment_count": len(cm.userBuffer),
+		"is_empty":       len(cm.userBuffer) == 0,
+	}
+
+	if len(cm.userBuffer) > 0 {
+		provenanceCounts := make(map[string]int)
+		totalLength := 0
+		for i := range cm.userBuffer {
+			fragment := &cm.userBuffer[i]
+			provenanceCounts[fragment.Provenance]++
+			totalLength += len(fragment.Content)
+		}
+		info["provenance_breakdown"] = provenanceCounts
+		info["total_buffer_length"] = totalLength
 	}
 
 	return info

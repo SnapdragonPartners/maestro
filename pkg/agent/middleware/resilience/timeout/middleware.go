@@ -21,7 +21,9 @@ func Middleware(duration time.Duration) llm.Middleware {
 				defer cancel()
 
 				// Execute the request with timeout context
-				return next.Complete(timeoutCtx, req)
+				resp, err := next.Complete(timeoutCtx, req)
+
+				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
 			// Stream implementation with timeout
 			func(ctx context.Context, req llm.CompletionRequest) (<-chan llm.StreamChunk, error) {

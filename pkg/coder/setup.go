@@ -12,16 +12,16 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-// handleSetup processes the SETUP state.
+// handleSetup processes the SETUP state
 //
 //nolint:unparam // bool return required by state machine interface, always false for non-terminal states
 func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	if c.workspaceManager == nil {
-		c.logger.Warn("No workspace manager configured, skipping Git worktree setup")
+	if c.cloneManager == nil {
+		c.logger.Warn("No clone manager configured, skipping Git clone setup")
 		return StatePlanning, false, nil
 	}
 
-	// Get story ID from state data.
+	// Get story ID from state data
 	storyID, exists := sm.GetStateValue(KeyStoryID)
 	if !exists {
 		return proto.StateError, false, logx.Errorf("no story_id found in state data during SETUP")
@@ -32,36 +32,36 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 		return proto.StateError, false, logx.Errorf("story_id is not a string in SETUP state: %v (type: %T)", storyID, storyID)
 	}
 
-	// Setup workspace.
+	// Setup workspace with lightweight clone
 	agentID := c.BaseStateMachine.GetAgentID()
-	// Make agent ID filesystem-safe using shared sanitization helper.
+	// Make agent ID filesystem-safe using shared sanitization helper
 	fsafeAgentID := utils.SanitizeIdentifier(agentID)
-	workspaceResult, err := c.workspaceManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
+	cloneResult, err := c.cloneManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
 	if err != nil {
 		c.logger.Error("Failed to setup workspace: %v", err)
 		return proto.StateError, false, logx.Wrap(err, "workspace setup failed")
 	}
 
-	// Store worktree path and actual branch name for subsequent states.
-	sm.SetStateData(KeyWorktreePath, workspaceResult.WorkDir)
-	sm.SetStateData(KeyActualBranchName, workspaceResult.BranchName)
+	// Store clone path and actual branch name for subsequent states
+	sm.SetStateData(KeyWorktreePath, cloneResult.WorkDir) // Keep key name for compatibility
+	sm.SetStateData(KeyActualBranchName, cloneResult.BranchName)
 
-	// Update the coder's working directory to use the agent work directory.
-	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place.
-	c.workDir = workspaceResult.WorkDir
-	c.logger.Info("Workspace setup complete: %s", workspaceResult.WorkDir)
+	// Update coder's working directory to use agent work directory
+	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place
+	c.workDir = cloneResult.WorkDir
+	c.logger.Info("Workspace setup complete: %s", cloneResult.WorkDir)
 	c.logger.Debug("Updated coder working directory to: %s", c.workDir)
 	c.logger.Debug("Coder instance pointer: %p, workDir: %s", c, c.workDir)
 
-	// Configure container with read-only workspace for planning phase.
+	// Configure container with read-only workspace for planning phase
 	if c.longRunningExecutor != nil {
 		if err := c.configureWorkspaceMount(ctx, true, "planning"); err != nil {
 			return proto.StateError, false, logx.Wrap(err, "failed to configure planning container")
 		}
 	}
 
-	// Tools are now registered globally by the orchestrator at startup.
-	// No need to register tools per-story or per-agent.
+	// Tools registered globally by orchestrator at startup
+	// No need to register tools per-story or per-agent
 
 	return StatePlanning, false, nil
 }
@@ -75,7 +75,7 @@ func (c *Coder) SetDockerImage(image string) {
 
 // configureWorkspaceMount configures container with readonly or readwrite workspace access.
 func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purpose string) error {
-	// Stop current container to reconfigure.
+	// Stop current container to reconfigure
 	if c.containerName != "" {
 		c.logger.Info("Stopping existing container %s to reconfigure for %s", c.containerName, purpose)
 		c.cleanupContainer(ctx, fmt.Sprintf("reconfigure for %s", purpose))
@@ -89,7 +89,7 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		c.logger.Info("DevOps story detected - running container as root for Docker access")
 	}
 
-	// Create execution options for the new container.
+	// Create execution options for new container
 	execOpts := execpkg.Opts{
 		WorkDir:         c.workDir,
 		ReadOnly:        readonly,
@@ -112,11 +112,11 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		execOpts.NetworkDisabled = false
 	}
 
-	// Use sanitized agent ID for container naming (story ID not accessible from here).
+	// Use sanitized agent ID for container naming (story ID not accessible from here)
 	agentID := c.GetID()
 	sanitizedAgentID := utils.SanitizeContainerName(agentID)
 
-	// Start new container with appropriate configuration.
+	// Start new container with appropriate configuration
 	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
 	if err != nil {
 		return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
@@ -125,10 +125,10 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	c.containerName = containerName
 	c.logger.Info("Started %s container: %s (readonly=%v)", purpose, containerName, readonly)
 
-	// Update shell tool to use the new container.
+	// Update shell tool to use new container
 	if err := c.updateShellToolForStory(ctx); err != nil {
 		c.logger.Error("Failed to update shell tool for new container: %v", err)
-		// Continue anyway - this shouldn't block the story.
+		// Continue anyway - this shouldn't block the story
 	}
 
 	return nil
@@ -153,7 +153,7 @@ func (c *Coder) cleanupContainer(ctx context.Context, reason string) {
 			c.logger.Info("Container %s stopped successfully", c.containerName)
 		}
 
-		// Clear container name.
+		// Clear container name
 		c.containerName = ""
 	}
 }

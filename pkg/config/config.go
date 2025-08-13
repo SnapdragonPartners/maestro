@@ -248,7 +248,7 @@ const (
 	ModelOpenAIO3Latest     = ModelOpenAIO3
 	ModelGPT5               = "gpt-5"
 	DefaultCoderModel       = ModelClaudeSonnet4
-	DefaultArchitectModel   = ModelOpenAIO3
+	DefaultArchitectModel   = ModelOpenAIO3Mini
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"

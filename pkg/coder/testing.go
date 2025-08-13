@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -20,7 +21,7 @@ import (
 
 // handleTesting processes the TESTING state.
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Get worktree path for running tests.
+	// Get worktree path for running tests
 	worktreePath, exists := sm.GetStateValue(KeyWorktreePath)
 	if !exists || worktreePath == "" {
 		return proto.StateError, false, logx.Errorf("no worktree path found - workspace setup required")
@@ -31,7 +32,7 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		return proto.StateError, false, logx.Errorf("worktree_path is not a string: %v", worktreePath)
 	}
 
-	// Get story type for testing strategy decision.
+	// Get story type for testing strategy decision
 	storyType := string(proto.StoryTypeApp) // Default to app
 	if storyTypeVal, exists := sm.GetStateValue(proto.KeyStoryType); exists {
 		if storyTypeStr, ok := storyTypeVal.(string); ok && proto.IsValidStoryType(storyTypeStr) {
@@ -50,51 +51,51 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 
 // handleAppStoryTesting handles testing for application stories using traditional build/test/lint flow.
 func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
-	// Use MCP test tool instead of direct build registry calls.
+	// Use MCP test tool instead of direct build registry calls
 	if c.buildService != nil {
-		// Get backend info first.
+		// Get backend info first
 		backendInfo, err := c.buildService.GetBackendInfo(worktreePathStr)
 		if err != nil {
 			c.logger.Error("Failed to get backend info: %v", err)
 			return proto.StateError, false, logx.Wrap(err, "failed to get backend info")
 		}
 
-		// Store backend information for context.
+		// Store backend information for context
 		sm.SetStateData(KeyBuildBackend, backendInfo.Name)
 		c.logger.Info("App story testing: using build service with backend %s", backendInfo.Name)
 
-		// Run tests using the build service.
+		// Run tests using build service
 		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, worktreePathStr)
 		if err != nil {
 			c.logger.Error("Failed to run tests: %v", err)
-			// Truncate error output to prevent context bloat.
+			// Create test failure effect with truncated error message
 			errorStr := err.Error()
 			truncatedError := truncateOutput(errorStr)
-			sm.SetStateData(KeyTestError, errorStr)               // Keep full error for logging
-			sm.SetStateData(KeyTestFailureOutput, truncatedError) // Use truncated for context
-			sm.SetStateData(KeyCodingMode, "test_fix")
-			return StateCoding, false, nil
+			sm.SetStateData(KeyTestError, errorStr) // Keep full error for logging
+
+			testFailureEff := effect.NewGenericTestFailureEffect(truncatedError)
+			return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 		}
 
-		// Store test results.
+		// Store test results
 		sm.SetStateData(KeyTestsPassed, testsPassed)
 		sm.SetStateData(KeyTestOutput, testOutput)
 		sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 		if !testsPassed {
 			c.logger.Info("App story tests failed, transitioning to CODING state for fixes")
-			// Truncate test output to prevent context bloat.
+			// Create test failure effect with truncated test output
 			truncatedOutput := truncateOutput(testOutput)
-			sm.SetStateData(KeyTestFailureOutput, truncatedOutput)
-			sm.SetStateData(KeyCodingMode, "test_fix")
-			return StateCoding, false, nil
+
+			testFailureEff := effect.NewGenericTestFailureEffect(truncatedOutput)
+			return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 		}
 
 		c.logger.Info("App story tests passed successfully")
 		return c.proceedToCodeReview()
 	}
 
-	// Fallback to legacy testing approach
+	// Use general testing approach for other story types
 	return c.handleLegacyTesting(ctx, sm, worktreePathStr)
 }
 
@@ -115,12 +116,13 @@ func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStat
 		c.logger.Info("DevOps story: validating Makefile targets")
 		if err := c.validateMakefileTargets(worktreePathStr); err != nil {
 			c.logger.Error("Makefile validation failed: %v", err)
+			// Create test failure effect with truncated error message
 			errorStr := err.Error()
 			truncatedError := truncateOutput(errorStr)
-			sm.SetStateData(KeyTestError, errorStr)
-			sm.SetStateData(KeyTestFailureOutput, truncatedError)
-			sm.SetStateData(KeyCodingMode, "test_fix")
-			return StateCoding, false, nil
+			sm.SetStateData(KeyTestError, errorStr) // Keep full error for logging
+
+			testFailureEff := effect.NewGenericTestFailureEffect(truncatedError)
+			return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 		}
 	}
 
@@ -148,9 +150,9 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	if globalConfig.Container == nil {
 		c.logger.Info("Container config not found - sending back to CODING for container_update")
 		feedback := "Container configuration missing. Use the 'container_update' tool to set up container configuration (name, dockerfile path) before building."
-		sm.SetStateData(KeyTestFailureOutput, feedback)
-		sm.SetStateData(KeyCodingMode, "container_config_setup")
-		return StateCoding, false, nil
+
+		testFailureEff := effect.NewContainerConfigSetupEffect(feedback)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 	}
 
 	containerConfig := globalConfig.Container
@@ -172,9 +174,9 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 				}
 				return ""
 			}())
-		sm.SetStateData(KeyTestFailureOutput, feedback)
-		sm.SetStateData(KeyCodingMode, "container_config_setup")
-		return StateCoding, false, nil
+
+		testFailureEff := effect.NewContainerConfigSetupEffect(feedback)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 	}
 
 	c.logger.Info("Container config found: name=%s, dockerfile=%s", containerConfig.Name, containerConfig.Dockerfile)
@@ -184,9 +186,9 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	if !buildSuccess {
 		c.logger.Error("Container build failed: %v", buildError)
 		feedback := fmt.Sprintf("Container build failed: %s\n\nPlease fix the Dockerfile or build issues and try again.", buildError)
-		sm.SetStateData(KeyTestFailureOutput, feedback)
-		sm.SetStateData(KeyCodingMode, "container_build_fix")
-		return StateCoding, false, nil
+
+		testFailureEff := effect.NewContainerBuildFailureEffect(feedback)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 	}
 
 	c.logger.Info("Container build successful, running boot test")
@@ -196,9 +198,9 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	if !bootSuccess {
 		c.logger.Error("Container boot test failed: %v", bootError)
 		feedback := fmt.Sprintf("Container build succeeded but boot test failed: %s\n\nThe container builds but doesn't run properly. Please fix the application startup or Dockerfile configuration.", bootError)
-		sm.SetStateData(KeyTestFailureOutput, feedback)
-		sm.SetStateData(KeyCodingMode, "container_runtime_fix")
-		return StateCoding, false, nil
+
+		testFailureEff := effect.NewContainerRuntimeFailureEffect(feedback)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 	}
 
 	c.logger.Info("Container infrastructure testing completed successfully")
@@ -209,6 +211,27 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 	return c.proceedToCodeReview()
+}
+
+// executeTestFailureAndTransition executes a test failure effect and transitions to CODING state.
+func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.BaseStateMachine, testFailureEff *effect.TestFailureEffect) (proto.State, bool, error) {
+	// Execute the test failure effect
+	result, err := c.ExecuteEffect(ctx, testFailureEff)
+	if err != nil {
+		c.logger.Error("🧪 Failed to execute test failure effect: %v", err)
+		return proto.StateError, false, logx.Wrap(err, "test failure effect execution failed")
+	}
+
+	// Process the result
+	if failureResult, ok := result.(*effect.TestFailureResult); ok {
+		c.logger.Info("🧪 Test failure processed: %s", failureResult.FailureType)
+		// Set state data for CODING state to use
+		sm.SetStateData(KeyTestFailureOutput, failureResult.FailureMessage)
+		sm.SetStateData(KeyCodingMode, failureResult.FailureType)
+		return StateCoding, false, nil
+	}
+
+	return proto.StateError, false, logx.Errorf("invalid test failure result type: %T", result)
 }
 
 // runContainerBuildTesting runs container_build tool directly for testing.
@@ -278,16 +301,16 @@ func (c *Coder) runContainerBootTesting(ctx context.Context, containerName strin
 	return false, "Container boot test completed but success status unclear"
 }
 
-// handleLegacyTesting handles the legacy testing approach for backward compatibility.
+// handleLegacyTesting handles the general testing approach for non-DevOps stories.
 func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
-	// Use global config singleton.
+	// Use global config singleton
 	globalConfig, err := config.GetConfig()
 	if err != nil {
 		c.logger.Error("Global config not available")
 		return proto.StateError, false, fmt.Errorf("global config not available: %w", err)
 	}
 
-	// Store platform information for context.
+	// Store platform information for context
 	platform := globalConfig.Project.PrimaryPlatform
 	sm.SetStateData(KeyBuildBackend, platform)
 
@@ -298,32 +321,32 @@ func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMach
 	}
 	_ = testCommand // Used in runMakeTest below
 
-	// Run tests using the detected backend.
+	// Run tests using detected backend
 	testsPassed, testOutput, err := c.runMakeTest(ctx, worktreePathStr)
 
-	// Store test results.
+	// Store test results
 	sm.SetStateData(KeyTestsPassed, testsPassed)
 	sm.SetStateData(KeyTestOutput, testOutput)
 	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 	if err != nil {
 		c.logger.Error("Failed to run tests: %v", err)
-		// Truncate error output to prevent context bloat.
+		// Create test failure effect with truncated error message
 		errorStr := err.Error()
 		truncatedError := truncateOutput(errorStr)
-		sm.SetStateData(KeyTestError, errorStr)               // Keep full error for logging
-		sm.SetStateData(KeyTestFailureOutput, truncatedError) // Use truncated for context
-		sm.SetStateData(KeyCodingMode, "test_fix")
-		return StateCoding, false, nil
+		sm.SetStateData(KeyTestError, errorStr) // Keep full error for logging
+
+		testFailureEff := effect.NewGenericTestFailureEffect(truncatedError)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 	}
 
 	if !testsPassed {
 		c.logger.Info("Tests failed, transitioning to CODING state for fixes")
-		// Truncate test output to prevent context bloat.
+		// Create test failure effect with truncated test output
 		truncatedOutput := truncateOutput(testOutput)
-		sm.SetStateData(KeyTestFailureOutput, truncatedOutput)
-		sm.SetStateData(KeyCodingMode, "test_fix")
-		return StateCoding, false, nil
+
+		testFailureEff := effect.NewGenericTestFailureEffect(truncatedOutput)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 	}
 
 	c.logger.Info("Tests passed successfully")
@@ -370,11 +393,11 @@ func truncateOutput(output string) string {
 func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, string, error) {
 	c.logger.Info("Running tests in %s", worktreePath)
 
-	// Create a context with timeout for the test execution.
+	// Create context with timeout for test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Use global config singleton for test command.
+	// Use global config singleton for test command
 	globalConfig, err := config.GetConfig()
 	if err != nil {
 		return false, "", fmt.Errorf("global config not available: %w", err)
@@ -388,7 +411,7 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 
 	c.logger.Info("Using %s platform for testing with command: %s", platform, testCommand)
 
-	// Execute test command using shell.
+	// Execute test command using shell
 	opts := execpkg.Opts{
 		WorkDir: worktreePath,
 		Timeout: 5 * time.Minute,
@@ -400,35 +423,35 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 	}
 	outputStr := result.Stdout + result.Stderr
 
-	// Log the test output for debugging.
+	// Log test output for debugging
 	c.logger.Info("Test output: %s", outputStr)
 
-	// Check if it's a timeout.
+	// Check if timeout occurred
 	if testCtx.Err() == context.DeadlineExceeded {
 		return false, outputStr, logx.Errorf("tests timed out after 5 minutes")
 	}
 
-	// Check test result based on exit code.
+	// Check test result based on exit code
 	if result.ExitCode != 0 {
-		// Tests failed - this is expected when tests fail.
+		// Tests failed - expected when tests fail
 		c.logger.Info("Tests failed with exit code: %d", result.ExitCode)
 		return false, outputStr, nil
 	}
 
-	// Tests succeeded.
+	// Tests succeeded
 	c.logger.Info("Tests completed successfully")
 	return true, outputStr, nil
 }
 
-// runTestWithBuildService runs tests using the build service instead of direct backend calls.
+// runTestWithBuildService runs tests using build service instead of direct backend calls.
 func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string) (bool, string, error) {
 	c.logger.Info("Running tests via build service in %s", worktreePath)
 
-	// Create a context with timeout for the test execution.
+	// Create context with timeout for test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Create test request.
+	// Create test request
 	req := &build.Request{
 		ProjectRoot: worktreePath,
 		Operation:   "test",
@@ -436,35 +459,35 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 		Context:     make(map[string]string),
 	}
 
-	// Execute test via build service.
+	// Execute test via build service
 	response, err := c.buildService.ExecuteBuild(testCtx, req)
 	if err != nil {
 		return false, "", logx.Wrap(err, "build service test execution failed")
 	}
 
-	// Log the test output for debugging.
+	// Log test output for debugging
 	c.logger.Info("Test output: %s", response.Output)
 
 	if !response.Success {
-		// Check if it's a timeout.
+		// Check if timeout occurred
 		if testCtx.Err() == context.DeadlineExceeded {
 			return false, response.Output, logx.Errorf("tests timed out after 5 minutes")
 		}
 
-		// Tests failed - this is expected when tests fail.
+		// Tests failed - expected when tests fail
 		c.logger.Info("Tests failed: %s", response.Error)
 		return false, response.Output, nil
 	}
 
-	// Tests succeeded.
+	// Tests succeeded
 	c.logger.Info("Tests completed successfully via build service")
 	return true, response.Output, nil
 }
 
 // proceedToCodeReview transitions to CODE_REVIEW state after successful testing.
 func (c *Coder) proceedToCodeReview() (proto.State, bool, error) {
-	// Tests passed, transition to CODE_REVIEW state.
-	// The approval request will be sent when entering the CODE_REVIEW state.
+	// Tests passed, transition to CODE_REVIEW state
+	// Approval request will be sent when entering CODE_REVIEW state
 	c.logger.Info("🧑‍💻 Tests completed successfully, transitioning to CODE_REVIEW")
 	return StateCodeReview, false, nil
 }

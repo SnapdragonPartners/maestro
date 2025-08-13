@@ -1,23 +1,13 @@
-.PHONY: build test test-integration test-all test-coverage check-coverage lint run clean agentctl replayer maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
+.PHONY: build test test-integration test-all test-coverage check-coverage lint run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
 
 # Build all binaries
 build: lint
 	go generate ./...
-	go build -o bin/maestro ./cmd/orchestrator
-	go build -o bin/agentctl ./cmd/agentctl
-	go build -o bin/replayer ./cmd/replayer
-
-# Build the agentctl CLI tool
-agentctl: lint
-	go build -o bin/agentctl ./cmd/agentctl
+	go build -o bin/maestro ./cmd/maestro
 
 # Build the maestro CLI tool
 maestro: lint
-	go build -o bin/maestro ./cmd/orchestrator
-
-# Build the replayer tool
-replayer: lint
-	go build -o bin/replayer ./cmd/replayer
+	go build -o bin/maestro ./cmd/maestro
 
 # Run all tests with coverage
 test:
@@ -97,6 +87,7 @@ fix: fix-imports fix-godot
 
 # Run linting tools
 lint: install-lint
+	go fmt ./...
 	golangci-lint run
 
 # Lint documentation (markdown files)

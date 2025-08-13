@@ -12,7 +12,7 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-// handleAwaitMerge processes the AWAIT_MERGE state using Effects pattern.
+// handleAwaitMerge processes the AWAIT_MERGE state using Effects pattern
 //
 //nolint:unparam // bool return is part of state machine interface
 func (c *Coder) handleAwaitMerge(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {

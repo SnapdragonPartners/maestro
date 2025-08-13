@@ -2,7 +2,6 @@ package coder
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -96,49 +95,4 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 	default:
 		return proto.StateError, false, logx.Errorf("unknown approval status: %s", result.Status)
 	}
-}
-
-// convertApprovalData converts various approval data formats to ApprovalResult.
-func convertApprovalData(data any) (*proto.ApprovalResult, error) {
-	// If data is nil or empty, return error indicating no approval data.
-	if data == nil {
-		return nil, logx.Errorf("no approval data available")
-	}
-
-	// If it's already the correct type, return it.
-	if result, ok := data.(*proto.ApprovalResult); ok {
-		return result, nil
-	}
-
-	// If it's a map (from JSON deserialization), convert it.
-	if dataMap, ok := data.(map[string]any); ok {
-		// Convert map to JSON and then to struct.
-		jsonData, err := json.Marshal(dataMap)
-		if err != nil {
-			return nil, logx.Wrap(err, "failed to marshal approval data")
-		}
-
-		var result proto.ApprovalResult
-		if err := json.Unmarshal(jsonData, &result); err != nil {
-			return nil, logx.Wrap(err, "failed to unmarshal approval data")
-		}
-
-		return &result, nil
-	}
-
-	// If it's a string (from cleanup or serialization), handle appropriately.
-	if str, ok := data.(string); ok {
-		// Empty string means no approval result (from cleanup).
-		if str == "" {
-			return nil, logx.Errorf("no approval data available")
-		}
-		// Non-empty string might be JSON-serialized approval result.
-		var result proto.ApprovalResult
-		if err := json.Unmarshal([]byte(str), &result); err != nil {
-			return nil, logx.Wrap(err, "failed to unmarshal approval data from string")
-		}
-		return &result, nil
-	}
-
-	return nil, logx.Errorf("unsupported approval data type: %T", data)
 }

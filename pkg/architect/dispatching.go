@@ -48,14 +48,8 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 
 	// Check if there are ready stories to dispatch.
 	if story := d.queue.NextReadyStory(); story != nil {
-		d.logger.Info("🏗️ Found ready story %s, dispatching to coder", story.ID)
-		if err := d.dispatchReadyStory(ctx, story.ID); err != nil {
-			// Dispatch failed - dispatcher already logged the details
-			// Just note we'll retry later (story remains ready in queue)
-			d.logger.Debug("🏗️ Story %s dispatch failed, will retry later", story.ID)
-		} else {
-			d.logger.Info("🏗️ Successfully dispatched story %s", story.ID)
-		}
+		// Attempt to dispatch the story (error handling is internal)
+		_ = d.dispatchReadyStory(ctx, story.ID)
 		// Transition to MONITORING after dispatch attempt (successful or not)
 		return StateMonitoring, nil
 	}
@@ -72,8 +66,6 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 
 // dispatchReadyStory assigns a ready story to an available agent.
 func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
-	d.logger.Info("🏗️ Dispatching ready story %s", storyID)
-
 	// Get the story from queue.
 	story, exists := d.queue.stories[storyID]
 	if !exists {
@@ -85,30 +77,23 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 	}
 
 	// Send to dispatcher via story message.
-	d.logger.Info("🏗️ Sending story %s to dispatcher", storyID)
 
 	return d.sendStoryToDispatcher(ctx, storyID)
 }
 
 // sendStoryToDispatcher sends a story to the dispatcher.
 func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) error {
-	d.logger.Info("🏗️ Sending story %s to dispatcher", storyID)
-
 	// Create story message for the dispatcher ("coder" targets any available coder).
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
 	storyMsg.SetPayload(proto.KeyStoryID, storyID)
 
-	d.logger.Info("🏗️ Created STORY message %s for story %s -> dispatcher", storyMsg.ID, storyID)
-
 	// Get story details.
 	if story, exists := d.queue.stories[storyID]; exists {
-		d.logger.Info("🏗️ Queue story StoryType for %s: '%s'", storyID, story.StoryType)
 		storyMsg.SetPayload(proto.KeyTitle, story.Title)
 		storyMsg.SetPayload(proto.KeyFilePath, story.FilePath)
 		storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
 		storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
 		storyMsg.SetPayload(proto.KeyStoryType, story.StoryType) // Pass actual story type
-		d.logger.Info("🏗️ Set story_type payload to '%s' for story %s", story.StoryType, storyID)
 
 		// Read and parse story content for the coder.
 		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
@@ -118,7 +103,6 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 			// Detect backend from story content and requirements.
 			backend := d.detectBackend(storyID, content, requirements)
 			storyMsg.SetPayload(proto.KeyBackend, backend)
-			d.logger.Info("🏗️ Detected backend '%s' for story %s", backend, storyID)
 		} else {
 			// Fallback to title if content parsing fails.
 			storyMsg.SetPayload(proto.KeyContent, story.Title)
@@ -127,12 +111,10 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 			// Default backend detection from title.
 			backend := d.detectBackend(storyID, story.Title, []string{})
 			storyMsg.SetPayload(proto.KeyBackend, backend)
-			d.logger.Info("🏗️ Detected backend '%s' for story %s (from title)", backend, storyID)
 		}
 	}
 
 	// Send story to dispatcher.
-	d.logger.Info("🏗️ Dispatching STORY message %s using Effects pattern", storyMsg.ID)
 
 	dispatchEffect := &DispatchStoryEffect{Story: storyMsg}
 	if err := d.ExecuteEffect(ctx, dispatchEffect); err != nil {
@@ -144,7 +126,6 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		return fmt.Errorf("failed to mark story as dispatched: %w", err)
 	}
 
-	d.logger.Info("🏗️ Successfully dispatched STORY message %s to dispatcher", storyMsg.ID)
 	return nil
 }
 
@@ -218,7 +199,7 @@ func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
 }
 
 // detectBackend analyzes story content and requirements to determine the appropriate backend.
-func (d *Driver) detectBackend(storyID, content string, requirements []string) string {
+func (d *Driver) detectBackend(_ /* storyID */, content string, requirements []string) string {
 	// Convert content to lowercase for case-insensitive matching.
 	contentLower := strings.ToLower(content)
 
@@ -284,7 +265,6 @@ func (d *Driver) detectBackend(storyID, content string, requirements []string) s
 	}
 
 	// Default to null backend if no specific backend detected.
-	d.logger.Info("🏗️ No specific backend detected for story %s, using null backend", storyID)
 	return "null"
 }
 

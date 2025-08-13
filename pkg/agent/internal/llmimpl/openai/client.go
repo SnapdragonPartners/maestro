@@ -37,9 +37,12 @@ func NewO3ClientWithModel(apiKey, model string) llm.LLMClient {
 
 // Complete implements the llm.LLMClient interface.
 func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	if o.model == "" {
 		o.model = "o3-mini"
 	}
+
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 
 	// Convert to OpenAI messages.
 	messages := make([]openai.ChatCompletionMessage, 0, len(in.Messages))
@@ -51,6 +54,8 @@ func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.
 		})
 	}
 
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
 	// Make API request.
 	resp, err := o.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:               o.model,
@@ -59,15 +64,27 @@ func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.
 		// Note: O3 models have beta limitations - temperature is fixed at 1.
 	})
 
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
 	if err != nil {
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 		return llm.CompletionResponse{}, fmt.Errorf("openai chat completion failed: %w", err)
 	}
 
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
 	if len(resp.Choices) == 0 {
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 		return llm.CompletionResponse{}, fmt.Errorf("empty response from OpenAI o3")
 	}
 
-	return llm.CompletionResponse{Content: resp.Choices[0].Message.Content}, nil
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
+	result := llm.CompletionResponse{Content: resp.Choices[0].Message.Content}
+
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
+	return result, nil
 }
 
 // Stream implements the llm.LLMClient interface.

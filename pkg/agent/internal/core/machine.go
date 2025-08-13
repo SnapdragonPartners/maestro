@@ -49,8 +49,8 @@ type StateMachine interface {
 	// Persist saves the current state to durable storage.
 	Persist() error
 
-	// CompactIfNeeded compacts state data if size threshold is exceeded.
-	CompactIfNeeded() error
+	// TruncateTransitionHistoryIfNeeded truncates old state transitions if history is too long.
+	TruncateTransitionHistoryIfNeeded() error
 }
 
 // StateData represents generic state storage.
@@ -292,17 +292,18 @@ func (sm *BaseStateMachine) Persist() error {
 	return nil
 }
 
-// CompactIfNeeded compacts state data if size threshold is exceeded.
-func (sm *BaseStateMachine) CompactIfNeeded() error {
+// TruncateTransitionHistoryIfNeeded truncates old state transitions if history is too long.
+// This is simple slice truncation for memory management, not LLM-based compaction.
+func (sm *BaseStateMachine) TruncateTransitionHistoryIfNeeded() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	const maxTransitions = 100 // Keep last 100 transitions
+	const maxTransitions = 100 // Keep last 100 transitions for debugging
 	if len(sm.transitions) > maxTransitions {
 		sm.transitions = sm.transitions[len(sm.transitions)-maxTransitions:]
 	}
 
-	// TODO: Add additional compaction strategies (e.g., for state data)
+	// TODO: Add similar truncation for other history if needed (not LLM-based compaction)
 	return nil
 }
 

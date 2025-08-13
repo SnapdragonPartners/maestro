@@ -17,7 +17,6 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	// Check for context cancellation first.
 	select {
 	case <-ctx.Done():
-		d.logger.Info("🏗️ Request processing cancelled due to context cancellation")
 		return StateError, fmt.Errorf("architect request processing cancelled: %w", ctx.Err())
 	default:
 	}
@@ -27,11 +26,8 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	// Get the current request from state data.
 	requestMsg, exists := d.stateData["current_request"].(*proto.AgentMsg)
 	if !exists || requestMsg == nil {
-		d.logger.Error("🏗️ No current request found in state data or request is nil")
 		return StateError, fmt.Errorf("no current request found")
 	}
-
-	d.logger.Info("🏗️ Processing %s request %s from %s", requestMsg.Type, requestMsg.ID, requestMsg.FromAgent)
 
 	// Persist request to database (fire-and-forget)
 	if d.persistenceChannel != nil {
@@ -125,24 +121,19 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 					err = d.handleRequeueRequest(ctx, requestMsg)
 					response = nil // No response needed for requeue messages
 				default:
-					d.logger.Error("🏗️ Unknown request kind: %s", kindStr)
 					return StateError, fmt.Errorf("unknown request kind: %s", kindStr)
 				}
 			} else {
-				d.logger.Error("🏗️ Request kind is not a string")
 				return StateError, fmt.Errorf("request kind is not a string")
 			}
 		} else {
-			d.logger.Error("🏗️ No kind field in REQUEST message")
 			return StateError, fmt.Errorf("no kind field in REQUEST message")
 		}
 	default:
-		d.logger.Error("🏗️ Unknown request type: %s", requestMsg.Type)
 		return StateError, fmt.Errorf("unknown request type: %s", requestMsg.Type)
 	}
 
 	if err != nil {
-		d.logger.Error("🏗️ Failed to process request %s: %v", requestMsg.ID, err)
 		return StateError, err
 	}
 
@@ -197,15 +188,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 						case proto.ResponseKindApproval, proto.ResponseKindExecution, proto.ResponseKindMerge, proto.ResponseKindRequeue:
 							agentResponse.ResponseType = persistence.ResponseTypeResult
 						default:
-							d.logger.Warn("🏗️ Unknown response kind '%s', defaulting to result type", kindStr)
 							agentResponse.ResponseType = persistence.ResponseTypeResult
 						}
 					} else {
-						d.logger.Warn("🏗️ Response kind field exists but is not a string (%T), defaulting to result type", kindRaw)
 						agentResponse.ResponseType = persistence.ResponseTypeResult
 					}
 				} else {
-					d.logger.Warn("🏗️ Response missing kind field, defaulting to result type")
 					agentResponse.ResponseType = persistence.ResponseTypeResult
 				}
 
@@ -253,7 +241,6 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 					}
 				}
 			default:
-				d.logger.Warn("🏗️ Unknown response type: %s", response.Type)
 			}
 
 			// Set correlation ID if present
@@ -307,11 +294,13 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 
 	// If we have LLM client, use it for more intelligent responses.
 	if d.llmClient != nil {
-		llmResponse, err := d.llmClient.GenerateResponse(ctx, fmt.Sprintf("Answer this coding question: %v", question))
+		prompt := fmt.Sprintf("Answer this coding question: %v", question)
+
+		// Get LLM response using centralized helper
+		llmAnswer, err := d.callLLMWithTemplate(ctx, prompt)
 		if err != nil {
-			d.logger.Warn("🏗️ LLM failed, using fallback answer: %v", err)
 		} else {
-			answer = llmResponse
+			answer = llmAnswer
 		}
 	}
 
@@ -364,7 +353,6 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	// Parse approval type from request.
 	approvalType, err := proto.ParseApprovalType(approvalTypeString)
 	if err != nil {
-		d.logger.Warn("🏗️ Invalid approval type %s, defaulting to plan", approvalTypeString)
 		approvalType = proto.ApprovalTypePlan
 	}
 
@@ -472,27 +460,27 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 			prompt = fmt.Sprintf("Review this request: %v", content)
 		}
 
-		llmResponse, err := d.llmClient.GenerateResponse(ctx, prompt)
+		// Get LLM response using centralized helper
+		llmFeedback, err := d.callLLMWithTemplate(ctx, prompt)
 		if err != nil {
-			d.logger.Warn("🏗️ LLM failed, using fallback approval: %v", err)
 		} else {
-			feedback = llmResponse
+			feedback = llmFeedback
 			// For completion requests, parse LLM response to determine approval.
 			if approvalType == proto.ApprovalTypeCompletion {
-				if strings.Contains(strings.ToUpper(llmResponse), "REJECTED") {
+				if strings.Contains(strings.ToUpper(feedback), "REJECTED") {
 					approved = false
 				}
 			}
 			// For budget review requests, parse structured response
 			if approvalType == proto.ApprovalTypeBudgetReview {
-				responseUpper := strings.ToUpper(llmResponse)
+				responseUpper := strings.ToUpper(feedback)
 				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
 					approved = false
 					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmResponse // Use the full LLM response as feedback
+					feedback = llmFeedback // Use the full LLM response as feedback
 				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
 					approved = false
-					feedback = llmResponse
+					feedback = llmFeedback
 				}
 				// APPROVED or any other response defaults to approved = true
 			}
@@ -506,20 +494,10 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 	if approved && approvalType == proto.ApprovalTypeCompletion {
 		// Extract story ID and mark as completed in queue.
 		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
-			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
-				if d.queue != nil {
-					d.logger.Info("🏗️ Marking story %s as completed in queue", storyIDStr)
-					if err := d.queue.MarkCompleted(storyIDStr); err != nil {
-						d.logger.Warn("🏗️ Failed to mark story %s as completed: %v", storyIDStr, err)
-					}
-				} else {
-					d.logger.Warn("🏗️ Queue is nil, cannot mark story %s as completed", storyIDStr)
-				}
-			} else {
-				d.logger.Warn("🏗️ Story ID is not a string or is empty: %v", storyIDPayload)
+			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" && d.queue != nil {
+				// Mark story as completed (ignore errors as this is fire-and-forget)
+				_ = d.queue.MarkCompleted(storyIDStr)
 			}
-		} else {
-			d.logger.Warn("🏗️ No story ID found in completion approval request")
 		}
 	}
 
@@ -575,34 +553,25 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 // handleRequeueRequest processes a REQUEUE message (fire-and-forget).
 func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *proto.AgentMsg) error {
 	storyID, _ := requeueMsg.GetPayload("story_id")
-	reason, _ := requeueMsg.GetPayload("reason")
 
 	storyIDStr, _ := storyID.(string)
-	reasonStr, _ := reason.(string)
-
-	d.logger.Info("🏗️ Processing story requeue request: story_id=%s, reason=%s, from=%s",
-		storyIDStr, reasonStr, requeueMsg.FromAgent)
 
 	if storyIDStr == "" {
-		d.logger.Error("🏗️ Requeue request missing story_id")
 		return fmt.Errorf("requeue request missing story_id")
 	}
 
 	// Load current queue state.
 	if d.queue == nil {
-		d.logger.Error("🏗️ No queue available for requeue")
 		return fmt.Errorf("no queue available")
 	}
 
 	// Mark story as pending for reassignment.
 	if err := d.queue.MarkPending(storyIDStr); err != nil {
-		d.logger.Error("🏗️ Failed to requeue story %s: %v", storyIDStr, err)
 		return fmt.Errorf("failed to requeue story %s: %w", storyIDStr, err)
 	}
 
 	// Log the requeue event - this will appear in the architect logs.
-	d.logger.Info("🏗️ Story %s successfully requeued due to: %s (from agent %s)",
-		storyIDStr, reasonStr, requeueMsg.FromAgent)
+	// Requeue completed successfully
 
 	return nil
 }
@@ -618,8 +587,6 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 	branchNameStr, _ := branchName.(string)
 	storyIDStr, _ := storyID.(string)
 
-	d.logger.Info("🏗️ Processing merge request for story %s, PR: %s, branch: %s", storyIDStr, prURLStr, branchNameStr)
-
 	// Attempt merge using GitHub CLI.
 	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, branchNameStr, storyIDStr)
 
@@ -634,24 +601,20 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 
 	if err != nil || (mergeResult != nil && mergeResult.HasConflicts) {
 		if err != nil {
-			d.logger.Info("🏗️ Merge failed with error for story %s: %v", storyIDStr, err)
 			resultMsg.SetPayload("status", "merge_error")
 			resultMsg.SetPayload("error_details", err.Error())
 		} else {
-			d.logger.Info("🏗️ Merge failed with conflicts for story %s", storyIDStr)
 			resultMsg.SetPayload("status", "merge_conflict")
 			resultMsg.SetPayload("conflict_details", mergeResult.ConflictInfo)
 		}
 	} else {
-		d.logger.Info("🏗️ Merge successful for story %s, commit: %s", storyIDStr, mergeResult.CommitSHA)
 		resultMsg.SetPayload("status", "merged")
 		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
 
 		// Mark story as completed in queue.
 		if d.queue != nil {
-			if err := d.queue.MarkCompleted(storyIDStr); err != nil {
-				d.logger.Warn("🏗️ Failed to mark story %s as completed: %v", storyIDStr, err)
-			}
+			// Mark story as completed (ignore errors as this is fire-and-forget)
+			_ = d.queue.MarkCompleted(storyIDStr)
 		}
 	}
 
@@ -669,8 +632,6 @@ type MergeAttemptResult struct {
 
 // attemptPRMerge attempts to merge a PR using GitHub CLI.
 func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID string) (*MergeAttemptResult, error) {
-	d.logger.Info("🏗️ Attempting to merge PR: %s, branch: %s", prURL, branchName)
-
 	// Use gh CLI to merge PR with squash strategy and branch deletion.
 	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -689,7 +650,6 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 		if branchName == "" {
 			return nil, fmt.Errorf("no PR URL or branch name provided for merge")
 		}
-		d.logger.Info("🏗️ No PR URL provided, checking for existing PR for branch: %s", branchName)
 
 		// First, try to find an existing PR for this branch.
 		listCmd := exec.CommandContext(mergeCtx, "gh", "pr", "list", "--head", branchName, "--json", "number,url")
@@ -697,12 +657,10 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 
 		if listErr == nil && len(listOutput) > 0 && string(listOutput) != "[]" {
 			// Found existing PR, try to merge it.
-			d.logger.Info("🏗️ Found existing PR for branch %s, attempting merge", branchName)
 			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
 			output, err = cmd.CombinedOutput()
 		} else {
 			// No PR found, create one first then merge.
-			d.logger.Info("🏗️ No existing PR found for branch %s, creating PR first", branchName)
 
 			// Create PR.
 			createCmd := exec.CommandContext(mergeCtx, "gh", "pr", "create",
@@ -716,7 +674,6 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 				return nil, fmt.Errorf("failed to create PR for branch %s: %w\nOutput: %s", branchName, createErr, string(createOutput))
 			}
 
-			d.logger.Info("🏗️ Created PR for branch %s, now attempting merge", branchName)
 			// Now try to merge the newly created PR.
 			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
 			output, err = cmd.CombinedOutput()
@@ -732,32 +689,16 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 		// Check if error is due to merge conflicts.
 		outputStr := strings.ToLower(string(output))
 		if strings.Contains(outputStr, "conflict") || strings.Contains(outputStr, "merge conflict") {
-			mergeTarget := prURL
-			if mergeTarget == "" {
-				mergeTarget = branchName
-			}
-			d.logger.Info("🏗️ Merge conflicts detected for %s", mergeTarget)
 			result.HasConflicts = true
 			result.ConflictInfo = string(output)
 			return result, nil // Not an error, just conflicts
 		}
 
 		// Other error (permissions, network, etc.).
-		mergeTarget := prURL
-		if mergeTarget == "" {
-			mergeTarget = branchName
-		}
-		d.logger.Error("🏗️ Failed to merge %s: %v\nOutput: %s", mergeTarget, err, string(output))
 		return nil, fmt.Errorf("gh pr merge failed: %w\nOutput: %s", err, string(output))
 	}
 
-	// Success - extract commit SHA from output if available.
-	outputStr := string(output)
-	mergeTarget := prURL
-	if mergeTarget == "" {
-		mergeTarget = branchName
-	}
-	d.logger.Info("🏗️ Merge successful for %s\nOutput: %s", mergeTarget, outputStr)
+	// Success - merge completed successfully
 
 	// TODO: Parse commit SHA from gh output if needed
 	result.CommitSHA = "merged" // Placeholder until we parse actual SHA
@@ -898,7 +839,6 @@ Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with sp
 	// Render template
 	prompt, err := d.renderer.Render(templateName, templateData)
 	if err != nil {
-		d.logger.Warn("🏗️ Failed to render budget review template: %v", err)
 		// Fallback to simple text
 		return fmt.Sprintf(`Budget Review Request
 

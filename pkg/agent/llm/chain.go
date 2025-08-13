@@ -19,7 +19,10 @@ type clientFunc struct {
 }
 
 func (f clientFunc) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	return f.complete(ctx, req)
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	resp, err := f.complete(ctx, req)
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	return resp, err
 }
 
 func (f clientFunc) Stream(ctx context.Context, req CompletionRequest) (<-chan StreamChunk, error) {

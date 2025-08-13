@@ -104,13 +104,10 @@ func (d *Driver) ExecuteEffect(ctx context.Context, eff effect.Effect) error {
 
 // ExecuteEffects executes multiple Effects in sequence.
 func (d *Driver) ExecuteEffects(ctx context.Context, effects ...effect.Effect) error {
-	runtime := NewRuntime(d.dispatcher, d.logger, d.architectID)
-
 	for i, eff := range effects {
 		d.logger.Debug("Executing effect %d/%d", i+1, len(effects))
 
-		_, err := eff.Execute(ctx, runtime)
-		if err != nil {
+		if err := d.ExecuteEffect(ctx, eff); err != nil {
 			return fmt.Errorf("effect %d failed: %w", i+1, err)
 		}
 	}

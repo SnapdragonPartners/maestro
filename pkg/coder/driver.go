@@ -42,7 +42,7 @@ type Coder struct {
 	renderer                *templates.Renderer
 	logger                  *logx.Logger
 	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
-	workspaceManager        *WorkspaceManager              // Git worktree management
+	cloneManager            *CloneManager                  // Git clone management
 	buildRegistry           *build.Registry                // Build backend registry
 	buildService            *build.Service                 // Build service for MCP tools
 	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
@@ -206,18 +206,7 @@ const (
 	stateDataKeyCodingIterations         stateDataKey = "coding_iterations"
 	stateDataKeyPlanningIterations       stateDataKey = "planning_iterations"
 
-	// BUDGET_REVIEW and other state keys.
-	stateDataKeyQuestionReason      stateDataKey = "question_reason"
-	stateDataKeyQuestionOrigin      stateDataKey = "question_origin"
-	stateDataKeyQuestionContent     stateDataKey = "question_content"
-	stateDataKeyBudgetReviewAction  stateDataKey = "budget_review_action"
-	stateDataKeyErrorMessage        stateDataKey = "error_msg"
-	stateDataKeyLoops               stateDataKey = "loops"
-	stateDataKeyMaxLoops            stateDataKey = "max_loops"
-	stateDataKeyQuestionAnswered    stateDataKey = "question_answered"
-	stateDataKeyQuestionCompletedAt stateDataKey = "question_completed_at"
-	stateDataKeyCompletionSubmitted stateDataKey = "completion_submitted"
-	stateDataKeyAwaitingCompletion  stateDataKey = "awaiting_completion_approval"
+	// BUDGET_REVIEW and other state keys - removed unused constants.
 )
 
 // PlanTodo represents a single task item in the implementation plan.
@@ -408,27 +397,35 @@ func (c *Coder) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChan
 	c.logger.Info("🧑‍💻 Coder %s state notification channel set", c.GetID())
 }
 
-// SetWorkspaceManager sets the workspace manager (for testing).
-func (c *Coder) SetWorkspaceManager(wm *WorkspaceManager) {
-	c.workspaceManager = wm
-	if wm != nil && c.longRunningExecutor != nil {
-		wm.SetContainerManager(c.longRunningExecutor)
+// SetCloneManager sets the clone manager (for testing).
+func (c *Coder) SetCloneManager(cm *CloneManager) {
+	c.cloneManager = cm
+	if cm != nil && c.longRunningExecutor != nil {
+		cm.SetContainerManager(c.longRunningExecutor)
 	}
 }
 
-// NewCoder creates a new coder using agent foundation.
-func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClient, workDir string, buildService *build.Service, logger *logx.Logger) (*Coder, error) {
-	if llmClient == nil {
-		return nil, logx.Errorf("LLM client is required")
+// NewCoder creates a new coder with LLM integration.
+// The API key is automatically retrieved from environment variables.
+func NewCoder(agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service) (*Coder, error) {
+	// Create LLM client using DRY helper function (same as architect)
+	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeCoder)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
 	}
 
-	// Tools are now auto-registered via init() functions in the tools package
+	// Create basic coder - use helper to inline the basic construction
+	logger := logx.NewLogger(agentID)
 
-	// Use provided logger or create a default one.
-	if logger == nil {
-		logger = logx.NewLogger(agentID)
+	// Validate work directory exists
+	if workDir == "" {
+		return nil, logx.Errorf("work directory is required")
+	}
+	if mkdirErr := os.MkdirAll(workDir, 0755); mkdirErr != nil {
+		return nil, logx.Wrap(mkdirErr, "failed to create work directory")
 	}
 
+	// Create template renderer
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -439,7 +436,7 @@ func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClie
 	agentCtx := &agent.Context{
 		Context: context.Background(),
 		Logger:  log.New(os.Stdout, fmt.Sprintf("[%s] ", agentID), log.LstdFlags),
-		Store:   nil, // REMOVED: Filesystem state store - state persistence is now handled by SQLite
+		Store:   nil, // State persistence handled by SQLite
 		WorkDir: workDir,
 	}
 
@@ -455,16 +452,10 @@ func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClie
 		},
 	}
 
-	// Use canonical transition table from fsm package - single source of truth.
-	// This ensures driver behavior exactly matches STATES.md specification.
-	// IMPORTANT: Use nil state store to prevent loading stale state on agent restarts.
-	// Agent state will be managed by SQLite for system-level resume functionality.
+	// Create state machine
 	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, nil, CoderTransitions)
 
-	// Use default coding budget
-	codingBudget := 8 // Default coding budget
-
-	// Create build registry first so we can use it for Docker image selection.
+	// Create build registry
 	buildRegistry := build.NewRegistry()
 
 	coder := &Coder{
@@ -475,50 +466,18 @@ func NewCoder(agentID string, modelConfig *config.Model, llmClient agent.LLMClie
 		llmClient:           llmClient,
 		renderer:            renderer,
 		workDir:             workDir,
-		originalWorkDir:     workDir, // Store original work directory for cleanup
+		originalWorkDir:     workDir,
 		logger:              logger,
 		dispatcher:          nil, // Will be set during Attach()
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
-		codingBudget:        codingBudget,
+		codingBudget:        8, // Default coding budget
 		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(workDir), agentID),
 		containerName:       "", // Will be set during setup
 	}
 
-	// Timeout wrapper is now applied at the ProcessState level via agent.ProcessStateWithGlobalTimeout
-
-	return coder, nil
-}
-
-// NewCoderWithClaude creates a new coder with LLM integration (for live mode).
-// The API key is automatically retrieved from environment variables.
-func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, _ string, workspaceManager *WorkspaceManager, buildService *build.Service) (*Coder, error) {
-	// Get the current configuration to build LLM client with middleware
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get configuration: %w", err)
-	}
-
-	// Create LLM client factory
-	factory, err := agent.NewLLMClientFactory(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
-	}
-
-	// Create initial coder client without metrics context (circular dependency)
-	llmClient, err := factory.CreateClient(agent.TypeCoder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
-	}
-
-	// Create coder with LLM integration.
-	coder, err := NewCoder(agentID, modelConfig, llmClient, workDir, buildService, nil)
-	if err != nil {
-		return nil, err
-	}
-
 	// Now that we have the coder (StateProvider), create enhanced client with metrics context
-	enhancedClient, err := factory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
+	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeCoder, coder, coder.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
 	}
@@ -526,15 +485,40 @@ func NewCoderWithClaude(agentID, _, workDir string, modelConfig *config.Model, _
 	// Replace the client with the enhanced version
 	coder.llmClient = enhancedClient
 
-	// Set the workspace manager.
-	coder.workspaceManager = workspaceManager
+	// Set the clone manager.
+	coder.cloneManager = cloneManager
 
-	// Configure workspace manager with container manager for comprehensive cleanup.
-	if workspaceManager != nil && coder.longRunningExecutor != nil {
-		workspaceManager.SetContainerManager(coder.longRunningExecutor)
+	// Configure clone manager with container manager for comprehensive cleanup.
+	if cloneManager != nil && coder.longRunningExecutor != nil {
+		cloneManager.SetContainerManager(coder.longRunningExecutor)
 	}
 
 	return coder, nil
+}
+
+// handleLLMResponse handles LLM responses with proper empty response logic (same as architect).
+func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
+	if resp.Content != "" {
+		// Case 1: Normal response with content
+		c.contextManager.AddAssistantMessage(resp.Content)
+		return nil
+	}
+
+	if len(resp.ToolCalls) > 0 {
+		// Case 2: Pure tool use - add placeholder for conversational continuity
+		toolNames := make([]string, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolNames[i] = resp.ToolCalls[i].Name
+		}
+		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
+		c.contextManager.AddAssistantMessage(placeholder)
+		return nil
+	}
+
+	// Case 3: True empty response - this is an error condition
+	// DO NOT add any message to context - let upstream handle the error
+	c.logger.Error("🚨 TRUE EMPTY RESPONSE: No content and no tool calls")
+	return logx.Errorf("LLM returned empty response with no content and no tool calls")
 }
 
 // getRecentToolActivity returns a summary of the last N tool calls and their results.
@@ -663,9 +647,9 @@ func (c *Coder) detectIssuePattern() string {
 	return strings.Join(issues, "; ")
 }
 
-// checkLoopBudget tracks loop counts and triggers BUDGET_REVIEW when budget is exceeded.
-// Returns true if budget exceeded and BUDGET_REVIEW should be triggered.
-func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin proto.State) bool {
+// checkLoopBudget tracks loop counts and creates BudgetReviewEffect when budget is exceeded.
+// Returns (BudgetReviewEffect, bool) - effect to execute and whether budget was exceeded.
+func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget int, origin proto.State) (*effect.BudgetReviewEffect, bool) {
 	// Get current iteration count.
 	var iterationCount int
 	if val, exists := sm.GetStateValue(key); exists {
@@ -680,62 +664,43 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 
 	// Check if budget exceeded.
 	if iterationCount >= budget {
-		// Send REQUEST message for BUDGET_REVIEW approval.
+		// Create budget review request content
 		content := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
-
-		c.pendingApprovalRequest = &ApprovalRequest{
-			ID:      proto.GenerateApprovalID(),
-			Content: content,
-			Reason:  "BUDGET_REVIEW: Loop budget exceeded, requesting guidance",
-			Type:    proto.ApprovalTypeBudgetReview,
-		}
 
 		// Store origin state for later use.
 		sm.SetStateData(KeyOrigin, string(origin))
 
-		// Set the expected state data for BUDGET_REVIEW questions.
-		sm.SetStateData(string(stateDataKeyQuestionReason), "BUDGET_REVIEW")
-		sm.SetStateData(string(stateDataKeyQuestionOrigin), string(origin))
-		sm.SetStateData(string(stateDataKeyLoops), iterationCount)
-		sm.SetStateData(string(stateDataKeyMaxLoops), budget)
-
-		if c.dispatcher != nil {
-			requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, c.GetID(), "architect")
-			requestMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
-			requestMsg.SetPayload("approval_type", proto.ApprovalTypeBudgetReview.String())
-			requestMsg.SetPayload("content", content)
-			requestMsg.SetPayload("reason", c.pendingApprovalRequest.Reason)
-			requestMsg.SetPayload("approval_id", c.pendingApprovalRequest.ID)
-			requestMsg.SetPayload(KeyOrigin, string(origin))
-			requestMsg.SetPayload("loops", iterationCount)
-			requestMsg.SetPayload("max_loops", budget)
-
-			// Add story context
-			if storyID := utils.GetStateValueOr[string](sm, KeyStoryID, ""); storyID != "" {
-				requestMsg.SetPayload("story_id", storyID)
-			}
-
-			// Add resource usage information
-			requestMsg.SetPayload("context_size", c.contextManager.CountTokens()) // Real data
-			requestMsg.SetPayload("phase_tokens", 0)                              // TODO: Track per-phase
-			requestMsg.SetPayload("phase_cost_usd", 0.0)                          // TODO: Track per-phase
-			requestMsg.SetPayload("total_llm_calls", 0)                           // TODO: Count calls
-
-			// Add activity analysis
-			requestMsg.SetPayload("recent_activity", c.getRecentToolActivity(5))
-			requestMsg.SetPayload("issue_pattern", c.detectIssuePattern())
-
-			if err := c.dispatcher.DispatchMessage(requestMsg); err != nil {
-				c.logger.Error("🧑‍💻 Failed to send BUDGET_REVIEW request: %v", err)
-			} else {
-				c.logger.Info("🧑‍💻 Sent BUDGET_REVIEW request %s to architect for %s state", c.pendingApprovalRequest.ID, origin)
-			}
+		// Create BudgetReviewEffect with comprehensive payload
+		extraPayload := map[string]any{
+			"loops":           iterationCount,
+			"max_loops":       budget,
+			"context_size":    c.contextManager.CountTokens(),
+			"recent_activity": c.getRecentToolActivity(5),
+			"issue_pattern":   c.detectIssuePattern(),
+			"phase_tokens":    0,   // TODO: Track per-phase
+			"phase_cost_usd":  0.0, // TODO: Track per-phase
+			"total_llm_calls": 0,   // TODO: Count calls
 		}
 
-		return true
+		// Add story context
+		if storyID := utils.GetStateValueOr[string](sm, KeyStoryID, ""); storyID != "" {
+			extraPayload["story_id"] = storyID
+		}
+
+		budgetReviewEffect := &effect.BudgetReviewEffect{
+			Content:      content,
+			Reason:       "BUDGET_REVIEW: Loop budget exceeded, requesting guidance",
+			OriginState:  string(origin),
+			StoryID:      utils.GetStateValueOr[string](sm, KeyStoryID, ""),
+			TargetAgent:  "architect",
+			Timeout:      5 * time.Minute, // Standard timeout for budget reviews
+			ExtraPayload: extraPayload,
+		}
+
+		return budgetReviewEffect, true
 	}
 
-	return false
+	return nil, false
 }
 
 // ProcessState implements the v2 FSM state machine logic.
@@ -846,44 +811,6 @@ func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 }
 
 // handleRequestBlocking provides the blocking message receipt logic for approval requests.
-func (c *Coder) handleRequestBlocking(ctx context.Context, sm *agent.BaseStateMachine, resultKey stateDataKey, currentState proto.State) (proto.State, bool, error) {
-	c.logger.Debug("🧑‍💻 Blocking in approval state, waiting for architect RESULT...")
-	select {
-	case <-ctx.Done():
-		return proto.StateError, false, fmt.Errorf("coder request blocking cancelled: %w", ctx.Err())
-	case resultMsg, ok := <-c.replyCh:
-		if !ok {
-			// Channel closed by dispatcher - abnormal shutdown
-			c.logger.Info("🧑‍💻 Reply channel closed, transitioning to ERROR")
-			return proto.StateError, true, fmt.Errorf("reply channel closed unexpectedly")
-		}
-
-		if resultMsg == nil {
-			// This shouldn't happen with proper channel management, but handle gracefully
-			c.logger.Warn("🧑‍💻 Received nil RESULT message on open channel")
-			return currentState, false, nil
-		}
-
-		if resultMsg.Type == proto.MsgTypeRESPONSE {
-			c.logger.Info("🧑‍💻 Received RESPONSE message %s for approval", resultMsg.ID)
-
-			// Extract approval result and store it.
-			if approvalData, exists := resultMsg.GetPayload("approval_result"); exists {
-				c.logger.Debug("🧑‍💻 Storing approval data: key=%s, type=%T, value=%+v", resultKey, approvalData, approvalData)
-				sm.SetStateData(string(resultKey), approvalData)
-				c.logger.Info("🧑‍💻 Approval result received and stored")
-				// Return same state to re-process with the new approval data.
-				return currentState, false, nil
-			} else {
-				c.logger.Error("🧑‍💻 RESULT message missing approval_result payload")
-				return proto.StateError, false, logx.Errorf("RESULT message missing approval_result")
-			}
-		} else {
-			c.logger.Warn("🧑‍💻 Received unexpected message type: %s", resultMsg.Type)
-			return currentState, false, nil
-		}
-	}
-}
 
 // GetPendingApprovalRequest returns whether there's a pending approval request.
 func (c *Coder) GetPendingApprovalRequest() (bool, string, string, string, proto.ApprovalType) {

@@ -16,11 +16,11 @@ import (
 //
 //nolint:govet // Configuration struct, logical grouping preferred
 type Phase struct {
-	projectRoot      string
-	buildRegistry    *build.Registry
-	logger           *logx.Logger
-	config           *Config
-	workspaceManager *coder.WorkspaceManager
+	projectRoot   string
+	buildRegistry *build.Registry
+	logger        *logx.Logger
+	config        *Config
+	cloneManager  *coder.CloneManager
 }
 
 // Config holds bootstrap configuration options.
@@ -60,24 +60,23 @@ func NewPhase(projectRoot string, config *Config) *Phase {
 		config = DefaultConfig()
 	}
 
-	// Create workspace manager for git operations using the same pattern as coder.
+	// Create clone manager for git operations using the same pattern as coder.
 	gitRunner := coder.NewDefaultGitRunner()
-	workspaceManager := coder.NewWorkspaceManager(
+	cloneManager := coder.NewCloneManager(
 		gitRunner,
 		filepath.Dir(projectRoot), // Use parent of projectRoot as projectWorkDir
 		config.RepoURL,
 		config.TargetBranch,
 		".mirrors",
 		"bootstrap-{STORY_ID}", // Won't be used since we commit to main
-		"{STORY_ID}",           // Won't be used since we use projectRoot directly
 	)
 
 	return &Phase{
-		projectRoot:      projectRoot,
-		buildRegistry:    build.NewRegistry(),
-		logger:           logx.NewLogger("bootstrap"),
-		config:           config,
-		workspaceManager: workspaceManager,
+		projectRoot:   projectRoot,
+		buildRegistry: build.NewRegistry(),
+		logger:        logx.NewLogger("bootstrap"),
+		config:        config,
+		cloneManager:  cloneManager,
 	}
 }
 
@@ -214,20 +213,20 @@ func (p *Phase) generateArtifacts(ctx context.Context, backend build.Backend, wo
 	return artifacts, nil
 }
 
-// setupWorkspace uses WorkspaceManager to create a workspace for bootstrap operations.
+// setupWorkspace uses CloneManager to create a workspace for bootstrap operations.
 func (p *Phase) setupWorkspace(ctx context.Context) (string, error) {
 	// For bootstrap, we'll use a dummy story ID since we're working directly on main.
-	// The important thing is that we get a proper worktree from the mirror.
+	// The important thing is that we get a proper clone from the mirror.
 	dummyStoryID := "bootstrap"
 	agentID := "bootstrap"
 
 	// Use projectRoot as the agent work directory for bootstrap.
-	workspaceResult, err := p.workspaceManager.SetupWorkspace(ctx, agentID, dummyStoryID, p.projectRoot)
+	cloneResult, err := p.cloneManager.SetupWorkspace(ctx, agentID, dummyStoryID, p.projectRoot)
 	if err != nil {
 		return "", fmt.Errorf("failed to setup workspace: %w", err)
 	}
 
-	return workspaceResult.WorkDir, nil
+	return cloneResult.WorkDir, nil
 }
 
 // commitToMain commits the bootstrap artifacts directly to the main branch.

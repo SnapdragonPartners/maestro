@@ -9,25 +9,19 @@ import (
 
 // handleWaiting blocks until a spec message or question is received.
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
-	d.logger.Info("🏗️ Architect waiting for spec or question...")
-
 	select {
 	case <-ctx.Done():
-		d.logger.Info("🏗️ Architect WAITING state context cancelled")
 		return StateError, fmt.Errorf("architect waiting cancelled: %w", ctx.Err())
 	case specMsg, ok := <-d.specCh:
 		if !ok {
 			// Channel closed by dispatcher - abnormal shutdown
-			d.logger.Info("🏗️ Spec channel closed, transitioning to ERROR")
 			return StateError, fmt.Errorf("spec channel closed unexpectedly")
 		}
 
 		if specMsg == nil {
 			// This shouldn't happen with proper channel management, but handle gracefully
-			d.logger.Warn("🏗️ Received nil spec message on open channel")
 			return StateWaiting, nil
 		}
-		d.logger.Info("🏗️ Architect received spec message %s, transitioning to SCOPING", specMsg.ID)
 
 		// Store the spec message for processing in SCOPING state.
 		d.stateData["spec_message"] = specMsg
@@ -36,13 +30,11 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	case questionMsg, ok := <-d.questionsCh:
 		if !ok {
 			// Channel closed by dispatcher - abnormal shutdown
-			d.logger.Info("🏗️ Questions channel closed, transitioning to ERROR")
 			return StateError, fmt.Errorf("questions channel closed unexpectedly")
 		}
 
 		if questionMsg == nil {
 			// This shouldn't happen with proper channel management, but handle gracefully
-			d.logger.Warn("🏗️ Received nil question message on open channel")
 			return StateWaiting, nil
 		}
 		// Question message received, transitioning to REQUEST state for processing

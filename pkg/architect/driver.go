@@ -5,6 +5,7 @@ package architect
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -22,64 +23,12 @@ const (
 	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
 )
 
-// LLMClient defines the interface for language model interactions.
-type LLMClient interface {
-	// GenerateResponse generates a response given a prompt.
-	GenerateResponse(ctx context.Context, prompt string) (string, error)
-}
-
-// LLMClientToAgentAdapter adapts architect LLMClient to agent.LLMClient.
-type LLMClientToAgentAdapter struct {
-	client LLMClient
-}
-
-// Complete implements the agent.LLMClient interface for completion requests.
-func (a *LLMClientToAgentAdapter) Complete(ctx context.Context, req agent.CompletionRequest) (agent.CompletionResponse, error) {
-	// Convert the first message to a prompt.
-	if len(req.Messages) == 0 {
-		return agent.CompletionResponse{}, fmt.Errorf("no messages in completion request")
-	}
-
-	prompt := req.Messages[0].Content
-
-	// Call the architect's LLMClient.
-	response, err := a.client.GenerateResponse(ctx, prompt)
-	if err != nil {
-		return agent.CompletionResponse{}, logx.Wrap(err, "architect LLM completion failed")
-	}
-
-	// Convert back to agent format.
-	return agent.CompletionResponse{
-		Content: response,
-	}, nil
-}
-
-// Stream implements the agent.LLMClient interface for streaming requests.
-func (a *LLMClientToAgentAdapter) Stream(ctx context.Context, req agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
-	// Simple implementation: call Complete and stream the result as a single chunk.
-	response, err := a.Complete(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a channel and send the response as a single chunk.
-	ch := make(chan agent.StreamChunk, 1)
-	ch <- agent.StreamChunk{
-		Content: response.Content,
-		Done:    true,
-		Error:   nil,
-	}
-	close(ch)
-
-	return ch, nil
-}
-
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
 	currentState       proto.State
 	stateData          map[string]any
 	contextManager     *contextmgr.ContextManager
-	llmClient          LLMClient                   // LLM for intelligent responses
+	llmClient          agent.LLMClient             // LLM for intelligent responses
 	renderer           *templates.Renderer         // Template renderer for prompts
 	queue              *Queue                      // Story queue manager
 	escalationHandler  *EscalationHandler          // Escalation handler
@@ -95,7 +44,7 @@ type Driver struct {
 }
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID string, modelConfig *config.Model, llmClient LLMClient, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -132,27 +81,49 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient LLMClien
 	}
 }
 
+// NewArchitect creates a new architect with LLM integration.
+// The API key is automatically retrieved from environment variables.
+func NewArchitect(architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+	// Architect constructor with model configuration validation
+
+	// Create basic LLM client using helper
+	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeArchitect)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
+	}
+
+	// Create architect with LLM integration
+	architect := NewDriver(architectID, modelConfig, llmClient, dispatcher, workDir, orchestratorConfig, persistenceChannel)
+
+	// Enhance client with metrics context now that we have the architect (StateProvider)
+	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeArchitect, architect, architect.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create enhanced architect LLM client: %w", err)
+	}
+
+	// Replace the client with the enhanced version
+	architect.llmClient = enhancedClient
+
+	return architect, nil
+}
+
 // SetChannels sets the communication channels from the dispatcher.
 func (d *Driver) SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	d.specCh = specCh
 	d.questionsCh = questionsCh
 	d.replyCh = replyCh
-
-	d.logger.Info("🏗️ Architect %s channels set: spec=%p questions=%p reply=%p", d.architectID, specCh, questionsCh, replyCh)
 }
 
 // SetDispatcher sets the dispatcher reference (already set in constructor, but required for interface).
 func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 	// Architect already has dispatcher from constructor, but update it for consistency.
 	d.dispatcher = dispatcher
-	d.logger.Info("🏗️ Architect %s dispatcher set: %p", d.architectID, dispatcher)
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
 func (d *Driver) SetStateNotificationChannel(_ /* stateNotifCh */ chan<- *proto.StateChangeNotification) {
 	// TODO: Implement state change notifications for architect
 	// For now, just log that it's set - architect uses different state management.
-	d.logger.Info("🏗️ Architect %s state notification channel set", d.architectID)
 }
 
 // Initialize sets up the driver and loads any existing state.
@@ -199,6 +170,12 @@ func (d *Driver) GetID() string {
 	return d.architectID
 }
 
+// GetStoryID returns the current story ID (implements StateProvider interface for metrics).
+// Architects don't work on individual stories, so return empty string.
+func (d *Driver) GetStoryID() string {
+	return "" // Architects coordinate stories but don't work on individual ones
+}
+
 // Shutdown implements Agent interface with context.
 func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
 	// Call the original shutdown method.
@@ -209,10 +186,8 @@ func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
 // shutdown is the internal shutdown method.
 func (d *Driver) shutdown() {
 	// No filesystem state persistence - clean shutdown
-	d.logger.Info("🏗️ Architect %s shutting down cleanly (no state persistence)", d.architectID)
 
 	// Channels are owned by dispatcher, no cleanup needed here.
-	d.logger.Info("🏗️ Architect %s shutdown completed", d.architectID)
 }
 
 // Step implements agent.Driver interface - executes one state transition.
@@ -241,8 +216,6 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 
 // Run starts the architect's state machine loop in WAITING state.
 func (d *Driver) Run(ctx context.Context) error {
-	d.logger.Info("🏗️ Architect %s starting state machine", d.architectID)
-
 	// Ensure channels are attached.
 	if d.specCh == nil || d.questionsCh == nil {
 		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
@@ -253,33 +226,25 @@ func (d *Driver) Run(ctx context.Context) error {
 	d.stateData = make(map[string]any)
 	d.stateData["started_at"] = time.Now().UTC()
 
-	d.logger.Info("🏗️ Architect ready in WAITING state")
-
 	// Run the state machine loop.
 	for {
 		// Check context cancellation.
 		select {
 		case <-ctx.Done():
-			d.logger.Info("🏗️ Architect state machine context cancelled")
 			return fmt.Errorf("architect context cancelled: %w", ctx.Err())
 		default:
 		}
 
 		// Check if we're already in a terminal state.
 		if d.currentState == StateDone || d.currentState == StateError {
-			d.logger.Info("🏗️ Architect state machine reached terminal state: %s", d.currentState)
 			break
 		}
 
-		// Log state processing (only for non-waiting states to reduce noise).
-		if d.currentState != StateWaiting {
-			d.logger.Info("🏗️ Architect processing state: %s", d.currentState)
-		}
+		// State processing (WAITING states are handled quietly)
 
 		// Process current state.
 		nextState, err := d.processCurrentState(ctx)
 		if err != nil {
-			d.logger.Error("🏗️ Architect state processing error in %s: %v", d.currentState, err)
 			// Transition to error state.
 			d.transitionTo(ctx, StateError, map[string]any{
 				"error":        err.Error(),
@@ -291,14 +256,9 @@ func (d *Driver) Run(ctx context.Context) error {
 		// Transition to next state (always call transitionTo - let it handle self-transitions).
 		d.transitionTo(ctx, nextState, nil)
 
-		// Compact context if needed.
-		if err := d.contextManager.CompactIfNeeded(); err != nil {
-			// Log warning but don't fail.
-			d.logger.Warn("context compaction failed: %v", err)
-		}
+		// Context compaction now handled automatically by middleware in contextManager.AddMessage()
 	}
 
-	d.logger.Info("🏗️ Architect state machine completed")
 	return nil
 }
 
@@ -363,12 +323,7 @@ func (d *Driver) transitionTo(_ context.Context, newState proto.State, additiona
 
 	// No filesystem state persistence - state transitions are tracked in memory only
 
-	// Enhanced logging for debugging.
-	if oldState != newState {
-		d.logger.Info("🏗️ Architect state transition: %s → %s", oldState, newState)
-	} else {
-		d.logger.Info("🏗️ Architect staying in state: %s", oldState)
-	}
+	// State transition completed
 }
 
 // GetCurrentState returns the current state of the driver.
@@ -405,6 +360,38 @@ func (d *Driver) GetContextSummary() string {
 	return d.contextManager.GetContextSummary()
 }
 
+// handleLLMResponse handles LLM responses with proper empty response logic (same as coder).
+func (d *Driver) handleLLMResponse(resp agent.CompletionResponse) error {
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
+	if resp.Content != "" {
+		// Case 1: Normal response with content
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+		d.contextManager.AddAssistantMessage(resp.Content)
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+		return nil
+	}
+
+	if len(resp.ToolCalls) > 0 {
+		// Case 2: Pure tool use - add placeholder for conversational continuity
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+		toolNames := make([]string, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolNames[i] = resp.ToolCalls[i].Name
+		}
+		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
+		d.contextManager.AddAssistantMessage(placeholder)
+		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+		return nil
+	}
+
+	// Case 3: True empty response - this is an error condition
+	// DO NOT add any message to context - let upstream handle the error
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	d.logger.Error("🚨 TRUE EMPTY RESPONSE: No content and no tool calls")
+	return logx.Errorf("LLM returned empty response with no content and no tool calls")
+}
+
 // GetQueue returns the queue manager for external access.
 func (d *Driver) GetQueue() *Queue {
 	return d.queue
@@ -421,4 +408,60 @@ func (d *Driver) GetStoryList() []*QueuedStory {
 // GetEscalationHandler returns the escalation handler for external access.
 func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
+}
+
+// buildMessagesWithContext creates completion messages with context history (same as coder).
+// This centralizes the pattern used across architect LLM calls with context isolation.
+func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
+	messages := []agent.CompletionMessage{
+		{Role: agent.RoleUser, Content: initialPrompt},
+	}
+
+	// Add conversation history from context manager (same as coder pattern).
+	// For architect, we typically reset context between templates, but if context exists, include it.
+	contextMessages := d.contextManager.GetMessages()
+	for i := range contextMessages {
+		msg := &contextMessages[i]
+		messages = append(messages, agent.CompletionMessage{
+			Role:    agent.CompletionRole(msg.Role),
+			Content: msg.Content,
+		})
+	}
+
+	return messages
+}
+
+// callLLMWithTemplate renders a template and gets LLM response using the same pattern as coder.
+// This helper centralizes the architect's LLM call pattern with proper context management.
+func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string, error) {
+	// Flush user buffer before LLM request (same as coder)
+	if err := d.contextManager.FlushUserBuffer(); err != nil {
+		return "", fmt.Errorf("failed to flush user buffer: %w", err)
+	}
+
+	// Build messages with context (same pattern as coder)
+	messages := d.buildMessagesWithContext(prompt)
+
+	req := agent.CompletionRequest{
+		Messages:  messages,
+		MaxTokens: agent.ArchitectMaxTokens,
+	}
+
+	// Get LLM response using same pattern as coder
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	resp, err := d.llmClient.Complete(ctx, req)
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	if err != nil {
+		return "", fmt.Errorf("LLM completion failed: %w", err)
+	}
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
+	// Handle LLM response with proper empty response logic (same as coder)
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	if err := d.handleLLMResponse(resp); err != nil {
+		return "", fmt.Errorf("LLM response handling failed: %w", err)
+	}
+	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
+	return resp.Content, nil
 }
