@@ -117,6 +117,8 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 					response, err = d.handleQuestionRequest(ctx, requestMsg)
 				case proto.RequestKindApproval:
 					response, err = d.handleApprovalRequest(ctx, requestMsg)
+				case proto.RequestKindMerge:
+					response, err = d.handleMergeRequest(ctx, requestMsg)
 				case proto.RequestKindRequeue:
 					err = d.handleRequeueRequest(ctx, requestMsg)
 					response = nil // No response needed for requeue messages
@@ -451,8 +453,24 @@ COMPLETION CLAIM:
 - Evidence: %v  
 - Confidence: %v
 
-Please evaluate if the story requirements are truly satisfied based on the evidence provided. 
-Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback on what's missing]".`,
+Please evaluate if the story requirements are truly satisfied based on the evidence provided.
+
+## Decision Options:
+
+**APPROVED** - Story is truly complete
+- Use when all requirements are fully satisfied
+- Effect: Story will be marked as DONE
+
+**NEEDS_CHANGES** - Missing work identified  
+- Use when coder missed requirements or needs additional work (tests, docs, validation, etc.)
+- Effect: Returns to PLANNING to address missing items
+
+**REJECTED** - Story approach is fundamentally flawed
+- Use when approach is wrong or story is impossible  
+- Effect: Story is abandoned
+
+## Response Format:
+Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]", or "REJECTED: [fundamental issues]".`,
 				originalStory, reason, evidence, confidence)
 		case proto.ApprovalTypeBudgetReview:
 			prompt = d.generateBudgetReviewPrompt(requestMsg)
@@ -465,14 +483,34 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 		if err != nil {
 		} else {
 			feedback = llmFeedback
-			// For completion requests, parse LLM response to determine approval.
+			// For completion requests, parse three-status response
 			if approvalType == proto.ApprovalTypeCompletion {
-				if strings.Contains(strings.ToUpper(feedback), "REJECTED") {
+				responseUpper := strings.ToUpper(feedback)
+				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
 					approved = false
+					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
+					feedback = llmFeedback // Use the full LLM response as feedback
+				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
+					approved = false
+					feedback = llmFeedback
 				}
+				// APPROVED or any other response defaults to approved = true
 			}
 			// For budget review requests, parse structured response
 			if approvalType == proto.ApprovalTypeBudgetReview {
+				responseUpper := strings.ToUpper(feedback)
+				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
+					approved = false
+					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
+					feedback = llmFeedback // Use the full LLM response as feedback
+				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
+					approved = false
+					feedback = llmFeedback
+				}
+				// APPROVED or any other response defaults to approved = true
+			}
+			// For code review requests, parse three-status response
+			if approvalType == proto.ApprovalTypeCode {
 				responseUpper := strings.ToUpper(feedback)
 				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
 					approved = false
@@ -522,8 +560,26 @@ Respond with either "APPROVED: [brief reason]" or "REJECTED: [specific feedback 
 				// Default to rejected for REJECTED or unknown negative responses
 				approvalResult.Status = proto.ApprovalStatusRejected
 			}
+		} else if approvalType == proto.ApprovalTypeCode && feedback != "" {
+			// For code reviews, parse the LLM response to preserve NEEDS_CHANGES vs REJECTED
+			responseUpper := strings.ToUpper(feedback)
+			if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
+				approvalResult.Status = proto.ApprovalStatusNeedsChanges
+			} else {
+				// Default to rejected for REJECTED or unknown negative responses
+				approvalResult.Status = proto.ApprovalStatusRejected
+			}
+		} else if approvalType == proto.ApprovalTypeCompletion && feedback != "" {
+			// For completion requests, parse the LLM response to preserve NEEDS_CHANGES vs REJECTED
+			responseUpper := strings.ToUpper(feedback)
+			if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
+				approvalResult.Status = proto.ApprovalStatusNeedsChanges
+			} else {
+				// Default to rejected for REJECTED or unknown negative responses
+				approvalResult.Status = proto.ApprovalStatusRejected
+			}
 		} else {
-			// For non-budget reviews, default to rejected
+			// For other approval types, default to rejected
 			approvalResult.Status = proto.ApprovalStatusRejected
 		}
 	}

@@ -67,12 +67,24 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		c.logger.Info("🧑‍💻 %s approved by architect", approvalType)
 		return c.handlePlanReviewApproval(ctx, sm, approvalType)
 
-	case proto.ApprovalStatusRejected, proto.ApprovalStatusNeedsChanges:
-		c.logger.Info("🧑‍💻 %s rejected/needs changes, returning to PLANNING", approvalType)
+	case proto.ApprovalStatusNeedsChanges:
+		c.logger.Info("🧑‍💻 %s needs changes, returning to PLANNING with feedback", approvalType)
 		if approvalResult.Feedback != "" {
 			c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
 		}
 		return StatePlanning, false, nil
+
+	case proto.ApprovalStatusRejected:
+		if approvalType == proto.ApprovalTypeCompletion {
+			c.logger.Error("🧑‍💻 Completion request rejected by architect: %s", approvalResult.Feedback)
+			return proto.StateError, false, logx.Errorf("completion rejected by architect: %s", approvalResult.Feedback)
+		} else {
+			c.logger.Info("🧑‍💻 %s rejected, returning to PLANNING with feedback", approvalType)
+			if approvalResult.Feedback != "" {
+				c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
+			}
+			return StatePlanning, false, nil
+		}
 
 	default:
 		return proto.StateError, false, logx.Errorf("unknown %s approval status: %s", approvalType, approvalResult.Status)

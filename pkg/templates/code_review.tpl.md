@@ -67,30 +67,60 @@ Evaluate the implementation for:
 7. **Documentation**: Adequate comments and documentation for complex logic
 8. **Error Handling**: Proper error handling and edge case coverage
 
-## Decision Format
+## Decision Options
 
-Respond with ONLY "approved" or "not approved" followed by your detailed review:
+You have three possible decisions for this code review:
+
+### 1. **APPROVED** - Code is ready for merge
+Use when implementation fully meets acceptance criteria and is production-ready.
+- **Effect**: Code will be merged and story completed
+- **Use for**: Complete, working implementations that meet all requirements
+
+### 2. **NEEDS_CHANGES** - Code has fixable issues  
+Use when implementation has issues but can be improved with specific feedback.
+- **Effect**: Code returns to CODING state with your feedback for improvements
+- **Use for**: Recoverable issues like bugs, missing tests, code quality issues
+
+### 3. **REJECTED** - Story should be abandoned
+Use when implementation approach is fundamentally flawed or story is impossible.
+- **Effect**: Story is abandoned and may be requeued for different agent/approach  
+- **Use for**: Unsalvageable code, impossible requirements, completely wrong approach
+
+## Response Format
+
+Choose ONE of the following formats:
 
 **If APPROVED:**
 ```
-approved
+APPROVED
 
 The implementation successfully meets all acceptance criteria:
 - [Detailed explanation of why it meets each requirement]
 - [Any minor suggestions for future improvements]
 ```
 
-**If NOT APPROVED:**
+**If NEEDS_CHANGES:**
 ```
-not approved
+NEEDS_CHANGES
 
 The implementation has the following issues that must be addressed:
 - [Specific, actionable feedback for each issue]
-- [Reference to which acceptance criteria are not met]
+- [Reference to which acceptance criteria are not met]  
 - [Suggested improvements or alternative approaches]
 
-Additional stories may be required for:
-- [Any additional work needed beyond fixes]
+Return to coding to address these issues.
 ```
 
-Be thorough, fair, and constructive. Focus on actionable feedback that helps the agent deliver production-ready code.
+**If REJECTED:**
+```
+REJECTED
+
+This implementation cannot be salvaged because:
+- [Fundamental flaws in approach]
+- [Impossible requirements or technical constraints]
+- [Complete misunderstanding of story requirements]
+
+Story should be abandoned or reassigned.
+```
+
+Be thorough, fair, and constructive. Use NEEDS_CHANGES for recoverable issues and reserve REJECTED for truly unsalvageable situations.
