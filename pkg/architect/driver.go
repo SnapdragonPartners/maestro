@@ -448,20 +448,24 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 	}
 
 	// Get LLM response using same pattern as coder
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens",
+		d.llmClient.GetDefaultConfig().Name, len(messages), req.MaxTokens)
+
+	start := time.Now()
 	resp, err := d.llmClient.Complete(ctx, req)
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+	duration := time.Since(start)
+
 	if err != nil {
+		d.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
 		return "", fmt.Errorf("LLM completion failed: %w", err)
 	}
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
+
+	d.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars", duration.Seconds(), len(resp.Content))
 
 	// Handle LLM response with proper empty response logic (same as coder)
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	if err := d.handleLLMResponse(resp); err != nil {
 		return "", fmt.Errorf("LLM response handling failed: %w", err)
 	}
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 
 	return resp.Content, nil
 }

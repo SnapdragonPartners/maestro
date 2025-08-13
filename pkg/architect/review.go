@@ -474,10 +474,18 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 	}
 
 	// Get LLM response using centralized helper
+	fmt.Printf("🧠 Starting budget review LLM call for story %s (review ID: %s)\n",
+		pendingReview.StoryID, pendingReview.ID)
+
 	review, err := re.driver.callLLMWithTemplate(ctx, prompt)
 	if err != nil {
+		fmt.Printf("❌ Budget review LLM call failed for story %s: %v\n",
+			pendingReview.StoryID, err)
 		return fmt.Errorf("failed to get LLM response for code review: %w", err)
 	}
+
+	fmt.Printf("✅ Budget review LLM call completed for story %s, response length: %d chars\n",
+		pendingReview.StoryID, len(review))
 
 	// Parse LLM review response.
 	return re.processLLMReviewResponse(ctx, pendingReview, review)

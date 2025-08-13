@@ -127,7 +127,7 @@ var ModelProviders = map[string]string{
 	ModelClaudeSonnet3: ProviderAnthropic,
 	ModelClaudeSonnet4: ProviderAnthropic,
 	ModelOpenAIO3:      ProviderOpenAI,
-	ModelOpenAIO3Mini:  ProviderOpenAI,
+	ModelOpenAIO3Mini:  ProviderOpenAIOfficial,
 	ModelGPT5:          ProviderOpenAIOfficial,
 }
 
@@ -247,7 +247,7 @@ const (
 	ModelOpenAIO3Latest     = ModelOpenAIO3
 	ModelGPT5               = "gpt-5"
 	DefaultCoderModel       = ModelClaudeSonnet4
-	DefaultArchitectModel   = ModelGPT5
+	DefaultArchitectModel   = ModelOpenAIO3Mini
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -597,7 +597,7 @@ func createDefaultConfig() *Config {
 						MaxConcurrency:  3,
 					},
 				},
-				Timeout: 60 * time.Second,
+				Timeout: 3 * time.Minute, // Increased for GPT-5 reasoning time
 			},
 			StateTimeout: 10 * time.Minute, // Global timeout for state processing
 		},
@@ -830,7 +830,7 @@ func applyDefaults(config *Config) {
 	}
 
 	if config.Agents.Resilience.Timeout == 0 {
-		config.Agents.Resilience.Timeout = 60 * time.Second
+		config.Agents.Resilience.Timeout = 3 * time.Minute // Increased for GPT-5 reasoning time (was 60s)
 	}
 
 	// Apply state timeout default

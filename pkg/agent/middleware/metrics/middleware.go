@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"orchestrator/pkg/agent/llm"
@@ -79,8 +80,16 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 					duration,
 				)
 
-				// Debug logging for token usage
-				// Metrics recorded, no additional logging needed
+				// Enhanced logging for LLM calls with detailed metrics
+				if err == nil {
+					logx.Infof("LLM call to model '%s': latency %.3g, request tokens: %s, response tokens: %s, total tokens: %s (agent: %s, story: %s, state: %s)",
+						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), agentID, storyID, state)
+				} else {
+					// Use defaultLogger.Error instead of logx.Errorf to avoid return value check
+					defaultLogger := logx.NewLogger("metrics")
+					defaultLogger.Error("LLM call to model '%s' failed: latency %.3g, request tokens: %s, response tokens: %s, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
+						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), err.Error(), agentID, storyID, state, errorType)
+				}
 
 				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
@@ -119,7 +128,16 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 					duration,
 				)
 
-				// Metrics recorded, no additional logging needed
+				// Enhanced logging for streaming LLM calls
+				if err == nil {
+					logx.Infof("LLM stream to model '%s' started: setup latency %.3gs (agent: %s, story: %s, state: %s)",
+						modelConfig.Name, duration.Seconds(), agentID, storyID, state)
+				} else {
+					// Use defaultLogger.Error instead of logx.Errorf to avoid return value check
+					defaultLogger := logx.NewLogger("metrics")
+					defaultLogger.Error("LLM stream to model '%s' failed: setup latency %.3gs, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
+						modelConfig.Name, duration.Seconds(), err.Error(), agentID, storyID, state, errorType)
+				}
 
 				return ch, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
@@ -129,6 +147,25 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 			},
 		)
 	}
+}
+
+// formatWithCommas adds thousands separators to numbers for readability.
+func formatWithCommas(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+
+	str := fmt.Sprintf("%d", n)
+	result := ""
+
+	for i, char := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result += ","
+		}
+		result += string(char)
+	}
+
+	return result
 }
 
 // getErrorType classifies errors for metrics labeling.

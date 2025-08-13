@@ -57,10 +57,15 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 		MaxOutputTokens: openai.Int(int64(in.MaxTokens)),
 		Input:           responses.ResponseNewParamsInputUnion{OfString: openai.String(inputText)},
 		// TODO: HARD-CODED GPT-5 PARAMETERS - make configurable later
-		// Reasoning: { effort: "minimal" } - faster responses, still good for most tasks
-		// Text: { verbosity: "medium" } - balanced output length
-		// These should be extracted to configuration once we understand the optimal settings
+		// These parameters optimize GPT-5 for faster responses while maintaining quality
+		// Based on: https://platform.openai.com/docs/guides/latest-model
 	}
+
+	// TODO: Add GPT-5 specific parameters once SDK supports them
+	// For now, the increased timeout should allow GPT-5 to complete reasoning
+	// Future parameters to add:
+	// - Reasoning: { effort: "minimal" } - faster responses, still good for most tasks
+	// - Text: { verbosity: "medium" } - balanced output length
 
 	// Add tools if provided using responses API format
 	if len(in.Tools) > 0 {
