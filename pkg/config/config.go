@@ -129,7 +129,6 @@ var ModelProviders = map[string]string{
 	ModelOpenAIO3:      ProviderOpenAI,
 	ModelOpenAIO3Mini:  ProviderOpenAI,
 	ModelGPT5:          ProviderOpenAIOfficial,
-	"gpt-4o":           ProviderOpenAIOfficial, // For testing
 }
 
 // IsModelSupported checks if we have defaults for this model.
@@ -248,7 +247,7 @@ const (
 	ModelOpenAIO3Latest     = ModelOpenAIO3
 	ModelGPT5               = "gpt-5"
 	DefaultCoderModel       = ModelClaudeSonnet4
-	DefaultArchitectModel   = ModelOpenAIO3Mini
+	DefaultArchitectModel   = ModelGPT5
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"

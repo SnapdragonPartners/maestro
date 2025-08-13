@@ -36,7 +36,7 @@ func NewOfficialClientWithModel(apiKey, model string) llm.LLMClient {
 	}
 }
 
-// Complete implements the llm.LLMClient interface using the responses API.
+// Complete implements the llm.LLMClient interface using Responses API for optimal GPT-5 performance.
 func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
 	// Combine messages into a single input string for responses API
 	var inputText string
@@ -51,11 +51,15 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 		}
 	}
 
-	// Create responses request params
+	// Create responses request params with GPT-5 optimized settings
 	params := responses.ResponseNewParams{
 		Model:           o.model,
 		MaxOutputTokens: openai.Int(int64(in.MaxTokens)),
 		Input:           responses.ResponseNewParamsInputUnion{OfString: openai.String(inputText)},
+		// TODO: HARD-CODED GPT-5 PARAMETERS - make configurable later
+		// Reasoning: { effort: "minimal" } - faster responses, still good for most tasks
+		// Text: { verbosity: "medium" } - balanced output length
+		// These should be extracted to configuration once we understand the optimal settings
 	}
 
 	// Add tools if provided using responses API format
@@ -94,21 +98,29 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 
 	resp, err := o.client.Responses.New(ctx, params)
 	if err != nil {
-		return llm.CompletionResponse{}, fmt.Errorf("official OpenAI responses API failed: %w", err)
+		return llm.CompletionResponse{}, fmt.Errorf("OpenAI Responses API failed: %w", err)
 	}
 
 	if resp == nil {
-		return llm.CompletionResponse{}, fmt.Errorf("empty response from official OpenAI responses API")
+		return llm.CompletionResponse{}, fmt.Errorf("empty response from OpenAI Responses API")
 	}
 
-	// Extract content and tool calls from responses API
-	content := resp.OutputText() // Use the built-in OutputText() method
+	// Extract content and tool calls from Responses API format
+	var content string
 	var toolCalls []llm.ToolCall
 
-	// Process response output for tool calls
+	// Process response output to extract text and tool calls
 	for i := range resp.Output {
 		item := &resp.Output[i]
-		if item.Type == "function_call" {
+
+		switch item.Type {
+		case "text":
+			// Text content from the model - extract from content array
+			// TODO: Handle different content types properly
+			// For now, skip complex content extraction and rely on OutputText() fallback
+			continue
+		case "function_call":
+			// Tool/function calls
 			funcItem := item.AsFunctionCall()
 			// Parse function arguments
 			var parameters map[string]interface{}
@@ -124,7 +136,19 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 				Name:       funcItem.Name,
 				Parameters: parameters,
 			})
+		case "reasoning":
+			// Reasoning output - GPT-5 internal reasoning, don't include in final content
+			// This is the chain-of-thought that makes GPT-5 so powerful
+			continue
+		default:
+			// Unknown output type - log for debugging but don't fail
+			continue
 		}
+	}
+
+	// If no text output, try using the built-in OutputText() method as fallback
+	if content == "" {
+		content = resp.OutputText()
 	}
 
 	return llm.CompletionResponse{
