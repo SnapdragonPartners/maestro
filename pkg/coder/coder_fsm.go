@@ -95,6 +95,7 @@ const (
 	KeyPlanRisks                   = "plan_risks"
 	KeyCompletionSignaled          = "completion_signaled"
 	KeyConsecutiveEmptyResponses   = "consecutive_empty_responses"
+	KeyCompletionDetails           = "completion_details"
 )
 
 // ValidateState checks if a state is valid for coder agents.

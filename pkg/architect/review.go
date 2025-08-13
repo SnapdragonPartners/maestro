@@ -458,6 +458,7 @@ func (re *ReviewEvaluator) performLLMReview(ctx context.Context, pendingReview *
 		Extra: map[string]any{
 			"story_id":           pendingReview.StoryID,
 			"story_title":        story.Title,
+			"story_type":         story.StoryType,
 			"agent_id":           pendingReview.AgentID,
 			"review_id":          pendingReview.ID,
 			"code_path":          pendingReview.CodePath,

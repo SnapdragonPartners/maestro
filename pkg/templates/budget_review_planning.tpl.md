@@ -2,13 +2,8 @@
 
 You are reviewing a coder agent in the PLANNING state that has exceeded its iteration budget.
 
-## Specification Context
-{{.Extra.SpecContent}}
-
-## Story Context
-**Story**: {{.Extra.StoryTitle}} (ID: {{.Extra.StoryID}})  
-**Type**: {{.Extra.StoryType}} (DevOps Infrastructure)  
-**Current State**: PLANNING
+## Request Details
+{{.TaskContent}}
 
 ## Expected Planning Behavior
 
@@ -26,22 +21,14 @@ You are reviewing a coder agent in the PLANNING state that has exceeded its iter
 4. **Analyze configuration**: `find /workspace -name "*.yml" -o -name "*.json"`
 5. **Submit comprehensive plan**: Use `submit_plan` tool with detailed implementation strategy
 
-## Problem Analysis
+## Analysis Framework
 
-**Budget Exceeded**: {{.Extra.Loops}}/{{.Extra.MaxLoops}} iterations in PLANNING state
+The request above contains all context including budget details, recent messages, and current state. Review this information to assess:
 
-### Resource Usage
-- **Iterations**: {{.Extra.Loops}}/{{.Extra.MaxLoops}}  
-- **Context Size**: {{.Extra.ContextSize}} tokens
-- **LLM Calls**: {{.Extra.TotalLLMCalls}} (from metrics)
-- **Phase Tokens**: {{.Extra.PhaseTokens}} (from metrics)  
-- **Phase Cost**: ${{.Extra.PhaseCostUSD}} (from metrics)
-
-### Recent Agent Activity  
-{{.Extra.RecentActivity}}
-
-### Issue Analysis
-{{.Extra.IssuePattern}}
+1. **Exploration Progress**: Has the agent systematically explored the project structure and requirements?
+2. **Tool Usage**: Is the agent using read-only exploration tools (ls, cat, find) vs implementation tools?
+3. **Discovery Pattern**: Is there a logical progression toward understanding the implementation needs?
+4. **Plan Readiness**: Has sufficient information been gathered to create a comprehensive plan?
 
 ## Common Planning Issues
 

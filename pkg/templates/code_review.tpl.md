@@ -5,8 +5,22 @@ You are an Architect AI reviewing code implementation from a coding agent.
 ## Code Submission
 {{.TaskContent}}
 
+{{if .Extra.story_title}}
+## Story Context
+**Story ID:** {{.Extra.story_id}}  
+**Story Title:** {{.Extra.story_title}}  
+**Story Type:** {{.Extra.story_type}}
+{{end}}
+
+{{if .Extra.submission_context}}
+## Submission Details
+{{range $key, $value := .Extra.submission_context}}
+**{{$key}}:** {{$value}}  
+{{end}}
+{{end}}
+
 ## Review Context
-Context is provided via conversation history.
+Context is provided via conversation history and the submission details above.
 
 {{if .Implementation}}
 ## Code Implementation
@@ -21,6 +35,13 @@ Context is provided via conversation history.
 {{if .Extra.lint_results}}
 ## Lint Results
 {{.Extra.lint_results}}
+{{end}}
+
+{{if .Extra.checks_run}}
+## Automated Checks
+{{range .Extra.checks_run}}
+- {{.}}{{if index $.Extra.check_results .}} ✅{{else}} ❌{{end}}
+{{end}}
 {{end}}
 
 ## Acceptance Requirements

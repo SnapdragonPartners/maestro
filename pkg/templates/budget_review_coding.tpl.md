@@ -2,13 +2,8 @@
 
 You are reviewing a coder agent in the CODING state that has exceeded its iteration budget.
 
-## Specification Context
-{{.Extra.SpecContent}}
-
-## Story Context
-**Story**: {{.Extra.StoryTitle}} (ID: {{.Extra.StoryID}})  
-**Type**: {{.Extra.StoryType}} (DevOps Infrastructure)  
-**Current State**: CODING
+## Request Details
+{{.TaskContent}}
 
 ## Expected Coding Behavior
 
@@ -31,22 +26,14 @@ You are reviewing a coder agent in the CODING state that has exceeded its iterat
 - **Shell commands**: Build, test, validation commands
 - **Done/completion tools**: Mark story complete when requirements met
 
-## Problem Analysis
+## Analysis Framework
 
-**Budget Exceeded**: {{.Extra.Loops}}/{{.Extra.MaxLoops}} iterations in CODING state
+The request above contains all context including budget details, recent messages, and current state. Review this information to assess:
 
-### Resource Usage
-- **Iterations**: {{.Extra.Loops}}/{{.Extra.MaxLoops}}  
-- **Context Size**: {{.Extra.ContextSize}} tokens
-- **LLM Calls**: {{.Extra.TotalLLMCalls}} (from metrics)
-- **Phase Tokens**: {{.Extra.PhaseTokens}} (from metrics)  
-- **Phase Cost**: ${{.Extra.PhaseCostUSD}} (from metrics)
-
-### Recent Agent Activity  
-{{.Extra.RecentActivity}}
-
-### Issue Analysis
-{{.Extra.IssuePattern}}
+1. **Progress Assessment**: Is the agent making meaningful progress toward the implementation goals?
+2. **Tool Usage**: Is the agent using appropriate coding tools (container_build, shell, done) correctly?
+3. **Pattern Recognition**: Are there loops, errors, or blockages preventing completion?
+4. **Plan Adherence**: Is the agent following the implementation plan or getting distracted?
 
 ## Common Coding Issues
 

@@ -30,6 +30,10 @@ import (
 const (
 	// roleToolMessage represents tool message role in context manager.
 	roleToolMessage = "tool"
+
+	// budgetReviewContextTokenLimit limits the context messages included in budget review requests
+	// to avoid burning excessive tokens when asking for permission to use more tokens.
+	budgetReviewContextTokenLimit = 10000
 )
 
 // Coder implements the v2 FSM using agent foundation.
@@ -664,8 +668,8 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 
 	// Check if budget exceeded.
 	if iterationCount >= budget {
-		// Create budget review request content
-		content := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
+		// Build comprehensive budget review content
+		content := c.buildBudgetReviewContent(sm, origin, iterationCount, budget)
 
 		// Store origin state for later use.
 		sm.SetStateData(KeyOrigin, string(origin))
@@ -1143,4 +1147,133 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	}
 
 	return tools.NewProvider(agentCtx, codingTools)
+}
+
+// buildBudgetReviewContent creates comprehensive budget review content with story, plan, and context.
+func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.State, iterationCount, budget int) string {
+	// Basic budget info
+	header := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
+
+	// Get story and plan context
+	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
+	plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
+	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
+
+	// Get truncated context messages
+	contextMessages := c.getContextMessagesWithTokenLimit(budgetReviewContextTokenLimit)
+
+	// Build comprehensive content
+	content := fmt.Sprintf(`## Budget Review Request
+%s
+
+## Story Context
+**Story ID:** %s
+**Story Type:** %s
+
+### Story Requirements
+%s
+
+## Implementation Plan
+%s
+
+## Recent Context (%d messages, ≤%d tokens)
+%s
+
+## Current State
+- **Files Created:** %v
+- **Tests Passed:** %v
+- **Current State:** %s
+
+Please advise how I should proceed given this context.`,
+		header,
+		storyID, storyType,
+		taskContent,
+		plan,
+		len(contextMessages.Messages), budgetReviewContextTokenLimit,
+		contextMessages.Content,
+		utils.GetStateValueOr[[]string](sm, KeyFilesCreated, []string{}),
+		utils.GetStateValueOr[bool](sm, KeyTestsPassed, false),
+		origin)
+
+	return content
+}
+
+// ContextMessages represents extracted context messages with metadata.
+//
+//nolint:govet // fieldalignment: struct is not performance critical
+type ContextMessages struct {
+	Messages []string `json:"messages"`
+	Content  string   `json:"content"`
+	Tokens   int      `json:"tokens"`
+}
+
+// getContextMessagesWithTokenLimit extracts recent context messages up to the token limit.
+func (c *Coder) getContextMessagesWithTokenLimit(tokenLimit int) *ContextMessages {
+	if c.contextManager == nil {
+		return &ContextMessages{
+			Messages: []string{},
+			Content:  "No context manager available",
+			Tokens:   0,
+		}
+	}
+
+	// Create token counter
+	tokenCounter, err := utils.NewTokenCounter("gpt-4")
+	if err != nil {
+		c.logger.Debug("Failed to create token counter: %v", err)
+		return &ContextMessages{
+			Messages: []string{},
+			Content:  "Token counter unavailable",
+			Tokens:   0,
+		}
+	}
+
+	// Get recent messages from context manager
+	// We'll work backwards from most recent to fit within token limit
+	allMessages := c.contextManager.GetMessages()
+	if len(allMessages) == 0 {
+		return &ContextMessages{
+			Messages: []string{},
+			Content:  "No messages in context",
+			Tokens:   0,
+		}
+	}
+
+	var selectedMessages []string
+	var totalTokens int
+
+	// Work backwards from most recent message
+	for i := len(allMessages) - 1; i >= 0; i-- {
+		msg := allMessages[i]
+		msgContent := fmt.Sprintf("[%s]: %s", msg.Role, msg.Content)
+		msgTokens := tokenCounter.CountTokens(msgContent)
+
+		// Check if adding this message would exceed limit
+		if totalTokens+msgTokens > tokenLimit {
+			// If we haven't selected any messages yet, include this one truncated
+			if len(selectedMessages) == 0 {
+				truncated := tokenCounter.TruncateToTokenLimit(msgContent, tokenLimit)
+				selectedMessages = append([]string{truncated}, selectedMessages...)
+				totalTokens = tokenCounter.CountTokens(truncated)
+			}
+			break
+		}
+
+		// Add message to beginning of selection (since we're working backwards)
+		selectedMessages = append([]string{msgContent}, selectedMessages...)
+		totalTokens += msgTokens
+	}
+
+	// Build content string
+	content := "No recent messages"
+	if len(selectedMessages) > 0 {
+		content = fmt.Sprintf("```\n%s\n```", strings.Join(selectedMessages, "\n\n"))
+	}
+
+	return &ContextMessages{
+		Messages: selectedMessages,
+		Content:  content,
+		Tokens:   totalTokens,
+	}
 }

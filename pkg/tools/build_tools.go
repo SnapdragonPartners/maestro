@@ -347,9 +347,22 @@ func (d *DoneTool) Definition() ToolDefinition {
 		Name:        "done",
 		Description: "Signal that the coding task is complete and advance the FSM to TESTING state",
 		InputSchema: InputSchema{
-			Type:       "object",
-			Properties: map[string]Property{},
-			Required:   []string{},
+			Type: "object",
+			Properties: map[string]Property{
+				"summary": {
+					Type:        "string",
+					Description: "Brief summary of what was accomplished (required for completion claims)",
+				},
+				"evidence": {
+					Type:        "string",
+					Description: "Evidence that requirements were met (e.g., test results, validation steps)",
+				},
+				"confidence": {
+					Type:        "string",
+					Description: "Confidence level in completion (high/medium/low) with reasoning",
+				},
+			},
+			Required: []string{"summary"},
 		},
 	}
 }
@@ -362,17 +375,35 @@ func (d *DoneTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (d *DoneTool) PromptDocumentation() string {
 	return `- **done** - Signal that the coding task is complete
-  - No parameters required
+  - Parameters: summary (required), evidence (optional), confidence (optional)
+  - summary: Brief description of what was accomplished
+  - evidence: Test results, validation steps, or other proof of completion
+  - confidence: Your confidence level (high/medium/low) with reasoning
   - Advances FSM to TESTING state for verification
   - Use when all implementation work is finished`
 }
 
 // Exec executes the done operation.
-func (d *DoneTool) Exec(_ context.Context, _ map[string]any) (any, error) {
-	return map[string]any{
+func (d *DoneTool) Exec(_ context.Context, args map[string]any) (any, error) {
+	result := map[string]any{
 		"success": true,
 		"message": "Task marked as complete, advancing to TESTING state",
-	}, nil
+	}
+
+	// Extract and store completion details
+	if summary, ok := args["summary"].(string); ok && summary != "" {
+		result["summary"] = summary
+	}
+
+	if evidence, ok := args["evidence"].(string); ok && evidence != "" {
+		result["evidence"] = evidence
+	}
+
+	if confidence, ok := args["confidence"].(string); ok && confidence != "" {
+		result["confidence"] = confidence
+	}
+
+	return result, nil
 }
 
 // BackendInfoTool provides MCP interface for backend information.

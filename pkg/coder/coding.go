@@ -242,6 +242,19 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		if toolCall.Name == tools.ToolDone {
 			c.logger.Info("🧑‍💻 Done tool called - signaling task completion")
 
+			// Store completion details from done tool for later use in code review
+			summary := utils.GetMapFieldOr[string](toolCall.Parameters, "summary", "")
+			evidence := utils.GetMapFieldOr[string](toolCall.Parameters, "evidence", "")
+			confidence := utils.GetMapFieldOr[string](toolCall.Parameters, "confidence", "")
+
+			completionDetails := map[string]string{
+				"summary":    summary,
+				"evidence":   evidence,
+				"confidence": confidence,
+			}
+			sm.SetStateData(KeyCompletionDetails, completionDetails)
+			c.logger.Info("🧑‍💻 Stored completion details: summary=%q, evidence=%q, confidence=%q", summary, evidence, confidence)
+
 			// Create completion effect to signal immediate transition to TESTING
 			completionEff := effect.NewCompletionEffect(
 				"Implementation complete - proceeding to testing phase",

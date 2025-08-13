@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/effect"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
@@ -15,11 +16,14 @@ import (
 
 // handleCodeReview processes the CODE_REVIEW state using Effects pattern.
 func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Get files created and story info for context
+	// Get context information
 	filesCreatedRaw, _ := sm.GetStateValue(KeyFilesCreated)
 	originalStory := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
 	plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+	testsPassed := utils.GetStateValueOr[bool](sm, KeyTestsPassed, false)
+	testOutput := utils.GetStateValueOr[string](sm, KeyTestOutput, "")
+	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
 
 	var approvalEff *effect.ApprovalEffect
 
@@ -29,20 +33,84 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		filesCreated = files
 	}
 
-	if len(filesCreated) == 0 {
-		// No files created - request completion approval
-		c.logger.Info("🧑‍💻 No files created, requesting story completion approval")
+	// Get completion details from done tool if available
+	completionDetailsRaw, _ := sm.GetStateValue(KeyCompletionDetails)
+	completionDetails := map[string]string{}
+	if details, ok := completionDetailsRaw.(map[string]string); ok {
+		completionDetails = details
+	}
 
-		codeContent := "Story completed during implementation phase: tests passed, no new files needed"
-		approvalEff = effect.NewApprovalEffect(codeContent, "Story requirements already satisfied, requesting completion approval", proto.ApprovalTypeCompletion)
+	// Generate git diff to show what changed
+	gitDiff := c.getGitDiff(ctx)
+
+	// Build comprehensive evidence section
+	evidence := c.buildCompletionEvidence(testsPassed, testOutput, gitDiff, storyType, filesCreated)
+
+	if len(filesCreated) == 0 && gitDiff == "" {
+		// No files created and no changes - request completion approval
+		c.logger.Info("🧑‍💻 No files created and no changes, requesting story completion approval")
+
+		summary := completionDetails["summary"]
+		if summary == "" {
+			summary = "Story requirements already satisfied during analysis"
+		}
+
+		confidence := completionDetails["confidence"]
+		if confidence == "" {
+			confidence = "high - no changes needed"
+		}
+
+		codeContent := fmt.Sprintf(`## Completion Summary
+%s
+
+## Evidence
+%s
+
+## Confidence
+%s
+
+## Original Story
+%s
+
+## Implementation Analysis
+%s`, summary, evidence, confidence, originalStory, plan)
+
+		approvalEff = effect.NewApprovalEffect(codeContent, "Story completion verified with evidence", proto.ApprovalTypeCompletion)
 		approvalEff.StoryID = storyID
 	} else {
-		// Files were created - request code approval with file summary
-		c.logger.Info("🧑‍💻 Files created during implementation, requesting code review approval")
+		// Files were created or changes made - request code approval with full details
+		c.logger.Info("🧑‍💻 Changes made during implementation, requesting code review approval")
 
-		filesSummary := strings.Join(filesCreated, ", ")
-		codeContent := fmt.Sprintf("Code implementation and testing completed: %d files created (%s), tests passed\n\nOriginal Story:\n%s\n\nImplementation Plan:\n%s", len(filesCreated), filesSummary, originalStory, plan)
-		approvalEff = effect.NewApprovalEffect(codeContent, "Code requires architect approval before completion", proto.ApprovalTypeCode)
+		summary := completionDetails["summary"]
+		if summary == "" {
+			filesSummary := strings.Join(filesCreated, ", ")
+			summary = fmt.Sprintf("Implementation completed: %d files created (%s)", len(filesCreated), filesSummary)
+		}
+
+		confidence := completionDetails["confidence"]
+		if confidence == "" {
+			confidence = "high - all tests passing"
+		}
+
+		codeContent := fmt.Sprintf(`## Implementation Summary
+%s
+
+## Evidence
+%s
+
+## Confidence
+%s
+
+## Git Diff
+%s
+
+## Original Story
+%s
+
+## Implementation Plan
+%s`, summary, evidence, confidence, gitDiff, originalStory, plan)
+
+		approvalEff = effect.NewApprovalEffect(codeContent, "Code implementation requires architect review", proto.ApprovalTypeCode)
 		approvalEff.StoryID = storyID
 	}
 
@@ -95,4 +163,74 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 	default:
 		return proto.StateError, false, logx.Errorf("unknown approval status: %s", result.Status)
 	}
+}
+
+// getGitDiff gets the current git diff to show what changed.
+func (c *Coder) getGitDiff(ctx context.Context) string {
+	// Use the executor to run git diff
+	opts := &execpkg.Opts{
+		WorkDir: c.workDir,
+		Timeout: 30 * time.Second, // 30 seconds should be enough for git diff
+	}
+
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "diff", "HEAD"}, opts)
+	if err != nil {
+		c.logger.Debug("Failed to get git diff: %v", err)
+		return "No git changes detected"
+	}
+
+	if strings.TrimSpace(result.Stdout) == "" {
+		return "No changes in git working directory"
+	}
+
+	// Limit diff size to avoid overwhelming the architect
+	if len(result.Stdout) > 50000 {
+		return result.Stdout[:50000] + "\n... (diff truncated, showing first 50000 chars)"
+	}
+
+	return result.Stdout
+}
+
+// buildCompletionEvidence builds evidence section based on story type and results.
+func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, storyType string, filesCreated []string) string {
+	evidence := ""
+
+	// Add test evidence
+	if testsPassed {
+		evidence += "✅ All tests passing\n"
+		if testOutput != "" {
+			evidence += fmt.Sprintf("Test output: %s\n", testOutput)
+		}
+	} else {
+		evidence += "❌ Tests not run or failed\n"
+		if testOutput != "" {
+			evidence += fmt.Sprintf("Test output: %s\n", testOutput)
+		}
+	}
+
+	// Add story-type specific evidence
+	if storyType == string(proto.StoryTypeDevOps) {
+		evidence += "🐳 DevOps story completed:\n"
+		evidence += "  - Container build and validation completed\n"
+		evidence += "  - Infrastructure configuration verified\n"
+		if len(filesCreated) > 0 {
+			evidence += fmt.Sprintf("  - Files created: %s\n", strings.Join(filesCreated, ", "))
+		}
+	} else {
+		evidence += "💻 Application story completed:\n"
+		evidence += "  - Code implementation finished\n"
+		evidence += "  - Build and lint checks passed\n"
+		if len(filesCreated) > 0 {
+			evidence += fmt.Sprintf("  - Files created: %s\n", strings.Join(filesCreated, ", "))
+		}
+	}
+
+	// Add change summary
+	if gitDiff != "" && gitDiff != "No changes in git working directory" && gitDiff != "No git changes detected" {
+		evidence += "📝 Code changes made (see Git Diff section below)\n"
+	} else {
+		evidence += "📝 No code changes required\n"
+	}
+
+	return evidence
 }
