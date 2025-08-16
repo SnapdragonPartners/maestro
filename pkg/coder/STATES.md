@@ -121,11 +121,15 @@ Upon receiving architect approval:
 
 | Approval Result      | Status Code           | Next state                                                                           |
 | -------------------- | -------------------- | ------------------------------------------------------------------------------------ |
-| **CONTINUE**         | `ApprovalStatusApproved` | Return to `CODING` and reset counter. |
-| **PIVOT**            | `ApprovalStatusNeedsChanges` | Return to `PLANNING` and reset counter. |
+| **CONTINUE**         | `ApprovalStatusApproved` | Return to origin state and reset counter. |
+| **NEEDS_CHANGES**    | `ApprovalStatusNeedsChanges` | Context-aware: from CODING → CODING with guidance, from PLANNING → PLANNING with guidance |
 | **ABANDON**          | `ApprovalStatusRejected` | Move to `ERROR`.                                                                     |
 
-Note: The architect uses standard approval status codes that map to budget review actions as shown above.
+**Context-Aware Transitions**: The `NEEDS_CHANGES` response has different behaviors based on origin state:
+- **From CODING**: Return to `CODING` with implementation guidance (plan is fine, execution needs adjustment)  
+- **From PLANNING**: Return to `PLANNING` with planning guidance (plan needs revision)
+
+This ensures approved plans aren't discarded due to execution issues.
 
 ## Plan & Completion Review
 

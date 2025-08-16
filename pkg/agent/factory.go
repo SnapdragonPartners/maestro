@@ -14,6 +14,7 @@ import (
 	"orchestrator/pkg/agent/middleware/resilience/ratelimit"
 	"orchestrator/pkg/agent/middleware/resilience/retry"
 	"orchestrator/pkg/agent/middleware/resilience/timeout"
+	"orchestrator/pkg/agent/middleware/validation"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
@@ -110,7 +111,7 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 }
 
 // createClientWithMiddleware creates a client with the full middleware chain.
-func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) { //nolint:revive,unparam // stateProvider temporarily unused due to metrics middleware removal
+func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	// Create the raw LLM client based on provider
 	provider, err := config.GetModelProvider(modelName)
 	if err != nil {
@@ -155,7 +156,22 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, _ string, state
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	fmt.Printf("🏭 FACTORY: Building full middleware chain for %s\n", modelName)
 
+	// Convert agentTypeStr to validation.AgentType
+	var validationAgentType validation.AgentType
+	switch Type(agentTypeStr) {
+	case TypeArchitect:
+		validationAgentType = validation.AgentTypeArchitect
+	case TypeCoder:
+		validationAgentType = validation.AgentTypeCoder
+	default:
+		validationAgentType = validation.AgentTypeCoder // Default to coder (safer)
+	}
+
+	// Create agent-aware validator
+	validator := validation.NewEmptyResponseValidator(validationAgentType)
+
 	client := llm.Chain(rawClient,
+		validator.Middleware(), // Agent-aware empty response validation
 		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger),
 		circuit.Middleware(circuitBreaker),
 		retry.Middleware(retryPolicy),

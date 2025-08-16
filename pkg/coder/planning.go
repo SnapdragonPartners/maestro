@@ -126,6 +126,12 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	// Use base agent retry mechanism - exponential backoff is already implemented.
 	resp, llmErr := c.llmClient.Complete(ctx, req)
 	if llmErr != nil {
+		// Check if this is an empty response error that should trigger budget review
+		if c.isEmptyResponseError(llmErr) {
+			return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
+		}
+
+		// For other errors, continue with normal error handling
 		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM planning response")
 	}
 

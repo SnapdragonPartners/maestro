@@ -182,24 +182,15 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM coding response")
 	}
 
-	if resp.Content == "" && len(resp.ToolCalls) == 0 {
-		// This is a fallback check for cases where the LLM client didn't catch empty response
-		return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
-	}
+	// Note: Empty response detection now handled universally by validation middleware
+	// No need to check len(resp.ToolCalls) == 0 here
 
-	// Reset consecutive empty response counter on successful response
+	// Reset consecutive empty response counter only when we get useful tool calls
 	sm.SetStateData(KeyConsecutiveEmptyResponses, 0)
-	c.logger.Debug("🧑‍💻 Successful LLM response - reset consecutive empty counter")
+	c.logger.Debug("🧑‍💻 Successful LLM response with tool calls - reset consecutive empty counter")
 
-	// Execute tool calls (MCP tools).
-	var filesCreated int
-	if len(resp.ToolCalls) > 0 {
-		filesCreated = c.executeMCPToolCalls(ctx, sm, resp.ToolCalls)
-	} else {
-		// No tool calls found - this shouldn't happen with proper MCP tool usage
-		c.logger.Warn("🧑‍💻 No tool calls found in LLM response - expecting MCP tools for file operations")
-		filesCreated = 0
-	}
+	// Execute tool calls (MCP tools) - we know there are tool calls because of the check above
+	filesCreated := c.executeMCPToolCalls(ctx, sm, resp.ToolCalls)
 
 	// Add assistant response to context.
 	// Handle LLM response with proper empty response logic
@@ -244,16 +235,9 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 
 			// Store completion details from done tool for later use in code review
 			summary := utils.GetMapFieldOr[string](toolCall.Parameters, "summary", "")
-			evidence := utils.GetMapFieldOr[string](toolCall.Parameters, "evidence", "")
-			confidence := utils.GetMapFieldOr[string](toolCall.Parameters, "confidence", "")
 
-			completionDetails := map[string]string{
-				"summary":    summary,
-				"evidence":   evidence,
-				"confidence": confidence,
-			}
-			sm.SetStateData(KeyCompletionDetails, completionDetails)
-			c.logger.Info("🧑‍💻 Stored completion details: summary=%q, evidence=%q, confidence=%q", summary, evidence, confidence)
+			sm.SetStateData(KeyCompletionDetails, summary)
+			c.logger.Info("🧑‍💻 Stored completion summary: %q", summary)
 
 			// Create completion effect to signal immediate transition to TESTING
 			completionEff := effect.NewCompletionEffect(

@@ -63,9 +63,10 @@ The request above contains all context including budget details, recent messages
 
 ### NEEDS_CHANGES: Course Correction Required
 - Agent not following approved plan systematically
-- Stuck in build/test failure loops but recoverable
+- Stuck in build/test failure loops but recoverable with guidance
 - Using inappropriate tools but can be guided back
-- **Effect**: Return to PLANNING with architect feedback to revise approach
+- Making empty responses without proper tool usage
+- **Effect**: Continue in CODING state with specific guidance on how to proceed
 
 ### REJECTED: Abandon Story  
 - Implementation plan fundamentally flawed beyond recovery
@@ -78,9 +79,9 @@ The request above contains all context including budget details, recent messages
 ```json
 {
   "status": "APPROVED|NEEDS_CHANGES|REJECTED",
-  "feedback": "Specific guidance on what the agent should do in coding state",
+  "feedback": "Specific guidance on how to proceed with implementation (used when NEEDS_CHANGES)",
   "reasoning": "Why you made this decision based on the evidence"
 }
 ```
 
-Provide concrete guidance for the implementation phase.
+**Important**: When using NEEDS_CHANGES from CODING state, the agent will return to CODING (not PLANNING) with your feedback guidance. Provide concrete implementation guidance that helps the agent proceed with coding tasks.

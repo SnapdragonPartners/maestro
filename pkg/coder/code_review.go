@@ -33,12 +33,8 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		filesCreated = files
 	}
 
-	// Get completion details from done tool if available
-	completionDetailsRaw, _ := sm.GetStateValue(KeyCompletionDetails)
-	completionDetails := map[string]string{}
-	if details, ok := completionDetailsRaw.(map[string]string); ok {
-		completionDetails = details
-	}
+	// Get completion summary from done tool if available
+	completionSummary := utils.GetStateValueOr[string](sm, KeyCompletionDetails, "")
 
 	// Generate git diff to show what changed
 	gitDiff := c.getGitDiff(ctx)
@@ -50,15 +46,12 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		// No files created and no changes - request completion approval
 		c.logger.Info("🧑‍💻 No files created and no changes, requesting story completion approval")
 
-		summary := completionDetails["summary"]
+		summary := completionSummary
 		if summary == "" {
 			summary = "Story requirements already satisfied during analysis"
 		}
 
-		confidence := completionDetails["confidence"]
-		if confidence == "" {
-			confidence = "high - no changes needed"
-		}
+		confidence := "high - no changes needed"
 
 		codeContent := fmt.Sprintf(`## Completion Summary
 %s
@@ -81,16 +74,13 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		// Files were created or changes made - request code approval with full details
 		c.logger.Info("🧑‍💻 Changes made during implementation, requesting code review approval")
 
-		summary := completionDetails["summary"]
+		summary := completionSummary
 		if summary == "" {
 			filesSummary := strings.Join(filesCreated, ", ")
 			summary = fmt.Sprintf("Implementation completed: %d files created (%s)", len(filesCreated), filesSummary)
 		}
 
-		confidence := completionDetails["confidence"]
-		if confidence == "" {
-			confidence = "high - all tests passing"
-		}
+		confidence := "high - all tests passing"
 
 		codeContent := fmt.Sprintf(`## Implementation Summary
 %s

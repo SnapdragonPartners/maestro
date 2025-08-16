@@ -74,16 +74,28 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 			return StateCoding, false, nil // default fallback
 		}
 	case proto.ApprovalStatusNeedsChanges:
-		// PIVOT - return to PLANNING and reset ALL counters, inject feedback into context.
-		c.logger.Info("🧑‍💻 Budget review needs changes, pivoting to PLANNING with feedback")
-		// Reset both iteration counters since we're starting over with new guidance
-		sm.SetStateData(string(stateDataKeyPlanningIterations), 0)
-		sm.SetStateData(string(stateDataKeyCodingIterations), 0)
-		// Inject architect feedback into context to guide next attempt
-		if feedback != "" {
-			c.injectArchitectFeedback(feedback)
+		// NEEDS_CHANGES - context-aware transition based on origin state
+		if originStr == string(StateCoding) {
+			// From CODING: return to CODING with guidance (not a plan issue, just execution issue)
+			c.logger.Info("🧑‍💻 Budget review needs changes from CODING, continuing CODING with feedback")
+			// Reset coding counter and inject feedback for coding improvements
+			sm.SetStateData(string(stateDataKeyCodingIterations), 0)
+			if feedback != "" {
+				c.injectCodingFeedback(feedback)
+			}
+			return StateCoding, false, nil
+		} else {
+			// From PLANNING or other states: PIVOT - return to PLANNING
+			c.logger.Info("🧑‍💻 Budget review needs changes from %s, pivoting to PLANNING with feedback", originStr)
+			// Reset both iteration counters since we're starting over with new guidance
+			sm.SetStateData(string(stateDataKeyPlanningIterations), 0)
+			sm.SetStateData(string(stateDataKeyCodingIterations), 0)
+			// Inject architect feedback into context to guide next attempt
+			if feedback != "" {
+				c.injectArchitectFeedback(feedback)
+			}
+			return StatePlanning, false, nil
 		}
-		return StatePlanning, false, nil
 	case proto.ApprovalStatusRejected:
 		// ABANDON - move to ERROR.
 		c.logger.Info("🧑‍💻 Budget review rejected, abandoning task")
@@ -94,7 +106,7 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 }
 
 // injectArchitectFeedback adds architect guidance to the context as an assistant message
-// to maintain proper user/assistant alternation while providing course correction.
+// to maintain proper user/assistant alternation while providing course correction for planning.
 func (c *Coder) injectArchitectFeedback(feedback string) {
 	// The feedback from ApprovalResult.Feedback is already the clean guidance text
 	assistantContent := "I understand the architect's feedback. Let me correct my approach: " + feedback +
@@ -103,6 +115,20 @@ func (c *Coder) injectArchitectFeedback(feedback string) {
 	// Inject into context manager
 	if c.contextManager != nil {
 		c.contextManager.AddAssistantMessage(assistantContent)
-		c.logger.Debug("🧑‍💻 Injected architect feedback into context")
+		c.logger.Debug("🧑‍💻 Injected architect feedback into context for planning")
+	}
+}
+
+// injectCodingFeedback adds architect guidance to the context as an assistant message
+// to maintain proper user/assistant alternation while providing course correction for coding.
+func (c *Coder) injectCodingFeedback(feedback string) {
+	// The feedback from ApprovalResult.Feedback is already the clean guidance text
+	assistantContent := "I understand the architect's guidance. Let me adjust my coding approach: " + feedback +
+		"\n\nI'll continue with the implementation using this guidance."
+
+	// Inject into context manager
+	if c.contextManager != nil {
+		c.contextManager.AddAssistantMessage(assistantContent)
+		c.logger.Debug("🧑‍💻 Injected architect feedback into context for coding")
 	}
 }

@@ -136,14 +136,18 @@ func NewLoopBudgetExceededEffect(originState string, iterationCount, maxIteratio
 
 // NewEmptyResponseBudgetReviewEffect creates a budget review effect for empty response escalation.
 func NewEmptyResponseBudgetReviewEffect(originState string, consecutiveCount int) *BudgetReviewEffect {
-	content := fmt.Sprintf("LLM returned %d consecutive empty responses from %s state. "+
-		"The work may be complete but the agent is unable to proceed. How should I proceed?",
+	content := fmt.Sprintf("LLM returned %d consecutive responses with NO TOOL CALLS from %s state. "+
+		"In CODING state, the agent should be using MCP tools (shell, done, ask_question) to make progress. "+
+		"This suggests either: (1) the work is complete but the agent hasn't used the 'done' tool, or "+
+		"(2) the agent is stuck and needs guidance. "+
+		"Please provide guidance: CONTINUE (keep working), COMPLETE (mark as done), or REDIRECT (provide specific instructions).",
 		consecutiveCount, originState)
 
-	reason := "BUDGET_REVIEW: Multiple empty LLM responses, requesting guidance"
+	reason := "BUDGET_REVIEW: Multiple responses without tool calls, requesting guidance"
 
 	effect := NewBudgetReviewEffect(content, reason, originState)
 	effect.ExtraPayload["consecutive_empty_responses"] = consecutiveCount
+	effect.ExtraPayload["issue_type"] = "no_tool_calls"
 
 	return effect
 }

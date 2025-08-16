@@ -351,15 +351,7 @@ func (d *DoneTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"summary": {
 					Type:        "string",
-					Description: "Brief summary of what was accomplished (required for completion claims)",
-				},
-				"evidence": {
-					Type:        "string",
-					Description: "Evidence that requirements were met (e.g., test results, validation steps)",
-				},
-				"confidence": {
-					Type:        "string",
-					Description: "Confidence level in completion (high/medium/low) with reasoning",
+					Description: "Description of what was accomplished including evidence and confidence if applicable",
 				},
 			},
 			Required: []string{"summary"},
@@ -375,10 +367,8 @@ func (d *DoneTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (d *DoneTool) PromptDocumentation() string {
 	return `- **done** - Signal that the coding task is complete
-  - Parameters: summary (required), evidence (optional), confidence (optional)
-  - summary: Brief description of what was accomplished
-  - evidence: Test results, validation steps, or other proof of completion
-  - confidence: Your confidence level (high/medium/low) with reasoning
+  - Parameter: summary (required)
+  - summary: Description of what was accomplished including evidence and confidence if applicable
   - Advances FSM to TESTING state for verification
   - Use when all implementation work is finished`
 }
@@ -390,17 +380,9 @@ func (d *DoneTool) Exec(_ context.Context, args map[string]any) (any, error) {
 		"message": "Task marked as complete, advancing to TESTING state",
 	}
 
-	// Extract and store completion details
+	// Extract summary
 	if summary, ok := args["summary"].(string); ok && summary != "" {
 		result["summary"] = summary
-	}
-
-	if evidence, ok := args["evidence"].(string); ok && evidence != "" {
-		result["evidence"] = evidence
-	}
-
-	if confidence, ok := args["confidence"].(string); ok && confidence != "" {
-		result["confidence"] = confidence
 	}
 
 	return result, nil
