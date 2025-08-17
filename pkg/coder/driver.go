@@ -247,10 +247,6 @@ func getMaxReplyTokens(modelName string) int {
 	}
 }
 
-const (
-	bootstrapContainerTag = "maestro-bootstrap:latest"
-)
-
 // getDockerImageForAgent returns the appropriate Docker image based on global config.
 func getDockerImageForAgent(_ string) string {
 	// Use global config singleton
@@ -280,8 +276,8 @@ func getDockerImageForAgent(_ string) string {
 				_ = logx.Errorf("❌ Failed to build bootstrap container: %v", err)
 				return config.DefaultUbuntuDockerImage // Fallback
 			}
-			logx.Infof("✅ Using bootstrap container: %s", bootstrapContainerTag)
-			return bootstrapContainerTag
+			logx.Infof("✅ Using bootstrap container: %s", config.BootstrapContainerTag)
+			return config.BootstrapContainerTag
 		}
 
 		// Fall back to platform-specific default
@@ -330,11 +326,11 @@ func ensureBootstrapContainer() error {
 	}
 
 	// Build the bootstrap container (Docker handles caching automatically)
-	logx.Infof("🔨 Building bootstrap container: %s", bootstrapContainerTag)
+	logx.Infof("🔨 Building bootstrap container: %s", config.BootstrapContainerTag)
 	logx.Infof("📋 Using Dockerfile: %s", dockerfilePath)
 	logx.Infof("📁 Build context: %s", maestroDir)
 
-	cmd := exec.Command("docker", "build", "-t", bootstrapContainerTag, "-f", dockerfilePath, maestroDir)
+	cmd := exec.Command("docker", "build", "-t", config.BootstrapContainerTag, "-f", dockerfilePath, maestroDir)
 	cmd.Dir = projectDir
 
 	// Capture output for debugging
@@ -347,7 +343,7 @@ func ensureBootstrapContainer() error {
 		return fmt.Errorf("failed to build bootstrap container: %w (output: %s)", err, outputStr)
 	}
 
-	logx.Infof("✅ Bootstrap container built successfully: %s", bootstrapContainerTag)
+	logx.Infof("✅ Bootstrap container built successfully: %s", config.BootstrapContainerTag)
 
 	// Log some build details
 	if strings.Contains(outputStr, "Successfully tagged") {

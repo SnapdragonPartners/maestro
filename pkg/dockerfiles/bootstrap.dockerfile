@@ -8,6 +8,8 @@ RUN apk add --no-cache \
     docker-cli \
     # Git for repository operations and diff generation
     git \
+    # GitHub CLI for pull request operations and git authentication
+    github-cli \
     # Core development and shell tools
     bash \
     curl \

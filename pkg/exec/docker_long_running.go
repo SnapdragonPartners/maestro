@@ -378,12 +378,18 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		execArgs = append(execArgs, "--workdir", "/workspace")
 	}
 
+	// Add environment variables if specified.
+	for _, envVar := range opts.Env {
+		execArgs = append(execArgs, "-e", envVar) // Pass the full key=value pair
+	}
+
 	// Add container name and command.
 	execArgs = append(execArgs, containerName)
 	execArgs = append(execArgs, cmd...)
 
 	// Execute command.
 	dockerCmd := exec.CommandContext(execCtx, d.dockerCmd, execArgs...)
+
 	stdout, stderr, err := d.executeCommand(dockerCmd)
 
 	duration := time.Since(start)

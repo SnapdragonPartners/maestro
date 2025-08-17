@@ -26,7 +26,6 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/dockerfiles"
-	"orchestrator/pkg/eventlog"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
@@ -51,7 +50,6 @@ type Orchestrator struct {
 	config       *config.Config
 	dispatcher   *dispatch.Dispatcher
 	rateLimiter  *limiter.Limiter
-	eventLog     *eventlog.Writer
 	logger       *logx.Logger
 	architect    *architect.Driver // Phase 4: Architect driver for spec processing
 	webServer    *webui.Server     // Web UI server
@@ -105,22 +103,6 @@ func checkDependencies(_ *config.Config) error {
 		}
 	}
 
-	// Check for GITHUB_TOKEN.
-	githubToken := os.Getenv("GITHUB_TOKEN")
-	if githubToken == "" {
-		errors = append(errors, "GITHUB_TOKEN not found in environment variables")
-	}
-
-	// Validate GITHUB_TOKEN format if present.
-	if githubToken != "" {
-		if !strings.HasPrefix(githubToken, "ghp_") && !strings.HasPrefix(githubToken, "github_pat_") {
-			errors = append(errors, "GITHUB_TOKEN format appears invalid (should start with 'ghp_' or 'github_pat_')")
-		}
-		if len(githubToken) < 20 {
-			errors = append(errors, "GITHUB_TOKEN appears too short to be valid")
-		}
-	}
-
 	if len(errors) > 0 {
 		return fmt.Errorf("dependency check failed:\n  - %s", strings.Join(errors, "\n  - "))
 	}
@@ -129,7 +111,6 @@ func checkDependencies(_ *config.Config) error {
 	fmt.Println("  - git: available")
 	fmt.Println("  - gh (GitHub CLI): available")
 	fmt.Println("  - docker: available")
-	fmt.Println("  - GITHUB_TOKEN: configured")
 
 	return nil
 }
@@ -142,9 +123,9 @@ func main() {
 		return
 	}
 
-	// Check if this is the bootstrap subcommand
+	// Check if this is the bootstrap subcommand (alias for init)
 	if len(os.Args) >= 2 && os.Args[1] == "bootstrap" {
-		handleBootstrap(os.Args[2:])
+		handleInit(os.Args[2:])
 		return
 	}
 
@@ -298,11 +279,7 @@ func NewOrchestrator(cfg *config.Config, projectDir string) (*Orchestrator, erro
 	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(cfg)
 
-	// Create event log.
-	eventLog, err := eventlog.NewWriter("logs", 24)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create event log: %w", err)
-	}
+	// Event logging removed - using stdout loggers instead
 
 	// Create build service.
 	buildService := build.NewBuildService()
@@ -326,7 +303,7 @@ func NewOrchestrator(cfg *config.Config, projectDir string) (*Orchestrator, erro
 	// No global state store - each agent manages its own state.
 
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dispatcher: %w", err)
 	}
@@ -374,7 +351,6 @@ func NewOrchestrator(cfg *config.Config, projectDir string) (*Orchestrator, erro
 		config:             cfg,
 		dispatcher:         dispatcher,
 		rateLimiter:        rateLimiter,
-		eventLog:           eventLog,
 		logger:             logger,
 		agents:             make(map[string]StatusAgent),
 		agentTypes:         make(map[string]string),
@@ -699,9 +675,7 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	// Step 7: Close other resources.
 	o.rateLimiter.Close()
 
-	if err := o.eventLog.Close(); err != nil {
-		o.logger.Error("Failed to close event log: %v", err)
-	}
+	// Event log removed - no cleanup needed
 
 	o.logger.Info("Graceful shutdown completed")
 	return nil
@@ -1271,171 +1245,6 @@ func openBrowser(url string) error {
 	return nil
 }
 
-// handleBootstrap handles the maestro bootstrap command for automated setup.
-func handleBootstrap(args []string) {
-	// Parse command line flags
-	bootstrapFlags := flag.NewFlagSet("bootstrap", flag.ExitOnError)
-	projectDir := bootstrapFlags.String("projectdir", "", "Project directory (required)")
-	specContent := bootstrapFlags.String("spec", "", "Bootstrap specification content (optional)")
-	if err := bootstrapFlags.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse flags: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *projectDir == "" {
-		fmt.Fprintf(os.Stderr, "Project directory must be specified with -projectdir flag\n")
-		os.Exit(1)
-	}
-
-	fmt.Println("🚀 Maestro Bootstrap Flow")
-	fmt.Println("Using agent helpers for automated container and build setup.")
-	fmt.Println()
-
-	// Load orchestrator configuration
-	if loadErr := config.LoadConfig(*projectDir); loadErr != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", loadErr)
-		os.Exit(1)
-	}
-	cfg, err := config.GetConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get config: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Create bootstrap runner
-	runner, err := NewBootstrapRunner(&cfg, *projectDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create bootstrap runner: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Generate spec content if not provided
-	var bootstrapSpec string
-	if *specContent != "" {
-		bootstrapSpec = *specContent
-	} else {
-		// Generate bootstrap spec from project config and verification
-		bootstrapSpec, err = generateBootstrapSpec(*projectDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to generate bootstrap spec: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	// Run bootstrap flow with cancellable context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Setup signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Run bootstrap in goroutine
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- runner.RunBootstrap(ctx, bootstrapSpec)
-	}()
-
-	// Wait for completion or signal
-	var exitCode int
-	select {
-	case err := <-errChan:
-		if err != nil {
-			// Cleanup on failure
-			_ = runner.Shutdown(ctx)
-			fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
-			exitCode = 1
-		} else {
-			// Cleanup on success
-			if err := runner.Shutdown(ctx); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: Failed to shutdown cleanly: %v\n", err)
-			}
-		}
-	case sig := <-sigChan:
-		fmt.Printf("\nReceived signal %s, shutting down gracefully...\n", sig)
-		cancel() // Cancel context to stop bootstrap
-
-		// Wait for graceful shutdown with timeout
-		func() {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer shutdownCancel()
-
-			if err := runner.Shutdown(shutdownCtx); err != nil {
-				fmt.Fprintf(os.Stderr, "Shutdown error: %v\n", err)
-			}
-		}()
-		fmt.Println("Bootstrap shutdown complete")
-		exitCode = 0
-	}
-
-	// Clean up and exit
-	cancel()
-	if exitCode != 0 {
-		os.Exit(exitCode)
-	}
-
-	fmt.Println("✅ Bootstrap completed successfully!")
-	fmt.Println("🎯 Project is ready for development with validated container and build system.")
-}
-
-// generateBootstrapSpec generates a bootstrap specification from current project state.
-func generateBootstrapSpec(projectDir string) (string, error) {
-	// Get project configuration (should already be loaded)
-	cfg, err := config.GetConfig()
-	if err != nil {
-		// Try loading if not already loaded
-		if loadErr := config.LoadConfig(projectDir); loadErr != nil {
-			return "", fmt.Errorf("failed to load project config: %w", loadErr)
-		}
-		cfg, err = config.GetConfig()
-		if err != nil {
-			return "", fmt.Errorf("failed to get project config: %w", err)
-		}
-	}
-
-	// Run workspace verification to identify what needs bootstrapping
-	logger := logx.NewLogger("bootstrap-spec")
-	ctx := context.Background()
-	opts := workspace.VerifyOptions{
-		Logger:  logger,
-		Timeout: 30 * time.Second,
-		Fast:    false,
-	}
-
-	report, err := workspace.VerifyWorkspace(ctx, projectDir, opts)
-	if err != nil {
-		return "", fmt.Errorf("workspace verification failed: %w", err)
-	}
-
-	// Generate spec content using template system
-	projectName := ""
-	platform := ""
-	containerImage := ""
-	gitRepoURL := ""
-	dockerfilePath := ""
-
-	if cfg.Project != nil {
-		projectName = cfg.Project.Name
-		// Platform field was removed, use generic
-		platform = genericPlatform
-		if cfg.Git != nil {
-			gitRepoURL = cfg.Git.RepoURL
-		}
-	}
-	if projectName == "" {
-		projectName = filepath.Base(projectDir)
-	}
-	if platform == "" {
-		platform = genericPlatform
-	}
-
-	if cfg.Container != nil {
-		containerImage = cfg.Container.Name
-		dockerfilePath = cfg.Container.Dockerfile // From was replaced with Dockerfile
-	}
-
-	return generateBootstrapSpecContent(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report)
-}
-
 // handleInit handles the maestro init command for interactive project setup.
 func handleInit(args []string) {
 	// Parse command line flags
@@ -1595,7 +1404,7 @@ func initializeProject(projectDir, gitRepoFlag string, orchestratorConfig *confi
 	logger.Info("Using global config singleton")
 
 	// Step 1: Gather required information
-	gitRepo, err := getGitRepository(gitRepoFlag)
+	rawGitRepo, err := getGitRepository(gitRepoFlag)
 	if err != nil {
 		return fmt.Errorf("failed to get git repository: %w", err)
 	}
@@ -1603,7 +1412,25 @@ func initializeProject(projectDir, gitRepoFlag string, orchestratorConfig *confi
 	// Step 2: Ask for target branch first
 	targetBranch := getTargetBranch()
 
-	// Step 3: Create git mirror and temporary worktree
+	// Step 3: Create initial git config to trigger URL conversion
+	gitConfig := &config.GitConfig{
+		RepoURL:       rawGitRepo,
+		TargetBranch:  targetBranch,
+		MirrorDir:     config.DefaultMirrorDir,
+		BranchPattern: config.DefaultBranchPattern,
+	}
+	if updateErr := config.UpdateGit(gitConfig); updateErr != nil {
+		return fmt.Errorf("failed to update git config: %w", updateErr)
+	}
+
+	// Step 4: Get the converted URL from config (SSH -> HTTPS conversion happens here)
+	currentConfig, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get updated config: %w", err)
+	}
+	gitRepo := currentConfig.Git.RepoURL // This is the converted HTTPS URL
+
+	// Step 5: Create git mirror and temporary worktree with converted URL
 	fmt.Println("🔗 Setting up git repository access...")
 	if setupErr := setupGitMirror(projectDir, gitRepo); setupErr != nil {
 		return fmt.Errorf("failed to setup git mirror: %w", setupErr)
@@ -1667,16 +1494,7 @@ func initializeProject(projectDir, gitRepoFlag string, orchestratorConfig *confi
 		return fmt.Errorf("failed to update container config: %w", updateErr)
 	}
 
-	// Update git config with repository URL and target branch
-	gitConfig := &config.GitConfig{
-		RepoURL:       gitRepo,
-		TargetBranch:  targetBranch,
-		MirrorDir:     config.DefaultMirrorDir,
-		BranchPattern: config.DefaultBranchPattern,
-	}
-	if updateErr := config.UpdateGit(gitConfig); updateErr != nil {
-		return fmt.Errorf("failed to update git config: %w", updateErr)
-	}
+	// Git config already updated earlier in the flow
 
 	// Step 6: Setup project infrastructure
 	if setupErr := setupProjectInfrastructureNew(projectDir); setupErr != nil {
@@ -1873,10 +1691,16 @@ func setupGitMirror(projectDir, gitRepo string) error {
 	// Clone as bare repository (mirror)
 	cmd := exec.Command("git", "clone", "--mirror", gitRepo, mirrorPath)
 	cmd.Dir = projectDir // Set working directory explicitly
-	cmd.Env = append(os.Environ(),
-		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10",
-		"GIT_TERMINAL_PROMPT=0",
-	)
+
+	// Set up environment for git authentication
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	// Add GitHub token if available for HTTPS authentication
+	if config.HasGitHubToken() {
+		env = append(env, "GITHUB_TOKEN="+config.GetGitHubToken())
+	}
+
+	cmd.Env = env
 
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone failed: %w (output: %s)", err, string(output))
@@ -2405,7 +2229,7 @@ func printNextStepsNew() {
 
 // buildBootstrapContainerForInit builds the maestro-bootstrap container during initialization.
 func buildBootstrapContainerForInit(workDir string, logger *logx.Logger) error {
-	const bootstrapTag = "maestro-bootstrap:latest"
+	bootstrapTag := config.BootstrapContainerTag
 
 	logger.Info("🔨 Ensuring bootstrap container: %s", bootstrapTag)
 

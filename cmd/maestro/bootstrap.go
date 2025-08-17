@@ -46,7 +46,7 @@ func NewBootstrapRunner(cfg *config.Config, workDir string) (*BootstrapRunner, e
 	rateLimiter := limiter.NewLimiter(cfg)
 
 	// Create dispatcher for agent coordination (no filesystem eventlog)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, nil)
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dispatcher: %w", err)
 	}
@@ -112,7 +112,7 @@ func (br *BootstrapRunner) RunBootstrap(ctx context.Context, specContent string)
 		RepoURL:         repoURL,
 		TargetBranch:    baseBranch,
 		MirrorDir:       ".mirrors",
-		BranchPattern:   "maestro/story-%s",
+		BranchPattern:   "maestro/story-{STORY_ID}",
 		WorktreePattern: "maestro-story-%s",
 	}
 

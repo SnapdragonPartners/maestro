@@ -11,7 +11,6 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
@@ -63,7 +62,6 @@ type ChannelReceiver interface {
 type Dispatcher struct {
 	agents      map[string]Agent
 	rateLimiter *limiter.Limiter
-	eventLog    *eventlog.Writer
 	logger      *logx.Logger
 	config      *config.Config
 	inputChan   chan *proto.AgentMsg
@@ -112,11 +110,10 @@ type Result struct {
 }
 
 // NewDispatcher creates a new message dispatcher with the given configuration.
-func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter, eventLog *eventlog.Writer) (*Dispatcher, error) {
+func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter) (*Dispatcher, error) {
 	return &Dispatcher{
 		agents:            make(map[string]Agent),
 		rateLimiter:       rateLimiter,
-		eventLog:          eventLog,
 		logger:            logx.NewLogger("dispatcher"),
 		config:            cfg,
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
@@ -525,14 +522,6 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		d.logger.Debug("✅ Message %s (%s) has valid story_id: %s", msg.ID, msg.Type, storyIDStr)
 	}
 
-	// Log message (skip if eventLog is nil - using database logging instead).
-	if d.eventLog != nil {
-		if err := d.eventLog.WriteMessage(msg); err != nil {
-			d.logger.Error("Failed to log incoming message: %v", err)
-			// Continue processing even if logging fails.
-		}
-	}
-
 	// Resolve logical agent name to actual agent ID for all messages.
 	resolvedToAgent := d.resolveAgentName(msg.ToAgent)
 	if resolvedToAgent != msg.ToAgent {
@@ -658,12 +647,6 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 	// Route response to appropriate queue based on message type.
 	d.logger.Info("Routing response %s: %s → %s (%s)", response.ID, response.FromAgent, response.ToAgent, response.Type)
 
-	if d.eventLog != nil {
-		if err := d.eventLog.WriteMessage(response); err != nil {
-			d.logger.Error("Failed to log response message: %v", err)
-		}
-	}
-
 	// Resolve logical agent name to actual agent ID.
 	resolvedToAgent := d.resolveAgentName(response.ToAgent)
 	if resolvedToAgent != response.ToAgent {
@@ -706,12 +689,6 @@ func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) {
 	errorMsg.SetMetadata("error_type", "processing_error")
 
 	d.logger.Error("Sending error response for message %s: %v", originalMsg.ID, err)
-
-	if d.eventLog != nil {
-		if logErr := d.eventLog.WriteMessage(errorMsg); logErr != nil {
-			d.logger.Error("Failed to log error message: %v", logErr)
-		}
-	}
 }
 
 // resolveAgentName resolves logical agent names to actual agent IDs.

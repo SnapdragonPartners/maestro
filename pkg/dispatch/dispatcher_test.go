@@ -9,7 +9,6 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/proto"
 )
@@ -79,15 +78,11 @@ func NewTestDispatcher(t *testing.T) *Dispatcher {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	// Create rate limiter and event log
+	// Create rate limiter
 	rateLimiter := limiter.NewLimiter(&cfg)
-	eventLog, err := eventlog.NewWriter(tempDir, 24)
-	if err != nil {
-		t.Fatalf("Failed to create event log: %v", err)
-	}
 
 	// Create dispatcher using the same signature as createTestDispatcher
-	dispatcher, err := NewDispatcher(&cfg, rateLimiter, eventLog)
+	dispatcher, err := NewDispatcher(&cfg, rateLimiter)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -105,6 +100,7 @@ func createTestDispatcher(t *testing.T) *Dispatcher {
 	// Create temporary directory and load config
 	tempDir := t.TempDir()
 
+	//nolint:contextcheck // Test uses background context which is appropriate for tests
 	err := config.LoadConfig(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
@@ -118,14 +114,8 @@ func createTestDispatcher(t *testing.T) *Dispatcher {
 	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(&cfg)
 
-	// Create event log
-	eventLog, err := eventlog.NewWriter(tempDir, 24)
-	if err != nil {
-		t.Fatalf("Failed to create event log: %v", err)
-	}
-
 	// Create dispatcher
-	dispatcher, err := NewDispatcher(&cfg, rateLimiter, eventLog)
+	dispatcher, err := NewDispatcher(&cfg, rateLimiter)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}

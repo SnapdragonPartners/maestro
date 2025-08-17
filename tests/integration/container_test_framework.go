@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/config"
 	dockerexec "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 )
@@ -56,7 +57,7 @@ func (f *ContainerTestFramework) GetExecutor() *dockerexec.LongRunningDockerExec
 // StartContainer starts the maestro-bootstrap container with proper mounts.
 func (f *ContainerTestFramework) StartContainer(ctx context.Context) error {
 	// Create executor
-	f.executor = dockerexec.NewLongRunningDockerExec("maestro-bootstrap:latest", "test-tool-harness")
+	f.executor = dockerexec.NewLongRunningDockerExec(config.BootstrapContainerTag, "test-tool-harness")
 
 	// Configure container options
 	opts := &dockerexec.Opts{

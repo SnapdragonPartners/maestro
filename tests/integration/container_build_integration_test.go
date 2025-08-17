@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/config"
 	dockerexec "orchestrator/pkg/exec"
 	"orchestrator/pkg/tools"
 )
@@ -212,7 +213,7 @@ func TestGitOperationsInContainer(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create executor and start container
-	executor := dockerexec.NewLongRunningDockerExec("maestro-bootstrap:latest", "git-test")
+	executor := dockerexec.NewLongRunningDockerExec(config.BootstrapContainerTag, "git-test")
 
 	// Configure container options
 	opts := &dockerexec.Opts{
@@ -224,8 +225,8 @@ func TestGitOperationsInContainer(t *testing.T) {
 	}
 
 	// Inject GitHub token if available
-	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
-		opts.Env = append(opts.Env, "GITHUB_TOKEN="+token)
+	if config.HasGitHubToken() {
+		opts.Env = append(opts.Env, "GITHUB_TOKEN="+config.GetGitHubToken())
 		t.Logf("GitHub token available for authentication testing")
 	} else {
 		t.Logf("No GitHub token available - gh auth status will likely fail")

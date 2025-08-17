@@ -120,13 +120,12 @@ func (c *Coder) getTargetBranch() (string, error) {
 func (c *Coder) commitChanges(ctx context.Context, storyID string) error {
 	c.logger.Debug("🔀 Committing changes for story %s", storyID)
 
-	// Add all changes to staging area
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
 		Timeout: 30 * time.Second,
 	}
 
-	// git add -A
+	// Add all changes to staging area
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "add", "-A"}, opts)
 	if err != nil {
 		c.logger.Error("🔀 git add failed: %v, output: %s", err, result.Stderr)
@@ -160,6 +159,15 @@ func (c *Coder) pushBranch(ctx context.Context, localBranch, remoteBranch string
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
 		Timeout: 2 * time.Minute, // Give enough time for potentially large pushes
+		Env:     []string{},      // Initialize environment variables slice
+	}
+
+	// Add GITHUB_TOKEN for authentication
+	if config.HasGitHubToken() {
+		opts.Env = append(opts.Env, "GITHUB_TOKEN")
+		c.logger.Debug("🔀 Added GITHUB_TOKEN to git push environment")
+	} else {
+		c.logger.Warn("🔀 GITHUB_TOKEN not found - git push may fail with authentication error")
 	}
 
 	// git push -u origin localBranch:remoteBranch

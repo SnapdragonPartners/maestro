@@ -18,7 +18,6 @@ import (
 	"orchestrator/pkg/architect"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
-	"orchestrator/pkg/eventlog"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -445,15 +444,8 @@ func createTestDispatcher(t *testing.T) *dispatch.Dispatcher {
 	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(&cfg)
 
-	// Create event log.
-	tmpDir := t.TempDir()
-	eventLog, err := eventlog.NewWriter(tmpDir, 24)
-	if err != nil {
-		t.Fatalf("Failed to create event log: %v", err)
-	}
-
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(&cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(&cfg, rateLimiter)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -734,16 +726,11 @@ func TestAgentRestartMonitoring(t *testing.T) {
 		},
 	}
 
-	// Create rate limiter and event log.
+	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(cfg)
-	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
-	if err != nil {
-		t.Fatalf("Failed to create event log: %v", err)
-	}
-	defer eventLog.Close()
 
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -971,16 +958,11 @@ func TestArchitectMonitoringDuringRestart(t *testing.T) {
 		},
 	}
 
-	// Create rate limiter and event log.
+	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(cfg)
-	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
-	if err != nil {
-		t.Fatalf("Failed to create event log: %v", err)
-	}
-	defer eventLog.Close()
 
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -1193,16 +1175,11 @@ func TestHandleStories(t *testing.T) {
 		},
 	}
 
-	// Create rate limiter and event log.
+	// Create rate limiter.
 	rateLimiter := limiter.NewLimiter(cfg)
-	eventLog, err := eventlog.NewWriter(filepath.Join(tempDir, "logs"), 24)
-	if err != nil {
-		t.Fatalf("Failed to create event log: %v", err)
-	}
-	defer eventLog.Close()
 
 	// Create dispatcher.
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter, eventLog)
+	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}

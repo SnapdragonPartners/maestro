@@ -49,13 +49,17 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
 // Global config instance with mutex protection.
@@ -222,9 +226,11 @@ const (
 	DefaultDockerPIDs    = int64(1024) // Process limit for container execution
 
 	// Git repository defaults.
-	DefaultTargetBranch  = "main"             // Default target branch for pull requests
-	DefaultMirrorDir     = ".mirrors"         // Default directory for git mirrors
-	DefaultBranchPattern = "story-{STORY_ID}" // Default pattern for story branch names
+	DefaultTargetBranch  = "main"                         // Default target branch for pull requests
+	DefaultMirrorDir     = ".mirrors"                     // Default directory for git mirrors
+	DefaultBranchPattern = "story-{STORY_ID}"             // Default pattern for story branch names
+	DefaultGitUserName   = "Maestro {AGENT_ID}"           // Default git commit author name
+	DefaultGitUserEmail  = "maestro-{AGENT_ID}@localhost" // Default git commit author email
 
 	// Default Docker images for different project types (used only for dockerfile mode fallbacks).
 	DefaultGoDockerImage     = "golang:alpine" // Use latest stable Go with alpine
@@ -243,11 +249,14 @@ const (
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
 	ModelClaudeSonnetLatest = ModelClaudeSonnet4
 	ModelOpenAIO3           = "o3"
-	ModelOpenAIO3Mini       = "o3-mini"
-	ModelOpenAIO3Latest     = ModelOpenAIO3
-	ModelGPT5               = "gpt-5"
-	DefaultCoderModel       = ModelClaudeSonnet4
-	DefaultArchitectModel   = ModelOpenAIO3Mini
+
+	// Container image constants.
+	BootstrapContainerTag = "maestro-bootstrap:latest"
+	ModelOpenAIO3Mini     = "o3-mini"
+	ModelOpenAIO3Latest   = ModelOpenAIO3
+	ModelGPT5             = "gpt-5"
+	DefaultCoderModel     = ModelClaudeSonnet4
+	DefaultArchitectModel = ModelOpenAIO3Mini
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -259,6 +268,10 @@ const (
 	ProviderAnthropic      = "anthropic"
 	ProviderOpenAI         = "openai"
 	ProviderOpenAIOfficial = "openai_official"
+
+	// API key environment variable names.
+	EnvAnthropicAPIKey = "ANTHROPIC_API_KEY"
+	EnvOpenAIAPIKey    = "OPENAI_API_KEY"
 )
 
 // GitConfig contains git repository settings for the project.
@@ -268,6 +281,8 @@ type GitConfig struct {
 	TargetBranch  string `json:"target_branch"`  // Target branch for pull requests (default: main)
 	MirrorDir     string `json:"mirror_dir"`     // Mirror directory path (default: .mirrors)
 	BranchPattern string `json:"branch_pattern"` // Branch name pattern (default: story-{STORY_ID})
+	GitUserName   string `json:"git_user_name"`  // Git commit author name (default: Maestro {AGENT_ID})
+	GitUserEmail  string `json:"git_user_email"` // Git commit author email (default: maestro-{AGENT_ID}@localhost)
 }
 
 // OrchestratorConfig contains system-wide orchestrator settings.
@@ -409,6 +424,12 @@ func LoadConfig(inputProjectDir string) error {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Missing file - create new config with defaults
 		config = createDefaultConfig()
+
+		// Validate default config immediately (including API keys and tools)
+		if err := validateConfig(config); err != nil {
+			return fmt.Errorf("default config validation failed: %w", err)
+		}
+
 		if err := saveConfigLocked(); err != nil {
 			return fmt.Errorf("failed to save initial config: %w", err)
 		}
@@ -493,6 +514,22 @@ func UpdateBootstrap(_ string, _ interface{}) error {
 func UpdateGit(git *GitConfig) error {
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Convert SSH URLs to HTTPS format for token-based authentication
+	if git.RepoURL != "" {
+		if convertedURL := convertSSHToHTTPS(git.RepoURL); convertedURL != git.RepoURL {
+			logx.NewLogger("config").Info("Converting SSH URL to HTTPS: %s -> %s", git.RepoURL, convertedURL)
+			git.RepoURL = convertedURL
+		}
+	}
+
+	// Apply git user defaults if not provided
+	if git.GitUserName == "" {
+		git.GitUserName = DefaultGitUserName
+	}
+	if git.GitUserEmail == "" {
+		git.GitUserEmail = DefaultGitUserEmail
+	}
 
 	config.Git = git
 	return saveConfigLocked()
@@ -605,6 +642,8 @@ func createDefaultConfig() *Config {
 			TargetBranch:  DefaultTargetBranch,
 			MirrorDir:     DefaultMirrorDir,
 			BranchPattern: DefaultBranchPattern,
+			GitUserName:   DefaultGitUserName,
+			GitUserEmail:  DefaultGitUserEmail,
 		},
 
 		// Orchestrator settings
@@ -754,6 +793,21 @@ func applyDefaults(config *Config) {
 	if config.Git.BranchPattern == "" {
 		config.Git.BranchPattern = DefaultBranchPattern
 	}
+	if config.Git.GitUserName == "" {
+		config.Git.GitUserName = DefaultGitUserName
+	}
+	if config.Git.GitUserEmail == "" {
+		config.Git.GitUserEmail = DefaultGitUserEmail
+	}
+
+	// Convert SSH URLs to HTTPS format for token-based authentication
+	// This handles both new configs and user manual edits
+	if config.Git.RepoURL != "" {
+		if convertedURL := convertSSHToHTTPS(config.Git.RepoURL); convertedURL != config.Git.RepoURL {
+			logx.NewLogger("config").Info("Converting SSH URL to HTTPS: %s -> %s", config.Git.RepoURL, convertedURL)
+			config.Git.RepoURL = convertedURL
+		}
+	}
 
 	// Apply agent defaults
 	if config.Agents.MaxCoders == 0 {
@@ -850,6 +904,34 @@ func applyDefaults(config *Config) {
 }
 
 func validateConfig(config *Config) error {
+	// Debug logging
+	fmt.Printf("[config] 🔑 Validating environment variables\n")
+
+	// Validate GITHUB_TOKEN environment variable (required for all git operations)
+	githubToken := GetGitHubToken()
+	if githubToken == "" {
+		return fmt.Errorf("GITHUB_TOKEN not found in environment variables - required for git operations")
+	}
+
+	// Validate GITHUB_TOKEN format
+	if !strings.HasPrefix(githubToken, "ghp_") && !strings.HasPrefix(githubToken, "github_pat_") {
+		return fmt.Errorf("GITHUB_TOKEN format appears invalid (should start with 'ghp_' or 'github_pat_')")
+	}
+	if len(githubToken) < 20 {
+		return fmt.Errorf("GITHUB_TOKEN appears too short to be valid (got %d chars, need at least 20)", len(githubToken))
+	}
+	fmt.Printf("[config] 🔑 ✅ GITHUB_TOKEN validated successfully (%d chars)\n", len(githubToken))
+
+	// Validate LLM API keys for configured models
+	if err := validateRequiredAPIKeys(config); err != nil {
+		return fmt.Errorf("LLM API key validation failed: %w", err)
+	}
+
+	// Validate external tool dependencies
+	if err := validateExternalTools(); err != nil {
+		return fmt.Errorf("external tool validation failed: %w", err)
+	}
+
 	// Validate orchestrator models
 	if config.Orchestrator == nil || len(config.Orchestrator.Models) == 0 {
 		return fmt.Errorf("no models configured in orchestrator section")
@@ -888,6 +970,150 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	return nil
+}
+
+// validateRequiredAPIKeys checks that all required API keys are present for the configured models.
+func validateRequiredAPIKeys(cfg *Config) error {
+	if cfg.Agents == nil {
+		return nil // No agents configured, no API keys needed
+	}
+
+	// Debug logging
+	fmt.Printf("[config] 🔑 Validating API keys for configured models\n")
+
+	// Collect all required providers based on configured models
+	requiredProviders := make(map[string]bool)
+
+	// Check coder model
+	if cfg.Agents.CoderModel != "" {
+		coderProvider, err := GetModelProvider(cfg.Agents.CoderModel)
+		if err != nil {
+			return fmt.Errorf("coder model %s: %w", cfg.Agents.CoderModel, err)
+		}
+		requiredProviders[coderProvider] = true
+		fmt.Printf("[config] 🔑 Coder model %s requires provider %s\n", cfg.Agents.CoderModel, coderProvider)
+	}
+
+	// Check architect model
+	if cfg.Agents.ArchitectModel != "" {
+		architectProvider, err := GetModelProvider(cfg.Agents.ArchitectModel)
+		if err != nil {
+			return fmt.Errorf("architect model %s: %w", cfg.Agents.ArchitectModel, err)
+		}
+		requiredProviders[architectProvider] = true
+		fmt.Printf("[config] 🔑 Architect model %s requires provider %s\n", cfg.Agents.ArchitectModel, architectProvider)
+	}
+
+	// Validate API keys for each required provider
+	for provider := range requiredProviders {
+		apiKey, err := GetAPIKey(provider)
+		if err != nil {
+			return fmt.Errorf("failed to get API key for provider %s: %w", provider, err)
+		}
+		if apiKey == "" {
+			var envVar string
+			switch provider {
+			case ProviderAnthropic:
+				envVar = EnvAnthropicAPIKey
+			case ProviderOpenAI, ProviderOpenAIOfficial:
+				envVar = EnvOpenAIAPIKey
+			default:
+				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
+			}
+			return fmt.Errorf("%s not found in environment variables - required for %s models", envVar, provider)
+		}
+
+		// Basic validation: API keys should be reasonably long
+		if len(apiKey) < 10 {
+			var envVar string
+			switch provider {
+			case ProviderAnthropic:
+				envVar = EnvAnthropicAPIKey
+			case ProviderOpenAI, ProviderOpenAIOfficial:
+				envVar = EnvOpenAIAPIKey
+			default:
+				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
+			}
+			return fmt.Errorf("%s appears too short to be valid (got %d chars, need at least 10)", envVar, len(apiKey))
+		} else {
+			// Log successful validation
+			var envVar string
+			switch provider {
+			case ProviderAnthropic:
+				envVar = EnvAnthropicAPIKey
+			case ProviderOpenAI, ProviderOpenAIOfficial:
+				envVar = EnvOpenAIAPIKey
+			default:
+				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
+			}
+			fmt.Printf("[config] 🔑 ✅ %s validated successfully (%d chars)\n", envVar, len(apiKey))
+		}
+	}
+
+	fmt.Printf("[config] 🔑 ✅ All required API keys validated successfully\n")
+	return nil
+}
+
+// validateExternalTools checks that all required external tools are available.
+func validateExternalTools() error {
+	fmt.Printf("[config] 🔧 Validating external tool dependencies\n")
+
+	requiredTools := map[string]string{
+		"git":    "Git is required for repository operations",
+		"gh":     "GitHub CLI is required for pull request operations",
+		"docker": "Docker is required for containerized builds",
+	}
+
+	var errors []string
+
+	for tool, description := range requiredTools {
+		if err := CheckToolAvailable(tool); err != nil {
+			errors = append(errors, fmt.Sprintf("%s not found on PATH: %s", tool, description))
+		} else {
+			fmt.Printf("[config] 🔧 ✅ %s: available\n", tool)
+		}
+	}
+
+	// Check if Docker daemon is running (docker-specific validation)
+	if CheckToolAvailable("docker") == nil {
+		if err := CheckDockerDaemonRunning(); err != nil {
+			errors = append(errors, fmt.Sprintf("Docker daemon is not running: %s", err.Error()))
+		} else {
+			fmt.Printf("[config] 🔧 ✅ Docker daemon: running\n")
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("missing required tools:\n  - %s", strings.Join(errors, "\n  - "))
+	}
+
+	fmt.Printf("[config] 🔧 ✅ All external tools validated successfully\n")
+	return nil
+}
+
+// CheckToolAvailable checks if a command is available on the system PATH.
+// This is an exported helper that other packages can use for specific tool checks.
+func CheckToolAvailable(toolName string) error {
+	_, err := exec.LookPath(toolName)
+	if err != nil {
+		return fmt.Errorf("command %s not found: %w", toolName, err)
+	}
+	return nil
+}
+
+// CheckDockerDaemonRunning checks if the Docker daemon is running.
+// This is an exported helper that other packages can use for Docker-specific checks.
+//
+//nolint:contextcheck // Function creates its own context internally
+func CheckDockerDaemonRunning() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-q")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker ps failed: %w", err)
+	}
 	return nil
 }
 
@@ -1027,9 +1253,9 @@ func GetAPIKey(provider string) (string, error) {
 	var envVar string
 	switch provider {
 	case ProviderAnthropic:
-		envVar = "ANTHROPIC_API_KEY"
+		envVar = EnvAnthropicAPIKey
 	case ProviderOpenAI, ProviderOpenAIOfficial:
-		envVar = "OPENAI_API_KEY" // Both use the same API key
+		envVar = EnvOpenAIAPIKey // Both use the same API key
 	default:
 		return "", fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -1073,4 +1299,40 @@ func ValidateAPIKeysForConfig() error {
 	}
 
 	return nil
+}
+
+// GetGitHubToken returns the GitHub token from environment variables.
+// This centralizes GitHub token access with validation and consistent logging.
+func GetGitHubToken() string {
+	return os.Getenv("GITHUB_TOKEN")
+}
+
+// HasGitHubToken returns true if a GitHub token is available.
+func HasGitHubToken() bool {
+	return GetGitHubToken() != ""
+}
+
+// convertSSHToHTTPS converts SSH git URLs to HTTPS format for token-based authentication.
+// This enables all git operations to use GITHUB_TOKEN instead of SSH keys.
+func convertSSHToHTTPS(originalURL string) string {
+	// Check if it's already an HTTPS URL
+	if strings.HasPrefix(originalURL, "https://") {
+		return originalURL
+	}
+
+	// Convert SSH URL format: git@github.com:owner/repo.git -> https://github.com/owner/repo.git
+	if strings.HasPrefix(originalURL, "git@github.com:") {
+		// Extract owner/repo.git part
+		repoPath := strings.TrimPrefix(originalURL, "git@github.com:")
+		return "https://github.com/" + repoPath
+	}
+
+	// Handle other common SSH formats: ssh://git@github.com/owner/repo.git
+	if strings.HasPrefix(originalURL, "ssh://git@github.com/") {
+		repoPath := strings.TrimPrefix(originalURL, "ssh://git@github.com/")
+		return "https://github.com/" + repoPath
+	}
+
+	// If it's not a recognized GitHub URL format, return as-is
+	return originalURL
 }

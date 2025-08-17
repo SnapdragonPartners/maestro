@@ -3,9 +3,11 @@ package coder
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -53,6 +55,9 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	c.logger.Info("Workspace setup complete: %s", cloneResult.WorkDir)
 	c.logger.Debug("Updated coder working directory to: %s", c.workDir)
 	c.logger.Debug("Coder instance pointer: %p, workDir: %s", c, c.workDir)
+
+	// Git user identity is now configured during CloneManager.SetupWorkspace() on the host
+	// This avoids read-only filesystem issues with container mounts
 
 	// Configure container with read-only workspace for planning phase
 	if c.longRunningExecutor != nil {
@@ -111,6 +116,14 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		execOpts.ResourceLimits.Memory = "2g"
 		execOpts.ResourceLimits.PIDs = 1024
 		execOpts.NetworkDisabled = false
+
+		// Inject GITHUB_TOKEN for git operations during coding phase
+		if config.HasGitHubToken() {
+			execOpts.Env = append(execOpts.Env, "GITHUB_TOKEN")
+			c.logger.Debug("Injected GITHUB_TOKEN into coding container environment")
+		} else {
+			c.logger.Warn("GITHUB_TOKEN not found in environment - git push operations may fail")
+		}
 	}
 
 	// Use sanitized agent ID for container naming (story ID not accessible from here)
@@ -125,6 +138,13 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 
 	c.containerName = containerName
 	c.logger.Info("Started %s container: %s (readonly=%v)", purpose, containerName, readonly)
+
+	// For coding containers, verify GITHUB_TOKEN is available
+	if !readonly {
+		if err := c.verifyGitHubTokenInContainer(ctx); err != nil {
+			return logx.Wrap(err, "GITHUB_TOKEN verification failed - cannot proceed with coding")
+		}
+	}
 
 	// Update shell tool to use new container
 	if err := c.updateShellToolForStory(ctx); err != nil {
@@ -183,4 +203,47 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 	}
 
 	return result.Stdout, nil
+}
+
+// verifyGitHubTokenInContainer checks if GitHub authentication is working in the container.
+func (c *Coder) verifyGitHubTokenInContainer(ctx context.Context) error {
+	opts := &execpkg.Opts{
+		WorkDir: c.workDir,
+		Timeout: 15 * time.Second, // Allow time for network request
+		Env:     []string{},       // Initialize environment variables slice
+	}
+
+	// Add GITHUB_TOKEN for authentication
+	if config.HasGitHubToken() {
+		opts.Env = append(opts.Env, "GITHUB_TOKEN")
+	}
+
+	// Setup Git to use GitHub CLI for authentication with GITHUB_TOKEN
+	c.logger.Info("🔑 Configuring Git authentication with GitHub CLI...")
+	result, err := c.longRunningExecutor.Run(ctx, []string{"gh", "auth", "setup-git"}, opts)
+	if err != nil {
+		c.logger.Error("❌ GitHub CLI authentication setup failed")
+		c.logger.Error("Command: gh auth setup-git")
+		c.logger.Error("Exit code: %d", result.ExitCode)
+		c.logger.Error("Stdout: %s", result.Stdout)
+		c.logger.Error("Stderr: %s", result.Stderr)
+		c.logger.Error("Error: %v", err)
+		return fmt.Errorf("GitHub CLI authentication setup failed - this is required for git operations: %w", err)
+	}
+
+	c.logger.Info("✅ Git authentication configured successfully - GitHub CLI will handle git credentials")
+
+	// Verify the setup worked by checking git config
+	configResult, configErr := c.longRunningExecutor.Run(ctx, []string{"git", "config", "--list"}, opts)
+	if configErr == nil {
+		if strings.Contains(configResult.Stdout, "credential.https://github.com.helper=!/usr/bin/gh auth git-credential") {
+			c.logger.Info("✅ Git credential helper verified: GitHub CLI is configured")
+		} else {
+			c.logger.Warn("⚠️ Git credential helper not found in config - authentication may fail")
+		}
+	} else {
+		c.logger.Warn("⚠️ Could not verify git config: %v", configErr)
+	}
+
+	return nil
 }

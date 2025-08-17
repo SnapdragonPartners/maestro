@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
 
@@ -85,7 +86,12 @@ func (c *CloneManager) SetupWorkspace(ctx context.Context, agentID, storyID, age
 	}
 	c.logger.Debug("Verified agent work directory exists at: %s", agentWorkDirPath)
 
-	// Step 4: Create and checkout branch.
+	// Step 4: Configure git user identity on host (before any container mounts)
+	if gitErr := c.configureGitIdentity(ctx, agentWorkDirPath, agentID); gitErr != nil {
+		return nil, logx.Wrap(gitErr, "failed to configure git user identity")
+	}
+
+	// Step 5: Create and checkout branch.
 	branchName := c.buildBranchName(storyID)
 	actualBranchName, err := c.createBranch(ctx, agentWorkDirPath, branchName)
 	if err != nil {
@@ -245,7 +251,7 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 	}
 
 	// Configure remote origin for pushing branches to actual repository.
-	// The clone inherits the bare repository configuration, so we need to set the proper remote URL.
+	// URL conversion from SSH to HTTPS is handled in config loading.
 	c.logger.Debug("Configuring origin remote for clone: %s", c.repoURL)
 	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "set-url", "origin", c.repoURL)
 	if err != nil {
@@ -402,4 +408,32 @@ func (c *CloneManager) BuildAgentWorkDir(_ /* agentID */, agentWorkDir string) s
 // buildBranchName constructs the branch name using the pattern.
 func (c *CloneManager) buildBranchName(storyID string) string {
 	return strings.ReplaceAll(c.branchPattern, "{STORY_ID}", storyID)
+}
+
+// configureGitIdentity configures git user identity in the workspace on the host.
+// This runs before any container mounts to avoid read-only filesystem issues.
+func (c *CloneManager) configureGitIdentity(ctx context.Context, agentWorkDir, agentID string) error {
+	// Get config values with agent ID substitution
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	userName := strings.ReplaceAll(cfg.Git.GitUserName, "{AGENT_ID}", agentID)
+	userEmail := strings.ReplaceAll(cfg.Git.GitUserEmail, "{AGENT_ID}", agentID)
+
+	// Configure git user name on host
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "config", "user.name", userName)
+	if err != nil {
+		return fmt.Errorf("failed to set git user.name: %w", err)
+	}
+
+	// Configure git user email on host
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "config", "user.email", userEmail)
+	if err != nil {
+		return fmt.Errorf("failed to set git user.email: %w", err)
+	}
+
+	c.logger.Info("🔧 Configured git user identity on host: %s <%s>", userName, userEmail)
+	return nil
 }

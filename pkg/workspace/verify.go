@@ -400,7 +400,7 @@ func verifyExternalTools(warn func(string, ...interface{})) {
 	}
 
 	// Check for GITHUB_TOKEN environment variable
-	if _, ok := os.LookupEnv("GITHUB_TOKEN"); !ok {
+	if !config.HasGitHubToken() {
 		warn("GITHUB_TOKEN environment variable not set: GitHub operations may fail")
 	}
 }
