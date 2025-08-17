@@ -923,6 +923,7 @@ func (o *Orchestrator) startStateChangeProcessor(ctx context.Context) {
 
 	// Get state change notifications from dispatcher.
 	stateChangeCh := o.dispatcher.GetStateChangeChannel()
+	o.logger.Info("State change processor got channel from dispatcher: %p", stateChangeCh)
 
 	for {
 		select {
@@ -936,7 +937,10 @@ func (o *Orchestrator) startStateChangeProcessor(ctx context.Context) {
 				return
 			}
 			if notification != nil {
+				o.logger.Info("🔔 Received state change notification: %s %s -> %s", notification.AgentID, notification.FromState, notification.ToState)
 				o.handleStateChange(ctx, notification)
+			} else {
+				o.logger.Warn("Received nil state change notification")
 			}
 		}
 	}

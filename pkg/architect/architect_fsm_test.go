@@ -18,7 +18,6 @@ func TestArchitectStateString(t *testing.T) {
 		{StateMonitoring, "MONITORING"},
 		{StateRequest, "REQUEST"},
 		{StateEscalated, "ESCALATED"},
-		{StateMerging, "MERGING"},
 		{StateDone, "DONE"},
 		{StateError, "ERROR"},
 		{proto.State("INVALID"), "INVALID"}, // Invalid state
@@ -56,12 +55,10 @@ func TestIsValidArchitectTransition(t *testing.T) {
 
 		// MONITORING transitions.
 		{StateMonitoring, StateRequest, "MONITORING -> REQUEST (coder request)"},
-		{StateMonitoring, StateMerging, "MONITORING -> MERGING (approved code-review)"},
 		{StateMonitoring, StateError, "MONITORING -> ERROR (channel closed/abnormal shutdown)"},
 
 		// REQUEST transitions.
 		{StateRequest, StateMonitoring, "REQUEST -> MONITORING (approve non-code/request changes)"},
-		{StateRequest, StateMerging, "REQUEST -> MERGING (approve code-review)"},
 		{StateRequest, StateEscalated, "REQUEST -> ESCALATED (cannot answer)"},
 		{StateRequest, StateError, "REQUEST -> ERROR (abandon/unrecoverable)"},
 
@@ -70,8 +67,6 @@ func TestIsValidArchitectTransition(t *testing.T) {
 		{StateEscalated, StateError, "ESCALATED -> ERROR (timeout/no answer)"},
 
 		// MERGING transitions.
-		{StateMerging, StateDispatching, "MERGING -> DISPATCHING (merge succeeds)"},
-		{StateMerging, StateError, "MERGING -> ERROR (merge failure)"},
 
 		// DONE transitions.
 		{StateDone, StateWaiting, "DONE -> WAITING (new spec arrives)"},
@@ -100,7 +95,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateWaiting, StateDispatching, "WAITING -> DISPATCHING (invalid)"},
 		{StateWaiting, StateMonitoring, "WAITING -> MONITORING (invalid)"},
 		{StateWaiting, StateEscalated, "WAITING -> ESCALATED (invalid)"},
-		{StateWaiting, StateMerging, "WAITING -> MERGING (invalid)"},
 		{StateWaiting, StateDone, "WAITING -> DONE (invalid)"},
 
 		// Invalid SCOPING transitions.
@@ -108,7 +102,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateScoping, StateMonitoring, "SCOPING -> MONITORING (invalid)"},
 		{StateScoping, StateRequest, "SCOPING -> REQUEST (invalid)"},
 		{StateScoping, StateEscalated, "SCOPING -> ESCALATED (invalid)"},
-		{StateScoping, StateMerging, "SCOPING -> MERGING (invalid)"},
 		{StateScoping, StateDone, "SCOPING -> DONE (invalid)"},
 
 		// Invalid DISPATCHING transitions.
@@ -116,7 +109,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateDispatching, StateScoping, "DISPATCHING -> SCOPING (invalid)"},
 		{StateDispatching, StateRequest, "DISPATCHING -> REQUEST (invalid)"},
 		{StateDispatching, StateEscalated, "DISPATCHING -> ESCALATED (invalid)"},
-		{StateDispatching, StateMerging, "DISPATCHING -> MERGING (invalid)"},
 		{StateDispatching, StateError, "DISPATCHING -> ERROR (invalid)"},
 
 		// Invalid MONITORING transitions.
@@ -137,16 +129,9 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateEscalated, StateScoping, "ESCALATED -> SCOPING (invalid)"},
 		{StateEscalated, StateDispatching, "ESCALATED -> DISPATCHING (invalid)"},
 		{StateEscalated, StateMonitoring, "ESCALATED -> MONITORING (invalid)"},
-		{StateEscalated, StateMerging, "ESCALATED -> MERGING (invalid)"},
 		{StateEscalated, StateDone, "ESCALATED -> DONE (invalid)"},
 
 		// Invalid MERGING transitions.
-		{StateMerging, StateWaiting, "MERGING -> WAITING (invalid)"},
-		{StateMerging, StateScoping, "MERGING -> SCOPING (invalid)"},
-		{StateMerging, StateMonitoring, "MERGING -> MONITORING (invalid)"},
-		{StateMerging, StateRequest, "MERGING -> REQUEST (invalid)"},
-		{StateMerging, StateEscalated, "MERGING -> ESCALATED (invalid)"},
-		{StateMerging, StateDone, "MERGING -> DONE (invalid)"},
 
 		// Invalid DONE transitions (can only go to WAITING)
 		{StateDone, StateScoping, "DONE -> SCOPING (invalid)"},
@@ -154,7 +139,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateDone, StateMonitoring, "DONE -> MONITORING (invalid)"},
 		{StateDone, StateRequest, "DONE -> REQUEST (invalid)"},
 		{StateDone, StateEscalated, "DONE -> ESCALATED (invalid)"},
-		{StateDone, StateMerging, "DONE -> MERGING (invalid)"},
 		{StateDone, StateError, "DONE -> ERROR (invalid)"},
 
 		// Invalid ERROR transitions (can only go to WAITING)
@@ -163,7 +147,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateError, StateMonitoring, "ERROR -> MONITORING (invalid)"},
 		{StateError, StateRequest, "ERROR -> REQUEST (invalid)"},
 		{StateError, StateEscalated, "ERROR -> ESCALATED (invalid)"},
-		{StateError, StateMerging, "ERROR -> MERGING (invalid)"},
 		{StateError, StateDone, "ERROR -> DONE (invalid)"},
 	}
 
@@ -192,7 +175,6 @@ func TestGetAllArchitectStates(t *testing.T) {
 		StateMonitoring,
 		StateRequest,
 		StateEscalated,
-		StateMerging,
 		StateDone,
 		StateError,
 	}
@@ -219,7 +201,6 @@ func TestIsTerminalState(t *testing.T) {
 		{StateMonitoring, false},
 		{StateRequest, false},
 		{StateEscalated, false},
-		{StateMerging, false},
 		{StateDone, true},
 		{StateError, true},
 	}
@@ -243,7 +224,6 @@ func TestIsValidArchitectState(t *testing.T) {
 		StateMonitoring,
 		StateRequest,
 		StateEscalated,
-		StateMerging,
 		StateDone,
 		StateError,
 	}
@@ -295,10 +275,7 @@ func TestValidNextStates(t *testing.T) {
 		{StateWaiting, []proto.State{StateScoping, StateRequest, StateError}},
 		{StateScoping, []proto.State{StateDispatching, StateError}},
 		{StateDispatching, []proto.State{StateMonitoring, StateDone}},
-		{StateMonitoring, []proto.State{StateRequest, StateMerging, StateError}},
-		{StateRequest, []proto.State{StateMonitoring, StateMerging, StateEscalated, StateError}},
 		{StateEscalated, []proto.State{StateRequest, StateError}},
-		{StateMerging, []proto.State{StateDispatching, StateError}},
 		{StateDone, []proto.State{StateWaiting}},
 		{StateError, []proto.State{StateWaiting}},
 	}

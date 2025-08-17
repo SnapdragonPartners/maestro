@@ -280,8 +280,6 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 			return d.handleRequest(ctx)
 		case StateEscalated:
 			return d.handleEscalated(ctx)
-		case StateMerging:
-			return d.handleMerging(ctx)
 		case StateDone:
 			// DONE is a terminal state - should not continue processing.
 			return StateDone, nil

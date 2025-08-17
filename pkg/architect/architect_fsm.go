@@ -31,9 +31,6 @@ const (
 	// Human escalation states.
 	StateEscalated proto.State = "ESCALATED"
 
-	// Merge & unblock states.
-	StateMerging proto.State = "MERGING"
-
 	// Terminal states.
 	StateDone  proto.State = "DONE"
 	StateError proto.State = "ERROR"
@@ -54,7 +51,7 @@ func ValidateState(state proto.State) error {
 func GetValidStates() []proto.State {
 	return []proto.State{
 		StateWaiting, StateScoping, StateDispatching, StateMonitoring,
-		StateRequest, StateEscalated, StateMerging, StateDone, StateError,
+		StateRequest, StateEscalated, StateDone, StateError,
 	}
 }
 
@@ -71,18 +68,14 @@ var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglob
 	// DISPATCHING can transition to MONITORING when stories placed on work-queue, or DONE when no stories left.
 	StateDispatching: {StateMonitoring, StateDone},
 
-	// MONITORING can transition to REQUEST for any coder request, MERGING when approved code-review arrives, or ERROR on channel closure.
-	StateMonitoring: {StateRequest, StateMerging, StateError},
+	// MONITORING can transition to REQUEST for any coder request, or ERROR on channel closure.
+	StateMonitoring: {StateRequest, StateError},
 
-	// REQUEST can transition to MONITORING (approve non-code/request changes), MERGING (approve code-review),
-	// ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
-	StateRequest: {StateMonitoring, StateMerging, StateEscalated, StateError},
+	// REQUEST can transition to MONITORING (approve non-code/request changes), ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
+	StateRequest: {StateMonitoring, StateEscalated, StateError},
 
 	// ESCALATED can transition to REQUEST when human answer supplied, or ERROR on timeout/no answer.
 	StateEscalated: {StateRequest, StateError},
-
-	// MERGING can transition to DISPATCHING when merge succeeds (may unblock more stories), or ERROR on failure.
-	StateMerging: {StateDispatching, StateError},
 
 	// DONE can transition to WAITING when new spec arrives.
 	StateDone: {StateWaiting},
@@ -128,7 +121,6 @@ func GetAllArchitectStates() []proto.State {
 		StateMonitoring,
 		StateRequest,
 		StateEscalated,
-		StateMerging,
 		StateDone,
 		StateError,
 	}

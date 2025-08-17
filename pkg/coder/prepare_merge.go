@@ -43,6 +43,12 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		targetBranch = "main"
 	}
 
+	// Ensure GitHub authentication is set up before git operations
+	if authErr := c.ensureGitHubAuthentication(ctx, false); authErr != nil {
+		c.logger.Error("🔀 GitHub authentication setup failed: %v", authErr)
+		return proto.StateError, false, logx.Wrap(authErr, "GitHub authentication required for PREPARE_MERGE")
+	}
+
 	// Step 1: Commit all changes
 	if commitErr := c.commitChanges(ctx, storyID); commitErr != nil {
 		if c.isRecoverableGitError(commitErr) {

@@ -139,10 +139,10 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	c.containerName = containerName
 	c.logger.Info("Started %s container: %s (readonly=%v)", purpose, containerName, readonly)
 
-	// For coding containers, verify GITHUB_TOKEN is available
+	// For coding containers, ensure GitHub authentication is set up
 	if !readonly {
-		if err := c.verifyGitHubTokenInContainer(ctx); err != nil {
-			return logx.Wrap(err, "GITHUB_TOKEN verification failed - cannot proceed with coding")
+		if err := c.ensureGitHubAuthentication(ctx, true); err != nil {
+			return logx.Wrap(err, "GitHub authentication setup failed - cannot proceed with coding")
 		}
 	}
 
@@ -205,45 +205,97 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 	return result.Stdout, nil
 }
 
-// verifyGitHubTokenInContainer checks if GitHub authentication is working in the container.
-func (c *Coder) verifyGitHubTokenInContainer(ctx context.Context) error {
+// ensureGitHubAuthentication ensures GitHub authentication is properly configured in the container.
+// This includes checking for GITHUB_TOKEN, verifying git/gh tools, configuring git user, and setting up auth.
+// addContextMessage controls whether helpful context messages are added for the coder (true for container setup, false for PREPARE_MERGE).
+func (c *Coder) ensureGitHubAuthentication(ctx context.Context, addContextMessage bool) error {
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
-		Timeout: 15 * time.Second, // Allow time for network request
-		Env:     []string{},       // Initialize environment variables slice
+		Timeout: 15 * time.Second,
+		Env:     []string{},
 	}
 
-	// Add GITHUB_TOKEN for authentication
-	if config.HasGitHubToken() {
-		opts.Env = append(opts.Env, "GITHUB_TOKEN")
+	// FATAL CHECK: GITHUB_TOKEN must exist
+	if !config.HasGitHubToken() {
+		return fmt.Errorf("GITHUB_TOKEN not found in environment - this is required for git operations and cannot be fixed by coder")
 	}
+	opts.Env = append(opts.Env, "GITHUB_TOKEN")
 
-	// Setup Git to use GitHub CLI for authentication with GITHUB_TOKEN
-	c.logger.Info("🔑 Configuring Git authentication with GitHub CLI...")
-	result, err := c.longRunningExecutor.Run(ctx, []string{"gh", "auth", "setup-git"}, opts)
-	if err != nil {
-		c.logger.Error("❌ GitHub CLI authentication setup failed")
-		c.logger.Error("Command: gh auth setup-git")
-		c.logger.Error("Exit code: %d", result.ExitCode)
-		c.logger.Error("Stdout: %s", result.Stdout)
-		c.logger.Error("Stderr: %s", result.Stderr)
-		c.logger.Error("Error: %v", err)
-		return fmt.Errorf("GitHub CLI authentication setup failed - this is required for git operations: %w", err)
-	}
+	// Check if git is available
+	gitResult, gitErr := c.longRunningExecutor.Run(ctx, []string{"which", "git"}, opts)
+	gitAvailable := gitErr == nil && gitResult.ExitCode == 0
 
-	c.logger.Info("✅ Git authentication configured successfully - GitHub CLI will handle git credentials")
+	// Check if gh (GitHub CLI) is available
+	ghResult, ghErr := c.longRunningExecutor.Run(ctx, []string{"which", "gh"}, opts)
+	ghAvailable := ghErr == nil && ghResult.ExitCode == 0
 
-	// Verify the setup worked by checking git config
-	configResult, configErr := c.longRunningExecutor.Run(ctx, []string{"git", "config", "--list"}, opts)
-	if configErr == nil {
-		if strings.Contains(configResult.Stdout, "credential.https://github.com.helper=!/usr/bin/gh auth git-credential") {
-			c.logger.Info("✅ Git credential helper verified: GitHub CLI is configured")
-		} else {
-			c.logger.Warn("⚠️ Git credential helper not found in config - authentication may fail")
+	c.logger.Info("🔑 Ensuring GitHub authentication (git: %t, gh: %t)", gitAvailable, ghAvailable)
+
+	// Add context messages for missing tools (only during container setup)
+	if addContextMessage {
+		if !gitAvailable {
+			c.contextManager.AddMessage("system", "Git is not installed in the container. You will need to install git before making commits or pushes.")
 		}
-	} else {
-		c.logger.Warn("⚠️ Could not verify git config: %v", configErr)
+		if !ghAvailable {
+			c.contextManager.AddMessage("system", "GitHub CLI (gh) is not installed in the container. You will need to install gh before creating pull requests.")
+		}
 	}
 
+	// Configure git user identity (if git is available)
+	if gitAvailable {
+		if err := c.configureGitUser(ctx, opts); err != nil {
+			c.logger.Warn("⚠️ Failed to configure git user identity: %v", err)
+			if addContextMessage {
+				c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+			}
+		}
+	}
+
+	// Setup GitHub CLI authentication (if both tools are available)
+	if gitAvailable && ghAvailable {
+		result, err := c.longRunningExecutor.Run(ctx, []string{"gh", "auth", "setup-git"}, opts)
+		if err != nil {
+			c.logger.Warn("⚠️ GitHub CLI auth setup failed: %v (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
+			if addContextMessage {
+				c.contextManager.AddMessage("system", fmt.Sprintf("GitHub CLI authentication setup failed: %v. You may need to troubleshoot GitHub authentication before making git operations.", err))
+			}
+		} else {
+			c.logger.Info("✅ Git authentication configured - GitHub CLI will handle git credentials")
+
+			// Verify the setup worked
+			configResult, configErr := c.longRunningExecutor.Run(ctx, []string{"git", "config", "--list"}, opts)
+			if configErr == nil && strings.Contains(configResult.Stdout, "credential.https://github.com.helper=!/usr/bin/gh auth git-credential") {
+				c.logger.Info("✅ Git credential helper verified: GitHub CLI is configured")
+			}
+		}
+	}
+
+	return nil
+}
+
+// configureGitUser configures git user.name and user.email in the container using config values.
+func (c *Coder) configureGitUser(ctx context.Context, opts *execpkg.Opts) error {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	agentID := c.GetID()
+	userName := strings.ReplaceAll(cfg.Git.GitUserName, "{AGENT_ID}", agentID)
+	userEmail := strings.ReplaceAll(cfg.Git.GitUserEmail, "{AGENT_ID}", agentID)
+
+	// Set user.name
+	_, err = c.longRunningExecutor.Run(ctx, []string{"git", "config", "user.name", userName}, opts)
+	if err != nil {
+		return fmt.Errorf("failed to set git user.name: %w", err)
+	}
+
+	// Set user.email
+	_, err = c.longRunningExecutor.Run(ctx, []string{"git", "config", "user.email", userEmail}, opts)
+	if err != nil {
+		return fmt.Errorf("failed to set git user.email: %w", err)
+	}
+
+	c.logger.Info("✅ Configured git user identity: %s <%s>", userName, userEmail)
 	return nil
 }

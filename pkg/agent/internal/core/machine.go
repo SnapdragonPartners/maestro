@@ -217,6 +217,8 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.Sta
 			Metadata:  metadata,
 		}
 
+		sm.logger.Debug("📤 Sending state notification: %s %s -> %s (channel: %p)", sm.agentID, oldState, newState, sm.stateNotifCh)
+
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -228,13 +230,15 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.Sta
 
 			select {
 			case sm.stateNotifCh <- notification:
-				// Notification sent successfully.
+				sm.logger.Debug("✅ State notification sent successfully: %s %s -> %s", sm.agentID, oldState, newState)
 			default:
 				// Channel full, log warning but don't block.
-				sm.logger.Debug("State notification channel full, dropping notification for %s: %s->%s",
+				sm.logger.Warn("⚠️ State notification channel full, dropping notification for %s: %s->%s",
 					sm.agentID, oldState, newState)
 			}
 		}()
+	} else {
+		sm.logger.Warn("❌ No state notification channel set for agent %s, cannot send %s -> %s notification", sm.agentID, oldState, newState)
 	}
 
 	// Update state data with transition metadata.

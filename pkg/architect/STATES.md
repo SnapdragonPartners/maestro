@@ -27,22 +27,16 @@ stateDiagram-v2
 
     %% ---------- MAIN EVENT LOOP ----------
     MONITORING    --> REQUEST            : any coder request\n(question • plan • iter/tokens • code-review • merge)
-    MONITORING    --> MERGING            : approved code-review arrives
     MONITORING    --> ERROR              : channel closed/abnormal shutdown
     
     %% ---------- REQUEST HANDLING ----------
     REQUEST       --> MONITORING         : approve (non-code) • request changes  
-    REQUEST       --> MERGING            : approve code-review
     REQUEST       --> ESCALATED          : cannot answer → ask human
     REQUEST       --> ERROR              : abandon / unrecoverable
 
     %% ---------- HUMAN ESCALATION ----------
     ESCALATED     --> REQUEST            : human answer supplied
     ESCALATED     --> ERROR              : timeout / no answer
-
-    %% ---------- MERGE & UNBLOCK ----------
-    MERGING       --> DISPATCHING        : merge succeeds (may unblock more stories)
-    MERGING       --> ERROR              : merge failure
 
     %% ---------- TERMINALS ----------
     DONE          --> WAITING            : new spec arrives
@@ -64,7 +58,6 @@ stateDiagram-v2
 | **MONITORING**   | Monitor coder progress and wait for requests (questions, reviews, merges).    |
 | **REQUEST**      | Process coder requests: questions, plan/code reviews.                         |
 | **ESCALATED**    | Waiting for human intervention on complex business questions.                 |
-| **MERGING**      | Handle merge operations after code approval.                                  |
 | **DONE**         | All stories completed successfully.                                           |
 | **ERROR**        | Unrecoverable error or workflow abandonment.                                  |
 
@@ -72,8 +65,7 @@ stateDiagram-v2
 
 ## Key workflow changes (Merge Workflow)
 
-- **MERGING state**: Handles merge operations after code approval
-- **Merge requests**: Coders send merge requests after code approval  
+- **Merge requests**: Coders send merge requests after code approval via REQUEST state
 - **Story completion**: Only happens after successful PR merge (not code approval)
 - **Dependency unlocking**: Triggered by merge success, enabling dependent stories
 - **Conflict handling**: Merge conflicts returned to coder for resolution

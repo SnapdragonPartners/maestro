@@ -689,6 +689,31 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 			// Mark story as completed (ignore errors as this is fire-and-forget)
 			_ = d.queue.MarkCompleted(storyIDStr)
 		}
+
+		// Update story status to "done" in database after successful merge
+		if d.persistenceChannel != nil {
+			statusReq := &persistence.UpdateStoryStatusRequest{
+				StoryID: storyIDStr,
+				Status:  "done",
+			}
+
+			// Wrap in proper Request structure
+			req := &persistence.Request{
+				Data:      statusReq,
+				Response:  nil, // Fire-and-forget operation
+				Operation: persistence.OpUpdateStoryStatus,
+			}
+
+			d.logger.Info("🔀 Updating story %s status to 'done' after successful merge", storyIDStr)
+
+			// Fire-and-forget database update
+			select {
+			case d.persistenceChannel <- req:
+				d.logger.Debug("🔀 Status update sent to persistence worker")
+			default:
+				d.logger.Warn("🔀 Failed to send status update - persistence channel full")
+			}
+		}
 	}
 
 	return resultMsg, nil
