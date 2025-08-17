@@ -734,6 +734,8 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 			nextState, done, err = c.handleTesting(ctx, sm)
 		case StateCodeReview:
 			nextState, done, err = c.handleCodeReview(ctx, sm)
+		case StatePrepareMerge:
+			nextState, done, err = c.handlePrepareMerge(ctx, sm)
 		case StateBudgetReview:
 			nextState, done, err = c.handleBudgetReview(ctx, sm)
 		case StateAwaitMerge:

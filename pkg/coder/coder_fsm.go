@@ -15,6 +15,7 @@ const (
 	StateTesting      proto.State = "TESTING"
 	StatePlanReview   proto.State = "PLAN_REVIEW"
 	StateCodeReview   proto.State = "CODE_REVIEW"
+	StatePrepareMerge proto.State = "PREPARE_MERGE"
 	StateBudgetReview proto.State = "BUDGET_REVIEW"
 	StateAwaitMerge   proto.State = "AWAIT_MERGE"
 )
@@ -55,7 +56,7 @@ const (
 	KeyCodeGenerated               = "code_generated"
 	KeyFilesCreated                = "files_created"
 	KeyCodingCompletedAt           = "coding_completed_at"
-	KeyWorktreePath                = "worktree_path"
+	KeyWorkspacePath               = "workspace_path"
 	KeyBuildBackend                = "build_backend"
 	KeyTestError                   = "test_error"
 	KeyTestsPassed                 = "tests_passed"
@@ -66,7 +67,8 @@ const (
 	KeyMergeCompletedAt            = "merge_completed_at"
 	KeyBudgetReviewCompletedAt     = "budget_review_completed_at"
 	KeyArchitectResponse           = "architect_response"
-	KeyActualBranchName            = "actual_branch_name"
+	KeyLocalBranchName             = "local_branch_name"
+	KeyRemoteBranchName            = "remote_branch_name"
 	KeyQuestionContext             = "question_context"
 	KeyPlanningCompletedAt         = "planning_completed_at"
 	KeyCompletionReason            = "completion_reason"
@@ -78,9 +80,7 @@ const (
 	KeyCodingContextSaved          = "coding_context_saved"
 	KeyDoneLogged                  = "done_logged"
 	KeyFixesApplied                = "fixes_applied"
-	KeyBranchName                  = "branch_name"
-	KeyBranchPushed                = "branch_pushed"
-	KeyPushedBranch                = "pushed_branch"
+	KeyPrepareMergeCompletedAt     = "prepare_merge_completed_at"
 	KeyPRCreationError             = "pr_creation_error"
 	KeyPRURL                       = "pr_url"
 	KeyPRCreated                   = "pr_created"
@@ -113,18 +113,18 @@ func ValidateState(state proto.State) error {
 func GetValidStates() []proto.State {
 	return []proto.State{
 		proto.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting,
-		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge, proto.StateDone, proto.StateError,
+		StatePlanReview, StateCodeReview, StatePrepareMerge, StateBudgetReview, StateAwaitMerge, proto.StateDone, proto.StateError,
 	}
 }
 
 // CoderTransitions defines the canonical state transition map for coder agents.
-// This is the single source of truth, derived directly from STATES.md and worktree MVP stories.
+// This is the single source of truth, derived directly from STATES.md and clone-based workspace stories.
 // Any code, tests, or diagrams must match this specification exactly.
 var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// WAITING can transition to SETUP when receiving task assignment, ERROR during shutdown, or DONE for clean shutdown.
 	proto.StateWaiting: {StateSetup, proto.StateError, proto.StateDone},
 
-	// SETUP prepares workspace (mirror clone, worktree, branch) then goes to PLANNING.
+	// SETUP prepares workspace (mirror, clone, branch) then goes to PLANNING.
 	StateSetup: {StatePlanning, proto.StateError},
 
 	// PLANNING can submit plan for review or exceed budget (→BUDGET_REVIEW). Questions are handled inline via Effects.
@@ -139,11 +139,14 @@ var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// TESTING can pass (→CODE_REVIEW) or fail (→CODING).
 	StateTesting: {StateCoding, StateCodeReview},
 
-	// CODE_REVIEW can approve (→AWAIT_MERGE), request changes (→CODING), or abandon (→ERROR).
-	StateCodeReview: {StateAwaitMerge, StateCoding, proto.StateError},
+	// CODE_REVIEW can approve (→PREPARE_MERGE), request changes (→CODING), or abandon (→ERROR).
+	StateCodeReview: {StatePrepareMerge, StateCoding, proto.StateError},
 
 	// BUDGET_REVIEW can continue (→CODING), pivot (→PLANNING), or abandon (→ERROR).
 	StateBudgetReview: {StatePlanning, StateCoding, proto.StateError},
+
+	// PREPARE_MERGE can commit and create PR (→AWAIT_MERGE), encounter recoverable git errors (→CODING), or hit unrecoverable errors (→ERROR).
+	StatePrepareMerge: {StateAwaitMerge, StateCoding, proto.StateError},
 
 	// AWAIT_MERGE can complete successfully (→DONE), encounter merge conflicts (→CODING), or have channel closure (→ERROR).
 	StateAwaitMerge: {proto.StateDone, StateCoding, proto.StateError},

@@ -42,9 +42,10 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 		return proto.StateError, false, logx.Wrap(err, "workspace setup failed")
 	}
 
-	// Store clone path and actual branch name for subsequent states
-	sm.SetStateData(KeyWorktreePath, cloneResult.WorkDir) // Keep key name for compatibility
-	sm.SetStateData(KeyActualBranchName, cloneResult.BranchName)
+	// Store clone path and branch names for subsequent states
+	sm.SetStateData(KeyWorkspacePath, cloneResult.WorkDir)
+	sm.SetStateData(KeyLocalBranchName, cloneResult.BranchName)
+	sm.SetStateData(KeyRemoteBranchName, cloneResult.BranchName) // Initially same as local
 
 	// Update coder's working directory to use agent work directory
 	// This ensures all subsequent operations (MCP tools, testing, etc.) happen in the right place

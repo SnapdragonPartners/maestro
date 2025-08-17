@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
@@ -105,15 +104,12 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 		CPM:            3.0,
 	}
 
-	// Create real Claude LLM client for testing.
-	apiKey := getTestAPIKey(t)
-	llmClient := agent.NewClaudeClient(apiKey)
-
 	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
 	// Create coder driver.
-	driver, err := coder.NewCoder(coderID, modelCfg, llmClient, tempDir, buildService, nil)
+	// NewCoder signature: (agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service)
+	driver, err := coder.NewCoder(coderID, "", tempDir, modelCfg, "", nil, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -146,15 +142,12 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, modelConfig *config.
 		}
 	}
 
-	// Create real Claude LLM client for testing.
-	apiKey := getTestAPIKey(t)
-	llmClient := agent.NewClaudeClient(apiKey)
-
 	// Create BuildService for MCP tools.
 	buildService := build.NewBuildService()
 
 	// Create coder driver with model configuration.
-	driver, err := coder.NewCoder(coderID, modelConfig, llmClient, tempDir, buildService, nil)
+	// NewCoder signature: (agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service)
+	driver, err := coder.NewCoder(coderID, "", tempDir, modelConfig, "", nil, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}

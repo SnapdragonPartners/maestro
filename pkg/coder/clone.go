@@ -11,8 +11,8 @@ import (
 	"orchestrator/pkg/logx"
 )
 
-// CloneManager handles Git lightweight clone operations for coder agents.
-// Provides perfect container isolation while maintaining object sharing through git clone --shared --reference.
+// CloneManager handles Git clone operations for coder agents.
+// Provides complete agent isolation with self-contained repositories while maintaining network efficiency through local mirrors.
 type CloneManager struct {
 	gitRunner        GitRunner
 	containerManager ContainerManager // Optional container manager for Docker cleanup
@@ -57,7 +57,7 @@ type CloneResult struct {
 	BranchName string
 }
 
-// SetupWorkspace creates a lightweight git clone with shared objects for container isolation.
+// SetupWorkspace creates a self-contained git repository for complete agent isolation.
 func (c *CloneManager) SetupWorkspace(ctx context.Context, agentID, storyID, agentWorkDir string) (*CloneResult, error) {
 	c.logger.Debug("SetupWorkspace called with agentID=%s, storyID=%s, agentWorkDir=%s", agentID, storyID, agentWorkDir)
 	c.logger.Debug("ProjectWorkDir: %s", c.projectWorkDir)
@@ -217,11 +217,12 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 	return mirrorPath, nil
 }
 
-// createFreshClone creates a lightweight clone with shared objects for isolation.
+// createFreshClone creates a self-contained git repository for agent isolation.
+// Uses local mirror as source for network efficiency while ensuring complete container compatibility.
 func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWorkDir string) error {
-	c.logger.Debug("Creating fresh lightweight clone at: %s", agentWorkDir)
+	c.logger.Debug("Creating fresh self-contained clone at: %s", agentWorkDir)
 
-	// Step 1: Remove existing directory completely if it exists.
+	// Remove existing directory completely if it exists.
 	if _, err := os.Stat(agentWorkDir); err == nil {
 		c.logger.Debug("Removing existing agent work directory: %s", agentWorkDir)
 		if err := os.RemoveAll(agentWorkDir); err != nil {
@@ -229,27 +230,29 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 		}
 	}
 
-	// Step 2: Create parent directory if needed.
+	// Create parent directory if needed.
 	if err := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); err != nil {
 		return logx.Wrap(err, "failed to create parent directory")
 	}
 
-	// Step 3: Create lightweight clone with shared objects.
-	// Use --shared and --reference to share objects with the mirror for efficiency.
-	c.logger.Debug("Creating lightweight clone from mirror: %s", mirrorPath)
-	_, err := c.gitRunner.Run(ctx, "", "clone", "--shared", "--reference", mirrorPath, mirrorPath, agentWorkDir)
+	// Clone from local mirror to agent workspace.
+	// This creates a complete, independent copy with all objects included.
+	// Benefits: fast (local copy), self-contained (works in containers), isolated (safe for concurrent agents).
+	c.logger.Debug("Creating self-contained clone from local mirror: %s", mirrorPath)
+	_, err := c.gitRunner.Run(ctx, "", "clone", mirrorPath, agentWorkDir)
 	if err != nil {
-		return logx.Wrap(err, fmt.Sprintf("git clone --shared --reference %s %s %s failed", mirrorPath, mirrorPath, agentWorkDir))
+		return logx.Wrap(err, fmt.Sprintf("git clone %s %s failed", mirrorPath, agentWorkDir))
 	}
 
-	// Step 4: Set up remote URL for pushing (clone inherits from bare repo).
+	// Configure remote origin for pushing branches to actual repository.
+	// The clone inherits the bare repository configuration, so we need to set the proper remote URL.
 	c.logger.Debug("Configuring origin remote for clone: %s", c.repoURL)
 	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "set-url", "origin", c.repoURL)
 	if err != nil {
 		return logx.Wrap(err, "failed to configure origin remote for clone - agent will not be able to push branches")
 	}
 
-	c.logger.Debug("Successfully created lightweight clone at: %s", agentWorkDir)
+	c.logger.Debug("Successfully created self-contained clone at: %s", agentWorkDir)
 	return nil
 }
 

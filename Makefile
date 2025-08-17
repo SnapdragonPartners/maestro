@@ -16,12 +16,12 @@ test:
 # Run integration tests only (requires API keys and external services)
 test-integration:
 	@echo "🧪 Running integration tests..."
-	go test -tags=integration -cover ./...
+	go test -tags=integration -cover -timeout=10m ./...
 
 # Run all tests including integration tests (combines unit and integration)
 test-all:
 	@echo "🔬 Running all tests (unit + integration)..."
-	go test -tags=integration -cover ./...
+	go test -tags=integration -cover -timeout=10m ./...
 
 # Run tests and generate detailed coverage report
 test-coverage:

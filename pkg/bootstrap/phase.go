@@ -114,7 +114,7 @@ func (p *Phase) Execute(ctx context.Context) (*PhaseResult, error) {
 		Metadata:       make(map[string]string),
 	}
 
-	// Step 1: Setup workspace using WorkspaceManager (ensures mirror exists and creates worktree)
+	// Step 1: Setup workspace using CloneManager (ensures mirror exists and creates clone)
 	workDir, err := p.setupWorkspace(ctx)
 	if err != nil {
 		return p.failureResult(startTime, fmt.Errorf("workspace setup failed: %w", err))

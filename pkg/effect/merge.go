@@ -51,6 +51,7 @@ func (e *MergeEffect) Execute(ctx context.Context, runtime Runtime) (any, error)
 	// Extract merge result from response payload
 	statusRaw, statusExists := responseMsg.GetPayload("status")
 	conflictInfoRaw, _ := responseMsg.GetPayload("conflict_details")
+	feedbackRaw, _ := responseMsg.GetPayload("feedback")
 	mergeCommitRaw, _ := responseMsg.GetPayload("merge_commit")
 
 	if !statusExists {
@@ -63,7 +64,13 @@ func (e *MergeEffect) Execute(ctx context.Context, runtime Runtime) (any, error)
 	}
 
 	conflictInfo, _ := conflictInfoRaw.(string)
+	feedback, _ := feedbackRaw.(string)
 	mergeCommit, _ := mergeCommitRaw.(string)
+
+	// Use feedback as primary message, fall back to conflict_details for backward compatibility
+	if feedback != "" {
+		conflictInfo = feedback
+	}
 
 	result := &git.MergeResult{
 		Status:       status,

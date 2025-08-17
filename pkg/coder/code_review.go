@@ -136,8 +136,8 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 			return proto.StateDone, false, nil
 		}
 
-		c.logger.Info("🧑‍💻 Code approved - proceeding to merge")
-		return StateAwaitMerge, false, nil
+		c.logger.Info("🧑‍💻 Code approved - preparing merge")
+		return StatePrepareMerge, false, nil
 
 	case proto.ApprovalStatusNeedsChanges:
 		c.logger.Info("🧑‍💻 Code needs changes: %s", result.Feedback)

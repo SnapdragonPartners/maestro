@@ -15,7 +15,7 @@ func TestGetAllCoderStates(t *testing.T) {
 	// Expected states based on current CoderTransitions map.
 	expectedStates := []proto.State{
 		StateSetup, StatePlanning, StateCoding, StateTesting,
-		StatePlanReview, StateCodeReview, StateBudgetReview, StateAwaitMerge,
+		StatePlanReview, StateCodeReview, StatePrepareMerge, StateBudgetReview, StateAwaitMerge,
 	}
 
 	// Sort expected states for comparison.
@@ -77,6 +77,7 @@ func TestIsCoderState(t *testing.T) {
 		{"TESTING", true, "Valid coder state"},
 		{"PLAN_REVIEW", true, "Valid coder state"},
 		{"CODE_REVIEW", true, "Valid coder state"},
+		{"PREPARE_MERGE", true, "Valid coder state"},
 		{"WAITING", false, "Base agent state"},
 		{"DONE", false, "Base agent state"},
 		{"ERROR", false, "Base agent state"},

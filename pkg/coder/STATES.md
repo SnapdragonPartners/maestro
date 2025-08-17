@@ -4,7 +4,7 @@ Here's the complete current **STATES.md** content, inline for easy copy-paste:
 
 # Coder Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-07-20 (rev G - Eliminated FIXING State)*
+*Last updated: 2025-08-16 (rev H - Added PREPARE_MERGE State)*
 
 This document is the **single source of truth** for the coder agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -44,9 +44,13 @@ stateDiagram-v2
     TESTING       --> CODING           : tests fail
 
     %% Code review & merge workflow
-    CODE_REVIEW   --> AWAIT_MERGE      : approve & send merge request
+    CODE_REVIEW   --> PREPARE_MERGE    : approve & prepare for merge
     CODE_REVIEW   --> CODING           : changes
     CODE_REVIEW   --> ERROR            : abandon/error
+    
+    PREPARE_MERGE --> AWAIT_MERGE      : git operations complete & merge request sent
+    PREPARE_MERGE --> CODING           : git operations failed (recoverable)
+    PREPARE_MERGE --> ERROR            : git operations failed (unrecoverable)
     
     AWAIT_MERGE   --> DONE             : merge successful
     AWAIT_MERGE   --> CODING           : merge conflicts 
@@ -73,12 +77,13 @@ stateDiagram-v2
 | State               | Purpose                                                                        |
 | ------------------- | ------------------------------------------------------------------------------ |
 | **WAITING**         | Agent is idle, waiting for the orchestrator to assign new work.                |
-| **SETUP**           | Initialize Git worktree and create story branch.                               |
+| **SETUP**           | Initialize Git workspace and create story branch.                              |
 | **PLANNING**        | Draft a high-level implementation plan.                                        |
 | **PLAN\_REVIEW**    | Architect reviews plan or completion request; approves, requests changes, or abandons. |
 | **CODING**          | Implement the approved plan or fix test failures/review issues.                |
 | **TESTING**         | Run the automated test suite.                                                  |
 | **CODE\_REVIEW**    | Architect reviews the code and either approves, requests changes, or abandons. |
+| **PREPARE\_MERGE**  | Commit changes, push branch, create PR, and send merge request to architect.   |
 | **BUDGET\_REVIEW**  | Architect reviews budget exceeded request and decides how to proceed. |
 | **AWAIT\_MERGE**    | Waiting for architect to merge PR after code approval.                        |
 | **QUESTION**        | Awaiting external clarification or information.                                |
@@ -89,20 +94,21 @@ stateDiagram-v2
 
 ## Allowed transitions (tabular)
 
-| From \ To           | WAITING | SETUP | PLAN\_REVIEW | PLANNING | CODING | TESTING | CODE\_REVIEW | BUDGET\_REVIEW | AWAIT\_MERGE | QUESTION | DONE | ERROR |
-| ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------------ | -------------- | ------------ | -------- | ---- | ----- |
-| **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –            | –              | –            | –        | –    | ✔︎    |
-| **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –            | –              | –            | –        | –    | ✔︎    |
-| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –            | ✔︎             | –            | ✔︎       | –    | –     |
-| **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | ✔︎   | ✔︎    |
-| **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –            | ✔︎             | –            | ✔︎       | –    | ✔︎    |
-| **TESTING**         | –       | –     | –            | –        | ✔︎     | –       | ✔︎           | –              | –            | –        | –    | –     |
-| **CODE\_REVIEW**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | ✔︎           | –        | –    | ✔︎    |
-| **BUDGET\_REVIEW**  | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | –    | ✔︎    |
-| **AWAIT\_MERGE**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –            | –        | ✔︎   | ✔︎    |
-| **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –            | –        | –    | ✔︎    |
-| **DONE**            | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
-| **ERROR**           | –       | –     | –            | –        | –      | –       | –            | –              | –            | –        | –    | –     |
+| From \ To           | WAITING | SETUP | PLAN\_REVIEW | PLANNING | CODING | TESTING | CODE\_REVIEW | PREPARE\_MERGE | BUDGET\_REVIEW | AWAIT\_MERGE | QUESTION | DONE | ERROR |
+| ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------------ | -------------- | -------------- | ------------ | -------- | ---- | ----- |
+| **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
+| **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
+| **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –            | –              | ✔︎             | –            | ✔︎       | –    | –     |
+| **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | ✔︎   | ✔︎    |
+| **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –            | –              | ✔︎             | –            | ✔︎       | –    | ✔︎    |
+| **TESTING**         | –       | –     | –            | –        | ✔︎     | –       | ✔︎           | –              | –              | –            | –        | –    | –     |
+| **CODE\_REVIEW**    | –       | –     | –            | –        | ✔︎     | –       | –            | ✔︎             | –              | –            | –        | –    | ✔︎    |
+| **PREPARE\_MERGE**  | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –              | ✔︎           | –        | –    | ✔︎    |
+| **BUDGET\_REVIEW**  | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
+| **AWAIT\_MERGE**    | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –              | –            | –        | ✔︎   | ✔︎    |
+| **QUESTION**        | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
+| **DONE**            | –       | –     | –            | –        | –      | –       | –            | –              | –              | –            | –        | –    | –     |
+| **ERROR**           | –       | –     | –            | –        | –      | –       | –            | –              | –              | –            | –        | –    | –     |
 
 *(✔︎ = allowed, — = invalid)*
 
@@ -160,12 +166,12 @@ Plan reviews (including completion claims) support three-way decisions:
 
 ---
 
-## Worktree & Merge Workflow Integration
+## Workspace & Merge Workflow Integration
 
-This FSM includes **Git worktree support** and **merge workflow**:
+This FSM includes **Git workspace support** and **merge workflow**:
 
 ### Key States:
-- **SETUP**: Initialize Git worktree and story branch (entry state before PLANNING)
+- **SETUP**: Initialize Git workspace and story branch (entry state before PLANNING)
 - **BUDGET_REVIEW**: Architect reviews budget exceeded request when iteration budget is exceeded
 
 ### Special Transitions:
@@ -180,18 +186,19 @@ This FSM includes **Git worktree support** and **merge workflow**:
 
 ### Workflow Flow:
 ```
-WAITING → SETUP → PLANNING → CODING → TESTING → CODE_REVIEW → AWAIT_MERGE → DONE
-                    ↑         ↑         ↑           ↑             ↑           ↓
-                    └─────────┴─────────┴───────────┴─────────────┘    [agent restart]
-                              ↑         ↑                              ↓
-                              └─BUDGET_REVIEW─┘                    WAITING (new agent)
+WAITING → SETUP → PLANNING → CODING → TESTING → CODE_REVIEW → PREPARE_MERGE → AWAIT_MERGE → DONE
+                    ↑         ↑         ↑           ↑             ↑                ↑           ↓
+                    └─────────┴─────────┴───────────┴─────────────┴────────────────┘    [agent restart]
+                              ↑         ↑                                               ↓
+                              └─BUDGET_REVIEW─┘                                   WAITING (new agent)
 ```
 
 ### Issue Resolution in CODING:
 1. **Test failures**: `TESTING → CODING` (with test output in state data)
-2. **Review changes**: `CODE_REVIEW → CODING` (with review feedback in state data)  
-3. **Merge conflicts**: `AWAIT_MERGE → CODING` (with conflict details in state data)
-4. All issues resolved in unified CODING state with appropriate context
+2. **Review changes**: `CODE_REVIEW → CODING` (with review feedback in state data)
+3. **Git/PR failures**: `PREPARE_MERGE → CODING` (with git operation details in state data)  
+4. **Merge conflicts**: `AWAIT_MERGE → CODING` (with conflict details in state data)
+5. All issues resolved in unified CODING state with appropriate context
 
 ### Agent Restart Workflow:
 - **Story completion**: `AWAIT_MERGE → DONE` (merge successful)  

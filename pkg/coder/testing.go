@@ -21,15 +21,15 @@ import (
 
 // handleTesting processes the TESTING state.
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Get worktree path for running tests
-	worktreePath, exists := sm.GetStateValue(KeyWorktreePath)
-	if !exists || worktreePath == "" {
-		return proto.StateError, false, logx.Errorf("no worktree path found - workspace setup required")
+	// Get workspace path for running tests
+	workspacePath, exists := sm.GetStateValue(KeyWorkspacePath)
+	if !exists || workspacePath == "" {
+		return proto.StateError, false, logx.Errorf("no workspace path found - workspace setup required")
 	}
 
-	worktreePathStr, ok := utils.SafeAssert[string](worktreePath)
+	workspacePathStr, ok := utils.SafeAssert[string](workspacePath)
 	if !ok {
-		return proto.StateError, false, logx.Errorf("worktree_path is not a string: %v", worktreePath)
+		return proto.StateError, false, logx.Errorf("workspace_path is not a string: %v", workspacePath)
 	}
 
 	// Get story type for testing strategy decision
@@ -44,17 +44,17 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 
 	// Use different testing strategies based on story type
 	if storyType == string(proto.StoryTypeDevOps) {
-		return c.handleDevOpsStoryTesting(ctx, sm, worktreePathStr)
+		return c.handleDevOpsStoryTesting(ctx, sm, workspacePathStr)
 	}
-	return c.handleAppStoryTesting(ctx, sm, worktreePathStr)
+	return c.handleAppStoryTesting(ctx, sm, workspacePathStr)
 }
 
 // handleAppStoryTesting handles testing for application stories using traditional build/test/lint flow.
-func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
+func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, workspacePathStr string) (proto.State, bool, error) {
 	// Use MCP test tool instead of direct build registry calls
 	if c.buildService != nil {
 		// Get backend info first
-		backendInfo, err := c.buildService.GetBackendInfo(worktreePathStr)
+		backendInfo, err := c.buildService.GetBackendInfo(workspacePathStr)
 		if err != nil {
 			c.logger.Error("Failed to get backend info: %v", err)
 			return proto.StateError, false, logx.Wrap(err, "failed to get backend info")
@@ -65,7 +65,7 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 		c.logger.Info("App story testing: using build service with backend %s", backendInfo.Name)
 
 		// Run tests using build service
-		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, worktreePathStr)
+		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, workspacePathStr)
 		if err != nil {
 			c.logger.Error("Failed to run tests: %v", err)
 			// Create test failure effect with truncated error message
@@ -96,25 +96,25 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 	}
 
 	// Use general testing approach for other story types
-	return c.handleLegacyTesting(ctx, sm, worktreePathStr)
+	return c.handleLegacyTesting(ctx, sm, workspacePathStr)
 }
 
 // handleDevOpsStoryTesting handles testing for DevOps stories focusing on infrastructure validation.
-func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
+func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStateMachine, workspacePathStr string) (proto.State, bool, error) {
 	c.logger.Info("DevOps story testing: focusing on infrastructure validation")
 
 	// For DevOps stories, we need actual infrastructure validation, not just file checks
 	// Check if this is a container-related DevOps story
-	dockerfilePath := filepath.Join(worktreePathStr, "Dockerfile")
+	dockerfilePath := filepath.Join(workspacePathStr, "Dockerfile")
 	if fileExists(dockerfilePath) {
-		return c.handleContainerTesting(ctx, sm, worktreePathStr, dockerfilePath)
+		return c.handleContainerTesting(ctx, sm, workspacePathStr, dockerfilePath)
 	}
 
 	// Check for Makefile and run basic validation if present
-	makefilePath := filepath.Join(worktreePathStr, "Makefile")
+	makefilePath := filepath.Join(workspacePathStr, "Makefile")
 	if fileExists(makefilePath) {
 		c.logger.Info("DevOps story: validating Makefile targets")
-		if err := c.validateMakefileTargets(worktreePathStr); err != nil {
+		if err := c.validateMakefileTargets(workspacePathStr); err != nil {
 			c.logger.Error("Makefile validation failed: %v", err)
 			// Create test failure effect with truncated error message
 			errorStr := err.Error()
@@ -136,7 +136,7 @@ func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStat
 }
 
 // handleContainerTesting performs actual container infrastructure testing for DevOps stories.
-func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr, _ string) (proto.State, bool, error) {
+func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateMachine, workspacePathStr, _ string) (proto.State, bool, error) {
 	c.logger.Info("DevOps story: performing container infrastructure testing")
 
 	// Get global config to check container configuration
@@ -182,7 +182,7 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	c.logger.Info("Container config found: name=%s, dockerfile=%s", containerConfig.Name, containerConfig.Dockerfile)
 
 	// Run container_build tool directly
-	buildSuccess, buildError := c.runContainerBuildTesting(ctx, worktreePathStr, containerConfig)
+	buildSuccess, buildError := c.runContainerBuildTesting(ctx, workspacePathStr, containerConfig)
 	if !buildSuccess {
 		c.logger.Error("Container build failed: %v", buildError)
 		feedback := fmt.Sprintf("Container build failed: %s\n\nPlease fix the Dockerfile or build issues and try again.", buildError)
@@ -235,7 +235,7 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 }
 
 // runContainerBuildTesting runs container_build tool directly for testing.
-func (c *Coder) runContainerBuildTesting(ctx context.Context, worktreePathStr string, containerConfig *config.ContainerConfig) (bool, string) {
+func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr string, containerConfig *config.ContainerConfig) (bool, string) {
 	c.logger.Info("Running container build test for container: %s", containerConfig.Name)
 
 	// Create container build tool instance using the coder's executor
@@ -245,7 +245,7 @@ func (c *Coder) runContainerBuildTesting(ctx context.Context, worktreePathStr st
 	args := map[string]any{
 		"container_name":    containerConfig.Name,
 		"dockerfile_path":   containerConfig.Dockerfile,
-		"working_directory": worktreePathStr,
+		"working_directory": workspacePathStr,
 	}
 
 	// Execute container build
@@ -302,7 +302,7 @@ func (c *Coder) runContainerBootTesting(ctx context.Context, containerName strin
 }
 
 // handleLegacyTesting handles the general testing approach for non-DevOps stories.
-func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMachine, worktreePathStr string) (proto.State, bool, error) {
+func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMachine, workspacePathStr string) (proto.State, bool, error) {
 	// Use global config singleton
 	globalConfig, err := config.GetConfig()
 	if err != nil {
@@ -322,7 +322,7 @@ func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMach
 	_ = testCommand // Used in runMakeTest below
 
 	// Run tests using detected backend
-	testsPassed, testOutput, err := c.runMakeTest(ctx, worktreePathStr)
+	testsPassed, testOutput, err := c.runMakeTest(ctx, workspacePathStr)
 
 	// Store test results
 	sm.SetStateData(KeyTestsPassed, testsPassed)
@@ -354,8 +354,8 @@ func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMach
 }
 
 // validateMakefileTargets validates that Makefile has reasonable targets for DevOps.
-func (c *Coder) validateMakefileTargets(worktreePathStr string) error {
-	makefilePath := filepath.Join(worktreePathStr, "Makefile")
+func (c *Coder) validateMakefileTargets(workspacePathStr string) error {
+	makefilePath := filepath.Join(workspacePathStr, "Makefile")
 	content, err := os.ReadFile(makefilePath)
 	if err != nil {
 		return fmt.Errorf("failed to read Makefile: %w", err)
@@ -390,8 +390,8 @@ func truncateOutput(output string) string {
 }
 
 // runMakeTest executes tests using the appropriate build backend - implements AR-103.
-func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, string, error) {
-	c.logger.Info("Running tests in %s", worktreePath)
+func (c *Coder) runMakeTest(ctx context.Context, workspacePath string) (bool, string, error) {
+	c.logger.Info("Running tests in %s", workspacePath)
 
 	// Create context with timeout for test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -413,7 +413,7 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 
 	// Execute test command using shell
 	opts := execpkg.Opts{
-		WorkDir: worktreePath,
+		WorkDir: workspacePath,
 		Timeout: 5 * time.Minute,
 	}
 
@@ -444,8 +444,8 @@ func (c *Coder) runMakeTest(ctx context.Context, worktreePath string) (bool, str
 }
 
 // runTestWithBuildService runs tests using build service instead of direct backend calls.
-func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string) (bool, string, error) {
-	c.logger.Info("Running tests via build service in %s", worktreePath)
+func (c *Coder) runTestWithBuildService(ctx context.Context, workspacePath string) (bool, string, error) {
+	c.logger.Info("Running tests via build service in %s", workspacePath)
 
 	// Create context with timeout for test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -453,7 +453,7 @@ func (c *Coder) runTestWithBuildService(ctx context.Context, worktreePath string
 
 	// Create test request
 	req := &build.Request{
-		ProjectRoot: worktreePath,
+		ProjectRoot: workspacePath,
 		Operation:   "test",
 		Timeout:     300, // 5 minutes
 		Context:     make(map[string]string),
