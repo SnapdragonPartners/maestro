@@ -13,12 +13,12 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// TestContainerBootTestIntegration tests the container_boot_test tool using the container test framework.
+// TestContainerBootTestIntegration tests the container_test tool in boot test mode using the container test framework.
 // This test runs the real MCP tool inside a container environment to match production behavior.
 func TestContainerBootTestIntegration(t *testing.T) {
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
-		t.Skip("Docker not available, skipping container boot test integration test")
+		t.Skip("Docker not available, skipping container test integration test")
 	}
 
 	// Setup test environment
@@ -140,12 +140,13 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 				t.Fatalf("Container %s was not built successfully", tc.containerName)
 			}
 
-			// Now test the boot test tool
-			bootTestTool := tools.NewContainerBootTestTool(framework.GetExecutor())
+			// Now test the container_test tool in boot test mode
+			containerTestTool := tools.NewContainerTestTool(framework.GetExecutor())
 
-			// Prepare tool arguments
+			// Prepare tool arguments for boot test mode (no command, ttl_seconds=0)
 			args := map[string]interface{}{
 				"container_name": tc.containerName,
+				"ttl_seconds":    0, // Boot test mode
 			}
 
 			// Add custom timeout if specified
@@ -153,8 +154,8 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 				args["timeout_seconds"] = tc.timeout
 			}
 
-			// Execute the boot test
-			result, err := bootTestTool.Exec(ctx, args)
+			// Execute the container test in boot test mode
+			result, err := containerTestTool.Exec(ctx, args)
 
 			if tc.expectSuccess {
 				if err != nil {
@@ -188,7 +189,7 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 					t.Fatalf("Expected timeout=%d, got timeout=%v", expectedTimeout, timeout)
 				}
 
-				t.Logf("✅ Boot test passed: container %s stayed running for %d seconds", tc.containerName, expectedTimeout)
+				t.Logf("✅ Container test (boot mode) passed: container %s stayed running for %d seconds", tc.containerName, expectedTimeout)
 
 			} else {
 				// Boot test should fail
@@ -208,14 +209,14 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 					}
 
 					if success {
-						t.Fatalf("Expected boot test to fail but it succeeded: %+v", resultMap)
+						t.Fatalf("Expected container test (boot mode) to fail but it succeeded: %+v", resultMap)
 					}
 
 					// Check that we have exit code information
 					if exitCode, ok := resultMap["exit_code"]; ok {
-						t.Logf("✅ Expected boot test failure with exit code: %v", exitCode)
+						t.Logf("✅ Expected container test (boot mode) failure with exit code: %v", exitCode)
 					} else {
-						t.Logf("✅ Expected boot test failure occurred")
+						t.Logf("✅ Expected container test (boot mode) failure occurred")
 					}
 				}
 			}
@@ -223,11 +224,11 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 	}
 }
 
-// TestContainerBootTestEdgeCases tests edge cases and error conditions
+// TestContainerBootTestEdgeCases tests edge cases and error conditions for container_test boot mode
 func TestContainerBootTestEdgeCases(t *testing.T) {
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
-		t.Skip("Docker not available, skipping container boot test edge cases")
+		t.Skip("Docker not available, skipping container test boot mode edge cases")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -249,20 +250,21 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	bootTestTool := tools.NewContainerBootTestTool(framework.GetExecutor())
+	containerTestTool := tools.NewContainerTestTool(framework.GetExecutor())
 
 	t.Run("nonexistent_container", func(t *testing.T) {
 		args := map[string]interface{}{
 			"container_name": "nonexistent-container-xyz",
+			"ttl_seconds":    0, // Boot test mode
 		}
 
-		result, err := bootTestTool.Exec(ctx, args)
+		result, err := containerTestTool.Exec(ctx, args)
 
 		// Should fail because container doesn't exist
 		if err == nil {
 			if resultMap, ok := result.(map[string]interface{}); ok {
 				if success, ok := resultMap["success"].(bool); ok && success {
-					t.Fatalf("Expected boot test to fail for nonexistent container")
+					t.Fatalf("Expected container test (boot mode) to fail for nonexistent container")
 				}
 			}
 		}
@@ -274,9 +276,10 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 		args := map[string]interface{}{
 			"container_name":  "test-container",
 			"timeout_seconds": 100, // Above max limit of 60
+			"ttl_seconds":     0,   // Boot test mode
 		}
 
-		result, err := bootTestTool.Exec(ctx, args)
+		result, err := containerTestTool.Exec(ctx, args)
 
 		// Should either limit timeout to 60 or fail cleanly
 		if err == nil {

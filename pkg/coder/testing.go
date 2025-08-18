@@ -268,21 +268,22 @@ func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr s
 	return false, "Container build completed but success status unclear"
 }
 
-// runContainerBootTesting runs container_boot_test tool directly for testing.
+// runContainerBootTesting runs container_test tool in boot test mode for testing.
 func (c *Coder) runContainerBootTesting(ctx context.Context, containerName string) (bool, string) {
 	c.logger.Info("Running container boot test for container: %s", containerName)
 
-	// Create container boot test tool instance using the coder's executor
-	bootTestTool := tools.NewContainerBootTestTool(c.longRunningExecutor)
+	// Create container test tool instance using the coder's executor
+	containerTestTool := tools.NewContainerTestTool(c.longRunningExecutor)
 
-	// Prepare arguments for container_boot_test tool
+	// Prepare arguments for container_test tool in boot test mode (no command, ttl_seconds=0)
 	args := map[string]any{
 		"container_name":  containerName,
 		"timeout_seconds": 30, // 30 second boot test
+		"ttl_seconds":     0,  // Boot test mode
 	}
 
-	// Execute container boot test
-	result, err := bootTestTool.Exec(ctx, args)
+	// Execute container test in boot test mode
+	result, err := containerTestTool.Exec(ctx, args)
 	if err != nil {
 		return false, err.Error()
 	}

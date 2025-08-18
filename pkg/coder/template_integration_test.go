@@ -131,11 +131,11 @@ func TestTemplateToolDocumentationIntegration(t *testing.T) {
 				}
 				// DevOps planning should include container tools for verification
 				if tt.state == "planning" {
-					if !strings.Contains(renderedTemplate, tools.ToolContainerExec) {
-						t.Errorf("DevOps planning template should contain container_exec tool")
+					if !strings.Contains(renderedTemplate, tools.ToolContainerTest) {
+						t.Errorf("DevOps planning template should contain container_test tool")
 					}
-					if !strings.Contains(renderedTemplate, tools.ToolContainerBootTest) {
-						t.Errorf("DevOps planning template should contain container_boot_test tool")
+					if !strings.Contains(renderedTemplate, tools.ToolContainerList) {
+						t.Errorf("DevOps planning template should contain container_list tool")
 					}
 				}
 

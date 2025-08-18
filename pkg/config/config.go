@@ -337,6 +337,9 @@ type ContainerConfig struct {
 	Dockerfile    string `json:"dockerfile,omitempty"`     // Path to dockerfile if building custom image
 	WorkspacePath string `json:"workspace_path,omitempty"` // Path where project is mounted inside container (default: "/workspace")
 
+	// Docker capabilities (detected at startup)
+	BuildxAvailable bool `json:"-"` // Whether buildx is available on the host (transient, not persisted)
+
 	// Docker runtime settings (command-line only, cannot be set in Dockerfile)
 	Network   string `json:"network,omitempty"`    // Docker --network setting
 	TmpfsSize string `json:"tmpfs_size,omitempty"` // Docker --tmpfs size setting
@@ -934,8 +937,8 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("LLM API key validation failed: %w", err)
 	}
 
-	// Validate external tool dependencies
-	if err := validateExternalTools(); err != nil {
+	// Validate external tool dependencies and detect capabilities
+	if err := validateExternalTools(config); err != nil {
 		return fmt.Errorf("external tool validation failed: %w", err)
 	}
 
@@ -1062,8 +1065,8 @@ func validateRequiredAPIKeys(cfg *Config) error {
 	return nil
 }
 
-// validateExternalTools checks that all required external tools are available.
-func validateExternalTools() error {
+// validateExternalTools checks that all required external tools are available and detects Docker capabilities.
+func validateExternalTools(config *Config) error {
 	fmt.Printf("[config] 🔧 Validating external tool dependencies\n")
 
 	requiredTools := map[string]string{
@@ -1088,6 +1091,18 @@ func validateExternalTools() error {
 			errors = append(errors, fmt.Sprintf("Docker daemon is not running: %s", err.Error()))
 		} else {
 			fmt.Printf("[config] 🔧 ✅ Docker daemon: running\n")
+
+			// Check buildx availability and store result in config
+			if config.Container == nil {
+				config.Container = &ContainerConfig{}
+			}
+			if err := CheckBuildxAvailable(); err != nil {
+				config.Container.BuildxAvailable = false
+				fmt.Printf("[config] 🔧 ⚠️ Docker buildx: not available (will use docker build)\n")
+			} else {
+				config.Container.BuildxAvailable = true
+				fmt.Printf("[config] 🔧 ✅ Docker buildx: available\n")
+			}
 		}
 	}
 
@@ -1121,6 +1136,29 @@ func CheckDockerDaemonRunning() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker ps failed: %w", err)
 	}
+	return nil
+}
+
+// CheckBuildxAvailable checks if Docker buildx is available and usable.
+// This is an exported helper that other packages can use for buildx-specific checks.
+//
+//nolint:contextcheck // Function creates its own context internally
+func CheckBuildxAvailable() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check 1: buildx CLI command exists
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker buildx version failed: %w", err)
+	}
+
+	// Check 2: default builder is available and working
+	cmd = exec.CommandContext(ctx, "docker", "buildx", "inspect", "--builder", "default")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker buildx inspect failed: %w", err)
+	}
+
 	return nil
 }
 

@@ -489,11 +489,13 @@ Repository: %s
 - Configure container-based development environment`
 
 	if dockerfilePath != "" {
-		spec += `
-- Use existing Dockerfile for container setup`
+		spec += fmt.Sprintf(`
+- Use existing Dockerfile for container setup
+- Build and tag container as: maestro-%s-dev`, projectName)
 	} else {
 		spec += fmt.Sprintf(`
-- Use %s as base container image`, containerImage)
+- Use %s as base container image
+- Build and tag container as: maestro-%s-dev`, containerImage, projectName)
 	}
 
 	spec += fmt.Sprintf(`

@@ -24,6 +24,10 @@ Thumbs.db
 *.out
 go.work
 
+# Go module cache (should never be committed)
+pkg/mod/
+pkg/sumdb/
+
 # Binaries
 orchestrator
 agentctl

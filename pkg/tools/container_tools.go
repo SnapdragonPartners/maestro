@@ -28,13 +28,13 @@ type ContainerUpdateTool struct {
 	executor exec.Executor
 }
 
-// ContainerExecTool provides MCP interface for executing commands in containers.
-type ContainerExecTool struct {
+// ContainerTestTool provides unified MCP interface for container testing with optional TTL and command execution.
+type ContainerTestTool struct {
 	executor exec.Executor
 }
 
-// ContainerBootTestTool provides MCP interface for testing container boot behavior.
-type ContainerBootTestTool struct {
+// ContainerListTool lists available containers and their registry status.
+type ContainerListTool struct {
 	executor exec.Executor
 }
 
@@ -48,21 +48,21 @@ func NewContainerUpdateTool(executor exec.Executor) *ContainerUpdateTool {
 	return &ContainerUpdateTool{executor: executor}
 }
 
-// NewContainerExecTool creates a new container exec tool instance.
-func NewContainerExecTool(executor exec.Executor) *ContainerExecTool {
-	return &ContainerExecTool{executor: executor}
+// NewContainerTestTool creates a new container test tool instance.
+func NewContainerTestTool(executor exec.Executor) *ContainerTestTool {
+	return &ContainerTestTool{executor: executor}
 }
 
-// NewContainerBootTestTool creates a new container boot test tool instance.
-func NewContainerBootTestTool(executor exec.Executor) *ContainerBootTestTool {
-	return &ContainerBootTestTool{executor: executor}
+// NewContainerListTool creates a new container list tool instance.
+func NewContainerListTool(executor exec.Executor) *ContainerListTool {
+	return &ContainerListTool{executor: executor}
 }
 
 // Definition returns the tool's definition in Claude API format.
 func (c *ContainerBuildTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "container_build",
-		Description: "Build Docker container from Dockerfile with proper validation and testing",
+		Description: "Build Docker container from Dockerfile using buildx with proper validation and testing",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -95,14 +95,15 @@ func (c *ContainerBuildTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ContainerBuildTool) PromptDocumentation() string {
-	return `- **container_build** - Build Docker container from Dockerfile
+	return `- **container_build** - Build Docker container from Dockerfile using buildx
   - Parameters:
     - container_name (required): name to tag the built container
     - cwd (optional): working directory containing dockerfile
     - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
     - platform (optional): target platform for multi-arch builds
-  - Builds container using Docker with validation and testing
-  - Use for DevOps stories that need to build platform-specific containers`
+  - Builds container using Docker buildx with validation and testing
+  - Use for DevOps stories that need to build platform-specific containers
+  - Avoids legacy docker build deprecation warnings`
 }
 
 // extractWorkingDirectory extracts and validates the working directory from args.
@@ -193,20 +194,65 @@ func (c *ContainerBuildTool) buildAndTestContainer(ctx context.Context, cwd, con
 	}, nil
 }
 
-// buildContainer builds the Docker container from the specified dockerfile.
+// buildContainer builds the Docker container from the specified dockerfile using buildx or docker build as fallback.
 func (c *ContainerBuildTool) buildContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) error {
-	// Build command with optional platform support
-	args := []string{"docker", "build", "-t", containerName, "-f", dockerfilePath}
+	// Get config to check buildx availability
+	cfg, err := config.GetConfig()
+	if err != nil {
+		log.Printf("WARNING: Failed to get config, defaulting to docker build: %v", err)
+		return c.buildWithDockerBuild(ctx, cwd, containerName, dockerfilePath, platform)
+	}
+
+	// Check if multi-platform build is requested but buildx not available
+	if platform != "" && (cfg.Container == nil || !cfg.Container.BuildxAvailable) {
+		return fmt.Errorf("multi-platform builds require buildx, but buildx is not available on this host")
+	}
+
+	// Use buildx if available, otherwise fall back to docker build
+	if cfg.Container != nil && cfg.Container.BuildxAvailable {
+		return c.buildWithBuildx(ctx, cwd, containerName, dockerfilePath, platform)
+	} else {
+		log.Printf("INFO: Using docker build (buildx not available)")
+		return c.buildWithDockerBuild(ctx, cwd, containerName, dockerfilePath, platform)
+	}
+}
+
+// buildWithBuildx builds using docker buildx.
+func (c *ContainerBuildTool) buildWithBuildx(ctx context.Context, cwd, containerName, dockerfilePath, platform string) error {
+	args := []string{"docker", "buildx", "build", "-t", containerName, "-f", dockerfilePath}
 	if platform != "" {
 		args = append(args, "--platform", platform)
 	}
-	args = append(args, ".")
+	args = append(args, "--load", ".")
 
-	// Execute via executor interface
 	opts := &exec.Opts{
 		WorkDir: cwd,
-		Timeout: 5 * time.Minute, // Docker builds can take time
+		Timeout: 5 * time.Minute,
+		Env:     []string{"DOCKER_CONFIG=/tmp/docker"}, // Use writable location
 	}
+
+	result, err := c.executor.Run(ctx, args, opts)
+	if err != nil {
+		return fmt.Errorf("docker buildx build failed: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("docker buildx build failed with exit code %d (stdout: %s, stderr: %s)", result.ExitCode, result.Stdout, result.Stderr)
+	}
+	return nil
+}
+
+// buildWithDockerBuild builds using legacy docker build with BuildKit enabled.
+func (c *ContainerBuildTool) buildWithDockerBuild(ctx context.Context, cwd, containerName, dockerfilePath, _ string) error {
+	args := []string{"docker", "build", "-t", containerName, "-f", dockerfilePath}
+	// Note: --platform not supported in legacy docker build (parameter ignored)
+	args = append(args, ".")
+
+	opts := &exec.Opts{
+		WorkDir: cwd,
+		Timeout: 5 * time.Minute,
+		Env:     []string{"DOCKER_BUILDKIT=1"}, // Enable BuildKit for legacy build
+	}
+
 	result, err := c.executor.Run(ctx, args, opts)
 	if err != nil {
 		return fmt.Errorf("docker build failed: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
@@ -214,7 +260,6 @@ func (c *ContainerBuildTool) buildContainer(ctx context.Context, cwd, containerN
 	if result.ExitCode != 0 {
 		return fmt.Errorf("docker build failed with exit code %d (stdout: %s, stderr: %s)", result.ExitCode, result.Stdout, result.Stderr)
 	}
-
 	return nil
 }
 
@@ -337,23 +382,27 @@ func (c *ContainerUpdateTool) updateProjectConfig(containerName, dockerfilePath 
 	return nil
 }
 
-// ContainerExecTool and ContainerBootTestTool Implementation
+// ContainerTestTool Implementation - Unified container testing with optional TTL and command execution
 
 // Definition returns the tool's definition in Claude API format.
-func (c *ContainerExecTool) Definition() ToolDefinition {
+func (c *ContainerTestTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name:        "container_exec",
-		Description: "Execute a specific command inside a container",
+		Name:        "container_test",
+		Description: "Unified container testing tool - boot test, command execution, or long-running containers with TTL",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"container_name": {
 					Type:        "string",
-					Description: "Name of container to run",
+					Description: "Name of container to test",
 				},
 				"command": {
 					Type:        "string",
-					Description: "Command to execute in container (required)",
+					Description: "Command to execute in container (optional, if not provided does boot test)",
+				},
+				"ttl_seconds": {
+					Type:        "integer",
+					Description: "Time-to-live for container in seconds (0=boot test, >0=persistent container, default: 0)",
 				},
 				"working_dir": {
 					Type:        "string",
@@ -372,86 +421,67 @@ func (c *ContainerExecTool) Definition() ToolDefinition {
 					Description: "Maximum seconds to wait for command completion (default: 60, max: 300)",
 				},
 			},
-			Required: []string{"container_name", "command"},
-		},
-	}
-}
-
-// Definition returns the tool's definition in Claude API format.
-func (c *ContainerBootTestTool) Definition() ToolDefinition {
-	return ToolDefinition{
-		Name:        "container_boot_test",
-		Description: "Test that a container boots successfully with its default command",
-		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"container_name": {
-					Type:        "string",
-					Description: "Name of container to test",
-				},
-				"timeout_seconds": {
-					Type:        "integer",
-					Description: "Seconds to wait for container to stay running (default: 30, max: 60)",
-				},
-			},
 			Required: []string{"container_name"},
 		},
 	}
 }
 
 // Name returns the tool identifier.
-func (c *ContainerExecTool) Name() string {
-	return "container_exec"
-}
-
-// Name returns the tool identifier.
-func (c *ContainerBootTestTool) Name() string {
-	return "container_boot_test"
+func (c *ContainerTestTool) Name() string {
+	return "container_test"
 }
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
-func (c *ContainerExecTool) PromptDocumentation() string {
-	return `- **container_exec** - Execute a specific command inside a container
+func (c *ContainerTestTool) PromptDocumentation() string {
+	return `- **container_test** - Unified container testing tool
   - Parameters:
-    - container_name (required): name of container to run
-    - command (required): command to execute in container
+    - container_name (required): name of container to test
+    - command (optional): command to execute in container (if not provided, does boot test)
+    - ttl_seconds (optional): time-to-live for container (0=boot test, >0=persistent container, default: 0)
     - working_dir (optional): working directory inside container
     - env_vars (optional): environment variables to set
     - volumes (optional): volume mounts for host access
-    - timeout_seconds (optional): max seconds to wait for completion (default: 60, max: 300)
-  - Runs the specified command and returns output and exit code
-  - Use for testing container functionality, running tests, or health checks`
+    - timeout_seconds (optional): max seconds to wait for command completion (default: 60, max: 300)
+  - Modes:
+    - Boot Test (no command, ttl_seconds=0): Tests container boots successfully
+    - Command Execution (with command): Executes command and returns output
+    - Persistent Container (ttl_seconds>0): Starts long-running container for further interaction
+  - Automatically registers containers with registry for lifecycle management`
 }
 
-// PromptDocumentation returns markdown documentation for LLM prompts.
-func (c *ContainerBootTestTool) PromptDocumentation() string {
-	return `- **container_boot_test** - Test that a container starts successfully with its default command
-  - Parameters:
-    - container_name (required): name of container to test
-    - timeout_seconds (optional): seconds to wait for container to stay running (default: 30, max: 60)
-  - Starts container with default CMD, waits for specified time, then kills it
-  - Returns success if container stays running for the timeout duration
-  - Use to verify a container image boots properly (e.g., web servers, background services)`
-}
-
-// Exec executes a specific command in the container.
-func (c *ContainerExecTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract container name using utils pattern
+// Exec executes the unified container test tool.
+func (c *ContainerTestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+	// Extract container name
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
 	if containerName == "" {
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Extract command (required)
+	// Extract optional command
 	command := utils.GetMapFieldOr(args, "command", "")
-	if command == "" {
-		return nil, fmt.Errorf("command is required")
+
+	// Extract TTL (time-to-live) - 0 means boot test, >0 means persistent
+	ttlSeconds := utils.GetMapFieldOr(args, "ttl_seconds", 0)
+
+	// Determine mode based on parameters
+	if command != "" {
+		// Command execution mode
+		return c.executeCommand(ctx, args, containerName, command)
+	} else if ttlSeconds > 0 {
+		// Persistent container mode
+		return c.startPersistentContainer(ctx, args, containerName, ttlSeconds)
+	} else {
+		// Boot test mode (default)
+		return c.performBootTest(ctx, args, containerName)
 	}
+}
 
+// executeCommand runs a specific command in a container and returns the result.
+func (c *ContainerTestTool) executeCommand(ctx context.Context, args map[string]any, containerName, command string) (any, error) {
 	// Build docker run command
-	dockerArgs := c.buildDockerExecArgs(args, containerName, command)
+	dockerArgs := c.buildDockerArgs(args, containerName, command, false)
 
-	// Execute with appropriate timeout for command execution
+	// Execute with appropriate timeout
 	timeout := utils.GetMapFieldOr(args, "timeout_seconds", 60)
 	if timeout > 300 {
 		timeout = 300 // Enforce max limit
@@ -461,7 +491,14 @@ func (c *ContainerExecTool) Exec(ctx context.Context, args map[string]any) (any,
 		Timeout: time.Duration(timeout) * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("container exec failed: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"command":        command,
+			"error":          fmt.Sprintf("Command execution failed: %v", err),
+			"stdout":         result.Stdout,
+			"stderr":         result.Stderr,
+		}, nil
 	}
 
 	return map[string]any{
@@ -469,64 +506,102 @@ func (c *ContainerExecTool) Exec(ctx context.Context, args map[string]any) (any,
 		"container_name": containerName,
 		"command":        command,
 		"exit_code":      result.ExitCode,
-		"output":         result.Stdout,
+		"stdout":         result.Stdout,
 		"stderr":         result.Stderr,
 		"message":        fmt.Sprintf("Command executed in container '%s' with exit code %d", containerName, result.ExitCode),
 	}, nil
 }
 
-// Exec tests that the container boots successfully.
-func (c *ContainerBootTestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract container name using utils pattern
-	containerName := utils.GetMapFieldOr(args, "container_name", "")
-	if containerName == "" {
-		return nil, fmt.Errorf("container_name is required")
-	}
+// performBootTest tests that a container boots successfully.
+func (c *ContainerTestTool) performBootTest(ctx context.Context, args map[string]any, containerName string) (any, error) {
+	// Build docker run command for boot test (no specific command)
+	dockerArgs := []string{"docker", "run", "--rm", containerName}
 
 	// Get timeout for boot test
 	timeout := utils.GetMapFieldOr(args, "timeout_seconds", 30)
 	if timeout > 60 {
-		timeout = 60 // Enforce max limit
+		timeout = 60 // Enforce max limit for boot test
 	}
 
-	// Build docker run command for boot test (no specific command, let container run its default)
-	dockerArgs := c.buildDockerBootTestArgs(containerName)
-
-	// Execute with boot test timeout
 	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{
 		Timeout: time.Duration(timeout) * time.Second,
 	})
 
-	// For boot test, timeout is expected (we kill the container after waiting)
-	// Success means container was killed by timeout after running for the full duration
+	// For boot test, timeout is expected (container should be killed after waiting)
 	if err != nil {
-		// Check if error was due to timeout (signal: killed, context deadline exceeded, etc.)
 		errorMsg := err.Error()
 		if strings.Contains(errorMsg, "killed") || strings.Contains(errorMsg, "timeout") || strings.Contains(errorMsg, "context deadline exceeded") {
-			// Container was killed by timeout - this is success for boot test
+			// Container was killed by timeout - success for boot test
 			return map[string]any{
 				"success":        true,
 				"container_name": containerName,
 				"timeout":        timeout,
+				"mode":           "boot_test",
 				"message":        fmt.Sprintf("Container '%s' booted successfully and ran for %d seconds", containerName, timeout),
 			}, nil
 		}
 	}
 
-	// Container exited early, failed to start, or had other error
+	// Container exited early or had other error
 	return map[string]any{
 		"success":        false,
 		"container_name": containerName,
 		"exit_code":      result.ExitCode,
 		"stdout":         result.Stdout,
 		"stderr":         result.Stderr,
+		"mode":           "boot_test",
 		"message":        fmt.Sprintf("Container '%s' failed boot test - exited early with code %d", containerName, result.ExitCode),
 	}, nil
 }
 
-// buildDockerExecArgs builds the docker run command arguments for executing a specific command.
-func (c *ContainerExecTool) buildDockerExecArgs(args map[string]any, containerName, command string) []string {
-	dockerArgs := []string{"docker", "run", "--rm"}
+// startPersistentContainer starts a container with TTL and registers it with the container registry.
+func (c *ContainerTestTool) startPersistentContainer(ctx context.Context, args map[string]any, containerName string, ttlSeconds int) (any, error) {
+	// Build docker run command for persistent container (detached mode)
+	dockerArgs := c.buildDockerArgs(args, containerName, "", true)
+
+	// Execute docker run in detached mode
+	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{
+		Timeout: 30 * time.Second, // Just for starting the container
+	})
+	if err != nil {
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"error":          fmt.Sprintf("Failed to start persistent container: %v", err),
+			"stdout":         result.Stdout,
+			"stderr":         result.Stderr,
+		}, nil
+	}
+
+	// Extract container ID from output (docker run -d returns container ID)
+	containerID := strings.TrimSpace(result.Stdout)
+
+	// Register with container registry
+	registry := exec.GetGlobalRegistry()
+	if registry != nil {
+		// Use the container ID as agent ID for now, container name as container name, and "persistent" as purpose
+		registry.Register(containerID, containerName, "persistent")
+	}
+
+	return map[string]any{
+		"success":        true,
+		"container_name": containerName,
+		"container_id":   containerID,
+		"ttl_seconds":    ttlSeconds,
+		"mode":           "persistent",
+		"message":        fmt.Sprintf("Persistent container '%s' started with TTL %d seconds", containerName, ttlSeconds),
+	}, nil
+}
+
+// buildDockerArgs builds docker run command arguments based on parameters.
+func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, command string, detached bool) []string {
+	dockerArgs := []string{"docker", "run"}
+
+	if detached {
+		dockerArgs = append(dockerArgs, "-d") // Detached mode for persistent containers
+	} else {
+		dockerArgs = append(dockerArgs, "--rm") // Remove after execution
+	}
 
 	// Add working directory if specified
 	workingDir := utils.GetMapFieldOr(args, "working_dir", "")
@@ -556,13 +631,92 @@ func (c *ContainerExecTool) buildDockerExecArgs(args map[string]any, containerNa
 		}
 	}
 
-	// Add container name and command
-	dockerArgs = append(dockerArgs, containerName, "sh", "-c", command)
+	// Add container name
+	dockerArgs = append(dockerArgs, containerName)
+
+	// Add command if specified
+	if command != "" {
+		dockerArgs = append(dockerArgs, "sh", "-c", command)
+	}
+
 	return dockerArgs
 }
 
-// buildDockerBootTestArgs builds the docker run command arguments for boot testing.
-func (c *ContainerBootTestTool) buildDockerBootTestArgs(containerName string) []string {
-	// Simple boot test - run container with default CMD, will be killed after timeout
-	return []string{"docker", "run", "--rm", containerName}
+// Name returns the tool identifier.
+func (c *ContainerListTool) Name() string {
+	return "container_list"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (c *ContainerListTool) PromptDocumentation() string {
+	return `- **container_list** - List all available Docker containers with registry status
+  - Parameters:
+    - show_all (optional): show all containers including stopped ones (default: false)
+  - Lists Docker containers with their names, images, status, and ports
+  - Includes registry information when available
+  - Use to see what containers are available for use`
+}
+
+// Definition returns the container_list tool definition.
+func (c *ContainerListTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "container_list",
+		Description: "List all available Docker containers with their registry status",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"show_all": {
+					Type:        "boolean",
+					Description: "Show all containers including stopped ones (default: false)",
+				},
+			},
+			Required: []string{},
+		},
+	}
+}
+
+// Exec executes the container_list tool.
+func (c *ContainerListTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+	showAll := false
+	if showAllRaw, exists := args["show_all"]; exists {
+		if showAllBool, ok := showAllRaw.(bool); ok {
+			showAll = showAllBool
+		}
+	}
+
+	// Get registry information
+	registry := exec.GetGlobalRegistry()
+	var registryContainers map[string]exec.RegistryContainerInfo
+	if registry != nil {
+		registryContainers = registry.GetActiveContainers()
+	}
+
+	// Build docker ps command
+	dockerArgs := []string{"docker", "ps"}
+	if showAll {
+		dockerArgs = append(dockerArgs, "-a")
+	}
+	dockerArgs = append(dockerArgs, "--format", "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}")
+
+	// Execute docker ps
+	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{Timeout: 30 * time.Second})
+	if err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to list containers: %v", err),
+		}, nil
+	}
+
+	response := map[string]any{
+		"success": true,
+		"output":  result.Stdout,
+	}
+
+	// Add registry information if available
+	if registryContainers != nil {
+		response["registry_status"] = registryContainers
+		response["registry_count"] = len(registryContainers)
+	}
+
+	return response, nil
 }
