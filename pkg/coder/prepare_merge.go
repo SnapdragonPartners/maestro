@@ -220,7 +220,6 @@ func (c *Coder) createPullRequest(ctx context.Context, storyID, headBranch, base
 		return "", fmt.Errorf("PR created but no URL returned from gh command")
 	}
 
-	c.logger.Info("🔀 PR created successfully: %s", prURL)
 	return prURL, nil
 }
 

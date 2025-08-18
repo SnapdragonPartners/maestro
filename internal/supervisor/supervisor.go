@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 
+	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/dispatch"
@@ -48,9 +49,10 @@ func DefaultRestartPolicy() RestartPolicy {
 // Supervisor manages agent lifecycle, restart policies, and state change processing.
 // It consolidates the logic that was previously scattered across the orchestrator.
 type Supervisor struct {
-	Kernel *kernel.Kernel
-	Logger *logx.Logger
-	Policy RestartPolicy
+	Kernel  *kernel.Kernel
+	Factory *factory.AgentFactory
+	Logger  *logx.Logger
+	Policy  RestartPolicy
 
 	// Agent tracking (preserves existing patterns)
 	Agents     map[string]dispatch.Agent
@@ -60,10 +62,14 @@ type Supervisor struct {
 	running bool
 }
 
-// NewSupervisor creates a new supervisor with the given kernel and restart policy.
+// NewSupervisor creates a new supervisor with the given kernel.
 func NewSupervisor(k *kernel.Kernel) *Supervisor {
+	// Create the agent factory with kernel dependencies
+	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, k.BuildService)
+
 	return &Supervisor{
 		Kernel:     k,
+		Factory:    agentFactory,
 		Logger:     logx.NewLogger("supervisor"),
 		Policy:     DefaultRestartPolicy(),
 		Agents:     make(map[string]dispatch.Agent),
@@ -184,7 +190,7 @@ func (s *Supervisor) handleStateAction(ctx context.Context, notification *proto.
 
 // restartAgent handles restarting an individual agent.
 // This preserves the restartAgent logic from the old orchestrator.
-func (s *Supervisor) restartAgent(_ context.Context, agentID string) error {
+func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 	s.Logger.Info("Restarting agent: %s", agentID)
 
 	// Get the agent type
@@ -196,11 +202,16 @@ func (s *Supervisor) restartAgent(_ context.Context, agentID string) error {
 	// Clean up existing agent resources
 	s.cleanupAgentResources(agentID)
 
-	// TODO: Implement agent recreation logic
-	// This will need to use the AgentFactory to recreate the specific agent
-	// For now, log that restart is needed
-	s.Logger.Info("Agent %s cleanup completed, recreation needed via factory", agentID)
+	// Recreate the agent using the factory
+	newAgent, err := s.Factory.RecreateAgent(ctx, agentID, agentType)
+	if err != nil {
+		return fmt.Errorf("failed to recreate agent %s: %w", agentID, err)
+	}
 
+	// Register the newly created agent
+	s.RegisterAgent(ctx, agentID, agentType, newAgent)
+
+	s.Logger.Info("Agent %s successfully recreated and registered", agentID)
 	return nil
 }
 
@@ -225,7 +236,7 @@ func (s *Supervisor) getAgentType(agentID string) string {
 	return ""
 }
 
-// RegisterAgent adds an agent to the supervisor's tracking.
+// RegisterAgent adds an agent to the supervisor's tracking and starts its state machine.
 func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType string, agent dispatch.Agent) {
 	s.AgentTypes[agentID] = agentType
 	s.Agents[agentID] = agent
@@ -258,4 +269,9 @@ func (s *Supervisor) GetAgents() (map[string]dispatch.Agent, map[string]string) 
 	}
 
 	return agents, agentTypes
+}
+
+// GetFactory returns the agent factory for external use.
+func (s *Supervisor) GetFactory() *factory.AgentFactory {
+	return s.Factory
 }

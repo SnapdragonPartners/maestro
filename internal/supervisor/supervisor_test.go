@@ -66,7 +66,7 @@ func TestNewSupervisor(t *testing.T) {
 	}
 	defer k.Stop()
 
-	// Create supervisor
+	// Create supervisor with nil factory for testing
 	supervisor := NewSupervisor(k)
 
 	if supervisor == nil {

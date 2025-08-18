@@ -146,6 +146,9 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			return StateError, err
 		}
 
+		// Store the response in state data for merge success detection
+		d.stateData["last_response"] = response
+
 		// Persist response to database (fire-and-forget)
 		if d.persistenceChannel != nil {
 			agentResponse := &persistence.AgentResponse{
@@ -271,11 +274,45 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Response sent and persisted to database
 	}
 
-	// Clear the processed request and return to monitoring.
-	delete(d.stateData, "current_request")
+	// Check if this was a successful merge request before clearing state
+	var wasSuccessfulMerge bool
+	if requestMsg, exists := d.stateData["current_request"]; exists {
+		if agentMsg, ok := requestMsg.(*proto.AgentMsg); ok {
+			requestType, _ := agentMsg.GetPayload("request_type")
+			kindPayload, _ := agentMsg.GetPayload(proto.KeyKind)
 
-	// Determine next state based on whether architect owns a spec.
-	if d.ownsSpec() {
+			// Check if this was a merge request
+			isMergeRequest := false
+			if requestTypeStr, ok := requestType.(string); ok && requestTypeStr == "merge" {
+				isMergeRequest = true
+			} else if kindStr, ok := kindPayload.(string); ok && kindStr == string(proto.RequestKindMerge) {
+				isMergeRequest = true
+			}
+
+			// If it was a merge request and we have a response stored, check if merge succeeded
+			if isMergeRequest {
+				if responseData, exists := d.stateData["last_response"]; exists {
+					if response, ok := responseData.(*proto.AgentMsg); ok {
+						if status, exists := response.GetPayload("status"); exists {
+							if statusStr, ok := status.(string); ok && statusStr == string(proto.ApprovalStatusApproved) {
+								wasSuccessfulMerge = true
+								d.logger.Info("🔀 Detected successful merge, transitioning to DISPATCHING to release dependent stories")
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Clear the processed request
+	delete(d.stateData, "current_request")
+	delete(d.stateData, "last_response")
+
+	// Determine next state - successful merges transition to DISPATCHING
+	if wasSuccessfulMerge && d.ownsSpec() {
+		return StateDispatching, nil
+	} else if d.ownsSpec() {
 		return StateMonitoring, nil
 	} else {
 		return StateWaiting, nil
@@ -690,11 +727,11 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 			_ = d.queue.MarkCompleted(storyIDStr)
 		}
 
-		// Update story status to "done" in database after successful merge
+		// Update story status to "merged" in database after successful merge
 		if d.persistenceChannel != nil {
 			statusReq := &persistence.UpdateStoryStatusRequest{
 				StoryID: storyIDStr,
-				Status:  "done",
+				Status:  persistence.StatusMerged,
 			}
 
 			// Wrap in proper Request structure
@@ -704,7 +741,7 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 				Operation: persistence.OpUpdateStoryStatus,
 			}
 
-			d.logger.Info("🔀 Updating story %s status to 'done' after successful merge", storyIDStr)
+			d.logger.Info("🔀 Updating story %s status to 'merged' after successful merge", storyIDStr)
 
 			// Fire-and-forget database update
 			select {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/internal/supervisor"
 	"orchestrator/pkg/agent"
@@ -23,7 +24,6 @@ type FlowRunner interface {
 // BootstrapFlow handles single-spec execution with termination.
 // This consolidates the bootstrap logic from bootstrap.go.
 type BootstrapFlow struct {
-	factory  *AgentFactory
 	gitRepo  string
 	specFile string
 }
@@ -33,19 +33,12 @@ func NewBootstrapFlow(gitRepo, specFile string) *BootstrapFlow {
 	return &BootstrapFlow{
 		gitRepo:  gitRepo,
 		specFile: specFile,
-		factory:  NewAgentFactory(),
 	}
 }
 
 // Run executes the bootstrap flow.
 func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("Starting bootstrap flow")
-
-	// Create supervisor for agent lifecycle management
-	supervisor := supervisor.NewSupervisor(k)
-
-	// Start supervisor's state change processor
-	supervisor.Start(ctx)
 
 	// Load and inject spec content FIRST to complete interactive setup
 	k.Logger.Info("📝 Starting interactive bootstrap setup...")
@@ -60,14 +53,20 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		return fmt.Errorf("failed to get updated config: %w", err)
 	}
 
+	// Create supervisor for agent lifecycle management (creates its own factory)
+	supervisor := supervisor.NewSupervisor(k)
+
+	// Start supervisor's state change processor
+	supervisor.Start(ctx)
+
 	// Create agent configuration with updated git settings
-	agentConfig, err := createAgentConfig(&updatedConfig, ".")
+	agentConfig, err := factory.CreateAgentConfig(&updatedConfig, ".")
 	if err != nil {
 		return fmt.Errorf("failed to create agent config: %w", err)
 	}
 
-	// Create agent set with updated configuration
-	agentSet, err := f.factory.CreateAgentSet(ctx, agentConfig, k.Dispatcher, &updatedConfig, k.PersistenceChannel, k.BuildService)
+	// Create agent set with updated configuration using supervisor's factory
+	agentSet, err := supervisor.GetFactory().CreateAgentSet(ctx, agentConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create agent set: %w", err)
 	}
@@ -144,7 +143,6 @@ func (f *BootstrapFlow) waitForArchitectCompletion(ctx context.Context, architec
 // OrchestratorFlow handles long-running multi-spec processing.
 // This consolidates the main orchestrator logic from main.go.
 type OrchestratorFlow struct {
-	factory  *AgentFactory
 	specFile string
 	webUI    bool
 }
@@ -154,7 +152,6 @@ func NewMainFlow(specFile string, webUI bool) *OrchestratorFlow {
 	return &OrchestratorFlow{
 		specFile: specFile,
 		webUI:    webUI,
-		factory:  NewAgentFactory(),
 	}
 }
 
@@ -170,20 +167,20 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		k.Logger.Info("🌐 Web UI started on port 8080")
 	}
 
-	// Create supervisor for agent lifecycle management
+	// Create supervisor for agent lifecycle management (creates its own factory)
 	supervisor := supervisor.NewSupervisor(k)
 
 	// Start supervisor's state change processor
 	supervisor.Start(ctx)
 
 	// Create agent configuration
-	agentConfig, err := createAgentConfig(k.Config, ".")
+	agentConfig, err := factory.CreateAgentConfig(k.Config, ".")
 	if err != nil {
 		return fmt.Errorf("failed to create agent config: %w", err)
 	}
 
-	// Create agent set
-	agentSet, err := f.factory.CreateAgentSet(ctx, agentConfig, k.Dispatcher, k.Config, k.PersistenceChannel, k.BuildService)
+	// Create agent set using supervisor's factory
+	agentSet, err := supervisor.GetFactory().CreateAgentSet(ctx, agentConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create agent set: %w", err)
 	}

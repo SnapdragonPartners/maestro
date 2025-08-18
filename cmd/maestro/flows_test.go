@@ -27,10 +27,6 @@ func TestNewBootstrapFlow(t *testing.T) {
 	if flow.specFile != specFile {
 		t.Errorf("Expected specFile to be %s, got %s", specFile, flow.specFile)
 	}
-
-	if flow.factory == nil {
-		t.Error("Expected factory to be initialized")
-	}
 }
 
 // TestNewMainFlow tests main flow creation.
@@ -50,10 +46,6 @@ func TestNewMainFlow(t *testing.T) {
 
 	if flow.webUI != webUI {
 		t.Errorf("Expected webUI to be %t, got %t", webUI, flow.webUI)
-	}
-
-	if flow.factory == nil {
-		t.Error("Expected factory to be initialized")
 	}
 }
 
