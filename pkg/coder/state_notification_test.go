@@ -39,7 +39,7 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	buildService := build.NewBuildService()
 
 	// Create real coder
-	coder, err := NewCoder(agentID, agentID, workDir, modelConfig, "", cloneManager, buildService)
+	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, cloneManager, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestCoderStateNotificationChannelSetup(t *testing.T) {
 	buildService := build.NewBuildService()
 
 	// Create real coder
-	coder, err := NewCoder(agentID, agentID, workDir, modelConfig, "", cloneManager, buildService)
+	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, cloneManager, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

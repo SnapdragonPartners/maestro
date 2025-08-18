@@ -11,7 +11,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
-	"orchestrator/pkg/templates/bootstrap"
+	bootstrapTemplate "orchestrator/pkg/templates/bootstrap"
 	"orchestrator/pkg/workspace"
 )
 
@@ -96,8 +96,9 @@ func (f *BootstrapFlow) runInteractiveBootstrapSetup(ctx context.Context) ([]byt
 		// Continue with basic bootstrap
 	}
 
-	// Step 10: Generate bootstrap specification
-	spec, err := generateBootstrapSpecContent(params.name, params.platform, params.containerImage, convertedGitRepo, params.dockerfilePath, report)
+	// Step 10: Generate bootstrap specification with target container name
+	targetContainerName := params.containerName // This is the maestro-{projectname} or user-specified image
+	spec, err := generateBootstrapSpecContent(params.name, params.platform, targetContainerName, convertedGitRepo, params.dockerfilePath, report)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate bootstrap spec: %w", err)
 	}
@@ -387,6 +388,8 @@ func gatherUserInputNew(platform string, confidence float64, projectDir, _, _, w
 				params.dockerfilePath = strings.TrimSpace(scanner.Text())
 			}
 		}
+		// Use project-specific target name for dockerfile builds
+		params.containerName = fmt.Sprintf("maestro-%s", params.name)
 
 	case "3", "image":
 		params.containerSource = containerSourceImageName
@@ -394,17 +397,19 @@ func gatherUserInputNew(platform string, confidence float64, projectDir, _, _, w
 		if scanner.Scan() {
 			params.containerImage = strings.TrimSpace(scanner.Text())
 		}
+		// For user-specified images, use the image name directly
+		params.containerName = params.containerImage
 
 	default:
 		params.containerSource = containerSourceDetect
-		// Set default based on platform
+		// Set base image for building, but use project-specific target name
 		switch params.platform {
-		case "go":
+		case config.PlatformGo:
 			params.containerImage = config.DefaultGoDockerImage
 		default:
 			params.containerImage = config.DefaultUbuntuDockerImage
 		}
-		params.containerName = params.containerImage
+		params.containerName = fmt.Sprintf("maestro-%s", params.name)
 	}
 
 	return params, confidence, nil
@@ -421,24 +426,15 @@ func updateConfigWithUserChoices(params *projectParamsNew) error {
 		return fmt.Errorf("failed to update project info: %w", err)
 	}
 
-	// Update container config
+	// Update container config - always start with bootstrap container for initial setup
+	// The coder will update this to the target container once it's built/ready
 	containerConfig := &config.ContainerConfig{
-		Name: params.containerName,
+		Name: config.BootstrapContainerTag,
 	}
 
-	// Configure container source
-	switch params.containerSource {
-	case containerSourceDockerfile:
-		if params.dockerfilePath != "" {
-			containerConfig.Dockerfile = params.dockerfilePath
-		}
-	case containerSourceImageName:
-		if params.containerImage != "" {
-			containerConfig.Name = params.containerImage
-			containerConfig.Dockerfile = "" // Clear dockerfile
-		}
-	default: // detect
-		containerConfig.Name = params.containerImage
+	// Store dockerfile path if using dockerfile mode (coder will need this for building target container)
+	if params.containerSource == containerSourceDockerfile && params.dockerfilePath != "" {
+		containerConfig.Dockerfile = params.dockerfilePath
 	}
 
 	if err := config.UpdateContainer(containerConfig); err != nil {
@@ -458,7 +454,7 @@ func generateBootstrapSpecContent(projectName, platform, containerImage, gitRepo
 	}
 
 	// Use the existing bootstrap template system
-	spec, err := bootstrap.GenerateBootstrapSpecFromReportEnhanced(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report)
+	spec, err := bootstrapTemplate.GenerateBootstrapSpecFromReportEnhanced(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate bootstrap spec: %w", err)
 	}

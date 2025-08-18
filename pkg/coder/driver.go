@@ -407,7 +407,14 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 
 // NewCoder creates a new coder with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewCoder(agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service) (*Coder, error) {
+func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.Model, cloneManager *CloneManager, buildService *build.Service) (*Coder, error) {
+	// Check for context cancellation before starting construction
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("coder construction cancelled: %w", ctx.Err())
+	default:
+	}
+
 	// Create LLM client using DRY helper function (same as architect)
 	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeCoder)
 	if err != nil {

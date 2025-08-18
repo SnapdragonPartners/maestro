@@ -52,9 +52,6 @@ func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- 
 
 // CreateAgentSet creates and initializes architect and coder agents.
 func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*AgentSet, error) {
-	// TODO: Pass context to agent constructors when they support context-aware initialization
-	_ = ctx // Suppress linter warning for now
-
 	// Get current config from singleton
 	orchestratorConfig, err := config.GetConfig()
 	if err != nil {
@@ -69,6 +66,7 @@ func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*A
 	// Create architect agent
 	architectID := "architect-001"
 	architect, err := architect.NewArchitect(
+		ctx,
 		architectID,
 		cfg.ArchitectModel,
 		f.dispatcher,
@@ -107,11 +105,10 @@ func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*A
 
 		// Create coder with individual work directory
 		coderAgent, err := coder.NewCoder(
+			ctx,
 			coderID,
-			coderID,      // Use same ID for both parameters
 			coderWorkDir, // Use individual work directory, not project directory
 			cfg.CoderModel,
-			"", // Empty spec path - will be provided via messages
 			cloneManager,
 			f.buildService,
 		)
@@ -132,9 +129,6 @@ func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*A
 
 // RecreateAgent recreates a single agent by type and ID.
 func (f *AgentFactory) RecreateAgent(ctx context.Context, agentID, agentType string) (dispatch.Agent, error) {
-	// TODO: Pass context to agent constructors when they support context-aware initialization
-	_ = ctx // Suppress linter warning for now
-
 	// Get current config from singleton
 	orchestratorConfig, err := config.GetConfig()
 	if err != nil {
@@ -150,6 +144,7 @@ func (f *AgentFactory) RecreateAgent(ctx context.Context, agentID, agentType str
 	switch agentType {
 	case "architect":
 		architect, err := architect.NewArchitect(
+			ctx,
 			agentID,
 			agentConfig.ArchitectModel,
 			f.dispatcher,
@@ -182,11 +177,10 @@ func (f *AgentFactory) RecreateAgent(ctx context.Context, agentID, agentType str
 
 		// Create coder with individual work directory
 		coderAgent, err := coder.NewCoder(
+			ctx,
 			agentID,
-			agentID,      // Use same ID for both parameters
 			coderWorkDir, // Use individual work directory, not project directory
 			agentConfig.CoderModel,
-			"", // Empty spec path - will be provided via messages
 			cloneManager,
 			f.buildService,
 		)

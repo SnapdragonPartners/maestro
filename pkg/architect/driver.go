@@ -83,7 +83,14 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 
 // NewArchitect creates a new architect with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewArchitect(architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+func NewArchitect(ctx context.Context, architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+	// Check for context cancellation before starting construction
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("architect construction cancelled: %w", ctx.Err())
+	default:
+	}
+
 	// Architect constructor with model configuration validation
 
 	// Create basic LLM client using helper

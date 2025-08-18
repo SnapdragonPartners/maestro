@@ -236,6 +236,13 @@ const (
 	DefaultGoDockerImage     = "golang:alpine" // Use latest stable Go with alpine
 	DefaultUbuntuDockerImage = "ubuntu:22.04"
 
+	// Platform constants.
+	PlatformGo      = "go"
+	PlatformPython  = "python"
+	PlatformNode    = "node"
+	PlatformDocker  = "docker"
+	PlatformGeneric = "generic"
+
 	// Build target constants - used for GetBuildCommand() and elsewhere.
 	BuildTargetBuild   = "build"
 	BuildTargetTest    = "test"

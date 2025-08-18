@@ -109,7 +109,7 @@ func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
 
 	// Create coder driver.
 	// NewCoder signature: (agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service)
-	driver, err := coder.NewCoder(coderID, "", tempDir, modelCfg, "", nil, buildService)
+	driver, err := coder.NewCoder(context.Background(), coderID, tempDir, modelCfg, nil, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
@@ -146,8 +146,7 @@ func CreateTestCoderWithAgent(t *testing.T, coderID string, modelConfig *config.
 	buildService := build.NewBuildService()
 
 	// Create coder driver with model configuration.
-	// NewCoder signature: (agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service)
-	driver, err := coder.NewCoder(coderID, "", tempDir, modelConfig, "", nil, buildService)
+	driver, err := coder.NewCoder(context.Background(), coderID, tempDir, modelConfig, nil, buildService)
 	if err != nil {
 		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
 	}
