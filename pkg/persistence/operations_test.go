@@ -6,29 +6,29 @@ import (
 	"testing"
 )
 
-func TestDatabaseOperations(t *testing.T) {
-	// Helper function to create a new database for each test
-	createTestDB := func(t *testing.T) (*DatabaseOperations, func()) {
-		tempDir, err := os.MkdirTemp("", "persistence_test")
-		if err != nil {
-			t.Fatalf("Failed to create temp dir: %v", err)
-		}
-
-		dbPath := filepath.Join(tempDir, "test.db")
-
-		db, err := InitializeDatabase(dbPath)
-		if err != nil {
-			t.Fatalf("Failed to initialize database: %v", err)
-		}
-
-		cleanup := func() {
-			db.Close()
-			os.RemoveAll(tempDir)
-		}
-
-		return NewDatabaseOperations(db), cleanup
+// Helper function to create a new database for each test.
+func createTestDB(t *testing.T) (*DatabaseOperations, func()) {
+	tempDir, err := os.MkdirTemp("", "persistence_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
+	dbPath := filepath.Join(tempDir, "test.db")
+
+	db, err := InitializeDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	cleanup := func() {
+		db.Close()
+		os.RemoveAll(tempDir)
+	}
+
+	return NewDatabaseOperations(db), cleanup
+}
+
+func TestDatabaseOperations(t *testing.T) {
 	// Test spec operations
 	t.Run("SpecOperations", func(t *testing.T) {
 		ops, cleanup := createTestDB(t)
@@ -359,6 +359,114 @@ func TestValidStatus(t *testing.T) {
 
 	if IsValidStatus("invalid") {
 		t.Error("Expected 'invalid' to be invalid")
+	}
+}
+
+func TestBatchUpsertStoriesWithDependencies(t *testing.T) {
+	ops, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create parent spec first
+	specID := GenerateSpecID()
+	spec := &Spec{
+		ID:      specID,
+		Content: "Parent spec for batch test",
+	}
+	err := ops.UpsertSpec(spec)
+	if err != nil {
+		t.Fatalf("Failed to create parent spec: %v", err)
+	}
+
+	// Create stories for batch insert
+	story1ID, _ := GenerateStoryID()
+	story2ID, _ := GenerateStoryID()
+	story3ID, _ := GenerateStoryID()
+
+	stories := []*Story{
+		{
+			ID:        story1ID,
+			SpecID:    specID,
+			Title:     "Batch Story 1",
+			Content:   "Content 1",
+			Status:    StatusNew,
+			StoryType: "app",
+			Priority:  1,
+		},
+		{
+			ID:        story2ID,
+			SpecID:    specID,
+			Title:     "Batch Story 2",
+			Content:   "Content 2",
+			Status:    StatusNew,
+			StoryType: "app",
+			Priority:  2,
+		},
+		{
+			ID:        story3ID,
+			SpecID:    specID,
+			Title:     "Batch Story 3",
+			Content:   "Content 3",
+			Status:    StatusNew,
+			StoryType: "devops",
+			Priority:  3,
+		},
+	}
+
+	// Create dependencies: story2 depends on story1, story3 depends on both
+	dependencies := []*StoryDependency{
+		{StoryID: story2ID, DependsOn: story1ID},
+		{StoryID: story3ID, DependsOn: story1ID},
+		{StoryID: story3ID, DependsOn: story2ID},
+	}
+
+	// Execute batch operation
+	batchReq := &BatchUpsertStoriesWithDependenciesRequest{
+		Stories:      stories,
+		Dependencies: dependencies,
+	}
+
+	err = ops.BatchUpsertStoriesWithDependencies(batchReq)
+	if err != nil {
+		t.Fatalf("Failed to batch upsert stories with dependencies: %v", err)
+	}
+
+	// Verify all stories were inserted
+	for _, expectedStory := range stories {
+		story, getErr := ops.GetStoryByID(expectedStory.ID)
+		if getErr != nil {
+			t.Fatalf("Failed to get story %s: %v", expectedStory.ID, getErr)
+		}
+		if story.Title != expectedStory.Title {
+			t.Errorf("Expected title %q, got %q", expectedStory.Title, story.Title)
+		}
+	}
+
+	// Verify dependencies were inserted
+	deps2, err := ops.GetStoryDependencies(story2ID)
+	if err != nil {
+		t.Fatalf("Failed to get dependencies for story2: %v", err)
+	}
+	if len(deps2) != 1 || deps2[0] != story1ID {
+		t.Errorf("Expected story2 to depend on [%s], got %v", story1ID, deps2)
+	}
+
+	deps3, err := ops.GetStoryDependencies(story3ID)
+	if err != nil {
+		t.Fatalf("Failed to get dependencies for story3: %v", err)
+	}
+	if len(deps3) != 2 {
+		t.Errorf("Expected story3 to have 2 dependencies, got %d", len(deps3))
+	}
+
+	// Verify pending stories query works correctly with batch-inserted dependencies
+	pending, err := ops.QueryPendingStories()
+	if err != nil {
+		t.Fatalf("Failed to query pending stories: %v", err)
+	}
+
+	// Only story1 should be pending (no dependencies)
+	if len(pending) != 1 || pending[0].ID != story1ID {
+		t.Errorf("Expected only story1 to be pending, got %v", getStoryIDs(pending))
 	}
 }
 

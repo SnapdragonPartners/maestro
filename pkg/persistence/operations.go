@@ -31,16 +31,17 @@ const (
 	OpUpdateAgentPlan     = "update_agent_plan"
 
 	// Query operations (with response).
-	OpQueryStoriesByStatus     = "query_stories_by_status"
-	OpQueryPendingStories      = "query_pending_stories"
-	OpGetStoryDependencies     = "get_story_dependencies"
-	OpGetSpecSummary           = "get_spec_summary"
-	OpGetStoryByID             = "get_story_by_id"
-	OpGetSpecByID              = "get_spec_by_id"
-	OpGetAllStories            = "get_all_stories"
-	OpGetAgentRequestsByStory  = "get_agent_requests_by_story"
-	OpGetAgentResponsesByStory = "get_agent_responses_by_story"
-	OpGetAgentPlansByStory     = "get_agent_plans_by_story"
+	OpQueryStoriesByStatus               = "query_stories_by_status"
+	OpQueryPendingStories                = "query_pending_stories"
+	OpGetStoryDependencies               = "get_story_dependencies"
+	OpGetSpecSummary                     = "get_spec_summary"
+	OpGetStoryByID                       = "get_story_by_id"
+	OpGetSpecByID                        = "get_spec_by_id"
+	OpGetAllStories                      = "get_all_stories"
+	OpGetAgentRequestsByStory            = "get_agent_requests_by_story"
+	OpGetAgentResponsesByStory           = "get_agent_responses_by_story"
+	OpGetAgentPlansByStory               = "get_agent_plans_by_story"
+	OpBatchUpsertStoriesWithDependencies = "batch_upsert_stories_with_dependencies"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -51,6 +52,12 @@ type UpdateStoryStatusRequest struct {
 	CostUSD          *float64  `json:"cost_usd,omitempty"`          // Total cost in USD for this story
 	StoryID          string    `json:"story_id"`
 	Status           string    `json:"status"`
+}
+
+// BatchUpsertStoriesWithDependenciesRequest represents a batch operation for atomically inserting stories with dependencies.
+type BatchUpsertStoriesWithDependenciesRequest struct {
+	Stories      []*Story           `json:"stories"`      // Stories to upsert
+	Dependencies []*StoryDependency `json:"dependencies"` // Dependencies to add after stories are inserted
 }
 
 // DatabaseOperations provides methods for database operations.
@@ -643,4 +650,74 @@ func (ops *DatabaseOperations) GetAgentPlansByStory(storyID string) ([]*AgentPla
 	}
 
 	return plans, nil
+}
+
+// BatchUpsertStoriesWithDependencies atomically inserts stories and their dependencies.
+// This ensures all stories exist before any dependencies are created, preventing foreign key constraint errors.
+func (ops *DatabaseOperations) BatchUpsertStoriesWithDependencies(req *BatchUpsertStoriesWithDependenciesRequest) error {
+	// Begin transaction for atomicity
+	tx, err := ops.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback() // Ignore rollback errors
+		}
+	}()
+
+	// First, upsert all stories
+	storyQuery := `
+		INSERT INTO stories (
+			id, spec_id, title, content, status, priority, approved_plan,
+			created_at, started_at, completed_at, assigned_agent,
+			tokens_used, cost_usd, metadata, story_type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			spec_id = excluded.spec_id,
+			title = excluded.title,
+			content = excluded.content,
+			status = excluded.status,
+			priority = excluded.priority,
+			approved_plan = excluded.approved_plan,
+			started_at = excluded.started_at,
+			completed_at = excluded.completed_at,
+			assigned_agent = excluded.assigned_agent,
+			tokens_used = excluded.tokens_used,
+			cost_usd = excluded.cost_usd,
+			metadata = excluded.metadata,
+			story_type = excluded.story_type
+	`
+
+	for _, story := range req.Stories {
+		_, err = tx.Exec(storyQuery,
+			story.ID, story.SpecID, story.Title, story.Content, story.Status,
+			story.Priority, story.ApprovedPlan, story.CreatedAt, story.StartedAt,
+			story.CompletedAt, story.AssignedAgent, story.TokensUsed,
+			story.CostUSD, story.Metadata, story.StoryType,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to upsert story %s: %w", story.ID, err)
+		}
+	}
+
+	// Then, add all dependencies
+	depQuery := `
+		INSERT OR IGNORE INTO story_dependencies (story_id, depends_on)
+		VALUES (?, ?)
+	`
+
+	for _, dep := range req.Dependencies {
+		_, err = tx.Exec(depQuery, dep.StoryID, dep.DependsOn)
+		if err != nil {
+			return fmt.Errorf("failed to add dependency %s -> %s: %w", dep.StoryID, dep.DependsOn, err)
+		}
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }

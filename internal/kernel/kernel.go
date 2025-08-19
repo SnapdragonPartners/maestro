@@ -273,6 +273,14 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 				k.Logger.Info("Successfully added story dependency: %s -> %s", deps.StoryID, deps.DependsOn)
 			}
 		}
+	case persistence.OpBatchUpsertStoriesWithDependencies:
+		if batchReq, ok := req.Data.(*persistence.BatchUpsertStoriesWithDependenciesRequest); ok {
+			if err := ops.BatchUpsertStoriesWithDependencies(batchReq); err != nil {
+				k.Logger.Error("Failed to batch upsert stories with dependencies: %v", err)
+			} else {
+				k.Logger.Info("Successfully batch upserted %d stories with %d dependencies", len(batchReq.Stories), len(batchReq.Dependencies))
+			}
+		}
 
 	case persistence.OpGetAllStories:
 		if req.Response != nil {

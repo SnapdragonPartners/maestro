@@ -15,6 +15,22 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// Requirement represents a parsed requirement from a specification.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type Requirement struct {
+	ID                 string            `json:"id"`
+	Title              string            `json:"title"`
+	Description        string            `json:"description"`
+	AcceptanceCriteria []string          `json:"acceptance_criteria"`
+	EstimatedPoints    int               `json:"estimated_points"`
+	Priority           int               `json:"priority"`
+	Dependencies       []string          `json:"dependencies"`
+	Tags               []string          `json:"tags"`
+	Details            map[string]string `json:"details"`
+	StoryType          string            `json:"story_type"` // "devops" or "app"
+}
+
 // handleScoping processes the scoping phase (platform detection, bootstrap, spec analysis and story generation).
 func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	// State: analyzing specification and generating stories
@@ -155,8 +171,9 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 		Response:  nil, // Fire-and-forget
 	}
 
-	// Process requirements: generate stories and dependencies in parallel
+	// Process requirements: generate stories and collect dependencies for batch operation
 	storyIDs := make([]string, 0, len(requirements))
+	var allDependencies []*persistence.StoryDependency
 
 	for i := range requirements {
 		req := &requirements[i]
@@ -179,25 +196,35 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 		d.queue.AddStory(storyID, specID, req.Title, req.StoryType, dependencies, req.EstimatedPoints)
 		d.logger.Debug("Added story %s to queue with dependencies: %v", storyID, dependencies)
 
-		// Fire persistence requests for dependencies
+		// Collect dependencies for batch operation (don't send individually)
 		for _, depID := range dependencies {
 			dependency := &persistence.StoryDependency{
 				StoryID:   storyID,
 				DependsOn: depID,
 			}
-
-			d.persistenceChannel <- &persistence.Request{
-				Operation: persistence.OpAddStoryDependency,
-				Data:      dependency,
-				Response:  nil, // Fire-and-forget
-			}
+			allDependencies = append(allDependencies, dependency)
 		}
 
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// Flush canonical queue to database for persistence/logging
+	// Flush canonical queue to database first to ensure stories exist
 	d.queue.FlushToDatabase()
+
+	// Then add all dependencies in batch if any exist
+	if len(allDependencies) > 0 {
+		// Use batch operation with empty stories (since stories already exist from queue flush)
+		batchRequest := &persistence.BatchUpsertStoriesWithDependenciesRequest{
+			Stories:      []*persistence.Story{}, // Empty since stories are already in DB
+			Dependencies: allDependencies,
+		}
+
+		d.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpBatchUpsertStoriesWithDependencies,
+			Data:      batchRequest,
+			Response:  nil, // Fire-and-forget
+		}
+	}
 
 	// Mark spec as processed
 	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
