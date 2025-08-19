@@ -94,7 +94,6 @@ const (
 	KeyExplorationSummary          = "exploration_summary"
 	KeyPlanRisks                   = "plan_risks"
 	KeyCompletionSignaled          = "completion_signaled"
-	KeyConsecutiveEmptyResponses   = "consecutive_empty_responses"
 	KeyCompletionDetails           = "completion_details"
 )
 

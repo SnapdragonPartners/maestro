@@ -175,7 +175,25 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	if llmErr != nil {
 		// Check if this is an empty response error that should trigger budget review
 		if c.isEmptyResponseError(llmErr) {
-			return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
+			// Log debugging info for troubleshooting
+			c.logEmptyLLMResponse(prompt, req)
+
+			// Create empty response budget review effect
+			budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StateCoding), 1)
+
+			// Set story ID for dispatcher validation
+			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+			budgetReviewEff.StoryID = storyID
+
+			// Store origin state and effect for BUDGET_REVIEW state to execute
+			sm.SetStateData(KeyOrigin, string(StateCoding))
+			sm.SetStateData("budget_review_effect", budgetReviewEff)
+
+			// Add requesting permission message to preserve alternation
+			c.contextManager.AddAssistantMessage("requesting permission to continue")
+
+			c.logger.Info("🧑‍💻 Empty response in CODING - escalating to budget review")
+			return StateBudgetReview, false, nil
 		}
 
 		// For other errors, continue with normal error handling
@@ -184,10 +202,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Note: Empty response detection now handled universally by validation middleware
 	// No need to check len(resp.ToolCalls) == 0 here
-
-	// Reset consecutive empty response counter only when we get useful tool calls
-	sm.SetStateData(KeyConsecutiveEmptyResponses, 0)
-	c.logger.Debug("🧑‍💻 Successful LLM response with tool calls - reset consecutive empty counter")
+	// Note: Consecutive empty response tracking removed - middleware handles retries
 
 	// Execute tool calls (MCP tools) - we know there are tool calls because of the check above
 	filesCreated := c.executeMCPToolCalls(ctx, sm, resp.ToolCalls)
@@ -427,56 +442,29 @@ func (c *Coder) isEmptyResponseError(err error) bool {
 	return llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse)
 }
 
-// handleEmptyResponseForBudgetReview handles empty LLM responses with two-tier approach.
-// First empty response: provide guidance and stay in CODING.
-// Second consecutive empty response: escalate to budget review.
-func (c *Coder) handleEmptyResponseForBudgetReview(_ context.Context, sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest) (proto.State, bool, error) {
-	c.logEmptyLLMResponse(prompt, req)
+// logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
+func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) {
+	// Log the entire prompt and context for debugging empty responses
+	c.logger.Error("🚨 EMPTY RESPONSE FROM LLM - DEBUGGING INFO:")
+	c.logger.Error("📝 Complete prompt sent to LLM:")
+	c.logger.Error("%s", strings.Repeat("=", 80))
+	c.logger.Error("%s", prompt)
+	c.logger.Error("%s", strings.Repeat("=", 80))
 
-	// Check consecutive empty response count
-	consecutiveCount := utils.GetStateValueOr[int](sm, KeyConsecutiveEmptyResponses, 0)
-
-	// Increment consecutive empty response counter
-	sm.SetStateData(KeyConsecutiveEmptyResponses, consecutiveCount+1)
-
-	if consecutiveCount == 0 {
-		// First empty response: provide guidance and continue in CODING
-		c.logger.Info("🧑‍💻 First empty response - providing guidance on completion")
-
-		// Add placeholder assistant message to maintain alternation
-		placeholderResponse := sanitizeEmptyResponse("")
-		c.contextManager.AddAssistantMessage(placeholderResponse)
-
-		// Add guidance user message
-		guidanceMessage := "If you are done working and ready for testing and review, use the 'done' tool. If you are stuck for any other reason, use the 'ask_question' tool to get guidance on how to proceed."
-		c.contextManager.AddMessage("empty-response-guidance", guidanceMessage)
-
-		// Flush the user buffer so the guidance message is immediately available
-		if err := c.contextManager.FlushUserBuffer(); err != nil {
-			c.logger.Error("🧑‍💻 Failed to flush user buffer after adding guidance: %v", err)
+	if c.contextManager != nil {
+		messages := c.contextManager.GetMessages()
+		c.logger.Error("💬 Context Manager Messages (%d total):", len(messages))
+		for i := range messages {
+			msg := &messages[i]
+			c.logger.Error("  [%d] Role: %s, Content: %s", i, msg.Role, msg.Content)
 		}
-
-		c.logger.Info("🧑‍💻 Added completion guidance, continuing in CODING state")
-		return StateCoding, false, nil
+	} else {
+		c.logger.Error("💬 Context Manager: nil")
 	}
 
-	// Second or subsequent empty response: escalate to budget review
-	c.logger.Info("🧑‍💻 Consecutive empty response #%d - escalating to budget review", consecutiveCount+1)
-
-	// Create empty response budget review effect
-	budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StateCoding), consecutiveCount+1)
-
-	// Set story ID for dispatcher validation
-	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
-	budgetReviewEff.StoryID = storyID
-
-	// Store origin state and effect for BUDGET_REVIEW state to execute
-	sm.SetStateData(KeyOrigin, string(StateCoding))
-	sm.SetStateData("budget_review_effect", budgetReviewEff)
-
-	// Add requesting permission message to preserve alternation
-	c.contextManager.AddAssistantMessage("requesting permission to continue")
-
-	// Transition to BUDGET_REVIEW state to wait for architect response
-	return StateBudgetReview, false, nil
+	c.logger.Error("🔍 Request Details:")
+	c.logger.Error("  - Temperature: %v", req.Temperature)
+	c.logger.Error("  - Max Tokens: %v", req.MaxTokens)
+	c.logger.Error("  - Tools Count: %d", len(req.Tools))
+	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
 }

@@ -3,7 +3,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -128,7 +127,25 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	if llmErr != nil {
 		// Check if this is an empty response error that should trigger budget review
 		if c.isEmptyResponseError(llmErr) {
-			return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
+			// Log debugging info for troubleshooting
+			c.logEmptyLLMResponse(prompt, req)
+
+			// Create empty response budget review effect
+			budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StatePlanning), 1)
+
+			// Set story ID for dispatcher validation
+			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+			budgetReviewEff.StoryID = storyID
+
+			// Store origin state and effect for BUDGET_REVIEW state to execute
+			sm.SetStateData(KeyOrigin, string(StatePlanning))
+			sm.SetStateData("budget_review_effect", budgetReviewEff)
+
+			// Add requesting permission message to preserve alternation
+			c.contextManager.AddAssistantMessage("requesting permission to continue")
+
+			c.logger.Info("🧑‍💻 Empty response in PLANNING - escalating to budget review")
+			return StateBudgetReview, false, nil
 		}
 
 		// For other errors, continue with normal error handling
@@ -341,33 +358,6 @@ func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.Ba
 	c.logger.Info("🧑‍💻 Completion submitted, transitioning to PLAN_REVIEW for approval via Effects")
 
 	return StatePlanReview, false, nil
-}
-
-// logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
-func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) {
-	// Log the entire prompt and context for debugging empty responses
-	c.logger.Error("🚨 EMPTY RESPONSE FROM LLM - DEBUGGING INFO:")
-	c.logger.Error("📝 Complete prompt sent to LLM:")
-	c.logger.Error("%s", strings.Repeat("=", 80))
-	c.logger.Error("%s", prompt)
-	c.logger.Error("%s", strings.Repeat("=", 80))
-
-	if c.contextManager != nil {
-		messages := c.contextManager.GetMessages()
-		c.logger.Error("💬 Context Manager Messages (%d total):", len(messages))
-		for i := range messages {
-			msg := &messages[i]
-			c.logger.Error("  [%d] Role: %s, Content: %s", i, msg.Role, msg.Content)
-		}
-	} else {
-		c.logger.Error("💬 Context Manager: nil")
-	}
-
-	c.logger.Error("🔍 Request Details:")
-	c.logger.Error("  - Temperature: %v", req.Temperature)
-	c.logger.Error("  - Max Tokens: %v", req.MaxTokens)
-	c.logger.Error("  - Tools Count: %d", len(req.Tools))
-	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
 }
 
 // Context management placeholder helper methods for planning.
