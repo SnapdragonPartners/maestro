@@ -13,6 +13,16 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// IMPORTANT: Tool Error Handling Pattern
+// All MCP tools should return structured responses with success/error details instead of (nil, error).
+// When commands fail, return map[string]any with:
+//   - "success": false
+//   - "error": error message
+//   - "stdout": command output (when available)
+//   - "stderr": command errors (when available)
+// This gives LLMs full context to understand failures and avoid repeating the same mistakes.
+// Only return (nil, error) for parameter validation errors, not execution failures.
+
 const (
 	// DefaultDockerfile is the standard Dockerfile name.
 	DefaultDockerfile = "Dockerfile"
@@ -177,12 +187,28 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 func (c *ContainerBuildTool) buildAndTestContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) (any, error) {
 	// Build the container
 	if err := c.buildContainer(ctx, cwd, containerName, dockerfilePath, platform); err != nil {
-		return nil, fmt.Errorf("failed to build container: %w", err)
+		// Return structured response with build failure details (error already includes stdout/stderr)
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"dockerfile":     dockerfilePath,
+			"platform":       platform,
+			"error":          fmt.Sprintf("Failed to build container: %v", err),
+			"stage":          "build",
+		}, nil
 	}
 
 	// Test the container
 	if err := c.testContainer(ctx, containerName); err != nil {
-		return nil, fmt.Errorf("container build succeeded but failed testing: %w", err)
+		// Return structured response with test failure details (error already includes stdout/stderr)
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"dockerfile":     dockerfilePath,
+			"platform":       platform,
+			"error":          fmt.Sprintf("Container built successfully but failed testing: %v", err),
+			"stage":          "test",
+		}, nil
 	}
 
 	return map[string]any{
