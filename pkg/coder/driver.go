@@ -716,58 +716,50 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	currentState := c.BaseStateMachine.GetCurrentState()
 	c.logger.Debug("ProcessState: coder %p, workDir: %s, currentState: %s", c, c.workDir, currentState)
 
-	// Use global timeout wrapper
-	nextState, done, err := agent.ProcessStateWithGlobalTimeout(ctx, currentState, func(ctx context.Context) (proto.State, bool, error) {
-		var nextState proto.State
-		var done bool
-		var err error
+	// Process state directly without timeout wrapper
+	var nextState proto.State
+	var done bool
+	var err error
 
-		switch currentState {
-		case proto.StateWaiting:
-			nextState, done, err = c.handleWaiting(ctx, sm)
-		case StateSetup:
-			nextState, done, err = c.handleSetup(ctx, sm)
-		case StatePlanning:
-			nextState, done, err = c.handlePlanning(ctx, sm)
-		case StatePlanReview:
-			nextState, done, err = c.handlePlanReview(ctx, sm)
-		case StateCoding:
-			nextState, done, err = c.handleCoding(ctx, sm)
-		case StateTesting:
-			nextState, done, err = c.handleTesting(ctx, sm)
-		case StateCodeReview:
-			nextState, done, err = c.handleCodeReview(ctx, sm)
-		case StatePrepareMerge:
-			nextState, done, err = c.handlePrepareMerge(ctx, sm)
-		case StateBudgetReview:
-			nextState, done, err = c.handleBudgetReview(ctx, sm)
-		case StateAwaitMerge:
-			nextState, done, err = c.handleAwaitMerge(ctx, sm)
-		case proto.StateDone:
-			nextState, done, err = c.handleDone(ctx, sm)
-		case proto.StateError:
-			nextState, done, err = c.handleError(ctx, sm)
-		default:
-			return proto.StateError, false, logx.Errorf("unknown state: %s", c.BaseStateMachine.GetCurrentState())
-		}
+	switch currentState {
+	case proto.StateWaiting:
+		nextState, done, err = c.handleWaiting(ctx, sm)
+	case StateSetup:
+		nextState, done, err = c.handleSetup(ctx, sm)
+	case StatePlanning:
+		nextState, done, err = c.handlePlanning(ctx, sm)
+	case StatePlanReview:
+		nextState, done, err = c.handlePlanReview(ctx, sm)
+	case StateCoding:
+		nextState, done, err = c.handleCoding(ctx, sm)
+	case StateTesting:
+		nextState, done, err = c.handleTesting(ctx, sm)
+	case StateCodeReview:
+		nextState, done, err = c.handleCodeReview(ctx, sm)
+	case StatePrepareMerge:
+		nextState, done, err = c.handlePrepareMerge(ctx, sm)
+	case StateBudgetReview:
+		nextState, done, err = c.handleBudgetReview(ctx, sm)
+	case StateAwaitMerge:
+		nextState, done, err = c.handleAwaitMerge(ctx, sm)
+	case proto.StateDone:
+		nextState, done, err = c.handleDone(ctx, sm)
+	case proto.StateError:
+		nextState, done, err = c.handleError(ctx, sm)
+	default:
+		return proto.StateError, false, logx.Errorf("unknown state: %s", c.BaseStateMachine.GetCurrentState())
+	}
 
-		// Log the state transition decision.
-		if err != nil {
-			c.logger.Error("🔄 State handler %s returned error: %v", currentState, err)
-			// Store error message for ERROR state handling.
-			sm.SetStateData(KeyErrorMessage, err.Error())
-			// Transition to ERROR state instead of propagating error up.
-			c.logger.Info("🔄 State handler %s → ERROR (due to error)", currentState)
-			return proto.StateError, false, nil
-		} else if nextState != currentState {
-			c.logger.Info("🔄 State handler %s → %s (done: %v)", currentState, nextState, done)
-		}
-
-		return nextState, done, nil
-	})
-
+	// Log the state transition decision.
 	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "state processing with global timeout failed")
+		c.logger.Error("🔄 State handler %s returned error: %v", currentState, err)
+		// Store error message for ERROR state handling.
+		sm.SetStateData(KeyErrorMessage, err.Error())
+		// Transition to ERROR state instead of propagating error up.
+		c.logger.Info("🔄 State handler %s → ERROR (due to error)", currentState)
+		return proto.StateError, false, nil
+	} else if nextState != currentState {
+		c.logger.Info("🔄 State handler %s → %s (done: %v)", currentState, nextState, done)
 	}
 
 	return nextState, done, nil

@@ -271,38 +271,30 @@ func (d *Driver) Run(ctx context.Context) error {
 
 // processCurrentState handles the logic for the current state.
 func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
-	// Use global timeout wrapper for architect state processing
-	nextState, err := agent.ProcessStateWithGlobalTimeoutSimple(ctx, d.currentState, func(ctx context.Context) (proto.State, error) {
-		switch d.currentState {
-		case StateWaiting:
-			// WAITING state - block until spec received.
-			return d.handleWaiting(ctx)
-		case StateScoping:
-			return d.handleScoping(ctx)
-		case StateDispatching:
-			return d.handleDispatching(ctx)
-		case StateMonitoring:
-			return d.handleMonitoring(ctx)
-		case StateRequest:
-			return d.handleRequest(ctx)
-		case StateEscalated:
-			return d.handleEscalated(ctx)
-		case StateDone:
-			// DONE is a terminal state - should not continue processing.
-			return StateDone, nil
-		case StateError:
-			// ERROR is a terminal state - should not continue processing.
-			return StateError, nil
-		default:
-			return StateError, fmt.Errorf("unknown state: %s", d.currentState)
-		}
-	})
-
-	if err != nil {
-		return StateError, logx.Wrap(err, "architect state processing with global timeout failed")
+	// Process state directly without timeout wrapper
+	switch d.currentState {
+	case StateWaiting:
+		// WAITING state - block until spec received.
+		return d.handleWaiting(ctx)
+	case StateScoping:
+		return d.handleScoping(ctx)
+	case StateDispatching:
+		return d.handleDispatching(ctx)
+	case StateMonitoring:
+		return d.handleMonitoring(ctx)
+	case StateRequest:
+		return d.handleRequest(ctx)
+	case StateEscalated:
+		return d.handleEscalated(ctx)
+	case StateDone:
+		// DONE is a terminal state - should not continue processing.
+		return StateDone, nil
+	case StateError:
+		// ERROR is a terminal state - should not continue processing.
+		return StateError, nil
+	default:
+		return StateError, fmt.Errorf("unknown state: %s", d.currentState)
 	}
-
-	return nextState, nil
 }
 
 // transitionTo moves the driver to a new state and persists it.
