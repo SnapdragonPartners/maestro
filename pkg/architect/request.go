@@ -275,43 +275,30 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Response sent and persisted to database
 	}
 
-	// Check if this was a successful merge request before clearing state
-	var wasSuccessfulMerge bool
-	if requestMsg, exists := d.stateData["current_request"]; exists {
-		if agentMsg, ok := requestMsg.(*proto.AgentMsg); ok {
-			requestType, _ := agentMsg.GetPayload("request_type")
-			kindPayload, _ := agentMsg.GetPayload(proto.KeyKind)
-
-			// Check if this was a merge request
-			isMergeRequest := false
-			if requestTypeStr, ok := requestType.(string); ok && requestTypeStr == "merge" {
-				isMergeRequest = true
-			} else if kindStr, ok := kindPayload.(string); ok && kindStr == string(proto.RequestKindMerge) {
-				isMergeRequest = true
-			}
-
-			// If it was a merge request and we have a response stored, check if merge succeeded
-			if isMergeRequest {
-				if responseData, exists := d.stateData["last_response"]; exists {
-					if response, ok := responseData.(*proto.AgentMsg); ok {
-						if status, exists := response.GetPayload("status"); exists {
-							if statusStr, ok := status.(string); ok && statusStr == string(proto.ApprovalStatusApproved) {
-								wasSuccessfulMerge = true
-								d.logger.Info("🔀 Detected successful merge, transitioning to DISPATCHING to release dependent stories")
-							}
-						}
-					}
+	// Check if work was accepted (completion or merge)
+	var workWasAccepted bool
+	if accepted, exists := d.stateData["work_accepted"]; exists {
+		if acceptedBool, ok := accepted.(bool); ok && acceptedBool {
+			workWasAccepted = true
+			// Log the acceptance details for debugging
+			if storyID, exists := d.stateData["accepted_story_id"]; exists {
+				if acceptanceType, exists := d.stateData["acceptance_type"]; exists {
+					d.logger.Info("🎉 Detected work acceptance for story %v via %v, transitioning to DISPATCHING to release dependent stories",
+						storyID, acceptanceType)
 				}
 			}
 		}
 	}
 
-	// Clear the processed request
+	// Clear the processed request and acceptance signals
 	delete(d.stateData, "current_request")
 	delete(d.stateData, "last_response")
+	delete(d.stateData, "work_accepted")
+	delete(d.stateData, "accepted_story_id")
+	delete(d.stateData, "acceptance_type")
 
-	// Determine next state - successful merges transition to DISPATCHING
-	if wasSuccessfulMerge && d.ownsSpec() {
+	// Determine next state - work acceptance (completion or merge) transitions to DISPATCHING
+	if workWasAccepted && d.ownsSpec() {
 		return StateDispatching, nil
 	} else if d.ownsSpec() {
 		return StateMonitoring, nil
@@ -475,21 +462,10 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		var prompt string
 		switch approvalType {
 		case proto.ApprovalTypeCompletion:
-			// Extract completion-specific data for better review.
-			reason, _ := requestMsg.GetPayload("completion_reason")
-			evidence, _ := requestMsg.GetPayload("completion_evidence")
-			confidence, _ := requestMsg.GetPayload("completion_confidence")
-			originalStory, _ := requestMsg.GetPayload("original_story")
-
+			// Use the structured content from the content field - contains everything needed
 			prompt = fmt.Sprintf(`Review this story completion claim:
 
-ORIGINAL STORY:
 %v
-
-COMPLETION CLAIM:
-- Reason: %v
-- Evidence: %v  
-- Confidence: %v
 
 Please evaluate if the story requirements are truly satisfied based on the evidence provided.
 
@@ -509,7 +485,7 @@ Please evaluate if the story requirements are truly satisfied based on the evide
 
 ## Response Format:
 Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]", or "REJECTED: [fundamental issues]".`,
-				originalStory, reason, evidence, confidence)
+				content)
 		case proto.ApprovalTypeBudgetReview:
 			prompt = d.generateBudgetReviewPrompt(requestMsg)
 		default:
@@ -568,11 +544,10 @@ Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]"
 
 	// Mark story as completed for approved completions.
 	if approved && approvalType == proto.ApprovalTypeCompletion {
-		// Extract story ID and mark as completed in queue.
+		// Extract story ID and handle work acceptance (queue completion, database persistence, state transition signal)
 		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
-			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" && d.queue != nil {
-				// Mark story as completed (ignore errors as this is fire-and-forget)
-				_ = d.queue.MarkCompleted(storyIDStr)
+			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
+				d.handleWorkAccepted(ctx, storyIDStr, "completion")
 			}
 		}
 	}
@@ -722,68 +697,8 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		resultMsg.SetPayload("feedback", "Pull request merged successfully")
 		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
 
-		// Mark story as completed in queue.
-		if d.queue != nil {
-			// Mark story as completed (ignore errors as this is fire-and-forget)
-			_ = d.queue.MarkCompleted(storyIDStr)
-		}
-
-		// Update story status to "merged" in database after successful merge
-		if d.persistenceChannel != nil {
-			// Query metrics for this story if Prometheus is configured
-			var storyMetrics *metrics.StoryMetrics
-			if d.orchestratorConfig != nil && d.orchestratorConfig.Agents != nil &&
-				d.orchestratorConfig.Agents.Metrics.Enabled &&
-				d.orchestratorConfig.Agents.Metrics.PrometheusURL != "" {
-				d.logger.Info("📊 Querying metrics for completed story %s", storyIDStr)
-
-				queryService, err := metrics.NewQueryService(d.orchestratorConfig.Agents.Metrics.PrometheusURL)
-				if err != nil {
-					d.logger.Warn("📊 Failed to create metrics query service: %v", err)
-				} else {
-					queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-					defer cancel()
-
-					storyMetrics, err = queryService.GetStoryMetrics(queryCtx, storyIDStr)
-					if err != nil {
-						d.logger.Warn("📊 Failed to query story metrics: %v", err)
-					} else if storyMetrics != nil {
-						d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total cost: $%.6f",
-							storyIDStr, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalCost)
-					}
-				}
-			}
-
-			// Prepare status update request with metrics data
-			statusReq := &persistence.UpdateStoryStatusRequest{
-				StoryID: storyIDStr,
-				Status:  persistence.StatusDone,
-			}
-
-			// Include metrics data if available
-			if storyMetrics != nil {
-				statusReq.PromptTokens = &storyMetrics.PromptTokens
-				statusReq.CompletionTokens = &storyMetrics.CompletionTokens
-				statusReq.CostUSD = &storyMetrics.TotalCost
-			}
-
-			// Wrap in proper Request structure
-			req := &persistence.Request{
-				Data:      statusReq,
-				Response:  nil, // Fire-and-forget operation
-				Operation: persistence.OpUpdateStoryStatus,
-			}
-
-			d.logger.Info("🔀 Updating story %s status to 'merged' after successful merge", storyIDStr)
-
-			// Fire-and-forget database update
-			select {
-			case d.persistenceChannel <- req:
-				d.logger.Debug("🔀 Status update sent to persistence worker")
-			default:
-				d.logger.Warn("🔀 Failed to send status update - persistence channel full")
-			}
-		}
+		// Handle work acceptance (queue completion, database persistence, state transition signal)
+		d.handleWorkAccepted(ctx, storyIDStr, "merge")
 	}
 
 	return resultMsg, nil
@@ -1089,4 +1004,86 @@ Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with sp
 	}
 
 	return prompt
+}
+
+// handleWorkAccepted handles the unified flow for work acceptance (completion or merge).
+// This is the single path for marking stories as done, persisting to database, and signaling state transition.
+func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType string) {
+	if storyID == "" {
+		d.logger.Warn("handleWorkAccepted called with empty story ID")
+		return
+	}
+
+	d.logger.Info("🎉 Work accepted for story %s via %s", storyID, acceptanceType)
+
+	// 1. Mark story as completed in queue
+	if d.queue != nil {
+		if err := d.queue.MarkCompleted(storyID); err != nil {
+			d.logger.Error("Failed to mark story %s as completed in queue: %v", storyID, err)
+		} else {
+			d.logger.Info("✅ Story %s marked as completed in queue", storyID)
+		}
+	}
+
+	// 2. Persist story completion to database with metrics
+	if d.persistenceChannel != nil {
+		// Query metrics for this story if Prometheus is configured
+		var storyMetrics *metrics.StoryMetrics
+		if d.orchestratorConfig != nil && d.orchestratorConfig.Agents != nil &&
+			d.orchestratorConfig.Agents.Metrics.Enabled &&
+			d.orchestratorConfig.Agents.Metrics.PrometheusURL != "" {
+			d.logger.Info("📊 Querying metrics for completed story %s", storyID)
+
+			queryService, err := metrics.NewQueryService(d.orchestratorConfig.Agents.Metrics.PrometheusURL)
+			if err != nil {
+				d.logger.Warn("📊 Failed to create metrics query service: %v", err)
+			} else {
+				queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+
+				storyMetrics, err = queryService.GetStoryMetrics(queryCtx, storyID)
+				if err != nil {
+					d.logger.Warn("📊 Failed to query story metrics: %v", err)
+				} else if storyMetrics != nil {
+					d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total cost: $%.6f",
+						storyID, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalCost)
+				}
+			}
+		}
+
+		// Prepare status update request with metrics data
+		statusReq := &persistence.UpdateStoryStatusRequest{
+			StoryID: storyID,
+			Status:  persistence.StatusDone,
+		}
+
+		// Include metrics data if available
+		if storyMetrics != nil {
+			statusReq.PromptTokens = &storyMetrics.PromptTokens
+			statusReq.CompletionTokens = &storyMetrics.CompletionTokens
+			statusReq.CostUSD = &storyMetrics.TotalCost
+		}
+
+		// Wrap in proper Request structure
+		req := &persistence.Request{
+			Data:      statusReq,
+			Response:  nil, // Fire-and-forget operation
+			Operation: persistence.OpUpdateStoryStatus,
+		}
+
+		d.logger.Info("💾 Updating story %s status to 'done' after %s", storyID, acceptanceType)
+
+		// Fire-and-forget database update
+		select {
+		case d.persistenceChannel <- req:
+			d.logger.Debug("💾 Status update sent to persistence worker")
+		default:
+			d.logger.Warn("💾 Failed to send status update - persistence channel full")
+		}
+	}
+
+	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)
+	d.stateData["work_accepted"] = true
+	d.stateData["accepted_story_id"] = storyID
+	d.stateData["acceptance_type"] = acceptanceType
 }
