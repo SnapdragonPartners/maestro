@@ -155,7 +155,7 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 		Response:  nil, // Fire-and-forget
 	}
 
-	// Convert requirements to database stories
+	// Process requirements: generate stories and dependencies in parallel
 	storyIDs := make([]string, 0, len(requirements))
 
 	for i := range requirements {
@@ -166,17 +166,38 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
 		}
 
-		// Add story to in-memory queue (canonical state)
-		d.queue.AddStory(storyID, specID, req.Title, req.StoryType, req.Dependencies, req.EstimatedPoints)
+		// Calculate dependencies based on order (simple dependency model)
+		var dependencies []string
+		if len(req.Dependencies) > 0 {
+			// Simple implementation: depend on all previous stories
+			for j := 0; j < i; j++ {
+				dependencies = append(dependencies, storyIDs[j])
+			}
+		}
+
+		// Update canonical queue with story and dependencies
+		d.queue.AddStory(storyID, specID, req.Title, req.StoryType, dependencies, req.EstimatedPoints)
+		d.logger.Debug("Added story %s to queue with dependencies: %v", storyID, dependencies)
+
+		// Fire persistence requests for dependencies
+		for _, depID := range dependencies {
+			dependency := &persistence.StoryDependency{
+				StoryID:   storyID,
+				DependsOn: depID,
+			}
+
+			d.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpAddStoryDependency,
+				Data:      dependency,
+				Response:  nil, // Fire-and-forget
+			}
+		}
 
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// Flush in-memory queue to database for persistence/logging first
+	// Flush canonical queue to database for persistence/logging
 	d.queue.FlushToDatabase()
-
-	// Handle dependencies between stories AFTER stories are in database
-	d.processDependencies(requirements, storyIDs)
 
 	// Mark spec as processed
 	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
@@ -249,37 +270,6 @@ func (d *Driver) generateRichStoryContent(req *Requirement) string {
 	content += fmt.Sprintf("**Estimated Points:** %d\n", req.EstimatedPoints)
 
 	return content
-}
-
-// processDependencies handles story dependencies by storing them in the database.
-func (d *Driver) processDependencies(requirements []Requirement, storyIDs []string) {
-	// For now, implement a simple dependency model where dependencies
-	// are based on the order of requirements (earlier requirements are dependencies)
-	// This could be enhanced to parse actual dependencies from LLM analysis
-	for i := range requirements {
-		req := &requirements[i]
-		if len(req.Dependencies) == 0 {
-			continue
-		}
-
-		storyID := storyIDs[i]
-
-		// Simple implementation: add dependency to previous story
-		for j := 0; j < i; j++ {
-			dependsOnStoryID := storyIDs[j]
-
-			dependency := &persistence.StoryDependency{
-				StoryID:   storyID,
-				DependsOn: dependsOnStoryID,
-			}
-
-			d.persistenceChannel <- &persistence.Request{
-				Operation: persistence.OpAddStoryDependency,
-				Data:      dependency,
-				Response:  nil, // Fire-and-forget
-			}
-		}
-	}
 }
 
 // getSpecFileFromMessage extracts the spec file path from the stored SPEC message.

@@ -23,6 +23,7 @@ type Recorder interface {
 	ObserveRequest(
 		model, storyID, agentID, state string,
 		promptTokens, completionTokens int,
+		cost float64,
 		success bool,
 		errorType string,
 		duration time.Duration,
@@ -47,6 +48,7 @@ func Nop() Recorder {
 func (n *NoopRecorder) ObserveRequest(
 	_, _, _, _ string,
 	_, _ int,
+	_ float64,
 	_ bool,
 	_ string,
 	_ time.Duration,

@@ -11,7 +11,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 5
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -79,7 +79,7 @@ func createSchema(db *sql.DB) error {
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
-			status TEXT DEFAULT 'new' CHECK (status IN ('new','planning','coding','committed','merged','error','duplicate')),
+			status TEXT DEFAULT '` + StatusNew + `' CHECK (status IN ('` + StatusNew + `','` + StatusPlanning + `','` + StatusCoding + `','` + StatusDone + `','` + StatusError + `','` + StatusDuplicate + `')),
 			priority INTEGER DEFAULT 0,
 			approved_plan TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),

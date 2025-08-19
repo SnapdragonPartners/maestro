@@ -12,6 +12,7 @@ import (
 type PrometheusRecorder struct {
 	requestsTotal   *prometheus.CounterVec
 	tokensTotal     *prometheus.CounterVec
+	costsTotal      *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
 	throttleTotal   *prometheus.CounterVec
 	queueWaitTime   *prometheus.HistogramVec
@@ -33,6 +34,13 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 				Help: "Total number of tokens used in LLM requests",
 			},
 			[]string{"model", "story_id", "agent_id", "state", "type"},
+		),
+		costsTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_costs_total",
+				Help: "Total cost in USD for LLM requests",
+			},
+			[]string{"model", "story_id", "agent_id", "state"},
 		),
 		requestDuration: promauto.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -64,6 +72,7 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 func (p *PrometheusRecorder) ObserveRequest(
 	model, storyID, agentID, state string,
 	promptTokens, completionTokens int,
+	cost float64,
 	success bool,
 	errorType string,
 	duration time.Duration,
@@ -77,10 +86,11 @@ func (p *PrometheusRecorder) ObserveRequest(
 	// Record request count
 	p.requestsTotal.WithLabelValues(model, storyID, agentID, state, status, errorType).Inc()
 
-	// Record tokens (only on success)
+	// Record tokens and costs (only on success)
 	if success {
 		p.tokensTotal.WithLabelValues(model, storyID, agentID, state, "prompt").Add(float64(promptTokens))
 		p.tokensTotal.WithLabelValues(model, storyID, agentID, state, "completion").Add(float64(completionTokens))
+		p.costsTotal.WithLabelValues(model, storyID, agentID, state).Add(cost)
 	}
 
 	// Record request duration

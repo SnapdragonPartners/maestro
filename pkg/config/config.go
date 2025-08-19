@@ -190,9 +190,10 @@ type ResilienceConfig struct {
 
 // MetricsConfig defines configuration for metrics collection.
 type MetricsConfig struct {
-	Enabled   bool   `json:"enabled"`   // Whether metrics collection is enabled
-	Exporter  string `json:"exporter"`  // Metrics exporter type ("prometheus", "noop")
-	Namespace string `json:"namespace"` // Metrics namespace for grouping
+	Enabled       bool   `json:"enabled"`        // Whether metrics collection is enabled
+	Exporter      string `json:"exporter"`       // Metrics exporter type ("prometheus", "noop")
+	Namespace     string `json:"namespace"`      // Metrics namespace for grouping
+	PrometheusURL string `json:"prometheus_url"` // Prometheus server URL for querying metrics
 }
 
 // AgentConfig defines which models to use and concurrency limits.
@@ -615,9 +616,10 @@ func createDefaultConfig() *Config {
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
 			Metrics: MetricsConfig{
-				Enabled:   false,
-				Exporter:  "noop",
-				Namespace: "maestro",
+				Enabled:       false,
+				Exporter:      "noop",
+				Namespace:     "maestro",
+				PrometheusURL: "http://localhost:9090", // Default Prometheus URL
 			},
 			Resilience: ResilienceConfig{
 				CircuitBreaker: CircuitBreakerConfig{
@@ -1291,6 +1293,36 @@ func GetArchitectModel() (*Model, error) {
 		}
 	}
 	return nil, fmt.Errorf("architect_model '%s' not found in config", cfg.Agents.ArchitectModel)
+}
+
+// CalculateCost calculates the cost in USD for a given model and token usage.
+// Returns the cost based on the model's CPM (cost per million tokens) configuration.
+func CalculateCost(modelName string, promptTokens, completionTokens int) (float64, error) {
+	cfg, err := GetConfig()
+	if err != nil {
+		return 0, err
+	}
+
+	if cfg.Orchestrator == nil {
+		return 0, fmt.Errorf("orchestrator config not found")
+	}
+
+	// Find the model in the orchestrator config
+	for i := range cfg.Orchestrator.Models {
+		if cfg.Orchestrator.Models[i].Name == modelName {
+			model := &cfg.Orchestrator.Models[i]
+
+			// Calculate total tokens
+			totalTokens := float64(promptTokens + completionTokens)
+
+			// Convert CPM (cost per million) to cost
+			cost := (totalTokens / 1_000_000.0) * model.CPM
+
+			return cost, nil
+		}
+	}
+
+	return 0, fmt.Errorf("model '%s' not found in config", modelName)
 }
 
 // GetAPIKey returns the API key for a given provider from environment variables.

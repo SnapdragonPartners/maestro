@@ -45,9 +45,12 @@ const (
 
 // UpdateStoryStatusRequest represents a status update request.
 type UpdateStoryStatusRequest struct {
-	Timestamp time.Time `json:"timestamp,omitempty"`
-	StoryID   string    `json:"story_id"`
-	Status    string    `json:"status"`
+	Timestamp        time.Time `json:"timestamp,omitempty"`
+	PromptTokens     *int64    `json:"prompt_tokens,omitempty"`     // Total prompt tokens used for this story
+	CompletionTokens *int64    `json:"completion_tokens,omitempty"` // Total completion tokens used for this story
+	CostUSD          *float64  `json:"cost_usd,omitempty"`          // Total cost in USD for this story
+	StoryID          string    `json:"story_id"`
+	Status           string    `json:"status"`
 }
 
 // DatabaseOperations provides methods for database operations.
@@ -114,35 +117,51 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 	return nil
 }
 
-// UpdateStoryStatus updates just the status and related timestamp fields of a story.
+// UpdateStoryStatus updates the status, timestamp, and optionally token/cost fields of a story.
 func (ops *DatabaseOperations) UpdateStoryStatus(req *UpdateStoryStatusRequest) error {
 	// Determine which timestamp field to update based on status
 	var timestampField string
 	switch req.Status {
 	case StatusPlanning, StatusCoding:
 		timestampField = "started_at"
-	case StatusCommitted, StatusMerged, StatusError:
+	case StatusDone, StatusError:
 		timestampField = "completed_at"
 	}
 
-	var query string
-	var args []interface{}
+	// Build the update query dynamically based on what fields are provided
+	setParts := []string{"status = ?"}
+	args := []interface{}{req.Status}
 
+	// Add timestamp if applicable
 	if timestampField != "" {
-		query = fmt.Sprintf(`
-			UPDATE stories 
-			SET status = ?, %s = ?
-			WHERE id = ?
-		`, timestampField)
+		setParts = append(setParts, fmt.Sprintf("%s = ?", timestampField))
 		timestamp := req.Timestamp
 		if timestamp.IsZero() {
 			timestamp = time.Now()
 		}
-		args = []interface{}{req.Status, timestamp, req.StoryID}
-	} else {
-		query = `UPDATE stories SET status = ? WHERE id = ?`
-		args = []interface{}{req.Status, req.StoryID}
+		args = append(args, timestamp)
 	}
+
+	// Add token and cost fields if provided (for completion states)
+	if req.PromptTokens != nil {
+		setParts = append(setParts, "tokens_used = ?")
+		totalTokens := *req.PromptTokens
+		if req.CompletionTokens != nil {
+			totalTokens += *req.CompletionTokens
+		}
+		args = append(args, totalTokens)
+	}
+
+	if req.CostUSD != nil {
+		setParts = append(setParts, "cost_usd = ?")
+		args = append(args, *req.CostUSD)
+	}
+
+	// Add WHERE clause
+	args = append(args, req.StoryID)
+
+	//nolint:gosec // Using safe string concatenation for dynamic query building with bounded inputs
+	query := `UPDATE stories SET ` + strings.Join(setParts, ", ") + ` WHERE id = ?`
 
 	result, err := ops.db.Exec(query, args...)
 	if err != nil {
@@ -257,8 +276,8 @@ func (ops *DatabaseOperations) QueryPendingStories() ([]*Story, error) {
 		FROM stories s
 		LEFT JOIN story_dependencies d ON s.id = d.story_id
 		LEFT JOIN stories dep ON d.depends_on = dep.id 
-		    AND dep.status NOT IN ('committed', 'merged')
-		WHERE s.status = 'new' AND dep.id IS NULL
+		    AND dep.status NOT IN ('`+StatusDone+`')
+		WHERE s.status = '`+StatusNew+`' AND dep.id IS NULL
 		ORDER BY s.priority DESC, s.created_at ASC
 	`, "pending stories")
 }

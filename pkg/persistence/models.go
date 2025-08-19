@@ -48,8 +48,7 @@ const (
 	StatusNew       = "new"
 	StatusPlanning  = "planning"
 	StatusCoding    = "coding"
-	StatusCommitted = "committed"
-	StatusMerged    = "merged"
+	StatusDone      = "done"
 	StatusError     = "error"
 	StatusDuplicate = "duplicate"
 )
@@ -60,8 +59,7 @@ func ValidStatuses() []string {
 		StatusNew,
 		StatusPlanning,
 		StatusCoding,
-		StatusCommitted,
-		StatusMerged,
+		StatusDone,
 		StatusError,
 		StatusDuplicate,
 	}

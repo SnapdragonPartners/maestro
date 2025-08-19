@@ -55,6 +55,17 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 					promptTokens, completionTokens = usageExtractor(req, resp)
 				}
 
+				// Calculate cost
+				var cost float64
+				if err == nil && (promptTokens > 0 || completionTokens > 0) {
+					if calculatedCost, costErr := config.CalculateCost(modelConfig.Name, promptTokens, completionTokens); costErr == nil {
+						cost = calculatedCost
+					} else {
+						// Log cost calculation error but don't fail the request
+						logx.Warnf("Failed to calculate cost for model %s: %v", modelConfig.Name, costErr)
+					}
+				}
+
 				// Determine error type
 				errorType := ""
 				if err != nil {
@@ -75,6 +86,7 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 					state,
 					promptTokens,
 					completionTokens,
+					cost,
 					err == nil,
 					errorType,
 					duration,
@@ -82,13 +94,13 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 
 				// Enhanced logging for LLM calls with detailed metrics
 				if err == nil {
-					logx.Infof("LLM call to model '%s': latency %.3gs, request tokens: %s, response tokens: %s, total tokens: %s (agent: %s, story: %s, state: %s)",
-						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), agentID, storyID, state)
+					logx.Infof("LLM call to model '%s': latency %.3gs, request tokens: %s, response tokens: %s, total tokens: %s, cost $%.6f (agent: %s, story: %s, state: %s)",
+						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), cost, agentID, storyID, state)
 				} else {
 					// Use defaultLogger.Error instead of logx.Errorf to avoid return value check
 					defaultLogger := logx.NewLogger("metrics")
-					defaultLogger.Error("LLM call to model '%s' failed: latency %.3gs, request tokens: %s, response tokens: %s, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
-						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), err.Error(), agentID, storyID, state, errorType)
+					defaultLogger.Error("LLM call to model '%s' failed: latency %.3gs, request tokens: %s, response tokens: %s, cost $%.6f, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
+						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), cost, err.Error(), agentID, storyID, state, errorType)
 				}
 
 				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged
@@ -115,14 +127,15 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				agentID := stateProvider.GetID()
 				state := string(stateProvider.GetCurrentState())
 
-				// Record metrics (no token counts for streaming)
+				// Record metrics (no token counts or costs for streaming)
 				recorder.ObserveRequest(
 					modelConfig.Name,
 					storyID,
 					agentID,
 					state,
-					0, // No prompt token count for streaming
-					0, // No completion token count for streaming
+					0,   // No prompt token count for streaming
+					0,   // No completion token count for streaming
+					0.0, // No cost for streaming
 					err == nil,
 					errorType,
 					duration,

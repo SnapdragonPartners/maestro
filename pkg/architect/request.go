@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/metrics"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -729,9 +730,41 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 
 		// Update story status to "merged" in database after successful merge
 		if d.persistenceChannel != nil {
+			// Query metrics for this story if Prometheus is configured
+			var storyMetrics *metrics.StoryMetrics
+			if d.orchestratorConfig != nil && d.orchestratorConfig.Agents != nil &&
+				d.orchestratorConfig.Agents.Metrics.Enabled &&
+				d.orchestratorConfig.Agents.Metrics.PrometheusURL != "" {
+				d.logger.Info("📊 Querying metrics for completed story %s", storyIDStr)
+
+				queryService, err := metrics.NewQueryService(d.orchestratorConfig.Agents.Metrics.PrometheusURL)
+				if err != nil {
+					d.logger.Warn("📊 Failed to create metrics query service: %v", err)
+				} else {
+					queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					defer cancel()
+
+					storyMetrics, err = queryService.GetStoryMetrics(queryCtx, storyIDStr)
+					if err != nil {
+						d.logger.Warn("📊 Failed to query story metrics: %v", err)
+					} else if storyMetrics != nil {
+						d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total cost: $%.6f",
+							storyIDStr, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalCost)
+					}
+				}
+			}
+
+			// Prepare status update request with metrics data
 			statusReq := &persistence.UpdateStoryStatusRequest{
 				StoryID: storyIDStr,
-				Status:  persistence.StatusMerged,
+				Status:  persistence.StatusDone,
+			}
+
+			// Include metrics data if available
+			if storyMetrics != nil {
+				statusReq.PromptTokens = &storyMetrics.PromptTokens
+				statusReq.CompletionTokens = &storyMetrics.CompletionTokens
+				statusReq.CostUSD = &storyMetrics.TotalCost
 			}
 
 			// Wrap in proper Request structure

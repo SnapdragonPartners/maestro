@@ -139,8 +139,8 @@ var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// TESTING can pass (→CODE_REVIEW) or fail (→CODING).
 	StateTesting: {StateCoding, StateCodeReview},
 
-	// CODE_REVIEW can approve (→PREPARE_MERGE), request changes (→CODING), or abandon (→ERROR).
-	StateCodeReview: {StatePrepareMerge, StateCoding, proto.StateError},
+	// CODE_REVIEW can approve code (→PREPARE_MERGE), approve completion (→DONE), request changes (→CODING), or abandon (→ERROR).
+	StateCodeReview: {StatePrepareMerge, proto.StateDone, StateCoding, proto.StateError},
 
 	// BUDGET_REVIEW can continue (→CODING), pivot (→PLANNING), or abandon (→ERROR).
 	StateBudgetReview: {StatePlanning, StateCoding, proto.StateError},

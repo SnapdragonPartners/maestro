@@ -74,6 +74,17 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 	// Step 3: Create PR using GitHub CLI
 	prURL, err := c.createPullRequest(ctx, storyID, remoteBranch, targetBranch)
 	if err != nil {
+		// Special handling for "No commits between" error - indicates work detection mismatch
+		if strings.Contains(err.Error(), "No commits between") {
+			c.logger.Info("🔀 No commits detected by GitHub - advising coder to verify work")
+			c.contextManager.AddMessage("system",
+				"GitHub reports 'No commits between branches' but work was detected earlier. "+
+					"If this is incorrect and no work was actually needed, use the 'done' tool to "+
+					"signal completion. Otherwise, make a small change (like adding a comment) to "+
+					"ensure commits are present.")
+			return StateCoding, false, nil
+		}
+
 		if c.isRecoverableGitError(err) {
 			c.logger.Info("🔀 PR creation failed (recoverable), returning to CODING: %v", err)
 			c.contextManager.AddMessage("system", fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error()))

@@ -117,7 +117,7 @@ func (q *Queue) FlushToDatabase() {
 		case StatusInProgress:
 			dbStatus = persistence.StatusCoding
 		case StatusCompleted:
-			dbStatus = persistence.StatusCommitted
+			dbStatus = persistence.StatusDone
 		default:
 			dbStatus = persistence.StatusNew
 		}
@@ -144,131 +144,10 @@ func (q *Queue) FlushToDatabase() {
 	}
 }
 
-// LoadFromDatabase loads stories from the database.
-// This should only be used for recovery/restart scenarios.
-func (q *Queue) LoadFromDatabase() error {
-	if q.persistenceChannel == nil {
-		return fmt.Errorf("persistence channel not available - database storage is required for story loading")
-	}
+// LoadFromDatabase has been removed - the queue is canonical and never loads from database.
+// The database is purely a persistence log for external monitoring and debugging.
 
-	// Request all stories from database
-	responseCh := make(chan interface{}, 1)
-	req := &persistence.Request{
-		Operation: persistence.OpGetAllStories,
-		Data:      nil,
-		Response:  responseCh,
-	}
-
-	// Send request to persistence worker
-	q.persistenceChannel <- req
-
-	// Wait for response
-	response := <-responseCh
-	if response == nil {
-		// No stories in database yet, start with empty queue
-		return nil
-	}
-
-	// Handle error response
-	if err, ok := response.(error); ok {
-		return fmt.Errorf("failed to load stories from database: %w", err)
-	}
-
-	// Convert response to stories
-	stories, ok := response.([]*persistence.Story)
-	if !ok {
-		return fmt.Errorf("unexpected response type from database: %T", response)
-	}
-
-	// Convert database stories to queue stories
-	for _, dbStory := range stories {
-		queueStory := q.convertDatabaseStoryToQueueStory(dbStory)
-		q.stories[queueStory.ID] = queueStory
-	}
-
-	// After loading all stories, check for initially ready ones
-	q.checkAndNotifyReady()
-
-	return nil
-}
-
-// convertDatabaseStoryToQueueStory converts a database story to a queue story.
-func (q *Queue) convertDatabaseStoryToQueueStory(dbStory *persistence.Story) *QueuedStory {
-	// Convert database status to queue status
-	var queueStatus StoryStatus
-	switch dbStory.Status {
-	case persistence.StatusNew:
-		queueStatus = StatusPending
-	case persistence.StatusPlanning:
-		queueStatus = StatusInProgress
-	case persistence.StatusCoding:
-		queueStatus = StatusInProgress
-	case persistence.StatusCommitted:
-		queueStatus = StatusCompleted
-	case persistence.StatusMerged:
-		queueStatus = StatusCompleted
-	case persistence.StatusError:
-		queueStatus = StatusBlocked
-	case persistence.StatusDuplicate:
-		queueStatus = StatusCancelled
-	default:
-		queueStatus = StatusPending // Default fallback
-	}
-
-	// Get dependencies for this story
-	dependencies := q.getStoryDependencies(dbStory.ID)
-
-	return &QueuedStory{
-		ID:              dbStory.ID,
-		SpecID:          dbStory.SpecID, // Include SpecID
-		Title:           dbStory.Title,
-		FilePath:        "", // No file path for database stories
-		Status:          queueStatus,
-		Priority:        dbStory.Priority, // Map priority field
-		DependsOn:       dependencies,
-		EstimatedPoints: 1,                 // Default estimated points (could be improved later)
-		AssignedAgent:   "",                // Not tracked in database yet
-		StartedAt:       nil,               // Not tracked in database yet
-		CompletedAt:     nil,               // Not tracked in database yet
-		LastUpdated:     dbStory.CreatedAt, // Use CreatedAt since UpdatedAt doesn't exist
-		StoryType:       dbStory.StoryType, // Pass through story type from database
-	}
-}
-
-// getStoryDependencies retrieves dependencies for a story from the database.
-func (q *Queue) getStoryDependencies(storyID string) []string {
-	if q.persistenceChannel == nil {
-		return []string{}
-	}
-
-	// Request dependencies from database
-	responseCh := make(chan interface{}, 1)
-	req := &persistence.Request{
-		Operation: persistence.OpGetStoryDependencies,
-		Data:      storyID,
-		Response:  responseCh,
-	}
-
-	q.persistenceChannel <- req
-
-	// Wait for response
-	response := <-responseCh
-	if response == nil {
-		return []string{}
-	}
-
-	// Handle error response
-	if _, ok := response.(error); ok {
-		return []string{} // Return empty on error
-	}
-
-	// Convert response to dependencies
-	if deps, ok := response.([]string); ok {
-		return deps
-	}
-
-	return []string{}
-}
+// Database loading methods have been removed - the queue is canonical.
 
 // NextReadyStory returns the next story that's ready to be worked on.
 func (q *Queue) NextReadyStory() *QueuedStory {
@@ -429,7 +308,7 @@ func (q *Queue) MarkCompleted(storyID string) error {
 	if q.persistenceChannel != nil {
 		updateReq := &persistence.UpdateStoryStatusRequest{
 			StoryID:   storyID,
-			Status:    persistence.StatusCommitted,
+			Status:    persistence.StatusDone,
 			Timestamp: now,
 		}
 		q.persistenceChannel <- &persistence.Request{

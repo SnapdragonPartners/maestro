@@ -43,7 +43,7 @@ CREATE TABLE stories (
     spec_id TEXT REFERENCES specs(id),  -- Parent specification
     title TEXT NOT NULL,                -- User-friendly name (former filename)
     content TEXT NOT NULL,              -- Story markdown content
-    status TEXT DEFAULT 'new' CHECK (status IN ('new','planning','coding','committed','merged','error','duplicate')),
+    status TEXT DEFAULT 'new' CHECK (status IN ('new','planning','coding','done','error','duplicate')),
     priority INTEGER DEFAULT 0,         -- Story priority
     approved_plan TEXT,                 -- Approved implementation plan
     created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),

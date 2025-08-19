@@ -247,7 +247,7 @@ func TestDatabaseOperations(t *testing.T) {
 		// Complete story1
 		updateReq := &UpdateStoryStatusRequest{
 			StoryID: story1ID,
-			Status:  StatusCommitted,
+			Status:  StatusDone,
 		}
 		err = ops.UpdateStoryStatus(updateReq)
 		if err != nil {
@@ -349,7 +349,7 @@ func TestIDGeneration(t *testing.T) {
 }
 
 func TestValidStatus(t *testing.T) {
-	validStatuses := []string{StatusNew, StatusPlanning, StatusCoding, StatusCommitted, StatusMerged, StatusError, StatusDuplicate}
+	validStatuses := []string{StatusNew, StatusPlanning, StatusCoding, StatusDone, StatusError, StatusDuplicate}
 
 	for _, status := range validStatuses {
 		if !IsValidStatus(status) {
