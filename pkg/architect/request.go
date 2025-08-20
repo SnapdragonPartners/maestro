@@ -13,6 +13,10 @@ import (
 	"orchestrator/pkg/templates"
 )
 
+const (
+	defaultStoryType = "app"
+)
+
 // handleRequest processes the request phase (handling coder requests).
 func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	// Check for context cancellation first.
@@ -462,30 +466,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		var prompt string
 		switch approvalType {
 		case proto.ApprovalTypeCompletion:
-			// Use the structured content from the content field - contains everything needed
-			prompt = fmt.Sprintf(`Review this story completion claim:
-
-%v
-
-Please evaluate if the story requirements are truly satisfied based on the evidence provided.
-
-## Decision Options:
-
-**APPROVED** - Story is truly complete
-- Use when all requirements are fully satisfied
-- Effect: Story will be marked as DONE
-
-**NEEDS_CHANGES** - Missing work identified  
-- Use when coder missed requirements or needs additional work (tests, docs, validation, etc.)
-- Effect: Returns to PLANNING to address missing items
-
-**REJECTED** - Story approach is fundamentally flawed
-- Use when approach is wrong or story is impossible  
-- Effect: Story is abandoned
-
-## Response Format:
-Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]", or "REJECTED: [fundamental issues]".`,
-				content)
+			// Use story-type-aware completion approval templates
+			prompt = d.generateCompletionApprovalPrompt(requestMsg, content)
+		case proto.ApprovalTypeCode:
+			// Use story-type-aware code review templates
+			prompt = d.generateCodeReviewApprovalPrompt(requestMsg, content)
 		case proto.ApprovalTypeBudgetReview:
 			prompt = d.generateBudgetReviewPrompt(requestMsg)
 		default:
@@ -923,7 +908,7 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 		storyTitle = "Unknown Story"
 	}
 	if storyType == "" {
-		storyType = "app" // default
+		storyType = defaultStoryType // default
 	}
 	if recentActivity == "" {
 		recentActivity = "No recent activity data available"
@@ -1004,6 +989,69 @@ Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with sp
 	}
 
 	return prompt
+}
+
+// generateApprovalPrompt is a shared helper for story-type-aware approval prompts.
+func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any, appTemplate, devopsTemplate templates.StateTemplate, fallbackMsg string) string {
+	// Extract story ID to get story type from queue
+	var storyID string
+	if val, exists := requestMsg.GetPayload("story_id"); exists {
+		storyID, _ = val.(string)
+	}
+
+	// Get story type from queue (defaults to app if not found)
+	storyType := defaultStoryType
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyType = story.StoryType
+		}
+	}
+
+	// Select appropriate template based on story type
+	var templateName templates.StateTemplate
+	if storyType == "devops" {
+		templateName = devopsTemplate
+	} else {
+		templateName = appTemplate
+	}
+
+	// Create template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Content": content,
+		},
+	}
+
+	// Render template using the same pattern as other methods
+	if d.renderer == nil {
+		// Fallback to simple prompt if renderer not available
+		return fmt.Sprintf("%s: %v", fallbackMsg, content)
+	}
+
+	prompt, err := d.renderer.Render(templateName, templateData)
+	if err != nil {
+		d.logger.Error("Failed to render approval template: %v", err)
+		// Fallback to simple prompt
+		return fmt.Sprintf("%s: %v", fallbackMsg, content)
+	}
+
+	return prompt
+}
+
+// generateCompletionApprovalPrompt creates a story-type-aware prompt for completion approval requests.
+func (d *Driver) generateCompletionApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
+	return d.generateApprovalPrompt(requestMsg, content,
+		templates.AppCompletionApprovalTemplate,
+		templates.DevOpsCompletionApprovalTemplate,
+		"Review this story completion claim")
+}
+
+// generateCodeReviewApprovalPrompt creates a story-type-aware prompt for code review approval requests.
+func (d *Driver) generateCodeReviewApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
+	return d.generateApprovalPrompt(requestMsg, content,
+		templates.AppCodeReviewTemplate,
+		templates.DevOpsCodeReviewTemplate,
+		"Review this code implementation")
 }
 
 // handleWorkAccepted handles the unified flow for work acceptance (completion or merge).

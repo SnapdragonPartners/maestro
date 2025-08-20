@@ -48,6 +48,14 @@ const (
 	TestingTemplate StateTemplate = "testing.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "approval.tpl.md"
+	// AppCompletionApprovalTemplate is the template for app story completion approval.
+	AppCompletionApprovalTemplate StateTemplate = "app_completion_approval.tpl.md"
+	// DevOpsCompletionApprovalTemplate is the template for devops story completion approval.
+	DevOpsCompletionApprovalTemplate StateTemplate = "devops_completion_approval.tpl.md"
+	// AppCodeReviewTemplate is the template for app story code review approval.
+	AppCodeReviewTemplate StateTemplate = "app_code_review.tpl.md"
+	// DevOpsCodeReviewTemplate is the template for devops story code review approval.
+	DevOpsCodeReviewTemplate StateTemplate = "devops_code_review.tpl.md"
 
 	// BudgetReviewPlanningTemplate is the template for architect budget review in planning state.
 	BudgetReviewPlanningTemplate StateTemplate = "budget_review_planning.tpl.md"

@@ -90,10 +90,23 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	// Determine user based on story type
 	storyType := utils.GetStateValueOr[string](c.BaseStateMachine, proto.KeyStoryType, string(proto.StoryTypeApp))
 	containerUser := "1000:1000" // Default: non-root user for app stories
+
+	// Determine container image based on story type and configuration
+	var containerImage string
 	if storyType == string(proto.StoryTypeDevOps) {
+		// DevOps stories always use the safe bootstrap container
+		containerImage = config.BootstrapContainerTag
 		containerUser = "0:0" // Run as root for DevOps stories to access Docker socket
-		c.logger.Info("DevOps story detected - running container as root for Docker access")
+		c.logger.Info("DevOps story detected - using safe container %s as root", containerImage)
+	} else {
+		// App stories try configured container first, fall back to bootstrap if it fails
+		containerImage = getDockerImageForAgent(c.workDir)
+		c.logger.Info("App story detected - attempting to use configured container: %s", containerImage)
 	}
+
+	// Update container image before starting new container
+	c.SetDockerImage(containerImage)
+	c.logger.Info("Set container image to: %s", containerImage)
 
 	// Create execution options for new container
 	execOpts := execpkg.Opts{
@@ -133,7 +146,21 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	// Start new container with appropriate configuration
 	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
 	if err != nil {
-		return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
+		// For app stories, try falling back to bootstrap container if configured container fails
+		if storyType == string(proto.StoryTypeApp) && containerImage != config.BootstrapContainerTag {
+			c.logger.Warn("Failed to start configured container %s, falling back to safe container %s: %v",
+				containerImage, config.BootstrapContainerTag, err)
+
+			// Update to bootstrap container and retry
+			c.SetDockerImage(config.BootstrapContainerTag)
+			containerName, err = c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+			if err != nil {
+				return logx.Wrap(err, fmt.Sprintf("failed to start %s container with fallback %s", purpose, config.BootstrapContainerTag))
+			}
+			c.logger.Info("Successfully started fallback container: %s", config.BootstrapContainerTag)
+		} else {
+			return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
+		}
 	}
 
 	c.containerName = containerName
