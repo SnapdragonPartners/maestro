@@ -37,6 +37,10 @@ You are a DevOps agent with READ-ONLY access to the codebase during planning.
 **Never mark DevOps stories complete without actual verification!**
 
 ### DevOps Infrastructure Exploration Commands
+
+**IMPORTANT**: Use multiple shell tool calls in a single response to efficiently explore the infrastructure codebase. This reduces token usage and speeds up discovery.
+
+Example exploration sequence (use multiple tools in one response):
 ```bash
 # Check infrastructure files
 ls -la /workspace/

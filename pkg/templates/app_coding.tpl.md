@@ -34,8 +34,9 @@ For example, to create a Python hello world program:
 {{end}}{{.ToolDocumentation}}
 
 **IMPORTANT**: 
-- Use multiple shell tool calls as needed to create ALL required files. Do not just initialize - create the complete implementation.
-- You can use build, test, and lint tools to verify your implementation as you work.
+- Use multiple shell tool calls **in a single response** to efficiently create files, read existing code, and verify your work. This reduces token usage.
+- Do not just initialize - create the complete implementation with all required files.
+- You can read multiple files at once, create multiple files, and run build/test commands all in one response.
 - When you have finished creating all necessary files and the implementation is complete, call the done tool to signal completion and advance to the testing phase.
 
 Now use shell commands to generate the complete implementation:
