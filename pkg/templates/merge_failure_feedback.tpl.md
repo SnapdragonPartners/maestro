@@ -3,7 +3,7 @@
 The merge process has encountered issues that need to be resolved:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 **Action Required:**

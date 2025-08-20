@@ -3,7 +3,7 @@
 The git commit operation encountered an issue:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 **Action Required:**

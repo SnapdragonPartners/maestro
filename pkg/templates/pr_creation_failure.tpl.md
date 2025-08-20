@@ -3,7 +3,7 @@
 The pull request creation encountered an issue:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 **Action Required:**

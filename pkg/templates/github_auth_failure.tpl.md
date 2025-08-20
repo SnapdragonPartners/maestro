@@ -3,7 +3,7 @@
 GitHub CLI authentication setup encountered an issue:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 **Action Required:**

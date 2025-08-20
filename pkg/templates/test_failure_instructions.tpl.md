@@ -3,7 +3,7 @@
 The test failure output is:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 You must:

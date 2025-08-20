@@ -3,7 +3,7 @@
 The git push operation encountered an issue:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 **Action Required:**
