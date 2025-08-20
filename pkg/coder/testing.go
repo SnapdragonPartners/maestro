@@ -15,6 +15,7 @@ import (
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
@@ -225,9 +226,22 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 	// Process the result
 	if failureResult, ok := result.(*effect.TestFailureResult); ok {
 		c.logger.Info("🧪 Test failure processed: %s", failureResult.FailureType)
-		// Set state data for CODING state to use
-		sm.SetStateData(KeyTestFailureOutput, failureResult.FailureMessage)
-		sm.SetStateData(KeyCodingMode, failureResult.FailureType)
+
+		// Add test failure directly to context using mini-template
+		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
+		templateName := templates.TestFailureInstructionsTemplate
+		if storyType == string(proto.StoryTypeDevOps) {
+			templateName = templates.DevOpsTestFailureInstructionsTemplate
+		}
+
+		testFailureMessage, err := c.renderer.RenderSimple(templateName, failureResult.FailureMessage)
+		if err != nil {
+			c.logger.Error("Failed to render test failure message: %v", err)
+			// Fallback to simple message
+			testFailureMessage = fmt.Sprintf("Test execution failed:\n\n%s\n\nPlease analyze the test failures and fix the issues.", failureResult.FailureMessage)
+		}
+		c.contextManager.AddMessage("test-failure", testFailureMessage)
+
 		return StateCoding, false, nil
 	}
 

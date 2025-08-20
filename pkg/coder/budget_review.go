@@ -8,6 +8,7 @@ import (
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
 )
 
@@ -81,7 +82,17 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 			// Reset coding counter and inject feedback for coding improvements
 			sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 			if feedback != "" {
-				c.injectCodingFeedback(feedback)
+				// Use mini-template to format the feedback message
+				if c.renderer != nil {
+					renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, feedback)
+					if err != nil {
+						c.logger.Error("Failed to render budget review feedback: %v", err)
+						// Fallback to simple message
+						renderedMessage = "I understand the architect's guidance. Let me adjust my coding approach: " + feedback + "\n\nI'll continue with the implementation using this guidance."
+					}
+					c.contextManager.AddAssistantMessage(renderedMessage)
+					c.logger.Debug("🧑‍💻 Injected architect feedback into context for coding")
+				}
 			}
 			return StateCoding, false, nil
 		} else {
@@ -92,7 +103,17 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 			sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 			// Inject architect feedback into context to guide next attempt
 			if feedback != "" {
-				c.injectArchitectFeedback(feedback)
+				// Use mini-template to format the feedback message
+				if c.renderer != nil {
+					renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, feedback)
+					if err != nil {
+						c.logger.Error("Failed to render budget review feedback: %v", err)
+						// Fallback to simple message
+						renderedMessage = "I understand the architect's feedback. Let me correct my approach: " + feedback + "\n\nI'll now focus on the proper planning approach as guided."
+					}
+					c.contextManager.AddAssistantMessage(renderedMessage)
+					c.logger.Debug("🧑‍💻 Injected architect feedback into context for planning")
+				}
 			}
 			return StatePlanning, false, nil
 		}
@@ -102,33 +123,5 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 		return proto.StateError, false, logx.Errorf("task abandoned by architect after budget review")
 	default:
 		return proto.StateError, false, logx.Errorf("unknown budget review approval status: %s", status)
-	}
-}
-
-// injectArchitectFeedback adds architect guidance to the context as an assistant message
-// to maintain proper user/assistant alternation while providing course correction for planning.
-func (c *Coder) injectArchitectFeedback(feedback string) {
-	// The feedback from ApprovalResult.Feedback is already the clean guidance text
-	assistantContent := "I understand the architect's feedback. Let me correct my approach: " + feedback +
-		"\n\nI'll now focus on the proper planning approach as guided."
-
-	// Inject into context manager
-	if c.contextManager != nil {
-		c.contextManager.AddAssistantMessage(assistantContent)
-		c.logger.Debug("🧑‍💻 Injected architect feedback into context for planning")
-	}
-}
-
-// injectCodingFeedback adds architect guidance to the context as an assistant message
-// to maintain proper user/assistant alternation while providing course correction for coding.
-func (c *Coder) injectCodingFeedback(feedback string) {
-	// The feedback from ApprovalResult.Feedback is already the clean guidance text
-	assistantContent := "I understand the architect's guidance. Let me adjust my coding approach: " + feedback +
-		"\n\nI'll continue with the implementation using this guidance."
-
-	// Inject into context manager
-	if c.contextManager != nil {
-		c.contextManager.AddAssistantMessage(assistantContent)
-		c.logger.Debug("🧑‍💻 Injected architect feedback into context for coding")
 	}
 }

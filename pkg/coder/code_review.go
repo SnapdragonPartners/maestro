@@ -155,8 +155,9 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 	case proto.ApprovalStatusNeedsChanges:
 		c.logger.Info("🧑‍💻 Changes requested: %s", result.Feedback)
 
-		// Store feedback for CODING state to address
-		sm.SetStateData(KeyCodeReviewRejectionFeedback, result.Feedback)
+		// Add feedback directly to context
+		feedbackMessage := fmt.Sprintf("Code review feedback - changes requested:\n\n%s\n\nPlease address these issues and continue implementation.", result.Feedback)
+		c.contextManager.AddMessage("architect-feedback", feedbackMessage)
 		return StateCoding, false, nil
 
 	case proto.ApprovalStatusRejected:
@@ -164,7 +165,8 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 		if approvalTypeStr == string(proto.ApprovalTypeCompletion) {
 			c.logger.Error("🧑‍💻 Completion rejected by architect: %s", result.Feedback)
 			// Return to CODING to do the work that was deemed missing
-			sm.SetStateData(KeyCodeReviewRejectionFeedback, result.Feedback)
+			rejectionMessage := fmt.Sprintf("Code completion rejected by architect:\n\n%s\n\nPlease continue implementation to address these concerns.", result.Feedback)
+			c.contextManager.AddMessage("architect-rejection", rejectionMessage)
 			return StateCoding, false, nil
 		} else {
 			c.logger.Error("🧑‍💻 Code rejected by architect: %s", result.Feedback)

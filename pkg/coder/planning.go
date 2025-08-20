@@ -341,10 +341,7 @@ func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.Ba
 	evidence := utils.GetMapFieldOr[string](resultMap, "evidence", "")
 	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
 
-	// Store completion data.
-	sm.SetStateData(KeyCompletionReason, reason)
-	sm.SetStateData(KeyCompletionEvidence, evidence)
-	sm.SetStateData(KeyCompletionConfidence, confidence)
+	// Store completion timestamp
 	sm.SetStateData(KeyCompletionSubmittedAt, time.Now().UTC())
 
 	// Store completion approval request for PLAN_REVIEW state to handle

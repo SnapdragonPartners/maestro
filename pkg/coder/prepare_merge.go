@@ -12,6 +12,7 @@ import (
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
 )
 
@@ -53,7 +54,13 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 	if commitErr := c.commitChanges(ctx, storyID); commitErr != nil {
 		if c.isRecoverableGitError(commitErr) {
 			c.logger.Info("🔀 Git commit failed (recoverable), returning to CODING: %v", commitErr)
-			c.contextManager.AddMessage("system", fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error()))
+			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitCommitFailureTemplate, commitErr.Error()); renderErr != nil {
+				c.logger.Error("Failed to render git commit failure message: %v", renderErr)
+				// Fallback to simple message
+				c.contextManager.AddMessage("system", fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error()))
+			} else {
+				c.contextManager.AddMessage("system", renderedMessage)
+			}
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 Git commit failed (unrecoverable): %v", commitErr)
@@ -64,7 +71,13 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 	if pushErr := c.pushBranch(ctx, localBranch, remoteBranch); pushErr != nil {
 		if c.isRecoverableGitError(pushErr) {
 			c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
-			c.contextManager.AddMessage("system", fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error()))
+			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, pushErr.Error()); renderErr != nil {
+				c.logger.Error("Failed to render git push failure message: %v", renderErr)
+				// Fallback to simple message
+				c.contextManager.AddMessage("system", fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error()))
+			} else {
+				c.contextManager.AddMessage("system", renderedMessage)
+			}
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
@@ -87,7 +100,13 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 
 		if c.isRecoverableGitError(err) {
 			c.logger.Info("🔀 PR creation failed (recoverable), returning to CODING: %v", err)
-			c.contextManager.AddMessage("system", fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error()))
+			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.PRCreationFailureTemplate, err.Error()); renderErr != nil {
+				c.logger.Error("Failed to render PR creation failure message: %v", renderErr)
+				// Fallback to simple message
+				c.contextManager.AddMessage("system", fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error()))
+			} else {
+				c.contextManager.AddMessage("system", renderedMessage)
+			}
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 PR creation failed (unrecoverable): %v", err)

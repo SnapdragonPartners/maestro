@@ -18,24 +18,6 @@ import (
 
 // handleCoding processes the CODING state with priority-based work handling.
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Check for merge conflict (highest priority)
-	if conflictData, exists := sm.GetStateValue(KeyMergeConflictDetails); exists {
-		c.logger.Info("🧑‍💻 Handling merge conflict in CODING state")
-		return c.handleMergeConflictCoding(ctx, sm, conflictData)
-	}
-
-	// Check for code review feedback (second priority)
-	if reviewData, exists := sm.GetStateValue(KeyCodeReviewRejectionFeedback); exists {
-		c.logger.Info("🧑‍💻 Handling code review feedback in CODING state")
-		return c.handleCodeReviewCoding(ctx, sm, reviewData)
-	}
-
-	// Check for test failures (third priority)
-	if testData, exists := sm.GetStateValue(KeyTestFailureOutput); exists {
-		c.logger.Info("🧑‍💻 Handling test failures in CODING state")
-		return c.handleTestFixCoding(ctx, sm, testData)
-	}
-
 	// Default: Continue with initial coding
 	return c.handleInitialCoding(ctx, sm)
 }
@@ -54,45 +36,6 @@ func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMach
 	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
 		"scenario": "initial_coding",
 		"message":  "Continue with code implementation based on your plan",
-	})
-}
-
-// handleMergeConflictCoding handles merge conflict resolution during coding.
-func (c *Coder) handleMergeConflictCoding(ctx context.Context, sm *agent.BaseStateMachine, conflictData any) (proto.State, bool, error) {
-	// Clear merge conflict data after handling.
-	sm.SetStateData(KeyMergeConflictDetails, nil)
-
-	// Execute coding with merge conflict context.
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"scenario":      "merge_conflict",
-		"conflict_data": conflictData,
-		"message":       "Resolve the merge conflicts and continue implementation",
-	})
-}
-
-// handleCodeReviewCoding handles code review feedback during coding.
-func (c *Coder) handleCodeReviewCoding(ctx context.Context, sm *agent.BaseStateMachine, reviewData any) (proto.State, bool, error) {
-	// Clear review feedback data after handling.
-	sm.SetStateData(KeyCodeReviewRejectionFeedback, nil)
-
-	// Execute coding with review feedback context.
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"scenario":    "code_review_feedback",
-		"review_data": reviewData,
-		"message":     "Address the code review feedback and continue implementation",
-	})
-}
-
-// handleTestFixCoding handles test failure fixes during coding.
-func (c *Coder) handleTestFixCoding(ctx context.Context, sm *agent.BaseStateMachine, testData any) (proto.State, bool, error) {
-	// Clear test failure data after handling.
-	sm.SetStateData(KeyTestFailureOutput, nil)
-
-	// Execute coding with test failure context.
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"scenario":  "test_failures",
-		"test_data": testData,
-		"message":   "Fix the test failures and continue implementation",
 	})
 }
 

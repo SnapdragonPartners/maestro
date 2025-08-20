@@ -11,6 +11,7 @@ import (
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
 )
 
@@ -273,7 +274,26 @@ func (c *Coder) ensureGitHubAuthentication(ctx context.Context, addContextMessag
 		if err := c.configureGitUser(ctx, opts); err != nil {
 			c.logger.Warn("⚠️ Failed to configure git user identity: %v", err)
 			if addContextMessage {
-				c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+				// Get global config for git user info
+				globalConfig, configErr := config.GetConfig()
+				if configErr != nil {
+					// Fallback to simple message if config unavailable
+					c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+				} else {
+					// Use template with actual git config values
+					templateData := map[string]string{
+						"Error":        err.Error(),
+						"GitUserName":  globalConfig.Git.GitUserName,
+						"GitUserEmail": globalConfig.Git.GitUserEmail,
+					}
+					if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitConfigFailureTemplate, templateData); renderErr != nil {
+						c.logger.Error("Failed to render git config failure message: %v", renderErr)
+						// Fallback to simple message
+						c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+					} else {
+						c.contextManager.AddMessage("system", renderedMessage)
+					}
+				}
 			}
 		}
 	}
@@ -284,7 +304,13 @@ func (c *Coder) ensureGitHubAuthentication(ctx context.Context, addContextMessag
 		if err != nil {
 			c.logger.Warn("⚠️ GitHub CLI auth setup failed: %v (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
 			if addContextMessage {
-				c.contextManager.AddMessage("system", fmt.Sprintf("GitHub CLI authentication setup failed: %v. You may need to troubleshoot GitHub authentication before making git operations.", err))
+				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitHubAuthFailureTemplate, err.Error()); renderErr != nil {
+					c.logger.Error("Failed to render GitHub auth failure message: %v", renderErr)
+					// Fallback to simple message
+					c.contextManager.AddMessage("system", fmt.Sprintf("GitHub CLI authentication setup failed: %v. You may need to troubleshoot GitHub authentication before making git operations.", err))
+				} else {
+					c.contextManager.AddMessage("system", renderedMessage)
+				}
 			}
 		} else {
 			c.logger.Info("✅ Git authentication configured - GitHub CLI will handle git credentials")
