@@ -80,16 +80,11 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 
 				// Record metrics
 				recorder.ObserveRequest(
-					modelConfig.Name,
 					storyID,
-					agentID,
-					state,
 					promptTokens,
 					completionTokens,
 					cost,
 					err == nil,
-					errorType,
-					duration,
 				)
 
 				// Enhanced logging for LLM calls with detailed metrics
@@ -129,16 +124,11 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 
 				// Record metrics (no token counts or costs for streaming)
 				recorder.ObserveRequest(
-					modelConfig.Name,
 					storyID,
-					agentID,
-					state,
 					0,   // No prompt token count for streaming
 					0,   // No completion token count for streaming
 					0.0, // No cost for streaming
 					err == nil,
-					errorType,
-					duration,
 				)
 
 				// Enhanced logging for streaming LLM calls

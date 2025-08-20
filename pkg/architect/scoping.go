@@ -193,7 +193,7 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 		}
 
 		// Update canonical queue with story and dependencies
-		d.queue.AddStory(storyID, specID, req.Title, req.StoryType, dependencies, req.EstimatedPoints)
+		d.queue.AddStory(storyID, specID, req.Title, req.Description, req.StoryType, dependencies, req.EstimatedPoints)
 		d.logger.Debug("Added story %s to queue with dependencies: %v", storyID, dependencies)
 
 		// Collect dependencies for batch operation (don't send individually)

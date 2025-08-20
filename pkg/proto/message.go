@@ -258,6 +258,23 @@ func (msg *AgentMsg) GetPayload(key string) (any, bool) {
 	return val, exists
 }
 
+// GetTypedPayload retrieves a payload value with type safety using generics.
+func GetTypedPayload[T any](msg *AgentMsg, key string) (T, bool) {
+	var zero T
+	if msg.Payload == nil {
+		return zero, false
+	}
+	val, exists := msg.Payload[key]
+	if !exists {
+		return zero, false
+	}
+	typed, ok := val.(T)
+	if !ok {
+		return zero, false
+	}
+	return typed, true
+}
+
 // SetMetadata sets a metadata value for the message.
 func (msg *AgentMsg) SetMetadata(key, value string) {
 	if msg.Metadata == nil {

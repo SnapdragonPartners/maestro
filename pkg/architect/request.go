@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"orchestrator/pkg/metrics"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -582,6 +581,62 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		}
 	}
 
+	// If this is an approved plan, update the story's approved plan in the queue
+	if approvalResult.Status == proto.ApprovalStatusApproved && approvalType == proto.ApprovalTypePlan {
+		if storyIDStr, exists := proto.GetTypedPayload[string](requestMsg, proto.KeyStoryID); exists && d.queue != nil {
+			// Get the plan content from the request
+			var planContent string
+			if planStr, exists := proto.GetTypedPayload[string](requestMsg, "plan"); exists {
+				planContent = planStr
+			} else if contentStr, ok := content.(string); ok {
+				planContent = contentStr
+			}
+
+			if planContent != "" {
+				if err := d.queue.SetApprovedPlan(storyIDStr, planContent); err != nil {
+					d.logger.Error("Failed to set approved plan for story %s: %v", storyIDStr, err)
+				} else {
+					d.logger.Info("✅ Set approved plan for story %s", storyIDStr)
+					// Persist just this story to database with the updated approved plan
+					if story, exists := d.queue.GetStory(storyIDStr); exists {
+						// Convert queue status to database status
+						var dbStatus string
+						switch story.Status {
+						case StatusPending:
+							dbStatus = persistence.StatusNew
+						case StatusInProgress:
+							dbStatus = persistence.StatusCoding
+						case StatusCompleted:
+							dbStatus = persistence.StatusDone
+						default:
+							dbStatus = persistence.StatusNew
+						}
+
+						dbStory := &persistence.Story{
+							ID:            story.ID,
+							SpecID:        story.SpecID,
+							Title:         story.Title,
+							Content:       story.Content,
+							ApprovedPlan:  story.ApprovedPlan,
+							Status:        dbStatus,
+							Priority:      story.Priority,
+							CreatedAt:     story.LastUpdated,
+							StartedAt:     story.StartedAt,
+							CompletedAt:   story.CompletedAt,
+							AssignedAgent: story.AssignedAgent,
+							StoryType:     story.StoryType,
+							TokensUsed:    0,   // Metrics data added during completion
+							CostUSD:       0.0, // Metrics data added during completion
+						}
+
+						persistence.PersistStory(dbStory, d.persistenceChannel)
+						d.logger.Debug("💾 Persisted story %s with approved plan to database", storyIDStr)
+					}
+				}
+			}
+		}
+	}
+
 	// Create RESPONSE using unified protocol with individual approval fields.
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
@@ -595,7 +650,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	response.SetPayload("approval_result", approvalResult)
 
 	// Copy story_id from request for dispatcher validation
-	if storyID, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
+	if storyID, exists := proto.GetTypedPayload[string](requestMsg, proto.KeyStoryID); exists {
 		response.SetPayload(proto.KeyStoryID, storyID)
 	}
 
@@ -1075,59 +1130,11 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 
 	// 2. Persist story completion to database with metrics
 	if d.persistenceChannel != nil {
-		// Query metrics for this story if Prometheus is configured
-		var storyMetrics *metrics.StoryMetrics
-		if d.orchestratorConfig != nil && d.orchestratorConfig.Agents != nil &&
-			d.orchestratorConfig.Agents.Metrics.Enabled &&
-			d.orchestratorConfig.Agents.Metrics.PrometheusURL != "" {
-			d.logger.Info("📊 Querying metrics for completed story %s", storyID)
-
-			queryService, err := metrics.NewQueryService(d.orchestratorConfig.Agents.Metrics.PrometheusURL)
-			if err != nil {
-				d.logger.Warn("📊 Failed to create metrics query service: %v", err)
-			} else {
-				queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				defer cancel()
-
-				storyMetrics, err = queryService.GetStoryMetrics(queryCtx, storyID)
-				if err != nil {
-					d.logger.Warn("📊 Failed to query story metrics: %v", err)
-				} else if storyMetrics != nil {
-					d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total cost: $%.6f",
-						storyID, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalCost)
-				}
-			}
-		}
-
-		// Prepare status update request with metrics data
-		statusReq := &persistence.UpdateStoryStatusRequest{
-			StoryID: storyID,
-			Status:  persistence.StatusDone,
-		}
-
-		// Include metrics data if available
-		if storyMetrics != nil {
-			statusReq.PromptTokens = &storyMetrics.PromptTokens
-			statusReq.CompletionTokens = &storyMetrics.CompletionTokens
-			statusReq.CostUSD = &storyMetrics.TotalCost
-		}
-
-		// Wrap in proper Request structure
-		req := &persistence.Request{
-			Data:      statusReq,
-			Response:  nil, // Fire-and-forget operation
-			Operation: persistence.OpUpdateStoryStatus,
-		}
-
 		d.logger.Info("💾 Updating story %s status to 'done' after %s", storyID, acceptanceType)
 
-		// Fire-and-forget database update
-		select {
-		case d.persistenceChannel <- req:
-			d.logger.Debug("💾 Status update sent to persistence worker")
-		default:
-			d.logger.Warn("💾 Failed to send status update - persistence channel full")
-		}
+		// Use the new persistence function that handles metrics retrieval
+		now := time.Now().UTC()
+		persistence.PersistStoryWithMetrics(ctx, storyID, persistence.StatusDone, now, d.persistenceChannel, d.logger)
 	}
 
 	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)

@@ -34,7 +34,6 @@ type Driver struct {
 	escalationHandler  *EscalationHandler          // Escalation handler
 	dispatcher         *dispatch.Dispatcher        // Dispatcher for sending messages
 	logger             *logx.Logger                // Logger with proper agent prefixing
-	orchestratorConfig *config.Config              // Orchestrator configuration for repo access
 	specCh             <-chan *proto.AgentMsg      // Read-only channel for spec messages
 	questionsCh        chan *proto.AgentMsg        // Bi-directional channel for questions/requests
 	replyCh            <-chan *proto.AgentMsg      // Read-only channel for replies
@@ -44,7 +43,7 @@ type Driver struct {
 }
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -72,7 +71,6 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 		escalationHandler:  escalationHandler,
 		dispatcher:         dispatcher,
 		logger:             logx.NewLogger(architectID),
-		orchestratorConfig: orchestratorConfig,
 		persistenceChannel: persistenceChannel,
 		// Channels will be set during Attach()
 		specCh:      nil,
@@ -83,7 +81,7 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 
 // NewArchitect creates a new architect with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewArchitect(ctx context.Context, architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+func NewArchitect(ctx context.Context, architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -100,7 +98,7 @@ func NewArchitect(ctx context.Context, architectID string, modelConfig *config.M
 	}
 
 	// Create architect with LLM integration
-	architect := NewDriver(architectID, modelConfig, llmClient, dispatcher, workDir, orchestratorConfig, persistenceChannel)
+	architect := NewDriver(architectID, modelConfig, llmClient, dispatcher, workDir, persistenceChannel)
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
 	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeArchitect, architect, architect.logger)

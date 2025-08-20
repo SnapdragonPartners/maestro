@@ -52,12 +52,6 @@ func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- 
 
 // CreateAgentSet creates and initializes architect and coder agents.
 func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*AgentSet, error) {
-	// Get current config from singleton
-	orchestratorConfig, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
 	agentSet := &AgentSet{
 		Coders:   make([]dispatch.Agent, 0, cfg.NumCoders),
 		AgentIDs: make([]string, 0, cfg.NumCoders+1),
@@ -71,7 +65,6 @@ func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*A
 		cfg.ArchitectModel,
 		f.dispatcher,
 		cfg.WorkDir,
-		&orchestratorConfig,
 		f.persistenceChannel,
 	)
 	if err != nil {
@@ -129,12 +122,6 @@ func (f *AgentFactory) CreateAgentSet(ctx context.Context, cfg *AgentConfig) (*A
 
 // RecreateAgent recreates a single agent by type and ID.
 func (f *AgentFactory) RecreateAgent(ctx context.Context, agentID, agentType string) (dispatch.Agent, error) {
-	// Get current config from singleton
-	orchestratorConfig, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
 	// Get current config to create agent config
 	agentConfig, err := f.createAgentConfigFromCurrent()
 	if err != nil {
@@ -149,7 +136,6 @@ func (f *AgentFactory) RecreateAgent(ctx context.Context, agentID, agentType str
 			agentConfig.ArchitectModel,
 			f.dispatcher,
 			agentConfig.WorkDir,
-			&orchestratorConfig,
 			f.persistenceChannel,
 		)
 		if err != nil {

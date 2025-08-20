@@ -126,6 +126,8 @@ func NewRenderer() (*Renderer, error) {
 		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
+		AppCodeReviewTemplate,
+		DevOpsCodeReviewTemplate,
 	}
 
 	for _, name := range templateNames {

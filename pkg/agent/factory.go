@@ -29,9 +29,19 @@ type LLMClientFactory struct {
 
 // NewLLMClientFactory creates a new LLM client factory with the given configuration.
 func NewLLMClientFactory(cfg config.Config) (*LLMClientFactory, error) {
-	// TODO: TEMPORARY FIX - use noop recorder to test if Prometheus is causing the hang
-	// recorder := metrics.NewPrometheusRecorder()
-	recorder := metrics.Nop()
+	logger := logx.NewLogger("factory")
+
+	// Create metrics recorder based on configuration
+	var recorder metrics.Recorder
+	if cfg.Agents != nil && cfg.Agents.Metrics.Enabled {
+		logger.Info("📊 Using internal metrics recorder (enabled=%v)",
+			cfg.Agents.Metrics.Enabled)
+		recorder = metrics.NewInternalRecorder()
+	} else {
+		logger.Info("📊 Using no-op metrics recorder (enabled=%v)",
+			cfg.Agents != nil && cfg.Agents.Metrics.Enabled)
+		recorder = metrics.Nop()
+	}
 
 	// Initialize circuit breakers for each provider
 	circuitBreakers := make(map[string]circuit.Breaker)
@@ -165,8 +175,8 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger),
 		circuit.Middleware(circuitBreaker),
 		retry.Middleware(retryPolicy),
-		logging.EmptyResponseLoggingMiddleware(),                     // Log empty responses after retry exhaustion
-		ratelimit.Middleware(f.rateLimitMap, nil, f.metricsRecorder), // Uses default token estimator
+		logging.EmptyResponseLoggingMiddleware(),  // Log empty responses after retry exhaustion
+		ratelimit.Middleware(f.rateLimitMap, nil), // Uses default token estimator
 		timeout.Middleware(f.config.Agents.Resilience.Timeout),
 	)
 

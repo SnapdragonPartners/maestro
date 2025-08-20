@@ -37,7 +37,8 @@ type QueuedStory struct {
 	ID              string      `json:"id"`
 	SpecID          string      `json:"spec_id"` // Foreign key to spec
 	Title           string      `json:"title"`
-	FilePath        string      `json:"file_path"`
+	Content         string      `json:"content"`       // Story content generated during SCOPING
+	ApprovedPlan    string      `json:"approved_plan"` // Approved implementation plan
 	Status          StoryStatus `json:"status"`
 	Priority        int         `json:"priority"`
 	DependsOn       []string    `json:"depends_on"`
@@ -79,11 +80,12 @@ func (q *Queue) SetReadyChannel(ch chan<- string) {
 
 // AddStory adds a story directly to the in-memory queue.
 // This should be used when stories are generated during normal operation.
-func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies []string, estimatedPoints int) {
+func (q *Queue) AddStory(storyID, specID, title, content, storyType string, dependencies []string, estimatedPoints int) {
 	queuedStory := &QueuedStory{
 		ID:              storyID,
 		Title:           title,
-		FilePath:        "", // No file path for generated stories
+		Content:         content, // Story content from requirement description
+		ApprovedPlan:    "",      // Plan will be set during approval
 		Status:          StatusPending,
 		Priority:        estimatedPoints,
 		DependsOn:       dependencies,
@@ -92,8 +94,8 @@ func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies 
 		StartedAt:       nil,
 		CompletedAt:     nil,
 		LastUpdated:     time.Now(),
-		StoryType:       storyType, // This is the key fix!
-		SpecID:          specID,    // Add SpecID for database foreign key
+		StoryType:       storyType,
+		SpecID:          specID,
 	}
 
 	q.stories[storyID] = queuedStory
@@ -102,12 +104,14 @@ func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies 
 	q.checkAndNotifyReady()
 }
 
-// FlushToDatabase writes all in-memory stories to the database for persistence.
+// FlushToDatabase writes all in-memory stories and dependencies to the database for persistence.
+// This uses the new persistence functions and ensures proper ordering (stories first, then dependencies).
 func (q *Queue) FlushToDatabase() {
 	if q.persistenceChannel == nil {
 		return
 	}
 
+	// Phase 1: Persist all stories first (to satisfy foreign key constraints)
 	for _, queuedStory := range q.stories {
 		// Convert queue status to database status
 		var dbStatus string
@@ -122,24 +126,31 @@ func (q *Queue) FlushToDatabase() {
 			dbStatus = persistence.StatusNew
 		}
 
-		// Convert QueuedStory back to persistence.Story for database
+		// Convert QueuedStory to persistence.Story with complete data
 		dbStory := &persistence.Story{
-			ID:         queuedStory.ID,
-			SpecID:     queuedStory.SpecID, // Include SpecID for foreign key
-			Title:      queuedStory.Title,
-			Status:     dbStatus,
-			Priority:   queuedStory.Priority,
-			CreatedAt:  queuedStory.LastUpdated,
-			StoryType:  queuedStory.StoryType, // Preserve story type
-			TokensUsed: 0,
-			CostUSD:    0.0,
+			ID:            queuedStory.ID,
+			SpecID:        queuedStory.SpecID,
+			Title:         queuedStory.Title,
+			Content:       queuedStory.Content,      // Now includes story content
+			ApprovedPlan:  queuedStory.ApprovedPlan, // Now includes approved plan
+			Status:        dbStatus,
+			Priority:      queuedStory.Priority,
+			CreatedAt:     queuedStory.LastUpdated,
+			StartedAt:     queuedStory.StartedAt,
+			CompletedAt:   queuedStory.CompletedAt,
+			AssignedAgent: queuedStory.AssignedAgent,
+			StoryType:     queuedStory.StoryType,
+			TokensUsed:    0,   // Metrics data added during completion
+			CostUSD:       0.0, // Metrics data added during completion
 		}
 
-		// Send to database (fire-and-forget)
-		q.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpUpsertStory,
-			Data:      dbStory,
-			Response:  nil,
+		persistence.PersistStory(dbStory, q.persistenceChannel)
+	}
+
+	// Phase 2: Persist all dependencies (now that stories exist in database)
+	for _, queuedStory := range q.stories {
+		for _, dependsOnID := range queuedStory.DependsOn {
+			persistence.PersistDependency(queuedStory.ID, dependsOnID, q.persistenceChannel)
 		}
 	}
 }
@@ -380,6 +391,39 @@ func (q *Queue) MarkPending(storyID string) error {
 	story.Status = StatusPending
 	story.AssignedAgent = ""
 	story.StartedAt = nil
+	story.LastUpdated = time.Now().UTC()
+
+	return nil
+}
+
+// RequeueStory resets a story to pending status and clears the approved plan for fresh start.
+// This should be used when a coder errors out and a new coder needs to start from scratch.
+func (q *Queue) RequeueStory(storyID string) error {
+	story, exists := q.stories[storyID]
+	if !exists {
+		return fmt.Errorf("story %s not found", storyID)
+	}
+
+	// Clear assignment, approved plan, and reset to pending
+	story.Status = StatusPending
+	story.AssignedAgent = ""
+	story.ApprovedPlan = "" // Clear approved plan for fresh start
+	story.StartedAt = nil
+	story.LastUpdated = time.Now().UTC()
+
+	// TODO: Persist the requeue event to database for tracking
+
+	return nil
+}
+
+// SetApprovedPlan sets the approved plan for a story.
+func (q *Queue) SetApprovedPlan(storyID, approvedPlan string) error {
+	story, exists := q.stories[storyID]
+	if !exists {
+		return fmt.Errorf("story %s not found", storyID)
+	}
+
+	story.ApprovedPlan = approvedPlan
 	story.LastUpdated = time.Now().UTC()
 
 	return nil

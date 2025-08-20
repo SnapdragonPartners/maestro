@@ -616,10 +616,10 @@ func createDefaultConfig() *Config {
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
 			Metrics: MetricsConfig{
-				Enabled:       false,
-				Exporter:      "noop",
+				Enabled:       true,       // Enable metrics by default for development visibility
+				Exporter:      "internal", // Use internal aggregation by default
 				Namespace:     "maestro",
-				PrometheusURL: "http://localhost:9090", // Default Prometheus URL
+				PrometheusURL: "", // Not needed for internal metrics
 			},
 			Resilience: ResilienceConfig{
 				CircuitBreaker: CircuitBreakerConfig{

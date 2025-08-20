@@ -3,17 +3,9 @@ package architect
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/proto"
-)
-
-const (
-	buildSystemMake   = "make"
-	buildSystemPython = "python"
-	buildSystemNode   = "node"
 )
 
 // handleDispatching processes the dispatching phase (queue management and story assignment).
@@ -104,28 +96,21 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 	// Get story details.
 	if story, exists := d.queue.stories[storyID]; exists {
 		storyMsg.SetPayload(proto.KeyTitle, story.Title)
-		storyMsg.SetPayload(proto.KeyFilePath, story.FilePath)
 		storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
 		storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
-		storyMsg.SetPayload(proto.KeyStoryType, story.StoryType) // Pass actual story type
+		storyMsg.SetPayload(proto.KeyStoryType, story.StoryType)
 
-		// Read and parse story content for the coder.
-		if content, requirements, err := d.parseStoryContent(story.FilePath); err == nil {
-			storyMsg.SetPayload(proto.KeyContent, content)
-			storyMsg.SetPayload(proto.KeyRequirements, requirements)
-
-			// Detect backend from story content and requirements.
-			backend := d.detectBackend(storyID, content, requirements)
-			storyMsg.SetPayload(proto.KeyBackend, backend)
-		} else {
-			// Fallback to title if content parsing fails.
-			storyMsg.SetPayload(proto.KeyContent, story.Title)
-			storyMsg.SetPayload(proto.KeyRequirements, []string{})
-
-			// Default backend detection from title.
-			backend := d.detectBackend(storyID, story.Title, []string{})
-			storyMsg.SetPayload(proto.KeyBackend, backend)
+		// Use story content from the queue (set during SCOPING)
+		content := story.Content
+		if content == "" {
+			// Fallback to title if content is not set
+			content = story.Title
 		}
+		storyMsg.SetPayload(proto.KeyContent, content)
+
+		// Parse requirements from content if available
+		requirements := []string{} // TODO: Extract requirements from story content during SCOPING
+		storyMsg.SetPayload(proto.KeyRequirements, requirements)
 	}
 
 	// Send story to dispatcher.
@@ -279,155 +264,6 @@ func (d *Driver) getStoryIDs(stories []*QueuedStory) []string {
 		ids[i] = story.ID
 	}
 	return ids
-}
-
-// parseStoryContent reads a story file and extracts content and requirements for the coder.
-func (d *Driver) parseStoryContent(filePath string) (string, []string, error) {
-	// Read the story file.
-	fileBytes, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to read story file %s: %w", filePath, err)
-	}
-
-	content := string(fileBytes)
-
-	// Skip YAML frontmatter (everything before the second ---).
-	lines := strings.Split(content, "\n")
-	contentStart := 0
-	dashCount := 0
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "---" {
-			dashCount++
-			if dashCount == 2 {
-				contentStart = i + 1
-				break
-			}
-		}
-	}
-
-	if contentStart >= len(lines) {
-		return "", nil, fmt.Errorf("no content found after YAML frontmatter in %s", filePath)
-	}
-
-	// Get content after frontmatter.
-	contentLines := lines[contentStart:]
-	storyContent := strings.Join(contentLines, "\n")
-
-	// Extract Story description (everything after **Story** until **Acceptance Criteria**).
-	storyStart := strings.Index(storyContent, "**Story**")
-	criteriaStart := strings.Index(storyContent, "**Acceptance Criteria**")
-
-	var storyDescription string
-	if storyStart != -1 && criteriaStart != -1 {
-		storyDescription = strings.TrimSpace(storyContent[storyStart+9 : criteriaStart])
-	} else if storyStart != -1 {
-		storyDescription = strings.TrimSpace(storyContent[storyStart+9:])
-	} else {
-		// Fallback: use first paragraph.
-		paragraphs := strings.Split(strings.TrimSpace(storyContent), "\n\n")
-		if len(paragraphs) > 0 {
-			storyDescription = strings.TrimSpace(paragraphs[0])
-		}
-	}
-
-	// Extract requirements from Acceptance Criteria bullets.
-	var requirements []string
-	if criteriaStart != -1 {
-		criteriaSection := storyContent[criteriaStart+23:] // Skip "**Acceptance Criteria**"
-		lines := strings.Split(criteriaSection, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "*") || strings.HasPrefix(line, "-") {
-				// Remove bullet point marker and clean up.
-				requirement := strings.TrimSpace(line[1:])
-				if requirement != "" {
-					requirements = append(requirements, requirement)
-				}
-			}
-		}
-	}
-
-	return storyDescription, requirements, nil
-}
-
-// detectBackend analyzes story content and requirements to determine the appropriate backend.
-func (d *Driver) detectBackend(_ /* storyID */, content string, requirements []string) string {
-	// Convert content to lowercase for case-insensitive matching.
-	contentLower := strings.ToLower(content)
-
-	// Convert requirements to lowercase for case-insensitive matching.
-	requirementsLower := make([]string, len(requirements))
-	for i, req := range requirements {
-		requirementsLower[i] = strings.ToLower(req)
-	}
-
-	// Check content for backend indicators.
-	if containsBackendKeywords(contentLower, []string{
-		"go", "golang", "go.mod", "go.sum", "main.go", "package main",
-		"func main", "import \"", "go build", "go test", "go run",
-	}) {
-		return "go"
-	}
-
-	if containsBackendKeywords(contentLower, []string{
-		"python", "pip", "requirements.txt", "setup.py", "pyproject.toml",
-		"def ", "import ", "from ", "python3", "venv", "virtualenv", "uv",
-	}) {
-		return buildSystemPython
-	}
-
-	if containsBackendKeywords(contentLower, []string{
-		"javascript", "typescript", "node", "npm", "package.json", "yarn",
-		"pnpm", "bun", "const ", "let ", "var ", "function", "=>", "nodejs",
-	}) {
-		return buildSystemNode
-	}
-
-	if containsBackendKeywords(contentLower, []string{
-		"makefile", "gcc", "clang", "c++", "cpp",
-	}) || strings.Contains(contentLower, " make ") || strings.HasPrefix(contentLower, "make ") || strings.HasSuffix(contentLower, " make") || strings.Contains(contentLower, " c ") {
-		return buildSystemMake
-	}
-
-	// Check requirements for backend indicators.
-	for _, req := range requirementsLower {
-		if containsBackendKeywords(req, []string{
-			"go", "golang", "go.mod", "go.sum", "main.go", "package main",
-		}) {
-			return "go"
-		}
-
-		if containsBackendKeywords(req, []string{
-			"python", "pip", "requirements.txt", "setup.py", "pyproject.toml",
-		}) {
-			return buildSystemPython
-		}
-
-		if containsBackendKeywords(req, []string{
-			"javascript", "typescript", "node", "npm", "package.json", "yarn",
-		}) {
-			return buildSystemNode
-		}
-
-		if containsBackendKeywords(req, []string{
-			"makefile", "gcc", "clang",
-		}) || strings.Contains(req, " make ") || strings.HasPrefix(req, "make ") || strings.HasSuffix(req, " make") {
-			return buildSystemMake
-		}
-	}
-
-	// Default to null backend if no specific backend detected.
-	return "null"
-}
-
-// containsBackendKeywords checks if text contains any of the given keywords.
-func containsBackendKeywords(text string, keywords []string) bool {
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
-			return true
-		}
-	}
-	return false
 }
 
 // persistQueueState saves the current queue state to the state store.

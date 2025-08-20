@@ -3,7 +3,7 @@
 The architect has reviewed your current approach and requests changes:
 
 ```
-{{.Data}}
+{{.Extra.Data}}
 ```
 
 **Action Required:**
