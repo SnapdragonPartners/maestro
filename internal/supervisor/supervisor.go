@@ -149,9 +149,9 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 		action := s.Policy.OnError[agentType]
 
 		// CRITICAL: For coder errors, requeue the story before restart
-		// This preserves the exact flow from the old orchestrator
 		if agentType == string(agent.TypeCoder) {
-			if err := s.Kernel.Dispatcher.SendRequeue(notification.AgentID, "agent error"); err != nil {
+			s.Logger.Info("Requeuing story for failed agent %s", notification.AgentID)
+			if err := s.Kernel.Dispatcher.RequeueStory(notification.AgentID); err != nil {
 				s.Logger.Error("Failed to requeue story for agent %s: %v", notification.AgentID, err)
 			}
 		}

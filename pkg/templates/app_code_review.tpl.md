@@ -3,7 +3,7 @@
 You are an architect reviewing CODE IMPLEMENTATION for an APPLICATION story.
 
 ## Code Submission
-{{.Content}}
+{{.Extra.Content}}
 
 ## Evaluation Criteria for Application Code
 

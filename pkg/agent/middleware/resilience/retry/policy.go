@@ -21,12 +21,13 @@ type Config struct {
 }
 
 // DefaultConfig provides reasonable defaults for retry behavior.
+// Timing: 0ms -> ~1s -> ~2s -> ~4s -> ~8s (±10% jitter)
 //
 //nolint:gochecknoglobals // Sensible default config pattern
 var DefaultConfig = Config{
-	MaxAttempts:   3,
-	InitialDelay:  100 * time.Millisecond,
-	MaxDelay:      10 * time.Second,
+	MaxAttempts:   5,
+	InitialDelay:  1 * time.Second,
+	MaxDelay:      30 * time.Second,
 	BackoffFactor: 2.0,
 	Jitter:        true,
 }

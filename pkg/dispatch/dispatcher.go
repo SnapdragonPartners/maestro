@@ -1002,6 +1002,19 @@ func (d *Dispatcher) SendRequeue(agentID, reason string) error {
 	}
 }
 
+// RequeueStory directly requeues a story by clearing the agent's lease.
+// This makes the story available for reassignment to another agent.
+func (d *Dispatcher) RequeueStory(agentID string) error {
+	storyID := d.GetLease(agentID)
+	if storyID == "" {
+		return fmt.Errorf("no lease found for agent %s", agentID)
+	}
+
+	d.ClearLease(agentID)
+	d.logger.Info("Requeued story %s from failed agent %s", storyID, agentID)
+	return nil
+}
+
 // GetContainerRegistry returns the container registry for orchestrator access.
 func (d *Dispatcher) GetContainerRegistry() *exec.ContainerRegistry {
 	return d.containerRegistry
