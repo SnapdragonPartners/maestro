@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/coder"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -946,11 +947,15 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 	}
 
 	// Get story information from queue
-	var storyTitle, storyType, specContent string
+	var storyTitle, storyType, specContent, approvedPlan string
 	if storyID != "" && d.queue != nil {
 		if story, exists := d.queue.GetStory(storyID); exists {
 			storyTitle = story.Title
 			storyType = story.StoryType
+			// For CODING state reviews, include the approved plan for context
+			if origin == string(coder.StateCoding) && story.ApprovedPlan != "" {
+				approvedPlan = story.ApprovedPlan
+			}
 			// TODO: For now, we add a placeholder for spec content
 			// In a future enhancement, we could fetch the actual spec content
 			// using the story.SpecID and the persistence channel
@@ -977,7 +982,7 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 
 	// Select template based on current state
 	var templateName templates.StateTemplate
-	if origin == "PLANNING" {
+	if origin == string(coder.StatePlanning) {
 		templateName = templates.BudgetReviewPlanningTemplate
 	} else {
 		templateName = templates.BudgetReviewCodingTemplate
@@ -999,6 +1004,7 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 			"RecentActivity": recentActivity,
 			"IssuePattern":   issuePattern,
 			"SpecContent":    specContent,
+			"ApprovedPlan":   approvedPlan, // Include approved plan for CODING state context
 		},
 	}
 

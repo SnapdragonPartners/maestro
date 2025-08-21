@@ -127,25 +127,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	if llmErr != nil {
 		// Check if this is an empty response error that should trigger budget review
 		if c.isEmptyResponseError(llmErr) {
-			// Log debugging info for troubleshooting
-			c.logEmptyLLMResponse(prompt, req)
-
-			// Create empty response budget review effect
-			budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StatePlanning), 1)
-
-			// Set story ID for dispatcher validation
-			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
-			budgetReviewEff.StoryID = storyID
-
-			// Store origin state and effect for BUDGET_REVIEW state to execute
-			sm.SetStateData(KeyOrigin, string(StatePlanning))
-			sm.SetStateData("budget_review_effect", budgetReviewEff)
-
-			// Add requesting permission message to preserve alternation
-			c.contextManager.AddAssistantMessage("requesting permission to continue")
-
-			c.logger.Info("🧑‍💻 Empty response in PLANNING - escalating to budget review")
-			return StateBudgetReview, false, nil
+			return c.handleEmptyResponseError(sm, prompt, req, StatePlanning)
 		}
 
 		// For other errors, continue with normal error handling

@@ -508,6 +508,8 @@ func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
 	if resp.Content != "" {
 		// Case 1: Normal response with content
 		c.contextManager.AddAssistantMessage(resp.Content)
+		// Clear empty response flag on successful response
+		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
 		return nil
 	}
 
@@ -519,6 +521,8 @@ func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
 		}
 		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
 		c.contextManager.AddAssistantMessage(placeholder)
+		// Clear empty response flag on successful response with tool calls
+		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
 		return nil
 	}
 

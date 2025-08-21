@@ -118,25 +118,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	if llmErr != nil {
 		// Check if this is an empty response error that should trigger budget review
 		if c.isEmptyResponseError(llmErr) {
-			// Log debugging info for troubleshooting
-			c.logEmptyLLMResponse(prompt, req)
-
-			// Create empty response budget review effect
-			budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StateCoding), 1)
-
-			// Set story ID for dispatcher validation
-			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
-			budgetReviewEff.StoryID = storyID
-
-			// Store origin state and effect for BUDGET_REVIEW state to execute
-			sm.SetStateData(KeyOrigin, string(StateCoding))
-			sm.SetStateData("budget_review_effect", budgetReviewEff)
-
-			// Add requesting permission message to preserve alternation
-			c.contextManager.AddAssistantMessage("requesting permission to continue")
-
-			c.logger.Info("🧑‍💻 Empty response in CODING - escalating to budget review")
-			return StateBudgetReview, false, nil
+			return c.handleEmptyResponseError(sm, prompt, req, StateCoding)
 		}
 
 		// For other errors, continue with normal error handling
@@ -383,6 +365,38 @@ func (c *Coder) getCurrentTask() any    { return map[string]any{} }
 // isEmptyResponseError checks if an error is an empty response error that should trigger budget review.
 func (c *Coder) isEmptyResponseError(err error) bool {
 	return llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse)
+}
+
+// handleEmptyResponseError handles empty response errors with budget review escalation and loop prevention.
+func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest, originState proto.State) (proto.State, bool, error) {
+	// Log debugging info for troubleshooting
+	c.logEmptyLLMResponse(prompt, req)
+
+	// Check if we've already attempted budget review for empty response
+	if utils.GetStateValueOr[bool](sm, KeyEmptyResponse, false) {
+		c.logger.Error("🧑‍💻 Second empty response after budget review - transitioning to ERROR")
+		return proto.StateError, false, fmt.Errorf("received empty response even after budget review guidance")
+	}
+
+	// Set flag to track that we're handling empty response
+	sm.SetStateData(KeyEmptyResponse, true)
+
+	// Create empty response budget review effect
+	budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(originState), 1)
+
+	// Set story ID for dispatcher validation
+	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+	budgetReviewEff.StoryID = storyID
+
+	// Store origin state and effect for BUDGET_REVIEW state to execute
+	sm.SetStateData(KeyOrigin, string(originState))
+	sm.SetStateData("budget_review_effect", budgetReviewEff)
+
+	// Add requesting permission message to preserve alternation
+	c.contextManager.AddAssistantMessage("requesting permission to continue")
+
+	c.logger.Info("🧑‍💻 Empty response in %s - escalating to budget review", originState)
+	return StateBudgetReview, false, nil
 }
 
 // logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
