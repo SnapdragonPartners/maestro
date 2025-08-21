@@ -78,8 +78,8 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 		return fmt.Errorf("story %s not found in queue", storyID)
 	}
 
-	if story.Status != StatusPending {
-		return fmt.Errorf("story %s is not in pending status (current: %s)", storyID, story.Status)
+	if story.GetStatus() != StatusPending {
+		return fmt.Errorf("story %s is not in pending status (current: %s)", storyID, story.GetStatus())
 	}
 
 	// Send to dispatcher via story message.
@@ -143,9 +143,9 @@ func (d *Driver) logQueueState() {
 	var pendingStories, completedStories, inProgressStories []string
 
 	for _, story := range allStories {
-		statusCounts[string(story.Status)]++
+		statusCounts[string(story.GetStatus())]++
 
-		switch story.Status {
+		switch story.GetStatus() {
 		case StatusPending:
 			// Check if dependencies are met for pending stories
 			dependencyStatus := "BLOCKED"

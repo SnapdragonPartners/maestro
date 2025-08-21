@@ -244,10 +244,16 @@ func TestDatabaseOperations(t *testing.T) {
 			t.Errorf("Expected pending story [%s], got %v", story1ID, getStoryIDs(pending))
 		}
 
-		// Complete story1
+		// Complete story1 with PR and commit information
+		prID := "123"
+		commitHash := "abc123def456"
+		completionSummary := "Story completed via merge. PR: https://github.com/test/repo/pull/123, Commit: abc123def456"
 		updateReq := &UpdateStoryStatusRequest{
-			StoryID: story1ID,
-			Status:  StatusDone,
+			StoryID:           story1ID,
+			Status:            StatusDone,
+			PRID:              &prID,
+			CommitHash:        &commitHash,
+			CompletionSummary: &completionSummary,
 		}
 		err = ops.UpdateStoryStatus(updateReq)
 		if err != nil {

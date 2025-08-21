@@ -46,12 +46,15 @@ const (
 
 // UpdateStoryStatusRequest represents a status update request.
 type UpdateStoryStatusRequest struct {
-	Timestamp        time.Time `json:"timestamp,omitempty"`
-	PromptTokens     *int64    `json:"prompt_tokens,omitempty"`     // Total prompt tokens used for this story
-	CompletionTokens *int64    `json:"completion_tokens,omitempty"` // Total completion tokens used for this story
-	CostUSD          *float64  `json:"cost_usd,omitempty"`          // Total cost in USD for this story
-	StoryID          string    `json:"story_id"`
-	Status           string    `json:"status"`
+	Timestamp         time.Time `json:"timestamp,omitempty"`
+	PromptTokens      *int64    `json:"prompt_tokens,omitempty"`      // Total prompt tokens used for this story
+	CompletionTokens  *int64    `json:"completion_tokens,omitempty"`  // Total completion tokens used for this story
+	CostUSD           *float64  `json:"cost_usd,omitempty"`           // Total cost in USD for this story
+	PRID              *string   `json:"pr_id,omitempty"`              // Pull request ID
+	CommitHash        *string   `json:"commit_hash,omitempty"`        // Commit hash from merge
+	CompletionSummary *string   `json:"completion_summary,omitempty"` // Summary of what was completed
+	StoryID           string    `json:"story_id"`
+	Status            string    `json:"status"`
 }
 
 // BatchUpsertStoriesWithDependenciesRequest represents a batch operation for atomically inserting stories with dependencies.
@@ -94,8 +97,8 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 		INSERT INTO stories (
 			id, spec_id, title, content, status, priority, approved_plan,
 			created_at, started_at, completed_at, assigned_agent,
-			tokens_used, cost_usd, metadata, story_type
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			spec_id = excluded.spec_id,
 			title = excluded.title,
@@ -109,14 +112,17 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 			tokens_used = excluded.tokens_used,
 			cost_usd = excluded.cost_usd,
 			metadata = excluded.metadata,
-			story_type = excluded.story_type
+			story_type = excluded.story_type,
+			pr_id = excluded.pr_id,
+			commit_hash = excluded.commit_hash,
+			completion_summary = excluded.completion_summary
 	`
 
 	_, err := ops.db.Exec(query,
 		story.ID, story.SpecID, story.Title, story.Content, story.Status,
 		story.Priority, story.ApprovedPlan, story.CreatedAt, story.StartedAt,
 		story.CompletedAt, story.AssignedAgent, story.TokensUsed,
-		story.CostUSD, story.Metadata, story.StoryType,
+		story.CostUSD, story.Metadata, story.StoryType, story.PRID, story.CommitHash, story.CompletionSummary,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to upsert story %s: %w", story.ID, err)
@@ -162,6 +168,22 @@ func (ops *DatabaseOperations) UpdateStoryStatus(req *UpdateStoryStatusRequest) 
 	if req.CostUSD != nil {
 		setParts = append(setParts, "cost_usd = ?")
 		args = append(args, *req.CostUSD)
+	}
+
+	// Add completion-related fields if provided
+	if req.PRID != nil {
+		setParts = append(setParts, "pr_id = ?")
+		args = append(args, *req.PRID)
+	}
+
+	if req.CommitHash != nil {
+		setParts = append(setParts, "commit_hash = ?")
+		args = append(args, *req.CommitHash)
+	}
+
+	if req.CompletionSummary != nil {
+		setParts = append(setParts, "completion_summary = ?")
+		args = append(args, *req.CompletionSummary)
 	}
 
 	// Add WHERE clause

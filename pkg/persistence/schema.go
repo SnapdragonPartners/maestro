@@ -11,7 +11,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 5
+const CurrentSchemaVersion = 6
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -89,7 +89,10 @@ func createSchema(db *sql.DB) error {
 			tokens_used BIGINT DEFAULT 0,
 			cost_usd DECIMAL(10,4) DEFAULT 0.0,
 			metadata TEXT,
-			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app'))
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app')),
+			pr_id TEXT,
+			commit_hash TEXT,
+			completion_summary TEXT
 		)`,
 
 		// Story dependencies junction table

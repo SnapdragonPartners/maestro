@@ -110,7 +110,7 @@ func (d *Driver) sendAbandonAndRequeue(ctx context.Context) error {
 	}
 
 	// Reset to pending status so it can be picked up again.
-	story.Status = StatusPending
+	story.SetStatus(StatusPending)
 	story.AssignedAgent = ""
 	story.StartedAt = nil
 	story.CompletedAt = nil

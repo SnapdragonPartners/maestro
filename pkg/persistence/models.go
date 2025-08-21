@@ -20,21 +20,40 @@ type Spec struct {
 //
 //nolint:govet // struct alignment optimization not critical for this type
 type Story struct {
-	CreatedAt     time.Time  `json:"created_at"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
-	TokensUsed    int64      `json:"tokens_used"`
-	CostUSD       float64    `json:"cost_usd"`
-	ID            string     `json:"id"`
-	SpecID        string     `json:"spec_id"`
-	Title         string     `json:"title"`
-	Content       string     `json:"content"`
-	Status        string     `json:"status"`
-	ApprovedPlan  string     `json:"approved_plan,omitempty"`
-	AssignedAgent string     `json:"assigned_agent,omitempty"`
-	Metadata      string     `json:"metadata,omitempty"` // JSON blob for extensibility
-	StoryType     string     `json:"story_type"`         // "devops" or "app"
-	Priority      int        `json:"priority"`
+	// Core persistent fields
+	ID           string `json:"id"`
+	SpecID       string `json:"spec_id"`
+	Title        string `json:"title"`
+	Content      string `json:"content"`
+	Status       string `json:"status"`
+	Priority     int    `json:"priority"`
+	ApprovedPlan string `json:"approved_plan,omitempty"`
+	StoryType    string `json:"story_type"` // "devops" or "app"
+
+	// Timestamps
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	LastUpdated time.Time  `json:"last_updated"`
+
+	// Assignment and execution
+	AssignedAgent string `json:"assigned_agent,omitempty"`
+
+	// Metrics and costs
+	TokensUsed int64   `json:"tokens_used"`
+	CostUSD    float64 `json:"cost_usd"`
+
+	// Completion tracking
+	PRID              string `json:"pr_id,omitempty"`              // Pull request ID
+	CommitHash        string `json:"commit_hash,omitempty"`        // Commit hash from merge
+	CompletionSummary string `json:"completion_summary,omitempty"` // Summary of what was completed
+
+	// Extensibility
+	Metadata string `json:"metadata,omitempty"` // JSON blob for extensibility
+
+	// Queue-specific fields (not persisted to database)
+	DependsOn       []string `json:"depends_on" db:"-"`       // Story dependencies
+	EstimatedPoints int      `json:"estimated_points" db:"-"` // Estimation points
 }
 
 // StoryDependency represents a dependency relationship between stories.

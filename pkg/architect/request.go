@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/coder"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -532,7 +535,9 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		// Extract story ID and handle work acceptance (queue completion, database persistence, state transition signal)
 		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
 			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
-				d.handleWorkAccepted(ctx, storyIDStr, "completion")
+				// For completion (non-merge) scenarios, we don't have PR/commit data
+				completionSummary := "Story completed via manual approval"
+				d.handleWorkAccepted(ctx, storyIDStr, "completion", nil, nil, &completionSummary)
 			}
 		}
 	}
@@ -602,7 +607,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 					if story, exists := d.queue.GetStory(storyIDStr); exists {
 						// Convert queue status to database status
 						var dbStatus string
-						switch story.Status {
+						switch story.GetStatus() {
 						case StatusPending:
 							dbStatus = persistence.StatusNew
 						case StatusInProgress:
@@ -738,11 +743,69 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		resultMsg.SetPayload("feedback", "Pull request merged successfully")
 		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
 
+		// Extract PR ID from URL for database storage
+		var prIDPtr *string
+		if prURLStr != "" {
+			prID := extractPRIDFromURL(prURLStr)
+			if prID != "" {
+				prIDPtr = &prID
+			}
+		}
+
+		// Prepare completion summary
+		completionSummary := fmt.Sprintf("Story completed via merge. PR: %s, Commit: %s", prURLStr, mergeResult.CommitSHA)
+
 		// Handle work acceptance (queue completion, database persistence, state transition signal)
-		d.handleWorkAccepted(ctx, storyIDStr, "merge")
+		d.handleWorkAccepted(ctx, storyIDStr, "merge", prIDPtr, &mergeResult.CommitSHA, &completionSummary)
 	}
 
 	return resultMsg, nil
+}
+
+// queryStoryMetrics retrieves metrics for a story from the internal metrics recorder.
+func (d *Driver) queryStoryMetrics(_ context.Context, storyID string) *metrics.StoryMetrics {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		d.logger.Warn("📊 Failed to get config for metrics query: %v", err)
+		return nil
+	}
+
+	if cfg.Agents == nil || !cfg.Agents.Metrics.Enabled {
+		d.logger.Warn("📊 Metrics not enabled - skipping metrics query")
+		return nil
+	}
+
+	d.logger.Info("📊 Querying internal metrics for completed story %s", storyID)
+
+	// Get the internal metrics recorder (singleton)
+	recorder := metrics.NewInternalRecorder()
+	storyMetrics := recorder.GetStoryMetrics(storyID)
+
+	if storyMetrics != nil {
+		d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total tokens: %d, total cost: $%.6f",
+			storyID, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalTokens, storyMetrics.TotalCost)
+	} else {
+		d.logger.Warn("📊 No metrics found for story %s", storyID)
+	}
+
+	return storyMetrics
+}
+
+// extractPRIDFromURL extracts the PR number from a GitHub PR URL.
+func extractPRIDFromURL(prURL string) string {
+	// Extract PR number from URLs like:
+	// https://github.com/owner/repo/pull/123
+	// https://api.github.com/repos/owner/repo/pulls/123
+	parts := strings.Split(prURL, "/")
+	if len(parts) > 0 {
+		// Get the last part which should be the PR number
+		lastPart := parts[len(parts)-1]
+		// Validate it's numeric
+		if _, err := strconv.Atoi(lastPart); err == nil {
+			return lastPart
+		}
+	}
+	return ""
 }
 
 // MergeAttemptResult represents the result of a merge attempt.
@@ -1117,7 +1180,7 @@ func (d *Driver) generateCodeReviewApprovalPrompt(requestMsg *proto.AgentMsg, co
 
 // handleWorkAccepted handles the unified flow for work acceptance (completion or merge).
 // This is the single path for marking stories as done, persisting to database, and signaling state transition.
-func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType string) {
+func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType string, prID, commitHash, completionSummary *string) {
 	if storyID == "" {
 		d.logger.Warn("handleWorkAccepted called with empty story ID")
 		return
@@ -1125,22 +1188,42 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 
 	d.logger.Info("🎉 Work accepted for story %s via %s", storyID, acceptanceType)
 
-	// 1. Mark story as completed in queue
+	// 1. Update story with completion data in queue
 	if d.queue != nil {
-		if err := d.queue.MarkCompleted(storyID); err != nil {
-			d.logger.Error("Failed to mark story %s as completed in queue: %v", storyID, err)
-		} else {
-			d.logger.Info("✅ Story %s marked as completed in queue", storyID)
+		if story, exists := d.queue.GetStory(storyID); exists {
+			// Update the story with completion data
+			if prID != nil {
+				story.PRID = *prID
+			}
+			if commitHash != nil {
+				story.CommitHash = *commitHash
+			}
+			if completionSummary != nil {
+				story.CompletionSummary = *completionSummary
+			}
+
+			// Mark as completed
+			if err := d.queue.MarkCompleted(storyID); err != nil {
+				d.logger.Error("Failed to mark story %s as completed in queue: %v", storyID, err)
+			} else {
+				d.logger.Info("✅ Story %s marked as completed in queue with completion data", storyID)
+			}
 		}
 	}
 
-	// 2. Persist story completion to database with metrics
-	if d.persistenceChannel != nil {
-		d.logger.Info("💾 Updating story %s status to 'done' after %s", storyID, acceptanceType)
+	// 2. Add metrics to the story and persist to database
+	if d.persistenceChannel != nil && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			// Query and add metrics if available
+			storyMetrics := d.queryStoryMetrics(ctx, storyID)
+			if storyMetrics != nil {
+				story.TokensUsed = storyMetrics.PromptTokens + storyMetrics.CompletionTokens
+				story.CostUSD = storyMetrics.TotalCost
+			}
 
-		// Use the new persistence function that handles metrics retrieval
-		now := time.Now().UTC()
-		persistence.PersistStoryWithMetrics(ctx, storyID, persistence.StatusDone, now, d.persistenceChannel, d.logger)
+			d.logger.Info("💾 Persisting completed story %s to database after %s", storyID, acceptanceType)
+			persistence.PersistStory(story.ToPersistenceStory(), d.persistenceChannel)
+		}
 	}
 
 	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)

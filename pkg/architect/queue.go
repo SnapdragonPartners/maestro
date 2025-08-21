@@ -30,24 +30,29 @@ const (
 	StatusAwaitHumanFeedback StoryStatus = "await_human_feedback"
 )
 
-// QueuedStory represents a story in the architect's queue.
-//
-//nolint:govet // Large complex struct, logical grouping preferred
+// QueuedStory embeds the unified Story type with architect-specific methods.
 type QueuedStory struct {
-	ID              string      `json:"id"`
-	SpecID          string      `json:"spec_id"` // Foreign key to spec
-	Title           string      `json:"title"`
-	Content         string      `json:"content"`       // Story content generated during SCOPING
-	ApprovedPlan    string      `json:"approved_plan"` // Approved implementation plan
-	Status          StoryStatus `json:"status"`
-	Priority        int         `json:"priority"`
-	DependsOn       []string    `json:"depends_on"`
-	EstimatedPoints int         `json:"estimated_points"`
-	AssignedAgent   string      `json:"assigned_agent,omitempty"`
-	StartedAt       *time.Time  `json:"started_at,omitempty"`
-	CompletedAt     *time.Time  `json:"completed_at,omitempty"`
-	LastUpdated     time.Time   `json:"last_updated"`
-	StoryType       string      `json:"story_type"` // "devops" or "app"
+	persistence.Story
+}
+
+// GetStatus returns the story status as StoryStatus enum.
+func (s *QueuedStory) GetStatus() StoryStatus {
+	return StoryStatus(s.Status)
+}
+
+// SetStatus sets the story status from StoryStatus enum.
+func (s *QueuedStory) SetStatus(status StoryStatus) {
+	s.Status = string(status)
+}
+
+// NewQueuedStory creates a new QueuedStory from a persistence.Story.
+func NewQueuedStory(story *persistence.Story) *QueuedStory {
+	return &QueuedStory{Story: *story}
+}
+
+// ToPersistenceStory converts to persistence.Story for database operations.
+func (s *QueuedStory) ToPersistenceStory() *persistence.Story {
+	return &s.Story
 }
 
 // Queue manages the architect's story queue with dependency resolution.
@@ -81,22 +86,26 @@ func (q *Queue) SetReadyChannel(ch chan<- string) {
 // AddStory adds a story directly to the in-memory queue.
 // This should be used when stories are generated during normal operation.
 func (q *Queue) AddStory(storyID, specID, title, content, storyType string, dependencies []string, estimatedPoints int) {
+	now := time.Now()
 	queuedStory := &QueuedStory{
-		ID:              storyID,
-		Title:           title,
-		Content:         content, // Story content from requirement description
-		ApprovedPlan:    "",      // Plan will be set during approval
-		Status:          StatusPending,
-		Priority:        estimatedPoints,
-		DependsOn:       dependencies,
-		EstimatedPoints: estimatedPoints,
-		AssignedAgent:   "",
-		StartedAt:       nil,
-		CompletedAt:     nil,
-		LastUpdated:     time.Now(),
-		StoryType:       storyType,
-		SpecID:          specID,
+		Story: persistence.Story{
+			ID:              storyID,
+			SpecID:          specID,
+			Title:           title,
+			Content:         content, // Story content from requirement description
+			ApprovedPlan:    "",      // Plan will be set during approval
+			Priority:        estimatedPoints,
+			DependsOn:       dependencies,
+			EstimatedPoints: estimatedPoints,
+			AssignedAgent:   "",
+			StartedAt:       nil,
+			CompletedAt:     nil,
+			LastUpdated:     now,
+			CreatedAt:       now,
+			StoryType:       storyType,
+		},
 	}
+	queuedStory.SetStatus(StatusPending)
 
 	q.stories[storyID] = queuedStory
 
@@ -115,7 +124,7 @@ func (q *Queue) FlushToDatabase() {
 	for _, queuedStory := range q.stories {
 		// Convert queue status to database status
 		var dbStatus string
-		switch queuedStory.Status {
+		switch queuedStory.GetStatus() {
 		case StatusPending:
 			dbStatus = persistence.StatusNew
 		case StatusInProgress:
@@ -186,7 +195,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 	var ready []*QueuedStory
 
 	for _, story := range q.stories {
-		if story.Status != StatusPending {
+		if story.GetStatus() != StatusPending {
 			continue
 		}
 
@@ -202,7 +211,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 // AllStoriesCompleted checks if all stories in the queue are completed.
 func (q *Queue) AllStoriesCompleted() bool {
 	for _, story := range q.stories {
-		if story.Status != StatusCompleted && story.Status != StatusCancelled {
+		if story.GetStatus() != StatusCompleted && story.GetStatus() != StatusCancelled {
 			return false
 		}
 	}
@@ -217,7 +226,7 @@ func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
 			// Dependency doesn't exist - consider it as not met.
 			return false
 		}
-		if dep.Status != StatusCompleted {
+		if dep.GetStatus() != StatusCompleted {
 			return false
 		}
 	}
@@ -231,12 +240,12 @@ func (q *Queue) MarkInProgress(storyID, agentID string) error {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	if story.Status != StatusPending {
+	if story.GetStatus() != StatusPending {
 		return fmt.Errorf("story %s is not in pending status (current: %s)", storyID, story.Status)
 	}
 
 	now := time.Now().UTC()
-	story.Status = StatusInProgress
+	story.SetStatus(StatusInProgress)
 	story.AssignedAgent = agentID
 	story.StartedAt = &now
 	story.LastUpdated = now
@@ -265,12 +274,12 @@ func (q *Queue) MarkWaitingReview(storyID string) error {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	if story.Status != StatusInProgress {
+	if story.GetStatus() != StatusInProgress {
 		return fmt.Errorf("story %s is not in progress (current: %s)", storyID, story.Status)
 	}
 
 	now := time.Now().UTC()
-	story.Status = StatusWaitingReview
+	story.SetStatus(StatusWaitingReview)
 	story.LastUpdated = now
 
 	// Update database status remains as coding since the story is still being worked on
@@ -300,7 +309,7 @@ func (q *Queue) MarkCompleted(storyID string) error {
 	allowedStatuses := []StoryStatus{StatusInProgress, StatusWaitingReview}
 	statusAllowed := false
 	for _, status := range allowedStatuses {
-		if story.Status == status {
+		if story.GetStatus() == status {
 			statusAllowed = true
 			break
 		}
@@ -311,7 +320,7 @@ func (q *Queue) MarkCompleted(storyID string) error {
 	}
 
 	now := time.Now().UTC()
-	story.Status = StatusCompleted
+	story.SetStatus(StatusCompleted)
 	story.CompletedAt = &now
 	story.LastUpdated = now
 
@@ -342,7 +351,7 @@ func (q *Queue) checkAndNotifyReady() {
 	}
 
 	for _, story := range q.stories {
-		if story.Status == StatusPending && q.areDependenciesMet(story) {
+		if story.GetStatus() == StatusPending && q.areDependenciesMet(story) {
 			// Try to notify (non-blocking).
 			select {
 			case q.readyStoryCh <- story.ID:
@@ -361,7 +370,7 @@ func (q *Queue) MarkBlocked(storyID string) error {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	story.Status = StatusBlocked
+	story.SetStatus(StatusBlocked)
 	story.LastUpdated = time.Now().UTC()
 
 	return nil
@@ -374,7 +383,7 @@ func (q *Queue) MarkAwaitHumanFeedback(storyID string) error {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	story.Status = StatusAwaitHumanFeedback
+	story.SetStatus(StatusAwaitHumanFeedback)
 	story.LastUpdated = time.Now().UTC()
 
 	return nil
@@ -388,7 +397,7 @@ func (q *Queue) MarkPending(storyID string) error {
 	}
 
 	// Clear assignment and reset to pending.
-	story.Status = StatusPending
+	story.SetStatus(StatusPending)
 	story.AssignedAgent = ""
 	story.StartedAt = nil
 	story.LastUpdated = time.Now().UTC()
@@ -405,7 +414,7 @@ func (q *Queue) RequeueStory(storyID string) error {
 	}
 
 	// Clear assignment, approved plan, and reset to pending
-	story.Status = StatusPending
+	story.SetStatus(StatusPending)
 	story.AssignedAgent = ""
 	story.ApprovedPlan = "" // Clear approved plan for fresh start
 	story.StartedAt = nil
@@ -454,7 +463,7 @@ func (q *Queue) GetAllStories() []*QueuedStory {
 func (q *Queue) GetStoriesByStatus(status StoryStatus) []*QueuedStory {
 	var filtered []*QueuedStory
 	for _, story := range q.stories {
-		if story.Status == status {
+		if story.GetStatus() == status {
 			filtered = append(filtered, story)
 		}
 	}
@@ -553,9 +562,9 @@ func (q *Queue) GetQueueSummary() map[string]any {
 	completedPoints := 0
 
 	for _, story := range q.stories {
-		statusCounts[story.Status]++
+		statusCounts[story.GetStatus()]++
 		totalPoints += story.EstimatedPoints
-		if story.Status == StatusCompleted {
+		if story.GetStatus() == StatusCompleted {
 			completedPoints += story.EstimatedPoints
 		}
 	}

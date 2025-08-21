@@ -20,6 +20,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/state"
 	"orchestrator/pkg/utils"
@@ -1193,36 +1194,42 @@ func TestHandleStories(t *testing.T) {
 	// Create test stories.
 	testStories := []*architect.QueuedStory{
 		{
-			ID:              "story-001",
-			Title:           "Implement user authentication",
-			Status:          architect.StatusPending,
-			EstimatedPoints: 5,
-			DependsOn:       []string{},
-			LastUpdated:     time.Now(),
-			StoryType:       "app",
+			Story: persistence.Story{
+				ID:              "story-001",
+				Title:           "Implement user authentication",
+				Status:          string(architect.StatusPending),
+				EstimatedPoints: 5,
+				DependsOn:       []string{},
+				LastUpdated:     time.Now(),
+				StoryType:       "app",
+			},
 		},
 		{
-			ID:              "story-002",
-			Title:           "Add database layer",
-			Status:          architect.StatusInProgress,
-			EstimatedPoints: 8,
-			DependsOn:       []string{"story-001"},
-			AssignedAgent:   "coder-001",
-			StartedAt:       &[]time.Time{time.Now().Add(-1 * time.Hour)}[0],
-			LastUpdated:     time.Now(),
-			StoryType:       "app",
+			Story: persistence.Story{
+				ID:              "story-002",
+				Title:           "Add database layer",
+				Status:          string(architect.StatusInProgress),
+				EstimatedPoints: 8,
+				DependsOn:       []string{"story-001"},
+				AssignedAgent:   "coder-001",
+				StartedAt:       &[]time.Time{time.Now().Add(-1 * time.Hour)}[0],
+				LastUpdated:     time.Now(),
+				StoryType:       "app",
+			},
 		},
 		{
-			ID:              "story-003",
-			Title:           "Create REST API endpoints",
-			Status:          architect.StatusCompleted,
-			EstimatedPoints: 3,
-			DependsOn:       []string{"story-002"},
-			AssignedAgent:   "coder-002",
-			StartedAt:       &[]time.Time{time.Now().Add(-2 * time.Hour)}[0],
-			CompletedAt:     &[]time.Time{time.Now().Add(-30 * time.Minute)}[0],
-			LastUpdated:     time.Now(),
-			StoryType:       "app",
+			Story: persistence.Story{
+				ID:              "story-003",
+				Title:           "Create REST API endpoints",
+				Status:          string(architect.StatusCompleted),
+				EstimatedPoints: 3,
+				DependsOn:       []string{"story-002"},
+				AssignedAgent:   "coder-002",
+				StartedAt:       &[]time.Time{time.Now().Add(-2 * time.Hour)}[0],
+				CompletedAt:     &[]time.Time{time.Now().Add(-30 * time.Minute)}[0],
+				LastUpdated:     time.Now(),
+				StoryType:       "app",
+			},
 		},
 	}
 
@@ -1277,13 +1284,13 @@ func TestHandleStories(t *testing.T) {
 		if stories[0].ID != "story-001" {
 			t.Errorf("Expected first story ID to be story-001, got %s", stories[0].ID)
 		}
-		if stories[0].Status != architect.StatusPending {
+		if stories[0].GetStatus() != architect.StatusPending {
 			t.Errorf("Expected first story status to be pending, got %s", stories[0].Status)
 		}
-		if stories[1].Status != architect.StatusInProgress {
+		if stories[1].GetStatus() != architect.StatusInProgress {
 			t.Errorf("Expected second story status to be in_progress, got %s", stories[1].Status)
 		}
-		if stories[2].Status != architect.StatusCompleted {
+		if stories[2].GetStatus() != architect.StatusCompleted {
 			t.Errorf("Expected third story status to be completed, got %s", stories[2].Status)
 		}
 	})
