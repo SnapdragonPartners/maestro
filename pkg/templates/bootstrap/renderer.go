@@ -152,17 +152,20 @@ func GenerateBootstrapSpecFromReport(projectName, platform, containerImage strin
 }
 
 // GenerateBootstrapSpecFromReportEnhanced creates an enhanced bootstrap specification with git repo URL and config data from global singleton.
+// In bootstrap mode, always generate a spec regardless of verification results - empty repos need setup too.
 func GenerateBootstrapSpecFromReportEnhanced(projectName, platform, containerImage, gitRepoURL, dockerfilePath string, report *workspace.VerifyReport) (string, error) {
-	if !report.RequiresBootstrap() {
-		return "", fmt.Errorf("no bootstrap required - verification passed")
-	}
-
 	renderer, err := NewRenderer()
 	if err != nil {
 		return "", fmt.Errorf("failed to create bootstrap renderer: %w", err)
 	}
 
-	return renderer.RenderBootstrapSpecWithConfig(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report.BootstrapFailures)
+	// Use bootstrap failures if they exist, otherwise pass empty list for clean repos
+	var failures []workspace.BootstrapFailure
+	if report != nil {
+		failures = report.BootstrapFailures
+	}
+
+	return renderer.RenderBootstrapSpecWithConfig(projectName, platform, containerImage, gitRepoURL, dockerfilePath, failures)
 }
 
 // RenderBootstrapSpecWithConfig generates a bootstrap specification with config data from global singleton.

@@ -5,13 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 )
 
 func main() {
@@ -25,11 +28,20 @@ func main() {
 	)
 	flag.Parse()
 
-	// Determine mode - auto-trigger bootstrap if config doesn't exist
-	if *bootstrap || !configExists(*projectDir) {
-		if !*bootstrap {
-			fmt.Printf("No configuration found at %s/.maestro/config.json - entering bootstrap mode\n", *projectDir)
-		}
+	// Universal setup (Steps 1-3): Always run these regardless of mode
+	configWasCreated, err := setupProjectInfrastructure(*projectDir, *gitRepo, *specFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Project setup failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Determine mode - auto-offer bootstrap if config was created from defaults
+	shouldBootstrap := *bootstrap || configWasCreated
+	if shouldBootstrap && !*bootstrap {
+		fmt.Printf("New configuration created - entering bootstrap mode to set up repository\n")
+	}
+
+	if shouldBootstrap {
 		if err := runBootstrapMode(*projectDir, *gitRepo, *specFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
 			os.Exit(1)
@@ -42,11 +54,155 @@ func main() {
 	}
 }
 
-// configExists checks if the Maestro configuration file exists.
-func configExists(projectDir string) bool {
+// setupProjectInfrastructure handles universal setup steps 1-3:
+// 1. Load/create config, 2. Merge command line params, 3. Run VerifyProject
+// Returns whether config was created from defaults (indicating need for bootstrap).
+func setupProjectInfrastructure(projectDir, gitRepo, specFile string) (bool, error) {
+	// Step 1: Check if config exists before loading
 	configPath := filepath.Join(projectDir, ".maestro", "config.json")
-	_, err := os.Stat(configPath)
-	return err == nil
+	configWasCreated := false
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		configWasCreated = true
+	}
+
+	// Load or create config
+	if err := config.LoadConfig(projectDir); err != nil {
+		return false, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Step 2: Merge command line parameters into config
+	if err := mergeCommandLineParams(gitRepo, specFile); err != nil {
+		return false, fmt.Errorf("failed to merge command line params: %w", err)
+	}
+
+	// Step 3: Run VerifyProject (auto-fixes infrastructure issues)
+	if err := verifyProject(projectDir); err != nil {
+		return false, fmt.Errorf("project verification failed: %w", err)
+	}
+
+	return configWasCreated, nil
+}
+
+// mergeCommandLineParams updates config with command line arguments.
+func mergeCommandLineParams(gitRepo, specFile string) error {
+	// Get current config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Update git repo URL if provided
+	if gitRepo != "" && cfg.Git != nil {
+		cfg.Git.RepoURL = gitRepo
+		if err := config.UpdateGit(cfg.Git); err != nil {
+			return fmt.Errorf("failed to update git config: %w", err)
+		}
+	}
+
+	// TODO: Handle specFile parameter if needed for config
+	_ = specFile
+
+	return nil
+}
+
+// verifyProject implements VerifyProject() - auto-fixes deterministic infrastructure.
+//
+//nolint:cyclop // TODO: refactor to reduce complexity - extract helper functions for each setup step
+func verifyProject(projectDir string) error {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// 1. Create .maestro/ directory structure
+	maestroDir := filepath.Join(projectDir, config.ProjectConfigDir)
+	if mkdirErr := os.MkdirAll(maestroDir, 0755); mkdirErr != nil {
+		return fmt.Errorf("failed to create .maestro directory: %w", mkdirErr)
+	}
+
+	// Create subdirectories
+	subdirs := []string{"logs", "work", "stories"}
+	for _, subdir := range subdirs {
+		if mkdirErr := os.MkdirAll(filepath.Join(maestroDir, subdir), 0755); mkdirErr != nil {
+			return fmt.Errorf("failed to create %s directory: %w", subdir, mkdirErr)
+		}
+	}
+
+	// 2. Validate/create database
+	dbPath := filepath.Join(maestroDir, "maestro.db")
+	db, err := persistence.InitializeDatabase(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to initialize database: %w", err)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		return fmt.Errorf("failed to close database: %w", closeErr)
+	}
+
+	// 3. Create CODER.md and ARCHITECT.md system prompt files
+	coderPath := filepath.Join(projectDir, "CODER.md")
+	if _, err := os.Stat(coderPath); os.IsNotExist(err) {
+		coderContent := `# CODER.md
+
+This file provides guidance to Coder agents when working with code in this repository.
+
+## Project Overview
+
+This project uses Maestro for multi-agent AI development coordination.
+
+## Development Commands
+
+Follow the build and test commands specified in the project configuration.
+
+## Code Style
+
+Follow existing patterns and conventions in the codebase.
+`
+		if err := os.WriteFile(coderPath, []byte(coderContent), 0644); err != nil {
+			return fmt.Errorf("failed to create CODER.md: %w", err)
+		}
+	}
+
+	architectPath := filepath.Join(projectDir, "ARCHITECT.md")
+	if _, err := os.Stat(architectPath); os.IsNotExist(err) {
+		architectContent := `# ARCHITECT.md
+
+This file provides guidance to Architect agents when coordinating development in this repository.
+
+## Project Architecture
+
+This project uses Maestro for coordinated AI development.
+
+## Story Management
+
+Generate focused, well-scoped stories with clear acceptance criteria.
+`
+		if err := os.WriteFile(architectPath, []byte(architectContent), 0644); err != nil {
+			return fmt.Errorf("failed to create ARCHITECT.md: %w", err)
+		}
+	}
+
+	// 4. Create git mirror if git config exists
+	if cfg.Git != nil && cfg.Git.RepoURL != "" {
+		mirrorDir := filepath.Join(maestroDir, "mirrors")
+		if err := os.MkdirAll(mirrorDir, 0755); err != nil {
+			return fmt.Errorf("failed to create mirrors directory: %w", err)
+		}
+
+		// Extract repo name from URL for mirror directory
+		repoName := extractRepoName(cfg.Git.RepoURL)
+		repoMirrorPath := filepath.Join(mirrorDir, repoName)
+
+		// Check if mirror already exists
+		if _, err := os.Stat(filepath.Join(repoMirrorPath, ".git")); os.IsNotExist(err) {
+			// Clone as bare mirror
+			if err := cloneGitMirror(cfg.Git.RepoURL, repoMirrorPath); err != nil {
+				return fmt.Errorf("failed to create git mirror: %w", err)
+			}
+		}
+	}
+
+	fmt.Printf("Project infrastructure verification completed for %s\n", projectDir)
+	return nil
 }
 
 func runBootstrapMode(projectDir, gitRepo, specFile string) error {
@@ -90,12 +246,9 @@ func runMainMode(projectDir, specFile string, webUI bool) error {
 }
 
 // initializeKernel consolidates the common kernel initialization logic.
+// Config must already be loaded via setupProjectInfrastructure().
 func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error) {
-	// Load configuration
-	if err := config.LoadConfig(projectDir); err != nil {
-		return nil, nil, fmt.Errorf("failed to load config: %w", err)
-	}
-
+	// Get already-loaded configuration (no reload needed)
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get config: %w", err)
@@ -117,4 +270,32 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 	}
 
 	return k, ctx, nil
+}
+
+// extractRepoName extracts the repository name from a Git URL.
+func extractRepoName(repoURL string) string {
+	// Remove .git suffix if present
+	repoURL = strings.TrimSuffix(repoURL, ".git")
+
+	// Extract the last path component
+	parts := strings.Split(repoURL, "/")
+	if len(parts) == 0 {
+		return "repo"
+	}
+
+	repoName := parts[len(parts)-1]
+	if repoName == "" {
+		return "repo"
+	}
+
+	return repoName
+}
+
+// cloneGitMirror creates a bare git mirror clone of the repository.
+func cloneGitMirror(repoURL, mirrorPath string) error {
+	cmd := exec.Command("git", "clone", "--mirror", repoURL, mirrorPath)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone --mirror failed: %w", err)
+	}
+	return nil
 }
