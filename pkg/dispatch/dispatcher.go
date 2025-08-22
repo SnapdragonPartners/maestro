@@ -71,8 +71,9 @@ type Dispatcher struct {
 	running     bool
 
 	// Phase 1: Channel-based queues.
-	storyCh     chan *proto.AgentMsg // Ready stories for any coder (replaces sharedWorkQueue)
-	questionsCh chan *proto.AgentMsg // Questions/requests for architect (replaces architectRequestQueue)
+	storyCh         chan *proto.AgentMsg          // Ready stories for any coder (replaces sharedWorkQueue)
+	questionsCh     chan *proto.AgentMsg          // Questions/requests for architect (replaces architectRequestQueue)
+	statusUpdatesCh chan *proto.StoryStatusUpdate // Story status updates for architect (non-blocking)
 
 	// Phase 2: Per-agent reply channels.
 	replyChannels map[string]chan *proto.AgentMsg // Per-agent reply channels for ANSWER/RESULT messages
@@ -122,6 +123,7 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter) (*Dispatche
 		specCh:            make(chan *proto.AgentMsg, 10),                                             // Buffered channel for spec messages
 		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
+		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                   // Buffered channel for status updates
 		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
 		errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
 		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
@@ -164,6 +166,7 @@ func (d *Dispatcher) Attach(ag Agent) {
 				d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
 				channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
 				channelReceiver.SetDispatcher(d)
+				// TODO: Add status updates channel to architect interface
 				return
 			case agent.TypeCoder:
 				d.logger.Info("Attached coder agent: %s with direct channel setup", agentID)
@@ -799,6 +802,11 @@ func (d *Dispatcher) GetStateChangeChannel() <-chan *proto.StateChangeNotificati
 	return d.stateChangeCh
 }
 
+// GetStatusUpdatesChannel returns the story status updates channel.
+func (d *Dispatcher) GetStatusUpdatesChannel() <-chan *proto.StoryStatusUpdate {
+	return d.statusUpdatesCh
+}
+
 // ArchitectChannels contains the channels returned to architects.
 type ArchitectChannels struct {
 	Specs <-chan *proto.AgentMsg // Delivers spec messages
@@ -861,6 +869,11 @@ func (d *Dispatcher) closeAllChannels() {
 	if d.stateChangeCh != nil {
 		close(d.stateChangeCh)
 		d.logger.Info("Closed state change notification channel")
+	}
+
+	if d.statusUpdatesCh != nil {
+		close(d.statusUpdatesCh)
+		d.logger.Info("Closed status updates channel")
 	}
 }
 
@@ -1002,17 +1015,67 @@ func (d *Dispatcher) SendRequeue(agentID, reason string) error {
 	}
 }
 
-// RequeueStory directly requeues a story by clearing the agent's lease.
-// This makes the story available for reassignment to another agent.
+// RequeueStory atomically requeues a story and releases it if unblocked.
+// This clears the agent's lease and tells the architect to requeue and release the story.
 func (d *Dispatcher) RequeueStory(agentID string) error {
 	storyID := d.GetLease(agentID)
 	if storyID == "" {
 		return fmt.Errorf("no lease found for agent %s", agentID)
 	}
 
+	// Clear the lease first
 	d.ClearLease(agentID)
 	d.logger.Info("Requeued story %s from failed agent %s", storyID, agentID)
+
+	// Find the architect and call its external API to requeue and release the story
+	d.mu.RLock()
+	architectAgent, exists := d.agents["architect-001"]
+	d.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("architect agent not found for story requeue and release")
+	}
+
+	// Cast to architect driver to access external API
+	type ExternalAPIProvider interface {
+		GetExternalAPI() interface{ RequeueAndRelease(string) error }
+	}
+
+	architectDriver, ok := architectAgent.(ExternalAPIProvider)
+	if !ok {
+		return fmt.Errorf("architect agent does not support external API")
+	}
+
+	// Call the external API to requeue and release the story atomically
+	if err := architectDriver.GetExternalAPI().RequeueAndRelease(storyID); err != nil {
+		return fmt.Errorf("failed to requeue and release story %s: %w", storyID, err)
+	}
+
 	return nil
+}
+
+// UpdateStoryStatus provides a non-blocking way for coders to update story status.
+// This sends a simple status update notification to the architect via a dedicated channel.
+func (d *Dispatcher) UpdateStoryStatus(storyID, status string) error {
+	d.logger.Info("🔄 Sending story %s status update to %s via status channel", storyID, status)
+
+	// Create a simple status update notification
+	statusUpdate := &proto.StoryStatusUpdate{
+		StoryID:   storyID,
+		Status:    status,
+		Timestamp: time.Now().UTC(),
+		AgentID:   "dispatcher", // Could be enhanced to track the actual requesting agent
+	}
+
+	// Send to status updates channel (non-blocking)
+	select {
+	case d.statusUpdatesCh <- statusUpdate:
+		d.logger.Info("✅ Story %s status update sent to architect", storyID)
+		return nil
+	default:
+		d.logger.Warn("❌ Status updates channel full, dropping status update for story %s", storyID)
+		return fmt.Errorf("status updates channel full")
+	}
 }
 
 // GetContainerRegistry returns the container registry for orchestrator access.

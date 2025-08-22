@@ -137,7 +137,7 @@ func (ops *DatabaseOperations) UpdateStoryStatus(req *UpdateStoryStatusRequest) 
 	switch req.Status {
 	case StatusPlanning, StatusCoding:
 		timestampField = "started_at"
-	case StatusDone, StatusError:
+	case StatusDone:
 		timestampField = "completed_at"
 	}
 

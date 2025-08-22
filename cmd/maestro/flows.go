@@ -6,11 +6,9 @@ import (
 	"os"
 	"time"
 
-	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/internal/supervisor"
 	"orchestrator/pkg/agent"
-	"orchestrator/pkg/architect"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/proto"
@@ -59,26 +57,25 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	// Start supervisor's state change processor
 	supervisor.Start(ctx)
 
-	// Create agent configuration with updated git settings
-	agentConfig, err := factory.CreateAgentConfig(&updatedConfig, ".")
+	// Create and register architect agent
+	architect, err := supervisor.GetFactory().NewAgent(ctx, "architect-001", string(agent.TypeArchitect))
 	if err != nil {
-		return fmt.Errorf("failed to create agent config: %w", err)
+		return fmt.Errorf("failed to create architect: %w", err)
 	}
+	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
 
-	// Create agent set with updated configuration using supervisor's factory
-	agentSet, err := supervisor.GetFactory().CreateAgentSet(ctx, agentConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create agent set: %w", err)
-	}
-
-	k.Logger.Info("✅ Created agent set with architect and %d coders", len(agentSet.Coders))
-
-	// Register and start agents with updated configuration
-	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), agentSet.Architect)
-	for i, coder := range agentSet.Coders {
+	// Create and register coder agents based on config
+	numCoders := updatedConfig.Agents.MaxCoders
+	for i := 0; i < numCoders; i++ {
 		coderID := fmt.Sprintf("coder-%03d", i+1)
-		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coder)
+		coderAgent, coderErr := supervisor.GetFactory().NewAgent(ctx, coderID, string(agent.TypeCoder))
+		if coderErr != nil {
+			return fmt.Errorf("failed to create coder %s: %w", coderID, coderErr)
+		}
+		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coderAgent)
 	}
+
+	k.Logger.Info("✅ Created and registered architect and %d coders", numCoders)
 
 	// Inject spec into architect
 	if specErr := InjectSpec(k.Dispatcher, "bootstrap", specContent); specErr != nil {
@@ -87,8 +84,8 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	k.Logger.Info("📝 Injected bootstrap spec into architect")
 
-	// Wait for architect completion
-	finalState, err := f.waitForArchitectCompletion(ctx, agentSet.Architect)
+	// Wait for architect completion - use interface
+	finalState, err := f.waitForArchitectCompletion(ctx, architect)
 	if err != nil {
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
@@ -112,9 +109,19 @@ func (f *BootstrapFlow) loadSpecContent(ctx context.Context) ([]byte, error) {
 	return f.runInteractiveBootstrapSetup(ctx)
 }
 
+// StateProvider interface for agents that provide state information.
+type StateProvider interface {
+	GetCurrentState() proto.State
+}
+
 // waitForArchitectCompletion waits for the architect to reach a terminal state.
 // This preserves the existing waitForArchitectCompletion logic.
-func (f *BootstrapFlow) waitForArchitectCompletion(ctx context.Context, architect *architect.Driver) (proto.State, error) {
+func (f *BootstrapFlow) waitForArchitectCompletion(ctx context.Context, architect dispatch.Agent) (proto.State, error) {
+	// Cast to StateProvider to get state information
+	stateProvider, ok := architect.(StateProvider)
+	if !ok {
+		return proto.StateError, fmt.Errorf("architect does not implement StateProvider interface")
+	}
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -124,7 +131,7 @@ func (f *BootstrapFlow) waitForArchitectCompletion(ctx context.Context, architec
 			return proto.StateError, fmt.Errorf("context cancelled while waiting for architect")
 
 		case <-ticker.C:
-			currentState := architect.GetCurrentState()
+			currentState := stateProvider.GetCurrentState()
 
 			// Check for terminal states
 			if currentState == proto.StateDone {
@@ -173,26 +180,25 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	// Start supervisor's state change processor
 	supervisor.Start(ctx)
 
-	// Create agent configuration
-	agentConfig, err := factory.CreateAgentConfig(k.Config, ".")
+	// Create and register architect agent
+	architect, err := supervisor.GetFactory().NewAgent(ctx, "architect-001", string(agent.TypeArchitect))
 	if err != nil {
-		return fmt.Errorf("failed to create agent config: %w", err)
+		return fmt.Errorf("failed to create architect: %w", err)
 	}
+	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
 
-	// Create agent set using supervisor's factory
-	agentSet, err := supervisor.GetFactory().CreateAgentSet(ctx, agentConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create agent set: %w", err)
-	}
-
-	// Register agents with supervisor
-	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), agentSet.Architect)
-	for i, coder := range agentSet.Coders {
+	// Create and register coder agents based on config
+	numCoders := k.Config.Agents.MaxCoders
+	for i := 0; i < numCoders; i++ {
 		coderID := fmt.Sprintf("coder-%03d", i+1)
-		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coder)
+		coderAgent, coderErr := supervisor.GetFactory().NewAgent(ctx, coderID, string(agent.TypeCoder))
+		if coderErr != nil {
+			return fmt.Errorf("failed to create coder %s: %w", coderID, coderErr)
+		}
+		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coderAgent)
 	}
 
-	k.Logger.Info("✅ Created agent set with architect and %d coders", len(agentSet.Coders))
+	k.Logger.Info("✅ Created and registered architect and %d coders", numCoders)
 
 	// Handle initial spec if provided
 	if f.specFile != "" {

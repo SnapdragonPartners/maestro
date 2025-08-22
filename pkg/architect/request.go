@@ -610,9 +610,9 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 						switch story.GetStatus() {
 						case StatusPending:
 							dbStatus = persistence.StatusNew
-						case StatusInProgress:
+						case StatusAssigned:
 							dbStatus = persistence.StatusCoding
-						case StatusCompleted:
+						case StatusDone:
 							dbStatus = persistence.StatusDone
 						default:
 							dbStatus = persistence.StatusNew
@@ -681,7 +681,7 @@ func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *p
 	}
 
 	// Mark story as pending for reassignment.
-	if err := d.queue.MarkPending(storyIDStr); err != nil {
+	if err := d.queue.UpdateStoryStatus(storyIDStr, StatusPending); err != nil {
 		return fmt.Errorf("failed to requeue story %s: %w", storyIDStr, err)
 	}
 
@@ -1187,10 +1187,12 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	}
 
 	d.logger.Info("🎉 Work accepted for story %s via %s", storyID, acceptanceType)
+	d.logger.Info("🔍 handleWorkAccepted: queue=%v, persistenceChannel=%v", d.queue != nil, d.persistenceChannel != nil)
 
 	// 1. Update story with completion data in queue
 	if d.queue != nil {
 		if story, exists := d.queue.GetStory(storyID); exists {
+			d.logger.Info("🔍 Found story %s in queue for completion", storyID)
 			// Update the story with completion data
 			if prID != nil {
 				story.PRID = *prID
@@ -1202,13 +1204,18 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 				story.CompletionSummary = *completionSummary
 			}
 
-			// Mark as completed
-			if err := d.queue.MarkCompleted(storyID); err != nil {
-				d.logger.Error("Failed to mark story %s as completed in queue: %v", storyID, err)
-			} else {
-				d.logger.Info("✅ Story %s marked as completed in queue with completion data", storyID)
-			}
+			// Update status and timestamps in memory (don't persist yet)
+			now := time.Now().UTC()
+			story.SetStatus(persistence.StatusDone) // Use database-compatible status
+			story.CompletedAt = &now
+			story.LastUpdated = now
+
+			d.logger.Info("✅ Story %s marked as completed in queue with completion data", storyID)
+		} else {
+			d.logger.Warn("⚠️ Story %s not found in queue for completion", storyID)
 		}
+	} else {
+		d.logger.Warn("⚠️ Queue is nil in handleWorkAccepted")
 	}
 
 	// 2. Add metrics to the story and persist to database
@@ -1222,7 +1229,35 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 			}
 
 			d.logger.Info("💾 Persisting completed story %s to database after %s", storyID, acceptanceType)
-			persistence.PersistStory(story.ToPersistenceStory(), d.persistenceChannel)
+			persistenceStory := story.ToPersistenceStory()
+			d.logger.Info("🔍 Story data for persistence: ID=%s, Status=%s, TokensUsed=%d, CostUSD=%.6f, PRID=%s, CommitHash=%s",
+				persistenceStory.ID, persistenceStory.Status, persistenceStory.TokensUsed, persistenceStory.CostUSD, persistenceStory.PRID, persistenceStory.CommitHash)
+
+			// Non-blocking send attempt
+			select {
+			case d.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpUpsertStory,
+				Data:      persistenceStory,
+				Response:  nil,
+			}:
+				d.logger.Info("✅ Story %s persistence request sent successfully", storyID)
+			default:
+				d.logger.Error("❌ Persistence channel full! Cannot persist story %s", storyID)
+			}
+
+			// Notify queue that story completed (for dependency resolution)
+			if d.queue != nil {
+				d.queue.checkAndNotifyReady()
+			}
+		} else {
+			d.logger.Warn("⚠️ Persistence failed: story %s not found in queue", storyID)
+		}
+	} else {
+		if d.persistenceChannel == nil {
+			d.logger.Warn("⚠️ Persistence skipped: persistenceChannel is nil")
+		}
+		if d.queue == nil {
+			d.logger.Warn("⚠️ Persistence skipped: queue is nil")
 		}
 	}
 

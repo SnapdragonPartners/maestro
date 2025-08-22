@@ -684,3 +684,11 @@ type StateChangeNotification struct {
 	Timestamp time.Time      `json:"timestamp"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
+
+// StoryStatusUpdate represents a simple story status change notification.
+type StoryStatusUpdate struct {
+	StoryID   string    `json:"story_id"`
+	Status    string    `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	AgentID   string    `json:"agent_id"`
+}

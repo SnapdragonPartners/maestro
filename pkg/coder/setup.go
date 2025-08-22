@@ -3,6 +3,7 @@ package coder
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -19,6 +20,16 @@ import (
 //
 //nolint:unparam // bool return required by state machine interface, always false for non-terminal states
 func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+	// Clean and recreate work directory for fresh workspace
+	c.logger.Info("🧹 Cleaning work directory for fresh workspace: %s", c.workDir)
+	if err := os.RemoveAll(c.workDir); err != nil {
+		c.logger.Warn("Failed to remove existing work directory: %v", err)
+	}
+	if err := os.MkdirAll(c.workDir, 0755); err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to create fresh work directory")
+	}
+	c.logger.Info("✅ Created fresh work directory: %s", c.workDir)
+
 	if c.cloneManager == nil {
 		c.logger.Warn("No clone manager configured, skipping Git clone setup")
 		return StatePlanning, false, nil
@@ -64,6 +75,16 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	if c.longRunningExecutor != nil {
 		if err := c.configureWorkspaceMount(ctx, true, "planning"); err != nil {
 			return proto.StateError, false, logx.Wrap(err, "failed to configure planning container")
+		}
+	}
+
+	// Update story status to PLANNING via dispatcher (non-blocking)
+	if c.dispatcher != nil {
+		if err := c.dispatcher.UpdateStoryStatus(storyIDStr, "planning"); err != nil {
+			c.logger.Warn("Failed to update story status to planning: %v", err)
+			// Continue anyway - status update failure shouldn't block the workflow
+		} else {
+			c.logger.Info("✅ Story %s status updated to PLANNING", storyIDStr)
 		}
 	}
 

@@ -120,9 +120,9 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		return err
 	}
 
-	// Only mark story as dispatched AFTER successful channel send.
-	if err := d.queue.MarkInProgress(storyID, "dispatcher"); err != nil {
-		return fmt.Errorf("failed to mark story as dispatched: %w", err)
+	// Only mark story as pending AFTER successful channel send.
+	if err := d.queue.UpdateStoryStatus(storyID, StatusPending); err != nil {
+		return fmt.Errorf("failed to mark story as pending: %w", err)
 	}
 
 	return nil
@@ -164,9 +164,9 @@ func (d *Driver) logQueueState() {
 			}
 			pendingStories = append(pendingStories, fmt.Sprintf("%s (%s, deps: %s)",
 				story.ID, dependencyStatus, dependsOnStr))
-		case StatusCompleted:
+		case StatusDone:
 			completedStories = append(completedStories, story.ID)
-		case StatusInProgress:
+		case StatusAssigned:
 			inProgressStories = append(inProgressStories, story.ID)
 		}
 	}
@@ -223,7 +223,7 @@ func (d *Driver) detectDeadlock() bool {
 	}
 
 	// Check if any stories are in progress - not a deadlock
-	inProgressStories := d.queue.GetStoriesByStatus(StatusInProgress)
+	inProgressStories := d.queue.GetStoriesByStatus(StatusAssigned)
 	if len(inProgressStories) > 0 {
 		d.logger.Debug("🚀 DISPATCHING: No deadlock - %d stories in progress: %v",
 			len(inProgressStories), d.getStoryIDs(inProgressStories))

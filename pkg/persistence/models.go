@@ -62,37 +62,15 @@ type StoryDependency struct {
 	DependsOn string `json:"depends_on"`
 }
 
-// Story status constants.
+// Story status constants (mirrored from canonical in architect for database operations).
 const (
-	StatusNew       = "new"
-	StatusPlanning  = "planning"
-	StatusCoding    = "coding"
-	StatusDone      = "done"
-	StatusError     = "error"
-	StatusDuplicate = "duplicate"
+	StatusNew      = "new"
+	StatusPending  = "pending"
+	StatusAssigned = "assigned"
+	StatusPlanning = "planning"
+	StatusCoding   = "coding"
+	StatusDone     = "done"
 )
-
-// ValidStatuses returns all valid story statuses.
-func ValidStatuses() []string {
-	return []string{
-		StatusNew,
-		StatusPlanning,
-		StatusCoding,
-		StatusDone,
-		StatusError,
-		StatusDuplicate,
-	}
-}
-
-// IsValidStatus checks if a status string is valid.
-func IsValidStatus(status string) bool {
-	for _, validStatus := range ValidStatuses() {
-		if status == validStatus {
-			return true
-		}
-	}
-	return false
-}
 
 // GenerateSpecID generates a new UUID for a spec.
 func GenerateSpecID() string {

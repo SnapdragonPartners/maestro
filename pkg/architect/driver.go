@@ -25,8 +25,6 @@ const (
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	currentState       proto.State
-	stateData          map[string]any
 	contextManager     *contextmgr.ContextManager
 	llmClient          agent.LLMClient             // LLM for intelligent responses
 	renderer           *templates.Renderer         // Template renderer for prompts
@@ -38,8 +36,11 @@ type Driver struct {
 	questionsCh        chan *proto.AgentMsg        // Bi-directional channel for questions/requests
 	replyCh            <-chan *proto.AgentMsg      // Read-only channel for replies
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
+	externalAPI        *ExternalAPI                // API for external operations outside FSM
+	stateData          map[string]any
 	architectID        string
 	workDir            string // Workspace directory
+	currentState       proto.State
 }
 
 // NewDriver creates a new architect driver instance.
@@ -58,6 +59,8 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 		panic("persistence channel is required - database storage is mandatory")
 	}
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
+	logger := logx.NewLogger(architectID)
+	externalAPI := NewExternalAPI(queue, logger)
 
 	return &Driver{
 		architectID:        architectID,
@@ -70,8 +73,9 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 		queue:              queue,
 		escalationHandler:  escalationHandler,
 		dispatcher:         dispatcher,
-		logger:             logx.NewLogger(architectID),
+		logger:             logger,
 		persistenceChannel: persistenceChannel,
+		externalAPI:        externalAPI,
 		// Channels will be set during Attach()
 		specCh:      nil,
 		questionsCh: nil,
@@ -225,6 +229,9 @@ func (d *Driver) Run(ctx context.Context) error {
 	if d.specCh == nil || d.questionsCh == nil {
 		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
+
+	// Start status updates processor goroutine.
+	go d.processStatusUpdates(ctx)
 
 	// Start in WAITING state, ready to receive specs.
 	d.currentState = StateWaiting
@@ -405,6 +412,11 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
+// GetExternalAPI returns the external API for operations outside the FSM.
+func (d *Driver) GetExternalAPI() *ExternalAPI {
+	return d.externalAPI
+}
+
 // buildMessagesWithContext creates completion messages with context history (same as coder).
 // This centralizes the pattern used across architect LLM calls with context isolation.
 func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
@@ -463,4 +475,39 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 	}
 
 	return resp.Content, nil
+}
+
+// processStatusUpdates runs as a goroutine to process story status updates from coders.
+// This provides a non-blocking way for coders to update story status without waiting for architect availability.
+func (d *Driver) processStatusUpdates(ctx context.Context) {
+	if d.dispatcher == nil {
+		d.logger.Warn("No dispatcher available for status updates processing")
+		return
+	}
+
+	statusUpdatesCh := d.dispatcher.GetStatusUpdatesChannel()
+	d.logger.Info("📊 Status updates processor started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			d.logger.Info("📊 Status updates processor stopping due to context cancellation")
+			return
+
+		case statusUpdate := <-statusUpdatesCh:
+			if statusUpdate == nil {
+				d.logger.Info("📊 Status updates channel closed, processor stopping")
+				return
+			}
+
+			d.logger.Info("📊 Processing status update: story %s → %s", statusUpdate.StoryID, statusUpdate.Status)
+
+			// Convert string status to StoryStatus and update via queue
+			if err := d.queue.UpdateStoryStatus(statusUpdate.StoryID, StoryStatus(statusUpdate.Status)); err != nil {
+				d.logger.Error("❌ Failed to update story %s status to %s: %v", statusUpdate.StoryID, statusUpdate.Status, err)
+			} else {
+				d.logger.Info("✅ Successfully updated story %s status to %s", statusUpdate.StoryID, statusUpdate.Status)
+			}
+		}
+	}
 }

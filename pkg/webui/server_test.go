@@ -1208,7 +1208,7 @@ func TestHandleStories(t *testing.T) {
 			Story: persistence.Story{
 				ID:              "story-002",
 				Title:           "Add database layer",
-				Status:          string(architect.StatusInProgress),
+				Status:          string(architect.StatusAssigned),
 				EstimatedPoints: 8,
 				DependsOn:       []string{"story-001"},
 				AssignedAgent:   "coder-001",
@@ -1221,7 +1221,7 @@ func TestHandleStories(t *testing.T) {
 			Story: persistence.Story{
 				ID:              "story-003",
 				Title:           "Create REST API endpoints",
-				Status:          string(architect.StatusCompleted),
+				Status:          string(architect.StatusDone),
 				EstimatedPoints: 3,
 				DependsOn:       []string{"story-002"},
 				AssignedAgent:   "coder-002",
@@ -1287,10 +1287,10 @@ func TestHandleStories(t *testing.T) {
 		if stories[0].GetStatus() != architect.StatusPending {
 			t.Errorf("Expected first story status to be pending, got %s", stories[0].Status)
 		}
-		if stories[1].GetStatus() != architect.StatusInProgress {
+		if stories[1].GetStatus() != architect.StatusAssigned {
 			t.Errorf("Expected second story status to be in_progress, got %s", stories[1].Status)
 		}
-		if stories[2].GetStatus() != architect.StatusCompleted {
+		if stories[2].GetStatus() != architect.StatusDone {
 			t.Errorf("Expected third story status to be completed, got %s", stories[2].Status)
 		}
 	})

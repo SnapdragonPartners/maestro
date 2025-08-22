@@ -105,6 +105,17 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 			}
 		}
 
+		// Update story status to CODING via dispatcher (non-blocking)
+		if c.dispatcher != nil {
+			storyID := c.GetStoryID() // Get story ID for status update
+			if err := c.dispatcher.UpdateStoryStatus(storyID, "coding"); err != nil {
+				c.logger.Warn("Failed to update story status to coding: %v", err)
+				// Continue anyway - status update failure shouldn't block the workflow
+			} else {
+				c.logger.Info("✅ Story %s status updated to CODING", storyID)
+			}
+		}
+
 		c.logger.Info("🧑‍💻 Container reconfigured, transitioning to CODING")
 		return StateCoding, false, nil
 

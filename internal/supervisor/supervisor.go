@@ -55,8 +55,9 @@ type Supervisor struct {
 	Policy  RestartPolicy
 
 	// Agent tracking (preserves existing patterns)
-	Agents     map[string]dispatch.Agent
-	AgentTypes map[string]string
+	Agents        map[string]dispatch.Agent
+	AgentTypes    map[string]string
+	AgentContexts map[string]context.CancelFunc // Context management for graceful shutdown
 
 	// Runtime state
 	running bool
@@ -64,17 +65,18 @@ type Supervisor struct {
 
 // NewSupervisor creates a new supervisor with the given kernel.
 func NewSupervisor(k *kernel.Kernel) *Supervisor {
-	// Create the agent factory with kernel dependencies
-	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, k.BuildService)
+	// Create the agent factory with kernel dependencies (lightweight)
+	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel)
 
 	return &Supervisor{
-		Kernel:     k,
-		Factory:    agentFactory,
-		Logger:     logx.NewLogger("supervisor"),
-		Policy:     DefaultRestartPolicy(),
-		Agents:     make(map[string]dispatch.Agent),
-		AgentTypes: make(map[string]string),
-		running:    false,
+		Kernel:        k,
+		Factory:       agentFactory,
+		Logger:        logx.NewLogger("supervisor"),
+		Policy:        DefaultRestartPolicy(),
+		Agents:        make(map[string]dispatch.Agent),
+		AgentTypes:    make(map[string]string),
+		AgentContexts: make(map[string]context.CancelFunc),
+		running:       false,
 	}
 }
 
@@ -189,7 +191,7 @@ func (s *Supervisor) handleStateAction(ctx context.Context, notification *proto.
 }
 
 // restartAgent handles restarting an individual agent.
-// This preserves the restartAgent logic from the old orchestrator.
+// This creates a completely fresh agent instance with no state preservation.
 func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 	s.Logger.Info("Restarting agent: %s", agentID)
 
@@ -199,16 +201,22 @@ func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 		return fmt.Errorf("unknown agent type for %s", agentID)
 	}
 
-	// Clean up existing agent resources
-	s.cleanupAgentResources(agentID)
-
-	// Recreate the agent using the factory
-	newAgent, err := s.Factory.RecreateAgent(ctx, agentID, agentType)
-	if err != nil {
-		return fmt.Errorf("failed to recreate agent %s: %w", agentID, err)
+	// Terminate existing agent by cancelling its context
+	if cancelFunc, exists := s.AgentContexts[agentID]; exists {
+		s.Logger.Info("Cancelling context for agent: %s", agentID)
+		cancelFunc()
 	}
 
-	// Register the newly created agent
+	// Clean up tracking maps
+	s.cleanupAgentResources(agentID)
+
+	// Create new agent using the lightweight factory
+	newAgent, err := s.Factory.NewAgent(ctx, agentID, agentType)
+	if err != nil {
+		return fmt.Errorf("failed to create agent %s: %w", agentID, err)
+	}
+
+	// Register the newly created agent with fresh context
 	s.RegisterAgent(ctx, agentID, agentType, newAgent)
 
 	s.Logger.Info("Agent %s successfully recreated and registered", agentID)
@@ -216,15 +224,16 @@ func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 }
 
 // cleanupAgentResources performs cleanup for a terminated agent.
-// This preserves the cleanupAgentResources logic from the old orchestrator.
+// This only cleans up tracking maps - work directory cleanup happens in agent SETUP state.
 func (s *Supervisor) cleanupAgentResources(agentID string) {
 	s.Logger.Info("Cleaning up resources for agent: %s", agentID)
 
 	// Remove from tracking maps
 	delete(s.Agents, agentID)
 	delete(s.AgentTypes, agentID)
+	delete(s.AgentContexts, agentID)
 
-	// TODO: Add any additional cleanup needed (containers, file handles, etc.)
+	// Work directory cleanup is handled by agent SETUP state for fresh workspace
 }
 
 // getAgentType returns the type of an agent by ID.
@@ -237,16 +246,21 @@ func (s *Supervisor) getAgentType(agentID string) string {
 }
 
 // RegisterAgent adds an agent to the supervisor's tracking and starts its state machine.
+// Creates individual context for the agent to enable graceful shutdown.
 func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType string, agent dispatch.Agent) {
 	s.AgentTypes[agentID] = agentType
 	s.Agents[agentID] = agent
 	s.Logger.Info("Registered agent %s (type: %s)", agentID, agentType)
 
-	// Start the agent's state machine
+	// Start the agent's state machine with individual context
 	if runnable, ok := agent.(interface{ Run(context.Context) error }); ok {
+		// Create individual context for this agent (child of main context)
+		agentCtx, cancel := context.WithCancel(ctx)
+		s.AgentContexts[agentID] = cancel
+
 		go func() {
 			s.Logger.Info("Starting agent %s state machine", agentID)
-			if err := runnable.Run(ctx); err != nil {
+			if err := runnable.Run(agentCtx); err != nil {
 				s.Logger.Error("Agent %s state machine failed: %v", agentID, err)
 			}
 		}()
