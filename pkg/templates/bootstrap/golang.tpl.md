@@ -90,7 +90,7 @@ This story addresses Go-specific infrastructure issues discovered during project
   {{- end}}
 {{- end}}
 - [ ] Ensure `build` target includes: `{{index $goCommands "mod_tidy"}} && go build -o bin/{{.ProjectName}} ./...`
-- [ ] Verify all targets work: `{{index $defaults "build_command"}}`, `{{index $defaults "test_command"}}`, `{{index $defaults "lint_command"}}`, `{{index $defaults "run_command"}}`
+- [ ] Verify all targets work: `{{.BuildCommand}}`, `{{.TestCommand}}`, `{{.LintCommand}}`, `{{.RunCommand}}`
 {{- end}}
 
 ### Go Linting Configuration
@@ -247,15 +247,15 @@ echo "Running pre-commit checks..."
 
 # Run build
 echo "🔨 Building..."
-make build
+{{.BuildCommand}}
 
 # Run tests
 echo "🧪 Testing..."
-make test
+{{.TestCommand}}
 
 # Run linting
 echo "🔍 Linting..."
-make lint
+{{.LintCommand}}
 
 echo "✅ All pre-commit checks passed!"
 ```
@@ -270,17 +270,17 @@ chmod +x .git/hooks/pre-commit
 **1. Full Development Workflow Test**
 ```bash
 # Test build pipeline
-make clean
-make build
-make test
-make lint
+{{.CleanCommand}}
+{{.BuildCommand}}
+{{.TestCommand}}
+{{.LintCommand}}
 
 # Test pre-commit hook
 git add .
 git commit -m "Test commit"  # Should pass all checks
 
 # Test container environment
-docker run --rm -v $(pwd):/workspace -w /workspace {{.RecommendedContainer}} make build
+docker run --rm -v $(pwd):/workspace -w /workspace {{.RecommendedContainer}} {{.BuildCommand}}
 ```
 
 ## Configuration Files
@@ -299,19 +299,19 @@ set -e
 echo "🔍 Running pre-commit checks..."
 
 echo "🔨 Building..."
-if ! make build; then
+if ! {{.BuildCommand}}; then
     echo "❌ Build failed"
     exit 1
 fi
 
 echo "🧪 Testing..."
-if ! make test; then
+if ! {{.TestCommand}}; then
     echo "❌ Tests failed"
     exit 1
 fi
 
 echo "🔍 Linting..."
-if ! make lint; then
+if ! {{.LintCommand}}; then
     echo "❌ Linting failed"
     exit 1
 fi

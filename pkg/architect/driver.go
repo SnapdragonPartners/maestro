@@ -21,6 +21,10 @@ import (
 // Story content constants.
 const (
 	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
+
+	// Story type constants to avoid repetition and improve maintainability.
+	storyTypeDevOps = "devops"
+	storyTypeApp    = "app"
 )
 
 // Driver manages the state machine for an architect workflow.

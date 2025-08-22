@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/workspace"
 )
 
@@ -44,6 +45,18 @@ type TemplateData struct {
 	RequiresNetworkAccess  bool                                    `json:"requires_network_access"`  // True if container needs network for setup
 	TemplateName           string                                  `json:"template_name"`            // Name of template being used
 	DockerfilePath         string                                  `json:"dockerfile_path"`          // Path to dockerfile if using dockerfile mode
+
+	// Build configuration from project config
+	BuildCommand   string `json:"build_command,omitempty"`   // Build command from config (e.g. "make build")
+	TestCommand    string `json:"test_command,omitempty"`    // Test command from config (e.g. "make test")
+	LintCommand    string `json:"lint_command,omitempty"`    // Lint command from config (e.g. "make lint")
+	RunCommand     string `json:"run_command,omitempty"`     // Run command from config (e.g. "make run")
+	CleanCommand   string `json:"clean_command,omitempty"`   // Clean command from config (e.g. "make clean")
+	InstallCommand string `json:"install_command,omitempty"` // Install command from config (e.g. "make install")
+
+	// Git configuration from project config
+	GitUserName  string `json:"git_user_name,omitempty"`  // Git commit author name from config
+	GitUserEmail string `json:"git_user_email,omitempty"` // Git commit author email from config
 }
 
 // NewTemplateData creates a new TemplateData from verification results.
@@ -110,6 +123,44 @@ func NewTemplateData(projectName, platform, platformDisplayName, containerImage,
 			if data.FailuresByPriority[i].Priority > data.FailuresByPriority[j].Priority {
 				data.FailuresByPriority[i], data.FailuresByPriority[j] = data.FailuresByPriority[j], data.FailuresByPriority[i]
 			}
+		}
+	}
+
+	return data
+}
+
+// NewTemplateDataWithConfig creates a new TemplateData with config data included.
+func NewTemplateDataWithConfig(projectName, platform, platformDisplayName, containerImage, gitRepoURL, dockerfilePath string, failures []workspace.BootstrapFailure) *TemplateData {
+	// Start with base template data
+	data := NewTemplateData(projectName, platform, platformDisplayName, containerImage, gitRepoURL, failures)
+
+	// Set dockerfile path
+	data.DockerfilePath = dockerfilePath
+
+	// Get config from global singleton
+	cfg, err := config.GetConfig()
+	if err != nil {
+		// Config not available - continue with basic template data (this is normal during bootstrap)
+		return data
+	}
+
+	// Populate build commands from config
+	if cfg.Build != nil {
+		data.BuildCommand = cfg.Build.Build
+		data.TestCommand = cfg.Build.Test
+		data.LintCommand = cfg.Build.Lint
+		data.RunCommand = cfg.Build.Run
+		data.CleanCommand = cfg.Build.Clean
+		data.InstallCommand = cfg.Build.Install
+	}
+
+	// Populate git config from config
+	if cfg.Git != nil {
+		data.GitUserName = cfg.Git.GitUserName
+		data.GitUserEmail = cfg.Git.GitUserEmail
+		// Use git repo URL from config if not provided as parameter
+		if data.GitRepoURL == "" {
+			data.GitRepoURL = cfg.Git.RepoURL
 		}
 	}
 

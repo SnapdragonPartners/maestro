@@ -446,100 +446,25 @@ func updateConfigWithUserChoices(params *projectParamsNew) error {
 
 // generateBootstrapSpecContent generates the bootstrap specification using the template system.
 func generateBootstrapSpecContent(projectName, platform, containerImage, gitRepoURL, dockerfilePath string, report *workspace.VerifyReport) (string, error) {
-	// For bootstrap mode, if workspace verification failed or has no bootstrap failures,
-	// create a basic bootstrap spec anyway
-	if report == nil || !report.RequiresBootstrap() {
-		// Create a basic bootstrap spec for initial project setup
-		return generateBasicBootstrapSpec(projectName, platform, containerImage, gitRepoURL, dockerfilePath), nil
+	// Always use the detailed template system for consistent, comprehensive bootstrap specs
+	// If no failures exist, we'll pass an empty failures list but still get detailed setup instructions
+
+	var failures []workspace.BootstrapFailure
+	if report != nil {
+		failures = report.BootstrapFailures
 	}
 
-	// Use the existing bootstrap template system
+	// Create a minimal report if none exists to ensure template system works
+	if report == nil {
+		report = &workspace.VerifyReport{
+			BootstrapFailures: failures,
+		}
+	}
+
+	// Use the detailed bootstrap template system (never the basic hardcoded one)
 	spec, err := bootstrapTemplate.GenerateBootstrapSpecFromReportEnhanced(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate bootstrap spec: %w", err)
 	}
 	return spec, nil
-}
-
-// generateBasicBootstrapSpec creates a basic bootstrap specification for initial project setup.
-func generateBasicBootstrapSpec(projectName, platform, containerImage, gitRepoURL, dockerfilePath string) string {
-	spec := fmt.Sprintf(`# Bootstrap Specification: %s
-
-## Project Overview
-Project: %s
-Platform: %s
-Repository: %s
-`, projectName, projectName, platform, gitRepoURL)
-
-	if dockerfilePath != "" {
-		spec += fmt.Sprintf("Dockerfile: %s\n", dockerfilePath)
-	} else {
-		spec += fmt.Sprintf("Container Image: %s\n", containerImage)
-	}
-
-	spec += `
-## Bootstrap Tasks
-
-### 1. Infrastructure Setup
-- Initialize Maestro project structure
-- Set up .maestro configuration directory
-- Create necessary build files and configurations
-
-### 2. Development Environment
-- Configure container-based development environment`
-
-	if dockerfilePath != "" {
-		spec += fmt.Sprintf(`
-- Use existing Dockerfile for container setup
-- Build and tag container as: maestro-%s-dev`, projectName)
-	} else {
-		spec += fmt.Sprintf(`
-- Use %s as base container image
-- Build and tag container as: maestro-%s-dev`, containerImage, projectName)
-	}
-
-	spec += fmt.Sprintf(`
-- Set up git integration with %s
-
-### 3. Platform-Specific Setup`, gitRepoURL)
-
-	switch platform {
-	case "go":
-		spec += `
-- Configure Go module structure
-- Set up Go build pipeline
-- Configure testing framework`
-	case "node":
-		spec += `
-- Configure Node.js environment
-- Set up package.json and npm scripts  
-- Configure testing framework`
-	case "python":
-		spec += `
-- Configure Python environment
-- Set up requirements.txt or pyproject.toml
-- Configure testing framework`
-	default:
-		spec += `
-- Configure generic build system
-- Set up basic development tools
-- Configure testing framework`
-	}
-
-	spec += `
-
-### 4. Verification
-- Verify all components are working correctly
-- Run initial build/test to ensure setup is complete
-- Generate final project status report
-
-## Success Criteria
-- [ ] Maestro infrastructure is initialized
-- [ ] Development environment is containerized and functional  
-- [ ] Git integration is configured
-- [ ] Platform-specific tooling is set up
-- [ ] Initial build/test passes successfully
-`
-
-	return spec
 }

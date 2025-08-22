@@ -151,7 +151,7 @@ func GenerateBootstrapSpecFromReport(projectName, platform, containerImage strin
 	return renderer.RenderBootstrapSpec(projectName, platform, containerImage, report.BootstrapFailures)
 }
 
-// GenerateBootstrapSpecFromReportEnhanced creates an enhanced bootstrap specification with git repo URL.
+// GenerateBootstrapSpecFromReportEnhanced creates an enhanced bootstrap specification with git repo URL and config data from global singleton.
 func GenerateBootstrapSpecFromReportEnhanced(projectName, platform, containerImage, gitRepoURL, dockerfilePath string, report *workspace.VerifyReport) (string, error) {
 	if !report.RequiresBootstrap() {
 		return "", fmt.Errorf("no bootstrap required - verification passed")
@@ -162,7 +162,37 @@ func GenerateBootstrapSpecFromReportEnhanced(projectName, platform, containerIma
 		return "", fmt.Errorf("failed to create bootstrap renderer: %w", err)
 	}
 
-	return renderer.RenderBootstrapSpecEnhanced(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report.BootstrapFailures)
+	return renderer.RenderBootstrapSpecWithConfig(projectName, platform, containerImage, gitRepoURL, dockerfilePath, report.BootstrapFailures)
+}
+
+// RenderBootstrapSpecWithConfig generates a bootstrap specification with config data from global singleton.
+func (r *Renderer) RenderBootstrapSpecWithConfig(projectName, platform, containerImage, gitRepoURL, dockerfilePath string, failures []workspace.BootstrapFailure) (string, error) {
+	// Get platform display name
+	platformDisplayName := platform
+	if supportedPlatform, exists := bootstrap.PlatformWhitelist[platform]; exists {
+		platformDisplayName = supportedPlatform.DisplayName
+	}
+
+	// Create template data with config data from global singleton
+	data := NewTemplateDataWithConfig(projectName, platform, platformDisplayName, containerImage, gitRepoURL, dockerfilePath, failures)
+
+	// Select template based on platform
+	templateName := r.selectTemplateForPlatform(platform)
+	data.TemplateName = templateName
+
+	// Get the template
+	tmpl, exists := r.templates[templateName]
+	if !exists {
+		return "", fmt.Errorf("template %s not found", templateName)
+	}
+
+	// Render the template
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to render bootstrap template: %w", err)
+	}
+
+	return buf.String(), nil
 }
 
 // selectTemplateForPlatform returns the appropriate template filename for the given platform.

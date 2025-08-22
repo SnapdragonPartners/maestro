@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"orchestrator/internal/kernel"
@@ -24,8 +25,11 @@ func main() {
 	)
 	flag.Parse()
 
-	// Determine mode
-	if *bootstrap {
+	// Determine mode - auto-trigger bootstrap if config doesn't exist
+	if *bootstrap || !configExists(*projectDir) {
+		if !*bootstrap {
+			fmt.Printf("No configuration found at %s/.maestro/config.json - entering bootstrap mode\n", *projectDir)
+		}
 		if err := runBootstrapMode(*projectDir, *gitRepo, *specFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
 			os.Exit(1)
@@ -36,6 +40,13 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// configExists checks if the Maestro configuration file exists.
+func configExists(projectDir string) bool {
+	configPath := filepath.Join(projectDir, ".maestro", "config.json")
+	_, err := os.Stat(configPath)
+	return err == nil
 }
 
 func runBootstrapMode(projectDir, gitRepo, specFile string) error {

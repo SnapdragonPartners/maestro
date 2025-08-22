@@ -1133,7 +1133,7 @@ func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any,
 
 	// Select appropriate template based on story type
 	var templateName templates.StateTemplate
-	if storyType == "devops" {
+	if storyType == storyTypeDevOps {
 		templateName = devopsTemplate
 	} else {
 		templateName = appTemplate
