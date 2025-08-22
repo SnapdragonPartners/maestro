@@ -2,8 +2,6 @@
 package metrics
 
 import (
-	"time"
-
 	"orchestrator/pkg/proto"
 )
 
@@ -20,19 +18,13 @@ type StateProvider interface {
 // Recorder defines the interface for recording LLM operation metrics.
 type Recorder interface {
 	// ObserveRequest records metrics for a completed LLM request.
+	// Only storyID, tokens, cost, and success are used by internal recorder.
 	ObserveRequest(
-		model, storyID, agentID, state string,
+		storyID string,
 		promptTokens, completionTokens int,
+		cost float64,
 		success bool,
-		errorType string,
-		duration time.Duration,
 	)
-
-	// IncThrottle increments the throttle counter for rate limiting events.
-	IncThrottle(model, reason string)
-
-	// ObserveQueueWait records time spent waiting for rate limit availability.
-	ObserveQueueWait(model string, duration time.Duration)
 }
 
 // NoopRecorder implements Recorder with no-op behavior for when metrics are disabled.
@@ -45,21 +37,10 @@ func Nop() Recorder {
 
 // ObserveRequest does nothing in the no-op recorder.
 func (n *NoopRecorder) ObserveRequest(
-	_, _, _, _ string,
-	_, _ int,
-	_ bool,
 	_ string,
-	_ time.Duration,
+	_, _ int,
+	_ float64,
+	_ bool,
 ) {
-	// No-op
-}
-
-// IncThrottle does nothing in the no-op recorder.
-func (n *NoopRecorder) IncThrottle(_, _ string) {
-	// No-op
-}
-
-// ObserveQueueWait does nothing in the no-op recorder.
-func (n *NoopRecorder) ObserveQueueWait(_ string, _ time.Duration) {
 	// No-op
 }

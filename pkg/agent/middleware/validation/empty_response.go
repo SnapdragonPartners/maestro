@@ -136,12 +136,17 @@ func (v *EmptyResponseValidator) createGuidanceMessage(req llm.CompletionRequest
 		return "Your response wasn't understood. Please provide a clear response with your analysis and decision."
 	}
 
+	// Extract tool names from the request
+	toolNames := extractToolNames(req.Tools)
+
+	// Handle case where no tools are available
+	if len(toolNames) == 0 {
+		return "No response received, please try again."
+	}
+
 	// For coder agents, provide tool-specific guidance
 	fallback := fmt.Sprintf("Responses without tool usage are invalid. Use one of the available tools such as %s or %s.",
 		tools.ToolShell, tools.ToolAskQuestion)
-
-	// Extract tool names from the request
-	toolNames := extractToolNames(req.Tools)
 
 	// Add completion-specific guidance based on available tools
 	if contains(toolNames, tools.ToolDone) {

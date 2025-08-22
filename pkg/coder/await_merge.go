@@ -9,6 +9,7 @@ import (
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 )
 
 // handleAwaitMerge processes the AWAIT_MERGE state using Effects pattern
@@ -41,20 +42,25 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 		return proto.StateDone, false, nil
 
 	case string(proto.ApprovalStatusNeedsChanges):
-		// Append context message with architect's feedback
+		// Get merge feedback
 		feedback := result.ConflictInfo
 		if feedback == "" {
 			feedback = "Unknown merge issue"
 		}
-		contextMessage := fmt.Sprintf("Merge requires changes. Fix and resubmit: %s", feedback)
 
 		c.logger.Info("🧑‍💻 Merge needs changes, transitioning to CODING: %s", feedback)
 
-		// Append context to conversation
-		c.contextManager.AddMessage("architect", contextMessage)
+		// Use mini-template to format the merge failure message
+		if c.renderer != nil {
+			renderedMessage, err := c.renderer.RenderSimple(templates.MergeFailureFeedbackTemplate, feedback)
+			if err != nil {
+				c.logger.Error("Failed to render merge failure feedback: %v", err)
+				// Fallback to simple message
+				renderedMessage = fmt.Sprintf("Merge requires changes. Fix and resubmit: %s", feedback)
+			}
+			c.contextManager.AddMessage("architect", renderedMessage)
+		}
 
-		sm.SetStateData(KeyMergeConflictDetails, result.ConflictInfo)
-		sm.SetStateData(KeyCodingMode, "merge_retry")
 		return StateCoding, false, nil
 
 	case string(proto.ApprovalStatusRejected):

@@ -31,10 +31,10 @@ func createToolByName(toolName string) (tools.Tool, error) {
 		return tools.NewContainerBuildTool(nil), nil
 	case tools.ToolContainerUpdate:
 		return tools.NewContainerUpdateTool(nil), nil
-	case tools.ToolContainerExec:
-		return tools.NewContainerExecTool(nil), nil
-	case tools.ToolContainerBootTest:
-		return tools.NewContainerBootTestTool(nil), nil
+	case tools.ToolContainerTest:
+		return tools.NewContainerTestTool(nil), nil
+	case tools.ToolContainerList:
+		return tools.NewContainerListTool(nil), nil
 	case tools.ToolAskQuestion:
 		return tools.NewAskQuestionTool(), nil
 	case tools.ToolSubmitPlan:

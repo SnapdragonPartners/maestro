@@ -15,6 +15,22 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// Requirement represents a parsed requirement from a specification.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type Requirement struct {
+	ID                 string            `json:"id"`
+	Title              string            `json:"title"`
+	Description        string            `json:"description"`
+	AcceptanceCriteria []string          `json:"acceptance_criteria"`
+	EstimatedPoints    int               `json:"estimated_points"`
+	Priority           int               `json:"priority"`
+	Dependencies       []string          `json:"dependencies"`
+	Tags               []string          `json:"tags"`
+	Details            map[string]string `json:"details"`
+	StoryType          string            `json:"story_type"` // "devops" or "app"
+}
+
 // handleScoping processes the scoping phase (platform detection, bootstrap, spec analysis and story generation).
 func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	// State: analyzing specification and generating stories
@@ -95,6 +111,12 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 			d.stateData["story_ids"] = storyIDs
 			d.stateData["stories_generated"] = true
 			d.stateData["stories_count"] = len(storyIDs)
+
+			// CRITICAL: Validate devops story constraints before proceeding
+			if err := d.validateDevOpsStoryConstraints(requirements); err != nil {
+				d.logger.Error("DevOps story validation failed: %v", err)
+				return StateError, fmt.Errorf("DevOps story validation failed: %w", err)
+			}
 		} else {
 			return StateError, fmt.Errorf("persistence channel not available - database storage is required for story generation")
 		}
@@ -155,8 +177,9 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 		Response:  nil, // Fire-and-forget
 	}
 
-	// Convert requirements to database stories
+	// Process requirements: generate stories and collect dependencies for batch operation
 	storyIDs := make([]string, 0, len(requirements))
+	var allDependencies []*persistence.StoryDependency
 
 	for i := range requirements {
 		req := &requirements[i]
@@ -166,17 +189,48 @@ func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, spe
 			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
 		}
 
-		// Add story to in-memory queue (canonical state)
-		d.queue.AddStory(storyID, specID, req.Title, req.StoryType, req.Dependencies, req.EstimatedPoints)
+		// Calculate dependencies based on order (simple dependency model)
+		var dependencies []string
+		if len(req.Dependencies) > 0 {
+			// Simple implementation: depend on all previous stories
+			for j := 0; j < i; j++ {
+				dependencies = append(dependencies, storyIDs[j])
+			}
+		}
+
+		// Update canonical queue with story and dependencies
+		d.queue.AddStory(storyID, specID, req.Title, req.Description, req.StoryType, dependencies, req.EstimatedPoints)
+		d.logger.Debug("Added story %s to queue with dependencies: %v", storyID, dependencies)
+
+		// Collect dependencies for batch operation (don't send individually)
+		for _, depID := range dependencies {
+			dependency := &persistence.StoryDependency{
+				StoryID:   storyID,
+				DependsOn: depID,
+			}
+			allDependencies = append(allDependencies, dependency)
+		}
 
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// Flush in-memory queue to database for persistence/logging first
+	// Flush canonical queue to database first to ensure stories exist
 	d.queue.FlushToDatabase()
 
-	// Handle dependencies between stories AFTER stories are in database
-	d.processDependencies(requirements, storyIDs)
+	// Then add all dependencies in batch if any exist
+	if len(allDependencies) > 0 {
+		// Use batch operation with empty stories (since stories already exist from queue flush)
+		batchRequest := &persistence.BatchUpsertStoriesWithDependenciesRequest{
+			Stories:      []*persistence.Story{}, // Empty since stories are already in DB
+			Dependencies: allDependencies,
+		}
+
+		d.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpBatchUpsertStoriesWithDependencies,
+			Data:      batchRequest,
+			Response:  nil, // Fire-and-forget
+		}
+	}
 
 	// Mark spec as processed
 	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
@@ -249,37 +303,6 @@ func (d *Driver) generateRichStoryContent(req *Requirement) string {
 	content += fmt.Sprintf("**Estimated Points:** %d\n", req.EstimatedPoints)
 
 	return content
-}
-
-// processDependencies handles story dependencies by storing them in the database.
-func (d *Driver) processDependencies(requirements []Requirement, storyIDs []string) {
-	// For now, implement a simple dependency model where dependencies
-	// are based on the order of requirements (earlier requirements are dependencies)
-	// This could be enhanced to parse actual dependencies from LLM analysis
-	for i := range requirements {
-		req := &requirements[i]
-		if len(req.Dependencies) == 0 {
-			continue
-		}
-
-		storyID := storyIDs[i]
-
-		// Simple implementation: add dependency to previous story
-		for j := 0; j < i; j++ {
-			dependsOnStoryID := storyIDs[j]
-
-			dependency := &persistence.StoryDependency{
-				StoryID:   storyID,
-				DependsOn: dependsOnStoryID,
-			}
-
-			d.persistenceChannel <- &persistence.Request{
-				Operation: persistence.OpAddStoryDependency,
-				Data:      dependency,
-				Response:  nil, // Fire-and-forget
-			}
-		}
-	}
 }
 
 // getSpecFileFromMessage extracts the spec file path from the stored SPEC message.
@@ -460,4 +483,59 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 	}
 
 	return requirements, nil
+}
+
+// validateDevOpsStoryConstraints ensures devops story constraints are met to prevent container bootstrapping issues.
+// This prevents the problem where multiple devops stories cause verification to run in wrong container environment.
+func (d *Driver) validateDevOpsStoryConstraints(requirements []Requirement) error {
+	var devopsStories []int // Store indices instead of copying structs
+	var appStories []int
+
+	// Separate devops and app stories by index to avoid copying large structs
+	for i := range requirements {
+		req := &requirements[i]
+		switch strings.ToLower(req.StoryType) {
+		case storyTypeDevOps:
+			devopsStories = append(devopsStories, i)
+		case storyTypeApp, "": // Empty story type defaults to app
+			appStories = append(appStories, i)
+		default:
+			return fmt.Errorf("invalid story type '%s' in story '%s'. Must be 'devops' or 'app'", req.StoryType, req.Title)
+		}
+	}
+
+	// CONSTRAINT 1: No more than one devops story
+	if len(devopsStories) > 1 {
+		devopsTitles := make([]string, len(devopsStories))
+		for i, storyIdx := range devopsStories {
+			devopsTitles[i] = requirements[storyIdx].Title
+		}
+		return fmt.Errorf("found %d devops stories but only 1 is allowed. Container bootstrapping requires exactly one devops story containing all infrastructure setup. Devops stories: %v",
+			len(devopsStories), devopsTitles)
+	}
+
+	// CONSTRAINT 2: If devops story exists, it must be first and block all app stories
+	if len(devopsStories) == 1 {
+		devopsIndex := devopsStories[0]
+		devopsStory := &requirements[devopsIndex]
+
+		// Check if devops story is first (index 0)
+		if devopsIndex != 0 {
+			return fmt.Errorf("devops story '%s' must be first in sequence to ensure container is built before app stories run. Current first story: '%s'",
+				devopsStory.Title, requirements[0].Title)
+		}
+
+		// Verify no additional devops stories exist after the first one
+		for i := range requirements {
+			if i > 0 && strings.EqualFold(requirements[i].StoryType, storyTypeDevOps) {
+				return fmt.Errorf("found additional devops story '%s' at index %d. All devops work must be in the first story", requirements[i].Title, i)
+			}
+		}
+
+		d.logger.Info("DevOps story validation passed: '%s' is first and will block %d app stories", devopsStory.Title, len(appStories))
+	} else {
+		d.logger.Info("DevOps story validation passed: no devops stories found (%d app stories)", len(appStories))
+	}
+
+	return nil
 }

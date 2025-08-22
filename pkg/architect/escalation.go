@@ -91,7 +91,7 @@ func (eh *EscalationHandler) EscalateBusinessQuestion(_ context.Context, pending
 	}
 
 	// Update story status to await human feedback.
-	if err := eh.queue.MarkAwaitHumanFeedback(escalation.StoryID); err != nil {
+	if err := eh.queue.UpdateStoryStatus(escalation.StoryID, StatusPending); err != nil {
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 
@@ -130,7 +130,7 @@ func (eh *EscalationHandler) EscalateReviewFailure(_ context.Context, storyID, a
 	}
 
 	// Update story status to await human feedback.
-	if err := eh.queue.MarkAwaitHumanFeedback(escalation.StoryID); err != nil {
+	if err := eh.queue.UpdateStoryStatus(escalation.StoryID, StatusPending); err != nil {
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 
@@ -164,7 +164,7 @@ func (eh *EscalationHandler) EscalateSystemError(_ context.Context, storyID, age
 	}
 
 	// Update story status to await human feedback.
-	if err := eh.queue.MarkAwaitHumanFeedback(escalation.StoryID); err != nil {
+	if err := eh.queue.UpdateStoryStatus(escalation.StoryID, StatusPending); err != nil {
 		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
 	}
 

@@ -48,6 +48,32 @@ const (
 	TestingTemplate StateTemplate = "testing.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "approval.tpl.md"
+	// AppCompletionApprovalTemplate is the template for app story completion approval.
+	AppCompletionApprovalTemplate StateTemplate = "app_completion_approval.tpl.md"
+	// DevOpsCompletionApprovalTemplate is the template for devops story completion approval.
+	DevOpsCompletionApprovalTemplate StateTemplate = "devops_completion_approval.tpl.md"
+	// TestFailureInstructionsTemplate is the mini-template for app test failure instructions.
+	TestFailureInstructionsTemplate StateTemplate = "test_failure_instructions.tpl.md"
+	// DevOpsTestFailureInstructionsTemplate is the mini-template for devops test failure instructions.
+	DevOpsTestFailureInstructionsTemplate StateTemplate = "devops_test_failure_instructions.tpl.md"
+	// BudgetReviewFeedbackTemplate is the mini-template for budget review feedback.
+	BudgetReviewFeedbackTemplate StateTemplate = "budget_review_feedback.tpl.md"
+	// MergeFailureFeedbackTemplate is the mini-template for merge failure feedback.
+	MergeFailureFeedbackTemplate StateTemplate = "merge_failure_feedback.tpl.md"
+	// GitCommitFailureTemplate is the mini-template for git commit failures.
+	GitCommitFailureTemplate StateTemplate = "git_commit_failure.tpl.md"
+	// GitPushFailureTemplate is the mini-template for git push failures.
+	GitPushFailureTemplate StateTemplate = "git_push_failure.tpl.md"
+	// PRCreationFailureTemplate is the mini-template for pull request creation failures.
+	PRCreationFailureTemplate StateTemplate = "pr_creation_failure.tpl.md"
+	// GitConfigFailureTemplate is the mini-template for git configuration failures.
+	GitConfigFailureTemplate StateTemplate = "git_config_failure.tpl.md"
+	// GitHubAuthFailureTemplate is the mini-template for GitHub authentication failures.
+	GitHubAuthFailureTemplate StateTemplate = "github_auth_failure.tpl.md"
+	// AppCodeReviewTemplate is the template for app story code review approval.
+	AppCodeReviewTemplate StateTemplate = "app_code_review.tpl.md"
+	// DevOpsCodeReviewTemplate is the template for devops story code review approval.
+	DevOpsCodeReviewTemplate StateTemplate = "devops_code_review.tpl.md"
 
 	// BudgetReviewPlanningTemplate is the template for architect budget review in planning state.
 	BudgetReviewPlanningTemplate StateTemplate = "budget_review_planning.tpl.md"
@@ -84,6 +110,15 @@ func NewRenderer() (*Renderer, error) {
 		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
+		TestFailureInstructionsTemplate,
+		DevOpsTestFailureInstructionsTemplate,
+		BudgetReviewFeedbackTemplate,
+		MergeFailureFeedbackTemplate,
+		GitCommitFailureTemplate,
+		GitPushFailureTemplate,
+		PRCreationFailureTemplate,
+		GitConfigFailureTemplate,
+		GitHubAuthFailureTemplate,
 		// Architect agent templates.
 		BudgetReviewPlanningTemplate,
 		BudgetReviewCodingTemplate,
@@ -91,6 +126,8 @@ func NewRenderer() (*Renderer, error) {
 		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
+		AppCodeReviewTemplate,
+		DevOpsCodeReviewTemplate,
 	}
 
 	for _, name := range templateNames {
@@ -161,4 +198,15 @@ func (r *Renderer) GetAvailableTemplates() []StateTemplate {
 		templates = append(templates, name)
 	}
 	return templates
+}
+
+// RenderSimple renders a template with simple data - helper for mini-templates.
+// The data will be available as .Data in the template.
+func (r *Renderer) RenderSimple(templateName StateTemplate, data any) (string, error) {
+	templateData := &TemplateData{
+		Extra: map[string]any{
+			"Data": data,
+		},
+	}
+	return r.Render(templateName, templateData)
 }

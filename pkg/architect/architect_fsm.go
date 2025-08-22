@@ -71,8 +71,8 @@ var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglob
 	// MONITORING can transition to REQUEST for any coder request, or ERROR on channel closure.
 	StateMonitoring: {StateRequest, StateError},
 
-	// REQUEST can transition to MONITORING (approve non-code/request changes), ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
-	StateRequest: {StateMonitoring, StateEscalated, StateError},
+	// REQUEST can transition to MONITORING (approve non-code/request changes), DISPATCHING (successful merges), ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
+	StateRequest: {StateMonitoring, StateDispatching, StateEscalated, StateError},
 
 	// ESCALATED can transition to REQUEST when human answer supplied, or ERROR on timeout/no answer.
 	StateEscalated: {StateRequest, StateError},

@@ -28,6 +28,13 @@ Classify each story as either:
 - **devops**: Infrastructure, containers, deployment, configuration - minimally scoped to infrastructure tasks ONLY
 - **app**: Application code, features, business logic, algorithms, data processing
 
+**CRITICAL DEVOPS CONSTRAINTS**: 
+- DevOps stories are OPTIONAL - only create them when the spec explicitly requires infrastructure work
+- If devops stories are needed, create *no more than one* devops story which must contain all container building and verification requirements
+- Any devops story MUST be first in sequence and MUST block all app stories with dependencies (all app stories depend on the devops story)
+- After the devops story is complete, the new container will be used for all subsequent stories which must be of type "app"
+- Most regular development specs will have NO devops stories - this is normal and expected
+
 **Important**: DevOps stories should be scoped to pure infrastructure tasks that don't require language-specific toolchains. When in doubt, classify as "app" since app containers provide full development environments.
 
 **DevOps Examples**: Raw Docker container building/copying, Dockerfile creation, deployment scripts, CI/CD pipeline setup, infrastructure configuration, container registry operations  

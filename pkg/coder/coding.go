@@ -18,24 +18,6 @@ import (
 
 // handleCoding processes the CODING state with priority-based work handling.
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Check for merge conflict (highest priority)
-	if conflictData, exists := sm.GetStateValue(KeyMergeConflictDetails); exists {
-		c.logger.Info("🧑‍💻 Handling merge conflict in CODING state")
-		return c.handleMergeConflictCoding(ctx, sm, conflictData)
-	}
-
-	// Check for code review feedback (second priority)
-	if reviewData, exists := sm.GetStateValue(KeyCodeReviewRejectionFeedback); exists {
-		c.logger.Info("🧑‍💻 Handling code review feedback in CODING state")
-		return c.handleCodeReviewCoding(ctx, sm, reviewData)
-	}
-
-	// Check for test failures (third priority)
-	if testData, exists := sm.GetStateValue(KeyTestFailureOutput); exists {
-		c.logger.Info("🧑‍💻 Handling test failures in CODING state")
-		return c.handleTestFixCoding(ctx, sm, testData)
-	}
-
 	// Default: Continue with initial coding
 	return c.handleInitialCoding(ctx, sm)
 }
@@ -54,45 +36,6 @@ func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMach
 	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
 		"scenario": "initial_coding",
 		"message":  "Continue with code implementation based on your plan",
-	})
-}
-
-// handleMergeConflictCoding handles merge conflict resolution during coding.
-func (c *Coder) handleMergeConflictCoding(ctx context.Context, sm *agent.BaseStateMachine, conflictData any) (proto.State, bool, error) {
-	// Clear merge conflict data after handling.
-	sm.SetStateData(KeyMergeConflictDetails, nil)
-
-	// Execute coding with merge conflict context.
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"scenario":      "merge_conflict",
-		"conflict_data": conflictData,
-		"message":       "Resolve the merge conflicts and continue implementation",
-	})
-}
-
-// handleCodeReviewCoding handles code review feedback during coding.
-func (c *Coder) handleCodeReviewCoding(ctx context.Context, sm *agent.BaseStateMachine, reviewData any) (proto.State, bool, error) {
-	// Clear review feedback data after handling.
-	sm.SetStateData(KeyCodeReviewRejectionFeedback, nil)
-
-	// Execute coding with review feedback context.
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"scenario":    "code_review_feedback",
-		"review_data": reviewData,
-		"message":     "Address the code review feedback and continue implementation",
-	})
-}
-
-// handleTestFixCoding handles test failure fixes during coding.
-func (c *Coder) handleTestFixCoding(ctx context.Context, sm *agent.BaseStateMachine, testData any) (proto.State, bool, error) {
-	// Clear test failure data after handling.
-	sm.SetStateData(KeyTestFailureOutput, nil)
-
-	// Execute coding with test failure context.
-	return c.executeCodingWithTemplate(ctx, sm, map[string]any{
-		"scenario":  "test_failures",
-		"test_data": testData,
-		"message":   "Fix the test failures and continue implementation",
 	})
 }
 
@@ -175,7 +118,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	if llmErr != nil {
 		// Check if this is an empty response error that should trigger budget review
 		if c.isEmptyResponseError(llmErr) {
-			return c.handleEmptyResponseForBudgetReview(ctx, sm, prompt, req)
+			return c.handleEmptyResponseError(sm, prompt, req, StateCoding)
 		}
 
 		// For other errors, continue with normal error handling
@@ -184,10 +127,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Note: Empty response detection now handled universally by validation middleware
 	// No need to check len(resp.ToolCalls) == 0 here
-
-	// Reset consecutive empty response counter only when we get useful tool calls
-	sm.SetStateData(KeyConsecutiveEmptyResponses, 0)
-	c.logger.Debug("🧑‍💻 Successful LLM response with tool calls - reset consecutive empty counter")
+	// Note: Consecutive empty response tracking removed - middleware handles retries
 
 	// Execute tool calls (MCP tools) - we know there are tool calls because of the check above
 	filesCreated := c.executeMCPToolCalls(ctx, sm, resp.ToolCalls)
@@ -427,56 +367,61 @@ func (c *Coder) isEmptyResponseError(err error) bool {
 	return llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse)
 }
 
-// handleEmptyResponseForBudgetReview handles empty LLM responses with two-tier approach.
-// First empty response: provide guidance and stay in CODING.
-// Second consecutive empty response: escalate to budget review.
-func (c *Coder) handleEmptyResponseForBudgetReview(_ context.Context, sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest) (proto.State, bool, error) {
+// handleEmptyResponseError handles empty response errors with budget review escalation and loop prevention.
+func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest, originState proto.State) (proto.State, bool, error) {
+	// Log debugging info for troubleshooting
 	c.logEmptyLLMResponse(prompt, req)
 
-	// Check consecutive empty response count
-	consecutiveCount := utils.GetStateValueOr[int](sm, KeyConsecutiveEmptyResponses, 0)
-
-	// Increment consecutive empty response counter
-	sm.SetStateData(KeyConsecutiveEmptyResponses, consecutiveCount+1)
-
-	if consecutiveCount == 0 {
-		// First empty response: provide guidance and continue in CODING
-		c.logger.Info("🧑‍💻 First empty response - providing guidance on completion")
-
-		// Add placeholder assistant message to maintain alternation
-		placeholderResponse := sanitizeEmptyResponse("")
-		c.contextManager.AddAssistantMessage(placeholderResponse)
-
-		// Add guidance user message
-		guidanceMessage := "If you are done working and ready for testing and review, use the 'done' tool. If you are stuck for any other reason, use the 'ask_question' tool to get guidance on how to proceed."
-		c.contextManager.AddMessage("empty-response-guidance", guidanceMessage)
-
-		// Flush the user buffer so the guidance message is immediately available
-		if err := c.contextManager.FlushUserBuffer(); err != nil {
-			c.logger.Error("🧑‍💻 Failed to flush user buffer after adding guidance: %v", err)
-		}
-
-		c.logger.Info("🧑‍💻 Added completion guidance, continuing in CODING state")
-		return StateCoding, false, nil
+	// Check if we've already attempted budget review for empty response
+	if utils.GetStateValueOr[bool](sm, KeyEmptyResponse, false) {
+		c.logger.Error("🧑‍💻 Second empty response after budget review - transitioning to ERROR")
+		return proto.StateError, false, fmt.Errorf("received empty response even after budget review guidance")
 	}
 
-	// Second or subsequent empty response: escalate to budget review
-	c.logger.Info("🧑‍💻 Consecutive empty response #%d - escalating to budget review", consecutiveCount+1)
+	// Set flag to track that we're handling empty response
+	sm.SetStateData(KeyEmptyResponse, true)
 
 	// Create empty response budget review effect
-	budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(StateCoding), consecutiveCount+1)
+	budgetReviewEff := effect.NewEmptyResponseBudgetReviewEffect(string(originState), 1)
 
 	// Set story ID for dispatcher validation
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
 	budgetReviewEff.StoryID = storyID
 
 	// Store origin state and effect for BUDGET_REVIEW state to execute
-	sm.SetStateData(KeyOrigin, string(StateCoding))
+	sm.SetStateData(KeyOrigin, string(originState))
 	sm.SetStateData("budget_review_effect", budgetReviewEff)
 
 	// Add requesting permission message to preserve alternation
 	c.contextManager.AddAssistantMessage("requesting permission to continue")
 
-	// Transition to BUDGET_REVIEW state to wait for architect response
+	c.logger.Info("🧑‍💻 Empty response in %s - escalating to budget review", originState)
 	return StateBudgetReview, false, nil
+}
+
+// logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
+func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) {
+	// Log the entire prompt and context for debugging empty responses
+	c.logger.Error("🚨 EMPTY RESPONSE FROM LLM - DEBUGGING INFO:")
+	c.logger.Error("📝 Complete prompt sent to LLM:")
+	c.logger.Error("%s", strings.Repeat("=", 80))
+	c.logger.Error("%s", prompt)
+	c.logger.Error("%s", strings.Repeat("=", 80))
+
+	if c.contextManager != nil {
+		messages := c.contextManager.GetMessages()
+		c.logger.Error("💬 Context Manager Messages (%d total):", len(messages))
+		for i := range messages {
+			msg := &messages[i]
+			c.logger.Error("  [%d] Role: %s, Content: %s", i, msg.Role, msg.Content)
+		}
+	} else {
+		c.logger.Error("💬 Context Manager: nil")
+	}
+
+	c.logger.Error("🔍 Request Details:")
+	c.logger.Error("  - Temperature: %v", req.Temperature)
+	c.logger.Error("  - Max Tokens: %v", req.MaxTokens)
+	c.logger.Error("  - Tools Count: %d", len(req.Tools))
+	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
 }

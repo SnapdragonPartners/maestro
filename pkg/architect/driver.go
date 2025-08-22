@@ -21,12 +21,14 @@ import (
 // Story content constants.
 const (
 	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
+
+	// Story type constants to avoid repetition and improve maintainability.
+	storyTypeDevOps = "devops"
+	storyTypeApp    = "app"
 )
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	currentState       proto.State
-	stateData          map[string]any
 	contextManager     *contextmgr.ContextManager
 	llmClient          agent.LLMClient             // LLM for intelligent responses
 	renderer           *templates.Renderer         // Template renderer for prompts
@@ -34,17 +36,19 @@ type Driver struct {
 	escalationHandler  *EscalationHandler          // Escalation handler
 	dispatcher         *dispatch.Dispatcher        // Dispatcher for sending messages
 	logger             *logx.Logger                // Logger with proper agent prefixing
-	orchestratorConfig *config.Config              // Orchestrator configuration for repo access
 	specCh             <-chan *proto.AgentMsg      // Read-only channel for spec messages
 	questionsCh        chan *proto.AgentMsg        // Bi-directional channel for questions/requests
 	replyCh            <-chan *proto.AgentMsg      // Read-only channel for replies
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
+	externalAPI        *ExternalAPI                // API for external operations outside FSM
+	stateData          map[string]any
 	architectID        string
 	workDir            string // Workspace directory
+	currentState       proto.State
 }
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -59,6 +63,8 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 		panic("persistence channel is required - database storage is mandatory")
 	}
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
+	logger := logx.NewLogger(architectID)
+	externalAPI := NewExternalAPI(queue, logger)
 
 	return &Driver{
 		architectID:        architectID,
@@ -71,9 +77,9 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 		queue:              queue,
 		escalationHandler:  escalationHandler,
 		dispatcher:         dispatcher,
-		logger:             logx.NewLogger(architectID),
-		orchestratorConfig: orchestratorConfig,
+		logger:             logger,
 		persistenceChannel: persistenceChannel,
+		externalAPI:        externalAPI,
 		// Channels will be set during Attach()
 		specCh:      nil,
 		questionsCh: nil,
@@ -83,7 +89,14 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 
 // NewArchitect creates a new architect with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewArchitect(architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, orchestratorConfig *config.Config, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+func NewArchitect(ctx context.Context, architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+	// Check for context cancellation before starting construction
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("architect construction cancelled: %w", ctx.Err())
+	default:
+	}
+
 	// Architect constructor with model configuration validation
 
 	// Create basic LLM client using helper
@@ -93,7 +106,7 @@ func NewArchitect(architectID string, modelConfig *config.Model, dispatcher *dis
 	}
 
 	// Create architect with LLM integration
-	architect := NewDriver(architectID, modelConfig, llmClient, dispatcher, workDir, orchestratorConfig, persistenceChannel)
+	architect := NewDriver(architectID, modelConfig, llmClient, dispatcher, workDir, persistenceChannel)
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
 	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeArchitect, architect, architect.logger)
@@ -221,6 +234,9 @@ func (d *Driver) Run(ctx context.Context) error {
 		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
 
+	// Start status updates processor goroutine.
+	go d.processStatusUpdates(ctx)
+
 	// Start in WAITING state, ready to receive specs.
 	d.currentState = StateWaiting
 	d.stateData = make(map[string]any)
@@ -264,38 +280,30 @@ func (d *Driver) Run(ctx context.Context) error {
 
 // processCurrentState handles the logic for the current state.
 func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
-	// Use global timeout wrapper for architect state processing
-	nextState, err := agent.ProcessStateWithGlobalTimeoutSimple(ctx, d.currentState, func(ctx context.Context) (proto.State, error) {
-		switch d.currentState {
-		case StateWaiting:
-			// WAITING state - block until spec received.
-			return d.handleWaiting(ctx)
-		case StateScoping:
-			return d.handleScoping(ctx)
-		case StateDispatching:
-			return d.handleDispatching(ctx)
-		case StateMonitoring:
-			return d.handleMonitoring(ctx)
-		case StateRequest:
-			return d.handleRequest(ctx)
-		case StateEscalated:
-			return d.handleEscalated(ctx)
-		case StateDone:
-			// DONE is a terminal state - should not continue processing.
-			return StateDone, nil
-		case StateError:
-			// ERROR is a terminal state - should not continue processing.
-			return StateError, nil
-		default:
-			return StateError, fmt.Errorf("unknown state: %s", d.currentState)
-		}
-	})
-
-	if err != nil {
-		return StateError, logx.Wrap(err, "architect state processing with global timeout failed")
+	// Process state directly without timeout wrapper
+	switch d.currentState {
+	case StateWaiting:
+		// WAITING state - block until spec received.
+		return d.handleWaiting(ctx)
+	case StateScoping:
+		return d.handleScoping(ctx)
+	case StateDispatching:
+		return d.handleDispatching(ctx)
+	case StateMonitoring:
+		return d.handleMonitoring(ctx)
+	case StateRequest:
+		return d.handleRequest(ctx)
+	case StateEscalated:
+		return d.handleEscalated(ctx)
+	case StateDone:
+		// DONE is a terminal state - should not continue processing.
+		return StateDone, nil
+	case StateError:
+		// ERROR is a terminal state - should not continue processing.
+		return StateError, nil
+	default:
+		return StateError, fmt.Errorf("unknown state: %s", d.currentState)
 	}
-
-	return nextState, nil
 }
 
 // transitionTo moves the driver to a new state and persists it.
@@ -408,6 +416,11 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
+// GetExternalAPI returns the external API for operations outside the FSM.
+func (d *Driver) GetExternalAPI() *ExternalAPI {
+	return d.externalAPI
+}
+
 // buildMessagesWithContext creates completion messages with context history (same as coder).
 // This centralizes the pattern used across architect LLM calls with context isolation.
 func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
@@ -466,4 +479,39 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 	}
 
 	return resp.Content, nil
+}
+
+// processStatusUpdates runs as a goroutine to process story status updates from coders.
+// This provides a non-blocking way for coders to update story status without waiting for architect availability.
+func (d *Driver) processStatusUpdates(ctx context.Context) {
+	if d.dispatcher == nil {
+		d.logger.Warn("No dispatcher available for status updates processing")
+		return
+	}
+
+	statusUpdatesCh := d.dispatcher.GetStatusUpdatesChannel()
+	d.logger.Info("📊 Status updates processor started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			d.logger.Info("📊 Status updates processor stopping due to context cancellation")
+			return
+
+		case statusUpdate := <-statusUpdatesCh:
+			if statusUpdate == nil {
+				d.logger.Info("📊 Status updates channel closed, processor stopping")
+				return
+			}
+
+			d.logger.Info("📊 Processing status update: story %s → %s", statusUpdate.StoryID, statusUpdate.Status)
+
+			// Convert string status to StoryStatus and update via queue
+			if err := d.queue.UpdateStoryStatus(statusUpdate.StoryID, StoryStatus(statusUpdate.Status)); err != nil {
+				d.logger.Error("❌ Failed to update story %s status to %s: %v", statusUpdate.StoryID, statusUpdate.Status, err)
+			} else {
+				d.logger.Info("✅ Successfully updated story %s status to %s", statusUpdate.StoryID, statusUpdate.Status)
+			}
+		}
+	}
 }

@@ -17,11 +17,10 @@ const (
 	ToolBackendInfo = "backend_info"
 
 	// Container tools.
-	ToolContainerBuild    = "container_build"
-	ToolContainerUpdate   = "container_update"
-	ToolContainerExec     = "container_exec"
-	ToolContainerBootTest = "container_boot_test"
-	ToolContainerList     = "container_list"
+	ToolContainerBuild  = "container_build"
+	ToolContainerUpdate = "container_update"
+	ToolContainerTest   = "container_test"
+	ToolContainerList   = "container_list"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -43,9 +42,8 @@ var (
 		ToolSubmitPlan,
 		ToolAskQuestion,
 		ToolMarkStoryComplete,
-		ToolContainerExec,
-		ToolContainerBootTest,
-		// TODO: Add ToolContainerList when implemented
+		ToolContainerTest,
+		ToolContainerList,
 	}
 
 	// DevOps coding tools - infrastructure focus, container operations.
@@ -55,9 +53,8 @@ var (
 		ToolDone,
 		ToolContainerBuild,
 		ToolContainerUpdate,
-		ToolContainerExec,
-		ToolContainerBootTest,
-		// TODO: Add ToolContainerList when implemented
+		ToolContainerTest,
+		ToolContainerList,
 	}
 
 	// App coding tools - full development environment.

@@ -2,6 +2,12 @@
 
 **Platform**: {{.PlatformDisplayName}} ({{.Platform}})  
 **Container**: {{.ContainerImage}}  
+{{- if .DockerfilePath}}
+**Dockerfile**: {{.DockerfilePath}}  
+{{- end}}
+{{- if .GitRepoURL}}
+**Repository**: {{.GitRepoURL}}  
+{{- end}}
 **Total Issues**: {{.TotalFailures}}  
 {{- if .HasCriticalFailures}}
 **Priority**: 🔴 **CRITICAL** - Infrastructure issues blocking development  
@@ -38,7 +44,7 @@ This story addresses infrastructure issues discovered during project initializat
   - Action: {{.Details.action}}
   {{- end}}
 {{- end}}
-- [ ] Verify all build targets work: `{{index $defaults "build_command"}}`, `{{index $defaults "test_command"}}`, `{{index $defaults "lint_command"}}`, `{{index $defaults "run_command"}}`
+- [ ] Verify all required build targets work: `{{.BuildCommand}}`, `{{.TestCommand}}`, `{{.LintCommand}}`, `{{.RunCommand}}`
 {{- end}}
 
 {{- if .HasFailuresOfType "container"}}
@@ -145,7 +151,41 @@ This story addresses infrastructure issues discovered during project initializat
 *No critical infrastructure issues found.*
 {{- end}}
 
-### Phase 2: High Priority Fixes (Priority 2+)
+### Phase 2: Development Quality Setup
+**Essential Quality Tools** (install if not already configured):
+1. **Linting Configuration**: Set up aggressive linting for code quality
+   {{- if eq .Platform "go"}}
+   - Install golangci-lint: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
+   - Create `.golangci.yml` with aggressive rules (see Go template for config)
+   {{- else if eq .Platform "node"}}
+   - Install ESLint: `npm install --save-dev eslint @typescript-eslint/parser @typescript-eslint/eslint-plugin`
+   - Create `.eslintrc.js` with strict TypeScript/JavaScript rules
+   {{- else if eq .Platform "python"}}
+   - Install Ruff: `pip install ruff`
+   - Create `pyproject.toml` or `ruff.toml` with aggressive linting rules
+   {{- else}}
+   - Configure platform-specific linting tools for {{.Platform}}
+   {{- end}}
+   - Integrate linting into `{{.LintCommand}}` target
+   - Ensure linting passes before proceeding
+
+2. **Pre-commit Hooks**: Enforce quality gates automatically
+   - Create `.git/hooks/pre-commit` requiring build, test, and lint success
+   - Make hook executable: `chmod +x .git/hooks/pre-commit`
+   - Test hook blocks commits on failure
+
+3. **CI Configuration**: Prepare for continuous integration
+   {{- if eq .Platform "go"}}
+   - Consider `.github/workflows/go.yml` for GitHub Actions
+   {{- else if eq .Platform "node"}}
+   - Consider `.github/workflows/node.yml` for GitHub Actions
+   {{- else if eq .Platform "python"}}
+   - Consider `.github/workflows/python.yml` for GitHub Actions
+   {{- else}}
+   - Configure CI pipeline appropriate for {{.Platform}}
+   {{- end}}
+
+### Phase 3: High Priority Infrastructure Fixes (Priority 2+)
 {{- range .FailuresByPriority}}
 {{- if gt .Priority 1}}
 1. **{{.Component}}**: {{.Description}}
@@ -156,24 +196,27 @@ This story addresses infrastructure issues discovered during project initializat
 {{- end}}
 {{- end}}
 
-### Phase 3: Validation
+### Phase 4: Validation
 1. Run full verification suite: `maestro init --verify`
 2. Test complete development workflow:
-   - `{{index $defaults "build_command"}}` - should compile successfully
-   - `{{index $defaults "test_command"}}` - should run tests
-   - `{{index $defaults "lint_command"}}` - should pass linting
-   - `{{index $defaults "run_command"}}` - should start application
+   - `{{.BuildCommand}}` - should compile successfully
+   - `{{.TestCommand}}` - should run tests
+   - `{{.LintCommand}}` - should pass linting
+   - `{{.RunCommand}}` - should start application
 3. Verify container security constraints
 4. Test git operations (clone, worktree, PR creation)
 
 ## Technical Notes
 
 ### Platform: {{.PlatformDisplayName}}
-- **Build System**: {{index $defaults "build_command"}}
-- **Package Manager**: {{index $defaults "package_manager"}}
-- **Test Framework**: {{index $defaults "test_framework"}}
-- **Linting Tool**: {{index $defaults "lint_tool"}}
+- **Build Command**: {{.BuildCommand}}
+- **Test Command**: {{.TestCommand}}
+- **Lint Command**: {{.LintCommand}}
+- **Run Command**: {{.RunCommand}}
 - **Container Image**: {{.ContainerImage}}
+{{- if .GitUserName}}
+- **Git User**: {{.GitUserName}} <{{.GitUserEmail}}>
+{{- end}}
 
 ### Container Configuration
 {{- if .RequiresNetworkAccess}}

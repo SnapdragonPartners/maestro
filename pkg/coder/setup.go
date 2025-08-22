@@ -3,6 +3,7 @@ package coder
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
 )
 
@@ -18,6 +20,16 @@ import (
 //
 //nolint:unparam // bool return required by state machine interface, always false for non-terminal states
 func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+	// Clean and recreate work directory for fresh workspace
+	c.logger.Info("🧹 Cleaning work directory for fresh workspace: %s", c.workDir)
+	if err := os.RemoveAll(c.workDir); err != nil {
+		c.logger.Warn("Failed to remove existing work directory: %v", err)
+	}
+	if err := os.MkdirAll(c.workDir, 0755); err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to create fresh work directory")
+	}
+	c.logger.Info("✅ Created fresh work directory: %s", c.workDir)
+
 	if c.cloneManager == nil {
 		c.logger.Warn("No clone manager configured, skipping Git clone setup")
 		return StatePlanning, false, nil
@@ -66,6 +78,16 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 		}
 	}
 
+	// Update story status to PLANNING via dispatcher (non-blocking)
+	if c.dispatcher != nil {
+		if err := c.dispatcher.UpdateStoryStatus(storyIDStr, "planning"); err != nil {
+			c.logger.Warn("Failed to update story status to planning: %v", err)
+			// Continue anyway - status update failure shouldn't block the workflow
+		} else {
+			c.logger.Info("✅ Story %s status updated to PLANNING", storyIDStr)
+		}
+	}
+
 	// Tools registered globally by orchestrator at startup
 	// No need to register tools per-story or per-agent
 
@@ -90,10 +112,23 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	// Determine user based on story type
 	storyType := utils.GetStateValueOr[string](c.BaseStateMachine, proto.KeyStoryType, string(proto.StoryTypeApp))
 	containerUser := "1000:1000" // Default: non-root user for app stories
+
+	// Determine container image based on story type and configuration
+	var containerImage string
 	if storyType == string(proto.StoryTypeDevOps) {
+		// DevOps stories always use the safe bootstrap container
+		containerImage = config.BootstrapContainerTag
 		containerUser = "0:0" // Run as root for DevOps stories to access Docker socket
-		c.logger.Info("DevOps story detected - running container as root for Docker access")
+		c.logger.Info("DevOps story detected - using safe container %s as root", containerImage)
+	} else {
+		// App stories try configured container first, fall back to bootstrap if it fails
+		containerImage = getDockerImageForAgent(c.workDir)
+		c.logger.Info("App story detected - attempting to use configured container: %s", containerImage)
 	}
+
+	// Update container image before starting new container
+	c.SetDockerImage(containerImage)
+	c.logger.Info("Set container image to: %s", containerImage)
 
 	// Create execution options for new container
 	execOpts := execpkg.Opts{
@@ -133,7 +168,21 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	// Start new container with appropriate configuration
 	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
 	if err != nil {
-		return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
+		// For app stories, try falling back to bootstrap container if configured container fails
+		if storyType == string(proto.StoryTypeApp) && containerImage != config.BootstrapContainerTag {
+			c.logger.Warn("Failed to start configured container %s, falling back to safe container %s: %v",
+				containerImage, config.BootstrapContainerTag, err)
+
+			// Update to bootstrap container and retry
+			c.SetDockerImage(config.BootstrapContainerTag)
+			containerName, err = c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+			if err != nil {
+				return logx.Wrap(err, fmt.Sprintf("failed to start %s container with fallback %s", purpose, config.BootstrapContainerTag))
+			}
+			c.logger.Info("Successfully started fallback container: %s", config.BootstrapContainerTag)
+		} else {
+			return logx.Wrap(err, fmt.Sprintf("failed to start %s container", purpose))
+		}
 	}
 
 	c.containerName = containerName
@@ -246,7 +295,26 @@ func (c *Coder) ensureGitHubAuthentication(ctx context.Context, addContextMessag
 		if err := c.configureGitUser(ctx, opts); err != nil {
 			c.logger.Warn("⚠️ Failed to configure git user identity: %v", err)
 			if addContextMessage {
-				c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+				// Get global config for git user info
+				globalConfig, configErr := config.GetConfig()
+				if configErr != nil {
+					// Fallback to simple message if config unavailable
+					c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+				} else {
+					// Use template with actual git config values
+					templateData := map[string]string{
+						"Error":        err.Error(),
+						"GitUserName":  globalConfig.Git.GitUserName,
+						"GitUserEmail": globalConfig.Git.GitUserEmail,
+					}
+					if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitConfigFailureTemplate, templateData); renderErr != nil {
+						c.logger.Error("Failed to render git config failure message: %v", renderErr)
+						// Fallback to simple message
+						c.contextManager.AddMessage("system", fmt.Sprintf("Could not configure git user identity: %v. You may need to set git user.name and user.email manually.", err))
+					} else {
+						c.contextManager.AddMessage("system", renderedMessage)
+					}
+				}
 			}
 		}
 	}
@@ -257,7 +325,13 @@ func (c *Coder) ensureGitHubAuthentication(ctx context.Context, addContextMessag
 		if err != nil {
 			c.logger.Warn("⚠️ GitHub CLI auth setup failed: %v (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
 			if addContextMessage {
-				c.contextManager.AddMessage("system", fmt.Sprintf("GitHub CLI authentication setup failed: %v. You may need to troubleshoot GitHub authentication before making git operations.", err))
+				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitHubAuthFailureTemplate, err.Error()); renderErr != nil {
+					c.logger.Error("Failed to render GitHub auth failure message: %v", renderErr)
+					// Fallback to simple message
+					c.contextManager.AddMessage("system", fmt.Sprintf("GitHub CLI authentication setup failed: %v. You may need to troubleshoot GitHub authentication before making git operations.", err))
+				} else {
+					c.contextManager.AddMessage("system", renderedMessage)
+				}
 			}
 		} else {
 			c.logger.Info("✅ Git authentication configured - GitHub CLI will handle git credentials")

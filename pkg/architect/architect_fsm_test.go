@@ -59,6 +59,7 @@ func TestIsValidArchitectTransition(t *testing.T) {
 
 		// REQUEST transitions.
 		{StateRequest, StateMonitoring, "REQUEST -> MONITORING (approve non-code/request changes)"},
+		{StateRequest, StateDispatching, "REQUEST -> DISPATCHING (successful merge)"},
 		{StateRequest, StateEscalated, "REQUEST -> ESCALATED (cannot answer)"},
 		{StateRequest, StateError, "REQUEST -> ERROR (abandon/unrecoverable)"},
 
@@ -118,10 +119,9 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateMonitoring, StateEscalated, "MONITORING -> ESCALATED (invalid)"},
 		{StateMonitoring, StateDone, "MONITORING -> DONE (invalid)"},
 
-		// Invalid REQUEST transitions (should not go directly to DISPATCHING)
+		// Invalid REQUEST transitions
 		{StateRequest, StateWaiting, "REQUEST -> WAITING (invalid)"},
 		{StateRequest, StateScoping, "REQUEST -> SCOPING (invalid)"},
-		{StateRequest, StateDispatching, "REQUEST -> DISPATCHING (invalid)"},
 		{StateRequest, StateDone, "REQUEST -> DONE (invalid)"},
 
 		// Invalid ESCALATED transitions.

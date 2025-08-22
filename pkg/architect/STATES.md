@@ -1,6 +1,6 @@
 # Architect Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-07-24 (rev E - Shutdown Handling)*
+*Last updated: 2025-08-18 (rev F - Merge-to-Dispatching Transition)*
 
 This document is the **single source of truth** for the architect agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -31,6 +31,7 @@ stateDiagram-v2
     
     %% ---------- REQUEST HANDLING ----------
     REQUEST       --> MONITORING         : approve (non-code) • request changes  
+    REQUEST       --> DISPATCHING        : successful merge → release dependent stories
     REQUEST       --> ESCALATED          : cannot answer → ask human
     REQUEST       --> ERROR              : abandon / unrecoverable
 
@@ -69,6 +70,7 @@ stateDiagram-v2
 - **Story completion**: Only happens after successful PR merge (not code approval)
 - **Dependency unlocking**: Triggered by merge success, enabling dependent stories
 - **Conflict handling**: Merge conflicts returned to coder for resolution
+- **Post-merge transition**: Successful merges transition from REQUEST → DISPATCHING to release dependent stories and update mirrors (not REQUEST → MONITORING)
 
 ---
 

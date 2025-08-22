@@ -407,7 +407,14 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 
 // NewCoder creates a new coder with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewCoder(agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service) (*Coder, error) {
+func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.Model, cloneManager *CloneManager, buildService *build.Service) (*Coder, error) {
+	// Check for context cancellation before starting construction
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("coder construction cancelled: %w", ctx.Err())
+	default:
+	}
+
 	// Create LLM client using DRY helper function (same as architect)
 	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeCoder)
 	if err != nil {
@@ -501,6 +508,8 @@ func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
 	if resp.Content != "" {
 		// Case 1: Normal response with content
 		c.contextManager.AddAssistantMessage(resp.Content)
+		// Clear empty response flag on successful response
+		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
 		return nil
 	}
 
@@ -512,6 +521,8 @@ func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
 		}
 		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
 		c.contextManager.AddAssistantMessage(placeholder)
+		// Clear empty response flag on successful response with tool calls
+		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
 		return nil
 	}
 
@@ -709,58 +720,50 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	currentState := c.BaseStateMachine.GetCurrentState()
 	c.logger.Debug("ProcessState: coder %p, workDir: %s, currentState: %s", c, c.workDir, currentState)
 
-	// Use global timeout wrapper
-	nextState, done, err := agent.ProcessStateWithGlobalTimeout(ctx, currentState, func(ctx context.Context) (proto.State, bool, error) {
-		var nextState proto.State
-		var done bool
-		var err error
+	// Process state directly without timeout wrapper
+	var nextState proto.State
+	var done bool
+	var err error
 
-		switch currentState {
-		case proto.StateWaiting:
-			nextState, done, err = c.handleWaiting(ctx, sm)
-		case StateSetup:
-			nextState, done, err = c.handleSetup(ctx, sm)
-		case StatePlanning:
-			nextState, done, err = c.handlePlanning(ctx, sm)
-		case StatePlanReview:
-			nextState, done, err = c.handlePlanReview(ctx, sm)
-		case StateCoding:
-			nextState, done, err = c.handleCoding(ctx, sm)
-		case StateTesting:
-			nextState, done, err = c.handleTesting(ctx, sm)
-		case StateCodeReview:
-			nextState, done, err = c.handleCodeReview(ctx, sm)
-		case StatePrepareMerge:
-			nextState, done, err = c.handlePrepareMerge(ctx, sm)
-		case StateBudgetReview:
-			nextState, done, err = c.handleBudgetReview(ctx, sm)
-		case StateAwaitMerge:
-			nextState, done, err = c.handleAwaitMerge(ctx, sm)
-		case proto.StateDone:
-			nextState, done, err = c.handleDone(ctx, sm)
-		case proto.StateError:
-			nextState, done, err = c.handleError(ctx, sm)
-		default:
-			return proto.StateError, false, logx.Errorf("unknown state: %s", c.BaseStateMachine.GetCurrentState())
-		}
+	switch currentState {
+	case proto.StateWaiting:
+		nextState, done, err = c.handleWaiting(ctx, sm)
+	case StateSetup:
+		nextState, done, err = c.handleSetup(ctx, sm)
+	case StatePlanning:
+		nextState, done, err = c.handlePlanning(ctx, sm)
+	case StatePlanReview:
+		nextState, done, err = c.handlePlanReview(ctx, sm)
+	case StateCoding:
+		nextState, done, err = c.handleCoding(ctx, sm)
+	case StateTesting:
+		nextState, done, err = c.handleTesting(ctx, sm)
+	case StateCodeReview:
+		nextState, done, err = c.handleCodeReview(ctx, sm)
+	case StatePrepareMerge:
+		nextState, done, err = c.handlePrepareMerge(ctx, sm)
+	case StateBudgetReview:
+		nextState, done, err = c.handleBudgetReview(ctx, sm)
+	case StateAwaitMerge:
+		nextState, done, err = c.handleAwaitMerge(ctx, sm)
+	case proto.StateDone:
+		nextState, done, err = c.handleDone(ctx, sm)
+	case proto.StateError:
+		nextState, done, err = c.handleError(ctx, sm)
+	default:
+		return proto.StateError, false, logx.Errorf("unknown state: %s", c.BaseStateMachine.GetCurrentState())
+	}
 
-		// Log the state transition decision.
-		if err != nil {
-			c.logger.Error("🔄 State handler %s returned error: %v", currentState, err)
-			// Store error message for ERROR state handling.
-			sm.SetStateData(KeyErrorMessage, err.Error())
-			// Transition to ERROR state instead of propagating error up.
-			c.logger.Info("🔄 State handler %s → ERROR (due to error)", currentState)
-			return proto.StateError, false, nil
-		} else if nextState != currentState {
-			c.logger.Info("🔄 State handler %s → %s (done: %v)", currentState, nextState, done)
-		}
-
-		return nextState, done, nil
-	})
-
+	// Log the state transition decision.
 	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "state processing with global timeout failed")
+		c.logger.Error("🔄 State handler %s returned error: %v", currentState, err)
+		// Store error message for ERROR state handling.
+		sm.SetStateData(KeyErrorMessage, err.Error())
+		// Transition to ERROR state instead of propagating error up.
+		c.logger.Info("🔄 State handler %s → ERROR (due to error)", currentState)
+		return proto.StateError, false, nil
+	} else if nextState != currentState {
+		c.logger.Info("🔄 State handler %s → %s (done: %v)", currentState, nextState, done)
 	}
 
 	return nextState, done, nil

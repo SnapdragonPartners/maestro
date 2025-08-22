@@ -190,9 +190,10 @@ type ResilienceConfig struct {
 
 // MetricsConfig defines configuration for metrics collection.
 type MetricsConfig struct {
-	Enabled   bool   `json:"enabled"`   // Whether metrics collection is enabled
-	Exporter  string `json:"exporter"`  // Metrics exporter type ("prometheus", "noop")
-	Namespace string `json:"namespace"` // Metrics namespace for grouping
+	Enabled       bool   `json:"enabled"`        // Whether metrics collection is enabled
+	Exporter      string `json:"exporter"`       // Metrics exporter type ("prometheus", "noop")
+	Namespace     string `json:"namespace"`      // Metrics namespace for grouping
+	PrometheusURL string `json:"prometheus_url"` // Prometheus server URL for querying metrics
 }
 
 // AgentConfig defines which models to use and concurrency limits.
@@ -235,6 +236,13 @@ const (
 	// Default Docker images for different project types (used only for dockerfile mode fallbacks).
 	DefaultGoDockerImage     = "golang:alpine" // Use latest stable Go with alpine
 	DefaultUbuntuDockerImage = "ubuntu:22.04"
+
+	// Platform constants.
+	PlatformGo      = "go"
+	PlatformPython  = "python"
+	PlatformNode    = "node"
+	PlatformDocker  = "docker"
+	PlatformGeneric = "generic"
 
 	// Build target constants - used for GetBuildCommand() and elsewhere.
 	BuildTargetBuild   = "build"
@@ -329,6 +337,9 @@ type ContainerConfig struct {
 	Name          string `json:"name"`                     // Container name/tag (standard image or custom built image)
 	Dockerfile    string `json:"dockerfile,omitempty"`     // Path to dockerfile if building custom image
 	WorkspacePath string `json:"workspace_path,omitempty"` // Path where project is mounted inside container (default: "/workspace")
+
+	// Docker capabilities (detected at startup)
+	BuildxAvailable bool `json:"-"` // Whether buildx is available on the host (transient, not persisted)
 
 	// Docker runtime settings (command-line only, cannot be set in Dockerfile)
 	Network   string `json:"network,omitempty"`    // Docker --network setting
@@ -605,9 +616,10 @@ func createDefaultConfig() *Config {
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
 			Metrics: MetricsConfig{
-				Enabled:   false,
-				Exporter:  "noop",
-				Namespace: "maestro",
+				Enabled:       true,       // Enable metrics by default for development visibility
+				Exporter:      "internal", // Use internal aggregation by default
+				Namespace:     "maestro",
+				PrometheusURL: "", // Not needed for internal metrics
 			},
 			Resilience: ResilienceConfig{
 				CircuitBreaker: CircuitBreakerConfig{
@@ -927,8 +939,8 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("LLM API key validation failed: %w", err)
 	}
 
-	// Validate external tool dependencies
-	if err := validateExternalTools(); err != nil {
+	// Validate external tool dependencies and detect capabilities
+	if err := validateExternalTools(config); err != nil {
 		return fmt.Errorf("external tool validation failed: %w", err)
 	}
 
@@ -1055,8 +1067,8 @@ func validateRequiredAPIKeys(cfg *Config) error {
 	return nil
 }
 
-// validateExternalTools checks that all required external tools are available.
-func validateExternalTools() error {
+// validateExternalTools checks that all required external tools are available and detects Docker capabilities.
+func validateExternalTools(config *Config) error {
 	fmt.Printf("[config] 🔧 Validating external tool dependencies\n")
 
 	requiredTools := map[string]string{
@@ -1081,6 +1093,18 @@ func validateExternalTools() error {
 			errors = append(errors, fmt.Sprintf("Docker daemon is not running: %s", err.Error()))
 		} else {
 			fmt.Printf("[config] 🔧 ✅ Docker daemon: running\n")
+
+			// Check buildx availability and store result in config
+			if config.Container == nil {
+				config.Container = &ContainerConfig{}
+			}
+			if err := CheckBuildxAvailable(); err != nil {
+				config.Container.BuildxAvailable = false
+				fmt.Printf("[config] 🔧 ⚠️ Docker buildx: not available (will use docker build)\n")
+			} else {
+				config.Container.BuildxAvailable = true
+				fmt.Printf("[config] 🔧 ✅ Docker buildx: available\n")
+			}
 		}
 	}
 
@@ -1114,6 +1138,29 @@ func CheckDockerDaemonRunning() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("docker ps failed: %w", err)
 	}
+	return nil
+}
+
+// CheckBuildxAvailable checks if Docker buildx is available and usable.
+// This is an exported helper that other packages can use for buildx-specific checks.
+//
+//nolint:contextcheck // Function creates its own context internally
+func CheckBuildxAvailable() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check 1: buildx CLI command exists
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker buildx version failed: %w", err)
+	}
+
+	// Check 2: default builder is available and working
+	cmd = exec.CommandContext(ctx, "docker", "buildx", "inspect", "--builder", "default")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker buildx inspect failed: %w", err)
+	}
+
 	return nil
 }
 
@@ -1246,6 +1293,36 @@ func GetArchitectModel() (*Model, error) {
 		}
 	}
 	return nil, fmt.Errorf("architect_model '%s' not found in config", cfg.Agents.ArchitectModel)
+}
+
+// CalculateCost calculates the cost in USD for a given model and token usage.
+// Returns the cost based on the model's CPM (cost per million tokens) configuration.
+func CalculateCost(modelName string, promptTokens, completionTokens int) (float64, error) {
+	cfg, err := GetConfig()
+	if err != nil {
+		return 0, err
+	}
+
+	if cfg.Orchestrator == nil {
+		return 0, fmt.Errorf("orchestrator config not found")
+	}
+
+	// Find the model in the orchestrator config
+	for i := range cfg.Orchestrator.Models {
+		if cfg.Orchestrator.Models[i].Name == modelName {
+			model := &cfg.Orchestrator.Models[i]
+
+			// Calculate total tokens
+			totalTokens := float64(promptTokens + completionTokens)
+
+			// Convert CPM (cost per million) to cost
+			cost := (totalTokens / 1_000_000.0) * model.CPM
+
+			return cost, nil
+		}
+	}
+
+	return 0, fmt.Errorf("model '%s' not found in config", modelName)
 }
 
 // GetAPIKey returns the API key for a given provider from environment variables.

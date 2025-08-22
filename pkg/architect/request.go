@@ -4,12 +4,20 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent/middleware/metrics"
+	"orchestrator/pkg/coder"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+)
+
+const (
+	defaultStoryType = "app"
 )
 
 // handleRequest processes the request phase (handling coder requests).
@@ -146,6 +154,9 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			return StateError, err
 		}
 
+		// Store the response in state data for merge success detection
+		d.stateData["last_response"] = response
+
 		// Persist response to database (fire-and-forget)
 		if d.persistenceChannel != nil {
 			agentResponse := &persistence.AgentResponse{
@@ -271,11 +282,32 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Response sent and persisted to database
 	}
 
-	// Clear the processed request and return to monitoring.
-	delete(d.stateData, "current_request")
+	// Check if work was accepted (completion or merge)
+	var workWasAccepted bool
+	if accepted, exists := d.stateData["work_accepted"]; exists {
+		if acceptedBool, ok := accepted.(bool); ok && acceptedBool {
+			workWasAccepted = true
+			// Log the acceptance details for debugging
+			if storyID, exists := d.stateData["accepted_story_id"]; exists {
+				if acceptanceType, exists := d.stateData["acceptance_type"]; exists {
+					d.logger.Info("🎉 Detected work acceptance for story %v via %v, transitioning to DISPATCHING to release dependent stories",
+						storyID, acceptanceType)
+				}
+			}
+		}
+	}
 
-	// Determine next state based on whether architect owns a spec.
-	if d.ownsSpec() {
+	// Clear the processed request and acceptance signals
+	delete(d.stateData, "current_request")
+	delete(d.stateData, "last_response")
+	delete(d.stateData, "work_accepted")
+	delete(d.stateData, "accepted_story_id")
+	delete(d.stateData, "acceptance_type")
+
+	// Determine next state - work acceptance (completion or merge) transitions to DISPATCHING
+	if workWasAccepted && d.ownsSpec() {
+		return StateDispatching, nil
+	} else if d.ownsSpec() {
 		return StateMonitoring, nil
 	} else {
 		return StateWaiting, nil
@@ -437,41 +469,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		var prompt string
 		switch approvalType {
 		case proto.ApprovalTypeCompletion:
-			// Extract completion-specific data for better review.
-			reason, _ := requestMsg.GetPayload("completion_reason")
-			evidence, _ := requestMsg.GetPayload("completion_evidence")
-			confidence, _ := requestMsg.GetPayload("completion_confidence")
-			originalStory, _ := requestMsg.GetPayload("original_story")
-
-			prompt = fmt.Sprintf(`Review this story completion claim:
-
-ORIGINAL STORY:
-%v
-
-COMPLETION CLAIM:
-- Reason: %v
-- Evidence: %v  
-- Confidence: %v
-
-Please evaluate if the story requirements are truly satisfied based on the evidence provided.
-
-## Decision Options:
-
-**APPROVED** - Story is truly complete
-- Use when all requirements are fully satisfied
-- Effect: Story will be marked as DONE
-
-**NEEDS_CHANGES** - Missing work identified  
-- Use when coder missed requirements or needs additional work (tests, docs, validation, etc.)
-- Effect: Returns to PLANNING to address missing items
-
-**REJECTED** - Story approach is fundamentally flawed
-- Use when approach is wrong or story is impossible  
-- Effect: Story is abandoned
-
-## Response Format:
-Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]", or "REJECTED: [fundamental issues]".`,
-				originalStory, reason, evidence, confidence)
+			// Use story-type-aware completion approval templates
+			prompt = d.generateCompletionApprovalPrompt(requestMsg, content)
+		case proto.ApprovalTypeCode:
+			// Use story-type-aware code review templates
+			prompt = d.generateCodeReviewApprovalPrompt(requestMsg, content)
 		case proto.ApprovalTypeBudgetReview:
 			prompt = d.generateBudgetReviewPrompt(requestMsg)
 		default:
@@ -530,11 +532,12 @@ Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]"
 
 	// Mark story as completed for approved completions.
 	if approved && approvalType == proto.ApprovalTypeCompletion {
-		// Extract story ID and mark as completed in queue.
+		// Extract story ID and handle work acceptance (queue completion, database persistence, state transition signal)
 		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
-			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" && d.queue != nil {
-				// Mark story as completed (ignore errors as this is fire-and-forget)
-				_ = d.queue.MarkCompleted(storyIDStr)
+			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
+				// For completion (non-merge) scenarios, we don't have PR/commit data
+				completionSummary := "Story completed via manual approval"
+				d.handleWorkAccepted(ctx, storyIDStr, "completion", nil, nil, &completionSummary)
 			}
 		}
 	}
@@ -584,6 +587,62 @@ Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]"
 		}
 	}
 
+	// If this is an approved plan, update the story's approved plan in the queue
+	if approvalResult.Status == proto.ApprovalStatusApproved && approvalType == proto.ApprovalTypePlan {
+		if storyIDStr, exists := proto.GetTypedPayload[string](requestMsg, proto.KeyStoryID); exists && d.queue != nil {
+			// Get the plan content from the request
+			var planContent string
+			if planStr, exists := proto.GetTypedPayload[string](requestMsg, "plan"); exists {
+				planContent = planStr
+			} else if contentStr, ok := content.(string); ok {
+				planContent = contentStr
+			}
+
+			if planContent != "" {
+				if err := d.queue.SetApprovedPlan(storyIDStr, planContent); err != nil {
+					d.logger.Error("Failed to set approved plan for story %s: %v", storyIDStr, err)
+				} else {
+					d.logger.Info("✅ Set approved plan for story %s", storyIDStr)
+					// Persist just this story to database with the updated approved plan
+					if story, exists := d.queue.GetStory(storyIDStr); exists {
+						// Convert queue status to database status
+						var dbStatus string
+						switch story.GetStatus() {
+						case StatusPending:
+							dbStatus = persistence.StatusNew
+						case StatusAssigned:
+							dbStatus = persistence.StatusCoding
+						case StatusDone:
+							dbStatus = persistence.StatusDone
+						default:
+							dbStatus = persistence.StatusNew
+						}
+
+						dbStory := &persistence.Story{
+							ID:            story.ID,
+							SpecID:        story.SpecID,
+							Title:         story.Title,
+							Content:       story.Content,
+							ApprovedPlan:  story.ApprovedPlan,
+							Status:        dbStatus,
+							Priority:      story.Priority,
+							CreatedAt:     story.LastUpdated,
+							StartedAt:     story.StartedAt,
+							CompletedAt:   story.CompletedAt,
+							AssignedAgent: story.AssignedAgent,
+							StoryType:     story.StoryType,
+							TokensUsed:    0,   // Metrics data added during completion
+							CostUSD:       0.0, // Metrics data added during completion
+						}
+
+						persistence.PersistStory(dbStory, d.persistenceChannel)
+						d.logger.Debug("💾 Persisted story %s with approved plan to database", storyIDStr)
+					}
+				}
+			}
+		}
+	}
+
 	// Create RESPONSE using unified protocol with individual approval fields.
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
@@ -597,7 +656,7 @@ Choose one: "APPROVED: [brief reason]", "NEEDS_CHANGES: [specific missing work]"
 	response.SetPayload("approval_result", approvalResult)
 
 	// Copy story_id from request for dispatcher validation
-	if storyID, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
+	if storyID, exists := proto.GetTypedPayload[string](requestMsg, proto.KeyStoryID); exists {
 		response.SetPayload(proto.KeyStoryID, storyID)
 	}
 
@@ -622,7 +681,7 @@ func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *p
 	}
 
 	// Mark story as pending for reassignment.
-	if err := d.queue.MarkPending(storyIDStr); err != nil {
+	if err := d.queue.UpdateStoryStatus(storyIDStr, StatusPending); err != nil {
 		return fmt.Errorf("failed to requeue story %s: %w", storyIDStr, err)
 	}
 
@@ -684,39 +743,69 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		resultMsg.SetPayload("feedback", "Pull request merged successfully")
 		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
 
-		// Mark story as completed in queue.
-		if d.queue != nil {
-			// Mark story as completed (ignore errors as this is fire-and-forget)
-			_ = d.queue.MarkCompleted(storyIDStr)
-		}
-
-		// Update story status to "done" in database after successful merge
-		if d.persistenceChannel != nil {
-			statusReq := &persistence.UpdateStoryStatusRequest{
-				StoryID: storyIDStr,
-				Status:  "done",
-			}
-
-			// Wrap in proper Request structure
-			req := &persistence.Request{
-				Data:      statusReq,
-				Response:  nil, // Fire-and-forget operation
-				Operation: persistence.OpUpdateStoryStatus,
-			}
-
-			d.logger.Info("🔀 Updating story %s status to 'done' after successful merge", storyIDStr)
-
-			// Fire-and-forget database update
-			select {
-			case d.persistenceChannel <- req:
-				d.logger.Debug("🔀 Status update sent to persistence worker")
-			default:
-				d.logger.Warn("🔀 Failed to send status update - persistence channel full")
+		// Extract PR ID from URL for database storage
+		var prIDPtr *string
+		if prURLStr != "" {
+			prID := extractPRIDFromURL(prURLStr)
+			if prID != "" {
+				prIDPtr = &prID
 			}
 		}
+
+		// Prepare completion summary
+		completionSummary := fmt.Sprintf("Story completed via merge. PR: %s, Commit: %s", prURLStr, mergeResult.CommitSHA)
+
+		// Handle work acceptance (queue completion, database persistence, state transition signal)
+		d.handleWorkAccepted(ctx, storyIDStr, "merge", prIDPtr, &mergeResult.CommitSHA, &completionSummary)
 	}
 
 	return resultMsg, nil
+}
+
+// queryStoryMetrics retrieves metrics for a story from the internal metrics recorder.
+func (d *Driver) queryStoryMetrics(_ context.Context, storyID string) *metrics.StoryMetrics {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		d.logger.Warn("📊 Failed to get config for metrics query: %v", err)
+		return nil
+	}
+
+	if cfg.Agents == nil || !cfg.Agents.Metrics.Enabled {
+		d.logger.Warn("📊 Metrics not enabled - skipping metrics query")
+		return nil
+	}
+
+	d.logger.Info("📊 Querying internal metrics for completed story %s", storyID)
+
+	// Get the internal metrics recorder (singleton)
+	recorder := metrics.NewInternalRecorder()
+	storyMetrics := recorder.GetStoryMetrics(storyID)
+
+	if storyMetrics != nil {
+		d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total tokens: %d, total cost: $%.6f",
+			storyID, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalTokens, storyMetrics.TotalCost)
+	} else {
+		d.logger.Warn("📊 No metrics found for story %s", storyID)
+	}
+
+	return storyMetrics
+}
+
+// extractPRIDFromURL extracts the PR number from a GitHub PR URL.
+func extractPRIDFromURL(prURL string) string {
+	// Extract PR number from URLs like:
+	// https://github.com/owner/repo/pull/123
+	// https://api.github.com/repos/owner/repo/pulls/123
+	parts := strings.Split(prURL, "/")
+	if len(parts) > 0 {
+		// Get the last part which should be the PR number
+		lastPart := parts[len(parts)-1]
+		// Validate it's numeric
+		if _, err := strconv.Atoi(lastPart); err == nil {
+			return lastPart
+		}
+	}
+	return ""
 }
 
 // MergeAttemptResult represents the result of a merge attempt.
@@ -921,11 +1010,15 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 	}
 
 	// Get story information from queue
-	var storyTitle, storyType, specContent string
+	var storyTitle, storyType, specContent, approvedPlan string
 	if storyID != "" && d.queue != nil {
 		if story, exists := d.queue.GetStory(storyID); exists {
 			storyTitle = story.Title
 			storyType = story.StoryType
+			// For CODING state reviews, include the approved plan for context
+			if origin == string(coder.StateCoding) && story.ApprovedPlan != "" {
+				approvedPlan = story.ApprovedPlan
+			}
 			// TODO: For now, we add a placeholder for spec content
 			// In a future enhancement, we could fetch the actual spec content
 			// using the story.SpecID and the persistence channel
@@ -938,7 +1031,7 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 		storyTitle = "Unknown Story"
 	}
 	if storyType == "" {
-		storyType = "app" // default
+		storyType = defaultStoryType // default
 	}
 	if recentActivity == "" {
 		recentActivity = "No recent activity data available"
@@ -952,7 +1045,7 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 
 	// Select template based on current state
 	var templateName templates.StateTemplate
-	if origin == "PLANNING" {
+	if origin == string(coder.StatePlanning) {
 		templateName = templates.BudgetReviewPlanningTemplate
 	} else {
 		templateName = templates.BudgetReviewCodingTemplate
@@ -974,6 +1067,7 @@ func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
 			"RecentActivity": recentActivity,
 			"IssuePattern":   issuePattern,
 			"SpecContent":    specContent,
+			"ApprovedPlan":   approvedPlan, // Include approved plan for CODING state context
 		},
 	}
 
@@ -1019,4 +1113,156 @@ Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with sp
 	}
 
 	return prompt
+}
+
+// generateApprovalPrompt is a shared helper for story-type-aware approval prompts.
+func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any, appTemplate, devopsTemplate templates.StateTemplate, fallbackMsg string) string {
+	// Extract story ID to get story type from queue
+	var storyID string
+	if val, exists := requestMsg.GetPayload("story_id"); exists {
+		storyID, _ = val.(string)
+	}
+
+	// Get story type from queue (defaults to app if not found)
+	storyType := defaultStoryType
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyType = story.StoryType
+		}
+	}
+
+	// Select appropriate template based on story type
+	var templateName templates.StateTemplate
+	if storyType == storyTypeDevOps {
+		templateName = devopsTemplate
+	} else {
+		templateName = appTemplate
+	}
+
+	// Create template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Content": content,
+		},
+	}
+
+	// Render template using the same pattern as other methods
+	if d.renderer == nil {
+		// Fallback to simple prompt if renderer not available
+		return fmt.Sprintf("%s: %v", fallbackMsg, content)
+	}
+
+	prompt, err := d.renderer.Render(templateName, templateData)
+	if err != nil {
+		d.logger.Error("Failed to render approval template: %v", err)
+		// Fallback to simple prompt
+		return fmt.Sprintf("%s: %v", fallbackMsg, content)
+	}
+
+	return prompt
+}
+
+// generateCompletionApprovalPrompt creates a story-type-aware prompt for completion approval requests.
+func (d *Driver) generateCompletionApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
+	return d.generateApprovalPrompt(requestMsg, content,
+		templates.AppCompletionApprovalTemplate,
+		templates.DevOpsCompletionApprovalTemplate,
+		"Review this story completion claim")
+}
+
+// generateCodeReviewApprovalPrompt creates a story-type-aware prompt for code review approval requests.
+func (d *Driver) generateCodeReviewApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
+	return d.generateApprovalPrompt(requestMsg, content,
+		templates.AppCodeReviewTemplate,
+		templates.DevOpsCodeReviewTemplate,
+		"Review this code implementation")
+}
+
+// handleWorkAccepted handles the unified flow for work acceptance (completion or merge).
+// This is the single path for marking stories as done, persisting to database, and signaling state transition.
+func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType string, prID, commitHash, completionSummary *string) {
+	if storyID == "" {
+		d.logger.Warn("handleWorkAccepted called with empty story ID")
+		return
+	}
+
+	d.logger.Info("🎉 Work accepted for story %s via %s", storyID, acceptanceType)
+	d.logger.Info("🔍 handleWorkAccepted: queue=%v, persistenceChannel=%v", d.queue != nil, d.persistenceChannel != nil)
+
+	// 1. Update story with completion data in queue
+	if d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			d.logger.Info("🔍 Found story %s in queue for completion", storyID)
+			// Update the story with completion data
+			if prID != nil {
+				story.PRID = *prID
+			}
+			if commitHash != nil {
+				story.CommitHash = *commitHash
+			}
+			if completionSummary != nil {
+				story.CompletionSummary = *completionSummary
+			}
+
+			// Update status and timestamps in memory (don't persist yet)
+			now := time.Now().UTC()
+			story.SetStatus(persistence.StatusDone) // Use database-compatible status
+			story.CompletedAt = &now
+			story.LastUpdated = now
+
+			d.logger.Info("✅ Story %s marked as completed in queue with completion data", storyID)
+		} else {
+			d.logger.Warn("⚠️ Story %s not found in queue for completion", storyID)
+		}
+	} else {
+		d.logger.Warn("⚠️ Queue is nil in handleWorkAccepted")
+	}
+
+	// 2. Add metrics to the story and persist to database
+	if d.persistenceChannel != nil && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			// Query and add metrics if available
+			storyMetrics := d.queryStoryMetrics(ctx, storyID)
+			if storyMetrics != nil {
+				story.TokensUsed = storyMetrics.PromptTokens + storyMetrics.CompletionTokens
+				story.CostUSD = storyMetrics.TotalCost
+			}
+
+			d.logger.Info("💾 Persisting completed story %s to database after %s", storyID, acceptanceType)
+			persistenceStory := story.ToPersistenceStory()
+			d.logger.Info("🔍 Story data for persistence: ID=%s, Status=%s, TokensUsed=%d, CostUSD=%.6f, PRID=%s, CommitHash=%s",
+				persistenceStory.ID, persistenceStory.Status, persistenceStory.TokensUsed, persistenceStory.CostUSD, persistenceStory.PRID, persistenceStory.CommitHash)
+
+			// Non-blocking send attempt
+			select {
+			case d.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpUpsertStory,
+				Data:      persistenceStory,
+				Response:  nil,
+			}:
+				d.logger.Info("✅ Story %s persistence request sent successfully", storyID)
+			default:
+				d.logger.Error("❌ Persistence channel full! Cannot persist story %s", storyID)
+			}
+
+			// Notify queue that story completed (for dependency resolution)
+			if d.queue != nil {
+				d.queue.checkAndNotifyReady()
+			}
+		} else {
+			d.logger.Warn("⚠️ Persistence failed: story %s not found in queue", storyID)
+		}
+	} else {
+		if d.persistenceChannel == nil {
+			d.logger.Warn("⚠️ Persistence skipped: persistenceChannel is nil")
+		}
+		if d.queue == nil {
+			d.logger.Warn("⚠️ Persistence skipped: queue is nil")
+		}
+	}
+
+	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)
+	d.stateData["work_accepted"] = true
+	d.stateData["accepted_story_id"] = storyID
+	d.stateData["acceptance_type"] = acceptanceType
 }

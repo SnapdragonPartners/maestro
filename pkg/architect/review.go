@@ -566,7 +566,7 @@ func (re *ReviewEvaluator) escalateToHuman(ctx context.Context, pendingReview *P
 		}
 	} else {
 		// Fallback: mark story as requiring human feedback.
-		err := re.queue.MarkAwaitHumanFeedback(pendingReview.StoryID)
+		err := re.queue.UpdateStoryStatus(pendingReview.StoryID, StatusPending)
 		if err != nil {
 			return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", pendingReview.StoryID, err)
 		}
@@ -630,7 +630,7 @@ func (re *ReviewEvaluator) requestCodeFixes(ctx context.Context, pendingReview *
 	pendingReview.ReviewNotes = feedback
 
 	// Mark story as waiting_review (still needs work).
-	err := re.queue.MarkWaitingReview(pendingReview.StoryID)
+	err := re.queue.UpdateStoryStatus(pendingReview.StoryID, StatusCoding)
 	if err != nil {
 		return fmt.Errorf("failed to mark story %s as waiting review: %w", pendingReview.StoryID, err)
 	}

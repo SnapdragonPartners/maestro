@@ -3,6 +3,7 @@ package persistence
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
@@ -11,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 1
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -31,17 +32,98 @@ func InitializeDatabase(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Initialize schema
-	if err := createSchema(db); err != nil {
+	// Initialize schema with migrations
+	if err := initializeSchemaWithMigrations(db); err != nil {
 		if closeErr := db.Close(); closeErr != nil {
 			// Log close error but return the original error
 			_ = closeErr
 		}
-		return nil, fmt.Errorf("failed to create schema: %w", err)
+		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
 	return db, nil
 }
+
+// initializeSchemaWithMigrations ensures the database schema is at the current version.
+func initializeSchemaWithMigrations(db *sql.DB) error {
+	// Get current schema version
+	currentVersion, err := GetSchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("failed to get current schema version: %w", err)
+	}
+
+	// If database is empty (version 0), create fresh schema
+	if currentVersion == 0 {
+		return createSchema(db)
+	}
+
+	// If database is up-to-date, no migration needed
+	if currentVersion == CurrentSchemaVersion {
+		return nil
+	}
+
+	// Run migrations from current version to target version
+	return runMigrations(db, currentVersion, CurrentSchemaVersion)
+}
+
+// runMigrations applies database migrations from current version to target version.
+func runMigrations(db *sql.DB, fromVersion, toVersion int) error {
+	for version := fromVersion + 1; version <= toVersion; version++ {
+		if err := runMigration(db, version); err != nil {
+			return fmt.Errorf("migration to version %d failed: %w", version, err)
+		}
+
+		// Update schema version after successful migration
+		if err := setSchemaVersion(db, version); err != nil {
+			return fmt.Errorf("failed to update schema version to %d: %w", version, err)
+		}
+	}
+	return nil
+}
+
+// runMigration applies a specific version migration.
+func runMigration(db *sql.DB, version int) error {
+	switch version {
+	case 1:
+		return migrateToVersion1(db)
+	case 2:
+		return migrateToVersion2(db)
+	case 3:
+		return migrateToVersion3(db)
+	case 4:
+		return migrateToVersion4(db)
+	case 5:
+		return migrateToVersion5(db)
+	case 6:
+		return migrateToVersion6(db)
+	default:
+		return fmt.Errorf("unknown migration version: %d", version)
+	}
+}
+
+// migrateToVersion6 adds the new completion fields to the stories table.
+func migrateToVersion6(db *sql.DB) error {
+	migrations := []string{
+		"ALTER TABLE stories ADD COLUMN pr_id TEXT",
+		"ALTER TABLE stories ADD COLUMN commit_hash TEXT",
+		"ALTER TABLE stories ADD COLUMN completion_summary TEXT",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
+// Placeholder migrations for future versions 1-5 (these would be implemented when needed).
+func migrateToVersion1(_ *sql.DB) error { return nil }
+func migrateToVersion2(_ *sql.DB) error { return nil }
+func migrateToVersion3(_ *sql.DB) error { return nil }
+func migrateToVersion4(_ *sql.DB) error { return nil }
+func migrateToVersion5(_ *sql.DB) error { return nil }
 
 // createSchema creates all required tables and indices.
 func createSchema(db *sql.DB) error {
@@ -79,7 +161,7 @@ func createSchema(db *sql.DB) error {
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
-			status TEXT DEFAULT 'new' CHECK (status IN ('new','planning','coding','committed','merged','error','duplicate')),
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','assigned','planning','coding','done')),
 			priority INTEGER DEFAULT 0,
 			approved_plan TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -89,7 +171,10 @@ func createSchema(db *sql.DB) error {
 			tokens_used BIGINT DEFAULT 0,
 			cost_usd DECIMAL(10,4) DEFAULT 0.0,
 			metadata TEXT,
-			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app'))
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app')),
+			pr_id TEXT,
+			commit_hash TEXT,
+			completion_summary TEXT
 		)`,
 
 		// Story dependencies junction table
@@ -211,9 +296,18 @@ func setSchemaVersion(db *sql.DB, version int) error {
 
 // GetSchemaVersion returns the current schema version from the database.
 func GetSchemaVersion(db *sql.DB) (int, error) {
+	// First ensure the schema_version table exists
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER PRIMARY KEY,
+		applied_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+	)`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create schema_version table: %w", err)
+	}
+
 	var version int
-	err := db.QueryRow("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").Scan(&version)
-	if err == sql.ErrNoRows {
+	err = db.QueryRow("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil // No version set yet
 	}
 	if err != nil {

@@ -4,7 +4,7 @@ Here's the complete current **STATES.md** content, inline for easy copy-paste:
 
 # Coder Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-08-16 (rev H - Added PREPARE_MERGE State)*
+*Last updated: 2025-08-19 (rev I - Added CODE_REVIEW → DONE transition for completion approvals)*
 
 This document is the **single source of truth** for the coder agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -44,7 +44,8 @@ stateDiagram-v2
     TESTING       --> CODING           : tests fail
 
     %% Code review & merge workflow
-    CODE_REVIEW   --> PREPARE_MERGE    : approve & prepare for merge
+    CODE_REVIEW   --> PREPARE_MERGE    : approve code & prepare for merge
+    CODE_REVIEW   --> DONE             : approve completion (no merge needed)
     CODE_REVIEW   --> CODING           : changes
     CODE_REVIEW   --> ERROR            : abandon/error
     

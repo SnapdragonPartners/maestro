@@ -9,6 +9,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
@@ -17,7 +18,6 @@ import (
 // handleCodeReview processes the CODE_REVIEW state using Effects pattern.
 func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Get context information
-	filesCreatedRaw, _ := sm.GetStateValue(KeyFilesCreated)
 	originalStory := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
 	plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
@@ -27,24 +27,31 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 
 	var approvalEff *effect.ApprovalEffect
 
-	// Check if files were actually created during implementation
-	filesCreated := []string{}
-	if files, ok := filesCreatedRaw.([]string); ok {
-		filesCreated = files
-	}
-
 	// Get completion summary from done tool if available
 	completionSummary := utils.GetStateValueOr[string](sm, KeyCompletionDetails, "")
 
-	// Generate git diff to show what changed
-	gitDiff := c.getGitDiff(ctx)
+	// Use reliable git-based work detection instead of unreliable filesCreated
+	baseBranch, err := c.getTargetBranch()
+	if err != nil {
+		c.logger.Warn("Failed to get target branch, using 'main': %v", err)
+		baseBranch = "main"
+	}
+
+	workResult := git.CheckWorkDone(ctx, baseBranch, c.workDir, c.longRunningExecutor)
+	if workResult.Err != nil {
+		c.logger.Warn("🔍 Git work check warning: %v", workResult.Err)
+	}
+
+	// Generate git diff for evidence (branch-based, not just uncommitted)
+	gitDiff := c.getBranchDiff(ctx, baseBranch)
 
 	// Build comprehensive evidence section
-	evidence := c.buildCompletionEvidence(testsPassed, testOutput, gitDiff, storyType, filesCreated)
+	evidence := c.buildCompletionEvidence(testsPassed, testOutput, gitDiff, storyType, workResult)
 
-	if len(filesCreated) == 0 && gitDiff == "" {
-		// No files created and no changes - request completion approval
-		c.logger.Info("🧑‍💻 No files created and no changes, requesting story completion approval")
+	if !workResult.HasWork {
+		// No work detected - request completion approval
+		c.logger.Info("🧑‍💻 No work detected (%s) - requesting completion approval",
+			strings.Join(workResult.Reasons, ", "))
 
 		summary := completionSummary
 		if summary == "" {
@@ -70,14 +77,16 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Story completion verified with evidence", proto.ApprovalTypeCompletion)
 		approvalEff.StoryID = storyID
+		// Store approval type for later processing
+		sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCompletion))
 	} else {
-		// Files were created or changes made - request code approval with full details
-		c.logger.Info("🧑‍💻 Changes made during implementation, requesting code review approval")
+		// Work was detected - request code approval with full details
+		c.logger.Info("🧑‍💻 Work detected (%s) - requesting code review approval",
+			strings.Join(workResult.Reasons, ", "))
 
 		summary := completionSummary
 		if summary == "" {
-			filesSummary := strings.Join(filesCreated, ", ")
-			summary = fmt.Sprintf("Implementation completed: %d files created (%s)", len(filesCreated), filesSummary)
+			summary = fmt.Sprintf("Implementation completed: %s", strings.Join(workResult.Reasons, ", "))
 		}
 
 		confidence := "high - all tests passing"
@@ -102,6 +111,8 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Code implementation requires architect review", proto.ApprovalTypeCode)
 		approvalEff.StoryID = storyID
+		// Store approval type for later processing
+		sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCode))
 	}
 
 	// Execute approval effect - blocks until architect responds
@@ -124,53 +135,82 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 	// Store completion timestamp
 	sm.SetStateData(KeyCodeReviewCompletedAt, time.Now().UTC())
 
+	// Get the approval type that was stored when the request was made
+	approvalTypeStr := utils.GetStateValueOr[string](sm, KeyCodeApprovalResult, "")
+
 	// Handle approval based on status
 	switch result.Status {
 	case proto.ApprovalStatusApproved:
-		c.logger.Info("🧑‍💻 Code approved by architect")
+		c.logger.Info("🧑‍💻 Approval received from architect")
 
-		// For completion approvals, go directly to DONE
-		// For code approvals, proceed to AWAIT_MERGE
-		if strings.Contains(result.Feedback, "completion") || strings.Contains(result.Feedback, "no changes") {
+		// Route based on approval type (not unreliable string matching)
+		if approvalTypeStr == string(proto.ApprovalTypeCompletion) {
 			c.logger.Info("🧑‍💻 Completion approved - story finished successfully")
 			return proto.StateDone, false, nil
+		} else {
+			c.logger.Info("🧑‍💻 Code approved - preparing merge")
+			return StatePrepareMerge, false, nil
 		}
 
-		c.logger.Info("🧑‍💻 Code approved - preparing merge")
-		return StatePrepareMerge, false, nil
-
 	case proto.ApprovalStatusNeedsChanges:
-		c.logger.Info("🧑‍💻 Code needs changes: %s", result.Feedback)
+		c.logger.Info("🧑‍💻 Changes requested: %s", result.Feedback)
 
-		// Store feedback for CODING state to address
-		sm.SetStateData(KeyCodeReviewRejectionFeedback, result.Feedback)
+		// Add feedback directly to context
+		feedbackMessage := fmt.Sprintf("Code review feedback - changes requested:\n\n%s\n\nPlease address these issues and continue implementation.", result.Feedback)
+		c.contextManager.AddMessage("architect-feedback", feedbackMessage)
 		return StateCoding, false, nil
 
 	case proto.ApprovalStatusRejected:
-		c.logger.Error("🧑‍💻 Code rejected by architect: %s", result.Feedback)
-		return proto.StateError, false, logx.Errorf("code rejected by architect: %s", result.Feedback)
+		// Handle rejection differently based on approval type
+		if approvalTypeStr == string(proto.ApprovalTypeCompletion) {
+			c.logger.Error("🧑‍💻 Completion rejected by architect: %s", result.Feedback)
+			// Return to CODING to do the work that was deemed missing
+			rejectionMessage := fmt.Sprintf("Code completion rejected by architect:\n\n%s\n\nPlease continue implementation to address these concerns.", result.Feedback)
+			c.contextManager.AddMessage("architect-rejection", rejectionMessage)
+			return StateCoding, false, nil
+		} else {
+			c.logger.Error("🧑‍💻 Code rejected by architect: %s", result.Feedback)
+			return proto.StateError, false, logx.Errorf("code rejected by architect: %s", result.Feedback)
+		}
 
 	default:
 		return proto.StateError, false, logx.Errorf("unknown approval status: %s", result.Status)
 	}
 }
 
-// getGitDiff gets the current git diff to show what changed.
-func (c *Coder) getGitDiff(ctx context.Context) string {
-	// Use the executor to run git diff
+// getBranchDiff gets the git diff since branch creation (more accurate than HEAD diff).
+func (c *Coder) getBranchDiff(ctx context.Context, baseBranch string) string {
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
-		Timeout: 30 * time.Second, // 30 seconds should be enough for git diff
+		Timeout: 30 * time.Second,
 	}
 
-	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "diff", "HEAD"}, opts)
+	// Try merge-base approach first (most accurate)
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "merge-base", baseBranch, "HEAD"}, opts)
+	if err == nil && strings.TrimSpace(result.Stdout) != "" {
+		mergeBase := strings.TrimSpace(result.Stdout)
+		result, err = c.longRunningExecutor.Run(ctx, []string{"git", "diff", mergeBase + "..HEAD"}, opts)
+		if err == nil {
+			if strings.TrimSpace(result.Stdout) == "" {
+				return "No changes since branching from " + baseBranch
+			}
+			// Limit diff size to avoid overwhelming the architect
+			if len(result.Stdout) > 50000 {
+				return result.Stdout[:50000] + "\n... (diff truncated, showing first 50000 chars)"
+			}
+			return result.Stdout
+		}
+	}
+
+	// Fallback to simple range diff
+	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "diff", baseBranch + "..HEAD"}, opts)
 	if err != nil {
-		c.logger.Debug("Failed to get git diff: %v", err)
+		c.logger.Debug("Failed to get branch diff: %v", err)
 		return "No git changes detected"
 	}
 
 	if strings.TrimSpace(result.Stdout) == "" {
-		return "No changes in git working directory"
+		return "No changes since branching from " + baseBranch
 	}
 
 	// Limit diff size to avoid overwhelming the architect
@@ -182,7 +222,7 @@ func (c *Coder) getGitDiff(ctx context.Context) string {
 }
 
 // buildCompletionEvidence builds evidence section based on story type and results.
-func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, storyType string, filesCreated []string) string {
+func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, storyType string, workResult *git.WorkDoneResult) string {
 	evidence := ""
 
 	// Add test evidence
@@ -203,20 +243,36 @@ func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, s
 		evidence += "🐳 DevOps story completed:\n"
 		evidence += "  - Container build and validation completed\n"
 		evidence += "  - Infrastructure configuration verified\n"
-		if len(filesCreated) > 0 {
-			evidence += fmt.Sprintf("  - Files created: %s\n", strings.Join(filesCreated, ", "))
-		}
 	} else {
 		evidence += "💻 Application story completed:\n"
 		evidence += "  - Code implementation finished\n"
 		evidence += "  - Build and lint checks passed\n"
-		if len(filesCreated) > 0 {
-			evidence += fmt.Sprintf("  - Files created: %s\n", strings.Join(filesCreated, ", "))
+	}
+
+	// Add work detection evidence
+	if workResult.HasWork {
+		evidence += fmt.Sprintf("🔍 Work detected: %s\n", strings.Join(workResult.Reasons, ", "))
+		if workResult.Unstaged {
+			evidence += "  - Unstaged changes present\n"
+		}
+		if workResult.Staged {
+			evidence += "  - Staged changes present\n"
+		}
+		if workResult.Untracked {
+			evidence += "  - Untracked files present\n"
+		}
+		if workResult.Ahead {
+			evidence += "  - Commits ahead of base branch\n"
+		}
+	} else {
+		evidence += "🔍 No work required - story satisfied by analysis\n"
+		if len(workResult.Reasons) > 0 {
+			evidence += fmt.Sprintf("  - Verified: %s\n", strings.Join(workResult.Reasons, ", "))
 		}
 	}
 
-	// Add change summary
-	if gitDiff != "" && gitDiff != "No changes in git working directory" && gitDiff != "No git changes detected" {
+	// Add git diff summary
+	if gitDiff != "" && !strings.Contains(gitDiff, "No changes") && !strings.Contains(gitDiff, "No git changes") {
 		evidence += "📝 Code changes made (see Git Diff section below)\n"
 	} else {
 		evidence += "📝 No code changes required\n"

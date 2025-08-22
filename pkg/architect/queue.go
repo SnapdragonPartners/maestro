@@ -4,55 +4,61 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 )
 
-// StoryStatus represents the status of a story in the queue.
+// StoryStatus represents the status of a story (canonical source of truth).
 type StoryStatus string
 
 const (
-	// StatusPending indicates a story is waiting to be started.
+	// StatusNew indicates a story was just created, not yet released to queue.
+	StatusNew StoryStatus = "new"
+	// StatusPending indicates a story is released to dispatcher queue, ready for assignment.
 	StatusPending StoryStatus = "pending"
-	// StatusInProgress indicates a story is being actively worked on.
-	StatusInProgress StoryStatus = "in_progress"
-	// StatusWaitingReview indicates a story is waiting for review.
-	StatusWaitingReview StoryStatus = "waiting_review"
-	// StatusCompleted indicates a story has been completed successfully.
-	StatusCompleted StoryStatus = "completed"
-	// StatusBlocked indicates a story is blocked and cannot proceed.
-	StatusBlocked StoryStatus = "blocked"
-	// StatusCancelled indicates a story has been cancelled.
-	StatusCancelled StoryStatus = "cancelled"
-	// StatusAwaitHumanFeedback indicates a story is waiting for human input.
-	StatusAwaitHumanFeedback StoryStatus = "await_human_feedback"
+	// StatusAssigned indicates a story was picked up by coder, assignment created.
+	StatusAssigned StoryStatus = "assigned"
+	// StatusPlanning indicates a coder is planning the work.
+	StatusPlanning StoryStatus = "planning"
+	// StatusCoding indicates a coder is implementing the work.
+	StatusCoding StoryStatus = "coding"
+	// StatusDone indicates work is completed and merged.
+	StatusDone StoryStatus = "done"
 )
 
-// QueuedStory represents a story in the architect's queue.
-//
-//nolint:govet // Large complex struct, logical grouping preferred
+// QueuedStory embeds the unified Story type with architect-specific methods.
 type QueuedStory struct {
-	ID              string      `json:"id"`
-	SpecID          string      `json:"spec_id"` // Foreign key to spec
-	Title           string      `json:"title"`
-	FilePath        string      `json:"file_path"`
-	Status          StoryStatus `json:"status"`
-	Priority        int         `json:"priority"`
-	DependsOn       []string    `json:"depends_on"`
-	EstimatedPoints int         `json:"estimated_points"`
-	AssignedAgent   string      `json:"assigned_agent,omitempty"`
-	StartedAt       *time.Time  `json:"started_at,omitempty"`
-	CompletedAt     *time.Time  `json:"completed_at,omitempty"`
-	LastUpdated     time.Time   `json:"last_updated"`
-	StoryType       string      `json:"story_type"` // "devops" or "app"
+	persistence.Story
+}
+
+// GetStatus returns the story status as StoryStatus enum.
+func (s *QueuedStory) GetStatus() StoryStatus {
+	return StoryStatus(s.Status)
+}
+
+// SetStatus sets the story status from StoryStatus enum.
+func (s *QueuedStory) SetStatus(status StoryStatus) {
+	s.Status = string(status)
+}
+
+// NewQueuedStory creates a new QueuedStory from a persistence.Story.
+func NewQueuedStory(story *persistence.Story) *QueuedStory {
+	return &QueuedStory{Story: *story}
+}
+
+// ToPersistenceStory converts to persistence.Story for database operations.
+func (s *QueuedStory) ToPersistenceStory() *persistence.Story {
+	return &s.Story
 }
 
 // Queue manages the architect's story queue with dependency resolution.
 //
 //nolint:govet // Simple management struct, logical grouping preferred
 type Queue struct {
+	mutex              sync.RWMutex // Protects all story operations
 	stories            map[string]*QueuedStory
 	readyStoryCh       chan<- string               // Channel to notify when stories become ready
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
@@ -79,22 +85,27 @@ func (q *Queue) SetReadyChannel(ch chan<- string) {
 
 // AddStory adds a story directly to the in-memory queue.
 // This should be used when stories are generated during normal operation.
-func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies []string, estimatedPoints int) {
+func (q *Queue) AddStory(storyID, specID, title, content, storyType string, dependencies []string, estimatedPoints int) {
+	now := time.Now()
 	queuedStory := &QueuedStory{
-		ID:              storyID,
-		Title:           title,
-		FilePath:        "", // No file path for generated stories
-		Status:          StatusPending,
-		Priority:        estimatedPoints,
-		DependsOn:       dependencies,
-		EstimatedPoints: estimatedPoints,
-		AssignedAgent:   "",
-		StartedAt:       nil,
-		CompletedAt:     nil,
-		LastUpdated:     time.Now(),
-		StoryType:       storyType, // This is the key fix!
-		SpecID:          specID,    // Add SpecID for database foreign key
+		Story: persistence.Story{
+			ID:              storyID,
+			SpecID:          specID,
+			Title:           title,
+			Content:         content, // Story content from requirement description
+			ApprovedPlan:    "",      // Plan will be set during approval
+			Priority:        estimatedPoints,
+			DependsOn:       dependencies,
+			EstimatedPoints: estimatedPoints,
+			AssignedAgent:   "",
+			StartedAt:       nil,
+			CompletedAt:     nil,
+			LastUpdated:     now,
+			CreatedAt:       now,
+			StoryType:       storyType,
+		},
 	}
+	queuedStory.SetStatus(StatusPending)
 
 	q.stories[storyID] = queuedStory
 
@@ -102,173 +113,61 @@ func (q *Queue) AddStory(storyID, specID, title, storyType string, dependencies 
 	q.checkAndNotifyReady()
 }
 
-// FlushToDatabase writes all in-memory stories to the database for persistence.
+// FlushToDatabase writes all in-memory stories and dependencies to the database for persistence.
+// This uses the new persistence functions and ensures proper ordering (stories first, then dependencies).
 func (q *Queue) FlushToDatabase() {
 	if q.persistenceChannel == nil {
 		return
 	}
 
+	// Phase 1: Persist all stories first (to satisfy foreign key constraints)
 	for _, queuedStory := range q.stories {
 		// Convert queue status to database status
 		var dbStatus string
-		switch queuedStory.Status {
+		switch queuedStory.GetStatus() {
 		case StatusPending:
 			dbStatus = persistence.StatusNew
-		case StatusInProgress:
+		case StatusAssigned:
 			dbStatus = persistence.StatusCoding
-		case StatusCompleted:
-			dbStatus = persistence.StatusCommitted
+		case StatusDone:
+			dbStatus = persistence.StatusDone
 		default:
 			dbStatus = persistence.StatusNew
 		}
 
-		// Convert QueuedStory back to persistence.Story for database
+		// Convert QueuedStory to persistence.Story with complete data
 		dbStory := &persistence.Story{
-			ID:         queuedStory.ID,
-			SpecID:     queuedStory.SpecID, // Include SpecID for foreign key
-			Title:      queuedStory.Title,
-			Status:     dbStatus,
-			Priority:   queuedStory.Priority,
-			CreatedAt:  queuedStory.LastUpdated,
-			StoryType:  queuedStory.StoryType, // Preserve story type
-			TokensUsed: 0,
-			CostUSD:    0.0,
+			ID:            queuedStory.ID,
+			SpecID:        queuedStory.SpecID,
+			Title:         queuedStory.Title,
+			Content:       queuedStory.Content,      // Now includes story content
+			ApprovedPlan:  queuedStory.ApprovedPlan, // Now includes approved plan
+			Status:        dbStatus,
+			Priority:      queuedStory.Priority,
+			CreatedAt:     queuedStory.LastUpdated,
+			StartedAt:     queuedStory.StartedAt,
+			CompletedAt:   queuedStory.CompletedAt,
+			AssignedAgent: queuedStory.AssignedAgent,
+			StoryType:     queuedStory.StoryType,
+			TokensUsed:    0,   // Metrics data added during completion
+			CostUSD:       0.0, // Metrics data added during completion
 		}
 
-		// Send to database (fire-and-forget)
-		q.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpUpsertStory,
-			Data:      dbStory,
-			Response:  nil,
+		persistence.PersistStory(dbStory, q.persistenceChannel)
+	}
+
+	// Phase 2: Persist all dependencies (now that stories exist in database)
+	for _, queuedStory := range q.stories {
+		for _, dependsOnID := range queuedStory.DependsOn {
+			persistence.PersistDependency(queuedStory.ID, dependsOnID, q.persistenceChannel)
 		}
 	}
 }
 
-// LoadFromDatabase loads stories from the database.
-// This should only be used for recovery/restart scenarios.
-func (q *Queue) LoadFromDatabase() error {
-	if q.persistenceChannel == nil {
-		return fmt.Errorf("persistence channel not available - database storage is required for story loading")
-	}
+// LoadFromDatabase has been removed - the queue is canonical and never loads from database.
+// The database is purely a persistence log for external monitoring and debugging.
 
-	// Request all stories from database
-	responseCh := make(chan interface{}, 1)
-	req := &persistence.Request{
-		Operation: persistence.OpGetAllStories,
-		Data:      nil,
-		Response:  responseCh,
-	}
-
-	// Send request to persistence worker
-	q.persistenceChannel <- req
-
-	// Wait for response
-	response := <-responseCh
-	if response == nil {
-		// No stories in database yet, start with empty queue
-		return nil
-	}
-
-	// Handle error response
-	if err, ok := response.(error); ok {
-		return fmt.Errorf("failed to load stories from database: %w", err)
-	}
-
-	// Convert response to stories
-	stories, ok := response.([]*persistence.Story)
-	if !ok {
-		return fmt.Errorf("unexpected response type from database: %T", response)
-	}
-
-	// Convert database stories to queue stories
-	for _, dbStory := range stories {
-		queueStory := q.convertDatabaseStoryToQueueStory(dbStory)
-		q.stories[queueStory.ID] = queueStory
-	}
-
-	// After loading all stories, check for initially ready ones
-	q.checkAndNotifyReady()
-
-	return nil
-}
-
-// convertDatabaseStoryToQueueStory converts a database story to a queue story.
-func (q *Queue) convertDatabaseStoryToQueueStory(dbStory *persistence.Story) *QueuedStory {
-	// Convert database status to queue status
-	var queueStatus StoryStatus
-	switch dbStory.Status {
-	case persistence.StatusNew:
-		queueStatus = StatusPending
-	case persistence.StatusPlanning:
-		queueStatus = StatusInProgress
-	case persistence.StatusCoding:
-		queueStatus = StatusInProgress
-	case persistence.StatusCommitted:
-		queueStatus = StatusCompleted
-	case persistence.StatusMerged:
-		queueStatus = StatusCompleted
-	case persistence.StatusError:
-		queueStatus = StatusBlocked
-	case persistence.StatusDuplicate:
-		queueStatus = StatusCancelled
-	default:
-		queueStatus = StatusPending // Default fallback
-	}
-
-	// Get dependencies for this story
-	dependencies := q.getStoryDependencies(dbStory.ID)
-
-	return &QueuedStory{
-		ID:              dbStory.ID,
-		SpecID:          dbStory.SpecID, // Include SpecID
-		Title:           dbStory.Title,
-		FilePath:        "", // No file path for database stories
-		Status:          queueStatus,
-		Priority:        dbStory.Priority, // Map priority field
-		DependsOn:       dependencies,
-		EstimatedPoints: 1,                 // Default estimated points (could be improved later)
-		AssignedAgent:   "",                // Not tracked in database yet
-		StartedAt:       nil,               // Not tracked in database yet
-		CompletedAt:     nil,               // Not tracked in database yet
-		LastUpdated:     dbStory.CreatedAt, // Use CreatedAt since UpdatedAt doesn't exist
-		StoryType:       dbStory.StoryType, // Pass through story type from database
-	}
-}
-
-// getStoryDependencies retrieves dependencies for a story from the database.
-func (q *Queue) getStoryDependencies(storyID string) []string {
-	if q.persistenceChannel == nil {
-		return []string{}
-	}
-
-	// Request dependencies from database
-	responseCh := make(chan interface{}, 1)
-	req := &persistence.Request{
-		Operation: persistence.OpGetStoryDependencies,
-		Data:      storyID,
-		Response:  responseCh,
-	}
-
-	q.persistenceChannel <- req
-
-	// Wait for response
-	response := <-responseCh
-	if response == nil {
-		return []string{}
-	}
-
-	// Handle error response
-	if _, ok := response.(error); ok {
-		return []string{} // Return empty on error
-	}
-
-	// Convert response to dependencies
-	if deps, ok := response.([]string); ok {
-		return deps
-	}
-
-	return []string{}
-}
+// Database loading methods have been removed - the queue is canonical.
 
 // NextReadyStory returns the next story that's ready to be worked on.
 func (q *Queue) NextReadyStory() *QueuedStory {
@@ -296,7 +195,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 	var ready []*QueuedStory
 
 	for _, story := range q.stories {
-		if story.Status != StatusPending {
+		if story.GetStatus() != StatusPending {
 			continue
 		}
 
@@ -312,7 +211,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 // AllStoriesCompleted checks if all stories in the queue are completed.
 func (q *Queue) AllStoriesCompleted() bool {
 	for _, story := range q.stories {
-		if story.Status != StatusCompleted && story.Status != StatusCancelled {
+		if story.GetStatus() != StatusDone {
 			return false
 		}
 	}
@@ -327,122 +226,11 @@ func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
 			// Dependency doesn't exist - consider it as not met.
 			return false
 		}
-		if dep.Status != StatusCompleted {
+		if dep.GetStatus() != StatusDone {
 			return false
 		}
 	}
 	return true
-}
-
-// MarkInProgress marks a story as in progress and assigns it to an agent.
-func (q *Queue) MarkInProgress(storyID, agentID string) error {
-	story, exists := q.stories[storyID]
-	if !exists {
-		return fmt.Errorf("story %s not found", storyID)
-	}
-
-	if story.Status != StatusPending {
-		return fmt.Errorf("story %s is not in pending status (current: %s)", storyID, story.Status)
-	}
-
-	now := time.Now().UTC()
-	story.Status = StatusInProgress
-	story.AssignedAgent = agentID
-	story.StartedAt = &now
-	story.LastUpdated = now
-
-	// Update database status to coding (fire-and-forget)
-	if q.persistenceChannel != nil {
-		updateReq := &persistence.UpdateStoryStatusRequest{
-			StoryID:   storyID,
-			Status:    persistence.StatusCoding,
-			Timestamp: now,
-		}
-		q.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpUpdateStoryStatus,
-			Data:      updateReq,
-			Response:  nil, // Fire-and-forget
-		}
-	}
-
-	return nil
-}
-
-// MarkWaitingReview marks a story as waiting for review.
-func (q *Queue) MarkWaitingReview(storyID string) error {
-	story, exists := q.stories[storyID]
-	if !exists {
-		return fmt.Errorf("story %s not found", storyID)
-	}
-
-	if story.Status != StatusInProgress {
-		return fmt.Errorf("story %s is not in progress (current: %s)", storyID, story.Status)
-	}
-
-	now := time.Now().UTC()
-	story.Status = StatusWaitingReview
-	story.LastUpdated = now
-
-	// Update database status remains as coding since the story is still being worked on
-	if q.persistenceChannel != nil {
-		updateReq := &persistence.UpdateStoryStatusRequest{
-			StoryID:   storyID,
-			Status:    persistence.StatusCoding,
-			Timestamp: now,
-		}
-		q.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpUpdateStoryStatus,
-			Data:      updateReq,
-			Response:  nil, // Fire-and-forget
-		}
-	}
-
-	return nil
-}
-
-// MarkCompleted marks a story as completed.
-func (q *Queue) MarkCompleted(storyID string) error {
-	story, exists := q.stories[storyID]
-	if !exists {
-		return fmt.Errorf("story %s not found", storyID)
-	}
-
-	allowedStatuses := []StoryStatus{StatusInProgress, StatusWaitingReview}
-	statusAllowed := false
-	for _, status := range allowedStatuses {
-		if story.Status == status {
-			statusAllowed = true
-			break
-		}
-	}
-
-	if !statusAllowed {
-		return fmt.Errorf("story %s is not in a completable status (current: %s)", storyID, story.Status)
-	}
-
-	now := time.Now().UTC()
-	story.Status = StatusCompleted
-	story.CompletedAt = &now
-	story.LastUpdated = now
-
-	// Update database status to committed (fire-and-forget)
-	if q.persistenceChannel != nil {
-		updateReq := &persistence.UpdateStoryStatusRequest{
-			StoryID:   storyID,
-			Status:    persistence.StatusCommitted,
-			Timestamp: now,
-		}
-		q.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpUpdateStoryStatus,
-			Data:      updateReq,
-			Response:  nil, // Fire-and-forget
-		}
-	}
-
-	// Check if any pending stories became ready due to this completion.
-	q.checkAndNotifyReady()
-
-	return nil
 }
 
 // checkAndNotifyReady checks for stories that became ready and notifies via channel.
@@ -452,7 +240,7 @@ func (q *Queue) checkAndNotifyReady() {
 	}
 
 	for _, story := range q.stories {
-		if story.Status == StatusPending && q.areDependenciesMet(story) {
+		if story.GetStatus() == StatusPending && q.areDependenciesMet(story) {
 			// Try to notify (non-blocking).
 			select {
 			case q.readyStoryCh <- story.ID:
@@ -464,43 +252,34 @@ func (q *Queue) checkAndNotifyReady() {
 	}
 }
 
-// MarkBlocked marks a story as blocked.
-func (q *Queue) MarkBlocked(storyID string) error {
+// RequeueStory resets a story to pending status and clears the approved plan for fresh start.
+// This should be used when a coder errors out and a new coder needs to start from scratch.
+func (q *Queue) RequeueStory(storyID string) error {
 	story, exists := q.stories[storyID]
 	if !exists {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	story.Status = StatusBlocked
-	story.LastUpdated = time.Now().UTC()
-
-	return nil
-}
-
-// MarkAwaitHumanFeedback marks a story as awaiting human feedback/intervention.
-func (q *Queue) MarkAwaitHumanFeedback(storyID string) error {
-	story, exists := q.stories[storyID]
-	if !exists {
-		return fmt.Errorf("story %s not found", storyID)
-	}
-
-	story.Status = StatusAwaitHumanFeedback
-	story.LastUpdated = time.Now().UTC()
-
-	return nil
-}
-
-// MarkPending resets a story to pending status for reassignment (used for requeuing).
-func (q *Queue) MarkPending(storyID string) error {
-	story, exists := q.stories[storyID]
-	if !exists {
-		return fmt.Errorf("story %s not found", storyID)
-	}
-
-	// Clear assignment and reset to pending.
-	story.Status = StatusPending
+	// Clear assignment, approved plan, and reset to pending
+	story.SetStatus(StatusPending)
 	story.AssignedAgent = ""
+	story.ApprovedPlan = "" // Clear approved plan for fresh start
 	story.StartedAt = nil
+	story.LastUpdated = time.Now().UTC()
+
+	// TODO: Persist the requeue event to database for tracking
+
+	return nil
+}
+
+// SetApprovedPlan sets the approved plan for a story.
+func (q *Queue) SetApprovedPlan(storyID, approvedPlan string) error {
+	story, exists := q.stories[storyID]
+	if !exists {
+		return fmt.Errorf("story %s not found", storyID)
+	}
+
+	story.ApprovedPlan = approvedPlan
 	story.LastUpdated = time.Now().UTC()
 
 	return nil
@@ -531,7 +310,7 @@ func (q *Queue) GetAllStories() []*QueuedStory {
 func (q *Queue) GetStoriesByStatus(status StoryStatus) []*QueuedStory {
 	var filtered []*QueuedStory
 	for _, story := range q.stories {
-		if story.Status == status {
+		if story.GetStatus() == status {
 			filtered = append(filtered, story)
 		}
 	}
@@ -630,9 +409,9 @@ func (q *Queue) GetQueueSummary() map[string]any {
 	completedPoints := 0
 
 	for _, story := range q.stories {
-		statusCounts[story.Status]++
+		statusCounts[story.GetStatus()]++
 		totalPoints += story.EstimatedPoints
-		if story.Status == StatusCompleted {
+		if story.GetStatus() == StatusDone {
 			completedPoints += story.EstimatedPoints
 		}
 	}
@@ -648,4 +427,26 @@ func (q *Queue) GetQueueSummary() map[string]any {
 	summary["cycles"] = cycles
 
 	return summary
+}
+
+// UpdateStoryStatus updates a story's status with mutex protection and persistence.
+func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
+	// Lock for in-memory update
+	q.mutex.Lock()
+	story, exists := q.stories[storyID]
+	if !exists {
+		q.mutex.Unlock()
+		return fmt.Errorf("story %s not found in queue", storyID)
+	}
+
+	story.SetStatus(status)
+	story.LastUpdated = time.Now().UTC()
+	q.mutex.Unlock() // Release before persistence
+
+	// Persist to database (no mutex needed)
+	if q.persistenceChannel != nil {
+		persistence.PersistStory(story.ToPersistenceStory(), q.persistenceChannel)
+	}
+
+	return nil
 }

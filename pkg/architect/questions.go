@@ -147,7 +147,7 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 			"story_id":         pendingQ.StoryID,
 			"story_title":      story.Title,
 			"story_type":       story.StoryType,
-			"story_file_path":  story.FilePath,
+			"story_content":    story.Content,
 			"agent_id":         pendingQ.AgentID,
 			"question_id":      pendingQ.ID,
 			"question_context": pendingQ.Context,

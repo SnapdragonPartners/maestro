@@ -24,17 +24,44 @@ func TestNewRenderer(t *testing.T) {
 		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
+		TestFailureInstructionsTemplate,
+		DevOpsTestFailureInstructionsTemplate,
+		BudgetReviewFeedbackTemplate,
+		MergeFailureFeedbackTemplate,
+		GitCommitFailureTemplate,
+		GitPushFailureTemplate,
+		PRCreationFailureTemplate,
+		GitConfigFailureTemplate,
+		GitHubAuthFailureTemplate,
 		// Architect agent templates.
+		BudgetReviewPlanningTemplate,
+		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,
 		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
+		AppCodeReviewTemplate,
+		DevOpsCodeReviewTemplate,
 	}
 
 	for _, templateName := range expectedTemplates {
 		data := &TemplateData{
 			TaskContent: "Test task",
+			Extra: map[string]any{
+				"Data":    "Test data",
+				"Content": "Test content",
+			},
 		}
+
+		// Special handling for git config template which needs structured data
+		if templateName == GitConfigFailureTemplate {
+			data.Extra["Data"] = map[string]string{
+				"Error":        "Test error",
+				"GitUserName":  "Test User",
+				"GitUserEmail": "test@example.com",
+			}
+		}
+
 		_, err := renderer.Render(templateName, data)
 		if err != nil {
 			t.Errorf("Failed to render template %s: %v", templateName, err)
@@ -272,5 +299,220 @@ func TestRenderWithCompleteData(t *testing.T) {
 		if strings.Contains(result, "{{.") {
 			t.Errorf("Template %s contains unprocessed placeholders", templateName)
 		}
+	}
+}
+
+// TestRenderSimpleMiniTemplates tests all mini-templates that use RenderSimple.
+func TestRenderSimpleMiniTemplates(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		template     StateTemplate
+		data         any
+		expectedText string
+	}{
+		{
+			name:         "Budget Review Feedback",
+			template:     BudgetReviewFeedbackTemplate,
+			data:         "Please reduce complexity and focus on core requirements",
+			expectedText: "ARCHITECT GUIDANCE",
+		},
+		{
+			name:         "Git Push Failure",
+			template:     GitPushFailureTemplate,
+			data:         "fatal: could not read from remote repository",
+			expectedText: "Git Push Failed",
+		},
+		{
+			name:         "Git Commit Failure",
+			template:     GitCommitFailureTemplate,
+			data:         "error: nothing to commit",
+			expectedText: "Git Commit Failed",
+		},
+		{
+			name:         "GitHub Auth Failure",
+			template:     GitHubAuthFailureTemplate,
+			data:         "authentication failed",
+			expectedText: "GitHub Authentication Setup Failed",
+		},
+		{
+			name:         "Merge Failure Feedback",
+			template:     MergeFailureFeedbackTemplate,
+			data:         "merge conflict in main.go",
+			expectedText: "MERGE FAILED - Changes Required",
+		},
+		{
+			name:         "PR Creation Failure",
+			template:     PRCreationFailureTemplate,
+			data:         "failed to create pull request",
+			expectedText: "Pull Request Creation Failed",
+		},
+		{
+			name:         "Test Failure Instructions",
+			template:     TestFailureInstructionsTemplate,
+			data:         "TestHealthEndpoint failed",
+			expectedText: "Tests are failing and must pass",
+		},
+		{
+			name:         "DevOps Test Failure Instructions",
+			template:     DevOpsTestFailureInstructionsTemplate,
+			data:         "Container build failed",
+			expectedText: "Infrastructure tests are failing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := renderer.RenderSimple(tt.template, tt.data)
+			if err != nil {
+				t.Errorf("Failed to render template %s: %v", tt.template, err)
+				return
+			}
+
+			// Verify template contains expected text
+			if !strings.Contains(result, tt.expectedText) {
+				t.Errorf("Template %s should contain '%s', got: %s", tt.template, tt.expectedText, result)
+			}
+
+			// Verify the data was inserted correctly
+			if dataStr, ok := tt.data.(string); ok {
+				if !strings.Contains(result, dataStr) {
+					t.Errorf("Template %s should contain data '%s', got: %s", tt.template, tt.data, result)
+				}
+			}
+
+			// Verify no unprocessed placeholders remain
+			if strings.Contains(result, "{{.Data}}") {
+				t.Errorf("Template %s still contains unprocessed {{.Data}} placeholder", tt.template)
+			}
+
+			if dataStr, ok := tt.data.(string); ok && strings.Contains(result, "{{.Extra.Data}}") && !strings.Contains(result, dataStr) {
+				t.Errorf("Template %s contains unprocessed {{.Extra.Data}} placeholder", tt.template)
+			}
+		})
+	}
+}
+
+// TestGitConfigFailureTemplate tests the special git config template with structured data.
+func TestGitConfigFailureTemplate(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	templateData := map[string]string{
+		"Error":        "user.name not configured",
+		"GitUserName":  "Test User",
+		"GitUserEmail": "test@example.com",
+	}
+
+	result, err := renderer.RenderSimple(GitConfigFailureTemplate, templateData)
+	if err != nil {
+		t.Fatalf("Failed to render git config failure template: %v", err)
+	}
+
+	// Verify template contains expected text
+	if !strings.Contains(result, "Git Configuration Failed") {
+		t.Error("Template should contain 'Git Configuration Failed'")
+	}
+
+	// Verify the structured data was inserted correctly
+	if !strings.Contains(result, templateData["Error"]) {
+		t.Error("Template should contain error message")
+	}
+	if !strings.Contains(result, templateData["GitUserName"]) {
+		t.Error("Template should contain git user name")
+	}
+	if !strings.Contains(result, templateData["GitUserEmail"]) {
+		t.Error("Template should contain git user email")
+	}
+
+	// Verify git commands are properly formatted
+	if !strings.Contains(result, `git config --global user.name "Test User"`) {
+		t.Error("Template should contain properly formatted git config name command")
+	}
+	if !strings.Contains(result, `git config --global user.email "test@example.com"`) {
+		t.Error("Template should contain properly formatted git config email command")
+	}
+
+	// Verify no unprocessed placeholders remain
+	if strings.Contains(result, "{{.") {
+		t.Errorf("Template contains unprocessed placeholders: %s", result)
+	}
+}
+
+// TestCodeReviewTemplates tests the code review templates that use Extra.Content.
+func TestCodeReviewTemplates(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("Failed to create renderer: %v", err)
+	}
+
+	testContent := `
+package main
+
+import "net/http"
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+`
+
+	tests := []struct {
+		name         string
+		template     StateTemplate
+		expectedText string
+	}{
+		{
+			name:         "App Code Review",
+			template:     AppCodeReviewTemplate,
+			expectedText: "Application Code Review",
+		},
+		{
+			name:         "DevOps Code Review",
+			template:     DevOpsCodeReviewTemplate,
+			expectedText: "DevOps Code Review",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create template data with content in Extra map
+			templateData := &TemplateData{
+				Extra: map[string]any{
+					"Content": testContent,
+				},
+			}
+
+			result, err := renderer.Render(tt.template, templateData)
+			if err != nil {
+				t.Errorf("Failed to render template %s: %v", tt.template, err)
+				return
+			}
+
+			// Verify template contains expected text
+			if !strings.Contains(result, tt.expectedText) {
+				t.Errorf("Template %s should contain '%s'", tt.template, tt.expectedText)
+			}
+
+			// Verify the code content was inserted correctly
+			if !strings.Contains(result, "func healthHandler") {
+				t.Errorf("Template %s should contain the code content", tt.template)
+			}
+
+			// Verify no unprocessed placeholders remain
+			if strings.Contains(result, "{{.Content}}") {
+				t.Errorf("Template %s still contains unprocessed {{.Content}} placeholder", tt.template)
+			}
+
+			if strings.Contains(result, "{{.Extra.Content}}") && !strings.Contains(result, "func healthHandler") {
+				t.Errorf("Template %s contains unprocessed {{.Extra.Content}} placeholder", tt.template)
+			}
+		})
 	}
 }

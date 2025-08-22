@@ -14,12 +14,12 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// TestContainerExecIntegration tests the container_exec tool using the container test framework.
+// TestContainerExecIntegration tests the container_test tool in command execution mode using the container test framework.
 // This test runs the real MCP tool inside a container environment to match production behavior.
 func TestContainerExecIntegration(t *testing.T) {
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
-		t.Skip("Docker not available, skipping container exec integration test")
+		t.Skip("Docker not available, skipping container test (command execution) integration test")
 	}
 
 	// Setup test environment
@@ -148,8 +148,8 @@ CMD ["echo", "Hello from test container"]
 				args["timeout_seconds"] = tc.timeout
 			}
 
-			// Create container exec tool with the container executor
-			tool := tools.NewContainerExecTool(framework.GetExecutor())
+			// Create container test tool with the container executor
+			tool := tools.NewContainerTestTool(framework.GetExecutor())
 
 			// Execute the tool
 			result, err := tool.Exec(ctx, args)
@@ -188,7 +188,7 @@ CMD ["echo", "Hello from test container"]
 					}
 				}
 
-				t.Logf("✅ Successfully executed command: %s", tc.command)
+				t.Logf("✅ Successfully executed command via container_test: %s", tc.command)
 
 			} else {
 				// Command should fail
@@ -208,7 +208,7 @@ CMD ["echo", "Hello from test container"]
 					}
 
 					if success {
-						t.Fatalf("Expected command to fail but it succeeded: %+v", resultMap)
+						t.Fatalf("Expected container test (command execution) to fail but it succeeded: %+v", resultMap)
 					}
 
 					// Check exit code is non-zero
@@ -220,7 +220,7 @@ CMD ["echo", "Hello from test container"]
 						t.Fatalf("Expected non-zero exit code for failed command, got %d", exitCode)
 					}
 
-					t.Logf("✅ Expected command failure occurred with exit code: %d", exitCode)
+					t.Logf("✅ Expected container_test command failure occurred with exit code: %d", exitCode)
 				}
 
 				// Check expected error output if specified
