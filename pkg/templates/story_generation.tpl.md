@@ -28,16 +28,18 @@ Classify each story as either:
 - **devops**: Infrastructure, containers, deployment, configuration - minimally scoped to infrastructure tasks ONLY
 - **app**: Application code, features, business logic, algorithms, data processing
 
-**CRITICAL DEVOPS CONSTRAINTS**: 
-- DevOps stories are OPTIONAL - only create them when the spec explicitly requires infrastructure work
-- If devops stories are needed, create *no more than one* devops story which must contain all container building and verification requirements
-- Any devops story MUST be first in sequence and MUST block all app stories with dependencies (all app stories depend on the devops story)
-- After the devops story is complete, the new container will be used for all subsequent stories which must be of type "app"
+**DEVOPS STORY ORDERING**:
+- DevOps stories are OPTIONAL - only create them when the spec explicitly requires infrastructure work  
+- Multiple DevOps stories are allowed when infrastructure has natural separation of concerns
+- DevOps stories should be ordered logically so that foundational infrastructure comes first
+- Use natural dependencies to ensure proper sequencing: infrastructure → build tools → application code
 - Most regular development specs will have NO devops stories - this is normal and expected
 
 **Important**: DevOps stories should be scoped to pure infrastructure tasks that don't require language-specific toolchains. When in doubt, classify as "app" since app containers provide full development environments.
 
-**DevOps Examples**: Raw Docker container building/copying, Dockerfile creation, deployment scripts, CI/CD pipeline setup, infrastructure configuration, container registry operations  
+**Container-Aware Development**: DevOps stories run in secure bootstrap containers with container management tools, while app stories run in appropriate development environments. Both story types can safely coexist with proper dependency ordering.
+
+**DevOps Examples**: Raw Docker container building/copying, Dockerfile creation, deployment scripts, CI/CD pipeline setup, infrastructure configuration, container registry operations, container validation and testing
 **App Examples**: Language module setup (go.mod, package.json, requirements.txt), build system configuration (Makefiles, build.gradle), linting setup (golangci-lint, eslint), language-specific tools, feature implementation, bug fixes, algorithm development, API endpoints, business logic, data processing
 
 **Key Rule**: If a task requires language-specific knowledge or toolchain (Go, Node.js, Python, etc.), classify as "app"

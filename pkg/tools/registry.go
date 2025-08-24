@@ -296,6 +296,14 @@ func createContainerListTool(ctx AgentContext) (Tool, error) {
 	return NewContainerListTool(ctx.Executor), nil
 }
 
+// createContainerSwitchTool creates a container switch tool instance.
+func createContainerSwitchTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("container switch tool requires an executor")
+	}
+	return NewContainerSwitchTool(ctx.Executor), nil
+}
+
 // SCHEMA FUNCTIONS - Extract schemas from tool implementations
 
 func getShellSchema() InputSchema {
@@ -351,8 +359,11 @@ func getContainerTestSchema() InputSchema {
 }
 
 func getContainerListSchema() InputSchema {
-	// TODO: Implement container list tool
-	return InputSchema{Type: "object"}
+	return NewContainerListTool(nil).Definition().InputSchema
+}
+
+func getContainerSwitchSchema() InputSchema {
+	return NewContainerSwitchTool(nil).Definition().InputSchema
 }
 
 // init registers all tools in the global registry using the factory pattern.
@@ -438,5 +449,11 @@ func init() {
 		Name:        ToolContainerList,
 		Description: "List available containers in the system",
 		InputSchema: getContainerListSchema(),
+	})
+
+	Register(ToolContainerSwitch, createContainerSwitchTool, &ToolMeta{
+		Name:        ToolContainerSwitch,
+		Description: "Switch coder agent execution environment to a different container, with fallback to bootstrap container on failure",
+		InputSchema: getContainerSwitchSchema(),
 	})
 }

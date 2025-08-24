@@ -5,6 +5,13 @@ You are an architect reviewing a completion claim for a DEVOPS story.
 ## Story Completion Claim
 {{.Content}}
 
+{{- if .DockerfileContent}}
+## Current Dockerfile
+```dockerfile
+{{.DockerfileContent}}
+```
+{{- end}}
+
 ## Evaluation Criteria for DevOps Stories
 
 **APPROVED** - Infrastructure is truly complete
@@ -28,6 +35,7 @@ You are an architect reviewing a completion claim for a DEVOPS story.
 
 ## Evidence to Look For (DevOps-Specific)
 - **Container Validation**: Container builds successful, containers boot and run
+- **Dockerfile Review**: Target container configuration properly defined in Dockerfile
 - **Infrastructure Testing**: Health checks passing, services responding
 - **System Integration**: Multi-container systems working together
 - **Build System**: Makefiles, CI/CD pipelines functional

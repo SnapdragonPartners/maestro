@@ -21,10 +21,10 @@ import (
 
 // LLMClientFactory creates LLM clients with properly configured middleware chains.
 type LLMClientFactory struct {
-	config          config.Config
-	metricsRecorder metrics.Recorder
 	circuitBreakers map[string]circuit.Breaker
 	rateLimitMap    *ratelimit.ProviderLimiterMap
+	metricsRecorder metrics.Recorder
+	config          config.Config
 }
 
 // NewLLMClientFactory creates a new LLM client factory with the given configuration.

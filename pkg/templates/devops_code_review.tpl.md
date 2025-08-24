@@ -5,6 +5,13 @@ You are an architect reviewing CODE IMPLEMENTATION for a DEVOPS story.
 ## Code Submission
 {{.Extra.Content}}
 
+{{- if .DockerfileContent}}
+## Current Dockerfile
+```dockerfile
+{{.DockerfileContent}}
+```
+{{- end}}
+
 ## Evaluation Criteria for DevOps Code
 
 **APPROVED** - Infrastructure code is ready for merge

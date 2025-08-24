@@ -322,6 +322,9 @@ type Config struct {
 
 	// === SYSTEM-WIDE ORCHESTRATOR SETTINGS ===
 	Orchestrator *OrchestratorConfig `json:"orchestrator"` // LLM models, rate limits, budgets
+
+	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
+	validTargetImage bool `json:"-"` // Whether the configured target container is valid and runnable
 }
 
 // ProjectInfo contains basic project metadata.
@@ -460,6 +463,10 @@ func LoadConfig(inputProjectDir string) error {
 	}
 
 	config = loadedConfig
+
+	// Validate target container and set runtime flag
+	config.validTargetImage = validateTargetContainer(config)
+
 	return nil
 }
 
@@ -492,6 +499,10 @@ func UpdateContainer(container *ContainerConfig) error {
 	defer mu.Unlock()
 
 	config.Container = container
+
+	// Validate target container and update runtime flag
+	config.validTargetImage = validateTargetContainer(config)
+
 	return saveConfigLocked()
 }
 
@@ -1202,6 +1213,43 @@ func validateAgentLimits() error {
 	}
 
 	return nil
+}
+
+// validateTargetContainer checks if the configured target container is valid and runnable.
+// Returns true if the container exists, is runnable, and is not the bootstrap container.
+func validateTargetContainer(cfg *Config) bool {
+	if cfg.Container == nil || cfg.Container.Name == "" {
+		return false
+	}
+
+	// Don't validate bootstrap container as a target
+	if cfg.Container.Name == BootstrapContainerTag {
+		return false
+	}
+
+	// Check if the container exists and is runnable using docker inspect
+	cmd := exec.Command("docker", "inspect", cfg.Container.Name)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	// Try to run a simple command to verify the container is actually runnable
+	cmd = exec.Command("docker", "run", "--rm", cfg.Container.Name, "echo", "test")
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	return true
+}
+
+// IsValidTargetImage returns whether the configured target container is valid and runnable.
+func IsValidTargetImage() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	if config == nil {
+		return false
+	}
+	return config.validTargetImage
 }
 
 // GetCoderModel returns the validated coder model configuration.

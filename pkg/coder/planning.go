@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -322,6 +323,14 @@ func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.Ba
 	reason := utils.GetMapFieldOr[string](resultMap, "reason", "")
 	evidence := utils.GetMapFieldOr[string](resultMap, "evidence", "")
 	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
+
+	// Get story type to check for DevOps completion requirements
+	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
+
+	// DevOps completion gate: must have valid target image
+	if storyType == string(proto.StoryTypeDevOps) && !config.IsValidTargetImage() {
+		return proto.StateError, false, fmt.Errorf("DevOps story cannot be completed without a valid target container. You must create a valid target container and run the container_update tool to proceed. Current reason: %s", reason)
+	}
 
 	// Store completion timestamp
 	sm.SetStateData(KeyCompletionSubmittedAt, time.Now().UTC())

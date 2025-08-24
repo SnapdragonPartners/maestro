@@ -53,6 +53,11 @@ The request above contains all context including budget details, recent messages
 - **Wrong**: Using shell for operations that have dedicated tools
 - **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test` for container operations
 
+**Issue**: Using direct Docker commands instead of container tools
+- **Wrong**: `docker build`, `docker run`, `docker exec`, `docker ps`, etc. in shell commands
+- **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test`, `container_list` tools
+- **Why**: Container tools provide proper integration, error handling, and container registration
+
 ## Decision Options
 
 ### APPROVED: Continue Implementation

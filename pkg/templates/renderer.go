@@ -30,6 +30,8 @@ type TemplateData struct {
 	TestCommand  string `json:"test_command,omitempty"`
 	LintCommand  string `json:"lint_command,omitempty"`
 	RunCommand   string `json:"run_command,omitempty"`
+	// Dockerfile content for DevOps review templates
+	DockerfileContent string `json:"dockerfile_content,omitempty"`
 }
 
 // StateTemplate represents a workflow state template.
