@@ -681,7 +681,7 @@ func (d *Driver) processRequirementsCommon(requirements []Requirement, specID, l
 }
 
 // finalizeStoriesAndDependencies completes the story processing by flushing to database.
-func (d *Driver) finalizeStoriesAndDependencies(specID string, storyIDs []string, allDependencies []*persistence.StoryDependency) (string, []string, error) {
+func (d *Driver) finalizeStoriesAndDependencies(specID string, storyIDs []string, _ []*persistence.StoryDependency) (string, []string, error) {
 	// Get spec for processing if it exists
 	var spec *persistence.Spec
 	if specData, exists := d.stateData["current_spec"]; exists {
@@ -689,23 +689,8 @@ func (d *Driver) finalizeStoriesAndDependencies(specID string, storyIDs []string
 			spec = s
 		}
 	}
-	// Flush canonical queue to database first to ensure stories exist
+	// Flush canonical queue to database (stories first, then dependencies)
 	d.queue.FlushToDatabase()
-
-	// Then add all dependencies in batch if any exist
-	if len(allDependencies) > 0 {
-		// Use batch operation with empty stories (since stories already exist from queue flush)
-		batchRequest := &persistence.BatchUpsertStoriesWithDependenciesRequest{
-			Stories:      []*persistence.Story{}, // Empty since stories are already in DB
-			Dependencies: allDependencies,
-		}
-
-		d.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpBatchUpsertStoriesWithDependencies,
-			Data:      batchRequest,
-		}
-		d.logger.Debug("Submitted batch dependency creation for %d dependencies", len(allDependencies))
-	}
 
 	// Mark spec as processed if we have one
 	if spec != nil {

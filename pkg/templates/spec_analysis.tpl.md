@@ -14,6 +14,10 @@ Context is provided via conversation history.
 
 ## Instructions
 
+**CRITICAL**: First identify the platform/language specified in the specification. Look for explicit declarations like "Platform: Go", "Platform: Python", etc. If no platform is explicitly stated, detect it from the existing codebase context (go.mod = Go, package.json = Node.js, requirements.txt = Python, etc.).
+
+**PLATFORM CONSISTENCY RULE**: All requirements, examples, tools, and implementation details MUST be consistent with the identified platform. Do not mix platforms or suggest tools from different languages.
+
 Analyze the specification regardless of its format and extract discrete, implementable requirements. Be flexible with input formats - handle:
 - Formal specifications with sections
 - Informal notes and bullet points  
@@ -43,15 +47,16 @@ You MUST return valid JSON in exactly this format:
 
 ```json
 {
-  "analysis": "Brief summary of what you found in the specification",
+  "analysis": "Brief summary of what you found in the specification and the identified platform (e.g., 'Go-based project requiring module setup and linting configuration')",
+  "platform": "go",
   "requirements": [
     {
       "title": "Concise, clear requirement title",
-      "description": "Detailed description of what needs to be implemented",
+      "description": "Detailed description of what needs to be implemented using platform-appropriate tools and examples",
       "acceptance_criteria": [
-        "Specific, testable criterion 1",
-        "Specific, testable criterion 2", 
-        "Specific, testable criterion 3"
+        "Specific, testable criterion 1 (using platform-specific tools)",
+        "Specific, testable criterion 2 (platform-consistent approach)", 
+        "Specific, testable criterion 3 (appropriate for identified platform)"
       ],
       "estimated_points": 3,
       "dependencies": [],
@@ -63,6 +68,7 @@ You MUST return valid JSON in exactly this format:
 ```
 
 **Important Guidelines:**
+- **MAINTAIN PLATFORM CONSISTENCY**: Use only tools and approaches appropriate for the identified platform. Do not mix tools or concepts from different programming languages
 - Focus on implementable features, not documentation or planning tasks
 - Make requirements specific enough for a coding agent to implement
 - Ensure acceptance criteria are testable and concrete
@@ -73,6 +79,6 @@ You MUST return valid JSON in exactly this format:
 **Story Classification Guidelines:**
 - **DevOps stories** should be minimally scoped to pure infrastructure tasks that don't require language-specific toolchains
 - **DevOps examples**: Raw Docker container building/copying, Dockerfile creation, deployment scripts, CI/CD pipeline setup, infrastructure configuration, container registry operations
-- **App examples**: Language module setup (go.mod, package.json, requirements.txt), build system configuration (Makefiles, build.gradle), linting setup (golangci-lint, eslint), language-specific tools, feature implementation, bug fixes, algorithm development, API endpoints, business logic, data processing
+- **App examples**: Language module setup (go.mod for Go, package.json for Node.js, requirements.txt for Python), build system configuration (Makefiles, build.gradle), linting setup (golangci-lint for Go, eslint for JavaScript, ruff for Python), language-specific tools, feature implementation, bug fixes, algorithm development, API endpoints, business logic, data processing
 - **Key distinction**: If a task requires language-specific knowledge or toolchain (Go, Node.js, Python, etc.), classify as "app"
 - **When in doubt, classify as "app"** since app containers provide full development environments with language toolchains

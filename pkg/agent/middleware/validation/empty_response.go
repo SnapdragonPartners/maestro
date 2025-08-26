@@ -9,6 +9,7 @@ import (
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
 )
 
@@ -53,6 +54,8 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 
 				// Remove unused variables - we track success/failure in the loop directly
 
+				logger := logx.NewLogger("empty-response-validator")
+
 				for attempt := 1; attempt <= maxEmptyAttempts; attempt++ {
 					// Make the request
 					resp, err := next.Complete(ctx, req)
@@ -74,10 +77,14 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 						return resp, nil
 					}
 
-					// Empty response detected
+					// Empty response detected - log details
+					v.logEmptyResponseDetails(logger, attempt, resp, err)
+
 					if attempt == 1 {
 						// First attempt: add guidance and retry
+						logger.Warn("🔄 AUTO-RETRY: Adding guidance message and retrying (attempt 1→2)")
 						guidanceMessage := v.createGuidanceMessage(req)
+						logger.Debug("🔄 Guidance message: %s", guidanceMessage)
 
 						// Create a modified request with guidance as an additional user message
 						modifiedReq := req
@@ -92,6 +99,7 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 					}
 
 					// Second attempt failed - return error for state handler to process
+					logger.Error("❌ AUTO-RETRY FAILED: Both attempts returned empty responses, escalating to state handler")
 					break
 				}
 
@@ -175,4 +183,38 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// logEmptyResponseDetails logs comprehensive details about why a response was considered empty.
+func (v *EmptyResponseValidator) logEmptyResponseDetails(logger *logx.Logger, attempt int, resp llm.CompletionResponse, err error) {
+	// Determine the reason for emptiness
+	hasContent := strings.TrimSpace(resp.Content) != ""
+	hasToolCalls := len(resp.ToolCalls) > 0
+	isArchitect := v.agentType == AgentTypeArchitect
+
+	var emptyReason string
+	if err != nil {
+		emptyReason = fmt.Sprintf("LLM client returned ErrorTypeEmptyResponse: %v", err)
+	} else if !hasContent && !hasToolCalls {
+		emptyReason = "Response has no content and no tool calls"
+	} else if hasContent && !hasToolCalls && !isArchitect {
+		emptyReason = fmt.Sprintf("Coder response has content (%d chars) but NO TOOL CALLS (considered empty for coder agents)", len(resp.Content))
+	} else if !hasContent && hasToolCalls {
+		emptyReason = "Response has tool calls but no content (this should not happen)"
+	} else {
+		emptyReason = "Response was considered empty for unknown reason"
+	}
+
+	logger.Warn("⚠️ EMPTY RESPONSE DETECTED (attempt %d/%d): %s", attempt, 2, emptyReason)
+	logger.Debug("📊 Response details: content_length=%d, tool_calls_count=%d, agent_type=%s",
+		len(resp.Content), len(resp.ToolCalls), v.agentType)
+
+	// If there's content but no tool calls (common case), show a snippet
+	if hasContent && !hasToolCalls && !isArchitect {
+		contentSnippet := resp.Content
+		if len(contentSnippet) > 200 {
+			contentSnippet = contentSnippet[:200] + "..."
+		}
+		logger.Info("📝 Response content (no tool calls): %s", contentSnippet)
+	}
 }

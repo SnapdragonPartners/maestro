@@ -429,24 +429,19 @@ func (q *Queue) GetQueueSummary() map[string]any {
 	return summary
 }
 
-// UpdateStoryStatus updates a story's status with mutex protection and persistence.
+// UpdateStoryStatus updates a story's status in memory only.
+// Database persistence happens through FlushToDatabase() to avoid redundant operations.
 func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
-	// Lock for in-memory update
 	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
 	story, exists := q.stories[storyID]
 	if !exists {
-		q.mutex.Unlock()
 		return fmt.Errorf("story %s not found in queue", storyID)
 	}
 
 	story.SetStatus(status)
 	story.LastUpdated = time.Now().UTC()
-	q.mutex.Unlock() // Release before persistence
-
-	// Persist to database (no mutex needed)
-	if q.persistenceChannel != nil {
-		persistence.PersistStory(story.ToPersistenceStory(), q.persistenceChannel)
-	}
 
 	return nil
 }

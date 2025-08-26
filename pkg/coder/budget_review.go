@@ -63,6 +63,25 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 		// CONTINUE/PIVOT - return to origin state and reset counter.
 		c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
 
+		// Add architect's approval response to context to maintain conversation flow
+		if feedback != "" {
+			// Use mini-template to format the feedback message
+			if c.renderer != nil {
+				renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, feedback)
+				if err != nil {
+					c.logger.Error("Failed to render budget review feedback: %v", err)
+					// Fallback to simple message
+					renderedMessage = "The architect has approved my request to continue. I'll proceed with the work as planned."
+				}
+				c.contextManager.AddAssistantMessage(renderedMessage)
+				c.logger.Debug("🧑‍💻 Injected architect approval response into context")
+			}
+		} else {
+			// Default approval message when no specific feedback provided
+			c.contextManager.AddAssistantMessage("The architect has approved my request to continue. I'll proceed with the work as planned.")
+			c.logger.Debug("🧑‍💻 Added default approval response to context")
+		}
+
 		// Reset the iteration counter for the origin state.
 		switch originStr {
 		case string(StatePlanning):

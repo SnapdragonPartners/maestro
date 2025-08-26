@@ -82,11 +82,23 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		planningTemplate = templates.AppPlanningTemplate
 	}
 
+	// Get container information from config
+	var containerName, containerDockerfile string
+	if cfg, err := config.GetConfig(); err == nil && cfg.Container != nil {
+		containerName = cfg.Container.Name
+		containerDockerfile = cfg.Container.Dockerfile
+		c.logger.Debug("🐳 Planning template container info - Name: '%s', Dockerfile: '%s'", containerName, containerDockerfile)
+	} else {
+		c.logger.Debug("🐳 Planning template container info not available: %v", err)
+	}
+
 	// Create enhanced template data with state-specific tool documentation
 	templateData := &templates.TemplateData{
-		TaskContent:       taskContent,
-		TreeOutput:        utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
-		ToolDocumentation: c.planningToolProvider.GenerateToolDocumentation(),
+		TaskContent:         taskContent,
+		TreeOutput:          utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
+		ToolDocumentation:   c.planningToolProvider.GenerateToolDocumentation(),
+		ContainerName:       containerName,
+		ContainerDockerfile: containerDockerfile,
 		Extra: map[string]any{
 			"story_type": storyType, // Include story type for template logic
 		},

@@ -30,6 +30,9 @@ type TemplateData struct {
 	TestCommand  string `json:"test_command,omitempty"`
 	LintCommand  string `json:"lint_command,omitempty"`
 	RunCommand   string `json:"run_command,omitempty"`
+	// Container information
+	ContainerName       string `json:"container_name,omitempty"`
+	ContainerDockerfile string `json:"container_dockerfile,omitempty"`
 	// Dockerfile content for DevOps review templates
 	DockerfileContent string `json:"dockerfile_content,omitempty"`
 }
