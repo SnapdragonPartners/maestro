@@ -1,5 +1,45 @@
 // Package dispatch provides message routing and agent coordination for the orchestrator.
 // It manages agent communication channels, rate limiting, and message processing workflows.
+//
+// ## Channel Communication Patterns
+//
+// The dispatcher implements several channel-based communication patterns for clean, non-blocking
+// coordination between agents. These patterns replace legacy API-based approaches with async channels.
+//
+// ### 1. Status Updates Pattern
+// Used for updating story status from coders to architect:
+//   - Coders call: dispatcher.UpdateStoryStatus(storyID, status)
+//   - Dispatcher sends via: statusUpdatesCh chan *proto.StoryStatusUpdate
+//   - Architect processes via: processStatusUpdates() goroutine worker
+//   - Benefits: Non-blocking, fire-and-forget status updates
+//
+// ### 2. Requeue Requests Pattern
+// Used for requeuing failed stories from supervisor to architect:
+//   - Supervisor calls: dispatcher.UpdateStoryRequeue(storyID, agentID, reason)
+//   - Dispatcher sends via: requeueRequestsCh chan *proto.StoryRequeueRequest
+//   - Architect processes via: processRequeueRequests() goroutine worker
+//   - Benefits: Replaces legacy ExternalAPIProvider with clean channel communication
+//
+// ### 3. State Change Notifications Pattern
+// Used for notifying supervisor of agent state transitions:
+//   - Agents send: stateChangeCh <- &proto.StateChangeNotification{}
+//   - Supervisor processes via: handleStateChange() in main loop
+//   - Benefits: Centralized lifecycle management and restart policies
+//
+// ### 4. Question/Answer Pattern
+// Used for synchronous communication between coders and architect:
+//   - Coders send QUESTION messages via: questionsCh
+//   - Architect processes and sends ANSWER via: reply channels
+//   - Benefits: Bidirectional communication for technical questions
+//
+// ### 5. Work Distribution Pattern
+// Used for distributing ready stories to available coders:
+//   - Architect sends TASK messages via: storyCh
+//   - Coders pick up work from shared channel
+//   - Benefits: Load balancing across multiple coder agents
+//
+// All channels use buffered queues with appropriate sizing for production load.
+// Workers use context cancellation for graceful shutdown coordination.
 package dispatch
 
 import (
@@ -71,9 +111,10 @@ type Dispatcher struct {
 	running     bool
 
 	// Phase 1: Channel-based queues.
-	storyCh         chan *proto.AgentMsg          // Ready stories for any coder (replaces sharedWorkQueue)
-	questionsCh     chan *proto.AgentMsg          // Questions/requests for architect (replaces architectRequestQueue)
-	statusUpdatesCh chan *proto.StoryStatusUpdate // Story status updates for architect (non-blocking)
+	storyCh           chan *proto.AgentMsg            // Ready stories for any coder (replaces sharedWorkQueue)
+	questionsCh       chan *proto.AgentMsg            // Questions/requests for architect (replaces architectRequestQueue)
+	statusUpdatesCh   chan *proto.StoryStatusUpdate   // Story status updates for architect (non-blocking)
+	requeueRequestsCh chan *proto.StoryRequeueRequest // Story requeue requests for architect (non-blocking)
 
 	// Phase 2: Per-agent reply channels.
 	replyChannels map[string]chan *proto.AgentMsg // Per-agent reply channels for ANSWER/RESULT messages
@@ -124,6 +165,7 @@ func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter) (*Dispatche
 		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
 		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                   // Buffered channel for status updates
+		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                                 // Buffered channel for requeue requests
 		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
 		errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
 		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
@@ -807,6 +849,11 @@ func (d *Dispatcher) GetStatusUpdatesChannel() <-chan *proto.StoryStatusUpdate {
 	return d.statusUpdatesCh
 }
 
+// GetRequeueRequestsChannel returns the story requeue requests channel.
+func (d *Dispatcher) GetRequeueRequestsChannel() <-chan *proto.StoryRequeueRequest {
+	return d.requeueRequestsCh
+}
+
 // ArchitectChannels contains the channels returned to architects.
 type ArchitectChannels struct {
 	Specs <-chan *proto.AgentMsg // Delivers spec messages
@@ -874,6 +921,11 @@ func (d *Dispatcher) closeAllChannels() {
 	if d.statusUpdatesCh != nil {
 		close(d.statusUpdatesCh)
 		d.logger.Info("Closed status updates channel")
+	}
+
+	if d.requeueRequestsCh != nil {
+		close(d.requeueRequestsCh)
+		d.logger.Info("Closed requeue requests channel")
 	}
 }
 
@@ -1015,45 +1067,6 @@ func (d *Dispatcher) SendRequeue(agentID, reason string) error {
 	}
 }
 
-// RequeueStory atomically requeues a story and releases it if unblocked.
-// This clears the agent's lease and tells the architect to requeue and release the story.
-func (d *Dispatcher) RequeueStory(agentID string) error {
-	storyID := d.GetLease(agentID)
-	if storyID == "" {
-		return fmt.Errorf("no lease found for agent %s", agentID)
-	}
-
-	// Clear the lease first
-	d.ClearLease(agentID)
-	d.logger.Info("Requeued story %s from failed agent %s", storyID, agentID)
-
-	// Find the architect and call its external API to requeue and release the story
-	d.mu.RLock()
-	architectAgent, exists := d.agents["architect-001"]
-	d.mu.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("architect agent not found for story requeue and release")
-	}
-
-	// Cast to architect driver to access external API
-	type ExternalAPIProvider interface {
-		GetExternalAPI() interface{ RequeueAndRelease(string) error }
-	}
-
-	architectDriver, ok := architectAgent.(ExternalAPIProvider)
-	if !ok {
-		return fmt.Errorf("architect agent does not support external API")
-	}
-
-	// Call the external API to requeue and release the story atomically
-	if err := architectDriver.GetExternalAPI().RequeueAndRelease(storyID); err != nil {
-		return fmt.Errorf("failed to requeue and release story %s: %w", storyID, err)
-	}
-
-	return nil
-}
-
 // UpdateStoryStatus provides a non-blocking way for coders to update story status.
 // This sends a simple status update notification to the architect via a dedicated channel.
 func (d *Dispatcher) UpdateStoryStatus(storyID, status string) error {
@@ -1075,6 +1088,30 @@ func (d *Dispatcher) UpdateStoryStatus(storyID, status string) error {
 	default:
 		d.logger.Warn("❌ Status updates channel full, dropping status update for story %s", storyID)
 		return fmt.Errorf("status updates channel full")
+	}
+}
+
+// UpdateStoryRequeue sends a requeue request to the architect via the requeue channel.
+// This replaces the legacy ExternalAPIProvider pattern with clean channel communication.
+func (d *Dispatcher) UpdateStoryRequeue(storyID, agentID, reason string) error {
+	d.logger.Info("🔄 Sending story %s requeue request from agent %s via requeue channel: %s", storyID, agentID, reason)
+
+	// Create a requeue request notification
+	requeueRequest := &proto.StoryRequeueRequest{
+		StoryID:   storyID,
+		AgentID:   agentID,
+		Reason:    reason,
+		Timestamp: time.Now().UTC(),
+	}
+
+	// Send to requeue requests channel (non-blocking)
+	select {
+	case d.requeueRequestsCh <- requeueRequest:
+		d.logger.Info("✅ Story %s requeue request sent to architect", storyID)
+		return nil
+	default:
+		d.logger.Warn("❌ Requeue requests channel full, dropping requeue request for story %s", storyID)
+		return fmt.Errorf("requeue requests channel full")
 	}
 }
 
