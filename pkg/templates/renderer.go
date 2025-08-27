@@ -87,8 +87,6 @@ const (
 
 	// SpecAnalysisTemplate is the template for architect spec analysis state.
 	SpecAnalysisTemplate StateTemplate = "spec_analysis.tpl.md"
-	// StoryGenerationTemplate is the template for architect story generation state.
-	StoryGenerationTemplate StateTemplate = "story_generation.tpl.md"
 	// TechnicalQATemplate is the template for architect technical Q&A state.
 	TechnicalQATemplate StateTemplate = "technical_qa.tpl.md"
 	// CodeReviewTemplate is the template for architect code review state.
@@ -128,7 +126,6 @@ func NewRenderer() (*Renderer, error) {
 		BudgetReviewPlanningTemplate,
 		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,
-		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
 		AppCodeReviewTemplate,
