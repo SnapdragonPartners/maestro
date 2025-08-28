@@ -3,7 +3,11 @@
 The architect has reviewed your current approach and requests changes:
 
 ```
+{{- if isMap .Extra.Data -}}
+{{.Extra.Data.Feedback}}
+{{- else -}}
 {{.Extra.Data}}
+{{- end -}}
 ```
 
 **Action Required:**

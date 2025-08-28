@@ -113,6 +113,8 @@ func NewRenderer() (*Renderer, error) {
 		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
+		AppCompletionApprovalTemplate,
+		DevOpsCompletionApprovalTemplate,
 		TestFailureInstructionsTemplate,
 		DevOpsTestFailureInstructionsTemplate,
 		BudgetReviewFeedbackTemplate,
@@ -140,6 +142,17 @@ func NewRenderer() (*Renderer, error) {
 
 		tmpl, err := template.New(string(name)).Funcs(template.FuncMap{
 			"contains": strings.Contains,
+			"isMap": func(v any) bool {
+				if v == nil {
+					return false
+				}
+				switch v.(type) {
+				case map[string]any:
+					return true
+				default:
+					return false
+				}
+			},
 		}).Parse(string(content))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", name, err)

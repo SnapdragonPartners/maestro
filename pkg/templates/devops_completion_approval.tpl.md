@@ -3,7 +3,7 @@
 You are an architect reviewing a completion claim for a DEVOPS story.
 
 ## Story Completion Claim
-{{.Content}}
+{{.Extra.Content}}
 
 {{- if .DockerfileContent}}
 ## Current Dockerfile

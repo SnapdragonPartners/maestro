@@ -65,6 +65,7 @@ The request above contains all context including budget details, recent messages
 - Making progress on implementation steps
 - Tool usage appropriate for coding phase
 - **Effect**: Continue in current state with reset iteration budget
+- **Note**: This approves the APPROACH, not the completion. Agent must still complete all tasks and use 'done' tool when finished.
 
 ### NEEDS_CHANGES: Course Correction Required
 - Agent not following approved plan systematically

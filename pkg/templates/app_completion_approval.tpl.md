@@ -3,7 +3,7 @@
 You are an architect reviewing a completion claim for an APPLICATION story.
 
 ## Story Completion Claim
-{{.Content}}
+{{.Extra.Content}}
 
 ## Evaluation Criteria for Application Stories
 
