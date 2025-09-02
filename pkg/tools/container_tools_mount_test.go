@@ -100,7 +100,7 @@ func TestContainerTestTool_BuildDockerArgs(t *testing.T) {
 func TestContainerTestTool_WithAgentState(t *testing.T) {
 	// Test with mock agent in CODING state
 	mockAgent := &mockAgent{state: proto.State("CODING")}
-	tool := NewContainerTestToolWithAgent(nil, mockAgent)
+	tool := NewContainerTestTool(nil, mockAgent, "/test/workdir")
 
 	permissions := tool.getWorkspacePermissions()
 	if permissions != "rw" {

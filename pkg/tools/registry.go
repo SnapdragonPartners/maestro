@@ -297,13 +297,16 @@ func createContainerTestTool(ctx AgentContext) (Tool, error) {
 		return nil, fmt.Errorf("container test tool requires an executor")
 	}
 
-	// Use full context constructor if agent and workdir are available
-	if ctx.Agent != nil {
-		return NewContainerTestToolWithContext(ctx.Executor, ctx.Agent, ctx.WorkDir), nil
+	if ctx.Agent == nil {
+		return nil, fmt.Errorf("container test tool requires agent context for proper workDir mounting")
 	}
 
-	// Fallback to basic constructor (read-only default)
-	return NewContainerTestTool(ctx.Executor), nil
+	if ctx.WorkDir == "" {
+		return nil, fmt.Errorf("container test tool requires workDir for proper workspace mounting")
+	}
+
+	// Only one constructor - requires full context
+	return NewContainerTestTool(ctx.Executor, ctx.Agent, ctx.WorkDir), nil
 }
 
 // createContainerListTool creates a container list tool instance.
@@ -370,7 +373,9 @@ func getContainerUpdateSchema() InputSchema {
 }
 
 func getContainerTestSchema() InputSchema {
-	return NewContainerTestTool(nil).Definition().InputSchema
+	// Create a temporary instance just for schema extraction
+	tempTool := &ContainerTestTool{}
+	return tempTool.Definition().InputSchema
 }
 
 func getContainerListSchema() InputSchema {

@@ -286,8 +286,8 @@ func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr s
 func (c *Coder) runContainerBootTesting(ctx context.Context, containerName string) (bool, string) {
 	c.logger.Info("Running container boot test for container: %s", containerName)
 
-	// Create container test tool instance using the coder's executor
-	containerTestTool := tools.NewContainerTestTool(c.longRunningExecutor)
+	// Create container test tool instance with full agent context
+	containerTestTool := tools.NewContainerTestTool(c.longRunningExecutor, c, c.workDir)
 
 	// Prepare arguments for container_test tool in boot test mode (no command, ttl_seconds=0)
 	args := map[string]any{

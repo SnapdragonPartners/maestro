@@ -120,13 +120,7 @@ func verifyProject(projectDir string) error {
 		return fmt.Errorf("failed to create .maestro directory: %w", mkdirErr)
 	}
 
-	// Create subdirectories
-	subdirs := []string{"logs", "work", "stories"}
-	for _, subdir := range subdirs {
-		if mkdirErr := os.MkdirAll(filepath.Join(maestroDir, subdir), 0755); mkdirErr != nil {
-			return fmt.Errorf("failed to create %s directory: %w", subdir, mkdirErr)
-		}
-	}
+	// No subdirectories needed in .maestro/ - it only contains config and database
 
 	// 2. Validate/create database
 	dbPath := filepath.Join(maestroDir, "maestro.db")
@@ -139,7 +133,7 @@ func verifyProject(projectDir string) error {
 	}
 
 	// 3. Create CODER.md and ARCHITECT.md system prompt files
-	coderPath := filepath.Join(projectDir, "CODER.md")
+	coderPath := filepath.Join(maestroDir, "CODER.md")
 	if _, err := os.Stat(coderPath); os.IsNotExist(err) {
 		coderContent := `# CODER.md
 
@@ -162,7 +156,7 @@ Follow existing patterns and conventions in the codebase.
 		}
 	}
 
-	architectPath := filepath.Join(projectDir, "ARCHITECT.md")
+	architectPath := filepath.Join(maestroDir, "ARCHITECT.md")
 	if _, err := os.Stat(architectPath); os.IsNotExist(err) {
 		architectContent := `# ARCHITECT.md
 
@@ -183,9 +177,10 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 
 	// 4. Create git mirror if git config exists
 	if cfg.Git != nil && cfg.Git.RepoURL != "" {
-		mirrorDir := filepath.Join(maestroDir, "mirrors")
+		// Use the actual .mirrors directory in projectDir (not .maestro/mirrors)
+		mirrorDir := filepath.Join(projectDir, ".mirrors")
 		if err := os.MkdirAll(mirrorDir, 0755); err != nil {
-			return fmt.Errorf("failed to create mirrors directory: %w", err)
+			return fmt.Errorf("failed to create .mirrors directory: %w", err)
 		}
 
 		// Extract repo name from URL for mirror directory

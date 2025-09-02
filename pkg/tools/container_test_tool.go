@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/proto"
@@ -13,30 +14,12 @@ import (
 type ContainerTestTool struct {
 	executor   exec.Executor
 	hostRunner *HostRunner // For host execution strategy
-	agent      Agent       // Optional agent reference for state access
+	agent      Agent       // Required agent reference for state access and workDir
 	workDir    string      // Agent working directory for host mounts
 }
 
-// NewContainerTestTool creates a new container test tool instance.
-func NewContainerTestTool(executor exec.Executor) *ContainerTestTool {
-	return &ContainerTestTool{
-		executor:   executor,
-		hostRunner: NewHostRunner(),
-	}
-}
-
-// NewContainerTestToolWithAgent creates a new container test tool instance with agent state access.
-func NewContainerTestToolWithAgent(executor exec.Executor, agent Agent) *ContainerTestTool {
-	return &ContainerTestTool{
-		executor:   executor,
-		agent:      agent,
-		workDir:    ".",
-		hostRunner: NewHostRunner(),
-	}
-}
-
-// NewContainerTestToolWithContext creates a new container test tool instance with full context.
-func NewContainerTestToolWithContext(executor exec.Executor, agent Agent, workDir string) *ContainerTestTool {
+// NewContainerTestTool creates a new container test tool instance with required agent context.
+func NewContainerTestTool(executor exec.Executor, agent Agent, workDir string) *ContainerTestTool {
 	return &ContainerTestTool{
 		executor:   executor,
 		agent:      agent,
@@ -121,32 +104,35 @@ func (c *ContainerTestTool) Exec(ctx context.Context, args map[string]any) (any,
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Add host workspace path to args for host execution
-	if c.agent != nil {
-		hostWorkspacePath := c.agent.GetHostWorkspacePath()
-		if hostWorkspacePath != "" {
-			args["host_workspace_path"] = hostWorkspacePath
-			fmt.Printf("🗂️  ContainerTestTool: Got host workspace path from agent: %s\n", hostWorkspacePath)
-		} else {
-			fmt.Printf("🗂️  ContainerTestTool: Agent returned empty host workspace path\n")
-		}
+	// Strict validation - agent context is required
+	if c.agent == nil {
+		return nil, fmt.Errorf("container_test requires agent context for proper workDir mounting - no agent provided")
+	}
 
-		// Add mount permissions based on agent state
-		currentState := c.agent.GetCurrentState()
-		if currentState == proto.State("CODING") {
-			args["mount_permissions"] = "rw"
-		} else {
-			args["mount_permissions"] = "ro"
-		}
-		fmt.Printf("🗂️  ContainerTestTool: Agent state=%s, mount_permissions=%s\n", currentState, args["mount_permissions"])
+	// Get host workspace path from agent
+	hostWorkspacePath := c.agent.GetHostWorkspacePath()
+	if hostWorkspacePath == "" {
+		return nil, fmt.Errorf("agent returned empty host workspace path - cannot mount workspace")
+	}
+
+	// Validate that the workspace directory exists and is accessible
+	if stat, err := os.Stat(hostWorkspacePath); err != nil {
+		return nil, fmt.Errorf("host workspace path '%s' is not accessible: %w", hostWorkspacePath, err)
+	} else if !stat.IsDir() {
+		return nil, fmt.Errorf("host workspace path '%s' is not a directory", hostWorkspacePath)
+	}
+
+	args["host_workspace_path"] = hostWorkspacePath
+	fmt.Printf("🗂️  ContainerTestTool: Validated workspace path: %s\n", hostWorkspacePath)
+
+	// Add mount permissions based on agent state
+	currentState := c.agent.GetCurrentState()
+	if currentState == proto.State("CODING") {
+		args["mount_permissions"] = "rw"
 	} else {
-		// Fallback to workDir and read-only if no agent
-		fmt.Printf("🗂️  ContainerTestTool: No agent available, using fallback workDir: %s\n", c.workDir)
-		if c.workDir != "" {
-			args["host_workspace_path"] = c.workDir
-		}
 		args["mount_permissions"] = "ro"
 	}
+	fmt.Printf("🗂️  ContainerTestTool: Agent state=%s, mount_permissions=%s\n", currentState, args["mount_permissions"])
 
 	// Use host execution strategy for all container_test operations
 	return c.hostRunner.RunContainerTest(ctx, args)

@@ -239,8 +239,8 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 	// For now, use current working directory - in future this could be configurable
 	projectDir := "."
 
-	// Create startup orchestrator
-	startupOrch, err := orchestrator.NewStartupOrchestrator(projectDir)
+	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
+	startupOrch, err := orchestrator.NewStartupOrchestrator(projectDir, false)
 	if err != nil {
 		return fmt.Errorf("failed to create startup orchestrator: %w", err)
 	}

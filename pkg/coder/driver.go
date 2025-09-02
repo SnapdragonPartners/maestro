@@ -1121,6 +1121,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 	// Create agent context for planning (read-only access)
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
+		Agent:           c,                     // Pass agent reference for workDir access
 		ReadOnly:        true,                  // Planning is read-only
 		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
@@ -1142,6 +1143,7 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	// Create agent context for coding (read-write access)
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
+		Agent:           c,                     // Pass agent reference for workDir access
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,

@@ -85,10 +85,19 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 		Response:  nil,
 	}
 
-	// 2. Check for container context and add if needed
+	// 2. Check for container context and add if needed (with retry enhancement)
 	containerContext := ""
+	retryCount := 0
+	if retryData, exists := d.stateData["container_retry_count"]; exists {
+		if count, ok := retryData.(int); ok {
+			retryCount = count
+		}
+	}
+
 	if !config.IsValidTargetImage() {
-		containerContext = `
+		if retryCount == 0 {
+			// First attempt - standard container guidance
+			containerContext = `
 
 IMPORTANT CONSTRAINT: No valid target container image exists in this project. This means:
 - App stories require a containerized development environment to run properly
@@ -100,6 +109,26 @@ Please ensure that:
 2. The first story in dependency order is a DevOps story 
 3. DevOps stories handle container setup, build environment, or infrastructure
 4. App stories handle application code, features, and business logic within containers`
+		} else {
+			// Retry attempt - ENHANCED guidance
+			containerContext = `
+
+CRITICAL REQUIREMENT: Container Environment Setup - RETRY WITH ENHANCED GUIDANCE
+
+This project currently has NO VALID TARGET CONTAINER and your previous response did not include any DevOps stories.
+
+YOU MUST CREATE AT LEAST ONE DEVOPS STORY or the system cannot function. This is MANDATORY.
+
+DEVOPS STORY REQUIREMENTS:
+1. Story type MUST be "devops" (not "app")
+2. Must handle container setup, Dockerfile creation, or build environment
+3. Must be first in dependency order
+4. Example titles: "Set up development container", "Configure build environment", "Create Dockerfile"
+
+APP STORIES CANNOT RUN without a container environment. Every app story needs a DevOps story to run first.
+
+REQUIRED: Your response must include at least one DevOps story for container setup.`
+		}
 	}
 
 	// 3. Parse spec with LLM to get detailed requirements
@@ -141,6 +170,12 @@ Please ensure that:
 
 	// 5. Container validation and dependency fixing
 	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
+		// Check if this is a retry request
+		if strings.Contains(err.Error(), "retry_needed") {
+			d.logger.Info("🔄 Container validation triggered retry - clearing queue and restarting scoping")
+			d.queue.ClearAll()
+			return StateScoping, nil // Return to SCOPING state for retry
+		}
 		return StateError, fmt.Errorf("container validation failed: %w", err)
 	}
 
@@ -425,17 +460,29 @@ func (d *Driver) fixContainerDependencies(devopsStories, appStories []*QueuedSto
 	return nil
 }
 
-// retryWithContainerGuidance retries LLM with enhanced container guidance.
+// retryWithContainerGuidance retries LLM with enhanced container guidance following the empty response retry pattern.
 func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
-	d.logger.Error("🔄 No DevOps story found - this requires LLM retry with container guidance")
+	// Get retry counter from state data (0 if not set)
+	retryCount := 0
+	if retryData, exists := d.stateData["container_retry_count"]; exists {
+		if count, ok := retryData.(int); ok {
+			retryCount = count
+		}
+	}
 
-	// For now, return an error that will be handled by the caller
-	// The full LLM retry implementation would involve:
-	// 1. Clear current stories from queue
-	// 2. Add container-specific guidance to spec
-	// 3. Re-run story generation with enhanced prompt
-	// 4. Validate the new stories have proper DevOps→App structure
-	// 5. If still no DevOps story → fatal error
+	// Maximum 1 retry (attempt 0 + attempt 1)
+	if retryCount >= 1 {
+		d.logger.Error("❌ RETRY EXHAUSTED: LLM failed to generate DevOps story after guidance")
+		d.logger.Error("🏗️  REQUIRED: Manually add container setup requirements to your specification")
+		d.logger.Error("💡 GUIDANCE: DevOps stories handle container setup, build environment, infrastructure")
+		return fmt.Errorf("no DevOps story generated after retry - manual intervention required")
+	}
 
-	return fmt.Errorf("container validation failed: no valid target container and no DevOps story to create one - LLM retry needed")
+	d.logger.Warn("🔄 RETRY ATTEMPT %d: Re-running story generation with enhanced container guidance", retryCount+1)
+
+	// Increment retry counter for enhanced guidance in the next iteration
+	d.stateData["container_retry_count"] = retryCount + 1
+
+	// Return special error that triggers retry flow
+	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")
 }
