@@ -17,7 +17,9 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
 - **Coder State Machine** (`pkg/coder/`) - Coder-specific state machine for structured coding workflows
 - **Architect State Machine** (`pkg/architect/`) - Architect-specific state machine for spec processing and coordination
 - **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
-- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools for file operations in workspaces
+- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools including container management and file operations
+- **Container Runtime** (`internal/state/`) - Container orchestration state management and history tracking
+- **Container Tools** (`pkg/tools/`) - Container lifecycle management: build, test, switch, update operations
 
 ### Agent Flow
 1. **Architect Workflow**: Processes development specifications through state machine:
@@ -42,6 +44,50 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **ERROR/SHUTDOWN**: System control messages
 
 4. System maintains event logs and handles graceful shutdown with STATUS.md dumps
+
+## Container Architecture
+
+The system uses a **three-container model** for safe development and deployment:
+
+### Container Types
+
+1. **Safe Container** (`maestro-bootstrap` or similar)
+   - Bootstrap and fallback environment only
+   - Contains build tools, Docker, analysis utilities  
+   - Never modified - always clean and reliable
+   - Used when target container is unavailable
+
+2. **Target Container** (project-specific, e.g., `maestro-projectname`)
+   - Primary development environment for application code
+   - Built from project's Dockerfile
+   - Where coder agents normally execute
+   - Updated through container_update tool
+
+3. **Test Container** (temporary instances)
+   - Throwaway containers for validation
+   - Run on host (not docker-in-docker)
+   - Test changes without affecting active environment
+
+### Container Management
+
+**Coder agents manage their own containers:**
+- Start with verified target container or fallback to safe container
+- Can build, test, and switch containers mid-execution
+- Use `container_switch` for immediate environment changes
+- Use `container_update` to set persistent target image for future runs
+- Use `container_test` for temporary validation without disrupting active container
+
+### Key Container Tools
+
+- `container_build` - Build Docker images from Dockerfile
+- `container_test` - Run validation in temporary containers (mount policy: CODING=RW, others=RO)
+- `container_switch` - Switch active execution environment 
+- `container_update` - Set persistent target image configuration
+- `container_list` - View available containers and registry status
+
+**Mount Policy**: Test containers mount `/workspace` as read-only except in CODING state (read-write). `/tmp` is always writable.
+
+**Orchestrator Role**: The main orchestrator does NOT manage container switching - agents are self-managing. The orchestrator only handles container cleanup via the container registry for containers that don't exit on their own.
 
 ## Development Commands
 
@@ -95,6 +141,27 @@ The codebase follows this clean architecture:
 - `work/` - Agent workspace directories with isolated state
 - `tests/fixtures/` - Test input files and examples
 - `docs/` - Documentation and style guides
+
+### Project Directory Structure
+
+The system uses a specific directory layout for configuration and workspace management:
+
+```
+projectDir/                    # Binary location or CLI specified
+├── .maestro/                 # Master configuration directory
+│   ├── config.json          # Project configuration with pinned image IDs
+│   └── database/            # Agent state and history database
+├── .mirrors/                # Repository mirrors
+│   └── project-mirror.git/  # Bare git mirror of main repository
+├── coder-001/               # Agent working directory (directory-name-safe agent ID)
+├── coder-002/               # Agent working directory (directory-name-safe agent ID)
+└── ...                      # Additional agent directories as needed
+```
+
+**Configuration Management:**
+- `projectDir/.maestro/config.json` - Master config with pinned target image ID  
+- `projectDir/.maestro/database/` - Agent state, container history, runtime data
+- `coder-001/`, `coder-002/`, etc. - Individual agent working directories (repo clones with `.maestro/` for committed artifacts)
 
 ### LLM Abstraction
 All AI model interactions go through the unified `LLMClient` interface in `pkg/agent/`:
