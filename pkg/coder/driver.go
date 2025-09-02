@@ -1122,7 +1122,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
 		ReadOnly:        true,                  // Planning is read-only
-		NetworkDisabled: true,                  // No network access during planning
+		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
 	}
 
@@ -1277,4 +1277,16 @@ func (c *Coder) getContextMessagesWithTokenLimit(tokenLimit int) *ContextMessage
 		Content:  content,
 		Tokens:   totalTokens,
 	}
+}
+
+// GetHostWorkspacePath returns the host workspace path for container mounting.
+func (c *Coder) GetHostWorkspacePath() string {
+	// Convert to absolute path to match main container startup behavior
+	if absPath, err := filepath.Abs(c.originalWorkDir); err == nil {
+		c.logger.Debug("🗂️  GetHostWorkspacePath: %s (from originalWorkDir: %s)", absPath, c.originalWorkDir)
+		return absPath
+	}
+	// Fallback to original if Abs() fails
+	c.logger.Warn("⚠️  GetHostWorkspacePath: filepath.Abs failed, using original: %s", c.originalWorkDir)
+	return c.originalWorkDir
 }

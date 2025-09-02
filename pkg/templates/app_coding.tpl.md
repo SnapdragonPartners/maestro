@@ -1,3 +1,5 @@
+**CRITICAL INSTRUCTION: RESPOND WITH TOOL CALLS ONLY. NO TEXT. NO EXPLANATIONS. NO COMMENTS. TOOL CALLS ONLY.**
+
 # Application Coding Phase - Generate Code Files
 
 You are a coding agent implementing the planned solution using shell commands and development tools.

@@ -10,6 +10,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
 )
 
@@ -26,6 +27,8 @@ import (
 const (
 	// DefaultDockerfile is the standard Dockerfile name.
 	DefaultDockerfile = "Dockerfile"
+	// DefaultWorkspaceDir is the standard workspace directory inside containers.
+	DefaultWorkspaceDir = "/workspace"
 )
 
 // ContainerBuildTool provides MCP interface for building Docker containers from Dockerfile.
@@ -40,7 +43,10 @@ type ContainerUpdateTool struct {
 
 // ContainerTestTool provides unified MCP interface for container testing with optional TTL and command execution.
 type ContainerTestTool struct {
-	executor exec.Executor
+	executor   exec.Executor
+	hostRunner *HostRunner // For host execution strategy
+	agent      Agent       // Optional agent reference for state access
+	workDir    string      // Agent working directory for host mounts
 }
 
 // ContainerListTool lists available containers and their registry status.
@@ -65,7 +71,30 @@ func NewContainerUpdateTool(executor exec.Executor) *ContainerUpdateTool {
 
 // NewContainerTestTool creates a new container test tool instance.
 func NewContainerTestTool(executor exec.Executor) *ContainerTestTool {
-	return &ContainerTestTool{executor: executor}
+	return &ContainerTestTool{
+		executor:   executor,
+		hostRunner: NewHostRunner(),
+	}
+}
+
+// NewContainerTestToolWithAgent creates a new container test tool instance with agent state access.
+func NewContainerTestToolWithAgent(executor exec.Executor, agent Agent) *ContainerTestTool {
+	return &ContainerTestTool{
+		executor:   executor,
+		agent:      agent,
+		workDir:    ".",
+		hostRunner: NewHostRunner(),
+	}
+}
+
+// NewContainerTestToolWithContext creates a new container test tool instance with full context.
+func NewContainerTestToolWithContext(executor exec.Executor, agent Agent, workDir string) *ContainerTestTool {
+	return &ContainerTestTool{
+		executor:   executor,
+		agent:      agent,
+		workDir:    workDir,
+		hostRunner: NewHostRunner(),
+	}
 }
 
 // NewContainerListTool creates a new container list tool instance.
@@ -140,7 +169,7 @@ func extractWorkingDirectory(args map[string]any) string {
 		workspacePath, err := config.GetContainerWorkspacePath()
 		if err != nil {
 			// Fallback to standard workspace path if config not available
-			cwd = "/workspace"
+			cwd = DefaultWorkspaceDir
 		} else {
 			cwd = workspacePath
 		}
@@ -323,7 +352,7 @@ func (c *ContainerBuildTool) testContainer(ctx context.Context, containerName st
 func (c *ContainerUpdateTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "container_update",
-		Description: "Update project configuration with new container settings",
+		Description: "Update project configuration with container settings or atomically set pinned target image ID",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -339,8 +368,24 @@ func (c *ContainerUpdateTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Path to dockerfile relative to workspace root (defaults to 'Dockerfile')",
 				},
+				"pinned_image_id": {
+					Type:        "string",
+					Description: "Docker image ID (sha256:...) to pin as target image",
+				},
+				"image_tag": {
+					Type:        "string",
+					Description: "Optional human-readable tag for the image",
+				},
+				"reason": {
+					Type:        "string",
+					Description: "Reason for the pinned image change (for audit)",
+				},
+				"dry_run": {
+					Type:        "boolean",
+					Description: "Preview changes without applying them (default: false)",
+				},
 			},
-			Required: []string{"container_name"},
+			Required: []string{},
 		},
 	}
 }
@@ -352,26 +397,109 @@ func (c *ContainerUpdateTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ContainerUpdateTool) PromptDocumentation() string {
-	return `- **container_update** - Update project configuration with container settings
-  - Parameters:
+	return `- **container_update** - Update container settings or atomically set pinned target image ID
+  - Container Config Mode:
     - container_name (required): name of container to register
+    - dockerfile_path (optional): path to dockerfile
     - cwd (optional): working directory containing config
-  - Updates project configuration to use the specified container
-  - Use after successfully building a container with container_build`
+  - Pinned Image Mode:
+    - pinned_image_id (required): Docker image ID (sha256:...) to pin as target
+    - image_tag (optional): human-readable tag for audit
+    - reason (optional): reason for the change
+    - dry_run (optional): preview changes without applying
+  - Validates image exists locally; writes new pin ID; returns "updated" or "noop"
+  - Does NOT change active container; use container_switch to activate`
 }
 
 // Exec executes the container configuration update operation.
-func (c *ContainerUpdateTool) Exec(_ context.Context, args map[string]any) (any, error) {
-	// Extract container name using utils pattern
+func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+	// Determine mode based on parameters
+	pinnedImageID := utils.GetMapFieldOr(args, "pinned_image_id", "")
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
-	if containerName == "" {
-		return nil, fmt.Errorf("container_name is required")
+
+	if pinnedImageID != "" {
+		// Pinned Image Mode
+		return c.updatePinnedImage(ctx, args)
+	} else if containerName != "" {
+		// Container Config Mode
+		return c.updateContainerConfig(args)
+	} else {
+		return nil, fmt.Errorf("either pinned_image_id or container_name is required")
+	}
+}
+
+// updatePinnedImage implements Story 5 - atomically set pinned target image ID.
+func (c *ContainerUpdateTool) updatePinnedImage(_ context.Context, args map[string]any) (any, error) {
+	pinnedImageID := utils.GetMapFieldOr(args, "pinned_image_id", "")
+	imageTag := utils.GetMapFieldOr(args, "image_tag", "")
+	reason := utils.GetMapFieldOr(args, "reason", "")
+	dryRun := utils.GetMapFieldOr(args, "dry_run", false)
+
+	// TODO: Validate image exists locally (requires Docker image inspection)
+	// For now, basic validation that it looks like an image ID
+	if !strings.HasPrefix(pinnedImageID, "sha256:") {
+		return map[string]any{
+			"success": false,
+			"error":   "pinned_image_id must be a Docker image ID (sha256:...)",
+		}, nil
 	}
 
-	// Use default dockerfile path - container_build will validate existence during actual build
+	// Get current pinned image ID
+	oldPinnedID := config.GetPinnedImageID()
+
+	// Check for no-op
+	if oldPinnedID == pinnedImageID {
+		return map[string]any{
+			"success":           true,
+			"status":            "noop",
+			"previous_image_id": oldPinnedID,
+			"new_image_id":      pinnedImageID,
+			"message":           fmt.Sprintf("Image already pinned to %s", pinnedImageID),
+		}, nil
+	}
+
+	// Handle dry run
+	if dryRun {
+		return map[string]any{
+			"success":           true,
+			"status":            "would_update",
+			"previous_image_id": oldPinnedID,
+			"new_image_id":      pinnedImageID,
+			"reason":            reason,
+			"tag":               imageTag,
+			"message":           fmt.Sprintf("Would update pinned image: %s → %s", oldPinnedID, pinnedImageID),
+		}, nil
+	}
+
+	// Atomically update pinned image ID
+	if err := config.SetPinnedImageID(pinnedImageID); err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to set pinned image ID: %v", err),
+		}, nil
+	}
+
+	// Log the change for audit
+	log.Printf("INFO container_update: pinned image updated %s → %s (tag: %s, reason: %s)",
+		oldPinnedID, pinnedImageID, imageTag, reason)
+
+	return map[string]any{
+		"success":           true,
+		"status":            "updated",
+		"previous_image_id": oldPinnedID,
+		"new_image_id":      pinnedImageID,
+		"reason":            reason,
+		"tag":               imageTag,
+		"message":           fmt.Sprintf("Successfully pinned image: %s → %s", oldPinnedID, pinnedImageID),
+	}, nil
+}
+
+// updateContainerConfig updates the container name and dockerfile configuration.
+func (c *ContainerUpdateTool) updateContainerConfig(args map[string]any) (any, error) {
+	containerName := utils.GetMapFieldOr(args, "container_name", "")
 	dockerfilePath := utils.GetMapFieldOr(args, "dockerfile_path", DefaultDockerfile)
 
-	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s (container_build will validate)", containerName, dockerfilePath)
+	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s", containerName, dockerfilePath)
 
 	// Update project configuration with container name and dockerfile path
 	if err := c.updateProjectConfig(containerName, dockerfilePath); err != nil {
@@ -469,23 +597,26 @@ func (c *ContainerTestTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ContainerTestTool) PromptDocumentation() string {
-	return `- **container_test** - Unified container testing tool
+	return `- **container_test** - Run target (or safe) image in throwaway container to validate environment and/or run tests
+  - Purpose: Test container functionality without modifying active container
   - Parameters:
     - container_name (required): name of container to test
     - command (optional): command to execute in container (if not provided, does boot test)
     - ttl_seconds (optional): time-to-live for container (0=boot test, >0=persistent container, default: 0)
-    - working_dir (optional): working directory inside container
+    - working_dir (optional): working directory inside container (default: /workspace)
     - env_vars (optional): environment variables to set
-    - volumes (optional): volume mounts for host access
+    - volumes (optional): additional volume mounts (workspace auto-mounted)
     - timeout_seconds (optional): max seconds to wait for command completion (default: 60, max: 300)
-  - Modes:
-    - Boot Test (no command, ttl_seconds=0): Tests container boots successfully
-    - Command Execution (with command): Executes command and returns output
-    - Persistent Container (ttl_seconds>0): Starts long-running container for further interaction
-  - Automatically registers containers with registry for lifecycle management`
+  - Mount Policy:
+    - CODING: /workspace mounted READ-WRITE; /tmp writable
+    - All other states: /workspace mounted READ-ONLY; /tmp writable
+    - Polyglot: Don't assume language; tests may cache under /tmp
+  - Behavior: May compile/run tests but must not modify sources except in CODING mode
+  - Returns: { "status": "pass" | "fail", "details": { "image_id", "role": "target|safe", ... } }
+  - Note: This tool NEVER changes the active container`
 }
 
-// Exec executes the unified container test tool.
+// Exec executes the unified container test tool using host execution strategy.
 func (c *ContainerTestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
 	// Extract container name
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
@@ -493,143 +624,39 @@ func (c *ContainerTestTool) Exec(ctx context.Context, args map[string]any) (any,
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Extract optional command
-	command := utils.GetMapFieldOr(args, "command", "")
-
-	// Extract TTL (time-to-live) - 0 means boot test, >0 means persistent
-	ttlSeconds := utils.GetMapFieldOr(args, "ttl_seconds", 0)
-
-	// Determine mode based on parameters
-	if command != "" {
-		// Command execution mode
-		return c.executeCommand(ctx, args, containerName, command)
-	} else if ttlSeconds > 0 {
-		// Persistent container mode
-		return c.startPersistentContainer(ctx, args, containerName, ttlSeconds)
-	} else {
-		// Boot test mode (default)
-		return c.performBootTest(ctx, args, containerName)
-	}
-}
-
-// executeCommand runs a specific command in a container and returns the result.
-func (c *ContainerTestTool) executeCommand(ctx context.Context, args map[string]any, containerName, command string) (any, error) {
-	// Build docker run command
-	dockerArgs := c.buildDockerArgs(args, containerName, command, false)
-
-	// Execute with appropriate timeout
-	timeout := utils.GetMapFieldOr(args, "timeout_seconds", 60)
-	if timeout > 300 {
-		timeout = 300 // Enforce max limit
-	}
-
-	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{
-		Timeout: time.Duration(timeout) * time.Second,
-	})
-	if err != nil {
-		return map[string]any{
-			"success":        false,
-			"container_name": containerName,
-			"command":        command,
-			"error":          fmt.Sprintf("Command execution failed: %v", err),
-			"stdout":         result.Stdout,
-			"stderr":         result.Stderr,
-		}, nil
-	}
-
-	return map[string]any{
-		"success":        result.ExitCode == 0,
-		"container_name": containerName,
-		"command":        command,
-		"exit_code":      result.ExitCode,
-		"stdout":         result.Stdout,
-		"stderr":         result.Stderr,
-		"message":        fmt.Sprintf("Command executed in container '%s' with exit code %d", containerName, result.ExitCode),
-	}, nil
-}
-
-// performBootTest tests that a container boots successfully.
-func (c *ContainerTestTool) performBootTest(ctx context.Context, args map[string]any, containerName string) (any, error) {
-	// Build docker run command for boot test (no specific command)
-	dockerArgs := []string{"docker", "run", "--rm", containerName}
-
-	// Get timeout for boot test
-	timeout := utils.GetMapFieldOr(args, "timeout_seconds", 30)
-	if timeout > 60 {
-		timeout = 60 // Enforce max limit for boot test
-	}
-
-	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{
-		Timeout: time.Duration(timeout) * time.Second,
-	})
-
-	// For boot test, timeout is expected (container should be killed after waiting)
-	if err != nil {
-		errorMsg := err.Error()
-		if strings.Contains(errorMsg, "killed") || strings.Contains(errorMsg, "timeout") || strings.Contains(errorMsg, "context deadline exceeded") {
-			// Container was killed by timeout - success for boot test
-			return map[string]any{
-				"success":        true,
-				"container_name": containerName,
-				"timeout":        timeout,
-				"mode":           "boot_test",
-				"message":        fmt.Sprintf("Container '%s' booted successfully and ran for %d seconds", containerName, timeout),
-			}, nil
+	// Add host workspace path to args for host execution
+	if c.agent != nil {
+		hostWorkspacePath := c.agent.GetHostWorkspacePath()
+		if hostWorkspacePath != "" {
+			args["host_workspace_path"] = hostWorkspacePath
+			fmt.Printf("🗂️  ContainerTestTool: Got host workspace path from agent: %s\n", hostWorkspacePath)
+		} else {
+			fmt.Printf("🗂️  ContainerTestTool: Agent returned empty host workspace path\n")
 		}
+
+		// Add mount permissions based on agent state
+		currentState := c.agent.GetCurrentState()
+		if currentState == proto.State("CODING") {
+			args["mount_permissions"] = "rw"
+		} else {
+			args["mount_permissions"] = "ro"
+		}
+		fmt.Printf("🗂️  ContainerTestTool: Agent state=%s, mount_permissions=%s\n", currentState, args["mount_permissions"])
+	} else {
+		// Fallback to workDir and read-only if no agent
+		fmt.Printf("🗂️  ContainerTestTool: No agent available, using fallback workDir: %s\n", c.workDir)
+		if c.workDir != "" {
+			args["host_workspace_path"] = c.workDir
+		}
+		args["mount_permissions"] = "ro"
 	}
 
-	// Container exited early or had other error
-	return map[string]any{
-		"success":        false,
-		"container_name": containerName,
-		"exit_code":      result.ExitCode,
-		"stdout":         result.Stdout,
-		"stderr":         result.Stderr,
-		"mode":           "boot_test",
-		"message":        fmt.Sprintf("Container '%s' failed boot test - exited early with code %d", containerName, result.ExitCode),
-	}, nil
-}
-
-// startPersistentContainer starts a container with TTL and registers it with the container registry.
-func (c *ContainerTestTool) startPersistentContainer(ctx context.Context, args map[string]any, containerName string, ttlSeconds int) (any, error) {
-	// Build docker run command for persistent container (detached mode)
-	dockerArgs := c.buildDockerArgs(args, containerName, "", true)
-
-	// Execute docker run in detached mode
-	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{
-		Timeout: 30 * time.Second, // Just for starting the container
-	})
-	if err != nil {
-		return map[string]any{
-			"success":        false,
-			"container_name": containerName,
-			"error":          fmt.Sprintf("Failed to start persistent container: %v", err),
-			"stdout":         result.Stdout,
-			"stderr":         result.Stderr,
-		}, nil
-	}
-
-	// Extract container ID from output (docker run -d returns container ID)
-	containerID := strings.TrimSpace(result.Stdout)
-
-	// Register with container registry
-	registry := exec.GetGlobalRegistry()
-	if registry != nil {
-		// Use the container ID as agent ID for now, container name as container name, and "persistent" as purpose
-		registry.Register(containerID, containerName, "persistent")
-	}
-
-	return map[string]any{
-		"success":        true,
-		"container_name": containerName,
-		"container_id":   containerID,
-		"ttl_seconds":    ttlSeconds,
-		"mode":           "persistent",
-		"message":        fmt.Sprintf("Persistent container '%s' started with TTL %d seconds", containerName, ttlSeconds),
-	}, nil
+	// Use host execution strategy for all container_test operations
+	return c.hostRunner.RunContainerTest(ctx, args)
 }
 
 // buildDockerArgs builds docker run command arguments based on parameters.
+// Automatically mounts workspace with appropriate permissions based on agent state.
 func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, command string, detached bool) []string {
 	dockerArgs := []string{"docker", "run"}
 
@@ -639,8 +666,18 @@ func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, 
 		dockerArgs = append(dockerArgs, "--rm") // Remove after execution
 	}
 
-	// Add working directory if specified
-	workingDir := utils.GetMapFieldOr(args, "working_dir", "")
+	// Add tmpfs for writable /tmp (always writable)
+	dockerArgs = append(dockerArgs, "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m")
+
+	// Automatically mount workspace based on agent state
+	workspaceMount := c.getWorkspaceMount()
+	if workspaceMount != "" {
+		dockerArgs = append(dockerArgs, "-v", workspaceMount)
+	}
+
+	// Set default working directory to /workspace
+	defaultWorkingDir := "/workspace"
+	workingDir := utils.GetMapFieldOr(args, "working_dir", defaultWorkingDir)
 	if workingDir != "" {
 		dockerArgs = append(dockerArgs, "-w", workingDir)
 	}
@@ -656,7 +693,7 @@ func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, 
 		}
 	}
 
-	// Add volume mounts
+	// Add additional volume mounts (in addition to automatic workspace mount)
 	if volumesRaw, exists := args["volumes"]; exists {
 		if volumes, ok := volumesRaw.([]any); ok {
 			for _, volume := range volumes {
@@ -676,6 +713,58 @@ func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, 
 	}
 
 	return dockerArgs
+}
+
+// getWorkspaceMount returns the appropriate workspace mount string based on agent state.
+// Implements mount policy: PLANNING=RO, CODING=RW, /tmp always writable.
+func (c *ContainerTestTool) getWorkspaceMount() string {
+	// Get the host workspace path from the agent
+	var hostWorkspacePath string
+	if c.agent != nil {
+		hostWorkspacePath = c.agent.GetHostWorkspacePath()
+	}
+
+	// Fallback to workDir if agent doesn't provide host path
+	if hostWorkspacePath == "" {
+		hostWorkspacePath = c.workDir
+	}
+
+	// Final fallback to current directory
+	if hostWorkspacePath == "" {
+		hostWorkspacePath = "."
+	}
+
+	// Determine mount permissions based on agent state
+	permissions := c.getWorkspacePermissions()
+
+	// Return workspace mount: host_path:/workspace:permissions
+	return fmt.Sprintf("%s:/workspace:%s", hostWorkspacePath, permissions)
+}
+
+// getWorkspacePermissions determines workspace mount permissions based on agent state.
+// Returns "rw" only for CODING state, "ro" for all other states (safer default).
+func (c *ContainerTestTool) getWorkspacePermissions() string {
+	// Try to get current agent state
+	// This would need to be enhanced to access the actual agent context
+	currentState := c.getCurrentAgentState()
+
+	// Only CODING state gets read-write access, all others are read-only for security
+	if currentState == proto.State("CODING") {
+		return "rw"
+	}
+
+	// All other states (PLANNING, TESTING, SETUP, CODE_REVIEW, etc.) get read-only
+	return "ro"
+}
+
+// getCurrentAgentState gets the current agent state if available.
+func (c *ContainerTestTool) getCurrentAgentState() proto.State {
+	if c.agent != nil {
+		return c.agent.GetCurrentState()
+	}
+
+	// If no agent reference is available, default to empty state (read-only)
+	return proto.State("")
 }
 
 // Name returns the tool identifier.

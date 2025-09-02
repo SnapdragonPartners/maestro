@@ -141,7 +141,11 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 // getWorkDirFromConfig determines the work directory from configuration.
 func getWorkDirFromConfig(_ *config.Config) string {
 	// TODO: Add WorkDir field to config structure if not present
-	// For now, return current directory as used in flows.go
+	// Return absolute current directory to ensure proper host path resolution
+	if absDir, err := filepath.Abs("."); err == nil {
+		return absDir
+	}
+	// Fallback to current directory if Abs() fails
 	return "."
 }
 

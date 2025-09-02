@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/build"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/proto"
 )
 
 // AgentContext contains agent+state specific configuration for tool creation.
@@ -18,6 +19,13 @@ type AgentContext struct {
 	ReadOnly        bool
 	NetworkDisabled bool
 	WorkDir         string
+	Agent           Agent // Optional agent reference for state-aware tools
+}
+
+// Agent interface for tools that need access to agent state.
+type Agent interface {
+	GetCurrentState() proto.State
+	GetHostWorkspacePath() string // Returns the host workspace path for container mounting
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -288,6 +296,13 @@ func createContainerTestTool(ctx AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container test tool requires an executor")
 	}
+
+	// Use full context constructor if agent and workdir are available
+	if ctx.Agent != nil {
+		return NewContainerTestToolWithContext(ctx.Executor, ctx.Agent, ctx.WorkDir), nil
+	}
+
+	// Fallback to basic constructor (read-only default)
 	return NewContainerTestTool(ctx.Executor), nil
 }
 

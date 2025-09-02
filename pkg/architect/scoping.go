@@ -139,7 +139,12 @@ Please ensure that:
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// 5. Flush stories to database
+	// 5. Container validation and dependency fixing
+	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
+		return StateError, fmt.Errorf("container validation failed: %w", err)
+	}
+
+	// 6. Flush stories to database
 	d.queue.FlushToDatabase()
 
 	// Mark spec as processed
@@ -349,3 +354,88 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 }
 
 // All story generation now uses the clean linear flow in handleScoping()
+
+// validateAndFixContainerDependencies implements hybrid container validation.
+// 1. If validateTargetContainer fails and DevOps story exists → fix DAG
+// 2. If validateTargetContainer fails and no DevOps story → retry LLM
+// 3. If LLM retry still has no DevOps story → fatal error.
+func (d *Driver) validateAndFixContainerDependencies(ctx context.Context, specID string) error {
+	// Check if we have a valid target container
+	if config.IsValidTargetImage() {
+		d.logger.Info("✅ Valid target container exists, no dependency fixes needed")
+		return nil
+	}
+
+	d.logger.Warn("⚠️  No valid target container - checking story dependencies")
+
+	// Get all stories from the queue
+	allStories := d.queue.GetAllStories()
+	if len(allStories) == 0 {
+		return fmt.Errorf("no stories found in queue")
+	}
+
+	// Filter to stories for this spec and categorize by type
+	var devopsStories, appStories []*QueuedStory
+	for _, story := range allStories {
+		if story.SpecID == specID {
+			if story.StoryType == "devops" {
+				devopsStories = append(devopsStories, story)
+			} else if story.StoryType == "app" {
+				appStories = append(appStories, story)
+			}
+		}
+	}
+
+	if len(devopsStories) > 0 {
+		// Option 1: DevOps story exists - fix DAG to make app stories depend on DevOps
+		d.logger.Info("🔧 DevOps story exists (%d found) - fixing dependencies to block app stories", len(devopsStories))
+		return d.fixContainerDependencies(devopsStories, appStories)
+	} else {
+		// Option 2: No DevOps story - retry with LLM
+		d.logger.Warn("❌ No DevOps story found - requesting LLM retry with container guidance")
+		return d.retryWithContainerGuidance(ctx, specID)
+	}
+}
+
+// fixContainerDependencies adds dependencies so app stories are blocked by DevOps stories.
+func (d *Driver) fixContainerDependencies(devopsStories, appStories []*QueuedStory) error {
+	d.logger.Info("🔄 Adding DevOps→App dependencies: %d app stories will depend on %d devops stories",
+		len(appStories), len(devopsStories))
+
+	// Make each app story depend on all DevOps stories
+	for _, appStory := range appStories {
+		for _, devopsStory := range devopsStories {
+			// Add DevOps story ID to app story's dependencies if not already present
+			dependencyExists := false
+			for _, existingDep := range appStory.DependsOn {
+				if existingDep == devopsStory.ID {
+					dependencyExists = true
+					break
+				}
+			}
+
+			if !dependencyExists {
+				d.logger.Debug("📌 Adding dependency: %s depends on %s", appStory.ID, devopsStory.ID)
+				appStory.DependsOn = append(appStory.DependsOn, devopsStory.ID)
+			}
+		}
+	}
+
+	d.logger.Info("✅ Container dependencies fixed - app stories now blocked until DevOps completes")
+	return nil
+}
+
+// retryWithContainerGuidance retries LLM with enhanced container guidance.
+func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
+	d.logger.Error("🔄 No DevOps story found - this requires LLM retry with container guidance")
+
+	// For now, return an error that will be handled by the caller
+	// The full LLM retry implementation would involve:
+	// 1. Clear current stories from queue
+	// 2. Add container-specific guidance to spec
+	// 3. Re-run story generation with enhanced prompt
+	// 4. Validate the new stories have proper DevOps→App structure
+	// 5. If still no DevOps story → fatal error
+
+	return fmt.Errorf("container validation failed: no valid target container and no DevOps story to create one - LLM retry needed")
+}

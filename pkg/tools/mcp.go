@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/exec"
@@ -175,6 +176,12 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 		ResourceLimits:  s.resourceLimits,
 	}
 
+	// Check for direct docker usage and add guidance
+	dockerWarning := ""
+	if strings.Contains(cmdStr, "docker ") || strings.HasPrefix(strings.TrimSpace(cmdStr), "docker") {
+		dockerWarning = "\n\nNOTE: Direct docker CLI usage detected. Consider using the provided container_* tools instead (container_build, container_test, container_switch) as they work properly in our containerized environment and provide better integration."
+	}
+
 	// Execute the command using the executor interface.
 	result, err := s.executor.Run(ctx, []string{"sh", "-c", cmdStr}, &opts)
 	if err != nil {
@@ -183,12 +190,14 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 
 	// Return result in a format consistent with Claude API.
 	// Note: We return success even for non-zero exit codes - the LLM can handle exit codes.
-	return map[string]any{
-		"stdout":    result.Stdout,
+	response := map[string]any{
+		"stdout":    result.Stdout + dockerWarning,
 		"stderr":    result.Stderr,
 		"exit_code": result.ExitCode,
 		"cwd":       cwd,
 		"command":   cmdStr,
 		"duration":  result.Duration.String(),
-	}, nil
+	}
+
+	return response, nil
 }
