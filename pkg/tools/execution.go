@@ -94,6 +94,8 @@ func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) 
 
 // executeCommand runs a command in a container and returns results.
 func (r *HostRunner) executeCommand(ctx context.Context, containerName, command, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (any, error) {
+	r.logger.Info("🧪 container_test command: container='%s', command='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds", 
+		containerName, command, workingDir, hostWorkspace, mountPermissions, timeoutSec)
 	timeout := time.Duration(timeoutSec) * time.Second
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -124,8 +126,14 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 			exitCode = exitError.ExitCode()
 		} else {
 			return map[string]any{
-				"success": false,
-				"error":   fmt.Sprintf("Command execution failed: %v", err),
+				"success":        false,
+				"container_name": containerName,
+				"command":        command,
+				"working_dir":    workingDir,
+				"host_workspace": hostWorkspace,
+				"permissions":    mountPermissions,
+				"timeout":        timeoutSec,
+				"error":          fmt.Sprintf("Command execution failed: %v", err),
 			}, nil
 		}
 	}
@@ -134,7 +142,11 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 		"success":        exitCode == 0,
 		"container_name": containerName,
 		"command":        command,
+		"working_dir":    workingDir,
+		"host_workspace": hostWorkspace,
+		"permissions":    mountPermissions,
 		"exit_code":      exitCode,
+		"timeout":        timeoutSec,
 		"stdout":         stdout.String(),
 		"stderr":         stderr.String(),
 		"host_executed":  true,
@@ -202,8 +214,35 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 	}, nil
 }
 
-// performBootTest tests that a container starts successfully.
+// performBootTest tests that a container starts successfully and has required capabilities.
 func (r *HostRunner) performBootTest(ctx context.Context, containerName, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (any, error) {
+	r.logger.Info("🧪 container_test boot test: container='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds", 
+		containerName, workingDir, hostWorkspace, mountPermissions, timeoutSec)
+	// First validate container capabilities before doing boot test
+	// Use local executor for validation (runs docker commands on host)
+	hostExecutor := execpkg.NewLocalExec()
+	validationResult := validateContainerCapabilities(ctx, hostExecutor, containerName)
+
+	// If validation fails, return immediately with detailed error
+	if !validationResult.Success {
+		r.logger.Error("❌ Container '%s' validation failed: %s", containerName, validationResult.Message)
+		for tool, details := range validationResult.ErrorDetails {
+			r.logger.Error("   - %s: %s", tool, details)
+		}
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"working_dir":    workingDir,
+			"host_workspace": hostWorkspace,
+			"permissions":    mountPermissions,
+			"timeout":        timeoutSec,
+			"mode":           "boot_test_with_validation",
+			"validation":     validationResult,
+			"host_executed":  true,
+			"message":        fmt.Sprintf("Container '%s' failed capability validation: %s", containerName, validationResult.Message),
+		}, nil
+	}
+	r.logger.Info("✅ Container '%s' validation passed: git available, GitHub CLI available, GitHub API accessible", containerName)
 	timeout := time.Duration(timeoutSec) * time.Second
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -234,10 +273,14 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 			return map[string]any{
 				"success":        true,
 				"container_name": containerName,
-				"mode":           "boot_test",
+				"working_dir":    workingDir,
+				"host_workspace": hostWorkspace,
+				"permissions":    mountPermissions,
+				"mode":           "boot_test_with_validation",
 				"timeout":        timeoutSec,
 				"host_executed":  true,
-				"message":        fmt.Sprintf("Container '%s' booted successfully", containerName),
+				"validation":     validationResult,
+				"message":        fmt.Sprintf("Container '%s' booted successfully and passed validation", containerName),
 			}, nil
 		}
 	}
@@ -252,8 +295,12 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 	return map[string]any{
 		"success":        false,
 		"container_name": containerName,
+		"working_dir":    workingDir,
+		"host_workspace": hostWorkspace,
+		"permissions":    mountPermissions,
 		"mode":           "boot_test",
 		"exit_code":      exitCode,
+		"timeout":        timeoutSec,
 		"stdout":         stdout.String(),
 		"stderr":         stderr.String(),
 		"host_executed":  true,

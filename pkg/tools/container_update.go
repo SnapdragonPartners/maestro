@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
@@ -25,14 +26,10 @@ func NewContainerUpdateTool(executor exec.Executor) *ContainerUpdateTool {
 func (c *ContainerUpdateTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "container_update",
-		Description: "Update project configuration with container settings or atomically set pinned target image ID",
+		Description: "Update project configuration with container settings - automatically gets image ID from Docker",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
-				"cwd": {
-					Type:        "string",
-					Description: "Working directory containing .maestro/config.json (defaults to current directory)",
-				},
 				"container_name": {
 					Type:        "string",
 					Description: "Name of the container to register in configuration",
@@ -41,24 +38,8 @@ func (c *ContainerUpdateTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Path to dockerfile relative to workspace root (defaults to 'Dockerfile')",
 				},
-				"pinned_image_id": {
-					Type:        "string",
-					Description: "Docker image ID (sha256:...) to pin as target image",
-				},
-				"image_tag": {
-					Type:        "string",
-					Description: "Optional human-readable tag for the image",
-				},
-				"reason": {
-					Type:        "string",
-					Description: "Reason for the pinned image change (for audit)",
-				},
-				"dry_run": {
-					Type:        "boolean",
-					Description: "Preview changes without applying them (default: false)",
-				},
 			},
-			Required: []string{},
+			Required: []string{"container_name"},
 		},
 	}
 }
@@ -70,120 +51,83 @@ func (c *ContainerUpdateTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ContainerUpdateTool) PromptDocumentation() string {
-	return `- **container_update** - Update container settings or atomically set pinned target image ID
-  - Container Config Mode:
+	return `- **container_update** - Update container configuration atomically  
+  - Parameters:
     - container_name (required): name of container to register
-    - dockerfile_path (optional): path to dockerfile
-    - cwd (optional): working directory containing config
-  - Pinned Image Mode:
-    - pinned_image_id (required): Docker image ID (sha256:...) to pin as target
-    - image_tag (optional): human-readable tag for audit
-    - reason (optional): reason for the change
-    - dry_run (optional): preview changes without applying
-  - Validates image exists locally; writes new pin ID; returns "updated" or "noop"
+    - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
+  - Validates container capabilities before updating configuration
+  - Automatically gets and pins the current image ID from Docker
+  - Updates container name, dockerfile path, AND pinned image ID atomically
   - Does NOT change active container; use container_switch to activate`
 }
 
 // Exec executes the container configuration update operation.
 func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Determine mode based on parameters
-	pinnedImageID := utils.GetMapFieldOr(args, "pinned_image_id", "")
+	// Extract required parameters
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
-
-	if pinnedImageID != "" {
-		// Pinned Image Mode
-		return c.updatePinnedImage(ctx, args)
-	} else if containerName != "" {
-		// Container Config Mode
-		return c.updateContainerConfig(args)
-	} else {
-		return nil, fmt.Errorf("either pinned_image_id or container_name is required")
-	}
-}
-
-// updatePinnedImage implements Story 5 - atomically set pinned target image ID.
-func (c *ContainerUpdateTool) updatePinnedImage(_ context.Context, args map[string]any) (any, error) {
-	pinnedImageID := utils.GetMapFieldOr(args, "pinned_image_id", "")
-	imageTag := utils.GetMapFieldOr(args, "image_tag", "")
-	reason := utils.GetMapFieldOr(args, "reason", "")
-	dryRun := utils.GetMapFieldOr(args, "dry_run", false)
-
-	// TODO: Validate image exists locally (requires Docker image inspection)
-	// For now, basic validation that it looks like an image ID
-	if !strings.HasPrefix(pinnedImageID, "sha256:") {
-		return map[string]any{
-			"success": false,
-			"error":   "pinned_image_id must be a Docker image ID (sha256:...)",
-		}, nil
+	if containerName == "" {
+		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Get current pinned image ID
-	oldPinnedID := config.GetPinnedImageID()
-
-	// Check for no-op
-	if oldPinnedID == pinnedImageID {
-		return map[string]any{
-			"success":           true,
-			"status":            "noop",
-			"previous_image_id": oldPinnedID,
-			"new_image_id":      pinnedImageID,
-			"message":           fmt.Sprintf("Image already pinned to %s", pinnedImageID),
-		}, nil
-	}
-
-	// Handle dry run
-	if dryRun {
-		return map[string]any{
-			"success":           true,
-			"status":            "would_update",
-			"previous_image_id": oldPinnedID,
-			"new_image_id":      pinnedImageID,
-			"reason":            reason,
-			"tag":               imageTag,
-			"message":           fmt.Sprintf("Would update pinned image: %s → %s", oldPinnedID, pinnedImageID),
-		}, nil
-	}
-
-	// Atomically update pinned image ID
-	if err := config.SetPinnedImageID(pinnedImageID); err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to set pinned image ID: %v", err),
-		}, nil
-	}
-
-	// Log the change for audit
-	log.Printf("INFO container_update: pinned image updated %s → %s (tag: %s, reason: %s)",
-		oldPinnedID, pinnedImageID, imageTag, reason)
-
-	return map[string]any{
-		"success":           true,
-		"status":            "updated",
-		"previous_image_id": oldPinnedID,
-		"new_image_id":      pinnedImageID,
-		"reason":            reason,
-		"tag":               imageTag,
-		"message":           fmt.Sprintf("Successfully pinned image: %s → %s", oldPinnedID, pinnedImageID),
-	}, nil
-}
-
-// updateContainerConfig updates the container name and dockerfile configuration.
-func (c *ContainerUpdateTool) updateContainerConfig(args map[string]any) (any, error) {
-	containerName := utils.GetMapFieldOr(args, "container_name", "")
+	// Extract optional parameters
 	dockerfilePath := utils.GetMapFieldOr(args, "dockerfile_path", DefaultDockerfile)
 
+	return c.updateContainerConfiguration(ctx, containerName, dockerfilePath)
+}
+
+// updateContainerConfiguration updates the complete container configuration atomically.
+func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, containerName, dockerfilePath string) (any, error) {
 	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s", containerName, dockerfilePath)
+
+	// Validate container capabilities before updating configuration
+	hostExecutor := exec.NewLocalExec()
+	validationResult := validateContainerCapabilities(ctx, hostExecutor, containerName)
+
+	if !validationResult.Success {
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"dockerfile":     dockerfilePath,
+			"validation":     validationResult,
+			"error": fmt.Sprintf("Container validation failed: %s. Cannot update configuration to use container that lacks required tools: %v",
+				validationResult.Message, validationResult.MissingTools),
+		}, nil
+	}
+
+	// Get the current image ID for the container to pin it automatically
+	imageID, err := c.getContainerImageID(ctx, containerName)
+	if err != nil {
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"dockerfile":     dockerfilePath,
+			"error":          fmt.Sprintf("Failed to get image ID for container '%s': %v", containerName, err),
+		}, nil
+	}
 
 	// Update project configuration with container name and dockerfile path
 	if err := c.updateProjectConfig(containerName, dockerfilePath); err != nil {
 		return nil, fmt.Errorf("failed to update project config: %w", err)
 	}
 
+	// Pin the image ID for consistency
+	if err := config.SetPinnedImageID(imageID); err != nil {
+		return map[string]any{
+			"success":        false,
+			"container_name": containerName,
+			"dockerfile":     dockerfilePath,
+			"error":          fmt.Sprintf("Failed to pin image ID %s: %v", imageID, err),
+		}, nil
+	}
+
+	log.Printf("INFO container_update: Updated container config: %s, dockerfile: %s, pinned image: %s", containerName, dockerfilePath, imageID)
+
 	return map[string]any{
-		"success":        true,
-		"container_name": containerName,
-		"dockerfile":     dockerfilePath,
-		"message":        fmt.Sprintf("Successfully updated configuration to use container '%s' with dockerfile '%s'", containerName, dockerfilePath),
+		"success":         true,
+		"container_name":  containerName,
+		"dockerfile":      dockerfilePath,
+		"pinned_image_id": imageID,
+		"message":         fmt.Sprintf("Successfully updated container '%s' with dockerfile '%s' and pinned image ID '%s'", containerName, dockerfilePath, imageID),
 	}, nil
 }
 
@@ -217,4 +161,30 @@ func (c *ContainerUpdateTool) updateProjectConfig(containerName, dockerfilePath 
 		return fmt.Errorf("failed to update container config: %w", err)
 	}
 	return nil
+}
+
+// getContainerImageID gets the image ID for a given container/image name.
+func (c *ContainerUpdateTool) getContainerImageID(ctx context.Context, containerName string) (string, error) {
+	// Use docker inspect to get the image ID
+	result, err := c.executor.Run(ctx, []string{"docker", "inspect", "--format={{.Id}}", containerName}, &exec.Opts{
+		Timeout: 30 * time.Second,
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect container/image '%s': %w (stdout: %s, stderr: %s)",
+			containerName, err, result.Stdout, result.Stderr)
+	}
+
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("docker inspect failed for '%s' with exit code %d (stdout: %s, stderr: %s)",
+			containerName, result.ExitCode, result.Stdout, result.Stderr)
+	}
+
+	imageID := strings.TrimSpace(result.Stdout)
+	if imageID == "" {
+		return "", fmt.Errorf("empty image ID returned for container/image '%s'", containerName)
+	}
+
+	log.Printf("DEBUG: Retrieved image ID %s for container %s", imageID, containerName)
+	return imageID, nil
 }

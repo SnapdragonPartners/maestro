@@ -342,12 +342,11 @@ func (c *Coder) verifyGitHubAuthSetup(ctx context.Context) error {
 	}
 	c.logger.Info("✅ GitHub CLI is available: %s", strings.TrimSpace(strings.Split(ghResult.Stdout, "\n")[0]))
 
-	// Check GitHub CLI authentication status
-	authResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "auth", "status"}, opts)
-	if err != nil || authResult.ExitCode != 0 {
-		return fmt.Errorf("GitHub CLI authentication not configured: %w (stdout: %s, stderr: %s)", err, authResult.Stdout, authResult.Stderr)
+	// Check GitHub API connectivity with lightweight validation (replaces gh auth status)
+	if apiErr := c.validateGitHubAPIConnectivity(ctx, opts); apiErr != nil {
+		return fmt.Errorf("GitHub API connectivity validation failed: %w", apiErr)
 	}
-	c.logger.Info("✅ GitHub CLI authentication verified")
+	c.logger.Info("✅ GitHub API connectivity validated")
 
 	// Check if git credential helper is configured for GitHub
 	configResult, err := c.longRunningExecutor.Run(ctx, []string{"git", "config", "--list"}, opts)
@@ -403,4 +402,69 @@ func (c *Coder) configureGitUserIdentity(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// validateGitHubAPIConnectivity performs lightweight GitHub API validation using gh CLI.
+// This replaces the problematic 'gh auth status' with scope-free API calls.
+func (c *Coder) validateGitHubAPIConnectivity(ctx context.Context, opts *execpkg.Opts) error {
+	// Get repository info from config for API validation
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config for GitHub API validation: %w", err)
+	}
+
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		return fmt.Errorf("no repository URL configured - cannot validate GitHub API access")
+	}
+
+	// Extract owner/repo from URL for API validation
+	repoPath := extractRepoPath(cfg.Git.RepoURL)
+	if repoPath == "" {
+		return fmt.Errorf("cannot extract repository path from URL: %s", cfg.Git.RepoURL)
+	}
+
+	c.logger.Info("🔍 Validating GitHub API connectivity for repository: %s", repoPath)
+
+	// Test 1: Validate token with /user endpoint
+	userResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "api", "/user"}, opts)
+	if err != nil || userResult.ExitCode != 0 {
+		return fmt.Errorf("GitHub API /user validation failed: %w (stdout: %s, stderr: %s). This indicates the GITHUB_TOKEN is invalid or GitHub API is unreachable",
+			err, userResult.Stdout, userResult.Stderr)
+	}
+	c.logger.Info("✅ GitHub API token validated")
+
+	// Test 2: Validate repository access
+	repoResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "api", fmt.Sprintf("/repos/%s", repoPath)}, opts)
+	if err != nil || repoResult.ExitCode != 0 {
+		return fmt.Errorf("GitHub API repository access validation failed for %s: %w (stdout: %s, stderr: %s). This indicates the token lacks repository access permissions",
+			repoPath, err, repoResult.Stdout, repoResult.Stderr)
+	}
+	c.logger.Info("✅ GitHub API repository access validated for: %s", repoPath)
+
+	return nil
+}
+
+// extractRepoPath extracts owner/repo from a GitHub URL.
+// Supports both HTTPS and SSH formats.
+func extractRepoPath(repoURL string) string {
+	// Remove .git suffix if present
+	url := strings.TrimSuffix(repoURL, ".git")
+
+	// Handle HTTPS URLs: https://github.com/owner/repo
+	if strings.HasPrefix(url, "https://github.com/") {
+		path := strings.TrimPrefix(url, "https://github.com/")
+		if strings.Count(path, "/") >= 1 {
+			return path
+		}
+	}
+
+	// Handle SSH URLs: git@github.com:owner/repo
+	if strings.HasPrefix(url, "git@github.com:") {
+		path := strings.TrimPrefix(url, "git@github.com:")
+		if strings.Count(path, "/") >= 1 {
+			return path
+		}
+	}
+
+	return ""
 }

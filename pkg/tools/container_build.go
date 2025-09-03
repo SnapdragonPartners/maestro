@@ -219,19 +219,15 @@ func (c *ContainerBuildTool) buildWithDockerBuild(ctx context.Context, cwd, cont
 	return nil
 }
 
-// testContainer performs basic validation that the container works.
+// testContainer performs validation that the container has all required tools for Maestro operations.
 func (c *ContainerBuildTool) testContainer(ctx context.Context, containerName string) error {
-	// Test 1: Basic container startup test
-	result, err := c.executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "echo", "test"}, &exec.Opts{})
-	if err != nil || result.ExitCode != 0 {
-		return fmt.Errorf("container failed basic startup test: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
-	}
+	// Use centralized validation helper with comprehensive checks
+	validationResult := validateContainerCapabilities(ctx, c.executor, containerName)
 
-	// Test 2: Check if common tools are available (depending on what we need)
-	// This is a basic smoke test - more specific tests could be added based on platform
-	result, err = c.executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "sh", "-c", "command -v sh"}, &exec.Opts{})
-	if err != nil || result.ExitCode != 0 {
-		return fmt.Errorf("container missing basic shell: %w (stdout: %s, stderr: %s)", err, result.Stdout, result.Stderr)
+	if !validationResult.Success {
+		// Return detailed error with specific missing tools
+		return fmt.Errorf("container validation failed: %s. Missing tools: %v. Details: %v",
+			validationResult.Message, validationResult.MissingTools, validationResult.ErrorDetails)
 	}
 
 	return nil

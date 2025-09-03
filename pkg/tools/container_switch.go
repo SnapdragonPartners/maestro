@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
@@ -90,27 +89,22 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (an
 	}, nil
 }
 
-// testContainerAvailability tests that the target container is available and working.
+// testContainerAvailability tests that the target container has all required capabilities.
 func (c *ContainerSwitchTool) testContainerAvailability(ctx context.Context, containerName string) (map[string]any, error) {
-	// Try to run a simple test command in the target container
-	result, err := c.executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "echo", "container_test"}, &exec.Opts{
-		Timeout: 30 * time.Second,
-	})
+	// Use centralized validation helper with comprehensive checks
+	validationResult := validateContainerCapabilities(ctx, c.executor, containerName)
 
-	if err != nil {
-		return nil, fmt.Errorf("container '%s' failed availability test: %w (stdout: %s, stderr: %s)",
-			containerName, err, result.Stdout, result.Stderr)
-	}
-
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("container '%s' failed availability test with exit code %d (stdout: %s, stderr: %s)",
-			containerName, result.ExitCode, result.Stdout, result.Stderr)
+	if !validationResult.Success {
+		return nil, fmt.Errorf("container '%s' validation failed: %s. Missing tools: %v. This container cannot be used for Maestro operations until these tools are installed: %v",
+			containerName, validationResult.Message, validationResult.MissingTools, validationResult.ErrorDetails)
 	}
 
 	return map[string]any{
-		"test_passed": true,
-		"stdout":      result.Stdout,
-		"stderr":      result.Stderr,
+		"test_passed":      true,
+		"validation":       validationResult,
+		"git_available":    validationResult.GitAvailable,
+		"gh_available":     validationResult.GHAvailable,
+		"github_api_valid": validationResult.GitHubAPIValid,
 	}, nil
 }
 
