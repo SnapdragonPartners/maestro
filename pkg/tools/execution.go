@@ -94,7 +94,7 @@ func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) 
 
 // executeCommand runs a command in a container and returns results.
 func (r *HostRunner) executeCommand(ctx context.Context, containerName, command, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (any, error) {
-	r.logger.Info("🧪 container_test command: container='%s', command='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds", 
+	r.logger.Info("🧪 container_test command: container='%s', command='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds",
 		containerName, command, workingDir, hostWorkspace, mountPermissions, timeoutSec)
 	timeout := time.Duration(timeoutSec) * time.Second
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -216,12 +216,12 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 
 // performBootTest tests that a container starts successfully and has required capabilities.
 func (r *HostRunner) performBootTest(ctx context.Context, containerName, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (any, error) {
-	r.logger.Info("🧪 container_test boot test: container='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds", 
+	r.logger.Info("🧪 container_test boot test: container='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds",
 		containerName, workingDir, hostWorkspace, mountPermissions, timeoutSec)
 	// First validate container capabilities before doing boot test
 	// Use local executor for validation (runs docker commands on host)
 	hostExecutor := execpkg.NewLocalExec()
-	validationResult := validateContainerCapabilities(ctx, hostExecutor, containerName)
+	validationResult := ValidateContainerCapabilities(ctx, hostExecutor, containerName)
 
 	// If validation fails, return immediately with detailed error
 	if !validationResult.Success {

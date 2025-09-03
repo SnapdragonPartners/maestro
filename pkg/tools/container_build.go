@@ -222,7 +222,7 @@ func (c *ContainerBuildTool) buildWithDockerBuild(ctx context.Context, cwd, cont
 // testContainer performs validation that the container has all required tools for Maestro operations.
 func (c *ContainerBuildTool) testContainer(ctx context.Context, containerName string) error {
 	// Use centralized validation helper with comprehensive checks
-	validationResult := validateContainerCapabilities(ctx, c.executor, containerName)
+	validationResult := ValidateContainerCapabilities(ctx, c.executor, containerName)
 
 	if !validationResult.Success {
 		// Return detailed error with specific missing tools

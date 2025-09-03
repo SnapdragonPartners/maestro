@@ -81,7 +81,7 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 
 	// Validate container capabilities before updating configuration
 	hostExecutor := exec.NewLocalExec()
-	validationResult := validateContainerCapabilities(ctx, hostExecutor, containerName)
+	validationResult := ValidateContainerCapabilities(ctx, hostExecutor, containerName)
 
 	if !validationResult.Success {
 		return map[string]any{

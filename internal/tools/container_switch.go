@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"orchestrator/internal/embeds/scripts"
-	"orchestrator/internal/runtime"
 	"orchestrator/internal/state"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
@@ -29,9 +27,6 @@ type Orchestrator interface {
 
 	// Health and verification
 	HealthCheck(ctx context.Context, cid string) error
-
-	// Docker operations
-	GetDocker() runtime.Docker
 
 	// Configuration
 	GetRepoURL() string
@@ -108,14 +103,9 @@ func ContainerSwitch(ctx context.Context, role state.Role, imageID string, o Orc
 		}
 	}()
 
-	// 2) Probe: GitHub auth setup
-	logger.Info("🔑 Setting up GitHub authentication in candidate container")
-	repoURL := o.GetRepoURL()
-	if err = runtime.InstallAndRunGHInit(ctx, o.GetDocker(), cid, repoURL, scripts.GHInitSh); err != nil {
-		logger.Error("❌ GitHub auth setup failed: %v", err)
-		return nil, fmt.Errorf("github auth setup failed: %w", err)
-	}
-	logger.Info("✅ GitHub authentication configured successfully")
+	// 2) Probe: GitHub auth setup - removed embedded script system
+	logger.Info("🔑 GitHub authentication setup skipped (embedded script system removed)")
+	logger.Info("✅ Containers should be pre-configured with GitHub authentication")
 
 	// 3) Probe: health checks
 	logger.Info("🏥 Running health checks on candidate container")

@@ -64,10 +64,10 @@ type ContainerValidationResult struct {
 	GitHubAPIValid bool              `json:"github_api_valid"` // 1 byte + 4 bytes padding
 }
 
-// validateContainerCapabilities validates that a container has all required tools for Maestro operations.
+// ValidateContainerCapabilities validates that a container has all required tools for Maestro operations.
 // This includes git, GitHub CLI, and validates GitHub API connectivity.
 // Returns detailed validation results with verbose error messages for LLM understanding.
-func validateContainerCapabilities(ctx context.Context, executor exec.Executor, containerName string) *ContainerValidationResult {
+func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, containerName string) *ContainerValidationResult {
 	result := &ContainerValidationResult{
 		ContainerName: containerName,
 		ErrorDetails:  make(map[string]string),

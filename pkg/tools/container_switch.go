@@ -92,7 +92,7 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (an
 // testContainerAvailability tests that the target container has all required capabilities.
 func (c *ContainerSwitchTool) testContainerAvailability(ctx context.Context, containerName string) (map[string]any, error) {
 	// Use centralized validation helper with comprehensive checks
-	validationResult := validateContainerCapabilities(ctx, c.executor, containerName)
+	validationResult := ValidateContainerCapabilities(ctx, c.executor, containerName)
 
 	if !validationResult.Success {
 		return nil, fmt.Errorf("container '%s' validation failed: %s. Missing tools: %v. This container cannot be used for Maestro operations until these tools are installed: %v",

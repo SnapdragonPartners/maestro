@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"orchestrator/internal/embeds/scripts"
-	"orchestrator/internal/runtime"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	execpkg "orchestrator/pkg/exec"
@@ -256,38 +254,28 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 	return result.Stdout, nil
 }
 
-// setupGitHubAuthentication sets up ephemeral GitHub authentication using our embedded script approach.
-// This replaces the old manual auth setup with a clean, atomic script-based approach.
+// setupGitHubAuthentication sets up GitHub authentication using GitHub CLI.
+// Configures git credential helper to use GitHub CLI for push operations.
 func (c *Coder) setupGitHubAuthentication(ctx context.Context) error {
-	c.logger.Info("🔑 Setting up GitHub authentication using embedded script approach")
+	c.logger.Info("🔑 Setting up GitHub authentication")
 
 	// FATAL CHECK: GITHUB_TOKEN must exist in environment
 	if !config.HasGitHubToken() {
 		return fmt.Errorf("GITHUB_TOKEN not found in environment - this is required for git operations and cannot be fixed by coder")
 	}
 
-	// Get repository URL from config for script verification
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get config: %w", err)
+	// Configure git to use GitHub CLI for authentication
+	c.logger.Info("🔧 Configuring git credential helper to use GitHub CLI")
+	setupResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "auth", "setup-git"}, &execpkg.Opts{
+		WorkDir: "/workspace",
+		Timeout: 30 * time.Second,
+	})
+	if err != nil || setupResult.ExitCode != 0 {
+		return fmt.Errorf("GitHub git setup failed: %w (stdout: %s, stderr: %s)", err, setupResult.Stdout, setupResult.Stderr)
 	}
-	_ = cfg.Git.RepoURL  // TODO: Used for GitHub auth script
-	_ = scripts.GHInitSh // TODO: Testing scripts import
+	c.logger.Info("✅ Git credential helper configured for GitHub")
 
-	// Test runtime package access without calling functions
-	var _ runtime.Docker = nil // TODO: Testing runtime import
-
-	// TODO: Temporarily commented out to debug crash
-	// Install and run the embedded GitHub auth script using the executor directly
-	// The LongRunningDockerExec now implements the Docker interface methods we need
-	c.logger.Info("🔑 Installing and executing GitHub authentication script in container %s", c.containerName)
-	// if err := runtime.InstallAndRunGHInit(ctx, c.longRunningExecutor, c.containerName, repoURL, scripts.GHInitSh); err != nil {
-	//	c.logger.Error("❌ GitHub authentication script failed: %v", err)
-	//	c.contextManager.AddMessage("system", fmt.Sprintf("GitHub authentication setup failed: %v. You may need to check your GITHUB_TOKEN and network connectivity.", err))
-	//	return fmt.Errorf("GitHub authentication script failed: %w", err)
-	// }
-
-	c.logger.Info("✅ GitHub authentication script completed successfully")
+	c.logger.Info("✅ GitHub authentication setup completed successfully")
 
 	// Verify the authentication setup by checking tools and configuration
 	if err := c.verifyGitHubAuthSetup(ctx); err != nil {
