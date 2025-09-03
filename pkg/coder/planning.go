@@ -229,7 +229,12 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 
 		result, err := tool.Exec(ctx, toolCall.Parameters)
 		if err != nil {
-			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			if toolCall.Name == tools.ToolShell {
+				// For shell tool, provide cleaner logging without Docker details
+				c.logger.Info("Shell command failed: %v", err)
+			} else {
+				c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			}
 			continue
 		}
 

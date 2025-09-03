@@ -185,7 +185,8 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 	// Execute the command using the executor interface.
 	result, err := s.executor.Run(ctx, []string{"sh", "-c", cmdStr}, &opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute command: %w", err)
+		// For shell tool, provide clean error message without Docker implementation details
+		return nil, fmt.Errorf("shell command failed: %s (exit code: %d)", cmdStr, result.ExitCode)
 	}
 
 	// Return result in a format consistent with Claude API.

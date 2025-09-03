@@ -136,8 +136,8 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		ReadOnly:        readonly,
 		NetworkDisabled: false, // Network enabled for builds/tests
 		User:            containerUser,
-		Env:             []string{},
-		Timeout:         0, // No timeout for long-running container
+		Env:             []string{"HOME=/tmp"}, // Set HOME to writable location for git config
+		Timeout:         0,                     // No timeout for long-running container
 		ResourceLimits: &execpkg.ResourceLimits{
 			CPUs:   "1",    // Limited CPU for planning
 			Memory: "512m", // Limited memory for planning

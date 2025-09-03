@@ -277,7 +277,12 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		result, err := tool.Exec(ctx, toolCall.Parameters)
 		if err != nil {
 			// Tool execution failures are recoverable - add comprehensive error to context for LLM to react.
-			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			if toolCall.Name == tools.ToolShell {
+				// For shell tool, provide cleaner logging without Docker details
+				c.logger.Info("Shell command failed: %v", err)
+			} else {
+				c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			}
 			c.addComprehensiveToolFailureToContext(*toolCall, err)
 			continue // Continue processing other tool calls
 		}
