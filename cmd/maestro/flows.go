@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/internal/kernel"
+	"orchestrator/internal/orchestrator"
 	"orchestrator/internal/supervisor"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
@@ -200,6 +201,11 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	k.Logger.Info("✅ Created and registered architect and %d coders", numCoders)
 
+	// Run startup orchestration (Story 3: rebuild + reconcile/rollback)
+	if err := f.runStartupOrchestration(ctx, k); err != nil {
+		return fmt.Errorf("startup orchestration failed: %w", err)
+	}
+
 	// Handle initial spec if provided
 	if f.specFile != "" {
 		specContent, err := os.ReadFile(f.specFile)
@@ -221,6 +227,30 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	<-ctx.Done()
 	k.Logger.Info("📴 Main flow shutting down due to context cancellation")
 
+	return nil
+}
+
+// TODO: Temporarily disabled startup orchestration to debug crash
+// runStartupOrchestration executes the startup rebuild + reconcile/rollback from Story 3.
+func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kernel.Kernel) error {
+	k.Logger.Info("🔧 Starting startup orchestration")
+
+	// Determine project directory from kernel
+	// For now, use current working directory - in future this could be configurable
+	projectDir := "."
+
+	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
+	startupOrch, err := orchestrator.NewStartupOrchestrator(projectDir, false)
+	if err != nil {
+		return fmt.Errorf("failed to create startup orchestrator: %w", err)
+	}
+
+	// Execute startup sequence
+	if err := startupOrch.OnStart(ctx); err != nil {
+		return fmt.Errorf("startup orchestration failed: %w", err)
+	}
+
+	k.Logger.Info("✅ Startup orchestration completed successfully")
 	return nil
 }
 

@@ -3,7 +3,9 @@ package architect
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -1146,6 +1148,13 @@ func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any,
 		},
 	}
 
+	// Add Dockerfile content for DevOps stories
+	if storyType == storyTypeDevOps {
+		if dockerfileContent := d.getDockerfileContent(); dockerfileContent != "" {
+			templateData.DockerfileContent = dockerfileContent
+		}
+	}
+
 	// Render template using the same pattern as other methods
 	if d.renderer == nil {
 		// Fallback to simple prompt if renderer not available
@@ -1160,6 +1169,38 @@ func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any,
 	}
 
 	return prompt
+}
+
+// getDockerfileContent reads the current Dockerfile content from the locally mounted repository.
+func (d *Driver) getDockerfileContent() string {
+	// Get config to find Dockerfile path
+	cfg, err := config.GetConfig()
+	if err != nil {
+		d.logger.Debug("Failed to get config for Dockerfile path: %v", err)
+		return ""
+	}
+
+	// Determine Dockerfile path (default to "Dockerfile" if not configured)
+	dockerfilePath := "Dockerfile"
+	if cfg.Container != nil && cfg.Container.Dockerfile != "" {
+		dockerfilePath = cfg.Container.Dockerfile
+	}
+
+	// Try to read the Dockerfile from the configured project directory
+	// The architect has access to the locally mounted repository through workDir
+	if d.workDir == "" {
+		d.logger.Debug("Work directory not set, cannot read Dockerfile")
+		return ""
+	}
+
+	fullPath := filepath.Join(d.workDir, dockerfilePath)
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		d.logger.Debug("Could not read Dockerfile at %s: %v", fullPath, err)
+		return ""
+	}
+
+	return string(content)
 }
 
 // generateCompletionApprovalPrompt creates a story-type-aware prompt for completion approval requests.

@@ -9,8 +9,20 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
+
+// mockTestAgent implements tools.Agent interface for testing.
+type mockTestAgent struct{}
+
+func (m *mockTestAgent) GetCurrentState() proto.State {
+	return proto.State("PLANNING") // Default to read-only state
+}
+
+func (m *mockTestAgent) GetHostWorkspacePath() string {
+	return "/tmp/test-workspace"
+}
 
 // HarnessResult wraps the tool result with additional metadata for testing.
 //
@@ -32,7 +44,9 @@ func createToolByName(toolName string) (tools.Tool, error) {
 	case tools.ToolContainerUpdate:
 		return tools.NewContainerUpdateTool(nil), nil
 	case tools.ToolContainerTest:
-		return tools.NewContainerTestTool(nil), nil
+		// Create mock agent for testing
+		mockAgent := &mockTestAgent{}
+		return tools.NewContainerTestTool(nil, mockAgent, "/tmp/test-workspace"), nil
 	case tools.ToolContainerList:
 		return tools.NewContainerListTool(nil), nil
 	case tools.ToolAskQuestion:

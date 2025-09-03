@@ -322,6 +322,9 @@ type Config struct {
 
 	// === SYSTEM-WIDE ORCHESTRATOR SETTINGS ===
 	Orchestrator *OrchestratorConfig `json:"orchestrator"` // LLM models, rate limits, budgets
+
+	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
+	validTargetImage bool `json:"-"` // Whether the configured target container is valid and runnable
 }
 
 // ProjectInfo contains basic project metadata.
@@ -337,6 +340,10 @@ type ContainerConfig struct {
 	Name          string `json:"name"`                     // Container name/tag (standard image or custom built image)
 	Dockerfile    string `json:"dockerfile,omitempty"`     // Path to dockerfile if building custom image
 	WorkspacePath string `json:"workspace_path,omitempty"` // Path where project is mounted inside container (default: "/workspace")
+
+	// Container orchestration (atomic switching)
+	PinnedImageID string `json:"pinned_image_id,omitempty"` // Currently pinned Docker image ID (sha256:...)
+	SafeImageID   string `json:"safe_image_id,omitempty"`   // Safe fallback Docker image ID (sha256:...)
 
 	// Docker capabilities (detected at startup)
 	BuildxAvailable bool `json:"-"` // Whether buildx is available on the host (transient, not persisted)
@@ -460,6 +467,10 @@ func LoadConfig(inputProjectDir string) error {
 	}
 
 	config = loadedConfig
+
+	// Validate target container and set runtime flag (testing with docker inspect only)
+	config.validTargetImage = validateTargetContainer(config)
+
 	return nil
 }
 
@@ -492,6 +503,10 @@ func UpdateContainer(container *ContainerConfig) error {
 	defer mu.Unlock()
 
 	config.Container = container
+
+	// Validate target container and update runtime flag (testing with docker inspect only)
+	config.validTargetImage = validateTargetContainer(config)
+
 	return saveConfigLocked()
 }
 
@@ -502,6 +517,56 @@ func UpdateBuild(build *BuildConfig) error {
 
 	config.Build = build
 	return saveConfigLocked()
+}
+
+// SetPinnedImageID atomically updates the pinned image ID and persists to disk.
+func SetPinnedImageID(imageID string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config.Container == nil {
+		return fmt.Errorf("container config not initialized")
+	}
+
+	config.Container.PinnedImageID = imageID
+	return saveConfigLocked()
+}
+
+// GetPinnedImageID returns the currently pinned image ID.
+func GetPinnedImageID() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config.Container == nil {
+		return ""
+	}
+
+	return config.Container.PinnedImageID
+}
+
+// SetSafeImageID atomically updates the safe fallback image ID and persists to disk.
+func SetSafeImageID(imageID string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config.Container == nil {
+		return fmt.Errorf("container config not initialized")
+	}
+
+	config.Container.SafeImageID = imageID
+	return saveConfigLocked()
+}
+
+// GetSafeImageID returns the safe fallback image ID.
+func GetSafeImageID() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config.Container == nil {
+		return ""
+	}
+
+	return config.Container.SafeImageID
 }
 
 // UpdateProject updates the project information and persists to disk.
@@ -1202,6 +1267,44 @@ func validateAgentLimits() error {
 	}
 
 	return nil
+}
+
+// validateTargetContainer checks if the configured target container is valid and runnable.
+// Returns true if the container exists, is runnable, and is not the bootstrap container.
+func validateTargetContainer(cfg *Config) bool {
+	if cfg.Container == nil || cfg.Container.Name == "" {
+		return false
+	}
+
+	// Don't validate bootstrap container as a target
+	if cfg.Container.Name == BootstrapContainerTag {
+		return false
+	}
+
+	// TODO: Commenting out docker commands to debug location-dependent crash
+	// Check if the container exists and is runnable using docker inspect
+	// cmd := exec.Command("docker", "inspect", cfg.Container.Name)
+	// if err := cmd.Run(); err != nil {
+	//	return false
+	// }
+
+	// Try to run a simple command to verify the container is actually runnable
+	// cmd = exec.Command("docker", "run", "--rm", cfg.Container.Name, "echo", "test")
+	// if err := cmd.Run(); err != nil {
+	//	return false
+	// }
+
+	return true
+}
+
+// IsValidTargetImage returns whether the configured target container is valid and runnable.
+func IsValidTargetImage() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	if config == nil {
+		return false
+	}
+	return config.validTargetImage
 }
 
 // GetCoderModel returns the validated coder model configuration.

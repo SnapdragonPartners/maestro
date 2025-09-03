@@ -70,7 +70,7 @@ type Supervisor struct {
 3. Supervisor cancels agent context: cancelFunc()
 4. Agent Run() loop exits on ctx.Done()
 5. Supervisor removes agent from tracking maps
-6. For coder ERROR: Supervisor calls RequeueStory()
+6. For coder ERROR: Supervisor sends requeue request via UpdateStoryRequeue()
 7. Supervisor creates new agent with same ID
 ```
 

@@ -576,7 +576,7 @@ func (re *ReviewEvaluator) escalateToHuman(ctx context.Context, pendingReview *P
 	}
 
 	// Send escalation message back to agent.
-	err := re.sendReviewResult(ctx, pendingReview, "ESCALATED")
+	err := re.sendReviewResult(ctx, pendingReview, proto.ApprovalStatusRejected.String())
 	if err != nil {
 		return fmt.Errorf("failed to send escalation message: %w", err)
 	}
@@ -636,7 +636,7 @@ func (re *ReviewEvaluator) requestCodeFixes(ctx context.Context, pendingReview *
 	}
 
 	// Send feedback message back to agent.
-	err = re.sendReviewResult(ctx, pendingReview, "NEEDS_FIXES")
+	err = re.sendReviewResult(ctx, pendingReview, proto.ApprovalStatusNeedsChanges.String())
 	if err != nil {
 		return fmt.Errorf("failed to send feedback message: %w", err)
 	}
@@ -693,8 +693,8 @@ func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *
 	// Set review result payload.
 	resultMsg.Payload["review_id"] = pendingReview.ID
 	resultMsg.Payload["story_id"] = pendingReview.StoryID
-	resultMsg.Payload["review_result"] = result
-	resultMsg.Payload["review_notes"] = pendingReview.ReviewNotes
+	resultMsg.Payload["status"] = result                      // BudgetReviewEffect expects "status"
+	resultMsg.Payload["feedback"] = pendingReview.ReviewNotes // BudgetReviewEffect expects "feedback"
 	resultMsg.Payload["reviewed_at"] = pendingReview.ReviewedAt.Format(time.RFC3339)
 	resultMsg.Payload["checks_run"] = pendingReview.ChecksRun
 	resultMsg.Payload["check_results"] = pendingReview.CheckResults

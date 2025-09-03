@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -31,11 +32,14 @@ type Requirement struct {
 	StoryType          string            `json:"story_type"` // "devops" or "app"
 }
 
-// handleScoping processes the scoping phase (platform detection, bootstrap, spec analysis and story generation).
+// handleScoping processes the scoping phase using a clean linear flow.
+// 1. Create and persist spec record immediately
+// 2. Check for container context and add if needed
+// 3. Parse spec with LLM to get detailed requirements
+// 4. Convert requirements directly to stories with rich content
+// 5. Flush stories to database.
 func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
-	// State: analyzing specification and generating stories
-
-	// Extract spec file path from the SPEC message.
+	// Extract spec file path from the SPEC message
 	specFile := d.getSpecFileFromMessage()
 	if specFile == "" {
 		return StateError, fmt.Errorf("no spec file path found in SPEC message")
@@ -46,7 +50,6 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	var err error
 
 	// Check if we have direct content from bootstrap
-	// Get the stored spec message first
 	var contentPayload interface{}
 	var hasContent bool
 	if specMsgData, exists := d.stateData["spec_message"]; exists {
@@ -69,60 +72,129 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 		}
 	}
 
-	// Spec Analysis - check if spec already parsed.
-	var requirements []Requirement
-	if _, exists := d.stateData["spec_parsing_completed_at"]; !exists {
-		// LLM parsing is required - no fallback.
-		if d.llmClient == nil {
-			return StateError, fmt.Errorf("LLM client not available - spec analysis requires LLM")
-		}
+	// 1. Create and persist spec record immediately (for recovery)
+	specID := persistence.GenerateSpecID()
+	spec := &persistence.Spec{
+		ID:        specID,
+		Content:   string(rawSpecContent),
+		CreatedAt: time.Now(),
+	}
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpUpsertSpec,
+		Data:      spec,
+		Response:  nil,
+	}
 
-		requirements, err = d.parseSpecWithLLM(ctx, string(rawSpecContent), specFile)
-		if err != nil {
-			return StateError, fmt.Errorf("LLM spec analysis failed: %w", err)
-		}
-		d.stateData["parsing_method"] = "llm_primary"
-
-		// Store parsed requirements.
-		d.stateData["requirements"] = requirements
-		d.stateData["raw_spec_content"] = string(rawSpecContent)
-		d.stateData["spec_parsing_completed_at"] = time.Now().UTC()
-	} else {
-		// Reload requirements from state data.
-		if reqData, exists := d.stateData["requirements"]; exists {
-			requirements, err = d.convertToRequirements(reqData)
-			if err != nil {
-				return StateError, fmt.Errorf("failed to convert requirements from state data: %w", err)
-			}
+	// 2. Check for container context and add if needed (with retry enhancement)
+	containerContext := ""
+	retryCount := 0
+	if retryData, exists := d.stateData["container_retry_count"]; exists {
+		if count, ok := retryData.(int); ok {
+			retryCount = count
 		}
 	}
 
-	// STEP 4: Story Generation - check if stories already generated.
-	if _, exists := d.stateData["stories_generated"]; !exists {
-		// Generate stories from LLM-analyzed requirements.
-		if d.persistenceChannel != nil {
-			// Use database-aware story generation from requirements.
-			specID, storyIDs, err := d.generateStoriesFromRequirements(requirements, string(rawSpecContent))
-			if err != nil {
-				return StateError, fmt.Errorf("failed to generate stories from requirements: %w", err)
-			}
+	if !config.IsValidTargetImage() {
+		if retryCount == 0 {
+			// First attempt - standard container guidance
+			containerContext = `
 
-			d.stateData["spec_id"] = specID
-			d.stateData["story_ids"] = storyIDs
-			d.stateData["stories_generated"] = true
-			d.stateData["stories_count"] = len(storyIDs)
+IMPORTANT CONSTRAINT: No valid target container image exists in this project. This means:
+- App stories require a containerized development environment to run properly
+- You MUST create at least one DevOps story first to build the target container
+- The first story (in dependency order) must be a DevOps story that creates a valid container
 
-			// CRITICAL: Validate devops story constraints before proceeding
-			if err := d.validateDevOpsStoryConstraints(requirements); err != nil {
-				d.logger.Error("DevOps story validation failed: %v", err)
-				return StateError, fmt.Errorf("DevOps story validation failed: %w", err)
-			}
+Please ensure that:
+1. At least one DevOps story exists to build the target container environment
+2. The first story in dependency order is a DevOps story 
+3. DevOps stories handle container setup, build environment, or infrastructure
+4. App stories handle application code, features, and business logic within containers`
 		} else {
-			return StateError, fmt.Errorf("persistence channel not available - database storage is required for story generation")
+			// Retry attempt - ENHANCED guidance
+			containerContext = `
+
+CRITICAL REQUIREMENT: Container Environment Setup - RETRY WITH ENHANCED GUIDANCE
+
+This project currently has NO VALID TARGET CONTAINER and your previous response did not include any DevOps stories.
+
+YOU MUST CREATE AT LEAST ONE DEVOPS STORY or the system cannot function. This is MANDATORY.
+
+DEVOPS STORY REQUIREMENTS:
+1. Story type MUST be "devops" (not "app")
+2. Must handle container setup, Dockerfile creation, or build environment
+3. Must be first in dependency order
+4. Example titles: "Set up development container", "Configure build environment", "Create Dockerfile"
+
+APP STORIES CANNOT RUN without a container environment. Every app story needs a DevOps story to run first.
+
+REQUIRED: Your response must include at least one DevOps story for container setup.`
 		}
 	}
 
-	// Requirement parsing and story generation completed successfully
+	// 3. Parse spec with LLM to get detailed requirements
+	if d.llmClient == nil {
+		return StateError, fmt.Errorf("LLM client not available - spec analysis requires LLM")
+	}
+
+	requirements, err := d.parseSpecWithLLM(ctx, string(rawSpecContent)+containerContext, specFile)
+	if err != nil {
+		return StateError, fmt.Errorf("LLM spec analysis failed: %w", err)
+	}
+
+	// 4. Convert requirements directly to stories with rich content
+	storyIDs := make([]string, 0, len(requirements))
+	for i := range requirements {
+		req := &requirements[i]
+		// Generate unique story ID
+		storyID, err := persistence.GenerateStoryID()
+		if err != nil {
+			return StateError, fmt.Errorf("failed to generate story ID: %w", err)
+		}
+
+		// Calculate dependencies based on order (simple dependency model)
+		var dependencies []string
+		if len(req.Dependencies) > 0 {
+			// Simple implementation: depend on all previous stories
+			for j := 0; j < i; j++ {
+				dependencies = append(dependencies, storyIDs[j])
+			}
+		}
+
+		// Convert requirement to rich story content
+		title, content := d.requirementToStoryContent(req)
+
+		// Add story to internal queue
+		d.queue.AddStory(storyID, specID, title, content, req.StoryType, dependencies, req.EstimatedPoints)
+		storyIDs = append(storyIDs, storyID)
+	}
+
+	// 5. Container validation and dependency fixing
+	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
+		// Check if this is a retry request
+		if strings.Contains(err.Error(), "retry_needed") {
+			d.logger.Info("🔄 Container validation triggered retry - clearing queue and restarting scoping")
+			d.queue.ClearAll()
+			return StateScoping, nil // Return to SCOPING state for retry
+		}
+		return StateError, fmt.Errorf("container validation failed: %w", err)
+	}
+
+	// 6. Flush stories to database
+	d.queue.FlushToDatabase()
+
+	// Mark spec as processed
+	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpUpsertSpec,
+		Data:      spec,
+		Response:  nil,
+	}
+
+	// Store completion state
+	d.stateData["spec_id"] = specID
+	d.stateData["story_ids"] = storyIDs
+	d.stateData["stories_generated"] = true
+	d.stateData["stories_count"] = len(storyIDs)
 
 	return StateDispatching, nil
 }
@@ -160,149 +232,18 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile 
 	return d.parseSpecAnalysisJSON(llmAnalysis)
 }
 
-// generateStoriesFromRequirements converts LLM-analyzed requirements into database stories.
-func (d *Driver) generateStoriesFromRequirements(requirements []Requirement, specContent string) (string, []string, error) {
-	// Generate spec ID and create spec record
-	specID := persistence.GenerateSpecID()
-	spec := &persistence.Spec{
-		ID:        specID,
-		Content:   specContent,
-		CreatedAt: time.Now(),
+// requirementToStoryContent converts a requirement to story title and rich markdown content.
+// This is the single source of truth for how LLM requirements become story content.
+func (d *Driver) requirementToStoryContent(req *Requirement) (string, string) {
+	title := req.Title
+
+	content := fmt.Sprintf("**Task**\n%s\n\n", req.Description)
+	content += "**Acceptance Criteria**\n"
+	for _, criteria := range req.AcceptanceCriteria {
+		content += fmt.Sprintf("* %s\n", criteria)
 	}
 
-	// Store spec in database (fire-and-forget)
-	d.persistenceChannel <- &persistence.Request{
-		Operation: persistence.OpUpsertSpec,
-		Data:      spec,
-		Response:  nil, // Fire-and-forget
-	}
-
-	// Process requirements: generate stories and collect dependencies for batch operation
-	storyIDs := make([]string, 0, len(requirements))
-	var allDependencies []*persistence.StoryDependency
-
-	for i := range requirements {
-		req := &requirements[i]
-		// Generate story ID (8-char hex)
-		storyID, err := persistence.GenerateStoryID()
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
-		}
-
-		// Calculate dependencies based on order (simple dependency model)
-		var dependencies []string
-		if len(req.Dependencies) > 0 {
-			// Simple implementation: depend on all previous stories
-			for j := 0; j < i; j++ {
-				dependencies = append(dependencies, storyIDs[j])
-			}
-		}
-
-		// Update canonical queue with story and dependencies
-		d.queue.AddStory(storyID, specID, req.Title, req.Description, req.StoryType, dependencies, req.EstimatedPoints)
-		d.logger.Debug("Added story %s to queue with dependencies: %v", storyID, dependencies)
-
-		// Collect dependencies for batch operation (don't send individually)
-		for _, depID := range dependencies {
-			dependency := &persistence.StoryDependency{
-				StoryID:   storyID,
-				DependsOn: depID,
-			}
-			allDependencies = append(allDependencies, dependency)
-		}
-
-		storyIDs = append(storyIDs, storyID)
-	}
-
-	// Flush canonical queue to database first to ensure stories exist
-	d.queue.FlushToDatabase()
-
-	// Then add all dependencies in batch if any exist
-	if len(allDependencies) > 0 {
-		// Use batch operation with empty stories (since stories already exist from queue flush)
-		batchRequest := &persistence.BatchUpsertStoriesWithDependenciesRequest{
-			Stories:      []*persistence.Story{}, // Empty since stories are already in DB
-			Dependencies: allDependencies,
-		}
-
-		d.persistenceChannel <- &persistence.Request{
-			Operation: persistence.OpBatchUpsertStoriesWithDependencies,
-			Data:      batchRequest,
-			Response:  nil, // Fire-and-forget
-		}
-	}
-
-	// Mark spec as processed
-	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
-	d.persistenceChannel <- &persistence.Request{
-		Operation: persistence.OpUpsertSpec,
-		Data:      spec,
-		Response:  nil, // Fire-and-forget
-	}
-
-	return specID, storyIDs, nil
-}
-
-// requirementToStory converts a LLM-analyzed requirement to a database story.
-// Currently unused but kept for potential future use.
-//
-//nolint:unused
-func (d *Driver) requirementToStory(storyID, specID string, req *Requirement) *persistence.Story {
-	// Generate rich story content from LLM-analyzed requirement
-	content := d.generateRichStoryContent(req)
-
-	return &persistence.Story{
-		ID:         storyID,
-		SpecID:     specID,
-		Title:      req.Title,
-		Content:    content,
-		Status:     persistence.StatusNew,
-		Priority:   req.EstimatedPoints, // Use points as priority
-		CreatedAt:  time.Now(),
-		TokensUsed: 0,
-		CostUSD:    0.0,
-		StoryType:  req.StoryType, // Use story type from requirement
-	}
-}
-
-// generateRichStoryContent creates detailed markdown content for a story from LLM-analyzed requirement.
-// Currently unused but kept for potential future use.
-//
-//nolint:unused
-func (d *Driver) generateRichStoryContent(req *Requirement) string {
-	content := fmt.Sprintf("# %s\n\n", req.Title)
-
-	// Add detailed description from LLM analysis
-	if req.Description != "" {
-		content += fmt.Sprintf("## Description\n%s\n\n", req.Description)
-	}
-
-	// Add acceptance criteria from LLM analysis or provide defaults
-	if len(req.AcceptanceCriteria) > 0 {
-		content += acceptanceCriteriaHeader
-		for _, criterion := range req.AcceptanceCriteria {
-			content += fmt.Sprintf("- %s\n", criterion)
-		}
-		content += "\n"
-	} else {
-		content += acceptanceCriteriaHeader
-		content += "- Implementation completes successfully\n"
-		content += "- All tests pass\n"
-		content += "- Code follows project conventions\n\n"
-	}
-
-	// Add dependencies if any
-	if len(req.Dependencies) > 0 {
-		content += "## Dependencies\n"
-		for _, dep := range req.Dependencies {
-			content += fmt.Sprintf("- %s\n", dep)
-		}
-		content += "\n"
-	}
-
-	content += fmt.Sprintf("**Estimated Points:** %d\n", req.EstimatedPoints)
-
-	return content
+	return title, content
 }
 
 // getSpecFileFromMessage extracts the spec file path from the stored SPEC message.
@@ -345,44 +286,6 @@ func (d *Driver) getSpecFileFromMessage() string {
 	}
 
 	return ""
-}
-
-// convertToRequirements converts state data back to Requirements slice.
-func (d *Driver) convertToRequirements(data any) ([]Requirement, error) {
-	// Handle slice of Requirement structs (from spec parser).
-	if reqs, ok := data.([]Requirement); ok {
-		return reqs, nil
-	}
-
-	// Handle slice of maps (from mock or legacy data).
-	if reqMaps, ok := data.([]map[string]any); ok {
-		var requirements []Requirement
-		for _, reqMap := range reqMaps {
-			req := Requirement{}
-
-			if title, ok := reqMap["title"].(string); ok {
-				req.Title = title
-			}
-			if desc, ok := reqMap["description"].(string); ok {
-				req.Description = desc
-			}
-			if points, ok := reqMap["estimated_points"].(int); ok {
-				req.EstimatedPoints = points
-			}
-
-			// Handle acceptance criteria.
-			if criteria, ok := reqMap["acceptance_criteria"]; ok {
-				if criteriaSlice, ok := criteria.([]string); ok {
-					req.AcceptanceCriteria = criteriaSlice
-				}
-			}
-
-			requirements = append(requirements, req)
-		}
-		return requirements, nil
-	}
-
-	return nil, fmt.Errorf("unsupported requirements data type: %T", data)
 }
 
 // parseSpecAnalysisJSON parses the LLM's JSON response to extract requirements.
@@ -485,57 +388,101 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 	return requirements, nil
 }
 
-// validateDevOpsStoryConstraints ensures devops story constraints are met to prevent container bootstrapping issues.
-// This prevents the problem where multiple devops stories cause verification to run in wrong container environment.
-func (d *Driver) validateDevOpsStoryConstraints(requirements []Requirement) error {
-	var devopsStories []int // Store indices instead of copying structs
-	var appStories []int
+// All story generation now uses the clean linear flow in handleScoping()
 
-	// Separate devops and app stories by index to avoid copying large structs
-	for i := range requirements {
-		req := &requirements[i]
-		switch strings.ToLower(req.StoryType) {
-		case storyTypeDevOps:
-			devopsStories = append(devopsStories, i)
-		case storyTypeApp, "": // Empty story type defaults to app
-			appStories = append(appStories, i)
-		default:
-			return fmt.Errorf("invalid story type '%s' in story '%s'. Must be 'devops' or 'app'", req.StoryType, req.Title)
-		}
+// validateAndFixContainerDependencies implements hybrid container validation.
+// 1. If validateTargetContainer fails and DevOps story exists → fix DAG
+// 2. If validateTargetContainer fails and no DevOps story → retry LLM
+// 3. If LLM retry still has no DevOps story → fatal error.
+func (d *Driver) validateAndFixContainerDependencies(ctx context.Context, specID string) error {
+	// Check if we have a valid target container
+	if config.IsValidTargetImage() {
+		d.logger.Info("✅ Valid target container exists, no dependency fixes needed")
+		return nil
 	}
 
-	// CONSTRAINT 1: No more than one devops story
-	if len(devopsStories) > 1 {
-		devopsTitles := make([]string, len(devopsStories))
-		for i, storyIdx := range devopsStories {
-			devopsTitles[i] = requirements[storyIdx].Title
-		}
-		return fmt.Errorf("found %d devops stories but only 1 is allowed. Container bootstrapping requires exactly one devops story containing all infrastructure setup. Devops stories: %v",
-			len(devopsStories), devopsTitles)
+	d.logger.Warn("⚠️  No valid target container - checking story dependencies")
+
+	// Get all stories from the queue
+	allStories := d.queue.GetAllStories()
+	if len(allStories) == 0 {
+		return fmt.Errorf("no stories found in queue")
 	}
 
-	// CONSTRAINT 2: If devops story exists, it must be first and block all app stories
-	if len(devopsStories) == 1 {
-		devopsIndex := devopsStories[0]
-		devopsStory := &requirements[devopsIndex]
-
-		// Check if devops story is first (index 0)
-		if devopsIndex != 0 {
-			return fmt.Errorf("devops story '%s' must be first in sequence to ensure container is built before app stories run. Current first story: '%s'",
-				devopsStory.Title, requirements[0].Title)
-		}
-
-		// Verify no additional devops stories exist after the first one
-		for i := range requirements {
-			if i > 0 && strings.EqualFold(requirements[i].StoryType, storyTypeDevOps) {
-				return fmt.Errorf("found additional devops story '%s' at index %d. All devops work must be in the first story", requirements[i].Title, i)
+	// Filter to stories for this spec and categorize by type
+	var devopsStories, appStories []*QueuedStory
+	for _, story := range allStories {
+		if story.SpecID == specID {
+			if story.StoryType == "devops" {
+				devopsStories = append(devopsStories, story)
+			} else if story.StoryType == "app" {
+				appStories = append(appStories, story)
 			}
 		}
-
-		d.logger.Info("DevOps story validation passed: '%s' is first and will block %d app stories", devopsStory.Title, len(appStories))
-	} else {
-		d.logger.Info("DevOps story validation passed: no devops stories found (%d app stories)", len(appStories))
 	}
 
+	if len(devopsStories) > 0 {
+		// Option 1: DevOps story exists - fix DAG to make app stories depend on DevOps
+		d.logger.Info("🔧 DevOps story exists (%d found) - fixing dependencies to block app stories", len(devopsStories))
+		return d.fixContainerDependencies(devopsStories, appStories)
+	} else {
+		// Option 2: No DevOps story - retry with LLM
+		d.logger.Warn("❌ No DevOps story found - requesting LLM retry with container guidance")
+		return d.retryWithContainerGuidance(ctx, specID)
+	}
+}
+
+// fixContainerDependencies adds dependencies so app stories are blocked by DevOps stories.
+func (d *Driver) fixContainerDependencies(devopsStories, appStories []*QueuedStory) error {
+	d.logger.Info("🔄 Adding DevOps→App dependencies: %d app stories will depend on %d devops stories",
+		len(appStories), len(devopsStories))
+
+	// Make each app story depend on all DevOps stories
+	for _, appStory := range appStories {
+		for _, devopsStory := range devopsStories {
+			// Add DevOps story ID to app story's dependencies if not already present
+			dependencyExists := false
+			for _, existingDep := range appStory.DependsOn {
+				if existingDep == devopsStory.ID {
+					dependencyExists = true
+					break
+				}
+			}
+
+			if !dependencyExists {
+				d.logger.Debug("📌 Adding dependency: %s depends on %s", appStory.ID, devopsStory.ID)
+				appStory.DependsOn = append(appStory.DependsOn, devopsStory.ID)
+			}
+		}
+	}
+
+	d.logger.Info("✅ Container dependencies fixed - app stories now blocked until DevOps completes")
 	return nil
+}
+
+// retryWithContainerGuidance retries LLM with enhanced container guidance following the empty response retry pattern.
+func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
+	// Get retry counter from state data (0 if not set)
+	retryCount := 0
+	if retryData, exists := d.stateData["container_retry_count"]; exists {
+		if count, ok := retryData.(int); ok {
+			retryCount = count
+		}
+	}
+
+	// Maximum 1 retry (attempt 0 + attempt 1)
+	if retryCount >= 1 {
+		d.logger.Error("❌ RETRY EXHAUSTED: LLM failed to generate DevOps story after guidance")
+		d.logger.Error("🏗️  REQUIRED: Manually add container setup requirements to your specification")
+		d.logger.Error("💡 GUIDANCE: DevOps stories handle container setup, build environment, infrastructure")
+		return fmt.Errorf("no DevOps story generated after retry - manual intervention required")
+	}
+
+	d.logger.Warn("🔄 RETRY ATTEMPT %d: Re-running story generation with enhanced container guidance", retryCount+1)
+
+	// Increment retry counter for enhanced guidance in the next iteration
+	d.stateData["container_retry_count"] = retryCount + 1
+
+	// Return special error that triggers retry flow
+	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")
 }

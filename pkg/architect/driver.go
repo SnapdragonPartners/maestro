@@ -40,7 +40,6 @@ type Driver struct {
 	questionsCh        chan *proto.AgentMsg        // Bi-directional channel for questions/requests
 	replyCh            <-chan *proto.AgentMsg      // Read-only channel for replies
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
-	externalAPI        *ExternalAPI                // API for external operations outside FSM
 	stateData          map[string]any
 	architectID        string
 	workDir            string // Workspace directory
@@ -64,7 +63,6 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 	}
 	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
 	logger := logx.NewLogger(architectID)
-	externalAPI := NewExternalAPI(queue, logger)
 
 	return &Driver{
 		architectID:        architectID,
@@ -79,7 +77,6 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 		dispatcher:         dispatcher,
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
-		externalAPI:        externalAPI,
 		// Channels will be set during Attach()
 		specCh:      nil,
 		questionsCh: nil,
@@ -236,6 +233,9 @@ func (d *Driver) Run(ctx context.Context) error {
 
 	// Start status updates processor goroutine.
 	go d.processStatusUpdates(ctx)
+
+	// Start requeue requests processor goroutine.
+	go d.processRequeueRequests(ctx)
 
 	// Start in WAITING state, ready to receive specs.
 	d.currentState = StateWaiting
@@ -416,11 +416,6 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
-// GetExternalAPI returns the external API for operations outside the FSM.
-func (d *Driver) GetExternalAPI() *ExternalAPI {
-	return d.externalAPI
-}
-
 // buildMessagesWithContext creates completion messages with context history (same as coder).
 // This centralizes the pattern used across architect LLM calls with context isolation.
 func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
@@ -511,6 +506,70 @@ func (d *Driver) processStatusUpdates(ctx context.Context) {
 				d.logger.Error("❌ Failed to update story %s status to %s: %v", statusUpdate.StoryID, statusUpdate.Status, err)
 			} else {
 				d.logger.Info("✅ Successfully updated story %s status to %s", statusUpdate.StoryID, statusUpdate.Status)
+			}
+		}
+	}
+}
+
+// processRequeueRequests runs as a goroutine to process story requeue requests from coders.
+// This provides a clean channel-based approach to requeuing stories, replacing the legacy ExternalAPIProvider pattern.
+func (d *Driver) processRequeueRequests(ctx context.Context) {
+	if d.dispatcher == nil {
+		d.logger.Warn("No dispatcher available for requeue requests processing")
+		return
+	}
+
+	requeueRequestsCh := d.dispatcher.GetRequeueRequestsChannel()
+	d.logger.Info("🔄 Requeue requests processor started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			d.logger.Info("🔄 Requeue requests processor stopping due to context cancellation")
+			return
+
+		case requeueRequest := <-requeueRequestsCh:
+			if requeueRequest == nil {
+				d.logger.Info("🔄 Requeue requests channel closed, processor stopping")
+				return
+			}
+
+			d.logger.Info("🔄 Processing requeue request: story %s from agent %s - %s",
+				requeueRequest.StoryID, requeueRequest.AgentID, requeueRequest.Reason)
+
+			// Change story status back to PENDING so it can be picked up again
+			if err := d.queue.UpdateStoryStatus(requeueRequest.StoryID, StatusPending); err != nil {
+				d.logger.Error("❌ Failed to requeue story %s: %v", requeueRequest.StoryID, err)
+				continue
+			}
+
+			// Also dispatch the story back to the work queue (like DISPATCHING state does)
+			if story, exists := d.queue.stories[requeueRequest.StoryID]; exists && story.GetStatus() == StatusPending {
+				// Create story message for dispatcher
+				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
+				storyMsg.SetPayload(proto.KeyStoryID, requeueRequest.StoryID)
+				storyMsg.SetPayload(proto.KeyTitle, story.Title)
+				storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
+				storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
+				storyMsg.SetPayload(proto.KeyStoryType, story.StoryType)
+
+				// Use story content from the queue
+				content := story.Content
+				if content == "" {
+					content = story.Title // Fallback to title if content is not set
+				}
+				storyMsg.SetPayload(proto.KeyContent, content)
+				storyMsg.SetPayload(proto.KeyRequirements, []string{}) // Empty requirements for requeue
+
+				// Send story to dispatcher using Effects pattern
+				dispatchEffect := &DispatchStoryEffect{Story: storyMsg}
+				if err := d.ExecuteEffect(ctx, dispatchEffect); err != nil {
+					d.logger.Error("❌ Failed to dispatch requeued story %s to work queue: %v", requeueRequest.StoryID, err)
+				} else {
+					d.logger.Info("✅ Successfully requeued and dispatched story %s to work queue", requeueRequest.StoryID)
+				}
+			} else {
+				d.logger.Error("❌ Story %s not found or not in PENDING status after requeue", requeueRequest.StoryID)
 			}
 		}
 	}

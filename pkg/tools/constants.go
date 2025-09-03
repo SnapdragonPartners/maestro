@@ -21,6 +21,7 @@ const (
 	ToolContainerUpdate = "container_update"
 	ToolContainerTest   = "container_test"
 	ToolContainerList   = "container_list"
+	ToolContainerSwitch = "container_switch"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -55,6 +56,7 @@ var (
 		ToolContainerUpdate,
 		ToolContainerTest,
 		ToolContainerList,
+		ToolContainerSwitch,
 	}
 
 	// App coding tools - full development environment.

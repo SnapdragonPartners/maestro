@@ -63,6 +63,17 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 		// CONTINUE/PIVOT - return to origin state and reset counter.
 		c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
 
+		// For APPROVED status, provide generic approval message without architect feedback
+		// This prevents confusion when architect says work is "complete" but done tool still needs to be called
+		var approvalMessage string
+		if originStr == string(StateCoding) {
+			approvalMessage = "The architect has approved your current approach. Continue with the implementation and invoke the 'done' tool when you are complete."
+		} else {
+			approvalMessage = "The architect has approved your current approach. Proceed with the work as planned and use the 'submit_plan' tool when you have completed your planning."
+		}
+		c.contextManager.AddMessage("architect", approvalMessage)
+		c.logger.Debug("🧑‍💻 Added generic approval message from architect to maintain conversation alternation")
+
 		// Reset the iteration counter for the origin state.
 		switch originStr {
 		case string(StatePlanning):
@@ -82,16 +93,21 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 			// Reset coding counter and inject feedback for coding improvements
 			sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 			if feedback != "" {
-				// Use mini-template to format the feedback message
+				// Use mini-template to format the feedback message with status context
 				if c.renderer != nil {
-					renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, feedback)
+					// Pass both status and feedback to template
+					templateData := map[string]any{
+						"Status":   status.String(),
+						"Feedback": feedback,
+					}
+					renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, templateData)
 					if err != nil {
 						c.logger.Error("Failed to render budget review feedback: %v", err)
 						// Fallback to simple message
 						renderedMessage = "I understand the architect's guidance. Let me adjust my coding approach: " + feedback + "\n\nI'll continue with the implementation using this guidance."
 					}
-					c.contextManager.AddAssistantMessage(renderedMessage)
-					c.logger.Debug("🧑‍💻 Injected architect feedback into context for coding")
+					c.contextManager.AddMessage("architect", renderedMessage)
+					c.logger.Debug("🧑‍💻 Injected architect feedback to maintain conversation alternation")
 				}
 			}
 			return StateCoding, false, nil
@@ -103,16 +119,21 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 			sm.SetStateData(string(stateDataKeyCodingIterations), 0)
 			// Inject architect feedback into context to guide next attempt
 			if feedback != "" {
-				// Use mini-template to format the feedback message
+				// Use mini-template to format the feedback message with status context
 				if c.renderer != nil {
-					renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, feedback)
+					// Pass both status and feedback to template
+					templateData := map[string]any{
+						"Status":   status.String(),
+						"Feedback": feedback,
+					}
+					renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewFeedbackTemplate, templateData)
 					if err != nil {
 						c.logger.Error("Failed to render budget review feedback: %v", err)
 						// Fallback to simple message
 						renderedMessage = "I understand the architect's feedback. Let me correct my approach: " + feedback + "\n\nI'll now focus on the proper planning approach as guided."
 					}
-					c.contextManager.AddAssistantMessage(renderedMessage)
-					c.logger.Debug("🧑‍💻 Injected architect feedback into context for planning")
+					c.contextManager.AddMessage("architect", renderedMessage)
+					c.logger.Debug("🧑‍💻 Injected architect feedback to maintain conversation alternation")
 				}
 			}
 			return StatePlanning, false, nil

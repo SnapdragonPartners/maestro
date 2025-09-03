@@ -450,3 +450,67 @@ func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
 
 	return nil
 }
+
+// GetDependencyOrderedStories returns stories in dependency order (topologically sorted).
+// Stories with no dependencies come first, followed by their dependents.
+func (q *Queue) GetDependencyOrderedStories() []*QueuedStory {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	// Simple topological sort
+	inDegree := make(map[string]int)
+	adjacencyList := make(map[string][]string)
+	allStories := make(map[string]*QueuedStory)
+
+	// Initialize
+	for storyID, story := range q.stories {
+		inDegree[storyID] = 0
+		allStories[storyID] = story
+		adjacencyList[storyID] = []string{}
+	}
+
+	// Count dependencies (in-degree)
+	for storyID, story := range q.stories {
+		for _, depID := range story.DependsOn {
+			if _, exists := q.stories[depID]; exists {
+				inDegree[storyID]++
+				adjacencyList[depID] = append(adjacencyList[depID], storyID)
+			}
+		}
+	}
+
+	// Topological sort using Kahn's algorithm
+	var queue []string
+	for storyID, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, storyID)
+		}
+	}
+
+	var result []*QueuedStory
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		result = append(result, allStories[current])
+
+		// Reduce in-degree of neighbors
+		for _, neighbor := range adjacencyList[current] {
+			inDegree[neighbor]--
+			if inDegree[neighbor] == 0 {
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+
+	return result
+}
+
+// ClearAll removes all stories from the in-memory queue.
+// Used when retrying story generation with different parameters.
+func (q *Queue) ClearAll() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.stories = make(map[string]*QueuedStory)
+}

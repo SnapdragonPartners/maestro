@@ -609,3 +609,64 @@ func (d *LongRunningDockerExec) updateContainerActivity(containerName string) {
 		}
 	}
 }
+
+// Exec executes a command in a running container and returns the combined output.
+// This method implements the Docker interface needed for GitHub bootstrap.
+func (d *LongRunningDockerExec) Exec(ctx context.Context, cid string, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("command cannot be empty")
+	}
+
+	// Build docker exec command
+	execArgs := []string{"exec", "-i", cid}
+	execArgs = append(execArgs, args...)
+
+	// Execute command
+	cmd := exec.CommandContext(ctx, d.dockerCmd, execArgs...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("docker exec failed: %w", err)
+	}
+
+	return output, nil
+}
+
+// CpToContainer copies data to a file inside a running container.
+// This method implements the Docker interface needed for GitHub bootstrap.
+func (d *LongRunningDockerExec) CpToContainer(ctx context.Context, cid, dstPath string, data []byte, mode int) error {
+	// Create a temporary file with the data
+	tmpFile, err := os.CreateTemp("", "maestro-cp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	defer func() { _ = tmpFile.Close() }()
+
+	// Write data to temp file
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write to temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// Set file permissions on temp file
+	if err := os.Chmod(tmpFile.Name(), os.FileMode(mode)); err != nil {
+		return fmt.Errorf("failed to chmod temp file: %w", err)
+	}
+
+	// Copy file to container using docker cp
+	cmd := exec.CommandContext(ctx, d.dockerCmd, "cp", tmpFile.Name(), cid+":"+dstPath)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker cp failed: %w", err)
+	}
+
+	// Set correct permissions inside container
+	chmodCmd := exec.CommandContext(ctx, d.dockerCmd, "exec", cid, "chmod", fmt.Sprintf("%o", mode), dstPath)
+	if err := chmodCmd.Run(); err != nil {
+		return fmt.Errorf("failed to set permissions in container: %w", err)
+	}
+
+	return nil
+}

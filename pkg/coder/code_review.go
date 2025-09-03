@@ -72,7 +72,9 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 ## Original Story
 %s
 
-## Implementation Analysis
+## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
+The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the completion matches what was approved:
+
 %s`, summary, evidence, confidence, originalStory, plan)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Story completion verified with evidence", proto.ApprovalTypeCompletion)
@@ -106,7 +108,9 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 ## Original Story
 %s
 
-## Implementation Plan
+## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
+The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
+
 %s`, summary, evidence, confidence, gitDiff, originalStory, plan)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Code implementation requires architect review", proto.ApprovalTypeCode)

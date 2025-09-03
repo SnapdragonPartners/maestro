@@ -53,6 +53,11 @@ The request above contains all context including budget details, recent messages
 - **Wrong**: Using shell for operations that have dedicated tools
 - **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test` for container operations
 
+**Issue**: Using direct Docker commands instead of container tools
+- **Wrong**: `docker build`, `docker run`, `docker exec`, `docker ps`, etc. in shell commands
+- **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test`, `container_list` tools
+- **Why**: Container tools provide proper integration, error handling, and container registration
+
 ## Decision Options
 
 ### APPROVED: Continue Implementation
@@ -60,6 +65,7 @@ The request above contains all context including budget details, recent messages
 - Making progress on implementation steps
 - Tool usage appropriate for coding phase
 - **Effect**: Continue in current state with reset iteration budget
+- **Note**: This approves the APPROACH, not the completion. Agent must still complete all tasks and use 'done' tool when finished.
 
 ### NEEDS_CHANGES: Course Correction Required
 - Agent not following approved plan systematically

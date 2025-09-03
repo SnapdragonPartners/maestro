@@ -612,9 +612,22 @@ func (r *VerifyReport) GetBootstrapFailuresByPriority() []BootstrapFailure {
 	return failures
 }
 
-// RequiresBootstrap returns true if there are any bootstrap failures that require remediation.
+// RequiresBootstrap returns true if there are any bootstrap failures that require remediation,
+// OR if this appears to be an empty repository that needs initial setup.
 func (r *VerifyReport) RequiresBootstrap() bool {
-	return len(r.BootstrapFailures) > 0
+	// If we have explicit bootstrap failures, definitely need bootstrap
+	if len(r.BootstrapFailures) > 0 {
+		return true
+	}
+
+	// If we have general failures, we might need bootstrap to fix them
+	if len(r.Failures) > 0 {
+		return true
+	}
+
+	// If verification passed completely with no warnings or failures,
+	// this is likely a fully working repo that doesn't need bootstrap
+	return false
 }
 
 // GenerateBootstrapSummary creates a human-readable summary of bootstrap requirements.

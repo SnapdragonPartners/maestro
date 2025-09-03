@@ -30,6 +30,11 @@ type TemplateData struct {
 	TestCommand  string `json:"test_command,omitempty"`
 	LintCommand  string `json:"lint_command,omitempty"`
 	RunCommand   string `json:"run_command,omitempty"`
+	// Container information
+	ContainerName       string `json:"container_name,omitempty"`
+	ContainerDockerfile string `json:"container_dockerfile,omitempty"`
+	// Dockerfile content for DevOps review templates
+	DockerfileContent string `json:"dockerfile_content,omitempty"`
 }
 
 // StateTemplate represents a workflow state template.
@@ -82,8 +87,6 @@ const (
 
 	// SpecAnalysisTemplate is the template for architect spec analysis state.
 	SpecAnalysisTemplate StateTemplate = "spec_analysis.tpl.md"
-	// StoryGenerationTemplate is the template for architect story generation state.
-	StoryGenerationTemplate StateTemplate = "story_generation.tpl.md"
 	// TechnicalQATemplate is the template for architect technical Q&A state.
 	TechnicalQATemplate StateTemplate = "technical_qa.tpl.md"
 	// CodeReviewTemplate is the template for architect code review state.
@@ -110,6 +113,8 @@ func NewRenderer() (*Renderer, error) {
 		AppCodingTemplate,
 		TestingTemplate,
 		ApprovalTemplate,
+		AppCompletionApprovalTemplate,
+		DevOpsCompletionApprovalTemplate,
 		TestFailureInstructionsTemplate,
 		DevOpsTestFailureInstructionsTemplate,
 		BudgetReviewFeedbackTemplate,
@@ -123,7 +128,6 @@ func NewRenderer() (*Renderer, error) {
 		BudgetReviewPlanningTemplate,
 		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,
-		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
 		AppCodeReviewTemplate,
@@ -138,6 +142,17 @@ func NewRenderer() (*Renderer, error) {
 
 		tmpl, err := template.New(string(name)).Funcs(template.FuncMap{
 			"contains": strings.Contains,
+			"isMap": func(v any) bool {
+				if v == nil {
+					return false
+				}
+				switch v.(type) {
+				case map[string]any:
+					return true
+				default:
+					return false
+				}
+			},
 		}).Parse(string(content))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse template %s: %w", name, err)

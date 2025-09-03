@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/build"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/proto"
 )
 
 // AgentContext contains agent+state specific configuration for tool creation.
@@ -18,6 +19,13 @@ type AgentContext struct {
 	ReadOnly        bool
 	NetworkDisabled bool
 	WorkDir         string
+	Agent           Agent // Optional agent reference for state-aware tools
+}
+
+// Agent interface for tools that need access to agent state.
+type Agent interface {
+	GetCurrentState() proto.State
+	GetHostWorkspacePath() string // Returns the host workspace path for container mounting
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -288,12 +296,30 @@ func createContainerTestTool(ctx AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container test tool requires an executor")
 	}
-	return NewContainerTestTool(ctx.Executor), nil
+
+	if ctx.Agent == nil {
+		return nil, fmt.Errorf("container test tool requires agent context for proper workDir mounting")
+	}
+
+	if ctx.WorkDir == "" {
+		return nil, fmt.Errorf("container test tool requires workDir for proper workspace mounting")
+	}
+
+	// Only one constructor - requires full context
+	return NewContainerTestTool(ctx.Executor, ctx.Agent, ctx.WorkDir), nil
 }
 
 // createContainerListTool creates a container list tool instance.
 func createContainerListTool(ctx AgentContext) (Tool, error) {
 	return NewContainerListTool(ctx.Executor), nil
+}
+
+// createContainerSwitchTool creates a container switch tool instance.
+func createContainerSwitchTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("container switch tool requires an executor")
+	}
+	return NewContainerSwitchTool(ctx.Executor), nil
 }
 
 // SCHEMA FUNCTIONS - Extract schemas from tool implementations
@@ -347,12 +373,17 @@ func getContainerUpdateSchema() InputSchema {
 }
 
 func getContainerTestSchema() InputSchema {
-	return NewContainerTestTool(nil).Definition().InputSchema
+	// Create a temporary instance just for schema extraction
+	tempTool := &ContainerTestTool{}
+	return tempTool.Definition().InputSchema
 }
 
 func getContainerListSchema() InputSchema {
-	// TODO: Implement container list tool
-	return InputSchema{Type: "object"}
+	return NewContainerListTool(nil).Definition().InputSchema
+}
+
+func getContainerSwitchSchema() InputSchema {
+	return NewContainerSwitchTool(nil).Definition().InputSchema
 }
 
 // init registers all tools in the global registry using the factory pattern.
@@ -438,5 +469,11 @@ func init() {
 		Name:        ToolContainerList,
 		Description: "List available containers in the system",
 		InputSchema: getContainerListSchema(),
+	})
+
+	Register(ToolContainerSwitch, createContainerSwitchTool, &ToolMeta{
+		Name:        ToolContainerSwitch,
+		Description: "Switch coder agent execution environment to a different container, with fallback to bootstrap container on failure",
+		InputSchema: getContainerSwitchSchema(),
 	})
 }

@@ -99,6 +99,7 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 		c.logger.Info("🧑‍💻 Development plan approved, reconfiguring container for coding")
 
 		// Reconfigure container with read-write workspace for coding phase
+		// Note: configureWorkspaceMount(readonly=false) creates a new coding container with GitHub auth
 		if c.longRunningExecutor != nil {
 			if err := c.configureWorkspaceMount(ctx, false, "coding"); err != nil {
 				return proto.StateError, false, logx.Wrap(err, "failed to configure coding container")

@@ -153,8 +153,19 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 		// CRITICAL: For coder errors, requeue the story before restart
 		if agentType == string(agent.TypeCoder) {
 			s.Logger.Info("Requeuing story for failed agent %s", notification.AgentID)
-			if err := s.Kernel.Dispatcher.RequeueStory(notification.AgentID); err != nil {
-				s.Logger.Error("Failed to requeue story for agent %s: %v", notification.AgentID, err)
+			// Get the story ID from the agent's lease
+			storyID := s.Kernel.Dispatcher.GetLease(notification.AgentID)
+			if storyID == "" {
+				s.Logger.Error("No story lease found for failed agent %s", notification.AgentID)
+			} else {
+				// Clear the lease first
+				s.Kernel.Dispatcher.ClearLease(notification.AgentID)
+				// Use the new clean channel-based requeue pattern
+				if err := s.Kernel.Dispatcher.UpdateStoryRequeue(storyID, notification.AgentID, "Agent failed with error state"); err != nil {
+					s.Logger.Error("Failed to requeue story %s from agent %s: %v", storyID, notification.AgentID, err)
+				} else {
+					s.Logger.Info("Successfully requeued story %s from failed agent %s", storyID, notification.AgentID)
+				}
 			}
 		}
 

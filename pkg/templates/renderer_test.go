@@ -37,7 +37,6 @@ func TestNewRenderer(t *testing.T) {
 		BudgetReviewPlanningTemplate,
 		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,
-		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
 		AppCodeReviewTemplate,
@@ -238,7 +237,6 @@ func TestRenderArchitectTemplates(t *testing.T) {
 
 	architectTemplates := []StateTemplate{
 		SpecAnalysisTemplate,
-		StoryGenerationTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,
 	}

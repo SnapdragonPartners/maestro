@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -81,11 +82,23 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		planningTemplate = templates.AppPlanningTemplate
 	}
 
+	// Get container information from config
+	var containerName, containerDockerfile string
+	if cfg, err := config.GetConfig(); err == nil && cfg.Container != nil {
+		containerName = cfg.Container.Name
+		containerDockerfile = cfg.Container.Dockerfile
+		c.logger.Debug("🐳 Planning template container info - Name: '%s', Dockerfile: '%s'", containerName, containerDockerfile)
+	} else {
+		c.logger.Debug("🐳 Planning template container info not available: %v", err)
+	}
+
 	// Create enhanced template data with state-specific tool documentation
 	templateData := &templates.TemplateData{
-		TaskContent:       taskContent,
-		TreeOutput:        utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
-		ToolDocumentation: c.planningToolProvider.GenerateToolDocumentation(),
+		TaskContent:         taskContent,
+		TreeOutput:          utils.GetStateValueOr[string](sm, KeyTreeOutputCached, "Project structure not available"),
+		ToolDocumentation:   c.planningToolProvider.GenerateToolDocumentation(),
+		ContainerName:       containerName,
+		ContainerDockerfile: containerDockerfile,
 		Extra: map[string]any{
 			"story_type": storyType, // Include story type for template logic
 		},
@@ -216,7 +229,12 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 
 		result, err := tool.Exec(ctx, toolCall.Parameters)
 		if err != nil {
-			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			if toolCall.Name == tools.ToolShell {
+				// For shell tool, provide cleaner logging without Docker details
+				c.logger.Info("Shell command failed: %v", err)
+			} else {
+				c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			}
 			continue
 		}
 
@@ -322,6 +340,14 @@ func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.Ba
 	reason := utils.GetMapFieldOr[string](resultMap, "reason", "")
 	evidence := utils.GetMapFieldOr[string](resultMap, "evidence", "")
 	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
+
+	// Get story type to check for DevOps completion requirements
+	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
+
+	// DevOps completion gate: must have valid target image
+	if storyType == string(proto.StoryTypeDevOps) && !config.IsValidTargetImage() {
+		return proto.StateError, false, fmt.Errorf("DevOps story cannot be completed without a valid target container. You must create a valid target container and run the container_update tool to proceed. Current reason: %s", reason)
+	}
 
 	// Store completion timestamp
 	sm.SetStateData(KeyCompletionSubmittedAt, time.Now().UTC())

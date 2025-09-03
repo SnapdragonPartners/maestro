@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/llmerrors"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -67,11 +68,23 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
 
 	// Create enhanced template data with state-specific tool documentation.
+	// Get container information from config
+	var containerName, containerDockerfile string
+	if cfg, err := config.GetConfig(); err == nil && cfg.Container != nil {
+		containerName = cfg.Container.Name
+		containerDockerfile = cfg.Container.Dockerfile
+		c.logger.Debug("🐳 Coding template container info - Name: '%s', Dockerfile: '%s'", containerName, containerDockerfile)
+	} else {
+		c.logger.Debug("🐳 Coding template container info not available: %v", err)
+	}
+
 	enhancedTemplateData := &templates.TemplateData{
-		TaskContent:       taskContent,
-		Plan:              plan, // Include plan from PLANNING state
-		WorkDir:           c.workDir,
-		ToolDocumentation: c.codingToolProvider.GenerateToolDocumentation(),
+		TaskContent:         taskContent,
+		Plan:                plan, // Include plan from PLANNING state
+		WorkDir:             c.workDir,
+		ToolDocumentation:   c.codingToolProvider.GenerateToolDocumentation(),
+		ContainerName:       containerName,
+		ContainerDockerfile: containerDockerfile,
 		Extra: map[string]any{
 			"story_type": storyType, // Include story type for template logic
 		},
@@ -264,7 +277,12 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		result, err := tool.Exec(ctx, toolCall.Parameters)
 		if err != nil {
 			// Tool execution failures are recoverable - add comprehensive error to context for LLM to react.
-			c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			if toolCall.Name == tools.ToolShell {
+				// For shell tool, provide cleaner logging without Docker details
+				c.logger.Info("Shell command failed: %v", err)
+			} else {
+				c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			}
 			c.addComprehensiveToolFailureToContext(*toolCall, err)
 			continue // Continue processing other tool calls
 		}

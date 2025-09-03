@@ -1121,8 +1121,9 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 	// Create agent context for planning (read-only access)
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
+		Agent:           c,                     // Pass agent reference for workDir access
 		ReadOnly:        true,                  // Planning is read-only
-		NetworkDisabled: true,                  // No network access during planning
+		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
 	}
 
@@ -1142,6 +1143,7 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	// Create agent context for coding (read-write access)
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
+		Agent:           c,                     // Pass agent reference for workDir access
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
@@ -1277,4 +1279,16 @@ func (c *Coder) getContextMessagesWithTokenLimit(tokenLimit int) *ContextMessage
 		Content:  content,
 		Tokens:   totalTokens,
 	}
+}
+
+// GetHostWorkspacePath returns the host workspace path for container mounting.
+func (c *Coder) GetHostWorkspacePath() string {
+	// Convert to absolute path to match main container startup behavior
+	if absPath, err := filepath.Abs(c.originalWorkDir); err == nil {
+		c.logger.Debug("🗂️  GetHostWorkspacePath: %s (from originalWorkDir: %s)", absPath, c.originalWorkDir)
+		return absPath
+	}
+	// Fallback to original if Abs() fails
+	c.logger.Warn("⚠️  GetHostWorkspacePath: filepath.Abs failed, using original: %s", c.originalWorkDir)
+	return c.originalWorkDir
 }
