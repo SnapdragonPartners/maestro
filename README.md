@@ -1,564 +1,174 @@
-# Maestro: Multi-Agent Orchestration for Software Development
-
 ![Maestro](web/static/img/logos/maestro_logo_small.png)
 
-If you’re looking for a general-purpose agent framework, you’ll probably want something like CrewAI or LangChain. But if you're building robust software and want a system that reflects actual engineering best practices out of the box—welcome to Maestro.
+# Maestro
 
-**Maestro** is a highly opinionated multi-agent orchestration system written in Go. It’s designed from the ground up to manage the full development lifecycle using two core agent roles: a singleton **Architect** and any number of **Coders**.
+Maestro is a tool that uses AI to write full applications in a disciplined way that reflects good software engineering principles.  
 
-It follows a strict but extensible workflow, tightly integrated with conventional development tools—`git`, `make`, and `docker`—to ensure safety, repeatability, and test coverage.
+In some ways, it's an agent orchestration tool. But unlike most others, Maestro bakes in structure, workflow, and opinions drawn from real-world experience managing large software projects. The goal is **production-ready code, not just code snippets.**
 
-## Who It’s For
+---
 
-Maestro is for engineers and small teams who want to use LLMs to write robust, production software with minimal oversight.
+## Why Maestro?
 
-## Status
+**Much simpler than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.  
 
-Maestro is currently a pre-release MVP. All core functionality is implemented, but the system is still under active development and subject to change. We have just started to use it to build itself.
+Most frameworks require wrestling with Python versions, dependency hell, or complex setup. With Maestro:  
 
-## Key Features
+- Download the binary (or build from source)  
+- Provide your API keys as environment variables  
+- Run the bootstrap workflow  
+- Start building  
 
-- 🧠 **Two Agent Types**: One Architect, many Coders. Each with its own LLM backend.
-- 🧰 **Standard Tooling**: Uses `git worktrees`, `make`, and `docker` for isolated, language-aware dev environments.
-- 🧵 **LLM Specialization**: Architects default to OpenAI o3 for planning; Coders default to Claude for code generation and test coverage.
-- 🌐 **Web UI and CLI**: Real-time agent dashboards and full command-line support.
-- 🔄 **Spec-to-Code Flow**: From markdown spec to merged pull request, all automated.
+---
 
-## How It Works
+## Key Ideas
 
-1. You write a spec in markdown.
-2. The Architect parses it and asks clarifying questions.
-3. It generates implementation stories with dependency graphs.
-4. The orchestrator bootstraps the repo and initializes agents.
-5. Unblocked stories are dispatched to Coders.
-6. Each Coder clones the repo into a worktree and drafts a plan.
-7. The Architect approves the plan.
-8. The Coder writes, tests, and submits the code.
-9. The Architect reviews and merges the pull request.
-10. The **Coder agent resets**, ready for the next task.
+### Architect vs. Coders
+- **Architect** (singleton):  
+  - Breaks specs into stories  
+  - Reviews and approves plans  
+  - Enforces principles (DRY, YAGNI, abstraction levels, test coverage)  
+  - Merges PRs  
+  - Does *not* write code directly  
 
-Throughout the process:
-- Coders can ask questions or escalate issues.
-- Architects enforce budget limits and validate merge readiness.
-- All planning happens in read-only containers; all dev happens in isolated, writable ones.
+- **Coders** (many):  
+  - Pull stories from a queue  
+  - Develop plans, then code  
+  - Must check in periodically  
+  - Run automated tests before completing work  
+  - Submit PRs for architect review  
 
-## Why Go?
+Coders are goroutines that fully terminate and restart between stories. All state (stories, messages, progress, tokens, costs, etc.) is persisted in a SQLite database.
 
-Most orchestration frameworks are written in Python, but Go offers:
-- Fast startup, low memory usage
-- Easy deployment as a single binary
-- Strong concurrency primitives
-- No need for ML libraries—Maestro delegates all model calls to external APIs
+### Workflow at a Glance
+1. User provides a complex spec  
+2. Architect breaks it into stories and dispatches them  
+3. Coders plan, get approval, then implement  
+4. Architect reviews code + tests, merges PRs  
+5. Coders terminate, new ones spawn for new work  
 
-## Language Support
+If a coder stalls or fails, Maestro automatically retries or reassigns. Questions can bubble up to a human via CLI or web UI.
 
-Maestro is language-agnostic at the agent level but uses `make` during bootstrapping. By default, it supports:
+See the canonical state diagrams for details:  
+- [Architect state machine](pkg/architect/STATES.md)  
+- [Coder state machine](pkg/coder/STATES.md)
 
-- Go
-- Python
-- JavaScript
+---
 
-You can support any language by supplying your own Makefile or writing a custom agent backend using provided interfaces.
+## Tools & Environment
 
-## Extensibility
+- **GitHub (mandatory for now):**  
+  - Local mirrors for speed  
+  - Tokens for push/PR/merge  
+  - One working clone per coder, deleted when the coder terminates  
 
-Maestro includes base types and interfaces that make it easy to:
+- **Docker:**  
+  - Coders run in read-only containers for planning, read-write for coding  
+  - Currently run as root for simplicity (rootless support under consideration)  
+  - Provides security isolation and portability  
 
-- Write your own agent implementations
-- Plug in alternate LLM providers via Go interfaces
-- Override templates and execution logic
+- **Makefiles:**  
+  - Used for build, test, lint, run  
+  - Either wrap your existing build tool or override targets in config  
+  - Aggressive lint/test defaults (“turn checks up to 11”)  
 
-## State Machines
+- **LLMs:**  
+  - Supports OpenAI & Anthropic models via official Go SDKs  
+  - Architect defaults: reasoning-oriented models  
+  - Coders default: coding-oriented models  
+  - Rate limiting handled internally via token buckets  
+  - Local model support is on the roadmap  
 
-Maestro’s core logic is defined by canonical finite state machines (FSMs) for each agent:
+---
 
-- [Coder FSM](pkg/coder/STATES.md#coder-agent-finite-state-machine-canonical)
-- [Architect FSM](pkg/architect/STATES.md#architect-agent-finite-state-machine-canonical)
+## DevOps vs. App Stories
 
-Mermaid diagrams are included and enforced via tests and documentation. Any deviation is considered a bug.
+Maestro distinguishes two story types:  
+- **DevOps stories**: adjust Dockerfiles, build envs, CI/CD, etc.  
+- **App stories**: generate or modify application code  
 
-## Learn More
+This distinction is transparent to the user—architect generates stories automatically.
 
-- 📖 [Documentation & Wiki](https://github.com/dratner/maestro/wiki)
-- 💬 [Discussion Board](https://github.com/dratner/maestro/discussions)
+---
 
-## Contributing
+## Quickstart
 
-Maestro is MIT licensed and welcomes contributions.
-
-To contribute:
-- Join the [discussion board](https://github.com/dratner/maestro/discussions)
-- Open a [pull request](https://github.com/dratner/maestro/pulls) with improvements or bug fixes
- 
-## Requirements
-
-### System Requirements
-
-- **Go**: Version 1.24+ required for building the orchestrator
-- **Git**: Required for worktree management and code review workflows
-- **Make**: Required for build commands
-- **Docker**: Version 20.10+ for sandboxed AI agent execution (recommended)
-- **Platform**: Linux, macOS, or Windows with Docker Desktop
-- **Resources**: Minimum 2GB RAM, 1 CPU core available for containers
-
-### Docker Sandboxing
-
-The system uses Docker containers by default to provide secure, isolated execution environments for AI agents:
-
-- **Security**: Prevents agents from accessing files outside their workspace
-- **Isolation**: Each agent runs in a separate container with resource limits
-- **Compatibility**: Supports git worktrees and architect code review workflows
-
-For detailed information about Docker sandboxing, see [README_SANDBOX.md](README_SANDBOX.md).
-
-### Environment Variables
-
-Required environment variables for AI model access:
-
+> **Step 1:** Download binary (or build from source).  
+> **Step 2:** Export your API keys as environment variables.  
 ```bash
-# For Claude coding agents
-export ANTHROPIC_API_KEY=your_anthropic_api_key
-
-# For OpenAI o3 architect agents  
-export OPENAI_API_KEY=your_openai_api_key
-
-# Optional: Custom configuration file path
-export CONFIG_PATH=/path/to/config.json
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_TOKEN=ghp-...
 ```
 
-## Quick Start
-
-### Building the System
-
+> **Step 3:** Bootstrap a new project.  
 ```bash
-# Build the orchestrator
-make build
-
-# Run tests
-make test
-
-# Lint code
-make lint
-
-# Start the orchestrator
-make run
+mkdir myapp
+cd myapp
+maestro -bootstrap -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
 ```
 
-### Web UI
-
-The orchestrator includes a built-in web UI for monitoring and managing multi-agent workflows in real-time.
-
-#### Starting the Web UI
-
+> **Step 4:** Run Maestro.  
 ```bash
-# Start with web UI on port 8080
-./bin/orchestrator -ui
-
-# Start with custom working directory
-./bin/orchestrator -ui -workdir=/path/to/workspace
-
-# Development mode with temporary workspace
-make ui-dev
+maestro run
 ```
 
-The web UI will be available at `http://localhost:8080` and automatically opens in your browser.
+> **Step 5 (optional):** Open the web UI at [http://localhost:8080](http://localhost:8080).  
 
-#### Web UI Features
+---
 
-**Agent Monitoring:**
-- Real-time agent status grid showing ID, role, state, and last update time
-- Click on any agent card to view detailed information including:
-  - Current implementation plan
-  - Task content being processed
-  - State transition history
-- Color-coded states: WAITING (blue), WORKING (yellow), DONE (green), ERROR (red), ESCALATED (purple)
+## System Requirements
 
-**Queue Management:**
-- Expandable queue viewer for architect, coder, and shared work queues
-- Real-time message counts and queue status
-- Message inspection showing ID, type, from/to agents, and timestamps
-- Automatic polling when queues are expanded
+- **Binary**: ~42 MB fat binary (Linux & macOS tested; Windows soon)  
+- **Go**: Only needed if compiling (Go 1.24+)  
+- **Docker**: CLI + daemon required  
+- **GitHub**: Token with push/PR/merge perms  
+- **Resources**: Runs comfortably on a personal workstation  
 
-**Specification Upload:**
-- Drag-and-drop or click to upload `.md` specification files
-- File validation (max 100KB, markdown files only)
-- Automatic routing to architect agent when in WAITING state
-- Upload status feedback and error handling
+---
 
-**System Logs:**
-- Real-time log streaming with domain filtering (architect, coder, dispatch)
-- Auto-scroll option for continuous monitoring
-- Log level color coding (ERROR: red, WARN: yellow, INFO: blue, DEBUG: gray)
-- Clear logs functionality
+## Metrics & Dashboard
 
-**Escalation Management:**
-- Banner notification when agents require human intervention
-- Modal view for reviewing escalated questions and providing answers
-- Integration with architect escalation system
+Maestro tracks and displays:  
+- Completed stories  
+- Token use  
+- Dollar cost  
+- Wall-clock time  
+- Test results and code quality metrics  
 
-**System Controls:**
-- Graceful shutdown via web interface
-- Real-time connection status indicator
-- Last updated timestamp
-- Offline detection with retry mechanism
+---
 
-#### Web UI Architecture
+## FAQ
 
-- **Backend**: Go HTTP server integrated into orchestrator binary
-- **Frontend**: Vanilla JavaScript with Tailwind CSS
-- **Polling**: 1-second intervals for real-time updates
-- **Static Assets**: CSS and JS served from `/static/` route
-- **Templates**: Go html/template system for server-side rendering
+**Q: Do I have to use GitHub?**  
+Yes, for now. Maestro’s workflow relies on PRs and merges.  
 
-#### Development
+**Q: Can I skip Docker?**  
+No. Coders always run in Docker containers for isolation and reproducibility.  
 
-```bash
-# Build CSS from Tailwind source
-make build-css
+**Q: Why doesn’t the architect write code?**  
+By design. The architect enforces engineering discipline, ensures coders don’t review their own work, and keeps technical debt low.  
 
-# Start in development mode with temporary workspace
-make ui-dev
+**Q: Is this secure?**  
+Maestro is intended as a single-user tool running locally. Since code is already exchanged with third-party LLMs, the trade-off of running root containers is considered acceptable. Rootless support is planned.  
 
-# Rebuild and restart
-make build ui-dev
-```
+**Q: What happens if Maestro crashes?**  
+All stories, states, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.  
 
-The web UI provides a comprehensive dashboard for monitoring multi-agent workflows, making it easy to track progress, debug issues, and manage the system without command-line interaction.
+---
 
-### Running Individual Agents with AgentCtl
+## Roadmap
 
-The `agentctl` tool allows you to run individual agents in isolation for testing and development.
+- Local/offline model support  
+- Rootless Docker support  
+- Adding Slack-like chat for agents
+- Adding robust high-level documentation features
+- Refresh webUI including chat  
+- Video walkthrough and richer examples  
+- Expanded model/tool integrations  
 
-#### Canonical Usage
-
-```bash
-# Canonical format (defaults to coder agent and live mode with API key fallback)
-./bin/agentctl run [coder|architect] --input <file.json> [--workdir <dir>] [--mode <mock|live|debug>] [--cleanup]
-
-# Simple examples
-./bin/agentctl run --input tests/fixtures/test_task.json                    # Default: coder, auto-detect mode
-./bin/agentctl run coder --input tests/fixtures/test_task.json             # Explicit coder agent
-./bin/agentctl run architect --input stories/001.md --mode mock            # Architect in mock mode
-./bin/agentctl run coder --input task.json --workdir ./work/tmp --cleanup  # Custom workdir with cleanup
-```
-
-#### Mode Auto-Detection
-
-The tool automatically detects the best mode based on available API keys:
-- **live mode**: Used if `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variables are set
-- **mock mode**: Fallback when no API keys are available (shows informational message)
-- **debug mode**: Explicit debugging mode (specify with `--mode debug`)
-
-#### Workspace Management
-
-- **Default behavior**: Working directories are preserved after execution for inspection
-- **Cleanup**: Use `--cleanup` flag to remove temporary directories after execution
-- **Auto-generated**: If `--workdir` is not specified, creates temporary directories automatically
-
-#### Architect Commands
-
-The architect agent provides additional commands for managing escalations and monitoring:
-
-```bash
-# List all escalations requiring human intervention
-./bin/agentctl architect list-escalations
-
-# Filter escalations by status
-./bin/agentctl architect list-escalations --status pending
-./bin/agentctl architect list-escalations --status resolved
-
-# Output in JSON format for programmatic use
-./bin/agentctl architect list-escalations --format json
-
-# Specify custom work directory
-./bin/agentctl architect list-escalations --workdir /path/to/project/logs
-```
-
-#### Agent Types
-
-- **coder** (default) - Process coding tasks and generate implementations
-  - Input: TASK JSON messages
-  - Output: RESULT JSON with generated code and test results
-  - Modes: mock, live (with `ANTHROPIC_API_KEY`)
-
-- **architect** - Process development stories and generate task messages
-  - Input: Markdown story files (`.md`)
-  - Output: TASK JSON messages with requirements and implementation details
-  - Modes: mock (live mode not yet implemented)
-  - Additional Commands: `list-escalations` for monitoring business questions and review failures
-
-#### Modes
-
-- **auto-detect** - Automatically choose live or mock based on API key presence (default)
-- **mock** - Use mock implementations (fast, no API calls)
-- **live** - Use real API calls (requires environment variables)
-- **debug** - Enhanced debugging mode with additional logging
-
-#### Environment Variables for Live Mode
-
-```bash
-# For coder agent live mode
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
-
-# For architect agent live mode (when implemented)
-export OPENAI_API_KEY="your-openai-api-key"
-
-# Auto-detection works with either key present
-# Tool will inform you when falling back to mock mode
-```
-
-#### Examples
-
-```bash
-# Basic coder usage (auto-detects mode, preserves workdir)
-./bin/agentctl run --input tests/fixtures/test_task.json
-
-# Explicit coder with custom workdir and cleanup
-./bin/agentctl run coder --input tests/fixtures/test_task.json --workdir ./work/tmp --cleanup
-
-# Architect in mock mode (live mode not yet implemented)
-./bin/agentctl run architect --input stories/001.md --mode mock
-
-# Force mock mode even with API keys present
-./bin/agentctl run coder --input task.json --mode mock
-
-# Debug mode with enhanced logging
-./bin/agentctl run coder --input task.json --mode debug
-
-# Run full orchestrator flow with all agents using test spec
-./bin/orchestrator --spec tests/fixtures/test_spec.md
-
-# Monitor architect escalations (business questions, review failures)
-./bin/agentctl architect list-escalations --status pending
-./bin/agentctl architect list-escalations --format json --workdir ./project/logs
-```
-
-#### Sample Task JSON Format
-
-For testing the coder agent, create a task JSON file in the `tests/fixtures/` directory:
-
-```json
-{
-  "id": "test_msg_001",
-  "type": "TASK", 
-  "from_agent": "architect",
-  "to_agent": "coder",
-  "timestamp": "2025-06-10T19:00:00Z",
-  "payload": {
-    "content": "Create a simple health endpoint that returns JSON with status and timestamp",
-    "requirements": [
-      "GET /health endpoint",
-      "Return JSON response",
-      "Include timestamp"
-    ]
-  }
-}
-```
-
-## System Architecture
-
-### Core Components
-
-- **Task Dispatcher** (`pkg/dispatch/`) - Routes messages between agents with rate limiting and channel-based notifications
-- **Agent Message Protocol** (`pkg/proto/`) - Structured communication via `AgentMsg` with types: TASK, RESULT, ERROR, QUESTION, ANSWER, REQUEST, SHUTDOWN
-- **Rate Limiting** (`pkg/limiter/`) - Token bucket per-model rate limiting with daily budget enforcement
-- **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl` with daily rotation
-- **Configuration** (`pkg/config/`) - JSON config loader with environment variable overrides
-- **Agent Foundation** (`pkg/agent/`) - Core LLM abstractions, state machine interfaces, and foundational components
-- **Coder State Machine** (`pkg/coder/`) - Coder-specific state machine for structured coding workflows  
-- **Architect State Machine** (`pkg/architect/`) - Architect-specific state machine for spec processing and coordination
-- **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
-- **MCP Tool Integration** (`pkg/tools/`) - Model Context Protocol tools for file operations in workspaces
-
-### Channel-Based Architecture (Phase 6)
-
-The system uses a sophisticated channel-based communication pattern for real-time coordination:
-
-**Dispatcher Channels:**
-- `SubscribeIdleAgents()` - Architect subscription to real-time idle agent notifications
-- Pull-based message queues (shared work, architect work, coder feedback)
-- Agent state tracking with busy/idle transitions
-- Graceful shutdown with proper channel cleanup
-
-**Architect Worker Channels:**
-- `readyStoryCh` - Queue notifications when stories become ready (buffered, size 1)
-- `idleAgentCh` - Dispatcher notifications when agents become available (buffered, size 10) 
-- `reviewDoneCh` - Review worker completion signals (buffered, size 1)
-- `questionAnsweredCh` - Answer worker completion signals (buffered, size 1)
-
-**Message Flow:**
-1. **Task Assignment**: `TASK` → shared work queue → agent pull → mark busy
-2. **Completion Notification**: `RESULT` with completion status → mark idle → notify architect
-3. **Question/Answer**: `QUESTION` → architect queue → answer worker → `ANSWER` → coder queue
-4. **Review Process**: `REQUEST` → architect queue → review worker → `RESULT` → coder queue
-
-### Agent Flow (Phase 6 Architecture)
-
-1. **Architect Workflow** - Processes development specifications through state machine:
-   - **SPEC_PARSING**: Parse specification files into requirements using LLM or deterministic parser
-   - **STORY_GENERATION**: Generate story files from requirements with dependency tracking
-   - **QUEUE_AND_DISPATCH**: Merged state that manages story queue and dispatches ready stories:
-     - Load stories and detect dependency cycles
-     - Listen on channels for ready stories (`readyStoryCh`) and idle agents (`idleAgentCh`)
-     - Assign stories to available coding agents through dispatcher
-     - Handle completion via channel notifications
-   - **AWAIT_HUMAN_FEEDBACK**: Handle business escalations requiring human intervention
-   - **DONE**: Workflow completed successfully
-
-2. **Coder Workflow** - Implements stories through v2 FSM:
-   - **WAITING**: Idle state, waiting for task assignment
-   - **PLANNING**: Analyze task requirements and create implementation plan
-   - **PLAN_REVIEW**: Request architect approval of implementation plan (REQUEST→RESULT flow)
-   - **CODING**: Generate code using MCP tools to create files in workspace
-   - **TESTING**: Run formatting, building, and tests on generated code
-   - **FIXING**: Apply fixes when tests fail, return to TESTING
-   - **CODE_REVIEW**: Request architect approval of code implementation (REQUEST→RESULT flow)
-   - **QUESTION**: Ask architect technical questions with origin tracking (QUESTION→ANSWER flow)
-   - **DONE**: Task completed successfully
-
-3. **Channel-Based Coordination**:
-   - **Answer Worker**: Long-running goroutine handles QUESTION messages using LLM
-   - **Review Worker**: Long-running goroutine performs automated code review with quality checks
-   - **Real-time Notifications**: Dispatcher immediately notifies architect when agents become idle
-   - **Pull-based Queues**: Agents actively pull work from dispatcher queues
-
-4. **System Features**: Event logging, escalation tracking, agent state persistence, graceful shutdown
-
-## Configuration
-
-The system uses JSON configuration with environment variable overrides:
-
-```json
-{
-  "models": {
-    "claude_sonnet4": {
-      "max_tokens_per_minute": 5000,
-      "max_budget_per_day_usd": 50.0,
-      "api_key": "${ANTHROPIC_API_KEY}",
-      "agents": [
-        {"name": "claude-coder", "id": "001", "type": "coder", "workdir": "./work/claude"}
-      ]
-    },
-    "openai_o3": {
-      "max_tokens_per_minute": 2000,
-      "max_budget_per_day_usd": 20.0, 
-      "api_key": "${OPENAI_API_KEY}",
-      "agents": [
-        {"name": "architect", "id": "001", "type": "architect", "workdir": "./work/architect"}
-      ]
-    }
-  },
-  "repo_url": "git@github.com:user/repo.git",
-  "base_branch": "main",
-  "mirror_dir": ".mirrors",
-  "worktree_pattern": "{AGENT_ID}/{STORY_ID}",
-  "branch_pattern": "story-{STORY_ID}"
-}
-```
-
-### Git Worktree Support (Worktree MVP)
-
-The system supports Git worktrees for isolated agent workspaces, enabling multiple concurrent story development:
-
-**Story File Naming Constraint**: Story files MUST follow the pattern `{ID}.md` (e.g., `050.md`, `123.md`). The filename becomes the canonical story identifier and Git branch name. Invalid examples: `R-12345_login.md` → unclear story ID extraction.
-
-**Startup Sequence**:
-1. **Parse configuration** from `CONFIG_PATH` or `--config` flag
-2. **Create WORKDIR** if missing (from config or CLI argument)  
-3. **Initialize Git mirrors** lazily in `{WORKDIR}/.mirrors/` subdirectory
-4. **Start agents** with workspace managers configured
-
-**Git Configuration**:
-- `repo_url`: SSH repository URL for clone/push operations
-- `base_branch`: Base branch for worktree creation (default: `main`)
-- `mirror_dir`: Mirror repository location relative to WORKDIR (default: `.mirrors`)
-- `worktree_pattern`: Workspace path template (default: `{AGENT_ID}/{STORY_ID}`)
-- `branch_pattern`: Git branch naming (default: `story-{STORY_ID}`)
-
-**Workspace Flow**:
-1. **SETUP**: Create mirror clone (if needed), add worktree, create story branch
-2. **Code Development**: Generate code in isolated workspace
-3. **TESTING**: Run `make test` in worktree directory  
-4. **Branch Push**: Push story branch for review (if `GITHUB_TOKEN` available)
-5. **Cleanup**: Remove worktree after completion, prepare for next story
-
-This enables agents to work on multiple stories sequentially with proper isolation and cleanup.
-
-## Development Stories
-
-The system follows story-driven development with ordered implementation stories:
-
-- **Stories 001-012**: MVP implementation (completed)
-- **Stories 013-019**: Phase 2 - Real LLM integrations and standalone testing tools (completed)  
-- **Stories 040-046**: Phase 4 - Architect Agent Core Workflow (completed)
-- **Stories 060-064**: Phase 6 - Refactor & State-Machine Alignment (completed)
-  - Story 060: Repository refactor to new package layout
-  - Story 061: Coding Agent driver update to v2 FSM  
-  - Story 062: Architect driver update (merged queue/dispatch + channels)
-  - Story 063: Dispatcher & channel wiring with production-ready agent state tracking
-  - Story 064: Documentation & diagram sync
-
-See `PROJECT.md`, `PHASE2.md`, `PHASE4.md`, and `PHASE6.md` for detailed story specifications.
-
-## Testing
-
-```bash
-# Run all tests
-go test ./...
-
-# Run end-to-end smoke test
-go test -v . -run TestE2ESmokeTest
-
-# Test individual agents (using files in tests/fixtures/)
-./bin/agentctl run architect --input stories/001.md --mode mock
-./bin/agentctl run coder --input tests/fixtures/test_task.json --mode mock
-
-# Test live mode with workspace (auto-detects mode)
-./bin/agentctl run coder --input tests/fixtures/test_task.json --workdir ./work/tmp
-
-# Test architect escalation commands
-./bin/agentctl architect list-escalations
-./bin/agentctl architect list-escalations --status pending --format json
-```
-
-## Directory Structure
-
-```
-orchestrator/
-├── cmd/             # Command-line tools
-│   ├── agentctl/    # Standalone agent runner CLI
-│   └── replayer/    # Event log replay tool
-├── config/          # Configuration files
-├── docs/            # Documentation and style guides
-├── logs/            # Runtime event logs (generated)
-├── pkg/             # Core packages (Phase 6 clean architecture)
-│   ├── agent/       # Foundational abstractions: LLM clients, state machine building blocks
-│   ├── architect/   # Architect agent: spec processing, story generation, coordination state machine
-│   ├── coder/       # Coder agent: implementation workflows, coding state machine
-│   ├── config/      # Configuration: JSON loader with environment variable overrides
-│   ├── contextmgr/  # Context management for LLM conversations
-│   ├── dispatch/    # Message routing: queue management, rate limiting, channel notifications
-│   ├── eventlog/    # Structured logging to logs/events.jsonl with daily rotation
-│   ├── limiter/     # Token bucket rate limiting with daily budget enforcement
-│   ├── logx/        # Structured logging utilities
-│   ├── proto/       # Message protocol: AgentMsg definitions and validation
-│   ├── state/       # Agent state storage and recovery
-│   ├── templates/   # Prompt templates: reusable LLM prompt templates
-│   ├── testkit/     # Testing utilities and helpers
-│   ├── tools/       # MCP integration: Model Context Protocol tool implementations
-│   └── webui/       # Web UI server: HTTP API and dashboard for monitoring agents
-├── status/          # Agent status reports (generated)
-├── stories/         # Generated story files from specifications
-├── tests/           # Test files and fixtures
-│   └── fixtures/    # Test input files (JSON, MD)
-├── web/             # Web UI frontend assets
-│   ├── static/      # Static assets (CSS, JavaScript)
-│   │   ├── css/     # Compiled Tailwind CSS
-│   │   └── js/      # Frontend JavaScript
-│   └── templates/   # Go HTML templates
-└── work/            # Agent workspace directories with isolated state
-```
+---
 
 ## License
 
-See project documentation for license information.
+MIT  
