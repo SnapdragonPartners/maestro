@@ -203,6 +203,11 @@ func (k *Kernel) Stop() error {
 	return nil
 }
 
+// ProjectDir returns the project directory path.
+func (k *Kernel) ProjectDir() string {
+	return k.projectDir
+}
+
 // startPersistenceWorker begins the database persistence worker goroutine.
 // This consolidates the persistence logic that was duplicated between bootstrap and main.
 func (k *Kernel) startPersistenceWorker() {

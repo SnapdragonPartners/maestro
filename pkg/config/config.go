@@ -69,9 +69,24 @@ import (
 //nolint:gochecknoglobals // Intentional singleton pattern for config management
 var (
 	config     *Config
-	projectDir string // Immutable after LoadConfig - set once at startup
+	projectDir string       // Immutable after LoadConfig - set once at startup
+	logger     *logx.Logger // Package logger for config operations
 	mu         sync.RWMutex
 )
+
+// getLogger returns the config logger, initializing it if needed.
+func getLogger() *logx.Logger {
+	if logger == nil {
+		logger = logx.NewLogger("config")
+	}
+	return logger
+}
+
+// LogInfo logs an info message using the config logger.
+// This is exposed for other packages (like main) to use consistent logging.
+func LogInfo(format string, args ...interface{}) {
+	getLogger().Info(format, args...)
+}
 
 // Model represents an LLM model with its capabilities and limits.
 type Model struct {
@@ -441,6 +456,7 @@ func LoadConfig(inputProjectDir string) error {
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Missing file - create new config with defaults
+		getLogger().Info("📝 Config file not found, creating new config at %s", configPath)
 		config = createDefaultConfig()
 
 		// Validate default config immediately (including API keys and tools)
@@ -451,10 +467,12 @@ func LoadConfig(inputProjectDir string) error {
 		if err := saveConfigLocked(); err != nil {
 			return fmt.Errorf("failed to save initial config: %w", err)
 		}
+		getLogger().Info("✅ New config file created and validated")
 		return nil
 	}
 
 	// File exists - try to load it
+	getLogger().Info("📝 Loading config from %s", configPath)
 	loadedConfig, err := loadConfigFromFile(configPath)
 	if err != nil {
 		return fmt.Errorf("fatal: config file exists but cannot be parsed (to avoid overwriting your changes): %w", err)
@@ -471,6 +489,7 @@ func LoadConfig(inputProjectDir string) error {
 	// Validate target container and set runtime flag (testing with docker inspect only)
 	config.validTargetImage = validateTargetContainer(config)
 
+	getLogger().Info("✅ Config loaded and validated successfully")
 	return nil
 }
 
@@ -982,7 +1001,7 @@ func applyDefaults(config *Config) {
 
 func validateConfig(config *Config) error {
 	// Debug logging
-	fmt.Printf("[config] 🔑 Validating environment variables\n")
+	getLogger().Info("🔑 Validating environment variables")
 
 	// Validate GITHUB_TOKEN environment variable (required for all git operations)
 	githubToken := GetGitHubToken()
@@ -997,7 +1016,7 @@ func validateConfig(config *Config) error {
 	if len(githubToken) < 20 {
 		return fmt.Errorf("GITHUB_TOKEN appears too short to be valid (got %d chars, need at least 20)", len(githubToken))
 	}
-	fmt.Printf("[config] 🔑 ✅ GITHUB_TOKEN validated successfully (%d chars)\n", len(githubToken))
+	getLogger().Info("🔑 ✅ GITHUB_TOKEN validated successfully (%d chars)", len(githubToken))
 
 	// Validate LLM API keys for configured models
 	if err := validateRequiredAPIKeys(config); err != nil {
@@ -1057,7 +1076,7 @@ func validateRequiredAPIKeys(cfg *Config) error {
 	}
 
 	// Debug logging
-	fmt.Printf("[config] 🔑 Validating API keys for configured models\n")
+	getLogger().Info("🔑 Validating API keys for configured models")
 
 	// Collect all required providers based on configured models
 	requiredProviders := make(map[string]bool)
@@ -1069,7 +1088,7 @@ func validateRequiredAPIKeys(cfg *Config) error {
 			return fmt.Errorf("coder model %s: %w", cfg.Agents.CoderModel, err)
 		}
 		requiredProviders[coderProvider] = true
-		fmt.Printf("[config] 🔑 Coder model %s requires provider %s\n", cfg.Agents.CoderModel, coderProvider)
+		getLogger().Info("🔑 Coder model %s requires provider %s", cfg.Agents.CoderModel, coderProvider)
 	}
 
 	// Check architect model
@@ -1079,7 +1098,7 @@ func validateRequiredAPIKeys(cfg *Config) error {
 			return fmt.Errorf("architect model %s: %w", cfg.Agents.ArchitectModel, err)
 		}
 		requiredProviders[architectProvider] = true
-		fmt.Printf("[config] 🔑 Architect model %s requires provider %s\n", cfg.Agents.ArchitectModel, architectProvider)
+		getLogger().Info("🔑 Architect model %s requires provider %s", cfg.Agents.ArchitectModel, architectProvider)
 	}
 
 	// Validate API keys for each required provider
@@ -1124,17 +1143,17 @@ func validateRequiredAPIKeys(cfg *Config) error {
 			default:
 				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
 			}
-			fmt.Printf("[config] 🔑 ✅ %s validated successfully (%d chars)\n", envVar, len(apiKey))
+			getLogger().Info("🔑 ✅ %s validated successfully (%d chars)", envVar, len(apiKey))
 		}
 	}
 
-	fmt.Printf("[config] 🔑 ✅ All required API keys validated successfully\n")
+	getLogger().Info("🔑 ✅ All required API keys validated successfully")
 	return nil
 }
 
 // validateExternalTools checks that all required external tools are available and detects Docker capabilities.
 func validateExternalTools(config *Config) error {
-	fmt.Printf("[config] 🔧 Validating external tool dependencies\n")
+	getLogger().Info("🔧 Validating external tool dependencies")
 
 	requiredTools := map[string]string{
 		"git":    "Git is required for repository operations",
@@ -1148,7 +1167,7 @@ func validateExternalTools(config *Config) error {
 		if err := CheckToolAvailable(tool); err != nil {
 			errors = append(errors, fmt.Sprintf("%s not found on PATH: %s", tool, description))
 		} else {
-			fmt.Printf("[config] 🔧 ✅ %s: available\n", tool)
+			getLogger().Info("🔧 ✅ %s: available", tool)
 		}
 	}
 
@@ -1157,7 +1176,7 @@ func validateExternalTools(config *Config) error {
 		if err := CheckDockerDaemonRunning(); err != nil {
 			errors = append(errors, fmt.Sprintf("Docker daemon is not running: %s", err.Error()))
 		} else {
-			fmt.Printf("[config] 🔧 ✅ Docker daemon: running\n")
+			getLogger().Info("🔧 ✅ Docker daemon: running")
 
 			// Check buildx availability and store result in config
 			if config.Container == nil {
@@ -1165,10 +1184,10 @@ func validateExternalTools(config *Config) error {
 			}
 			if err := CheckBuildxAvailable(); err != nil {
 				config.Container.BuildxAvailable = false
-				fmt.Printf("[config] 🔧 ⚠️ Docker buildx: not available (will use docker build)\n")
+				getLogger().Warn("🔧 ⚠️ Docker buildx: not available (will use docker build)")
 			} else {
 				config.Container.BuildxAvailable = true
-				fmt.Printf("[config] 🔧 ✅ Docker buildx: available\n")
+				getLogger().Info("🔧 ✅ Docker buildx: available")
 			}
 		}
 	}
@@ -1177,7 +1196,7 @@ func validateExternalTools(config *Config) error {
 		return fmt.Errorf("missing required tools:\n  - %s", strings.Join(errors, "\n  - "))
 	}
 
-	fmt.Printf("[config] 🔧 ✅ All external tools validated successfully\n")
+	getLogger().Info("🔧 ✅ All external tools validated successfully")
 	return nil
 }
 
