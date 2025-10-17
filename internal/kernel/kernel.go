@@ -91,7 +91,7 @@ func (k *Kernel) initializeServices() error {
 	k.BuildService = build.NewBuildService()
 
 	// Create web server (will be started conditionally)
-	k.WebServer = webui.NewServer(k.Dispatcher, nil, k.projectDir)
+	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir)
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil

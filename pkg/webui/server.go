@@ -4,10 +4,12 @@ package webui
 import (
 	"bufio"
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -21,8 +23,13 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/state"
 )
+
+//go:embed web/templates/*.html
+var templateFS embed.FS
+
+//go:embed web/static
+var staticFS embed.FS
 
 // StoryProvider interface for agents that can provide stories.
 type StoryProvider interface {
@@ -32,7 +39,6 @@ type StoryProvider interface {
 // Server represents the web UI HTTP server.
 type Server struct {
 	dispatcher *dispatch.Dispatcher
-	store      *state.Store
 	logger     *logx.Logger
 	templates  *template.Template
 	workDir    string
@@ -47,27 +53,16 @@ type AgentListItem struct {
 }
 
 // NewServer creates a new web UI server.
-func NewServer(dispatcher *dispatch.Dispatcher, store *state.Store, workDir string) *Server {
-	// Load templates.
-	templates, err := template.ParseGlob("web/templates/*.html")
+func NewServer(dispatcher *dispatch.Dispatcher, workDir string) *Server {
+	// Load templates from embedded filesystem
+	templates, err := template.ParseFS(templateFS, "web/templates/*.html")
 	if err != nil {
-		// If templates not found, use embedded or fallback.
-		templates = template.New("fallback")
-		// Add a basic fallback template.
-		if _, err := templates.New("base.html").Parse(`
-		<!DOCTYPE html>
-		<html><head><title>Maestro - Fallback</title></head>
-		<body><h1>Maestro Web UI</h1><p>Template loading failed: {{.Error}}</p></body>
-		</html>`); err != nil {
-			// If even the fallback template fails, log the error.
-			// This is a programming error, not a runtime error.
-			panic(fmt.Sprintf("Failed to parse fallback template: %v", err))
-		}
+		// This should never happen since templates are embedded at compile time
+		panic(fmt.Sprintf("Failed to parse embedded templates: %v", err))
 	}
 
 	return &Server{
 		dispatcher: dispatcher,
-		store:      store,
 		logger:     logx.NewLogger("webui"),
 		workDir:    workDir,
 		templates:  templates,
@@ -78,7 +73,13 @@ func NewServer(dispatcher *dispatch.Dispatcher, store *state.Store, workDir stri
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Web UI routes.
 	mux.HandleFunc("/", s.handleDashboard)
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static/"))))
+
+	// Serve static files from embedded filesystem
+	staticSubFS, err := fs.Sub(staticFS, "web/static")
+	if err != nil {
+		panic(fmt.Sprintf("Failed to access embedded static files: %v", err))
+	}
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSubFS))))
 
 	// API endpoints.
 	mux.HandleFunc("/api/agents", s.handleAgents)
@@ -99,74 +100,29 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build response list.
+	// Build response list from dispatcher (source of truth for agent state)
 	agents := make([]AgentListItem, 0)
 
-	// Get agent info from dispatcher.
-	if s.dispatcher != nil {
-		registeredAgents := s.dispatcher.GetRegisteredAgents()
-
-		for i := range registeredAgents {
-			agentInfo := &registeredAgents[i]
-			var currentState string
-			var lastTS time.Time
-
-			if agentInfo.Driver != nil {
-				// Use driver's current state.
-				currentState = agentInfo.State
-				lastTS = time.Now() // Use current time for live agents
-			} else {
-				// Fallback to store if driver not available.
-				if s.store != nil {
-					agentState, err := s.store.GetStateInfo(agentInfo.ID)
-					if err != nil {
-						currentState = proto.StateWaiting.String()
-						lastTS = time.Now()
-					} else {
-						currentState = agentState.State
-						lastTS = agentState.LastTimestamp
-					}
-				} else {
-					// No state store available
-					currentState = proto.StateWaiting.String()
-					lastTS = time.Now()
-				}
-			}
-
-			agents = append(agents, AgentListItem{
-				ID:     agentInfo.ID,
-				Role:   agentInfo.Type.String(),
-				State:  currentState,
-				LastTS: lastTS,
-			})
+	if s.dispatcher == nil {
+		// No dispatcher means no agents running
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(agents); err != nil {
+			s.logger.Error("Failed to encode agents response: %v", err)
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		}
-	} else if s.store != nil {
-		// Fallback: get agents from store when dispatcher is nil
-		agentIDs, err := s.store.ListAgents()
-		if err != nil {
-			s.logger.Error("Failed to list agents from store: %v", err)
-		} else {
-			for _, agentID := range agentIDs {
-				agentState, err := s.store.GetStateInfo(agentID)
-				if err != nil {
-					s.logger.Warn("Failed to get state for agent %s: %v", agentID, err)
-					continue
-				}
+		return
+	}
 
-				// Extract role from agent ID (format: "role:number")
-				role := "unknown"
-				if colonIndex := strings.Index(agentID, ":"); colonIndex != -1 {
-					role = agentID[:colonIndex]
-				}
+	registeredAgents := s.dispatcher.GetRegisteredAgents()
+	for i := range registeredAgents {
+		agentInfo := &registeredAgents[i]
 
-				agents = append(agents, AgentListItem{
-					ID:     agentID,
-					Role:   role,
-					State:  agentState.State,
-					LastTS: agentState.LastTimestamp,
-				})
-			}
-		}
+		agents = append(agents, AgentListItem{
+			ID:     agentInfo.ID,
+			Role:   agentInfo.Type.String(),
+			State:  agentInfo.State,
+			LastTS: time.Now(), // Agents are live, use current time
+		})
 	}
 
 	// Sort by ID for consistent ordering.
@@ -201,22 +157,37 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 
 	agentID := path
 
-	// Get agent state.
-	if s.store == nil {
-		s.logger.Warn("State store not available for agent: %s", agentID)
-		http.Error(w, "Agent state not available", http.StatusNotFound)
+	// Get agent from dispatcher
+	if s.dispatcher == nil {
+		http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
 		return
 	}
-	agentState, err := s.store.GetStateInfo(agentID)
-	if err != nil {
+
+	registeredAgents := s.dispatcher.GetRegisteredAgents()
+	var agentInfo *dispatch.AgentInfo
+	for i := range registeredAgents {
+		if registeredAgents[i].ID == agentID {
+			agentInfo = &registeredAgents[i]
+			break
+		}
+	}
+
+	if agentInfo == nil {
 		s.logger.Warn("Agent not found: %s", agentID)
 		http.Error(w, "Agent not found", http.StatusNotFound)
 		return
 	}
 
+	// Build response with available agent information
+	response := map[string]interface{}{
+		"id":    agentInfo.ID,
+		"type":  agentInfo.Type.String(),
+		"state": agentInfo.State,
+	}
+
 	// Send JSON response.
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(agentState); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.logger.Error("Failed to encode agent response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
@@ -281,7 +252,7 @@ func (s *Server) handleStories(w http.ResponseWriter, r *http.Request) {
 	// Check if architect is available.
 	_, err := s.findArchitectState()
 	if err != nil {
-		s.logger.Warn("Failed to find architect for stories: %v", err)
+		s.logger.Debug("Architect not available for stories request: %v", err)
 		http.Error(w, "Architect not available", http.StatusServiceUnavailable)
 		return
 	}
@@ -344,20 +315,12 @@ func (s *Server) validateUploadFile(_ multipart.File, header *multipart.FileHead
 
 // checkArchitectAvailability checks if architect is available.
 func (s *Server) checkArchitectAvailability() error {
-	if s.dispatcher == nil {
-		return fmt.Errorf("dispatcher not available")
-	}
-
 	architectState, err := s.findArchitectState()
 	if err != nil {
-		return fmt.Errorf("failed to check architect state: %w", err)
+		return err
 	}
 
-	if architectState == nil {
-		return fmt.Errorf("no architect available")
-	}
-
-	if architectState.State != proto.StateWaiting.String() {
+	if architectState != proto.StateWaiting.String() {
 		return fmt.Errorf("architect is busy")
 	}
 
@@ -832,88 +795,46 @@ func (s *Server) StartServer(ctx context.Context, port int) error {
 
 	s.logger.Info("Starting web UI server on port %d", port)
 
-	// Start server in a goroutine.
-	serverDone := make(chan error, 1)
+	// Start server in a goroutine (non-blocking).
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("Server error: %v", err)
-			serverDone <- err
-		} else {
-			serverDone <- nil
 		}
 	}()
 
-	// Wait for either context cancellation or server error.
-	select {
-	case err := <-serverDone:
-		if err != nil {
-			return err
-		}
-	case <-ctx.Done():
-		// Graceful shutdown.
+	// Start graceful shutdown handler in background.
+	go func() {
+		<-ctx.Done()
+		// Graceful shutdown - use background context with timeout since parent is cancelled.
+		// We can't use the cancelled parent context for shutdown operations.
 		s.logger.Info("Shutting down web UI server")
-		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		//nolint:contextcheck // Parent context is cancelled; we need a fresh context for shutdown
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("HTTP server shutdown failed: %w", err)
+			s.logger.Error("HTTP server shutdown failed: %v", err)
 		}
-		return nil
-	}
+	}()
 
 	return nil
 }
 
-// findArchitectState finds the state of the architect agent.
-func (s *Server) findArchitectState() (*state.AgentState, error) {
-	// First try dispatcher approach if available.
-	if s.dispatcher != nil {
-		// Get registered agents from dispatcher using proper type checking.
-		registeredAgents := s.dispatcher.GetRegisteredAgents()
+// findArchitectState finds the state of the architect agent from the dispatcher.
+func (s *Server) findArchitectState() (string, error) {
+	if s.dispatcher == nil {
+		return "", fmt.Errorf("dispatcher not available")
+	}
 
-		// Find the architect agent by type.
-		for i := range registeredAgents {
-			agentInfo := &registeredAgents[i]
-			if agentInfo.Type == agent.TypeArchitect {
-				// First try to get state from store.
-				if s.store != nil {
-					agentState, err := s.store.GetStateInfo(agentInfo.ID)
-					if err == nil {
-						return agentState, nil
-					}
-				}
+	// Get registered agents from dispatcher
+	registeredAgents := s.dispatcher.GetRegisteredAgents()
 
-				// If state not found in store, use live agent state from dispatcher.
-				// This handles the case where agent is running but hasn't saved state yet.
-				liveState := &state.AgentState{
-					State:           agentInfo.State,
-					LastTimestamp:   time.Now(),
-					ContextSnapshot: make(map[string]any),
-				}
-				return liveState, nil
-			}
+	// Find the architect agent by type
+	for i := range registeredAgents {
+		agentInfo := &registeredAgents[i]
+		if agentInfo.Type == agent.TypeArchitect {
+			return agentInfo.State, nil
 		}
 	}
 
-	// Fallback to old behavior: scan state store for agents with "architect:" prefix.
-	if s.store == nil {
-		return nil, fmt.Errorf("no state store available and no architect found in dispatcher")
-	}
-	agents, err := s.store.ListAgents()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list agents: %w", err)
-	}
-
-	// Find the architect agent by prefix (legacy behavior).
-	for _, agentID := range agents {
-		if strings.HasPrefix(agentID, "architect:") {
-			agentState, err := s.store.GetStateInfo(agentID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get architect state: %w", err)
-			}
-			return agentState, nil
-		}
-	}
-
-	// No architect found.
-	return nil, fmt.Errorf("no architect agent found")
+	return "", fmt.Errorf("no architect agent found")
 }
