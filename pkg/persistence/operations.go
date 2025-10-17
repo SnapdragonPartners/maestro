@@ -41,6 +41,7 @@ const (
 	OpGetAgentRequestsByStory            = "get_agent_requests_by_story"
 	OpGetAgentResponsesByStory           = "get_agent_responses_by_story"
 	OpGetAgentPlansByStory               = "get_agent_plans_by_story"
+	OpGetRecentMessages                  = "get_recent_messages"
 	OpBatchUpsertStoriesWithDependencies = "batch_upsert_stories_with_dependencies"
 )
 
@@ -742,4 +743,108 @@ func (ops *DatabaseOperations) BatchUpsertStoriesWithDependencies(req *BatchUpse
 	}
 
 	return nil
+}
+
+// RecentMessage represents a message (request or response) for the message viewer.
+type RecentMessage struct {
+	RequestType  *string // For requests: "question" or "approval"
+	ApprovalType *string // For approval requests: "plan", "code", "budget_review", "completion"
+	ResponseType *string // For responses: "answer" or "result"
+	Status       *string // For responses: "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
+	Feedback     *string // For responses: additional feedback
+	Reason       *string // For requests: reason for the request
+	ID           string
+	Type         string // "REQUEST" or "RESPONSE"
+	FromAgent    string
+	ToAgent      string
+	StoryID      string
+	CreatedAt    string
+	Content      string
+}
+
+// GetRecentMessages returns the most recent agent requests and responses across all stories.
+func (ops *DatabaseOperations) GetRecentMessages(limit int) ([]*RecentMessage, error) {
+	query := `
+		SELECT
+			id,
+			'REQUEST' as type,
+			from_agent,
+			to_agent,
+			story_id,
+			created_at,
+			request_type,
+			approval_type,
+			NULL as response_type,
+			NULL as status,
+			content,
+			NULL as feedback,
+			reason
+		FROM agent_requests
+		UNION ALL
+		SELECT
+			id,
+			'RESPONSE' as type,
+			from_agent,
+			to_agent,
+			story_id,
+			created_at,
+			NULL as request_type,
+			NULL as approval_type,
+			response_type,
+			status,
+			content,
+			feedback,
+			NULL as reason
+		FROM agent_responses
+		ORDER BY created_at DESC
+		LIMIT ?
+	`
+
+	rows, err := ops.db.Query(query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query recent messages: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var messages []*RecentMessage
+	for rows.Next() {
+		var msg RecentMessage
+		err := rows.Scan(
+			&msg.ID, &msg.Type, &msg.FromAgent, &msg.ToAgent, &msg.StoryID, &msg.CreatedAt,
+			&msg.RequestType, &msg.ApprovalType, &msg.ResponseType, &msg.Status,
+			&msg.Content, &msg.Feedback, &msg.Reason,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		messages = append(messages, &msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return messages, nil
+}
+
+// GetAllStoriesWithDependencies returns all stories with their dependencies populated.
+func (ops *DatabaseOperations) GetAllStoriesWithDependencies() ([]*Story, error) {
+	// First get all stories
+	stories, err := ops.GetAllStories()
+	if err != nil {
+		return nil, err
+	}
+
+	// Then fetch dependencies for each story
+	for _, story := range stories {
+		deps, err := ops.GetStoryDependencies(story.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get dependencies for story %s: %w", story.ID, err)
+		}
+		story.DependsOn = deps
+	}
+
+	return stories, nil
 }

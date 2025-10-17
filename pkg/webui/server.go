@@ -4,6 +4,7 @@ package webui
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -18,10 +19,13 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 )
 
@@ -90,6 +94,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/answer", s.handleAnswer)
 	mux.HandleFunc("/api/shutdown", s.handleShutdown)
 	mux.HandleFunc("/api/logs", s.handleLogs)
+	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/healthz", s.handleHealth)
 }
 
@@ -258,6 +263,7 @@ func (s *Server) handleStories(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get the architect agent from dispatcher to access its stories.
+	// Stories are maintained in architect's in-memory state (canonical source for active session).
 	registeredAgents := s.dispatcher.GetRegisteredAgents()
 	var stories []*architect.QueuedStory
 
@@ -817,6 +823,91 @@ func (s *Server) StartServer(ctx context.Context, port int) error {
 	}()
 
 	return nil
+}
+
+// MessageEntry represents a message in the message viewer.
+type MessageEntry struct {
+	RequestType  *string `json:"request_type,omitempty"`  // "question" or "approval"
+	ApprovalType *string `json:"approval_type,omitempty"` // "plan", "code", "budget_review", "completion"
+	ResponseType *string `json:"response_type,omitempty"` // "answer" or "result"
+	Status       *string `json:"status,omitempty"`        // "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
+	Feedback     *string `json:"feedback,omitempty"`      // For responses
+	Reason       *string `json:"reason,omitempty"`        // For requests
+	Timestamp    string  `json:"timestamp"`
+	ID           string  `json:"id"`
+	Type         string  `json:"type"`
+	From         string  `json:"from"`
+	To           string  `json:"to"`
+	StoryID      string  `json:"story_id,omitempty"`
+	Content      string  `json:"content"`
+}
+
+// handleMessages implements GET /api/messages - returns recent inter-agent messages.
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read logs and extract message events
+	logs := s.readMessageLogs()
+
+	// Send JSON response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(logs); err != nil {
+		s.logger.Error("Failed to encode messages response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Debug("Served %d message entries", len(logs))
+}
+
+// readMessageLogs reads message events from the database.
+func (s *Server) readMessageLogs() []MessageEntry {
+	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
+
+	// Open database using sql package
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		s.logger.Debug("Failed to open database for message reading: %v", err)
+		return []MessageEntry{}
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			s.logger.Warn("Failed to close database: %v", closeErr)
+		}
+	}()
+
+	// Use the persistence operations package
+	ops := persistence.NewDatabaseOperations(db)
+	recentMessages, err := ops.GetRecentMessages(5)
+	if err != nil {
+		s.logger.Warn("Failed to query recent messages: %v", err)
+		return []MessageEntry{}
+	}
+
+	// Convert persistence.RecentMessage to MessageEntry
+	messages := make([]MessageEntry, 0, len(recentMessages))
+	for _, msg := range recentMessages {
+		messages = append(messages, MessageEntry{
+			Timestamp:    msg.CreatedAt,
+			ID:           msg.ID,
+			Type:         msg.Type,
+			From:         msg.FromAgent,
+			To:           msg.ToAgent,
+			StoryID:      msg.StoryID,
+			RequestType:  msg.RequestType,
+			ApprovalType: msg.ApprovalType,
+			ResponseType: msg.ResponseType,
+			Status:       msg.Status,
+			Content:      msg.Content,
+			Feedback:     msg.Feedback,
+			Reason:       msg.Reason,
+		})
+	}
+
+	return messages
 }
 
 // findArchitectState finds the state of the architect agent from the dispatcher.

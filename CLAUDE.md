@@ -179,6 +179,57 @@ Development follows ordered stories defined in PROJECT.md. Each story has:
 
 Stories 001-012 define the complete MVP implementation path from scaffolding to end-to-end testing.
 
+## Data Architecture & Persistence
+
+### Canonical Data Sources
+
+The system maintains clear separation between ephemeral and persistent data:
+
+**Architect In-Memory State (Canonical for Stories)**
+- Stories are the architect's in-memory state - this is the **single source of truth for active stories**
+- Represents "what's happening right now" in the current session
+- Automatically filters out stale stories from previous runs
+- Web UI pulls story data from architect's `GetStoryList()` method
+- Database stores stories for audit/history, but architect state is authoritative for active work
+
+**Database (Canonical for Messages & Audit Data)**
+- Messages (QUESTION/ANSWER, REQUEST/RESULT) are **canonical in database**
+- Agents process messages and discard them (fire-and-forget to persistence queue)
+- Database is the only source of truth for message history
+- All audit data (agent_requests, agent_responses, agent_plans) persists to database
+- Web UI queries database directly for message viewer
+
+### Session Management
+
+**Session ID in Config:**
+- `config.json` contains `session_id` field (generated UUID at startup)
+- Persistence layer reads `session_id` from config for all writes
+- Agents remain unaware of sessions - persistence layer adds `session_id` automatically
+- Web UI defaults to current session, can query historical sessions explicitly
+
+**Session Lifecycle:**
+1. **New Session**: Generate new UUID, save to config.json, all writes use new session_id
+2. **Restart Session**: Keep existing session_id in config.json to continue interrupted work
+3. **Historical Analysis**: Web UI can request data from old session_id via query parameters
+
+**Agent Isolation:**
+- Agents only write via fire-and-forget queue (never read database)
+- Agents never know about session_id
+- Persistence worker adds session_id before INSERT
+- Clean separation: agents produce data, persistence layer manages storage
+
+### Logs vs Database
+
+**Logs** (`logs/events.jsonl`, `logs/run.log`):
+- Human-readable event stream for debugging
+- Never parsed for structured data
+- Used only by log viewer in web UI
+
+**Database** (`maestro.db`):
+- Structured, queryable data for messages and audit trail
+- Source of truth for all inter-agent communication
+- Enables historical analysis and session restart
+
 ## Configuration
 
 The system uses JSON configuration with environment variable overrides:
@@ -186,6 +237,7 @@ The system uses JSON configuration with environment variable overrides:
 - Placeholder substitution: `${ENV_VAR}` in JSON
 - Direct env override: any JSON key can be overridden by matching env var name
 - Model-specific settings for rate limits and budgets
+- `session_id` field tracks current orchestrator session (generated at startup or reused for restarts)
 
 ## Getting Help
 

@@ -1,4 +1,6 @@
 // Maestro Web UI JavaScript
+const MAESTRO_UI_VERSION = 'v0.1.5';
+
 class MaestroUI {
     constructor() {
         this.pollingInterval = 1000; // 1 second
@@ -7,7 +9,7 @@ class MaestroUI {
         this.isConnected = true;
         this.autoscroll = true;
         this.queuePollingIntervals = {};
-        
+
         this.init();
     }
 
@@ -15,6 +17,14 @@ class MaestroUI {
         this.setupEventListeners();
         this.startPolling();
         this.updateLastUpdated();
+        this.updateVersion();
+    }
+
+    updateVersion() {
+        const versionElement = document.getElementById('ui-version');
+        if (versionElement) {
+            versionElement.textContent = MAESTRO_UI_VERSION;
+        }
     }
 
     setupEventListeners() {
@@ -43,9 +53,11 @@ class MaestroUI {
         this.pollAgents();
         this.pollStories();
         this.pollLogs();
+        this.pollMessages();
         setInterval(() => this.pollAgents(), this.pollingInterval);
         setInterval(() => this.pollStories(), this.pollingInterval);
         setInterval(() => this.pollLogs(), this.pollingInterval);
+        setInterval(() => this.pollMessages(), this.pollingInterval);
         setInterval(() => this.updateLastUpdated(), 1000);
     }
 
@@ -84,15 +96,30 @@ class MaestroUI {
         try {
             const domain = document.getElementById('log-domain').value;
             const url = domain ? `/api/logs?domain=${encodeURIComponent(domain)}` : '/api/logs';
-            
+
             const response = await fetch(url);
             if (!response.ok) throw new Error('Failed to fetch logs');
-            
+
             const logs = await response.json();
             this.updateLogs(logs);
-            
+
         } catch (error) {
             console.error('Error polling logs:', error);
+        }
+    }
+
+    async pollMessages() {
+        try {
+            const response = await fetch('/api/messages');
+            if (!response.ok) throw new Error('Failed to fetch messages');
+
+            const messages = await response.json();
+            this.updateMessages(messages);
+            this.setConnectionStatus(true);
+
+        } catch (error) {
+            console.error('Error polling messages:', error);
+            this.handleConnectionError();
         }
     }
 
@@ -165,45 +192,156 @@ class MaestroUI {
         // Sort stories by ID for consistent display
         stories.sort((a, b) => a.id.localeCompare(b.id));
 
+        // Track which stories are currently expanded to preserve state
+        const expandedStories = new Set();
+        list.querySelectorAll('[id$="-details"]:not(.hidden)').forEach(el => {
+            expandedStories.add(el.id.replace('-details', ''));
+        });
+
+        // Track scroll positions for expanded story detail containers
+        const scrollPositions = new Map();
+        list.querySelectorAll('[id$="-details"]:not(.hidden)').forEach(el => {
+            const scrollableDiv = el.querySelector('div[style*="overflow-y"]');
+            if (scrollableDiv) {
+                scrollPositions.set(el.id, scrollableDiv.scrollTop);
+            }
+        });
+
         list.innerHTML = stories.map(story => this.createStoryCard(story)).join('');
+
+        // Restore expanded state after rebuild
+        expandedStories.forEach(storyId => {
+            const details = document.getElementById(`${storyId}-details`);
+            const chevron = document.getElementById(`${storyId}-chevron`);
+            if (details && chevron) {
+                details.classList.remove('hidden');
+                chevron.classList.add('rotate-180');
+
+                // Restore scroll position if it was saved
+                const savedScrollTop = scrollPositions.get(`${storyId}-details`);
+                if (savedScrollTop !== undefined) {
+                    const scrollableDiv = details.querySelector('div[style*="overflow-y"]');
+                    if (scrollableDiv) {
+                        scrollableDiv.scrollTop = savedScrollTop;
+                    }
+                }
+            }
+        });
     }
 
     createStoryCard(story) {
         const statusClass = this.getStoryStatusClass(story.status);
         const statusIcon = this.getStoryStatusIcon(story.status);
         const timeInfo = this.getStoryTimeInfo(story);
+        const storyId = story.id.replace(/[^a-zA-Z0-9]/g, '_'); // Sanitize ID for DOM
 
         return `
             <div class="border border-gray-200 rounded-lg p-4 mb-3">
-                <div class="flex items-center justify-between mb-2">
-                    <div class="flex items-center space-x-3">
+                <div class="flex items-center justify-between mb-2 cursor-pointer" onclick="window.maestroUI.toggleStoryDetails('${storyId}')">
+                    <div class="flex items-center space-x-3 flex-1">
                         <div class="flex-shrink-0">
                             ${statusIcon}
                         </div>
-                        <div>
+                        <div class="flex-1">
                             <h3 class="font-medium text-gray-900">${story.id}</h3>
                             <p class="text-sm text-gray-600">${story.title || 'Untitled Story'}</p>
                         </div>
                     </div>
-                    <span class="px-2 py-1 text-xs rounded-full ${statusClass}">${story.status}</span>
+                    <div class="flex items-center space-x-2">
+                        <span class="px-2 py-1 text-xs rounded-full ${statusClass}">${story.status}</span>
+                        <svg id="${storyId}-chevron" class="w-5 h-5 text-gray-500 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </div>
                 </div>
-                <div class="text-sm text-gray-500 flex items-center justify-between">
+                <div class="text-sm text-gray-500 flex items-center justify-between mb-2">
                     <div class="flex items-center space-x-4">
                         ${story.estimated_points ? `<span>📊 ${story.estimated_points} pts</span>` : ''}
                         ${story.assigned_agent ? `<span>👤 ${story.assigned_agent}</span>` : ''}
                         ${story.depends_on && story.depends_on.length > 0 ? `<span>🔗 Depends on: ${story.depends_on.join(', ')}</span>` : ''}
+                        ${this.formatTokenCost(story)}
                     </div>
                     <div class="text-xs text-gray-400">
                         ${timeInfo}
                     </div>
                 </div>
+
+                <!-- Expandable details section -->
+                <div id="${storyId}-details" class="hidden mt-3 pt-3 border-t border-gray-200">
+                    ${story.content ? `
+                        <div class="mb-3">
+                            <h4 class="text-sm font-medium text-gray-700 mb-1">Story Description</h4>
+                            <div class="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 rounded p-2">${this.escapeHtml(story.content)}</div>
+                        </div>
+                    ` : ''}
+                    ${story.approved_plan ? `
+                        <div class="mb-3">
+                            <h4 class="text-sm font-medium text-gray-700 mb-1">Approved Plan</h4>
+                            <div class="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 rounded p-2" style="max-height: 400px; overflow-y: auto;">${this.escapeHtml(story.approved_plan)}</div>
+                        </div>
+                    ` : ''}
+                </div>
             </div>
         `;
     }
 
+    toggleStoryDetails(storyId) {
+        const details = document.getElementById(`${storyId}-details`);
+        const chevron = document.getElementById(`${storyId}-chevron`);
+
+        if (details && chevron) {
+            if (details.classList.contains('hidden')) {
+                details.classList.remove('hidden');
+                chevron.classList.add('rotate-180');
+            } else {
+                details.classList.add('hidden');
+                chevron.classList.remove('rotate-180');
+            }
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    formatTokenCost(story) {
+        // Only show tokens/cost if non-zero
+        if (!story.tokens_used && !story.cost_usd) {
+            return '';
+        }
+
+        const parts = [];
+
+        if (story.tokens_used && story.tokens_used > 0) {
+            // Format tokens with commas (e.g., 123,043)
+            const tokensFormatted = story.tokens_used.toLocaleString();
+            parts.push(`<span>🎯 ${tokensFormatted} tokens</span>`);
+        }
+
+        if (story.cost_usd && story.cost_usd > 0) {
+            // Format cost as USD currency (e.g., $0.37)
+            const costFormatted = new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 4
+            }).format(story.cost_usd);
+            parts.push(`<span>💰 ${costFormatted}</span>`);
+        }
+
+        return parts.join(' ');
+    }
+
     getStoryStatusClass(status) {
         const statusMap = {
+            'new': 'bg-gray-100 text-gray-800',
             'pending': 'bg-gray-100 text-gray-800',
+            'assigned': 'bg-blue-100 text-blue-800',
+            'planning': 'bg-blue-100 text-blue-800',
+            'coding': 'bg-blue-100 text-blue-800',
+            'done': 'bg-green-100 text-green-800',
             'in_progress': 'bg-blue-100 text-blue-800',
             'waiting_review': 'bg-yellow-100 text-yellow-800',
             'completed': 'bg-green-100 text-green-800',
@@ -216,7 +354,12 @@ class MaestroUI {
 
     getStoryStatusIcon(status) {
         const iconMap = {
+            'new': '<div class="w-4 h-4 bg-gray-300 rounded-full"></div>',
             'pending': '<div class="w-4 h-4 bg-gray-300 rounded-full"></div>',
+            'assigned': '<div class="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>',
+            'planning': '<div class="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>',
+            'coding': '<div class="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>',
+            'done': '<div class="w-4 h-4 bg-green-500 rounded-full"><svg class="w-3 h-3 text-white ml-0.5 mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg></div>',
             'in_progress': '<div class="w-4 h-4 bg-blue-500 rounded-full animate-pulse"></div>',
             'waiting_review': '<div class="w-4 h-4 bg-yellow-500 rounded-full"></div>',
             'completed': '<div class="w-4 h-4 bg-green-500 rounded-full"><svg class="w-3 h-3 text-white ml-0.5 mt-0.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg></div>',
@@ -348,35 +491,218 @@ class MaestroUI {
 
     updateLogs(logs) {
         const container = document.getElementById('logs-container');
-        
+
         // Clear existing logs
         container.innerHTML = '';
-        
+
         logs.forEach(log => {
             const logLine = document.createElement('div');
             logLine.className = 'mb-1';
-            
+
             const levelColor = {
                 'ERROR': 'text-red-400',
                 'WARN': 'text-yellow-400',
                 'INFO': 'text-blue-400',
                 'DEBUG': 'text-gray-400'
             }[log.level] || 'text-green-400';
-            
+
             logLine.innerHTML = `
                 <span class="text-gray-500">[${log.timestamp}]</span>
                 <span class="text-cyan-400">[${log.agent_id}]</span>
                 <span class="${levelColor}">${log.level}:</span>
                 <span>${log.message}</span>
             `;
-            
+
             container.appendChild(logLine);
         });
-        
+
         // Auto-scroll if enabled
         if (this.autoscroll) {
             container.scrollTop = container.scrollHeight;
         }
+    }
+
+    updateMessages(messages) {
+        const loading = document.getElementById('messages-loading');
+        const empty = document.getElementById('messages-empty');
+        const list = document.getElementById('messages-list');
+
+        // Hide loading state
+        loading.classList.add('hidden');
+
+        if (!messages || messages.length === 0) {
+            empty.classList.remove('hidden');
+            list.classList.add('hidden');
+            return;
+        }
+
+        empty.classList.add('hidden');
+        list.classList.remove('hidden');
+
+        // Track which messages are currently expanded to preserve state (by actual message ID, not DOM ID)
+        const expandedMessageIds = new Map(); // Map from actual message.id to DOM sanitized ID
+        list.querySelectorAll('[id^="msg"][id$="-details"]:not(.hidden)').forEach(el => {
+            const domId = el.id.replace('-details', '');
+            // Find the actual message ID from the current message list by matching DOM ID
+            const messageIdSpan = el.querySelector('span.font-mono');
+            if (messageIdSpan) {
+                const actualMessageId = messageIdSpan.textContent.trim();
+                expandedMessageIds.set(actualMessageId, domId);
+            }
+        });
+
+        // Track scroll positions for expanded message content containers
+        const scrollPositions = new Map();
+        list.querySelectorAll('[id$="-details"]:not(.hidden)').forEach(el => {
+            const scrollableDiv = el.querySelector('div[style*="overflow-y"]');
+            if (scrollableDiv) {
+                // Get the actual message ID from the content
+                const messageIdSpan = el.querySelector('span.font-mono');
+                if (messageIdSpan) {
+                    const actualMessageId = messageIdSpan.textContent.trim();
+                    scrollPositions.set(actualMessageId, scrollableDiv.scrollTop);
+                }
+            }
+        });
+
+        // Display messages (API already returns only 5 most recent)
+        list.innerHTML = messages.map(msg => this.createMessageItem(msg)).join('');
+
+        // Restore expanded state after rebuild
+        messages.forEach(msg => {
+            if (expandedMessageIds.has(msg.id)) {
+                const msgId = msg.id.replace(/[^a-zA-Z0-9]/g, '_');
+                const details = document.getElementById(`${msgId}-details`);
+                const chevron = document.getElementById(`${msgId}-chevron`);
+                if (details && chevron) {
+                    details.classList.remove('hidden');
+                    chevron.classList.add('rotate-180');
+
+                    // Restore scroll position if it was saved
+                    const savedScrollTop = scrollPositions.get(msg.id);
+                    if (savedScrollTop !== undefined) {
+                        const scrollableDiv = details.querySelector('div[style*="overflow-y"]');
+                        if (scrollableDiv) {
+                            scrollableDiv.scrollTop = savedScrollTop;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    createMessageItem(message) {
+        const typeClass = this.getMessageTypeClass(message.type);
+        const timestamp = new Date(message.timestamp).toLocaleTimeString();
+        const msgId = message.id.replace(/[^a-zA-Z0-9]/g, '_'); // Sanitize ID for DOM
+
+        // Determine the message subtype for display
+        let messageSubtype = message.type;
+        if (message.type === 'REQUEST') {
+            if (message.request_type === 'approval' && message.approval_type) {
+                messageSubtype = `${message.approval_type.toUpperCase()} APPROVAL REQUEST`;
+            } else if (message.request_type === 'question') {
+                messageSubtype = 'QUESTION';
+            }
+        } else if (message.type === 'RESPONSE') {
+            if (message.response_type === 'result' && message.status) {
+                messageSubtype = `APPROVAL ${message.status}`;
+            } else if (message.response_type === 'answer') {
+                messageSubtype = 'ANSWER';
+            }
+        }
+
+        return `
+            <div class="border-l-4 ${typeClass} bg-gray-50 rounded-r mb-2">
+                <div class="px-3 py-2 cursor-pointer" onclick="window.maestroUI.toggleMessageDetails('${msgId}')">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3">
+                            <span class="font-mono text-xs text-gray-500">${timestamp}</span>
+                            <span class="font-medium text-gray-700">${messageSubtype}</span>
+                            <span class="text-gray-600 text-xs">${message.from} → ${message.to}</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-xs text-gray-400">${message.story_id ? message.story_id.substring(0, 8) : ''}</span>
+                            <svg id="${msgId}-chevron" class="w-4 h-4 text-gray-500 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Expandable details section -->
+                <div id="${msgId}-details" class="hidden px-3 pb-3 pt-1 border-t border-gray-200">
+                    <div class="space-y-2 text-sm">
+                        <div>
+                            <span class="font-medium text-gray-700">Message ID:</span>
+                            <span class="font-mono text-xs text-gray-600"> ${message.id}</span>
+                        </div>
+                        ${message.reason ? `
+                            <div>
+                                <span class="font-medium text-gray-700">Reason:</span>
+                                <div class="mt-1 text-gray-600 whitespace-pre-wrap bg-white rounded p-2">${this.escapeHtml(message.reason)}</div>
+                            </div>
+                        ` : ''}
+                        <div>
+                            <span class="font-medium text-gray-700">Content:</span>
+                            <div class="mt-1 text-gray-600 whitespace-pre-wrap bg-white rounded p-2" style="max-height: 300px; overflow-y: auto;">${this.escapeHtml(message.content)}</div>
+                        </div>
+                        ${message.feedback ? `
+                            <div>
+                                <span class="font-medium text-gray-700">Feedback:</span>
+                                <div class="mt-1 text-gray-600 whitespace-pre-wrap bg-white rounded p-2">${this.escapeHtml(message.feedback)}</div>
+                            </div>
+                        ` : ''}
+                        ${message.status ? `
+                            <div>
+                                <span class="font-medium text-gray-700">Status:</span>
+                                <span class="ml-2 px-2 py-1 text-xs rounded-full ${this.getStatusBadgeClass(message.status)}">${message.status}</span>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    toggleMessageDetails(msgId) {
+        const details = document.getElementById(`${msgId}-details`);
+        const chevron = document.getElementById(`${msgId}-chevron`);
+
+        if (details && chevron) {
+            if (details.classList.contains('hidden')) {
+                details.classList.remove('hidden');
+                chevron.classList.add('rotate-180');
+            } else {
+                details.classList.add('hidden');
+                chevron.classList.remove('rotate-180');
+            }
+        }
+    }
+
+    getStatusBadgeClass(status) {
+        const statusMap = {
+            'APPROVED': 'bg-green-100 text-green-800',
+            'REJECTED': 'bg-red-100 text-red-800',
+            'NEEDS_CHANGES': 'bg-yellow-100 text-yellow-800',
+            'PENDING': 'bg-gray-100 text-gray-800'
+        };
+        return statusMap[status] || 'bg-gray-100 text-gray-800';
+    }
+
+    getMessageTypeClass(type) {
+        const typeMap = {
+            'SPEC': 'border-purple-500',
+            'STORY': 'border-blue-500',
+            'TASK': 'border-blue-500',
+            'REQUEST': 'border-yellow-500',
+            'RESPONSE': 'border-green-500',
+            'QUESTION': 'border-yellow-500',
+            'ANSWER': 'border-green-500',
+            'ERROR': 'border-red-500',
+            'QUEUED': 'border-gray-400'
+        };
+        return typeMap[type] || 'border-gray-300';
     }
 
     // File upload handling
@@ -474,15 +800,22 @@ class MaestroUI {
         try {
             const response = await fetch('/api/queues');
             if (!response.ok) throw new Error('Failed to fetch queues');
-            
+
             const queues = await response.json();
             this.updateQueueDisplay(queueName, queues[queueName]);
-            
-            // Update count badges
-            document.getElementById(`architect-count`).textContent = queues.architect?.length || 0;
-            document.getElementById(`coder-count`).textContent = queues.coder?.length || 0;
-            document.getElementById(`shared-count`).textContent = queues.shared?.length || 0;
-            
+
+            // Update count badges - map backend keys to UI queue names
+            // Specs queue = input_channel (specs from web UI)
+            // Work queue = story_ch (stories ready for coders)
+            // Messages queue = questions_ch (questions/requests between agents)
+            const specsCount = queues.input_channel?.length || 0;
+            const workCount = queues.story_ch?.length || 0;
+            const messagesCount = queues.questions_ch?.length || 0;
+
+            document.getElementById(`specs-count`).textContent = specsCount;
+            document.getElementById(`work-count`).textContent = workCount;
+            document.getElementById(`messages-count`).textContent = messagesCount;
+
         } catch (error) {
             console.error('Error updating queue:', error);
         }
