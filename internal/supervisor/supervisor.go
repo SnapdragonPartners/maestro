@@ -26,6 +26,76 @@ const (
 	FatalShutdown
 )
 
+// ShutdownHandler provides an abstraction for system shutdown operations.
+// This allows for graceful shutdown and alternative behaviors (e.g., testing, recovery).
+type ShutdownHandler interface {
+	// Shutdown initiates system shutdown with the given exit code and reason.
+	Shutdown(exitCode int, reason string)
+}
+
+// DefaultShutdownHandler implements immediate process termination.
+type DefaultShutdownHandler struct {
+	logger *logx.Logger
+}
+
+// NewDefaultShutdownHandler creates a shutdown handler that calls os.Exit.
+func NewDefaultShutdownHandler(logger *logx.Logger) *DefaultShutdownHandler {
+	return &DefaultShutdownHandler{logger: logger}
+}
+
+// Shutdown performs immediate process termination.
+func (h *DefaultShutdownHandler) Shutdown(exitCode int, reason string) {
+	h.logger.Error("FATAL SHUTDOWN: %s (exit code: %d)", reason, exitCode)
+	os.Exit(exitCode)
+}
+
+// GracefulShutdownHandler implements graceful shutdown with cleanup.
+// This handler performs cleanup operations before terminating the process.
+type GracefulShutdownHandler struct {
+	logger          *logx.Logger
+	cleanupFunc     func() error // Optional cleanup function to run before exit
+	shutdownChannel chan int     // Optional channel to signal shutdown instead of os.Exit
+}
+
+// NewGracefulShutdownHandler creates a shutdown handler with optional cleanup.
+// If shutdownChannel is provided, it signals shutdown via channel instead of os.Exit (useful for testing).
+func NewGracefulShutdownHandler(logger *logx.Logger, cleanupFunc func() error, shutdownChannel chan int) *GracefulShutdownHandler {
+	return &GracefulShutdownHandler{
+		logger:          logger,
+		cleanupFunc:     cleanupFunc,
+		shutdownChannel: shutdownChannel,
+	}
+}
+
+// Shutdown performs graceful shutdown with cleanup operations.
+func (h *GracefulShutdownHandler) Shutdown(exitCode int, reason string) {
+	h.logger.Error("GRACEFUL SHUTDOWN: %s (exit code: %d)", reason, exitCode)
+
+	// Run cleanup if provided
+	if h.cleanupFunc != nil {
+		h.logger.Info("Running cleanup operations before shutdown...")
+		if err := h.cleanupFunc(); err != nil {
+			h.logger.Error("Cleanup failed: %v", err)
+		} else {
+			h.logger.Info("Cleanup completed successfully")
+		}
+	}
+
+	// Signal via channel if provided (for testing/controlled shutdown)
+	if h.shutdownChannel != nil {
+		select {
+		case h.shutdownChannel <- exitCode:
+			h.logger.Info("Shutdown signal sent via channel")
+		default:
+			h.logger.Warn("Shutdown channel full, falling back to os.Exit")
+			os.Exit(exitCode)
+		}
+	} else {
+		// Default to immediate termination
+		os.Exit(exitCode)
+	}
+}
+
 // RestartPolicy defines how to handle agent state transitions.
 type RestartPolicy struct {
 	OnDone  map[string]RestartAction // Actions when agents reach DONE state
@@ -49,10 +119,11 @@ func DefaultRestartPolicy() RestartPolicy {
 // Supervisor manages agent lifecycle, restart policies, and state change processing.
 // It consolidates the logic that was previously scattered across the orchestrator.
 type Supervisor struct {
-	Kernel  *kernel.Kernel
-	Factory *factory.AgentFactory
-	Logger  *logx.Logger
-	Policy  RestartPolicy
+	Kernel          *kernel.Kernel
+	Factory         *factory.AgentFactory
+	Logger          *logx.Logger
+	Policy          RestartPolicy
+	ShutdownHandler ShutdownHandler // Encapsulated shutdown for graceful termination and testing
 
 	// Agent tracking (preserves existing patterns)
 	Agents        map[string]dispatch.Agent
@@ -68,15 +139,18 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 	// Create the agent factory with kernel dependencies (lightweight)
 	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel)
 
+	logger := logx.NewLogger("supervisor")
+
 	return &Supervisor{
-		Kernel:        k,
-		Factory:       agentFactory,
-		Logger:        logx.NewLogger("supervisor"),
-		Policy:        DefaultRestartPolicy(),
-		Agents:        make(map[string]dispatch.Agent),
-		AgentTypes:    make(map[string]string),
-		AgentContexts: make(map[string]context.CancelFunc),
-		running:       false,
+		Kernel:          k,
+		Factory:         agentFactory,
+		Logger:          logger,
+		Policy:          DefaultRestartPolicy(),
+		ShutdownHandler: NewDefaultShutdownHandler(logger), // Default to immediate shutdown
+		Agents:          make(map[string]dispatch.Agent),
+		AgentTypes:      make(map[string]string),
+		AgentContexts:   make(map[string]context.CancelFunc),
+		running:         false,
 	}
 }
 
@@ -190,10 +264,9 @@ func (s *Supervisor) handleStateAction(ctx context.Context, notification *proto.
 		s.Logger.Error("Agent %s (%s) reached %s state, triggering fatal shutdown",
 			notification.AgentID, agentType, stateType)
 
-		// For architect errors, we should trigger system shutdown
-		// This will be handled by the flow that's monitoring the supervisor
-		s.Logger.Error("Architect error requires system shutdown")
-		os.Exit(1)
+		// Use encapsulated shutdown handler for graceful termination
+		reason := fmt.Sprintf("Agent %s (%s) reached %s state", notification.AgentID, agentType, stateType)
+		s.ShutdownHandler.Shutdown(1, reason)
 
 	default:
 		s.Logger.Info("No action configured for agent %s (%s) in %s state",
@@ -299,4 +372,11 @@ func (s *Supervisor) GetAgents() (map[string]dispatch.Agent, map[string]string) 
 // GetFactory returns the agent factory for external use.
 func (s *Supervisor) GetFactory() *factory.AgentFactory {
 	return s.Factory
+}
+
+// SetShutdownHandler allows injecting a custom shutdown handler.
+// This is useful for testing (mock handler) or implementing graceful shutdown.
+func (s *Supervisor) SetShutdownHandler(handler ShutdownHandler) {
+	s.ShutdownHandler = handler
+	s.Logger.Info("Custom shutdown handler installed")
 }
