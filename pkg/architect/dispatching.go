@@ -43,13 +43,25 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	// Log current queue state for debugging
 	d.logQueueState()
 
-	// Check if there are ready stories to dispatch.
-	if story := d.queue.NextReadyStory(); story != nil {
-		d.logger.Info("🚀 DISPATCHING: Found ready story %s (%s), dispatching to coder", story.ID, story.Title)
-		// Attempt to dispatch the story (error handling is internal)
-		_ = d.dispatchReadyStory(ctx, story.ID)
-		// Transition to MONITORING after dispatch attempt (successful or not)
-		d.logger.Info("🚀 DISPATCHING → MONITORING: Story dispatched, returning to monitor coder progress")
+	// Get ALL ready stories to dispatch (not just one)
+	readyStories := d.queue.GetReadyStories()
+	if len(readyStories) > 0 {
+		d.logger.Info("🚀 DISPATCHING: Found %d ready stories, dispatching all to enable parallel execution", len(readyStories))
+
+		// Dispatch all ready stories to maximize parallelism
+		dispatchedCount := 0
+		for _, story := range readyStories {
+			d.logger.Info("🚀 DISPATCHING: Dispatching story %s (%s) to coder", story.ID, story.Title)
+			if err := d.dispatchReadyStory(ctx, story.ID); err != nil {
+				d.logger.Error("🚀 DISPATCHING: Failed to dispatch story %s: %v", story.ID, err)
+				// Continue dispatching other stories even if one fails
+			} else {
+				dispatchedCount++
+			}
+		}
+
+		d.logger.Info("🚀 DISPATCHING → MONITORING: Successfully dispatched %d/%d stories, returning to monitor coder progress",
+			dispatchedCount, len(readyStories))
 		return StateMonitoring, nil
 	}
 

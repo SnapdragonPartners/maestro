@@ -413,7 +413,7 @@ class MaestroUI {
     showAgentModal(agent) {
         const modal = document.getElementById('escalation-modal');
         const content = document.getElementById('escalation-content');
-        
+
         content.innerHTML = `
             <div class="space-y-4">
                 <div class="grid grid-cols-2 gap-4">
@@ -425,8 +425,20 @@ class MaestroUI {
                         <label class="text-sm font-medium text-gray-700">Current State</label>
                         <p class="text-sm text-gray-900">${agent.state}</p>
                     </div>
+                    ${agent.model_name ? `
+                        <div>
+                            <label class="text-sm font-medium text-gray-700">Model</label>
+                            <p class="text-sm text-gray-900">${agent.model_name}</p>
+                        </div>
+                    ` : ''}
+                    ${agent.story_id ? `
+                        <div>
+                            <label class="text-sm font-medium text-gray-700">Current Story</label>
+                            <p class="text-sm text-gray-900">${agent.story_id}</p>
+                        </div>
+                    ` : ''}
                 </div>
-                
+
                 ${agent.plan ? `
                     <div>
                         <label class="text-sm font-medium text-gray-700">Plan</label>
@@ -435,7 +447,7 @@ class MaestroUI {
                         </div>
                     </div>
                 ` : ''}
-                
+
                 ${agent.task_content ? `
                     <div>
                         <label class="text-sm font-medium text-gray-700">Task Content</label>
@@ -444,7 +456,7 @@ class MaestroUI {
                         </div>
                     </div>
                 ` : ''}
-                
+
                 ${agent.transitions && agent.transitions.length > 0 ? `
                     <div>
                         <label class="text-sm font-medium text-gray-700">State Transitions</label>
@@ -472,7 +484,7 @@ class MaestroUI {
                 ` : ''}
             </div>
         `;
-        
+
         modal.classList.remove('hidden');
     }
 

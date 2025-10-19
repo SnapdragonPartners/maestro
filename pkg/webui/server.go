@@ -185,9 +185,11 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with available agent information
 	response := map[string]interface{}{
-		"id":    agentInfo.ID,
-		"type":  agentInfo.Type.String(),
-		"state": agentInfo.State,
+		"id":         agentInfo.ID,
+		"type":       agentInfo.Type.String(),
+		"state":      agentInfo.State,
+		"model_name": agentInfo.ModelName,
+		"story_id":   agentInfo.StoryID,
 	}
 
 	// Send JSON response.
