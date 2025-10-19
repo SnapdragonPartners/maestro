@@ -43,13 +43,25 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	// Log current queue state for debugging
 	d.logQueueState()
 
-	// Check if there are ready stories to dispatch.
-	if story := d.queue.NextReadyStory(); story != nil {
-		d.logger.Info("🚀 DISPATCHING: Found ready story %s (%s), dispatching to coder", story.ID, story.Title)
-		// Attempt to dispatch the story (error handling is internal)
-		_ = d.dispatchReadyStory(ctx, story.ID)
-		// Transition to MONITORING after dispatch attempt (successful or not)
-		d.logger.Info("🚀 DISPATCHING → MONITORING: Story dispatched, returning to monitor coder progress")
+	// Get ALL ready stories to dispatch (not just one)
+	readyStories := d.queue.GetReadyStories()
+	if len(readyStories) > 0 {
+		d.logger.Info("🚀 DISPATCHING: Found %d ready stories, dispatching all to enable parallel execution", len(readyStories))
+
+		// Dispatch all ready stories to maximize parallelism
+		dispatchedCount := 0
+		for _, story := range readyStories {
+			d.logger.Info("🚀 DISPATCHING: Dispatching story %s (%s) to coder", story.ID, story.Title)
+			if err := d.dispatchReadyStory(ctx, story.ID); err != nil {
+				d.logger.Error("🚀 DISPATCHING: Failed to dispatch story %s: %v", story.ID, err)
+				// Continue dispatching other stories even if one fails
+			} else {
+				dispatchedCount++
+			}
+		}
+
+		d.logger.Info("🚀 DISPATCHING → MONITORING: Successfully dispatched %d/%d stories, returning to monitor coder progress",
+			dispatchedCount, len(readyStories))
 		return StateMonitoring, nil
 	}
 
@@ -199,8 +211,13 @@ func (d *Driver) logQueueState() {
 	}
 }
 
-// detectDeadlock checks if the system is in a deadlock state.
-// Deadlock occurs when: no stories are in progress AND no stories are ready AND not all stories are completed.
+// detectDeadlock checks if the system is in a true deadlock state.
+// A deadlock occurs when:
+// 1. Not all stories are completed
+// 2. No stories are ready to dispatch (all unreleased stories are blocked by dependencies)
+// 3. All unreleased stories have circular dependencies or depend on stories that don't exist
+//
+// This is a more robust check than looking at agent states, which can be brittle.
 func (d *Driver) detectDeadlock() bool {
 	if d.queue == nil {
 		return false // Can't detect deadlock without queue
@@ -222,48 +239,58 @@ func (d *Driver) detectDeadlock() bool {
 		return false
 	}
 
-	// Check if any stories are in progress - not a deadlock
-	inProgressStories := d.queue.GetStoriesByStatus(StatusAssigned)
-	if len(inProgressStories) > 0 {
-		d.logger.Debug("🚀 DISPATCHING: No deadlock - %d stories in progress: %v",
-			len(inProgressStories), d.getStoryIDs(inProgressStories))
+	// At this point: not all stories completed AND no stories ready
+	// Now check if unreleased stories have valid, satisfiable dependencies
+
+	// Get all unreleased (not done) stories
+	var unreleasedStories []*QueuedStory
+	for _, story := range allStories {
+		if story.GetStatus() != StatusDone {
+			unreleasedStories = append(unreleasedStories, story)
+		}
+	}
+
+	if len(unreleasedStories) == 0 {
+		// All stories are done, should have been caught above but double-check
 		return false
 	}
 
-	// At this point: no completed stories, no ready stories, no in-progress stories
-	// This indicates a deadlock - stories are stuck due to dependency issues
-	pendingStories := d.queue.GetStoriesByStatus(StatusPending)
-	d.logger.Error("🚀 DISPATCHING: DEADLOCK DETECTED - %d stories pending but none ready or in progress", len(pendingStories))
+	// For each unreleased story, check if its dependencies can ever be satisfied
+	// A dependency is unsatisfiable if:
+	// 1. The dependency doesn't exist in the queue
+	// 2. The dependencies form a cycle (circular dependency)
 
-	// Log details about the deadlocked stories
-	for _, story := range pendingStories {
-		dependsOnStr := "none"
-		if len(story.DependsOn) > 0 {
-			dependsOnStr = fmt.Sprintf("%v", story.DependsOn)
+	// First check for circular dependencies
+	cycles := d.queue.DetectCycles()
+	if len(cycles) > 0 {
+		d.logger.Error("🚀 DISPATCHING: DEADLOCK DETECTED - Circular dependencies found")
+		for _, cycle := range cycles {
+			d.logger.Error("🚀 DISPATCHING: Dependency cycle: %v", cycle)
 		}
-		d.logger.Error("🚀 DISPATCHING: Deadlocked story %s (%s) depends on: %s",
-			story.ID, story.Title, dependsOnStr)
+		return true
+	}
 
-		// Check status of dependencies
+	// Check for missing dependencies
+	hasMissingDeps := false
+	for _, story := range unreleasedStories {
 		for _, depID := range story.DependsOn {
-			if depStory, exists := d.queue.GetStory(depID); exists {
-				d.logger.Error("🚀 DISPATCHING: Dependency %s status: %s", depID, depStory.Status)
-			} else {
-				d.logger.Error("🚀 DISPATCHING: Dependency %s NOT FOUND in queue", depID)
+			if _, exists := d.queue.GetStory(depID); !exists {
+				d.logger.Error("🚀 DISPATCHING: DEADLOCK DETECTED - Story %s depends on non-existent story %s",
+					story.ID, depID)
+				hasMissingDeps = true
 			}
 		}
 	}
 
-	return true
-}
-
-// getStoryIDs extracts story IDs from a slice of QueuedStory pointers.
-func (d *Driver) getStoryIDs(stories []*QueuedStory) []string {
-	ids := make([]string, len(stories))
-	for i, story := range stories {
-		ids[i] = story.ID
+	if hasMissingDeps {
+		return true
 	}
-	return ids
+
+	// If we get here: no cycles, no missing deps, no ready stories, not all complete
+	// This means there are stories being actively worked on - NOT a deadlock
+	d.logger.Debug("🚀 DISPATCHING: No deadlock - %d unreleased stories have valid dependencies and work is in progress",
+		len(unreleasedStories))
+	return false
 }
 
 // persistQueueState saves the current queue state to the state store.

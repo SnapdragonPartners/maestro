@@ -4,13 +4,13 @@
 
 Maestro is a tool that uses AI to write full applications in a disciplined way that reflects good software engineering principles.  
 
-In some ways, it's an agent orchestration tool. But unlike most others, Maestro bakes in structure, workflow, and opinions drawn from real-world experience managing large software projects. The goal is **production-ready code, not just code snippets.**
+In some ways, it's an agent orchestration tool. But unlike most others, Maestro bakes in structure, workflow, and opinions drawn from real-world experience managing large software projects. The goal is **production-ready apps, not just code snippets.**
 
 ---
 
 ## Why Maestro?
 
-**Much simpler than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.  
+**Much simpler setup than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.  
 
 Most frameworks require wrestling with Python versions, dependency hell, or complex setup. With Maestro:  
 

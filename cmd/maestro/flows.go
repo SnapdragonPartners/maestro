@@ -235,9 +235,8 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("🔧 Starting startup orchestration")
 
-	// Determine project directory from kernel
-	// For now, use current working directory - in future this could be configurable
-	projectDir := "."
+	// Get project directory from kernel
+	projectDir := k.ProjectDir()
 
 	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
 	startupOrch, err := orchestrator.NewStartupOrchestrator(projectDir, false)

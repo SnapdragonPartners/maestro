@@ -28,6 +28,11 @@ func main() {
 	)
 	flag.Parse()
 
+	// Warn if projectdir is using default value
+	if *projectDir == "." {
+		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
+	}
+
 	// Universal setup (Steps 1-3): Always run these regardless of mode
 	configWasCreated, err := setupProjectInfrastructure(*projectDir, *gitRepo, *specFile)
 	if err != nil {
@@ -40,6 +45,14 @@ func main() {
 	if shouldBootstrap && !*bootstrap {
 		fmt.Printf("New configuration created - entering bootstrap mode to set up repository\n")
 	}
+
+	// Display mode and working directory
+	mode := "main"
+	if shouldBootstrap {
+		mode = "bootstrap"
+	}
+	config.LogInfo("🚀 Starting Maestro in %s mode", mode)
+	config.LogInfo("📁 Working directory: %s", *projectDir)
 
 	if shouldBootstrap {
 		if err := runBootstrapMode(*projectDir, *gitRepo, *specFile); err != nil {
@@ -187,16 +200,25 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		repoName := extractRepoName(cfg.Git.RepoURL)
 		repoMirrorPath := filepath.Join(mirrorDir, repoName)
 
-		// Check if mirror already exists
-		if _, err := os.Stat(filepath.Join(repoMirrorPath, ".git")); os.IsNotExist(err) {
+		// Check if mirror already exists by looking for HEAD file (bare repos don't have .git subdir)
+		if _, err := os.Stat(filepath.Join(repoMirrorPath, "HEAD")); os.IsNotExist(err) {
 			// Clone as bare mirror
+			config.LogInfo("📥 Creating git mirror for %s...", cfg.Git.RepoURL)
 			if err := cloneGitMirror(cfg.Git.RepoURL, repoMirrorPath); err != nil {
 				return fmt.Errorf("failed to create git mirror: %w", err)
 			}
+			config.LogInfo("✅ Git mirror created at %s", repoMirrorPath)
+		} else {
+			// Mirror exists - update it
+			config.LogInfo("📂 Git mirror exists at %s, updating...", repoMirrorPath)
+			if err := updateGitMirror(repoMirrorPath); err != nil {
+				return fmt.Errorf("failed to update git mirror: %w", err)
+			}
+			config.LogInfo("✅ Git mirror updated successfully")
 		}
 	}
 
-	fmt.Printf("Project infrastructure verification completed for %s\n", projectDir)
+	config.LogInfo("✅ Project infrastructure verification completed for %s", projectDir)
 	return nil
 }
 
@@ -289,8 +311,20 @@ func extractRepoName(repoURL string) string {
 // cloneGitMirror creates a bare git mirror clone of the repository.
 func cloneGitMirror(repoURL, mirrorPath string) error {
 	cmd := exec.Command("git", "clone", "--mirror", repoURL, mirrorPath)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git clone --mirror failed: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git clone --mirror failed: %w\nOutput: %s", err, string(output))
+	}
+	return nil
+}
+
+// updateGitMirror updates an existing bare mirror repository.
+func updateGitMirror(mirrorPath string) error {
+	cmd := exec.Command("git", "remote", "update")
+	cmd.Dir = mirrorPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
 	}
 	return nil
 }

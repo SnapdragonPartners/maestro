@@ -91,7 +91,7 @@ func (k *Kernel) initializeServices() error {
 	k.BuildService = build.NewBuildService()
 
 	// Create web server (will be started conditionally)
-	k.WebServer = webui.NewServer(k.Dispatcher, nil, k.projectDir)
+	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir)
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
@@ -201,6 +201,11 @@ func (k *Kernel) Stop() error {
 	k.running = false
 	k.Logger.Info("Kernel services stopped")
 	return nil
+}
+
+// ProjectDir returns the project directory path.
+func (k *Kernel) ProjectDir() string {
+	return k.projectDir
 }
 
 // startPersistenceWorker begins the database persistence worker goroutine.

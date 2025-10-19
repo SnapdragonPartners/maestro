@@ -978,10 +978,12 @@ func (d *Dispatcher) DumpHeads(_ int) map[string]any {
 
 // AgentInfo represents information about a registered agent.
 type AgentInfo struct {
-	Driver agent.Driver
-	ID     string
-	Type   agent.Type
-	State  string
+	Driver    agent.Driver
+	ID        string
+	Type      agent.Type
+	State     string
+	ModelName string
+	StoryID   string
 }
 
 // GetRegisteredAgents returns information about all registered agents.
@@ -993,20 +995,55 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	for id, agentInterface := range d.agents {
 		// Try to cast to Driver interface to get more information.
 		if driver, ok := agentInterface.(agent.Driver); ok {
+			// Get story ID from lease tracking
+			storyID := d.GetLease(id)
+
+			// Get model name - try to get it from agent config in state data
+			modelName := ""
+			stateData := driver.GetStateData()
+
+			// Try to get model name from different state keys
+			if modelNameVal, ok := stateData["model_name"]; ok {
+				if name, ok := modelNameVal.(string); ok {
+					modelName = name
+				}
+			}
+
+			// If not found, try to get it from config path
+			if modelName == "" {
+				if cfg, err := config.GetConfig(); err == nil {
+					// Use the appropriate model based on agent type
+					switch driver.GetAgentType() {
+					case agent.TypeArchitect:
+						if cfg.Agents != nil && cfg.Agents.ArchitectModel != "" {
+							modelName = cfg.Agents.ArchitectModel
+						}
+					case agent.TypeCoder:
+						if cfg.Agents != nil && cfg.Agents.CoderModel != "" {
+							modelName = cfg.Agents.CoderModel
+						}
+					}
+				}
+			}
+
 			agentInfos = append(agentInfos, AgentInfo{
-				ID:     id,
-				Type:   driver.GetAgentType(),
-				State:  driver.GetCurrentState().String(),
-				Driver: driver,
+				ID:        id,
+				Type:      driver.GetAgentType(),
+				State:     driver.GetCurrentState().String(),
+				ModelName: modelName,
+				StoryID:   storyID,
+				Driver:    driver,
 			})
 		} else {
 			// Fallback for agents that don't implement Driver interface.
 			// Default to coder type (all new agents should implement Driver interface).
 			agentInfos = append(agentInfos, AgentInfo{
-				ID:     id,
-				Type:   agent.TypeCoder, // Default fallback
-				State:  "UNKNOWN",
-				Driver: nil,
+				ID:        id,
+				Type:      agent.TypeCoder, // Default fallback
+				State:     "UNKNOWN",
+				ModelName: "",
+				StoryID:   "",
+				Driver:    nil,
 			})
 		}
 	}

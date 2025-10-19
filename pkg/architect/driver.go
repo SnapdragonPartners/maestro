@@ -29,21 +29,22 @@ const (
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	contextManager     *contextmgr.ContextManager
-	llmClient          agent.LLMClient             // LLM for intelligent responses
-	renderer           *templates.Renderer         // Template renderer for prompts
-	queue              *Queue                      // Story queue manager
-	escalationHandler  *EscalationHandler          // Escalation handler
-	dispatcher         *dispatch.Dispatcher        // Dispatcher for sending messages
-	logger             *logx.Logger                // Logger with proper agent prefixing
-	specCh             <-chan *proto.AgentMsg      // Read-only channel for spec messages
-	questionsCh        chan *proto.AgentMsg        // Bi-directional channel for questions/requests
-	replyCh            <-chan *proto.AgentMsg      // Read-only channel for replies
-	persistenceChannel chan<- *persistence.Request // Channel for database operations
-	stateData          map[string]any
-	architectID        string
-	workDir            string // Workspace directory
-	currentState       proto.State
+	contextManager      *contextmgr.ContextManager
+	llmClient           agent.LLMClient                       // LLM for intelligent responses
+	renderer            *templates.Renderer                   // Template renderer for prompts
+	queue               *Queue                                // Story queue manager
+	escalationHandler   *EscalationHandler                    // Escalation handler
+	dispatcher          *dispatch.Dispatcher                  // Dispatcher for sending messages
+	logger              *logx.Logger                          // Logger with proper agent prefixing
+	specCh              <-chan *proto.AgentMsg                // Read-only channel for spec messages
+	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for questions/requests
+	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
+	persistenceChannel  chan<- *persistence.Request           // Channel for database operations
+	stateNotificationCh chan<- *proto.StateChangeNotification // Channel for state change notifications
+	stateData           map[string]any
+	architectID         string
+	workDir             string // Workspace directory
+	currentState        proto.State
 }
 
 // NewDriver creates a new architect driver instance.
@@ -131,9 +132,9 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
-func (d *Driver) SetStateNotificationChannel(_ /* stateNotifCh */ chan<- *proto.StateChangeNotification) {
-	// TODO: Implement state change notifications for architect
-	// For now, just log that it's set - architect uses different state management.
+func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
+	d.stateNotificationCh = stateNotifCh
+	d.logger.Debug("State notification channel set for architect")
 }
 
 // Initialize sets up the driver and loads any existing state.
@@ -325,6 +326,23 @@ func (d *Driver) transitionTo(_ context.Context, newState proto.State, additiona
 	// Merge additional data if provided.
 	for k, v := range additionalData {
 		d.stateData[k] = v
+	}
+
+	// Send state change notification if channel is available
+	if d.stateNotificationCh != nil {
+		notification := &proto.StateChangeNotification{
+			AgentID:   d.architectID,
+			FromState: oldState,
+			ToState:   newState,
+		}
+
+		// Non-blocking send to prevent deadlock
+		select {
+		case d.stateNotificationCh <- notification:
+			d.logger.Debug("Sent state change notification: %s -> %s", oldState, newState)
+		default:
+			d.logger.Warn("State notification channel full, could not send %s -> %s transition", oldState, newState)
+		}
 	}
 
 	// No filesystem state persistence - state transitions are tracked in memory only
