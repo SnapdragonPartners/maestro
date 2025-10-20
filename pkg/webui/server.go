@@ -791,21 +791,32 @@ func (s *Server) getDebugLogDir() string {
 	return filepath.Join(s.workDir, "..", "logs")
 }
 
-// StartServer starts the HTTP server on the specified port.
-func (s *Server) StartServer(ctx context.Context, port int) error {
+// StartServer starts the HTTP server using configuration settings.
+func (s *Server) StartServer(ctx context.Context, host string, port int, useSSL bool, certFile, keyFile string) error {
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
 
+	addr := fmt.Sprintf("%s:%d", host, port)
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		Addr:    addr,
 		Handler: mux,
 	}
 
-	s.logger.Info("Starting web UI server on port %d", port)
+	if useSSL {
+		s.logger.Info("Starting web UI server on %s (HTTPS)", addr)
+	} else {
+		s.logger.Info("Starting web UI server on %s (HTTP)", addr)
+	}
 
 	// Start server in a goroutine (non-blocking).
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if useSSL {
+			err = server.ListenAndServeTLS(certFile, keyFile)
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			s.logger.Error("Server error: %v", err)
 		}
 	}()

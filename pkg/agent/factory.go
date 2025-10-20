@@ -28,7 +28,7 @@ type LLMClientFactory struct {
 }
 
 // NewLLMClientFactory creates a new LLM client factory with the given configuration.
-func NewLLMClientFactory(cfg config.Config) (*LLMClientFactory, error) {
+func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 	logger := logx.NewLogger("factory")
 
 	// Create metrics recorder based on configuration
@@ -74,7 +74,7 @@ func NewLLMClientFactory(cfg config.Config) (*LLMClientFactory, error) {
 	rateLimitMap := ratelimit.NewProviderLimiterMap(rateLimitConfigs)
 
 	return &LLMClientFactory{
-		config:          cfg,
+		config:          *cfg,
 		metricsRecorder: recorder,
 		circuitBreakers: circuitBreakers,
 		rateLimitMap:    rateLimitMap,
@@ -193,7 +193,7 @@ func CreateLLMClientForAgent(agentType Type) (LLMClient, error) {
 	}
 
 	// Create LLM client factory
-	factory, err := NewLLMClientFactory(cfg)
+	factory, err := NewLLMClientFactory(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
 	}
@@ -217,7 +217,7 @@ func EnhanceLLMClientWithMetrics(_ LLMClient, agentType Type, stateProvider metr
 	}
 
 	// Create LLM client factory
-	factory, err := NewLLMClientFactory(cfg)
+	factory, err := NewLLMClientFactory(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
 	}

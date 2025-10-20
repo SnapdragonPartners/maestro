@@ -144,14 +144,19 @@ func (k *Kernel) Start() error {
 	return nil
 }
 
-// StartWebUI conditionally starts the web UI server if requested.
-func (k *Kernel) StartWebUI(port int) error {
+// StartWebUI conditionally starts the web UI server using configuration settings.
+func (k *Kernel) StartWebUI() error {
 	if k.WebServer == nil {
 		return fmt.Errorf("web server not initialized")
 	}
 
-	k.Logger.Info("Starting web UI on port %d", port)
-	if err := k.WebServer.StartServer(k.ctx, port); err != nil {
+	if k.Config.WebUI == nil {
+		return fmt.Errorf("webui config not found")
+	}
+
+	cfg := k.Config.WebUI
+	k.Logger.Info("Starting web UI on %s:%d (SSL: %v)", cfg.Host, cfg.Port, cfg.SSL)
+	if err := k.WebServer.StartServer(k.ctx, cfg.Host, cfg.Port, cfg.SSL, cfg.Cert, cfg.Key); err != nil {
 		return fmt.Errorf("failed to start web server: %w", err)
 	}
 	return nil

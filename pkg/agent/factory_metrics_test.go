@@ -38,7 +38,7 @@ func TestMetricsRecorderSelection(t *testing.T) {
 				},
 			}
 
-			factory, err := NewLLMClientFactory(cfg)
+			factory, err := NewLLMClientFactory(&cfg)
 			if err != nil {
 				t.Fatalf("NewLLMClientFactory() error = %v", err)
 			}
@@ -63,7 +63,7 @@ func TestDefaultConfigUsesInternal(t *testing.T) {
 		},
 	}
 
-	factory, err := NewLLMClientFactory(cfg)
+	factory, err := NewLLMClientFactory(&cfg)
 	if err != nil {
 		t.Fatalf("NewLLMClientFactory() error = %v", err)
 	}

@@ -169,10 +169,10 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Start web UI if requested
 	if f.webUI {
-		if err := k.StartWebUI(8080); err != nil {
+		if err := k.StartWebUI(); err != nil {
 			return fmt.Errorf("failed to start web UI: %w", err)
 		}
-		k.Logger.Info("🌐 Web UI started on port 8080")
+		k.Logger.Info("🌐 Web UI started successfully")
 	}
 
 	// Create supervisor for agent lifecycle management (creates its own factory)

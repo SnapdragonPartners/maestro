@@ -308,6 +308,16 @@ type GitConfig struct {
 	GitUserEmail  string `json:"git_user_email"` // Git commit author email (default: maestro-{AGENT_ID}@localhost)
 }
 
+// WebUIConfig contains web UI server settings.
+type WebUIConfig struct {
+	Enabled bool   `json:"enabled"` // Whether web UI is enabled (default: true)
+	Host    string `json:"host"`    // Host to bind to (default: "localhost")
+	Port    int    `json:"port"`    // Port to listen on (default: 8080, must be > 0 if enabled)
+	SSL     bool   `json:"ssl"`     // Whether to use SSL/TLS (default: false)
+	Cert    string `json:"cert"`    // Path to SSL certificate file (required if ssl=true)
+	Key     string `json:"key"`     // Path to SSL private key file (required if ssl=true)
+}
+
 // OrchestratorConfig contains system-wide orchestrator settings.
 // These settings apply to the entire orchestrator system, not individual projects.
 // Keep this minimal - most settings should be per-project or constants.
@@ -334,6 +344,7 @@ type Config struct {
 	Build     *BuildConfig     `json:"build"`     // Build commands and targets
 	Agents    *AgentConfig     `json:"agents"`    // Which models to use for this project
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
+	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
 
 	// === SYSTEM-WIDE ORCHESTRATOR SETTINGS ===
 	Orchestrator *OrchestratorConfig `json:"orchestrator"` // LLM models, rate limits, budgets
@@ -741,6 +752,14 @@ func createDefaultConfig() *Config {
 			GitUserName:   DefaultGitUserName,
 			GitUserEmail:  DefaultGitUserEmail,
 		},
+		WebUI: &WebUIConfig{
+			Enabled: true,        // Enabled by default
+			Host:    "localhost", // Secure default: bind to localhost only
+			Port:    8080,        // Standard development port
+			SSL:     false,       // SSL disabled by default (requires cert/key setup)
+			Cert:    "",          // No default certificate
+			Key:     "",          // No default key
+		},
 
 		// Orchestrator settings
 		Orchestrator: &OrchestratorConfig{
@@ -846,6 +865,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Orchestrator == nil {
 		config.Orchestrator = &OrchestratorConfig{}
+	}
+	if config.WebUI == nil {
+		config.WebUI = &WebUIConfig{}
 	}
 
 	// Apply container defaults
@@ -997,6 +1019,17 @@ func applyDefaults(config *Config) {
 		}
 		config.Orchestrator.Models = defaultModels
 	}
+
+	// Apply WebUI defaults
+	if config.WebUI.Host == "" {
+		config.WebUI.Host = "localhost"
+	}
+	if config.WebUI.Port == 0 {
+		config.WebUI.Port = 8080
+	}
+	// Note: Enabled defaults to false (zero value), but we want true by default
+	// This is handled in createDefaultConfig for new configs
+	// For existing configs without webui section, we set enabled=true to maintain backward compatibility
 }
 
 func validateConfig(config *Config) error {
@@ -1066,7 +1099,73 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	// Validate WebUI settings
+	if config.WebUI != nil && config.WebUI.Enabled {
+		// Validate port range
+		if config.WebUI.Port <= 0 || config.WebUI.Port > 65535 {
+			return fmt.Errorf("webui port must be between 1 and 65535 (got %d)", config.WebUI.Port)
+		}
+
+		// Validate SSL configuration
+		if config.WebUI.SSL {
+			if config.WebUI.Cert == "" {
+				return fmt.Errorf("webui ssl enabled but cert path is empty")
+			}
+			if config.WebUI.Key == "" {
+				return fmt.Errorf("webui ssl enabled but key path is empty")
+			}
+
+			// Resolve and validate certificate paths
+			certPath, err := resolveWebUIFilePath(config.WebUI.Cert)
+			if err != nil {
+				return fmt.Errorf("webui cert path error: %w", err)
+			}
+			if _, statErr := os.Stat(certPath); os.IsNotExist(statErr) {
+				return fmt.Errorf("webui cert file does not exist: %s", certPath)
+			}
+
+			keyPath, err := resolveWebUIFilePath(config.WebUI.Key)
+			if err != nil {
+				return fmt.Errorf("webui key path error: %w", err)
+			}
+			if _, statErr := os.Stat(keyPath); os.IsNotExist(statErr) {
+				return fmt.Errorf("webui key file does not exist: %s", keyPath)
+			}
+		}
+	}
+
 	return nil
+}
+
+// resolveWebUIFilePath resolves a file path for WebUI cert/key files.
+// - Absolute paths: returned as-is.
+// - Relative paths with directories: resolved relative to current directory.
+// - Filename only: resolved to {projectDir}/.maestro/{filename}.
+func resolveWebUIFilePath(filePath string) (string, error) {
+	if filePath == "" {
+		return "", fmt.Errorf("file path is empty")
+	}
+
+	// Check if it's an absolute path
+	if filepath.IsAbs(filePath) {
+		return filePath, nil
+	}
+
+	// Check if it contains directory separators
+	if strings.Contains(filePath, string(filepath.Separator)) || strings.Contains(filePath, "/") {
+		// Relative path with directory - resolve relative to current directory
+		absPath, err := filepath.Abs(filePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve relative path: %w", err)
+		}
+		return absPath, nil
+	}
+
+	// Filename only - resolve to .maestro directory
+	if projectDir == "" {
+		return "", fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+	return filepath.Join(projectDir, ProjectConfigDir, filePath), nil
 }
 
 // validateRequiredAPIKeys checks that all required API keys are present for the configured models.

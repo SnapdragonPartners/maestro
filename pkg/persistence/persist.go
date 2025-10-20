@@ -70,7 +70,7 @@ func queryStoryMetrics(_ /* ctx */ context.Context, storyID string, logger *logx
 		return nil
 	}
 
-	if !isMetricsConfigured(cfg) {
+	if !isMetricsConfigured(&cfg) {
 		logWarning(logger, "📊 Metrics not enabled - skipping metrics query")
 		return nil
 	}
@@ -106,7 +106,7 @@ func logInfo(logger *logx.Logger, format string, args ...interface{}) {
 }
 
 // isMetricsConfigured checks if metrics are properly configured.
-func isMetricsConfigured(cfg config.Config) bool {
+func isMetricsConfigured(cfg *config.Config) bool {
 	return cfg.Agents != nil && cfg.Agents.Metrics.Enabled
 }
 
