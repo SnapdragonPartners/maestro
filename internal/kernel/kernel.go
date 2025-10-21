@@ -219,8 +219,9 @@ func (k *Kernel) startPersistenceWorker() {
 	go func() {
 		k.Logger.Debug("Starting persistence worker")
 
-		// Create database operations handler
-		ops := persistence.NewDatabaseOperations(k.Database)
+		// Create database operations handler with session isolation
+		// The session ID is passed to ensure all database operations are scoped to the current orchestrator run
+		ops := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
 
 		for {
 			select {

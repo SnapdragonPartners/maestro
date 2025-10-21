@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,7 +26,8 @@ func createTestDB(t *testing.T) (*DatabaseOperations, func()) {
 		os.RemoveAll(tempDir)
 	}
 
-	return NewDatabaseOperations(db), cleanup
+	// Use test-session as session ID for all test operations
+	return NewDatabaseOperations(db, "test-session"), cleanup
 }
 
 func TestDatabaseOperations(t *testing.T) {
@@ -488,4 +490,505 @@ func mustGenerateStoryID() string {
 		panic(err)
 	}
 	return id
+}
+
+// TestSessionIsolation verifies that database operations are properly isolated by session_id.
+func TestSessionIsolation(t *testing.T) {
+	// Create a shared database for multiple sessions
+	tempDir, err := os.MkdirTemp("", "session_isolation_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	db, err := InitializeDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer db.Close()
+
+	// sessionCounter ensures unique session IDs for each sub-test
+	sessionCounter := 0
+	createSessions := func() (*DatabaseOperations, *DatabaseOperations) {
+		sessionCounter++
+		session1 := fmt.Sprintf("session-%03d-a", sessionCounter)
+		session2 := fmt.Sprintf("session-%03d-b", sessionCounter)
+		return NewDatabaseOperations(db, session1), NewDatabaseOperations(db, session2)
+	}
+
+	// Test 1: Specs should be isolated by session
+	t.Run("SpecIsolation", func(t *testing.T) {
+		ops1, ops2 := createSessions()
+		spec1 := &Spec{
+			ID:      GenerateSpecID(),
+			Content: "Spec from session 1",
+		}
+		spec2 := &Spec{
+			ID:      GenerateSpecID(),
+			Content: "Spec from session 2",
+		}
+
+		// Insert specs into different sessions
+		if err := ops1.UpsertSpec(spec1); err != nil {
+			t.Fatalf("Failed to insert spec1: %v", err)
+		}
+		if err := ops2.UpsertSpec(spec2); err != nil {
+			t.Fatalf("Failed to insert spec2: %v", err)
+		}
+
+		// Session 1 should only see spec1
+		retrieved1, err := ops1.GetSpecByID(spec1.ID)
+		if err != nil {
+			t.Fatalf("Failed to get spec1: %v", err)
+		}
+		if retrieved1.Content != spec1.Content {
+			t.Errorf("Expected spec1 content %q, got %q", spec1.Content, retrieved1.Content)
+		}
+
+		// Session 1 should NOT see spec2
+		_, err = ops1.GetSpecByID(spec2.ID)
+		if err == nil {
+			t.Error("Session 1 should not be able to retrieve spec2")
+		}
+
+		// Session 2 should only see spec2
+		retrieved2, err := ops2.GetSpecByID(spec2.ID)
+		if err != nil {
+			t.Fatalf("Failed to get spec2: %v", err)
+		}
+		if retrieved2.Content != spec2.Content {
+			t.Errorf("Expected spec2 content %q, got %q", spec2.Content, retrieved2.Content)
+		}
+
+		// Session 2 should NOT see spec1
+		_, err = ops2.GetSpecByID(spec1.ID)
+		if err == nil {
+			t.Error("Session 2 should not be able to retrieve spec1")
+		}
+	})
+
+	// Test 2: Stories should be isolated by session
+	t.Run("StoryIsolation", func(t *testing.T) {
+		ops1, ops2 := createSessions()
+		// Create parent specs for each session
+		spec1ID := GenerateSpecID()
+		spec2ID := GenerateSpecID()
+
+		spec1 := &Spec{ID: spec1ID, Content: "Parent spec 1"}
+		spec2 := &Spec{ID: spec2ID, Content: "Parent spec 2"}
+
+		if err := ops1.UpsertSpec(spec1); err != nil {
+			t.Fatalf("Failed to insert spec1: %v", err)
+		}
+		if err := ops2.UpsertSpec(spec2); err != nil {
+			t.Fatalf("Failed to insert spec2: %v", err)
+		}
+
+		story1ID, _ := GenerateStoryID()
+		story2ID, _ := GenerateStoryID()
+
+		story1 := &Story{
+			ID:        story1ID,
+			SpecID:    spec1ID,
+			Title:     "Story from session 1",
+			Content:   "Content 1",
+			Status:    StatusNew,
+			StoryType: "app",
+		}
+		story2 := &Story{
+			ID:        story2ID,
+			SpecID:    spec2ID,
+			Title:     "Story from session 2",
+			Content:   "Content 2",
+			Status:    StatusNew,
+			StoryType: "app",
+		}
+
+		// Insert stories into different sessions
+		if err := ops1.UpsertStory(story1); err != nil {
+			t.Fatalf("Failed to insert story1: %v", err)
+		}
+		if err := ops2.UpsertStory(story2); err != nil {
+			t.Fatalf("Failed to insert story2: %v", err)
+		}
+
+		// Session 1 should only see story1
+		retrieved1, err := ops1.GetStoryByID(story1ID)
+		if err != nil {
+			t.Fatalf("Failed to get story1: %v", err)
+		}
+		if retrieved1.Title != story1.Title {
+			t.Errorf("Expected story1 title %q, got %q", story1.Title, retrieved1.Title)
+		}
+
+		// Session 1 should NOT see story2
+		_, err = ops1.GetStoryByID(story2ID)
+		if err == nil {
+			t.Error("Session 1 should not be able to retrieve story2")
+		}
+
+		// GetAllStories should be session-isolated
+		allStories1, err := ops1.GetAllStories()
+		if err != nil {
+			t.Fatalf("Failed to get all stories for session1: %v", err)
+		}
+		if len(allStories1) != 1 {
+			t.Errorf("Session 1 should see 1 story, got %d", len(allStories1))
+		}
+
+		allStories2, err := ops2.GetAllStories()
+		if err != nil {
+			t.Fatalf("Failed to get all stories for session2: %v", err)
+		}
+		if len(allStories2) != 1 {
+			t.Errorf("Session 2 should see 1 story, got %d", len(allStories2))
+		}
+	})
+
+	// Test 3: Queries should be session-isolated
+	t.Run("QueryIsolation", func(t *testing.T) {
+		ops1, ops2 := createSessions()
+		// Create parent specs for each session
+		spec1ID := GenerateSpecID()
+		spec2ID := GenerateSpecID()
+
+		spec1 := &Spec{ID: spec1ID, Content: "Query spec 1"}
+		spec2 := &Spec{ID: spec2ID, Content: "Query spec 2"}
+
+		if err := ops1.UpsertSpec(spec1); err != nil {
+			t.Fatalf("Failed to insert spec1: %v", err)
+		}
+		if err := ops2.UpsertSpec(spec2); err != nil {
+			t.Fatalf("Failed to insert spec2: %v", err)
+		}
+
+		// Create multiple stories in each session
+		for i := 0; i < 3; i++ {
+			story1ID, _ := GenerateStoryID()
+			story2ID, _ := GenerateStoryID()
+
+			story1 := &Story{
+				ID:        story1ID,
+				SpecID:    spec1ID,
+				Title:     fmt.Sprintf("Session1 Story %d", i),
+				Content:   "Content",
+				Status:    StatusNew,
+				StoryType: "app",
+			}
+			story2 := &Story{
+				ID:        story2ID,
+				SpecID:    spec2ID,
+				Title:     fmt.Sprintf("Session2 Story %d", i),
+				Content:   "Content",
+				Status:    StatusPlanning,
+				StoryType: "app",
+			}
+
+			if err := ops1.UpsertStory(story1); err != nil {
+				t.Fatalf("Failed to insert story1: %v", err)
+			}
+			if err := ops2.UpsertStory(story2); err != nil {
+				t.Fatalf("Failed to insert story2: %v", err)
+			}
+		}
+
+		// Query by status - each session should only see its own stories
+		filter1 := &StoryFilter{Status: &[]string{StatusNew}[0]}
+		results1, err := ops1.QueryStoriesByFilter(filter1)
+		if err != nil {
+			t.Fatalf("Failed to query stories for session1: %v", err)
+		}
+		if len(results1) != 3 {
+			t.Errorf("Session 1 should see 3 StatusNew stories, got %d", len(results1))
+		}
+
+		filter2 := &StoryFilter{Status: &[]string{StatusPlanning}[0]}
+		results2, err := ops2.QueryStoriesByFilter(filter2)
+		if err != nil {
+			t.Fatalf("Failed to query stories for session2: %v", err)
+		}
+		if len(results2) != 3 {
+			t.Errorf("Session 2 should see 3 StatusPlanning stories, got %d", len(results2))
+		}
+
+		// QueryPendingStories should be session-isolated
+		pending1, err := ops1.QueryPendingStories()
+		if err != nil {
+			t.Fatalf("Failed to query pending stories for session1: %v", err)
+		}
+		if len(pending1) != 3 {
+			t.Errorf("Session 1 should see 3 pending stories, got %d", len(pending1))
+		}
+
+		pending2, err := ops2.QueryPendingStories()
+		if err != nil {
+			t.Fatalf("Failed to query pending stories for session2: %v", err)
+		}
+		if len(pending2) != 0 {
+			t.Errorf("Session 2 should see 0 pending stories (all are StatusPlanning), got %d", len(pending2))
+		}
+	})
+
+	// Test 4: Agent requests/responses should be session-isolated
+	t.Run("AgentMessageIsolation", func(t *testing.T) {
+		ops1, ops2 := createSessions()
+		// Create parent specs and stories for each session
+		spec1ID := GenerateSpecID()
+		spec2ID := GenerateSpecID()
+
+		spec1 := &Spec{ID: spec1ID, Content: "Agent spec 1"}
+		spec2 := &Spec{ID: spec2ID, Content: "Agent spec 2"}
+
+		if err := ops1.UpsertSpec(spec1); err != nil {
+			t.Fatalf("Failed to insert spec1: %v", err)
+		}
+		if err := ops2.UpsertSpec(spec2); err != nil {
+			t.Fatalf("Failed to insert spec2: %v", err)
+		}
+
+		story1ID, _ := GenerateStoryID()
+		story2ID, _ := GenerateStoryID()
+
+		story1 := &Story{
+			ID:        story1ID,
+			SpecID:    spec1ID,
+			Title:     "Story 1",
+			Content:   "Content 1",
+			Status:    StatusNew,
+			StoryType: "app",
+		}
+		story2 := &Story{
+			ID:        story2ID,
+			SpecID:    spec2ID,
+			Title:     "Story 2",
+			Content:   "Content 2",
+			Status:    StatusNew,
+			StoryType: "app",
+		}
+
+		if err := ops1.UpsertStory(story1); err != nil {
+			t.Fatalf("Failed to insert story1: %v", err)
+		}
+		if err := ops2.UpsertStory(story2); err != nil {
+			t.Fatalf("Failed to insert story2: %v", err)
+		}
+
+		// Create agent requests in each session
+		req1 := &AgentRequest{
+			ID:          GenerateSpecID(),
+			StoryID:     &story1ID,
+			RequestType: "question",
+			FromAgent:   "coder-1",
+			ToAgent:     "architect",
+			Content:     "Question from session 1",
+		}
+		req2 := &AgentRequest{
+			ID:          GenerateSpecID(),
+			StoryID:     &story2ID,
+			RequestType: "question",
+			FromAgent:   "coder-2",
+			ToAgent:     "architect",
+			Content:     "Question from session 2",
+		}
+
+		if err := ops1.UpsertAgentRequest(req1); err != nil {
+			t.Fatalf("Failed to insert request1: %v", err)
+		}
+		if err := ops2.UpsertAgentRequest(req2); err != nil {
+			t.Fatalf("Failed to insert request2: %v", err)
+		}
+
+		// Session 1 should only see its own requests
+		requests1, err := ops1.GetAgentRequestsByStory(story1ID)
+		if err != nil {
+			t.Fatalf("Failed to get requests for session1: %v", err)
+		}
+		if len(requests1) != 1 {
+			t.Errorf("Session 1 should see 1 request, got %d", len(requests1))
+		}
+
+		// Session 1 should NOT see session 2's requests
+		requests1ForStory2, err := ops1.GetAgentRequestsByStory(story2ID)
+		if err != nil {
+			t.Fatalf("Failed to query requests for story2 in session1: %v", err)
+		}
+		if len(requests1ForStory2) != 0 {
+			t.Errorf("Session 1 should see 0 requests for story2, got %d", len(requests1ForStory2))
+		}
+
+		// GetRecentMessages should be session-isolated
+		messages1, err := ops1.GetRecentMessages(10)
+		if err != nil {
+			t.Fatalf("Failed to get recent messages for session1: %v", err)
+		}
+		if len(messages1) != 1 {
+			t.Errorf("Session 1 should see 1 message, got %d", len(messages1))
+		}
+
+		messages2, err := ops2.GetRecentMessages(10)
+		if err != nil {
+			t.Fatalf("Failed to get recent messages for session2: %v", err)
+		}
+		if len(messages2) != 1 {
+			t.Errorf("Session 2 should see 1 message, got %d", len(messages2))
+		}
+	})
+
+	// Test 5: UpdateStoryStatus should be session-isolated
+	t.Run("UpdateStoryStatusIsolation", func(t *testing.T) {
+		ops1, ops2 := createSessions()
+		// Create parent specs for each session
+		spec1ID := GenerateSpecID()
+		spec2ID := GenerateSpecID()
+
+		spec1 := &Spec{ID: spec1ID, Content: "Update spec 1"}
+		spec2 := &Spec{ID: spec2ID, Content: "Update spec 2"}
+
+		if err := ops1.UpsertSpec(spec1); err != nil {
+			t.Fatalf("Failed to insert spec1: %v", err)
+		}
+		if err := ops2.UpsertSpec(spec2); err != nil {
+			t.Fatalf("Failed to insert spec2: %v", err)
+		}
+
+		// Create stories in each session
+		story1ID, _ := GenerateStoryID()
+		story2ID, _ := GenerateStoryID()
+
+		story1 := &Story{
+			ID:        story1ID,
+			SpecID:    spec1ID,
+			Title:     "Story in session 1",
+			Content:   "Content 1",
+			Status:    StatusNew,
+			StoryType: "app",
+		}
+		story2 := &Story{
+			ID:        story2ID,
+			SpecID:    spec2ID,
+			Title:     "Story in session 2",
+			Content:   "Content 2",
+			Status:    StatusNew,
+			StoryType: "app",
+		}
+
+		if err := ops1.UpsertStory(story1); err != nil {
+			t.Fatalf("Failed to insert story1: %v", err)
+		}
+		if err := ops2.UpsertStory(story2); err != nil {
+			t.Fatalf("Failed to insert story2: %v", err)
+		}
+
+		// Update status in session 1
+		updateReq1 := &UpdateStoryStatusRequest{
+			StoryID: story1ID,
+			Status:  StatusCoding,
+		}
+		if err := ops1.UpdateStoryStatus(updateReq1); err != nil {
+			t.Fatalf("Failed to update story status in session1: %v", err)
+		}
+
+		// Verify session 1 sees the update
+		updated1, err := ops1.GetStoryByID(story1ID)
+		if err != nil {
+			t.Fatalf("Failed to get updated story1: %v", err)
+		}
+		if updated1.Status != StatusCoding {
+			t.Errorf("Session 1 story should have status %q, got %q", StatusCoding, updated1.Status)
+		}
+
+		// Verify session 2 cannot see or update session 1's story
+		_, err = ops1.GetStoryByID(story2ID)
+		if err == nil {
+			t.Error("Session 1 should not be able to retrieve story2 from session 2")
+		}
+
+		// Verify that attempting to update a story from a different session fails
+		updateReq2 := &UpdateStoryStatusRequest{
+			StoryID: story1ID, // Try to update session1's story from session2
+			Status:  StatusDone,
+		}
+		err = ops2.UpdateStoryStatus(updateReq2)
+		if err == nil {
+			t.Error("Session 2 should not be able to update session 1's story")
+		}
+
+		// Verify session 1's story is still StatusCoding (not affected by session 2's attempt)
+		stillCoding, err := ops1.GetStoryByID(story1ID)
+		if err != nil {
+			t.Fatalf("Failed to get story1 after session2 update attempt: %v", err)
+		}
+		if stillCoding.Status != StatusCoding {
+			t.Errorf("Session 1 story should still be %q, got %q", StatusCoding, stillCoding.Status)
+		}
+	})
+
+	// Test 6: BatchUpsertStoriesWithDependencies should be session-isolated
+	t.Run("BatchUpsertIsolation", func(t *testing.T) {
+		ops1, ops2 := createSessions()
+		// Create parent specs for each session
+		spec1ID := GenerateSpecID()
+		spec2ID := GenerateSpecID()
+
+		spec1 := &Spec{ID: spec1ID, Content: "Batch spec 1"}
+		spec2 := &Spec{ID: spec2ID, Content: "Batch spec 2"}
+
+		if err := ops1.UpsertSpec(spec1); err != nil {
+			t.Fatalf("Failed to insert spec1: %v", err)
+		}
+		if err := ops2.UpsertSpec(spec2); err != nil {
+			t.Fatalf("Failed to insert spec2: %v", err)
+		}
+
+		// Batch insert stories in session 1
+		batchStory1ID, _ := GenerateStoryID()
+		batchStory2ID, _ := GenerateStoryID()
+
+		batch1 := &BatchUpsertStoriesWithDependenciesRequest{
+			Stories: []*Story{
+				{
+					ID:        batchStory1ID,
+					SpecID:    spec1ID,
+					Title:     "Batch Story 1",
+					Content:   "Content 1",
+					Status:    StatusNew,
+					StoryType: "app",
+				},
+				{
+					ID:        batchStory2ID,
+					SpecID:    spec1ID,
+					Title:     "Batch Story 2",
+					Content:   "Content 2",
+					Status:    StatusNew,
+					StoryType: "app",
+				},
+			},
+			Dependencies: []*StoryDependency{
+				{StoryID: batchStory2ID, DependsOn: batchStory1ID},
+			},
+		}
+
+		if err := ops1.BatchUpsertStoriesWithDependencies(batch1); err != nil {
+			t.Fatalf("Failed to batch upsert in session1: %v", err)
+		}
+
+		// Session 1 should see both stories
+		allStories1, err := ops1.GetAllStories()
+		if err != nil {
+			t.Fatalf("Failed to get stories for session1: %v", err)
+		}
+		if len(allStories1) != 2 {
+			t.Errorf("Session 1 should see 2 stories, got %d", len(allStories1))
+		}
+
+		// Session 2 should see 0 stories
+		allStories2, err := ops2.GetAllStories()
+		if err != nil {
+			t.Fatalf("Failed to get stories for session2: %v", err)
+		}
+		if len(allStories2) != 0 {
+			t.Errorf("Session 2 should see 0 stories, got %d", len(allStories2))
+		}
+	})
 }

@@ -23,6 +23,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
@@ -892,8 +893,15 @@ func (s *Server) readMessageLogs() []MessageEntry {
 		}
 	}()
 
-	// Use the persistence operations package
-	ops := persistence.NewDatabaseOperations(db)
+	// Get current session ID from config for session-isolated queries
+	cfg, err := config.GetConfig()
+	if err != nil {
+		s.logger.Warn("Failed to get config for session ID: %v", err)
+		return []MessageEntry{}
+	}
+
+	// Use the persistence operations package with session isolation
+	ops := persistence.NewDatabaseOperations(db, cfg.SessionID)
 	recentMessages, err := ops.GetRecentMessages(5)
 	if err != nil {
 		s.logger.Warn("Failed to query recent messages: %v", err)

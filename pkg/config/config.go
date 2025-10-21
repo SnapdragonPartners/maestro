@@ -318,6 +318,24 @@ type WebUIConfig struct {
 	Key     string `json:"key"`     // Path to SSL private key file (required if ssl=true)
 }
 
+// ChatLimitsConfig contains size and compaction limits for chat messages.
+type ChatLimitsConfig struct {
+	MaxMessageChars int `json:"max_message_chars"` // Maximum message size (default: 4096)
+}
+
+// ChatScannerConfig contains secret scanning configuration.
+type ChatScannerConfig struct {
+	Enabled   bool `json:"enabled"`    // Whether secret scanning is enabled (default: true)
+	TimeoutMs int  `json:"timeout_ms"` // Scanner timeout in milliseconds (default: 800)
+}
+
+// ChatConfig contains agent chat system configuration.
+type ChatConfig struct {
+	Enabled bool              `json:"enabled"` // Whether chat system is enabled (default: false for Phase 1)
+	Limits  ChatLimitsConfig  `json:"limits"`  // Size and compaction limits
+	Scanner ChatScannerConfig `json:"scanner"` // Secret scanning configuration
+}
+
 // OrchestratorConfig contains system-wide orchestrator settings.
 // These settings apply to the entire orchestrator system, not individual projects.
 // Keep this minimal - most settings should be per-project or constants.
@@ -345,12 +363,14 @@ type Config struct {
 	Agents    *AgentConfig     `json:"agents"`    // Which models to use for this project
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
 	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
+	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
 
 	// === SYSTEM-WIDE ORCHESTRATOR SETTINGS ===
 	Orchestrator *OrchestratorConfig `json:"orchestrator"` // LLM models, rate limits, budgets
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
-	validTargetImage bool `json:"-"` // Whether the configured target container is valid and runnable
+	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
+	validTargetImage bool   `json:"-"` // Whether the configured target container is valid and runnable
 }
 
 // ProjectInfo contains basic project metadata.
@@ -760,6 +780,16 @@ func createDefaultConfig() *Config {
 			Cert:    "",          // No default certificate
 			Key:     "",          // No default key
 		},
+		Chat: &ChatConfig{
+			Enabled: false, // Disabled by default for Phase 1
+			Limits: ChatLimitsConfig{
+				MaxMessageChars: 4096, // 4KB message limit
+			},
+			Scanner: ChatScannerConfig{
+				Enabled:   true, // Enable secret scanning by default
+				TimeoutMs: 800,  // 800ms timeout for scanning
+			},
+		},
 
 		// Orchestrator settings
 		Orchestrator: &OrchestratorConfig{
@@ -868,6 +898,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.WebUI == nil {
 		config.WebUI = &WebUIConfig{}
+	}
+	if config.Chat == nil {
+		config.Chat = &ChatConfig{}
 	}
 
 	// Apply container defaults
@@ -1030,6 +1063,16 @@ func applyDefaults(config *Config) {
 	// Note: Enabled defaults to false (zero value), but we want true by default
 	// This is handled in createDefaultConfig for new configs
 	// For existing configs without webui section, we set enabled=true to maintain backward compatibility
+
+	// Apply Chat defaults
+	if config.Chat.Limits.MaxMessageChars == 0 {
+		config.Chat.Limits.MaxMessageChars = 4096
+	}
+	if config.Chat.Scanner.TimeoutMs == 0 {
+		config.Chat.Scanner.TimeoutMs = 800
+	}
+	// Note: chat.enabled defaults to false, scanner.enabled defaults to false
+	// If user wants chat, they must explicitly enable it
 }
 
 func validateConfig(config *Config) error {
@@ -1610,6 +1653,13 @@ func HasGitHubToken() bool {
 	return GetGitHubToken() != ""
 }
 
+// GetWebUIPassword returns the WebUI password from environment variable only.
+// Passwords are never stored in config - only read from MAESTRO_WEBUI_PASSWORD env var.
+// If no password is set, returns empty string (caller should generate one).
+func GetWebUIPassword() string {
+	return os.Getenv("MAESTRO_WEBUI_PASSWORD")
+}
+
 // convertSSHToHTTPS converts SSH git URLs to HTTPS format for token-based authentication.
 // This enables all git operations to use GITHUB_TOKEN instead of SSH keys.
 func convertSSHToHTTPS(originalURL string) string {
@@ -1633,4 +1683,25 @@ func convertSSHToHTTPS(originalURL string) string {
 
 	// If it's not a recognized GitHub URL format, return as-is
 	return originalURL
+}
+
+// GenerateSessionID generates a new UUID session ID for the current orchestrator run.
+// This session ID is used for database session isolation (filtering all reads/writes by session).
+// Must be called after LoadConfig and before any database operations.
+func GenerateSessionID() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	// Generate new UUID for this session
+	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+	// For better readability, use a simple timestamp-based ID instead of full UUID
+	// This makes logs and debugging easier while still being unique
+	config.SessionID = sessionID
+
+	getLogger().Info("Generated session ID: %s", sessionID)
+	return nil
 }

@@ -282,6 +282,12 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 		return nil, nil, fmt.Errorf("failed to get config: %w", err)
 	}
 
+	// Generate session ID for this orchestrator run (used for database session isolation)
+	if sessionErr := config.GenerateSessionID(); sessionErr != nil {
+		return nil, nil, fmt.Errorf("failed to generate session ID: %w", sessionErr)
+	}
+	config.LogInfo("📋 Session ID: %s", cfg.SessionID)
+
 	// Create context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	_ = cancel // Will be called when context is cancelled
