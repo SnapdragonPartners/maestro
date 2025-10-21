@@ -190,3 +190,20 @@ func GenerateAgentResponseID() string {
 func GenerateAgentPlanID() string {
 	return uuid.New().String()
 }
+
+// ChatMessage represents a message in the agent chat channel.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type ChatMessage struct {
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	Author    string `json:"author"`
+	Text      string `json:"text"`
+	Timestamp string `json:"ts"`
+}
+
+// ChatCursor tracks the last message ID read by an agent.
+type ChatCursor struct {
+	AgentID string `json:"agent_id"`
+	LastID  int64  `json:"last_id"`
+}

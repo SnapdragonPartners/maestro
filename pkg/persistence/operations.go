@@ -43,6 +43,12 @@ const (
 	OpGetAgentPlansByStory               = "get_agent_plans_by_story"
 	OpGetRecentMessages                  = "get_recent_messages"
 	OpBatchUpsertStoriesWithDependencies = "batch_upsert_stories_with_dependencies"
+
+	// Chat operations.
+	OpPostChatMessage  = "post_chat_message"
+	OpGetChatMessages  = "get_chat_messages"
+	OpGetChatCursor    = "get_chat_cursor"
+	OpUpdateChatCursor = "update_chat_cursor"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -858,4 +864,91 @@ func (ops *DatabaseOperations) GetAllStoriesWithDependencies() ([]*Story, error)
 	}
 
 	return stories, nil
+}
+
+// PostChatMessage inserts a new chat message and returns the assigned ID.
+func (ops *DatabaseOperations) PostChatMessage(author, text, timestamp string) (int64, error) {
+	query := `
+		INSERT INTO chat (session_id, ts, author, text)
+		VALUES (?, ?, ?, ?)
+	`
+
+	result, err := ops.db.Exec(query, ops.sessionID, timestamp, author, text)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert chat message: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get last insert id: %w", err)
+	}
+
+	return id, nil
+}
+
+// GetChatMessages returns all chat messages with id > sinceID for the current session.
+func (ops *DatabaseOperations) GetChatMessages(sinceID int64) ([]*ChatMessage, error) {
+	query := `
+		SELECT id, session_id, ts, author, text
+		FROM chat
+		WHERE session_id = ? AND id > ?
+		ORDER BY id ASC
+	`
+
+	rows, err := ops.db.Query(query, ops.sessionID, sinceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query chat messages: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var messages []*ChatMessage
+	for rows.Next() {
+		var msg ChatMessage
+		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Timestamp, &msg.Author, &msg.Text)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan chat message: %w", err)
+		}
+		messages = append(messages, &msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return messages, nil
+}
+
+// GetChatCursor returns the last read message ID for an agent.
+func (ops *DatabaseOperations) GetChatCursor(agentID string) (int64, error) {
+	query := `SELECT last_id FROM chat_cursor WHERE agent_id = ?`
+
+	var lastID int64
+	err := ops.db.QueryRow(query, agentID).Scan(&lastID)
+	if err == sql.ErrNoRows {
+		// No cursor found - return 0 (will read all messages)
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to get chat cursor for agent %s: %w", agentID, err)
+	}
+
+	return lastID, nil
+}
+
+// UpdateChatCursor updates the last read message ID for an agent.
+func (ops *DatabaseOperations) UpdateChatCursor(agentID string, lastID int64) error {
+	query := `
+		INSERT INTO chat_cursor (agent_id, last_id)
+		VALUES (?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET last_id = excluded.last_id
+	`
+
+	_, err := ops.db.Exec(query, agentID, lastID)
+	if err != nil {
+		return fmt.Errorf("failed to update chat cursor for agent %s: %w", agentID, err)
+	}
+
+	return nil
 }

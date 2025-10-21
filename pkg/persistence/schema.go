@@ -278,6 +278,21 @@ func createSchema(db *sql.DB) error {
 			reviewed_by TEXT,
 			feedback TEXT
 		)`,
+
+		// Chat messages table for agent collaboration
+		`CREATE TABLE IF NOT EXISTS chat (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			ts TEXT NOT NULL,
+			author TEXT NOT NULL,
+			text TEXT NOT NULL
+		)`,
+
+		// Chat cursor table for tracking agent read positions
+		`CREATE TABLE IF NOT EXISTS chat_cursor (
+			agent_id TEXT PRIMARY KEY,
+			last_id INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 
 	// Create indices
@@ -306,6 +321,10 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_agent_responses_correlation ON agent_responses(correlation_id)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_plans_story ON agent_plans(story_id)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_plans_status ON agent_plans(status)",
+
+		// Chat indices
+		"CREATE INDEX IF NOT EXISTS idx_chat_session ON chat(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_chat_session_id ON chat(session_id, id)",
 	}
 
 	// Execute table creation
