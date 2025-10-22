@@ -17,6 +17,10 @@ import (
 	"orchestrator/pkg/logx"
 )
 
+const (
+	defaultTmpfsSize = "1g"
+)
+
 // ExecStrategy represents where a tool should execute.
 type ExecStrategy string
 
@@ -105,7 +109,7 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 		"docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
-		"--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
+		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize),
 		containerName,
 		"sh", "-c", command,
 	}
@@ -163,7 +167,7 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 		"docker", "run", "-d", "--name", uniqueName,
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
-		"--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
+		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize),
 		containerName,
 		"sleep", fmt.Sprintf("%d", ttlSeconds),
 	}
@@ -252,7 +256,7 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 		"docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
-		"--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
+		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize),
 		containerName,
 	}
 

@@ -132,9 +132,9 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		return err
 	}
 
-	// Only mark story as pending AFTER successful channel send.
-	if err := d.queue.UpdateStoryStatus(storyID, StatusPending); err != nil {
-		return fmt.Errorf("failed to mark story as pending: %w", err)
+	// Mark story as assigned AFTER successful channel send to prevent double-dispatch.
+	if err := d.queue.UpdateStoryStatus(storyID, StatusAssigned); err != nil {
+		return fmt.Errorf("failed to mark story as assigned: %w", err)
 	}
 
 	return nil

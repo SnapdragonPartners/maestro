@@ -150,7 +150,7 @@ func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, 
 	}
 
 	// Add tmpfs for writable /tmp (always writable)
-	dockerArgs = append(dockerArgs, "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m")
+	dockerArgs = append(dockerArgs, "--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize))
 
 	// Automatically mount workspace based on agent state
 	workspaceMount := c.getWorkspaceMount()

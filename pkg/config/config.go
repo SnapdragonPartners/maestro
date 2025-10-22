@@ -115,6 +115,13 @@ var ModelDefaults = map[string]Model{
 		CPM:            3.0,
 		DailyBudget:    10.0,
 	},
+	ModelClaudeSonnet4Old: {
+		Name:           ModelClaudeSonnet4Old,
+		MaxTPM:         3000000,
+		MaxConnections: 5,
+		CPM:            3.0,
+		DailyBudget:    10.0,
+	},
 	ModelOpenAIO3Mini: {
 		Name:           ModelOpenAIO3Mini,
 		MaxTPM:         100000,
@@ -143,11 +150,12 @@ var ModelDefaults = map[string]Model{
 //
 //nolint:gochecknoglobals // Intentional global for model-to-provider mapping
 var ModelProviders = map[string]string{
-	ModelClaudeSonnet3: ProviderAnthropic,
-	ModelClaudeSonnet4: ProviderAnthropic,
-	ModelOpenAIO3:      ProviderOpenAI,
-	ModelOpenAIO3Mini:  ProviderOpenAIOfficial,
-	ModelGPT5:          ProviderOpenAIOfficial,
+	ModelClaudeSonnet3:    ProviderAnthropic,
+	ModelClaudeSonnet4:    ProviderAnthropic,
+	ModelClaudeSonnet4Old: ProviderAnthropic,
+	ModelOpenAIO3:         ProviderOpenAI,
+	ModelOpenAIO3Mini:     ProviderOpenAIOfficial,
+	ModelGPT5:             ProviderOpenAIOfficial,
 }
 
 // IsModelSupported checks if we have defaults for this model.
@@ -268,7 +276,8 @@ const (
 	BuildTargetInstall = "install"
 
 	// Model name constants.
-	ModelClaudeSonnet4      = "claude-sonnet-4-20250514"
+	ModelClaudeSonnet4      = "claude-sonnet-4-5"
+	ModelClaudeSonnet4Old   = "claude-sonnet-4-20250514"
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
 	ModelClaudeSonnetLatest = ModelClaudeSonnet4
 	ModelOpenAIO3           = "o3"
