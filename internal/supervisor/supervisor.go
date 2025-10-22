@@ -11,8 +11,10 @@ import (
 	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 )
 
@@ -136,10 +138,16 @@ type Supervisor struct {
 
 // NewSupervisor creates a new supervisor with the given kernel.
 func NewSupervisor(k *kernel.Kernel) *Supervisor {
-	// Create the agent factory with kernel dependencies (lightweight)
-	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel)
-
 	logger := logx.NewLogger("supervisor")
+
+	// Create database operations for chat service
+	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
+
+	// Create chat service with scanner and config
+	chatService := chat.NewService(dbOps, k.Config.Chat)
+
+	// Create the agent factory with kernel dependencies (lightweight)
+	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, chatService)
 
 	return &Supervisor{
 		Kernel:          k,

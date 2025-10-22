@@ -274,7 +274,10 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 			continue
 		}
 
-		result, err := tool.Exec(ctx, toolCall.Parameters)
+		// Add agent_id to context for tools that need it (like chat tools)
+		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, c.agentID)
+
+		result, err := tool.Exec(toolCtx, toolCall.Parameters)
 		if err != nil {
 			// Tool execution failures are recoverable - add comprehensive error to context for LLM to react.
 			if toolCall.Name == tools.ToolShell {

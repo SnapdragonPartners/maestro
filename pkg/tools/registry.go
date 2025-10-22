@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/chat"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/proto"
 )
@@ -16,6 +17,7 @@ import (
 //nolint:govet // fieldalignment: Logical grouping preferred over memory optimization
 type AgentContext struct {
 	Executor        execpkg.Executor
+	ChatService     *chat.Service
 	ReadOnly        bool
 	NetworkDisabled bool
 	WorkDir         string
@@ -322,6 +324,22 @@ func createContainerSwitchTool(ctx AgentContext) (Tool, error) {
 	return NewContainerSwitchTool(ctx.Executor), nil
 }
 
+// createChatPostTool creates a chat post tool instance.
+func createChatPostTool(ctx AgentContext) (Tool, error) {
+	if ctx.ChatService == nil {
+		return nil, fmt.Errorf("chat post tool requires a chat service")
+	}
+	return NewChatPostTool(ctx.ChatService), nil
+}
+
+// createChatReadTool creates a chat read tool instance.
+func createChatReadTool(ctx AgentContext) (Tool, error) {
+	if ctx.ChatService == nil {
+		return nil, fmt.Errorf("chat read tool requires a chat service")
+	}
+	return NewChatReadTool(ctx.ChatService), nil
+}
+
 // SCHEMA FUNCTIONS - Extract schemas from tool implementations
 
 func getShellSchema() InputSchema {
@@ -384,6 +402,14 @@ func getContainerListSchema() InputSchema {
 
 func getContainerSwitchSchema() InputSchema {
 	return NewContainerSwitchTool(nil).Definition().InputSchema
+}
+
+func getChatPostSchema() InputSchema {
+	return NewChatPostTool(nil).Definition().InputSchema
+}
+
+func getChatReadSchema() InputSchema {
+	return NewChatReadTool(nil).Definition().InputSchema
 }
 
 // init registers all tools in the global registry using the factory pattern.
@@ -475,5 +501,18 @@ func init() {
 		Name:        ToolContainerSwitch,
 		Description: "Switch coder agent execution environment to a different container, with fallback to bootstrap container on failure",
 		InputSchema: getContainerSwitchSchema(),
+	})
+
+	// Register chat tools
+	Register(ToolChatPost, createChatPostTool, &ToolMeta{
+		Name:        ToolChatPost,
+		Description: "Post a message to the agent chat channel. Use this to communicate with other agents or ask questions in the shared chat.",
+		InputSchema: getChatPostSchema(),
+	})
+
+	Register(ToolChatRead, createChatReadTool, &ToolMeta{
+		Name:        ToolChatRead,
+		Description: "Read new messages from the agent chat channel since your last read. Returns messages and updates your read cursor automatically.",
+		InputSchema: getChatReadSchema(),
 	})
 }

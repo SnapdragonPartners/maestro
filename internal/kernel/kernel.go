@@ -13,6 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/limiter"
@@ -39,6 +40,7 @@ type Kernel struct {
 	Database           *sql.DB
 	PersistenceChannel chan *persistence.Request
 	BuildService       *build.Service
+	ChatService        *chat.Service
 	WebServer          *webui.Server
 
 	// Runtime state
@@ -90,8 +92,12 @@ func (k *Kernel) initializeServices() error {
 	// Create build service
 	k.BuildService = build.NewBuildService()
 
+	// Create chat service
+	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
+	k.ChatService = chat.NewService(dbOps, k.Config.Chat)
+
 	// Create web server (will be started conditionally)
-	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir)
+	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService)
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
@@ -144,14 +150,19 @@ func (k *Kernel) Start() error {
 	return nil
 }
 
-// StartWebUI conditionally starts the web UI server if requested.
-func (k *Kernel) StartWebUI(port int) error {
+// StartWebUI conditionally starts the web UI server using configuration settings.
+func (k *Kernel) StartWebUI() error {
 	if k.WebServer == nil {
 		return fmt.Errorf("web server not initialized")
 	}
 
-	k.Logger.Info("Starting web UI on port %d", port)
-	if err := k.WebServer.StartServer(k.ctx, port); err != nil {
+	if k.Config.WebUI == nil {
+		return fmt.Errorf("webui config not found")
+	}
+
+	cfg := k.Config.WebUI
+	k.Logger.Info("Starting web UI on %s:%d (SSL: %v)", cfg.Host, cfg.Port, cfg.SSL)
+	if err := k.WebServer.StartServer(k.ctx, cfg.Host, cfg.Port, cfg.SSL, cfg.Cert, cfg.Key); err != nil {
 		return fmt.Errorf("failed to start web server: %w", err)
 	}
 	return nil
@@ -214,8 +225,9 @@ func (k *Kernel) startPersistenceWorker() {
 	go func() {
 		k.Logger.Debug("Starting persistence worker")
 
-		// Create database operations handler
-		ops := persistence.NewDatabaseOperations(k.Database)
+		// Create database operations handler with session isolation
+		// The session ID is passed to ensure all database operations are scoped to the current orchestrator run
+		ops := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
 
 		for {
 			select {

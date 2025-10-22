@@ -22,6 +22,10 @@ const (
 	ToolContainerTest   = "container_test"
 	ToolContainerList   = "container_list"
 	ToolContainerSwitch = "container_switch"
+
+	// Chat tools.
+	ToolChatPost = "chat_post"
+	ToolChatRead = "chat_read"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -29,15 +33,18 @@ const (
 //nolint:gochecknoglobals // These are constants that need to be globally accessible
 var (
 	// App planning tools - exploration and plan submission for application stories.
+	// Includes chat tools for agent collaboration.
 	AppPlanningTools = []string{
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
 		ToolMarkStoryComplete,
+		ToolChatPost,
+		ToolChatRead,
 	}
 
 	// DevOps planning tools - exploration and plan submission for infrastructure stories.
-	// Includes container tools for verification of existing infrastructure.
+	// Includes container tools for verification of existing infrastructure and chat for collaboration.
 	DevOpsPlanningTools = []string{
 		ToolShell,
 		ToolSubmitPlan,
@@ -45,9 +52,12 @@ var (
 		ToolMarkStoryComplete,
 		ToolContainerTest,
 		ToolContainerList,
+		ToolChatPost,
+		ToolChatRead,
 	}
 
 	// DevOps coding tools - infrastructure focus, container operations.
+	// Includes chat tools for agent collaboration.
 	DevOpsCodingTools = []string{
 		ToolShell,
 		ToolAskQuestion,
@@ -57,9 +67,12 @@ var (
 		ToolContainerTest,
 		ToolContainerList,
 		ToolContainerSwitch,
+		ToolChatPost,
+		ToolChatRead,
 	}
 
 	// App coding tools - full development environment.
+	// Includes chat tools for agent collaboration.
 	AppCodingTools = []string{
 		ToolShell,
 		ToolBuild,
@@ -67,6 +80,8 @@ var (
 		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
+		ToolChatPost,
+		ToolChatRead,
 	}
 
 	// Testing tools - validation and verification.

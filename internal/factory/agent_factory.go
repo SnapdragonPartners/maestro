@@ -9,6 +9,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
@@ -20,13 +21,15 @@ import (
 type AgentFactory struct {
 	dispatcher         *dispatch.Dispatcher
 	persistenceChannel chan<- *persistence.Request
+	chatService        *chat.Service
 }
 
 // NewAgentFactory creates a new lightweight agent factory.
-func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- *persistence.Request) *AgentFactory {
+func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- *persistence.Request, chatService *chat.Service) *AgentFactory {
 	return &AgentFactory{
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
+		chatService:        chatService,
 	}
 }
 
@@ -128,6 +131,7 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		coderModel,
 		cloneManager,
 		buildService,
+		f.chatService, // Chat service for agent collaboration
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)

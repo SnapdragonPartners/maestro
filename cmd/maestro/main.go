@@ -22,7 +22,7 @@ func main() {
 	var (
 		gitRepo    = flag.String("git-repo", "", "Git repository URL for bootstrap mode")
 		specFile   = flag.String("spec-file", "", "Path to specification file")
-		webUI      = flag.Bool("webui", false, "Enable web UI for main mode")
+		noWebUI    = flag.Bool("nowebui", false, "Disable web UI")
 		bootstrap  = flag.Bool("bootstrap", false, "Run in bootstrap mode")
 		projectDir = flag.String("projectdir", ".", "Project directory")
 	)
@@ -60,7 +60,7 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
-		if err := runMainMode(*projectDir, *specFile, *webUI); err != nil {
+		if err := runMainMode(*projectDir, *specFile, *noWebUI); err != nil {
 			fmt.Fprintf(os.Stderr, "Main mode failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -242,7 +242,7 @@ func runBootstrapMode(projectDir, gitRepo, specFile string) error {
 	return flow.Run(ctx, k)
 }
 
-func runMainMode(projectDir, specFile string, webUI bool) error {
+func runMainMode(projectDir, specFile string, noWebUI bool) error {
 	logger := logx.NewLogger("maestro-main")
 	logger.Info("Starting Maestro in main mode")
 
@@ -257,19 +257,36 @@ func runMainMode(projectDir, specFile string, webUI bool) error {
 		}
 	}()
 
+	// Determine WebUI status: read from config, but respect -nowebui flag override
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	webUIEnabled := false
+	if cfg.WebUI != nil && cfg.WebUI.Enabled && !noWebUI {
+		webUIEnabled = true
+	}
+
 	// Create and run main flow
-	flow := NewMainFlow(specFile, webUI)
+	flow := NewMainFlow(specFile, webUIEnabled)
 	return flow.Run(ctx, k)
 }
 
 // initializeKernel consolidates the common kernel initialization logic.
 // Config must already be loaded via setupProjectInfrastructure().
 func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error) {
-	// Get already-loaded configuration (no reload needed)
+	// Generate session ID for this orchestrator run (used for database session isolation)
+	if sessionErr := config.GenerateSessionID(); sessionErr != nil {
+		return nil, nil, fmt.Errorf("failed to generate session ID: %w", sessionErr)
+	}
+
+	// Get configuration AFTER generating session ID (session ID is stored in global config)
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get config: %w", err)
 	}
+	config.LogInfo("📋 Session ID: %s", cfg.SessionID)
 
 	// Create context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

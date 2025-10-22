@@ -308,6 +308,35 @@ type GitConfig struct {
 	GitUserEmail  string `json:"git_user_email"` // Git commit author email (default: maestro-{AGENT_ID}@localhost)
 }
 
+// WebUIConfig contains web UI server settings.
+type WebUIConfig struct {
+	Enabled bool   `json:"enabled"` // Whether web UI is enabled (default: true)
+	Host    string `json:"host"`    // Host to bind to (default: "localhost")
+	Port    int    `json:"port"`    // Port to listen on (default: 8080, must be > 0 if enabled)
+	SSL     bool   `json:"ssl"`     // Whether to use SSL/TLS (default: false)
+	Cert    string `json:"cert"`    // Path to SSL certificate file (required if ssl=true)
+	Key     string `json:"key"`     // Path to SSL private key file (required if ssl=true)
+}
+
+// ChatLimitsConfig contains size and compaction limits for chat messages.
+type ChatLimitsConfig struct {
+	MaxMessageChars int `json:"max_message_chars"` // Maximum message size (default: 4096)
+}
+
+// ChatScannerConfig contains secret scanning configuration.
+type ChatScannerConfig struct {
+	Enabled   bool `json:"enabled"`    // Whether secret scanning is enabled (default: true)
+	TimeoutMs int  `json:"timeout_ms"` // Scanner timeout in milliseconds (default: 800)
+}
+
+// ChatConfig contains agent chat system configuration.
+type ChatConfig struct {
+	Enabled        bool              `json:"enabled"`          // Whether chat system is enabled (default: false for Phase 1)
+	MaxNewMessages int               `json:"max_new_messages"` // Maximum new messages to inject per LLM call (default: 100)
+	Limits         ChatLimitsConfig  `json:"limits"`           // Size and compaction limits
+	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
+}
+
 // OrchestratorConfig contains system-wide orchestrator settings.
 // These settings apply to the entire orchestrator system, not individual projects.
 // Keep this minimal - most settings should be per-project or constants.
@@ -334,12 +363,15 @@ type Config struct {
 	Build     *BuildConfig     `json:"build"`     // Build commands and targets
 	Agents    *AgentConfig     `json:"agents"`    // Which models to use for this project
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
+	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
+	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
 
 	// === SYSTEM-WIDE ORCHESTRATOR SETTINGS ===
 	Orchestrator *OrchestratorConfig `json:"orchestrator"` // LLM models, rate limits, budgets
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
-	validTargetImage bool `json:"-"` // Whether the configured target container is valid and runnable
+	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
+	validTargetImage bool   `json:"-"` // Whether the configured target container is valid and runnable
 }
 
 // ProjectInfo contains basic project metadata.
@@ -741,6 +773,25 @@ func createDefaultConfig() *Config {
 			GitUserName:   DefaultGitUserName,
 			GitUserEmail:  DefaultGitUserEmail,
 		},
+		WebUI: &WebUIConfig{
+			Enabled: true,        // Enabled by default
+			Host:    "localhost", // Secure default: bind to localhost only
+			Port:    8080,        // Standard development port
+			SSL:     false,       // SSL disabled by default (requires cert/key setup)
+			Cert:    "",          // No default certificate
+			Key:     "",          // No default key
+		},
+		Chat: &ChatConfig{
+			Enabled:        false, // Disabled by default for Phase 1
+			MaxNewMessages: 100,   // Inject up to 100 new messages per LLM call
+			Limits: ChatLimitsConfig{
+				MaxMessageChars: 4096, // 4KB message limit
+			},
+			Scanner: ChatScannerConfig{
+				Enabled:   true, // Enable secret scanning by default
+				TimeoutMs: 800,  // 800ms timeout for scanning
+			},
+		},
 
 		// Orchestrator settings
 		Orchestrator: &OrchestratorConfig{
@@ -846,6 +897,12 @@ func applyDefaults(config *Config) {
 	}
 	if config.Orchestrator == nil {
 		config.Orchestrator = &OrchestratorConfig{}
+	}
+	if config.WebUI == nil {
+		config.WebUI = &WebUIConfig{}
+	}
+	if config.Chat == nil {
+		config.Chat = &ChatConfig{}
 	}
 
 	// Apply container defaults
@@ -997,6 +1054,30 @@ func applyDefaults(config *Config) {
 		}
 		config.Orchestrator.Models = defaultModels
 	}
+
+	// Apply WebUI defaults
+	if config.WebUI.Host == "" {
+		config.WebUI.Host = "localhost"
+	}
+	if config.WebUI.Port == 0 {
+		config.WebUI.Port = 8080
+	}
+	// Note: Enabled defaults to false (zero value), but we want true by default
+	// This is handled in createDefaultConfig for new configs
+	// For existing configs without webui section, we set enabled=true to maintain backward compatibility
+
+	// Apply Chat defaults
+	if config.Chat.MaxNewMessages == 0 {
+		config.Chat.MaxNewMessages = 100
+	}
+	if config.Chat.Limits.MaxMessageChars == 0 {
+		config.Chat.Limits.MaxMessageChars = 4096
+	}
+	if config.Chat.Scanner.TimeoutMs == 0 {
+		config.Chat.Scanner.TimeoutMs = 800
+	}
+	// Note: chat.enabled defaults to false, scanner.enabled defaults to false
+	// If user wants chat, they must explicitly enable it
 }
 
 func validateConfig(config *Config) error {
@@ -1066,7 +1147,73 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	// Validate WebUI settings
+	if config.WebUI != nil && config.WebUI.Enabled {
+		// Validate port range
+		if config.WebUI.Port <= 0 || config.WebUI.Port > 65535 {
+			return fmt.Errorf("webui port must be between 1 and 65535 (got %d)", config.WebUI.Port)
+		}
+
+		// Validate SSL configuration
+		if config.WebUI.SSL {
+			if config.WebUI.Cert == "" {
+				return fmt.Errorf("webui ssl enabled but cert path is empty")
+			}
+			if config.WebUI.Key == "" {
+				return fmt.Errorf("webui ssl enabled but key path is empty")
+			}
+
+			// Resolve and validate certificate paths
+			certPath, err := resolveWebUIFilePath(config.WebUI.Cert)
+			if err != nil {
+				return fmt.Errorf("webui cert path error: %w", err)
+			}
+			if _, statErr := os.Stat(certPath); os.IsNotExist(statErr) {
+				return fmt.Errorf("webui cert file does not exist: %s", certPath)
+			}
+
+			keyPath, err := resolveWebUIFilePath(config.WebUI.Key)
+			if err != nil {
+				return fmt.Errorf("webui key path error: %w", err)
+			}
+			if _, statErr := os.Stat(keyPath); os.IsNotExist(statErr) {
+				return fmt.Errorf("webui key file does not exist: %s", keyPath)
+			}
+		}
+	}
+
 	return nil
+}
+
+// resolveWebUIFilePath resolves a file path for WebUI cert/key files.
+// - Absolute paths: returned as-is.
+// - Relative paths with directories: resolved relative to current directory.
+// - Filename only: resolved to {projectDir}/.maestro/{filename}.
+func resolveWebUIFilePath(filePath string) (string, error) {
+	if filePath == "" {
+		return "", fmt.Errorf("file path is empty")
+	}
+
+	// Check if it's an absolute path
+	if filepath.IsAbs(filePath) {
+		return filePath, nil
+	}
+
+	// Check if it contains directory separators
+	if strings.Contains(filePath, string(filepath.Separator)) || strings.Contains(filePath, "/") {
+		// Relative path with directory - resolve relative to current directory
+		absPath, err := filepath.Abs(filePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve relative path: %w", err)
+		}
+		return absPath, nil
+	}
+
+	// Filename only - resolve to .maestro directory
+	if projectDir == "" {
+		return "", fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+	return filepath.Join(projectDir, ProjectConfigDir, filePath), nil
 }
 
 // validateRequiredAPIKeys checks that all required API keys are present for the configured models.
@@ -1511,6 +1658,13 @@ func HasGitHubToken() bool {
 	return GetGitHubToken() != ""
 }
 
+// GetWebUIPassword returns the WebUI password from environment variable only.
+// Passwords are never stored in config - only read from MAESTRO_WEBUI_PASSWORD env var.
+// If no password is set, returns empty string (caller should generate one).
+func GetWebUIPassword() string {
+	return os.Getenv("MAESTRO_WEBUI_PASSWORD")
+}
+
 // convertSSHToHTTPS converts SSH git URLs to HTTPS format for token-based authentication.
 // This enables all git operations to use GITHUB_TOKEN instead of SSH keys.
 func convertSSHToHTTPS(originalURL string) string {
@@ -1534,4 +1688,25 @@ func convertSSHToHTTPS(originalURL string) string {
 
 	// If it's not a recognized GitHub URL format, return as-is
 	return originalURL
+}
+
+// GenerateSessionID generates a new UUID session ID for the current orchestrator run.
+// This session ID is used for database session isolation (filtering all reads/writes by session).
+// Must be called after LoadConfig and before any database operations.
+func GenerateSessionID() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	// Generate new UUID for this session
+	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+	// For better readability, use a simple timestamp-based ID instead of full UUID
+	// This makes logs and debugging easier while still being unique
+	config.SessionID = sessionID
+
+	getLogger().Info("Generated session ID: %s", sessionID)
+	return nil
 }

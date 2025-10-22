@@ -23,6 +23,8 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
+	"orchestrator/pkg/chat"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
@@ -42,10 +44,11 @@ type StoryProvider interface {
 
 // Server represents the web UI HTTP server.
 type Server struct {
-	dispatcher *dispatch.Dispatcher
-	logger     *logx.Logger
-	templates  *template.Template
-	workDir    string
+	dispatcher  *dispatch.Dispatcher
+	chatService *chat.Service
+	logger      *logx.Logger
+	templates   *template.Template
+	workDir     string
 }
 
 // AgentListItem represents an agent in the list response.
@@ -57,7 +60,7 @@ type AgentListItem struct {
 }
 
 // NewServer creates a new web UI server.
-func NewServer(dispatcher *dispatch.Dispatcher, workDir string) *Server {
+func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *chat.Service) *Server {
 	// Load templates from embedded filesystem
 	templates, err := template.ParseFS(templateFS, "web/templates/*.html")
 	if err != nil {
@@ -66,36 +69,76 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string) *Server {
 	}
 
 	return &Server{
-		dispatcher: dispatcher,
-		logger:     logx.NewLogger("webui"),
-		workDir:    workDir,
-		templates:  templates,
+		dispatcher:  dispatcher,
+		logger:      logx.NewLogger("webui"),
+		workDir:     workDir,
+		templates:   templates,
+		chatService: chatService,
+	}
+}
+
+// requireAuth wraps an HTTP handler with Basic Authentication.
+// Username is always "maestro", password comes from MAESTRO_WEBUI_PASSWORD env var.
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get password from environment
+		expectedPassword := config.GetWebUIPassword()
+		if expectedPassword == "" {
+			// No password set - this should never happen as we generate one at startup
+			s.logger.Error("WebUI password not set - denying access")
+			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Check Basic Auth credentials
+		username, password, ok := r.BasicAuth()
+		if !ok {
+			// No credentials provided
+			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate credentials (constant-time comparison for password)
+		expectedUsername := "maestro"
+		if username != expectedUsername || password != expectedPassword {
+			// Invalid credentials
+			s.logger.Warn("Failed authentication attempt from %s (username: %s)", r.RemoteAddr, username)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Credentials valid - proceed to handler
+		next(w, r)
 	}
 }
 
 // RegisterRoutes sets up HTTP routes for the API.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	// Web UI routes.
-	mux.HandleFunc("/", s.handleDashboard)
+	// Web UI routes - protected by basic auth.
+	mux.HandleFunc("/", s.requireAuth(s.handleDashboard))
 
-	// Serve static files from embedded filesystem
+	// Serve static files from embedded filesystem - protected by basic auth
 	staticSubFS, err := fs.Sub(staticFS, "web/static")
 	if err != nil {
 		panic(fmt.Sprintf("Failed to access embedded static files: %v", err))
 	}
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSubFS))))
+	mux.Handle("/static/", s.requireAuth(http.StripPrefix("/static/", http.FileServer(http.FS(staticSubFS))).ServeHTTP))
 
-	// API endpoints.
-	mux.HandleFunc("/api/agents", s.handleAgents)
-	mux.HandleFunc("/api/agent/", s.handleAgent)
-	mux.HandleFunc("/api/queues", s.handleQueues)
-	mux.HandleFunc("/api/stories", s.handleStories)
-	mux.HandleFunc("/api/upload", s.handleUpload)
-	mux.HandleFunc("/api/answer", s.handleAnswer)
-	mux.HandleFunc("/api/shutdown", s.handleShutdown)
-	mux.HandleFunc("/api/logs", s.handleLogs)
-	mux.HandleFunc("/api/messages", s.handleMessages)
-	mux.HandleFunc("/api/healthz", s.handleHealth)
+	// API endpoints - all protected by basic auth.
+	mux.HandleFunc("/api/agents", s.requireAuth(s.handleAgents))
+	mux.HandleFunc("/api/agent/", s.requireAuth(s.handleAgent))
+	mux.HandleFunc("/api/queues", s.requireAuth(s.handleQueues))
+	mux.HandleFunc("/api/stories", s.requireAuth(s.handleStories))
+	mux.HandleFunc("/api/upload", s.requireAuth(s.handleUpload))
+	mux.HandleFunc("/api/answer", s.requireAuth(s.handleAnswer))
+	mux.HandleFunc("/api/shutdown", s.requireAuth(s.handleShutdown))
+	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
+	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
+	mux.HandleFunc("/api/healthz", s.requireAuth(s.handleHealth))
+	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
 }
 
 // handleAgents implements GET /api/agents.
@@ -791,21 +834,32 @@ func (s *Server) getDebugLogDir() string {
 	return filepath.Join(s.workDir, "..", "logs")
 }
 
-// StartServer starts the HTTP server on the specified port.
-func (s *Server) StartServer(ctx context.Context, port int) error {
+// StartServer starts the HTTP server using configuration settings.
+func (s *Server) StartServer(ctx context.Context, host string, port int, useSSL bool, certFile, keyFile string) error {
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
 
+	addr := fmt.Sprintf("%s:%d", host, port)
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		Addr:    addr,
 		Handler: mux,
 	}
 
-	s.logger.Info("Starting web UI server on port %d", port)
+	if useSSL {
+		s.logger.Info("Starting web UI server on %s (HTTPS)", addr)
+	} else {
+		s.logger.Info("Starting web UI server on %s (HTTP)", addr)
+	}
 
 	// Start server in a goroutine (non-blocking).
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if useSSL {
+			err = server.ListenAndServeTLS(certFile, keyFile)
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			s.logger.Error("Server error: %v", err)
 		}
 	}()
@@ -881,8 +935,15 @@ func (s *Server) readMessageLogs() []MessageEntry {
 		}
 	}()
 
-	// Use the persistence operations package
-	ops := persistence.NewDatabaseOperations(db)
+	// Get current session ID from config for session-isolated queries
+	cfg, err := config.GetConfig()
+	if err != nil {
+		s.logger.Warn("Failed to get config for session ID: %v", err)
+		return []MessageEntry{}
+	}
+
+	// Use the persistence operations package with session isolation
+	ops := persistence.NewDatabaseOperations(db, cfg.SessionID)
 	recentMessages, err := ops.GetRecentMessages(5)
 	if err != nil {
 		s.logger.Warn("Failed to query recent messages: %v", err)
@@ -910,6 +971,153 @@ func (s *Server) readMessageLogs() []MessageEntry {
 	}
 
 	return messages
+}
+
+// handleChat implements GET /api/chat (read messages) and POST /api/chat (post message).
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleChatRead(w, r)
+	case http.MethodPost:
+		s.handleChatPost(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleChatPost implements POST /api/chat - posts a new chat message.
+func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
+	if s.chatService == nil {
+		http.Error(w, "Chat service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse JSON request body
+	var reqBody struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if reqBody.Text == "" {
+		http.Error(w, "Text is required", http.StatusBadRequest)
+		return
+	}
+
+	// Post message as "@human"
+	postReq := &chat.PostRequest{
+		Author: "@human",
+		Text:   reqBody.Text,
+	}
+
+	resp, err := s.chatService.Post(r.Context(), postReq)
+	if err != nil {
+		s.logger.Error("Failed to post chat message: %v", err)
+		http.Error(w, "Failed to post message", http.StatusInternalServerError)
+		return
+	}
+
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.logger.Error("Failed to encode response: %v", err)
+	}
+}
+
+// handleChatRead implements GET /api/chat - reads recent chat messages.
+func (s *Server) handleChatRead(w http.ResponseWriter, r *http.Request) {
+	if s.chatService == nil {
+		http.Error(w, "Chat service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get query parameter for cursor (optional)
+	cursorStr := r.URL.Query().Get("since")
+
+	// For now, just get all recent messages from the database directly
+	// The cursor will be used by agents, but web UI shows all messages
+	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		s.logger.Error("Failed to open database: %v", err)
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			s.logger.Warn("Failed to close database: %v", closeErr)
+		}
+	}()
+
+	// Get session ID from config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		s.logger.Error("Failed to get config: %v", err)
+		http.Error(w, "Configuration error", http.StatusInternalServerError)
+		return
+	}
+
+	// Query messages (session-isolated)
+	query := `
+		SELECT id, ts, author, text
+		FROM chat
+		WHERE session_id = ?
+		ORDER BY id ASC
+	`
+
+	// If cursor provided, only get messages after that ID
+	if cursorStr != "" {
+		query = `
+			SELECT id, ts, author, text
+			FROM chat
+			WHERE session_id = ? AND id > ?
+			ORDER BY id ASC
+		`
+	}
+
+	var rows *sql.Rows
+	if cursorStr != "" {
+		rows, err = db.Query(query, cfg.SessionID, cursorStr)
+	} else {
+		rows, err = db.Query(query, cfg.SessionID)
+	}
+
+	if err != nil {
+		s.logger.Error("Failed to query messages: %v", err)
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			s.logger.Warn("Failed to close rows: %v", closeErr)
+		}
+	}()
+
+	// Build response
+	messages := []map[string]interface{}{}
+	for rows.Next() {
+		var id int64
+		var timestamp, author, text string
+		if err := rows.Scan(&id, &timestamp, &author, &text); err != nil {
+			s.logger.Error("Failed to scan row: %v", err)
+			continue
+		}
+
+		messages = append(messages, map[string]interface{}{
+			"id":        id,
+			"timestamp": timestamp,
+			"author":    author,
+			"text":      text,
+		})
+	}
+
+	// Send response as direct array (not wrapped in object)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(messages); err != nil {
+		s.logger.Error("Failed to encode response: %v", err)
+	}
 }
 
 // findArchitectState finds the state of the architect agent from the dispatcher.

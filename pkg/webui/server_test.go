@@ -118,7 +118,7 @@ func TestHandleAgents(t *testing.T) {
 		t.Fatalf("Failed to register coder: %v", err)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test")
+	server := NewServer(dispatcher, "/tmp/test", nil)
 
 	req := httptest.NewRequest("GET", "/api/agents", nil)
 	w := httptest.NewRecorder()
@@ -181,7 +181,7 @@ func TestHandleAgent(t *testing.T) {
 		t.Fatalf("Failed to register architect: %v", err)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test")
+	server := NewServer(dispatcher, "/tmp/test", nil)
 
 	req := httptest.NewRequest("GET", "/api/agent/"+architectID, nil)
 	w := httptest.NewRecorder()
@@ -222,7 +222,7 @@ func TestHandleAgentNotFound(t *testing.T) {
 	}
 	defer dispatcher.Stop(ctx)
 
-	server := NewServer(dispatcher, "/tmp/test")
+	server := NewServer(dispatcher, "/tmp/test", nil)
 
 	req := httptest.NewRequest("GET", "/api/agent/nonexistent", nil)
 	w := httptest.NewRecorder()
@@ -258,7 +258,7 @@ func TestFindArchitectState(t *testing.T) {
 		t.Fatalf("Failed to register architect: %v", regErr)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test")
+	server := NewServer(dispatcher, "/tmp/test", nil)
 
 	state, err := server.findArchitectState()
 	if err != nil {
@@ -284,7 +284,7 @@ func TestFindArchitectStateNoArchitect(t *testing.T) {
 	}
 	defer dispatcher.Stop(ctx)
 
-	server := NewServer(dispatcher, "/tmp/test")
+	server := NewServer(dispatcher, "/tmp/test", nil)
 
 	_, err = server.findArchitectState()
 	if err == nil {
@@ -300,7 +300,7 @@ func TestEmbeddedTemplates(t *testing.T) {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test")
+	server := NewServer(dispatcher, "/tmp/test", nil)
 
 	if server.templates == nil {
 		t.Error("Templates should be loaded from embedded filesystem")

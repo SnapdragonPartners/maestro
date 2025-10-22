@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 7
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -96,6 +96,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion5(db)
 	case 6:
 		return migrateToVersion6(db)
+	case 7:
+		return migrateToVersion7(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -125,6 +127,36 @@ func migrateToVersion3(_ *sql.DB) error { return nil }
 func migrateToVersion4(_ *sql.DB) error { return nil }
 func migrateToVersion5(_ *sql.DB) error { return nil }
 
+// migrateToVersion7 adds session_id to all tables for session isolation.
+// This enables filtering all reads and writes by orchestrator session.
+func migrateToVersion7(db *sql.DB) error {
+	migrations := []string{
+		// Add session_id to all main tables
+		"ALTER TABLE specs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE stories ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE agent_states ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE agent_requests ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE agent_responses ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE agent_plans ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+
+		// Add indices for efficient session filtering
+		"CREATE INDEX IF NOT EXISTS idx_specs_session ON specs(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_stories_session ON stories(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_states_session ON agent_states(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_requests_session ON agent_requests(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_responses_session ON agent_responses(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_plans_session ON agent_plans(session_id)",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 func createSchema(db *sql.DB) error {
 	// Enable WAL mode and foreign keys
@@ -150,6 +182,7 @@ func createSchema(db *sql.DB) error {
 		// Specifications table
 		`CREATE TABLE IF NOT EXISTS specs (
 			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
 			content TEXT NOT NULL,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			processed_at DATETIME
@@ -158,6 +191,7 @@ func createSchema(db *sql.DB) error {
 		// Stories table
 		`CREATE TABLE IF NOT EXISTS stories (
 			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
@@ -188,6 +222,7 @@ func createSchema(db *sql.DB) error {
 		// Agent state persistence for system-level resume functionality
 		`CREATE TABLE IF NOT EXISTS agent_states (
 			agent_id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
 			agent_type TEXT NOT NULL CHECK (agent_type IN ('architect','coder')),
 			current_state TEXT NOT NULL,
 			state_data TEXT,
@@ -199,6 +234,7 @@ func createSchema(db *sql.DB) error {
 		// Agent requests table (unified questions and approval requests)
 		`CREATE TABLE IF NOT EXISTS agent_requests (
 			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
 			story_id TEXT REFERENCES stories(id),
 			request_type TEXT NOT NULL CHECK (request_type IN ('question', 'approval')),
 			approval_type TEXT CHECK (approval_type IN ('plan', 'code', 'budget_review', 'completion')),
@@ -215,6 +251,7 @@ func createSchema(db *sql.DB) error {
 		// Agent responses table (unified answers and approval results)
 		`CREATE TABLE IF NOT EXISTS agent_responses (
 			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
 			request_id TEXT REFERENCES agent_requests(id),
 			story_id TEXT REFERENCES stories(id),
 			response_type TEXT NOT NULL CHECK (response_type IN ('answer', 'result')),
@@ -230,6 +267,7 @@ func createSchema(db *sql.DB) error {
 		// Agent plans table (extracted from stories.approved_plan)
 		`CREATE TABLE IF NOT EXISTS agent_plans (
 			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
 			story_id TEXT NOT NULL REFERENCES stories(id),
 			from_agent TEXT NOT NULL,
 			content TEXT NOT NULL,
@@ -240,10 +278,34 @@ func createSchema(db *sql.DB) error {
 			reviewed_by TEXT,
 			feedback TEXT
 		)`,
+
+		// Chat messages table for agent collaboration
+		`CREATE TABLE IF NOT EXISTS chat (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			ts TEXT NOT NULL,
+			author TEXT NOT NULL,
+			text TEXT NOT NULL
+		)`,
+
+		// Chat cursor table for tracking agent read positions
+		`CREATE TABLE IF NOT EXISTS chat_cursor (
+			agent_id TEXT PRIMARY KEY,
+			last_id INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 
 	// Create indices
 	indices := []string{
+		// Session isolation indices (critical for performance)
+		"CREATE INDEX IF NOT EXISTS idx_specs_session ON specs(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_stories_session ON stories(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_states_session ON agent_states(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_requests_session ON agent_requests(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_responses_session ON agent_responses(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_plans_session ON agent_plans(session_id)",
+
+		// Existing functional indices
 		"CREATE INDEX IF NOT EXISTS idx_stories_status ON stories(status)",
 		"CREATE INDEX IF NOT EXISTS idx_stories_agent ON stories(assigned_agent)",
 		"CREATE INDEX IF NOT EXISTS idx_stories_type ON stories(story_type)",
@@ -259,6 +321,10 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_agent_responses_correlation ON agent_responses(correlation_id)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_plans_story ON agent_plans(story_id)",
 		"CREATE INDEX IF NOT EXISTS idx_agent_plans_status ON agent_plans(status)",
+
+		// Chat indices
+		"CREATE INDEX IF NOT EXISTS idx_chat_session ON chat(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_chat_session_id ON chat(session_id, id)",
 	}
 
 	// Execute table creation

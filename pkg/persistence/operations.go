@@ -43,6 +43,12 @@ const (
 	OpGetAgentPlansByStory               = "get_agent_plans_by_story"
 	OpGetRecentMessages                  = "get_recent_messages"
 	OpBatchUpsertStoriesWithDependencies = "batch_upsert_stories_with_dependencies"
+
+	// Chat operations.
+	OpPostChatMessage  = "post_chat_message"
+	OpGetChatMessages  = "get_chat_messages"
+	OpGetChatCursor    = "get_chat_cursor"
+	OpUpdateChatCursor = "update_chat_cursor"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -66,26 +72,33 @@ type BatchUpsertStoriesWithDependenciesRequest struct {
 
 // DatabaseOperations provides methods for database operations.
 // This is used by the orchestrator's database worker goroutine.
+// All database operations automatically inject and filter by session_id for session isolation.
 type DatabaseOperations struct {
-	db *sql.DB
+	db        *sql.DB
+	sessionID string // Current orchestrator session ID (injected into all writes, filtered in all reads)
 }
 
-// NewDatabaseOperations creates a new DatabaseOperations instance.
-func NewDatabaseOperations(db *sql.DB) *DatabaseOperations {
-	return &DatabaseOperations{db: db}
+// NewDatabaseOperations creates a new DatabaseOperations instance with session isolation.
+// The sessionID parameter is automatically injected into all write operations and used to filter all read operations.
+// This ensures that database queries are isolated by orchestrator session.
+func NewDatabaseOperations(db *sql.DB, sessionID string) *DatabaseOperations {
+	return &DatabaseOperations{
+		db:        db,
+		sessionID: sessionID,
+	}
 }
 
 // UpsertSpec inserts or updates a spec record.
 func (ops *DatabaseOperations) UpsertSpec(spec *Spec) error {
 	query := `
-		INSERT INTO specs (id, content, created_at, processed_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO specs (id, session_id, content, created_at, processed_at)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			content = excluded.content,
 			processed_at = excluded.processed_at
 	`
 
-	_, err := ops.db.Exec(query, spec.ID, spec.Content, spec.CreatedAt, spec.ProcessedAt)
+	_, err := ops.db.Exec(query, spec.ID, ops.sessionID, spec.Content, spec.CreatedAt, spec.ProcessedAt)
 	if err != nil {
 		return fmt.Errorf("failed to upsert spec %s: %w", spec.ID, err)
 	}
@@ -96,10 +109,10 @@ func (ops *DatabaseOperations) UpsertSpec(spec *Spec) error {
 func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 	query := `
 		INSERT INTO stories (
-			id, spec_id, title, content, status, priority, approved_plan,
+			id, session_id, spec_id, title, content, status, priority, approved_plan,
 			created_at, started_at, completed_at, assigned_agent,
 			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			spec_id = excluded.spec_id,
 			title = excluded.title,
@@ -120,7 +133,7 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 	`
 
 	_, err := ops.db.Exec(query,
-		story.ID, story.SpecID, story.Title, story.Content, story.Status,
+		story.ID, ops.sessionID, story.SpecID, story.Title, story.Content, story.Status,
 		story.Priority, story.ApprovedPlan, story.CreatedAt, story.StartedAt,
 		story.CompletedAt, story.AssignedAgent, story.TokensUsed,
 		story.CostUSD, story.Metadata, story.StoryType, story.PRID, story.CommitHash, story.CompletionSummary,
@@ -187,11 +200,11 @@ func (ops *DatabaseOperations) UpdateStoryStatus(req *UpdateStoryStatusRequest) 
 		args = append(args, *req.CompletionSummary)
 	}
 
-	// Add WHERE clause
-	args = append(args, req.StoryID)
+	// Add WHERE clause with session_id filtering
+	args = append(args, req.StoryID, ops.sessionID)
 
 	//nolint:gosec // Using safe string concatenation for dynamic query building with bounded inputs
-	query := `UPDATE stories SET ` + strings.Join(setParts, ", ") + ` WHERE id = ?`
+	query := `UPDATE stories SET ` + strings.Join(setParts, ", ") + ` WHERE id = ? AND session_id = ?`
 
 	result, err := ops.db.Exec(query, args...)
 	if err != nil {
@@ -236,8 +249,8 @@ func (ops *DatabaseOperations) RemoveStoryDependency(storyID, dependsOn string) 
 
 // QueryStoriesByFilter returns stories matching the given filter criteria.
 func (ops *DatabaseOperations) QueryStoriesByFilter(filter *StoryFilter) ([]*Story, error) {
-	query := "SELECT id, spec_id, title, content, status, priority, approved_plan, created_at, started_at, completed_at, assigned_agent, tokens_used, cost_usd, metadata FROM stories WHERE 1=1"
-	var args []interface{}
+	query := "SELECT id, spec_id, title, content, status, priority, approved_plan, created_at, started_at, completed_at, assigned_agent, tokens_used, cost_usd, metadata FROM stories WHERE session_id = ?"
+	args := []interface{}{ops.sessionID}
 
 	// Build WHERE conditions
 	if filter.Status != nil {
@@ -299,17 +312,18 @@ func (ops *DatabaseOperations) QueryStoriesByFilter(filter *StoryFilter) ([]*Sto
 
 // QueryPendingStories returns stories that are ready to be worked on (no unfinished dependencies).
 func (ops *DatabaseOperations) QueryPendingStories() ([]*Story, error) {
-	return ops.queryStoriesBySQL(`
-		SELECT DISTINCT s.id, s.spec_id, s.title, s.content, s.status, s.priority, 
-		       s.approved_plan, s.created_at, s.started_at, s.completed_at, 
+	query := `
+		SELECT DISTINCT s.id, s.spec_id, s.title, s.content, s.status, s.priority,
+		       s.approved_plan, s.created_at, s.started_at, s.completed_at,
 		       s.assigned_agent, s.tokens_used, s.cost_usd, s.metadata
 		FROM stories s
 		LEFT JOIN story_dependencies d ON s.id = d.story_id
-		LEFT JOIN stories dep ON d.depends_on = dep.id 
-		    AND dep.status NOT IN ('`+StatusDone+`')
-		WHERE s.status = '`+StatusNew+`' AND dep.id IS NULL
+		LEFT JOIN stories dep ON d.depends_on = dep.id
+		    AND dep.status NOT IN (?)
+		WHERE s.session_id = ? AND s.status = ? AND dep.id IS NULL
 		ORDER BY s.priority DESC, s.created_at ASC
-	`, "pending stories")
+	`
+	return ops.queryStoriesBySQLWithArgs(query, []interface{}{StatusDone, ops.sessionID, StatusNew}, "pending stories")
 }
 
 // GetStoryDependencies returns all dependencies for a given story.
@@ -346,20 +360,20 @@ func (ops *DatabaseOperations) GetStoryDependencies(storyID string) ([]string, e
 // GetSpecSummary returns aggregated metrics for a spec.
 func (ops *DatabaseOperations) GetSpecSummary(specID string) (*SpecSummary, error) {
 	query := `
-		SELECT 
+		SELECT
 			spec_id,
 			COUNT(*) as total_stories,
 			SUM(CASE WHEN status IN ('committed', 'merged') THEN 1 ELSE 0 END) as completed_stories,
 			SUM(tokens_used) as total_tokens,
 			SUM(cost_usd) as total_cost,
 			MAX(CASE WHEN status IN ('committed', 'merged') THEN completed_at END) as last_completed
-		FROM stories 
-		WHERE spec_id = ?
+		FROM stories
+		WHERE session_id = ? AND spec_id = ?
 		GROUP BY spec_id
 	`
 
 	summary := &SpecSummary{SpecID: specID}
-	err := ops.db.QueryRow(query, specID).Scan(
+	err := ops.db.QueryRow(query, ops.sessionID, specID).Scan(
 		&summary.SpecID,
 		&summary.TotalStories,
 		&summary.CompletedStories,
@@ -382,14 +396,14 @@ func (ops *DatabaseOperations) GetSpecSummary(specID string) (*SpecSummary, erro
 // GetStoryByID returns a story by its ID.
 func (ops *DatabaseOperations) GetStoryByID(storyID string) (*Story, error) {
 	query := `
-		SELECT id, spec_id, title, content, status, priority, approved_plan, 
-		       created_at, started_at, completed_at, assigned_agent, 
+		SELECT id, spec_id, title, content, status, priority, approved_plan,
+		       created_at, started_at, completed_at, assigned_agent,
 		       tokens_used, cost_usd, metadata
-		FROM stories WHERE id = ?
+		FROM stories WHERE session_id = ? AND id = ?
 	`
 
 	story := &Story{}
-	err := ops.db.QueryRow(query, storyID).Scan(
+	err := ops.db.QueryRow(query, ops.sessionID, storyID).Scan(
 		&story.ID, &story.SpecID, &story.Title, &story.Content,
 		&story.Status, &story.Priority, &story.ApprovedPlan,
 		&story.CreatedAt, &story.StartedAt, &story.CompletedAt,
@@ -409,10 +423,10 @@ func (ops *DatabaseOperations) GetStoryByID(storyID string) (*Story, error) {
 
 // GetSpecByID returns a spec by its ID.
 func (ops *DatabaseOperations) GetSpecByID(specID string) (*Spec, error) {
-	query := `SELECT id, content, created_at, processed_at FROM specs WHERE id = ?`
+	query := `SELECT id, content, created_at, processed_at FROM specs WHERE session_id = ? AND id = ?`
 
 	spec := &Spec{}
-	err := ops.db.QueryRow(query, specID).Scan(
+	err := ops.db.QueryRow(query, ops.sessionID, specID).Scan(
 		&spec.ID, &spec.Content, &spec.CreatedAt, &spec.ProcessedAt,
 	)
 
@@ -426,9 +440,9 @@ func (ops *DatabaseOperations) GetSpecByID(specID string) (*Spec, error) {
 	return spec, nil
 }
 
-// queryStoriesBySQL is a helper function to execute story queries and scan results.
-func (ops *DatabaseOperations) queryStoriesBySQL(query, queryType string) ([]*Story, error) {
-	rows, err := ops.db.Query(query)
+// queryStoriesBySQLWithArgs is a helper function to execute story queries with arguments and scan results.
+func (ops *DatabaseOperations) queryStoriesBySQLWithArgs(query string, args []interface{}, queryType string) ([]*Story, error) {
+	rows, err := ops.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query %s: %w", queryType, err)
 	}
@@ -464,21 +478,22 @@ func (ops *DatabaseOperations) queryStoriesBySQL(query, queryType string) ([]*St
 
 // GetAllStories returns all stories in the database.
 func (ops *DatabaseOperations) GetAllStories() ([]*Story, error) {
-	return ops.queryStoriesBySQL(`
-		SELECT id, spec_id, title, content, status, priority, approved_plan, 
-		       created_at, started_at, completed_at, assigned_agent, 
+	query := `
+		SELECT id, spec_id, title, content, status, priority, approved_plan,
+		       created_at, started_at, completed_at, assigned_agent,
 		       tokens_used, cost_usd, metadata
-		FROM stories ORDER BY priority DESC, created_at ASC
-	`, "all stories")
+		FROM stories WHERE session_id = ? ORDER BY priority DESC, created_at ASC
+	`
+	return ops.queryStoriesBySQLWithArgs(query, []interface{}{ops.sessionID}, "all stories")
 }
 
 // UpsertAgentRequest inserts or updates an agent request record.
 func (ops *DatabaseOperations) UpsertAgentRequest(request *AgentRequest) error {
 	query := `
 		INSERT INTO agent_requests (
-			id, story_id, request_type, approval_type, from_agent, to_agent, 
+			id, session_id, story_id, request_type, approval_type, from_agent, to_agent,
 			content, context, reason, created_at, correlation_id, parent_msg_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			story_id = excluded.story_id,
 			request_type = excluded.request_type,
@@ -493,7 +508,7 @@ func (ops *DatabaseOperations) UpsertAgentRequest(request *AgentRequest) error {
 	`
 
 	_, err := ops.db.Exec(query,
-		request.ID, request.StoryID, request.RequestType, request.ApprovalType,
+		request.ID, ops.sessionID, request.StoryID, request.RequestType, request.ApprovalType,
 		request.FromAgent, request.ToAgent, request.Content, request.Context,
 		request.Reason, request.CreatedAt, request.CorrelationID, request.ParentMsgID)
 	if err != nil {
@@ -506,9 +521,9 @@ func (ops *DatabaseOperations) UpsertAgentRequest(request *AgentRequest) error {
 func (ops *DatabaseOperations) UpsertAgentResponse(response *AgentResponse) error {
 	query := `
 		INSERT INTO agent_responses (
-			id, request_id, story_id, response_type, from_agent, to_agent,
+			id, session_id, request_id, story_id, response_type, from_agent, to_agent,
 			content, status, feedback, created_at, correlation_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			request_id = excluded.request_id,
 			story_id = excluded.story_id,
@@ -522,7 +537,7 @@ func (ops *DatabaseOperations) UpsertAgentResponse(response *AgentResponse) erro
 	`
 
 	_, err := ops.db.Exec(query,
-		response.ID, response.RequestID, response.StoryID, response.ResponseType,
+		response.ID, ops.sessionID, response.RequestID, response.StoryID, response.ResponseType,
 		response.FromAgent, response.ToAgent, response.Content, response.Status,
 		response.Feedback, response.CreatedAt, response.CorrelationID)
 	if err != nil {
@@ -539,9 +554,9 @@ func (ops *DatabaseOperations) UpsertAgentPlan(plan *AgentPlan) error {
 	}
 	query := `
 		INSERT INTO agent_plans (
-			id, story_id, from_agent, content, confidence, status,
+			id, session_id, story_id, from_agent, content, confidence, status,
 			created_at, reviewed_at, reviewed_by, feedback
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			story_id = excluded.story_id,
 			from_agent = excluded.from_agent,
@@ -554,7 +569,7 @@ func (ops *DatabaseOperations) UpsertAgentPlan(plan *AgentPlan) error {
 	`
 
 	_, err := ops.db.Exec(query,
-		plan.ID, plan.StoryID, plan.FromAgent, plan.Content, plan.Confidence,
+		plan.ID, ops.sessionID, plan.StoryID, plan.FromAgent, plan.Content, plan.Confidence,
 		plan.Status, plan.CreatedAt, plan.ReviewedAt, plan.ReviewedBy, plan.Feedback)
 	if err != nil {
 		return fmt.Errorf("failed to upsert agent plan %s: %w", plan.ID, err)
@@ -568,11 +583,11 @@ func (ops *DatabaseOperations) GetAgentRequestsByStory(storyID string) ([]*Agent
 		SELECT id, story_id, request_type, approval_type, from_agent, to_agent,
 		       content, context, reason, created_at, correlation_id, parent_msg_id
 		FROM agent_requests
-		WHERE story_id = ?
+		WHERE session_id = ? AND story_id = ?
 		ORDER BY created_at ASC
 	`
 
-	rows, err := ops.db.Query(query, storyID)
+	rows, err := ops.db.Query(query, ops.sessionID, storyID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent requests for story %s: %w", storyID, err)
 	}
@@ -606,11 +621,11 @@ func (ops *DatabaseOperations) GetAgentResponsesByStory(storyID string) ([]*Agen
 		SELECT id, request_id, story_id, response_type, from_agent, to_agent,
 		       content, status, feedback, created_at, correlation_id
 		FROM agent_responses
-		WHERE story_id = ?
+		WHERE session_id = ? AND story_id = ?
 		ORDER BY created_at ASC
 	`
 
-	rows, err := ops.db.Query(query, storyID)
+	rows, err := ops.db.Query(query, ops.sessionID, storyID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent responses for story %s: %w", storyID, err)
 	}
@@ -644,11 +659,11 @@ func (ops *DatabaseOperations) GetAgentPlansByStory(storyID string) ([]*AgentPla
 		SELECT id, story_id, from_agent, content, confidence, status,
 		       created_at, reviewed_at, reviewed_by, feedback
 		FROM agent_plans
-		WHERE story_id = ?
+		WHERE session_id = ? AND story_id = ?
 		ORDER BY created_at ASC
 	`
 
-	rows, err := ops.db.Query(query, storyID)
+	rows, err := ops.db.Query(query, ops.sessionID, storyID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query agent plans for story %s: %w", storyID, err)
 	}
@@ -692,10 +707,10 @@ func (ops *DatabaseOperations) BatchUpsertStoriesWithDependencies(req *BatchUpse
 	// First, upsert all stories
 	storyQuery := `
 		INSERT INTO stories (
-			id, spec_id, title, content, status, priority, approved_plan,
+			id, session_id, spec_id, title, content, status, priority, approved_plan,
 			created_at, started_at, completed_at, assigned_agent,
 			tokens_used, cost_usd, metadata, story_type
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			spec_id = excluded.spec_id,
 			title = excluded.title,
@@ -714,7 +729,7 @@ func (ops *DatabaseOperations) BatchUpsertStoriesWithDependencies(req *BatchUpse
 
 	for _, story := range req.Stories {
 		_, err = tx.Exec(storyQuery,
-			story.ID, story.SpecID, story.Title, story.Content, story.Status,
+			story.ID, ops.sessionID, story.SpecID, story.Title, story.Content, story.Status,
 			story.Priority, story.ApprovedPlan, story.CreatedAt, story.StartedAt,
 			story.CompletedAt, story.AssignedAgent, story.TokensUsed,
 			story.CostUSD, story.Metadata, story.StoryType,
@@ -780,6 +795,7 @@ func (ops *DatabaseOperations) GetRecentMessages(limit int) ([]*RecentMessage, e
 			NULL as feedback,
 			reason
 		FROM agent_requests
+		WHERE session_id = ?
 		UNION ALL
 		SELECT
 			id,
@@ -796,11 +812,12 @@ func (ops *DatabaseOperations) GetRecentMessages(limit int) ([]*RecentMessage, e
 			feedback,
 			NULL as reason
 		FROM agent_responses
+		WHERE session_id = ?
 		ORDER BY created_at DESC
 		LIMIT ?
 	`
 
-	rows, err := ops.db.Query(query, limit)
+	rows, err := ops.db.Query(query, ops.sessionID, ops.sessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query recent messages: %w", err)
 	}
@@ -847,4 +864,91 @@ func (ops *DatabaseOperations) GetAllStoriesWithDependencies() ([]*Story, error)
 	}
 
 	return stories, nil
+}
+
+// PostChatMessage inserts a new chat message and returns the assigned ID.
+func (ops *DatabaseOperations) PostChatMessage(author, text, timestamp string) (int64, error) {
+	query := `
+		INSERT INTO chat (session_id, ts, author, text)
+		VALUES (?, ?, ?, ?)
+	`
+
+	result, err := ops.db.Exec(query, ops.sessionID, timestamp, author, text)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert chat message: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get last insert id: %w", err)
+	}
+
+	return id, nil
+}
+
+// GetChatMessages returns all chat messages with id > sinceID for the current session.
+func (ops *DatabaseOperations) GetChatMessages(sinceID int64) ([]*ChatMessage, error) {
+	query := `
+		SELECT id, session_id, ts, author, text
+		FROM chat
+		WHERE session_id = ? AND id > ?
+		ORDER BY id ASC
+	`
+
+	rows, err := ops.db.Query(query, ops.sessionID, sinceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query chat messages: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	var messages []*ChatMessage
+	for rows.Next() {
+		var msg ChatMessage
+		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Timestamp, &msg.Author, &msg.Text)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan chat message: %w", err)
+		}
+		messages = append(messages, &msg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return messages, nil
+}
+
+// GetChatCursor returns the last read message ID for an agent.
+func (ops *DatabaseOperations) GetChatCursor(agentID string) (int64, error) {
+	query := `SELECT last_id FROM chat_cursor WHERE agent_id = ?`
+
+	var lastID int64
+	err := ops.db.QueryRow(query, agentID).Scan(&lastID)
+	if err == sql.ErrNoRows {
+		// No cursor found - return 0 (will read all messages)
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to get chat cursor for agent %s: %w", agentID, err)
+	}
+
+	return lastID, nil
+}
+
+// UpdateChatCursor updates the last read message ID for an agent.
+func (ops *DatabaseOperations) UpdateChatCursor(agentID string, lastID int64) error {
+	query := `
+		INSERT INTO chat_cursor (agent_id, last_id)
+		VALUES (?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET last_id = excluded.last_id
+	`
+
+	_, err := ops.db.Exec(query, agentID, lastID)
+	if err != nil {
+		return fmt.Errorf("failed to update chat cursor for agent %s: %w", agentID, err)
+	}
+
+	return nil
 }
