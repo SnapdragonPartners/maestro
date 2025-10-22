@@ -25,7 +25,7 @@ func TestGetHostWorkspacePath(t *testing.T) {
 		Name: "test-model",
 	}
 
-	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, nil, build.NewBuildService())
+	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, nil, build.NewBuildService(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

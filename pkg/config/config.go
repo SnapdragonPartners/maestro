@@ -331,9 +331,10 @@ type ChatScannerConfig struct {
 
 // ChatConfig contains agent chat system configuration.
 type ChatConfig struct {
-	Enabled bool              `json:"enabled"` // Whether chat system is enabled (default: false for Phase 1)
-	Limits  ChatLimitsConfig  `json:"limits"`  // Size and compaction limits
-	Scanner ChatScannerConfig `json:"scanner"` // Secret scanning configuration
+	Enabled        bool              `json:"enabled"`          // Whether chat system is enabled (default: false for Phase 1)
+	MaxNewMessages int               `json:"max_new_messages"` // Maximum new messages to inject per LLM call (default: 100)
+	Limits         ChatLimitsConfig  `json:"limits"`           // Size and compaction limits
+	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
 }
 
 // OrchestratorConfig contains system-wide orchestrator settings.
@@ -781,7 +782,8 @@ func createDefaultConfig() *Config {
 			Key:     "",          // No default key
 		},
 		Chat: &ChatConfig{
-			Enabled: false, // Disabled by default for Phase 1
+			Enabled:        false, // Disabled by default for Phase 1
+			MaxNewMessages: 100,   // Inject up to 100 new messages per LLM call
 			Limits: ChatLimitsConfig{
 				MaxMessageChars: 4096, // 4KB message limit
 			},
@@ -1065,6 +1067,9 @@ func applyDefaults(config *Config) {
 	// For existing configs without webui section, we set enabled=true to maintain backward compatibility
 
 	// Apply Chat defaults
+	if config.Chat.MaxNewMessages == 0 {
+		config.Chat.MaxNewMessages = 100
+	}
 	if config.Chat.Limits.MaxMessageChars == 0 {
 		config.Chat.Limits.MaxMessageChars = 4096
 	}

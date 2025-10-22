@@ -1,5 +1,5 @@
 // Maestro Web UI JavaScript
-const MAESTRO_UI_VERSION = 'v0.1.5';
+const MAESTRO_UI_VERSION = 'v0.1.6-chat-fix';
 
 class MaestroUI {
     constructor() {
@@ -15,6 +15,7 @@ class MaestroUI {
 
     init() {
         this.setupEventListeners();
+        this.initChat();
         this.startPolling();
         this.updateLastUpdated();
         this.updateVersion();
@@ -47,6 +48,16 @@ class MaestroUI {
         document.getElementById('log-domain').addEventListener('change', this.onLogDomainChange.bind(this));
         document.getElementById('autoscroll').addEventListener('change', this.onAutoscrollChange.bind(this));
         document.getElementById('clear-logs').addEventListener('click', this.clearLogs.bind(this));
+
+        // Chat controls
+        const chatInput = document.getElementById('chat-input');
+        const chatSend = document.getElementById('chat-send');
+
+        if (chatInput && chatSend) {
+            chatInput.addEventListener('input', this.onChatInput.bind(this));
+            chatInput.addEventListener('keydown', this.onChatKeydown.bind(this));
+            chatSend.addEventListener('click', this.sendChatMessage.bind(this));
+        }
     }
 
     async startPolling() {
@@ -54,10 +65,12 @@ class MaestroUI {
         this.pollStories();
         this.pollLogs();
         this.pollMessages();
+        this.pollChat();
         setInterval(() => this.pollAgents(), this.pollingInterval);
         setInterval(() => this.pollStories(), this.pollingInterval);
         setInterval(() => this.pollLogs(), this.pollingInterval);
         setInterval(() => this.pollMessages(), this.pollingInterval);
+        setInterval(() => this.pollChat(), 2000); // Poll chat every 2 seconds
         setInterval(() => this.updateLastUpdated(), 1000);
     }
 
@@ -951,29 +964,194 @@ class MaestroUI {
     showToast(message, type = 'info') {
         const container = document.getElementById('toast-container');
         const toast = document.createElement('div');
-        
+
         const bgColors = {
             success: 'bg-green-500',
             error: 'bg-red-500',
             warning: 'bg-yellow-500',
             info: 'bg-blue-500'
         };
-        
+
         toast.className = `${bgColors[type]} text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 translate-x-full`;
         toast.textContent = message;
-        
+
         container.appendChild(toast);
-        
+
         // Animate in
         setTimeout(() => {
             toast.classList.remove('translate-x-full');
         }, 100);
-        
+
         // Remove after 3 seconds
         setTimeout(() => {
             toast.classList.add('translate-x-full');
             setTimeout(() => container.removeChild(toast), 300);
         }, 3000);
+    }
+
+    // Chat functionality
+    initChat() {
+        this.lastChatMessageId = 0;
+        this.chatAutoScroll = true;
+    }
+
+    async pollChat() {
+        try {
+            const url = this.lastChatMessageId > 0
+                ? `/api/chat?since=${this.lastChatMessageId}`
+                : '/api/chat';
+
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('Failed to fetch chat messages');
+
+            const messages = await response.json();
+
+            if (messages && messages.length > 0) {
+                this.updateChatMessages(messages);
+                // Update lastChatMessageId to the highest ID received
+                const maxId = Math.max(...messages.map(m => m.id));
+                if (maxId > this.lastChatMessageId) {
+                    this.lastChatMessageId = maxId;
+                }
+            } else if (this.lastChatMessageId === 0) {
+                // First load with no messages - show empty state
+                this.updateChatMessages([]);
+            }
+
+        } catch (error) {
+            console.error('Error polling chat:', error);
+        }
+    }
+
+    updateChatMessages(messages) {
+        const loading = document.getElementById('chat-loading');
+        const empty = document.getElementById('chat-empty');
+        const list = document.getElementById('chat-list');
+
+        // Hide loading state on first update
+        if (loading && !loading.classList.contains('hidden')) {
+            loading.classList.add('hidden');
+        }
+
+        if (!messages || messages.length === 0) {
+            if (this.lastChatMessageId === 0) {
+                // Only show empty state on initial load with no messages
+                empty.classList.remove('hidden');
+                list.classList.add('hidden');
+            }
+            return;
+        }
+
+        // We have messages - ensure list is visible
+        empty.classList.add('hidden');
+        list.classList.remove('hidden');
+
+        // Append new messages (cursor-based polling means we only get new ones)
+        messages.forEach(msg => {
+            const messageElement = this.createChatMessage(msg);
+            list.appendChild(messageElement);
+        });
+
+        // Auto-scroll to bottom if enabled
+        if (this.chatAutoScroll) {
+            const chatMessages = document.getElementById('chat-messages');
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+    }
+
+    createChatMessage(message) {
+        const div = document.createElement('div');
+        const isHuman = message.author === '@human';
+
+        // Different styling for human vs agent messages
+        if (isHuman) {
+            div.className = 'flex justify-end';
+            div.innerHTML = `
+                <div class="max-w-[80%] bg-blue-500 text-white rounded-lg px-4 py-2">
+                    <div class="text-xs opacity-75 mb-1">${message.author} · ${this.formatChatTime(message.timestamp)}</div>
+                    <div class="text-sm whitespace-pre-wrap">${this.escapeHtml(message.text)}</div>
+                </div>
+            `;
+        } else {
+            div.className = 'flex justify-start';
+            div.innerHTML = `
+                <div class="max-w-[80%] bg-gray-200 text-gray-900 rounded-lg px-4 py-2">
+                    <div class="text-xs text-gray-600 mb-1">${message.author} · ${this.formatChatTime(message.timestamp)}</div>
+                    <div class="text-sm whitespace-pre-wrap">${this.escapeHtml(message.text)}</div>
+                </div>
+            `;
+        }
+
+        return div;
+    }
+
+    formatChatTime(timestamp) {
+        const date = new Date(timestamp);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    onChatInput(e) {
+        const input = e.target;
+        const button = document.getElementById('chat-send');
+
+        // Enable/disable send button based on input
+        button.disabled = input.value.trim().length === 0;
+    }
+
+    onChatKeydown(e) {
+        // Send on Enter (but not Shift+Enter)
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            this.sendChatMessage();
+        }
+    }
+
+    async sendChatMessage() {
+        const input = document.getElementById('chat-input');
+        const button = document.getElementById('chat-send');
+        const sendText = document.getElementById('send-text');
+        const sendSpinner = document.getElementById('send-spinner');
+
+        const text = input.value.trim();
+        if (!text) return;
+
+        // Disable input while sending
+        input.disabled = true;
+        button.disabled = true;
+        sendText.classList.add('hidden');
+        sendSpinner.classList.remove('hidden');
+
+        try {
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to send message');
+            }
+
+            const result = await response.json();
+
+            // Clear input on success
+            input.value = '';
+
+            // Message will appear via polling, no need to manually add it
+            this.showToast('Message sent', 'success');
+
+        } catch (error) {
+            console.error('Error sending chat message:', error);
+            this.showToast('Failed to send message', 'error');
+        } finally {
+            // Re-enable input
+            input.disabled = false;
+            button.disabled = false;
+            sendText.classList.remove('hidden');
+            sendSpinner.classList.add('hidden');
+        }
     }
 }
 

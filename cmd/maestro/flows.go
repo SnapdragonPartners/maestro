@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"time"
@@ -169,6 +171,9 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Start web UI if requested
 	if f.webUI {
+		// Generate password if not set (before starting WebUI)
+		ensureWebUIPassword()
+
 		if err := k.StartWebUI(); err != nil {
 			return fmt.Errorf("failed to start web UI: %w", err)
 		}
@@ -267,4 +272,83 @@ func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) 
 		return fmt.Errorf("failed to dispatch spec message: %w", err)
 	}
 	return nil
+}
+
+// ensureWebUIPassword checks if MAESTRO_WEBUI_PASSWORD is set, and generates one if not.
+// Prints directly to stdout (not logs) to avoid passwords in log files.
+func ensureWebUIPassword() {
+	// Check if password is already set
+	if config.GetWebUIPassword() != "" {
+		// Password already set via environment variable
+		fmt.Println("🔐 WebUI password loaded from MAESTRO_WEBUI_PASSWORD environment variable")
+
+		// Check SSL status and warn if disabled
+		cfg, err := config.GetConfig()
+		if err == nil && cfg.WebUI != nil && !cfg.WebUI.SSL {
+			fmt.Println("⚠️  WARNING: SSL is disabled! Password will be transmitted in plain text.")
+			fmt.Println("💡 Enable SSL in config.json or use SSH port forwarding for secure access.")
+		}
+		return
+	}
+
+	// Generate a secure random password
+	password, err := generateSecurePassword(16)
+	if err != nil {
+		fmt.Printf("⚠️  Failed to generate WebUI password: %v\n", err)
+		fmt.Println("⚠️  Please set MAESTRO_WEBUI_PASSWORD environment variable manually")
+		return
+	}
+
+	// Set it in the environment for this session
+	if setErr := os.Setenv("MAESTRO_WEBUI_PASSWORD", password); setErr != nil {
+		fmt.Printf("⚠️  Failed to set WebUI password: %v\n", setErr)
+		return
+	}
+
+	// Check SSL status for warning
+	cfg, cfgErr := config.GetConfig()
+	sslEnabled := cfgErr == nil && cfg.WebUI != nil && cfg.WebUI.SSL
+
+	// Display the generated password to the user (NOT via logger!)
+	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                   🔐 WebUI Password Generated                      ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  Username: maestro                                                 ║\n")
+	fmt.Printf("║  Password: %-52s ║\n", password)
+	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  ⚠️  Save this password! It will not be shown again.               ║")
+	fmt.Println("║  💡 Set MAESTRO_WEBUI_PASSWORD env var to use a custom password.  ║")
+	if !sslEnabled {
+		fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+		fmt.Println("║  🔓 WARNING: SSL is disabled! Password sent in plain text.        ║")
+		fmt.Println("║  💡 Enable SSL in config.json or use SSH port forwarding.         ║")
+	}
+	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+}
+
+// generateSecurePassword generates a cryptographically secure random password.
+// The password uses base64 encoding for readability while maintaining high entropy.
+func generateSecurePassword(length int) (string, error) {
+	// Generate random bytes (we need more bytes than length to account for base64 encoding)
+	// base64 encoding produces 4 characters for every 3 bytes
+	numBytes := (length * 3) / 4
+	if numBytes < length {
+		numBytes = length
+	}
+
+	randomBytes := make([]byte, numBytes)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+
+	// Encode to base64 URL-safe format (no special chars that need escaping)
+	password := base64.URLEncoding.EncodeToString(randomBytes)
+
+	// Trim to desired length
+	if len(password) > length {
+		password = password[:length]
+	}
+
+	return password, nil
 }

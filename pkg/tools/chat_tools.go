@@ -7,6 +7,12 @@ import (
 	"orchestrator/pkg/chat"
 )
 
+// ContextKeyAgentID is the context key type for agent ID.
+type ContextKeyAgentID string
+
+// AgentIDContextKey is the context key for storing agent ID.
+const AgentIDContextKey ContextKeyAgentID = "agent_id"
+
 // ChatPostTool posts a message to the agent chat channel.
 type ChatPostTool struct {
 	chatService *chat.Service
@@ -68,7 +74,7 @@ func (c *ChatPostTool) Exec(ctx context.Context, args map[string]any) (any, erro
 	}
 
 	// Get agent ID from context (set by the agent when calling tools)
-	agentID, ok := ctx.Value("agent_id").(string)
+	agentID, ok := ctx.Value(AgentIDContextKey).(string)
 	if !ok || agentID == "" {
 		return nil, fmt.Errorf("agent_id not found in context")
 	}
@@ -135,7 +141,7 @@ func (c *ChatReadTool) PromptDocumentation() string {
 // Exec retrieves new messages and updates the cursor.
 func (c *ChatReadTool) Exec(ctx context.Context, _ map[string]any) (any, error) {
 	// Get agent ID from context
-	agentID, ok := ctx.Value("agent_id").(string)
+	agentID, ok := ctx.Value(AgentIDContextKey).(string)
 	if !ok || agentID == "" {
 		return nil, fmt.Errorf("agent_id not found in context")
 	}

@@ -276,15 +276,15 @@ func runMainMode(projectDir, specFile string, noWebUI bool) error {
 // initializeKernel consolidates the common kernel initialization logic.
 // Config must already be loaded via setupProjectInfrastructure().
 func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error) {
-	// Get already-loaded configuration (no reload needed)
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
 	// Generate session ID for this orchestrator run (used for database session isolation)
 	if sessionErr := config.GenerateSessionID(); sessionErr != nil {
 		return nil, nil, fmt.Errorf("failed to generate session ID: %w", sessionErr)
+	}
+
+	// Get configuration AFTER generating session ID (session ID is stored in global config)
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get config: %w", err)
 	}
 	config.LogInfo("📋 Session ID: %s", cfg.SessionID)
 

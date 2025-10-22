@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	chatmw "orchestrator/pkg/agent/middleware/chat"
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -49,6 +51,7 @@ type Coder struct {
 	cloneManager            *CloneManager                  // Git clone management
 	buildRegistry           *build.Registry                // Build backend registry
 	buildService            *build.Service                 // Build service for MCP tools
+	chatService             *chat.Service                  // Chat service for agent collaboration
 	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
 	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
 	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
@@ -407,7 +410,7 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 
 // NewCoder creates a new coder with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.Model, cloneManager *CloneManager, buildService *build.Service) (*Coder, error) {
+func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.Model, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service) (*Coder, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -478,7 +481,8 @@ func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.
 		dispatcher:          nil, // Will be set during Attach()
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
-		codingBudget:        8, // Default coding budget
+		chatService:         chatService, // Chat service for agent collaboration
+		codingBudget:        8,           // Default coding budget
 		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(workDir), agentID),
 		containerName:       "", // Will be set during setup
 	}
@@ -487,6 +491,12 @@ func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.
 	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeCoder, coder, coder.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
+	}
+
+	// Wrap enhanced client with chat injection middleware if chat service is available
+	if chatService != nil {
+		enhancedClient = chatmw.WrapWithChatInjection(enhancedClient, chatService, agentID, logger)
+		logger.Info("💬 Chat injection middleware added to coder %s", agentID)
 	}
 
 	// Replace the client with the enhanced version
@@ -1122,6 +1132,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
 		Agent:           c,                     // Pass agent reference for workDir access
+		ChatService:     c.chatService,         // Chat service for agent collaboration
 		ReadOnly:        true,                  // Planning is read-only
 		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
@@ -1144,6 +1155,7 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor, // Use container executor
 		Agent:           c,                     // Pass agent reference for workDir access
+		ChatService:     c.chatService,         // Chat service for agent collaboration
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,

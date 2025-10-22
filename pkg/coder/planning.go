@@ -227,7 +227,10 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 			continue
 		}
 
-		result, err := tool.Exec(ctx, toolCall.Parameters)
+		// Add agent_id to context for tools that need it (like chat tools)
+		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, c.agentID)
+
+		result, err := tool.Exec(toolCtx, toolCall.Parameters)
 		if err != nil {
 			if toolCall.Name == tools.ToolShell {
 				// For shell tool, provide cleaner logging without Docker details

@@ -13,6 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
 
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/limiter"
@@ -39,6 +40,7 @@ type Kernel struct {
 	Database           *sql.DB
 	PersistenceChannel chan *persistence.Request
 	BuildService       *build.Service
+	ChatService        *chat.Service
 	WebServer          *webui.Server
 
 	// Runtime state
@@ -90,8 +92,12 @@ func (k *Kernel) initializeServices() error {
 	// Create build service
 	k.BuildService = build.NewBuildService()
 
+	// Create chat service
+	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
+	k.ChatService = chat.NewService(dbOps, k.Config.Chat)
+
 	// Create web server (will be started conditionally)
-	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir)
+	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService)
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
