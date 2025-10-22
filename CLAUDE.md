@@ -43,7 +43,14 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **TASK**: Work assignments from architect to coders
    - **ERROR/SHUTDOWN**: System control messages
 
-4. System maintains event logs and handles graceful shutdown with STATUS.md dumps
+4. **Agent Chat System**: Real-time collaboration channel
+   - **chat_post**: Agents and humans can post messages to shared chat
+   - **chat_read**: Agents can explicitly read messages (optional)
+   - **Automatic Injection**: New messages are automatically injected into each LLM call
+   - Messages are stored in database with session isolation and secret scanning
+   - Web UI provides interactive chat interface for human participation
+
+5. System maintains event logs and handles graceful shutdown with STATUS.md dumps
 
 ## Container Architecture
 
@@ -130,9 +137,10 @@ The codebase follows this clean architecture:
 
 ### Supporting Infrastructure
 - `pkg/limiter/` - Token bucket rate limiting with daily budget enforcement
-- `pkg/eventlog/` - Structured logging to `logs/events.jsonl` with daily rotation  
+- `pkg/eventlog/` - Structured logging to `logs/events.jsonl` with daily rotation
 - `pkg/contextmgr/` - Context management for LLM conversations
 - `pkg/logx/` - Structured logging utilities
+- `pkg/chat/` - Agent chat system for real-time collaboration and human-agent communication
 
 ### Runtime Directories
 - `config/` - Configuration files (config.json)
@@ -238,6 +246,34 @@ The system uses JSON configuration with environment variable overrides:
 - Direct env override: any JSON key can be overridden by matching env var name
 - Model-specific settings for rate limits and budgets
 - `session_id` field tracks current orchestrator session (generated at startup or reused for restarts)
+
+### Chat Configuration
+
+Chat system is configured in the `chat` section of `config.json`:
+
+```json
+{
+  "chat": {
+    "enabled": true,
+    "max_new_messages": 100,
+    "limits": {
+      "max_message_chars": 4096
+    },
+    "scanner": {
+      "enabled": true,
+      "timeout_ms": 800
+    }
+  }
+}
+```
+
+- **enabled**: Enable/disable the chat system
+- **max_new_messages**: Maximum messages to inject into each LLM call (default: 100)
+- **limits.max_message_chars**: Maximum characters per message (default: 4096)
+- **scanner.enabled**: Enable secret scanning for chat messages
+- **scanner.timeout_ms**: Timeout for secret scanning operations
+
+See `docs/MAESTRO_CHAT_SPEC.md` for detailed chat system architecture and implementation notes.
 
 ## Getting Help
 
