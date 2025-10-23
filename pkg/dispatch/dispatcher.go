@@ -99,14 +99,14 @@ type ChannelReceiver interface {
 //
 //nolint:govet // Large complex struct, logical grouping preferred over memory optimization
 type Dispatcher struct {
-	agents map[string]Agent
-	logger *logx.Logger
-	config      *config.Config
-	inputChan   chan *proto.AgentMsg
-	shutdown    chan struct{}
-	mu          sync.RWMutex
-	wg          sync.WaitGroup
-	running     bool
+	agents    map[string]Agent
+	logger    *logx.Logger
+	config    *config.Config
+	inputChan chan *proto.AgentMsg
+	shutdown  chan struct{}
+	mu        sync.RWMutex
+	wg        sync.WaitGroup
+	running   bool
 
 	// Phase 1: Channel-based queues.
 	storyCh           chan *proto.AgentMsg            // Ready stories for any coder (replaces sharedWorkQueue)
@@ -152,8 +152,8 @@ type Result struct {
 // NewDispatcher creates a new message dispatcher with the given configuration.
 func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 	return &Dispatcher{
-		agents: make(map[string]Agent),
-		logger: logx.NewLogger("dispatcher"),
+		agents:            make(map[string]Agent),
+		logger:            logx.NewLogger("dispatcher"),
 		config:            cfg,
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:          make(chan struct{}),
