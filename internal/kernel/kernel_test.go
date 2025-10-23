@@ -17,13 +17,8 @@ func createTestConfig() config.Config {
 	return config.Config{
 		Agents: &config.AgentConfig{
 			MaxCoders:      2,
-			CoderModel:     "test-model",
-			ArchitectModel: "test-model",
-		},
-		Orchestrator: &config.OrchestratorConfig{
-			Models: []config.Model{
-				{Name: "test-model", MaxTPM: 1000, MaxConnections: 1, CPM: 1.0, DailyBudget: 10.0},
-			},
+			CoderModel:     config.ModelClaudeSonnetLatest,
+			ArchitectModel: config.ModelOpenAIO3Mini,
 		},
 	}
 }
@@ -57,9 +52,6 @@ func TestNewKernel(t *testing.T) {
 	}
 	if kernel.Logger == nil {
 		t.Error("Kernel logger is nil")
-	}
-	if kernel.RateLimiter == nil {
-		t.Error("Kernel rate limiter is nil")
 	}
 	if kernel.Dispatcher == nil {
 		t.Error("Kernel dispatcher is nil")

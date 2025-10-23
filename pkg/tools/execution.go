@@ -13,12 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/config"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
-)
-
-const (
-	defaultTmpfsSize = "1g"
 )
 
 // ExecStrategy represents where a tool should execute.
@@ -109,7 +106,7 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 		"docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
-		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize),
+		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", config.GetContainerTmpfsSize()),
 		containerName,
 		"sh", "-c", command,
 	}
@@ -167,7 +164,7 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 		"docker", "run", "-d", "--name", uniqueName,
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
-		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize),
+		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", config.GetContainerTmpfsSize()),
 		containerName,
 		"sleep", fmt.Sprintf("%d", ttlSeconds),
 	}
@@ -256,7 +253,7 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 		"docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
-		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize),
+		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", config.GetContainerTmpfsSize()),
 		containerName,
 	}
 

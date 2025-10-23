@@ -88,89 +88,133 @@ func LogInfo(format string, args ...interface{}) {
 	getLogger().Info(format, args...)
 }
 
-// Model represents an LLM model with its capabilities and limits.
-type Model struct {
-	Name           string  `json:"name"`            // e.g. "claude-sonnet-4-20250514"
-	MaxTPM         int     `json:"max_tpm"`         // tokens per minute
-	MaxConnections int     `json:"max_connections"` // max concurrent connections
-	CPM            float64 `json:"cpm"`             // cost per million tokens (USD)
-	DailyBudget    float64 `json:"daily_budget"`    // max spend per day (USD)
+// ModelInfo contains static information about a known LLM model.
+// This data is hardcoded in the application, not user-configurable.
+type ModelInfo struct {
+	Provider         string  // API provider (anthropic, openai, openai_official)
+	InputCPM         float64 // Cost per million input tokens (USD)
+	OutputCPM        float64 // Cost per million output tokens (USD)
+	MaxContextTokens int     // Maximum context window size in tokens
+	MaxOutputTokens  int     // Maximum output tokens per request
 }
 
-// ModelDefaults defines default parameters for all supported models.
+// KnownModels registry contains pricing and provider information for common models.
+// This is optional - unknown models will be inferred via ProviderPatterns.
 //
-//nolint:gochecknoglobals // Intentional global for model definitions
-var ModelDefaults = map[string]Model{
-	ModelClaudeSonnet3: {
-		Name:           ModelClaudeSonnet3,
-		MaxTPM:         300000,
-		MaxConnections: 5,
-		CPM:            3.0,
-		DailyBudget:    10.0,
+//nolint:gochecknoglobals // Intentional global for static model registry
+var KnownModels = map[string]ModelInfo{
+	// Claude models (Anthropic)
+	"claude-3-7-sonnet-20250219": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         3.0,
+		OutputCPM:        15.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  8192,
 	},
-	ModelClaudeSonnet4: {
-		Name:           ModelClaudeSonnet4,
-		MaxTPM:         3000000,
-		MaxConnections: 5,
-		CPM:            3.0,
-		DailyBudget:    10.0,
+	"claude-sonnet-4-5": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         3.0,
+		OutputCPM:        15.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  8192,
 	},
-	ModelClaudeSonnet4Old: {
-		Name:           ModelClaudeSonnet4Old,
-		MaxTPM:         3000000,
-		MaxConnections: 5,
-		CPM:            3.0,
-		DailyBudget:    10.0,
+	"claude-sonnet-4-20250514": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         3.0,
+		OutputCPM:        15.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  8192,
 	},
-	ModelOpenAIO3Mini: {
-		Name:           ModelOpenAIO3Mini,
-		MaxTPM:         100000,
-		MaxConnections: 3,
-		CPM:            0.6,
-		DailyBudget:    5.0,
+
+	// OpenAI o3 models
+	"o3-mini": {
+		Provider:         ProviderOpenAIOfficial,
+		InputCPM:         1.1,
+		OutputCPM:        4.4,
+		MaxContextTokens: 128000,
+		MaxOutputTokens:  16384,
 	},
-	ModelOpenAIO3: {
-		Name:           ModelOpenAIO3,
-		MaxTPM:         100000,
-		MaxConnections: 3,
-		CPM:            0.6,
-		DailyBudget:    5.0,
+	"o3": {
+		Provider:         ProviderOpenAI,
+		InputCPM:         1.1,
+		OutputCPM:        4.4,
+		MaxContextTokens: 128000,
+		MaxOutputTokens:  16384,
 	},
-	ModelGPT5: {
-		Name:           ModelGPT5,
-		MaxTPM:         150000, // Higher limits for GPT-5
-		MaxConnections: 5,      // More connections
-		CPM:            30.0,   // Premium pricing for GPT-5
-		DailyBudget:    100.0,  // Higher budget
+
+	// GPT-5 (premium pricing)
+	"gpt-5": {
+		Provider:         ProviderOpenAIOfficial,
+		InputCPM:         20.0,
+		OutputCPM:        60.0,
+		MaxContextTokens: 128000,
+		MaxOutputTokens:  4096,
 	},
 }
 
-// ModelProviders maps each model to its API provider for middleware configuration.
-// This mapping is immutable and not user-configurable.
+// ProviderPattern represents a pattern for inferring provider from model name.
+type ProviderPattern struct {
+	Prefix   string
+	Provider string
+}
+
+// ProviderPatterns defines rules for inferring providers from unknown model names.
+// Allows using new models without code changes.
 //
-//nolint:gochecknoglobals // Intentional global for model-to-provider mapping
-var ModelProviders = map[string]string{
-	ModelClaudeSonnet3:    ProviderAnthropic,
-	ModelClaudeSonnet4:    ProviderAnthropic,
-	ModelClaudeSonnet4Old: ProviderAnthropic,
-	ModelOpenAIO3:         ProviderOpenAI,
-	ModelOpenAIO3Mini:     ProviderOpenAIOfficial,
-	ModelGPT5:             ProviderOpenAIOfficial,
-}
-
-// IsModelSupported checks if we have defaults for this model.
-func IsModelSupported(modelName string) bool {
-	_, exists := ModelDefaults[modelName]
-	return exists
+//nolint:gochecknoglobals // Intentional global for inference rules
+var ProviderPatterns = []ProviderPattern{
+	{"claude", ProviderAnthropic},
+	{"gpt", ProviderOpenAIOfficial},
+	{"o1", ProviderOpenAIOfficial},
+	{"o3", ProviderOpenAIOfficial},
 }
 
 // GetModelProvider returns the API provider for a given model.
+// First checks KnownModels, then tries pattern matching.
+// Returns error if model cannot be mapped to a provider (FATAL).
 func GetModelProvider(modelName string) (string, error) {
-	provider, exists := ModelProviders[modelName]
-	if !exists {
-		return "", fmt.Errorf("unknown model: %s", modelName)
+	// Check known models first
+	if info, exists := KnownModels[modelName]; exists {
+		return info.Provider, nil
 	}
-	return provider, nil
+
+	// Try pattern matching for unknown models
+	for i := range ProviderPatterns {
+		if strings.HasPrefix(modelName, ProviderPatterns[i].Prefix) {
+			return ProviderPatterns[i].Provider, nil
+		}
+	}
+
+	// FATAL: Cannot proceed without valid provider
+	return "", fmt.Errorf("unknown model '%s': no known provider mapping or pattern match - cannot determine API provider", modelName)
+}
+
+// GetModelInfo returns the ModelInfo for a given model name.
+// Returns the info and true if found in KnownModels, or a default info with inferred provider and false if not found.
+func GetModelInfo(modelName string) (ModelInfo, bool) {
+	// Check known models first
+	if info, exists := KnownModels[modelName]; exists {
+		return info, true
+	}
+
+	// Try to infer provider for unknown models
+	provider := ""
+	for i := range ProviderPatterns {
+		if strings.HasPrefix(modelName, ProviderPatterns[i].Prefix) {
+			provider = ProviderPatterns[i].Provider
+			break
+		}
+	}
+
+	// Return default info with inferred provider (or empty if no pattern matched)
+	// Use conservative defaults for unknown models
+	return ModelInfo{
+		Provider:         provider,
+		InputCPM:         0.0,   // No cost tracking for unknown models
+		OutputCPM:        0.0,   // No cost tracking for unknown models
+		MaxContextTokens: 32000, // Conservative default
+		MaxOutputTokens:  4096,  // Conservative default
+	}, false
 }
 
 // CircuitBreakerConfig defines configuration for circuit breaker behavior.
@@ -190,9 +234,9 @@ type RetryConfig struct {
 }
 
 // ProviderLimits defines rate limiting configuration for a specific API provider.
+// These are user-configurable values that can be overridden in config.json.
 type ProviderLimits struct {
 	TokensPerMinute int `json:"tokens_per_minute"` // Rate limit in tokens per minute
-	Burst           int `json:"burst"`             // Burst capacity
 	MaxConcurrency  int `json:"max_concurrency"`   // Maximum concurrent requests
 }
 
@@ -201,6 +245,25 @@ type RateLimitConfig struct {
 	Anthropic      ProviderLimits `json:"anthropic"`       // Rate limits for Anthropic models
 	OpenAI         ProviderLimits `json:"openai"`          // Rate limits for OpenAI models
 	OpenAIOfficial ProviderLimits `json:"openai_official"` // Rate limits for OpenAI Official models
+}
+
+// ProviderDefaults defines default rate limits for each provider.
+// These are used when rate limits are not specified in config.json.
+//
+//nolint:gochecknoglobals // Intentional global for provider defaults
+var ProviderDefaults = map[string]ProviderLimits{
+	ProviderAnthropic: {
+		TokensPerMinute: 300000,
+		MaxConcurrency:  5,
+	},
+	ProviderOpenAI: {
+		TokensPerMinute: 100000,
+		MaxConcurrency:  3,
+	},
+	ProviderOpenAIOfficial: {
+		TokensPerMinute: 150000,
+		MaxConcurrency:  5,
+	},
 }
 
 // ResilienceConfig bundles all resilience-related middleware configuration.
@@ -221,9 +284,9 @@ type MetricsConfig struct {
 
 // AgentConfig defines which models to use and concurrency limits.
 type AgentConfig struct {
-	MaxCoders      int              `json:"max_coders"`      // must be <= CoderModel.MaxConnections
-	CoderModel     string           `json:"coder_model"`     // must match a Model.Name
-	ArchitectModel string           `json:"architect_model"` // must match a Model.Name
+	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
+	CoderModel     string           `json:"coder_model"`     // Model name for coder agents (mapped to provider via KnownModels)
+	ArchitectModel string           `json:"architect_model"` // Model name for architect agent (mapped to provider via KnownModels)
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
 	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
 	StateTimeout   time.Duration    `json:"state_timeout"`   // Global timeout for any state processing
@@ -243,8 +306,8 @@ const (
 	QuestionsChannelSize = 2  // Buffer size for questions channel between agents
 
 	// Docker container runtime defaults (applied when not specified in config).
-	DefaultDockerNetwork = "none"      // Network isolation for security
-	DefaultTmpfsSize     = "100m"      // Temporary filesystem size for /tmp
+	DefaultDockerNetwork = "bridge"    // Enable networking (required for git operations)
+	DefaultTmpfsSize     = "1g"        // Temporary filesystem size for /tmp
 	DefaultDockerCPUs    = "2"         // CPU limit for container execution
 	DefaultDockerMemory  = "2g"        // Memory limit for container execution
 	DefaultDockerPIDs    = int64(1024) // Process limit for container execution
@@ -346,21 +409,10 @@ type ChatConfig struct {
 	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
 }
 
-// OrchestratorConfig contains system-wide orchestrator settings.
-// These settings apply to the entire orchestrator system, not individual projects.
-// Keep this minimal - most settings should be per-project or constants.
-type OrchestratorConfig struct {
-	Models []Model `json:"models"` // Available LLM models with rate limits and budgets
-}
-
 // Config represents the main configuration for the orchestrator system.
 //
-// IMPORTANT: This structure enforces strict separation between:
-// - Project settings: Project-specific configuration (container, build, agents, git)
-// - Orchestrator settings: System-wide settings (models, rate limits)
-// - State/metadata: Build status, timestamps, etc. belong in DATABASE, not here
-//
-// NOTE: Both project and orchestrator settings are saved together in .maestro/config.json
+// IMPORTANT: This structure contains only user-configurable project settings.
+// Model pricing, provider mappings, and other static data are hardcoded in KnownModels and ProviderDefaults.
 //
 // Schema versioning prevents breaking changes - increment SchemaVersion for any structural changes.
 type Config struct {
@@ -370,13 +422,10 @@ type Config struct {
 	Project   *ProjectInfo     `json:"project"`   // Basic project metadata (name, platform)
 	Container *ContainerConfig `json:"container"` // Container settings (NO build state/metadata)
 	Build     *BuildConfig     `json:"build"`     // Build commands and targets
-	Agents    *AgentConfig     `json:"agents"`    // Which models to use for this project
+	Agents    *AgentConfig     `json:"agents"`    // Which models to use and rate limits for this project
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
 	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
 	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
-
-	// === SYSTEM-WIDE ORCHESTRATOR SETTINGS ===
-	Orchestrator *OrchestratorConfig `json:"orchestrator"` // LLM models, rate limits, budgets
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -405,11 +454,11 @@ type ContainerConfig struct {
 	BuildxAvailable bool `json:"-"` // Whether buildx is available on the host (transient, not persisted)
 
 	// Docker runtime settings (command-line only, cannot be set in Dockerfile)
-	Network   string `json:"network,omitempty"`    // Docker --network setting
-	TmpfsSize string `json:"tmpfs_size,omitempty"` // Docker --tmpfs size setting
-	CPUs      string `json:"cpus,omitempty"`       // Docker --cpus limit
-	Memory    string `json:"memory,omitempty"`     // Docker --memory limit
-	PIDs      int64  `json:"pids,omitempty"`       // Docker --pids-limit setting
+	Network   string `json:"network"`    // Docker --network setting
+	TmpfsSize string `json:"tmpfs_size"` // Docker --tmpfs size setting
+	CPUs      string `json:"cpus"`       // Docker --cpus limit
+	Memory    string `json:"memory"`     // Docker --memory limit
+	PIDs      int64  `json:"pids"`       // Docker --pids-limit setting
 }
 
 // BuildConfig defines build targets and commands.
@@ -462,6 +511,23 @@ func GetContainerWorkspacePath() (string, error) {
 	}
 
 	return "/workspace", nil
+}
+
+// GetContainerTmpfsSize returns the tmpfs size for containers.
+// Returns the configured size or the default if not set.
+// Must call LoadConfig first to initialize config.
+func GetContainerTmpfsSize() string {
+	cfg, err := GetConfig()
+	if err != nil {
+		return DefaultTmpfsSize // Fallback to default if config not loaded
+	}
+
+	// Use configured tmpfs size or default
+	if cfg.Container != nil && cfg.Container.TmpfsSize != "" {
+		return cfg.Container.TmpfsSize
+	}
+
+	return DefaultTmpfsSize
 }
 
 // GetConfig returns the current global config BY VALUE (copy, not reference).
@@ -527,6 +593,11 @@ func LoadConfig(inputProjectDir string) error {
 
 	config = loadedConfig
 
+	// Save config back to disk with applied defaults (ensures old configs get updated)
+	if err := saveConfigLocked(); err != nil {
+		return fmt.Errorf("failed to save config with applied defaults: %w", err)
+	}
+
 	// Validate target container and set runtime flag (testing with docker inspect only)
 	config.validTargetImage = validateTargetContainer(config)
 
@@ -539,18 +610,18 @@ func UpdateAgents(_ string, agents *AgentConfig) error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Validate agent config by temporarily setting it and testing factory functions
+	// Validate agent config by temporarily setting it and testing provider mappings
 	oldAgents := config.Agents
 	config.Agents = agents
 
-	// Test that both models can be retrieved with the new config
-	if _, err := GetCoderModel(); err != nil {
+	// Validate that both models can be mapped to providers
+	if _, err := GetModelProvider(agents.CoderModel); err != nil {
 		config.Agents = oldAgents // Restore old config
-		return fmt.Errorf("invalid coder config: %w", err)
+		return fmt.Errorf("invalid coder model: %w", err)
 	}
-	if _, err := GetArchitectModel(); err != nil {
+	if _, err := GetModelProvider(agents.ArchitectModel); err != nil {
 		config.Agents = oldAgents // Restore old config
-		return fmt.Errorf("invalid architect config: %w", err)
+		return fmt.Errorf("invalid architect model: %w", err)
 	}
 
 	// Validation passed, keep the new config (already set above)
@@ -563,6 +634,23 @@ func UpdateContainer(container *ContainerConfig) error {
 	defer mu.Unlock()
 
 	config.Container = container
+
+	// Apply defaults to ensure all Docker runtime settings are populated
+	if config.Container.Network == "" {
+		config.Container.Network = DefaultDockerNetwork
+	}
+	if config.Container.TmpfsSize == "" {
+		config.Container.TmpfsSize = DefaultTmpfsSize
+	}
+	if config.Container.CPUs == "" {
+		config.Container.CPUs = DefaultDockerCPUs
+	}
+	if config.Container.Memory == "" {
+		config.Container.Memory = DefaultDockerMemory
+	}
+	if config.Container.PIDs == 0 {
+		config.Container.PIDs = DefaultDockerPIDs
+	}
 
 	// Validate target container and update runtime flag (testing with docker inspect only)
 	config.validTargetImage = validateTargetContainer(config)
@@ -710,12 +798,6 @@ func SaveConfig(config *Config, projectDir string) error {
 
 // createDefaultConfig creates a new config with sensible defaults.
 func createDefaultConfig() *Config {
-	// Use ModelDefaults to populate default models
-	defaultModels := make([]Model, 0, len(ModelDefaults))
-	for name := range ModelDefaults {
-		defaultModels = append(defaultModels, ModelDefaults[name])
-	}
-
 	return &Config{
 		SchemaVersion: SchemaVersion,
 
@@ -723,6 +805,7 @@ func createDefaultConfig() *Config {
 		Project: &ProjectInfo{},
 		Container: &ContainerConfig{
 			// Apply Docker runtime defaults
+			Name:      BootstrapContainerTag,
 			Network:   DefaultDockerNetwork,
 			TmpfsSize: DefaultTmpfsSize,
 			CPUs:      DefaultDockerCPUs,
@@ -762,13 +845,15 @@ func createDefaultConfig() *Config {
 				RateLimit: RateLimitConfig{
 					Anthropic: ProviderLimits{
 						TokensPerMinute: 300000,
-						Burst:           10000,
 						MaxConcurrency:  5,
 					},
 					OpenAI: ProviderLimits{
 						TokensPerMinute: 100000,
-						Burst:           5000,
 						MaxConcurrency:  3,
+					},
+					OpenAIOfficial: ProviderLimits{
+						TokensPerMinute: 150000,
+						MaxConcurrency:  5,
 					},
 				},
 				Timeout: 3 * time.Minute, // Increased for GPT-5 reasoning time
@@ -800,11 +885,6 @@ func createDefaultConfig() *Config {
 				Enabled:   true, // Enable secret scanning by default
 				TimeoutMs: 800,  // 800ms timeout for scanning
 			},
-		},
-
-		// Orchestrator settings
-		Orchestrator: &OrchestratorConfig{
-			Models: defaultModels,
 		},
 	}
 }
@@ -838,51 +918,23 @@ func saveConfigLocked() error {
 
 // validateAgentConfigInternal validates agent configuration during config loading.
 // This is separate from the factory functions to avoid circular dependencies.
-func validateAgentConfigInternal(agents *AgentConfig, cfg *Config) error {
+func validateAgentConfigInternal(agents *AgentConfig, _ *Config) error {
 	if agents.MaxCoders <= 0 {
 		return fmt.Errorf("max_coders must be positive")
 	}
 
-	// Validate coder model is supported
-	if !IsModelSupported(agents.CoderModel) {
-		return fmt.Errorf("coder_model '%s' is not supported", agents.CoderModel)
+	// Validate coder model can be mapped to a provider
+	if _, err := GetModelProvider(agents.CoderModel); err != nil {
+		return fmt.Errorf("coder_model '%s': %w", agents.CoderModel, err)
 	}
 
-	// Validate architect model is supported
-	if !IsModelSupported(agents.ArchitectModel) {
-		return fmt.Errorf("architect_model '%s' is not supported", agents.ArchitectModel)
+	// Validate architect model can be mapped to a provider
+	if _, err := GetModelProvider(agents.ArchitectModel); err != nil {
+		return fmt.Errorf("architect_model '%s': %w", agents.ArchitectModel, err)
 	}
 
-	// Find coder model in orchestrator config
-	var coderModel *Model
-	for i := range cfg.Orchestrator.Models {
-		if cfg.Orchestrator.Models[i].Name == agents.CoderModel {
-			coderModel = &cfg.Orchestrator.Models[i]
-			break
-		}
-	}
-	if coderModel == nil {
-		return fmt.Errorf("coder_model '%s' not found in models list", agents.CoderModel)
-	}
-
-	// Find architect model in orchestrator config
-	var architectModel *Model
-	for i := range cfg.Orchestrator.Models {
-		if cfg.Orchestrator.Models[i].Name == agents.ArchitectModel {
-			architectModel = &cfg.Orchestrator.Models[i]
-			break
-		}
-	}
-	if architectModel == nil {
-		return fmt.Errorf("architect_model '%s' not found in models list", agents.ArchitectModel)
-	}
-
-	// Validate concurrency limits
-	if agents.MaxCoders > coderModel.MaxConnections {
-		return fmt.Errorf("max_coders (%d) exceeds coder model max_connections (%d)",
-			agents.MaxCoders, coderModel.MaxConnections)
-	}
-
+	// No need to validate MaxConnections or TPM - those are removed from config
+	// Rate limits are now per-provider, not per-model
 	return nil
 }
 
@@ -904,9 +956,6 @@ func applyDefaults(config *Config) {
 	if config.Git == nil {
 		config.Git = &GitConfig{}
 	}
-	if config.Orchestrator == nil {
-		config.Orchestrator = &OrchestratorConfig{}
-	}
 	if config.WebUI == nil {
 		config.WebUI = &WebUIConfig{}
 	}
@@ -915,6 +964,9 @@ func applyDefaults(config *Config) {
 	}
 
 	// Apply container defaults
+	if config.Container.Name == "" {
+		config.Container.Name = BootstrapContainerTag
+	}
 	if config.Container.Network == "" {
 		config.Container.Network = DefaultDockerNetwork
 	}
@@ -1014,35 +1066,15 @@ func applyDefaults(config *Config) {
 		config.Agents.Resilience.Retry.BackoffFactor = 2.0
 	}
 
+	// Apply rate limit defaults from ProviderDefaults
 	if config.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute == 0 {
-		config.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute = 300000
+		config.Agents.Resilience.RateLimit.Anthropic = ProviderDefaults[ProviderAnthropic]
 	}
-	if config.Agents.Resilience.RateLimit.Anthropic.Burst == 0 {
-		config.Agents.Resilience.RateLimit.Anthropic.Burst = 10000
-	}
-	if config.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency == 0 {
-		config.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency = 5
-	}
-
 	if config.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute == 0 {
-		config.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute = 100000
+		config.Agents.Resilience.RateLimit.OpenAI = ProviderDefaults[ProviderOpenAI]
 	}
-	if config.Agents.Resilience.RateLimit.OpenAI.Burst == 0 {
-		config.Agents.Resilience.RateLimit.OpenAI.Burst = 5000
-	}
-	if config.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency == 0 {
-		config.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency = 3
-	}
-
-	// Set defaults for OpenAI Official provider (higher limits for premium GPT-5)
 	if config.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute == 0 {
-		config.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute = 150000
-	}
-	if config.Agents.Resilience.RateLimit.OpenAIOfficial.Burst == 0 {
-		config.Agents.Resilience.RateLimit.OpenAIOfficial.Burst = 10000
-	}
-	if config.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency == 0 {
-		config.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency = 5
+		config.Agents.Resilience.RateLimit.OpenAIOfficial = ProviderDefaults[ProviderOpenAIOfficial]
 	}
 
 	if config.Agents.Resilience.Timeout == 0 {
@@ -1052,16 +1084,6 @@ func applyDefaults(config *Config) {
 	// Apply state timeout default
 	if config.Agents.StateTimeout == 0 {
 		config.Agents.StateTimeout = 10 * time.Minute
-	}
-
-	// Apply orchestrator defaults
-	if len(config.Orchestrator.Models) == 0 {
-		// Use ModelDefaults to populate default models
-		defaultModels := make([]Model, 0, len(ModelDefaults))
-		for name := range ModelDefaults {
-			defaultModels = append(defaultModels, ModelDefaults[name])
-		}
-		config.Orchestrator.Models = defaultModels
 	}
 
 	// Apply WebUI defaults
@@ -1116,30 +1138,6 @@ func validateConfig(config *Config) error {
 	// Validate external tool dependencies and detect capabilities
 	if err := validateExternalTools(config); err != nil {
 		return fmt.Errorf("external tool validation failed: %w", err)
-	}
-
-	// Validate orchestrator models
-	if config.Orchestrator == nil || len(config.Orchestrator.Models) == 0 {
-		return fmt.Errorf("no models configured in orchestrator section")
-	}
-
-	for i := range config.Orchestrator.Models {
-		model := &config.Orchestrator.Models[i]
-		if model.Name == "" {
-			return fmt.Errorf("model[%d]: name is required", i)
-		}
-		if model.MaxTPM <= 0 {
-			return fmt.Errorf("model %s: max_tpm must be positive", model.Name)
-		}
-		if model.MaxConnections <= 0 {
-			return fmt.Errorf("model %s: max_connections must be positive", model.Name)
-		}
-		if model.CPM < 0 {
-			return fmt.Errorf("model %s: cpm cannot be negative", model.Name)
-		}
-		if model.DailyBudget < 0 {
-			return fmt.Errorf("model %s: daily_budget cannot be negative", model.Name)
-		}
 	}
 
 	// Validate agent config
@@ -1404,46 +1402,6 @@ func CheckBuildxAvailable() error {
 	return nil
 }
 
-// GetCoderModel returns the model configuration for coders.
-func (c *Config) GetCoderModel() *Model {
-	if c.Agents == nil || c.Orchestrator == nil {
-		return nil
-	}
-	for i := range c.Orchestrator.Models {
-		if c.Orchestrator.Models[i].Name == c.Agents.CoderModel {
-			return &c.Orchestrator.Models[i]
-		}
-	}
-	return nil
-}
-
-// GetArchitectModel returns the model configuration for the architect.
-func (c *Config) GetArchitectModel() *Model {
-	if c.Agents == nil || c.Orchestrator == nil {
-		return nil
-	}
-	for i := range c.Orchestrator.Models {
-		if c.Orchestrator.Models[i].Name == c.Agents.ArchitectModel {
-			return &c.Orchestrator.Models[i]
-		}
-	}
-	return nil
-}
-
-// validateAgentLimits performs basic validation on agent configuration.
-func validateAgentLimits() error {
-	cfg, err := GetConfig()
-	if err != nil {
-		return err
-	}
-
-	if cfg.Agents.MaxCoders <= 0 {
-		return fmt.Errorf("max_coders must be positive")
-	}
-
-	return nil
-}
-
 // validateTargetContainer checks if the configured target container is valid and runnable.
 // Returns true if the container exists, is runnable, and is not the bootstrap container.
 func validateTargetContainer(cfg *Config) bool {
@@ -1482,125 +1440,20 @@ func IsValidTargetImage() bool {
 	return config.validTargetImage
 }
 
-// GetCoderModel returns the validated coder model configuration.
-func GetCoderModel() (*Model, error) {
-	// Validate basic agent limits first
-	if err := validateAgentLimits(); err != nil {
-		return nil, err
-	}
-
-	cfg, err := GetConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate model is supported
-	if !IsModelSupported(cfg.Agents.CoderModel) {
-		return nil, fmt.Errorf("coder_model '%s' is not supported", cfg.Agents.CoderModel)
-	}
-
-	// Find model in orchestrator config
-	for i := range cfg.Orchestrator.Models {
-		if cfg.Orchestrator.Models[i].Name == cfg.Agents.CoderModel { //nolint:gocritic // Clear logic flow
-			model := &cfg.Orchestrator.Models[i]
-
-			// Validate all model parameters
-			if model.MaxTPM <= 0 {
-				return nil, fmt.Errorf("model '%s' has invalid MaxTPM: %d", model.Name, model.MaxTPM)
-			}
-			if model.MaxConnections <= 0 {
-				return nil, fmt.Errorf("model '%s' has invalid MaxConnections: %d", model.Name, model.MaxConnections)
-			}
-			if model.CPM < 0 {
-				return nil, fmt.Errorf("model '%s' has invalid CPM: %f", model.Name, model.CPM)
-			}
-			if model.DailyBudget < 0 {
-				return nil, fmt.Errorf("model '%s' has invalid DailyBudget: %f", model.Name, model.DailyBudget)
-			}
-
-			// Validate concurrency limits
-			if cfg.Agents.MaxCoders > model.MaxConnections {
-				return nil, fmt.Errorf("max_coders (%d) exceeds coder model max_connections (%d)",
-					cfg.Agents.MaxCoders, model.MaxConnections)
-			}
-
-			return model, nil
-		}
-	}
-	return nil, fmt.Errorf("coder_model '%s' not found in config", cfg.Agents.CoderModel)
-}
-
-// GetArchitectModel returns the validated architect model configuration.
-func GetArchitectModel() (*Model, error) {
-	// Validate basic agent limits first
-	if err := validateAgentLimits(); err != nil {
-		return nil, err
-	}
-
-	cfg, err := GetConfig()
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate model is supported
-	if !IsModelSupported(cfg.Agents.ArchitectModel) {
-		return nil, fmt.Errorf("architect_model '%s' is not supported", cfg.Agents.ArchitectModel)
-	}
-
-	// Find model in orchestrator config
-	for i := range cfg.Orchestrator.Models {
-		if cfg.Orchestrator.Models[i].Name == cfg.Agents.ArchitectModel { //nolint:gocritic // Clear logic flow
-			model := &cfg.Orchestrator.Models[i]
-
-			// Validate all model parameters
-			if model.MaxTPM <= 0 {
-				return nil, fmt.Errorf("model '%s' has invalid MaxTPM: %d", model.Name, model.MaxTPM)
-			}
-			if model.MaxConnections <= 0 {
-				return nil, fmt.Errorf("model '%s' has invalid MaxConnections: %d", model.Name, model.MaxConnections)
-			}
-			if model.CPM < 0 {
-				return nil, fmt.Errorf("model '%s' has invalid CPM: %f", model.Name, model.CPM)
-			}
-			if model.DailyBudget < 0 {
-				return nil, fmt.Errorf("model '%s' has invalid DailyBudget: %f", model.Name, model.DailyBudget)
-			}
-
-			// No concurrency limit check for architect (only one architect)
-			return model, nil
-		}
-	}
-	return nil, fmt.Errorf("architect_model '%s' not found in config", cfg.Agents.ArchitectModel)
-}
-
 // CalculateCost calculates the cost in USD for a given model and token usage.
-// Returns the cost based on the model's CPM (cost per million tokens) configuration.
+// Uses separate input and output token pricing from KnownModels registry.
+// Returns 0 cost for unknown models (allows using new models without pricing data).
 func CalculateCost(modelName string, promptTokens, completionTokens int) (float64, error) {
-	cfg, err := GetConfig()
-	if err != nil {
-		return 0, err
+	// Try to get pricing from KnownModels
+	if info, exists := KnownModels[modelName]; exists {
+		inputCost := (float64(promptTokens) / 1_000_000.0) * info.InputCPM
+		outputCost := (float64(completionTokens) / 1_000_000.0) * info.OutputCPM
+		return inputCost + outputCost, nil
 	}
 
-	if cfg.Orchestrator == nil {
-		return 0, fmt.Errorf("orchestrator config not found")
-	}
-
-	// Find the model in the orchestrator config
-	for i := range cfg.Orchestrator.Models {
-		if cfg.Orchestrator.Models[i].Name == modelName {
-			model := &cfg.Orchestrator.Models[i]
-
-			// Calculate total tokens
-			totalTokens := float64(promptTokens + completionTokens)
-
-			// Convert CPM (cost per million) to cost
-			cost := (totalTokens / 1_000_000.0) * model.CPM
-
-			return cost, nil
-		}
-	}
-
-	return 0, fmt.Errorf("model '%s' not found in config", modelName)
+	// For unknown models, return 0 cost (allows usage but no cost tracking)
+	// This is intentional - we want to support new models without requiring pricing data
+	return 0.0, nil
 }
 
 // GetAPIKey returns the API key for a given provider from environment variables.

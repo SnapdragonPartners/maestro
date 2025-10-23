@@ -8,7 +8,6 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
 )
@@ -115,8 +114,8 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 				return next.Stream(ctx, req)
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

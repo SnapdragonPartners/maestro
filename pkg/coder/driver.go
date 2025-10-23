@@ -410,7 +410,7 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 
 // NewCoder creates a new coder with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.Model, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service) (*Coder, error) {
+func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service) (*Coder, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -450,14 +450,21 @@ func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.
 		WorkDir: workDir,
 	}
 
+	// Get model name from config for context manager
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+	modelName := cfg.Agents.CoderModel
+
 	// Create agent config.
 	agentCfg := &agent.Config{
 		ID:      agentID,
 		Type:    "coder",
 		Context: *agentCtx,
 		LLMConfig: &agent.LLMConfig{
-			MaxContextTokens: getMaxContextTokens(modelConfig.Name),
-			MaxOutputTokens:  getMaxReplyTokens(modelConfig.Name),
+			MaxContextTokens: getMaxContextTokens(modelName),
+			MaxOutputTokens:  getMaxReplyTokens(modelName),
 			CompactIfOver:    2000, // Default buffer
 		},
 	}
@@ -472,7 +479,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, modelConfig *config.
 		BaseStateMachine:    sm,
 		agentConfig:         agentCfg,
 		agentID:             agentID,
-		contextManager:      contextmgr.NewContextManagerWithModel(modelConfig),
+		contextManager:      contextmgr.NewContextManagerWithModel(modelName),
 		llmClient:           llmClient,
 		renderer:            renderer,
 		workDir:             workDir,

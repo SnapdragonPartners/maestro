@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/tools"
 )
 
@@ -72,8 +71,8 @@ type LLMClient interface { //nolint:revive // Keep name for backward compatibili
 	// Stream generates a completion as a stream of chunks.
 	Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error)
 
-	// GetDefaultConfig returns default model configuration for this LLM client.
-	GetDefaultConfig() config.Model
+	// GetModelName returns the model name for this LLM client.
+	GetModelName() string
 }
 
 // NewCompletionRequest creates a new completion request with default values.

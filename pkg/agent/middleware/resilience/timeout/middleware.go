@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 )
 
 // Middleware returns a middleware function that wraps an LLM client with per-request timeout logic.
@@ -35,8 +34,8 @@ func Middleware(duration time.Duration) llm.Middleware {
 				return next.Stream(timeoutCtx, req)
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

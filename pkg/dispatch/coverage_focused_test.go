@@ -116,19 +116,6 @@ func TestReportErrorCoverage(t *testing.T) {
 	}
 }
 
-// TestCheckRateLimit covers rate limiting paths.
-func TestCheckRateLimit(t *testing.T) {
-	dispatcher := createTestDispatcher(t)
-
-	// Test rate limit check (will likely fail due to unconfigured model)
-	err := dispatcher.checkRateLimit("test-model")
-
-	// The result doesn't matter - we're just exercising the code path
-	if err != nil {
-		t.Logf("Rate limit check returned expected error: %v", err)
-	}
-}
-
 // TestProcessWithRetryCoverage covers retry logic paths.
 func TestProcessWithRetryCoverage(t *testing.T) {
 	dispatcher := createTestDispatcher(t)

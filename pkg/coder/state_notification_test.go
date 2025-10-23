@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/build"
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 )
 
@@ -17,13 +16,6 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	// Create a test coder with minimal setup
 	agentID := "test-coder-notifications"
 	workDir := t.TempDir()
-
-	modelConfig := &config.Model{
-		Name:           "test-model",
-		MaxTPM:         1000,
-		DailyBudget:    10.0,
-		MaxConnections: 1,
-	}
 
 	// Create minimal clone manager
 	gitRunner := NewDefaultGitRunner()
@@ -39,7 +31,7 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	buildService := build.NewBuildService()
 
 	// Create real coder
-	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, cloneManager, buildService, nil)
+	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}
@@ -138,13 +130,6 @@ func TestCoderStateNotificationChannelSetup(t *testing.T) {
 	agentID := "test-coder-channel-setup"
 	workDir := t.TempDir()
 
-	modelConfig := &config.Model{
-		Name:           "test-model",
-		MaxTPM:         1000,
-		DailyBudget:    10.0,
-		MaxConnections: 1,
-	}
-
 	// Create minimal clone manager
 	gitRunner := NewDefaultGitRunner()
 	cloneManager := NewCloneManager(
@@ -159,7 +144,7 @@ func TestCoderStateNotificationChannelSetup(t *testing.T) {
 	buildService := build.NewBuildService()
 
 	// Create real coder
-	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, cloneManager, buildService, nil)
+	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

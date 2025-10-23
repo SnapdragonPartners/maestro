@@ -7,18 +7,18 @@ import (
 )
 
 func TestCodeParsingConfig(t *testing.T) {
-	modelConfig := &config.Model{
-		Name:   config.ModelClaudeSonnetLatest,
-		MaxTPM: 50000,
+	// Test basic model info validation
+	modelInfo, exists := config.GetModelInfo(config.ModelClaudeSonnetLatest)
+	if !exists {
+		t.Error("Expected to find model info for code parsing")
 	}
 
-	// Test basic model config validation
-	if modelConfig.Name == "" {
-		t.Error("Expected model name to be set")
+	// Test that we can get model info for code parsing tasks
+	if modelInfo.MaxContextTokens <= 0 {
+		t.Error("Expected positive MaxContextTokens for code parsing tasks")
 	}
 
-	// Test that we can create a model config for code parsing
-	if modelConfig.MaxTPM <= 0 {
-		t.Error("Expected positive MaxTPM for code parsing tasks")
+	if modelInfo.MaxOutputTokens <= 0 {
+		t.Error("Expected positive MaxOutputTokens for code parsing tasks")
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/sashabaranov/go-openai"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 )
 
 // O3Client wraps the OpenAI API client to implement llm.LLMClient interface.
@@ -166,13 +165,7 @@ func (o *O3Client) GetModel() string {
 	return o.model
 }
 
-// GetDefaultConfig returns default model configuration for O3.
-func (o *O3Client) GetDefaultConfig() config.Model {
-	return config.Model{
-		Name:           "o3-mini",
-		MaxTPM:         10000, // 10k tokens per minute for O3 mini
-		DailyBudget:    100.0, // $100 daily budget
-		MaxConnections: 2,     // 2 concurrent connections (O3 has lower limits)
-		CPM:            15.0,  // $15 per million tokens (approximate)
-	}
+// GetModelName returns the model name for this client.
+func (o *O3Client) GetModelName() string {
+	return o.model
 }

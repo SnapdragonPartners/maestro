@@ -20,12 +20,7 @@ func TestGetHostWorkspacePath(t *testing.T) {
 	agentID := "test-coder-001"
 	workDir := "./test-workspace"
 
-	// Get a minimal model config for testing
-	modelConfig := &config.Model{
-		Name: "test-model",
-	}
-
-	coder, err := NewCoder(context.Background(), agentID, workDir, modelConfig, nil, build.NewBuildService(), nil)
+	coder, err := NewCoder(context.Background(), agentID, workDir, nil, build.NewBuildService(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 )
 
 // Middleware returns a middleware function that wraps an LLM client with circuit breaker logic.
@@ -46,8 +45,8 @@ func Middleware(breaker Breaker) llm.Middleware {
 				return ch, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

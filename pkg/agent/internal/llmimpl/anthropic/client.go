@@ -180,15 +180,9 @@ func (c *ClaudeClient) Stream(ctx context.Context, in llm.CompletionRequest) (<-
 	return ch, nil
 }
 
-// GetDefaultConfig returns default model configuration for Claude.
-func (c *ClaudeClient) GetDefaultConfig() config.Model {
-	return config.Model{
-		Name:           config.ModelClaudeSonnetLatest,
-		MaxTPM:         50000, // 50k tokens per minute for Claude Sonnet 4
-		DailyBudget:    200.0, // $200 daily budget
-		MaxConnections: 4,     // 4 concurrent connections
-		CPM:            3.0,   // $3 per million tokens (average)
-	}
+// GetModelName returns the model name for this client.
+func (c *ClaudeClient) GetModelName() string {
+	return string(c.model)
 }
 
 // classifyError maps Anthropic SDK errors to our structured error types.

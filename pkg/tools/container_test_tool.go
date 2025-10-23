@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
@@ -150,7 +151,7 @@ func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, 
 	}
 
 	// Add tmpfs for writable /tmp (always writable)
-	dockerArgs = append(dockerArgs, "--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", defaultTmpfsSize))
+	dockerArgs = append(dockerArgs, "--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", config.GetContainerTmpfsSize()))
 
 	// Automatically mount workspace based on agent state
 	workspaceMount := c.getWorkspaceMount()

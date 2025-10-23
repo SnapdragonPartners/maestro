@@ -57,10 +57,10 @@ type LLMContextManager interface {
 //
 //nolint:govet // Field alignment less important than logical grouping
 type ContextManager struct {
-	messages        []Message     // Core conversation messages
-	userBuffer      []Fragment    // Buffer for user content with provenance
-	modelConfig     *config.Model // Model configuration for limits
-	currentTemplate string        // Current template name for change detection
+	messages        []Message  // Core conversation messages
+	userBuffer      []Fragment // Buffer for user content with provenance
+	modelName       string     // Model name for determining context limits
+	currentTemplate string     // Current template name for change detection
 }
 
 // NewContextManager creates a new context manager instance.
@@ -71,12 +71,12 @@ func NewContextManager() *ContextManager {
 	}
 }
 
-// NewContextManagerWithModel creates a context manager with model configuration.
-func NewContextManagerWithModel(modelConfig *config.Model) *ContextManager {
+// NewContextManagerWithModel creates a context manager with model name for context limits.
+func NewContextManagerWithModel(modelName string) *ContextManager {
 	return &ContextManager{
-		messages:    make([]Message, 0),
-		userBuffer:  make([]Fragment, 0),
-		modelConfig: modelConfig,
+		messages:   make([]Message, 0),
+		userBuffer: make([]Fragment, 0),
+		modelName:  modelName,
 	}
 }
 
@@ -166,10 +166,10 @@ func (cm *ContextManager) CountTokens() int {
 }
 
 // CompactIfNeeded performs context compaction if needed.
-// Uses model configuration to determine when compaction is necessary.
+// Uses model name to determine when compaction is necessary.
 func (cm *ContextManager) CompactIfNeeded() error {
-	if cm.modelConfig == nil {
-		// No model config available, use legacy threshold-based approach.
+	if cm.modelName == "" {
+		// No model name available, use legacy threshold-based approach.
 		return cm.compactIfNeededLegacy(10000) // Default threshold
 	}
 
@@ -366,27 +366,23 @@ func (cm *ContextManager) GetMessages() []Message {
 	return result
 }
 
-// GetModelConfig returns the model configuration.
-func (cm *ContextManager) GetModelConfig() *config.Model {
-	return cm.modelConfig
+// GetModelName returns the model name for this context manager.
+func (cm *ContextManager) GetModelName() string {
+	return cm.modelName
 }
 
 // getContextLimits returns context management limits based on model name.
+// Uses ModelInfo from config if available, otherwise falls back to conservative defaults.
 func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {
-	if cm.modelConfig == nil {
-		return 32000, 4096 // Conservative defaults
+	if cm.modelName == "" {
+		return 32000, 4096 // Conservative defaults for empty model name
 	}
 
-	modelName := strings.ToLower(cm.modelConfig.Name)
+	// Get model info from config (includes KnownModels and pattern matching)
+	modelInfo, _ := config.GetModelInfo(cm.modelName)
 
-	// Set limits based on model name
-	if strings.Contains(modelName, "claude") {
-		return 200000, 8192 // Claude limits
-	} else if strings.Contains(modelName, "gpt") || strings.Contains(modelName, "o3") {
-		return 128000, 4096 // GPT-4 Turbo / o3 limits
-	} else {
-		return 32000, 4096 // Conservative defaults
-	}
+	// Use the values from ModelInfo (will be defaults if unknown model)
+	return modelInfo.MaxContextTokens, modelInfo.MaxOutputTokens
 }
 
 // Clear removes all messages from the context.
@@ -440,7 +436,7 @@ func (cm *ContextManager) GetMaxContextTokens() int {
 
 // ShouldCompact checks if compaction is needed without performing it.
 func (cm *ContextManager) ShouldCompact() bool {
-	if cm.modelConfig == nil {
+	if cm.modelName == "" {
 		return cm.CountTokens() > 10000 // Legacy threshold
 	}
 
@@ -459,7 +455,7 @@ func (cm *ContextManager) GetCompactionInfo() map[string]any {
 		"should_compact": cm.ShouldCompact(),
 	}
 
-	if cm.modelConfig != nil {
+	if cm.modelName != "" {
 		maxContext, maxReply := cm.getContextLimits()
 		buffer := 2000 // Fixed buffer size
 		info["max_context_tokens"] = maxContext

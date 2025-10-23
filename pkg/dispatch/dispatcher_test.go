@@ -9,7 +9,6 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/proto"
 )
 
@@ -78,11 +77,8 @@ func NewTestDispatcher(t *testing.T) *Dispatcher {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	// Create rate limiter
-	rateLimiter := limiter.NewLimiter(&cfg)
-
 	// Create dispatcher using the same signature as createTestDispatcher
-	dispatcher, err := NewDispatcher(&cfg, rateLimiter)
+	dispatcher, err := NewDispatcher(&cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -111,11 +107,8 @@ func createTestDispatcher(t *testing.T) *Dispatcher {
 		t.Fatalf("Failed to get config: %v", err)
 	}
 
-	// Create rate limiter.
-	rateLimiter := limiter.NewLimiter(&cfg)
-
 	// Create dispatcher
-	dispatcher, err := NewDispatcher(&cfg, rateLimiter)
+	dispatcher, err := NewDispatcher(&cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}

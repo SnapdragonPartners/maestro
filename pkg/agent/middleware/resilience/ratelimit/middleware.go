@@ -5,7 +5,6 @@ import (
 	"context"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 )
 
 // Middleware returns a middleware function that wraps an LLM client with rate limiting.
@@ -21,10 +20,10 @@ func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Mi
 			func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
 				// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 				// Get model configuration to determine provider
-				modelConfig := next.GetDefaultConfig()
+				modelName := next.GetModelName()
 
 				// Get the appropriate rate limiter
-				limiter, err := limiterMap.GetLimiter(modelConfig.Name)
+				limiter, err := limiterMap.GetLimiter(modelName)
 				if err != nil {
 					return llm.CompletionResponse{}, err
 				}
@@ -46,10 +45,10 @@ func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Mi
 			// Stream implementation with rate limiting
 			func(ctx context.Context, req llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
 				// Get model configuration to determine provider
-				modelConfig := next.GetDefaultConfig()
+				modelName := next.GetModelName()
 
 				// Get the appropriate rate limiter
-				limiter, err := limiterMap.GetLimiter(modelConfig.Name)
+				limiter, err := limiterMap.GetLimiter(modelName)
 				if err != nil {
 					return nil, err
 				}
@@ -67,8 +66,8 @@ func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Mi
 				return next.Stream(ctx, req)
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

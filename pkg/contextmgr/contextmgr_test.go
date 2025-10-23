@@ -268,15 +268,9 @@ func containsAt(s, substr string) bool {
 }
 
 func TestNewContextManagerWithModel(t *testing.T) {
-	modelConfig := &config.Model{
-		Name:           config.ModelClaudeSonnetLatest,
-		MaxTPM:         50000,
-		DailyBudget:    200.0,
-		MaxConnections: 4,
-		CPM:            3.0,
-	}
+	modelName := config.ModelClaudeSonnetLatest
 
-	cm := NewContextManagerWithModel(modelConfig)
+	cm := NewContextManagerWithModel(modelName)
 
 	if cm == nil {
 		t.Error("Expected non-nil context manager")
@@ -294,15 +288,9 @@ func TestNewContextManagerWithModel(t *testing.T) {
 }
 
 func TestCompactIfNeededWithModel(t *testing.T) {
-	modelConfig := &config.Model{
-		Name:           config.ModelClaudeSonnetLatest,
-		MaxTPM:         50000,
-		DailyBudget:    200.0,
-		MaxConnections: 4,
-		CPM:            3.0,
-	}
+	modelName := config.ModelClaudeSonnetLatest
 
-	cm := NewContextManagerWithModel(modelConfig)
+	cm := NewContextManagerWithModel(modelName)
 
 	// Add messages that exceed the compaction threshold.
 	// Threshold = MaxContext - MaxReply - Buffer = 100 - 20 - 10 = 70
@@ -338,15 +326,9 @@ func TestShouldCompact(t *testing.T) {
 	}
 
 	// Test with model config.
-	modelConfig := &config.Model{
-		Name:           config.ModelClaudeSonnetLatest,
-		MaxTPM:         50000,
-		DailyBudget:    200.0,
-		MaxConnections: 4,
-		CPM:            3.0,
-	}
+	modelName := config.ModelClaudeSonnetLatest
 
-	cm2 := NewContextManagerWithModel(modelConfig)
+	cm2 := NewContextManagerWithModel(modelName)
 	if err := addUserMessage(cm2, "This is a longer message that should trigger compaction logic"); err != nil {
 		t.Errorf("Failed to add user message: %v", err)
 	}
@@ -358,15 +340,9 @@ func TestShouldCompact(t *testing.T) {
 }
 
 func TestGetCompactionInfo(t *testing.T) {
-	modelConfig := &config.Model{
-		Name:           config.ModelClaudeSonnetLatest,
-		MaxTPM:         50000,
-		DailyBudget:    200.0,
-		MaxConnections: 4,
-		CPM:            3.0,
-	}
+	modelName := config.ModelClaudeSonnetLatest
 
-	cm := NewContextManagerWithModel(modelConfig)
+	cm := NewContextManagerWithModel(modelName)
 	if err := addUserMessage(cm, "Test message"); err != nil {
 		t.Errorf("Failed to add user message: %v", err)
 	}

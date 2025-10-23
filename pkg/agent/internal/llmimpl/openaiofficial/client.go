@@ -176,13 +176,7 @@ func (o *OfficialClient) Stream(_ context.Context, _ llm.CompletionRequest) (<-c
 	return ch, nil
 }
 
-// GetDefaultConfig returns default model configuration for OpenAI Official.
-func (o *OfficialClient) GetDefaultConfig() config.Model {
-	return config.Model{
-		Name:           o.model,
-		MaxTPM:         100000, // 100k tokens per minute for O3
-		DailyBudget:    500.0,  // $500 daily budget (higher for official client)
-		MaxConnections: 3,      // 3 concurrent connections
-		CPM:            20.0,   // $20 per million tokens (O3 pricing)
-	}
+// GetModelName returns the model name for this client.
+func (o *OfficialClient) GetModelName() string {
+	return o.model
 }
