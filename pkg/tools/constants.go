@@ -26,6 +26,11 @@ const (
 	// Chat tools.
 	ToolChatPost = "chat_post"
 	ToolChatRead = "chat_read"
+
+	// Todo tools.
+	ToolTodosAdd     = "todos_add"
+	ToolTodoComplete = "todo_complete"
+	ToolTodoUpdate   = "todo_update"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -69,6 +74,9 @@ var (
 		ToolContainerSwitch,
 		ToolChatPost,
 		ToolChatRead,
+		ToolTodosAdd,
+		ToolTodoComplete,
+		ToolTodoUpdate,
 	}
 
 	// App coding tools - full development environment.
@@ -82,6 +90,9 @@ var (
 		ToolDone,
 		ToolChatPost,
 		ToolChatRead,
+		ToolTodosAdd,
+		ToolTodoComplete,
+		ToolTodoUpdate,
 	}
 
 	// Testing tools - validation and verification.

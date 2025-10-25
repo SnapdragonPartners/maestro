@@ -39,6 +39,8 @@ const (
 )
 
 // Coder implements the v2 FSM using agent foundation.
+//
+//nolint:govet // fieldalignment: keeping current field order for code clarity
 type Coder struct {
 	*agent.BaseStateMachine // Directly embed state machine
 	agentConfig             *agent.Config
@@ -63,6 +65,7 @@ type Coder struct {
 	originalWorkDir         string                 // Original agent work directory (for cleanup)
 	containerName           string                 // Current story container name
 	codingBudget            int                    // Iteration budgets
+	todoList                *TodoList              // Implementation todo list
 }
 
 // Runtime extends BaseRuntime with coder-specific capabilities.

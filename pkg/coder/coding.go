@@ -78,6 +78,12 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		c.logger.Debug("🐳 Coding template container info not available: %v", err)
 	}
 
+	// Get todo status for template
+	todoStatus := ""
+	if c.todoList != nil {
+		todoStatus = c.getTodoListStatus()
+	}
+
 	enhancedTemplateData := &templates.TemplateData{
 		TaskContent:         taskContent,
 		Plan:                plan, // Include plan from PLANNING state
@@ -86,7 +92,8 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		ContainerName:       containerName,
 		ContainerDockerfile: containerDockerfile,
 		Extra: map[string]any{
-			"story_type": storyType, // Include story type for template logic
+			"story_type": storyType,  // Include story type for template logic
+			"TodoStatus": todoStatus, // Include current todo status
 		},
 	}
 
@@ -181,6 +188,92 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 	for i := range toolCalls {
 		toolCall := &toolCalls[i]
 		c.logger.Info("Executing MCP tool: %s", toolCall.Name)
+
+		// Handle todo management tools first (before other tool processing)
+		if toolCall.Name == tools.ToolTodoComplete {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+
+			if err := c.handleTodoComplete(sm, index); err != nil {
+				c.logger.Error("📋 [TODO] Failed to complete todo: %v", err)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error completing todo: %v", err))
+				continue
+			}
+
+			if index == -1 {
+				c.contextManager.AddMessage(roleToolMessage, "✅ Current todo marked complete, advanced to next todo")
+			} else {
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Todo at index %d marked complete", index))
+			}
+			continue
+		}
+
+		if toolCall.Name == tools.ToolTodosAdd {
+			// Handle adding additional todos during coding
+			todosAny := utils.GetMapFieldOr[[]any](toolCall.Parameters, "todos", []any{})
+			if len(todosAny) == 0 {
+				c.logger.Error("📋 [TODO] todos_add called without todos")
+				c.contextManager.AddMessage(roleToolMessage, "Error: todos array required for todos_add")
+				continue
+			}
+
+			c.logger.Info("📋 [TODO] Adding %d todos during CODING", len(todosAny))
+
+			// Convert and append using the tool's validation
+			tool, getErr := c.codingToolProvider.Get(tools.ToolTodosAdd)
+			if getErr != nil {
+				c.logger.Error("📋 [TODO] Failed to get todos_add tool: %v", getErr)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error: %v", getErr))
+				continue
+			}
+
+			result, execErr := tool.Exec(ctx, toolCall.Parameters)
+			if execErr != nil {
+				c.logger.Error("📋 [TODO] todos_add validation failed: %v", execErr)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error: %v", execErr))
+				continue
+			}
+
+			// Process validated result
+			if resultMap, ok := result.(map[string]any); ok {
+				if validatedTodos, ok := resultMap["todos"].([]string); ok {
+					for _, todoStr := range validatedTodos {
+						c.todoList.Items = append(c.todoList.Items, TodoItem{
+							Description: todoStr,
+							Completed:   false,
+						})
+					}
+					sm.SetStateData("todo_list", c.todoList)
+					c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Added %d new todos", len(validatedTodos)))
+					c.logger.Info("📋 [TODO] ✅ Added %d todos to list (now %d total)", len(validatedTodos), len(c.todoList.Items))
+				}
+			}
+			continue
+		}
+
+		if toolCall.Name == tools.ToolTodoUpdate {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+			description := utils.GetMapFieldOr[string](toolCall.Parameters, "description", "")
+
+			if index < 0 {
+				c.logger.Error("📋 [TODO] todo_update called with invalid index")
+				c.contextManager.AddMessage(roleToolMessage, "Error: valid index required for todo_update")
+				continue
+			}
+
+			if err := c.handleTodoUpdate(sm, index, description); err != nil {
+				c.logger.Error("📋 [TODO] Failed to update todo: %v", err)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error updating todo: %v", err))
+				continue
+			}
+
+			action := "updated"
+			if description == "" {
+				action = "removed"
+			}
+			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Todo at index %d %s", index, action))
+			c.logger.Info("📋 [TODO] ✏️  Todo at index %d %s", index, action)
+			continue
+		}
 
 		// Handle done tool using Effects pattern.
 		if toolCall.Name == tools.ToolDone {

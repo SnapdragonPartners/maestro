@@ -152,14 +152,14 @@ func (v *EmptyResponseValidator) createGuidanceMessage(req llm.CompletionRequest
 	}
 
 	// For coder agents, provide tool-specific guidance
-	fallback := fmt.Sprintf("Responses without tool usage are invalid. Use one of the available tools such as %s or %s.",
+	fallback := fmt.Sprintf("CRITICAL: You must use the tool call API to invoke tools. Do NOT write text like 'Tool shell invoked' - instead make actual API tool calls. Available tools include: %s, %s.",
 		tools.ToolShell, tools.ToolAskQuestion)
 
 	// Add completion-specific guidance based on available tools
 	if contains(toolNames, tools.ToolDone) {
-		fallback += fmt.Sprintf(" If you are finished, use the %s tool to send your work for testing and review.", tools.ToolDone)
+		fallback += fmt.Sprintf(" When finished, use the %s tool (via API call, not text).", tools.ToolDone)
 	} else if contains(toolNames, tools.ToolSubmitPlan) {
-		fallback += fmt.Sprintf(" If you are finished planning, use %s to send your plan to the architect for review.", tools.ToolSubmitPlan)
+		fallback += fmt.Sprintf(" When finished planning, use %s (via API call, not text).", tools.ToolSubmitPlan)
 	}
 
 	return fallback

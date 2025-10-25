@@ -412,6 +412,33 @@ func getChatReadSchema() InputSchema {
 	return NewChatReadTool(nil).Definition().InputSchema
 }
 
+// createTodosAddTool creates an add todos tool instance.
+func createTodosAddTool(_ AgentContext) (Tool, error) {
+	return NewTodosAddTool(), nil
+}
+
+// createTodoCompleteTool creates a todo complete tool instance.
+func createTodoCompleteTool(_ AgentContext) (Tool, error) {
+	return NewTodoCompleteTool(), nil
+}
+
+// createTodoUpdateTool creates a todo update tool instance.
+func createTodoUpdateTool(_ AgentContext) (Tool, error) {
+	return NewTodoUpdateTool(), nil
+}
+
+func getTodosAddSchema() InputSchema {
+	return NewTodosAddTool().Definition().InputSchema
+}
+
+func getTodoCompleteSchema() InputSchema {
+	return NewTodoCompleteTool().Definition().InputSchema
+}
+
+func getTodoUpdateSchema() InputSchema {
+	return NewTodoUpdateTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -514,5 +541,24 @@ func init() {
 		Name:        ToolChatRead,
 		Description: "Read new messages from the agent chat channel since your last read. Returns messages and updates your read cursor automatically.",
 		InputSchema: getChatReadSchema(),
+	})
+
+	// Register todo tools
+	Register(ToolTodosAdd, createTodosAddTool, &ToolMeta{
+		Name:        ToolTodosAdd,
+		Description: "Add todos to implementation list (initial submission or additional todos). Recommended: 3-10 items for initial list.",
+		InputSchema: getTodosAddSchema(),
+	})
+
+	Register(ToolTodoComplete, createTodoCompleteTool, &ToolMeta{
+		Name:        ToolTodoComplete,
+		Description: "Mark a todo as complete (current todo by default, or specify index for out-of-order completion)",
+		InputSchema: getTodoCompleteSchema(),
+	})
+
+	Register(ToolTodoUpdate, createTodoUpdateTool, &ToolMeta{
+		Name:        ToolTodoUpdate,
+		Description: "Update or remove a todo by index",
+		InputSchema: getTodoUpdateSchema(),
 	})
 }

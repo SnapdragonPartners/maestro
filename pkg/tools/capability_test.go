@@ -127,14 +127,17 @@ func TestToolProviderAppCodingTools(t *testing.T) {
 
 	// Verify all expected tools are present
 	expectedTools := map[string]bool{
-		ToolShell:       false,
-		ToolBuild:       false,
-		ToolTest:        false,
-		ToolLint:        false,
-		ToolAskQuestion: false,
-		ToolDone:        false,
-		ToolChatPost:    false,
-		ToolChatRead:    false,
+		ToolShell:        false,
+		ToolBuild:        false,
+		ToolTest:         false,
+		ToolLint:         false,
+		ToolAskQuestion:  false,
+		ToolDone:         false,
+		ToolChatPost:     false,
+		ToolChatRead:     false,
+		ToolTodosAdd:     false,
+		ToolTodoComplete: false,
+		ToolTodoUpdate:   false,
 	}
 
 	for _, meta := range toolMetas {
