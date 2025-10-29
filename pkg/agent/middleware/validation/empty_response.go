@@ -81,18 +81,21 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 
 					if attempt == 1 {
 						// First attempt: add guidance and retry
+						logger.Warn("🔄 AUTO-RETRY: Empty response will NOT be added to context history")
 						logger.Warn("🔄 AUTO-RETRY: Adding guidance message and retrying (attempt 1→2)")
 						guidanceMessage := v.createGuidanceMessage(req)
 						logger.Debug("🔄 Guidance message: %s", guidanceMessage)
 
-						// Create a modified request with guidance as an additional user message
+						// IMPORTANT: Do NOT append the bad response to context
+						// The bad response (resp) is discarded here - only guidance is added
+						// This prevents "Tool shell invoked" text from polluting conversation history
 						modifiedReq := req
 						modifiedReq.Messages = append(modifiedReq.Messages, llm.CompletionMessage{
 							Role:    llm.RoleUser,
 							Content: guidanceMessage,
 						})
 
-						// Update req for next iteration
+						// Update req for next iteration (without the bad assistant response)
 						req = modifiedReq
 						continue
 					}

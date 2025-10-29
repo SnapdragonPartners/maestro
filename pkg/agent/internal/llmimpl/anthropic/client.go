@@ -45,16 +45,49 @@ func NewClaudeClientWithModel(apiKey, model string) llm.LLMClient {
 
 // Complete implements the llm.LLMClient interface.
 func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
-	// Convert to Anthropic messages.
+	// Convert to Anthropic messages with prompt caching support (SDK v1.14.0+).
 	messages := make([]anthropic.MessageParam, 0, len(in.Messages))
 	for i := range in.Messages {
 		msg := &in.Messages[i]
 		role := anthropic.MessageParamRole(msg.Role)
-		block := anthropic.NewTextBlock(msg.Content)
-		messages = append(messages, anthropic.MessageParam{
+
+		// Create text block with cache_control if specified
+		textBlock := anthropic.TextBlockParam{
+			Text: msg.Content,
+			Type: "text",
+		}
+
+		// Add cache_control if present (Anthropic prompt caching)
+		if msg.CacheControl != nil {
+			cacheControl := anthropic.NewCacheControlEphemeralParam()
+
+			// Set TTL if specified (defaults to 5m if not set)
+			if msg.CacheControl.TTL != "" {
+				switch msg.CacheControl.TTL {
+				case "5m":
+					cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+				case "1h":
+					cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+					// Default: SDK will use 5m default if TTL not set
+				}
+			}
+
+			textBlock.CacheControl = cacheControl
+		}
+
+		messageParam := anthropic.MessageParam{
 			Role:    role,
-			Content: []anthropic.ContentBlockParamUnion{block},
-		})
+			Content: []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(textBlock.Text)},
+		}
+
+		// If cache control was set, we need to use the full TextBlockParam instead of NewTextBlock
+		if msg.CacheControl != nil {
+			contentBlock := anthropic.ContentBlockParamUnion{}
+			contentBlock.OfText = &textBlock
+			messageParam.Content = []anthropic.ContentBlockParamUnion{contentBlock}
+		}
+
+		messages = append(messages, messageParam)
 	}
 
 	// Prepare request parameters.

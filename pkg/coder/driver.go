@@ -157,18 +157,45 @@ func (c *Coder) getCodingToolsForLLM() []tools.ToolDefinition {
 
 // buildMessagesWithContext creates completion messages with context history.
 // This centralizes the pattern used across PLANNING and CODING states.
+// Implements prompt caching strategy based on content provenance.
 func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
+	// System prompt (initialPrompt) always gets cached
 	messages := []agent.CompletionMessage{
-		{Role: agent.RoleUser, Content: initialPrompt},
+		{
+			Role:         agent.RoleUser,
+			Content:      initialPrompt,
+			CacheControl: &agent.CacheControl{Type: "ephemeral"}, // Cache system prompt
+		},
 	}
 
 	// Add conversation history from context manager (critical for tool results).
 	contextMessages := c.contextManager.GetMessages()
+
+	// Provenance-based caching strategy:
+	// - Cache messages with system-like provenance (system-prompt, story-content, plan-content, etc.)
+	// - Don't cache dynamic content (tool results, todo updates, llm responses, etc.)
+	cacheableProvenances := map[string]bool{
+		"system-prompt":   true,
+		"story-content":   true,
+		"plan-content":    true,
+		"task-content":    true,
+		"architect-task":  true,
+		"template-static": true,
+	}
+
+	// Track last cacheable message index to place cache breakpoint
+	lastCacheableIndex := -1
+
 	for i := range contextMessages {
 		msg := &contextMessages[i]
 		// Skip empty messages to prevent malformed prompts.
 		if strings.TrimSpace(msg.Content) == "" {
 			continue
+		}
+
+		// Check if this message is cacheable based on provenance
+		if cacheableProvenances[msg.Provenance] {
+			lastCacheableIndex = len(messages) // Index in output messages array
 		}
 
 		// Map context roles to LLM client roles.
@@ -180,10 +207,29 @@ func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.Completio
 		}
 
 		messages = append(messages, agent.CompletionMessage{
-			Role:    role,
-			Content: msg.Content, // Use original content without bracket formatting
+			Role:         role,
+			Content:      msg.Content, // Use original content without bracket formatting
+			CacheControl: nil,         // Will be set below if this is the last cacheable message
 		})
 	}
+
+	// Apply cache control to the last cacheable message (creates cache breakpoint)
+	if lastCacheableIndex >= 0 && lastCacheableIndex < len(messages) {
+		messages[lastCacheableIndex].CacheControl = &agent.CacheControl{Type: "ephemeral"}
+	}
+
+	// Add fresh tool usage guidance as the final message (never cached).
+	// This keeps the guidance in Claude's high-attention zone and prevents the
+	// "Tool X invoked" text response pattern by reminding Claude on every turn.
+	guidanceMsg := agent.CompletionMessage{
+		Role: agent.RoleUser,
+		Content: `CRITICAL REMINDERS:
+1. **Check before writing**: Always use shell tool to check what files exist (ls, cat) BEFORE creating or modifying them. Do NOT rewrite files that already exist and work correctly.
+2. **Tool call API**: Use the tool call API to invoke tools. Do NOT write text like 'Tool X invoked' - make actual API tool calls.
+3. **Complete todos**: When the current todo is finished, use the 'todo_complete' tool to advance. When all todos are complete, use the 'done' tool.`,
+		// No CacheControl - this message is always fresh and dynamic
+	}
+	messages = append(messages, guidanceMsg)
 
 	// Validate and sanitize messages before returning.
 	sanitized, err := agent.ValidateAndSanitizeMessages(messages)

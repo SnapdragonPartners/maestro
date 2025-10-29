@@ -11,8 +11,9 @@ import (
 
 // Message represents a single message in the conversation context.
 type Message struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	Provenance string // Source of content: "system-prompt", "tool-shell", "todo-status-update", etc.
 }
 
 // Fragment represents a piece of content with provenance tracking.
@@ -129,8 +130,9 @@ func (cm *ContextManager) Conversation() []Message {
 func (cm *ContextManager) ResetSystemPrompt(content string) {
 	// Clear all messages and buffer, set new system prompt
 	cm.messages = []Message{{
-		Role:    "system",
-		Content: strings.TrimSpace(content),
+		Role:       "system",
+		Content:    strings.TrimSpace(content),
+		Provenance: "system-prompt",
 	}}
 	cm.userBuffer = cm.userBuffer[:0]
 }
@@ -481,8 +483,9 @@ func (cm *ContextManager) ResetForNewTemplate(templateName, systemPrompt string)
 
 	// Clear all messages and buffer, set new system prompt
 	cm.messages = []Message{{
-		Role:    "system",
-		Content: strings.TrimSpace(systemPrompt),
+		Role:       "system",
+		Content:    strings.TrimSpace(systemPrompt),
+		Provenance: "system-prompt",
 	}}
 	cm.userBuffer = cm.userBuffer[:0]
 	cm.currentTemplate = templateName
@@ -510,8 +513,9 @@ func (cm *ContextManager) FlushUserBuffer() error {
 	if len(cm.userBuffer) == 0 {
 		// Add fallback message for empty buffer
 		cm.messages = append(cm.messages, Message{
-			Role:    "user",
-			Content: "No response from user, please try something else",
+			Role:       "user",
+			Content:    "No response from user, please try something else",
+			Provenance: "empty-buffer-fallback",
 		})
 		// Still need to try compaction even with fallback message
 	}
@@ -519,16 +523,28 @@ func (cm *ContextManager) FlushUserBuffer() error {
 	// Consolidate buffer fragments into single user message (if any)
 	if len(cm.userBuffer) > 0 {
 		contentParts := make([]string, 0, len(cm.userBuffer))
+		// Track provenance - use first fragment's provenance if all are the same, otherwise "mixed"
+		firstProvenance := cm.userBuffer[0].Provenance
+		allSameProvenance := true
+
 		for i := range cm.userBuffer {
 			fragment := &cm.userBuffer[i]
-			// Include provenance for debugging (optional)
 			contentParts = append(contentParts, fragment.Content)
+			if fragment.Provenance != firstProvenance {
+				allSameProvenance = false
+			}
+		}
+
+		provenance := firstProvenance
+		if !allSameProvenance {
+			provenance = "mixed"
 		}
 
 		combinedContent := strings.Join(contentParts, "\n\n")
 		cm.messages = append(cm.messages, Message{
-			Role:    "user",
-			Content: combinedContent,
+			Role:       "user",
+			Content:    combinedContent,
+			Provenance: provenance,
 		})
 
 		// Clear the buffer
@@ -549,8 +565,9 @@ func (cm *ContextManager) FlushUserBuffer() error {
 func (cm *ContextManager) AddAssistantMessage(content string) {
 	// Assistant messages go directly to context (no mutex needed - single threaded per agent)
 	cm.messages = append(cm.messages, Message{
-		Role:    "assistant",
-		Content: strings.TrimSpace(content),
+		Role:       "assistant",
+		Content:    strings.TrimSpace(content),
+		Provenance: "llm-response",
 	})
 	// Note: Compaction will be handled before the next LLM request, not here
 }

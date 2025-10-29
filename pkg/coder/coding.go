@@ -112,6 +112,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	}
 
 	// Reset context for new template (only if template type changed)
+	// ResetForNewTemplate will preserve context if template name unchanged
 	templateName := fmt.Sprintf("coding-%s", codingTemplate)
 	c.contextManager.ResetForNewTemplate(templateName, prompt)
 
@@ -199,7 +200,12 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 				continue
 			}
 
-			if index == -1 {
+			// Check if all todos are now complete
+			allComplete := c.todoList != nil && c.todoList.GetCurrentTodo() == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount()
+
+			if allComplete {
+				c.contextManager.AddMessage(roleToolMessage, "✅ All todos completed! Create a brief story completion summary and call the 'done' tool to finish this story.")
+			} else if index == -1 {
 				c.contextManager.AddMessage(roleToolMessage, "✅ Current todo marked complete, advanced to next todo")
 			} else {
 				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Todo at index %d marked complete", index))

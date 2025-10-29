@@ -154,6 +154,14 @@ class MaestroUI {
         const stateClass = this.getStateClass(agent.state);
         const timeDiff = this.getTimeSince(agent.last_ts);
 
+        // Calculate todo progress for coder agents
+        let todoInfo = '';
+        if (agent.todo_list && agent.todo_list.items) {
+            const completed = agent.todo_list.items.filter(item => item.completed).length;
+            const total = agent.todo_list.items.length;
+            todoInfo = `<p>Progress: ${completed}/${total} todos</p>`;
+        }
+
         card.innerHTML = `
             <div class="flex items-center justify-between mb-2">
                 <h3 class="font-medium text-gray-900">${agent.id}</h3>
@@ -162,6 +170,7 @@ class MaestroUI {
             <div class="text-sm text-gray-600">
                 <p>Role: ${agent.role}</p>
                 <p>Last updated: ${timeDiff}</p>
+                ${todoInfo}
             </div>
         `;
 
@@ -466,6 +475,25 @@ class MaestroUI {
                         <label class="text-sm font-medium text-gray-700">Task Content</label>
                         <div class="mt-1 p-3 bg-gray-50 rounded-md">
                             <pre class="text-sm text-gray-900 whitespace-pre-wrap">${agent.task_content}</pre>
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${agent.todo_list && agent.todo_list.items && agent.todo_list.items.length > 0 ? `
+                    <div>
+                        <label class="text-sm font-medium text-gray-700">Todo List Progress (${agent.todo_list.items.filter(i => i.completed).length}/${agent.todo_list.items.length})</label>
+                        <div class="mt-1 p-3 bg-gray-50 rounded-md space-y-2">
+                            ${agent.todo_list.items.map((item, idx) => {
+                                const isCurrent = idx === agent.todo_list.current;
+                                const icon = item.completed ? '✅' : (isCurrent ? '▶️' : '⏸️');
+                                const textClass = item.completed ? 'line-through text-gray-500' : (isCurrent ? 'font-semibold text-blue-700' : 'text-gray-700');
+                                return `
+                                    <div class="flex items-start space-x-2">
+                                        <span class="flex-shrink-0">${icon}</span>
+                                        <span class="text-sm ${textClass}">${this.escapeHtml(item.description)}</span>
+                                    </div>
+                                `;
+                            }).join('')}
                         </div>
                     </div>
                 ` : ''}

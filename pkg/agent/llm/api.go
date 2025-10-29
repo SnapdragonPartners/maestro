@@ -27,10 +27,18 @@ const (
 	ArchitectMaxTokens = 30000
 )
 
+// CacheControl represents prompt caching configuration for a message.
+// Used with Anthropic's prompt caching feature to reduce costs and latency.
+type CacheControl struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" or "1h" (optional, defaults to 5m)
+}
+
 // CompletionMessage represents a message in a completion request.
 type CompletionMessage struct {
-	Role    CompletionRole
-	Content string
+	Content      string
+	CacheControl *CacheControl `json:"cache_control,omitempty"` // Prompt caching marker
+	Role         CompletionRole
 }
 
 // Use tools.ToolDefinition directly instead of separate agent.Tool.

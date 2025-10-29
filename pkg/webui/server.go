@@ -235,6 +235,27 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		"story_id":   agentInfo.StoryID,
 	}
 
+	// Extract todo list from coder agents' state data
+	if agentInfo.Type == agent.TypeCoder && agentInfo.Driver != nil {
+		stateData := agentInfo.Driver.GetStateData()
+		if todoListData, exists := stateData["todo_list"]; exists {
+			// todoListData is the TodoList struct - convert to map for JSON
+			if todoListMap, ok := todoListData.(map[string]interface{}); ok {
+				response["todo_list"] = todoListMap
+			} else {
+				// If it's the actual struct, we need to marshal/unmarshal it
+				// This handles the case where it's stored as a struct type
+				todoJSON, err := json.Marshal(todoListData)
+				if err == nil {
+					var todoMap map[string]interface{}
+					if json.Unmarshal(todoJSON, &todoMap) == nil {
+						response["todo_list"] = todoMap
+					}
+				}
+			}
+		}
+	}
+
 	// Send JSON response.
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
