@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
@@ -129,9 +130,10 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	messages := c.buildMessagesWithContext(prompt)
 
 	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 8192,                     // Increased for comprehensive code generation
-		Tools:     c.getCodingToolsForLLM(), // Use state-specific tools
+		Messages:    messages,
+		MaxTokens:   8192,                         // Increased for comprehensive code generation
+		Temperature: llm.TemperatureDeterministic, // Deterministic output for coding
+		Tools:       c.getCodingToolsForLLM(),     // Use state-specific tools
 	}
 
 	// Use base agent retry mechanism.

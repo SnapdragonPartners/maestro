@@ -43,12 +43,166 @@ func NewClaudeClientWithModel(apiKey, model string) llm.LLMClient {
 	}
 }
 
+// validatePreSend performs final validation before API call to catch common issues.
+// - No system messages in messages array (should be in system parameter)
+// - Proper alternation maintained
+// - All roles are valid for Anthropic API.
+func validatePreSend(_ string, messages []llm.CompletionMessage) error {
+	// Check 1: Verify no system messages in messages array
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role == llm.RoleSystem {
+			return fmt.Errorf("system message found in messages array at index %d (should be extracted to system parameter)", i)
+		}
+	}
+
+	// Check 2: Verify alternation
+	for i := range messages {
+		msg := &messages[i]
+		if i > 0 {
+			prevMsg := &messages[i-1]
+			if msg.Role == prevMsg.Role {
+				return fmt.Errorf("alternation violation at index %d: consecutive %s messages", i, msg.Role)
+			}
+		}
+	}
+
+	// Check 3: Verify first message is user
+	if len(messages) > 0 && messages[0].Role != llm.RoleUser {
+		return fmt.Errorf("first message must be user role, got: %s", messages[0].Role)
+	}
+
+	// Check 4: Verify last message is user
+	if len(messages) > 0 && messages[len(messages)-1].Role != llm.RoleUser {
+		return fmt.Errorf("last message must be user role, got: %s", messages[len(messages)-1].Role)
+	}
+
+	// Check 5: Verify only valid roles (user and assistant)
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role != llm.RoleUser && msg.Role != llm.RoleAssistant {
+			return fmt.Errorf("invalid role %s at index %d (Anthropic only supports user and assistant in messages array)", msg.Role, i)
+		}
+	}
+
+	return nil
+}
+
+// ensureAlternation prepares messages for Anthropic API requirements.
+// 1. Extracts system messages to top-level system parameter
+// 2. Merges consecutive non-assistant messages into single user messages
+// 3. Ensures strict user↔assistant alternation
+// 4. Validates sequence ends with user message.
+func ensureAlternation(messages []llm.CompletionMessage) (systemPrompt string, alternating []llm.CompletionMessage, err error) {
+	if len(messages) == 0 {
+		return "", nil, fmt.Errorf("message list cannot be empty")
+	}
+
+	// Step 1: Extract system messages
+	var systemParts []string
+	var nonSystemMessages []llm.CompletionMessage
+
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role == llm.RoleSystem {
+			systemParts = append(systemParts, msg.Content)
+		} else {
+			nonSystemMessages = append(nonSystemMessages, *msg)
+		}
+	}
+
+	systemPrompt = strings.Join(systemParts, "\n\n")
+
+	if len(nonSystemMessages) == 0 {
+		return "", nil, fmt.Errorf("must have at least one non-system message")
+	}
+
+	// Step 2: Merge consecutive non-assistant messages
+	var merged []llm.CompletionMessage
+	var currentUserParts []string
+	var currentUserCache *llm.CacheControl // Track cache control for merged message
+
+	for i := range nonSystemMessages {
+		msg := &nonSystemMessages[i]
+
+		if msg.Role == llm.RoleAssistant {
+			// Flush any accumulated user messages first
+			if len(currentUserParts) > 0 {
+				merged = append(merged, llm.CompletionMessage{
+					Role:         llm.RoleUser,
+					Content:      strings.Join(currentUserParts, "\n\n"),
+					CacheControl: currentUserCache,
+				})
+				currentUserParts = nil
+				currentUserCache = nil
+			}
+
+			// Add assistant message as-is
+			merged = append(merged, *msg)
+		} else {
+			// Accumulate non-assistant message (user, tool, etc. all become user)
+			currentUserParts = append(currentUserParts, msg.Content)
+
+			// Preserve cache control from last message in sequence (Anthropic only caches last block)
+			if msg.CacheControl != nil {
+				currentUserCache = msg.CacheControl
+			}
+		}
+	}
+
+	// Flush any remaining user messages
+	if len(currentUserParts) > 0 {
+		merged = append(merged, llm.CompletionMessage{
+			Role:         llm.RoleUser,
+			Content:      strings.Join(currentUserParts, "\n\n"),
+			CacheControl: currentUserCache,
+		})
+	}
+
+	// Step 3: Validate alternation
+	for i := range merged {
+		msg := &merged[i]
+
+		// Check alternation pattern
+		if i > 0 {
+			prevMsg := &merged[i-1]
+			if msg.Role == prevMsg.Role {
+				return "", nil, fmt.Errorf("alternation violation at index %d: consecutive %s messages", i, msg.Role)
+			}
+		}
+
+		// First message must be user
+		if i == 0 && msg.Role != llm.RoleUser {
+			return "", nil, fmt.Errorf("first message must be user role, got: %s", msg.Role)
+		}
+	}
+
+	// Step 4: Ensure ends with user message
+	lastMsg := &merged[len(merged)-1]
+	if lastMsg.Role != llm.RoleUser {
+		return "", nil, fmt.Errorf("last message must be user role, got: %s", lastMsg.Role)
+	}
+
+	return systemPrompt, merged, nil
+}
+
 // Complete implements the llm.LLMClient interface.
 func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
+	// Ensure alternation and extract system prompt
+	systemPrompt, alternatingMessages, err := ensureAlternation(in.Messages)
+	if err != nil {
+		return llm.CompletionResponse{}, llmerrors.NewError(llmerrors.ErrorTypeBadPrompt, fmt.Sprintf("message alternation error: %v", err))
+	}
+
+	// Pre-send validation to catch issues before API call
+	if validationErr := validatePreSend(systemPrompt, alternatingMessages); validationErr != nil {
+		return llm.CompletionResponse{}, llmerrors.NewError(llmerrors.ErrorTypeBadPrompt, fmt.Sprintf("pre-send validation failed: %v", validationErr))
+	}
+
 	// Convert to Anthropic messages with prompt caching support (SDK v1.14.0+).
-	messages := make([]anthropic.MessageParam, 0, len(in.Messages))
-	for i := range in.Messages {
-		msg := &in.Messages[i]
+	messages := make([]anthropic.MessageParam, 0, len(alternatingMessages))
+	for i := range alternatingMessages {
+		msg := &alternatingMessages[i]
 		role := anthropic.MessageParamRole(msg.Role)
 
 		// Create text block with cache_control if specified
@@ -93,9 +247,18 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 	// Prepare request parameters.
 	maxTokens := int64(in.MaxTokens)
 	params := anthropic.MessageNewParams{
-		Model:     c.model,
-		Messages:  messages,
-		MaxTokens: maxTokens,
+		Model:       c.model,
+		Messages:    messages,
+		MaxTokens:   maxTokens,
+		Temperature: anthropic.Float(float64(in.Temperature)),
+	}
+
+	// Add system prompt if present
+	if systemPrompt != "" {
+		params.System = []anthropic.TextBlockParam{{
+			Text: systemPrompt,
+			Type: "text",
+		}}
 	}
 
 	// Add tools if provided using correct v1.5.0 API.

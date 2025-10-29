@@ -25,6 +25,14 @@ const (
 	// ArchitectMaxTokens defines the maximum tokens for architect LLM responses.
 	// Used for comprehensive spec analysis and story generation with O3.
 	ArchitectMaxTokens = 30000
+
+	// TemperatureDefault is the default temperature for planning, reviews, and judgment tasks.
+	// Allows some exploration and creativity while staying focused.
+	TemperatureDefault = 0.3
+
+	// TemperatureDeterministic is the temperature for code generation and deterministic tasks.
+	// Ensures consistent, repeatable outputs for implementation.
+	TemperatureDeterministic = 0.0
 )
 
 // CacheControl represents prompt caching configuration for a message.
@@ -87,8 +95,8 @@ type LLMClient interface { //nolint:revive // Keep name for backward compatibili
 func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
 	return CompletionRequest{
 		Messages:    messages,
-		MaxTokens:   4096, // Default to 4k tokens
-		Temperature: 0.7,  // Default temperature
+		MaxTokens:   4096,               // Default to 4k tokens
+		Temperature: TemperatureDefault, // Default: 0.3 for planning/reviews
 	}
 }
 

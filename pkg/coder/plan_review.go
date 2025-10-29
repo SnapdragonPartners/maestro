@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -246,9 +247,10 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 
 	// Make LLM call
 	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 4096,
-		Tools:     toolDefinitions,
+		Messages:    messages,
+		MaxTokens:   4096,
+		Temperature: llm.TemperatureDeterministic, // Deterministic output for todo collection
+		Tools:       toolDefinitions,
 	}
 
 	resp, err := c.llmClient.Complete(ctx, req)
@@ -340,9 +342,10 @@ func (c *Coder) retryTodoCollection(ctx context.Context, sm *agent.BaseStateMach
 
 	// Make LLM call
 	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 4096,
-		Tools:     toolDefinitions,
+		Messages:    messages,
+		MaxTokens:   4096,
+		Temperature: llm.TemperatureDeterministic, // Deterministic output for todo collection
+		Tools:       toolDefinitions,
 	}
 
 	resp, err := c.llmClient.Complete(ctx, req)

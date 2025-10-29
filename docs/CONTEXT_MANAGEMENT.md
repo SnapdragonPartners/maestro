@@ -4,6 +4,50 @@
 
 This document describes the context management architecture for the Maestro multi-agent orchestration system. Context management is responsible for maintaining conversation history between agents and LLMs, handling message accumulation, role-based caching, and ensuring proper message alternation for different LLM APIs.
 
+## Current Status
+
+**Phase 1: COMPLETE - Ready for Production Testing**
+
+All Phase 1 improvements have been implemented and compile successfully:
+
+✅ **Anthropic Alternation Handling**:
+- Alternation preflight validator (`pkg/agent/internal/llmimpl/anthropic/client.go:91-186`)
+- Pre-send request linter (`pkg/agent/internal/llmimpl/anthropic/client.go:46-89`)
+- System message extraction to top-level parameter
+- Consecutive non-assistant message consolidation
+- Strict user↔assistant alternation validation
+
+✅ **Temperature Settings**:
+- Defined temperature constants in `pkg/agent/llm/api.go`:
+  - `TemperatureDefault = 0.3` (for planning, reviews, architect)
+  - `TemperatureDeterministic = 0.0` (for code generation)
+- Default changed from 0.7 → 0.3 for better focus
+- Coding phase uses 0.0 for deterministic output
+- Planning phase uses 0.3 (default) for exploration
+- Plan review uses 0.0 for deterministic todo collection
+- Architect functions use 0.3 (default) for judgment/reasoning
+- Temperature parameter support added to Anthropic client
+
+✅ **Prompt Improvements**:
+- "If stuck" rule added to both coding templates
+- Instructs agents to use `ask_question` or `chat_post` when blocked
+
+✅ **Compaction**:
+- Already enabled with system prompt preservation at index 0
+- Verified to never remove system prompt during compaction
+
+✅ **Build Verification**:
+- All changes compile successfully
+- Linting checks pass
+
+**Status**: ⚠️ Code changes are complete but have not been runtime-tested. Ready for production testing to verify LLM integration.
+
+**What's Deferred (Phase 2)**:
+- OpenAI prompt caching support
+- Multi-breakpoint caching strategy
+- Rolling summaries with structured templates
+- Type-aware tool result caps (8-32KB by type)
+
 ## Design Principles
 
 1. **LLM-Agnostic Core**: Generic context management code maintains semantic roles without awareness of specific LLM API requirements
@@ -184,13 +228,13 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) {
 
 **Key Strategy**: System messages are marked for caching since they contain persistent instructions. Dynamic content (tool results, transient conversation) is not cached.
 
-#### OpenAI Implementation
+#### OpenAI Implementation (Phase 2)
 
 **API Characteristics**:
 - Supports: `system`, `user`, `assistant`, `tool` roles
 - System messages: Can appear anywhere in conversation
 - Alternation: More flexible - allows `assistant` → `tool` → `tool` sequences
-- Caching: Not supported (as of GPT-4)
+- Caching: **Supported** - Automatic prefix caching for prompts ≥1,024 tokens with optional `prompt_cache_key`
 - Tool results: Separate `tool` role messages with `tool_call_id`
 
 **Role Mapping**:
@@ -215,7 +259,9 @@ Because tool messages can follow assistant messages directly.
 
 **Strategy**: Minimal consolidation needed. Tool messages can remain separate if they follow an assistant message that made tool calls.
 
-**Caching Strategy**: Not applicable (OpenAI doesn't support prompt caching as of GPT-4).
+**Caching Strategy**: Use `prompt_cache_key` derived from story/session to stabilize routing. OpenAI automatically caches common prefixes ≥1,024 tokens. Track `cached_tokens` in usage metrics.
+
+**Note**: OpenAI support is deferred to Phase 2. Current focus is on Anthropic implementation.
 
 ## Role Semantics
 
@@ -453,30 +499,68 @@ if lastSystemIndex >= 0 {
 
 **Savings**: 79% reduction in input tokens
 
-## Implementation Checklist
+## Implementation Roadmap
 
-### Context Manager Changes
-- [x] Add semantic Role field to Message struct
-- [x] FlushUserBuffer creates separate messages (not consolidated)
-- [x] Each fragment maintains its semantic role
-- [ ] Remove any role-to-role mapping logic
+### Phase 1: Anthropic Focus (✅ COMPLETE)
 
-### Agent Layer Changes
-- [ ] buildMessagesWithContext preserves semantic roles
-- [ ] No role mapping or consolidation at this layer
-- [ ] Pass CompletionMessage with original Role values
+**Context Manager**
+- [x] Add Provenance field to Message struct
+- [x] FlushUserBuffer preserves provenance through consolidation
+- [x] Re-enable compaction with system prompt preservation
+- [x] Ensure compaction only removes messages after system prompt (index 0)
 
-### Anthropic Client Changes
-- [ ] Implement role mapping (SYSTEM/USER/ASSISTANT/TOOL → API roles)
-- [ ] Implement message consolidation for alternation
-- [ ] Implement cache breakpoint logic based on SYSTEM roles
-- [ ] Handle tool results as user message content blocks
+**Agent Layer**
+- [x] buildMessagesWithContext preserves provenance for cache decisions
+- [x] No role mapping at this layer (passes through semantic roles)
 
-### OpenAI Client Changes
-- [ ] Implement role mapping (1:1 for most roles)
-- [ ] Implement tool message linking (tool_call_id)
-- [ ] Minimal consolidation (API is more flexible)
-- [ ] No caching logic (not supported)
+**Anthropic Client**
+- [x] Implement alternation preflight validator (`client.go:91-186`)
+  - Extract system to top-level parameter
+  - Merge consecutive non-assistant messages into single user message
+  - Ensure strict user ↔ assistant alternation
+  - Validate sequence ends with user message
+- [x] Implement pre-send request linter (`client.go:46-89`)
+  - Check: no system role in messages array
+  - Check: alternation is correct
+  - Check: only valid roles (user/assistant)
+  - Returns errors for violations before API call
+- [x] Temperature constants defined (`pkg/agent/llm/api.go:29-35`)
+  - `TemperatureDefault = 0.3` (planning, reviews, architect)
+  - `TemperatureDeterministic = 0.0` (code generation)
+- [x] Temperature parameter support added to client (`client.go:253`)
+- [x] Temperature settings applied:
+  - Coding: 0.0 (`coding.go:135`)
+  - Planning: 0.3 (default, `planning.go:136`)
+  - Plan review: 0.0 (`plan_review.go:251,346`)
+  - Architect: 0.3 (default, uses NewCompletionRequest)
+
+**Prompt Templates**
+- [x] Add "If stuck" rule to both coding templates
+  - `app_coding.tpl.md:73`
+  - `devops_coding.tpl.md:83`
+- [x] Tool-only output constraint already present
+- [x] Todo status at end (Tier-3, dynamic)
+
+**Build Status**
+- [x] All changes compile successfully
+- [x] Linting checks pass
+- ⚠️ Runtime testing pending (ready for production)
+
+### Phase 2: OpenAI Support (Deferred)
+
+**OpenAI Client**
+- [ ] Add prompt caching support (`prompt_cache_key`)
+- [ ] Track cached token metrics
+- [ ] Implement tool_call_id validation and ordering
+- [ ] Support parallel tool calls with deterministic ordering
+- [ ] Pre-send linter for OpenAI-specific requirements
+
+**Advanced Features (Deferred)**
+- [ ] Multi-breakpoint caching (Anthropic)
+- [ ] Rolling summaries with structured templates
+- [ ] Type-aware tool result caps (8-32KB by type)
+- [ ] SHA-256 hashing and artifact references
+- [ ] Deterministic normalization for cache stability
 
 ## Testing Strategy
 
@@ -497,17 +581,27 @@ if lastSystemIndex >= 0 {
 - Monitor token usage reduction
 - Alert on alternation violations
 
-## Open Questions
+## Design Decisions
 
-1. **System Message Refresh**: Should we periodically refresh the system prompt even if cached? Or trust the cache?
+### Resolved
 
-2. **Cache Breakpoint Optimization**: Should we have multiple cache breakpoints (e.g., after system, after plan) or just one?
+1. **Cache Breakpoint Optimization**: **Single breakpoint** for Phase 1 (on system message). Multi-breakpoint deferred to Phase 2.
 
-3. **Tool Result Size**: Should we truncate large tool results to prevent context overflow? If so, at which layer?
+2. **Tool Result Size**: Keep current **2KB truncation** at context manager layer. Type-aware caps (8-32KB) deferred to Phase 2.
 
-4. **Mixed Conversations**: What happens if we have SYSTEM messages interspersed in conversation (not just at the start)?
+3. **OpenAI Support**: Deferred to Phase 2. Focus Phase 1 on Anthropic implementation and validation.
 
-5. **Backward Compatibility**: How do we migrate existing code that assumes user/assistant alternation?
+4. **Compaction Strategy**: Re-enable existing simple removal strategy. Rolling summaries deferred to Phase 2.
+
+5. **Temperature**: Verify coding agents use **0-0.3** temperature for deterministic output.
+
+### Open Questions
+
+1. **System Message Refresh**: Should we periodically refresh the system prompt even if cached? Or trust the cache for the duration of a story?
+
+2. **Mixed Conversations**: What happens if we have SYSTEM messages interspersed in conversation (not just at the start)? Current design assumes system at index 0.
+
+3. **Cache TTL**: Should we explore 1-hour cache TTL (beta) for longer stories, or stick with default 5-minute?
 
 ## References
 

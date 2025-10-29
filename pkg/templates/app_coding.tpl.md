@@ -70,6 +70,8 @@
 - **chat_post**: Use for progress updates visible to humans and other agents (max 4096 chars). Messages are scanned for secrets.
 - **chat_read**: Rarely needed - messages are auto-injected into your context
 
+**If stuck**: If you cannot determine the exact next tool call, call `ask_question` with the minimal blocking question. If no question applies, call `chat_post` with a one-line status and your next attempt.
+
 ### Container Management
 - **container_build**, **container_test**, **container_switch**, **container_list**: Use only when you need to modify the development environment itself
 
