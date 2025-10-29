@@ -164,18 +164,19 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher != nil {
 		registeredAgents := s.dispatcher.GetRegisteredAgents()
 
-		// Count coders and check architect
+		// Count coders and check architect exists
 		for i := range registeredAgents {
 			agentInfo := &registeredAgents[i]
 			if agentInfo.Type == agent.TypeArchitect {
-				// Architect is ready if in WAITING state
-				architectReady = (agentInfo.State == proto.StateWaiting.String())
+				// Architect is ready if it exists (registered), regardless of current state
+				// Once registered, the architect can accept specs even if currently busy
+				architectReady = true
 			} else if agentInfo.Type == agent.TypeCoder {
 				coderCount++
 			}
 		}
 
-		// System is ready if architect is ready
+		// System is ready if architect exists and is registered
 		agentReady = architectReady
 	}
 
