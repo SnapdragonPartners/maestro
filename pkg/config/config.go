@@ -403,7 +403,7 @@ type ChatScannerConfig struct {
 
 // ChatConfig contains agent chat system configuration.
 type ChatConfig struct {
-	Enabled        bool              `json:"enabled"`          // Whether chat system is enabled (default: false for Phase 1)
+	Enabled        bool              `json:"enabled"`          // Whether chat system is enabled (default: true)
 	MaxNewMessages int               `json:"max_new_messages"` // Maximum new messages to inject per LLM call (default: 100)
 	Limits         ChatLimitsConfig  `json:"limits"`           // Size and compaction limits
 	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
@@ -876,8 +876,8 @@ func createDefaultConfig() *Config {
 			Key:     "",          // No default key
 		},
 		Chat: &ChatConfig{
-			Enabled:        false, // Disabled by default for Phase 1
-			MaxNewMessages: 100,   // Inject up to 100 new messages per LLM call
+			Enabled:        true, // Enabled by default
+			MaxNewMessages: 100,  // Inject up to 100 new messages per LLM call
 			Limits: ChatLimitsConfig{
 				MaxMessageChars: 4096, // 4KB message limit
 			},
