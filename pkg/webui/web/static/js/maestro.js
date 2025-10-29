@@ -16,9 +16,17 @@ class MaestroUI {
     init() {
         this.setupEventListeners();
         this.initChat();
+        this.initServices();
         this.startPolling();
         this.updateLastUpdated();
         this.updateVersion();
+    }
+
+    initServices() {
+        this.servicesStatus = {
+            chat: { enabled: false },
+            agents: { ready: false, coder_count: 0, architect_ready: false }
+        };
     }
 
     updateVersion() {
@@ -61,17 +69,100 @@ class MaestroUI {
     }
 
     async startPolling() {
+        this.pollServicesStatus();
         this.pollAgents();
         this.pollStories();
         this.pollLogs();
         this.pollMessages();
         this.pollChat();
+        setInterval(() => this.pollServicesStatus(), 5000); // Poll services every 5 seconds
         setInterval(() => this.pollAgents(), this.pollingInterval);
         setInterval(() => this.pollStories(), this.pollingInterval);
         setInterval(() => this.pollLogs(), this.pollingInterval);
         setInterval(() => this.pollMessages(), this.pollingInterval);
         setInterval(() => this.pollChat(), 2000); // Poll chat every 2 seconds
         setInterval(() => this.updateLastUpdated(), 1000);
+    }
+
+    async pollServicesStatus() {
+        try {
+            const response = await fetch('/api/services/status');
+            if (!response.ok) throw new Error('Failed to fetch services status');
+
+            const status = await response.json();
+            this.updateServicesStatus(status);
+            this.setConnectionStatus(true);
+
+        } catch (error) {
+            console.error('Error polling services status:', error);
+            this.handleConnectionError();
+        }
+    }
+
+    updateServicesStatus(status) {
+        this.servicesStatus = status;
+
+        // Update chat UI based on status
+        this.updateChatAvailability();
+
+        // Update upload area based on agent readiness
+        this.updateUploadAvailability();
+    }
+
+    updateChatAvailability() {
+        const chatSection = document.getElementById('chat-section');
+        const chatInput = document.getElementById('chat-input');
+        const chatSend = document.getElementById('chat-send');
+        const chatDisabledBanner = document.getElementById('chat-disabled-banner');
+
+        if (!this.servicesStatus.chat.enabled) {
+            // Disable chat UI
+            if (chatInput) chatInput.disabled = true;
+            if (chatSend) chatSend.disabled = true;
+            if (chatInput) chatInput.placeholder = 'Chat is disabled in configuration';
+
+            // Show disabled banner
+            if (chatDisabledBanner) {
+                chatDisabledBanner.classList.remove('hidden');
+            }
+        } else {
+            // Enable chat UI
+            if (chatInput) {
+                chatInput.disabled = false;
+                chatInput.placeholder = 'Type a message...';
+            }
+            if (chatSend) chatSend.disabled = false;
+
+            // Hide disabled banner
+            if (chatDisabledBanner) {
+                chatDisabledBanner.classList.add('hidden');
+            }
+        }
+    }
+
+    updateUploadAvailability() {
+        const uploadArea = document.getElementById('upload-area');
+        const agentsNotReadyBanner = document.getElementById('agents-not-ready-banner');
+
+        if (!this.servicesStatus.agents.ready) {
+            // Show warning banner
+            if (agentsNotReadyBanner) {
+                agentsNotReadyBanner.classList.remove('hidden');
+            }
+            // Optionally disable upload area
+            if (uploadArea) {
+                uploadArea.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+        } else {
+            // Hide warning banner
+            if (agentsNotReadyBanner) {
+                agentsNotReadyBanner.classList.add('hidden');
+            }
+            // Re-enable upload area
+            if (uploadArea) {
+                uploadArea.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
     }
 
     async pollAgents() {

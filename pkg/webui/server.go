@@ -128,6 +128,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/static/", s.requireAuth(http.StripPrefix("/static/", http.FileServer(http.FS(staticSubFS))).ServeHTTP))
 
 	// API endpoints - all protected by basic auth.
+	mux.HandleFunc("/api/services/status", s.requireAuth(s.handleServicesStatus))
 	mux.HandleFunc("/api/agents", s.requireAuth(s.handleAgents))
 	mux.HandleFunc("/api/agent/", s.requireAuth(s.handleAgent))
 	mux.HandleFunc("/api/queues", s.requireAuth(s.handleQueues))
@@ -139,6 +140,66 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
 	mux.HandleFunc("/api/healthz", s.requireAuth(s.handleHealth))
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
+}
+
+// handleServicesStatus implements GET /api/services/status.
+func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get chat configuration
+	cfg, err := config.GetConfig()
+	chatEnabled := false
+	if err == nil {
+		chatEnabled = cfg.Chat.Enabled
+	}
+
+	// Check agent readiness
+	agentReady := false
+	architectReady := false
+	coderCount := 0
+
+	if s.dispatcher != nil {
+		registeredAgents := s.dispatcher.GetRegisteredAgents()
+
+		// Count coders and check architect
+		for i := range registeredAgents {
+			agentInfo := &registeredAgents[i]
+			if agentInfo.Type == agent.TypeArchitect {
+				// Architect is ready if in WAITING state
+				architectReady = (agentInfo.State == proto.StateWaiting.String())
+			} else if agentInfo.Type == agent.TypeCoder {
+				coderCount++
+			}
+		}
+
+		// System is ready if architect is ready
+		agentReady = architectReady
+	}
+
+	// Build response
+	response := map[string]interface{}{
+		"chat": map[string]interface{}{
+			"enabled": chatEnabled,
+		},
+		"agents": map[string]interface{}{
+			"ready":           agentReady,
+			"coder_count":     coderCount,
+			"architect_ready": architectReady,
+		},
+	}
+
+	// Send JSON response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.logger.Error("Failed to encode services status response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Debug("Served services status: chat=%v, agents_ready=%v", chatEnabled, agentReady)
 }
 
 // handleAgents implements GET /api/agents.

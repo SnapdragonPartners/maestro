@@ -70,11 +70,29 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		return c.handlePlanReviewApproval(ctx, sm, approvalType)
 
 	case proto.ApprovalStatusNeedsChanges:
-		c.logger.Info("🧑‍💻 %s needs changes, returning to PLANNING with feedback", approvalType)
+		c.logger.Info("🧑‍💻 %s needs changes, returning to appropriate state with feedback", approvalType)
+
+		// For completion approval (when all todos were complete), add feedback as new todo
+		if approvalType == proto.ApprovalTypeCompletion && c.todoList != nil {
+			allComplete := c.todoList.GetCurrentTodo() == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount()
+			if allComplete && approvalResult.Feedback != "" {
+				feedbackTodo := fmt.Sprintf("Address architect feedback: %s", approvalResult.Feedback)
+				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
+				c.logger.Info("📋 Added architect feedback as new todo")
+				sm.SetStateData("todo_list", c.todoList)
+			}
+		}
+
+		// Add feedback to context for visibility
 		if approvalResult.Feedback != "" {
 			c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
 		}
-		return StatePlanning, false, nil
+
+		// Return to appropriate state based on approval type
+		if approvalType == proto.ApprovalTypeCompletion {
+			return StateCoding, false, nil // Completion needs changes, go back to coding
+		}
+		return StatePlanning, false, nil // Plan needs changes, go back to planning
 
 	case proto.ApprovalStatusRejected:
 		if approvalType == proto.ApprovalTypeCompletion {

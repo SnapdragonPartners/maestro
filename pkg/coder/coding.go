@@ -287,6 +287,28 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		if toolCall.Name == tools.ToolDone {
 			c.logger.Info("🧑‍💻 Done tool called - signaling task completion")
 
+			// Check if all todos are complete before allowing story completion
+			if c.todoList != nil {
+				incompleteTodos := []TodoItem{}
+				for _, todo := range c.todoList.Items {
+					if !todo.Completed {
+						incompleteTodos = append(incompleteTodos, todo)
+					}
+				}
+
+				if len(incompleteTodos) > 0 {
+					// Block completion - tell agent to complete todos first
+					c.logger.Info("🧑‍💻 Done tool blocked: %d todos not marked complete", len(incompleteTodos))
+					errorMsg := fmt.Sprintf("Cannot mark story as done: %d todos are not marked complete. If this work is already completed, use the todo_complete tool to mark them complete before marking the story as done.\n\nIncomplete todos:", len(incompleteTodos))
+					for i, todo := range incompleteTodos {
+						errorMsg += fmt.Sprintf("\n  %d. %s", i+1, todo.Description)
+					}
+					c.contextManager.AddMessage(roleToolMessage, errorMsg)
+					c.logger.Info("📋 [TODO] Blocking done: %s", errorMsg)
+					continue // Skip this tool, continue processing others
+				}
+			}
+
 			// Store completion details from done tool for later use in code review
 			summary := utils.GetMapFieldOr[string](toolCall.Parameters, "summary", "")
 
