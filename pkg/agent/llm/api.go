@@ -59,17 +59,23 @@ type ToolCall struct {
 }
 
 // CompletionRequest represents a request to generate a completion.
+//
+//nolint:govet // fieldalignment: 80 bytes is reasonable, value semantics preferred over pointer indirection
 type CompletionRequest struct {
-	Messages    []CompletionMessage
-	Tools       []tools.ToolDefinition
-	Temperature float32
-	MaxTokens   int
+	Messages    []CompletionMessage    // 24 bytes (slice header)
+	Tools       []tools.ToolDefinition // 24 bytes (slice header)
+	ToolChoice  string                 // 16 bytes (string header)
+	MaxTokens   int                    // 8 bytes
+	Temperature float32                // 4 bytes + 4 bytes padding = 80 bytes total
 }
 
 // CompletionResponse represents a response from a completion request.
+//
+//nolint:govet // fieldalignment: value semantics preferred over pointer indirection
 type CompletionResponse struct {
-	Content   string
-	ToolCalls []ToolCall
+	ToolCalls  []ToolCall
+	Content    string // Main response text
+	StopReason string // Why the response stopped: "end_turn", "max_tokens", "pause_turn", "refusal", etc.
 }
 
 // StreamChunk represents a chunk of streamed completion response.

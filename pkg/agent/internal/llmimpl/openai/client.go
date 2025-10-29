@@ -35,6 +35,8 @@ func NewO3ClientWithModel(apiKey, model string) llm.LLMClient {
 }
 
 // Complete implements the llm.LLMClient interface.
+//
+//nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	if o.model == "" {
@@ -87,6 +89,8 @@ func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.
 }
 
 // Stream implements the llm.LLMClient interface.
+//
+//nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *O3Client) Stream(ctx context.Context, in llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
 	if o.model == "" {
 		o.model = "o3-mini"

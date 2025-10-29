@@ -42,6 +42,8 @@ func EmptyResponseLoggingMiddleware() llm.Middleware {
 }
 
 // logEmptyResponseDebugInfo logs comprehensive debugging information for empty LLM responses.
+//
+//nolint:gocritic // 80 bytes is reasonable for logging function
 func logEmptyResponseDebugInfo(req llm.CompletionRequest) {
 	logger := logx.NewLogger("llm-middleware") // Create logger for middleware
 

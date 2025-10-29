@@ -187,6 +187,8 @@ func ensureAlternation(messages []llm.CompletionMessage) (systemPrompt string, a
 }
 
 // Complete implements the llm.LLMClient interface.
+//
+//nolint:gocritic // CompletionRequest is 80 bytes but passing by value matches interface
 func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
 	// Ensure alternation and extract system prompt
 	systemPrompt, alternatingMessages, err := ensureAlternation(in.Messages)
@@ -305,9 +307,35 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 			tools = append(tools, anthropic.ToolUnionParamOfTool(toolParam.InputSchema, toolParam.Name))
 		}
 		params.Tools = tools
-		// Set tool choice to auto so Claude will decide when to use tools.
-		params.ToolChoice = anthropic.ToolChoiceUnionParam{
-			OfAuto: &anthropic.ToolChoiceAutoParam{},
+
+		// Set tool choice based on request (default to "auto" if not specified)
+		toolChoice := in.ToolChoice
+		if toolChoice == "" {
+			toolChoice = "auto"
+		}
+
+		switch toolChoice {
+		case "any":
+			// Force at least one tool call
+			params.ToolChoice = anthropic.ToolChoiceUnionParam{
+				OfAny: &anthropic.ToolChoiceAnyParam{},
+			}
+		case "auto":
+			// Let Claude decide when to use tools
+			params.ToolChoice = anthropic.ToolChoiceUnionParam{
+				OfAuto: &anthropic.ToolChoiceAutoParam{},
+			}
+		case "tool":
+			// Force specific tool (would need tool name parameter - not implemented yet)
+			// For now, fall back to "any"
+			params.ToolChoice = anthropic.ToolChoiceUnionParam{
+				OfAny: &anthropic.ToolChoiceAnyParam{},
+			}
+		default:
+			// Default to auto for unknown values
+			params.ToolChoice = anthropic.ToolChoiceUnionParam{
+				OfAuto: &anthropic.ToolChoiceAutoParam{},
+			}
 		}
 	}
 
@@ -354,12 +382,15 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 	}
 
 	return llm.CompletionResponse{
-		Content:   responseText,
-		ToolCalls: toolCalls,
+		Content:    responseText,
+		ToolCalls:  toolCalls,
+		StopReason: string(resp.StopReason),
 	}, nil
 }
 
 // Stream implements the llm.LLMClient interface.
+//
+//nolint:gocritic // CompletionRequest is 80 bytes but passing by value matches interface
 func (c *ClaudeClient) Stream(ctx context.Context, in llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
 	// Return mock stream for now.
 	ch := make(chan llm.StreamChunk, 1)

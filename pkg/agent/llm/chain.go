@@ -16,6 +16,7 @@ type clientFunc struct {
 	getModelName func() string
 }
 
+//nolint:gocritic // CompletionRequest is 80 bytes but passing by value is simpler
 func (f clientFunc) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	resp, err := f.complete(ctx, req)
@@ -23,6 +24,7 @@ func (f clientFunc) Complete(ctx context.Context, req CompletionRequest) (Comple
 	return resp, err
 }
 
+//nolint:gocritic // CompletionRequest is 80 bytes but passing by value is simpler
 func (f clientFunc) Stream(ctx context.Context, req CompletionRequest) (<-chan StreamChunk, error) {
 	return f.stream(ctx, req)
 }

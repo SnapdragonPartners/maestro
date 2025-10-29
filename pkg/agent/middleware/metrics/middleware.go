@@ -16,6 +16,8 @@ import (
 type UsageExtractor func(req llm.CompletionRequest, resp llm.CompletionResponse) (promptTokens, completionTokens int)
 
 // DefaultUsageExtractor provides a default implementation using TikToken for token counting.
+//
+//nolint:gocritic // 80 bytes is reasonable for metrics extraction
 func DefaultUsageExtractor(req llm.CompletionRequest, resp llm.CompletionResponse) (promptTokens, completionTokens int) {
 	// Count prompt tokens from all messages
 	var promptText string

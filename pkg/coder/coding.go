@@ -134,6 +134,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		MaxTokens:   8192,                         // Increased for comprehensive code generation
 		Temperature: llm.TemperatureDeterministic, // Deterministic output for coding
 		Tools:       c.getCodingToolsForLLM(),     // Use state-specific tools
+		ToolChoice:  "any",                        // Force tool use - coder must always use tools
 	}
 
 	// Use base agent retry mechanism.
@@ -512,6 +513,8 @@ func (c *Coder) isEmptyResponseError(err error) bool {
 }
 
 // handleEmptyResponseError handles empty response errors with budget review escalation and loop prevention.
+//
+//nolint:gocritic // 80 bytes is reasonable for error handling
 func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest, originState proto.State) (proto.State, bool, error) {
 	// Log debugging info for troubleshooting
 	c.logEmptyLLMResponse(prompt, req)
@@ -544,6 +547,8 @@ func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt stri
 }
 
 // logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
+//
+//nolint:gocritic // 80 bytes is reasonable for logging
 func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) {
 	// Log the entire prompt and context for debugging empty responses
 	c.logger.Error("🚨 EMPTY RESPONSE FROM LLM - DEBUGGING INFO:")
@@ -566,6 +571,7 @@ func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) 
 	c.logger.Error("🔍 Request Details:")
 	c.logger.Error("  - Temperature: %v", req.Temperature)
 	c.logger.Error("  - Max Tokens: %v", req.MaxTokens)
+	c.logger.Error("  - Tool Choice: %v", req.ToolChoice)
 	c.logger.Error("  - Tools Count: %d", len(req.Tools))
 	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
 }

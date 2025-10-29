@@ -37,6 +37,8 @@ func NewOfficialClientWithModel(apiKey, model string) llm.LLMClient {
 }
 
 // Complete implements the llm.LLMClient interface using Responses API for optimal GPT-5 performance.
+//
+//nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
 	// Combine messages into a single input string for responses API
 	var inputText string
@@ -163,6 +165,8 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 }
 
 // Stream implements the llm.LLMClient interface with streaming support.
+//
+//nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *OfficialClient) Stream(_ context.Context, _ llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
 	// For now, return a placeholder implementation since the official OpenAI package
 	// streaming API is experimental and may change. This can be updated when the responses
