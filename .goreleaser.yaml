@@ -48,7 +48,7 @@ builds:
       - CGO_ENABLED=0
 
 archives:
-  - format: tar.gz
+  - formats: ['tar.gz']
     files:
       - LICENSE
       - README.md
@@ -58,3 +58,5 @@ release:
     owner: SnapdragonPartners
     name: maestro
 
+changelog:
+  use: git
