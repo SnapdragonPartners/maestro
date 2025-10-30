@@ -6,7 +6,7 @@ on:
       - 'v*' # runs on tags like v0.1.5
 
 permissions:
-  contents: write # allows creating GitHub releases
+  contents: write
   id-token: write
 
 jobs:
@@ -22,25 +22,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23' # or your current Go version
+          go-version: '1.23'
 
       - name: Set up GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
           args: release --clean
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Apple signing & notarization secrets
-        env:
-          AC_USERNAME: ${{ secrets.AC_USERNAME }}
-          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
-        run: echo "Apple credentials configured"
-
-      - name: Run GoReleaser
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AC_USERNAME: ${{ secrets.AC_USERNAME }}
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
-        run: goreleaser release --clean
+
 
