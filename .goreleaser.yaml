@@ -1,0 +1,43 @@
+version: 2
+project_name: maestro
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: maestro
+    main: ./cmd/maestro
+    binary: maestro
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=1
+
+archives:
+  - format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+signs:
+  - cmd: codesign
+    args:
+      - --force
+      - --options
+      - runtime
+      - --timestamp
+      - --sign
+      - "Developer ID Application: Snapdragon Partners LLC (VNJH3VB68C)"
+      - "{{ .ArtifactPath }}"
+    artifacts: all
+
+release:
+  github:
+    owner: SnapdragonPartners
+    name: maestro
+

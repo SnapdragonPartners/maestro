@@ -225,6 +225,12 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 				continue
 			}
 
+			// Initialize todoList if nil (can happen if todos_add is called before planning completes)
+			if c.todoList == nil {
+				c.logger.Warn("📋 [TODO] Todo list not initialized, creating new list")
+				c.todoList = &TodoList{Items: []TodoItem{}}
+			}
+
 			c.logger.Info("📋 [TODO] Adding %d todos during CODING", len(todosAny))
 
 			// Convert and append using the tool's validation
