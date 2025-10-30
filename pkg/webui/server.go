@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
@@ -1007,7 +1007,7 @@ func (s *Server) readMessageLogs() []MessageEntry {
 	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
 
 	// Open database using sql package
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		s.logger.Debug("Failed to open database for message reading: %v", err)
 		return []MessageEntry{}
@@ -1122,7 +1122,7 @@ func (s *Server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 	// For now, just get all recent messages from the database directly
 	// The cursor will be used by agents, but web UI shows all messages
 	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		s.logger.Error("Failed to open database: %v", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)

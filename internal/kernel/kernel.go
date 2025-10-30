@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	_ "modernc.org/sqlite" // SQLite driver
 
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
