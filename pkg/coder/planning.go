@@ -133,6 +133,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		Messages:  messages,
 		MaxTokens: 8192,                       // Increased for exploration
 		Tools:     c.getPlanningToolsForLLM(), // Use story-type-specific planning tools
+		// Temperature: uses default 0.3 for exploration during planning
 	}
 
 	// Use base agent retry mechanism - exponential backoff is already implemented.

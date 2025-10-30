@@ -10,7 +10,6 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
-	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/proto"
 )
 
@@ -66,28 +65,17 @@ func (m *mockAgent) Shutdown(_ context.Context) error {
 
 func createTestConfig() *config.Config {
 	return &config.Config{
-		Orchestrator: &config.OrchestratorConfig{
-			Models: []config.Model{
-				{
-					Name:           "test-model",
-					MaxTPM:         10000,
-					DailyBudget:    10.0,
-					MaxConnections: 5,
-				},
-			},
-		},
 		Agents: &config.AgentConfig{
 			MaxCoders:      3,
-			CoderModel:     "test-model",
-			ArchitectModel: "test-model",
+			CoderModel:     config.ModelClaudeSonnetLatest,
+			ArchitectModel: config.ModelOpenAIO3Mini,
 		},
 	}
 }
 
 func TestHandleAgents(t *testing.T) {
 	cfg := createTestConfig()
-	rateLimiter := limiter.NewLimiter(cfg)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
+	dispatcher, err := dispatch.NewDispatcher(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -159,8 +147,7 @@ func TestHandleAgents(t *testing.T) {
 
 func TestHandleAgent(t *testing.T) {
 	cfg := createTestConfig()
-	rateLimiter := limiter.NewLimiter(cfg)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
+	dispatcher, err := dispatch.NewDispatcher(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -210,8 +197,7 @@ func TestHandleAgent(t *testing.T) {
 
 func TestHandleAgentNotFound(t *testing.T) {
 	cfg := createTestConfig()
-	rateLimiter := limiter.NewLimiter(cfg)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
+	dispatcher, err := dispatch.NewDispatcher(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -236,8 +222,7 @@ func TestHandleAgentNotFound(t *testing.T) {
 
 func TestFindArchitectState(t *testing.T) {
 	cfg := createTestConfig()
-	rateLimiter := limiter.NewLimiter(cfg)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
+	dispatcher, err := dispatch.NewDispatcher(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -272,8 +257,7 @@ func TestFindArchitectState(t *testing.T) {
 
 func TestFindArchitectStateNoArchitect(t *testing.T) {
 	cfg := createTestConfig()
-	rateLimiter := limiter.NewLimiter(cfg)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
+	dispatcher, err := dispatch.NewDispatcher(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
@@ -294,8 +278,7 @@ func TestFindArchitectStateNoArchitect(t *testing.T) {
 
 func TestEmbeddedTemplates(t *testing.T) {
 	cfg := createTestConfig()
-	rateLimiter := limiter.NewLimiter(cfg)
-	dispatcher, err := dispatch.NewDispatcher(cfg, rateLimiter)
+	dispatcher, err := dispatch.NewDispatcher(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}

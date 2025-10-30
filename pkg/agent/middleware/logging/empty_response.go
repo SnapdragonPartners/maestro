@@ -7,7 +7,6 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
 )
@@ -35,14 +34,16 @@ func EmptyResponseLoggingMiddleware() llm.Middleware {
 				return next.Stream(ctx, req)
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}
 }
 
 // logEmptyResponseDebugInfo logs comprehensive debugging information for empty LLM responses.
+//
+//nolint:gocritic // 80 bytes is reasonable for logging function
 func logEmptyResponseDebugInfo(req llm.CompletionRequest) {
 	logger := logx.NewLogger("llm-middleware") // Create logger for middleware
 

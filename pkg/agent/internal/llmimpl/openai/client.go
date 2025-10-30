@@ -10,7 +10,6 @@ import (
 	"github.com/sashabaranov/go-openai"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 )
 
 // O3Client wraps the OpenAI API client to implement llm.LLMClient interface.
@@ -36,6 +35,8 @@ func NewO3ClientWithModel(apiKey, model string) llm.LLMClient {
 }
 
 // Complete implements the llm.LLMClient interface.
+//
+//nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	if o.model == "" {
@@ -88,6 +89,8 @@ func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.
 }
 
 // Stream implements the llm.LLMClient interface.
+//
+//nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *O3Client) Stream(ctx context.Context, in llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
 	if o.model == "" {
 		o.model = "o3-mini"
@@ -166,13 +169,7 @@ func (o *O3Client) GetModel() string {
 	return o.model
 }
 
-// GetDefaultConfig returns default model configuration for O3.
-func (o *O3Client) GetDefaultConfig() config.Model {
-	return config.Model{
-		Name:           "o3-mini",
-		MaxTPM:         10000, // 10k tokens per minute for O3 mini
-		DailyBudget:    100.0, // $100 daily budget
-		MaxConnections: 2,     // 2 concurrent connections (O3 has lower limits)
-		CPM:            15.0,  // $15 per million tokens (approximate)
-	}
+// GetModelName returns the model name for this client.
+func (o *O3Client) GetModelName() string {
+	return o.model
 }

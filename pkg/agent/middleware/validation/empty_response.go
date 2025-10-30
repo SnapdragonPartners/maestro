@@ -8,7 +8,6 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
 )
@@ -51,72 +50,112 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 			func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
 				// Track empty response attempts (max 2: original + 1 retry with guidance)
 				const maxEmptyAttempts = 2
-
-				// Remove unused variables - we track success/failure in the loop directly
+				const maxPauseTurnAttempts = 5 // Limit pause_turn resumes to prevent infinite loops
 
 				logger := logx.NewLogger("empty-response-validator")
 
-				for attempt := 1; attempt <= maxEmptyAttempts; attempt++ {
-					// Make the request
-					resp, err := next.Complete(ctx, req)
+				// Outer loop handles pause_turn resumption
+				pauseTurnAttempts := 0
+				for {
+					if pauseTurnAttempts >= maxPauseTurnAttempts {
+						logger.Error("❌ Max pause_turn attempts exceeded (%d)", maxPauseTurnAttempts)
+						return llm.CompletionResponse{}, llmerrors.NewError(
+							llmerrors.ErrorTypeEmptyResponse,
+							"exceeded maximum pause_turn resume attempts",
+						)
+					}
+					pauseTurnAttempts++
 
-					// If there's a non-empty-response error, pass it through immediately
-					if err != nil && !llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse) {
-						//nolint:wrapcheck // Middleware intentionally passes through errors unchanged
-						return resp, err
+					// Inner loop handles empty response retries with guidance
+					var lastResp llm.CompletionResponse
+					var lastErr error
+
+					for attempt := 1; attempt <= maxEmptyAttempts; attempt++ {
+						// Make the request
+						resp, err := next.Complete(ctx, req)
+						lastResp = resp
+						lastErr = err
+
+						// Handle pause_turn first - this requires immediate resume
+						if err == nil && resp.StopReason == "pause_turn" {
+							logger.Info("⏸️ PAUSE_TURN detected: Model paused mid-turn, resuming automatically (attempt %d/%d)", pauseTurnAttempts, maxPauseTurnAttempts)
+
+							// Append the assistant's partial response and retry
+							// This is the documented way to resume a paused turn
+							req.Messages = append(req.Messages, llm.CompletionMessage{
+								Role:    llm.RoleAssistant,
+								Content: resp.Content,
+							})
+
+							// Break inner loop to resume in outer loop
+							break
+						}
+
+						// If there's a non-empty-response error, pass it through immediately
+						if err != nil && !llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse) {
+							//nolint:wrapcheck // Middleware intentionally passes through errors unchanged
+							return resp, err
+						}
+
+						// Check if this response should be considered empty
+						// (either from ErrorTypeEmptyResponse error or from our validation)
+						isEmpty := err != nil || v.isEmptyResponse(resp, req)
+
+						if !isEmpty {
+							// Good response, return it
+							return resp, nil
+						}
+
+						// Empty response detected - log details
+						v.logEmptyResponseDetails(logger, attempt, resp, err)
+
+						if attempt == 1 {
+							// First attempt: add guidance and retry
+							logger.Warn("🔄 AUTO-RETRY: Empty response will NOT be added to context history")
+							logger.Warn("🔄 AUTO-RETRY: Adding guidance message and retrying (attempt 1→2)")
+							guidanceMessage := v.createGuidanceMessage(req)
+							logger.Debug("🔄 Guidance message: %s", guidanceMessage)
+
+							// IMPORTANT: Do NOT append the bad response to context
+							// The bad response (resp) is discarded here - only guidance is added
+							// This prevents "Tool shell invoked" text from polluting conversation history
+							modifiedReq := req
+							modifiedReq.Messages = append(modifiedReq.Messages, llm.CompletionMessage{
+								Role:    llm.RoleUser,
+								Content: guidanceMessage,
+							})
+
+							// Update req for next iteration (without the bad assistant response)
+							req = modifiedReq
+							continue
+						}
+
+						// Second attempt failed - break inner loop
+						logger.Error("❌ AUTO-RETRY FAILED: Both attempts returned empty responses, escalating to state handler")
+						break
 					}
 
-					// Response stored in resp, error in err - no need to track separately
-
-					// Check if this response should be considered empty
-					// (either from ErrorTypeEmptyResponse error or from our validation)
-					isEmpty := err != nil || v.isEmptyResponse(resp, req)
-
-					if !isEmpty {
-						// Good response, return it
-						return resp, nil
-					}
-
-					// Empty response detected - log details
-					v.logEmptyResponseDetails(logger, attempt, resp, err)
-
-					if attempt == 1 {
-						// First attempt: add guidance and retry
-						logger.Warn("🔄 AUTO-RETRY: Adding guidance message and retrying (attempt 1→2)")
-						guidanceMessage := v.createGuidanceMessage(req)
-						logger.Debug("🔄 Guidance message: %s", guidanceMessage)
-
-						// Create a modified request with guidance as an additional user message
-						modifiedReq := req
-						modifiedReq.Messages = append(modifiedReq.Messages, llm.CompletionMessage{
-							Role:    llm.RoleUser,
-							Content: guidanceMessage,
-						})
-
-						// Update req for next iteration
-						req = modifiedReq
+					// Check if we should continue outer loop (pause_turn) or return error
+					if lastErr == nil && lastResp.StopReason == "pause_turn" {
+						// Continue outer loop to resume
 						continue
 					}
 
-					// Second attempt failed - return error for state handler to process
-					logger.Error("❌ AUTO-RETRY FAILED: Both attempts returned empty responses, escalating to state handler")
-					break
+					// No pause_turn, so we're done - return the error
+					emptyErr := llmerrors.NewError(
+						llmerrors.ErrorTypeEmptyResponse,
+						"received inadequate response after guidance: no meaningful content or tool usage",
+					)
+					return llm.CompletionResponse{}, emptyErr
 				}
-
-				// Both attempts failed - return ErrorTypeEmptyResponse
-				emptyErr := llmerrors.NewError(
-					llmerrors.ErrorTypeEmptyResponse,
-					"received inadequate response after guidance: no meaningful content or tool usage",
-				)
-				return llm.CompletionResponse{}, emptyErr
 			},
 			// Stream implementation - pass through unchanged (validation less applicable to streaming)
 			func(ctx context.Context, req llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
 				return next.Stream(ctx, req)
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}
@@ -124,6 +163,8 @@ func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 
 // isEmptyResponse determines if a response should be considered "empty" based on agent type and content.
 // Uses the logic: if len(toolCalls) == 0 { if !isArchitect || len(content) == 0 { return true } }.
+//
+//nolint:gocritic // 80 bytes is reasonable for validation
 func (v *EmptyResponseValidator) isEmptyResponse(resp llm.CompletionResponse, _ llm.CompletionRequest) bool {
 	// If there are tool calls, response is not empty
 	if len(resp.ToolCalls) > 0 {
@@ -139,6 +180,8 @@ func (v *EmptyResponseValidator) isEmptyResponse(resp llm.CompletionResponse, _ 
 }
 
 // createGuidanceMessage creates appropriate fallback guidance based on agent type and available tools.
+//
+//nolint:gocritic // 80 bytes is reasonable for guidance message creation
 func (v *EmptyResponseValidator) createGuidanceMessage(req llm.CompletionRequest) string {
 	if v.agentType == AgentTypeArchitect {
 		return "Your response wasn't understood. Please provide a clear response with your analysis and decision."
@@ -153,14 +196,14 @@ func (v *EmptyResponseValidator) createGuidanceMessage(req llm.CompletionRequest
 	}
 
 	// For coder agents, provide tool-specific guidance
-	fallback := fmt.Sprintf("Responses without tool usage are invalid. Use one of the available tools such as %s or %s.",
+	fallback := fmt.Sprintf("CRITICAL: You must use the tool call API to invoke tools. Do NOT write text like 'Tool shell invoked' - instead make actual API tool calls. Available tools include: %s, %s.",
 		tools.ToolShell, tools.ToolAskQuestion)
 
 	// Add completion-specific guidance based on available tools
 	if contains(toolNames, tools.ToolDone) {
-		fallback += fmt.Sprintf(" If you are finished, use the %s tool to send your work for testing and review.", tools.ToolDone)
+		fallback += fmt.Sprintf(" When finished, use the %s tool (via API call, not text).", tools.ToolDone)
 	} else if contains(toolNames, tools.ToolSubmitPlan) {
-		fallback += fmt.Sprintf(" If you are finished planning, use %s to send your plan to the architect for review.", tools.ToolSubmitPlan)
+		fallback += fmt.Sprintf(" When finished planning, use %s (via API call, not text).", tools.ToolSubmitPlan)
 	}
 
 	return fallback
@@ -206,8 +249,8 @@ func (v *EmptyResponseValidator) logEmptyResponseDetails(logger *logx.Logger, at
 	}
 
 	logger.Warn("⚠️ EMPTY RESPONSE DETECTED (attempt %d/%d): %s", attempt, 2, emptyReason)
-	logger.Debug("📊 Response details: content_length=%d, tool_calls_count=%d, agent_type=%s",
-		len(resp.Content), len(resp.ToolCalls), v.agentType)
+	logger.Debug("📊 Response details: content_length=%d, tool_calls_count=%d, agent_type=%s, stop_reason=%s",
+		len(resp.Content), len(resp.ToolCalls), v.agentType, resp.StopReason)
 
 	// If there's content but no tool calls (common case), show a snippet
 	if hasContent && !hasToolCalls && !isArchitect {

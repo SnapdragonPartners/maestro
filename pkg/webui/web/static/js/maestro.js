@@ -16,9 +16,17 @@ class MaestroUI {
     init() {
         this.setupEventListeners();
         this.initChat();
+        this.initServices();
         this.startPolling();
         this.updateLastUpdated();
         this.updateVersion();
+    }
+
+    initServices() {
+        this.servicesStatus = {
+            chat: { enabled: false },
+            agents: { ready: false, coder_count: 0, architect_ready: false }
+        };
     }
 
     updateVersion() {
@@ -61,17 +69,100 @@ class MaestroUI {
     }
 
     async startPolling() {
+        this.pollServicesStatus();
         this.pollAgents();
         this.pollStories();
         this.pollLogs();
         this.pollMessages();
         this.pollChat();
+        setInterval(() => this.pollServicesStatus(), 5000); // Poll services every 5 seconds
         setInterval(() => this.pollAgents(), this.pollingInterval);
         setInterval(() => this.pollStories(), this.pollingInterval);
         setInterval(() => this.pollLogs(), this.pollingInterval);
         setInterval(() => this.pollMessages(), this.pollingInterval);
         setInterval(() => this.pollChat(), 2000); // Poll chat every 2 seconds
         setInterval(() => this.updateLastUpdated(), 1000);
+    }
+
+    async pollServicesStatus() {
+        try {
+            const response = await fetch('/api/services/status');
+            if (!response.ok) throw new Error('Failed to fetch services status');
+
+            const status = await response.json();
+            this.updateServicesStatus(status);
+            this.setConnectionStatus(true);
+
+        } catch (error) {
+            console.error('Error polling services status:', error);
+            this.handleConnectionError();
+        }
+    }
+
+    updateServicesStatus(status) {
+        this.servicesStatus = status;
+
+        // Update chat UI based on status
+        this.updateChatAvailability();
+
+        // Update upload area based on agent readiness
+        this.updateUploadAvailability();
+    }
+
+    updateChatAvailability() {
+        const chatSection = document.getElementById('chat-section');
+        const chatInput = document.getElementById('chat-input');
+        const chatSend = document.getElementById('chat-send');
+        const chatDisabledBanner = document.getElementById('chat-disabled-banner');
+
+        if (!this.servicesStatus.chat.enabled) {
+            // Disable chat UI
+            if (chatInput) chatInput.disabled = true;
+            if (chatSend) chatSend.disabled = true;
+            if (chatInput) chatInput.placeholder = 'Chat is disabled in configuration';
+
+            // Show disabled banner
+            if (chatDisabledBanner) {
+                chatDisabledBanner.classList.remove('hidden');
+            }
+        } else {
+            // Enable chat UI
+            if (chatInput) {
+                chatInput.disabled = false;
+                chatInput.placeholder = 'Type a message...';
+            }
+            if (chatSend) chatSend.disabled = false;
+
+            // Hide disabled banner
+            if (chatDisabledBanner) {
+                chatDisabledBanner.classList.add('hidden');
+            }
+        }
+    }
+
+    updateUploadAvailability() {
+        const uploadArea = document.getElementById('upload-area');
+        const agentsNotReadyBanner = document.getElementById('agents-not-ready-banner');
+
+        if (!this.servicesStatus.agents.ready) {
+            // Show warning banner
+            if (agentsNotReadyBanner) {
+                agentsNotReadyBanner.classList.remove('hidden');
+            }
+            // Optionally disable upload area
+            if (uploadArea) {
+                uploadArea.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+        } else {
+            // Hide warning banner
+            if (agentsNotReadyBanner) {
+                agentsNotReadyBanner.classList.add('hidden');
+            }
+            // Re-enable upload area
+            if (uploadArea) {
+                uploadArea.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
     }
 
     async pollAgents() {
@@ -154,6 +245,14 @@ class MaestroUI {
         const stateClass = this.getStateClass(agent.state);
         const timeDiff = this.getTimeSince(agent.last_ts);
 
+        // Calculate todo progress for coder agents
+        let todoInfo = '';
+        if (agent.todo_list && agent.todo_list.items) {
+            const completed = agent.todo_list.items.filter(item => item.completed).length;
+            const total = agent.todo_list.items.length;
+            todoInfo = `<p>Progress: ${completed}/${total} todos</p>`;
+        }
+
         card.innerHTML = `
             <div class="flex items-center justify-between mb-2">
                 <h3 class="font-medium text-gray-900">${agent.id}</h3>
@@ -162,6 +261,7 @@ class MaestroUI {
             <div class="text-sm text-gray-600">
                 <p>Role: ${agent.role}</p>
                 <p>Last updated: ${timeDiff}</p>
+                ${todoInfo}
             </div>
         `;
 
@@ -466,6 +566,25 @@ class MaestroUI {
                         <label class="text-sm font-medium text-gray-700">Task Content</label>
                         <div class="mt-1 p-3 bg-gray-50 rounded-md">
                             <pre class="text-sm text-gray-900 whitespace-pre-wrap">${agent.task_content}</pre>
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${agent.todo_list && agent.todo_list.items && agent.todo_list.items.length > 0 ? `
+                    <div>
+                        <label class="text-sm font-medium text-gray-700">Todo List Progress (${agent.todo_list.items.filter(i => i.completed).length}/${agent.todo_list.items.length})</label>
+                        <div class="mt-1 p-3 bg-gray-50 rounded-md space-y-2">
+                            ${agent.todo_list.items.map((item, idx) => {
+                                const isCurrent = idx === agent.todo_list.current;
+                                const icon = item.completed ? '✅' : (isCurrent ? '▶️' : '⏸️');
+                                const textClass = item.completed ? 'line-through text-gray-500' : (isCurrent ? 'font-semibold text-blue-700' : 'text-gray-700');
+                                return `
+                                    <div class="flex items-start space-x-2">
+                                        <span class="flex-shrink-0">${icon}</span>
+                                        <span class="text-sm ${textClass}">${this.escapeHtml(item.description)}</span>
+                                    </div>
+                                `;
+                            }).join('')}
                         </div>
                     </div>
                 ` : ''}

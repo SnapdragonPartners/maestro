@@ -151,8 +151,8 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 				return next.Stream(ctx, modifiedReq)
 			},
 			// GetDefaultConfig passes through
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

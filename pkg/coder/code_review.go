@@ -159,7 +159,18 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 	case proto.ApprovalStatusNeedsChanges:
 		c.logger.Info("🧑‍💻 Changes requested: %s", result.Feedback)
 
-		// Add feedback directly to context
+		// If all todos were complete (which allowed done to be called), add feedback as new todo
+		if c.todoList != nil {
+			allComplete := c.todoList.GetCurrentTodo() == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount()
+			if allComplete && result.Feedback != "" {
+				feedbackTodo := fmt.Sprintf("Address architect feedback: %s", result.Feedback)
+				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
+				c.logger.Info("📋 Added architect feedback as new todo")
+				sm.SetStateData("todo_list", c.todoList)
+			}
+		}
+
+		// Add feedback to context for visibility
 		feedbackMessage := fmt.Sprintf("Code review feedback - changes requested:\n\n%s\n\nPlease address these issues and continue implementation.", result.Feedback)
 		c.contextManager.AddMessage("architect-feedback", feedbackMessage)
 		return StateCoding, false, nil

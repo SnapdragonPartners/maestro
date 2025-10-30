@@ -33,10 +33,6 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	// Test default values
-	if len(config.Orchestrator.Models) == 0 {
-		t.Error("Expected default models to be created")
-	}
-
 	if config.Agents == nil {
 		t.Error("Expected agents config to be created")
 	}

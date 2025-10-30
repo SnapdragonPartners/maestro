@@ -16,6 +16,8 @@ import (
 type UsageExtractor func(req llm.CompletionRequest, resp llm.CompletionResponse) (promptTokens, completionTokens int)
 
 // DefaultUsageExtractor provides a default implementation using TikToken for token counting.
+//
+//nolint:gocritic // 80 bytes is reasonable for metrics extraction
 func DefaultUsageExtractor(req llm.CompletionRequest, resp llm.CompletionResponse) (promptTokens, completionTokens int) {
 	// Count prompt tokens from all messages
 	var promptText string
@@ -44,7 +46,7 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				start := time.Now()
 
 				// Get model name for metrics
-				modelConfig := next.GetDefaultConfig()
+				modelName := next.GetModelName()
 
 				resp, err := next.Complete(ctx, req)
 				duration := time.Since(start)
@@ -58,11 +60,11 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				// Calculate cost
 				var cost float64
 				if err == nil && (promptTokens > 0 || completionTokens > 0) {
-					if calculatedCost, costErr := config.CalculateCost(modelConfig.Name, promptTokens, completionTokens); costErr == nil {
+					if calculatedCost, costErr := config.CalculateCost(modelName, promptTokens, completionTokens); costErr == nil {
 						cost = calculatedCost
 					} else {
 						// Log cost calculation error but don't fail the request
-						logx.Warnf("Failed to calculate cost for model %s: %v", modelConfig.Name, costErr)
+						logx.Warnf("Failed to calculate cost for model %s: %v", modelName, costErr)
 					}
 				}
 
@@ -90,12 +92,12 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				// Enhanced logging for LLM calls with detailed metrics
 				if err == nil {
 					logx.Infof("LLM call to model '%s': latency %.3gs, request tokens: %s, response tokens: %s, total tokens: %s, cost $%.6f (agent: %s, story: %s, state: %s)",
-						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), cost, agentID, storyID, state)
+						modelName, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), cost, agentID, storyID, state)
 				} else {
 					// Use defaultLogger.Error instead of logx.Errorf to avoid return value check
 					defaultLogger := logx.NewLogger("metrics")
 					defaultLogger.Error("LLM call to model '%s' failed: latency %.3gs, request tokens: %s, response tokens: %s, cost $%.6f, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
-						modelConfig.Name, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), cost, err.Error(), agentID, storyID, state, errorType)
+						modelName, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), cost, err.Error(), agentID, storyID, state, errorType)
 				}
 
 				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged
@@ -105,7 +107,7 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				start := time.Now()
 
 				// Get model name for metrics
-				modelConfig := next.GetDefaultConfig()
+				modelName := next.GetModelName()
 
 				ch, err := next.Stream(ctx, req)
 				duration := time.Since(start)
@@ -134,19 +136,19 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 				// Enhanced logging for streaming LLM calls
 				if err == nil {
 					logx.Infof("LLM stream to model '%s' started: setup latency %.3gs (agent: %s, story: %s, state: %s)",
-						modelConfig.Name, duration.Seconds(), agentID, storyID, state)
+						modelName, duration.Seconds(), agentID, storyID, state)
 				} else {
 					// Use defaultLogger.Error instead of logx.Errorf to avoid return value check
 					defaultLogger := logx.NewLogger("metrics")
 					defaultLogger.Error("LLM stream to model '%s' failed: setup latency %.3gs, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
-						modelConfig.Name, duration.Seconds(), err.Error(), agentID, storyID, state, errorType)
+						modelName, duration.Seconds(), err.Error(), agentID, storyID, state, errorType)
 				}
 
 				return ch, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

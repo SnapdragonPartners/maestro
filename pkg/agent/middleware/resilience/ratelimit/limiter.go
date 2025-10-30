@@ -43,6 +43,8 @@ func NewDefaultTokenEstimator() TokenEstimator {
 }
 
 // EstimatePrompt estimates prompt tokens using TikToken-based counting.
+//
+//nolint:gocritic // 80 bytes is reasonable for token estimation
 func (e *DefaultTokenEstimator) EstimatePrompt(req llm.CompletionRequest) int {
 	var promptText string
 	for i := range req.Messages {

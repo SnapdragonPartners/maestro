@@ -3,8 +3,6 @@ package llm
 
 import (
 	"context"
-
-	"orchestrator/pkg/config"
 )
 
 // Middleware represents a function that wraps an LLMClient with additional behavior.
@@ -15,9 +13,10 @@ type Middleware func(next LLMClient) LLMClient
 type clientFunc struct {
 	complete     func(context.Context, CompletionRequest) (CompletionResponse, error)
 	stream       func(context.Context, CompletionRequest) (<-chan StreamChunk, error)
-	getDefConfig func() config.Model
+	getModelName func() string
 }
 
+//nolint:gocritic // CompletionRequest is 80 bytes but passing by value is simpler
 func (f clientFunc) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 	resp, err := f.complete(ctx, req)
@@ -25,13 +24,14 @@ func (f clientFunc) Complete(ctx context.Context, req CompletionRequest) (Comple
 	return resp, err
 }
 
+//nolint:gocritic // CompletionRequest is 80 bytes but passing by value is simpler
 func (f clientFunc) Stream(ctx context.Context, req CompletionRequest) (<-chan StreamChunk, error) {
 	return f.stream(ctx, req)
 }
 
-// GetDefaultConfig delegates to the wrapped function.
-func (f clientFunc) GetDefaultConfig() config.Model {
-	return f.getDefConfig()
+// GetModelName delegates to the wrapped function.
+func (f clientFunc) GetModelName() string {
+	return f.getModelName()
 }
 
 // WrapClient creates a new LLMClient using the provided function implementations.
@@ -39,12 +39,12 @@ func (f clientFunc) GetDefaultConfig() config.Model {
 func WrapClient(
 	complete func(context.Context, CompletionRequest) (CompletionResponse, error),
 	stream func(context.Context, CompletionRequest) (<-chan StreamChunk, error),
-	getDefConfig func() config.Model,
+	getModelName func() string,
 ) LLMClient {
 	return clientFunc{
 		complete:     complete,
 		stream:       stream,
-		getDefConfig: getDefConfig,
+		getModelName: getModelName,
 	}
 }
 

@@ -7,22 +7,21 @@ import (
 )
 
 func TestAutoCheckinConfig(t *testing.T) {
-	modelConfig := &config.Model{
-		Name:        config.ModelClaudeSonnetLatest,
-		MaxTPM:      50000,
-		DailyBudget: 200.0,
+	// Test that model info is properly structured
+	modelInfo, exists := config.GetModelInfo(config.ModelClaudeSonnetLatest)
+	if !exists {
+		t.Error("Expected to find model info for Claude Sonnet")
 	}
 
-	// Test that model config is properly structured
-	if modelConfig.Name == "" {
-		t.Error("Expected model name to be set")
+	if modelInfo.MaxContextTokens <= 0 {
+		t.Error("Expected MaxContextTokens to be positive")
 	}
 
-	if modelConfig.MaxTPM <= 0 {
-		t.Error("Expected MaxTPM to be positive")
+	if modelInfo.MaxOutputTokens <= 0 {
+		t.Error("Expected MaxOutputTokens to be positive")
 	}
 
-	if modelConfig.DailyBudget <= 0 {
-		t.Error("Expected DailyBudget to be positive")
+	if modelInfo.InputCPM <= 0 {
+		t.Error("Expected InputCPM to be positive")
 	}
 }

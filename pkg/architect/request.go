@@ -215,7 +215,9 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 				// Extract approval_result struct if present
 				if approvalResult, exists := response.GetPayload("approval_result"); exists {
 					if result, ok := approvalResult.(*proto.ApprovalResult); ok {
+						// Content is the main response text
 						agentResponse.Content = result.Feedback
+
 						// Validate status against CHECK constraint
 						if validStatus, valid := proto.ValidateApprovalStatus(string(result.Status)); valid {
 							validStatusStr := string(validStatus)
@@ -223,7 +225,13 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 						} else {
 							d.logger.Warn("Invalid approval status '%s' from ApprovalResult ignored", result.Status)
 						}
-						agentResponse.Feedback = &result.Feedback
+
+						// Feedback field should only be set for rejections/changes, not for approvals
+						// This prevents duplication in the UI
+						if result.Status != proto.ApprovalStatusApproved && result.Feedback != "" {
+							agentResponse.Feedback = &result.Feedback
+						}
+						// For approved status, leave feedback as nil (it's already in content)
 					}
 				}
 

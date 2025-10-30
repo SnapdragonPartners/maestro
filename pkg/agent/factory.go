@@ -54,20 +54,21 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 	}
 
 	// Initialize rate limit map with provider configs
+	// Note: Burst is set to 110% of TokensPerMinute for modest smoothing
 	rateLimitConfigs := map[string]ratelimit.Config{
 		string(config.ProviderAnthropic): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute,
-			Burst:           cfg.Agents.Resilience.RateLimit.Anthropic.Burst,
+			Burst:           (cfg.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute * 110) / 100,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency,
 		},
 		string(config.ProviderOpenAI): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute,
-			Burst:           cfg.Agents.Resilience.RateLimit.OpenAI.Burst,
+			Burst:           (cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute * 110) / 100,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency,
 		},
 		string(config.ProviderOpenAIOfficial): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute,
-			Burst:           cfg.Agents.Resilience.RateLimit.OpenAIOfficial.Burst,
+			Burst:           (cfg.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute * 110) / 100,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency,
 		},
 	}

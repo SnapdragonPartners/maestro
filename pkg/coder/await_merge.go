@@ -50,6 +50,17 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 
 		c.logger.Info("🧑‍💻 Merge needs changes, transitioning to CODING: %s", feedback)
 
+		// If all todos were complete (which allowed done to be called), add feedback as new todo
+		if c.todoList != nil {
+			allComplete := c.todoList.GetCurrentTodo() == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount()
+			if allComplete && feedback != "" {
+				feedbackTodo := fmt.Sprintf("Address merge issue: %s", feedback)
+				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
+				c.logger.Info("📋 Added merge feedback as new todo")
+				sm.SetStateData("todo_list", c.todoList)
+			}
+		}
+
 		// Use mini-template to format the merge failure message
 		if c.renderer != nil {
 			renderedMessage, err := c.renderer.RenderSimple(templates.MergeFailureFeedbackTemplate, feedback)

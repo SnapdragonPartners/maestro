@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 )
 
 // Middleware returns a middleware function that wraps an LLM client with retry logic.
@@ -96,8 +95,8 @@ func Middleware(policy *Policy) llm.Middleware {
 					policy.Config.MaxAttempts, lastErr)
 			},
 			// Delegate GetDefaultConfig to the next client
-			func() config.Model {
-				return next.GetDefaultConfig()
+			func() string {
+				return next.GetModelName()
 			},
 		)
 	}

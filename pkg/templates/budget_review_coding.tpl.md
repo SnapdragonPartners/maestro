@@ -37,6 +37,11 @@ The request above contains all context including budget details, recent messages
 
 ## Common Coding Issues
 
+**Issue**: Work appears complete but agent hasn't called 'done' tool
+- **Pattern**: Agent has created all required files, code compiles/runs successfully, but continues refining or rewriting working code
+- **Correct Response**: Use APPROVED status with empty feedback field. The budget approval message will automatically remind the agent to call 'done' if work is substantially complete.
+- **Why**: This lets the architect validate completion without micromanaging. The agent should recognize when requirements are met.
+
 **Issue**: Not following approved plan
 - **Wrong**: Deviating from planned implementation approach
 - **Correct**: Execute plan steps systematically in planned order

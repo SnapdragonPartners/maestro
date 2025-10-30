@@ -16,7 +16,6 @@ import (
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
-	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/webui"
@@ -35,7 +34,6 @@ type Kernel struct {
 	Logger *logx.Logger
 
 	// Core infrastructure services (concrete types, no over-abstraction)
-	RateLimiter        *limiter.Limiter
 	Dispatcher         *dispatch.Dispatcher
 	Database           *sql.DB
 	PersistenceChannel chan *persistence.Request
@@ -74,12 +72,9 @@ func NewKernel(parent context.Context, cfg *config.Config, projectDir string) (*
 
 // initializeServices sets up all the core infrastructure services.
 func (k *Kernel) initializeServices() error {
-	// Create rate limiter
-	k.RateLimiter = limiter.NewLimiter(k.Config)
-
 	// Create dispatcher
 	var err error
-	k.Dispatcher, err = dispatch.NewDispatcher(k.Config, k.RateLimiter)
+	k.Dispatcher, err = dispatch.NewDispatcher(k.Config)
 	if err != nil {
 		return fmt.Errorf("failed to create dispatcher: %w", err)
 	}
@@ -202,11 +197,6 @@ func (k *Kernel) Stop() error {
 	if k.WebServer != nil {
 		// Web server stops via context cancellation
 		k.Logger.Info("Web server will stop via context cancellation")
-	}
-
-	// Close rate limiter
-	if k.RateLimiter != nil {
-		k.RateLimiter.Close()
 	}
 
 	k.running = false

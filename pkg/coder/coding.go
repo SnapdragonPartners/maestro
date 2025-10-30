@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
@@ -78,6 +79,12 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		c.logger.Debug("🐳 Coding template container info not available: %v", err)
 	}
 
+	// Get todo status for template
+	todoStatus := ""
+	if c.todoList != nil {
+		todoStatus = c.getTodoListStatus()
+	}
+
 	enhancedTemplateData := &templates.TemplateData{
 		TaskContent:         taskContent,
 		Plan:                plan, // Include plan from PLANNING state
@@ -86,7 +93,8 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		ContainerName:       containerName,
 		ContainerDockerfile: containerDockerfile,
 		Extra: map[string]any{
-			"story_type": storyType, // Include story type for template logic
+			"story_type": storyType,  // Include story type for template logic
+			"TodoStatus": todoStatus, // Include current todo status
 		},
 	}
 
@@ -105,6 +113,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	}
 
 	// Reset context for new template (only if template type changed)
+	// ResetForNewTemplate will preserve context if template name unchanged
 	templateName := fmt.Sprintf("coding-%s", codingTemplate)
 	c.contextManager.ResetForNewTemplate(templateName, prompt)
 
@@ -121,9 +130,11 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	messages := c.buildMessagesWithContext(prompt)
 
 	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 8192,                     // Increased for comprehensive code generation
-		Tools:     c.getCodingToolsForLLM(), // Use state-specific tools
+		Messages:    messages,
+		MaxTokens:   8192,                         // Increased for comprehensive code generation
+		Temperature: llm.TemperatureDeterministic, // Deterministic output for coding
+		Tools:       c.getCodingToolsForLLM(),     // Use state-specific tools
+		ToolChoice:  "any",                        // Force tool use - coder must always use tools
 	}
 
 	// Use base agent retry mechanism.
@@ -182,9 +193,128 @@ func (c *Coder) executeMCPToolCalls(ctx context.Context, sm *agent.BaseStateMach
 		toolCall := &toolCalls[i]
 		c.logger.Info("Executing MCP tool: %s", toolCall.Name)
 
+		// Handle todo management tools first (before other tool processing)
+		if toolCall.Name == tools.ToolTodoComplete {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+
+			if err := c.handleTodoComplete(sm, index); err != nil {
+				c.logger.Error("📋 [TODO] Failed to complete todo: %v", err)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error completing todo: %v", err))
+				continue
+			}
+
+			// Check if all todos are now complete
+			allComplete := c.todoList != nil && c.todoList.GetCurrentTodo() == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount()
+
+			if allComplete {
+				c.contextManager.AddMessage(roleToolMessage, "✅ All todos completed! Create a brief story completion summary and call the 'done' tool to finish this story.")
+			} else if index == -1 {
+				c.contextManager.AddMessage(roleToolMessage, "✅ Current todo marked complete, advanced to next todo")
+			} else {
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Todo at index %d marked complete", index))
+			}
+			continue
+		}
+
+		if toolCall.Name == tools.ToolTodosAdd {
+			// Handle adding additional todos during coding
+			todosAny := utils.GetMapFieldOr[[]any](toolCall.Parameters, "todos", []any{})
+			if len(todosAny) == 0 {
+				c.logger.Error("📋 [TODO] todos_add called without todos")
+				c.contextManager.AddMessage(roleToolMessage, "Error: todos array required for todos_add")
+				continue
+			}
+
+			// Initialize todoList if nil (can happen if todos_add is called before planning completes)
+			if c.todoList == nil {
+				c.logger.Warn("📋 [TODO] Todo list not initialized, creating new list")
+				c.todoList = &TodoList{Items: []TodoItem{}}
+			}
+
+			c.logger.Info("📋 [TODO] Adding %d todos during CODING", len(todosAny))
+
+			// Convert and append using the tool's validation
+			tool, getErr := c.codingToolProvider.Get(tools.ToolTodosAdd)
+			if getErr != nil {
+				c.logger.Error("📋 [TODO] Failed to get todos_add tool: %v", getErr)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error: %v", getErr))
+				continue
+			}
+
+			result, execErr := tool.Exec(ctx, toolCall.Parameters)
+			if execErr != nil {
+				c.logger.Error("📋 [TODO] todos_add validation failed: %v", execErr)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error: %v", execErr))
+				continue
+			}
+
+			// Process validated result
+			if resultMap, ok := result.(map[string]any); ok {
+				if validatedTodos, ok := resultMap["todos"].([]string); ok {
+					for _, todoStr := range validatedTodos {
+						c.todoList.Items = append(c.todoList.Items, TodoItem{
+							Description: todoStr,
+							Completed:   false,
+						})
+					}
+					sm.SetStateData("todo_list", c.todoList)
+					c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Added %d new todos", len(validatedTodos)))
+					c.logger.Info("📋 [TODO] ✅ Added %d todos to list (now %d total)", len(validatedTodos), len(c.todoList.Items))
+				}
+			}
+			continue
+		}
+
+		if toolCall.Name == tools.ToolTodoUpdate {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+			description := utils.GetMapFieldOr[string](toolCall.Parameters, "description", "")
+
+			if index < 0 {
+				c.logger.Error("📋 [TODO] todo_update called with invalid index")
+				c.contextManager.AddMessage(roleToolMessage, "Error: valid index required for todo_update")
+				continue
+			}
+
+			if err := c.handleTodoUpdate(sm, index, description); err != nil {
+				c.logger.Error("📋 [TODO] Failed to update todo: %v", err)
+				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("Error updating todo: %v", err))
+				continue
+			}
+
+			action := "updated"
+			if description == "" {
+				action = "removed"
+			}
+			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("✅ Todo at index %d %s", index, action))
+			c.logger.Info("📋 [TODO] ✏️  Todo at index %d %s", index, action)
+			continue
+		}
+
 		// Handle done tool using Effects pattern.
 		if toolCall.Name == tools.ToolDone {
 			c.logger.Info("🧑‍💻 Done tool called - signaling task completion")
+
+			// Check if all todos are complete before allowing story completion
+			if c.todoList != nil {
+				incompleteTodos := []TodoItem{}
+				for _, todo := range c.todoList.Items {
+					if !todo.Completed {
+						incompleteTodos = append(incompleteTodos, todo)
+					}
+				}
+
+				if len(incompleteTodos) > 0 {
+					// Block completion - tell agent to complete todos first
+					c.logger.Info("🧑‍💻 Done tool blocked: %d todos not marked complete", len(incompleteTodos))
+					errorMsg := fmt.Sprintf("Cannot mark story as done: %d todos are not marked complete. If this work is already completed, use the todo_complete tool to mark them complete before marking the story as done.\n\nIncomplete todos:", len(incompleteTodos))
+					for i, todo := range incompleteTodos {
+						errorMsg += fmt.Sprintf("\n  %d. %s", i+1, todo.Description)
+					}
+					c.contextManager.AddMessage(roleToolMessage, errorMsg)
+					c.logger.Info("📋 [TODO] Blocking done: %s", errorMsg)
+					continue // Skip this tool, continue processing others
+				}
+			}
 
 			// Store completion details from done tool for later use in code review
 			summary := utils.GetMapFieldOr[string](toolCall.Parameters, "summary", "")
@@ -389,6 +519,8 @@ func (c *Coder) isEmptyResponseError(err error) bool {
 }
 
 // handleEmptyResponseError handles empty response errors with budget review escalation and loop prevention.
+//
+//nolint:gocritic // 80 bytes is reasonable for error handling
 func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt string, req agent.CompletionRequest, originState proto.State) (proto.State, bool, error) {
 	// Log debugging info for troubleshooting
 	c.logEmptyLLMResponse(prompt, req)
@@ -421,6 +553,8 @@ func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt stri
 }
 
 // logEmptyLLMResponse logs comprehensive debugging info for empty LLM responses.
+//
+//nolint:gocritic // 80 bytes is reasonable for logging
 func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) {
 	// Log the entire prompt and context for debugging empty responses
 	c.logger.Error("🚨 EMPTY RESPONSE FROM LLM - DEBUGGING INFO:")
@@ -443,6 +577,7 @@ func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) 
 	c.logger.Error("🔍 Request Details:")
 	c.logger.Error("  - Temperature: %v", req.Temperature)
 	c.logger.Error("  - Max Tokens: %v", req.MaxTokens)
+	c.logger.Error("  - Tool Choice: %v", req.ToolChoice)
 	c.logger.Error("  - Tools Count: %d", len(req.Tools))
 	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
 }

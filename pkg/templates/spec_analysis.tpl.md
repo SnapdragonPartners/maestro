@@ -36,6 +36,8 @@ For each requirement you identify:
    - 4 points: Major integrations, security features
    - 5 points: Complex systems, architectural changes
 5. **Identify logical dependencies** between requirements (use requirement titles)
+   - **For app stories**: Scope stories to minimize overlap and enable parallel development - stories should touch different files/components where possible to avoid merge conflicts
+   - **For devops stories**: Dependencies are fine as infrastructure work is typically sequential
 6. **Classify story type** as either:
    - **"devops"**: Infrastructure, containers, deployment, configuration - minimally scoped to infrastructure tasks ONLY
    - **"app"**: Application code, features, business logic, algorithms, data processing
@@ -69,6 +71,7 @@ You MUST return valid JSON in exactly this format:
 
 **Important Guidelines:**
 - **MAINTAIN PLATFORM CONSISTENCY**: Use only tools and approaches appropriate for the identified platform. Do not mix tools or concepts from different programming languages
+- **OPTIMIZE FOR PARALLEL DEVELOPMENT**: For app stories, scope stories to minimize overlap in files and components. This enables multiple coding agents to work in parallel without merge conflicts
 - Focus on implementable features, not documentation or planning tasks
 - Make requirements specific enough for a coding agent to implement
 - Ensure acceptance criteria are testable and concrete

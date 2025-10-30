@@ -54,12 +54,6 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 
-	// Get architect model
-	architectModel, err := getModelByName(&cfg, cfg.Agents.ArchitectModel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get architect model: %w", err)
-	}
-
 	// Determine work directory from config
 	workDir := getWorkDirFromConfig(&cfg)
 
@@ -67,7 +61,6 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 	architect, err := architect.NewArchitect(
 		ctx,
 		agentID,
-		architectModel,
 		f.dispatcher,
 		workDir,
 		f.persistenceChannel,
@@ -87,12 +80,6 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
-	// Get coder model
-	coderModel, err := getModelByName(&cfg, cfg.Agents.CoderModel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get coder model: %w", err)
 	}
 
 	// Determine work directory from config
@@ -128,7 +115,6 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		ctx,
 		agentID,
 		coderWorkDir, // Individual work directory
-		coderModel,
 		cloneManager,
 		buildService,
 		f.chatService, // Chat service for agent collaboration
@@ -151,15 +137,4 @@ func getWorkDirFromConfig(_ *config.Config) string {
 	}
 	// Fallback to current directory if Abs() fails
 	return "."
-}
-
-// getModelByName finds a model configuration by name.
-func getModelByName(cfg *config.Config, modelName string) (*config.Model, error) {
-	for i := range cfg.Orchestrator.Models {
-		model := &cfg.Orchestrator.Models[i]
-		if model.Name == modelName {
-			return model, nil
-		}
-	}
-	return nil, fmt.Errorf("model %s not found in configuration", modelName)
 }

@@ -48,7 +48,7 @@ type Driver struct {
 }
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -67,7 +67,7 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 
 	return &Driver{
 		architectID:        architectID,
-		contextManager:     contextmgr.NewContextManagerWithModel(modelConfig),
+		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
 		llmClient:          llmClient,
@@ -87,7 +87,7 @@ func NewDriver(architectID string, modelConfig *config.Model, llmClient agent.LL
 
 // NewArchitect creates a new architect with LLM integration.
 // The API key is automatically retrieved from environment variables.
-func NewArchitect(ctx context.Context, architectID string, modelConfig *config.Model, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -97,6 +97,13 @@ func NewArchitect(ctx context.Context, architectID string, modelConfig *config.M
 
 	// Architect constructor with model configuration validation
 
+	// Get model name from config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+	modelName := cfg.Agents.ArchitectModel
+
 	// Create basic LLM client using helper
 	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeArchitect)
 	if err != nil {
@@ -104,7 +111,7 @@ func NewArchitect(ctx context.Context, architectID string, modelConfig *config.M
 	}
 
 	// Create architect with LLM integration
-	architect := NewDriver(architectID, modelConfig, llmClient, dispatcher, workDir, persistenceChannel)
+	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
 	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeArchitect, architect, architect.logger)
@@ -336,13 +343,22 @@ func (d *Driver) transitionTo(_ context.Context, newState proto.State, additiona
 			ToState:   newState,
 		}
 
-		// Non-blocking send to prevent deadlock
-		select {
-		case d.stateNotificationCh <- notification:
-			d.logger.Debug("Sent state change notification: %s -> %s", oldState, newState)
-		default:
-			d.logger.Warn("State notification channel full, could not send %s -> %s transition", oldState, newState)
-		}
+		// Safe channel send with panic recovery for closed channel
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					d.logger.Debug("State notification channel closed, could not send %s -> %s transition", oldState, newState)
+				}
+			}()
+
+			// Non-blocking send to prevent deadlock
+			select {
+			case d.stateNotificationCh <- notification:
+				d.logger.Debug("Sent state change notification: %s -> %s", oldState, newState)
+			default:
+				d.logger.Warn("State notification channel full, could not send %s -> %s transition", oldState, newState)
+			}
+		}()
 	}
 
 	// No filesystem state persistence - state transitions are tracked in memory only
@@ -473,7 +489,7 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 
 	// Get LLM response using same pattern as coder
 	d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens",
-		d.llmClient.GetDefaultConfig().Name, len(messages), req.MaxTokens)
+		d.llmClient.GetModelName(), len(messages), req.MaxTokens)
 
 	start := time.Now()
 	resp, err := d.llmClient.Complete(ctx, req)

@@ -52,7 +52,6 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
-	"orchestrator/pkg/limiter"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
@@ -100,15 +99,14 @@ type ChannelReceiver interface {
 //
 //nolint:govet // Large complex struct, logical grouping preferred over memory optimization
 type Dispatcher struct {
-	agents      map[string]Agent
-	rateLimiter *limiter.Limiter
-	logger      *logx.Logger
-	config      *config.Config
-	inputChan   chan *proto.AgentMsg
-	shutdown    chan struct{}
-	mu          sync.RWMutex
-	wg          sync.WaitGroup
-	running     bool
+	agents    map[string]Agent
+	logger    *logx.Logger
+	config    *config.Config
+	inputChan chan *proto.AgentMsg
+	shutdown  chan struct{}
+	mu        sync.RWMutex
+	wg        sync.WaitGroup
+	running   bool
 
 	// Phase 1: Channel-based queues.
 	storyCh           chan *proto.AgentMsg            // Ready stories for any coder (replaces sharedWorkQueue)
@@ -152,10 +150,9 @@ type Result struct {
 }
 
 // NewDispatcher creates a new message dispatcher with the given configuration.
-func NewDispatcher(cfg *config.Config, rateLimiter *limiter.Limiter) (*Dispatcher, error) {
+func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 	return &Dispatcher{
 		agents:            make(map[string]Agent),
-		rateLimiter:       rateLimiter,
 		logger:            logx.NewLogger("dispatcher"),
 		config:            cfg,
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
@@ -631,61 +628,13 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 }
 
 func (d *Dispatcher) processWithRetry(_ context.Context, msg *proto.AgentMsg, _ Agent) *Result {
-	// SHUTDOWN messages bypass rate limiting
-	if msg.Type != proto.MsgTypeSHUTDOWN {
-		// Extract model name from agent logID (format: "model:id").
-		modelName := msg.ToAgent
-		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
-			modelName = parts[0]
-		}
-
-		// Check rate limiting before processing.
-		if err := d.checkRateLimit(modelName); err != nil {
-			d.logger.Warn("Rate limit exceeded for %s (model %s): %v", msg.ToAgent, modelName, err)
-			return &Result{Error: err}
-		}
-	}
-
 	// Process message - NOTE: ProcessMessage removed from Agent interface.
 	// Agents now receive messages via channels exclusively.
 	d.logger.Debug("Processing message %s for agent %s", msg.ID, msg.ToAgent)
 
-	// Release agent slot after processing (only for non-SHUTDOWN messages).
-	if msg.Type != proto.MsgTypeSHUTDOWN {
-		// Extract model name for agent slot release
-		modelName := msg.ToAgent
-		if parts := strings.Split(msg.ToAgent, ":"); len(parts) >= 2 {
-			modelName = parts[0]
-		}
-		if err := d.rateLimiter.ReleaseAgent(modelName); err != nil {
-			d.logger.Warn("Failed to release agent slot for model %s: %v", modelName, err)
-		}
-	}
-
 	// Messages flow through channels - no direct processing or retry needed here.
 	// The retry logic would be handled at a higher level if needed.
 	return &Result{Message: nil}
-}
-
-func (d *Dispatcher) checkRateLimit(agentModel string) error {
-	// Reserve agent slot.
-	if err := d.rateLimiter.ReserveAgent(agentModel); err != nil {
-		return logx.Wrap(err, "failed to reserve agent slot")
-	}
-
-	// For now, we don't know token count in advance, so we'll reserve a default amount.
-	// In a real implementation, this might be estimated or configured.
-	defaultTokenReservation := 100
-
-	if err := d.rateLimiter.Reserve(agentModel, defaultTokenReservation); err != nil {
-		// Release the agent slot if token reservation fails.
-		if releaseErr := d.rateLimiter.ReleaseAgent(agentModel); releaseErr != nil {
-			d.logger.Warn("Failed to release agent slot for model %s: %v", agentModel, releaseErr)
-		}
-		return logx.Wrap(err, "failed to reserve tokens")
-	}
-
-	return nil
 }
 
 func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {

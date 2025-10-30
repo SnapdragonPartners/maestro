@@ -35,6 +35,9 @@ type (
 	// CompletionRole represents the role of a message in completion conversation.
 	CompletionRole = llm.CompletionRole
 
+	// CacheControl represents prompt caching configuration for a message.
+	CacheControl = llm.CacheControl
+
 	// StreamChunk represents a streaming response chunk.
 	StreamChunk = llm.StreamChunk
 

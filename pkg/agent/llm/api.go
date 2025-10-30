@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/tools"
 )
 
@@ -26,12 +25,28 @@ const (
 	// ArchitectMaxTokens defines the maximum tokens for architect LLM responses.
 	// Used for comprehensive spec analysis and story generation with O3.
 	ArchitectMaxTokens = 30000
+
+	// TemperatureDefault is the default temperature for planning, reviews, and judgment tasks.
+	// Allows some exploration and creativity while staying focused.
+	TemperatureDefault = 0.3
+
+	// TemperatureDeterministic is the temperature for code generation and deterministic tasks.
+	// Ensures consistent, repeatable outputs for implementation.
+	TemperatureDeterministic = 0.0
 )
+
+// CacheControl represents prompt caching configuration for a message.
+// Used with Anthropic's prompt caching feature to reduce costs and latency.
+type CacheControl struct {
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "5m" or "1h" (optional, defaults to 5m)
+}
 
 // CompletionMessage represents a message in a completion request.
 type CompletionMessage struct {
-	Role    CompletionRole
-	Content string
+	Content      string
+	CacheControl *CacheControl `json:"cache_control,omitempty"` // Prompt caching marker
+	Role         CompletionRole
 }
 
 // Use tools.ToolDefinition directly instead of separate agent.Tool.
@@ -44,17 +59,23 @@ type ToolCall struct {
 }
 
 // CompletionRequest represents a request to generate a completion.
+//
+//nolint:govet // fieldalignment: 80 bytes is reasonable, value semantics preferred over pointer indirection
 type CompletionRequest struct {
-	Messages    []CompletionMessage
-	Tools       []tools.ToolDefinition
-	Temperature float32
-	MaxTokens   int
+	Messages    []CompletionMessage    // 24 bytes (slice header)
+	Tools       []tools.ToolDefinition // 24 bytes (slice header)
+	ToolChoice  string                 // 16 bytes (string header)
+	MaxTokens   int                    // 8 bytes
+	Temperature float32                // 4 bytes + 4 bytes padding = 80 bytes total
 }
 
 // CompletionResponse represents a response from a completion request.
+//
+//nolint:govet // fieldalignment: value semantics preferred over pointer indirection
 type CompletionResponse struct {
-	Content   string
-	ToolCalls []ToolCall
+	ToolCalls  []ToolCall
+	Content    string // Main response text
+	StopReason string // Why the response stopped: "end_turn", "max_tokens", "pause_turn", "refusal", etc.
 }
 
 // StreamChunk represents a chunk of streamed completion response.
@@ -72,16 +93,16 @@ type LLMClient interface { //nolint:revive // Keep name for backward compatibili
 	// Stream generates a completion as a stream of chunks.
 	Stream(ctx context.Context, in CompletionRequest) (<-chan StreamChunk, error)
 
-	// GetDefaultConfig returns default model configuration for this LLM client.
-	GetDefaultConfig() config.Model
+	// GetModelName returns the model name for this LLM client.
+	GetModelName() string
 }
 
 // NewCompletionRequest creates a new completion request with default values.
 func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
 	return CompletionRequest{
 		Messages:    messages,
-		MaxTokens:   4096, // Default to 4k tokens
-		Temperature: 0.7,  // Default temperature
+		MaxTokens:   4096,               // Default to 4k tokens
+		Temperature: TemperatureDefault, // Default: 0.3 for planning/reviews
 	}
 }
 

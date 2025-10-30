@@ -63,16 +63,9 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 		// CONTINUE/PIVOT - return to origin state and reset counter.
 		c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
 
-		// For APPROVED status, provide generic approval message without architect feedback
-		// This prevents confusion when architect says work is "complete" but done tool still needs to be called
-		var approvalMessage string
-		if originStr == string(StateCoding) {
-			approvalMessage = "The architect has approved your current approach. Continue with the implementation and invoke the 'done' tool when you are complete."
-		} else {
-			approvalMessage = "The architect has approved your current approach. Proceed with the work as planned and use the 'submit_plan' tool when you have completed your planning."
-		}
-		c.contextManager.AddMessage("architect", approvalMessage)
-		c.logger.Debug("🧑‍💻 Added generic approval message from architect to maintain conversation alternation")
+		// Note: We do NOT add architect messages here, as they add noise to the conversation
+		// and can confuse the LLM. The empty response validator will provide appropriate
+		// guidance if the LLM continues to have issues with tool usage.
 
 		// Reset the iteration counter for the origin state.
 		switch originStr {

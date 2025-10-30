@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
 
@@ -211,7 +212,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	}
 
 	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
-	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", "/tmp:exec,nodev,nosuid,size=100m", "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
+	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
 
 	// Environment variables.
 	for _, env := range opts.Env {
