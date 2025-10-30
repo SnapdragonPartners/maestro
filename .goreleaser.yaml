@@ -4,6 +4,35 @@ project_name: maestro
 before:
   hooks:
     - go mod tidy
+    - |
+      sh -c '
+      # Sign all macOS binaries before archiving
+      for f in $(find dist -type f -name maestro); do
+        case "$f" in
+          *darwin*)
+            echo "Signing $f"
+            codesign --force --options runtime --timestamp \
+              --sign "Developer ID Application: Snapdragon Partners LLC (VNJH3VB68C)" "$f"
+            ;;
+        esac
+      done
+
+      # Notarize all macOS archives
+      for f in $(find dist -type f -name "*.tar.gz" | grep darwin); do
+        echo "Notarizing $f"
+        xcrun notarytool submit "$f" \
+          --apple-id "$AC_USERNAME" \
+          --team-id "VNJH3VB68C" \
+          --password "$AC_PASSWORD" \
+          --wait
+      done
+
+      # Staple the notarization ticket to signed binaries
+      for f in $(find dist -type f -name maestro | grep darwin); do
+        echo "Stapling $f"
+        xcrun stapler staple "$f"
+      done
+      '
 
 builds:
   - id: maestro
@@ -23,18 +52,6 @@ archives:
     files:
       - LICENSE
       - README.md
-
-signs:
-  - cmd: codesign
-    args:
-      - --force
-      - --options
-      - runtime
-      - --timestamp
-      - --sign
-      - "Developer ID Application: Snapdragon Partners LLC (VNJH3VB68C)"
-      - "{{ .ArtifactPath }}"
-    artifacts: all
 
 release:
   github:
