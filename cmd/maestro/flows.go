@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"orchestrator/internal/kernel"
-	"orchestrator/internal/orchestrator"
+	"orchestrator/internal/orch"
 	"orchestrator/internal/supervisor"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
@@ -244,7 +244,7 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 	projectDir := k.ProjectDir()
 
 	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
-	startupOrch, err := orchestrator.NewStartupOrchestrator(projectDir, false)
+	startupOrch, err := orch.NewStartupOrchestrator(projectDir, false)
 	if err != nil {
 		return fmt.Errorf("failed to create startup orchestrator: %w", err)
 	}
