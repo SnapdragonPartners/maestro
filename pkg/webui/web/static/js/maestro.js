@@ -187,6 +187,9 @@ class MaestroUI {
             const tokenUtilization = Math.round((1 - stats.available_tokens / stats.max_capacity) * 100);
             const concurrencyUtilization = Math.round((stats.active_requests / stats.max_concurrency) * 100);
 
+            // Debug: log stats for troubleshooting
+            console.log(`[Rate Limits] ${provider}:`, stats);
+
             // Color-code congestion levels (green < 70%, yellow < 90%, red >= 90%)
             const getUtilizationClass = (util) => {
                 if (util < 70) return 'text-green-600 bg-green-50';
@@ -195,9 +198,12 @@ class MaestroUI {
             };
 
             const getCongestionBadge = (hits) => {
-                if (hits === 0) return '<span class="text-green-600">✓ No congestion</span>';
-                if (hits < 10) return `<span class="text-yellow-600">⚠ ${hits} hits</span>`;
-                return `<span class="text-red-600">⚠ ${hits} hits</span>`;
+                // Ensure hits is a number
+                const hitCount = Number(hits) || 0;
+                console.log(`[Rate Limits] Badge for ${hitCount} hits`);
+                if (hitCount === 0) return '<span class="text-green-600">✓ No congestion</span>';
+                if (hitCount < 10) return `<span class="text-yellow-600">⚠ ${hitCount} hits</span>`;
+                return `<span class="text-red-600">⚠ ${hitCount} hits</span>`;
             };
 
             return `
