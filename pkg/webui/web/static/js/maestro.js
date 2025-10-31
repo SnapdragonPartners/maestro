@@ -107,6 +107,9 @@ class MaestroUI {
 
         // Update upload area based on agent readiness
         this.updateUploadAvailability();
+
+        // Update rate limit stats
+        this.updateRateLimitStats();
     }
 
     updateChatAvailability() {
@@ -163,6 +166,78 @@ class MaestroUI {
                 uploadArea.classList.remove('opacity-50', 'cursor-not-allowed');
             }
         }
+    }
+
+    updateRateLimitStats() {
+        const container = document.getElementById('rate-limits-container');
+        if (!container) return;
+
+        const rateLimits = this.servicesStatus.rate_limits || {};
+
+        if (Object.keys(rateLimits).length === 0) {
+            container.innerHTML = '<p class="text-gray-500 text-sm">No rate limit data available</p>';
+            return;
+        }
+
+        // Sort providers alphabetically
+        const providers = Object.keys(rateLimits).sort();
+
+        container.innerHTML = providers.map(provider => {
+            const stats = rateLimits[provider];
+            const tokenUtilization = Math.round((1 - stats.available_tokens / stats.max_capacity) * 100);
+            const concurrencyUtilization = Math.round((stats.active_requests / stats.max_concurrency) * 100);
+
+            // Color-code congestion levels (green < 70%, yellow < 90%, red >= 90%)
+            const getUtilizationClass = (util) => {
+                if (util < 70) return 'text-green-600 bg-green-50';
+                if (util < 90) return 'text-yellow-600 bg-yellow-50';
+                return 'text-red-600 bg-red-50';
+            };
+
+            const getCongestionBadge = (hits) => {
+                if (hits === 0) return '<span class="text-green-600">✓ No congestion</span>';
+                if (hits < 10) return `<span class="text-yellow-600">⚠ ${hits} hits</span>`;
+                return `<span class="text-red-600">⚠ ${hits} hits</span>`;
+            };
+
+            return `
+                <div class="border border-gray-200 rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="font-medium text-gray-900">${provider}</h3>
+                        <span class="text-xs text-gray-500 uppercase">Provider</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <!-- Token Limits -->
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-600">Token Limit Hits:</span>
+                                ${getCongestionBadge(stats.token_limit_hits)}
+                            </div>
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-600">Available Tokens:</span>
+                                <span class="${getUtilizationClass(tokenUtilization)} px-2 py-1 rounded text-xs font-medium">
+                                    ${stats.available_tokens.toLocaleString()} / ${stats.max_capacity.toLocaleString()}
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Concurrency Limits -->
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-600">Concurrency Hits:</span>
+                                ${getCongestionBadge(stats.concurrency_hits)}
+                            </div>
+                            <div class="flex items-center justify-between text-sm">
+                                <span class="text-gray-600">Active Requests:</span>
+                                <span class="${getUtilizationClass(concurrencyUtilization)} px-2 py-1 rounded text-xs font-medium">
+                                    ${stats.active_requests} / ${stats.max_concurrency}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
     }
 
     async pollAgents() {
