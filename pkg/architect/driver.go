@@ -86,8 +86,8 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 }
 
 // NewArchitect creates a new architect with LLM integration.
-// The API key is automatically retrieved from environment variables.
-func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+// Uses shared LLM factory for proper rate limiting across all agents.
+func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory) (*Driver, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -104,8 +104,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	}
 	modelName := cfg.Agents.ArchitectModel
 
-	// Create basic LLM client using helper
-	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeArchitect)
+	// Create basic LLM client from shared factory (no metrics context yet, need architect instance first)
+	llmClient, err := llmFactory.CreateClient(agent.TypeArchitect)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
 	}
@@ -114,7 +114,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
-	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeArchitect, architect, architect.logger)
+	// Use the shared factory to ensure proper rate limiting
+	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeArchitect, architect, architect.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enhanced architect LLM client: %w", err)
 	}

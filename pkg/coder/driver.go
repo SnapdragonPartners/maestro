@@ -458,8 +458,8 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 }
 
 // NewCoder creates a new coder with LLM integration.
-// The API key is automatically retrieved from environment variables.
-func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service) (*Coder, error) {
+// Uses shared LLM factory for proper rate limiting across all agents.
+func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service, llmFactory *agent.LLMClientFactory) (*Coder, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -467,8 +467,8 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	default:
 	}
 
-	// Create LLM client using DRY helper function (same as architect)
-	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeCoder)
+	// Create basic LLM client from shared factory (no metrics context yet, need coder instance first)
+	llmClient, err := llmFactory.CreateClient(agent.TypeCoder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
 	}
@@ -544,7 +544,8 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	}
 
 	// Now that we have the coder (StateProvider), create enhanced client with metrics context
-	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeCoder, coder, coder.logger)
+	// Use the shared factory to ensure proper rate limiting
+	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
 	}

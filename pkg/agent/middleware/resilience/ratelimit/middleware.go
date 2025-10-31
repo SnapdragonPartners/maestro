@@ -5,11 +5,22 @@ import (
 	"context"
 
 	"orchestrator/pkg/agent/llm"
+	"orchestrator/pkg/proto"
 )
 
+// StateProvider provides access to agent state for rate limiting (agent ID for tracking).
+type StateProvider interface {
+	// GetID returns the agent ID.
+	GetID() string
+	// GetCurrentState returns the agent's current state (optional, for future use).
+	GetCurrentState() proto.State
+	// GetStoryID returns the current story ID (optional, for future use).
+	GetStoryID() string
+}
+
 // Middleware returns a middleware function that wraps an LLM client with rate limiting.
-// It estimates token usage and acquires tokens before making requests.
-func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Middleware {
+// It estimates token usage and acquires tokens and concurrency slots before making requests.
+func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator, stateProvider StateProvider) llm.Middleware {
 	if estimator == nil {
 		estimator = NewDefaultTokenEstimator()
 	}
@@ -18,7 +29,6 @@ func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Mi
 		return llm.WrapClient(
 			// Complete implementation with rate limiting
 			func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-				// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 				// Get model configuration to determine provider
 				modelName := next.GetModelName()
 
@@ -32,10 +42,15 @@ func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Mi
 				promptTokens := estimator.EstimatePrompt(req)
 				totalTokens := promptTokens + req.MaxTokens
 
-				// Acquire tokens
-				if err2 := limiter.Acquire(ctx, totalTokens); err2 != nil {
-					return llm.CompletionResponse{}, err2 //nolint:wrapcheck // Middleware should pass through errors unchanged
+				// Get agent ID for tracking
+				agentID := stateProvider.GetID()
+
+				// Acquire tokens and concurrency slot atomically
+				release, err := limiter.Acquire(ctx, totalTokens, agentID)
+				if err != nil {
+					return llm.CompletionResponse{}, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 				}
+				defer release() // Always release slot, even on panic
 
 				// Execute the request
 				resp, err := next.Complete(ctx, req)
@@ -57,10 +72,15 @@ func Middleware(limiterMap *ProviderLimiterMap, estimator TokenEstimator) llm.Mi
 				promptTokens := estimator.EstimatePrompt(req)
 				totalTokens := promptTokens + req.MaxTokens
 
-				// Acquire tokens
-				if err := limiter.Acquire(ctx, totalTokens); err != nil {
+				// Get agent ID for tracking
+				agentID := stateProvider.GetID()
+
+				// Acquire tokens and concurrency slot atomically
+				release, err := limiter.Acquire(ctx, totalTokens, agentID)
+				if err != nil {
 					return nil, err //nolint:wrapcheck // Middleware should pass through errors unchanged
 				}
+				defer release() // Always release slot, even on panic
 
 				// Execute the request
 				return next.Stream(ctx, req)

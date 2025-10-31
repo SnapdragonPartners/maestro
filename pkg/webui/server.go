@@ -46,6 +46,7 @@ type StoryProvider interface {
 type Server struct {
 	dispatcher  *dispatch.Dispatcher
 	chatService *chat.Service
+	llmFactory  *agent.LLMClientFactory
 	logger      *logx.Logger
 	templates   *template.Template
 	workDir     string
@@ -60,7 +61,7 @@ type AgentListItem struct {
 }
 
 // NewServer creates a new web UI server.
-func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *chat.Service) *Server {
+func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *chat.Service, llmFactory *agent.LLMClientFactory) *Server {
 	// Load templates from embedded filesystem
 	templates, err := template.ParseFS(templateFS, "web/templates/*.html")
 	if err != nil {
@@ -74,6 +75,7 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 		workDir:     workDir,
 		templates:   templates,
 		chatService: chatService,
+		llmFactory:  llmFactory,
 	}
 }
 
@@ -180,6 +182,24 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 		agentReady = architectReady
 	}
 
+	// Get rate limit stats from LLM factory
+	rateLimitStats := make(map[string]interface{})
+	if s.llmFactory != nil {
+		stats := s.llmFactory.GetRateLimitStats()
+		for provider := range stats {
+			stat := stats[provider]
+			rateLimitStats[provider] = map[string]interface{}{
+				"available_tokens":     stat.AvailableTokens,
+				"max_capacity":         stat.MaxCapacity,
+				"active_requests":      stat.ActiveRequests,
+				"max_concurrency":      stat.MaxConcurrency,
+				"token_limit_hits":     stat.TokenLimitHits,
+				"concurrency_hits":     stat.ConcurrencyHits,
+				"tracked_acquisitions": stat.TrackedAcquisitions,
+			}
+		}
+	}
+
 	// Build response
 	response := map[string]interface{}{
 		"chat": map[string]interface{}{
@@ -190,6 +210,7 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 			"coder_count":     coderCount,
 			"architect_ready": architectReady,
 		},
+		"rate_limits": rateLimitStats,
 	}
 
 	// Send JSON response

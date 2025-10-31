@@ -22,14 +22,16 @@ type AgentFactory struct {
 	dispatcher         *dispatch.Dispatcher
 	persistenceChannel chan<- *persistence.Request
 	chatService        *chat.Service
+	llmFactory         *agent.LLMClientFactory // Shared LLM factory for rate limiting
 }
 
 // NewAgentFactory creates a new lightweight agent factory.
-func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- *persistence.Request, chatService *chat.Service) *AgentFactory {
+func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- *persistence.Request, chatService *chat.Service, llmFactory *agent.LLMClientFactory) *AgentFactory {
 	return &AgentFactory{
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
 		chatService:        chatService,
+		llmFactory:         llmFactory,
 	}
 }
 
@@ -57,13 +59,14 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 	// Determine work directory from config
 	workDir := getWorkDirFromConfig(&cfg)
 
-	// Create architect
+	// Create architect with shared LLM factory
 	architect, err := architect.NewArchitect(
 		ctx,
 		agentID,
 		f.dispatcher,
 		workDir,
 		f.persistenceChannel,
+		f.llmFactory, // Shared factory for rate limiting
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create architect: %w", err)
@@ -110,7 +113,7 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 	// Create build service as needed
 	buildService := build.NewBuildService()
 
-	// Create coder
+	// Create coder with shared LLM factory
 	coderAgent, err := coder.NewCoder(
 		ctx,
 		agentID,
@@ -118,6 +121,7 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		cloneManager,
 		buildService,
 		f.chatService, // Chat service for agent collaboration
+		f.llmFactory,  // Shared factory for rate limiting
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)
