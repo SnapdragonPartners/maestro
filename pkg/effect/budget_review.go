@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // BudgetReviewEffect represents a budget review request when iteration budgets are exceeded
@@ -60,32 +61,21 @@ func (e *BudgetReviewEffect) Execute(ctx context.Context, runtime Runtime) (any,
 	}
 
 	// Extract budget review result from response payload
-	statusRaw, statusExists := responseMsg.GetPayload("status")
-	feedbackRaw, _ := responseMsg.GetPayload("feedback")
-	approvalIDRaw, _ := responseMsg.GetPayload("approval_id")
-
-	if !statusExists {
-		return nil, fmt.Errorf("budget review response missing status field")
+	// The architect sends approval_result as a proto.ApprovalResult struct
+	approvalResultRaw, exists := responseMsg.GetPayload("approval_result")
+	if !exists {
+		return nil, fmt.Errorf("budget review response missing approval_result field")
 	}
 
-	status, ok := statusRaw.(string)
+	approvalResult, ok := utils.SafeAssert[*proto.ApprovalResult](approvalResultRaw)
 	if !ok {
-		return nil, fmt.Errorf("budget review status is not a string: %T", statusRaw)
+		return nil, fmt.Errorf("approval_result is not *proto.ApprovalResult: %T", approvalResultRaw)
 	}
-
-	// Parse status string to ApprovalStatus enum
-	approvalStatus, err := proto.ParseApprovalStatus(status)
-	if err != nil {
-		return nil, fmt.Errorf("invalid budget review status: %w", err)
-	}
-
-	feedbackStr, _ := feedbackRaw.(string)
-	approvalIDStr, _ := approvalIDRaw.(string)
 
 	result := &BudgetReviewResult{
-		Status:      approvalStatus,
-		Feedback:    feedbackStr,
-		ApprovalID:  approvalIDStr,
+		Status:      approvalResult.Status,
+		Feedback:    approvalResult.Feedback,
+		ApprovalID:  approvalResult.ID,
 		OriginState: e.OriginState,
 	}
 
