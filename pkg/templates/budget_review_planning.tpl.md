@@ -41,8 +41,33 @@ The request above contains all context including budget details, recent messages
 - **Correct**: Structured exploration of project, files, infrastructure
 
 **Issue**: Agent not submitting plan after sufficient exploration
-- **Wrong**: Endless exploration without creating implementation plan  
+- **Wrong**: Endless exploration without creating implementation plan
 - **Correct**: After 5-8 exploration commands, submit comprehensive plan
+
+## Automated Pattern Analysis
+
+The budget review request includes automated detection of universal failure patterns:
+
+1. **High Tool Failure Rate**: If >50% of recent tool calls failed, the agent's approach is fundamentally flawed
+2. **Repeated Failing Commands**: If the exact same command failed consecutively, the agent is stuck in a loop
+
+**These metrics are platform-agnostic** and indicate serious issues regardless of technology stack.
+
+### How to Respond to Detected Patterns
+
+**If automated analysis shows "ALERT" or significant issues**:
+1. Examine the "Recent Context" section to see the actual commands and errors
+2. Identify WHY the commands are failing (read-only filesystem? missing dependencies? wrong approach?)
+3. Use **NEEDS_CHANGES** status with specific corrective guidance:
+   - "Stop attempting [specific command] - it fails because [specific reason]"
+   - "The workspace is already current from SETUP. Git operations are unnecessary and will fail in read-only mode."
+   - "You need to use [alternative approach] instead"
+
+**If no automated patterns detected but high iteration count**:
+- Agent may be over-exploring without focusing on plan creation
+- Guide agent to synthesize findings and submit plan with `submit_plan` tool
+
+**Never approve continuation** when automated analysis detects repeated failures without addressing the root cause.
 
 ## Decision Options
 

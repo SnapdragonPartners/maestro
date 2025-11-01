@@ -634,7 +634,7 @@ func (c *Coder) getRecentToolActivity(limit int) string {
 	return fmt.Sprintf("Recent %d tool calls:\n%s", len(toolActivity), strings.Join(toolActivity, "\n"))
 }
 
-// detectIssuePattern analyzes recent activity to identify common problems.
+// detectIssuePattern analyzes recent activity using universal, platform-agnostic metrics.
 func (c *Coder) detectIssuePattern() string {
 	if c.contextManager == nil {
 		return "Cannot analyze - no context manager"
@@ -645,8 +645,7 @@ func (c *Coder) detectIssuePattern() string {
 		return "Insufficient activity to analyze patterns"
 	}
 
-	var recentCommands []string
-	var recentErrors []string
+	var toolCalls []toolCall
 
 	// Look at last 10 messages for patterns
 	start := len(messages) - 10
@@ -654,75 +653,90 @@ func (c *Coder) detectIssuePattern() string {
 		start = 0
 	}
 
+	// Extract tool calls with success/failure status
 	for i := start; i < len(messages); i++ {
 		msg := messages[i]
 		if msg.Role == roleToolMessage {
-			content := strings.ToLower(msg.Content)
+			content := msg.Content
 
-			// Extract command if it's a shell tool result
-			if strings.Contains(content, "command:") {
+			// Extract command if present
+			var command string
+			if strings.Contains(content, "Command:") || strings.Contains(content, "command:") {
 				lines := strings.Split(content, "\n")
 				for _, line := range lines {
-					if strings.Contains(line, "command:") {
-						cmd := strings.TrimSpace(strings.Split(line, "command:")[1])
-						recentCommands = append(recentCommands, cmd)
+					if strings.Contains(strings.ToLower(line), "command:") {
+						parts := strings.SplitN(line, ":", 2)
+						if len(parts) == 2 {
+							command = strings.TrimSpace(parts[1])
+						}
 						break
 					}
 				}
 			}
 
-			// Check for error patterns
-			if strings.Contains(content, "exit_code: 1") ||
+			// Determine if this tool call failed
+			failed := strings.Contains(content, "exit_code: 1") ||
 				strings.Contains(content, "exit_code: 127") ||
-				strings.Contains(content, "error:") ||
-				strings.Contains(content, "failed") {
-				recentErrors = append(recentErrors, content)
-			}
+				strings.Contains(content, "exit_code: 255") ||
+				strings.Contains(strings.ToLower(content), "error:") ||
+				strings.Contains(strings.ToLower(content), "failed:")
+
+			toolCalls = append(toolCalls, toolCall{
+				command: command,
+				failed:  failed,
+				content: content,
+			})
 		}
 	}
 
-	// Analyze patterns
+	if len(toolCalls) == 0 {
+		return "No tool calls to analyze"
+	}
+
+	// Calculate universal metrics
 	var issues []string
 
-	// Check for repeated implementation commands in planning
-	if len(recentCommands) > 2 {
-		implCmds := 0
-		for _, cmd := range recentCommands {
-			if strings.Contains(cmd, "go mod init") ||
-				strings.Contains(cmd, "npm install") ||
-				strings.Contains(cmd, "make build") ||
-				strings.Contains(cmd, "go build") {
-				implCmds++
-			}
-		}
-		if implCmds > 1 {
-			issues = append(issues, "Agent repeatedly trying implementation commands (may be in wrong state)")
+	// 1. Tool failure rate
+	failedCount := 0
+	for i := range toolCalls {
+		if toolCalls[i].failed {
+			failedCount++
 		}
 	}
+	failureRate := float64(failedCount) / float64(len(toolCalls))
 
-	// Check for repeated failures
-	if len(recentErrors) > 2 {
-		issues = append(issues, fmt.Sprintf("Agent experiencing repeated failures (%d recent errors)", len(recentErrors)))
+	if failureRate > 0.5 {
+		issues = append(issues, fmt.Sprintf("High tool failure rate: %d/%d tool calls failed (%.0f%%)",
+			failedCount, len(toolCalls), failureRate*100))
 	}
 
-	// Check for "command not found" errors
-	commandNotFound := 0
-	for _, cmd := range recentCommands {
-		for _, err := range recentErrors {
-			if strings.Contains(err, "not found") && strings.Contains(err, cmd) {
-				commandNotFound++
-			}
+	// 2. Identical consecutive failing commands
+	for i := 1; i < len(toolCalls); i++ {
+		prev := toolCalls[i-1]
+		curr := toolCalls[i]
+
+		if prev.command != "" && curr.command != "" &&
+			prev.command == curr.command &&
+			prev.failed && curr.failed {
+			issues = append(issues, fmt.Sprintf("Repeated failing command detected: '%s' (same command failed consecutively)", prev.command))
+			break // Only report once
 		}
 	}
-	if commandNotFound > 1 {
-		issues = append(issues, "Agent trying to use unavailable tools/commands")
+
+	// Add strong guidance when issues detected
+	if len(issues) > 0 {
+		issues = append(issues, "**ALERT**: Significant issues detected that likely require NEEDS_CHANGES guidance or ABANDON may be appropriate.")
+		return strings.Join(issues, "\n")
 	}
 
-	if len(issues) == 0 {
-		return "No clear issue pattern detected - agent may need more specific guidance"
-	}
+	return fmt.Sprintf("Tool calls appear healthy (%d/%d successful)", len(toolCalls)-failedCount, len(toolCalls))
+}
 
-	return strings.Join(issues, "; ")
+// toolCall represents a single tool invocation with its outcome.
+type toolCall struct {
+	command string
+	content string
+	failed  bool
 }
 
 // checkLoopBudget tracks loop counts and creates BudgetReviewEffect when budget is exceeded.
@@ -1089,6 +1103,11 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 			} else {
 				c.logger.Info("%s tool failed", toolCall.Name)
 				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s operation failed", toolCall.Name))
+
+				// Add planning reminder if tool failed in PLANNING state
+				if c.GetCurrentState() == StatePlanning {
+					c.addPlanningReminder()
+				}
 			}
 		}
 
@@ -1104,6 +1123,23 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s error: %s", toolCall.Name, sanitizedError))
 		}
 	}
+}
+
+// addPlanningReminder adds a reminder message when tools fail in PLANNING state.
+// This provides immediate feedback that the agent is in read-only exploration mode.
+func (c *Coder) addPlanningReminder() {
+	reminder := `⚠️ REMINDER: You are in PLANNING state with read-only access. Your task is to explore the codebase and create an implementation plan, not to modify files or run implementation commands.
+
+Key points:
+- Git operations (fetch, pull, checkout) are unnecessary - the workspace is already up-to-date from SETUP
+- Use read-only commands: ls, cat, find, grep, tree
+- Focus on understanding the code structure and requirements
+- Create a comprehensive plan using submit_plan when ready
+
+If you're uncertain how to proceed or repeatedly encountering errors, use the ask_question tool to get guidance from the architect.`
+
+	c.contextManager.AddMessage("user", reminder)
+	c.logger.Debug("Added planning state reminder after tool failure")
 }
 
 // sanitizeEmptyResponse ensures no empty responses break agent/user alternation.
@@ -1156,6 +1192,11 @@ func (c *Coder) addShellResultToContext(resultMap map[string]any) {
 	}
 
 	c.contextManager.AddMessage(roleToolMessage, feedback.String())
+
+	// Add planning reminder if command failed in PLANNING state
+	if exitCode != 0 && c.GetCurrentState() == StatePlanning {
+		c.addPlanningReminder()
+	}
 }
 
 // addComprehensiveToolFailureToContext adds detailed tool failure information to context.
@@ -1235,6 +1276,9 @@ func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin prot
 	// Get truncated context messages
 	contextMessages := c.getContextMessagesWithTokenLimit(budgetReviewContextTokenLimit)
 
+	// Get automated pattern analysis
+	issuePattern := c.detectIssuePattern()
+
 	// Build comprehensive content
 	content := fmt.Sprintf(`## Budget Review Request
 %s
@@ -1249,24 +1293,22 @@ func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin prot
 ## Implementation Plan
 %s
 
-## Recent Context (%d messages, ≤%d tokens)
+## Automated Pattern Analysis
 %s
 
-## Current State
-- **Files Created:** %v
-- **Tests Passed:** %v
-- **Current State:** %s
+## Recent Context (%d messages, ≤%d tokens)
+`+"```"+`
+%s
+`+"```"+`
 
-Please advise how I should proceed given this context.`,
+Please analyze the recent context and automated findings to determine if the agent is making progress or stuck in a loop. Provide specific guidance.`,
 		header,
 		storyID, storyType,
 		taskContent,
 		plan,
+		issuePattern,
 		len(contextMessages.Messages), budgetReviewContextTokenLimit,
-		contextMessages.Content,
-		utils.GetStateValueOr[[]string](sm, KeyFilesCreated, []string{}),
-		utils.GetStateValueOr[bool](sm, KeyTestsPassed, false),
-		origin)
+		contextMessages.Content)
 
 	return content
 }

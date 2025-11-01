@@ -386,11 +386,21 @@ if c.GetCurrentState() == StatePlanning {
 - No recognition of repetitive failure pattern
 
 ### After Changes
-- Agent tries `git fetch` 2 times → automated pattern detects "Repeated failing command"
+
+**Immediate feedback (first layer)**:
+- Agent tries `git fetch` → fails with read-only error
+- **System immediately adds planning reminder** to context
+- Next LLM call sees: "⚠️ REMINDER: You are in PLANNING state with read-only access... Git operations are unnecessary... If uncertain, use ask_question tool"
+- Agent has opportunity to self-correct before hitting budget limit
+
+**Budget review (second layer, if thrashing continues)**:
+- If agent ignores reminder and tries `git fetch` again → automated pattern detects "Repeated failing command"
 - Budget review shows: **ALERT**: "High tool failure rate: 8/10 failed (80%); Repeated failing command detected: 'git fetch origin main'; **ALERT**: Significant issues detected"
-- Architect sees alert + recent errors showing read-only filesystem
+- Architect sees alert + recent errors showing read-only filesystem + planning reminders
 - Architect responds: **NEEDS_CHANGES** with "Stop attempting git fetch - workspace is already up-to-date from SETUP. These operations fail in read-only planning mode. Focus on exploration using: ls, cat, find, grep"
-- Agent receives specific guidance and changes approach
+- Agent receives authoritative guidance and must change approach
+
+**Result**: Two-layer defense prevents thrashing - immediate feedback for quick self-correction, budget review with strong signals for architect intervention if needed.
 
 ## Rationale
 
@@ -409,20 +419,84 @@ The "ALERT" prefix and explicit "NEEDS_CHANGES or ABANDON" suggestion signals to
 ### Why Remove Files Created / Tests Passed?
 These state fields are unreliable and don't add value. If files were created or tests passed, it will be evident in the recent context. Including unreliable data confuses the architect.
 
+### Why Suggest `ask_question` Instead of Self-Destruct Button?
+**Considered**: Adding an `abandon_task` tool for agents to self-destruct when stuck.
+
+**Decision**: Suggest `ask_question` tool instead because:
+1. **Authority hierarchy**: Architect (human-supervised) should make abandonment decisions, not the agent
+2. **Premature surrender risk**: Agent might give up when just slightly confused, wasting progress
+3. **Collaborative approach**: `ask_question` escalates to architect who can provide guidance OR decide to abandon
+4. **Already exists**: `ask_question` is already available in `AppPlanningTools` and `DevOpsPlanningTools`
+5. **Lower stakes**: Asking for help is reversible, abandoning is not
+6. **Budget review safety net**: If agent doesn't ask and keeps thrashing, budget review catches it anyway
+
+The immediate planning reminder guides stuck agents toward `ask_question` as the appropriate escalation path.
+
+## Additional Issue: Git State Confusion
+
+### Problem
+
+Agents in PLANNING were running git commands (`git log`, `git rev-parse HEAD`, `git ls-tree`) and getting confusing results:
+- "fatal: your current branch has no commits yet"
+- "fatal: ambiguous argument 'HEAD': unknown revision"
+
+This caused agents to incorrectly conclude the workspace wasn't set up properly, even though files were present and accessible.
+
+### Root Cause
+
+The workspace uses a **fresh working branch model**:
+- Each story gets a new branch (e.g., `maestro-story-coder-002`)
+- The branch starts with no commits
+- Files are present from the base/parent branch
+- Git commands focused on commit history fail or return confusing output
+
+Agents interpreted "no commits on branch" as "no files in workspace" and spammed chat with "CRITICAL ISSUE" messages.
+
+### Solution
+
+Added **GIT STATE NOTE** to both planning templates explaining:
+- You're in a fresh working branch with no git history
+- Git history commands will fail/show "no commits" - this is expected
+- Workspace files ARE present and ready to explore
+- Focus on filesystem exploration (`ls`, `find`, `cat`), not git history
+
+This explains the model truthfully rather than just discouraging git commands.
+
+### Files Updated
+- `pkg/templates/app_planning.tpl.md` (lines 9)
+- `pkg/templates/devops_planning.tpl.md` (lines 9)
+
 ## Testing Strategy
 
-1. **Reproduce thrashing scenario**:
-   - Create story requiring git operations
-   - Force agent into read-only PLANNING mode
-   - Verify automated pattern detection triggers
+1. **Test immediate feedback (first layer)**:
+   - Agent in PLANNING attempts `git fetch`
+   - Verify command fails with read-only error
+   - Verify planning reminder immediately appears in context
+   - Verify next LLM call sees the reminder
+   - Verify agent can self-correct after seeing reminder
 
-2. **Verify architect response**:
+2. **Test budget review escalation (second layer)**:
+   - Agent ignores reminder and continues trying `git fetch`
+   - Verify automated pattern detection triggers after 2+ failures
    - Budget review should show ALERT with specific patterns
    - Architect should provide NEEDS_CHANGES with corrective guidance
    - Agent should change approach after receiving guidance
 
-3. **Verify no false positives**:
-   - Normal exploration (multiple `cat`, `find` commands) should not trigger alerts
+3. **Test `ask_question` escalation**:
+   - Agent uses `ask_question` after seeing planning reminder
+   - Verify question reaches architect
+   - Verify architect can provide guidance or decide to abandon
+
+4. **Test git state confusion prevention**:
+   - Agent runs `git log` or `git rev-parse HEAD`
+   - Commands fail with "no commits" message
+   - Verify agent reads GIT STATE NOTE in prompt
+   - Verify agent proceeds with filesystem exploration instead of panicking
+   - Verify no "CRITICAL ISSUE" messages about workspace not being set up
+
+5. **Verify no false positives**:
+   - Normal exploration (multiple `cat`, `find` commands that succeed) should not trigger reminders
+   - Single failures followed by different commands should not trigger budget alerts
    - Expected failures (testing error handling) should not cause false alarms if not repetitive
 
 ## Maintenance Notes

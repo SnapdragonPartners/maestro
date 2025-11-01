@@ -690,12 +690,31 @@ func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *
 	// Set parent message ID to link back to the original submission.
 	resultMsg.ParentMsgID = pendingReview.ID
 
-	// Set review result payload.
-	resultMsg.Payload["review_id"] = pendingReview.ID
+	// Parse status string to ApprovalStatus enum
+	approvalStatus, err := proto.ParseApprovalStatus(result)
+	if err != nil {
+		return fmt.Errorf("invalid approval status: %w", err)
+	}
+
+	// Create ApprovalResult struct to prevent content/feedback duplication in persistence
+	reviewedAt := time.Now().UTC()
+	if pendingReview.ReviewedAt != nil {
+		reviewedAt = *pendingReview.ReviewedAt
+	}
+
+	approvalResult := &proto.ApprovalResult{
+		ID:         pendingReview.ID,
+		RequestID:  pendingReview.ID, // The review ID is the request ID
+		Type:       proto.ApprovalTypeCode,
+		Status:     approvalStatus,
+		Feedback:   pendingReview.ReviewNotes,
+		ReviewedBy: "architect",
+		ReviewedAt: reviewedAt,
+	}
+
+	// Set approval_result in payload (prevents duplication in persistence)
+	resultMsg.Payload["approval_result"] = approvalResult
 	resultMsg.Payload["story_id"] = pendingReview.StoryID
-	resultMsg.Payload["status"] = result                      // BudgetReviewEffect expects "status"
-	resultMsg.Payload["feedback"] = pendingReview.ReviewNotes // BudgetReviewEffect expects "feedback"
-	resultMsg.Payload["reviewed_at"] = pendingReview.ReviewedAt.Format(time.RFC3339)
 	resultMsg.Payload["checks_run"] = pendingReview.ChecksRun
 	resultMsg.Payload["check_results"] = pendingReview.CheckResults
 

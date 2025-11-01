@@ -371,6 +371,9 @@ class MaestroUI {
         const empty = document.getElementById('stories-empty');
         const list = document.getElementById('stories-list');
 
+        // Cache stories for copy functionality
+        this.cachedStories = stories;
+
         // Hide loading state
         loading.classList.add('hidden');
 
@@ -464,13 +467,35 @@ class MaestroUI {
                 <div id="${storyId}-details" class="hidden mt-3 pt-3 border-t border-gray-200">
                     ${story.content ? `
                         <div class="mb-3">
-                            <h4 class="text-sm font-medium text-gray-700 mb-1">Story Description</h4>
+                            <div class="flex items-center justify-between mb-1">
+                                <h4 class="text-sm font-medium text-gray-700">Story Description</h4>
+                                <button
+                                    id="${storyId}-content-copy"
+                                    onclick="event.stopPropagation(); window.maestroUI.copyStoryField('${storyId}', 'content')"
+                                    class="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-gray-200"
+                                    title="Copy to clipboard">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                    </svg>
+                                </button>
+                            </div>
                             <div class="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 rounded p-2">${this.escapeHtml(story.content)}</div>
                         </div>
                     ` : ''}
                     ${story.approved_plan ? `
                         <div class="mb-3">
-                            <h4 class="text-sm font-medium text-gray-700 mb-1">Approved Plan</h4>
+                            <div class="flex items-center justify-between mb-1">
+                                <h4 class="text-sm font-medium text-gray-700">Approved Plan</h4>
+                                <button
+                                    id="${storyId}-approved_plan-copy"
+                                    onclick="event.stopPropagation(); window.maestroUI.copyStoryField('${storyId}', 'approved_plan')"
+                                    class="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-gray-200"
+                                    title="Copy to clipboard">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                    </svg>
+                                </button>
+                            </div>
                             <div class="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 rounded p-2" style="max-height: 400px; overflow-y: auto;">${this.escapeHtml(story.approved_plan)}</div>
                         </div>
                     ` : ''}
@@ -498,6 +523,56 @@ class MaestroUI {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    async copyToClipboard(text, buttonId) {
+        try {
+            await navigator.clipboard.writeText(text);
+
+            // Show success feedback
+            const button = document.getElementById(buttonId);
+            if (button) {
+                const originalHtml = button.innerHTML;
+                button.innerHTML = `
+                    <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                `;
+                button.classList.add('text-green-600');
+
+                setTimeout(() => {
+                    button.innerHTML = originalHtml;
+                    button.classList.remove('text-green-600');
+                }, 1500);
+            }
+        } catch (err) {
+            console.error('Failed to copy to clipboard:', err);
+            alert('Failed to copy to clipboard');
+        }
+    }
+
+    copyMessageField(msgId, field) {
+        // Find the message in the cached messages
+        const message = this.cachedMessages?.find(m => m.id.replace(/[^a-zA-Z0-9]/g, '_') === msgId);
+        if (!message) {
+            console.error('Message not found:', msgId);
+            return;
+        }
+
+        const text = message[field] || '';
+        this.copyToClipboard(text, `${msgId}-${field}-copy`);
+    }
+
+    copyStoryField(storyId, field) {
+        // Find the story in the cached stories
+        const story = this.cachedStories?.find(s => s.id.replace(/[^a-zA-Z0-9]/g, '_') === storyId);
+        if (!story) {
+            console.error('Story not found:', storyId);
+            return;
+        }
+
+        const text = story[field] || '';
+        this.copyToClipboard(text, `${storyId}-${field}-copy`);
     }
 
     formatTokenCost(story) {
@@ -752,6 +827,9 @@ class MaestroUI {
         const empty = document.getElementById('messages-empty');
         const list = document.getElementById('messages-list');
 
+        // Cache messages for copy functionality
+        this.cachedMessages = messages;
+
         // Hide loading state
         loading.classList.add('hidden');
 
@@ -869,12 +947,34 @@ class MaestroUI {
                             </div>
                         ` : ''}
                         <div>
-                            <span class="font-medium text-gray-700">Content:</span>
+                            <div class="flex items-center justify-between">
+                                <span class="font-medium text-gray-700">Content:</span>
+                                <button
+                                    id="${msgId}-content-copy"
+                                    onclick="event.stopPropagation(); window.maestroUI.copyMessageField('${msgId}', 'content')"
+                                    class="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-gray-200"
+                                    title="Copy to clipboard">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                    </svg>
+                                </button>
+                            </div>
                             <div class="mt-1 text-gray-600 whitespace-pre-wrap bg-white rounded p-2" style="max-height: 300px; overflow-y: auto;">${this.escapeHtml(message.content)}</div>
                         </div>
                         ${message.feedback ? `
                             <div>
-                                <span class="font-medium text-gray-700">Feedback:</span>
+                                <div class="flex items-center justify-between">
+                                    <span class="font-medium text-gray-700">Feedback:</span>
+                                    <button
+                                        id="${msgId}-feedback-copy"
+                                        onclick="event.stopPropagation(); window.maestroUI.copyMessageField('${msgId}', 'feedback')"
+                                        class="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-gray-200"
+                                        title="Copy to clipboard">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                        </svg>
+                                    </button>
+                                </div>
                                 <div class="mt-1 text-gray-600 whitespace-pre-wrap bg-white rounded p-2">${this.escapeHtml(message.feedback)}</div>
                             </div>
                         ` : ''}
