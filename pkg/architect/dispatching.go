@@ -103,14 +103,16 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) error {
 	// Create story message for the dispatcher ("coder" targets any available coder).
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
-	storyMsg.SetPayload(proto.KeyStoryID, storyID)
+
+	// Build story payload
+	payloadData := make(map[string]any)
 
 	// Get story details.
 	if story, exists := d.queue.stories[storyID]; exists {
-		storyMsg.SetPayload(proto.KeyTitle, story.Title)
-		storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
-		storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
-		storyMsg.SetPayload(proto.KeyStoryType, story.StoryType)
+		payloadData[proto.KeyTitle] = story.Title
+		payloadData[proto.KeyEstimatedPoints] = story.EstimatedPoints
+		payloadData[proto.KeyDependsOn] = story.DependsOn
+		payloadData[proto.KeyStoryType] = story.StoryType
 
 		// Use story content from the queue (set during SCOPING)
 		content := story.Content
@@ -118,12 +120,18 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 			// Fallback to title if content is not set
 			content = story.Title
 		}
-		storyMsg.SetPayload(proto.KeyContent, content)
+		payloadData[proto.KeyContent] = content
 
 		// Parse requirements from content if available
 		requirements := []string{} // TODO: Extract requirements from story content during SCOPING
-		storyMsg.SetPayload(proto.KeyRequirements, requirements)
+		payloadData[proto.KeyRequirements] = requirements
 	}
+
+	// Set typed story payload
+	storyMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, payloadData))
+
+	// Store story_id in metadata
+	storyMsg.SetMetadata(proto.KeyStoryID, storyID)
 
 	// Send story to dispatcher.
 

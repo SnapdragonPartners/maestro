@@ -50,21 +50,22 @@ func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
 	var err error
 
 	// Check if we have direct content from bootstrap
-	var contentPayload interface{}
 	var hasContent bool
 	if specMsgData, exists := d.stateData["spec_message"]; exists {
 		if currentSpecMsg, ok := specMsgData.(*proto.AgentMsg); ok {
-			contentPayload, hasContent = currentSpecMsg.GetPayload("spec_content")
+			// Extract spec content from typed payload
+			if typedPayload := currentSpecMsg.GetTypedPayload(); typedPayload != nil {
+				if payloadData, extractErr := typedPayload.ExtractGeneric(); extractErr == nil {
+					if contentStr, ok := payloadData["spec_content"].(string); ok {
+						rawSpecContent = []byte(contentStr)
+						hasContent = true
+					}
+				}
+			}
 		}
 	}
 
-	if hasContent {
-		if contentStr, ok := contentPayload.(string); ok {
-			rawSpecContent = []byte(contentStr)
-		} else {
-			return StateError, fmt.Errorf("spec_content payload is not a string: %T", contentPayload)
-		}
-	} else {
+	if !hasContent {
 		// Fallback to file-based spec reading
 		rawSpecContent, err = os.ReadFile(specFile)
 		if err != nil {
@@ -260,28 +261,30 @@ func (d *Driver) getSpecFileFromMessage() string {
 		return ""
 	}
 
-	// Debug: check payload structure (keys available for debugging if needed)
+	// Extract from typed payload
+	typedPayload := specMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return ""
+	}
+
+	payloadData, err := typedPayload.ExtractGeneric()
+	if err != nil {
+		return ""
+	}
 
 	// Check if we have spec_content (bootstrap mode) - no file needed
-	if _, hasContent := specMsg.GetPayload("spec_content"); hasContent {
+	if _, hasContent := payloadData["spec_content"]; hasContent {
 		return "<bootstrap-content>" // Return placeholder since actual content is handled elsewhere
 	}
 
 	// Extract spec file path from payload - try different keys.
-	specFile, exists := specMsg.GetPayload("spec_file")
-	if !exists {
-		// Try alternative keys.
-		specFile, exists = specMsg.GetPayload("file_path")
-		if !exists {
-			specFile, exists = specMsg.GetPayload("filepath")
-			if !exists {
-				return ""
-			}
-		}
+	if specFileStr, ok := payloadData["spec_file"].(string); ok {
+		return specFileStr
 	}
-
-	// Convert to string.
-	if specFileStr, ok := specFile.(string); ok {
+	if specFileStr, ok := payloadData["file_path"].(string); ok {
+		return specFileStr
+	}
+	if specFileStr, ok := payloadData["filepath"].(string); ok {
 		return specFileStr
 	}
 

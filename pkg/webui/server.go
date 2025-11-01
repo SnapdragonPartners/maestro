@@ -554,11 +554,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Create and send SPEC message to architect (use logical name "architect")
 	// The dispatcher will resolve this to the actual architect agent.
 	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, "web-ui", "architect")
-	msg.SetPayload("type", "spec_upload")
-	msg.SetPayload("filename", header.Filename)
-	msg.SetPayload("filepath", filePath)
-	msg.SetPayload("size", header.Size)
-	msg.SetPayload("content", string(content)) // Add the actual file content
+
+	// Build SPEC payload with typed generic payload
+	specPayload := map[string]any{
+		"type":     "spec_upload",
+		"filename": header.Filename,
+		"filepath": filePath,
+		"size":     header.Size,
+		"content":  string(content), // Add the actual file content
+	}
+	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
 
 	s.logger.Info("Dispatching SPEC message %s to architect", msg.ID)
 	if err := s.dispatcher.DispatchMessage(msg); err != nil {

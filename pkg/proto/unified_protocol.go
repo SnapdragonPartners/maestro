@@ -159,111 +159,8 @@ type RequeueResponsePayload struct {
 // Unified protocol validation functions use the constants defined in message.go
 // No need to redefine MsgTypeREQUEST and MsgTypeRESPONSE here
 
-// Helper functions for creating unified messages
-
-// NewQuestionRequest creates a new question request using the unified protocol.
-func NewQuestionRequest(fromAgent, toAgent, questionText string) *AgentMsg {
-	msg := NewAgentMsg(MsgTypeREQUEST, fromAgent, toAgent)
-	msg.SetPayload("kind", string(RequestKindQuestion))
-	msg.SetPayload("question", QuestionRequestPayload{
-		Text: questionText,
-	})
-	msg.SetPayload(KeyCorrelationID, generateID())
-	return msg
-}
-
-// NewQuestionResponse creates a new question response using the unified protocol.
-func NewQuestionResponse(originalRequest *AgentMsg, answerText string) *AgentMsg {
-	msg := NewAgentMsg(MsgTypeRESPONSE, originalRequest.ToAgent, originalRequest.FromAgent)
-	msg.SetPayload("kind", string(ResponseKindQuestion))
-	msg.SetPayload("answer", QuestionResponsePayload{
-		AnswerText: answerText,
-	})
-
-	// Copy correlation ID from original request
-	if correlationID, exists := originalRequest.GetPayload(KeyCorrelationID); exists {
-		msg.SetPayload(KeyCorrelationID, correlationID)
-	}
-	if requestID, exists := originalRequest.GetPayload("id"); exists {
-		msg.SetPayload("request_id", requestID)
-	} else {
-		msg.SetPayload("request_id", originalRequest.ID)
-	}
-
-	return msg
-}
-
-// NewApprovalRequest creates a new approval request using the unified protocol.
-func NewApprovalRequest(fromAgent, toAgent string, approvalType ApprovalType, content, reason string) *AgentMsg {
-	msg := NewAgentMsg(MsgTypeREQUEST, fromAgent, toAgent)
-	msg.SetPayload("kind", string(RequestKindApproval))
-
-	// Set approval fields as flat fields (architect expects this format)
-	msg.SetPayload("approval_type", string(approvalType))
-	msg.SetPayload("content", content)
-	msg.SetPayload("reason", reason)
-
-	msg.SetPayload(KeyCorrelationID, generateID())
-	return msg
-}
-
-// NewApprovalResponse creates a new approval response using the unified protocol.
-func NewApprovalResponse(originalRequest *AgentMsg, decision ApprovalStatus, feedback string) *AgentMsg {
-	msg := NewAgentMsg(MsgTypeRESPONSE, originalRequest.ToAgent, originalRequest.FromAgent)
-	msg.SetPayload("kind", string(ResponseKindApproval))
-	msg.SetPayload("approval", ApprovalResponsePayload{
-		Decision: decision,
-		Feedback: feedback,
-	})
-
-	// Copy correlation ID from original request
-	if correlationID, exists := originalRequest.GetPayload(KeyCorrelationID); exists {
-		msg.SetPayload(KeyCorrelationID, correlationID)
-	}
-	if requestID, exists := originalRequest.GetPayload("id"); exists {
-		msg.SetPayload("request_id", requestID)
-	} else {
-		msg.SetPayload("request_id", originalRequest.ID)
-	}
-
-	return msg
-}
-
-// NewMergeRequest creates a new merge request using the unified protocol.
-func NewMergeRequest(fromAgent, toAgent, storyID, branchName, prURL string) *AgentMsg {
-	msg := NewAgentMsg(MsgTypeREQUEST, fromAgent, toAgent)
-	msg.SetPayload("kind", string(RequestKindMerge))
-	msg.SetPayload("merge", MergeRequestPayload{
-		StoryID:    storyID,
-		BranchName: branchName,
-		PRURL:      prURL,
-	})
-	msg.SetPayload(KeyCorrelationID, generateID())
-	return msg
-}
-
-// NewMergeResponse creates a new merge response using the unified protocol.
-func NewMergeResponse(originalRequest *AgentMsg, status, mergeCommit, conflictDetails string) *AgentMsg {
-	msg := NewAgentMsg(MsgTypeRESPONSE, originalRequest.ToAgent, originalRequest.FromAgent)
-	msg.SetPayload("kind", string(ResponseKindMerge))
-	msg.SetPayload("merge", MergeResponsePayload{
-		Status:          status,
-		MergeCommit:     mergeCommit,
-		ConflictDetails: conflictDetails,
-	})
-
-	// Copy correlation ID from original request
-	if correlationID, exists := originalRequest.GetPayload(KeyCorrelationID); exists {
-		msg.SetPayload(KeyCorrelationID, correlationID)
-	}
-	if requestID, exists := originalRequest.GetPayload("id"); exists {
-		msg.SetPayload("request_id", requestID)
-	} else {
-		msg.SetPayload("request_id", originalRequest.ID)
-	}
-
-	return msg
-}
+// Helper functions for creating unified messages removed.
+// Use NewAgentMsg + SetTypedPayload(NewXXXPayload(...)) instead.
 
 // IsUnifiedRequest checks if a message is using the new unified request protocol.
 func IsUnifiedRequest(msg *AgentMsg) bool {
@@ -281,17 +178,24 @@ func GetRequestKind(msg *AgentMsg) (RequestKind, bool) {
 		return "", false
 	}
 
-	kind, exists := msg.GetPayload("kind")
-	if !exists {
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
 		return "", false
 	}
 
-	kindStr, ok := kind.(string)
-	if !ok {
+	// Map PayloadKind to RequestKind
+	switch typedPayload.Kind {
+	case PayloadKindQuestionRequest:
+		return RequestKindQuestion, true
+	case PayloadKindApprovalRequest:
+		return RequestKindApproval, true
+	case PayloadKindMergeRequest:
+		return RequestKindMerge, true
+	case PayloadKindRequeueRequest:
+		return RequestKindRequeue, true
+	default:
 		return "", false
 	}
-
-	return RequestKind(kindStr), true
 }
 
 // GetResponseKind extracts the response kind from a unified response message.
@@ -300,15 +204,22 @@ func GetResponseKind(msg *AgentMsg) (ResponseKind, bool) {
 		return "", false
 	}
 
-	kind, exists := msg.GetPayload("kind")
-	if !exists {
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
 		return "", false
 	}
 
-	kindStr, ok := kind.(string)
-	if !ok {
+	// Map PayloadKind to ResponseKind
+	switch typedPayload.Kind {
+	case PayloadKindQuestionResponse:
+		return ResponseKindQuestion, true
+	case PayloadKindApprovalResponse:
+		return ResponseKindApproval, true
+	case PayloadKindMergeResponse:
+		return ResponseKindMerge, true
+	case PayloadKindRequeueResponse:
+		return ResponseKindRequeue, true
+	default:
 		return "", false
 	}
-
-	return ResponseKind(kindStr), true
 }

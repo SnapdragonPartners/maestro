@@ -46,8 +46,18 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 			return proto.StateWaiting, false, nil
 		}
 
-		// Extract story content and store it in state data.
-		content, exists := storyMsg.GetPayload(proto.KeyContent)
+		// Extract story content from typed payload
+		typedPayload := storyMsg.GetTypedPayload()
+		if typedPayload == nil {
+			return proto.StateError, false, logx.Errorf("story message missing typed payload")
+		}
+
+		payloadData, err := typedPayload.ExtractGeneric()
+		if err != nil {
+			return proto.StateError, false, logx.Errorf("failed to extract story payload: %w", err)
+		}
+
+		content, exists := payloadData[proto.KeyContent]
 		if !exists {
 			return proto.StateError, false, logx.Errorf("story message missing content")
 		}
@@ -57,15 +67,14 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 			return proto.StateError, false, logx.Errorf("story content must be a string")
 		}
 
-		// Extract the actual story ID from the payload.
-		storyID, exists := storyMsg.GetPayload(proto.KeyStoryID)
+		// Extract the actual story ID from metadata (not payload).
+		storyIDStr, exists := storyMsg.Metadata[proto.KeyStoryID]
 		if !exists {
-			return proto.StateError, false, logx.Errorf("story message missing story_id")
+			return proto.StateError, false, logx.Errorf("story message missing story_id in metadata")
 		}
 
-		storyIDStr, ok := storyID.(string)
-		if !ok {
-			return proto.StateError, false, logx.Errorf("story_id must be a string")
+		if storyIDStr == "" {
+			return proto.StateError, false, logx.Errorf("story_id must not be empty")
 		}
 
 		logx.Infof("🧑‍💻 Received story message %s for story %s, transitioning to SETUP", storyMsg.ID, storyIDStr)
@@ -77,7 +86,7 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 
 		// Extract story type from the payload.
 		storyType := string(proto.StoryTypeApp) // Default to app
-		if storyTypePayload, exists := storyMsg.GetPayload(proto.KeyStoryType); exists {
+		if storyTypePayload, exists := payloadData[proto.KeyStoryType]; exists {
 			c.logger.Info("🧑‍💻 Received story_type payload: '%v' (type: %T)", storyTypePayload, storyTypePayload)
 			if storyTypeStr, ok := storyTypePayload.(string); ok && proto.IsValidStoryType(storyTypeStr) {
 				storyType = storyTypeStr

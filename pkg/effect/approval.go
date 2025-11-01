@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/utils"
 )
 
 // ApprovalEffect represents an approval request effect that blocks until architect responds.
@@ -24,14 +23,29 @@ func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, err
 	agentID := runtime.GetAgentID()
 	approvalID := proto.GenerateApprovalID()
 
-	// Create REQUEST message with approval payload
+	// Create REQUEST message with typed approval payload
 	approvalMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
-	approvalMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
-	approvalMsg.SetPayload("approval_type", e.ApprovalType.String())
-	approvalMsg.SetPayload("content", e.Content)
-	approvalMsg.SetPayload("reason", e.Reason)
-	approvalMsg.SetPayload("approval_id", approvalID)
-	approvalMsg.SetPayload("story_id", e.StoryID) // Include story_id that architect expects
+
+	// Build approval request payload
+	payload := &proto.ApprovalRequestPayload{
+		ApprovalType: e.ApprovalType,
+		Content:      e.Content,
+		Reason:       e.Reason,
+	}
+
+	// Add story_id as context if provided
+	if e.StoryID != "" {
+		payload.Context = "story_id:" + e.StoryID
+	}
+
+	// Set typed payload
+	approvalMsg.SetTypedPayload(proto.NewApprovalRequestPayload(payload))
+
+	// Store approval_id in metadata for tracking
+	approvalMsg.SetMetadata("approval_id", approvalID)
+	if e.StoryID != "" {
+		approvalMsg.SetMetadata("story_id", e.StoryID)
+	}
 
 	runtime.Info("📤 Sending %s approval request %s to %s", e.ApprovalType.String(), approvalID, e.TargetAgent)
 
@@ -53,15 +67,14 @@ func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, err
 	}
 
 	// Extract approval result from response payload
-	// The architect sends approval_result as a proto.ApprovalResult struct
-	approvalResultRaw, exists := responseMsg.GetPayload("approval_result")
-	if !exists {
-		return nil, fmt.Errorf("approval response missing approval_result field")
+	typedPayload := responseMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("approval response missing typed payload")
 	}
 
-	approvalResult, ok := utils.SafeAssert[*proto.ApprovalResult](approvalResultRaw)
-	if !ok {
-		return nil, fmt.Errorf("approval_result is not *proto.ApprovalResult: %T", approvalResultRaw)
+	approvalResult, err := typedPayload.ExtractApprovalResponse()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract approval response: %w", err)
 	}
 
 	result := &ApprovalResult{

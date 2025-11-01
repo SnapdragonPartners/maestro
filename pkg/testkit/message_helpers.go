@@ -43,31 +43,33 @@ func NewShutdownMessage(fromAgent, toAgent string) *MessageBuilder {
 
 // WithContent sets the content payload (common for STORY messages).
 func (mb *MessageBuilder) WithContent(content string) *MessageBuilder {
-	mb.msg.SetPayload("content", content)
+	// For STORY messages, use generic payload
+	payload := map[string]any{"content": content}
+	mb.msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, payload))
 	return mb
 }
 
-// WithStoryID sets the story_id payload (for architect tasks).
+// WithStoryID sets the story_id in metadata (not payload).
 func (mb *MessageBuilder) WithStoryID(storyID string) *MessageBuilder {
-	mb.msg.SetPayload("story_id", storyID)
+	mb.msg.SetMetadata("story_id", storyID)
 	return mb
 }
 
-// WithRequirements sets the requirements payload.
+// WithRequirements adds requirements to the payload.
 func (mb *MessageBuilder) WithRequirements(requirements []string) *MessageBuilder {
-	mb.msg.SetPayload("requirements", requirements)
+	mb.mergeToPayload("requirements", requirements)
 	return mb
 }
 
 // WithStatus sets the status payload (common for RESULT messages).
 func (mb *MessageBuilder) WithStatus(status string) *MessageBuilder {
-	mb.msg.SetPayload("status", status)
+	mb.mergeToPayload("status", status)
 	return mb
 }
 
 // WithImplementation sets the implementation payload (for coding results).
 func (mb *MessageBuilder) WithImplementation(implementation string) *MessageBuilder {
-	mb.msg.SetPayload("implementation", implementation)
+	mb.mergeToPayload("implementation", implementation)
 	return mb
 }
 
@@ -78,26 +80,61 @@ func (mb *MessageBuilder) WithTestResults(success bool, output string) *MessageB
 		"output":  output,
 		"elapsed": "100ms",
 	}
-	mb.msg.SetPayload("test_results", testResults)
+	mb.mergeToPayload("test_results", testResults)
 	return mb
 }
 
 // WithError sets the error payload (for ERROR messages).
 func (mb *MessageBuilder) WithError(errorMsg string) *MessageBuilder {
-	mb.msg.SetPayload("error", errorMsg)
+	payload := map[string]any{"error": errorMsg}
+	mb.msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindError, payload))
 	return mb
 }
 
 // WithQuestion sets the question payload (for QUESTION messages).
 func (mb *MessageBuilder) WithQuestion(question string) *MessageBuilder {
-	mb.msg.SetPayload("question", question)
+	questionPayload := &proto.QuestionRequestPayload{
+		Text: question,
+	}
+	mb.msg.SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 	return mb
 }
 
 // WithAnswer sets the answer payload (for QUESTION responses).
 func (mb *MessageBuilder) WithAnswer(answer string) *MessageBuilder {
-	mb.msg.SetPayload("answer", answer)
+	answerPayload := &proto.QuestionResponsePayload{
+		AnswerText: answer,
+	}
+	mb.msg.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
 	return mb
+}
+
+// mergeToPayload merges a key-value pair into the existing generic payload or creates one.
+func (mb *MessageBuilder) mergeToPayload(key string, value any) {
+	existing := mb.msg.GetTypedPayload()
+	var data map[string]any
+
+	if existing != nil {
+		// Try to extract existing data
+		data, _ = existing.ExtractGeneric()
+	}
+
+	if data == nil {
+		data = make(map[string]any)
+	}
+
+	data[key] = value
+
+	// Determine payload kind based on message type
+	kind := proto.PayloadKindGeneric
+	switch mb.msg.Type {
+	case proto.MsgTypeSTORY:
+		kind = proto.PayloadKindStory
+	case proto.MsgTypeERROR:
+		kind = proto.PayloadKindError
+	}
+
+	mb.msg.SetTypedPayload(proto.NewGenericPayload(kind, data))
 }
 
 // WithMetadata sets a metadata field.

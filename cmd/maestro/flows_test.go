@@ -59,8 +59,13 @@ func TestInjectSpecMessage(t *testing.T) {
 
 	// Simulate the message creation logic from InjectSpec
 	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, source, string(agent.TypeArchitect))
-	msg.SetPayload("spec_content", string(content))
-	msg.SetPayload("type", "spec_content")
+
+	// Build spec payload with typed generic payload
+	specPayload := map[string]any{
+		"spec_content": string(content),
+		"type":         "spec_content",
+	}
+	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
 	msg.SetMetadata("source", source)
 
 	// Verify message structure
@@ -76,12 +81,18 @@ func TestInjectSpecMessage(t *testing.T) {
 		t.Errorf("Expected message to to be %s, got %s", string(agent.TypeArchitect), msg.ToAgent)
 	}
 
-	// Check payload
-	specContentRaw, exists := msg.GetPayload("spec_content")
-	if !exists {
-		t.Error("Expected spec_content payload to exist")
+	// Check typed payload
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		t.Fatal("Expected typed payload to exist")
 	}
-	specContent, ok := specContentRaw.(string)
+
+	payloadData, err := typedPayload.ExtractGeneric()
+	if err != nil {
+		t.Fatalf("Failed to extract payload: %v", err)
+	}
+
+	specContent, ok := payloadData["spec_content"].(string)
 	if !ok {
 		t.Error("Expected spec_content to be a string")
 	}
@@ -89,11 +100,7 @@ func TestInjectSpecMessage(t *testing.T) {
 		t.Errorf("Expected spec_content payload to be %s, got %s", string(content), specContent)
 	}
 
-	payloadTypeRaw, exists := msg.GetPayload("type")
-	if !exists {
-		t.Error("Expected type payload to exist")
-	}
-	payloadType, ok := payloadTypeRaw.(string)
+	payloadType, ok := payloadData["type"].(string)
 	if !ok {
 		t.Error("Expected type payload to be a string")
 	}

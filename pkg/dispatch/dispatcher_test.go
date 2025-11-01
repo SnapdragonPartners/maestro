@@ -433,7 +433,8 @@ func TestDispatchMessage(t *testing.T) {
 		FromAgent: "orchestrator",
 		ToAgent:   "coder",
 	}
-	msg.SetPayload("test", "content")
+	// Build story payload with typed generic payload
+	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{"test": "content"}))
 
 	// Test dispatching a message
 	err = dispatcher.DispatchMessage(msg)
@@ -732,7 +733,8 @@ func TestSendResponse(t *testing.T) {
 		FromAgent: "architect",
 		ToAgent:   "coder-001",
 	}
-	responseMsg.SetPayload(proto.KeyKind, "approval")
+	// Build generic response payload
+	responseMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{}))
 
 	// Create agent to receive response
 	agent := &mockChannelReceiver{
@@ -1063,7 +1065,8 @@ func TestStoryIDValidation(t *testing.T) {
 		FromAgent: "orchestrator",
 		ToAgent:   "coder",
 	}
-	storyMsgEmpty.SetPayload(proto.KeyStoryID, "")
+	// story_id in metadata, not payload
+	storyMsgEmpty.SetMetadata(proto.KeyStoryID, "")
 
 	err = dispatcher.DispatchMessage(storyMsgEmpty)
 	// Accept either sync or async rejection
@@ -1080,7 +1083,8 @@ func TestStoryIDValidation(t *testing.T) {
 		FromAgent: "orchestrator",
 		ToAgent:   "coder",
 	}
-	storyMsgValid.SetPayload(proto.KeyStoryID, "story-123")
+	// story_id in metadata, not payload
+	storyMsgValid.SetMetadata(proto.KeyStoryID, "story-123")
 
 	err = dispatcher.DispatchMessage(storyMsgValid)
 	if err != nil {

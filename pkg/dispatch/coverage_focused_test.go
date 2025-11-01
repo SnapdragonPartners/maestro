@@ -72,22 +72,28 @@ func TestProcessMessageContextTimeout(t *testing.T) {
 
 	// Test STORY message with canceled context
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "test-agent")
-	storyMsg.SetPayload(proto.KeyStoryID, "timeout-story")
-	storyMsg.SetPayload(proto.KeyTitle, "Timeout Test")
-	storyMsg.SetPayload(proto.KeyRequirements, "Test timeout handling")
+	storyMsg.SetMetadata(proto.KeyStoryID, "timeout-story")
+	storyMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+		proto.KeyTitle:        "Timeout Test",
+		proto.KeyRequirements: "Test timeout handling",
+	}))
 
 	dispatcher.processMessage(ctx, storyMsg)
 
 	// Test SPEC message with canceled context
 	specMsg := proto.NewAgentMsg(proto.MsgTypeSPEC, "orchestrator", "architect")
-	specMsg.SetPayload(proto.KeyContent, "Test spec content")
+	specMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+		proto.KeyContent: "Test spec content",
+	}))
 
 	dispatcher.processMessage(ctx, specMsg)
 
 	// Test REQUEST message with canceled context
 	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "coder", "architect")
-	requestMsg.SetPayload(proto.KeyKind, "question")
-	requestMsg.SetPayload(proto.KeyContent, "Test question")
+	questionPayload := &proto.QuestionRequestPayload{
+		Text: "Test question",
+	}
+	requestMsg.SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 
 	dispatcher.processMessage(ctx, requestMsg)
 }
@@ -133,7 +139,7 @@ func TestProcessWithRetryCoverage(t *testing.T) {
 
 	// Test with regular message (will trigger rate limiting)
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "process-retry-test")
-	storyMsg.SetPayload(proto.KeyStoryID, "retry-story")
+	storyMsg.SetMetadata(proto.KeyStoryID, "retry-story")
 	result = dispatcher.processWithRetry(ctx, storyMsg, mockAgent)
 	if result.Error != nil {
 		t.Logf("Story message result (expected rate limit error): %v", result.Error)
@@ -155,8 +161,9 @@ func TestSendResponseCoverage(t *testing.T) {
 
 	// Test with RESPONSE that has no target agent
 	responseMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "nonexistent-agent")
-	responseMsg.SetPayload(proto.KeyKind, "answer")
-	responseMsg.SetPayload(proto.KeyContent, "Response content")
+	responseMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+		proto.KeyContent: "Response content",
+	}))
 
 	dispatcher.sendResponse(responseMsg)
 
@@ -168,8 +175,9 @@ func TestSendResponseCoverage(t *testing.T) {
 	dispatcher.Attach(agent)
 
 	responseMsg2 := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "response-target")
-	responseMsg2.SetPayload(proto.KeyKind, "answer")
-	responseMsg2.SetPayload(proto.KeyContent, "Response content 2")
+	responseMsg2.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+		proto.KeyContent: "Response content 2",
+	}))
 
 	dispatcher.sendResponse(responseMsg2)
 
@@ -210,7 +218,7 @@ func TestDispatchMessageEdgeCases(t *testing.T) {
 
 	// Try to dispatch a story message
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "test-agent")
-	storyMsg.SetPayload(proto.KeyStoryID, "edge-case-story")
+	storyMsg.SetMetadata(proto.KeyStoryID, "edge-case-story")
 	err = dispatcher.DispatchMessage(storyMsg)
 	if err != nil {
 		t.Logf("Story dispatch result: %v", err)

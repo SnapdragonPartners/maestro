@@ -263,8 +263,13 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) error {
 	// Create spec message using the existing protocol (matches bootstrap.go pattern)
 	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, source, string(agent.TypeArchitect))
-	msg.SetPayload("spec_content", string(content))
-	msg.SetPayload("type", "spec_content") // Preserve existing protocol
+
+	// Build spec payload with typed generic payload
+	specPayload := map[string]any{
+		"spec_content": string(content),
+		"type":         "spec_content", // Preserve existing protocol
+	}
+	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
 	msg.SetMetadata("source", source)
 
 	// Send via dispatcher (matches bootstrap.go pattern)

@@ -48,57 +48,44 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			CreatedAt: requestMsg.Timestamp,
 		}
 
-		// Extract story_id if present
-		if storyID, exists := requestMsg.GetPayload("story_id"); exists {
-			if storyIDStr, ok := storyID.(string); ok {
-				agentRequest.StoryID = &storyIDStr
-			}
+		// Extract story_id from metadata
+		if storyIDStr, exists := requestMsg.Metadata["story_id"]; exists {
+			agentRequest.StoryID = &storyIDStr
 		}
 
 		// Set request type and content based on unified REQUEST protocol
 		if requestMsg.Type == proto.MsgTypeREQUEST {
 			agentRequest.RequestType = persistence.RequestTypeApproval
-			// Extract content from different payload structures
-			if content, exists := requestMsg.GetPayload("content"); exists {
-				if contentStr, ok := content.(string); ok {
-					agentRequest.Content = contentStr
-				}
-			} else if questionPayload, exists := requestMsg.GetPayload("question"); exists {
-				// Handle question payload structure
-				switch q := questionPayload.(type) {
-				case proto.QuestionRequestPayload:
-					agentRequest.Content = q.Text
-				case string:
-					agentRequest.Content = q
-				}
-			}
-			if approvalType, exists := requestMsg.GetPayload("approval_type"); exists {
-				if approvalTypeStr, ok := approvalType.(string); ok {
-					agentRequest.ApprovalType = &approvalTypeStr
-				}
-			}
-			if reason, exists := requestMsg.GetPayload("reason"); exists {
-				if reasonStr, ok := reason.(string); ok {
-					agentRequest.Reason = &reasonStr
+
+			// Extract content from typed payload
+			if typedPayload := requestMsg.GetTypedPayload(); typedPayload != nil {
+				switch typedPayload.Kind {
+				case proto.PayloadKindQuestionRequest:
+					if q, err := typedPayload.ExtractQuestionRequest(); err == nil {
+						agentRequest.Content = q.Text
+					}
+				case proto.PayloadKindApprovalRequest:
+					if a, err := typedPayload.ExtractApprovalRequest(); err == nil {
+						agentRequest.Content = a.Content
+						approvalTypeStr := a.ApprovalType.String()
+						agentRequest.ApprovalType = &approvalTypeStr
+						if a.Reason != "" {
+							agentRequest.Reason = &a.Reason
+						}
+					}
 				}
 			}
 		}
 
-		// Set correlation ID if present
-		if correlationID, exists := requestMsg.GetPayload("correlation_id"); exists {
-			if correlationIDStr, ok := correlationID.(string); ok {
-				agentRequest.CorrelationID = &correlationIDStr
-			}
+		// Set correlation ID from metadata
+		if correlationIDStr, exists := requestMsg.Metadata["correlation_id"]; exists {
+			agentRequest.CorrelationID = &correlationIDStr
 		}
-		if correlationID, exists := requestMsg.GetPayload("question_id"); exists {
-			if correlationIDStr, ok := correlationID.(string); ok {
-				agentRequest.CorrelationID = &correlationIDStr
-			}
+		if correlationIDStr, exists := requestMsg.Metadata["question_id"]; exists {
+			agentRequest.CorrelationID = &correlationIDStr
 		}
-		if correlationID, exists := requestMsg.GetPayload("approval_id"); exists {
-			if correlationIDStr, ok := correlationID.(string); ok {
-				agentRequest.CorrelationID = &correlationIDStr
-			}
+		if correlationIDStr, exists := requestMsg.Metadata["approval_id"]; exists {
+			agentRequest.CorrelationID = &correlationIDStr
 		}
 
 		// Set parent message ID
@@ -120,26 +107,23 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	switch requestMsg.Type {
 	case proto.MsgTypeREQUEST:
 		// Handle unified REQUEST protocol with kind-based routing
-		if kindRaw, exists := requestMsg.GetPayload(proto.KeyKind); exists {
-			if kindStr, ok := kindRaw.(string); ok {
-				switch proto.RequestKind(kindStr) {
-				case proto.RequestKindQuestion:
-					response, err = d.handleQuestionRequest(ctx, requestMsg)
-				case proto.RequestKindApproval:
-					response, err = d.handleApprovalRequest(ctx, requestMsg)
-				case proto.RequestKindMerge:
-					response, err = d.handleMergeRequest(ctx, requestMsg)
-				case proto.RequestKindRequeue:
-					err = d.handleRequeueRequest(ctx, requestMsg)
-					response = nil // No response needed for requeue messages
-				default:
-					return StateError, fmt.Errorf("unknown request kind: %s", kindStr)
-				}
-			} else {
-				return StateError, fmt.Errorf("request kind is not a string")
-			}
-		} else {
-			return StateError, fmt.Errorf("no kind field in REQUEST message")
+		requestKind, hasKind := proto.GetRequestKind(requestMsg)
+		if !hasKind {
+			return StateError, fmt.Errorf("REQUEST message missing valid kind in typed payload")
+		}
+
+		switch requestKind {
+		case proto.RequestKindQuestion:
+			response, err = d.handleQuestionRequest(ctx, requestMsg)
+		case proto.RequestKindApproval:
+			response, err = d.handleApprovalRequest(ctx, requestMsg)
+		case proto.RequestKindMerge:
+			response, err = d.handleMergeRequest(ctx, requestMsg)
+		case proto.RequestKindRequeue:
+			err = d.handleRequeueRequest(ctx, requestMsg)
+			response = nil // No response needed for requeue messages
+		default:
+			return StateError, fmt.Errorf("unknown request kind: %s", requestKind)
 		}
 	default:
 		return StateError, fmt.Errorf("unknown request type: %s", requestMsg.Type)
@@ -171,80 +155,50 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			// Set request ID for correlation
 			agentResponse.RequestID = &requestMsg.ID
 
-			// Extract story_id if present
-			if storyID, exists := response.GetPayload("story_id"); exists {
-				if storyIDStr, ok := storyID.(string); ok {
-					agentResponse.StoryID = &storyIDStr
-				}
-			} else if storyID, exists := requestMsg.GetPayload("story_id"); exists {
+			// Extract story_id from metadata
+			if storyIDStr, exists := response.Metadata["story_id"]; exists {
+				agentResponse.StoryID = &storyIDStr
+			} else if storyIDStr, exists := requestMsg.Metadata["story_id"]; exists {
 				// Fallback to request message story_id
-				if storyIDStr, ok := storyID.(string); ok {
-					agentResponse.StoryID = &storyIDStr
-				}
+				agentResponse.StoryID = &storyIDStr
 			}
 
 			// Set response type and content based on message type
 			switch response.Type {
 			case proto.MsgTypeRESPONSE:
-				// Handle unified RESPONSE protocol
-				if kindRaw, exists := response.GetPayload(proto.KeyKind); exists {
-					if kindStr, ok := kindRaw.(string); ok {
-						switch proto.ResponseKind(kindStr) {
-						case proto.ResponseKindQuestion:
-							agentResponse.ResponseType = persistence.ResponseTypeAnswer
-							if answerPayload, exists := response.GetPayload(proto.KeyAnswer); exists {
-								switch ap := answerPayload.(type) {
-								case proto.QuestionResponsePayload:
-									agentResponse.Content = ap.AnswerText
-								case string:
-									agentResponse.Content = ap
-								}
+				// Handle unified RESPONSE protocol with typed payloads
+				responseKind, hasKind := proto.GetResponseKind(response)
+				if hasKind {
+					switch responseKind {
+					case proto.ResponseKindQuestion:
+						agentResponse.ResponseType = persistence.ResponseTypeAnswer
+						if typedPayload := response.GetTypedPayload(); typedPayload != nil {
+							if q, err := typedPayload.ExtractQuestionResponse(); err == nil {
+								agentResponse.Content = q.AnswerText
 							}
-						case proto.ResponseKindApproval, proto.ResponseKindExecution, proto.ResponseKindMerge, proto.ResponseKindRequeue:
-							agentResponse.ResponseType = persistence.ResponseTypeResult
-						default:
-							agentResponse.ResponseType = persistence.ResponseTypeResult
 						}
-					} else {
+					case proto.ResponseKindApproval, proto.ResponseKindExecution, proto.ResponseKindMerge, proto.ResponseKindRequeue:
+						agentResponse.ResponseType = persistence.ResponseTypeResult
+					default:
 						agentResponse.ResponseType = persistence.ResponseTypeResult
 					}
 				} else {
 					agentResponse.ResponseType = persistence.ResponseTypeResult
 				}
 
-				// Extract approval_result struct if present
-				if approvalResult, exists := response.GetPayload("approval_result"); exists {
-					if result, ok := approvalResult.(*proto.ApprovalResult); ok {
-						// Content contains the feedback/response text
-						agentResponse.Content = result.Feedback
+				// Extract approval response if present
+				if typedPayload := response.GetTypedPayload(); typedPayload != nil {
+					if typedPayload.Kind == proto.PayloadKindApprovalResponse {
+						if result, err := typedPayload.ExtractApprovalResponse(); err == nil {
+							// Content contains the feedback/response text
+							agentResponse.Content = result.Feedback
 
-						// Validate status against CHECK constraint
-						if validStatus, valid := proto.ValidateApprovalStatus(string(result.Status)); valid {
-							validStatusStr := string(validStatus)
-							agentResponse.Status = &validStatusStr
-						} else {
-							d.logger.Warn("Invalid approval status '%s' from ApprovalResult ignored", result.Status)
-						}
-					}
-				}
-
-				// Fallback to individual fields if approval_result not found
-				if agentResponse.Content == "" {
-					if content, exists := response.GetPayload("content"); exists {
-						if contentStr, ok := content.(string); ok {
-							agentResponse.Content = contentStr
-						}
-					}
-				}
-				if agentResponse.Status == nil {
-					if status, exists := response.GetPayload("status"); exists {
-						if statusStr, ok := status.(string); ok {
 							// Validate status against CHECK constraint
-							if validStatus, valid := proto.ValidateApprovalStatus(statusStr); valid {
+							if validStatus, valid := proto.ValidateApprovalStatus(string(result.Status)); valid {
 								validStatusStr := string(validStatus)
 								agentResponse.Status = &validStatusStr
 							} else {
-								d.logger.Warn("Invalid approval status '%s' ignored, using nil", statusStr)
+								d.logger.Warn("Invalid approval status '%s' from ApprovalResult ignored", result.Status)
 							}
 						}
 					}
@@ -252,21 +206,15 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			default:
 			}
 
-			// Set correlation ID if present
-			if correlationID, exists := response.GetPayload("correlation_id"); exists {
-				if correlationIDStr, ok := correlationID.(string); ok {
-					agentResponse.CorrelationID = &correlationIDStr
-				}
+			// Set correlation ID from metadata
+			if correlationIDStr, exists := response.Metadata["correlation_id"]; exists {
+				agentResponse.CorrelationID = &correlationIDStr
 			}
-			if correlationID, exists := response.GetPayload("question_id"); exists {
-				if correlationIDStr, ok := correlationID.(string); ok {
-					agentResponse.CorrelationID = &correlationIDStr
-				}
+			if correlationIDStr, exists := response.Metadata["question_id"]; exists {
+				agentResponse.CorrelationID = &correlationIDStr
 			}
-			if correlationID, exists := response.GetPayload("approval_id"); exists {
-				if correlationIDStr, ok := correlationID.(string); ok {
-					agentResponse.CorrelationID = &correlationIDStr
-				}
+			if correlationIDStr, exists := response.Metadata["approval_id"]; exists {
+				agentResponse.CorrelationID = &correlationIDStr
 			}
 
 			d.persistenceChannel <- &persistence.Request{
@@ -312,10 +260,18 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 // handleQuestionRequest processes a QUESTION message and returns an ANSWER.
 func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	question, exists := questionMsg.GetPayload("question")
-	if !exists {
-		return nil, fmt.Errorf("no question payload in message")
+	// Extract question from typed payload
+	typedPayload := questionMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("question message missing typed payload")
 	}
+
+	questionPayload, err := typedPayload.ExtractQuestionRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract question request: %w", err)
+	}
+
+	question := questionPayload.Text
 
 	// Question processing will be logged to database only
 
@@ -324,7 +280,7 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 
 	// If we have LLM client, use it for more intelligent responses.
 	if d.llmClient != nil {
-		prompt := fmt.Sprintf("Answer this coding question: %v", question)
+		prompt := fmt.Sprintf("Answer this coding question: %s", question)
 
 		// Get LLM response using centralized helper
 		llmAnswer, err := d.callLLMWithTemplate(ctx, prompt)
@@ -337,104 +293,66 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	// Create RESPONSE using unified protocol.
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, questionMsg.FromAgent)
 	response.ParentMsgID = questionMsg.ID
-	response.SetPayload(proto.KeyKind, string(proto.ResponseKindQuestion))
-	response.SetPayload(proto.KeyAnswer, answer) // Use proto.KeyAnswer instead of "answer"
-	response.SetPayload("content", answer)       // Also set content for fallback extraction
 
-	// Copy correlation ID from request for proper tracking
-	if correlationID, exists := questionMsg.GetPayload("correlation_id"); exists {
-		response.SetPayload("correlation_id", correlationID)
+	// Set typed question response payload
+	answerPayload := &proto.QuestionResponsePayload{
+		AnswerText: answer,
+		Metadata:   make(map[string]string),
 	}
-	// Copy story_id if present
-	if storyID, exists := questionMsg.GetPayload("story_id"); exists {
-		response.SetPayload("story_id", storyID)
+
+	// Copy correlation ID and story_id to metadata
+	if correlationIDStr, exists := questionMsg.Metadata["correlation_id"]; exists {
+		answerPayload.Metadata["correlation_id"] = correlationIDStr
+		response.SetMetadata("correlation_id", correlationIDStr)
 	}
+	if storyIDStr, exists := questionMsg.Metadata["story_id"]; exists {
+		answerPayload.Metadata["story_id"] = storyIDStr
+		response.SetMetadata("story_id", storyIDStr)
+	}
+
+	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
 
 	return response, nil
 }
 
 // handleApprovalRequest processes a REQUEST message and returns a RESULT.
 func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	requestType, _ := requestMsg.GetPayload("request_type")
-
-	// Check if this is a merge request.
-	if requestTypeStr, ok := requestType.(string); ok && requestTypeStr == "merge" {
-		return d.handleMergeRequest(ctx, requestMsg)
+	// Extract approval request from typed payload
+	typedPayload := requestMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("approval request message missing typed payload")
 	}
 
-	// Handle regular approval requests.
-	content, _ := requestMsg.GetPayload("content")
-	approvalTypeStr, _ := requestMsg.GetPayload("approval_type")
-	approvalID, _ := requestMsg.GetPayload("approval_id")
-
-	// Convert interface{} to string with type assertion
-	approvalTypeString := ""
-	if approvalTypeStr != nil {
-		approvalTypeString, _ = approvalTypeStr.(string)
+	approvalPayload, err := typedPayload.ExtractApprovalRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract approval request: %w", err)
 	}
 
-	approvalIDString := ""
-	if approvalID != nil {
-		approvalIDString, _ = approvalID.(string)
-	}
+	content := approvalPayload.Content
+	approvalType := approvalPayload.ApprovalType
+	approvalIDString := requestMsg.Metadata["approval_id"]
 
 	// Approval request processing will be logged to database only
 
-	// Parse approval type from request.
-	approvalType, err := proto.ParseApprovalType(approvalTypeString)
-	if err != nil {
-		approvalType = proto.ApprovalTypePlan
-	}
-
 	// Persist plan to database if this is a plan approval request
 	if approvalType == proto.ApprovalTypePlan && d.persistenceChannel != nil {
-		// For plan requests, look for content in the "plan" field first, then "content"
-		var planContent string
-		var planContentFound bool
+		planContent := content
 
-		if planPayload, exists := requestMsg.GetPayload("plan"); exists {
-			if planStr, ok := planPayload.(string); ok {
-				planContent = planStr
-				planContentFound = true
-			}
-		}
-		if !planContentFound {
-			if contentStr, ok := content.(string); ok {
-				planContent = contentStr
-				planContentFound = true
-			}
-		}
-
-		if planContentFound {
-			// Extract story_id
-			var storyIDStr string
-			if storyID, exists := requestMsg.GetPayload("story_id"); exists {
-				if storyID, ok := storyID.(string); ok {
-					storyIDStr = storyID
-				}
-			}
+		if planContent != "" {
+			// Extract story_id from metadata
+			storyIDStr := requestMsg.Metadata["story_id"]
 
 			// Debug logging for story_id validation
 			if storyIDStr == "" {
 				d.logger.Error("Agent plan creation: missing story_id in request from %s", requestMsg.FromAgent)
 			} else {
 				d.logger.Info("Creating agent plan for story_id: '%s' (len=%d) from agent: %s", storyIDStr, len(storyIDStr), requestMsg.FromAgent)
-				// Log all payload keys for debugging
-				d.logger.Debug("Request payload keys: %v", func() []string {
-					var keys []string
-					for k := range requestMsg.Payload {
-						keys = append(keys, k)
-					}
-					return keys
-				}())
 			}
 
 			// Extract confidence if present
 			var confidenceStr *string
-			if confidence, exists := requestMsg.GetPayload("confidence"); exists {
-				if conf, ok := confidence.(string); ok {
-					confidenceStr = &conf
-				}
+			if conf, exists := approvalPayload.Metadata["confidence"]; exists && conf != "" {
+				confidenceStr = &conf
 			}
 
 			agentPlan := &persistence.AgentPlan{
@@ -528,13 +446,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	// Mark story as completed for approved completions.
 	if approved && approvalType == proto.ApprovalTypeCompletion {
-		// Extract story ID and handle work acceptance (queue completion, database persistence, state transition signal)
-		if storyIDPayload, exists := requestMsg.GetPayload(proto.KeyStoryID); exists {
-			if storyIDStr, ok := storyIDPayload.(string); ok && storyIDStr != "" {
-				// For completion (non-merge) scenarios, we don't have PR/commit data
-				completionSummary := "Story completed via manual approval"
-				d.handleWorkAccepted(ctx, storyIDStr, "completion", nil, nil, &completionSummary)
-			}
+		// Extract story ID from metadata and handle work acceptance (queue completion, database persistence, state transition signal)
+		if storyIDStr, exists := requestMsg.Metadata[proto.KeyStoryID]; exists && storyIDStr != "" {
+			// For completion (non-merge) scenarios, we don't have PR/commit data
+			completionSummary := "Story completed via manual approval"
+			d.handleWorkAccepted(ctx, storyIDStr, "completion", nil, nil, &completionSummary)
 		}
 	}
 
@@ -585,14 +501,9 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	// If this is an approved plan, update the story's approved plan in the queue
 	if approvalResult.Status == proto.ApprovalStatusApproved && approvalType == proto.ApprovalTypePlan {
-		if storyIDStr, exists := proto.GetTypedPayload[string](requestMsg, proto.KeyStoryID); exists && d.queue != nil {
-			// Get the plan content from the request
-			var planContent string
-			if planStr, exists := proto.GetTypedPayload[string](requestMsg, "plan"); exists {
-				planContent = planStr
-			} else if contentStr, ok := content.(string); ok {
-				planContent = contentStr
-			}
+		if storyIDStr, exists := requestMsg.Metadata[proto.KeyStoryID]; exists && storyIDStr != "" && d.queue != nil {
+			// Get the plan content from the request (it's already in 'content' variable from approvalPayload)
+			planContent := content
 
 			if planContent != "" {
 				if err := d.queue.SetApprovedPlan(storyIDStr, planContent); err != nil {
@@ -639,22 +550,20 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		}
 	}
 
-	// Create RESPONSE using unified protocol with individual approval fields.
+	// Create RESPONSE using unified protocol with typed approval response payload.
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
 
-	// Set individual approval fields that ApprovalEffect expects
-	response.SetPayload("status", approvalResult.Status.String())
-	response.SetPayload("feedback", approvalResult.Feedback)
-	response.SetPayload("approval_id", approvalResult.ID)
+	// Set typed approval response payload
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
 
-	// Also set approval_result struct for database storage
-	response.SetPayload("approval_result", approvalResult)
-
-	// Copy story_id from request for dispatcher validation
-	if storyID, exists := proto.GetTypedPayload[string](requestMsg, proto.KeyStoryID); exists {
-		response.SetPayload(proto.KeyStoryID, storyID)
+	// Copy story_id from request metadata for dispatcher validation
+	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
+		response.SetMetadata(proto.KeyStoryID, storyID)
 	}
+
+	// Copy approval_id to metadata
+	response.SetMetadata("approval_id", approvalResult.ID)
 
 	// Approval result will be logged to database only
 
@@ -663,9 +572,8 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 // handleRequeueRequest processes a REQUEUE message (fire-and-forget).
 func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *proto.AgentMsg) error {
-	storyID, _ := requeueMsg.GetPayload("story_id")
-
-	storyIDStr, _ := storyID.(string)
+	// Extract story_id from metadata
+	storyIDStr := requeueMsg.Metadata["story_id"]
 
 	if storyIDStr == "" {
 		return fmt.Errorf("requeue request missing story_id")
@@ -689,14 +597,23 @@ func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *p
 
 // handleMergeRequest processes a merge REQUEST message and returns a RESULT.
 func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg) (*proto.AgentMsg, error) {
-	prURL, _ := request.GetPayload("pr_url")
-	branchName, _ := request.GetPayload("branch_name")
-	storyID, _ := request.GetPayload("story_id")
+	// Extract merge request from typed payload
+	typedPayload := request.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("merge request message missing typed payload")
+	}
 
-	// Convert to strings safely.
-	prURLStr, _ := prURL.(string)
-	branchNameStr, _ := branchName.(string)
-	storyIDStr, _ := storyID.(string)
+	mergePayload, err := typedPayload.ExtractGeneric()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract merge request: %w", err)
+	}
+
+	// Extract fields from payload
+	prURLStr, _ := mergePayload["pr_url"].(string)
+	branchNameStr, _ := mergePayload["branch_name"].(string)
+
+	// Extract story_id from metadata
+	storyIDStr := request.Metadata["story_id"]
 
 	d.logger.Info("🔀 Processing merge request for story %s: PR=%s, branch=%s", storyIDStr, prURLStr, branchNameStr)
 
@@ -706,38 +623,40 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 	// Create RESPONSE using unified protocol.
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, request.FromAgent)
 	resultMsg.ParentMsgID = request.ID
-	resultMsg.SetPayload(proto.KeyKind, string(proto.ResponseKindMerge))
 
-	// Copy story_id from request for dispatcher validation
-	if storyID, exists := request.GetPayload(proto.KeyStoryID); exists {
-		resultMsg.SetPayload(proto.KeyStoryID, storyID)
+	// Copy story_id from request metadata for dispatcher validation
+	if storyID, exists := request.Metadata[proto.KeyStoryID]; exists {
+		resultMsg.SetMetadata(proto.KeyStoryID, storyID)
 	}
+
+	// Build merge result payload
+	mergeResultPayload := make(map[string]any)
 
 	if err != nil {
 		// Categorize error for appropriate response
 		status, feedback := d.categorizeMergeError(err)
 		d.logger.Error("🔀 Merge failed for story %s: %s (status: %s)", storyIDStr, err.Error(), status)
 
-		resultMsg.SetPayload("status", string(status))
-		resultMsg.SetPayload("feedback", feedback)
+		mergeResultPayload["status"] = string(status)
+		mergeResultPayload["feedback"] = feedback
 		if status == proto.ApprovalStatusNeedsChanges {
-			resultMsg.SetPayload("error_details", err.Error()) // Preserve detailed error for debugging
+			mergeResultPayload["error_details"] = err.Error() // Preserve detailed error for debugging
 		}
 	} else if mergeResult != nil && mergeResult.HasConflicts {
 		// Merge conflicts are always recoverable
 		conflictFeedback := fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit: %s", mergeResult.ConflictInfo)
 		d.logger.Warn("🔀 Merge conflicts for story %s: %s", storyIDStr, mergeResult.ConflictInfo)
 
-		resultMsg.SetPayload("status", string(proto.ApprovalStatusNeedsChanges))
-		resultMsg.SetPayload("feedback", conflictFeedback)
-		resultMsg.SetPayload("conflict_details", mergeResult.ConflictInfo)
+		mergeResultPayload["status"] = string(proto.ApprovalStatusNeedsChanges)
+		mergeResultPayload["feedback"] = conflictFeedback
+		mergeResultPayload["conflict_details"] = mergeResult.ConflictInfo
 	} else {
 		// Success
 		d.logger.Info("🔀 Merge successful for story %s: commit %s", storyIDStr, mergeResult.CommitSHA)
 
-		resultMsg.SetPayload("status", string(proto.ApprovalStatusApproved))
-		resultMsg.SetPayload("feedback", "Pull request merged successfully")
-		resultMsg.SetPayload("merge_commit", mergeResult.CommitSHA)
+		mergeResultPayload["status"] = string(proto.ApprovalStatusApproved)
+		mergeResultPayload["feedback"] = "Pull request merged successfully"
+		mergeResultPayload["merge_commit"] = mergeResult.CommitSHA
 
 		// Extract PR ID from URL for database storage
 		var prIDPtr *string
@@ -754,6 +673,9 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		// Handle work acceptance (queue completion, database persistence, state transition signal)
 		d.handleWorkAccepted(ctx, storyIDStr, "merge", prIDPtr, &mergeResult.CommitSHA, &completionSummary)
 	}
+
+	// Set typed generic payload with merge result
+	resultMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, mergeResultPayload))
 
 	return resultMsg, nil
 }
@@ -954,56 +876,30 @@ func (d *Driver) categorizeMergeError(err error) (proto.ApprovalStatus, string) 
 
 // generateBudgetReviewPrompt creates an enhanced prompt for budget review requests using templates.
 func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
-	// Extract data from request message
-	var storyID string
-	if val, exists := requestMsg.GetPayload("story_id"); exists {
-		storyID, _ = val.(string)
+	// Extract data from typed payload
+	typedPayload := requestMsg.GetTypedPayload()
+	if typedPayload == nil {
+		d.logger.Warn("Budget review request missing typed payload, using defaults")
+		return "Budget review request missing data"
 	}
 
-	var origin string
-	if val, exists := requestMsg.GetPayload("origin"); exists {
-		origin, _ = val.(string)
+	payloadData, err := typedPayload.ExtractGeneric()
+	if err != nil {
+		d.logger.Warn("Failed to extract budget review payload: %v", err)
+		return "Budget review request data extraction failed"
 	}
 
-	var loops int
-	if val, exists := requestMsg.GetPayload("loops"); exists {
-		loops, _ = val.(int)
-	}
-
-	var maxLoops int
-	if val, exists := requestMsg.GetPayload("max_loops"); exists {
-		maxLoops, _ = val.(int)
-	}
-
-	var contextSize int
-	if val, exists := requestMsg.GetPayload("context_size"); exists {
-		contextSize, _ = val.(int)
-	}
-
-	var phaseTokens int
-	if val, exists := requestMsg.GetPayload("phase_tokens"); exists {
-		phaseTokens, _ = val.(int)
-	}
-
-	var phaseCostUSD float64
-	if val, exists := requestMsg.GetPayload("phase_cost_usd"); exists {
-		phaseCostUSD, _ = val.(float64)
-	}
-
-	var totalLLMCalls int
-	if val, exists := requestMsg.GetPayload("total_llm_calls"); exists {
-		totalLLMCalls, _ = val.(int)
-	}
-
-	var recentActivity string
-	if val, exists := requestMsg.GetPayload("recent_activity"); exists {
-		recentActivity, _ = val.(string)
-	}
-
-	var issuePattern string
-	if val, exists := requestMsg.GetPayload("issue_pattern"); exists {
-		issuePattern, _ = val.(string)
-	}
+	// Extract fields with safe type assertions and defaults
+	storyID, _ := payloadData["story_id"].(string)
+	origin, _ := payloadData["origin"].(string)
+	loops, _ := payloadData["loops"].(int)
+	maxLoops, _ := payloadData["max_loops"].(int)
+	contextSize, _ := payloadData["context_size"].(int)
+	phaseTokens, _ := payloadData["phase_tokens"].(int)
+	phaseCostUSD, _ := payloadData["phase_cost_usd"].(float64)
+	totalLLMCalls, _ := payloadData["total_llm_calls"].(int)
+	recentActivity, _ := payloadData["recent_activity"].(string)
+	issuePattern, _ := payloadData["issue_pattern"].(string)
 
 	// Get story information from queue
 	var storyTitle, storyType, specContent, approvedPlan string
@@ -1113,11 +1009,8 @@ Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with sp
 
 // generateApprovalPrompt is a shared helper for story-type-aware approval prompts.
 func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any, appTemplate, devopsTemplate templates.StateTemplate, fallbackMsg string) string {
-	// Extract story ID to get story type from queue
-	var storyID string
-	if val, exists := requestMsg.GetPayload("story_id"); exists {
-		storyID, _ = val.(string)
-	}
+	// Extract story ID from metadata to get story type from queue
+	storyID := requestMsg.Metadata["story_id"]
 
 	// Get story type from queue (defaults to app if not found)
 	storyType := defaultStoryType

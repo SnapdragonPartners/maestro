@@ -24,10 +24,21 @@ func (e *MergeEffect) Execute(ctx context.Context, runtime Runtime) (any, error)
 
 	// Create REQUEST message with merge payload
 	mergeMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
-	mergeMsg.SetPayload(proto.KeyKind, string(proto.RequestKindMerge))
-	mergeMsg.SetPayload("story_id", e.StoryID)
-	mergeMsg.SetPayload("pr_url", e.PRUrl)
-	mergeMsg.SetPayload("branch_name", e.BranchName)
+
+	// Build merge request payload
+	payload := &proto.MergeRequestPayload{
+		StoryID:    e.StoryID,
+		BranchName: e.BranchName,
+		PRURL:      e.PRUrl,
+	}
+
+	// Set typed payload
+	mergeMsg.SetTypedPayload(proto.NewMergeRequestPayload(payload))
+
+	// Store story_id in message metadata for tracking
+	if e.StoryID != "" {
+		mergeMsg.SetMetadata("story_id", e.StoryID)
+	}
 
 	runtime.Info("📤 Sending merge request for story %s to %s", e.StoryID, e.TargetAgent)
 
@@ -49,33 +60,20 @@ func (e *MergeEffect) Execute(ctx context.Context, runtime Runtime) (any, error)
 	}
 
 	// Extract merge result from response payload
-	statusRaw, statusExists := responseMsg.GetPayload("status")
-	conflictInfoRaw, _ := responseMsg.GetPayload("conflict_details")
-	feedbackRaw, _ := responseMsg.GetPayload("feedback")
-	mergeCommitRaw, _ := responseMsg.GetPayload("merge_commit")
-
-	if !statusExists {
-		return nil, fmt.Errorf("merge response missing status field")
+	typedPayload := responseMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("merge response missing typed payload")
 	}
 
-	status, ok := statusRaw.(string)
-	if !ok {
-		return nil, fmt.Errorf("merge status is not a string: %T", statusRaw)
-	}
-
-	conflictInfo, _ := conflictInfoRaw.(string)
-	feedback, _ := feedbackRaw.(string)
-	mergeCommit, _ := mergeCommitRaw.(string)
-
-	// Use feedback as primary message, fall back to conflict_details for backward compatibility
-	if feedback != "" {
-		conflictInfo = feedback
+	mergeResponse, err := typedPayload.ExtractMergeResponse()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract merge response: %w", err)
 	}
 
 	result := &git.MergeResult{
-		Status:       status,
-		ConflictInfo: conflictInfo,
-		MergeCommit:  mergeCommit,
+		Status:       mergeResponse.Status,
+		ConflictInfo: mergeResponse.ConflictDetails,
+		MergeCommit:  mergeResponse.MergeCommit,
 	}
 
 	runtime.Info("📥 Received merge response: %s", result.Status)

@@ -44,9 +44,14 @@ func (m *MockEffectRuntime) GetAgentRole() string {
 func TestApprovalEffect_Execute_Success(t *testing.T) {
 	// Create the RESPONSE message as the architect would send it
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	resultMsg.SetPayload("status", "APPROVED")
-	resultMsg.SetPayload("feedback", "Plan looks good")
-	resultMsg.SetPayload("approval_id", "approval-123")
+
+	// Build approval response with typed payload
+	protoApprovalResult := &proto.ApprovalResult{
+		ID:       "approval-123",
+		Status:   proto.ApprovalStatusApproved,
+		Feedback: "Plan looks good",
+	}
+	resultMsg.SetTypedPayload(proto.NewApprovalResponsePayload(protoApprovalResult))
 
 	// Mock runtime that returns this message
 	mockRuntime := &MockEffectRuntime{
@@ -70,7 +75,7 @@ func TestApprovalEffect_Execute_Success(t *testing.T) {
 	// Verify the result
 	approvalResult, ok := result.(*effect.ApprovalResult)
 	if !ok {
-		t.Fatalf("Expected *ApprovalResult, got: %T", result)
+		t.Fatalf("Expected *effect.ApprovalResult, got: %T", result)
 	}
 
 	if approvalResult.Status != proto.ApprovalStatusApproved {
@@ -103,9 +108,14 @@ func TestApprovalEffect_Execute_Success(t *testing.T) {
 func TestApprovalEffect_Execute_Rejected(t *testing.T) {
 	// Create the RESPONSE message
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	resultMsg.SetPayload("status", "REJECTED")
-	resultMsg.SetPayload("feedback", "Plan needs improvements")
-	resultMsg.SetPayload("approval_id", "approval-123")
+
+	// Build approval response with typed payload
+	protoApprovalResult := &proto.ApprovalResult{
+		ID:       "approval-123",
+		Status:   proto.ApprovalStatusRejected,
+		Feedback: "Plan needs improvements",
+	}
+	resultMsg.SetTypedPayload(proto.NewApprovalResponsePayload(protoApprovalResult))
 
 	mockRuntime := &MockEffectRuntime{
 		messageToReturn: resultMsg,
@@ -137,9 +147,10 @@ func TestApprovalEffect_Execute_Rejected(t *testing.T) {
 }
 
 func TestApprovalEffect_Execute_MissingStatus(t *testing.T) {
-	// Create a RESPONSE message without status payload (should fail)
+	// Create a RESPONSE message with invalid typed payload (should fail)
 	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	resultMsg.SetPayload("feedback", "some feedback") // Missing status field
+	// Use generic payload instead of approval response (wrong type)
+	resultMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{"feedback": "some feedback"}))
 
 	mockRuntime := &MockEffectRuntime{
 		messageToReturn: resultMsg,
@@ -156,7 +167,8 @@ func TestApprovalEffect_Execute_MissingStatus(t *testing.T) {
 		t.Fatal("Expected error for missing status, got nil")
 	}
 
-	expectedError := "approval response missing status field"
+	// With typed payloads, we get a type mismatch error before checking status
+	expectedError := "failed to extract approval response: expected approval_response payload, got generic"
 	if err.Error() != expectedError {
 		t.Errorf("Expected error '%s', got: '%s'", expectedError, err.Error())
 	}
@@ -217,7 +229,12 @@ func TestNewCompletionApprovalEffectWithStoryID(t *testing.T) {
 func TestAwaitQuestionEffect_Execute_Success(t *testing.T) {
 	// Create mock runtime that returns an ANSWER message
 	answerMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	answerMsg.SetPayload("answer", "Use the existing UserService pattern")
+
+	// Build question response with typed payload
+	questionResponse := &proto.QuestionResponsePayload{
+		AnswerText: "Use the existing UserService pattern",
+	}
+	answerMsg.SetTypedPayload(proto.NewQuestionResponsePayload(questionResponse))
 
 	mockRuntime := &MockEffectRuntime{
 		messageToReturn: answerMsg,
@@ -270,7 +287,12 @@ func TestAwaitQuestionEffect_Execute_Success(t *testing.T) {
 func TestAwaitQuestionEffect_Execute_EmptyAnswer(t *testing.T) {
 	// Create mock runtime that returns an ANSWER message with empty content
 	answerMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect-001", "test-coder")
-	answerMsg.SetPayload("answer", "")
+
+	// Build question response with empty answer
+	questionResponse := &proto.QuestionResponsePayload{
+		AnswerText: "",
+	}
+	answerMsg.SetTypedPayload(proto.NewQuestionResponsePayload(questionResponse))
 
 	mockRuntime := &MockEffectRuntime{
 		messageToReturn: answerMsg,

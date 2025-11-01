@@ -47,12 +47,14 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 
 		// Send two responses back-to-back - second should be dropped
 		msg1 := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "overflow-agent")
-		msg1.SetPayload(proto.KeyKind, "answer")
-		msg1.SetPayload(proto.KeyContent, "First response")
+		msg1.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+			proto.KeyContent: "First response",
+		}))
 
 		msg2 := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "overflow-agent")
-		msg2.SetPayload(proto.KeyKind, "answer")
-		msg2.SetPayload(proto.KeyContent, "Second response")
+		msg2.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+			proto.KeyContent: "Second response",
+		}))
 
 		dispatcher.routeToReplyCh(msg1)
 		dispatcher.routeToReplyCh(msg2) // Should log drop warning
@@ -68,12 +70,14 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 
 		// Test sendErrorResponse
 		errorMsg := proto.NewAgentMsg(proto.MsgTypeERROR, "orchestrator", "nonexistent")
-		errorMsg.SetPayload(proto.KeyContent, "Test error")
+		errorMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindError, map[string]any{
+			proto.KeyContent: "Test error",
+		}))
 		dispatcher.sendErrorResponse(errorMsg, fmt.Errorf("test error"))
 
 		// Test with missing agent
 		missingMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "missing-agent")
-		missingMsg.SetPayload(proto.KeyKind, "answer")
+		missingMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{}))
 		dispatcher.processMessage(ctx, missingMsg)
 	})
 
@@ -146,18 +150,22 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 
 		// Test spec message processing
 		specMsg := proto.NewAgentMsg(proto.MsgTypeSPEC, "orchestrator", "test-architect")
-		specMsg.SetPayload(proto.KeyContent, "Test spec")
+		specMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+			proto.KeyContent: "Test spec",
+		}))
 		dispatcher.processMessage(ctx, specMsg)
 
 		// Test questions channel
 		questionMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "coder", "architect")
-		questionMsg.SetPayload(proto.KeyKind, "question")
-		questionMsg.SetPayload(proto.KeyContent, "Test question")
+		questionPayload := &proto.QuestionRequestPayload{
+			Text: "Test question",
+		}
+		questionMsg.SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 		dispatcher.processMessage(ctx, questionMsg)
 
 		// Test response routing
 		responseMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "coder")
-		responseMsg.SetPayload(proto.KeyKind, "answer")
+		responseMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{}))
 		dispatcher.sendResponse(responseMsg)
 	})
 
@@ -171,7 +179,7 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 
 		for i := 0; i < fillCount; i++ {
 			msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "coder")
-			msg.SetPayload(proto.KeyStoryID, fmt.Sprintf("metrics-story-%d", i))
+			msg.SetMetadata(proto.KeyStoryID, fmt.Sprintf("metrics-story-%d", i))
 
 			select {
 			case dispatcher.storyCh <- msg:
@@ -235,9 +243,11 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 
 		// Test processWithRetry
 		msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "rate-test-agent")
-		msg.SetPayload(proto.KeyStoryID, "rate-test-story")
-		msg.SetPayload(proto.KeyTitle, "Rate Test")
-		msg.SetPayload(proto.KeyRequirements, "Test requirements")
+		msg.SetMetadata(proto.KeyStoryID, "rate-test-story")
+		msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+			proto.KeyTitle:        "Rate Test",
+			proto.KeyRequirements: "Test requirements",
+		}))
 
 		result := dispatcher.processWithRetry(ctx, msg, agent)
 		if result.Error != nil {
@@ -277,11 +287,14 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 			msg := proto.NewAgentMsg(tm.msgType, tm.from, tm.to)
 			switch tm.msgType {
 			case proto.MsgTypeSTORY:
-				msg.SetPayload(proto.KeyStoryID, "routing-story")
+				msg.SetMetadata(proto.KeyStoryID, "routing-story")
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{}))
 			case proto.MsgTypeREQUEST:
-				msg.SetPayload(proto.KeyKind, "question")
+				// Use question request payload for REQUEST messages
+				questionPayload := &proto.QuestionRequestPayload{Text: "routing question"}
+				msg.SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 			case proto.MsgTypeRESPONSE:
-				msg.SetPayload(proto.KeyKind, "answer")
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{}))
 			}
 
 			dispatcher.processMessage(ctx, msg)
@@ -301,7 +314,7 @@ func TestProcessMessageRetryLogic(t *testing.T) {
 	dispatcher.Attach(agent)
 
 	msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "timeout-agent")
-	msg.SetPayload(proto.KeyStoryID, "timeout-story")
+	msg.SetMetadata(proto.KeyStoryID, "timeout-story")
 
 	result := dispatcher.processWithRetry(shortCtx, msg, agent)
 	if result.Error != nil {

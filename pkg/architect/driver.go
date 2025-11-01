@@ -582,19 +582,28 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			if story, exists := d.queue.stories[requeueRequest.StoryID]; exists && story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
-				storyMsg.SetPayload(proto.KeyStoryID, requeueRequest.StoryID)
-				storyMsg.SetPayload(proto.KeyTitle, story.Title)
-				storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
-				storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
-				storyMsg.SetPayload(proto.KeyStoryType, story.StoryType)
+
+				// Build story payload
+				payloadData := map[string]any{
+					proto.KeyTitle:           story.Title,
+					proto.KeyEstimatedPoints: story.EstimatedPoints,
+					proto.KeyDependsOn:       story.DependsOn,
+					proto.KeyStoryType:       story.StoryType,
+					proto.KeyRequirements:    []string{}, // Empty requirements for requeue
+				}
 
 				// Use story content from the queue
 				content := story.Content
 				if content == "" {
 					content = story.Title // Fallback to title if content is not set
 				}
-				storyMsg.SetPayload(proto.KeyContent, content)
-				storyMsg.SetPayload(proto.KeyRequirements, []string{}) // Empty requirements for requeue
+				payloadData[proto.KeyContent] = content
+
+				// Set typed story payload
+				storyMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, payloadData))
+
+				// Store story_id in metadata
+				storyMsg.SetMetadata(proto.KeyStoryID, requeueRequest.StoryID)
 
 				// Send story to dispatcher using Effects pattern
 				dispatchEffect := &DispatchStoryEffect{Story: storyMsg}
