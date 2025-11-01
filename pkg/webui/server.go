@@ -991,7 +991,6 @@ type MessageEntry struct {
 	ApprovalType *string `json:"approval_type,omitempty"` // "plan", "code", "budget_review", "completion"
 	ResponseType *string `json:"response_type,omitempty"` // "answer" or "result"
 	Status       *string `json:"status,omitempty"`        // "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
-	Feedback     *string `json:"feedback,omitempty"`      // For responses
 	Reason       *string `json:"reason,omitempty"`        // For requests
 	Timestamp    string  `json:"timestamp"`
 	ID           string  `json:"id"`
@@ -1069,7 +1068,6 @@ func (s *Server) readMessageLogs() []MessageEntry {
 			ResponseType: msg.ResponseType,
 			Status:       msg.Status,
 			Content:      msg.Content,
-			Feedback:     msg.Feedback,
 			Reason:       msg.Reason,
 		})
 	}

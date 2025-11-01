@@ -136,7 +136,6 @@ type AgentResponse struct {
 	RequestID     *string   `json:"request_id,omitempty"`
 	StoryID       *string   `json:"story_id,omitempty"`
 	Status        *string   `json:"status,omitempty"` // "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
-	Feedback      *string   `json:"feedback,omitempty"`
 	CorrelationID *string   `json:"correlation_id,omitempty"`
 }
 

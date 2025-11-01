@@ -259,7 +259,6 @@ func createSchema(db *sql.DB) error {
 			to_agent TEXT NOT NULL,
 			content TEXT NOT NULL,
 			status TEXT CHECK (status IN ('APPROVED', 'REJECTED', 'NEEDS_CHANGES', 'PENDING')),
-			feedback TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			correlation_id TEXT
 		)`,
