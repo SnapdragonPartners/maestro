@@ -85,8 +85,8 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		return proto.StateError, false, logx.Wrap(pushErr, "git push failed")
 	}
 
-	// Step 3: Create PR using GitHub CLI
-	prURL, err := c.createPullRequest(ctx, storyID, remoteBranch, targetBranch)
+	// Step 3: Get existing PR or create new one using GitHub CLI
+	prURL, err := c.getOrCreatePullRequest(ctx, storyID, remoteBranch, targetBranch)
 	if err != nil {
 		// Special handling for "No commits between" error - indicates work detection mismatch
 		if strings.Contains(err.Error(), "No commits between") {
@@ -216,6 +216,35 @@ func (c *Coder) pushBranch(ctx context.Context, localBranch, remoteBranch string
 
 	c.logger.Info("🔀 Branch pushed successfully")
 	return nil
+}
+
+// getOrCreatePullRequest checks if a PR exists for the branch, otherwise creates one.
+func (c *Coder) getOrCreatePullRequest(ctx context.Context, storyID, headBranch, baseBranch string) (string, error) {
+	c.logger.Debug("🔀 Checking for existing PR: %s -> %s", headBranch, baseBranch)
+
+	opts := &execpkg.Opts{
+		WorkDir: c.workDir,
+		Timeout: 30 * time.Second,
+	}
+
+	// First check if PR already exists for this branch
+	// gh pr view returns the PR details if it exists, errors if it doesn't
+	result, err := c.longRunningExecutor.Run(ctx, []string{
+		"gh", "pr", "view", headBranch,
+		"--json", "url",
+		"--jq", ".url",
+	}, opts)
+
+	if err == nil && strings.TrimSpace(result.Stdout) != "" {
+		// PR exists, return the URL
+		prURL := strings.TrimSpace(result.Stdout)
+		c.logger.Info("🔀 PR already exists: %s", prURL)
+		return prURL, nil
+	}
+
+	// PR doesn't exist (or command failed), create it
+	c.logger.Debug("🔀 No existing PR found, creating new one")
+	return c.createPullRequest(ctx, storyID, headBranch, baseBranch)
 }
 
 // createPullRequest creates a PR using GitHub CLI and returns the PR URL.
