@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -175,7 +174,10 @@ func TestApprovalEffect_Execute_MissingStatus(t *testing.T) {
 }
 
 func TestNewPlanApprovalEffectWithStoryID(t *testing.T) {
-	eff := effect.NewPlanApprovalEffectWithStoryID("my plan content", "my task content", "story-123")
+	// Note: Function now accepts pre-rendered content as first parameter
+	// Second parameter is deprecated and ignored for backwards compatibility
+	renderedContent := "Rendered plan approval content with story-123"
+	eff := effect.NewPlanApprovalEffectWithStoryID(renderedContent, "", "story-123")
 
 	if eff.ApprovalType != proto.ApprovalTypePlan {
 		t.Errorf("Expected ApprovalTypePlan, got: %s", eff.ApprovalType)
@@ -185,16 +187,9 @@ func TestNewPlanApprovalEffectWithStoryID(t *testing.T) {
 		t.Errorf("Expected target agent 'architect', got: %s", eff.TargetAgent)
 	}
 
-	if !strings.Contains(eff.Content, "my plan content") {
-		t.Errorf("Expected content to contain plan content, got: %s", eff.Content)
-	}
-
-	if !strings.Contains(eff.Content, "my task content") {
-		t.Errorf("Expected content to contain task content, got: %s", eff.Content)
-	}
-
-	if !strings.Contains(eff.Content, "story-123") {
-		t.Errorf("Expected content to contain story ID, got: %s", eff.Content)
+	// Content should match exactly what was passed in (pre-rendered)
+	if eff.Content != renderedContent {
+		t.Errorf("Expected content to match rendered content, got: %s", eff.Content)
 	}
 
 	if eff.StoryID != "story-123" {
@@ -203,22 +198,18 @@ func TestNewPlanApprovalEffectWithStoryID(t *testing.T) {
 }
 
 func TestNewCompletionApprovalEffectWithStoryID(t *testing.T) {
-	eff := effect.NewCompletionApprovalEffectWithStoryID("completion summary", "file1.go, file2.go", "story-123")
+	// Note: Function now accepts pre-rendered content as first parameter
+	// Second parameter is deprecated and ignored for backwards compatibility
+	renderedContent := "Rendered completion content for story-123"
+	eff := effect.NewCompletionApprovalEffectWithStoryID(renderedContent, "", "story-123")
 
 	if eff.ApprovalType != proto.ApprovalTypeCompletion {
 		t.Errorf("Expected ApprovalTypeCompletion, got: %s", eff.ApprovalType)
 	}
 
-	if !strings.Contains(eff.Content, "completion summary") {
-		t.Errorf("Expected content to contain summary, got: %s", eff.Content)
-	}
-
-	if !strings.Contains(eff.Content, "file1.go, file2.go") {
-		t.Errorf("Expected content to contain files, got: %s", eff.Content)
-	}
-
-	if !strings.Contains(eff.Content, "story-123") {
-		t.Errorf("Expected content to contain story ID, got: %s", eff.Content)
+	// Content should match exactly what was passed in (pre-rendered)
+	if eff.Content != renderedContent {
+		t.Errorf("Expected content to match rendered content, got: %s", eff.Content)
 	}
 
 	if eff.StoryID != "story-123" {
