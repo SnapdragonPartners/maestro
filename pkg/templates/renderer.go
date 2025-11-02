@@ -106,6 +106,15 @@ const (
 	BudgetReviewRequestCodingTemplate StateTemplate = "budget_review_request_coding.tpl.md"
 	// QuestionRequestTemplate is the template for question request content.
 	QuestionRequestTemplate StateTemplate = "question_request.tpl.md"
+
+	// PlanApprovalResponseTemplate is the template for plan approval responses (architect → coder).
+	PlanApprovalResponseTemplate StateTemplate = "plan_approval_response.tpl.md"
+	// CodeReviewResponseTemplate is the template for code review responses.
+	CodeReviewResponseTemplate StateTemplate = "code_review_response.tpl.md"
+	// CompletionResponseTemplate is the template for completion review responses.
+	CompletionResponseTemplate StateTemplate = "completion_response.tpl.md"
+	// BudgetReviewResponseTemplate is the template for budget review responses.
+	BudgetReviewResponseTemplate StateTemplate = "budget_review_response.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -155,6 +164,11 @@ func NewRenderer() (*Renderer, error) {
 		BudgetReviewRequestPlanningTemplate,
 		BudgetReviewRequestCodingTemplate,
 		QuestionRequestTemplate,
+		// Response content templates (architect → coder).
+		PlanApprovalResponseTemplate,
+		CodeReviewResponseTemplate,
+		CompletionResponseTemplate,
+		BudgetReviewResponseTemplate,
 	}
 
 	for _, name := range templateNames {

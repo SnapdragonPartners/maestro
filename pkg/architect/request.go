@@ -460,7 +460,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		RequestID:  approvalIDString,
 		Type:       approvalType,
 		Status:     proto.ApprovalStatusApproved,
-		Feedback:   feedback,
+		Feedback:   "", // Will be set after status determination and formatting
 		ReviewedBy: d.architectID,
 		ReviewedAt: time.Now().UTC(),
 	}
@@ -497,6 +497,26 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 			// For other approval types, default to rejected
 			approvalResult.Status = proto.ApprovalStatusRejected
 		}
+	}
+
+	// Format feedback using templates based on approval type
+	switch approvalType {
+	case proto.ApprovalTypePlan:
+		approvalResult.Feedback = d.getPlanApprovalResponse(approvalResult.Status, feedback)
+	case proto.ApprovalTypeCode:
+		approvalResult.Feedback = d.getCodeReviewResponse(approvalResult.Status, feedback)
+	case proto.ApprovalTypeCompletion:
+		approvalResult.Feedback = d.getCompletionResponse(approvalResult.Status, feedback)
+	case proto.ApprovalTypeBudgetReview:
+		// Extract origin state from request metadata
+		originState := requestMsg.Metadata["origin"]
+		if originState == "" {
+			originState = "UNKNOWN"
+		}
+		approvalResult.Feedback = d.getBudgetReviewResponse(approvalResult.Status, feedback, originState)
+	default:
+		// Fallback to raw feedback for unknown types
+		approvalResult.Feedback = feedback
 	}
 
 	// If this is an approved plan, update the story's approved plan in the queue
@@ -1193,4 +1213,95 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	d.stateData["work_accepted"] = true
 	d.stateData["accepted_story_id"] = storyID
 	d.stateData["acceptance_type"] = acceptanceType
+}
+
+// Response formatting methods using templates
+
+// getPlanApprovalResponse formats a plan approval response using templates.
+func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback string) string {
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Status":   string(status),
+			"Feedback": feedback,
+		},
+	}
+
+	if d.renderer == nil {
+		return fmt.Sprintf("Plan Review: %s\n\n%s", status, feedback)
+	}
+
+	content, err := d.renderer.Render(templates.PlanApprovalResponseTemplate, templateData)
+	if err != nil {
+		d.logger.Warn("Failed to render plan approval response: %v", err)
+		return fmt.Sprintf("Plan Review: %s\n\n%s", status, feedback)
+	}
+
+	return content
+}
+
+// getCodeReviewResponse formats a code review response using templates.
+func (d *Driver) getCodeReviewResponse(status proto.ApprovalStatus, feedback string) string {
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Status":   string(status),
+			"Feedback": feedback,
+		},
+	}
+
+	if d.renderer == nil {
+		return fmt.Sprintf("Code Review: %s\n\n%s", status, feedback)
+	}
+
+	content, err := d.renderer.Render(templates.CodeReviewResponseTemplate, templateData)
+	if err != nil {
+		d.logger.Warn("Failed to render code review response: %v", err)
+		return fmt.Sprintf("Code Review: %s\n\n%s", status, feedback)
+	}
+
+	return content
+}
+
+// getCompletionResponse formats a completion review response using templates.
+func (d *Driver) getCompletionResponse(status proto.ApprovalStatus, feedback string) string {
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Status":   string(status),
+			"Feedback": feedback,
+		},
+	}
+
+	if d.renderer == nil {
+		return fmt.Sprintf("Completion Review: %s\n\n%s", status, feedback)
+	}
+
+	content, err := d.renderer.Render(templates.CompletionResponseTemplate, templateData)
+	if err != nil {
+		d.logger.Warn("Failed to render completion response: %v", err)
+		return fmt.Sprintf("Completion Review: %s\n\n%s", status, feedback)
+	}
+
+	return content
+}
+
+// getBudgetReviewResponse formats a budget review response using templates.
+func (d *Driver) getBudgetReviewResponse(status proto.ApprovalStatus, feedback, originState string) string {
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Status":      string(status),
+			"Feedback":    feedback,
+			"OriginState": originState,
+		},
+	}
+
+	if d.renderer == nil {
+		return fmt.Sprintf("Budget Review: %s\n\n%s", status, feedback)
+	}
+
+	content, err := d.renderer.Render(templates.BudgetReviewResponseTemplate, templateData)
+	if err != nil {
+		d.logger.Warn("Failed to render budget review response: %v", err)
+		return fmt.Sprintf("Budget Review: %s\n\n%s", status, feedback)
+	}
+
+	return content
 }
