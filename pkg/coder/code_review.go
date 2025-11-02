@@ -12,6 +12,7 @@ import (
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
 )
 
@@ -60,22 +61,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		confidence := "high - no changes needed"
 
-		codeContent := fmt.Sprintf(`## Completion Summary
-%s
-
-## Evidence
-%s
-
-## Confidence
-%s
-
-## Original Story
-%s
-
-## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
-The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the completion matches what was approved:
-
-%s`, summary, evidence, confidence, originalStory, plan)
+		codeContent := c.getCompletionRequestContent(summary, evidence, confidence, originalStory, plan)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Story completion verified with evidence", proto.ApprovalTypeCompletion)
 		approvalEff.StoryID = storyID
@@ -93,25 +79,7 @@ The following plan was already approved in PLAN_REVIEW and is immutable. Use it 
 
 		confidence := "high - all tests passing"
 
-		codeContent := fmt.Sprintf(`## Implementation Summary
-%s
-
-## Evidence
-%s
-
-## Confidence
-%s
-
-## Git Diff
-%s
-
-## Original Story
-%s
-
-## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
-The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
-
-%s`, summary, evidence, confidence, gitDiff, originalStory, plan)
+		codeContent := c.getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Code implementation requires architect review", proto.ApprovalTypeCode)
 		approvalEff.StoryID = storyID
@@ -294,4 +262,125 @@ func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, s
 	}
 
 	return evidence
+}
+
+// getCodeReviewContent generates code review request content using templates.
+func (c *Coder) getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan string) string {
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Summary":       summary,
+			"Evidence":      evidence,
+			"Confidence":    confidence,
+			"GitDiff":       gitDiff,
+			"OriginalStory": originalStory,
+			"ApprovedPlan":  plan,
+		},
+	}
+
+	// Render template
+	if c.renderer == nil {
+		return fmt.Sprintf(`## Implementation Summary
+%s
+
+## Evidence
+%s
+
+## Confidence
+%s
+
+## Git Diff
+%s
+
+## Original Story
+%s
+
+## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
+The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
+
+%s`, summary, evidence, confidence, gitDiff, originalStory, plan)
+	}
+
+	content, err := c.renderer.Render(templates.CodeReviewRequestTemplate, templateData)
+	if err != nil {
+		c.logger.Warn("Failed to render code review template: %v", err)
+		return fmt.Sprintf(`## Implementation Summary
+%s
+
+## Evidence
+%s
+
+## Confidence
+%s
+
+## Git Diff
+%s
+
+## Original Story
+%s
+
+## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
+The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
+
+%s`, summary, evidence, confidence, gitDiff, originalStory, plan)
+	}
+
+	return content
+}
+
+// getCompletionRequestContent generates completion request content using templates (for no-work scenarios).
+func (c *Coder) getCompletionRequestContent(summary, evidence, confidence, originalStory, plan string) string {
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Summary":       summary,
+			"Evidence":      evidence,
+			"Confidence":    confidence,
+			"OriginalStory": originalStory,
+			"ApprovedPlan":  plan,
+		},
+	}
+
+	// Render template
+	if c.renderer == nil {
+		return fmt.Sprintf(`## Completion Summary
+%s
+
+## Evidence
+%s
+
+## Confidence
+%s
+
+## Original Story
+%s
+
+## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
+The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the completion matches what was approved:
+
+%s`, summary, evidence, confidence, originalStory, plan)
+	}
+
+	content, err := c.renderer.Render(templates.CompletionRequestTemplate, templateData)
+	if err != nil {
+		c.logger.Warn("Failed to render completion request template: %v", err)
+		return fmt.Sprintf(`## Completion Summary
+%s
+
+## Evidence
+%s
+
+## Confidence
+%s
+
+## Original Story
+%s
+
+## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
+The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the completion matches what was approved:
+
+%s`, summary, evidence, confidence, originalStory, plan)
+	}
+
+	return content
 }

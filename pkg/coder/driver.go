@@ -757,7 +757,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 	// Check if budget exceeded.
 	if iterationCount >= budget {
 		// Build comprehensive budget review content
-		content := c.buildBudgetReviewContent(sm, origin, iterationCount, budget)
+		content := c.getBudgetReviewContent(sm, origin, iterationCount, budget)
 
 		// Store origin state for later use.
 		sm.SetStateData(KeyOrigin, string(origin))
@@ -1262,11 +1262,8 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	return tools.NewProvider(agentCtx, codingTools)
 }
 
-// buildBudgetReviewContent creates comprehensive budget review content with story, plan, and context.
-func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.State, iterationCount, budget int) string {
-	// Basic budget info
-	header := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
-
+// getBudgetReviewContent creates comprehensive budget review content using templates.
+func (c *Coder) getBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.State, iterationCount, budget int) string {
 	// Get story and plan context
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
@@ -1279,36 +1276,42 @@ func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin prot
 	// Get automated pattern analysis
 	issuePattern := c.detectIssuePattern()
 
-	// Build comprehensive content
-	content := fmt.Sprintf(`## Budget Review Request
-%s
+	// Select template based on origin state
+	var templateName templates.StateTemplate
+	if origin == StatePlanning {
+		templateName = templates.BudgetReviewRequestPlanningTemplate
+	} else {
+		templateName = templates.BudgetReviewRequestCodingTemplate
+	}
 
-## Story Context
-**Story ID:** %s
-**Story Type:** %s
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Loops":               iterationCount,
+			"MaxLoops":            budget,
+			"StoryID":             storyID,
+			"StoryType":           storyType,
+			"TaskContent":         taskContent,
+			"Plan":                plan,
+			"ApprovedPlan":        plan, // Same as plan for consistency with other templates
+			"IssuePattern":        issuePattern,
+			"RecentActivity":      contextMessages.Content,
+			"ContextMessageCount": len(contextMessages.Messages),
+			"ContextTokenLimit":   budgetReviewContextTokenLimit,
+		},
+	}
 
-### Story Requirements
-%s
+	// Render template
+	if c.renderer == nil {
+		// Fallback if no renderer available
+		return fmt.Sprintf("Budget exceeded in %s state (%d/%d iterations). Story: %s", origin, iterationCount, budget, storyID)
+	}
 
-## Implementation Plan
-%s
-
-## Automated Pattern Analysis
-%s
-
-## Recent Context (%d messages, ≤%d tokens)
-`+"```"+`
-%s
-`+"```"+`
-
-Please analyze the recent context and automated findings to determine if the agent is making progress or stuck in a loop. Provide specific guidance.`,
-		header,
-		storyID, storyType,
-		taskContent,
-		plan,
-		issuePattern,
-		len(contextMessages.Messages), budgetReviewContextTokenLimit,
-		contextMessages.Content)
+	content, err := c.renderer.Render(templateName, templateData)
+	if err != nil {
+		c.logger.Warn("Failed to render budget review template: %v", err)
+		return fmt.Sprintf("Budget exceeded in %s state (%d/%d iterations). Story: %s", origin, iterationCount, budget, storyID)
+	}
 
 	return content
 }

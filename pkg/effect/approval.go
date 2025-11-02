@@ -124,19 +124,21 @@ func NewApprovalEffectWithTimeout(content, reason string, approvalType proto.App
 }
 
 // NewPlanApprovalEffectWithStoryID creates a plan approval effect with story context.
-func NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID string) *ApprovalEffect {
-	content := fmt.Sprintf("Plan for Story %s:\n\nTask:\n%s\n\nProposed Plan:\n%s", storyID, taskContent, planContent)
+// planContent should be the fully-rendered template content.
+// The second parameter is deprecated and ignored for backwards compatibility.
+func NewPlanApprovalEffectWithStoryID(planContent, _, storyID string) *ApprovalEffect {
 	reason := fmt.Sprintf("Plan requires architect approval before implementation (Story %s)", storyID)
-	effect := NewApprovalEffect(content, reason, proto.ApprovalTypePlan)
+	effect := NewApprovalEffect(planContent, reason, proto.ApprovalTypePlan)
 	effect.StoryID = storyID // Set the story ID for the message payload
 	return effect
 }
 
 // NewCompletionApprovalEffectWithStoryID creates a completion approval effect with story context.
-func NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID string) *ApprovalEffect {
-	content := fmt.Sprintf("Story %s Completion Summary:\n\nFiles Created: %s\n\nSummary:\n%s", storyID, filesCreated, summary)
+// summary should be the fully-rendered template content.
+// The second parameter is deprecated and ignored for backwards compatibility.
+func NewCompletionApprovalEffectWithStoryID(summary, _, storyID string) *ApprovalEffect {
 	reason := fmt.Sprintf("Story completion requires architect approval (Story %s)", storyID)
-	effect := NewApprovalEffect(content, reason, proto.ApprovalTypeCompletion)
+	effect := NewApprovalEffect(summary, reason, proto.ApprovalTypeCompletion)
 	effect.StoryID = storyID // Set the story ID for the message payload
 	return effect
 }
