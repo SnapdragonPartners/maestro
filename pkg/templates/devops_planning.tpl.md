@@ -1,4 +1,4 @@
-**CRITICAL: You must use the tool call API to invoke tools. Do NOT write text like 'Tool shell invoked' or 'Tool X, Y, Z invoked' - instead make actual API tool calls. Respond with tool calls only, never with text descriptions of tool usage.**
+**CRITICAL: You must use the tool call API to invoke tools. Do NOT write text like 'Tool shell invoked' or 'Tool X, Y, Z invoked' - instead make actual API tool calls. You must call at least one tool in every response. Brief explanations of your reasoning are welcome alongside your tool calls.**
 
 # DevOps Infrastructure Planning Phase
 
