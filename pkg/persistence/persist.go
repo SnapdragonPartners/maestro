@@ -100,3 +100,16 @@ func PersistDependency(storyID, dependsOnID string, persistenceChannel chan<- *R
 		Response:  nil, // Fire-and-forget
 	}
 }
+
+// PersistToolExecution persists a tool execution record for debugging and analysis.
+func PersistToolExecution(toolExec *ToolExecution, persistenceChannel chan<- *Request) {
+	if persistenceChannel == nil || toolExec == nil {
+		return
+	}
+
+	persistenceChannel <- &Request{
+		Operation: OpInsertToolExecution,
+		Data:      toolExec,
+		Response:  nil, // Fire-and-forget
+	}
+}

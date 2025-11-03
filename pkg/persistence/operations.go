@@ -30,6 +30,9 @@ const (
 	OpUpsertAgentPlan     = "upsert_agent_plan"
 	OpUpdateAgentPlan     = "update_agent_plan"
 
+	// Tool execution logging operations.
+	OpInsertToolExecution = "insert_tool_execution"
+
 	// Query operations (with response).
 	OpQueryStoriesByStatus               = "query_stories_by_status"
 	OpQueryPendingStories                = "query_pending_stories"
@@ -948,6 +951,27 @@ func (ops *DatabaseOperations) UpdateChatCursor(agentID string, lastID int64) er
 	_, err := ops.db.Exec(query, agentID, lastID)
 	if err != nil {
 		return fmt.Errorf("failed to update chat cursor for agent %s: %w", agentID, err)
+	}
+
+	return nil
+}
+
+// InsertToolExecution inserts a tool execution record for debugging and analysis.
+func (ops *DatabaseOperations) InsertToolExecution(toolExec *ToolExecution) error {
+	query := `
+		INSERT INTO tool_executions (
+			session_id, agent_id, story_id, tool_name, tool_id, params,
+			exit_code, success, stdout, stderr, error, duration_ms, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	_, err := ops.db.Exec(query,
+		ops.sessionID, toolExec.AgentID, toolExec.StoryID, toolExec.ToolName,
+		toolExec.ToolID, toolExec.Params, toolExec.ExitCode, toolExec.Success,
+		toolExec.Stdout, toolExec.Stderr, toolExec.Error, toolExec.DurationMS,
+		toolExec.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to insert tool execution for agent %s: %w", toolExec.AgentID, err)
 	}
 
 	return nil

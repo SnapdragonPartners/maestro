@@ -345,6 +345,15 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			}
 		}
 
+	case persistence.OpInsertToolExecution:
+		if toolExec, ok := req.Data.(*persistence.ToolExecution); ok {
+			if err := ops.InsertToolExecution(toolExec); err != nil {
+				k.Logger.Error("Failed to insert tool execution: %v", err)
+			} else {
+				k.Logger.Debug("Successfully logged tool execution: %s for agent %s", toolExec.ToolName, toolExec.AgentID)
+			}
+		}
+
 	default:
 		k.Logger.Error("Unknown persistence operation: %v", req.Operation)
 		if req.Response != nil {

@@ -4,6 +4,7 @@ package coder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -55,6 +57,7 @@ type Coder struct {
 	buildRegistry           *build.Registry                // Build backend registry
 	buildService            *build.Service                 // Build service for MCP tools
 	chatService             *chat.Service                  // Chat service for agent collaboration
+	persistenceChannel      chan<- *persistence.Request    // Channel for database operations
 	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
 	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
 	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
@@ -460,7 +463,7 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 
 // NewCoder creates a new coder with LLM integration.
 // Uses shared LLM factory for proper rate limiting across all agents.
-func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service, llmFactory *agent.LLMClientFactory) (*Coder, error) {
+func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory) (*Coder, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -538,8 +541,9 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		dispatcher:          nil, // Will be set during Attach()
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
-		chatService:         chatService, // Chat service for agent collaboration
-		codingBudget:        8,           // Default coding budget
+		chatService:         chatService,        // Chat service for agent collaboration
+		persistenceChannel:  persistenceChannel, // Channel for database operations
+		codingBudget:        8,                  // Default coding budget
 		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(workDir), agentID),
 		containerName:       "", // Will be set during setup
 	}
@@ -1437,4 +1441,82 @@ func (c *Coder) GetHostWorkspacePath() string {
 	// Fallback to original if Abs() fails
 	c.logger.Warn("⚠️  GetHostWorkspacePath: filepath.Abs failed, using original: %s", c.originalWorkDir)
 	return c.originalWorkDir
+}
+
+// logToolExecution logs a tool execution to the database for debugging and analysis.
+// This is a fire-and-forget operation - failures are logged but don't affect tool execution.
+func (c *Coder) logToolExecution(toolCall *agent.ToolCall, result any, execErr error, duration time.Duration) {
+	if c.persistenceChannel == nil {
+		return // No persistence channel configured
+	}
+
+	// Get config for session ID
+	cfg, err := config.GetConfig()
+	if err != nil {
+		c.logger.Debug("Failed to get config for tool execution logging: %v", err)
+		return
+	}
+
+	// Get story ID from state machine if available
+	stateData := c.GetStateData()
+	storyIDStr, _ := stateData["story_id"].(string)
+
+	// Marshal parameters to JSON
+	var paramsJSON string
+	if toolCall.Parameters != nil {
+		if jsonBytes, err := json.Marshal(toolCall.Parameters); err == nil {
+			paramsJSON = string(jsonBytes)
+		}
+	}
+
+	// Extract result data based on tool type
+	var exitCode *int
+	var success *bool
+	var stdout, stderr, errorMsg string
+
+	if execErr != nil {
+		errorMsg = execErr.Error()
+		successVal := false
+		success = &successVal
+	} else {
+		successVal := true
+		success = &successVal
+	}
+
+	// Extract shell-specific data from result map
+	if resultMap, ok := result.(map[string]any); ok {
+		if exitCodeVal, ok := resultMap["exit_code"].(int); ok {
+			exitCode = &exitCodeVal
+		}
+		if stdoutVal, ok := resultMap["stdout"].(string); ok {
+			stdout = stdoutVal
+		}
+		if stderrVal, ok := resultMap["stderr"].(string); ok {
+			stderr = stderrVal
+		}
+		if errorVal, ok := resultMap["error"].(string); ok && errorVal != "" {
+			errorMsg = errorVal
+		}
+	}
+
+	// Create tool execution record
+	durationMS := duration.Milliseconds()
+	toolExec := &persistence.ToolExecution{
+		SessionID:  cfg.SessionID,
+		AgentID:    c.agentID,
+		StoryID:    storyIDStr,
+		ToolName:   toolCall.Name,
+		ToolID:     toolCall.ID,
+		Params:     paramsJSON,
+		ExitCode:   exitCode,
+		Success:    success,
+		Stdout:     stdout,
+		Stderr:     stderr,
+		Error:      errorMsg,
+		DurationMS: &durationMS,
+		CreatedAt:  time.Now(),
+	}
+
+	// Send to persistence worker (fire-and-forget)
+	persistence.PersistToolExecution(toolExec, c.persistenceChannel)
 }

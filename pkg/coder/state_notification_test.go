@@ -83,7 +83,7 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	defer llmFactory.Stop()
 
 	// Create real coder
-	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil, llmFactory)
+	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil, nil, llmFactory)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestCoderStateNotificationChannelSetup(t *testing.T) {
 	defer llmFactory.Stop()
 
 	// Create real coder
-	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil, llmFactory)
+	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil, nil, llmFactory)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

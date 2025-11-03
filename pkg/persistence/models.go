@@ -206,3 +206,23 @@ type ChatCursor struct {
 	AgentID string `json:"agent_id"`
 	LastID  int64  `json:"last_id"`
 }
+
+// ToolExecution represents a single tool execution for debugging and analysis.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type ToolExecution struct {
+	ID         int64     `json:"id"`
+	SessionID  string    `json:"session_id"`
+	AgentID    string    `json:"agent_id"`
+	StoryID    string    `json:"story_id,omitempty"`
+	ToolName   string    `json:"tool_name"`
+	ToolID     string    `json:"tool_id,omitempty"`
+	Params     string    `json:"params,omitempty"`      // JSON string of parameters
+	ExitCode   *int      `json:"exit_code,omitempty"`   // For shell commands
+	Success    *bool     `json:"success,omitempty"`     // true/false for all tools
+	Stdout     string    `json:"stdout,omitempty"`      // Tool output
+	Stderr     string    `json:"stderr,omitempty"`      // Tool errors
+	Error      string    `json:"error,omitempty"`       // Error message
+	DurationMS *int64    `json:"duration_ms,omitempty"` // Execution duration
+	CreatedAt  time.Time `json:"created_at"`
+}

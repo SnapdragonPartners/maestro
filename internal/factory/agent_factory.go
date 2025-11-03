@@ -120,8 +120,9 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		coderWorkDir, // Individual work directory
 		cloneManager,
 		buildService,
-		f.chatService, // Chat service for agent collaboration
-		f.llmFactory,  // Shared factory for rate limiting
+		f.chatService,        // Chat service for agent collaboration
+		f.persistenceChannel, // Channel for database operations
+		f.llmFactory,         // Shared factory for rate limiting
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)

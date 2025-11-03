@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 7
+const CurrentSchemaVersion = 8
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -98,6 +98,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion6(db)
 	case 7:
 		return migrateToVersion7(db)
+	case 8:
+		return migrateToVersion8(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -151,6 +153,48 @@ func migrateToVersion7(db *sql.DB) error {
 	for _, migration := range migrations {
 		if _, err := db.Exec(migration); err != nil {
 			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateToVersion8 adds tool_executions table for debugging tool call history.
+func migrateToVersion8(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS tool_executions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			story_id TEXT,
+			tool_name TEXT NOT NULL,
+			tool_id TEXT,
+			params TEXT,
+			exit_code INTEGER,
+			success INTEGER CHECK (success IN (0, 1)),
+			stdout TEXT,
+			stderr TEXT,
+			error TEXT,
+			duration_ms INTEGER,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create tool_executions table: %w", err)
+	}
+
+	// Add indices for common queries
+	indices := []string{
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_session ON tool_executions(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_agent ON tool_executions(agent_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_story ON tool_executions(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_tool ON tool_executions(tool_name)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_created ON tool_executions(created_at)",
+	}
+
+	for _, idx := range indices {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create index: %s: %w", idx, err)
 		}
 	}
 
@@ -292,6 +336,24 @@ func createSchema(db *sql.DB) error {
 			agent_id TEXT PRIMARY KEY,
 			last_id INTEGER NOT NULL DEFAULT 0
 		)`,
+
+		// Tool executions table for debugging and analysis
+		`CREATE TABLE IF NOT EXISTS tool_executions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			story_id TEXT,
+			tool_name TEXT NOT NULL,
+			tool_id TEXT,
+			params TEXT,
+			exit_code INTEGER,
+			success INTEGER CHECK (success IN (0, 1)),
+			stdout TEXT,
+			stderr TEXT,
+			error TEXT,
+			duration_ms INTEGER,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`,
 	}
 
 	// Create indices
@@ -324,6 +386,13 @@ func createSchema(db *sql.DB) error {
 		// Chat indices
 		"CREATE INDEX IF NOT EXISTS idx_chat_session ON chat(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_chat_session_id ON chat(session_id, id)",
+
+		// Tool execution indices
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_session ON tool_executions(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_agent ON tool_executions(agent_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_story ON tool_executions(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_tool ON tool_executions(tool_name)",
+		"CREATE INDEX IF NOT EXISTS idx_tool_exec_created ON tool_executions(created_at)",
 	}
 
 	// Execute table creation

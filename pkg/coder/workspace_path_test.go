@@ -72,7 +72,7 @@ func TestGetHostWorkspacePath(t *testing.T) {
 	llmFactory := createTestLLMFactoryForWorkspace(t)
 	defer llmFactory.Stop()
 
-	coder, err := NewCoder(context.Background(), agentID, workDir, nil, build.NewBuildService(), nil, llmFactory)
+	coder, err := NewCoder(context.Background(), agentID, workDir, nil, build.NewBuildService(), nil, nil, llmFactory)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}
