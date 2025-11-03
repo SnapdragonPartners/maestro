@@ -41,6 +41,12 @@ func (s *QueuedStory) GetStatus() StoryStatus {
 
 // SetStatus sets the story status from StoryStatus enum.
 func (s *QueuedStory) SetStatus(status StoryStatus) {
+	// Protect completed stories from status changes
+	// Once done, work is merged and dependencies released - story is immutable
+	if s.GetStatus() == StatusDone {
+		_ = logx.Errorf("INVALID: Attempted to change status of completed story %s from done to %s. Completed stories are immutable.", s.ID, status)
+		return
+	}
 	s.Status = string(status)
 }
 
@@ -260,6 +266,12 @@ func (q *Queue) RequeueStory(storyID string) error {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
+	// Protect completed stories from requeue
+	// Once done, work is merged and dependencies released - cannot be undone
+	if story.GetStatus() == StatusDone {
+		return fmt.Errorf("cannot requeue completed story %s: work is already merged and dependencies have been released. Any additional work should be handled through a new story", storyID)
+	}
+
 	// Clear assignment, approved plan, and reset to pending
 	story.SetStatus(StatusPending)
 	story.AssignedAgent = ""
@@ -437,6 +449,13 @@ func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
 	if !exists {
 		q.mutex.Unlock()
 		return fmt.Errorf("story %s not found in queue", storyID)
+	}
+
+	// Protect completed stories from status changes
+	// Once done, work is merged and dependencies released - story is immutable
+	if story.GetStatus() == StatusDone {
+		q.mutex.Unlock()
+		return fmt.Errorf("cannot update status of completed story %s: work is already merged and dependencies have been released. Any additional work should be handled through a new story", storyID)
 	}
 
 	story.SetStatus(status)
