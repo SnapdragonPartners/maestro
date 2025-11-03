@@ -32,12 +32,10 @@ func WrapWithChatInjection(client agent.LLMClient, chatService Service, agentID 
 
 // InjectionMiddleware creates middleware that injects new chat messages into LLM requests.
 // It fetches new messages before each LLM call and prepends them to the conversation context.
+// The chat service automatically manages cursor updates, so this middleware just fetches and formats.
 //
 //nolint:funlen // Middleware requires both Complete and Stream implementations
 func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logger) func(agent.LLMClient) agent.LLMClient {
-	// Track cursor across multiple calls
-	var cursor int64
-
 	// Shared logic for fetching and formatting chat messages
 	fetchAndFormatMessages := func(ctx context.Context) (*chat.GetNewResponse, agent.CompletionMessage, bool, error) {
 		// Get configuration to check if chat is enabled and get limits
@@ -65,12 +63,6 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 		}
 
 		newMessages := resp.Messages
-		newCursor := resp.NewPointer
-
-		// Update cursor for next call
-		if newCursor > cursor {
-			cursor = newCursor
-		}
 
 		// If no new messages, skip injection
 		if len(newMessages) == 0 {
@@ -121,8 +113,8 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 				modifiedReq := req
 				modifiedReq.Messages = append([]agent.CompletionMessage{injectedMessage}, req.Messages...)
 
-				logger.Info("💬 Injected %d chat messages into LLM request for %s (new cursor: %d)",
-					len(resp.Messages), agentID, cursor)
+				logger.Info("💬 Injected %d chat messages into LLM request for %s",
+					len(resp.Messages), agentID)
 
 				// Call next middleware with modified request
 				return next.Complete(ctx, modifiedReq)
@@ -144,8 +136,8 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 				modifiedReq := req
 				modifiedReq.Messages = append([]agent.CompletionMessage{injectedMessage}, req.Messages...)
 
-				logger.Info("💬 Injected %d chat messages into LLM stream for %s (new cursor: %d)",
-					len(resp.Messages), agentID, cursor)
+				logger.Info("💬 Injected %d chat messages into LLM stream for %s",
+					len(resp.Messages), agentID)
 
 				// Call next middleware with modified request
 				return next.Stream(ctx, modifiedReq)
