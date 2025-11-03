@@ -6,9 +6,59 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 )
+
+// createTestLLMFactory creates a minimal LLM factory for testing.
+func createTestLLMFactory(t *testing.T) *agent.LLMClientFactory {
+	t.Helper()
+	cfg := &config.Config{
+		Agents: &config.AgentConfig{
+			CoderModel:     "claude-sonnet-4-20250514",
+			ArchitectModel: "o3-mini",
+			Resilience: config.ResilienceConfig{
+				RateLimit: config.RateLimitConfig{
+					Anthropic: config.ProviderLimits{
+						TokensPerMinute: 300000,
+						MaxConcurrency:  5,
+					},
+					OpenAI: config.ProviderLimits{
+						TokensPerMinute: 100000,
+						MaxConcurrency:  3,
+					},
+					OpenAIOfficial: config.ProviderLimits{
+						TokensPerMinute: 150000,
+						MaxConcurrency:  5,
+					},
+				},
+				CircuitBreaker: config.CircuitBreakerConfig{
+					FailureThreshold: 5,
+					SuccessThreshold: 3,
+					Timeout:          30_000_000_000,
+				},
+				Retry: config.RetryConfig{
+					MaxAttempts:   3,
+					InitialDelay:  100_000_000,
+					MaxDelay:      10_000_000_000,
+					BackoffFactor: 2,
+					Jitter:        true,
+				},
+				Timeout: 180_000_000_000,
+			},
+			Metrics: config.MetricsConfig{
+				Enabled: false,
+			},
+		},
+	}
+	factory, err := agent.NewLLMClientFactory(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create test LLM factory: %v", err)
+	}
+	return factory
+}
 
 // TestCoderStateNotificationWithBaseStateMachine verifies that real coder agents
 // properly send state change notifications through BaseStateMachine.
@@ -29,9 +79,11 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	)
 
 	buildService := build.NewBuildService()
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
 
 	// Create real coder
-	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil)
+	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil, nil, llmFactory)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}
@@ -142,9 +194,11 @@ func TestCoderStateNotificationChannelSetup(t *testing.T) {
 	)
 
 	buildService := build.NewBuildService()
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
 
 	// Create real coder
-	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil)
+	coder, err := NewCoder(context.Background(), agentID, workDir, cloneManager, buildService, nil, nil, llmFactory)
 	if err != nil {
 		t.Fatalf("Failed to create coder: %v", err)
 	}

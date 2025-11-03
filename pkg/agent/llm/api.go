@@ -31,8 +31,8 @@ const (
 	TemperatureDefault = 0.3
 
 	// TemperatureDeterministic is the temperature for code generation and deterministic tasks.
-	// Ensures consistent, repeatable outputs for implementation.
-	TemperatureDeterministic = 0.0
+	// Uses slight randomness (0.2) to avoid getting stuck in loops while maintaining consistency.
+	TemperatureDeterministic = 0.2
 )
 
 // CacheControl represents prompt caching configuration for a message.

@@ -12,6 +12,7 @@ import (
 
 	_ "modernc.org/sqlite" // SQLite driver
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
@@ -40,6 +41,7 @@ type Kernel struct {
 	BuildService       *build.Service
 	ChatService        *chat.Service
 	WebServer          *webui.Server
+	LLMFactory         *agent.LLMClientFactory // Shared LLM client factory for all agents
 
 	// Runtime state
 	projectDir string
@@ -62,7 +64,8 @@ func NewKernel(parent context.Context, cfg *config.Config, projectDir string) (*
 	}
 
 	// Initialize core services
-	if err := k.initializeServices(); err != nil {
+	// Note: initializeServices calls NewLLMClientFactory which uses context.Background() internally
+	if err := k.initializeServices(); err != nil { //nolint:contextcheck // LLM factory uses background context for lifecycle
 		cancel()
 		return nil, fmt.Errorf("failed to initialize kernel services: %w", err)
 	}
@@ -80,7 +83,8 @@ func (k *Kernel) initializeServices() error {
 	}
 
 	// Initialize database
-	if err := k.initializeDatabase(); err != nil {
+	err = k.initializeDatabase()
+	if err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
 
@@ -91,8 +95,15 @@ func (k *Kernel) initializeServices() error {
 	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
 	k.ChatService = chat.NewService(dbOps, k.Config.Chat)
 
+	// Create shared LLM client factory (used by all agents)
+	// Note: NewLLMClientFactory uses context.Background() internally for rate limiter lifecycle
+	k.LLMFactory, err = agent.NewLLMClientFactory(k.Config) //nolint:contextcheck // Factory uses background context internally
+	if err != nil {
+		return fmt.Errorf("failed to create LLM client factory: %w", err)
+	}
+
 	// Create web server (will be started conditionally)
-	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService)
+	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService, k.LLMFactory)
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
@@ -197,6 +208,12 @@ func (k *Kernel) Stop() error {
 	if k.WebServer != nil {
 		// Web server stops via context cancellation
 		k.Logger.Info("Web server will stop via context cancellation")
+	}
+
+	// Stop LLM factory (stops rate limiter refill timers)
+	if k.LLMFactory != nil {
+		k.LLMFactory.Stop()
+		k.Logger.Info("LLM factory stopped (rate limiter refill timers terminated)")
 	}
 
 	k.running = false
@@ -325,6 +342,15 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 				k.Logger.Error("Failed to upsert agent plan: %v", err)
 			} else {
 				k.Logger.Info("Successfully upserted agent plan: %s", agentPlan.ID)
+			}
+		}
+
+	case persistence.OpInsertToolExecution:
+		if toolExec, ok := req.Data.(*persistence.ToolExecution); ok {
+			if err := ops.InsertToolExecution(toolExec); err != nil {
+				k.Logger.Error("Failed to insert tool execution: %v", err)
+			} else {
+				k.Logger.Debug("Successfully logged tool execution: %s for agent %s", toolExec.ToolName, toolExec.AgentID)
 			}
 		}
 

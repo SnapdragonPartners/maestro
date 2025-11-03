@@ -147,7 +147,8 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 	chatService := chat.NewService(dbOps, k.Config.Chat)
 
 	// Create the agent factory with kernel dependencies (lightweight)
-	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, chatService)
+	// Pass the shared LLM factory to ensure proper rate limiting across all agents
+	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, chatService, k.LLMFactory)
 
 	return &Supervisor{
 		Kernel:          k,

@@ -231,7 +231,14 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 		// Add agent_id to context for tools that need it (like chat tools)
 		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, c.agentID)
 
+		// Measure execution time and log tool execution to database
+		startTime := time.Now()
 		result, err := tool.Exec(toolCtx, toolCall.Parameters)
+		duration := time.Since(startTime)
+
+		// Log tool execution to database (fire-and-forget)
+		c.logToolExecution(toolCall, result, err, duration)
+
 		if err != nil {
 			if toolCall.Name == tools.ToolShell {
 				// For shell tool, provide cleaner logging without Docker details

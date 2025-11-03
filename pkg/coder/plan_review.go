@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
@@ -28,17 +29,15 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 	var eff effect.Effect
 	switch approvalType {
 	case proto.ApprovalTypePlan:
-		planContent := c.getPlanContentForReview(sm)
-		taskContent := c.getTaskContentForReview(sm)
-		storyID := c.GetStoryID() // Use the getter method I created
-		eff = effect.NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID)
+		planContent := c.getPlanApprovalContent(sm)
+		storyID := c.GetStoryID()                                               // Use the getter method I created
+		eff = effect.NewPlanApprovalEffectWithStoryID(planContent, "", storyID) // Task content is now in planContent template
 		c.contextManager.AddAssistantMessage("Plan review phase: requesting architect approval")
 
 	case proto.ApprovalTypeCompletion:
-		summary := c.getCompletionSummaryForReview(sm)
-		filesCreated := c.getFilesCreatedForReview(sm)
-		storyID := c.GetStoryID() // Use the getter method I created
-		eff = effect.NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID)
+		completionContent := c.getCompletionContent(sm)
+		storyID := c.GetStoryID()                                                           // Use the getter method I created
+		eff = effect.NewCompletionApprovalEffectWithStoryID(completionContent, "", storyID) // Files created is now in completionContent template
 		c.contextManager.AddAssistantMessage("Completion review phase: requesting architect approval")
 
 	default:
@@ -166,38 +165,79 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 
 // Helper methods to extract data for approval requests
 
-// getPlanContentForReview extracts plan content from state for review.
-func (c *Coder) getPlanContentForReview(sm *agent.BaseStateMachine) string {
-	planContent := utils.GetStateValueOr[string](sm, string(stateDataKeyPlan), "")
+// getPlanApprovalContent generates plan approval request content using templates.
+func (c *Coder) getPlanApprovalContent(sm *agent.BaseStateMachine) string {
+	// Get plan content from state
+	planContent := utils.GetStateValueOr[string](sm, KeyPlan, "")
 	if planContent == "" {
 		// Fallback to context if plan content not in state
 		planContent = c.getLastAssistantMessage()
 	}
-	return planContent
+
+	// Get task content
+	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
+
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"TaskContent": taskContent,
+			"PlanContent": planContent,
+		},
+	}
+
+	// Render template
+	if c.renderer == nil {
+		return fmt.Sprintf("## Implementation Plan\n\n%s\n\n## Task Requirements\n\n%s", planContent, taskContent)
+	}
+
+	content, err := c.renderer.Render(templates.PlanApprovalRequestTemplate, templateData)
+	if err != nil {
+		c.logger.Warn("Failed to render plan approval template: %v", err)
+		return fmt.Sprintf("## Implementation Plan\n\n%s\n\n## Task Requirements\n\n%s", planContent, taskContent)
+	}
+
+	return content
 }
 
-// getTaskContentForReview extracts task content from state for review.
-func (c *Coder) getTaskContentForReview(sm *agent.BaseStateMachine) string {
-	return utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
-}
-
-// getCompletionSummaryForReview extracts completion summary from state for review.
-func (c *Coder) getCompletionSummaryForReview(_ *agent.BaseStateMachine) string {
-	// Since there's no specific completion summary in state, generate one from context
+// getCompletionContent generates completion request content using templates.
+func (c *Coder) getCompletionContent(sm *agent.BaseStateMachine) string {
+	// Get completion summary from context
 	summary := c.getLastAssistantMessage()
 	if summary == "" {
 		summary = "Story implementation completed. Ready for final review."
 	}
-	return summary
-}
 
-// getFilesCreatedForReview extracts files created information from state for review.
-func (c *Coder) getFilesCreatedForReview(sm *agent.BaseStateMachine) string {
+	// Get files created
 	filesCreated := utils.GetStateValueOr[[]string](sm, KeyFilesCreated, []string{})
-	if len(filesCreated) == 0 {
-		return "No files created information available"
+	filesCreatedStr := "No files created information available"
+	if len(filesCreated) > 0 {
+		filesCreatedStr = strings.Join(filesCreated, ", ")
 	}
-	return strings.Join(filesCreated, ", ")
+
+	// Get story ID
+	storyID := c.GetStoryID()
+
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"StoryID":      storyID,
+			"Summary":      summary,
+			"FilesCreated": filesCreatedStr,
+		},
+	}
+
+	// Render template
+	if c.renderer == nil {
+		return fmt.Sprintf("## Completion Summary\n\n%s\n\n## Files Created\n\n%s", summary, filesCreatedStr)
+	}
+
+	content, err := c.renderer.Render(templates.CompletionRequestTemplate, templateData)
+	if err != nil {
+		c.logger.Warn("Failed to render completion request template: %v", err)
+		return fmt.Sprintf("## Completion Summary\n\n%s\n\n## Files Created\n\n%s", summary, filesCreatedStr)
+	}
+
+	return content
 }
 
 // getLastAssistantMessage gets the last assistant message from context.

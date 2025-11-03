@@ -196,7 +196,7 @@ type AgentMsg struct {
 	FromAgent   string            `json:"from_agent"`
 	ToAgent     string            `json:"to_agent"`
 	Timestamp   time.Time         `json:"timestamp"`
-	Payload     map[string]any    `json:"payload"`
+	Payload     *MessagePayload   `json:"payload"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	RetryCount  int               `json:"retry_count,omitempty"`
 	ParentMsgID string            `json:"parent_msg_id,omitempty"`
@@ -210,7 +210,7 @@ func NewAgentMsg(msgType MsgType, fromAgent, toAgent string) *AgentMsg {
 		FromAgent: fromAgent,
 		ToAgent:   toAgent,
 		Timestamp: time.Now().UTC(),
-		Payload:   make(map[string]any),
+		Payload:   nil, // Payload must be set explicitly with SetTypedPayload
 		Metadata:  make(map[string]string),
 	}
 }
@@ -241,38 +241,14 @@ func FromJSON(data []byte) (*AgentMsg, error) {
 	return &msg, nil
 }
 
-// SetPayload sets a payload value for the message.
-func (msg *AgentMsg) SetPayload(key string, value any) {
-	if msg.Payload == nil {
-		msg.Payload = make(map[string]any)
-	}
-	msg.Payload[key] = value
+// SetTypedPayload sets the typed payload for the message.
+func (msg *AgentMsg) SetTypedPayload(payload *MessagePayload) {
+	msg.Payload = payload
 }
 
-// GetPayload retrieves a payload value from the message.
-func (msg *AgentMsg) GetPayload(key string) (any, bool) {
-	if msg.Payload == nil {
-		return nil, false
-	}
-	val, exists := msg.Payload[key]
-	return val, exists
-}
-
-// GetTypedPayload retrieves a payload value with type safety using generics.
-func GetTypedPayload[T any](msg *AgentMsg, key string) (T, bool) {
-	var zero T
-	if msg.Payload == nil {
-		return zero, false
-	}
-	val, exists := msg.Payload[key]
-	if !exists {
-		return zero, false
-	}
-	typed, ok := val.(T)
-	if !ok {
-		return zero, false
-	}
-	return typed, true
+// GetTypedPayload retrieves the typed payload from the message.
+func (msg *AgentMsg) GetTypedPayload() *MessagePayload {
+	return msg.Payload
 }
 
 // SetMetadata sets a metadata value for the message.
@@ -304,13 +280,8 @@ func (msg *AgentMsg) Clone() *AgentMsg {
 		ParentMsgID: msg.ParentMsgID,
 	}
 
-	// Deep copy payload.
-	if msg.Payload != nil {
-		clone.Payload = make(map[string]any)
-		for k, v := range msg.Payload {
-			clone.Payload[k] = v
-		}
-	}
+	// Shallow copy payload pointer (MessagePayload contains json.RawMessage which is immutable).
+	clone.Payload = msg.Payload
 
 	// Deep copy metadata.
 	if msg.Metadata != nil {
@@ -551,20 +522,8 @@ func generateUniqueCounter() int64 {
 	return globalIDGen.NextCounter()
 }
 
-// SetCorrelation sets correlation ID on a message.
-func (msg *AgentMsg) SetCorrelation(correlationID string) {
-	msg.SetPayload(KeyCorrelationID, correlationID)
-}
-
-// GetCorrelationID extracts the correlation ID from a message.
-func (msg *AgentMsg) GetCorrelationID() (string, bool) {
-	if id, exists := msg.GetPayload(KeyCorrelationID); exists {
-		if idStr, ok := id.(string); ok {
-			return idStr, true
-		}
-	}
-	return "", false
-}
+// Note: Correlation IDs are now part of the typed payload structures themselves,
+// not separate payload fields. See QuestionRequestPayload, ApprovalRequestPayload, etc.
 
 // Centralized Enum Parsing Utilities.
 // These functions provide safe string-to-enum conversion with validation.
@@ -633,21 +592,11 @@ func IsValidStoryType(storyType string) bool {
 	return false
 }
 
-// EnumExtractor provides a generic way to safely extract and validate enum values from payloads.
+// EnumExtractor provides a generic way to safely extract and validate enum values.
 type EnumExtractor[T any] func(string) (T, error)
 
-// SafeExtractFromPayload extracts and validates an enum value from a message payload.
-func SafeExtractFromPayload[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {
-	var zero T
-
-	if rawValue, exists := msg.GetPayload(key); exists {
-		if strValue, ok := rawValue.(string); ok {
-			return parser(strValue)
-		}
-		return zero, fmt.Errorf("payload key %s is not a string", key)
-	}
-	return zero, fmt.Errorf("payload key %s not found", key)
-}
+// Note: SafeExtractFromPayload is obsolete with typed payloads.
+// Enum values are now accessed directly from typed payload structures.
 
 // SafeExtractFromMetadata extracts and validates an enum value from a message metadata.
 func SafeExtractFromMetadata[T any](msg *AgentMsg, key string, parser EnumExtractor[T]) (T, error) {

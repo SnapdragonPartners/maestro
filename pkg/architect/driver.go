@@ -86,8 +86,8 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 }
 
 // NewArchitect creates a new architect with LLM integration.
-// The API key is automatically retrieved from environment variables.
-func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) (*Driver, error) {
+// Uses shared LLM factory for proper rate limiting across all agents.
+func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory) (*Driver, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -104,8 +104,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	}
 	modelName := cfg.Agents.ArchitectModel
 
-	// Create basic LLM client using helper
-	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeArchitect)
+	// Create basic LLM client from shared factory (no metrics context yet, need architect instance first)
+	llmClient, err := llmFactory.CreateClient(agent.TypeArchitect)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
 	}
@@ -114,7 +114,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
-	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeArchitect, architect, architect.logger)
+	// Use the shared factory to ensure proper rate limiting
+	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeArchitect, architect, architect.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enhanced architect LLM client: %w", err)
 	}
@@ -581,19 +582,28 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			if story, exists := d.queue.stories[requeueRequest.StoryID]; exists && story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
-				storyMsg.SetPayload(proto.KeyStoryID, requeueRequest.StoryID)
-				storyMsg.SetPayload(proto.KeyTitle, story.Title)
-				storyMsg.SetPayload(proto.KeyEstimatedPoints, story.EstimatedPoints)
-				storyMsg.SetPayload(proto.KeyDependsOn, story.DependsOn)
-				storyMsg.SetPayload(proto.KeyStoryType, story.StoryType)
+
+				// Build story payload
+				payloadData := map[string]any{
+					proto.KeyTitle:           story.Title,
+					proto.KeyEstimatedPoints: story.EstimatedPoints,
+					proto.KeyDependsOn:       story.DependsOn,
+					proto.KeyStoryType:       story.StoryType,
+					proto.KeyRequirements:    []string{}, // Empty requirements for requeue
+				}
 
 				// Use story content from the queue
 				content := story.Content
 				if content == "" {
 					content = story.Title // Fallback to title if content is not set
 				}
-				storyMsg.SetPayload(proto.KeyContent, content)
-				storyMsg.SetPayload(proto.KeyRequirements, []string{}) // Empty requirements for requeue
+				payloadData[proto.KeyContent] = content
+
+				// Set typed story payload
+				storyMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, payloadData))
+
+				// Store story_id in metadata
+				storyMsg.SetMetadata(proto.KeyStoryID, requeueRequest.StoryID)
 
 				// Send story to dispatcher using Effects pattern
 				dispatchEffect := &DispatchStoryEffect{Story: storyMsg}

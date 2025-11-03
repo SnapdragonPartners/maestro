@@ -27,17 +27,37 @@ func (e *BudgetReviewEffect) Execute(ctx context.Context, runtime Runtime) (any,
 
 	// Create REQUEST message with budget review payload
 	budgetReviewMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
-	budgetReviewMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
-	budgetReviewMsg.SetPayload("approval_type", proto.ApprovalTypeBudgetReview.String())
-	budgetReviewMsg.SetPayload("content", e.Content)
-	budgetReviewMsg.SetPayload("reason", e.Reason)
-	budgetReviewMsg.SetPayload("approval_id", approvalID)
-	budgetReviewMsg.SetPayload("story_id", e.StoryID) // Include story_id for dispatcher validation
-	budgetReviewMsg.SetPayload("origin", e.OriginState)
 
-	// Add any extra payload data
+	// Build approval request payload with budget review type
+	payload := &proto.ApprovalRequestPayload{
+		ApprovalType: proto.ApprovalTypeBudgetReview,
+		Content:      e.Content,
+		Reason:       e.Reason,
+		Metadata:     make(map[string]string),
+	}
+
+	// Add origin state as context
+	if e.OriginState != "" {
+		payload.Context = "origin:" + e.OriginState
+	}
+
+	// Add story_id to metadata for dispatcher validation
+	if e.StoryID != "" {
+		payload.Metadata["story_id"] = e.StoryID
+	}
+
+	// Add extra payload data to metadata as strings
 	for key, value := range e.ExtraPayload {
-		budgetReviewMsg.SetPayload(key, value)
+		payload.Metadata[key] = fmt.Sprintf("%v", value)
+	}
+
+	// Set typed payload
+	budgetReviewMsg.SetTypedPayload(proto.NewApprovalRequestPayload(payload))
+
+	// Store approval_id in message metadata for tracking
+	budgetReviewMsg.SetMetadata("approval_id", approvalID)
+	if e.StoryID != "" {
+		budgetReviewMsg.SetMetadata("story_id", e.StoryID)
 	}
 
 	runtime.Info("📤 Sending budget review request %s to %s (origin: %s)", approvalID, e.TargetAgent, e.OriginState)
@@ -60,32 +80,21 @@ func (e *BudgetReviewEffect) Execute(ctx context.Context, runtime Runtime) (any,
 	}
 
 	// Extract budget review result from response payload
-	statusRaw, statusExists := responseMsg.GetPayload("status")
-	feedbackRaw, _ := responseMsg.GetPayload("feedback")
-	approvalIDRaw, _ := responseMsg.GetPayload("approval_id")
-
-	if !statusExists {
-		return nil, fmt.Errorf("budget review response missing status field")
+	// The architect sends approval response as typed payload
+	typedPayload := responseMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("budget review response missing typed payload")
 	}
 
-	status, ok := statusRaw.(string)
-	if !ok {
-		return nil, fmt.Errorf("budget review status is not a string: %T", statusRaw)
-	}
-
-	// Parse status string to ApprovalStatus enum
-	approvalStatus, err := proto.ParseApprovalStatus(status)
+	approvalResult, err := typedPayload.ExtractApprovalResponse()
 	if err != nil {
-		return nil, fmt.Errorf("invalid budget review status: %w", err)
+		return nil, fmt.Errorf("failed to extract approval response: %w", err)
 	}
-
-	feedbackStr, _ := feedbackRaw.(string)
-	approvalIDStr, _ := approvalIDRaw.(string)
 
 	result := &BudgetReviewResult{
-		Status:      approvalStatus,
-		Feedback:    feedbackStr,
-		ApprovalID:  approvalIDStr,
+		Status:      approvalResult.Status,
+		Feedback:    approvalResult.Feedback,
+		ApprovalID:  approvalResult.ID,
 		OriginState: e.OriginState,
 	}
 

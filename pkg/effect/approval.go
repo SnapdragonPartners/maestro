@@ -23,14 +23,29 @@ func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, err
 	agentID := runtime.GetAgentID()
 	approvalID := proto.GenerateApprovalID()
 
-	// Create REQUEST message with approval payload
+	// Create REQUEST message with typed approval payload
 	approvalMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
-	approvalMsg.SetPayload(proto.KeyKind, string(proto.RequestKindApproval))
-	approvalMsg.SetPayload("approval_type", e.ApprovalType.String())
-	approvalMsg.SetPayload("content", e.Content)
-	approvalMsg.SetPayload("reason", e.Reason)
-	approvalMsg.SetPayload("approval_id", approvalID)
-	approvalMsg.SetPayload("story_id", e.StoryID) // Include story_id that architect expects
+
+	// Build approval request payload
+	payload := &proto.ApprovalRequestPayload{
+		ApprovalType: e.ApprovalType,
+		Content:      e.Content,
+		Reason:       e.Reason,
+	}
+
+	// Add story_id as context if provided
+	if e.StoryID != "" {
+		payload.Context = "story_id:" + e.StoryID
+	}
+
+	// Set typed payload
+	approvalMsg.SetTypedPayload(proto.NewApprovalRequestPayload(payload))
+
+	// Store approval_id in metadata for tracking
+	approvalMsg.SetMetadata("approval_id", approvalID)
+	if e.StoryID != "" {
+		approvalMsg.SetMetadata("story_id", e.StoryID)
+	}
 
 	runtime.Info("📤 Sending %s approval request %s to %s", e.ApprovalType.String(), approvalID, e.TargetAgent)
 
@@ -52,32 +67,20 @@ func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, err
 	}
 
 	// Extract approval result from response payload
-	statusRaw, statusExists := responseMsg.GetPayload("status")
-	feedbackRaw, _ := responseMsg.GetPayload("feedback")
-	approvalIDRaw, _ := responseMsg.GetPayload("approval_id")
-
-	if !statusExists {
-		return nil, fmt.Errorf("approval response missing status field")
+	typedPayload := responseMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("approval response missing typed payload")
 	}
 
-	status, ok := statusRaw.(string)
-	if !ok {
-		return nil, fmt.Errorf("approval status is not a string: %T", statusRaw)
-	}
-
-	// Parse status string to ApprovalStatus enum
-	approvalStatus, err := proto.ParseApprovalStatus(status)
+	approvalResult, err := typedPayload.ExtractApprovalResponse()
 	if err != nil {
-		return nil, fmt.Errorf("invalid approval status: %w", err)
+		return nil, fmt.Errorf("failed to extract approval response: %w", err)
 	}
-
-	feedbackStr, _ := feedbackRaw.(string)
-	approvalIDStr, _ := approvalIDRaw.(string)
 
 	result := &ApprovalResult{
-		Status:     approvalStatus,
-		Feedback:   feedbackStr,
-		ApprovalID: approvalIDStr,
+		Status:     approvalResult.Status,
+		Feedback:   approvalResult.Feedback,
+		ApprovalID: approvalResult.ID,
 	}
 
 	runtime.Info("📥 Received approval response: %s", result.Status)
@@ -121,19 +124,21 @@ func NewApprovalEffectWithTimeout(content, reason string, approvalType proto.App
 }
 
 // NewPlanApprovalEffectWithStoryID creates a plan approval effect with story context.
-func NewPlanApprovalEffectWithStoryID(planContent, taskContent, storyID string) *ApprovalEffect {
-	content := fmt.Sprintf("Plan for Story %s:\n\nTask:\n%s\n\nProposed Plan:\n%s", storyID, taskContent, planContent)
+// planContent should be the fully-rendered template content.
+// The second parameter is deprecated and ignored for backwards compatibility.
+func NewPlanApprovalEffectWithStoryID(planContent, _, storyID string) *ApprovalEffect {
 	reason := fmt.Sprintf("Plan requires architect approval before implementation (Story %s)", storyID)
-	effect := NewApprovalEffect(content, reason, proto.ApprovalTypePlan)
+	effect := NewApprovalEffect(planContent, reason, proto.ApprovalTypePlan)
 	effect.StoryID = storyID // Set the story ID for the message payload
 	return effect
 }
 
 // NewCompletionApprovalEffectWithStoryID creates a completion approval effect with story context.
-func NewCompletionApprovalEffectWithStoryID(summary, filesCreated, storyID string) *ApprovalEffect {
-	content := fmt.Sprintf("Story %s Completion Summary:\n\nFiles Created: %s\n\nSummary:\n%s", storyID, filesCreated, summary)
+// summary should be the fully-rendered template content.
+// The second parameter is deprecated and ignored for backwards compatibility.
+func NewCompletionApprovalEffectWithStoryID(summary, _, storyID string) *ApprovalEffect {
 	reason := fmt.Sprintf("Story completion requires architect approval (Story %s)", storyID)
-	effect := NewApprovalEffect(content, reason, proto.ApprovalTypeCompletion)
+	effect := NewApprovalEffect(summary, reason, proto.ApprovalTypeCompletion)
 	effect.StoryID = storyID // Set the story ID for the message payload
 	return effect
 }

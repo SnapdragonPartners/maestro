@@ -89,11 +89,28 @@ func TestCurrentMessageValidation(t *testing.T) {
 				_ = tt.msg.FromAgent
 				_ = tt.msg.ToAgent
 
-				// Test payload access
+				// Test payload access via typed payload
 				if tt.msg.Type == proto.MsgTypeSTORY {
-					_, hasStoryID := tt.msg.GetPayload(proto.KeyStoryID)
-					_, hasTitle := tt.msg.GetPayload(proto.KeyTitle)
-					_, hasRequirements := tt.msg.GetPayload(proto.KeyRequirements)
+					hasStoryID := false
+					hasTitle := false
+					hasRequirements := false
+
+					// Check metadata for story_id
+					if _, exists := tt.msg.Metadata[proto.KeyStoryID]; exists {
+						hasStoryID = true
+					}
+
+					// Check typed payload for title and requirements
+					if typedPayload := tt.msg.GetTypedPayload(); typedPayload != nil {
+						if payloadData, err := typedPayload.ExtractGeneric(); err == nil {
+							if _, ok := payloadData[proto.KeyTitle]; ok {
+								hasTitle = true
+							}
+							if _, ok := payloadData[proto.KeyRequirements]; ok {
+								hasRequirements = true
+							}
+						}
+					}
 
 					t.Logf("STORY message validation - StoryID: %v, Title: %v, Requirements: %v",
 						hasStoryID, hasTitle, hasRequirements)
@@ -127,9 +144,11 @@ func TestStoryMessagePayloadValidation(t *testing.T) {
 					ID: "story-complete", Type: proto.MsgTypeSTORY,
 					FromAgent: "orchestrator", ToAgent: "coder",
 				}
-				msg.SetPayload(proto.KeyStoryID, "001")
-				msg.SetPayload(proto.KeyTitle, "Complete Story")
-				msg.SetPayload(proto.KeyRequirements, "All requirements")
+				msg.SetMetadata(proto.KeyStoryID, "001")
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+					proto.KeyTitle:        "Complete Story",
+					proto.KeyRequirements: "All requirements",
+				}))
 				return msg
 			},
 			hasStoryID: true, hasTitle: true, hasRequirements: true,
@@ -142,9 +161,11 @@ func TestStoryMessagePayloadValidation(t *testing.T) {
 					ID: "story-no-id", Type: proto.MsgTypeSTORY,
 					FromAgent: "orchestrator", ToAgent: "coder",
 				}
-				// Missing KeyStoryID - this has caused issues
-				msg.SetPayload(proto.KeyTitle, "Story Without ID")
-				msg.SetPayload(proto.KeyRequirements, "Requirements")
+				// Missing KeyStoryID in metadata - this has caused issues
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+					proto.KeyTitle:        "Story Without ID",
+					proto.KeyRequirements: "Requirements",
+				}))
 				return msg
 			},
 			hasStoryID: false, hasTitle: true, hasRequirements: true,
@@ -157,9 +178,11 @@ func TestStoryMessagePayloadValidation(t *testing.T) {
 					ID: "story-no-title", Type: proto.MsgTypeSTORY,
 					FromAgent: "orchestrator", ToAgent: "coder",
 				}
-				msg.SetPayload(proto.KeyStoryID, "002")
+				msg.SetMetadata(proto.KeyStoryID, "002")
 				// Missing KeyTitle
-				msg.SetPayload(proto.KeyRequirements, "Requirements")
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+					proto.KeyRequirements: "Requirements",
+				}))
 				return msg
 			},
 			hasStoryID: true, hasTitle: false, hasRequirements: true,
@@ -172,9 +195,11 @@ func TestStoryMessagePayloadValidation(t *testing.T) {
 					ID: "story-no-reqs", Type: proto.MsgTypeSTORY,
 					FromAgent: "orchestrator", ToAgent: "coder",
 				}
-				msg.SetPayload(proto.KeyStoryID, "003")
-				msg.SetPayload(proto.KeyTitle, "Story Without Requirements")
-				// Missing KeyRequirements
+				msg.SetMetadata(proto.KeyStoryID, "003")
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+					proto.KeyTitle: "Story Without Requirements",
+					// Missing KeyRequirements
+				}))
 				return msg
 			},
 			hasStoryID: true, hasTitle: true, hasRequirements: false,
@@ -187,9 +212,11 @@ func TestStoryMessagePayloadValidation(t *testing.T) {
 					ID: "story-empty-id", Type: proto.MsgTypeSTORY,
 					FromAgent: "orchestrator", ToAgent: "coder",
 				}
-				msg.SetPayload(proto.KeyStoryID, "") // Empty story_id
-				msg.SetPayload(proto.KeyTitle, "Story With Empty ID")
-				msg.SetPayload(proto.KeyRequirements, "Requirements")
+				msg.SetMetadata(proto.KeyStoryID, "") // Empty story_id
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+					proto.KeyTitle:        "Story With Empty ID",
+					proto.KeyRequirements: "Requirements",
+				}))
 				return msg
 			},
 			hasStoryID: true, hasTitle: true, hasRequirements: true, // Has key but empty value
@@ -201,10 +228,30 @@ func TestStoryMessagePayloadValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			msg := tt.setupPayload()
 
-			// Test payload validation
-			storyIDRaw, hasStoryID := msg.GetPayload(proto.KeyStoryID)
-			titleRaw, hasTitle := msg.GetPayload(proto.KeyTitle)
-			requirementsRaw, hasRequirements := msg.GetPayload(proto.KeyRequirements)
+			// Test payload validation - check metadata for story_id
+			var storyIDRaw any
+			hasStoryID := false
+			if storyID, exists := msg.Metadata[proto.KeyStoryID]; exists {
+				hasStoryID = true
+				storyIDRaw = storyID
+			}
+
+			// Check typed payload for title and requirements
+			var titleRaw, requirementsRaw any
+			hasTitle := false
+			hasRequirements := false
+			if typedPayload := msg.GetTypedPayload(); typedPayload != nil {
+				if payloadData, err := typedPayload.ExtractGeneric(); err == nil {
+					if title, ok := payloadData[proto.KeyTitle]; ok {
+						hasTitle = true
+						titleRaw = title
+					}
+					if requirements, ok := payloadData[proto.KeyRequirements]; ok {
+						hasRequirements = true
+						requirementsRaw = requirements
+					}
+				}
+			}
 
 			// Verify expected payload structure
 			if hasStoryID != tt.hasStoryID {
@@ -262,8 +309,10 @@ func TestRequestMessageValidation(t *testing.T) {
 					ID: "req-valid", Type: proto.MsgTypeREQUEST,
 					FromAgent: "coder", ToAgent: "architect",
 				}
-				msg.SetPayload(proto.KeyKind, "question")
-				msg.SetPayload("content", "How should I implement this?")
+				questionPayload := &proto.QuestionRequestPayload{
+					Text: "How should I implement this?",
+				}
+				msg.SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 				return msg
 			},
 			hasKind:     true,
@@ -276,8 +325,10 @@ func TestRequestMessageValidation(t *testing.T) {
 					ID: "req-no-kind", Type: proto.MsgTypeREQUEST,
 					FromAgent: "coder", ToAgent: "architect",
 				}
-				// Missing KeyKind - can cause routing problems
-				msg.SetPayload("content", "Request without kind")
+				// Missing Kind - use generic payload to simulate missing kind
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+					"content": "Request without kind",
+				}))
 				return msg
 			},
 			hasKind:     false,
@@ -289,20 +340,24 @@ func TestRequestMessageValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			msg := tt.setupMsg()
 
-			kindRaw, hasKind := msg.GetPayload(proto.KeyKind)
+			// Check if message has proper kind via GetRequestKind helper
+			hasKind := false
+			var kindStr string
+			kind, ok := proto.GetRequestKind(msg)
+			if ok {
+				hasKind = true
+				kindStr = string(kind)
+			}
+
 			if hasKind != tt.hasKind {
 				t.Errorf("Expected hasKind=%v, got %v", tt.hasKind, hasKind)
 			}
 
 			if hasKind {
-				if kindStr, ok := kindRaw.(string); ok {
-					if kindStr == "" {
-						t.Logf("WARNING: Empty kind detected in REQUEST message")
-					}
-					t.Logf("REQUEST kind: %s", kindStr)
-				} else {
-					t.Errorf("kind should be string, got %T: %v", kindRaw, kindRaw)
+				if kindStr == "" {
+					t.Logf("WARNING: Empty kind detected in REQUEST message")
 				}
+				t.Logf("REQUEST kind: %s", kindStr)
 			} else {
 				t.Logf("WARNING: Missing kind in REQUEST message - %s", tt.description)
 			}
@@ -394,9 +449,11 @@ func TestDispatcherStatsAndMetrics(t *testing.T) {
 func TestMessageCreationAndSerialization(t *testing.T) {
 	// Test various message creation patterns that might be used by dispatcher
 	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "coder")
-	storyMsg.SetPayload(proto.KeyStoryID, "test-001")
-	storyMsg.SetPayload(proto.KeyTitle, "Test Story")
-	storyMsg.SetPayload(proto.KeyRequirements, "Test requirements")
+	storyMsg.SetMetadata(proto.KeyStoryID, "test-001")
+	storyMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+		proto.KeyTitle:        "Test Story",
+		proto.KeyRequirements: "Test requirements",
+	}))
 
 	// Test serialization
 	data, err := storyMsg.ToJSON()
@@ -414,7 +471,7 @@ func TestMessageCreationAndSerialization(t *testing.T) {
 		t.Errorf("Expected STORY type, got %s", deserializedMsg.Type)
 	}
 
-	storyID, exists := deserializedMsg.GetPayload(proto.KeyStoryID)
+	storyID, exists := deserializedMsg.Metadata[proto.KeyStoryID]
 	if !exists || storyID != "test-001" {
 		t.Errorf("Expected story_id 'test-001', got %v (exists: %v)", storyID, exists)
 	}
@@ -479,7 +536,10 @@ func TestDispatcherRequeueOperations(t *testing.T) {
 func TestMessageValidationIntegration(t *testing.T) {
 	// Create messages with various validation states
 	validMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "coder")
-	validMsg.SetPayload(proto.KeyStoryID, "story-001")
+	validMsg.SetMetadata(proto.KeyStoryID, "story-001")
+	validMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+		proto.KeyTitle: "Test Story",
+	}))
 
 	invalidMsg := &proto.AgentMsg{
 		ID: "invalid-msg",
@@ -503,9 +563,9 @@ func TestMessageValidationIntegration(t *testing.T) {
 		t.Errorf("Cloned message ID mismatch: %s != %s", clonedMsg.ID, validMsg.ID)
 	}
 
-	storyID, exists := clonedMsg.GetPayload(proto.KeyStoryID)
+	storyID, exists := clonedMsg.Metadata[proto.KeyStoryID]
 	if !exists || storyID != "story-001" {
-		t.Errorf("Cloned message payload mismatch: %v (exists: %v)", storyID, exists)
+		t.Errorf("Cloned message metadata mismatch: %v (exists: %v)", storyID, exists)
 	}
 }
 
@@ -630,12 +690,16 @@ func TestDispatcherMessageTypeRouting(t *testing.T) {
 
 			// Add type-specific payload
 			if msgType == proto.MsgTypeSTORY {
-				msg.SetPayload(proto.KeyStoryID, "test-story")
-				msg.SetPayload(proto.KeyTitle, "Test Title")
-				msg.SetPayload(proto.KeyRequirements, "Test requirements")
+				msg.SetMetadata(proto.KeyStoryID, "test-story")
+				msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+					proto.KeyTitle:        "Test Title",
+					proto.KeyRequirements: "Test requirements",
+				}))
 			} else if msgType == proto.MsgTypeREQUEST {
-				msg.SetPayload(proto.KeyKind, "question")
-				msg.SetPayload(proto.KeyContent, "Test question")
+				questionPayload := &proto.QuestionRequestPayload{
+					Text: "Test question",
+				}
+				msg.SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 			}
 
 			// Test agent name resolution for this message

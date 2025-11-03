@@ -46,6 +46,7 @@ type StoryProvider interface {
 type Server struct {
 	dispatcher  *dispatch.Dispatcher
 	chatService *chat.Service
+	llmFactory  *agent.LLMClientFactory
 	logger      *logx.Logger
 	templates   *template.Template
 	workDir     string
@@ -60,7 +61,7 @@ type AgentListItem struct {
 }
 
 // NewServer creates a new web UI server.
-func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *chat.Service) *Server {
+func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *chat.Service, llmFactory *agent.LLMClientFactory) *Server {
 	// Load templates from embedded filesystem
 	templates, err := template.ParseFS(templateFS, "web/templates/*.html")
 	if err != nil {
@@ -74,6 +75,7 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 		workDir:     workDir,
 		templates:   templates,
 		chatService: chatService,
+		llmFactory:  llmFactory,
 	}
 }
 
@@ -180,6 +182,24 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 		agentReady = architectReady
 	}
 
+	// Get rate limit stats from LLM factory
+	rateLimitStats := make(map[string]interface{})
+	if s.llmFactory != nil {
+		stats := s.llmFactory.GetRateLimitStats()
+		for provider := range stats {
+			stat := stats[provider]
+			rateLimitStats[provider] = map[string]interface{}{
+				"available_tokens":     stat.AvailableTokens,
+				"max_capacity":         stat.MaxCapacity,
+				"active_requests":      stat.ActiveRequests,
+				"max_concurrency":      stat.MaxConcurrency,
+				"token_limit_hits":     stat.TokenLimitHits,
+				"concurrency_hits":     stat.ConcurrencyHits,
+				"tracked_acquisitions": stat.TrackedAcquisitions,
+			}
+		}
+	}
+
 	// Build response
 	response := map[string]interface{}{
 		"chat": map[string]interface{}{
@@ -190,6 +210,7 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 			"coder_count":     coderCount,
 			"architect_ready": architectReady,
 		},
+		"rate_limits": rateLimitStats,
 	}
 
 	// Send JSON response
@@ -533,11 +554,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Create and send SPEC message to architect (use logical name "architect")
 	// The dispatcher will resolve this to the actual architect agent.
 	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, "web-ui", "architect")
-	msg.SetPayload("type", "spec_upload")
-	msg.SetPayload("filename", header.Filename)
-	msg.SetPayload("filepath", filePath)
-	msg.SetPayload("size", header.Size)
-	msg.SetPayload("content", string(content)) // Add the actual file content
+
+	// Build SPEC payload with typed generic payload
+	specPayload := map[string]any{
+		"type":     "spec_upload",
+		"filename": header.Filename,
+		"filepath": filePath,
+		"size":     header.Size,
+		"content":  string(content), // Add the actual file content
+	}
+	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
 
 	s.logger.Info("Dispatching SPEC message %s to architect", msg.ID)
 	if err := s.dispatcher.DispatchMessage(msg); err != nil {
@@ -970,7 +996,6 @@ type MessageEntry struct {
 	ApprovalType *string `json:"approval_type,omitempty"` // "plan", "code", "budget_review", "completion"
 	ResponseType *string `json:"response_type,omitempty"` // "answer" or "result"
 	Status       *string `json:"status,omitempty"`        // "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
-	Feedback     *string `json:"feedback,omitempty"`      // For responses
 	Reason       *string `json:"reason,omitempty"`        // For requests
 	Timestamp    string  `json:"timestamp"`
 	ID           string  `json:"id"`
@@ -1048,7 +1073,6 @@ func (s *Server) readMessageLogs() []MessageEntry {
 			ResponseType: msg.ResponseType,
 			Status:       msg.Status,
 			Content:      msg.Content,
-			Feedback:     msg.Feedback,
 			Reason:       msg.Reason,
 		})
 	}

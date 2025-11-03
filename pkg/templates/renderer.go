@@ -91,6 +91,30 @@ const (
 	TechnicalQATemplate StateTemplate = "technical_qa.tpl.md"
 	// CodeReviewTemplate is the template for architect code review state.
 	CodeReviewTemplate StateTemplate = "code_review.tpl.md"
+
+	// PlanApprovalRequestTemplate is the template for plan approval request content (coder → architect).
+	PlanApprovalRequestTemplate StateTemplate = "plan_approval_request.tpl.md"
+	// CodeReviewRequestTemplate is the template for code review request content.
+	CodeReviewRequestTemplate StateTemplate = "code_review_request.tpl.md"
+	// CompletionRequestTemplate is the template for completion request content.
+	CompletionRequestTemplate StateTemplate = "completion_request.tpl.md"
+	// MergeRequestTemplate is the template for merge request content.
+	MergeRequestTemplate StateTemplate = "merge_request.tpl.md"
+	// BudgetReviewRequestPlanningTemplate is the template for budget review request content in planning state.
+	BudgetReviewRequestPlanningTemplate StateTemplate = "budget_review_request_planning.tpl.md"
+	// BudgetReviewRequestCodingTemplate is the template for budget review request content in coding state.
+	BudgetReviewRequestCodingTemplate StateTemplate = "budget_review_request_coding.tpl.md"
+	// QuestionRequestTemplate is the template for question request content.
+	QuestionRequestTemplate StateTemplate = "question_request.tpl.md"
+
+	// PlanApprovalResponseTemplate is the template for plan approval responses (architect → coder).
+	PlanApprovalResponseTemplate StateTemplate = "plan_approval_response.tpl.md"
+	// CodeReviewResponseTemplate is the template for code review responses.
+	CodeReviewResponseTemplate StateTemplate = "code_review_response.tpl.md"
+	// CompletionResponseTemplate is the template for completion review responses.
+	CompletionResponseTemplate StateTemplate = "completion_response.tpl.md"
+	// BudgetReviewResponseTemplate is the template for budget review responses.
+	BudgetReviewResponseTemplate StateTemplate = "budget_review_response.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -132,6 +156,19 @@ func NewRenderer() (*Renderer, error) {
 		CodeReviewTemplate,
 		AppCodeReviewTemplate,
 		DevOpsCodeReviewTemplate,
+		// Request content templates (coder → architect).
+		PlanApprovalRequestTemplate,
+		CodeReviewRequestTemplate,
+		CompletionRequestTemplate,
+		MergeRequestTemplate,
+		BudgetReviewRequestPlanningTemplate,
+		BudgetReviewRequestCodingTemplate,
+		QuestionRequestTemplate,
+		// Response content templates (architect → coder).
+		PlanApprovalResponseTemplate,
+		CodeReviewResponseTemplate,
+		CompletionResponseTemplate,
+		BudgetReviewResponseTemplate,
 	}
 
 	for _, name := range templateNames {

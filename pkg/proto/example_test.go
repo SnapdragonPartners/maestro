@@ -8,9 +8,14 @@ import (
 func ExampleAgentMsg_usage() {
 	// Create a STORY message from architect to claude.
 	storyMsg := NewAgentMsg(MsgTypeSTORY, "architect", "claude")
-	storyMsg.SetPayload("story_id", "001")
-	storyMsg.SetPayload("content", "Implement health endpoint")
-	storyMsg.SetPayload("requirements", []string{"GET /health", "return 200 OK", "JSON response"})
+
+	// Build story payload with typed generic payload
+	storyPayload := map[string]any{
+		"content":      "Implement health endpoint",
+		"requirements": []string{"GET /health", "return 200 OK", "JSON response"},
+	}
+	storyMsg.SetTypedPayload(NewGenericPayload(PayloadKindStory, storyPayload))
+	storyMsg.SetMetadata("story_id", "001")
 	storyMsg.SetMetadata("priority", "high")
 	storyMsg.SetMetadata("estimated_points", "1")
 
@@ -26,8 +31,11 @@ func ExampleAgentMsg_usage() {
 	// Claude receives and processes the story, then creates a RESULT message.
 	resultMsg := NewAgentMsg(MsgTypeRESPONSE, "claude", "architect")
 	resultMsg.ParentMsgID = storyMsg.ID
-	resultMsg.SetPayload("status", "completed")
-	resultMsg.SetPayload("implementation", `
+
+	// Build result payload with typed generic payload
+	resultPayload := map[string]any{
+		"status": "completed",
+		"implementation": `
 package main
 
 import (
@@ -42,8 +50,10 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		"status": "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
-}`)
-	resultMsg.SetPayload("tests_passed", true)
+}`,
+		"tests_passed": true,
+	}
+	resultMsg.SetTypedPayload(NewGenericPayload(PayloadKindGeneric, resultPayload))
 	resultMsg.SetMetadata("execution_time", "2.5s")
 
 	resultJSON, err := resultMsg.ToJSON()

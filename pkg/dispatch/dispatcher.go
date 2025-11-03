@@ -54,7 +54,6 @@ import (
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/utils"
 )
 
 // Severity represents the severity level of agent errors.
@@ -387,10 +386,8 @@ func (d *Dispatcher) DispatchMessage(msg *proto.AgentMsg) error {
 		// Enhanced logging for unified protocol messages
 		kindInfo := ""
 		if msg.Type == proto.MsgTypeREQUEST || msg.Type == proto.MsgTypeRESPONSE {
-			if kindRaw, hasKind := msg.GetPayload(proto.KeyKind); hasKind {
-				if kindStr, ok := kindRaw.(string); ok {
-					kindInfo = fmt.Sprintf(" (kind: %s)", kindStr)
-				}
+			if typedPayload := msg.GetTypedPayload(); typedPayload != nil {
+				kindInfo = fmt.Sprintf(" (payload_kind: %s)", typedPayload.Kind)
 			}
 		}
 		d.logger.Debug("Queued message %s: %s → %s%s", msg.ID, msg.FromAgent, msg.ToAgent, kindInfo)
@@ -546,16 +543,16 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 
 	// Validate story_id presence - only SPEC messages are allowed without story_id
 	if msg.Type != proto.MsgTypeSPEC {
-		storyIDRaw, hasStoryID := msg.GetPayload(proto.KeyStoryID)
+		// Story ID is now in metadata, not payload
+		storyIDStr, hasStoryID := msg.Metadata[proto.KeyStoryID]
 		if !hasStoryID {
-			d.logger.Error("❌ Message %s (%s) missing required story_id - rejecting at dispatcher level", msg.ID, msg.Type)
+			d.logger.Error("❌ Message %s (%s) missing required story_id in metadata - rejecting at dispatcher level", msg.ID, msg.Type)
 			d.sendErrorResponse(msg, fmt.Errorf("message %s (%s) missing required story_id", msg.ID, msg.Type))
 			return
 		}
 
-		// Validate story_id is not empty using generics pattern
-		storyIDStr, ok := utils.SafeAssert[string](storyIDRaw)
-		if !ok || strings.TrimSpace(storyIDStr) == "" {
+		// Validate story_id is not empty
+		if strings.TrimSpace(storyIDStr) == "" {
 			d.logger.Error("❌ Message %s (%s) has empty story_id - rejecting at dispatcher level", msg.ID, msg.Type)
 			d.sendErrorResponse(msg, fmt.Errorf("message %s (%s) has empty story_id", msg.ID, msg.Type))
 			return
@@ -660,13 +657,12 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 
 	case proto.MsgTypeRESPONSE:
 		// Route unified RESPONSE messages with kind logging
-		kindRaw, hasKind := response.GetPayload(proto.KeyKind)
 		kindStr := ""
-		if hasKind {
-			kindStr, _ = kindRaw.(string)
+		if typedPayload := response.GetTypedPayload(); typedPayload != nil {
+			kindStr = string(typedPayload.Kind)
 		}
 
-		d.logger.Debug("Routing RESPONSE %s (kind: %s) to reply channel", response.ID, kindStr)
+		d.logger.Debug("Routing RESPONSE %s (payload_kind: %s) to reply channel", response.ID, kindStr)
 		d.routeToReplyCh(response)
 
 	default:
@@ -678,8 +674,13 @@ func (d *Dispatcher) sendResponse(response *proto.AgentMsg) {
 func (d *Dispatcher) sendErrorResponse(originalMsg *proto.AgentMsg, err error) {
 	errorMsg := proto.NewAgentMsg(proto.MsgTypeERROR, "dispatcher", originalMsg.FromAgent)
 	errorMsg.ParentMsgID = originalMsg.ID
-	errorMsg.SetPayload("error", err.Error())
-	errorMsg.SetPayload("original_message_id", originalMsg.ID)
+
+	// Set typed error payload
+	errorPayload := map[string]any{
+		"error":               err.Error(),
+		"original_message_id": originalMsg.ID,
+	}
+	errorMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindError, errorPayload))
 	errorMsg.SetMetadata("error_type", "processing_error")
 
 	d.logger.Error("Sending error response for message %s: %v", originalMsg.ID, err)
@@ -1035,13 +1036,17 @@ func (d *Dispatcher) SendRequeue(agentID, reason string) error {
 
 	// Create requeue message using unified REQUEST protocol.
 	requeueMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "orchestrator", "architect")
-	requeueMsg.SetPayload(proto.KeyKind, string(proto.RequestKindRequeue))
-	requeueMsg.SetPayload(proto.KeyRequeue, proto.RequeueRequestPayload{
+
+	// Set typed requeue request payload
+	requeuePayload := &proto.RequeueRequestPayload{
 		StoryID: storyID,
 		AgentID: agentID,
 		Reason:  reason,
-	})
-	requeueMsg.SetPayload(proto.KeyCorrelationID, proto.GenerateCorrelationID())
+	}
+	requeueMsg.SetTypedPayload(proto.NewRequeueRequestPayload(requeuePayload))
+
+	// Store correlation_id in metadata
+	requeueMsg.SetMetadata("correlation_id", proto.GenerateCorrelationID())
 
 	// Send to questions channel (same as existing requeue logic).
 	select {

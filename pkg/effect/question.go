@@ -25,21 +25,32 @@ func (e *AwaitQuestionEffect) Execute(ctx context.Context, runtime Runtime) (any
 
 	// Create REQUEST message with question payload
 	questionMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, agentID, e.TargetAgent)
-	questionMsg.SetPayload(proto.KeyKind, string(proto.RequestKindQuestion))
-	questionMsg.SetPayload(proto.KeyQuestion, proto.QuestionRequestPayload{
-		Text:    e.Question,
-		Context: fmt.Sprintf("%s clarification (%s urgency)", e.OriginState, e.Urgency),
-		Urgency: e.Urgency,
-	})
-	questionMsg.SetPayload(proto.KeyCorrelationID, proto.GenerateCorrelationID())
-	questionMsg.SetPayload(proto.KeyStoryID, e.StoryID) // Include story_id that dispatcher requires
 
-	if e.Context != "" {
-		questionMsg.SetPayload("context", e.Context)
+	// Build question request payload
+	payload := &proto.QuestionRequestPayload{
+		Text:     e.Question,
+		Context:  fmt.Sprintf("%s clarification (%s urgency)", e.OriginState, e.Urgency),
+		Urgency:  e.Urgency,
+		Metadata: make(map[string]string),
 	}
 
+	// Add story_id to metadata (required by dispatcher)
+	if e.StoryID != "" {
+		payload.Metadata["story_id"] = e.StoryID
+	}
+
+	// Add origin state to metadata if provided
 	if e.OriginState != "" {
-		questionMsg.SetPayload("origin", e.OriginState)
+		payload.Metadata["origin"] = e.OriginState
+	}
+
+	// Set typed payload
+	questionMsg.SetTypedPayload(proto.NewQuestionRequestPayload(payload))
+
+	// Store correlation_id and story_id in message metadata for tracking
+	questionMsg.SetMetadata("correlation_id", proto.GenerateCorrelationID())
+	if e.StoryID != "" {
+		questionMsg.SetMetadata("story_id", e.StoryID)
 	}
 
 	runtime.Info("📤 Sending question to %s from %s state", e.TargetAgent, e.OriginState)
@@ -65,21 +76,24 @@ func (e *AwaitQuestionEffect) Execute(ctx context.Context, runtime Runtime) (any
 		return nil, fmt.Errorf("failed to receive answer: %w", err)
 	}
 
-	// Extract answer content
-	answerContent := ""
-	if content, exists := answerMsg.GetPayload("answer"); exists {
-		if contentStr, ok := content.(string); ok {
-			answerContent = contentStr
-		}
+	// Extract answer content from typed payload
+	typedPayload := answerMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("answer message missing typed payload")
 	}
 
-	if answerContent == "" {
+	answerPayload, err := typedPayload.ExtractQuestionResponse()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract question response: %w", err)
+	}
+
+	if answerPayload.AnswerText == "" {
 		return nil, fmt.Errorf("received empty answer content")
 	}
 
 	result := &QuestionResult{
-		Answer: answerContent,
-		Data:   answerMsg.Payload,
+		Answer: answerPayload.AnswerText,
+		Data:   nil, // No longer using map[string]any - typed payload only
 	}
 
 	runtime.Info("✅ Received answer from %s", e.TargetAgent)

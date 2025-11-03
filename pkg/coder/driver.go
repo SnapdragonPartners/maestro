@@ -4,6 +4,7 @@ package coder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -33,9 +35,10 @@ const (
 	// roleToolMessage represents tool message role in context manager.
 	roleToolMessage = "tool"
 
-	// budgetReviewContextTokenLimit limits the context messages included in budget review requests
-	// to avoid burning excessive tokens when asking for permission to use more tokens.
-	budgetReviewContextTokenLimit = 10000
+	// budgetReviewContextTokenLimit limits the context messages included in budget review requests.
+	// Budget reviews need: story, plan, todos, and ~10 tool calls with 2-4k token responses each.
+	// Total: ~2k (story) + ~3k (plan) + ~1k (todos) + ~30k (tool calls) = ~36k, so 100k gives headroom.
+	budgetReviewContextTokenLimit = 100000
 )
 
 // Coder implements the v2 FSM using agent foundation.
@@ -54,6 +57,7 @@ type Coder struct {
 	buildRegistry           *build.Registry                // Build backend registry
 	buildService            *build.Service                 // Build service for MCP tools
 	chatService             *chat.Service                  // Chat service for agent collaboration
+	persistenceChannel      chan<- *persistence.Request    // Channel for database operations
 	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
 	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
 	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
@@ -458,8 +462,8 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 }
 
 // NewCoder creates a new coder with LLM integration.
-// The API key is automatically retrieved from environment variables.
-func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service) (*Coder, error) {
+// Uses shared LLM factory for proper rate limiting across all agents.
+func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory) (*Coder, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -467,8 +471,8 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	default:
 	}
 
-	// Create LLM client using DRY helper function (same as architect)
-	llmClient, err := agent.CreateLLMClientForAgent(agent.TypeCoder)
+	// Create basic LLM client from shared factory (no metrics context yet, need coder instance first)
+	llmClient, err := llmFactory.CreateClient(agent.TypeCoder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
 	}
@@ -537,14 +541,16 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		dispatcher:          nil, // Will be set during Attach()
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
-		chatService:         chatService, // Chat service for agent collaboration
-		codingBudget:        8,           // Default coding budget
+		chatService:         chatService,        // Chat service for agent collaboration
+		persistenceChannel:  persistenceChannel, // Channel for database operations
+		codingBudget:        8,                  // Default coding budget
 		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(workDir), agentID),
 		containerName:       "", // Will be set during setup
 	}
 
 	// Now that we have the coder (StateProvider), create enhanced client with metrics context
-	enhancedClient, err := agent.EnhanceLLMClientWithMetrics(llmClient, agent.TypeCoder, coder, coder.logger)
+	// Use the shared factory to ensure proper rate limiting
+	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
 	}
@@ -633,7 +639,7 @@ func (c *Coder) getRecentToolActivity(limit int) string {
 	return fmt.Sprintf("Recent %d tool calls:\n%s", len(toolActivity), strings.Join(toolActivity, "\n"))
 }
 
-// detectIssuePattern analyzes recent activity to identify common problems.
+// detectIssuePattern analyzes recent activity using universal, platform-agnostic metrics.
 func (c *Coder) detectIssuePattern() string {
 	if c.contextManager == nil {
 		return "Cannot analyze - no context manager"
@@ -644,8 +650,7 @@ func (c *Coder) detectIssuePattern() string {
 		return "Insufficient activity to analyze patterns"
 	}
 
-	var recentCommands []string
-	var recentErrors []string
+	var toolCalls []toolCall
 
 	// Look at last 10 messages for patterns
 	start := len(messages) - 10
@@ -653,75 +658,114 @@ func (c *Coder) detectIssuePattern() string {
 		start = 0
 	}
 
+	// Extract tool calls with success/failure status
 	for i := start; i < len(messages); i++ {
 		msg := messages[i]
 		if msg.Role == roleToolMessage {
-			content := strings.ToLower(msg.Content)
+			content := msg.Content
 
-			// Extract command if it's a shell tool result
-			if strings.Contains(content, "command:") {
+			// Extract command if present
+			var command string
+			if strings.Contains(content, "Command:") || strings.Contains(content, "command:") {
 				lines := strings.Split(content, "\n")
 				for _, line := range lines {
-					if strings.Contains(line, "command:") {
-						cmd := strings.TrimSpace(strings.Split(line, "command:")[1])
-						recentCommands = append(recentCommands, cmd)
+					if strings.Contains(strings.ToLower(line), "command:") {
+						parts := strings.SplitN(line, ":", 2)
+						if len(parts) == 2 {
+							command = strings.TrimSpace(parts[1])
+						}
 						break
 					}
 				}
 			}
 
-			// Check for error patterns
-			if strings.Contains(content, "exit_code: 1") ||
+			// Determine if this tool call failed
+			failed := strings.Contains(content, "exit_code: 1") ||
 				strings.Contains(content, "exit_code: 127") ||
-				strings.Contains(content, "error:") ||
-				strings.Contains(content, "failed") {
-				recentErrors = append(recentErrors, content)
-			}
+				strings.Contains(content, "exit_code: 255") ||
+				strings.Contains(strings.ToLower(content), "error:") ||
+				strings.Contains(strings.ToLower(content), "failed:")
+
+			toolCalls = append(toolCalls, toolCall{
+				command: command,
+				failed:  failed,
+				content: content,
+			})
 		}
 	}
 
-	// Analyze patterns
+	if len(toolCalls) == 0 {
+		return "No tool calls to analyze"
+	}
+
+	// Calculate universal metrics
 	var issues []string
 
-	// Check for repeated implementation commands in planning
-	if len(recentCommands) > 2 {
-		implCmds := 0
-		for _, cmd := range recentCommands {
-			if strings.Contains(cmd, "go mod init") ||
-				strings.Contains(cmd, "npm install") ||
-				strings.Contains(cmd, "make build") ||
-				strings.Contains(cmd, "go build") {
-				implCmds++
+	// 1. Tool failure rate
+	failedCount := 0
+	for i := range toolCalls {
+		if toolCalls[i].failed {
+			failedCount++
+		}
+	}
+	failureRate := float64(failedCount) / float64(len(toolCalls))
+
+	if failureRate > 0.5 {
+		issues = append(issues, fmt.Sprintf("High tool failure rate: %d/%d tool calls failed (%.0f%%)",
+			failedCount, len(toolCalls), failureRate*100))
+	}
+
+	// 2. Identical consecutive failing commands
+	for i := 1; i < len(toolCalls); i++ {
+		prev := toolCalls[i-1]
+		curr := toolCalls[i]
+
+		if prev.command != "" && curr.command != "" &&
+			prev.command == curr.command &&
+			prev.failed && curr.failed {
+			issues = append(issues, fmt.Sprintf("Repeated failing command detected: '%s' (same command failed consecutively)", prev.command))
+			break // Only report once
+		}
+	}
+
+	// 3. Identical consecutive successful commands (indicates loop without progress)
+	// Look for sequences of 3+ identical successful commands
+	consecutiveCount := 1
+	var lastCommand string
+	for i := 0; i < len(toolCalls); i++ {
+		curr := toolCalls[i]
+		if curr.command == "" || curr.failed {
+			consecutiveCount = 1
+			lastCommand = ""
+			continue
+		}
+
+		if lastCommand == curr.command {
+			consecutiveCount++
+			if consecutiveCount >= 3 {
+				issues = append(issues, fmt.Sprintf("Repeated successful command loop detected: '%s' (same command executed %d times consecutively without errors)", curr.command, consecutiveCount))
+				break // Only report once
 			}
-		}
-		if implCmds > 1 {
-			issues = append(issues, "Agent repeatedly trying implementation commands (may be in wrong state)")
-		}
-	}
-
-	// Check for repeated failures
-	if len(recentErrors) > 2 {
-		issues = append(issues, fmt.Sprintf("Agent experiencing repeated failures (%d recent errors)", len(recentErrors)))
-	}
-
-	// Check for "command not found" errors
-	commandNotFound := 0
-	for _, cmd := range recentCommands {
-		for _, err := range recentErrors {
-			if strings.Contains(err, "not found") && strings.Contains(err, cmd) {
-				commandNotFound++
-			}
+		} else {
+			consecutiveCount = 1
+			lastCommand = curr.command
 		}
 	}
-	if commandNotFound > 1 {
-		issues = append(issues, "Agent trying to use unavailable tools/commands")
+
+	// Add strong guidance when issues detected
+	if len(issues) > 0 {
+		issues = append(issues, "**ALERT**: Significant issues detected that likely require NEEDS_CHANGES guidance or ABANDON may be appropriate.")
+		return strings.Join(issues, "\n")
 	}
 
-	if len(issues) == 0 {
-		return "No clear issue pattern detected - agent may need more specific guidance"
-	}
+	return fmt.Sprintf("Tool calls appear healthy (%d/%d successful)", len(toolCalls)-failedCount, len(toolCalls))
+}
 
-	return strings.Join(issues, "; ")
+// toolCall represents a single tool invocation with its outcome.
+type toolCall struct {
+	command string
+	content string
+	failed  bool
 }
 
 // checkLoopBudget tracks loop counts and creates BudgetReviewEffect when budget is exceeded.
@@ -742,7 +786,7 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 	// Check if budget exceeded.
 	if iterationCount >= budget {
 		// Build comprehensive budget review content
-		content := c.buildBudgetReviewContent(sm, origin, iterationCount, budget)
+		content := c.getBudgetReviewContent(sm, origin, iterationCount, budget)
 
 		// Store origin state for later use.
 		sm.SetStateData(KeyOrigin, string(origin))
@@ -1088,6 +1132,11 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 			} else {
 				c.logger.Info("%s tool failed", toolCall.Name)
 				c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s operation failed", toolCall.Name))
+
+				// Add planning reminder if tool failed in PLANNING state
+				if c.GetCurrentState() == StatePlanning {
+					c.addPlanningReminder()
+				}
 			}
 		}
 
@@ -1103,6 +1152,23 @@ func (c *Coder) addToolResultToContext(toolCall agent.ToolCall, result any) {
 			c.contextManager.AddMessage(roleToolMessage, fmt.Sprintf("%s error: %s", toolCall.Name, sanitizedError))
 		}
 	}
+}
+
+// addPlanningReminder adds a reminder message when tools fail in PLANNING state.
+// This provides immediate feedback that the agent is in read-only exploration mode.
+func (c *Coder) addPlanningReminder() {
+	reminder := `⚠️ REMINDER: You are in PLANNING state with read-only access. Your task is to explore the codebase and create an implementation plan, not to modify files or run implementation commands.
+
+Key points:
+- Git operations (fetch, pull, checkout) are unnecessary - the workspace is already up-to-date from SETUP
+- Use read-only commands: ls, cat, find, grep, tree
+- Focus on understanding the code structure and requirements
+- Create a comprehensive plan using submit_plan when ready
+
+If you're uncertain how to proceed or repeatedly encountering errors, use the ask_question tool to get guidance from the architect.`
+
+	c.contextManager.AddMessage("user", reminder)
+	c.logger.Debug("Added planning state reminder after tool failure")
 }
 
 // sanitizeEmptyResponse ensures no empty responses break agent/user alternation.
@@ -1155,6 +1221,11 @@ func (c *Coder) addShellResultToContext(resultMap map[string]any) {
 	}
 
 	c.contextManager.AddMessage(roleToolMessage, feedback.String())
+
+	// Add planning reminder if command failed in PLANNING state
+	if exitCode != 0 && c.GetCurrentState() == StatePlanning {
+		c.addPlanningReminder()
+	}
 }
 
 // addComprehensiveToolFailureToContext adds detailed tool failure information to context.
@@ -1220,11 +1291,8 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	return tools.NewProvider(agentCtx, codingTools)
 }
 
-// buildBudgetReviewContent creates comprehensive budget review content with story, plan, and context.
-func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.State, iterationCount, budget int) string {
-	// Basic budget info
-	header := fmt.Sprintf("Loop budget exceeded in %s state (%d/%d iterations). How should I proceed?", origin, iterationCount, budget)
-
+// getBudgetReviewContent creates comprehensive budget review content using templates.
+func (c *Coder) getBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.State, iterationCount, budget int) string {
 	// Get story and plan context
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
@@ -1234,38 +1302,45 @@ func (c *Coder) buildBudgetReviewContent(sm *agent.BaseStateMachine, origin prot
 	// Get truncated context messages
 	contextMessages := c.getContextMessagesWithTokenLimit(budgetReviewContextTokenLimit)
 
-	// Build comprehensive content
-	content := fmt.Sprintf(`## Budget Review Request
-%s
+	// Get automated pattern analysis
+	issuePattern := c.detectIssuePattern()
 
-## Story Context
-**Story ID:** %s
-**Story Type:** %s
+	// Select template based on origin state
+	var templateName templates.StateTemplate
+	if origin == StatePlanning {
+		templateName = templates.BudgetReviewRequestPlanningTemplate
+	} else {
+		templateName = templates.BudgetReviewRequestCodingTemplate
+	}
 
-### Story Requirements
-%s
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Loops":               iterationCount,
+			"MaxLoops":            budget,
+			"StoryID":             storyID,
+			"StoryType":           storyType,
+			"TaskContent":         taskContent,
+			"Plan":                plan,
+			"ApprovedPlan":        plan, // Same as plan for consistency with other templates
+			"IssuePattern":        issuePattern,
+			"RecentActivity":      contextMessages.Content,
+			"ContextMessageCount": len(contextMessages.Messages),
+			"ContextTokenLimit":   budgetReviewContextTokenLimit,
+		},
+	}
 
-## Implementation Plan
-%s
+	// Render template
+	if c.renderer == nil {
+		// Fallback if no renderer available
+		return fmt.Sprintf("Budget exceeded in %s state (%d/%d iterations). Story: %s", origin, iterationCount, budget, storyID)
+	}
 
-## Recent Context (%d messages, ≤%d tokens)
-%s
-
-## Current State
-- **Files Created:** %v
-- **Tests Passed:** %v
-- **Current State:** %s
-
-Please advise how I should proceed given this context.`,
-		header,
-		storyID, storyType,
-		taskContent,
-		plan,
-		len(contextMessages.Messages), budgetReviewContextTokenLimit,
-		contextMessages.Content,
-		utils.GetStateValueOr[[]string](sm, KeyFilesCreated, []string{}),
-		utils.GetStateValueOr[bool](sm, KeyTestsPassed, false),
-		origin)
+	content, err := c.renderer.Render(templateName, templateData)
+	if err != nil {
+		c.logger.Warn("Failed to render budget review template: %v", err)
+		return fmt.Sprintf("Budget exceeded in %s state (%d/%d iterations). Story: %s", origin, iterationCount, budget, storyID)
+	}
 
 	return content
 }
@@ -1317,6 +1392,13 @@ func (c *Coder) getContextMessagesWithTokenLimit(tokenLimit int) *ContextMessage
 	// Work backwards from most recent message
 	for i := len(allMessages) - 1; i >= 0; i-- {
 		msg := allMessages[i]
+
+		// Skip system prompts - budget reviews don't need them
+		// Budget reviews need: story, plan, todos, and tool call history
+		if msg.Role == "system" {
+			continue
+		}
+
 		msgContent := fmt.Sprintf("[%s]: %s", msg.Role, msg.Content)
 		msgTokens := tokenCounter.CountTokens(msgContent)
 
@@ -1359,4 +1441,82 @@ func (c *Coder) GetHostWorkspacePath() string {
 	// Fallback to original if Abs() fails
 	c.logger.Warn("⚠️  GetHostWorkspacePath: filepath.Abs failed, using original: %s", c.originalWorkDir)
 	return c.originalWorkDir
+}
+
+// logToolExecution logs a tool execution to the database for debugging and analysis.
+// This is a fire-and-forget operation - failures are logged but don't affect tool execution.
+func (c *Coder) logToolExecution(toolCall *agent.ToolCall, result any, execErr error, duration time.Duration) {
+	if c.persistenceChannel == nil {
+		return // No persistence channel configured
+	}
+
+	// Get config for session ID
+	cfg, err := config.GetConfig()
+	if err != nil {
+		c.logger.Debug("Failed to get config for tool execution logging: %v", err)
+		return
+	}
+
+	// Get story ID from state machine if available
+	stateData := c.GetStateData()
+	storyIDStr, _ := stateData["story_id"].(string)
+
+	// Marshal parameters to JSON
+	var paramsJSON string
+	if toolCall.Parameters != nil {
+		if jsonBytes, err := json.Marshal(toolCall.Parameters); err == nil {
+			paramsJSON = string(jsonBytes)
+		}
+	}
+
+	// Extract result data based on tool type
+	var exitCode *int
+	var success *bool
+	var stdout, stderr, errorMsg string
+
+	if execErr != nil {
+		errorMsg = execErr.Error()
+		successVal := false
+		success = &successVal
+	} else {
+		successVal := true
+		success = &successVal
+	}
+
+	// Extract shell-specific data from result map
+	if resultMap, ok := result.(map[string]any); ok {
+		if exitCodeVal, ok := resultMap["exit_code"].(int); ok {
+			exitCode = &exitCodeVal
+		}
+		if stdoutVal, ok := resultMap["stdout"].(string); ok {
+			stdout = stdoutVal
+		}
+		if stderrVal, ok := resultMap["stderr"].(string); ok {
+			stderr = stderrVal
+		}
+		if errorVal, ok := resultMap["error"].(string); ok && errorVal != "" {
+			errorMsg = errorVal
+		}
+	}
+
+	// Create tool execution record
+	durationMS := duration.Milliseconds()
+	toolExec := &persistence.ToolExecution{
+		SessionID:  cfg.SessionID,
+		AgentID:    c.agentID,
+		StoryID:    storyIDStr,
+		ToolName:   toolCall.Name,
+		ToolID:     toolCall.ID,
+		Params:     paramsJSON,
+		ExitCode:   exitCode,
+		Success:    success,
+		Stdout:     stdout,
+		Stderr:     stderr,
+		Error:      errorMsg,
+		DurationMS: &durationMS,
+		CreatedAt:  time.Now(),
+	}
+
+	// Send to persistence worker (fire-and-forget)
+	persistence.PersistToolExecution(toolExec, c.persistenceChannel)
 }

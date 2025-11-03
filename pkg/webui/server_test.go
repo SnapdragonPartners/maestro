@@ -69,8 +69,51 @@ func createTestConfig() *config.Config {
 			MaxCoders:      3,
 			CoderModel:     config.ModelClaudeSonnetLatest,
 			ArchitectModel: config.ModelOpenAIO3Mini,
+			Resilience: config.ResilienceConfig{
+				RateLimit: config.RateLimitConfig{
+					Anthropic: config.ProviderLimits{
+						TokensPerMinute: 300000,
+						MaxConcurrency:  5,
+					},
+					OpenAI: config.ProviderLimits{
+						TokensPerMinute: 100000,
+						MaxConcurrency:  3,
+					},
+					OpenAIOfficial: config.ProviderLimits{
+						TokensPerMinute: 150000,
+						MaxConcurrency:  5,
+					},
+				},
+				CircuitBreaker: config.CircuitBreakerConfig{
+					FailureThreshold: 5,
+					SuccessThreshold: 3,
+					Timeout:          30_000_000_000,
+				},
+				Retry: config.RetryConfig{
+					MaxAttempts:   3,
+					InitialDelay:  100_000_000,
+					MaxDelay:      10_000_000_000,
+					BackoffFactor: 2,
+					Jitter:        true,
+				},
+				Timeout: 180_000_000_000,
+			},
+			Metrics: config.MetricsConfig{
+				Enabled: false,
+			},
 		},
 	}
+}
+
+// createTestLLMFactory creates a minimal LLM factory for testing.
+func createTestLLMFactory(t *testing.T) *agent.LLMClientFactory {
+	t.Helper()
+	cfg := createTestConfig()
+	factory, err := agent.NewLLMClientFactory(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create test LLM factory: %v", err)
+	}
+	return factory
 }
 
 func TestHandleAgents(t *testing.T) {
@@ -106,7 +149,10 @@ func TestHandleAgents(t *testing.T) {
 		t.Fatalf("Failed to register coder: %v", err)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test", nil)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, "/tmp/test", nil, llmFactory)
 
 	req := httptest.NewRequest("GET", "/api/agents", nil)
 	w := httptest.NewRecorder()
@@ -168,7 +214,10 @@ func TestHandleAgent(t *testing.T) {
 		t.Fatalf("Failed to register architect: %v", err)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test", nil)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, "/tmp/test", nil, llmFactory)
 
 	req := httptest.NewRequest("GET", "/api/agent/"+architectID, nil)
 	w := httptest.NewRecorder()
@@ -208,7 +257,10 @@ func TestHandleAgentNotFound(t *testing.T) {
 	}
 	defer dispatcher.Stop(ctx)
 
-	server := NewServer(dispatcher, "/tmp/test", nil)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, "/tmp/test", nil, llmFactory)
 
 	req := httptest.NewRequest("GET", "/api/agent/nonexistent", nil)
 	w := httptest.NewRecorder()
@@ -243,7 +295,10 @@ func TestFindArchitectState(t *testing.T) {
 		t.Fatalf("Failed to register architect: %v", regErr)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test", nil)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, "/tmp/test", nil, llmFactory)
 
 	state, err := server.findArchitectState()
 	if err != nil {
@@ -268,7 +323,10 @@ func TestFindArchitectStateNoArchitect(t *testing.T) {
 	}
 	defer dispatcher.Stop(ctx)
 
-	server := NewServer(dispatcher, "/tmp/test", nil)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, "/tmp/test", nil, llmFactory)
 
 	_, err = server.findArchitectState()
 	if err == nil {
@@ -283,7 +341,10 @@ func TestEmbeddedTemplates(t *testing.T) {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 
-	server := NewServer(dispatcher, "/tmp/test", nil)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, "/tmp/test", nil, llmFactory)
 
 	if server.templates == nil {
 		t.Error("Templates should be loaded from embedded filesystem")

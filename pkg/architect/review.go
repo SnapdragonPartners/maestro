@@ -80,10 +80,21 @@ func NewReviewEvaluator(llmClient agent.LLMClient, renderer *templates.Renderer,
 
 // HandleResult processes a RESULT message from a coding agent (code submission).
 func (re *ReviewEvaluator) HandleResult(ctx context.Context, msg *proto.AgentMsg) error {
-	// Extract submission details from message.
-	storyID, _ := msg.Payload["story_id"].(string)
-	codePath, _ := msg.Payload["code_path"].(string)
-	codeContent, _ := msg.Payload["code_content"].(string)
+	// Extract submission details from message payload
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		return fmt.Errorf("result message missing typed payload")
+	}
+
+	// Extract generic payload as map (RESULT messages use generic payload kind)
+	payloadData, err := typedPayload.ExtractGeneric()
+	if err != nil {
+		return fmt.Errorf("failed to extract result payload: %w", err)
+	}
+
+	storyID, _ := payloadData["story_id"].(string)
+	codePath, _ := payloadData["code_path"].(string)
+	codeContent, _ := payloadData["code_content"].(string)
 
 	if storyID == "" {
 		return fmt.Errorf("invalid result message: missing story_id")
@@ -104,7 +115,7 @@ func (re *ReviewEvaluator) HandleResult(ctx context.Context, msg *proto.AgentMsg
 	}
 
 	// Copy relevant context from message payload.
-	for key, value := range msg.Payload {
+	for key, value := range payloadData {
 		if key != "story_id" && key != "code_path" && key != "code_content" {
 			pendingReview.Context[key] = value
 		}
@@ -690,14 +701,33 @@ func (re *ReviewEvaluator) sendReviewResult(ctx context.Context, pendingReview *
 	// Set parent message ID to link back to the original submission.
 	resultMsg.ParentMsgID = pendingReview.ID
 
-	// Set review result payload.
-	resultMsg.Payload["review_id"] = pendingReview.ID
-	resultMsg.Payload["story_id"] = pendingReview.StoryID
-	resultMsg.Payload["status"] = result                      // BudgetReviewEffect expects "status"
-	resultMsg.Payload["feedback"] = pendingReview.ReviewNotes // BudgetReviewEffect expects "feedback"
-	resultMsg.Payload["reviewed_at"] = pendingReview.ReviewedAt.Format(time.RFC3339)
-	resultMsg.Payload["checks_run"] = pendingReview.ChecksRun
-	resultMsg.Payload["check_results"] = pendingReview.CheckResults
+	// Parse status string to ApprovalStatus enum
+	approvalStatus, err := proto.ParseApprovalStatus(result)
+	if err != nil {
+		return fmt.Errorf("invalid approval status: %w", err)
+	}
+
+	// Create ApprovalResult struct to prevent content/feedback duplication in persistence
+	reviewedAt := time.Now().UTC()
+	if pendingReview.ReviewedAt != nil {
+		reviewedAt = *pendingReview.ReviewedAt
+	}
+
+	approvalResult := &proto.ApprovalResult{
+		ID:         pendingReview.ID,
+		RequestID:  pendingReview.ID, // The review ID is the request ID
+		Type:       proto.ApprovalTypeCode,
+		Status:     approvalStatus,
+		Feedback:   pendingReview.ReviewNotes,
+		ReviewedBy: "architect",
+		ReviewedAt: reviewedAt,
+	}
+
+	// Set typed approval response payload
+	resultMsg.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+
+	// Store additional context in metadata
+	resultMsg.SetMetadata("story_id", pendingReview.StoryID)
 
 	// Add metadata.
 	resultMsg.SetMetadata("review_type", "automated")

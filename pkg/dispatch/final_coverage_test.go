@@ -35,7 +35,7 @@ func TestMetricsMonitorWithTicker(t *testing.T) {
 loop:
 	for i := 0; i < fillCount; i++ {
 		msg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "test-agent")
-		msg.SetPayload(proto.KeyStoryID, fmt.Sprintf("metrics-story-%d", i))
+		msg.SetMetadata(proto.KeyStoryID, fmt.Sprintf("metrics-story-%d", i))
 
 		select {
 		case dispatcher.storyCh <- msg:
@@ -70,7 +70,9 @@ func TestProcessMessageTypeTimeout(t *testing.T) {
 
 	// Test ERROR message processing
 	errorMsg := proto.NewAgentMsg(proto.MsgTypeERROR, "test-agent", "target-agent")
-	errorMsg.SetPayload(proto.KeyContent, "Test error message")
+	errorMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindError, map[string]any{
+		proto.KeyContent: "Test error message",
+	}))
 
 	ctx := context.Background()
 	dispatcher.processMessage(ctx, errorMsg)
@@ -108,18 +110,25 @@ func TestMessageProcessorEdgeCases(t *testing.T) {
 		proto.NewAgentMsg(proto.MsgTypeSHUTDOWN, "orchestrator", "edge-case-agent"),
 	}
 
-	// Set required payloads
-	messages[0].SetPayload(proto.KeyStoryID, "edge-story")
-	messages[0].SetPayload(proto.KeyTitle, "Edge Case Story")
-	messages[0].SetPayload(proto.KeyRequirements, "Test requirements")
+	// Set required payloads with typed payloads
+	messages[0].SetMetadata(proto.KeyStoryID, "edge-story")
+	messages[0].SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+		proto.KeyTitle:        "Edge Case Story",
+		proto.KeyRequirements: "Test requirements",
+	}))
 
-	messages[1].SetPayload(proto.KeyKind, "question")
-	messages[1].SetPayload(proto.KeyContent, "Test question")
+	questionPayload := &proto.QuestionRequestPayload{
+		Text: "Test question",
+	}
+	messages[1].SetTypedPayload(proto.NewQuestionRequestPayload(questionPayload))
 
-	messages[2].SetPayload(proto.KeyKind, "answer")
-	messages[2].SetPayload(proto.KeyContent, "Test answer")
+	messages[2].SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+		proto.KeyContent: "Test answer",
+	}))
 
-	messages[3].SetPayload(proto.KeyContent, "Test error")
+	messages[3].SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindError, map[string]any{
+		proto.KeyContent: "Test error",
+	}))
 
 	for _, msg := range messages {
 		err := dispatcher.DispatchMessage(msg)
@@ -141,17 +150,19 @@ func TestMessageProcessorEdgeCases(t *testing.T) {
 func TestSendResponseEdgeCases(t *testing.T) {
 	dispatcher := createTestDispatcher(t)
 
-	// Test with message that has no kind payload
+	// Test with message that has generic payload (no specific kind)
 	responseMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "test-agent")
-	// Don't set kind payload to test fallback path
-	responseMsg.SetPayload(proto.KeyContent, "Response without kind")
+	responseMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+		proto.KeyContent: "Response without kind",
+	}))
 
 	dispatcher.sendResponse(responseMsg)
 
-	// Test with message that has invalid kind payload
+	// Test with message that has generic payload
 	responseMsg2 := proto.NewAgentMsg(proto.MsgTypeRESPONSE, "architect", "test-agent-2")
-	responseMsg2.SetPayload(proto.KeyKind, 123) // Invalid type (not string)
-	responseMsg2.SetPayload(proto.KeyContent, "Response with invalid kind")
+	responseMsg2.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
+		proto.KeyContent: "Response with invalid kind",
+	}))
 
 	dispatcher.sendResponse(responseMsg2)
 }
@@ -173,9 +184,11 @@ func TestDispatchMessageStoryChannelFull(t *testing.T) {
 
 	for i := 0; i <= capacity+5; i++ {
 		storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, "orchestrator", "test-agent")
-		storyMsg.SetPayload(proto.KeyStoryID, fmt.Sprintf("overflow-story-%d", i))
-		storyMsg.SetPayload(proto.KeyTitle, "Overflow Test")
-		storyMsg.SetPayload(proto.KeyRequirements, "Test story channel overflow")
+		storyMsg.SetMetadata(proto.KeyStoryID, fmt.Sprintf("overflow-story-%d", i))
+		storyMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindStory, map[string]any{
+			proto.KeyTitle:        "Overflow Test",
+			proto.KeyRequirements: "Test story channel overflow",
+		}))
 
 		err := dispatcher.DispatchMessage(storyMsg)
 		if err != nil {

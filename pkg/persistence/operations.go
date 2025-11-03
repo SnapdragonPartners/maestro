@@ -30,6 +30,9 @@ const (
 	OpUpsertAgentPlan     = "upsert_agent_plan"
 	OpUpdateAgentPlan     = "update_agent_plan"
 
+	// Tool execution logging operations.
+	OpInsertToolExecution = "insert_tool_execution"
+
 	// Query operations (with response).
 	OpQueryStoriesByStatus               = "query_stories_by_status"
 	OpQueryPendingStories                = "query_pending_stories"
@@ -522,8 +525,8 @@ func (ops *DatabaseOperations) UpsertAgentResponse(response *AgentResponse) erro
 	query := `
 		INSERT INTO agent_responses (
 			id, session_id, request_id, story_id, response_type, from_agent, to_agent,
-			content, status, feedback, created_at, correlation_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			content, status, created_at, correlation_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			request_id = excluded.request_id,
 			story_id = excluded.story_id,
@@ -532,14 +535,13 @@ func (ops *DatabaseOperations) UpsertAgentResponse(response *AgentResponse) erro
 			to_agent = excluded.to_agent,
 			content = excluded.content,
 			status = excluded.status,
-			feedback = excluded.feedback,
 			correlation_id = excluded.correlation_id
 	`
 
 	_, err := ops.db.Exec(query,
 		response.ID, ops.sessionID, response.RequestID, response.StoryID, response.ResponseType,
 		response.FromAgent, response.ToAgent, response.Content, response.Status,
-		response.Feedback, response.CreatedAt, response.CorrelationID)
+		response.CreatedAt, response.CorrelationID)
 	if err != nil {
 		return fmt.Errorf("failed to upsert agent response %s: %w", response.ID, err)
 	}
@@ -616,10 +618,12 @@ func (ops *DatabaseOperations) GetAgentRequestsByStory(storyID string) ([]*Agent
 }
 
 // GetAgentResponsesByStory returns all agent responses for a specific story.
+//
+//nolint:dupl // Similar structure to GetAgentPlansByStory but handles different table/types
 func (ops *DatabaseOperations) GetAgentResponsesByStory(storyID string) ([]*AgentResponse, error) {
 	query := `
 		SELECT id, request_id, story_id, response_type, from_agent, to_agent,
-		       content, status, feedback, created_at, correlation_id
+		       content, status, created_at, correlation_id
 		FROM agent_responses
 		WHERE session_id = ? AND story_id = ?
 		ORDER BY created_at ASC
@@ -639,7 +643,7 @@ func (ops *DatabaseOperations) GetAgentResponsesByStory(storyID string) ([]*Agen
 		err := rows.Scan(
 			&response.ID, &response.RequestID, &response.StoryID, &response.ResponseType,
 			&response.FromAgent, &response.ToAgent, &response.Content, &response.Status,
-			&response.Feedback, &response.CreatedAt, &response.CorrelationID)
+			&response.CreatedAt, &response.CorrelationID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan agent response: %w", err)
 		}
@@ -654,6 +658,8 @@ func (ops *DatabaseOperations) GetAgentResponsesByStory(storyID string) ([]*Agen
 }
 
 // GetAgentPlansByStory returns all agent plans for a specific story.
+//
+//nolint:dupl // Similar structure to GetAgentResponsesByStory but handles different table/types
 func (ops *DatabaseOperations) GetAgentPlansByStory(storyID string) ([]*AgentPlan, error) {
 	query := `
 		SELECT id, story_id, from_agent, content, confidence, status,
@@ -766,7 +772,6 @@ type RecentMessage struct {
 	ApprovalType *string // For approval requests: "plan", "code", "budget_review", "completion"
 	ResponseType *string // For responses: "answer" or "result"
 	Status       *string // For responses: "APPROVED", "REJECTED", "NEEDS_CHANGES", "PENDING"
-	Feedback     *string // For responses: additional feedback
 	Reason       *string // For requests: reason for the request
 	ID           string
 	Type         string // "REQUEST" or "RESPONSE"
@@ -792,7 +797,6 @@ func (ops *DatabaseOperations) GetRecentMessages(limit int) ([]*RecentMessage, e
 			NULL as response_type,
 			NULL as status,
 			content,
-			NULL as feedback,
 			reason
 		FROM agent_requests
 		WHERE session_id = ?
@@ -809,7 +813,6 @@ func (ops *DatabaseOperations) GetRecentMessages(limit int) ([]*RecentMessage, e
 			response_type,
 			status,
 			content,
-			feedback,
 			NULL as reason
 		FROM agent_responses
 		WHERE session_id = ?
@@ -831,7 +834,7 @@ func (ops *DatabaseOperations) GetRecentMessages(limit int) ([]*RecentMessage, e
 		err := rows.Scan(
 			&msg.ID, &msg.Type, &msg.FromAgent, &msg.ToAgent, &msg.StoryID, &msg.CreatedAt,
 			&msg.RequestType, &msg.ApprovalType, &msg.ResponseType, &msg.Status,
-			&msg.Content, &msg.Feedback, &msg.Reason,
+			&msg.Content, &msg.Reason,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
@@ -948,6 +951,27 @@ func (ops *DatabaseOperations) UpdateChatCursor(agentID string, lastID int64) er
 	_, err := ops.db.Exec(query, agentID, lastID)
 	if err != nil {
 		return fmt.Errorf("failed to update chat cursor for agent %s: %w", agentID, err)
+	}
+
+	return nil
+}
+
+// InsertToolExecution inserts a tool execution record for debugging and analysis.
+func (ops *DatabaseOperations) InsertToolExecution(toolExec *ToolExecution) error {
+	query := `
+		INSERT INTO tool_executions (
+			session_id, agent_id, story_id, tool_name, tool_id, params,
+			exit_code, success, stdout, stderr, error, duration_ms, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	_, err := ops.db.Exec(query,
+		ops.sessionID, toolExec.AgentID, toolExec.StoryID, toolExec.ToolName,
+		toolExec.ToolID, toolExec.Params, toolExec.ExitCode, toolExec.Success,
+		toolExec.Stdout, toolExec.Stderr, toolExec.Error, toolExec.DurationMS,
+		toolExec.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to insert tool execution for agent %s: %w", toolExec.AgentID, err)
 	}
 
 	return nil

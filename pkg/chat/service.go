@@ -140,7 +140,16 @@ func (s *Service) GetNew(_ context.Context, req *GetNewRequest) (*GetNewResponse
 		newPointer = messages[len(messages)-1].ID
 	}
 
-	s.logger.Debug("GetNew for %s: cursor=%d, messages=%d, newPointer=%d", req.AgentID, cursor, len(messages), newPointer)
+	// 4. Update cursor in database if we have new messages
+	if newPointer > cursor {
+		err = s.dbOps.UpdateChatCursor(req.AgentID, newPointer)
+		if err != nil {
+			// Log error but don't fail - messages were already retrieved
+			s.logger.Warn("Failed to update cursor for %s to %d: %v", req.AgentID, newPointer, err)
+		} else {
+			s.logger.Debug("Updated cursor for %s: %d -> %d (%d messages)", req.AgentID, cursor, newPointer, len(messages))
+		}
+	}
 
 	return &GetNewResponse{
 		Messages:   messages,

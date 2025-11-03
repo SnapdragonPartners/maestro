@@ -91,11 +91,18 @@ func (d *Driver) sendAbandonAndRequeue(ctx context.Context) error {
 
 	// Create ABANDON review message.
 	abandonMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, agentID)
-	abandonMsg.SetPayload("story_id", storyID)
-	abandonMsg.SetPayload("review_result", "ABANDON")
-	abandonMsg.SetPayload("review_notes", "Escalation timeout exceeded - abandoning current submission")
-	abandonMsg.SetPayload("reviewed_at", time.Now().UTC().Format(time.RFC3339))
-	abandonMsg.SetPayload("timeout_reason", "escalation_timeout")
+
+	// Build abandon payload
+	payloadData := map[string]any{
+		"review_result":  "ABANDON",
+		"review_notes":   "Escalation timeout exceeded - abandoning current submission",
+		"reviewed_at":    time.Now().UTC().Format(time.RFC3339),
+		"timeout_reason": "escalation_timeout",
+	}
+	abandonMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, payloadData))
+
+	// Store story_id in metadata
+	abandonMsg.SetMetadata("story_id", storyID)
 
 	// Send abandon message using Effects pattern.
 	sendEffect := &SendMessageEffect{Message: abandonMsg}

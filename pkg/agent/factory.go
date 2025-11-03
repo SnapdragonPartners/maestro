@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
@@ -28,6 +29,7 @@ type LLMClientFactory struct {
 }
 
 // NewLLMClientFactory creates a new LLM client factory with the given configuration.
+// Uses context.Background() for rate limiter lifecycle - callers should call Stop() on shutdown.
 func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 	logger := logx.NewLogger("factory")
 
@@ -53,26 +55,29 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		})
 	}
 
-	// Initialize rate limit map with provider configs
-	// Note: Burst is set to 110% of TokensPerMinute for modest smoothing
+	// Initialize rate limit map with provider configs (real token bucket implementation)
 	rateLimitConfigs := map[string]ratelimit.Config{
 		string(config.ProviderAnthropic): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute,
-			Burst:           (cfg.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute * 110) / 100,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.Anthropic.MaxConcurrency,
 		},
 		string(config.ProviderOpenAI): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute,
-			Burst:           (cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute * 110) / 100,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency,
 		},
 		string(config.ProviderOpenAIOfficial): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute,
-			Burst:           (cfg.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute * 110) / 100,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency,
 		},
 	}
-	rateLimitMap := ratelimit.NewProviderLimiterMap(rateLimitConfigs)
+
+	// Create rate limiter map with background context for lifecycle management
+	// Use request timeout from config for stale acquisition detection
+	rateLimitMap := ratelimit.NewProviderLimiterMap(
+		context.Background(),
+		rateLimitConfigs,
+		cfg.Agents.Resilience.Timeout,
+	)
 
 	return &LLMClientFactory{
 		config:          *cfg,
@@ -80,6 +85,23 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		circuitBreakers: circuitBreakers,
 		rateLimitMap:    rateLimitMap,
 	}, nil
+}
+
+// Stop cleans up factory resources (stops rate limiter refill timers).
+// Should be called on shutdown.
+func (f *LLMClientFactory) Stop() {
+	if f.rateLimitMap != nil {
+		f.rateLimitMap.Stop()
+	}
+}
+
+// GetRateLimitStats returns rate limiter statistics for all providers.
+// Used by the web UI to display congestion metrics.
+func (f *LLMClientFactory) GetRateLimitStats() map[string]ratelimit.LimiterStats {
+	if f.rateLimitMap == nil {
+		return make(map[string]ratelimit.LimiterStats)
+	}
+	return f.rateLimitMap.GetAllStats()
 }
 
 // CreateClient creates an LLM client for the specified agent type with full middleware chain.
@@ -176,58 +198,10 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger),
 		circuit.Middleware(circuitBreaker),
 		retry.Middleware(retryPolicy),
-		logging.EmptyResponseLoggingMiddleware(),  // Log empty responses after retry exhaustion
-		ratelimit.Middleware(f.rateLimitMap, nil), // Uses default token estimator
+		logging.EmptyResponseLoggingMiddleware(),                 // Log empty responses after retry exhaustion
+		ratelimit.Middleware(f.rateLimitMap, nil, stateProvider), // Real token bucket with concurrency limiting
 		timeout.Middleware(f.config.Agents.Resilience.Timeout),
 	)
 
 	return client, nil
-}
-
-// CreateLLMClientForAgent creates a basic LLM client for an agent type with middleware.
-// This is a helper function for agent constructors to avoid code duplication.
-func CreateLLMClientForAgent(agentType Type) (LLMClient, error) {
-	// Get the current configuration to build LLM client with middleware
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get configuration: %w", err)
-	}
-
-	// Create LLM client factory
-	factory, err := NewLLMClientFactory(&cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
-	}
-
-	// Create initial client without metrics context (circular dependency)
-	llmClient, err := factory.CreateClient(agentType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create %s LLM client: %w", agentType, err)
-	}
-
-	return llmClient, nil
-}
-
-// EnhanceLLMClientWithMetrics replaces a basic LLM client with an enhanced version that includes metrics context.
-// This is called after the agent is created to break circular dependencies.
-func EnhanceLLMClientWithMetrics(_ LLMClient, agentType Type, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
-	// Get the current configuration
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get configuration: %w", err)
-	}
-
-	// Create LLM client factory
-	factory, err := NewLLMClientFactory(&cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LLM client factory: %w", err)
-	}
-
-	// Create enhanced client with metrics context
-	enhancedClient, err := factory.CreateClientWithContext(agentType, stateProvider, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create enhanced %s LLM client: %w", agentType, err)
-	}
-
-	return enhancedClient, nil
 }

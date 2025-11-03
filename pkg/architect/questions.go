@@ -58,40 +58,24 @@ func NewQuestionHandler(llmClient agent.LLMClient, renderer *templates.Renderer,
 
 // HandleQuestion processes an incoming QUESTION message from a coding agent.
 func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentMsg) error {
-	// Extract question details from message - handle different formats.
-	var storyID, question string
-
-	// Try the expected format first.
-	if id, ok := msg.Payload["story_id"].(string); ok {
-		storyID = id
-	}
-	if q, ok := msg.Payload[proto.KeyQuestion].(string); ok {
-		question = q
+	// Extract question details from typed payload
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		return fmt.Errorf("question message missing typed payload")
 	}
 
-	// If that didn't work, try the format that Claude agents actually send.
-	if storyID == "" || question == "" {
-		// Claude agents send the full task content as "question".
-		if taskContent, ok := msg.Payload[proto.KeyQuestion].(string); ok {
-			// Extract story ID from the task content (front matter).
-			if extractedID := qh.extractStoryIDFromContent(taskContent); extractedID != "" {
-				storyID = extractedID
-				// Extract question from unified protocol
-				if questionPayload, ok := msg.Payload[proto.KeyQuestion]; ok {
-					switch qp := questionPayload.(type) {
-					case proto.QuestionRequestPayload:
-						question = qp.Text
-					case string:
-						question = qp
-					default:
-						question = "Technical assistance requested during development"
-					}
-				} else {
-					question = "Technical assistance requested during development"
-				}
-			}
-		}
+	questionPayload, err := typedPayload.ExtractQuestionRequest()
+	if err != nil {
+		return fmt.Errorf("failed to extract question request: %w", err)
 	}
+
+	// Extract story_id from metadata
+	storyID := ""
+	if sid, exists := questionPayload.Metadata["story_id"]; exists {
+		storyID = sid
+	}
+
+	question := questionPayload.Text
 
 	if storyID == "" || question == "" {
 		return fmt.Errorf("invalid question message: missing story_id or question (storyID='%s', question='%s')", storyID, question)
@@ -108,9 +92,9 @@ func (qh *QuestionHandler) HandleQuestion(ctx context.Context, msg *proto.AgentM
 		Status:   "pending",
 	}
 
-	// Copy relevant context from message payload.
-	for key, value := range msg.Payload {
-		if key != proto.KeyStoryID && key != proto.KeyQuestion {
+	// Copy metadata to context
+	for key, value := range questionPayload.Metadata {
+		if key != "story_id" {
 			pendingQ.Context[key] = value
 		}
 	}
@@ -202,11 +186,16 @@ func (qh *QuestionHandler) sendAnswerToAgent(ctx context.Context, pendingQ *Pend
 	// Set parent message ID to link back to the question.
 	resultMsg.ParentMsgID = pendingQ.ID
 
-	// Set answer payload.
-	resultMsg.Payload["question_id"] = pendingQ.ID
-	resultMsg.Payload["story_id"] = pendingQ.StoryID
-	resultMsg.Payload[proto.KeyAnswer] = pendingQ.Answer
-	resultMsg.Payload["answered_at"] = pendingQ.AnsweredAt.Format(time.RFC3339)
+	// Set typed question response payload
+	answerPayload := &proto.QuestionResponsePayload{
+		AnswerText: pendingQ.Answer,
+		Metadata: map[string]string{
+			"question_id": pendingQ.ID,
+			"story_id":    pendingQ.StoryID,
+			"answered_at": pendingQ.AnsweredAt.Format(time.RFC3339),
+		},
+	}
+	resultMsg.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
 
 	// Add metadata.
 	resultMsg.SetMetadata("question_type", "technical")
@@ -340,35 +329,6 @@ type QuestionStatus struct {
 	AnsweredQuestions  int                `json:"answered_questions"`
 	EscalatedQuestions int                `json:"escalated_questions"`
 	Questions          []*PendingQuestion `json:"questions"`
-}
-
-// extractStoryIDFromContent extracts the story ID from task content front matter.
-func (qh *QuestionHandler) extractStoryIDFromContent(content string) string {
-	lines := strings.Split(content, "\n")
-	inFrontMatter := false
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-
-		if line == "---" {
-			if inFrontMatter {
-				// End of front matter, didn't find ID.
-				break
-			}
-			inFrontMatter = true
-			continue
-		}
-
-		if inFrontMatter && strings.HasPrefix(line, "id:") {
-			// Extract ID value.
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1])
-			}
-		}
-	}
-
-	return ""
 }
 
 // truncateString truncates a string to the specified length.

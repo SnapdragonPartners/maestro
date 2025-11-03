@@ -63,6 +63,32 @@ The request above contains all context including budget details, recent messages
 - **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test`, `container_list` tools
 - **Why**: Container tools provide proper integration, error handling, and container registration
 
+## Automated Pattern Analysis
+
+The budget review request includes automated detection of universal failure patterns:
+
+1. **High Tool Failure Rate**: If >50% of recent tool calls failed, the implementation approach is not working
+2. **Repeated Failing Commands**: If the exact same command failed consecutively, the agent is stuck
+
+**These metrics are platform-agnostic** and indicate serious issues regardless of technology stack.
+
+### How to Respond to Detected Patterns
+
+**If automated analysis shows "ALERT" or significant issues**:
+1. Examine the "Recent Context" to understand what's failing and why
+2. Determine if it's:
+   - Build/test failures that need code changes
+   - Missing dependencies that need container updates
+   - Wrong tool usage that needs different approach
+3. Use **NEEDS_CHANGES** with specific implementation guidance to break the loop
+
+**Example good feedback for repeated failures**:
+- "Your tests are failing because [specific reason]. Try [specific fix]."
+- "Container is missing [dependency]. Modify Dockerfile to add it, then use container_build."
+- "Stop using [tool] - it's not available. Use [alternative tool] instead."
+
+**Never approve continuation** when automated analysis detects patterns without providing corrective guidance.
+
 ## Decision Options
 
 ### APPROVED: Continue Implementation

@@ -9,6 +9,23 @@ import (
 	"orchestrator/pkg/proto"
 )
 
+// getPayloadValue is a helper to extract values from typed payloads (for test assertions).
+func getPayloadValue(msg *proto.AgentMsg, key string) (any, bool) {
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, false
+	}
+
+	// Try to extract as generic payload
+	data, err := typedPayload.ExtractGeneric()
+	if err != nil {
+		return nil, false
+	}
+
+	value, exists := data[key]
+	return value, exists
+}
+
 // AssertMessageType verifies the message type.
 func AssertMessageType(t *testing.T, msg *proto.AgentMsg, expectedType proto.MsgType) {
 	t.Helper()
@@ -36,7 +53,7 @@ func AssertMessageToAgent(t *testing.T, msg *proto.AgentMsg, expectedToAgent str
 // AssertPayloadExists verifies a payload field exists.
 func AssertPayloadExists(t *testing.T, msg *proto.AgentMsg, key string) {
 	t.Helper()
-	if _, exists := msg.GetPayload(key); !exists {
+	if _, exists := getPayloadValue(msg, key); !exists {
 		t.Errorf("Expected payload key '%s' to exist", key)
 	}
 }
@@ -44,7 +61,7 @@ func AssertPayloadExists(t *testing.T, msg *proto.AgentMsg, key string) {
 // AssertPayloadValue verifies a payload field has expected value.
 func AssertPayloadValue(t *testing.T, msg *proto.AgentMsg, key string, expectedValue any) {
 	t.Helper()
-	value, exists := msg.GetPayload(key)
+	value, exists := getPayloadValue(msg, key)
 	if !exists {
 		t.Errorf("Expected payload key '%s' to exist", key)
 		return
@@ -57,7 +74,7 @@ func AssertPayloadValue(t *testing.T, msg *proto.AgentMsg, key string, expectedV
 // AssertPayloadString verifies a payload field is a string with expected value.
 func AssertPayloadString(t *testing.T, msg *proto.AgentMsg, key, expectedValue string) {
 	t.Helper()
-	value, exists := msg.GetPayload(key)
+	value, exists := getPayloadValue(msg, key)
 	if !exists {
 		t.Errorf("Expected payload key '%s' to exist", key)
 		return
@@ -75,7 +92,7 @@ func AssertPayloadString(t *testing.T, msg *proto.AgentMsg, key, expectedValue s
 // AssertPayloadContains verifies a payload string contains expected text.
 func AssertPayloadContains(t *testing.T, msg *proto.AgentMsg, key, expectedText string) {
 	t.Helper()
-	value, exists := msg.GetPayload(key)
+	value, exists := getPayloadValue(msg, key)
 	if !exists {
 		t.Errorf("Expected payload key '%s' to exist", key)
 		return
@@ -122,7 +139,7 @@ func AssertParentMessage(t *testing.T, msg *proto.AgentMsg, expectedParentID str
 // AssertTestResults verifies test results payload.
 func AssertTestResults(t *testing.T, msg *proto.AgentMsg, expectedSuccess bool) {
 	t.Helper()
-	testResults, exists := msg.GetPayload("test_results")
+	testResults, exists := getPayloadValue(msg, "test_results")
 	if !exists {
 		t.Error("Expected test_results payload to exist")
 		return
@@ -179,7 +196,7 @@ func AssertTestResults(t *testing.T, msg *proto.AgentMsg, expectedSuccess bool) 
 // AssertCodeCompiles verifies that implementation contains compilable Go code.
 func AssertCodeCompiles(t *testing.T, msg *proto.AgentMsg) {
 	t.Helper()
-	impl, exists := msg.GetPayload("implementation")
+	impl, exists := getPayloadValue(msg, "implementation")
 	if !exists {
 		t.Error("Expected implementation payload to exist")
 		return
@@ -206,7 +223,7 @@ func AssertHealthEndpointCode(t *testing.T, msg *proto.AgentMsg) {
 	t.Helper()
 	AssertCodeCompiles(t, msg)
 
-	impl, _ := msg.GetPayload("implementation")
+	impl, _ := getPayloadValue(msg, "implementation")
 	implStr, ok := impl.(string)
 	if !ok {
 		t.Fatalf("Expected implementation to be string, got %T", impl)
@@ -231,7 +248,7 @@ func AssertHealthEndpointCode(t *testing.T, msg *proto.AgentMsg) {
 func AssertNoAPICallsMade(t *testing.T, msg *proto.AgentMsg) {
 	t.Helper()
 	// Check for common indicators that real API was called.
-	if impl, exists := msg.GetPayload("implementation"); exists {
+	if impl, exists := getPayloadValue(msg, "implementation"); exists {
 		if implStr, ok := impl.(string); ok {
 			// Real API responses tend to be longer and more sophisticated.
 			if len(implStr) > 5000 {
