@@ -723,6 +723,30 @@ func (c *Coder) detectIssuePattern() string {
 		}
 	}
 
+	// 3. Identical consecutive successful commands (indicates loop without progress)
+	// Look for sequences of 3+ identical successful commands
+	consecutiveCount := 1
+	var lastCommand string
+	for i := 0; i < len(toolCalls); i++ {
+		curr := toolCalls[i]
+		if curr.command == "" || curr.failed {
+			consecutiveCount = 1
+			lastCommand = ""
+			continue
+		}
+
+		if lastCommand == curr.command {
+			consecutiveCount++
+			if consecutiveCount >= 3 {
+				issues = append(issues, fmt.Sprintf("Repeated successful command loop detected: '%s' (same command executed %d times consecutively without errors)", curr.command, consecutiveCount))
+				break // Only report once
+			}
+		} else {
+			consecutiveCount = 1
+			lastCommand = curr.command
+		}
+	}
+
 	// Add strong guidance when issues detected
 	if len(issues) > 0 {
 		issues = append(issues, "**ALERT**: Significant issues detected that likely require NEEDS_CHANGES guidance or ABANDON may be appropriate.")

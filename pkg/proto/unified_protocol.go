@@ -131,6 +131,7 @@ type MergeRequestPayload struct {
 // MergeResponsePayload represents the payload for merge responses.
 type MergeResponsePayload struct {
 	Status          string            `json:"status"`                     // merged, conflict, failed
+	Feedback        string            `json:"feedback,omitempty"`         // Human-readable feedback message
 	MergeCommit     string            `json:"merge_commit,omitempty"`     // Commit hash if merged
 	ConflictDetails string            `json:"conflict_details,omitempty"` // Details if conflict
 	ErrorDetails    string            `json:"error_details,omitempty"`    // Details if failed

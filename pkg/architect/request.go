@@ -508,10 +508,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	case proto.ApprovalTypeCompletion:
 		approvalResult.Feedback = d.getCompletionResponse(approvalResult.Status, feedback)
 	case proto.ApprovalTypeBudgetReview:
-		// Extract origin state from request metadata
-		originState := requestMsg.Metadata["origin"]
-		if originState == "" {
-			originState = "UNKNOWN"
+		// Extract origin state from approval payload context
+		// Context is formatted as "origin:STATE" where STATE is PLANNING or CODING
+		originState := "UNKNOWN"
+		if approvalPayload.Context != "" && strings.HasPrefix(approvalPayload.Context, "origin:") {
+			originState = strings.TrimPrefix(approvalPayload.Context, "origin:")
 		}
 		approvalResult.Feedback = d.getBudgetReviewResponse(approvalResult.Status, feedback, originState)
 	default:
@@ -649,34 +650,36 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		resultMsg.SetMetadata(proto.KeyStoryID, storyID)
 	}
 
-	// Build merge result payload
-	mergeResultPayload := make(map[string]any)
+	// Build merge response payload (typed)
+	mergeResponsePayload := &proto.MergeResponsePayload{
+		Metadata: make(map[string]string),
+	}
 
 	if err != nil {
 		// Categorize error for appropriate response
 		status, feedback := d.categorizeMergeError(err)
 		d.logger.Error("🔀 Merge failed for story %s: %s (status: %s)", storyIDStr, err.Error(), status)
 
-		mergeResultPayload["status"] = string(status)
-		mergeResultPayload["feedback"] = feedback
+		mergeResponsePayload.Status = string(status)
+		mergeResponsePayload.Feedback = feedback
 		if status == proto.ApprovalStatusNeedsChanges {
-			mergeResultPayload["error_details"] = err.Error() // Preserve detailed error for debugging
+			mergeResponsePayload.ErrorDetails = err.Error() // Preserve detailed error for debugging
 		}
 	} else if mergeResult != nil && mergeResult.HasConflicts {
 		// Merge conflicts are always recoverable
 		conflictFeedback := fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit: %s", mergeResult.ConflictInfo)
 		d.logger.Warn("🔀 Merge conflicts for story %s: %s", storyIDStr, mergeResult.ConflictInfo)
 
-		mergeResultPayload["status"] = string(proto.ApprovalStatusNeedsChanges)
-		mergeResultPayload["feedback"] = conflictFeedback
-		mergeResultPayload["conflict_details"] = mergeResult.ConflictInfo
+		mergeResponsePayload.Status = string(proto.ApprovalStatusNeedsChanges)
+		mergeResponsePayload.Feedback = conflictFeedback
+		mergeResponsePayload.ConflictDetails = mergeResult.ConflictInfo
 	} else {
 		// Success
 		d.logger.Info("🔀 Merge successful for story %s: commit %s", storyIDStr, mergeResult.CommitSHA)
 
-		mergeResultPayload["status"] = string(proto.ApprovalStatusApproved)
-		mergeResultPayload["feedback"] = "Pull request merged successfully"
-		mergeResultPayload["merge_commit"] = mergeResult.CommitSHA
+		mergeResponsePayload.Status = string(proto.ApprovalStatusApproved)
+		mergeResponsePayload.Feedback = "Pull request merged successfully"
+		mergeResponsePayload.MergeCommit = mergeResult.CommitSHA
 
 		// Extract PR ID from URL for database storage
 		var prIDPtr *string
@@ -694,8 +697,8 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		d.handleWorkAccepted(ctx, storyIDStr, "merge", prIDPtr, &mergeResult.CommitSHA, &completionSummary)
 	}
 
-	// Set typed generic payload with merge result
-	resultMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, mergeResultPayload))
+	// Set typed merge response payload
+	resultMsg.SetTypedPayload(proto.NewMergeResponsePayload(mergeResponsePayload))
 
 	return resultMsg, nil
 }
