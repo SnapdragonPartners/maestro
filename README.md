@@ -101,26 +101,27 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export GITHUB_TOKEN=ghp-...
 ```
 
-> **Step 3:** Bootstrap a new project.  
+> **Step 3:** Run Maestro in bootstrap mode.  
 ```bash
 mkdir myapp
-cd myapp
-maestro -bootstrap -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
+maestro -projectdir myapp -bootstrap -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
 ```
 
-> **Step 4:** Run Maestro.  
+> **Step 4:** Run Maestro in development mode.  
 ```bash
-maestro run
+maestro -projectdir myapp -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
 ```
 
 > **Step 5 (optional):** Open the web UI at [http://localhost:8080](http://localhost:8080).  
+
+Config settings are in <projectdir>/.maestro/config.json.
 
 ---
 
 ## System Requirements
 
-- **Binary**: ~42 MB fat binary (Linux & macOS tested; Windows soon)  
-- **Go**: Only needed if compiling (Go 1.24+)  
+- **Binary**: ~14 MB fat binary (Linux & macOS tested; Windows soon)  
+- **Go**: Only needed if compiling from source (Go 1.24+)  
 - **Docker**: CLI + daemon required  
 - **GitHub**: Token with push/PR/merge perms  
 - **Resources**: Runs comfortably on a personal workstation  
@@ -130,7 +131,9 @@ maestro run
 ## Metrics & Dashboard
 
 Maestro tracks and displays:  
-- Completed stories  
+- Specs, stories, and todos
+- All tool use
+- All chat and agent-to-agent message logs  
 - Token use  
 - Dollar cost  
 - Wall-clock time  
@@ -150,22 +153,10 @@ No. Coders always run in Docker containers for isolation and reproducibility.
 By design. The architect enforces engineering discipline, ensures coders don’t review their own work, and keeps technical debt low.  
 
 **Q: Is this secure?**  
-Maestro is intended as a single-user tool running locally. Since code is already exchanged with third-party LLMs, the trade-off of running root containers is considered acceptable. Rootless support is planned.  
+Maestro is intended as a single-user tool running locally. It is at least as secure as other common LLM-based coding agents (probably more so due to Docker isolation), but since code is already exchanged with third-party LLMs, the trade-off of running root containers is considered acceptable.
 
 **Q: What happens if Maestro crashes?**  
-All stories, states, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.  
-
----
-
-## Roadmap
-
-- Local/offline model support  
-- Rootless Docker support  
-- Adding Slack-like chat for agents
-- Adding robust high-level documentation features
-- Refresh webUI including chat  
-- Video walkthrough and richer examples  
-- Expanded model/tool integrations  
+All stories, states, tool use, messages, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.  
 
 ---
 
