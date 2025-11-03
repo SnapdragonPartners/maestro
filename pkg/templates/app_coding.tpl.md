@@ -72,6 +72,8 @@
 
 **If stuck**: If you cannot determine the exact next tool call, call `ask_question` with the minimal blocking question. If no question applies, call `chat_post` with a one-line status and your next attempt.
 
+**IMPORTANT**: Avoid repeating the exact same tool call multiple times sequentially. If you've already run a command and seen the result, use `ask_question` or `chat_post` to communicate uncertainty rather than running it again immediately.
+
 ### Container Management
 - **container_build**, **container_test**, **container_switch**, **container_list**: Use only when you need to modify the development environment itself
 

@@ -33,9 +33,10 @@ const (
 	// roleToolMessage represents tool message role in context manager.
 	roleToolMessage = "tool"
 
-	// budgetReviewContextTokenLimit limits the context messages included in budget review requests
-	// to avoid burning excessive tokens when asking for permission to use more tokens.
-	budgetReviewContextTokenLimit = 10000
+	// budgetReviewContextTokenLimit limits the context messages included in budget review requests.
+	// Budget reviews need: story, plan, todos, and ~10 tool calls with 2-4k token responses each.
+	// Total: ~2k (story) + ~3k (plan) + ~1k (todos) + ~30k (tool calls) = ~36k, so 100k gives headroom.
+	budgetReviewContextTokenLimit = 100000
 )
 
 // Coder implements the v2 FSM using agent foundation.
@@ -1387,6 +1388,13 @@ func (c *Coder) getContextMessagesWithTokenLimit(tokenLimit int) *ContextMessage
 	// Work backwards from most recent message
 	for i := len(allMessages) - 1; i >= 0; i-- {
 		msg := allMessages[i]
+
+		// Skip system prompts - budget reviews don't need them
+		// Budget reviews need: story, plan, todos, and tool call history
+		if msg.Role == "system" {
+			continue
+		}
+
 		msgContent := fmt.Sprintf("[%s]: %s", msg.Role, msg.Content)
 		msgTokens := tokenCounter.CountTokens(msgContent)
 
