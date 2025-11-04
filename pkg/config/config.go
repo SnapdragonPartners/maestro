@@ -409,6 +409,11 @@ type ChatConfig struct {
 	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
 }
 
+// LogsConfig contains log file management configuration.
+type LogsConfig struct {
+	RotationCount int `json:"rotation_count"` // Number of old log files to keep (default: 4)
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -426,6 +431,7 @@ type Config struct {
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
 	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
 	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
+	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -886,6 +892,9 @@ func createDefaultConfig() *Config {
 				TimeoutMs: 800,  // 800ms timeout for scanning
 			},
 		},
+		Logs: &LogsConfig{
+			RotationCount: 4, // Keep last 4 log files
+		},
 	}
 }
 
@@ -961,6 +970,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Chat == nil {
 		config.Chat = &ChatConfig{}
+	}
+	if config.Logs == nil {
+		config.Logs = &LogsConfig{}
 	}
 
 	// Apply container defaults
@@ -1109,6 +1121,11 @@ func applyDefaults(config *Config) {
 	}
 	// Note: chat.enabled defaults to false, scanner.enabled defaults to false
 	// If user wants chat, they must explicitly enable it
+
+	// Apply Logs defaults
+	if config.Logs.RotationCount == 0 {
+		config.Logs.RotationCount = 4
+	}
 }
 
 func validateConfig(config *Config) error {

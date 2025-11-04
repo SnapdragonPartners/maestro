@@ -178,6 +178,13 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 			return fmt.Errorf("failed to start web UI: %w", err)
 		}
 		k.Logger.Info("🌐 Web UI started successfully")
+
+		// Display WebUI URL for user access
+		protocol := "http"
+		if k.Config.WebUI.SSL {
+			protocol = "https"
+		}
+		fmt.Printf("🌐 WebUI: %s://%s:%d\n", protocol, k.Config.WebUI.Host, k.Config.WebUI.Port)
 	}
 
 	// Create supervisor for agent lifecycle management (creates its own factory)
@@ -255,6 +262,10 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 	}
 
 	k.Logger.Info("✅ Startup orchestration completed successfully")
+
+	// User-friendly message when system is ready
+	fmt.Println("✅ Startup complete.")
+
 	return nil
 }
 
@@ -280,18 +291,20 @@ func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) 
 }
 
 // ensureWebUIPassword checks if MAESTRO_WEBUI_PASSWORD is set, and generates one if not.
-// Prints directly to stdout (not logs) to avoid passwords in log files.
+// Logs status messages, but displays generated passwords directly to stdout (not logs).
 func ensureWebUIPassword() {
+	logger := config.LogInfo
+
 	// Check if password is already set
 	if config.GetWebUIPassword() != "" {
 		// Password already set via environment variable
-		fmt.Println("🔐 WebUI password loaded from MAESTRO_WEBUI_PASSWORD environment variable")
+		logger("🔐 WebUI password loaded from MAESTRO_WEBUI_PASSWORD environment variable")
 
 		// Check SSL status and warn if disabled
 		cfg, err := config.GetConfig()
 		if err == nil && cfg.WebUI != nil && !cfg.WebUI.SSL {
-			fmt.Println("⚠️  WARNING: SSL is disabled! Password will be transmitted in plain text.")
-			fmt.Println("💡 Enable SSL in config.json or use SSH port forwarding for secure access.")
+			logger("⚠️  WARNING: SSL is disabled! Password will be transmitted in plain text.")
+			logger("💡 Enable SSL in config.json or use SSH port forwarding for secure access.")
 		}
 		return
 	}

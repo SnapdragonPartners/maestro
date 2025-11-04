@@ -11,10 +11,12 @@ import (
 
 	"orchestrator/internal/utils"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 )
 
 // StartupOrchestrator provides startup orchestration with container validation.
 type StartupOrchestrator struct {
+	logger      *logx.Logger
 	projectDir  string
 	isBootstrap bool
 }
@@ -24,12 +26,13 @@ func NewStartupOrchestrator(projectDir string, isBootstrap bool) (*StartupOrches
 	return &StartupOrchestrator{
 		projectDir:  projectDir,
 		isBootstrap: isBootstrap,
+		logger:      logx.NewLogger("startup-orch"),
 	}, nil
 }
 
 // OnStart performs startup orchestration with container validation.
 func (o *StartupOrchestrator) OnStart(ctx context.Context) error {
-	fmt.Printf("🚀 Starting orchestrator validation...\n")
+	o.logger.Info("🚀 Starting orchestrator validation")
 
 	// Always ensure safe container is healthy
 	if err := o.ensureSafeContainerHealthy(ctx); err != nil {
@@ -37,7 +40,7 @@ func (o *StartupOrchestrator) OnStart(ctx context.Context) error {
 	}
 
 	if o.isBootstrap {
-		fmt.Printf("✅ Bootstrap mode: Safe container validated\n")
+		o.logger.Info("✅ Bootstrap mode: Safe container validated")
 		return nil
 	}
 
@@ -46,7 +49,7 @@ func (o *StartupOrchestrator) OnStart(ctx context.Context) error {
 		return fmt.Errorf("target container validation failed: %w", err)
 	}
 
-	fmt.Printf("✅ Orchestrator validation complete\n")
+	o.logger.Info("✅ Orchestrator validation complete")
 	return nil
 }
 
@@ -69,7 +72,7 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 		return fmt.Errorf("safe container %s is not healthy: %w", safeImageID, err)
 	}
 
-	fmt.Printf("✅ Safe container %s is healthy\n", safeImageID)
+	o.logger.Info("✅ Safe container %s is healthy", safeImageID)
 	return nil
 }
 
@@ -86,7 +89,7 @@ func (o *StartupOrchestrator) validateTargetContainer(ctx context.Context) error
 	// Case A: No pinned image ID - resolve container name to SHA256 and save it
 	// This happens after bootstrap when no target container has been built yet
 	if pinnedImageID == "" {
-		fmt.Printf("ℹ️  No pinned image ID configured, resolving container name: %s\n", cfg.Container.Name)
+		o.logger.Info("ℹ️  No pinned image ID configured, resolving container name: %s", cfg.Container.Name)
 
 		// Resolve the container name to its SHA256
 		imageID, err := utils.GetImageID(ctx, cfg.Container.Name)
@@ -104,23 +107,23 @@ func (o *StartupOrchestrator) validateTargetContainer(ctx context.Context) error
 			return fmt.Errorf("failed to save pinned image ID: %w", err)
 		}
 
-		fmt.Printf("✅ Resolved and pinned container: %s → %s\n", cfg.Container.Name, imageID)
+		o.logger.Info("✅ Resolved and pinned container: %s → %s", cfg.Container.Name, imageID)
 		return nil
 	}
 
 	// Case B: Pinned image is the safe image - this means we're in bootstrap mode
 	if pinnedImageID == safeImageID {
-		fmt.Printf("✅ Using safe/bootstrap container: %s\n", safeImageID)
+		o.logger.Info("✅ Using safe/bootstrap container: %s", safeImageID)
 		return nil
 	}
 
 	// Case C: We have a target image pinned - validate it's healthy
 	if err := utils.IsImageHealthy(ctx, pinnedImageID); err == nil {
-		fmt.Printf("✅ Target container %s is healthy\n", pinnedImageID)
+		o.logger.Info("✅ Target container %s is healthy", pinnedImageID)
 		return nil
 	}
 
-	fmt.Printf("⚠️  Target container %s is not healthy\n", pinnedImageID)
+	o.logger.Warn("⚠️  Target container %s is not healthy", pinnedImageID)
 
 	// Cases D/E: Offer interactive rebuild if dockerfile is available
 	if o.hasDockerfile(&cfg) {
@@ -160,7 +163,7 @@ func (o *StartupOrchestrator) offerInteractiveRebuild(ctx context.Context, cfg *
 	}
 
 	// Proceed with rebuild
-	fmt.Printf("🔨 Building container from dockerfile...\n")
+	o.logger.Info("🔨 Building container from dockerfile...")
 	if err := o.buildContainerFromConfig(ctx, cfg); err != nil {
 		return fmt.Errorf("container build failed: %w", err)
 	}
@@ -207,8 +210,8 @@ func (o *StartupOrchestrator) buildContainerFromConfig(ctx context.Context, cfg 
 		return fmt.Errorf("failed to update pinned image ID: %w", err)
 	}
 
-	fmt.Printf("✅ Container built successfully: %s\n", newImageID)
-	fmt.Printf("✅ Updated pinned image ID in configuration\n")
+	o.logger.Info("✅ Container built successfully: %s", newImageID)
+	o.logger.Info("✅ Updated pinned image ID in configuration")
 
 	return nil
 }
