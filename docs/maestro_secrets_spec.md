@@ -1,6 +1,6 @@
 # Maestro Secrets Management — Functional Specification
 
-**Version:** 2.0
+**Version:** 2.1
 **Status:** Ready for Implementation
 **Last Updated:** 2025-01-04
 
@@ -59,7 +59,9 @@ These features are explicitly NOT included:
 | `OPENAI_API_KEY` | OpenAI models (o3, GPT, etc.) | Using OpenAI models |
 | `SSL_KEY_PEM` | WebUI HTTPS private key | WebUI SSL enabled |
 
-**Note:** SSL certificates are public data and stored unencrypted as `.maestro/server.crt`.
+**Note:**
+- SSL certificates are public data and stored unencrypted as `.maestro/server.crt`.
+- `MAESTRO_PASSWORD` is not stored in secrets file - it's the encryption key used to decrypt this file.
 
 ### 2.3 Storage Format
 
@@ -115,17 +117,26 @@ All secrets use the same resolution order (highest to lowest priority):
    - Standard fallback: `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
    - SSL: `MAESTRO_SSL_CERT` and `MAESTRO_SSL_KEY` (if needed)
 
-### 3.2 Password Handling
+### 3.2 Project Password Handling
+
+The `MAESTRO_PASSWORD` serves two purposes:
+1. Decrypts `.maestro/secrets.json.enc` at startup
+2. Authenticates WebUI access (username: "maestro")
 
 **Interactive mode:**
-- Prompt user: `Enter project password: ******`
+- Prompt user: `Enter Maestro password: ******`
 - Use `golang.org/x/term.ReadPassword()` for hidden input
-- Clear password from memory immediately after use
+- Keep password in memory for WebUI authentication
+- Clear password from memory on shutdown
 
 **Non-interactive mode:**
 - Check for `MAESTRO_PASSWORD` environment variable
 - If present, use it (no prompt)
 - Enables CI/CD and automation
+
+**No secrets file:**
+- If `MAESTRO_PASSWORD` env var exists, use it for WebUI
+- Otherwise auto-generate ephemeral password for session (current behavior)
 
 **Memory safety:**
 ```go
@@ -197,8 +208,15 @@ Would you like to store credentials in Maestro? [y/N]:
 
 **Step 1: Set encryption password**
 ```
-Enter a password to encrypt your credentials: ******
+Enter a password for this Maestro project: ******
 Confirm password: ******
+
+This password will:
+  • Encrypt your credentials (GitHub token, API keys)
+  • Secure WebUI access (username: maestro)
+
+⚠️  You'll need this password every time you start Maestro.
+💡 Or you can store your password in the environment variable MAESTRO_PASSWORD for passwordless startup.
 ```
 
 **Step 2: Collect required secrets**
@@ -261,15 +279,18 @@ Path to SSL private key (PEM format): /path/to/key.pem
 **If `.maestro/secrets.json.enc` exists:**
 
 1. Check for `MAESTRO_PASSWORD` environment variable
-2. If not found, prompt: `Enter project password: ******`
+2. If not found, prompt: `Enter Maestro password: ******`
 3. Attempt decryption
 4. On failure → section 5.2 (decryption failure)
-5. On success → load secrets into memory (used via `GetSecret()`)
+5. On success → load secrets + use password for WebUI authentication
 
 **If secrets file does NOT exist:**
 
-1. Attempt to load all credentials from environment variables
-2. If required credentials missing → section 5.3 (missing credentials error)
+1. Check for `MAESTRO_PASSWORD` environment variable
+   - If exists: use for WebUI authentication
+   - If not: auto-generate ephemeral password for session
+2. Attempt to load credentials from environment variables
+3. If required credentials missing → section 5.3 (missing credentials error)
 
 ### 5.2 Decryption Failure
 
@@ -332,6 +353,7 @@ Then exit with status code 1.
 - [ ] `pkg/config/config.go`
   - [ ] Update `GetAPIKey()` to check secrets file first
   - [ ] Update `GetGitHubToken()` to check secrets file first
+  - [ ] Update `GetWebUIPassword()` to return project password or empty string (for auto-gen)
   - [ ] Add secrets file validation in `validateConfig()`
 
 - [ ] `cmd/maestro/interactive_bootstrap.go`
@@ -341,6 +363,7 @@ Then exit with status code 1.
 
 - [ ] `pkg/webui/server.go`
   - [ ] Update `StartServer()` to use `GetSSLCertAndKey()`
+  - [ ] Update WebUI auth to use project password (from secrets decryption or `MAESTRO_PASSWORD` env var)
 
 ### 6.3 Security Checklist
 
@@ -364,6 +387,8 @@ Then exit with status code 1.
 - [ ] File permissions enforcement
 - [ ] Memory zeroing (password cleared after use)
 - [ ] SSL cert/key loading from all sources
+- [ ] WebUI password uses project password from secrets decryption
+- [ ] WebUI password auto-generates when no secrets file exists
 
 ### 6.5 Documentation Updates
 
@@ -389,8 +414,15 @@ $ maestro -bootstrap
 By default, Maestro reads your credentials from environment variables.
 Would you like to store credentials in Maestro? [y/N]: y
 
-Enter a password to encrypt your credentials: ******
+Enter a password for this Maestro project: ******
 Confirm password: ******
+
+This password will:
+  • Encrypt your credentials (GitHub token, API keys)
+  • Secure WebUI access (username: maestro)
+
+⚠️  You'll need this password every time you start Maestro.
+💡 Or you can store your password in the environment variable MAESTRO_PASSWORD for passwordless startup.
 
 Enter GITHUB_TOKEN (required): ghp_abc123...
 Enter ANTHROPIC_API_KEY (optional): sk-ant-xyz...
@@ -423,8 +455,9 @@ Would you like to store credentials in Maestro? [y/N]: [Enter]
 ```bash
 $ maestro
 📋 Loading project from /path/to/project
-Enter project password: ******
+Enter Maestro password: ******
 ✅ Credentials decrypted successfully
+🌐 WebUI: https://localhost:8443 (username: maestro, use same password)
 🚀 Starting Maestro...
 ```
 
@@ -434,7 +467,8 @@ Enter project password: ******
 $ export MAESTRO_PASSWORD=my-secret-pass
 $ maestro
 📋 Loading project from /path/to/project
-✅ Credentials decrypted successfully (MAESTRO_PASSWORD)
+✅ Credentials decrypted successfully
+🌐 WebUI: https://localhost:8443 (username: maestro)
 🚀 Starting Maestro...
 ```
 
@@ -443,11 +477,11 @@ $ maestro
 ```bash
 $ maestro
 📋 Loading project from /path/to/project
-Enter project password: ******
+Enter Maestro password: ******
 ⚠️  Unable to decrypt secrets file with specified password.
 
 Do you want to (R)etry or (D)elete the secrets file and restart? [R/d]: r
-Enter project password: ******
+Enter Maestro password: ******
 ✅ Credentials decrypted successfully
 🚀 Starting Maestro...
 ```
@@ -605,6 +639,13 @@ This feature is successful if:
 ---
 
 ## Revision History
+
+- **v2.1** (2025-01-04) - Unified password for secrets and WebUI
+  - Changed `MAESTRO_WEBUI_PASSWORD` to `MAESTRO_PASSWORD` (single password concept)
+  - Password now serves dual purpose: decrypt secrets file + authenticate WebUI
+  - Removed `MAESTRO_WEBUI_PASSWORD` from stored secrets (password is the key, not stored)
+  - Simplified UX: one password to remember instead of two
+  - Updated all examples and error messages to reflect unified password model
 
 - **v2.0** (2025-01-04) - Simplified based on architecture review
   - Clarified goal as UX feature for non-technical users

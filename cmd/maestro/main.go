@@ -66,6 +66,12 @@ func run(projectDir, gitRepo, specFile string, bootstrap, noWebUI bool) int {
 		return 1
 	}
 
+	// Handle secrets file decryption if present (loads credentials into memory)
+	if err := handleSecretsDecryption(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to handle secrets: %v\n", err)
+		return 1
+	}
+
 	// Determine mode - auto-offer bootstrap if config was created from defaults
 	shouldBootstrap := bootstrap || configWasCreated
 	if shouldBootstrap && !bootstrap {
