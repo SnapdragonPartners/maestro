@@ -29,6 +29,9 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **DISPATCHING**: Assign ready stories to coding agents
    - **ANSWERING**: Handle technical questions from coding agents (QUESTION→ANSWER)
    - **REVIEWING**: Evaluate code submissions and provide approval/feedback (REQUEST→RESULT)
+     - **Iterative Approval with Read Tools**: Architect can use MCP read tools to inspect coder workspaces (read_file, list_files, get_diff, submit_reply) before approving
+     - **Iteration Limits**: Soft limit at 8 iterations (warning), hard limit at 16 iterations (escalation)
+   - **ESCALATED**: Wait for human intervention when iteration limits exceeded or cannot answer (2-hour timeout)
 
 2. **Coder Workflow**: Implements stories through state machine:
    - **PLANNING**: Analyze task and create implementation plan
@@ -49,6 +52,7 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **Automatic Injection**: New messages are automatically injected into each LLM call
    - Messages are stored in database with session isolation and secret scanning
    - Web UI provides interactive chat interface for human participation
+   - **Escalation Support**: When architect exceeds iteration limits, escalation messages are posted with `post_type: 'escalate'`, displayed prominently in WebUI with reply functionality for human guidance
 
 5. System maintains event logs and handles graceful shutdown with STATUS.md dumps
 
@@ -95,6 +99,8 @@ The system uses a **three-container model** for safe development and deployment:
 **Mount Policy**: Test containers mount `/workspace` as read-only except in CODING state (read-write). `/tmp` is always writable.
 
 **Orchestrator Role**: The main orchestrator does NOT manage container switching - agents are self-managing. The orchestrator only handles container cleanup via the container registry for containers that don't exit on their own.
+
+**Architect Execution**: The architect agent runs in a containerized environment (safe container) to execute read tools safely. Coder workspaces are mounted as read-only volumes when the architect uses read tools to inspect code.
 
 ## Development Commands
 
@@ -167,9 +173,14 @@ projectDir/                    # Binary location or CLI specified
 ```
 
 **Configuration Management:**
-- `projectDir/.maestro/config.json` - Master config with pinned target image ID  
+- `projectDir/.maestro/config.json` - Master config with pinned target image ID
 - `projectDir/.maestro/database/` - Agent state, container history, runtime data
 - `coder-001/`, `coder-002/`, etc. - Individual agent working directories (repo clones with `.maestro/` for committed artifacts)
+
+**Workspace Pre-creation:**
+- Coder working directories are created before agent execution starts
+- Ensures workspaces exist when architect uses read tools to inspect code
+- Implemented in `pkg/workspace/verify.go` and called during startup
 
 ### LLM Abstraction
 All AI model interactions go through the unified `LLMClient` interface in `pkg/agent/`:
