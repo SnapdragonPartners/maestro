@@ -1,7 +1,77 @@
 # Architect Read Access - Revised Implementation Summary
 
-**Date**: 2025-11-03
-**Status**: Ready for Review
+**Date**: 2025-11-04
+**Status**: In Progress - Phase 4b Complete
+
+---
+
+## Implementation Progress
+
+### ✅ Completed Phases
+
+**Phase 1: Workspace Pre-Creation** (Completed 2025-11-03)
+- Orchestrator pre-creates coder workspace directories at startup
+- Configuration schema updated with `max_coders` setting
+- Workspace lifecycle verified and tested
+
+**Phase 2: Architect Containerization** (Completed 2025-11-03)
+- `pkg/exec/architect_executor.go` - Docker executor with read-only mounts
+- Architect container starts at orchestrator initialization
+- Mounts all coder workspaces: `/mnt/coders/coder-001` through `/mnt/coders/coder-NNN`
+- Integration with `pkg/architect/driver.go` via executor field
+
+**Phase 3: MCP Read Tools** (Completed 2025-11-03)
+- `pkg/tools/read_file.go` - Read file contents from coder workspace
+- `pkg/tools/list_files.go` - List files with pattern matching
+- `pkg/tools/get_diff.go` - Get git diff for coder changes
+- `pkg/tools/submit_reply.go` - Explicit iteration termination signal
+- All tools registered in `pkg/tools/registry.go`
+- Tool documentation generation implemented
+
+**Phase 4a: Iteration Pattern Helper Methods** (Completed 2025-11-04)
+- `checkIterationLimit()` - Soft/hard limit enforcement in `pkg/architect/driver.go`
+- `createReadToolProvider()` - Lazy tool provider creation
+- `getArchitectToolsForLLM()` - Tool definition conversion
+- `processArchitectToolCalls()` - Tool execution with logging
+- Iteration state tracking via state data
+
+**Phase 4b: Iterative Approval Implementation** (Completed 2025-11-04)
+- `handleIterativeApproval()` - Code and completion review with tools
+- `handleIterativeQuestion()` - Technical question answering with workspace exploration
+- `generateIterativeCodeReviewPrompt()` - Code review prompt with tool docs
+- `generateIterativeCompletionPrompt()` - Completion review prompt with tool docs
+- `generateIterativeQuestionPrompt()` - Question answering prompt with tool docs
+- `buildApprovalResponseFromSubmit()` - Response packaging
+- `buildQuestionResponseFromSubmit()` - Answer packaging
+- Request routing logic updated in `handleRequest()`
+- Budget reviews kept lightweight (no tools) per design
+
+**Phase 4c: Shared Tool Logging Infrastructure** (Completed 2025-11-04)
+- `pkg/agent/tool_logging.go` - Shared `LogToolExecution()` function
+- Tool execution persistence to database with session tracking
+- Both coder and architect now use shared logging
+- Audit trail for all tool usage across agents
+
+### 🚧 In Progress
+
+None - ready for Phase 5
+
+### 📋 Pending Phases
+
+**Phase 5: Chat Escalation Support**
+- Chat-based escalation when hard iteration limits exceeded
+- ESCALATE state handler with human-in-the-loop
+- WebUI enhancements for escalation display
+
+**Phase 6: Testing & Validation**
+- Integration test for OpenAI tool calling
+- End-to-end testing of iterative approval flow
+- Performance validation
+
+**Phase 7: Documentation Updates**
+- Update CLAUDE.md with architect read access notes
+- Update ARCHITECTURE.md with container topology
+- Final implementation notes
 
 ---
 
@@ -46,10 +116,10 @@ for i := 1; i <= maxCoders; i++ {
 ```
 
 **Deliverables**:
-- [ ] Orchestrator pre-creates empty workspace directories based on `max_coders` config
-- [ ] Add `max_coders` to config schema
-- [ ] Verify workspace lifecycle works correctly
-- [ ] Test concurrent workspace operations
+- [x] Orchestrator pre-creates empty workspace directories based on `max_coders` config
+- [x] Add `max_coders` to config schema
+- [x] Verify workspace lifecycle works correctly
+- [x] Test concurrent workspace operations
 
 ---
 
@@ -91,10 +161,10 @@ type ArchitectExecutor struct {
 - Architect failure remains fatal error (one retry acceptable)
 
 **Deliverables**:
-- [ ] `pkg/exec/architect_executor.go` - container lifecycle management
-- [ ] Update `pkg/architect/driver.go` - add executor field
-- [ ] Orchestrator starts architect container at startup
-- [ ] Integration tests for mount configuration
+- [x] `pkg/exec/architect_executor.go` - container lifecycle management
+- [x] Update `pkg/architect/driver.go` - add executor field
+- [x] Orchestrator starts architect container at startup
+- [x] Integration tests for mount configuration
 
 ---
 
@@ -142,12 +212,12 @@ var ArchitectReadTools = []string{
 ```
 
 **Deliverables**:
-- [ ] `pkg/tools/read_file.go` + tests
-- [ ] `pkg/tools/list_files.go` + tests
-- [ ] `pkg/tools/get_diff.go` + tests
-- [ ] `pkg/tools/submit_reply.go` + tests
-- [ ] Registration in `pkg/tools/registry.go`
-- [ ] Tool documentation generation
+- [x] `pkg/tools/read_file.go` + tests
+- [x] `pkg/tools/list_files.go` + tests
+- [x] `pkg/tools/get_diff.go` + tests
+- [x] `pkg/tools/submit_reply.go` + tests
+- [x] Registration in `pkg/tools/registry.go`
+- [x] Tool documentation generation
 
 ---
 
@@ -297,16 +367,16 @@ func (cm *ContextManager) ResetForNewState() {
 ```
 
 **Deliverables**:
-- [ ] Update `pkg/architect/scoping.go` - add iteration pattern with soft/hard limits
-- [ ] Update `pkg/architect/request.go` - add iteration pattern with soft/hard limits
-- [ ] Add `ResetForNewState()` to context manager
-- [ ] Update architect templates with tool documentation
-- [ ] Configuration loading for iteration limits
-- [ ] Integration tests
+- [x] Helper methods in `pkg/architect/driver.go` - iteration limit checking, tool provider creation
+- [x] Update `pkg/architect/request.go` - add iterative approval and question handling
+- [x] Tool call processing with logging integration
+- [x] Prompt generation for code review, completion, and questions
+- [x] Response building from submit_reply signal
+- [x] Configuration loading for iteration limits
 
 ---
 
-### Phase 4b: Chat Escalation Support
+### Phase 5: Chat Escalation Support
 **Duration**: 2 days
 
 **Goal**: Enable architect to escalate to humans via chat when hard iteration limit reached.
@@ -405,7 +475,32 @@ CREATE INDEX idx_chat_messages_post_type ON chat_messages(post_type);
 
 ---
 
-### Phase 5: Testing & Validation
+### Phase 4c: Shared Tool Logging Infrastructure
+**Duration**: 0.5 days (emergent implementation)
+
+**Goal**: Centralize tool execution logging for all agents
+
+**Implementation**:
+- Created `pkg/agent/tool_logging.go` with shared `LogToolExecution()` function
+- Extracts tool execution metadata (params, result, duration, success/failure)
+- Persists to database via fire-and-forget persistence queue
+- Supports both shell tools and generic tools
+- Session-aware logging with automatic session_id injection
+
+**Refactoring**:
+- Moved coder's `logToolExecution()` to use shared implementation
+- Added architect tool logging in `processArchitectToolCalls()`
+- Both agents now share same audit trail infrastructure
+
+**Deliverables**:
+- [x] `pkg/agent/tool_logging.go` - shared logging function
+- [x] Refactor `pkg/coder/driver.go` to use shared logging
+- [x] Add logging to `pkg/architect/driver.go` tool processing
+- [x] Database integration via persistence channel
+
+---
+
+### Phase 6: Testing & Validation
 **Duration**: 2 days
 
 **Unit Tests**:
@@ -436,7 +531,7 @@ func TestIterationLimitEnforcement(t *testing.T)
 
 ---
 
-### Phase 6: Documentation
+### Phase 7: Documentation
 **Duration**: 1 day
 
 **Updates Required**:
@@ -453,16 +548,20 @@ func TestIterationLimitEnforcement(t *testing.T)
 
 ## Total Estimated Effort
 
-**14-17 days** (3 weeks)
+**14-18 days** (3-4 weeks)
 
 Breakdown:
-- Phase 1: 1 day (mostly verification)
-- Phase 2: 3-4 days
-- Phase 3: 2-3 days
-- Phase 4a: 2 days (iteration pattern)
-- Phase 4b: 2 days (chat escalation)
-- Phase 5: 2-3 days (includes escalation testing)
-- Phase 6: 1 day
+- Phase 1: 1 day (workspace pre-creation) ✅
+- Phase 2: 3-4 days (architect containerization) ✅
+- Phase 3: 2-3 days (MCP read tools) ✅
+- Phase 4a: 2 days (iteration pattern helpers) ✅
+- Phase 4b: 2 days (iterative approval implementation) ✅
+- Phase 4c: 0.5 days (shared tool logging - emergent) ✅
+- Phase 5: 2 days (chat escalation) 🚧
+- Phase 6: 2-3 days (testing & validation) 📋
+- Phase 7: 1 day (documentation) 📋
+
+**Current Progress**: ~60% complete (Phases 1-4c done)
 
 ---
 
