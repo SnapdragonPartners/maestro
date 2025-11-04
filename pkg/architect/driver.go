@@ -12,10 +12,12 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/tools"
 )
 
 // Story content constants.
@@ -36,6 +38,8 @@ type Driver struct {
 	escalationHandler   *EscalationHandler                    // Escalation handler
 	dispatcher          *dispatch.Dispatcher                  // Dispatcher for sending messages
 	logger              *logx.Logger                          // Logger with proper agent prefixing
+	executor            *execpkg.ArchitectExecutor            // Container executor for file access tools
+	chatService         ChatServiceInterface                  // Chat service for escalations (nil check required)
 	specCh              <-chan *proto.AgentMsg                // Read-only channel for spec messages
 	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for questions/requests
 	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
@@ -46,6 +50,38 @@ type Driver struct {
 	workDir             string // Workspace directory
 	currentState        proto.State
 }
+
+// ChatServiceInterface defines the interface for chat operations needed by architect.
+// This allows for testing with mocks and keeps the architect loosely coupled from chat implementation.
+type ChatServiceInterface interface {
+	Post(ctx context.Context, req *ChatPostRequest) (*ChatPostResponse, error)
+	WaitForReply(ctx context.Context, messageID int64, pollInterval time.Duration) (*ChatMessage, error)
+}
+
+// ChatPostRequest represents a chat post request (simplified for architect use).
+type ChatPostRequest struct {
+	Author   string
+	Text     string
+	ReplyTo  *int64
+	PostType string
+}
+
+// ChatPostResponse represents a chat post response (simplified for architect use).
+type ChatPostResponse struct {
+	ID      int64
+	Success bool
+}
+
+// ChatMessage represents a chat message (simplified for architect use).
+type ChatMessage struct {
+	Timestamp string
+	Author    string
+	Text      string
+	ID        int64
+}
+
+// ErrEscalationTriggered is returned when iteration limits are exceeded and escalation is needed.
+var ErrEscalationTriggered = fmt.Errorf("escalation triggered due to iteration limit")
 
 // NewDriver creates a new architect driver instance.
 func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
@@ -112,6 +148,26 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 
 	// Create architect with LLM integration
 	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
+
+	// Create and start architect container executor
+	// The architect container has read-only mounts to all coder workspaces
+	architectExecutor := execpkg.NewArchitectExecutor(
+		config.BootstrapContainerTag, // Use bootstrap image (same as coders)
+		workDir,                      // Project directory containing coder-NNN directories
+		cfg.Agents.MaxCoders,         // Number of coder workspaces to mount
+	)
+
+	// Start the architect container (one retry on failure)
+	if startErr := architectExecutor.Start(ctx); startErr != nil {
+		architect.logger.Warn("Failed to start architect container, retrying once: %v", startErr)
+		// Retry once
+		if retryErr := architectExecutor.Start(ctx); retryErr != nil {
+			return nil, fmt.Errorf("failed to start architect container after retry: %w", retryErr)
+		}
+	}
+
+	// Store executor in architect
+	architect.executor = architectExecutor
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
 	// Use the shared factory to ensure proper rate limiting
@@ -196,8 +252,17 @@ func (d *Driver) GetStoryID() string {
 }
 
 // Shutdown implements Agent interface with context.
-func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
-	// Call the original shutdown method.
+func (d *Driver) Shutdown(ctx context.Context) error {
+	// Stop architect container executor
+	if d.executor != nil {
+		d.logger.Info("Stopping architect container executor")
+		if err := d.executor.Stop(ctx); err != nil {
+			d.logger.Error("Failed to stop architect executor: %v", err)
+			// Continue with shutdown even if executor stop fails
+		}
+	}
+
+	// Call the original shutdown method
 	d.shutdown()
 	return nil
 }
@@ -206,7 +271,7 @@ func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
 func (d *Driver) shutdown() {
 	// No filesystem state persistence - clean shutdown
 
-	// Channels are owned by dispatcher, no cleanup needed here.
+	// Channels are owned by dispatcher, no cleanup needed here
 }
 
 // Step implements agent.Driver interface - executes one state transition.
@@ -617,4 +682,172 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// checkIterationLimit checks if the architect has exceeded iteration limits.
+// Returns true if hard limit exceeded (should escalate), false otherwise.
+// Soft limit triggers warning, hard limit triggers escalation to ESCALATE state.
+func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State) bool {
+	const softLimit = 8
+	const hardLimit = 16
+
+	// Get current iteration count
+	iterationCount := 0
+	if val, exists := d.stateData[stateDataKey]; exists {
+		if count, ok := val.(int); ok {
+			iterationCount = count
+		}
+	}
+
+	// Increment iteration count
+	iterationCount++
+	d.stateData[stateDataKey] = iterationCount
+
+	// Check soft limit (warning only)
+	if iterationCount == softLimit {
+		d.logger.Warn("⚠️  Soft iteration limit (%d) reached in %s - architect should consider finalizing analysis", softLimit, stateName)
+		// Add warning to context for LLM to see
+		warningMsg := fmt.Sprintf("Warning: You have used %d iterations in this phase. Consider finalizing your analysis soon to avoid escalation.", softLimit)
+		d.contextManager.AddMessage("system-warning", warningMsg)
+		return false
+	}
+
+	// Check hard limit (escalate)
+	if iterationCount >= hardLimit {
+		d.logger.Error("❌ Hard iteration limit (%d) exceeded in %s - escalating to human", hardLimit, stateName)
+		// Store escalation context for ESCALATE state
+		d.stateData["escalation_origin_state"] = string(stateName)
+		d.stateData["escalation_iteration_count"] = iterationCount
+		// Additional context will be added by caller (request_id, story_id)
+		return true
+	}
+
+	d.logger.Debug("Iteration %d/%d (soft: %d, hard: %d) in %s", iterationCount, hardLimit, softLimit, hardLimit, stateName)
+	return false
+}
+
+// createReadToolProvider creates a tool provider with architect read tools.
+func (d *Driver) createReadToolProvider() *tools.ToolProvider {
+	ctx := tools.AgentContext{
+		Executor:        d.executor, // Architect executor with read-only mounts
+		ChatService:     nil,        // No chat service needed for read tools
+		ReadOnly:        true,       // Architect tools are read-only
+		NetworkDisabled: false,      // Network allowed for architect
+		WorkDir:         d.workDir,
+		Agent:           nil, // No agent reference needed for read tools
+	}
+
+	return tools.NewProvider(ctx, tools.ArchitectReadTools)
+}
+
+// processArchitectToolCalls processes tool calls for architect states (SCOPING/REQUEST).
+// Returns the submit_reply response if detected, nil otherwise.
+func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
+	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
+
+	for i := range toolCalls {
+		toolCall := &toolCalls[i]
+		d.logger.Info("Executing architect tool: %s", toolCall.Name)
+
+		// Handle submit_reply tool - signals iteration completion
+		if toolCall.Name == tools.ToolSubmitReply {
+			response, ok := toolCall.Parameters["response"].(string)
+			if !ok || response == "" {
+				return "", fmt.Errorf("submit_reply tool called without response parameter")
+			}
+
+			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
+			return response, nil
+		}
+
+		// Get tool from ToolProvider and execute
+		tool, err := toolProvider.Get(toolCall.Name)
+		if err != nil {
+			d.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
+			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
+			continue
+		}
+
+		// Add agent_id to context for tools that need it
+		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.architectID)
+
+		// Execute tool
+		startTime := time.Now()
+		result, err := tool.Exec(toolCtx, toolCall.Parameters)
+		duration := time.Since(startTime)
+
+		// Log tool execution to database (fire-and-forget)
+		storyID := ""
+		if sid, exists := d.stateData["current_story_id"]; exists {
+			if sidStr, ok := sid.(string); ok {
+				storyID = sidStr
+			}
+		}
+		agent.LogToolExecution(toolCall, result, err, duration, d.architectID, storyID, d.persistenceChannel)
+
+		if err != nil {
+			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
+			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
+			continue
+		}
+
+		d.logger.Debug("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
+
+		// Add tool result to context
+		d.addToolResultToContext(*toolCall, result)
+		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
+	}
+
+	return "", nil // No submit_reply detected
+}
+
+// addToolResultToContext adds tool execution results to context for LLM continuity.
+func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
+	// Convert result to user message format
+	var resultStr string
+	if resultMap, ok := result.(map[string]any); ok {
+		// Pretty print structured results
+		if success, ok := resultMap["success"].(bool); ok && success {
+			// Success case - format based on tool type
+			switch toolCall.Name {
+			case tools.ToolReadFile:
+				content, _ := resultMap["content"].(string)
+				path, _ := resultMap["path"].(string)
+				truncated, _ := resultMap["truncated"].(bool)
+				if truncated {
+					resultStr = fmt.Sprintf("File %s (truncated):\n%s", path, content)
+				} else {
+					resultStr = fmt.Sprintf("File %s:\n%s", path, content)
+				}
+			case tools.ToolListFiles:
+				files, _ := resultMap["files"].([]string)
+				count, _ := resultMap["count"].(int)
+				pattern, _ := resultMap["pattern"].(string)
+				resultStr = fmt.Sprintf("Found %d files matching '%s':\n%s", count, pattern, strings.Join(files, "\n"))
+			case tools.ToolGetDiff:
+				diff, _ := resultMap["diff"].(string)
+				path, _ := resultMap["path"].(string)
+				if path != "" {
+					resultStr = fmt.Sprintf("Git diff for %s:\n%s", path, diff)
+				} else {
+					resultStr = fmt.Sprintf("Git diff:\n%s", diff)
+				}
+			default:
+				resultStr = fmt.Sprintf("Tool %s result: %v", toolCall.Name, resultMap)
+			}
+		} else {
+			// Error case
+			if errorMsg, ok := resultMap["error"].(string); ok {
+				resultStr = fmt.Sprintf("Tool %s error: %s", toolCall.Name, errorMsg)
+			} else {
+				resultStr = fmt.Sprintf("Tool %s failed: %v", toolCall.Name, resultMap)
+			}
+		}
+	} else {
+		// Fallback for non-map results
+		resultStr = fmt.Sprintf("Tool %s result: %v", toolCall.Name, result)
+	}
+
+	// Add to context as user message (tool response)
+	d.contextManager.AddMessage("tool", resultStr)
 }

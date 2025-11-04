@@ -439,6 +439,51 @@ func getTodoUpdateSchema() InputSchema {
 	return NewTodoUpdateTool().Definition().InputSchema
 }
 
+// createReadFileTool creates a read_file tool instance.
+func createReadFileTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("read_file tool requires an executor")
+	}
+	return NewReadFileTool(ctx.Executor, 1048576), nil // 1MB max
+}
+
+// createListFilesTool creates a list_files tool instance.
+func createListFilesTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("list_files tool requires an executor")
+	}
+	return NewListFilesTool(ctx.Executor, 1000), nil // 1000 files max
+}
+
+// createGetDiffTool creates a get_diff tool instance.
+func createGetDiffTool(ctx AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("get_diff tool requires an executor")
+	}
+	return NewGetDiffTool(ctx.Executor, 10000), nil // 10000 lines max
+}
+
+// createSubmitReplyTool creates a submit_reply tool instance.
+func createSubmitReplyTool(_ AgentContext) (Tool, error) {
+	return NewSubmitReplyTool(), nil
+}
+
+func getReadFileSchema() InputSchema {
+	return NewReadFileTool(nil, 0).Definition().InputSchema
+}
+
+func getListFilesSchema() InputSchema {
+	return NewListFilesTool(nil, 0).Definition().InputSchema
+}
+
+func getGetDiffSchema() InputSchema {
+	return NewGetDiffTool(nil, 0).Definition().InputSchema
+}
+
+func getSubmitReplySchema() InputSchema {
+	return NewSubmitReplyTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -560,5 +605,30 @@ func init() {
 		Name:        ToolTodoUpdate,
 		Description: "Update or remove a todo by index",
 		InputSchema: getTodoUpdateSchema(),
+	})
+
+	// Register architect read tools
+	Register(ToolReadFile, createReadFileTool, &ToolMeta{
+		Name:        ToolReadFile,
+		Description: "Read contents of a file from a coder workspace",
+		InputSchema: getReadFileSchema(),
+	})
+
+	Register(ToolListFiles, createListFilesTool, &ToolMeta{
+		Name:        ToolListFiles,
+		Description: "List files in a coder workspace matching a pattern",
+		InputSchema: getListFilesSchema(),
+	})
+
+	Register(ToolGetDiff, createGetDiffTool, &ToolMeta{
+		Name:        ToolGetDiff,
+		Description: "Get git diff between coder workspace and main branch",
+		InputSchema: getGetDiffSchema(),
+	})
+
+	Register(ToolSubmitReply, createSubmitReplyTool, &ToolMeta{
+		Name:        ToolSubmitReply,
+		Description: "Submit your final response and exit iteration loop",
+		InputSchema: getSubmitReplySchema(),
 	})
 }

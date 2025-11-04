@@ -9,6 +9,8 @@ class MaestroUI {
         this.isConnected = true;
         this.autoscroll = true;
         this.queuePollingIntervals = {};
+        this.replyingToMessageId = null; // Track which message we're replying to
+        this.replyingToAuthor = null;
 
         this.init();
     }
@@ -1329,11 +1331,24 @@ class MaestroUI {
         empty.classList.add('hidden');
         list.classList.remove('hidden');
 
+        // Track escalations
+        let hasNewEscalations = false;
+
         // Append new messages (cursor-based polling means we only get new ones)
         messages.forEach(msg => {
             const messageElement = this.createChatMessage(msg);
             list.appendChild(messageElement);
+
+            // Check if this is an escalation without a reply
+            if (msg.post_type === 'escalate') {
+                hasNewEscalations = true;
+            }
         });
+
+        // Update escalation banner if we found new escalations
+        if (hasNewEscalations) {
+            this.updateEscalationBanner();
+        }
 
         // Auto-scroll to bottom if enabled
         if (this.chatAutoScroll) {
@@ -1342,21 +1357,65 @@ class MaestroUI {
         }
     }
 
+    updateEscalationBanner() {
+        // Count unanswered escalations (escalations without a reply pointing to them)
+        // For now, show banner if there are any escalations
+        // (More sophisticated tracking would check for replies)
+        const list = document.getElementById('chat-list');
+        const escalationMessages = list.querySelectorAll('.border-red-300').length;
+
+        const banner = document.getElementById('escalation-banner');
+        const countSpan = document.getElementById('escalation-count');
+
+        if (escalationMessages > 0) {
+            banner.classList.remove('hidden');
+            countSpan.textContent = escalationMessages;
+        } else {
+            banner.classList.add('hidden');
+        }
+    }
+
     createChatMessage(message) {
         const div = document.createElement('div');
         const isHuman = message.author === '@human';
+        const isEscalation = message.post_type === 'escalate';
+        const isReply = message.post_type === 'reply' || message.reply_to;
+
+        // Add left margin for replies (threading)
+        const marginClass = isReply ? 'ml-8' : '';
 
         // Different styling for human vs agent messages
         if (isHuman) {
-            div.className = 'flex justify-end';
+            div.className = `flex justify-end ${marginClass}`;
             div.innerHTML = `
                 <div class="max-w-[80%] bg-blue-500 text-white rounded-lg px-4 py-2">
                     <div class="text-xs opacity-75 mb-1">${message.author} · ${this.formatChatTime(message.timestamp)}</div>
                     <div class="text-sm whitespace-pre-wrap">${this.escapeHtml(message.text)}</div>
                 </div>
             `;
+        } else if (isEscalation) {
+            // Escalation message - prominent styling with reply button
+            div.className = `flex justify-start ${marginClass}`;
+            div.innerHTML = `
+                <div class="max-w-[80%] bg-red-50 border-2 border-red-300 text-gray-900 rounded-lg px-4 py-2">
+                    <div class="flex items-center text-xs text-red-700 font-semibold mb-2">
+                        <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                        </svg>
+                        ESCALATION
+                    </div>
+                    <div class="text-xs text-gray-600 mb-1">${message.author} · ${this.formatChatTime(message.timestamp)}</div>
+                    <div class="text-sm whitespace-pre-wrap mb-2">${this.escapeHtml(message.text)}</div>
+                    <button
+                        class="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded transition-colors"
+                        onclick="window.maestro.replyToMessage(${message.id}, '${this.escapeHtml(message.author)}')">
+                        Reply to Escalation
+                    </button>
+                </div>
+            `;
         } else {
-            div.className = 'flex justify-start';
+            // Regular agent message
+            div.className = `flex justify-start ${marginClass}`;
             div.innerHTML = `
                 <div class="max-w-[80%] bg-gray-200 text-gray-900 rounded-lg px-4 py-2">
                     <div class="text-xs text-gray-600 mb-1">${message.author} · ${this.formatChatTime(message.timestamp)}</div>
@@ -1389,6 +1448,46 @@ class MaestroUI {
         }
     }
 
+    replyToMessage(messageId, author) {
+        this.replyingToMessageId = messageId;
+        this.replyingToAuthor = author;
+
+        const input = document.getElementById('chat-input');
+        input.placeholder = `Replying to ${author}...`;
+        input.focus();
+
+        // Show reply indicator
+        const chatInputArea = input.parentElement;
+        let indicator = document.getElementById('reply-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'reply-indicator';
+            chatInputArea.insertBefore(indicator, chatInputArea.firstChild);
+        }
+        indicator.className = 'bg-yellow-100 border border-yellow-300 rounded px-3 py-2 mb-2 flex items-center justify-between';
+        indicator.innerHTML = `
+            <span class="text-sm text-yellow-800">Replying to ${this.escapeHtml(author)}</span>
+            <button
+                onclick="window.maestro.cancelReply()"
+                class="text-yellow-600 hover:text-yellow-800 ml-2">
+                ✕
+            </button>
+        `;
+    }
+
+    cancelReply() {
+        this.replyingToMessageId = null;
+        this.replyingToAuthor = null;
+
+        const input = document.getElementById('chat-input');
+        input.placeholder = 'Type a message to agents...';
+
+        const indicator = document.getElementById('reply-indicator');
+        if (indicator) {
+            indicator.remove();
+        }
+    }
+
     async sendChatMessage() {
         const input = document.getElementById('chat-input');
         const button = document.getElementById('chat-send');
@@ -1405,12 +1504,20 @@ class MaestroUI {
         sendSpinner.classList.remove('hidden');
 
         try {
+            const payload = { text };
+
+            // Include reply_to if we're replying
+            if (this.replyingToMessageId) {
+                payload.reply_to = this.replyingToMessageId;
+                payload.post_type = 'reply';
+            }
+
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ text })
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
@@ -1421,6 +1528,11 @@ class MaestroUI {
 
             // Clear input on success
             input.value = '';
+
+            // Clear reply state
+            if (this.replyingToMessageId) {
+                this.cancelReply();
+            }
 
             // Message will appear via polling, no need to manually add it
             this.showToast('Message sent', 'success');

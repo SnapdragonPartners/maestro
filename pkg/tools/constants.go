@@ -31,6 +31,12 @@ const (
 	ToolTodosAdd     = "todos_add"
 	ToolTodoComplete = "todo_complete"
 	ToolTodoUpdate   = "todo_update"
+
+	// Architect read tools.
+	ToolReadFile    = "read_file"
+	ToolListFiles   = "list_files"
+	ToolGetDiff     = "get_diff"
+	ToolSubmitReply = "submit_reply"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -102,5 +108,14 @@ var (
 		ToolTest,
 		ToolLint,
 		ToolBackendInfo,
+	}
+
+	// Architect read tools - read-only access to coder workspaces.
+	// Used in SCOPING and REQUEST states for code review and analysis.
+	ArchitectReadTools = []string{
+		ToolReadFile,
+		ToolListFiles,
+		ToolGetDiff,
+		ToolSubmitReply,
 	}
 )

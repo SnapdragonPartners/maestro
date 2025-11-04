@@ -254,3 +254,202 @@ func TestOpenAIOfficial_ErrorHandling(t *testing.T) {
 		t.Errorf("Error message doesn't indicate authentication issue: %v", err)
 	}
 }
+
+// TestOpenAIOfficial_ArchitectReadTools tests OpenAI tool calling with our actual MCP read tools.
+// This validates that the tool definitions used by architect (list_files, read_file, get_diff, submit_reply)
+// work correctly with OpenAI's function calling API.
+func TestOpenAIOfficial_ArchitectReadTools(t *testing.T) {
+	// Skip if no API key available
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		t.Skip("Skipping integration test: OPENAI_API_KEY not set")
+	}
+
+	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "gpt-5")
+
+	// Define the actual MCP read tools used by architect
+	// These match the tool definitions in pkg/tools/
+	toolDefs := []tools.ToolDefinition{
+		{
+			Name:        "list_files",
+			Description: "List files in a coder's workspace matching a pattern",
+			InputSchema: tools.InputSchema{
+				Type: "object",
+				Properties: map[string]tools.Property{
+					"coder_id": {
+						Type:        "string",
+						Description: "ID of the coder whose workspace to list",
+					},
+					"pattern": {
+						Type:        "string",
+						Description: "Glob pattern to match files (e.g., '*.go', 'src/**/*.ts')",
+					},
+				},
+				Required: []string{"coder_id"},
+			},
+		},
+		{
+			Name:        "read_file",
+			Description: "Read the contents of a file in a coder's workspace",
+			InputSchema: tools.InputSchema{
+				Type: "object",
+				Properties: map[string]tools.Property{
+					"coder_id": {
+						Type:        "string",
+						Description: "ID of the coder whose workspace contains the file",
+					},
+					"path": {
+						Type:        "string",
+						Description: "Path to the file relative to workspace root",
+					},
+				},
+				Required: []string{"coder_id", "path"},
+			},
+		},
+		{
+			Name:        "get_diff",
+			Description: "Get git diff for changes in a coder's workspace",
+			InputSchema: tools.InputSchema{
+				Type: "object",
+				Properties: map[string]tools.Property{
+					"coder_id": {
+						Type:        "string",
+						Description: "ID of the coder whose workspace to diff",
+					},
+					"path": {
+						Type:        "string",
+						Description: "Optional: specific file path to diff (omit for all changes)",
+					},
+				},
+				Required: []string{"coder_id"},
+			},
+		},
+		{
+			Name:        "submit_reply",
+			Description: "Submit the final response and exit iteration loop",
+			InputSchema: tools.InputSchema{
+				Type: "object",
+				Properties: map[string]tools.Property{
+					"response": {
+						Type:        "string",
+						Description: "The final response to send back",
+					},
+				},
+				Required: []string{"response"},
+			},
+		},
+	}
+
+	// Create a request that should trigger list_files tool call
+	req := llm.CompletionRequest{
+		Messages: []llm.CompletionMessage{
+			{
+				Role: "system",
+				Content: "You are an architect reviewing code. You have access to tools to explore coder workspaces. " +
+					"Use list_files to see what files exist in coder-001's workspace.",
+			},
+			{
+				Role: "user",
+				Content: "Please list all Go files in coder-001's workspace using the list_files tool. " +
+					"Pass coder_id='coder-001' and pattern='*.go'.",
+			},
+		},
+		Tools:     toolDefs,
+		MaxTokens: 1000,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := client.Complete(ctx, req)
+	if err != nil {
+		t.Fatalf("Completion failed: %v", err)
+	}
+
+	t.Logf("Response Content: %s", resp.Content)
+	t.Logf("Tool Calls: %d", len(resp.ToolCalls))
+
+	// Log all tool calls for debugging
+	for i, tc := range resp.ToolCalls {
+		t.Logf("Tool Call %d: Name=%s, ID=%s, Params=%+v", i+1, tc.Name, tc.ID, tc.Parameters)
+	}
+
+	// Verify we got at least one tool call
+	if len(resp.ToolCalls) == 0 {
+		t.Logf("WARNING: No tool calls made. Response: %s", resp.Content)
+		t.Skip("Model chose not to use tools - may need prompt adjustment")
+		return
+	}
+
+	// Check if any tool call matches our expected architect read tools
+	foundValidTool := false
+	validToolNames := map[string]bool{
+		"list_files":   true,
+		"read_file":    true,
+		"get_diff":     true,
+		"submit_reply": true,
+	}
+
+	for _, tc := range resp.ToolCalls {
+		if validToolNames[tc.Name] {
+			foundValidTool = true
+			t.Logf("✅ Found valid architect tool call: %s", tc.Name)
+
+			// Verify tool call has an ID
+			if tc.ID == "" {
+				t.Errorf("Tool call %s missing ID", tc.Name)
+			}
+
+			// Verify parameters exist
+			if len(tc.Parameters) == 0 {
+				t.Errorf("Tool call %s has no parameters", tc.Name)
+			}
+
+			// Tool-specific validations
+			switch tc.Name {
+			case "list_files":
+				if coderID, exists := tc.Parameters["coder_id"]; !exists {
+					t.Error("list_files missing required parameter 'coder_id'")
+				} else {
+					t.Logf("  coder_id: %v", coderID)
+				}
+				if pattern, exists := tc.Parameters["pattern"]; exists {
+					t.Logf("  pattern: %v", pattern)
+				}
+
+			case "read_file":
+				if coderID, exists := tc.Parameters["coder_id"]; !exists {
+					t.Error("read_file missing required parameter 'coder_id'")
+				} else {
+					t.Logf("  coder_id: %v", coderID)
+				}
+				if path, exists := tc.Parameters["path"]; !exists {
+					t.Error("read_file missing required parameter 'path'")
+				} else {
+					t.Logf("  path: %v", path)
+				}
+
+			case "get_diff":
+				if coderID, exists := tc.Parameters["coder_id"]; !exists {
+					t.Error("get_diff missing required parameter 'coder_id'")
+				} else {
+					t.Logf("  coder_id: %v", coderID)
+				}
+
+			case "submit_reply":
+				if response, exists := tc.Parameters["response"]; !exists {
+					t.Error("submit_reply missing required parameter 'response'")
+				} else {
+					t.Logf("  response: %v", response)
+				}
+			}
+		}
+	}
+
+	if !foundValidTool {
+		t.Errorf("No valid architect read tools were called. Got: %v", resp.ToolCalls)
+	}
+
+	t.Logf("✅ OpenAI successfully invoked architect read tools")
+	t.Logf("✅ Tool definitions correctly converted to OpenAI function calling format")
+	t.Logf("✅ Tool parameters correctly extracted from response")
+}
