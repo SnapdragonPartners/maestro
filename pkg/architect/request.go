@@ -1335,6 +1335,9 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 
 	d.logger.Info("🔍 Starting iterative approval for %s (story: %s)", approvalType, storyID)
 
+	// Store story_id in state data for tool logging
+	d.stateData["current_story_id"] = storyID
+
 	// Check iteration limit
 	iterationKey := fmt.Sprintf("approval_iterations_%s", storyID)
 	if d.checkIterationLimit(iterationKey, StateRequest) {

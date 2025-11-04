@@ -4,7 +4,6 @@ package coder
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -1446,77 +1445,10 @@ func (c *Coder) GetHostWorkspacePath() string {
 // logToolExecution logs a tool execution to the database for debugging and analysis.
 // This is a fire-and-forget operation - failures are logged but don't affect tool execution.
 func (c *Coder) logToolExecution(toolCall *agent.ToolCall, result any, execErr error, duration time.Duration) {
-	if c.persistenceChannel == nil {
-		return // No persistence channel configured
-	}
-
-	// Get config for session ID
-	cfg, err := config.GetConfig()
-	if err != nil {
-		c.logger.Debug("Failed to get config for tool execution logging: %v", err)
-		return
-	}
-
 	// Get story ID from state machine if available
 	stateData := c.GetStateData()
 	storyIDStr, _ := stateData["story_id"].(string)
 
-	// Marshal parameters to JSON
-	var paramsJSON string
-	if toolCall.Parameters != nil {
-		if jsonBytes, err := json.Marshal(toolCall.Parameters); err == nil {
-			paramsJSON = string(jsonBytes)
-		}
-	}
-
-	// Extract result data based on tool type
-	var exitCode *int
-	var success *bool
-	var stdout, stderr, errorMsg string
-
-	if execErr != nil {
-		errorMsg = execErr.Error()
-		successVal := false
-		success = &successVal
-	} else {
-		successVal := true
-		success = &successVal
-	}
-
-	// Extract shell-specific data from result map
-	if resultMap, ok := result.(map[string]any); ok {
-		if exitCodeVal, ok := resultMap["exit_code"].(int); ok {
-			exitCode = &exitCodeVal
-		}
-		if stdoutVal, ok := resultMap["stdout"].(string); ok {
-			stdout = stdoutVal
-		}
-		if stderrVal, ok := resultMap["stderr"].(string); ok {
-			stderr = stderrVal
-		}
-		if errorVal, ok := resultMap["error"].(string); ok && errorVal != "" {
-			errorMsg = errorVal
-		}
-	}
-
-	// Create tool execution record
-	durationMS := duration.Milliseconds()
-	toolExec := &persistence.ToolExecution{
-		SessionID:  cfg.SessionID,
-		AgentID:    c.agentID,
-		StoryID:    storyIDStr,
-		ToolName:   toolCall.Name,
-		ToolID:     toolCall.ID,
-		Params:     paramsJSON,
-		ExitCode:   exitCode,
-		Success:    success,
-		Stdout:     stdout,
-		Stderr:     stderr,
-		Error:      errorMsg,
-		DurationMS: &durationMS,
-		CreatedAt:  time.Now(),
-	}
-
-	// Send to persistence worker (fire-and-forget)
-	persistence.PersistToolExecution(toolExec, c.persistenceChannel)
+	// Delegate to shared implementation in pkg/agent
+	agent.LogToolExecution(toolCall, result, execErr, duration, c.agentID, storyIDStr, c.persistenceChannel)
 }

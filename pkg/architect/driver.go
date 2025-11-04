@@ -742,6 +742,15 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		result, err := tool.Exec(toolCtx, toolCall.Parameters)
 		duration := time.Since(startTime)
 
+		// Log tool execution to database (fire-and-forget)
+		storyID := ""
+		if sid, exists := d.stateData["current_story_id"]; exists {
+			if sidStr, ok := sid.(string); ok {
+				storyID = sidStr
+			}
+		}
+		agent.LogToolExecution(toolCall, result, err, duration, d.architectID, storyID, d.persistenceChannel)
+
 		if err != nil {
 			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
 			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
