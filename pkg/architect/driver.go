@@ -654,8 +654,6 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 // checkIterationLimit checks if the architect has exceeded iteration limits.
 // Returns true if hard limit exceeded (should escalate), false otherwise.
 // Soft limit triggers warning, hard limit triggers escalation to ESCALATE state.
-//
-//nolint:unused // Will be used when iteration pattern is fully implemented in SCOPING/REQUEST states
 func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State) bool {
 	const softLimit = 8
 	const hardLimit = 16
@@ -695,8 +693,6 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 }
 
 // createReadToolProvider creates a tool provider with architect read tools.
-//
-//nolint:unused // Will be used when iteration pattern is fully implemented in SCOPING/REQUEST states
 func (d *Driver) createReadToolProvider() *tools.ToolProvider {
 	ctx := tools.AgentContext{
 		Executor:        d.executor, // Architect executor with read-only mounts
@@ -712,8 +708,6 @@ func (d *Driver) createReadToolProvider() *tools.ToolProvider {
 
 // processArchitectToolCalls processes tool calls for architect states (SCOPING/REQUEST).
 // Returns the submit_reply response if detected, nil otherwise.
-//
-//nolint:unused // Will be used when iteration pattern is fully implemented in SCOPING/REQUEST states
 func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
 	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
 
@@ -765,8 +759,6 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 }
 
 // addToolResultToContext adds tool execution results to context for LLM continuity.
-//
-//nolint:unused // Will be used when iteration pattern is fully implemented in SCOPING/REQUEST states
 func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
 	// Convert result to user message format
 	var resultStr string

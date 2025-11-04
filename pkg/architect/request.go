@@ -10,12 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/tools"
 )
 
 const (
@@ -131,6 +133,15 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	if err != nil {
 		return StateError, err
+	}
+
+	// If response is nil, it means iterative approval wants to continue iteration
+	if response == nil && requestMsg.Type == proto.MsgTypeREQUEST {
+		requestKind, _ := proto.GetRequestKind(requestMsg)
+		if requestKind == proto.RequestKindApproval {
+			d.logger.Info("🔄 Iterative approval continuing, staying in REQUEST state")
+			return StateRequest, nil
+		}
 	}
 
 	// Send response back using Effects pattern.
@@ -331,6 +342,14 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	content := approvalPayload.Content
 	approvalType := approvalPayload.ApprovalType
 	approvalIDString := requestMsg.Metadata["approval_id"]
+
+	// Check if this approval type should use iteration pattern
+	useIteration := approvalType == proto.ApprovalTypeCode || approvalType == proto.ApprovalTypeCompletion
+
+	// If using iteration and we have LLM and executor, use iterative review
+	if useIteration && d.llmClient != nil && d.executor != nil {
+		return d.handleIterativeApproval(ctx, requestMsg, approvalPayload)
+	}
 
 	// Approval request processing will be logged to database only
 
@@ -1307,4 +1326,305 @@ func (d *Driver) getBudgetReviewResponse(status proto.ApprovalStatus, feedback, 
 	}
 
 	return content
+}
+
+// handleIterativeApproval processes approval requests with iterative code exploration.
+func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	storyID := requestMsg.Metadata["story_id"]
+
+	d.logger.Info("🔍 Starting iterative approval for %s (story: %s)", approvalType, storyID)
+
+	// Check iteration limit
+	iterationKey := fmt.Sprintf("approval_iterations_%s", storyID)
+	if d.checkIterationLimit(iterationKey, StateRequest) {
+		d.logger.Error("❌ Hard iteration limit exceeded for approval %s", storyID)
+		// Transition to ESCALATE state will be handled by state machine
+		return nil, fmt.Errorf("iteration limit exceeded for approval request")
+	}
+
+	// Create tool provider (lazily, once per request)
+	toolProviderKey := fmt.Sprintf("tool_provider_%s", storyID)
+	var toolProvider *tools.ToolProvider
+	if tp, exists := d.stateData[toolProviderKey]; exists {
+		var ok bool
+		toolProvider, ok = tp.(*tools.ToolProvider)
+		if !ok {
+			return nil, fmt.Errorf("invalid tool provider type in state data")
+		}
+	} else {
+		toolProvider = d.createReadToolProvider()
+		d.stateData[toolProviderKey] = toolProvider
+		d.logger.Debug("Created read tool provider for approval %s", storyID)
+	}
+
+	// Get coder ID from request (extract from FromAgent)
+	coderID := requestMsg.FromAgent
+
+	// Build prompt based on approval type
+	var prompt string
+	switch approvalType {
+	case proto.ApprovalTypeCode:
+		prompt = d.generateIterativeCodeReviewPrompt(requestMsg, approvalPayload, coderID, toolProvider)
+	case proto.ApprovalTypeCompletion:
+		prompt = d.generateIterativeCompletionPrompt(requestMsg, approvalPayload, coderID, toolProvider)
+	default:
+		return nil, fmt.Errorf("unsupported iterative approval type: %s", approvalType)
+	}
+
+	// Reset context for this iteration (first iteration only)
+	iterationCount := 0
+	if val, exists := d.stateData[iterationKey]; exists {
+		if count, ok := val.(int); ok {
+			iterationCount = count
+		}
+	}
+
+	if iterationCount == 0 {
+		templateName := fmt.Sprintf("approval-%s-%s", approvalType, storyID)
+		d.contextManager.ResetForNewTemplate(templateName, prompt)
+	}
+
+	// Flush user buffer before LLM request
+	if err := d.contextManager.FlushUserBuffer(); err != nil {
+		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
+	}
+
+	// Build messages with context
+	messages := d.buildMessagesWithContext(prompt)
+
+	// Get tool definitions for LLM
+	toolDefs := d.getArchitectToolsForLLM(toolProvider)
+
+	req := agent.CompletionRequest{
+		Messages:  messages,
+		MaxTokens: agent.ArchitectMaxTokens,
+		Tools:     toolDefs,
+	}
+
+	// Call LLM
+	d.logger.Info("🔄 Calling LLM for iterative approval (iteration %d)", iterationCount+1)
+	resp, err := d.llmClient.Complete(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("LLM completion failed: %w", err)
+	}
+
+	// Handle LLM response
+	if err := d.handleLLMResponse(resp); err != nil {
+		return nil, fmt.Errorf("LLM response handling failed: %w", err)
+	}
+
+	// Process tool calls
+	if len(resp.ToolCalls) > 0 {
+		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
+		if err != nil {
+			return nil, fmt.Errorf("tool processing failed: %w", err)
+		}
+
+		// If submit_reply was called, use that response as the final decision
+		if submitResponse != "" {
+			d.logger.Info("✅ Architect submitted final decision via submit_reply")
+			return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, submitResponse)
+		}
+
+		// Otherwise, continue iteration (will be called again by state machine)
+		d.logger.Info("🔄 Tools executed, continuing iteration")
+		// Return nil response with no error to signal state machine to call us again
+		//nolint:nilnil // Intentional: nil response signals continuation, not an error
+		return nil, nil
+	}
+
+	// No tool calls and no submit_reply - this is an error
+	return nil, fmt.Errorf("LLM response contained no tool calls and no submit_reply signal")
+}
+
+// generateIterativeCodeReviewPrompt creates a prompt for iterative code review.
+//
+//nolint:dupl // Similar structure to completion prompt but intentionally different content
+func (d *Driver) generateIterativeCodeReviewPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
+	storyID := requestMsg.Metadata["story_id"]
+
+	// Get story info from queue for context
+	var storyTitle, storyContent string
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyTitle = story.Title
+			storyContent = story.Content
+		}
+	}
+
+	toolDocs := toolProvider.GenerateToolDocumentation()
+
+	return fmt.Sprintf(`# Code Review Request (Iterative)
+
+You are the architect reviewing code changes from %s for story: %s
+
+**Story Title:** %s
+**Story Content:**
+%s
+
+**Code Submission:**
+%s
+
+## Your Task
+
+Review the code changes by:
+1. Use **list_files** to see what files the coder modified (pass coder_id: "%s")
+2. Use **read_file** to inspect specific files that need review
+3. Use **get_diff** to see the actual changes made
+4. Analyze the code quality, correctness, and adherence to requirements
+
+When you have completed your review, call **submit_reply** with your decision:
+- Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
+- Follow with specific feedback explaining your decision
+
+## Available Tools
+
+%s
+
+## Important Notes
+
+- You can explore the coder's workspace at /mnt/coders/%s
+- You have read-only access to all their files
+- Take your time to review thoroughly before submitting your decision
+- Use multiple tool calls to gather all information you need
+
+Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, toolDocs, coderID)
+}
+
+// generateIterativeCompletionPrompt creates a prompt for iterative completion review.
+//
+//nolint:dupl // Similar structure to code review prompt but intentionally different content
+func (d *Driver) generateIterativeCompletionPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
+	storyID := requestMsg.Metadata["story_id"]
+
+	// Get story info from queue for context
+	var storyTitle, storyContent string
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyTitle = story.Title
+			storyContent = story.Content
+		}
+	}
+
+	toolDocs := toolProvider.GenerateToolDocumentation()
+
+	return fmt.Sprintf(`# Story Completion Review Request (Iterative)
+
+You are the architect reviewing a completion request from %s for story: %s
+
+**Story Title:** %s
+**Story Content:**
+%s
+
+**Completion Claim:**
+%s
+
+## Your Task
+
+Verify the story is complete by:
+1. Use **list_files** to see what files were created/modified (pass coder_id: "%s")
+2. Use **read_file** to inspect the implementation
+3. Use **get_diff** to see all changes made vs main branch
+4. Verify all acceptance criteria are met
+
+When you have completed your review, call **submit_reply** with your decision:
+- Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
+- Provide specific feedback on what's complete or what still needs work
+
+## Available Tools
+
+%s
+
+## Important Notes
+
+- You can explore the coder's workspace at /mnt/coders/%s
+- Verify the implementation matches the story requirements
+- Check for code quality, tests, documentation as needed
+- Be thorough but fair in your assessment
+
+Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, toolDocs, coderID)
+}
+
+// getArchitectToolsForLLM converts tool metadata to LLM tool definitions.
+func (d *Driver) getArchitectToolsForLLM(toolProvider *tools.ToolProvider) []tools.ToolDefinition {
+	toolMetas := toolProvider.List()
+	toolDefs := make([]tools.ToolDefinition, len(toolMetas))
+
+	for i := range toolMetas {
+		meta := &toolMetas[i]
+		// Tool definitions from ToolProvider are already in the correct format
+		toolDefs[i] = tools.ToolDefinition{
+			Name:        meta.Name,
+			Description: meta.Description,
+			InputSchema: meta.InputSchema,
+		}
+	}
+
+	return toolDefs
+}
+
+// buildApprovalResponseFromSubmit creates an approval response from submit_reply content.
+func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, submitResponse string) (*proto.AgentMsg, error) {
+	// Parse the submit response to extract status and feedback
+	responseUpper := strings.ToUpper(submitResponse)
+
+	var status proto.ApprovalStatus
+	var feedback string
+
+	if strings.HasPrefix(responseUpper, "APPROVED") {
+		status = proto.ApprovalStatusApproved
+		feedback = strings.TrimSpace(strings.TrimPrefix(submitResponse, "APPROVED"))
+		feedback = strings.TrimSpace(strings.TrimPrefix(feedback, ":"))
+	} else if strings.HasPrefix(responseUpper, "NEEDS_CHANGES") {
+		status = proto.ApprovalStatusNeedsChanges
+		feedback = strings.TrimSpace(strings.TrimPrefix(submitResponse, "NEEDS_CHANGES"))
+		feedback = strings.TrimSpace(strings.TrimPrefix(feedback, ":"))
+	} else if strings.HasPrefix(responseUpper, "REJECTED") {
+		status = proto.ApprovalStatusRejected
+		feedback = strings.TrimSpace(strings.TrimPrefix(submitResponse, "REJECTED"))
+		feedback = strings.TrimSpace(strings.TrimPrefix(feedback, ":"))
+	} else {
+		// Default to needs changes if format is unclear
+		status = proto.ApprovalStatusNeedsChanges
+		feedback = submitResponse
+	}
+
+	if feedback == "" {
+		feedback = "Review completed via iterative exploration"
+	}
+
+	// Create approval result
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  requestMsg.Metadata["approval_id"],
+		Type:       approvalPayload.ApprovalType,
+		Status:     status,
+		Feedback:   feedback,
+		ReviewedBy: d.architectID,
+		ReviewedAt: time.Now().UTC(),
+	}
+
+	// Handle work acceptance for approved completions
+	if status == proto.ApprovalStatusApproved && approvalPayload.ApprovalType == proto.ApprovalTypeCompletion {
+		storyID := requestMsg.Metadata["story_id"]
+		if storyID != "" {
+			completionSummary := fmt.Sprintf("Story completed via iterative review: %s", feedback)
+			d.handleWorkAccepted(ctx, storyID, "completion", nil, nil, &completionSummary)
+		}
+	}
+
+	// Create response message
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+
+	// Copy story_id to response metadata
+	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
+		response.SetMetadata(proto.KeyStoryID, storyID)
+	}
+	response.SetMetadata("approval_id", approvalResult.ID)
+
+	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
+	return response, nil
 }
