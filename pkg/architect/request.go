@@ -116,7 +116,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 		switch requestKind {
 		case proto.RequestKindQuestion:
-			response, err = d.handleQuestionRequest(ctx, requestMsg)
+			// Use iterative question handling if we have LLM and executor
+			if d.llmClient != nil && d.executor != nil {
+				response, err = d.handleIterativeQuestion(ctx, requestMsg)
+			} else {
+				response, err = d.handleQuestionRequest(ctx, requestMsg)
+			}
 		case proto.RequestKindApproval:
 			response, err = d.handleApprovalRequest(ctx, requestMsg)
 		case proto.RequestKindMerge:
@@ -135,11 +140,11 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		return StateError, err
 	}
 
-	// If response is nil, it means iterative approval wants to continue iteration
+	// If response is nil, it means iterative handling wants to continue iteration
 	if response == nil && requestMsg.Type == proto.MsgTypeREQUEST {
 		requestKind, _ := proto.GetRequestKind(requestMsg)
-		if requestKind == proto.RequestKindApproval {
-			d.logger.Info("🔄 Iterative approval continuing, staying in REQUEST state")
+		if requestKind == proto.RequestKindApproval || requestKind == proto.RequestKindQuestion {
+			d.logger.Info("🔄 Iterative request continuing, staying in REQUEST state")
 			return StateRequest, nil
 		}
 	}
@@ -1629,5 +1634,201 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 	response.SetMetadata("approval_id", approvalResult.ID)
 
 	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
+	return response, nil
+}
+
+// handleIterativeQuestion processes question requests with iterative code exploration.
+func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	// Extract question from typed payload
+	typedPayload := requestMsg.GetTypedPayload()
+	if typedPayload == nil {
+		return nil, fmt.Errorf("question message missing typed payload")
+	}
+
+	questionPayload, err := typedPayload.ExtractQuestionRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract question request: %w", err)
+	}
+
+	storyID := requestMsg.Metadata["story_id"]
+
+	d.logger.Info("🔍 Starting iterative question handling (story: %s)", storyID)
+
+	// Store story_id in state data for tool logging
+	d.stateData["current_story_id"] = storyID
+
+	// Check iteration limit
+	iterationKey := fmt.Sprintf("question_iterations_%s", requestMsg.ID)
+	if d.checkIterationLimit(iterationKey, StateRequest) {
+		d.logger.Error("❌ Hard iteration limit exceeded for question %s", requestMsg.ID)
+		return nil, fmt.Errorf("iteration limit exceeded for question request")
+	}
+
+	// Create tool provider (lazily, once per request)
+	toolProviderKey := fmt.Sprintf("tool_provider_%s", requestMsg.ID)
+	var toolProvider *tools.ToolProvider
+	if tp, exists := d.stateData[toolProviderKey]; exists {
+		var ok bool
+		toolProvider, ok = tp.(*tools.ToolProvider)
+		if !ok {
+			return nil, fmt.Errorf("invalid tool provider type in state data")
+		}
+	} else {
+		toolProvider = d.createReadToolProvider()
+		d.stateData[toolProviderKey] = toolProvider
+		d.logger.Debug("Created read tool provider for question %s", requestMsg.ID)
+	}
+
+	// Get coder ID from request
+	coderID := requestMsg.FromAgent
+
+	// Build prompt for technical question
+	prompt := d.generateIterativeQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
+
+	// Reset context for this iteration (first iteration only)
+	iterationCount := 0
+	if val, exists := d.stateData[iterationKey]; exists {
+		if count, ok := val.(int); ok {
+			iterationCount = count
+		}
+	}
+
+	if iterationCount == 0 {
+		templateName := fmt.Sprintf("question-%s", requestMsg.ID)
+		d.contextManager.ResetForNewTemplate(templateName, prompt)
+	}
+
+	// Flush user buffer before LLM request
+	if flushErr := d.contextManager.FlushUserBuffer(); flushErr != nil {
+		return nil, fmt.Errorf("failed to flush user buffer: %w", flushErr)
+	}
+
+	// Build messages with context
+	messages := d.buildMessagesWithContext(prompt)
+
+	// Get tool definitions for LLM
+	toolDefs := d.getArchitectToolsForLLM(toolProvider)
+
+	req := agent.CompletionRequest{
+		Messages:  messages,
+		MaxTokens: agent.ArchitectMaxTokens,
+		Tools:     toolDefs,
+	}
+
+	// Call LLM
+	d.logger.Info("🔄 Calling LLM for iterative question (iteration %d)", iterationCount+1)
+	resp, err := d.llmClient.Complete(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("LLM completion failed: %w", err)
+	}
+
+	// Handle LLM response
+	if err := d.handleLLMResponse(resp); err != nil {
+		return nil, fmt.Errorf("LLM response handling failed: %w", err)
+	}
+
+	// Process tool calls
+	if len(resp.ToolCalls) > 0 {
+		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
+		if err != nil {
+			return nil, fmt.Errorf("tool processing failed: %w", err)
+		}
+
+		// If submit_reply was called, use that response as the final answer
+		if submitResponse != "" {
+			d.logger.Info("✅ Architect submitted answer via submit_reply")
+			return d.buildQuestionResponseFromSubmit(requestMsg, submitResponse)
+		}
+
+		// Otherwise, continue iteration (will be called again by state machine)
+		d.logger.Info("🔄 Tools executed, continuing iteration")
+		//nolint:nilnil // Intentional: nil response signals continuation, not an error
+		return nil, nil
+	}
+
+	// No tool calls and no submit_reply - this is an error
+	return nil, fmt.Errorf("LLM response contained no tool calls and no submit_reply signal")
+}
+
+// generateIterativeQuestionPrompt creates a prompt for iterative technical question answering.
+//
+//nolint:dupl // Similar structure to other prompts but intentionally different content
+func (d *Driver) generateIterativeQuestionPrompt(requestMsg *proto.AgentMsg, questionPayload *proto.QuestionRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
+	storyID := requestMsg.Metadata["story_id"]
+
+	// Get story info from queue for context
+	var storyTitle, storyContent string
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyTitle = story.Title
+			storyContent = story.Content
+		}
+	}
+
+	toolDocs := toolProvider.GenerateToolDocumentation()
+
+	return fmt.Sprintf(`# Technical Question from Coder (Iterative)
+
+You are the architect answering a technical question from %s working on story: %s
+
+**Story Title:** %s
+**Story Content:**
+%s
+
+**Question:**
+%s
+
+## Your Task
+
+Answer the technical question by:
+1. Use **list_files** to see what files exist in the coder's workspace (pass coder_id: "%s")
+2. Use **read_file** to inspect relevant code files that relate to the question
+3. Use **get_diff** to see what changes the coder has made so far
+4. Analyze the codebase context to provide an informed answer
+
+When you have formulated your answer, call **submit_reply** with your response:
+- Provide a clear, actionable answer to the question
+- Reference specific files, functions, or patterns when helpful
+- Suggest concrete next steps if applicable
+
+## Available Tools
+
+%s
+
+## Important Notes
+
+- You can explore the coder's workspace at /mnt/coders/%s
+- You have read-only access to their files
+- Use the tools to understand context before answering
+- Provide specific, actionable guidance based on the actual code
+
+Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, toolDocs, coderID)
+}
+
+// buildQuestionResponseFromSubmit creates a question response from submit_reply content.
+func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, submitResponse string) (*proto.AgentMsg, error) {
+	// Create question response
+	answerPayload := &proto.QuestionResponsePayload{
+		AnswerText: submitResponse,
+		Metadata:   make(map[string]string),
+	}
+
+	// Add exploration metadata
+	answerPayload.Metadata["exploration_method"] = "iterative_with_tools"
+
+	// Create response message
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
+
+	// Copy story_id and question_id to response metadata
+	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
+		response.SetMetadata(proto.KeyStoryID, storyID)
+	}
+	if questionID, exists := requestMsg.Metadata["question_id"]; exists {
+		response.SetMetadata("question_id", questionID)
+	}
+
+	d.logger.Info("✅ Built question response via iterative exploration")
 	return response, nil
 }
