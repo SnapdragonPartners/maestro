@@ -1,4 +1,4 @@
-![Maestro](web/static/img/logos/maestro_logo_small.png)
+![Maestro](pkg/webui/web/static/img/logos/maestro_logo_small.png)
 
 # Maestro
 
@@ -91,7 +91,17 @@ This distinction is transparent to the user—architect generates stories automa
 
 ---
 
-## Quickstart
+## Quickstart from scratch
+
+> **Step 1:** Download binary and place it on your path
+> **Step 2:** Create a working directory and run Maestro:
+```bash
+mkdir myproject
+cd myproject 
+maestro
+```
+
+## Quickstart with preconfiguration
 
 > **Step 1:** Download binary (or build from source).  
 > **Step 2:** Export your API keys as environment variables.  
