@@ -4,6 +4,7 @@ package logx
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -70,6 +71,12 @@ var (
 		entries: make([]LogEntry, 0),
 		maxSize: 1000, // Keep last 1000 log entries
 	}
+
+	// Global log file state for rotation and tee functionality.
+	logFile       *os.File
+	logFilePath   string
+	logWriter     io.Writer
+	logWriterLock sync.RWMutex
 )
 
 // getProjectRoot finds the project root directory by looking for go.mod.
@@ -148,10 +155,106 @@ func initDebugFromEnv() {
 	}
 }
 
+// InitializeLogFile sets up log file rotation and configures output destination.
+// Must be called before any logging occurs, typically early in main().
+//
+// Parameters:
+//   - logDir: Directory where logs will be stored (e.g., projectDir/logs)
+//   - rotationCount: Number of old log files to keep (0 = no rotation)
+//   - tee: If true, logs go to both file and console; if false, only to file
+func InitializeLogFile(logDir string, rotationCount int, tee bool) error {
+	logWriterLock.Lock()
+	defer logWriterLock.Unlock()
+
+	// Create log directory if needed
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	// Set up log file path
+	logFilePath = filepath.Join(logDir, "maestro.log")
+
+	// Rotate existing logs before opening new file
+	if rotationCount > 0 {
+		if err := rotateLogs(logFilePath, rotationCount); err != nil {
+			return fmt.Errorf("failed to rotate logs: %w", err)
+		}
+	}
+
+	// Open new log file for writing
+	file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %w", err)
+	}
+	logFile = file
+
+	// Configure writer based on tee setting
+	if tee {
+		// Write to both file and stderr
+		logWriter = io.MultiWriter(file, os.Stderr)
+	} else {
+		// Write to file only
+		logWriter = file
+	}
+
+	return nil
+}
+
+// rotateLogs rotates existing log files: maestro.log → maestro.log.1 → maestro.log.2, etc.
+// The oldest log file (maestro.log.N) is deleted.
+func rotateLogs(logPath string, rotationCount int) error {
+	// Check if current log file exists
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		return nil // No existing log to rotate
+	}
+
+	// Rotate from oldest to newest to avoid overwriting
+	// maestro.log.2 → maestro.log.3, then maestro.log.1 → maestro.log.2, etc.
+	for i := rotationCount - 1; i >= 1; i-- {
+		oldPath := fmt.Sprintf("%s.%d", logPath, i)
+		newPath := fmt.Sprintf("%s.%d", logPath, i+1)
+
+		// Check if old file exists
+		if _, err := os.Stat(oldPath); err == nil {
+			// Remove new path if it exists (we're overwriting)
+			_ = os.Remove(newPath)
+			// Rename old to new
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return fmt.Errorf("failed to rotate %s to %s: %w", oldPath, newPath, err)
+			}
+		}
+	}
+
+	// Finally, rotate current log to .1
+	rotatedPath := fmt.Sprintf("%s.1", logPath)
+	_ = os.Remove(rotatedPath) // Remove if exists
+	if err := os.Rename(logPath, rotatedPath); err != nil {
+		return fmt.Errorf("failed to rotate %s to %s: %w", logPath, rotatedPath, err)
+	}
+
+	return nil
+}
+
+// CloseLogFile closes the log file. Should be called during shutdown.
+func CloseLogFile() error {
+	logWriterLock.Lock()
+	defer logWriterLock.Unlock()
+
+	if logFile != nil {
+		err := logFile.Close()
+		logFile = nil
+		logWriter = os.Stderr // Reset to stderr for safety
+		if err != nil {
+			return fmt.Errorf("failed to close log file: %w", err)
+		}
+	}
+	return nil
+}
+
 func NewLogger(agentID string) *Logger {
 	return &Logger{
 		agentID: agentID,
-		logger:  log.New(os.Stderr, "", 0), // Log to stderr for CLI compatibility
+		logger:  nil, // Not used anymore - we write directly in log()
 	}
 }
 
@@ -268,7 +371,18 @@ func (l *Logger) log(level Level, format string, args ...any) {
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	message := fmt.Sprintf(format, args...)
 	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, l.agentID, level, message)
-	l.logger.Println(logLine)
+
+	// Always use the current global writer (supports dynamic tee configuration)
+	logWriterLock.RLock()
+	writer := logWriter
+	logWriterLock.RUnlock()
+
+	if writer == nil {
+		writer = os.Stderr // Fallback if not initialized
+	}
+
+	// Ignore write errors - if logging fails, there's not much we can do
+	_, _ = fmt.Fprintln(writer, logLine)
 
 	// Also capture in memory buffer for web UI.
 	entry := LogEntry{
@@ -325,14 +439,23 @@ func Debug(ctx context.Context, domain, format string, args ...any) {
 		}
 	}
 
-	// Create temporary logger for this debug call.
-	logger := NewLogger(agentID)
+	// Format message with domain prefix.
 	message := fmt.Sprintf("[%s] %s", domain, fmt.Sprintf(format, args...))
 
-	// Log normally.
+	// Log using global writer.
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	logLine := fmt.Sprintf("[%s] [%s] %s: %s", timestamp, agentID, LevelDebug, message)
-	logger.logger.Println(logLine)
+
+	logWriterLock.RLock()
+	writer := logWriter
+	logWriterLock.RUnlock()
+
+	if writer == nil {
+		writer = os.Stderr // Fallback if not initialized
+	}
+
+	// Ignore write errors - if logging fails, there's not much we can do
+	_, _ = fmt.Fprintln(writer, logLine)
 
 	// Also capture in memory buffer with domain info.
 	entry := LogEntry{

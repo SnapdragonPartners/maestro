@@ -80,10 +80,10 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 }
 
 // requireAuth wraps an HTTP handler with Basic Authentication.
-// Username is always "maestro", password comes from MAESTRO_WEBUI_PASSWORD env var.
+// Username is always "maestro", password comes from unified password (secrets file or MAESTRO_PASSWORD env var).
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Get password from environment
+		// Get password using unified password logic
 		expectedPassword := config.GetWebUIPassword()
 		if expectedPassword == "" {
 			// No password set - this should never happen as we generate one at startup

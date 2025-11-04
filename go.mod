@@ -1,6 +1,8 @@
 module orchestrator
 
-go 1.24
+go 1.24.0
+
+toolchain go1.24.3
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.14.0
@@ -10,6 +12,8 @@ require (
 	github.com/prometheus/common v0.65.0
 	github.com/sashabaranov/go-openai v1.40.1
 	github.com/tiktoken-go/tokenizer v0.6.2
+	golang.org/x/crypto v0.43.0
+	golang.org/x/term v0.36.0
 	modernc.org/sqlite v1.34.1
 )
 
@@ -28,7 +32,7 @@ require (
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	golang.org/x/sys v0.34.0 // indirect
+	golang.org/x/sys v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect

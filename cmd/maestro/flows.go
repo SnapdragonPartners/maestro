@@ -6,7 +6,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"orchestrator/internal/kernel"
 	"orchestrator/internal/orch"
@@ -178,6 +181,13 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 			return fmt.Errorf("failed to start web UI: %w", err)
 		}
 		k.Logger.Info("🌐 Web UI started successfully")
+
+		// Display WebUI URL for user access
+		protocol := "http"
+		if k.Config.WebUI.SSL {
+			protocol = "https"
+		}
+		fmt.Printf("🌐 WebUI: %s://%s:%d\n", protocol, k.Config.WebUI.Host, k.Config.WebUI.Port)
 	}
 
 	// Create supervisor for agent lifecycle management (creates its own factory)
@@ -255,6 +265,10 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 	}
 
 	k.Logger.Info("✅ Startup orchestration completed successfully")
+
+	// User-friendly message when system is ready
+	fmt.Println("✅ Startup complete.")
+
 	return nil
 }
 
@@ -279,36 +293,40 @@ func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) 
 	return nil
 }
 
-// ensureWebUIPassword checks if MAESTRO_WEBUI_PASSWORD is set, and generates one if not.
-// Prints directly to stdout (not logs) to avoid passwords in log files.
+// ensureWebUIPassword checks if a WebUI password is available, and generates one if not.
+// With unified password: uses project password from secrets or MAESTRO_PASSWORD env var.
+// Logs status messages, but displays generated passwords directly to stdout (not logs).
 func ensureWebUIPassword() {
-	// Check if password is already set
+	logger := config.LogInfo
+
+	// Check if password is already set (from secrets file or MAESTRO_PASSWORD)
 	if config.GetWebUIPassword() != "" {
-		// Password already set via environment variable
-		fmt.Println("🔐 WebUI password loaded from MAESTRO_WEBUI_PASSWORD environment variable")
+		// Password already set - check which source
+		if config.GetProjectPassword() != "" {
+			logger("🔐 WebUI password loaded from project secrets")
+		} else {
+			logger("🔐 WebUI password loaded from MAESTRO_PASSWORD environment variable")
+		}
 
 		// Check SSL status and warn if disabled
 		cfg, err := config.GetConfig()
 		if err == nil && cfg.WebUI != nil && !cfg.WebUI.SSL {
-			fmt.Println("⚠️  WARNING: SSL is disabled! Password will be transmitted in plain text.")
-			fmt.Println("💡 Enable SSL in config.json or use SSH port forwarding for secure access.")
+			logger("⚠️  WARNING: SSL is disabled! Password will be transmitted in plain text.")
+			logger("💡 Enable SSL in config.json or use SSH port forwarding for secure access.")
 		}
 		return
 	}
 
-	// Generate a secure random password
+	// Generate a secure random password for this session
 	password, err := generateSecurePassword(16)
 	if err != nil {
 		fmt.Printf("⚠️  Failed to generate WebUI password: %v\n", err)
-		fmt.Println("⚠️  Please set MAESTRO_WEBUI_PASSWORD environment variable manually")
+		fmt.Println("⚠️  Please set MAESTRO_PASSWORD environment variable manually")
 		return
 	}
 
-	// Set it in the environment for this session
-	if setErr := os.Setenv("MAESTRO_WEBUI_PASSWORD", password); setErr != nil {
-		fmt.Printf("⚠️  Failed to set WebUI password: %v\n", setErr)
-		return
-	}
+	// Store in memory (simulating what would happen with MAESTRO_PASSWORD env var)
+	config.SetProjectPassword(password)
 
 	// Check SSL status for warning
 	cfg, cfgErr := config.GetConfig()
@@ -322,7 +340,7 @@ func ensureWebUIPassword() {
 	fmt.Printf("║  Password: %-52s ║\n", password)
 	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
 	fmt.Println("║  ⚠️  Save this password! It will not be shown again.               ║")
-	fmt.Println("║  💡 Set MAESTRO_WEBUI_PASSWORD env var to use a custom password.  ║")
+	fmt.Println("║  💡 Set MAESTRO_PASSWORD env var to use a custom password.         ║")
 	if !sslEnabled {
 		fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
 		fmt.Println("║  🔓 WARNING: SSL is disabled! Password sent in plain text.        ║")
@@ -356,4 +374,122 @@ func generateSecurePassword(length int) (string, error) {
 	}
 
 	return password, nil
+}
+
+// handleSecretsDecryption checks for secrets file and decrypts it if present.
+// Returns error only on fatal issues. Gracefully handles missing file or wrong password.
+//
+//nolint:cyclop // Complex logic for user interaction flow - extracting helpers would reduce readability
+func handleSecretsDecryption(projectDir string) error {
+	// Check if secrets file exists
+	if !config.SecretsFileExists(projectDir) {
+		// No secrets file - will use environment variables
+		return nil
+	}
+
+	config.LogInfo("📋 Loading project from %s", projectDir)
+
+	// Try to get password from MAESTRO_PASSWORD env var first
+	password := os.Getenv("MAESTRO_PASSWORD")
+
+	maxAttempts := 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// If no env var, prompt user
+		if password == "" {
+			var err error
+			password, err = promptForSecretsPassword()
+			if err != nil {
+				return fmt.Errorf("failed to read password: %w", err)
+			}
+		}
+
+		// Try to decrypt
+		secrets, err := config.DecryptSecretsFile(projectDir, password)
+		if err != nil {
+			if attempt < maxAttempts {
+				// Wrong password - offer retry or delete
+				if promptRetryOrDelete() {
+					return deleteSecretsFile(projectDir)
+				}
+
+				// Retry - clear password for next prompt
+				password = ""
+				continue
+			}
+
+			// Max attempts reached - delete file
+			fmt.Println("⚠️  Maximum password attempts reached.")
+			return deleteSecretsFile(projectDir)
+		}
+
+		// Success! Store secrets and password in memory
+		config.SetDecryptedSecrets(secrets)
+		config.SetProjectPassword(password)
+		config.LogInfo("✅ Credentials decrypted successfully")
+
+		// Display WebUI info if WebUI is enabled
+		displayWebUIInfo()
+
+		return nil
+	}
+
+	return nil
+}
+
+// promptForSecretsPassword prompts user for secrets password.
+func promptForSecretsPassword() (string, error) {
+	fmt.Print("Enter Maestro password: ")
+	passwordBytes, err := term.ReadPassword(syscall.Stdin)
+	fmt.Println() // New line after password input
+	if err != nil {
+		return "", fmt.Errorf("failed to read password: %w", err)
+	}
+
+	password := string(passwordBytes)
+
+	// Clear password bytes from memory
+	for i := range passwordBytes {
+		passwordBytes[i] = 0
+	}
+
+	return password, nil
+}
+
+// promptRetryOrDelete asks user if they want to retry or delete secrets file.
+func promptRetryOrDelete() (shouldDelete bool) {
+	fmt.Println("⚠️  Unable to decrypt secrets file with specified password.")
+	fmt.Println()
+	fmt.Print("Do you want to (R)etry or (D)elete the secrets file and restart? [R/d]: ")
+
+	var choice string
+	if _, err := fmt.Scanln(&choice); err != nil {
+		// Treat scan error as "retry" (safer default)
+		return false
+	}
+
+	return choice == "d" || choice == "D"
+}
+
+// deleteSecretsFile removes the secrets file and returns nil.
+func deleteSecretsFile(projectDir string) error {
+	secretsPath := projectDir + "/.maestro/secrets.json.enc"
+	if err := os.Remove(secretsPath); err != nil {
+		return fmt.Errorf("failed to delete secrets file: %w", err)
+	}
+	fmt.Println("⚠️  Deleting .maestro/secrets.json.enc...")
+	fmt.Println("✅ Secrets file removed. Attempting to continue with environment variables...")
+	return nil
+}
+
+// displayWebUIInfo displays WebUI access information if enabled.
+func displayWebUIInfo() {
+	cfg, err := config.GetConfig()
+	if err == nil && cfg.WebUI != nil && cfg.WebUI.Enabled {
+		protocol := "http"
+		if cfg.WebUI.SSL {
+			protocol = "https"
+		}
+		fmt.Printf("🌐 WebUI: %s://%s:%d (username: maestro, use same password)\n",
+			protocol, cfg.WebUI.Host, cfg.WebUI.Port)
+	}
 }

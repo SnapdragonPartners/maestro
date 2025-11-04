@@ -25,24 +25,56 @@ func main() {
 		noWebUI    = flag.Bool("nowebui", false, "Disable web UI")
 		bootstrap  = flag.Bool("bootstrap", false, "Run in bootstrap mode")
 		projectDir = flag.String("projectdir", ".", "Project directory")
+		tee        = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
 	)
 	flag.Parse()
 
+	// User-friendly startup message
+	fmt.Println("⏳ Starting up...")
+
+	// Initialize log file rotation BEFORE any logging occurs
+	// This ensures all subsequent logs (including config loading) are captured
+	logsDir := filepath.Join(*projectDir, ".maestro", "logs")
+	if err := logx.InitializeLogFile(logsDir, 4, *tee); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize log file: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Run main logic and get exit code
+	exitCode := run(*projectDir, *gitRepo, *specFile, *bootstrap, *noWebUI)
+
+	// Close log file before exiting
+	if closeErr := logx.CloseLogFile(); closeErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to close log file: %v\n", closeErr)
+	}
+
+	os.Exit(exitCode)
+}
+
+// run contains the main application logic and returns an exit code.
+// This allows defers in main() to execute before os.Exit is called.
+func run(projectDir, gitRepo, specFile string, bootstrap, noWebUI bool) int {
 	// Warn if projectdir is using default value
-	if *projectDir == "." {
+	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
 	}
 
 	// Universal setup (Steps 1-3): Always run these regardless of mode
-	configWasCreated, err := setupProjectInfrastructure(*projectDir, *gitRepo, *specFile)
+	configWasCreated, err := setupProjectInfrastructure(projectDir, gitRepo, specFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Project setup failed: %v\n", err)
-		os.Exit(1)
+		return 1
+	}
+
+	// Handle secrets file decryption if present (loads credentials into memory)
+	if err := handleSecretsDecryption(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to handle secrets: %v\n", err)
+		return 1
 	}
 
 	// Determine mode - auto-offer bootstrap if config was created from defaults
-	shouldBootstrap := *bootstrap || configWasCreated
-	if shouldBootstrap && !*bootstrap {
+	shouldBootstrap := bootstrap || configWasCreated
+	if shouldBootstrap && !bootstrap {
 		fmt.Printf("New configuration created - entering bootstrap mode to set up repository\n")
 	}
 
@@ -52,19 +84,21 @@ func main() {
 		mode = "bootstrap"
 	}
 	config.LogInfo("🚀 Starting Maestro in %s mode", mode)
-	config.LogInfo("📁 Working directory: %s", *projectDir)
+	config.LogInfo("📁 Working directory: %s", projectDir)
 
 	if shouldBootstrap {
-		if err := runBootstrapMode(*projectDir, *gitRepo, *specFile); err != nil {
+		if err := runBootstrapMode(projectDir, gitRepo, specFile); err != nil {
 			fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 	} else {
-		if err := runMainMode(*projectDir, *specFile, *noWebUI); err != nil {
+		if err := runMainMode(projectDir, specFile, noWebUI); err != nil {
 			fmt.Fprintf(os.Stderr, "Main mode failed: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 	}
+
+	return 0
 }
 
 // setupProjectInfrastructure handles universal setup steps 1-3:

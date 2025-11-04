@@ -2,11 +2,26 @@ package logx
 
 import (
 	"bytes"
-	"log"
 	"strings"
 	"testing"
 	"time"
 )
+
+// setupTestLogger sets up a logger with a bytes.Buffer for testing.
+func setupTestLogger() *bytes.Buffer {
+	var buf bytes.Buffer
+	logWriterLock.Lock()
+	logWriter = &buf
+	logWriterLock.Unlock()
+	return &buf
+}
+
+// resetTestLogger resets the logger to default stderr.
+func resetTestLogger() {
+	logWriterLock.Lock()
+	logWriter = nil
+	logWriterLock.Unlock()
+}
 
 func TestNewLogger(t *testing.T) {
 	logger := NewLogger("test-agent")
@@ -15,17 +30,18 @@ func TestNewLogger(t *testing.T) {
 		t.Errorf("Expected agent ID 'test-agent', got '%s'", logger.GetAgentID())
 	}
 
-	if logger.logger == nil {
+	// Logger is now initialized without internal log.Logger
+	if logger == nil {
 		t.Error("Expected logger to be initialized")
 	}
 }
 
 func TestLogFormat(t *testing.T) {
 	// Capture log output.
-	var buf bytes.Buffer
-	logger := NewLogger("architect")
-	logger.logger = log.New(&buf, "", 0)
+	buf := setupTestLogger()
+	defer resetTestLogger()
 
+	logger := NewLogger("architect")
 	logger.Info("Test message with %s", "formatting")
 
 	output := buf.String()
@@ -50,9 +66,7 @@ func TestLogFormat(t *testing.T) {
 }
 
 func TestLogLevels(t *testing.T) {
-	var buf bytes.Buffer
 	logger := NewLogger("test-agent")
-	logger.logger = log.New(&buf, "", 0)
 
 	tests := []struct {
 		level    Level
@@ -67,7 +81,8 @@ func TestLogLevels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.level), func(t *testing.T) {
-			buf.Reset()
+			buf := setupTestLogger()
+			defer resetTestLogger()
 
 			// Enable debug for DEBUG level test.
 			if tt.level == LevelDebug {
@@ -97,17 +112,28 @@ func TestWithAgentID(t *testing.T) {
 		t.Errorf("Expected original agent ID unchanged, got '%s'", originalLogger.GetAgentID())
 	}
 
-	// Both should share the same underlying logger.
-	if newLogger.logger != originalLogger.logger {
-		t.Error("Expected loggers to share the same underlying log.Logger")
+	// Both loggers now use the same global writer
+	// Test that they both can log successfully
+	buf := setupTestLogger()
+	defer resetTestLogger()
+
+	originalLogger.Info("test1")
+	newLogger.Info("test2")
+
+	output := buf.String()
+	if !strings.Contains(output, "original-agent") {
+		t.Error("Expected original logger to work")
+	}
+	if !strings.Contains(output, "new-agent") {
+		t.Error("Expected new logger to work")
 	}
 }
 
 func TestLogFormatting(t *testing.T) {
-	var buf bytes.Buffer
-	logger := NewLogger("claude")
-	logger.logger = log.New(&buf, "", 0)
+	buf := setupTestLogger()
+	defer resetTestLogger()
 
+	logger := NewLogger("claude")
 	logger.Info("Processing task %d with priority %s", 123, "high")
 
 	output := buf.String()
@@ -118,13 +144,11 @@ func TestLogFormatting(t *testing.T) {
 }
 
 func TestMultipleAgents(t *testing.T) {
-	var buf bytes.Buffer
+	buf := setupTestLogger()
+	defer resetTestLogger()
 
 	architect := NewLogger("architect")
-	architect.logger = log.New(&buf, "", 0)
-
 	claude := NewLogger("claude")
-	claude.logger = log.New(&buf, "", 0)
 
 	architect.Info("Creating task")
 	claude.Info("Executing task")
@@ -136,11 +160,11 @@ func TestMultipleAgents(t *testing.T) {
 		t.Errorf("Expected 2 log lines, got %d", len(lines))
 	}
 
-	if !strings.Contains(lines[0], "[architect]") {
+	if len(lines) > 0 && !strings.Contains(lines[0], "[architect]") {
 		t.Errorf("Expected first line to contain [architect], got: %s", lines[0])
 	}
 
-	if !strings.Contains(lines[1], "[claude]") {
+	if len(lines) > 1 && !strings.Contains(lines[1], "[claude]") {
 		t.Errorf("Expected second line to contain [claude], got: %s", lines[1])
 	}
 }
@@ -162,10 +186,10 @@ func TestLogLevelConstants(t *testing.T) {
 }
 
 func TestTimestampFormat(t *testing.T) {
-	var buf bytes.Buffer
-	logger := NewLogger("test")
-	logger.logger = log.New(&buf, "", 0)
+	buf := setupTestLogger()
+	defer resetTestLogger()
 
+	logger := NewLogger("test")
 	logger.Info("timestamp test")
 
 	output := buf.String()

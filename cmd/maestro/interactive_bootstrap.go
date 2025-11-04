@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"golang.org/x/term"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
@@ -84,6 +88,13 @@ func (f *BootstrapFlow) runInteractiveBootstrapSetup(ctx context.Context) ([]byt
 	// Step 8: Update configuration with user choices
 	if updateErr := updateConfigWithUserChoices(&params); updateErr != nil {
 		return nil, fmt.Errorf("failed to update configuration: %w", updateErr)
+	}
+
+	// Step 8.5: Handle credential storage (optional)
+	if credErr := handleCredentialStorage(projectDir); credErr != nil {
+		// Non-fatal - warn but continue
+		fmt.Printf("⚠️  Failed to store credentials: %v\n", credErr)
+		fmt.Println("You can set credentials using environment variables.")
 	}
 
 	// Step 9: Verify workspace and get report for spec generation
@@ -442,6 +453,135 @@ func updateConfigWithUserChoices(params *projectParamsNew) error {
 	}
 
 	return nil
+}
+
+// handleCredentialStorage prompts user for credential storage and saves if requested.
+// This implements the credential storage flow from the secrets management spec.
+func handleCredentialStorage(projectDir string) error {
+	fmt.Println()
+	fmt.Println("🔐 Credential Storage")
+	fmt.Println()
+	fmt.Println("By default, Maestro reads your credentials for services like GitHub, Anthropic,")
+	fmt.Println("and OpenAI from environment variables.")
+	fmt.Println()
+	fmt.Println("If you don't know what this means or want to store credentials securely in this")
+	fmt.Println("project, Maestro can encrypt and save them for you.")
+	fmt.Println()
+	fmt.Print("Would you like to store credentials in Maestro? [y/N]: ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	var choice string
+	if scanner.Scan() {
+		choice = strings.ToLower(strings.TrimSpace(scanner.Text()))
+	}
+
+	if choice != "y" && choice != "yes" {
+		fmt.Println("✅ Using environment variables for credentials")
+		return nil
+	}
+
+	// User wants to store credentials - collect password
+	password, err := promptForPassword()
+	if err != nil {
+		return fmt.Errorf("failed to get password: %w", err)
+	}
+
+	// Collect secrets
+	secrets := make(map[string]string)
+
+	// Required: GITHUB_TOKEN
+	fmt.Print("Enter GITHUB_TOKEN (required): ")
+	if scanner.Scan() {
+		githubToken := strings.TrimSpace(scanner.Text())
+		if githubToken == "" {
+			return fmt.Errorf("GITHUB_TOKEN is required")
+		}
+		secrets["GITHUB_TOKEN"] = githubToken
+	}
+
+	// Optional: ANTHROPIC_API_KEY
+	fmt.Print("Enter ANTHROPIC_API_KEY (optional, press Enter to skip): ")
+	if scanner.Scan() {
+		anthropicKey := strings.TrimSpace(scanner.Text())
+		if anthropicKey != "" {
+			secrets["ANTHROPIC_API_KEY"] = anthropicKey
+		}
+	}
+
+	// Optional: OPENAI_API_KEY
+	fmt.Print("Enter OPENAI_API_KEY (optional, press Enter to skip): ")
+	if scanner.Scan() {
+		openaiKey := strings.TrimSpace(scanner.Text())
+		if openaiKey != "" {
+			secrets["OPENAI_API_KEY"] = openaiKey
+		}
+	}
+
+	// TODO: Handle SSL cert/key if WebUI SSL is enabled
+	// This would require checking config and prompting for cert/key paths
+
+	// Encrypt and save
+	fmt.Println()
+	fmt.Println("🔐 Encrypting and saving credentials...")
+	if err := config.EncryptSecretsFile(projectDir, password, secrets); err != nil {
+		return fmt.Errorf("failed to encrypt secrets: %w", err)
+	}
+
+	fmt.Println("✅ Credentials saved to .maestro/secrets.json.enc (file permissions: 0600)")
+	return nil
+}
+
+// promptForPassword prompts user for password with confirmation.
+func promptForPassword() (string, error) {
+	maxAttempts := 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		fmt.Println()
+		fmt.Print("Enter a password for this Maestro project: ")
+		password1, err := term.ReadPassword(syscall.Stdin)
+		fmt.Println() // New line after password input
+		if err != nil {
+			return "", fmt.Errorf("failed to read password: %w", err)
+		}
+
+		fmt.Print("Confirm password: ")
+		password2, err := term.ReadPassword(syscall.Stdin)
+		fmt.Println() // New line after password input
+		if err != nil {
+			return "", fmt.Errorf("failed to read password: %w", err)
+		}
+
+		if !bytes.Equal(password1, password2) {
+			if attempt < maxAttempts {
+				fmt.Println("❌ Passwords do not match. Please try again.")
+				continue
+			}
+			return "", fmt.Errorf("passwords do not match after %d attempts", maxAttempts)
+		}
+
+		// Passwords match
+		password := string(password1)
+
+		// Clear password bytes from memory
+		for i := range password1 {
+			password1[i] = 0
+		}
+		for i := range password2 {
+			password2[i] = 0
+		}
+
+		// Display password usage info
+		fmt.Println()
+		fmt.Println("This password will:")
+		fmt.Println("  • Encrypt your credentials (GitHub token, API keys)")
+		fmt.Println("  • Secure WebUI access (username: maestro)")
+		fmt.Println()
+		fmt.Println("⚠️  You'll need this password every time you start Maestro.")
+		fmt.Println("💡 Or you can store your password in the environment variable MAESTRO_PASSWORD for passwordless startup.")
+
+		return password, nil
+	}
+
+	return "", fmt.Errorf("failed to get matching passwords")
 }
 
 // generateBootstrapSpecContent generates the bootstrap specification using the template system.

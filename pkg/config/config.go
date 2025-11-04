@@ -409,6 +409,11 @@ type ChatConfig struct {
 	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
 }
 
+// LogsConfig contains log file management configuration.
+type LogsConfig struct {
+	RotationCount int `json:"rotation_count"` // Number of old log files to keep (default: 4)
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -426,6 +431,7 @@ type Config struct {
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
 	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
 	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
+	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -886,6 +892,9 @@ func createDefaultConfig() *Config {
 				TimeoutMs: 800,  // 800ms timeout for scanning
 			},
 		},
+		Logs: &LogsConfig{
+			RotationCount: 4, // Keep last 4 log files
+		},
 	}
 }
 
@@ -961,6 +970,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Chat == nil {
 		config.Chat = &ChatConfig{}
+	}
+	if config.Logs == nil {
+		config.Logs = &LogsConfig{}
 	}
 
 	// Apply container defaults
@@ -1109,6 +1121,11 @@ func applyDefaults(config *Config) {
 	}
 	// Note: chat.enabled defaults to false, scanner.enabled defaults to false
 	// If user wants chat, they must explicitly enable it
+
+	// Apply Logs defaults
+	if config.Logs.RotationCount == 0 {
+		config.Logs.RotationCount = 4
+	}
 }
 
 func validateConfig(config *Config) error {
@@ -1456,7 +1473,8 @@ func CalculateCost(modelName string, promptTokens, completionTokens int) (float6
 	return 0.0, nil
 }
 
-// GetAPIKey returns the API key for a given provider from environment variables.
+// GetAPIKey returns the API key for a given provider.
+// Checks secrets file first, then falls back to environment variables.
 func GetAPIKey(provider string) (string, error) {
 	var envVar string
 	switch provider {
@@ -1468,11 +1486,13 @@ func GetAPIKey(provider string) (string, error) {
 		return "", fmt.Errorf("unknown provider: %s", provider)
 	}
 
-	key := os.Getenv(envVar)
-	if key == "" {
-		return "", fmt.Errorf("API key not found: %s environment variable is not set", envVar)
+	// Try to get from secrets file first, then environment variable
+	key, err := GetSecret(envVar)
+	if err == nil && key != "" {
+		return key, nil
 	}
-	return key, nil
+
+	return "", fmt.Errorf("API key not found: %s not found in secrets file or environment variables", envVar)
 }
 
 // ValidateAPIKeysForConfig validates that all required API keys are available for the configured models.
@@ -1509,10 +1529,14 @@ func ValidateAPIKeysForConfig() error {
 	return nil
 }
 
-// GetGitHubToken returns the GitHub token from environment variables.
-// This centralizes GitHub token access with validation and consistent logging.
+// GetGitHubToken returns the GitHub token.
+// Checks secrets file first, then falls back to environment variable.
 func GetGitHubToken() string {
-	return os.Getenv("GITHUB_TOKEN")
+	token, err := GetSecret("GITHUB_TOKEN")
+	if err == nil && token != "" {
+		return token
+	}
+	return ""
 }
 
 // HasGitHubToken returns true if a GitHub token is available.
@@ -1520,11 +1544,23 @@ func HasGitHubToken() bool {
 	return GetGitHubToken() != ""
 }
 
-// GetWebUIPassword returns the WebUI password from environment variable only.
-// Passwords are never stored in config - only read from MAESTRO_WEBUI_PASSWORD env var.
-// If no password is set, returns empty string (caller should generate one).
+// GetWebUIPassword returns the WebUI password using unified password logic:
+// 1. Project password from secrets decryption (in memory)
+// 2. MAESTRO_PASSWORD environment variable
+// 3. Empty string (caller should auto-generate ephemeral password).
 func GetWebUIPassword() string {
-	return os.Getenv("MAESTRO_WEBUI_PASSWORD")
+	// Check for project password in memory (from secrets decryption)
+	if password := GetProjectPassword(); password != "" {
+		return password
+	}
+
+	// Check for MAESTRO_PASSWORD environment variable
+	if password := os.Getenv("MAESTRO_PASSWORD"); password != "" {
+		return password
+	}
+
+	// Return empty string to trigger auto-generation
+	return ""
 }
 
 // convertSSHToHTTPS converts SSH git URLs to HTTPS format for token-based authentication.
