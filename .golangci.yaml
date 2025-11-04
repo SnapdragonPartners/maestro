@@ -56,7 +56,8 @@ linters:
     - gochecknoinits # Checks that no init functions are present in Go code
     - gochecknoglobals # Checks that no global vars are present
     - gomodguard   # Allow and block lists linter for direct Go module dependencies
-    
+    - depguard     # Checks for forbidden package imports
+
     # Style and consistency
     - stylecheck   # Replacement for golint
     - whitespace   # Tool for detection of leading/trailing whitespace
@@ -228,6 +229,16 @@ linters-settings:
             reason: "Use standard library errors and fmt.Errorf instead"
       local_replace_directives: false
 
+  # Import guard - enforce package boundaries
+  depguard:
+    rules:
+      main:
+        files:
+          - "!**/pkg/agent/**"  # Apply to all files except pkg/agent
+        deny:
+          - pkg: "orchestrator/pkg/agent/internal"
+            desc: "do not import agent internals from outside pkg/agent"
+
 issues:
   exclude-use-default: false
   max-issues-per-linter: 0      # No limit on issues per linter
@@ -258,6 +269,7 @@ issues:
         - wrapcheck        # Don't require error wrapping in tests
         - funlen           # Test functions can be longer
         - prealloc         # Preallocation less critical in tests
+        - depguard         # Don't enforce import restrictions in tests
         
     # Example and integration test files
     - path: "example_test\\.go"
@@ -316,7 +328,12 @@ issues:
       linters:
         - cyclop           # State machines can have higher complexity
         - maintidx         # State handling might be complex
-        
+
+    # Allow internal imports within pkg/agent
+    - path: "pkg/agent/.*\\.go"
+      linters:
+        - depguard         # Allow internal imports within pkg/agent
+
     # Disable fieldalignment for certain structs that prioritize readability
     - linters:
         - govet
