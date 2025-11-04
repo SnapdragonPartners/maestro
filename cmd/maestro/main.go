@@ -218,6 +218,20 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		}
 	}
 
+	// 5. Pre-create coder workspace directories for container mounting
+	// Creates exactly max_coders directories (e.g., coder-001, coder-002, coder-003)
+	// These will be mounted read-only into the architect container
+	if cfg.Agents != nil && cfg.Agents.MaxCoders > 0 {
+		config.LogInfo("📁 Pre-creating %d coder workspace directories...", cfg.Agents.MaxCoders)
+		for i := 1; i <= cfg.Agents.MaxCoders; i++ {
+			coderDir := filepath.Join(projectDir, fmt.Sprintf("coder-%03d", i))
+			if err := os.MkdirAll(coderDir, 0755); err != nil {
+				return fmt.Errorf("failed to create workspace directory %s: %w", coderDir, err)
+			}
+		}
+		config.LogInfo("✅ Created %d coder workspace directories", cfg.Agents.MaxCoders)
+	}
+
 	config.LogInfo("✅ Project infrastructure verification completed for %s", projectDir)
 	return nil
 }
