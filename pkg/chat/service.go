@@ -50,8 +50,10 @@ func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *
 
 // PostRequest represents a chat post request.
 type PostRequest struct {
-	Author string
-	Text   string
+	Author   string
+	Text     string
+	ReplyTo  *int64 // Optional: ID of message being replied to
+	PostType string // Optional: 'chat', 'reply', or 'escalate' (defaults to 'chat')
 }
 
 // PostResponse represents a chat post response.
@@ -101,14 +103,20 @@ func (s *Service) Post(ctx context.Context, req *PostRequest) (*PostResponse, er
 		}
 	}
 
-	// 3. Persist to database
+	// 3. Determine post type (default to 'chat')
+	postType := req.PostType
+	if postType == "" {
+		postType = "chat"
+	}
+
+	// 4. Persist to database
 	timestamp := time.Now().UTC().Format(time.RFC3339)
-	id, err := s.dbOps.PostChatMessage(req.Author, text, timestamp)
+	id, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.ReplyTo, postType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to persist chat message: %w", err)
 	}
 
-	s.logger.Debug("Posted chat message id=%d author=%s length=%d", id, req.Author, len(text))
+	s.logger.Debug("Posted chat message id=%d author=%s type=%s length=%d", id, req.Author, postType, len(text))
 
 	return &PostResponse{
 		ID:      id,
@@ -181,4 +189,35 @@ func FormatAuthor(agentID string) string {
 		return agentID
 	}
 	return "@" + agentID
+}
+
+// WaitForReply polls for a reply to the specified message ID.
+// Returns the first message where reply_to matches messageID.
+// Polls every pollInterval until a reply is found or context is canceled.
+func (s *Service) WaitForReply(ctx context.Context, messageID int64, pollInterval time.Duration) (*persistence.ChatMessage, error) {
+	s.logger.Info("Waiting for reply to message %d (poll interval: %v)", messageID, pollInterval)
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("context canceled while waiting for reply: %w", ctx.Err())
+
+		case <-ticker.C:
+			// Query for messages that reply to this message
+			reply, err := s.dbOps.GetChatMessageByReplyTo(messageID)
+			if err == nil {
+				// Found a reply
+				s.logger.Info("Received reply (id=%d) to message %d", reply.ID, messageID)
+				return reply, nil
+			}
+			// sql.ErrNoRows means no reply yet - keep polling
+			// Other errors are logged but we continue polling
+			if err.Error() != "sql: no rows in result set" {
+				s.logger.Warn("Error checking for replies to message %d: %v", messageID, err)
+			}
+		}
+	}
 }

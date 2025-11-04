@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 8
+const CurrentSchemaVersion = 9
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -100,6 +100,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion7(db)
 	case 8:
 		return migrateToVersion8(db)
+	case 9:
+		return migrateToVersion9(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -195,6 +197,27 @@ func migrateToVersion8(db *sql.DB) error {
 	for _, idx := range indices {
 		if _, err := db.Exec(idx); err != nil {
 			return fmt.Errorf("failed to create index: %s: %w", idx, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateToVersion9 adds reply_to and post_type fields to chat table for escalation support.
+func migrateToVersion9(db *sql.DB) error {
+	migrations := []string{
+		// Add reply_to field for message threading
+		"ALTER TABLE chat ADD COLUMN reply_to INTEGER REFERENCES chat(id)",
+		// Add post_type field for escalation tracking
+		"ALTER TABLE chat ADD COLUMN post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate'))",
+		// Add indices for efficient escalation queries
+		"CREATE INDEX IF NOT EXISTS idx_chat_reply_to ON chat(reply_to)",
+		"CREATE INDEX IF NOT EXISTS idx_chat_post_type ON chat(post_type)",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
 		}
 	}
 
@@ -328,7 +351,9 @@ func createSchema(db *sql.DB) error {
 			session_id TEXT NOT NULL,
 			ts TEXT NOT NULL,
 			author TEXT NOT NULL,
-			text TEXT NOT NULL
+			text TEXT NOT NULL,
+			reply_to INTEGER REFERENCES chat(id),
+			post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate'))
 		)`,
 
 		// Chat cursor table for tracking agent read positions
@@ -386,6 +411,8 @@ func createSchema(db *sql.DB) error {
 		// Chat indices
 		"CREATE INDEX IF NOT EXISTS idx_chat_session ON chat(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_chat_session_id ON chat(session_id, id)",
+		"CREATE INDEX IF NOT EXISTS idx_chat_reply_to ON chat(reply_to)",
+		"CREATE INDEX IF NOT EXISTS idx_chat_post_type ON chat(post_type)",
 
 		// Tool execution indices
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_session ON tool_executions(session_id)",

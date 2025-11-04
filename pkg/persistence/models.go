@@ -199,6 +199,8 @@ type ChatMessage struct {
 	Author    string `json:"author"`
 	Text      string `json:"text"`
 	Timestamp string `json:"ts"`
+	ReplyTo   *int64 `json:"reply_to,omitempty"` // Message ID being replied to (for threading)
+	PostType  string `json:"post_type"`          // Type: 'chat', 'reply', or 'escalate'
 }
 
 // ChatCursor tracks the last message ID read by an agent.
