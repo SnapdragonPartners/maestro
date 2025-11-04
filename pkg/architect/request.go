@@ -2,6 +2,7 @@ package architect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -136,11 +137,17 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		return StateError, fmt.Errorf("unknown request type: %s", requestMsg.Type)
 	}
 
+	// Check for escalation signal
+	if errors.Is(err, ErrEscalationTriggered) {
+		d.logger.Warn("🚨 Escalation triggered - transitioning to ESCALATED state")
+		return StateEscalated, nil
+	}
+
 	if err != nil {
 		return StateError, err
 	}
 
-	// If response is nil, it means iterative handling wants to continue iteration
+	// If response is nil, means iterative handling wants to continue iteration
 	if response == nil && requestMsg.Type == proto.MsgTypeREQUEST {
 		requestKind, _ := proto.GetRequestKind(requestMsg)
 		if requestKind == proto.RequestKindApproval || requestKind == proto.RequestKindQuestion {
@@ -1346,9 +1353,12 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Check iteration limit
 	iterationKey := fmt.Sprintf("approval_iterations_%s", storyID)
 	if d.checkIterationLimit(iterationKey, StateRequest) {
-		d.logger.Error("❌ Hard iteration limit exceeded for approval %s", storyID)
-		// Transition to ESCALATE state will be handled by state machine
-		return nil, fmt.Errorf("iteration limit exceeded for approval request")
+		d.logger.Error("❌ Hard iteration limit exceeded for approval %s - preparing escalation", storyID)
+		// Store additional escalation context
+		d.stateData["escalation_request_id"] = requestMsg.ID
+		d.stateData["escalation_story_id"] = storyID
+		// Signal escalation needed by returning sentinel error
+		return nil, ErrEscalationTriggered
 	}
 
 	// Create tool provider (lazily, once per request)
@@ -1660,8 +1670,12 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Check iteration limit
 	iterationKey := fmt.Sprintf("question_iterations_%s", requestMsg.ID)
 	if d.checkIterationLimit(iterationKey, StateRequest) {
-		d.logger.Error("❌ Hard iteration limit exceeded for question %s", requestMsg.ID)
-		return nil, fmt.Errorf("iteration limit exceeded for question request")
+		d.logger.Error("❌ Hard iteration limit exceeded for question %s - preparing escalation", requestMsg.ID)
+		// Store additional escalation context
+		d.stateData["escalation_request_id"] = requestMsg.ID
+		d.stateData["escalation_story_id"] = storyID
+		// Signal escalation needed by returning sentinel error
+		return nil, ErrEscalationTriggered
 	}
 
 	// Create tool provider (lazily, once per request)

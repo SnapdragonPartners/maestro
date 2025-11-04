@@ -8,124 +8,138 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// handleEscalated processes the escalated phase (waiting for human intervention).
+// handleEscalated processes the escalated phase using chat-based escalation.
+// This handler is reached when iteration limits are exceeded during request processing.
+// It posts an escalation message to chat, waits for human reply, and returns to the origin state.
 func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
-	// State: waiting for human intervention
+	d.logger.Info("🚨 Entered ESCALATED state - waiting for human guidance")
 
-	// Check escalation timeout (2 hours).
-	if escalatedAt, exists := d.stateData["escalated_at"].(time.Time); exists {
+	// Get escalation context from state data
+	originState, ok := d.stateData["escalation_origin_state"].(string)
+	if !ok || originState == "" {
+		return StateError, fmt.Errorf("escalation_origin_state not found in state data")
+	}
+
+	iterationCount, ok := d.stateData["escalation_iteration_count"].(int)
+	if !ok {
+		iterationCount = 0 // Default if not found
+	}
+
+	requestID, _ := d.stateData["escalation_request_id"].(string)
+	storyID, _ := d.stateData["escalation_story_id"].(string)
+
+	// Check if chat service is available
+	if d.chatService == nil {
+		d.logger.Error("Chat service not available for escalation - transitioning to ERROR")
+		return StateError, fmt.Errorf("chat service not available for escalation")
+	}
+
+	// Check if we've already posted an escalation message
+	escalationMsgID, hasPosted := d.stateData["escalation_message_id"].(int64)
+
+	if !hasPosted {
+		// First time in ESCALATED state - post escalation message
+		escalationText := d.buildEscalationMessage(originState, iterationCount, requestID, storyID)
+
+		resp, err := d.chatService.Post(ctx, &ChatPostRequest{
+			Author:   d.architectID,
+			Text:     escalationText,
+			PostType: "escalate",
+		})
+
+		if err != nil {
+			d.logger.Error("Failed to post escalation message: %v", err)
+			return StateError, fmt.Errorf("failed to post escalation: %w", err)
+		}
+
+		escalationMsgID = resp.ID
+		d.stateData["escalation_message_id"] = escalationMsgID
+		d.stateData["escalated_at"] = time.Now()
+
+		d.logger.Info("📢 Posted escalation message (id=%d) - waiting for human reply", escalationMsgID)
+	}
+
+	// Check escalation timeout (2 hours)
+	escalatedAt, _ := d.stateData["escalated_at"].(time.Time)
+	if !escalatedAt.IsZero() {
 		timeSinceEscalation := time.Since(escalatedAt)
 		if timeSinceEscalation > EscalationTimeout {
-			d.logger.Warn("escalation timeout exceeded (%v > %v), sending ABANDON review and re-queuing",
+			d.logger.Warn("Escalation timeout exceeded (%v > %v) - transitioning to ERROR",
 				timeSinceEscalation.Truncate(time.Minute), EscalationTimeout)
-
-			// Log timeout event for monitoring.
-			if d.escalationHandler != nil {
-				if logErr := d.escalationHandler.LogTimeout(escalatedAt, timeSinceEscalation); logErr != nil {
-					d.logger.Error("Failed to log timeout event: %v", logErr)
-				}
-			}
-
-			// Send ABANDON review and re-queue story.
-			if err := d.sendAbandonAndRequeue(ctx); err != nil {
-				d.logger.Error("failed to send ABANDON review and re-queue: %v", err)
-				return StateError, fmt.Errorf("failed to handle escalation timeout: %w", err)
-			}
-
-			return StateDispatching, nil
+			return StateError, fmt.Errorf("escalation timeout exceeded (%v)", timeSinceEscalation)
 		}
 
-		// Log remaining time periodically (every hour in actual usage, but for demo we'll be more verbose).
+		// Log time remaining periodically
 		timeRemaining := EscalationTimeout - timeSinceEscalation
-		d.logger.Debug("escalation timeout: %v remaining (escalated %v ago)",
+		d.logger.Debug("Escalation timeout: %v remaining (escalated %v ago)",
 			timeRemaining.Truncate(time.Minute), timeSinceEscalation.Truncate(time.Minute))
-	} else {
-		// If we don't have an escalation timestamp, this is an error - we should always record when we escalate.
-		d.logger.Warn("in ESCALATED state but no escalation timestamp found")
-		return StateError, fmt.Errorf("invalid escalated state: no escalation timestamp")
 	}
 
-	// Check for pending escalations.
-	if d.escalationHandler != nil {
-		summary := d.escalationHandler.GetEscalationSummary()
-		if summary.PendingEscalations > 0 {
-			// Still have pending escalations, stay in escalated state.
+	// Wait for human reply with timeout
+	pollInterval := 5 * time.Second
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // Short timeout for this poll cycle
+	defer cancel()
+
+	reply, err := d.chatService.WaitForReply(waitCtx, escalationMsgID, pollInterval)
+	if err != nil {
+		// Check if it's a timeout (expected during polling loop)
+		if waitCtx.Err() == context.DeadlineExceeded {
+			// No reply yet - stay in ESCALATED state and poll again next cycle
 			return StateEscalated, nil
 		}
-		// No more pending escalations, return to request handling.
-		return StateRequest, nil
+
+		// Other errors
+		d.logger.Warn("Error waiting for escalation reply: %v", err)
+		return StateEscalated, nil // Continue waiting
 	}
 
-	// No escalation handler, return to request.
+	// Got a reply!
+	d.logger.Info("✅ Received human reply (id=%d) to escalation", reply.ID)
+
+	// Add human guidance to context
+	d.contextManager.AddMessage("system", fmt.Sprintf(
+		"🧑 HUMAN GUIDANCE: %s\n\nPlease incorporate this guidance and continue with your task.",
+		reply.Text,
+	))
+
+	// Reset iteration counter for the origin state
+	originStateIterationKey := fmt.Sprintf("%s_iterations", originState)
+	d.stateData[originStateIterationKey] = 0
+
+	// Clear escalation state data
+	delete(d.stateData, "escalation_message_id")
+	delete(d.stateData, "escalation_origin_state")
+	delete(d.stateData, "escalation_iteration_count")
+	delete(d.stateData, "escalation_request_id")
+	delete(d.stateData, "escalation_story_id")
+	delete(d.stateData, "escalated_at")
+
+	// Return to REQUEST state (where escalations originate from)
+	d.logger.Info("↩️  Returning to REQUEST state with human guidance")
 	return StateRequest, nil
 }
 
-// sendAbandonAndRequeue sends an ABANDON review response and re-queues the story.
-func (d *Driver) sendAbandonAndRequeue(ctx context.Context) error {
-	// Get the escalated story ID from escalation handler.
-	if d.escalationHandler == nil {
-		return fmt.Errorf("no escalation handler available")
+// buildEscalationMessage creates the escalation message text for human review.
+func (d *Driver) buildEscalationMessage(originState string, iterationCount int, requestID, storyID string) string {
+	msg := fmt.Sprintf(`🚨 ESCALATION: Iteration limit exceeded
+
+I have reached my iteration limit (%d iterations) while processing a request and need human guidance.
+
+**Context:**
+- Origin State: %s
+- Request ID: %s`, iterationCount, originState, requestID)
+
+	if storyID != "" {
+		msg += fmt.Sprintf("\n- Story ID: %s", storyID)
 	}
 
-	summary := d.escalationHandler.GetEscalationSummary()
-	if len(summary.Escalations) == 0 {
-		return fmt.Errorf("no escalations found to abandon")
-	}
+	msg += `
 
-	// Find the most recent pending escalation.
-	var latestEscalation *EscalationEntry
-	for _, escalation := range summary.Escalations {
-		if escalation.Status == string(StatusPending) {
-			if latestEscalation == nil || escalation.EscalatedAt.After(latestEscalation.EscalatedAt) {
-				latestEscalation = escalation
-			}
-		}
-	}
+**What I was trying to do:**
+I was using MCP read tools to explore code and answer a request, but exceeded my iteration budget without completing the task.
 
-	if latestEscalation == nil {
-		return fmt.Errorf("no pending escalations found to abandon")
-	}
+**What I need:**
+Please provide guidance on how to proceed. Your reply will be added to my context and I'll continue with your guidance.`
 
-	storyID := latestEscalation.StoryID
-	agentID := latestEscalation.AgentID
-
-	// Create ABANDON review message.
-	abandonMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, agentID)
-
-	// Build abandon payload
-	payloadData := map[string]any{
-		"review_result":  "ABANDON",
-		"review_notes":   "Escalation timeout exceeded - abandoning current submission",
-		"reviewed_at":    time.Now().UTC().Format(time.RFC3339),
-		"timeout_reason": "escalation_timeout",
-	}
-	abandonMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, payloadData))
-
-	// Store story_id in metadata
-	abandonMsg.SetMetadata("story_id", storyID)
-
-	// Send abandon message using Effects pattern.
-	sendEffect := &SendMessageEffect{Message: abandonMsg}
-	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
-		return fmt.Errorf("failed to send ABANDON message: %w", err)
-	}
-
-	// Re-queue the story by resetting it to pending status.
-	story, exists := d.queue.GetStory(storyID)
-	if !exists {
-		return fmt.Errorf("story %s not found in queue", storyID)
-	}
-
-	// Reset to pending status so it can be picked up again.
-	story.SetStatus(StatusPending)
-	story.AssignedAgent = ""
-	story.StartedAt = nil
-	story.CompletedAt = nil
-	story.LastUpdated = time.Now().UTC()
-
-	// Trigger ready notification if dependencies are met.
-	d.queue.checkAndNotifyReady()
-
-	d.logger.Info("abandoned story %s due to escalation timeout and re-queued", storyID)
-	return nil
+	return msg
 }

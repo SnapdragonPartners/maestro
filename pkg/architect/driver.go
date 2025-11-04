@@ -39,6 +39,7 @@ type Driver struct {
 	dispatcher          *dispatch.Dispatcher                  // Dispatcher for sending messages
 	logger              *logx.Logger                          // Logger with proper agent prefixing
 	executor            *execpkg.ArchitectExecutor            // Container executor for file access tools
+	chatService         ChatServiceInterface                  // Chat service for escalations (nil check required)
 	specCh              <-chan *proto.AgentMsg                // Read-only channel for spec messages
 	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for questions/requests
 	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
@@ -49,6 +50,38 @@ type Driver struct {
 	workDir             string // Workspace directory
 	currentState        proto.State
 }
+
+// ChatServiceInterface defines the interface for chat operations needed by architect.
+// This allows for testing with mocks and keeps the architect loosely coupled from chat implementation.
+type ChatServiceInterface interface {
+	Post(ctx context.Context, req *ChatPostRequest) (*ChatPostResponse, error)
+	WaitForReply(ctx context.Context, messageID int64, pollInterval time.Duration) (*ChatMessage, error)
+}
+
+// ChatPostRequest represents a chat post request (simplified for architect use).
+type ChatPostRequest struct {
+	Author   string
+	Text     string
+	ReplyTo  *int64
+	PostType string
+}
+
+// ChatPostResponse represents a chat post response (simplified for architect use).
+type ChatPostResponse struct {
+	ID      int64
+	Success bool
+}
+
+// ChatMessage represents a chat message (simplified for architect use).
+type ChatMessage struct {
+	Timestamp string
+	Author    string
+	Text      string
+	ID        int64
+}
+
+// ErrEscalationTriggered is returned when iteration limits are exceeded and escalation is needed.
+var ErrEscalationTriggered = fmt.Errorf("escalation triggered due to iteration limit")
 
 // NewDriver creates a new architect driver instance.
 func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
@@ -683,8 +716,9 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	if iterationCount >= hardLimit {
 		d.logger.Error("❌ Hard iteration limit (%d) exceeded in %s - escalating to human", hardLimit, stateName)
 		// Store escalation context for ESCALATE state
-		d.stateData["escalation_reason"] = fmt.Sprintf("Iteration limit exceeded in %s (%d/%d iterations)", stateName, iterationCount, hardLimit)
-		d.stateData["escalation_state"] = string(stateName)
+		d.stateData["escalation_origin_state"] = string(stateName)
+		d.stateData["escalation_iteration_count"] = iterationCount
+		// Additional context will be added by caller (request_id, story_id)
 		return true
 	}
 
