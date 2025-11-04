@@ -12,6 +12,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -36,6 +37,7 @@ type Driver struct {
 	escalationHandler   *EscalationHandler                    // Escalation handler
 	dispatcher          *dispatch.Dispatcher                  // Dispatcher for sending messages
 	logger              *logx.Logger                          // Logger with proper agent prefixing
+	executor            *execpkg.ArchitectExecutor            // Container executor for file access tools
 	specCh              <-chan *proto.AgentMsg                // Read-only channel for spec messages
 	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for questions/requests
 	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
@@ -112,6 +114,26 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 
 	// Create architect with LLM integration
 	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
+
+	// Create and start architect container executor
+	// The architect container has read-only mounts to all coder workspaces
+	architectExecutor := execpkg.NewArchitectExecutor(
+		config.BootstrapContainerTag, // Use bootstrap image (same as coders)
+		workDir,                      // Project directory containing coder-NNN directories
+		cfg.Agents.MaxCoders,         // Number of coder workspaces to mount
+	)
+
+	// Start the architect container (one retry on failure)
+	if startErr := architectExecutor.Start(ctx); startErr != nil {
+		architect.logger.Warn("Failed to start architect container, retrying once: %v", startErr)
+		// Retry once
+		if retryErr := architectExecutor.Start(ctx); retryErr != nil {
+			return nil, fmt.Errorf("failed to start architect container after retry: %w", retryErr)
+		}
+	}
+
+	// Store executor in architect
+	architect.executor = architectExecutor
 
 	// Enhance client with metrics context now that we have the architect (StateProvider)
 	// Use the shared factory to ensure proper rate limiting
@@ -196,8 +218,17 @@ func (d *Driver) GetStoryID() string {
 }
 
 // Shutdown implements Agent interface with context.
-func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
-	// Call the original shutdown method.
+func (d *Driver) Shutdown(ctx context.Context) error {
+	// Stop architect container executor
+	if d.executor != nil {
+		d.logger.Info("Stopping architect container executor")
+		if err := d.executor.Stop(ctx); err != nil {
+			d.logger.Error("Failed to stop architect executor: %v", err)
+			// Continue with shutdown even if executor stop fails
+		}
+	}
+
+	// Call the original shutdown method
 	d.shutdown()
 	return nil
 }
@@ -206,7 +237,7 @@ func (d *Driver) Shutdown(_ /* ctx */ context.Context) error {
 func (d *Driver) shutdown() {
 	// No filesystem state persistence - clean shutdown
 
-	// Channels are owned by dispatcher, no cleanup needed here.
+	// Channels are owned by dispatcher, no cleanup needed here
 }
 
 // Step implements agent.Driver interface - executes one state transition.
