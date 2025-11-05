@@ -698,7 +698,8 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		}
 	} else if mergeResult != nil && mergeResult.HasConflicts {
 		// Merge conflicts are always recoverable
-		conflictFeedback := fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit: %s", mergeResult.ConflictInfo)
+		// Check if knowledge.dot is among the conflicting files and provide specific guidance
+		conflictFeedback := d.generateConflictGuidance(mergeResult.ConflictInfo)
 		d.logger.Warn("🔀 Merge conflicts for story %s: %s", storyIDStr, mergeResult.ConflictInfo)
 
 		mergeResponsePayload.Status = string(proto.ApprovalStatusNeedsChanges)
@@ -787,6 +788,55 @@ type MergeAttemptResult struct {
 	HasConflicts bool
 	ConflictInfo string
 	CommitSHA    string
+}
+
+// generateConflictGuidance creates detailed guidance for resolving merge conflicts.
+// Provides specific instructions for knowledge.dot conflicts.
+func (d *Driver) generateConflictGuidance(conflictInfo string) string {
+	hasKnowledgeConflict := strings.Contains(conflictInfo, ".maestro/knowledge.dot") || strings.Contains(conflictInfo, "knowledge.dot")
+
+	if hasKnowledgeConflict {
+		return `Merge conflicts detected, including in the knowledge graph.
+
+**KNOWLEDGE GRAPH CONFLICT RESOLUTION**
+
+The knowledge graph (.maestro/knowledge.dot) has conflicts. Please resolve carefully:
+
+1. **Pull the latest main branch**:
+   ` + "`" + `git pull origin main` + "`" + `
+
+2. **Open .maestro/knowledge.dot and resolve conflicts**:
+   - **Keep all unique nodes from both branches** (no data loss)
+   - **For duplicate node IDs with different content**:
+     * Prefer status='current' over 'deprecated' or 'legacy'
+     * Merge complementary descriptions if both add value
+     * Choose the more specific/detailed example
+     * Use the higher priority value (critical > high > medium > low)
+   - **Preserve all unique edges** (relationships)
+   - **Remove conflict markers** (<<<<<<, =======, >>>>>>>)
+   - **Ensure valid DOT syntax** after resolution
+
+3. **Validate the merged file**:
+   - Check that all nodes have required fields (type, level, status, description)
+   - Verify all enum values are correct (see schema in DOC_GRAPH.md)
+   - Ensure edge references point to existing nodes
+   - Confirm DOT syntax is valid (no trailing commas, balanced braces)
+
+4. **Commit and push**:
+   ` + "`" + `git add .maestro/knowledge.dot` + "`" + `
+   ` + "`" + `git commit -m "Resolved knowledge graph conflicts"` + "`" + `
+   ` + "`" + `git push` + "`" + `
+
+5. **Resubmit the PR** for review
+
+The knowledge graph is critical for architectural consistency. Take time to merge thoughtfully.
+
+**OTHER CONFLICTS**:
+` + conflictInfo
+	}
+
+	// Standard conflict message for non-knowledge files
+	return fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit:\n\n%s", conflictInfo)
 }
 
 // attemptPRMerge attempts to merge a PR using GitHub CLI.
