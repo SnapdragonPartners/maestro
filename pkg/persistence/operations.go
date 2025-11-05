@@ -56,8 +56,10 @@ const (
 	OpUpdateChatCursor = "update_chat_cursor"
 
 	// Knowledge graph operations.
-	OpStoreKnowledgePack    = "store_knowledge_pack"
-	OpRetrieveKnowledgePack = "retrieve_knowledge_pack"
+	OpStoreKnowledgePack     = "store_knowledge_pack"
+	OpRetrieveKnowledgePack  = "retrieve_knowledge_pack"
+	OpCheckKnowledgeModified = "check_knowledge_modified"
+	OpRebuildKnowledgeIndex  = "rebuild_knowledge_index"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -101,6 +103,17 @@ type RetrieveKnowledgePackRequest struct {
 type RetrieveKnowledgePackResponse struct {
 	Subgraph string `json:"subgraph"` // DOT format subgraph
 	Count    int    `json:"count"`    // Number of nodes in result
+}
+
+// CheckKnowledgeModifiedRequest represents a request to check if knowledge.dot was modified.
+type CheckKnowledgeModifiedRequest struct {
+	DotPath string `json:"dot_path"` // Path to knowledge.dot file
+}
+
+// RebuildKnowledgeIndexRequest represents a request to rebuild the knowledge index.
+type RebuildKnowledgeIndexRequest struct {
+	DotPath   string `json:"dot_path"`   // Path to knowledge.dot file
+	SessionID string `json:"session_id"` // Session ID for isolation
 }
 
 // DatabaseOperations provides methods for database operations.
@@ -1077,4 +1090,21 @@ func (ops *DatabaseOperations) RetrieveKnowledgePack(req *RetrieveKnowledgePackR
 		Subgraph: result.Subgraph,
 		Count:    result.Count,
 	}, nil
+}
+
+// CheckKnowledgeModified checks if the knowledge graph file has been modified since last index.
+func (ops *DatabaseOperations) CheckKnowledgeModified(req *CheckKnowledgeModifiedRequest) (bool, error) {
+	modified, err := knowledge.IsGraphModified(ops.db, req.DotPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to check knowledge modification: %w", err)
+	}
+	return modified, nil
+}
+
+// RebuildKnowledgeIndex rebuilds the knowledge graph index from the DOT file.
+func (ops *DatabaseOperations) RebuildKnowledgeIndex(req *RebuildKnowledgeIndexRequest) error {
+	if err := knowledge.RebuildIndex(ops.db, req.DotPath, req.SessionID); err != nil {
+		return fmt.Errorf("failed to rebuild knowledge index: %w", err)
+	}
+	return nil
 }

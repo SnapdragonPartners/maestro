@@ -377,6 +377,29 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			}
 		}
 
+	case persistence.OpCheckKnowledgeModified:
+		if checkReq, ok := req.Data.(*persistence.CheckKnowledgeModifiedRequest); ok {
+			modified, err := ops.CheckKnowledgeModified(checkReq)
+			if req.Response != nil {
+				if err != nil {
+					k.Logger.Error("Failed to check knowledge modification: %v", err)
+					req.Response <- err
+				} else {
+					k.Logger.Debug("Knowledge modification check: modified=%v", modified)
+					req.Response <- modified
+				}
+			}
+		}
+
+	case persistence.OpRebuildKnowledgeIndex:
+		if rebuildReq, ok := req.Data.(*persistence.RebuildKnowledgeIndexRequest); ok {
+			if err := ops.RebuildKnowledgeIndex(rebuildReq); err != nil {
+				k.Logger.Error("Failed to rebuild knowledge index: %v", err)
+			} else {
+				k.Logger.Info("Successfully rebuilt knowledge index for session %s", rebuildReq.SessionID)
+			}
+		}
+
 	default:
 		k.Logger.Error("Unknown persistence operation: %v", req.Operation)
 		if req.Response != nil {
