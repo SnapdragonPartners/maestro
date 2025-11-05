@@ -1139,8 +1139,8 @@ func validateConfig(config *Config) error {
 	}
 
 	// Validate GITHUB_TOKEN format
-	if !strings.HasPrefix(githubToken, "ghp_") && !strings.HasPrefix(githubToken, "github_pat_") {
-		return fmt.Errorf("GITHUB_TOKEN format appears invalid (should start with 'ghp_' or 'github_pat_')")
+	if !strings.HasPrefix(githubToken, "ghp_") && !strings.HasPrefix(githubToken, "github_pat_") && !strings.HasPrefix(githubToken, "ghs_") {
+		return fmt.Errorf("GITHUB_TOKEN format appears invalid (should start with 'ghp_', 'github_pat_', or 'ghs_')")
 	}
 	if len(githubToken) < 20 {
 		return fmt.Errorf("GITHUB_TOKEN appears too short to be valid (got %d chars, need at least 20)", len(githubToken))

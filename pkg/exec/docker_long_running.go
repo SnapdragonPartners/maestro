@@ -476,7 +476,8 @@ func (d *LongRunningDockerExec) normalizePath(path string) string {
 		return cleanPath
 	}
 
-	return path
+	// On Linux, clean the path to resolve relative components
+	return filepath.Clean(path)
 }
 
 // waitUntilDockerCanMount waits until Docker Desktop's gRPC-FUSE layer can see the directory.
