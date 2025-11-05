@@ -124,6 +124,27 @@ The repository includes pre-commit hooks that enforce:
 
 The pre-commit hooks are automatically installed and will prevent commits with linting issues.
 
+## Git Workflow and Branch Protection
+
+### Branch Protection Rules
+
+The `main` branch is protected with the following rules:
+- **No direct pushes to main** - All changes must go through pull requests
+- **Required status checks** - CI tests must pass before merging
+- Pre-commit hooks enforce local quality checks before commits
+
+### Development Workflow
+
+When making changes:
+1. Create a feature branch: `git checkout -b feature-name`
+2. Make your changes and commit (pre-commit hooks will run)
+3. Push the branch: `git push -u origin feature-name`
+4. Create a pull request to `main`
+5. Wait for CI checks to pass
+6. Merge via GitHub UI after approval
+
+**Important**: Always work on feature branches. Never attempt to push directly to `main` as it will be rejected by branch protection rules.
+
 ## Project Structure
 
 The codebase follows this clean architecture:
