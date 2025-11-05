@@ -354,6 +354,29 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			}
 		}
 
+	case persistence.OpStoreKnowledgePack:
+		if packReq, ok := req.Data.(*persistence.StoreKnowledgePackRequest); ok {
+			if err := ops.StoreKnowledgePack(packReq); err != nil {
+				k.Logger.Error("Failed to store knowledge pack: %v", err)
+			} else {
+				k.Logger.Debug("Successfully stored knowledge pack for story %s", packReq.StoryID)
+			}
+		}
+
+	case persistence.OpRetrieveKnowledgePack:
+		if retrieveReq, ok := req.Data.(*persistence.RetrieveKnowledgePackRequest); ok {
+			result, err := ops.RetrieveKnowledgePack(retrieveReq)
+			if req.Response != nil {
+				if err != nil {
+					k.Logger.Error("Failed to retrieve knowledge pack: %v", err)
+					req.Response <- err
+				} else {
+					k.Logger.Debug("Successfully retrieved knowledge pack (%d nodes)", result.Count)
+					req.Response <- result
+				}
+			}
+		}
+
 	default:
 		k.Logger.Error("Unknown persistence operation: %v", req.Operation)
 		if req.Response != nil {

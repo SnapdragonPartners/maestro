@@ -255,6 +255,7 @@ const (
 	stateDataKeyPlanTodos                stateDataKey = "plan_todos"
 	stateDataKeyExplorationSummary       stateDataKey = "exploration_summary"
 	stateDataKeyPlanRisks                stateDataKey = "plan_risks"
+	stateDataKeyKnowledgePack            stateDataKey = "knowledge_pack"
 	stateDataKeyPlanApprovalResult       stateDataKey = KeyPlanApprovalResult
 	stateDataKeyCompletionApprovalResult stateDataKey = "completion_approval_result"
 	stateDataKeyCodeApprovalResult       stateDataKey = KeyCodeApprovalResult

@@ -3,12 +3,15 @@ package coder
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
+	"orchestrator/pkg/knowledge"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -33,6 +36,18 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 
 	// Continue with iterative planning using LLM + tools
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
+
+	// Retrieve knowledge pack on first planning iteration
+	if _, exists := sm.GetStateValue(string(stateDataKeyKnowledgePack)); !exists {
+		if knowledgePack, err := c.retrieveKnowledgePack(ctx, taskContent); err == nil {
+			sm.SetStateData(string(stateDataKeyKnowledgePack), knowledgePack)
+			c.logger.Info("📚 Knowledge pack retrieved (%d nodes)", len(strings.Split(knowledgePack, "\n")))
+		} else {
+			c.logger.Warn("Failed to retrieve knowledge pack: %v", err)
+			// Not a fatal error - continue without knowledge pack
+			sm.SetStateData(string(stateDataKeyKnowledgePack), "")
+		}
+	}
 
 	// Generate tree output for template (cached for efficiency)
 	_, exists := sm.GetStateValue(KeyTreeOutputCached)
@@ -313,6 +328,12 @@ func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStat
 	risks := utils.GetMapFieldOr[string](resultMap, "risks", "")
 	todos := utils.GetMapFieldOr[[]any](resultMap, "todos", []any{})
 
+	// Get knowledge pack from result or fall back to state data
+	knowledgePack := utils.GetMapFieldOr[string](resultMap, "knowledge_pack", "")
+	if knowledgePack == "" {
+		knowledgePack = utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
+	}
+
 	// Convert todos to structured format.
 	planTodos := make([]PlanTodo, len(todos))
 	for i, todoItem := range todos {
@@ -332,6 +353,14 @@ func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStat
 	sm.SetStateData(string(stateDataKeyPlanRisks), risks)
 	sm.SetStateData(string(stateDataKeyPlanTodos), planTodos)
 	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
+
+	// Store knowledge pack via persistence if available
+	if knowledgePack != "" {
+		storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+		if storyID != "" {
+			c.storeKnowledgePack(storyID, knowledgePack)
+		}
+	}
 
 	// Store plan approval request for PLAN_REVIEW state to handle
 	c.pendingApprovalRequest = &ApprovalRequest{
@@ -380,3 +409,138 @@ func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.Ba
 func (c *Coder) getExplorationHistory() any { return []string{} }
 func (c *Coder) getFilesExamined() any      { return []string{} }
 func (c *Coder) getCurrentFindings() any    { return map[string]any{} }
+
+// retrieveKnowledgePack extracts key terms from story content and retrieves relevant knowledge.
+func (c *Coder) retrieveKnowledgePack(_ context.Context, taskContent string) (string, error) {
+	// Parse story content to extract description and acceptance criteria
+	description, acceptanceCriteria := parseStoryContent(taskContent)
+
+	// Extract key terms from story content
+	searchTerms := knowledge.ExtractKeyTerms(description, acceptanceCriteria)
+
+	if searchTerms == "" {
+		return "", fmt.Errorf("no search terms extracted from story content")
+	}
+
+	c.logger.Debug("📚 Extracted search terms: %s", searchTerms)
+
+	// Get session ID from config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Create response channel for query
+	responseChan := make(chan interface{}, 1)
+
+	// Send retrieval request via persistence queue
+	c.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpRetrieveKnowledgePack,
+		Data: &persistence.RetrieveKnowledgePackRequest{
+			SessionID:   cfg.SessionID,
+			SearchTerms: searchTerms,
+			Level:       "all", // Include both architecture and implementation
+			MaxResults:  20,
+			Depth:       1, // Include immediate neighbors
+		},
+		Response: responseChan,
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-responseChan:
+		if err, ok := resp.(error); ok {
+			return "", fmt.Errorf("knowledge retrieval failed: %w", err)
+		}
+		if result, ok := resp.(*persistence.RetrieveKnowledgePackResponse); ok {
+			return result.Subgraph, nil
+		}
+		return "", fmt.Errorf("unexpected response type: %T", resp)
+	case <-time.After(5 * time.Second):
+		return "", fmt.Errorf("knowledge retrieval timed out")
+	}
+}
+
+// parseStoryContent parses markdown story content to extract description and acceptance criteria.
+// Story content format:
+//
+//	**Task**
+//	<description>
+//
+//	**Acceptance Criteria**
+//	* <criteria 1>
+//	* <criteria 2>
+func parseStoryContent(content string) (string, []string) {
+	lines := strings.Split(content, "\n")
+	var description strings.Builder
+	var acceptanceCriteria []string
+	inTask := false
+	inCriteria := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "**Task**") {
+			inTask = true
+			inCriteria = false
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "**Acceptance Criteria**") {
+			inTask = false
+			inCriteria = true
+			continue
+		}
+
+		if inTask && trimmed != "" {
+			description.WriteString(trimmed)
+			description.WriteString(" ")
+		}
+
+		if inCriteria && strings.HasPrefix(trimmed, "*") {
+			// Remove leading "* " from criteria
+			criteria := strings.TrimPrefix(trimmed, "* ")
+			criteria = strings.TrimPrefix(criteria, "- ")
+			if criteria != "" {
+				acceptanceCriteria = append(acceptanceCriteria, criteria)
+			}
+		}
+	}
+
+	return strings.TrimSpace(description.String()), acceptanceCriteria
+}
+
+// storeKnowledgePack stores the knowledge pack for a story via persistence queue.
+func (c *Coder) storeKnowledgePack(storyID, knowledgePack string) {
+	// Get config for session ID
+	cfg, err := config.GetConfig()
+	if err != nil {
+		c.logger.Error("Failed to get config for knowledge pack storage: %v", err)
+		return
+	}
+
+	// Extract search terms from the pack for metadata (store first line of nodes)
+	searchTerms := ""
+	if lines := strings.Split(knowledgePack, "\n"); len(lines) > 1 {
+		// Use first node ID as representative search terms
+		searchTerms = "knowledge-pack-" + storyID[:8]
+	}
+
+	// Count nodes in the pack
+	nodeCount := strings.Count(knowledgePack, "[") // Rough approximation
+
+	// Send to persistence queue (fire-and-forget)
+	c.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpStoreKnowledgePack,
+		Data: &persistence.StoreKnowledgePackRequest{
+			StoryID:     storyID,
+			SessionID:   cfg.SessionID,
+			Subgraph:    knowledgePack,
+			SearchTerms: searchTerms,
+			NodeCount:   nodeCount,
+		},
+		Response: nil, // Fire-and-forget
+	}
+
+	c.logger.Debug("📚 Stored knowledge pack for story %s (%d nodes)", storyID, nodeCount)
+}
