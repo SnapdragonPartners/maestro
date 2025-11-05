@@ -574,9 +574,16 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		// STORY messages go to storyCh for coders to receive.
 		d.logger.Info("🔄 Sending STORY %s to storyCh", msg.ID)
 
-		// Send to storyCh (blocking send - buffer should prevent blocking).
-		d.storyCh <- msg
-		d.logger.Info("✅ STORY %s delivered to storyCh", msg.ID)
+		// Send to storyCh with shutdown check to prevent panic on closed channel
+		select {
+		case d.storyCh <- msg:
+			d.logger.Info("✅ STORY %s delivered to storyCh", msg.ID)
+		case <-d.shutdown:
+			d.logger.Warn("❌ Shutdown in progress, dropping STORY %s", msg.ID)
+			return
+		default:
+			d.logger.Warn("❌ Story channel full, dropping STORY %s", msg.ID)
+		}
 
 	case proto.MsgTypeSPEC:
 		// SPEC messages go to architect via spec channel.
@@ -591,8 +598,15 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	case proto.MsgTypeREQUEST:
 		// All REQUEST kinds go to questionsCh for architect to process
 		// Architect will handle kind-based routing internally
-		d.questionsCh <- msg
-		// Note: REQUEST processing and persistence handled by architect
+		select {
+		case d.questionsCh <- msg:
+			// Note: REQUEST processing and persistence handled by architect
+		case <-d.shutdown:
+			d.logger.Warn("❌ Shutdown in progress, dropping REQUEST %s", msg.ID)
+			return
+		default:
+			d.logger.Warn("❌ Questions channel full, dropping REQUEST %s", msg.ID)
+		}
 
 	case proto.MsgTypeRESPONSE:
 		// RESPONSE messages go to specific coder's reply channel.
