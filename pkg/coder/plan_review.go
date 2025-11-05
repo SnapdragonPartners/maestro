@@ -177,11 +177,15 @@ func (c *Coder) getPlanApprovalContent(sm *agent.BaseStateMachine) string {
 	// Get task content
 	taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
 
+	// Get knowledge pack from state
+	knowledgePack := utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
+
 	// Build template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
-			"TaskContent": taskContent,
-			"PlanContent": planContent,
+			"TaskContent":   taskContent,
+			"PlanContent":   planContent,
+			"KnowledgePack": knowledgePack,
 		},
 	}
 

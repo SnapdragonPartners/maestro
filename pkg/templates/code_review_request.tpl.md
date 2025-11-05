@@ -27,6 +27,18 @@ I have completed the implementation and all tests are passing. Ready for code re
 The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
 
 {{.Extra.ApprovedPlan}}
+{{if .Extra.KnowledgePack}}
+
+## Relevant Architectural Knowledge
+
+The following architectural patterns and rules are relevant to this story:
+
+```dot
+{{.Extra.KnowledgePack}}
+```
+
+**Review Note**: Please verify the implementation aligns with these established patterns, especially any rules marked as high or critical priority.
+{{end}}
 
 ## Review Request
 

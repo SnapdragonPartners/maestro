@@ -1066,11 +1066,13 @@ func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any,
 	// Extract story ID from metadata to get story type from queue
 	storyID := requestMsg.Metadata["story_id"]
 
-	// Get story type from queue (defaults to app if not found)
+	// Get story type and knowledge pack from queue (defaults to app if not found)
 	storyType := defaultStoryType
+	knowledgePack := ""
 	if storyID != "" && d.queue != nil {
 		if story, exists := d.queue.GetStory(storyID); exists {
 			storyType = story.StoryType
+			knowledgePack = story.KnowledgePack
 		}
 	}
 
@@ -1085,7 +1087,8 @@ func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any,
 	// Create template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
-			"Content": content,
+			"Content":       content,
+			"KnowledgePack": knowledgePack,
 		},
 	}
 

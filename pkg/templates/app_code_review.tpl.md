@@ -6,6 +6,18 @@ You are an architect reviewing CODE IMPLEMENTATION for an APPLICATION story.
 
 ## Code Submission
 {{.Extra.Content}}
+{{if .Extra.KnowledgePack}}
+
+## Relevant Architectural Knowledge
+
+The following architectural patterns and rules are relevant to this story:
+
+```dot
+{{.Extra.KnowledgePack}}
+```
+
+**Review Note**: Please verify the implementation aligns with these established patterns, especially any rules marked as high or critical priority.
+{{end}}
 
 ## Evaluation Criteria for Application Code
 
