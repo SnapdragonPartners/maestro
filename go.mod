@@ -18,6 +18,7 @@ require (
 )
 
 require (
+	github.com/awalterschulze/gographviz v2.0.3+incompatible // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
