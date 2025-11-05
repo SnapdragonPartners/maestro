@@ -10,7 +10,7 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.66.1
-	github.com/sashabaranov/go-openai v1.40.1
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/tiktoken-go/tokenizer v0.7.0
 	golang.org/x/crypto v0.43.0
 	golang.org/x/term v0.36.0
