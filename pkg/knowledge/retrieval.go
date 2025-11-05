@@ -134,6 +134,8 @@ func searchNodes(db *sql.DB, sessionID string, options RetrievalOptions) ([]stri
 }
 
 // loadGraph loads the entire knowledge graph for a session.
+//
+//nolint:cyclop // Complexity from NULL handling is acceptable here
 func loadGraph(db *sql.DB, sessionID string) (*Graph, error) {
 	graph := NewGraph()
 
@@ -150,22 +152,45 @@ func loadGraph(db *sql.DB, sessionID string) (*Graph, error) {
 
 	for nodeRows.Next() {
 		node := &Node{}
+		var tag, component, path, example, priority, rawDOT sql.NullString
+
 		scanErr := nodeRows.Scan(
 			&node.ID,
 			&node.Type,
 			&node.Level,
 			&node.Status,
 			&node.Description,
-			&node.Tag,
-			&node.Component,
-			&node.Path,
-			&node.Example,
-			&node.Priority,
-			&node.RawDOT,
+			&tag,
+			&component,
+			&path,
+			&example,
+			&priority,
+			&rawDOT,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan node: %w", scanErr)
 		}
+
+		// Convert nullable fields
+		if tag.Valid {
+			node.Tag = tag.String
+		}
+		if component.Valid {
+			node.Component = component.String
+		}
+		if path.Valid {
+			node.Path = path.String
+		}
+		if example.Valid {
+			node.Example = example.String
+		}
+		if priority.Valid {
+			node.Priority = priority.String
+		}
+		if rawDOT.Valid {
+			node.RawDOT = rawDOT.String
+		}
+
 		graph.Nodes[node.ID] = node
 	}
 
@@ -186,15 +211,26 @@ func loadGraph(db *sql.DB, sessionID string) (*Graph, error) {
 
 	for edgeRows.Next() {
 		edge := &Edge{}
+		var relation, note sql.NullString
+
 		err := edgeRows.Scan(
 			&edge.FromID,
 			&edge.ToID,
-			&edge.Relation,
-			&edge.Note,
+			&relation,
+			&note,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan edge: %w", err)
 		}
+
+		// Convert nullable fields
+		if relation.Valid {
+			edge.Relation = relation.String
+		}
+		if note.Valid {
+			edge.Note = note.String
+		}
+
 		graph.Edges = append(graph.Edges, edge)
 	}
 
