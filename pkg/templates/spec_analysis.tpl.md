@@ -8,6 +8,21 @@ You are an Architect AI analyzing a project specification to extract implementab
 ```
 {{.TaskContent}}
 ```
+{{if .Extra.knowledge_context}}
+## Architectural Knowledge
+
+The following architectural patterns, rules, and standards are established for this project:
+
+```dot
+{{.Extra.knowledge_context}}
+```
+
+**IMPORTANT**: When generating requirements, ensure they align with these established architectural patterns, rules, and standards. Consider:
+- Existing patterns that should be followed
+- Rules that must be adhered to (especially high/critical priority)
+- Standards for API design, testing, security, etc.
+- Current vs deprecated approaches
+{{end}}
 
 ## Context
 Context is provided via conversation history.
