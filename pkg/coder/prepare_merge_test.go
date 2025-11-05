@@ -2,12 +2,16 @@ package coder
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/dockerfiles"
 	execpkg "orchestrator/pkg/exec"
 )
 
@@ -129,8 +133,13 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 
 	// Check if GitHub CLI is available in a container
 	t.Run("GitHubAuthInContainer", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
+
+		// Ensure bootstrap image exists - build if needed
+		if err := ensureBootstrapImageExists(t, ctx); err != nil {
+			t.Fatalf("Failed to ensure bootstrap image exists: %v", err)
+		}
 
 		// Create a Docker executor using the same image as the real system
 		executor := execpkg.NewLongRunningDockerExec(config.BootstrapContainerTag, "test-github-auth")
@@ -187,4 +196,45 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 			t.Errorf("GitHub authentication did not show success indicators. Output: %s", output)
 		}
 	})
+}
+
+// ensureBootstrapImageExists checks if the maestro-bootstrap image exists, and builds it if not.
+func ensureBootstrapImageExists(t *testing.T, ctx context.Context) error {
+	t.Helper()
+
+	// Check if image already exists
+	checkCmd := exec.CommandContext(ctx, "docker", "image", "inspect", config.BootstrapContainerTag)
+	if err := checkCmd.Run(); err == nil {
+		t.Logf("Bootstrap image %s already exists", config.BootstrapContainerTag)
+		return nil
+	}
+
+	t.Logf("Bootstrap image %s not found, building it now...", config.BootstrapContainerTag)
+
+	// Create temporary directory for Dockerfile
+	tmpDir, err := os.MkdirTemp("", "maestro-bootstrap-build-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Write the embedded Dockerfile to temp location
+	dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
+	dockerfileContent := dockerfiles.GetBootstrapDockerfile()
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile: %w", err)
+	}
+
+	// Build the image
+	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", config.BootstrapContainerTag, "-f", dockerfilePath, tmpDir)
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+
+	t.Logf("Building bootstrap image: docker build -t %s ...", config.BootstrapContainerTag)
+	if err := buildCmd.Run(); err != nil {
+		return fmt.Errorf("failed to build bootstrap image: %w", err)
+	}
+
+	t.Logf("✅ Successfully built bootstrap image %s", config.BootstrapContainerTag)
+	return nil
 }
