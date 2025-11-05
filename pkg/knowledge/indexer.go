@@ -177,9 +177,9 @@ func IsGraphModified(db *sql.DB, dotPath string) (bool, error) {
 
 	currentMtime := stat.ModTime().Unix()
 
-	// Get stored mtime from database
+	// Get stored mtime from database using graph_path (no need for session_id filter - mtime is global per file)
 	var storedMtime int64
-	err = db.QueryRow("SELECT dot_file_mtime FROM knowledge_metadata WHERE id = 1").Scan(&storedMtime)
+	err = db.QueryRow("SELECT last_mtime FROM knowledge_metadata WHERE graph_path = ? LIMIT 1", dotPath).Scan(&storedMtime)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// No metadata exists - treat as modified
@@ -212,12 +212,12 @@ func UpdateMetadata(db *sql.DB, dotPath, sessionID string) error {
 
 	mtime := stat.ModTime().Unix()
 
-	// Insert or update metadata (singleton table with id=1)
+	// Insert or update metadata using graph_path and session_id as composite key
 	_, err = db.Exec(`
 		INSERT OR REPLACE INTO knowledge_metadata (
-			id, session_id, dot_file_mtime, last_indexed_at
-		) VALUES (1, ?, ?, ?)
-	`, sessionID, mtime, time.Now())
+			session_id, graph_path, last_mtime, last_indexed
+		) VALUES (?, ?, ?, ?)
+	`, sessionID, dotPath, mtime, time.Now())
 
 	if err != nil {
 		return fmt.Errorf("failed to update metadata: %w", err)

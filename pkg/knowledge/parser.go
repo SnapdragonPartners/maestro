@@ -3,9 +3,8 @@ package knowledge
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
-
-	"github.com/awalterschulze/gographviz"
 )
 
 // Node represents a knowledge graph node with all its attributes.
@@ -46,68 +45,104 @@ func NewGraph() *Graph {
 }
 
 // ParseDOT parses a DOT format string into a Graph.
+// Uses a custom parser to handle arbitrary attributes without validation.
 func ParseDOT(content string) (*Graph, error) {
-	if strings.TrimSpace(content) == "" {
+	content = strings.TrimSpace(content)
+	if content == "" {
 		return NewGraph(), nil
 	}
 
-	// Parse using gographviz
-	graphAst, err := gographviz.ParseString(content)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse DOT: %w", err)
+	// Basic validation - must have digraph or graph keyword as a distinct word
+	hasDigraph := regexp.MustCompile(`\bdigraph\b`).MatchString(content)
+	hasGraph := regexp.MustCompile(`\bgraph\b`).MatchString(content)
+	if !hasDigraph && !hasGraph {
+		return nil, fmt.Errorf("not a valid DOT graph (missing 'digraph' or 'graph' declaration)")
 	}
 
-	graph := gographviz.NewGraph()
-	if err := gographviz.Analyse(graphAst, graph); err != nil {
-		return nil, fmt.Errorf("failed to analyze DOT: %w", err)
-	}
-
-	// Convert to our Graph structure
 	result := NewGraph()
 
-	// Extract nodes using Lookup map
-	for nodeName, node := range graph.Nodes.Lookup {
-		// Remove quotes from node name
-		nodeID := unquote(nodeName)
+	// Parse nodes using regex
+	// Pattern: "node-id" [ attr="value" attr="value" ];
+	nodePattern := regexp.MustCompile(`"([^"]+)"\s*\[([^\]]+)\]`)
+	nodeMatches := nodePattern.FindAllStringSubmatch(content, -1)
 
-		// Extract attributes
-		attrs := node.Attrs
+	for _, match := range nodeMatches {
+		if len(match) < 3 {
+			continue
+		}
+
+		nodeID := match[1]
+		attrsStr := match[2]
+
+		// Parse attributes
+		attrs := parseAttributes(attrsStr)
 
 		n := &Node{
 			ID:          nodeID,
-			Type:        getAttrFromGV(attrs, "type"),
-			Level:       getAttrFromGV(attrs, "level"),
-			Status:      getAttrFromGV(attrs, "status"),
-			Description: getAttrFromGV(attrs, "description"),
-			Tag:         getAttrFromGV(attrs, "tag"),
-			Component:   getAttrFromGV(attrs, "component"),
-			Path:        getAttrFromGV(attrs, "path"),
-			Example:     getAttrFromGV(attrs, "example"),
-			Priority:    getAttrFromGV(attrs, "priority"),
+			Type:        attrs["type"],
+			Level:       attrs["level"],
+			Status:      attrs["status"],
+			Description: attrs["description"],
+			Tag:         attrs["tag"],
+			Component:   attrs["component"],
+			Path:        attrs["path"],
+			Example:     attrs["example"],
+			Priority:    attrs["priority"],
 		}
-
-		// Store raw DOT for reconstruction
-		n.RawDOT = buildRawDOTFromGV(nodeID, attrs)
 
 		result.Nodes[nodeID] = n
 	}
 
-	// Extract edges
-	for _, edge := range graph.Edges.Edges {
-		fromID := unquote(edge.Src)
-		toID := unquote(edge.Dst)
+	// Parse edges using regex
+	// Pattern: "from" -> "to" [ relation="value" ];
+	edgePattern := regexp.MustCompile(`"([^"]+)"\s*->\s*"([^"]+)"(?:\s*\[([^\]]+)\])?`)
+	edgeMatches := edgePattern.FindAllStringSubmatch(content, -1)
+
+	for _, match := range edgeMatches {
+		if len(match) < 3 {
+			continue
+		}
+
+		fromID := match[1]
+		toID := match[2]
+
+		var attrs map[string]string
+		if len(match) > 3 && match[3] != "" {
+			attrs = parseAttributes(match[3])
+		} else {
+			attrs = make(map[string]string)
+		}
 
 		e := &Edge{
 			FromID:   fromID,
 			ToID:     toID,
-			Relation: getAttrFromGV(edge.Attrs, "relation"),
-			Note:     getAttrFromGV(edge.Attrs, "note"),
+			Relation: attrs["relation"],
+			Note:     attrs["note"],
 		}
 
 		result.Edges = append(result.Edges, e)
 	}
 
 	return result, nil
+}
+
+// parseAttributes extracts key="value" pairs from attribute string.
+func parseAttributes(attrsStr string) map[string]string {
+	result := make(map[string]string)
+
+	// Pattern: key="value" (handles escaped quotes inside values)
+	attrPattern := regexp.MustCompile(`(\w+)="([^"]*)"`)
+	matches := attrPattern.FindAllStringSubmatch(attrsStr, -1)
+
+	for _, match := range matches {
+		if len(match) >= 3 {
+			key := match[1]
+			value := match[2]
+			result[key] = value
+		}
+	}
+
+	return result
 }
 
 // ToDOT converts the graph back to DOT format.
@@ -252,47 +287,7 @@ func (g *Graph) Subgraph(nodeIDs []string, depth int) *Graph {
 
 // Helper functions
 
-// unquote removes surrounding quotes from a string if present.
-func unquote(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// getAttrFromGV extracts an attribute value from gographviz Attrs, unquoting if necessary.
-func getAttrFromGV(attrs gographviz.Attrs, key string) string {
-	// Try to find the attribute by creating an Attr key
-	for k, v := range attrs {
-		if string(k) == key {
-			return unquote(v)
-		}
-	}
-	return ""
-}
-
 // escapeQuotes escapes double quotes in strings for DOT format.
 func escapeQuotes(s string) string {
 	return strings.ReplaceAll(s, "\"", "\\\"")
-}
-
-// buildRawDOTFromGV constructs the raw DOT representation of a node from gographviz Attrs.
-//
-//nolint:gocritic // We need literal quotes in DOT format
-func buildRawDOTFromGV(nodeID string, attrs gographviz.Attrs) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\"%s\" [", nodeID))
-
-	first := true
-	for key, val := range attrs {
-		if !first {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(fmt.Sprintf("%s=%s", string(key), val))
-		first = false
-	}
-
-	sb.WriteString("]")
-	return sb.String()
 }

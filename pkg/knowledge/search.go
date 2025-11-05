@@ -29,10 +29,12 @@ func ExtractKeyTerms(description string, acceptanceCriteria []string) string {
 		"those": true, "i": true, "you": true, "he": true, "she": true,
 		"it": true, "we": true, "they": true, "what": true, "which": true,
 		"who": true, "when": true, "where": true, "why": true, "how": true,
+		"using": true, "able": true, "use": true, "support": true,
 	}
 
-	// 4. Build frequency map (case-insensitive)
+	// 4. Build frequency map (case-insensitive counting, keep first-seen case)
 	freq := make(map[string]int)
+	caseMap := make(map[string]string) // lowercase -> original case
 	for _, token := range tokens {
 		lower := strings.ToLower(token)
 		if len(lower) < 3 { // Skip very short words
@@ -41,7 +43,11 @@ func ExtractKeyTerms(description string, acceptanceCriteria []string) string {
 		if stopWords[lower] {
 			continue
 		}
-		freq[token]++ // Keep original case
+		freq[lower]++
+		// Keep the first-seen case variant
+		if _, exists := caseMap[lower]; !exists {
+			caseMap[lower] = token
+		}
 	}
 
 	// 5. Sort by frequency, take top 20
@@ -50,8 +56,8 @@ func ExtractKeyTerms(description string, acceptanceCriteria []string) string {
 		freq int
 	}
 	sorted := make([]termFreq, 0, len(freq))
-	for term, f := range freq {
-		sorted = append(sorted, termFreq{term, f})
+	for lowerTerm, f := range freq {
+		sorted = append(sorted, termFreq{lowerTerm, f})
 	}
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].freq > sorted[j].freq
@@ -64,7 +70,7 @@ func ExtractKeyTerms(description string, acceptanceCriteria []string) string {
 
 	terms := make([]string, len(sorted))
 	for i, tf := range sorted {
-		terms[i] = tf.term
+		terms[i] = caseMap[tf.term] // Use the first-seen case
 	}
 
 	return strings.Join(terms, " ")
