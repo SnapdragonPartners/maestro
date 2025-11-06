@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/knowledge"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -132,12 +134,15 @@ REQUIRED: Your response must include at least one DevOps story for container set
 		}
 	}
 
-	// 3. Parse spec with LLM to get detailed requirements
+	// 3. Load architectural knowledge context for spec analysis
+	knowledgeContext := d.loadArchitecturalKnowledge()
+
+	// 4. Parse spec with LLM to get detailed requirements
 	if d.llmClient == nil {
 		return StateError, fmt.Errorf("LLM client not available - spec analysis requires LLM")
 	}
 
-	requirements, err := d.parseSpecWithLLM(ctx, string(rawSpecContent)+containerContext, specFile)
+	requirements, err := d.parseSpecWithLLM(ctx, string(rawSpecContent)+containerContext, specFile, knowledgeContext)
 	if err != nil {
 		return StateError, fmt.Errorf("LLM spec analysis failed: %w", err)
 	}
@@ -200,19 +205,20 @@ REQUIRED: Your response must include at least one DevOps story for container set
 	return StateDispatching, nil
 }
 
-// parseSpecWithLLM uses the LLM to analyze the specification.
-func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile string) ([]Requirement, error) {
+// parseSpecWithLLM uses the LLM to analyze the specification with architectural knowledge context.
+func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile, knowledgeContext string) ([]Requirement, error) {
 	// Check if renderer is available.
 	if d.renderer == nil {
 		return nil, fmt.Errorf("template renderer not available - falling back to deterministic parsing")
 	}
 
-	// LLM-first approach: send raw content directly to LLM.
+	// LLM-first approach: send raw content directly to LLM with knowledge context.
 	templateData := &templates.TemplateData{
 		TaskContent: rawSpecContent,
 		Extra: map[string]any{
-			"spec_file_path": specFile,
-			"mode":           "llm_analysis",
+			"spec_file_path":    specFile,
+			"mode":              "llm_analysis",
+			"knowledge_context": knowledgeContext,
 		},
 	}
 
@@ -221,8 +227,9 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile 
 		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
 	}
 
-	// Get LLM response using centralized helper
-	llmAnalysis, err := d.callLLMWithTemplate(ctx, prompt)
+	// Get LLM response with read tools to inspect the codebase
+	scopingTools := d.getScopingTools()
+	llmAnalysis, err := d.callLLMWithTools(ctx, prompt, scopingTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
 	}
@@ -488,4 +495,51 @@ func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
 
 	// Return special error that triggers retry flow
 	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")
+}
+
+// loadArchitecturalKnowledge loads the knowledge graph and filters to architecture-level nodes.
+// Returns formatted DOT graph string for inclusion in scoping template.
+func (d *Driver) loadArchitecturalKnowledge() string {
+	// Try to load knowledge.dot from workDir
+	knowledgePath := filepath.Join(d.workDir, ".maestro", "knowledge.dot")
+
+	// Check if file exists
+	content, err := os.ReadFile(knowledgePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			d.logger.Debug("📚 No knowledge.dot found, creating default graph")
+			// Create default knowledge graph if it doesn't exist
+			if mkdirErr := os.MkdirAll(filepath.Dir(knowledgePath), 0755); mkdirErr != nil {
+				d.logger.Warn("Failed to create .maestro directory: %v", mkdirErr)
+				return ""
+			}
+			if writeErr := os.WriteFile(knowledgePath, []byte(knowledge.DefaultKnowledgeGraph), 0644); writeErr != nil {
+				d.logger.Warn("Failed to write default knowledge graph: %v", writeErr)
+				return ""
+			}
+			content = []byte(knowledge.DefaultKnowledgeGraph)
+		} else {
+			d.logger.Warn("Failed to read knowledge.dot: %v", err)
+			return ""
+		}
+	}
+
+	// Parse the DOT graph
+	graph, err := knowledge.ParseDOT(string(content))
+	if err != nil {
+		d.logger.Warn("Failed to parse knowledge graph: %v", err)
+		return ""
+	}
+
+	// Filter to architecture-level nodes only
+	architectureGraph := graph.Filter(func(node *knowledge.Node) bool {
+		return node.Level == "architecture"
+	})
+
+	// Convert back to DOT format
+	architectureDOT := architectureGraph.ToDOT()
+
+	d.logger.Info("📚 Loaded architectural knowledge (%d nodes)", len(architectureGraph.Nodes))
+
+	return architectureDOT
 }

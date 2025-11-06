@@ -9,6 +9,18 @@ I have completed my analysis and created an implementation plan for this story.
 ## Implementation Plan
 
 {{.Extra.PlanContent}}
+{{if .Extra.KnowledgePack}}
+
+## Relevant Architectural Knowledge
+
+The following architectural patterns and rules are relevant to this story:
+
+```dot
+{{.Extra.KnowledgePack}}
+```
+
+**Review Note**: Please verify the implementation plan aligns with these established patterns, especially any rules marked as high or critical priority.
+{{end}}
 
 ## Review Request
 

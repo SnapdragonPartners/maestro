@@ -339,6 +339,12 @@ issues:
         - govet
       text: "fieldalignment:"
       path: "pkg/(config|proto)/.*\\.go"
+
+    # Disable fieldalignment for test files
+    - linters:
+        - govet
+      text: "fieldalignment:"
+      path: "_test\\.go"
       
     # Disable specific gocritic rules that are too noisy
     - linters:

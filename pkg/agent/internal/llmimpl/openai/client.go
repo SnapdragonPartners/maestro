@@ -57,13 +57,34 @@ func (o *O3Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.
 
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 
+	// Convert tools if provided
+	var tools []openai.Tool
+	if len(in.Tools) > 0 {
+		tools = make([]openai.Tool, len(in.Tools))
+		for i, tool := range in.Tools {
+			tools[i] = openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.InputSchema,
+				},
+			}
+		}
+	}
+
 	// Make API request.
-	resp, err := o.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:               o.model,
 		Messages:            messages,
 		MaxCompletionTokens: in.MaxTokens,
 		// Note: O3 models have beta limitations - temperature is fixed at 1.
-	})
+	}
+	if len(tools) > 0 {
+		req.Tools = tools
+	}
+
+	resp, err := o.client.CreateChatCompletion(ctx, req)
 
 	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
 

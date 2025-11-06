@@ -11,10 +11,8 @@ import (
 	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
-	"orchestrator/pkg/chat"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
-	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 )
 
@@ -140,11 +138,9 @@ type Supervisor struct {
 func NewSupervisor(k *kernel.Kernel) *Supervisor {
 	logger := logx.NewLogger("supervisor")
 
-	// Create database operations for chat service
-	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
-
-	// Create chat service with scanner and config
-	chatService := chat.NewService(dbOps, k.Config.Chat)
+	// Use the kernel's chat service (already initialized with scanner and config)
+	// Don't create a duplicate chat service
+	chatService := k.ChatService
 
 	// Create the agent factory with kernel dependencies (lightweight)
 	// Pass the shared LLM factory to ensure proper rate limiting across all agents

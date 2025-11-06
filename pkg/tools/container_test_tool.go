@@ -160,8 +160,7 @@ func (c *ContainerTestTool) buildDockerArgs(args map[string]any, containerName, 
 	}
 
 	// Set default working directory to /workspace
-	defaultWorkingDir := "/workspace"
-	workingDir := utils.GetMapFieldOr(args, "working_dir", defaultWorkingDir)
+	workingDir := utils.GetMapFieldOr(args, "working_dir", DefaultWorkspaceDir)
 	if workingDir != "" {
 		dockerArgs = append(dockerArgs, "-w", workingDir)
 	}

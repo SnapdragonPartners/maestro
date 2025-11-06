@@ -79,6 +79,8 @@ func (a *ArchitectExecutor) Available() bool {
 }
 
 // Start creates and starts the architect container with read-only mounts to all coder workspaces.
+//
+//nolint:cyclop // Complexity from mounting multiple workspaces is acceptable.
 func (a *ArchitectExecutor) Start(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -113,14 +115,34 @@ func (a *ArchitectExecutor) Start(ctx context.Context) error {
 	// Network enabled (architect needs to communicate with LLM APIs)
 	// Network is enabled by default, no --network flag needed
 
+	// Mount architect workspace (read-only)
+	architectDir := filepath.Join(a.projectDir, "architect-001")
+	absArchitectDir, archErr := filepath.Abs(architectDir)
+	if archErr != nil {
+		return fmt.Errorf("failed to resolve architect workspace path: %w", archErr)
+	}
+	hostArchitectPath := normalizePath(absArchitectDir)
+
+	// Verify architect workspace exists
+	if stat, statErr := os.Stat(hostArchitectPath); os.IsNotExist(statErr) {
+		return fmt.Errorf("architect workspace does not exist at %s - run workspace verification/setup first", hostArchitectPath)
+	} else if statErr != nil {
+		return fmt.Errorf("failed to stat architect workspace %s: %w", hostArchitectPath, statErr)
+	} else {
+		a.logger.Debug("Mounting architect workspace: %s (mode: %v)", hostArchitectPath, stat.Mode())
+	}
+
+	// Mount as read-only: host:container:ro
+	args = append(args, "--volume", fmt.Sprintf("%s:/mnt/architect:ro", hostArchitectPath))
+
 	// Mount all coder workspace directories (read-only)
 	for i := 1; i <= a.maxCoders; i++ {
 		coderDir := filepath.Join(a.projectDir, fmt.Sprintf("coder-%03d", i))
 
 		// Convert to absolute path
-		absCoderDir, err := filepath.Abs(coderDir)
-		if err != nil {
-			return fmt.Errorf("failed to resolve coder workspace path: %w", err)
+		absCoderDir, coderErr := filepath.Abs(coderDir)
+		if coderErr != nil {
+			return fmt.Errorf("failed to resolve coder workspace path: %w", coderErr)
 		}
 
 		// Normalize path for cross-platform

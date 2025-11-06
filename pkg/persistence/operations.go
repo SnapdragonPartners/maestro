@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"orchestrator/pkg/knowledge"
 )
 
 // Request represents a database operation request.
@@ -52,6 +54,12 @@ const (
 	OpGetChatMessages  = "get_chat_messages"
 	OpGetChatCursor    = "get_chat_cursor"
 	OpUpdateChatCursor = "update_chat_cursor"
+
+	// Knowledge graph operations.
+	OpStoreKnowledgePack     = "store_knowledge_pack"
+	OpRetrieveKnowledgePack  = "retrieve_knowledge_pack"
+	OpCheckKnowledgeModified = "check_knowledge_modified"
+	OpRebuildKnowledgeIndex  = "rebuild_knowledge_index"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -71,6 +79,41 @@ type UpdateStoryStatusRequest struct {
 type BatchUpsertStoriesWithDependenciesRequest struct {
 	Stories      []*Story           `json:"stories"`      // Stories to upsert
 	Dependencies []*StoryDependency `json:"dependencies"` // Dependencies to add after stories are inserted
+}
+
+// StoreKnowledgePackRequest represents a request to store a knowledge pack for a story.
+type StoreKnowledgePackRequest struct {
+	StoryID     string `json:"story_id"`
+	SessionID   string `json:"session_id"`
+	Subgraph    string `json:"subgraph"`
+	SearchTerms string `json:"search_terms"`
+	NodeCount   int    `json:"node_count"`
+}
+
+// RetrieveKnowledgePackRequest represents a request to retrieve a knowledge pack.
+type RetrieveKnowledgePackRequest struct {
+	SessionID   string `json:"session_id"`
+	SearchTerms string `json:"search_terms"`
+	Level       string `json:"level"`       // Filter by level: "architecture", "implementation", or "all"
+	MaxResults  int    `json:"max_results"` // Maximum nodes to return
+	Depth       int    `json:"depth"`       // Neighbor depth
+}
+
+// RetrieveKnowledgePackResponse represents the response from knowledge retrieval.
+type RetrieveKnowledgePackResponse struct {
+	Subgraph string `json:"subgraph"` // DOT format subgraph
+	Count    int    `json:"count"`    // Number of nodes in result
+}
+
+// CheckKnowledgeModifiedRequest represents a request to check if knowledge.dot was modified.
+type CheckKnowledgeModifiedRequest struct {
+	DotPath string `json:"dot_path"` // Path to knowledge.dot file
+}
+
+// RebuildKnowledgeIndexRequest represents a request to rebuild the knowledge index.
+type RebuildKnowledgeIndexRequest struct {
+	DotPath   string `json:"dot_path"`   // Path to knowledge.dot file
+	SessionID string `json:"session_id"` // Session ID for isolation
 }
 
 // DatabaseOperations provides methods for database operations.
@@ -1006,5 +1049,62 @@ func (ops *DatabaseOperations) InsertToolExecution(toolExec *ToolExecution) erro
 		return fmt.Errorf("failed to insert tool execution for agent %s: %w", toolExec.AgentID, err)
 	}
 
+	return nil
+}
+
+// StoreKnowledgePack stores a knowledge pack for a story.
+func (ops *DatabaseOperations) StoreKnowledgePack(req *StoreKnowledgePackRequest) error {
+	query := `
+		INSERT OR REPLACE INTO knowledge_packs (
+			story_id, session_id, subgraph, search_terms, node_count,
+			created_at, last_used
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`
+
+	now := time.Now()
+	_, err := ops.db.Exec(query,
+		req.StoryID, ops.sessionID, req.Subgraph, req.SearchTerms, req.NodeCount,
+		now, now)
+	if err != nil {
+		return fmt.Errorf("failed to store knowledge pack for story %s: %w", req.StoryID, err)
+	}
+
+	return nil
+}
+
+// RetrieveKnowledgePack retrieves a knowledge pack using the knowledge retrieval system.
+func (ops *DatabaseOperations) RetrieveKnowledgePack(req *RetrieveKnowledgePackRequest) (*RetrieveKnowledgePackResponse, error) {
+	// Use the knowledge package to retrieve the pack
+	result, err := knowledge.Retrieve(ops.db, ops.sessionID, knowledge.RetrievalOptions{
+		Terms:      req.SearchTerms,
+		Level:      req.Level,
+		MaxResults: req.MaxResults,
+		Depth:      req.Depth,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("knowledge retrieval failed: %w", err)
+	}
+
+	return &RetrieveKnowledgePackResponse{
+		Subgraph: result.Subgraph,
+		Count:    result.Count,
+	}, nil
+}
+
+// CheckKnowledgeModified checks if the knowledge graph file has been modified since last index.
+func (ops *DatabaseOperations) CheckKnowledgeModified(req *CheckKnowledgeModifiedRequest) (bool, error) {
+	modified, err := knowledge.IsGraphModified(ops.db, req.DotPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to check knowledge modification: %w", err)
+	}
+	return modified, nil
+}
+
+// RebuildKnowledgeIndex rebuilds the knowledge graph index from the DOT file.
+func (ops *DatabaseOperations) RebuildKnowledgeIndex(req *RebuildKnowledgeIndexRequest) error {
+	if err := knowledge.RebuildIndex(ops.db, req.DotPath, req.SessionID); err != nil {
+		return fmt.Errorf("failed to rebuild knowledge index: %w", err)
+	}
 	return nil
 }

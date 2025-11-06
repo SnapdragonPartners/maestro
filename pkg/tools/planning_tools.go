@@ -145,6 +145,10 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 					MinItems: &[]int{1}[0],
 					MaxItems: &[]int{25}[0],
 				},
+				"knowledge_pack": {
+					Type:        "string",
+					Description: "Relevant knowledge graph subgraph in DOT format (auto-populated, optional)",
+				},
 			},
 			Required: []string{"plan", "confidence", "todos"},
 		},
@@ -261,6 +265,14 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 		}
 	}
 
+	// Extract optional knowledge_pack.
+	knowledgePack := ""
+	if packVal, hasPack := args["knowledge_pack"]; hasPack {
+		if packStr, ok := packVal.(string); ok {
+			knowledgePack = packStr
+		}
+	}
+
 	return map[string]any{
 		"success":             true,
 		"message":             "Plan submitted successfully, advancing to PLAN_REVIEW",
@@ -269,6 +281,7 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 		"exploration_summary": explorationSummary,
 		"risks":               risks,
 		"todos":               validatedTodos,
+		"knowledge_pack":      knowledgePack,
 		"next_state":          "PLAN_REVIEW",
 	}, nil
 }

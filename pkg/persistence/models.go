@@ -54,6 +54,7 @@ type Story struct {
 	// Queue-specific fields (not persisted to database)
 	DependsOn       []string `json:"depends_on" db:"-"`       // Story dependencies
 	EstimatedPoints int      `json:"estimated_points" db:"-"` // Estimation points
+	KnowledgePack   string   `json:"knowledge_pack" db:"-"`   // Relevant knowledge subgraph (DOT format)
 }
 
 // StoryDependency represents a dependency relationship between stories.

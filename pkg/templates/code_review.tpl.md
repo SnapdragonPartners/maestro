@@ -7,9 +7,21 @@ You are an Architect AI reviewing code implementation from a coding agent.
 
 {{if .Extra.story_title}}
 ## Story Context
-**Story ID:** {{.Extra.story_id}}  
-**Story Title:** {{.Extra.story_title}}  
+**Story ID:** {{.Extra.story_id}}
+**Story Title:** {{.Extra.story_title}}
 **Story Type:** {{.Extra.story_type}}
+{{end}}
+{{if .Extra.KnowledgePack}}
+
+## Relevant Architectural Knowledge
+
+The following architectural patterns and rules are relevant to this story:
+
+```dot
+{{.Extra.KnowledgePack}}
+```
+
+**Review Note**: Please verify the implementation aligns with these established patterns, especially any rules marked as high or critical priority.
 {{end}}
 
 {{if .Extra.submission_context}}

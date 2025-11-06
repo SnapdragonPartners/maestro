@@ -79,7 +79,10 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		confidence := "high - all tests passing"
 
-		codeContent := c.getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan)
+		// Get knowledge pack from state machine
+		knowledgePack := utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
+
+		codeContent := c.getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan, knowledgePack)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Code implementation requires architect review", proto.ApprovalTypeCode)
 		approvalEff.StoryID = storyID
@@ -265,7 +268,7 @@ func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, s
 }
 
 // getCodeReviewContent generates code review request content using templates.
-func (c *Coder) getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan string) string {
+func (c *Coder) getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan, knowledgePack string) string {
 	// Build template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
@@ -275,6 +278,7 @@ func (c *Coder) getCodeReviewContent(summary, evidence, confidence, gitDiff, ori
 			"GitDiff":       gitDiff,
 			"OriginalStory": originalStory,
 			"ApprovedPlan":  plan,
+			"KnowledgePack": knowledgePack,
 		},
 	}
 

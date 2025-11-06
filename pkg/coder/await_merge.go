@@ -3,11 +3,14 @@ package coder
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 )
@@ -39,6 +42,10 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 	switch result.Status {
 	case string(proto.ApprovalStatusApproved):
 		c.logger.Info("🧑‍💻 PR merged successfully, story complete")
+
+		// Check if knowledge.dot was modified and trigger reindexing
+		c.checkAndReindexKnowledge()
+
 		return proto.StateDone, false, nil
 
 	case string(proto.ApprovalStatusNeedsChanges):
@@ -80,5 +87,54 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 
 	default:
 		return proto.StateError, false, logx.Errorf("unknown merge status: %s", result.Status)
+	}
+}
+
+// checkAndReindexKnowledge checks if knowledge.dot was modified and triggers reindexing.
+func (c *Coder) checkAndReindexKnowledge() {
+	// Get workspace path
+	knowledgePath := filepath.Join(c.workDir, ".maestro", "knowledge.dot")
+
+	// Get session ID from config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		c.logger.Error("Failed to get config for knowledge reindexing: %v", err)
+		return
+	}
+
+	// Create response channel for modification check
+	responseChan := make(chan interface{}, 1)
+
+	// Check if graph was modified via persistence queue
+	c.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpCheckKnowledgeModified,
+		Data: &persistence.CheckKnowledgeModifiedRequest{
+			DotPath: knowledgePath,
+		},
+		Response: responseChan,
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-responseChan:
+		if err, ok := resp.(error); ok {
+			c.logger.Warn("Failed to check knowledge modification: %v", err)
+			return
+		}
+		if modified, ok := resp.(bool); ok && modified {
+			c.logger.Info("📚 Knowledge graph modified, triggering reindex")
+
+			// Trigger rebuild via persistence queue (fire-and-forget)
+			c.persistenceChannel <- &persistence.Request{
+				Operation: persistence.OpRebuildKnowledgeIndex,
+				Data: &persistence.RebuildKnowledgeIndexRequest{
+					DotPath:   knowledgePath,
+					SessionID: cfg.SessionID,
+				},
+				Response: nil, // Fire-and-forget
+			}
+		}
+	case <-time.After(2 * time.Second):
+		c.logger.Warn("Knowledge modification check timed out")
 	}
 }

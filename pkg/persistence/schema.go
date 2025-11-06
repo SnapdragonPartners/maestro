@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 9
+const CurrentSchemaVersion = 10
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -102,6 +102,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion8(db)
 	case 9:
 		return migrateToVersion9(db)
+	case 10:
+		return migrateToVersion10(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -218,6 +220,121 @@ func migrateToVersion9(db *sql.DB) error {
 	for _, migration := range migrations {
 		if _, err := db.Exec(migration); err != nil {
 			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateToVersion10 adds knowledge graph tables for storing architectural patterns and design decisions.
+func migrateToVersion10(db *sql.DB) error {
+	tables := []string{
+		// Node index
+		`CREATE TABLE IF NOT EXISTS nodes (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			type TEXT NOT NULL CHECK (type IN ('component','interface','abstraction','datastore','external','pattern','rule')),
+			level TEXT NOT NULL CHECK (level IN ('architecture','implementation')),
+			status TEXT NOT NULL CHECK (status IN ('current','deprecated','future','legacy')),
+			description TEXT NOT NULL,
+			tag TEXT,
+			component TEXT,
+			path TEXT,
+			example TEXT,
+			priority TEXT CHECK (priority IN ('critical','high','medium','low')),
+			raw_dot TEXT NOT NULL
+		)`,
+
+		// Edge index
+		`CREATE TABLE IF NOT EXISTS edges (
+			from_id TEXT NOT NULL,
+			to_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			relation TEXT NOT NULL CHECK (relation IN ('calls','uses','implements','configured_with','must_follow','must_not_use','superseded_by','supersedes','coexists_with')),
+			note TEXT,
+			PRIMARY KEY (from_id, to_id, relation)
+		)`,
+
+		// Cached knowledge packs (story-specific subgraphs)
+		`CREATE TABLE IF NOT EXISTS knowledge_packs (
+			story_id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			subgraph TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			node_count INTEGER,
+			search_terms TEXT
+		)`,
+
+		// Knowledge graph metadata (file modification tracking)
+		`CREATE TABLE IF NOT EXISTS knowledge_metadata (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			session_id TEXT NOT NULL,
+			dot_file_mtime INTEGER NOT NULL,
+			last_indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Full-text search index
+		`CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+			id, tag, description, path, example,
+			content=nodes
+		)`,
+	}
+
+	// Create tables
+	for _, ddl := range tables {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("failed to create knowledge table: %w", err)
+		}
+	}
+
+	// FTS sync triggers (keep FTS table in sync with nodes table)
+	triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
+			INSERT INTO nodes_fts(rowid, id, tag, description, path, example)
+			VALUES (new.rowid, new.id, new.tag, new.description, new.path, new.example);
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
+			UPDATE nodes_fts SET
+				id = new.id,
+				tag = new.tag,
+				description = new.description,
+				path = new.path,
+				example = new.example
+			WHERE rowid = new.rowid;
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
+			DELETE FROM nodes_fts WHERE rowid = old.rowid;
+		END`,
+	}
+
+	// Create triggers
+	for _, trigger := range triggers {
+		if _, err := db.Exec(trigger); err != nil {
+			return fmt.Errorf("failed to create FTS trigger: %w", err)
+		}
+	}
+
+	// Performance indices
+	indices := []string{
+		"CREATE INDEX IF NOT EXISTS idx_nodes_session ON nodes(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_level ON nodes(level)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_component ON nodes(component)",
+		"CREATE INDEX IF NOT EXISTS idx_edges_session ON edges(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id)",
+		"CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id)",
+		"CREATE INDEX IF NOT EXISTS idx_packs_session ON knowledge_packs(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_packs_last_used ON knowledge_packs(last_used)",
+	}
+
+	// Create indices
+	for _, idx := range indices {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create knowledge index: %w", err)
 		}
 	}
 
@@ -379,6 +496,57 @@ func createSchema(db *sql.DB) error {
 			duration_ms INTEGER,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
+
+		// Knowledge graph nodes
+		`CREATE TABLE IF NOT EXISTS nodes (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			type TEXT NOT NULL CHECK (type IN ('component','interface','abstraction','datastore','external','pattern','rule')),
+			level TEXT NOT NULL CHECK (level IN ('architecture','implementation')),
+			status TEXT NOT NULL CHECK (status IN ('current','deprecated','future','legacy')),
+			description TEXT NOT NULL,
+			tag TEXT,
+			component TEXT,
+			path TEXT,
+			example TEXT,
+			priority TEXT CHECK (priority IN ('critical','high','medium','low')),
+			raw_dot TEXT NOT NULL
+		)`,
+
+		// Knowledge graph edges
+		`CREATE TABLE IF NOT EXISTS edges (
+			from_id TEXT NOT NULL,
+			to_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			relation TEXT NOT NULL CHECK (relation IN ('calls','uses','implements','configured_with','must_follow','must_not_use','superseded_by','supersedes','coexists_with')),
+			note TEXT,
+			PRIMARY KEY (from_id, to_id, relation)
+		)`,
+
+		// Cached knowledge packs (story-specific subgraphs)
+		`CREATE TABLE IF NOT EXISTS knowledge_packs (
+			story_id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			subgraph TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			node_count INTEGER,
+			search_terms TEXT
+		)`,
+
+		// Knowledge graph metadata (file modification tracking)
+		`CREATE TABLE IF NOT EXISTS knowledge_metadata (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			session_id TEXT NOT NULL,
+			dot_file_mtime INTEGER NOT NULL,
+			last_indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// Full-text search index for nodes
+		`CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+			id, tag, description, path, example,
+			content=nodes
+		)`,
 	}
 
 	// Create indices
@@ -420,12 +588,52 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_story ON tool_executions(story_id)",
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_tool ON tool_executions(tool_name)",
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_created ON tool_executions(created_at)",
+
+		// Knowledge graph indices
+		"CREATE INDEX IF NOT EXISTS idx_nodes_session ON nodes(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_level ON nodes(level)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status)",
+		"CREATE INDEX IF NOT EXISTS idx_nodes_component ON nodes(component)",
+		"CREATE INDEX IF NOT EXISTS idx_edges_session ON edges(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id)",
+		"CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id)",
+		"CREATE INDEX IF NOT EXISTS idx_packs_session ON knowledge_packs(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_packs_last_used ON knowledge_packs(last_used)",
 	}
 
 	// Execute table creation
 	for _, ddl := range tables {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
+		}
+	}
+
+	// Create FTS triggers for knowledge graph (sync nodes table with FTS index)
+	ftsTriggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
+			INSERT INTO nodes_fts(rowid, id, tag, description, path, example)
+			VALUES (new.rowid, new.id, new.tag, new.description, new.path, new.example);
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
+			UPDATE nodes_fts SET
+				id = new.id,
+				tag = new.tag,
+				description = new.description,
+				path = new.path,
+				example = new.example
+			WHERE rowid = new.rowid;
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
+			DELETE FROM nodes_fts WHERE rowid = old.rowid;
+		END`,
+	}
+
+	for _, trigger := range ftsTriggers {
+		if _, err := db.Exec(trigger); err != nil {
+			return fmt.Errorf("failed to create FTS trigger: %w", err)
 		}
 	}
 

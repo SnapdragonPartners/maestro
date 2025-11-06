@@ -3,26 +3,30 @@ package tools
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	execpkg "orchestrator/pkg/exec"
 )
 
-// ListFilesTool allows listing files in coder workspaces.
+// ListFilesTool allows listing files in workspaces.
 type ListFilesTool struct {
-	executor   execpkg.Executor
-	maxResults int
+	executor      execpkg.Executor
+	workspaceRoot string // Base path for file operations
+	maxResults    int
 }
 
 // NewListFilesTool creates a new list_files tool.
-func NewListFilesTool(executor execpkg.Executor, maxResults int) *ListFilesTool {
+func NewListFilesTool(executor execpkg.Executor, workspaceRoot string, maxResults int) *ListFilesTool {
 	if maxResults <= 0 {
 		maxResults = 1000 // Default: 1000 files
 	}
+	if workspaceRoot == "" {
+		workspaceRoot = "/workspace" // Default workspace path
+	}
 	return &ListFilesTool{
-		executor:   executor,
-		maxResults: maxResults,
+		executor:      executor,
+		workspaceRoot: workspaceRoot,
+		maxResults:    maxResults,
 	}
 }
 
@@ -33,76 +37,55 @@ func (t *ListFilesTool) Name() string {
 
 // PromptDocumentation returns formatted tool documentation for prompts.
 func (t *ListFilesTool) PromptDocumentation() string {
-	return `- **list_files** - List files in a coder workspace matching a pattern
-  - Parameters: coder_id (string, REQUIRED), pattern (string, optional glob pattern)
-  - Use to explore what files exist in a workspace`
+	return `- **list_files** - List files in the workspace matching a pattern
+  - Parameters: pattern (string, optional glob pattern)
+  - Use to explore what files exist in the codebase`
 }
 
 // Definition returns the tool definition for LLM.
 func (t *ListFilesTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        ToolListFiles,
-		Description: "List files in a coder workspace matching a pattern. Use this to explore what files exist.",
+		Description: "List files in the workspace matching a pattern. Use this to explore what files exist in the codebase.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
-				"coder_id": {
-					Type:        "string",
-					Description: "Coder ID (e.g., 'coder-001', 'coder-002')",
-				},
 				"pattern": {
 					Type:        "string",
 					Description: "File pattern to match (shell glob, e.g., '*.go', 'src/**/*.js'). Defaults to '*' (all files).",
 				},
 			},
-			Required: []string{"coder_id"},
+			Required: []string{},
 		},
 	}
 }
 
 // Exec executes the tool with the given arguments.
 func (t *ListFilesTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract arguments
-	coderID, ok := args["coder_id"].(string)
-	if !ok || coderID == "" {
-		return nil, fmt.Errorf("coder_id is required and must be a string")
-	}
-
+	// Extract pattern (optional)
 	pattern := "*"
 	if p, ok := args["pattern"].(string); ok && p != "" {
 		pattern = p
 	}
 
-	// Validate coder_id format
-	if !strings.HasPrefix(coderID, "coder-") {
-		return map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("invalid coder_id format: %s (expected 'coder-001' format)", coderID),
-		}, nil
-	}
-
-	// Construct base path in container
-	const codersMountPath = "/mnt/coders"
-	basePath := filepath.Join(codersMountPath, coderID)
-
 	// Use find with pattern matching, limit results
 	// Use -path instead of -name to support **/ patterns
 	cmd := []string{"sh", "-c", fmt.Sprintf(
 		"cd %s && find . -type f -path './%s' 2>/dev/null | head -n %d",
-		basePath, pattern, t.maxResults,
+		t.workspaceRoot, pattern, t.maxResults,
 	)}
 
 	result, err := t.executor.Run(ctx, cmd, nil)
 	if err != nil {
 		return map[string]any{
 			"success": false,
-			"error":   fmt.Sprintf("failed to list files in %s: %v", coderID, err),
+			"error":   fmt.Sprintf("failed to list files: %v", err),
 		}, nil
 	}
 	if result.ExitCode != 0 {
 		return map[string]any{
 			"success": false,
-			"error":   fmt.Sprintf("failed to list files in %s: %s", coderID, result.Stderr),
+			"error":   fmt.Sprintf("failed to list files: %s", result.Stderr),
 		}, nil
 	}
 
@@ -129,7 +112,6 @@ func (t *ListFilesTool) Exec(ctx context.Context, args map[string]any) (any, err
 		"success":   true,
 		"files":     files,
 		"count":     len(files),
-		"coder_id":  coderID,
 		"pattern":   pattern,
 		"truncated": truncated,
 	}, nil
