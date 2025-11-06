@@ -9,20 +9,25 @@ import (
 	execpkg "orchestrator/pkg/exec"
 )
 
-// ReadFileTool allows reading file contents from coder workspaces.
+// ReadFileTool allows reading file contents from workspaces.
 type ReadFileTool struct {
-	executor     execpkg.Executor
-	maxSizeBytes int64
+	executor      execpkg.Executor
+	workspaceRoot string // Base path for file operations (e.g., "/mnt/architect" or "/mnt/coders/coder-001")
+	maxSizeBytes  int64
 }
 
 // NewReadFileTool creates a new read_file tool.
-func NewReadFileTool(executor execpkg.Executor, maxSizeBytes int64) *ReadFileTool {
+func NewReadFileTool(executor execpkg.Executor, workspaceRoot string, maxSizeBytes int64) *ReadFileTool {
 	if maxSizeBytes <= 0 {
 		maxSizeBytes = 1048576 // Default: 1MB
 	}
+	if workspaceRoot == "" {
+		workspaceRoot = "/workspace" // Default workspace path
+	}
 	return &ReadFileTool{
-		executor:     executor,
-		maxSizeBytes: maxSizeBytes,
+		executor:      executor,
+		workspaceRoot: workspaceRoot,
+		maxSizeBytes:  maxSizeBytes,
 	}
 }
 
@@ -33,52 +38,35 @@ func (t *ReadFileTool) Name() string {
 
 // PromptDocumentation returns formatted tool documentation for prompts.
 func (t *ReadFileTool) PromptDocumentation() string {
-	return `- **read_file** - Read contents of a file from a coder workspace
-  - Parameters: coder_id (string, REQUIRED), path (string, REQUIRED)
-  - Use to inspect code that coders have written`
+	return `- **read_file** - Read contents of a file from the workspace
+  - Parameters: path (string, REQUIRED)
+  - Use to inspect code files and understand the codebase`
 }
 
 // Definition returns the tool definition for LLM.
 func (t *ReadFileTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        ToolReadFile,
-		Description: "Read contents of a file from a coder workspace. Use this to inspect code that coders have written.",
+		Description: "Read contents of a file from the workspace. Use this to inspect code files and understand the codebase.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
-				"coder_id": {
-					Type:        "string",
-					Description: "Coder ID (e.g., 'coder-001', 'coder-002')",
-				},
 				"path": {
 					Type:        "string",
-					Description: "Relative path to file within coder workspace",
+					Description: "Relative path to file within workspace",
 				},
 			},
-			Required: []string{"coder_id", "path"},
+			Required: []string{"path"},
 		},
 	}
 }
 
 // Exec executes the tool with the given arguments.
 func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (any, error) {
-	// Extract arguments
-	coderID, ok := args["coder_id"].(string)
-	if !ok || coderID == "" {
-		return nil, fmt.Errorf("coder_id is required and must be a string")
-	}
-
+	// Extract path argument
 	path, ok := args["path"].(string)
 	if !ok || path == "" {
 		return nil, fmt.Errorf("path is required and must be a string")
-	}
-
-	// Validate coder_id format (should be coder-NNN)
-	if !strings.HasPrefix(coderID, "coder-") {
-		return map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("invalid coder_id format: %s (expected 'coder-001' format)", coderID),
-		}, nil
 	}
 
 	// Clean path to prevent directory traversal
@@ -90,9 +78,8 @@ func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (any, erro
 		}, nil
 	}
 
-	// Construct full path in container
-	const codersMountPath = "/mnt/coders"
-	containerPath := filepath.Join(codersMountPath, coderID, cleanPath)
+	// Construct full path using workspace root
+	containerPath := filepath.Join(t.workspaceRoot, cleanPath)
 
 	// Use head to limit file size
 	cmd := []string{"sh", "-c", fmt.Sprintf("head -c %d %s 2>&1", t.maxSizeBytes, containerPath)}
@@ -118,7 +105,6 @@ func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (any, erro
 		"success":   true,
 		"content":   result.Stdout,
 		"path":      path,
-		"coder_id":  coderID,
 		"truncated": truncated,
 	}, nil
 }

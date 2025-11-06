@@ -65,7 +65,7 @@ func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) 
 	// Extract working directory (default to /workspace)
 	workingDir, _ := args["working_dir"].(string)
 	if workingDir == "" {
-		workingDir = "/workspace"
+		workingDir = DefaultWorkspaceDir
 	}
 
 	// Extract workspace mount from context (this should be the host path)

@@ -444,7 +444,13 @@ func createReadFileTool(ctx AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("read_file tool requires an executor")
 	}
-	return NewReadFileTool(ctx.Executor, 1048576), nil // 1MB max
+	// Use WorkDir from context as workspace root
+	// This should be set by the caller (e.g., /mnt/architect or /mnt/coders/coder-001)
+	workspaceRoot := ctx.WorkDir
+	if workspaceRoot == "" {
+		return nil, fmt.Errorf("WorkDir is required for read_file tool")
+	}
+	return NewReadFileTool(ctx.Executor, workspaceRoot, 1048576), nil // 1MB max
 }
 
 // createListFilesTool creates a list_files tool instance.
@@ -452,7 +458,13 @@ func createListFilesTool(ctx AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("list_files tool requires an executor")
 	}
-	return NewListFilesTool(ctx.Executor, 1000), nil // 1000 files max
+	// Use WorkDir from context as workspace root
+	// This should be set by the caller (e.g., /mnt/architect or /mnt/coders/coder-001)
+	workspaceRoot := ctx.WorkDir
+	if workspaceRoot == "" {
+		return nil, fmt.Errorf("WorkDir is required for list_files tool")
+	}
+	return NewListFilesTool(ctx.Executor, workspaceRoot, 1000), nil // 1000 files max
 }
 
 // createGetDiffTool creates a get_diff tool instance.
@@ -469,11 +481,11 @@ func createSubmitReplyTool(_ AgentContext) (Tool, error) {
 }
 
 func getReadFileSchema() InputSchema {
-	return NewReadFileTool(nil, 0).Definition().InputSchema
+	return NewReadFileTool(nil, "", 0).Definition().InputSchema
 }
 
 func getListFilesSchema() InputSchema {
-	return NewListFilesTool(nil, 0).Definition().InputSchema
+	return NewListFilesTool(nil, "", 0).Definition().InputSchema
 }
 
 func getGetDiffSchema() InputSchema {

@@ -227,8 +227,9 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile,
 		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
 	}
 
-	// Get LLM response using centralized helper
-	llmAnalysis, err := d.callLLMWithTemplate(ctx, prompt)
+	// Get LLM response with read tools to inspect the codebase
+	scopingTools := d.getScopingTools()
+	llmAnalysis, err := d.callLLMWithTools(ctx, prompt, scopingTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
 	}

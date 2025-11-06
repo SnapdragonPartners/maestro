@@ -556,6 +556,11 @@ func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.Completi
 // callLLMWithTemplate renders a template and gets LLM response using the same pattern as coder.
 // This helper centralizes the architect's LLM call pattern with proper context management.
 func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string, error) {
+	return d.callLLMWithTools(ctx, prompt, nil)
+}
+
+// callLLMWithTools allows calling LLM with optional tools (used for SCOPING and REQUEST phases).
+func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
 	// Flush user buffer before LLM request (same as coder)
 	if err := d.contextManager.FlushUserBuffer(); err != nil {
 		return "", fmt.Errorf("failed to flush user buffer: %w", err)
@@ -564,14 +569,24 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 	// Build messages with context (same pattern as coder)
 	messages := d.buildMessagesWithContext(prompt)
 
+	// Convert tools.Tool interface to tools.ToolDefinition for CompletionRequest
+	var toolDefs []tools.ToolDefinition
+	if toolsList != nil {
+		toolDefs = make([]tools.ToolDefinition, len(toolsList))
+		for i, tool := range toolsList {
+			toolDefs[i] = tool.Definition()
+		}
+	}
+
 	req := agent.CompletionRequest{
 		Messages:  messages,
 		MaxTokens: agent.ArchitectMaxTokens,
+		Tools:     toolDefs,
 	}
 
 	// Get LLM response using same pattern as coder
-	d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens",
-		d.llmClient.GetModelName(), len(messages), req.MaxTokens)
+	d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools",
+		d.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs))
 
 	start := time.Now()
 	resp, err := d.llmClient.Complete(ctx, req)
@@ -866,4 +881,20 @@ func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
 
 	// Add to context as user message (tool response)
 	d.contextManager.AddMessage("tool", resultStr)
+}
+
+// getScopingTools creates read-only tools for the SCOPING phase.
+// These tools allow the architect to inspect its own workspace at /mnt/architect.
+func (d *Driver) getScopingTools() []tools.Tool {
+	if d.executor == nil {
+		d.logger.Warn("No executor available for scoping tools")
+		return nil
+	}
+
+	toolsList := []tools.Tool{
+		tools.NewReadFileTool(d.executor, "/mnt/architect", 1048576), // 1MB max
+		tools.NewListFilesTool(d.executor, "/mnt/architect", 1000),   // 1000 files max
+	}
+
+	return toolsList
 }
