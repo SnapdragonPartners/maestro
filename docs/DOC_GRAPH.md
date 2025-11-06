@@ -1,5 +1,45 @@
 # Maestro Knowledge Graph Implementation Spec
 
+## Implementation Status
+
+**Current Phase**: Phase 5 - Testing & Documentation (Stories 12-13)
+**Completion**: 12/13 stories completed (92%)
+**Test Coverage**: 44 automated tests, 100% passing, ~85% coverage
+
+### Completed Stories
+
+✅ **Story 1**: Database schema & migration (version 10) - COMPLETED
+✅ **Story 2**: DOT parser & validator - COMPLETED (custom regex-based parser)
+✅ **Story 3**: Indexer & graph operations - COMPLETED
+✅ **Story 4**: Search term extraction - COMPLETED
+✅ **Story 5**: Knowledge retrieval tool - COMPLETED
+✅ **Story 6**: Default graph & initialization - COMPLETED
+✅ **Story 7**: Planning state integration - COMPLETED
+✅ **Story 8**: Post-merge reindexing & architect workspace update - COMPLETED
+✅ **Story 9**: Scoping with knowledge context - COMPLETED
+✅ **Story 10**: Review templates & validation - COMPLETED
+✅ **Story 11**: Merge conflict handling - COMPLETED
+✅ **Story 12**: Comprehensive testing - COMPLETED (44/44 tests passing)
+⏳ **Story 13**: Metrics & monitoring - PENDING
+
+### Critical Bugs Fixed During Testing
+
+1. **NULL Field Handling** (retrieval.go): Scanner crashed on optional NULL fields - now uses sql.NullString
+2. **Schema Alignment**: Fixed id vs node_id column naming inconsistency
+3. **Metadata Pattern**: Changed from singleton to composite key (session_id, graph_path)
+4. **File Modification**: Fixed Unix timestamp granularity (>1 second required)
+5. **Search Quality**: Enhanced stop word filtering and case consolidation
+6. **Schema Completeness**: Added missing last_used column to knowledge_packs
+7. **Parser Compatibility**: Replaced gographviz with custom regex parser for arbitrary attributes
+
+### Implementation Notes
+
+**Parser Decision**: Switched from `github.com/awalterschulze/gographviz` to custom regex-based parser in Story 2. The library rejected custom attributes that are core to our schema. Custom parser is lenient, handles arbitrary attributes, and passes all tests.
+
+**Schema Version**: Implemented as version 10 in `pkg/persistence/schema.go` with full migration from version 9.
+
+**Workspace Architecture**: Architect reads from dedicated workspace at `<projectDir>/architect-001/` mounted as `/mnt/architect` in container. Workspace updated before SCOPING and after merges.
+
 ## Overview
 
 Implement a knowledge graph system that captures architectural patterns, components, and decisions to reduce review cycles and improve code consistency across agent-generated code. The system uses DOT format for storage and SQLite for indexing, with integration points throughout the agent workflow.

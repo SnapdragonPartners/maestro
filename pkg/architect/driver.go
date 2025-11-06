@@ -5,6 +5,7 @@ package architect
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/workspace"
 )
 
 // Story content constants.
@@ -98,7 +100,14 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 		// Fallback queue without persistence is no longer supported
 		panic("persistence channel is required - database storage is mandatory")
 	}
-	escalationHandler := NewEscalationHandler(workDir+"/logs", queue)
+
+	// Ensure logs directory exists
+	logsDir := workDir + "/logs"
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		fmt.Printf("WARNING: Failed to create logs directory %s: %v\n", logsDir, err)
+	}
+
+	escalationHandler := NewEscalationHandler(logsDir, queue)
 	logger := logx.NewLogger(architectID)
 
 	return &Driver{
@@ -149,8 +158,15 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	// Create architect with LLM integration
 	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
 
+	// Ensure architect workspace exists before starting container
+	architectWorkspace, wsErr := workspace.EnsureArchitectWorkspace(ctx, workDir)
+	if wsErr != nil {
+		return nil, fmt.Errorf("failed to ensure architect workspace: %w", wsErr)
+	}
+	architect.logger.Info("Architect workspace ready at: %s", architectWorkspace)
+
 	// Create and start architect container executor
-	// The architect container has read-only mounts to all coder workspaces
+	// The architect container has read-only mounts to all coder workspaces and architect workspace
 	architectExecutor := execpkg.NewArchitectExecutor(
 		config.BootstrapContainerTag, // Use bootstrap image (same as coders)
 		workDir,                      // Project directory containing coder-NNN directories

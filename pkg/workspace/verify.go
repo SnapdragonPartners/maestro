@@ -151,7 +151,12 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 		rep.Durations["container"] = time.Since(start)
 	}
 
-	// 6. External Tools (warnings only, never fatal)
+	// 6. Agent Workspaces (critical for agent execution)
+	start = time.Now()
+	verifyAgentWorkspaces(ctx, projectDir, fail, bootstrapFail, opts)
+	rep.Durations["workspaces"] = time.Since(start)
+
+	// 7. External Tools (warnings only, never fatal)
 	start = time.Now()
 	verifyExternalTools(warn)
 	rep.Durations["tools"] = time.Since(start)
@@ -708,4 +713,52 @@ func verifyTargetBranch(ctx context.Context, gitMirrorPath string, bootstrapFail
 	}
 
 	return nil
+}
+
+// verifyAgentWorkspaces checks that required agent workspaces exist.
+func verifyAgentWorkspaces(_ context.Context, projectDir string, fail func(string, ...interface{}), bootstrapFail BootstrapFailFunc, opts VerifyOptions) {
+	// Get config for number of coders
+	cfg, err := config.GetConfig()
+	if err != nil {
+		fail("Failed to get config for workspace verification: %v", err)
+		return
+	}
+
+	// Check architect workspace (critical for architect execution)
+	architectWorkspace := filepath.Join(projectDir, "architect-001")
+	if _, statErr := os.Stat(architectWorkspace); os.IsNotExist(statErr) {
+		bootstrapFail(BootstrapFailureInfrastructure, "architect_workspace",
+			"Architect workspace missing at architect-001/ - required for architect agent execution",
+			map[string]string{
+				"workspace_path": architectWorkspace,
+				"action":         "create_architect_workspace",
+				"mount_point":    "/mnt/architect",
+			}, 1) // High priority - blocks architect execution
+	} else if statErr != nil {
+		fail("Failed to check architect workspace: %v", statErr)
+	} else {
+		// Verify it's a valid git worktree
+		gitDir := filepath.Join(architectWorkspace, ".git")
+		if _, gitStatErr := os.Stat(gitDir); os.IsNotExist(gitStatErr) {
+			bootstrapFail(BootstrapFailureInfrastructure, "architect_workspace",
+				"Architect workspace exists but is not a valid git worktree",
+				map[string]string{
+					"workspace_path": architectWorkspace,
+					"action":         "recreate_architect_workspace",
+				}, 1) // High priority - invalid state
+		}
+		opts.Logger.Debug("Architect workspace verified: %s", architectWorkspace)
+	}
+
+	// Check coder workspaces (should exist for mounted coders)
+	maxCoders := cfg.Agents.MaxCoders
+	for i := 1; i <= maxCoders; i++ {
+		coderWorkspace := filepath.Join(projectDir, fmt.Sprintf("coder-%03d", i))
+		if _, statErr := os.Stat(coderWorkspace); os.IsNotExist(statErr) {
+			// Coder workspace will be created on demand, so this is just a warning
+			opts.Logger.Debug("Coder workspace coder-%03d does not exist yet (will be created on demand)", i)
+		} else {
+			opts.Logger.Debug("Coder workspace verified: coder-%03d", i)
+		}
+	}
 }
