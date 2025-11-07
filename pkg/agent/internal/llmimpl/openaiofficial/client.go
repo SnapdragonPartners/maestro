@@ -12,6 +12,7 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/tools"
 )
 
 // OfficialClient wraps the official OpenAI Go client to implement llm.LLMClient interface.
@@ -34,6 +35,37 @@ func NewOfficialClientWithModel(apiKey, model string) llm.LLMClient {
 		client: client,
 		model:  model,
 	}
+}
+
+// convertPropertyToSchema recursively converts a Property to OpenAI schema format.
+func convertPropertyToSchema(prop *tools.Property) map[string]interface{} {
+	schema := map[string]interface{}{
+		"type":        prop.Type,
+		"description": prop.Description,
+	}
+
+	// Add enum if present
+	if len(prop.Enum) > 0 {
+		schema["enum"] = prop.Enum
+	}
+
+	// Handle array items recursively
+	if prop.Type == "array" && prop.Items != nil {
+		schema["items"] = convertPropertyToSchema(prop.Items)
+	}
+
+	// Handle object properties recursively
+	if prop.Type == "object" && prop.Properties != nil {
+		properties := make(map[string]interface{})
+		for name, childProp := range prop.Properties {
+			if childProp != nil {
+				properties[name] = convertPropertyToSchema(childProp)
+			}
+		}
+		schema["properties"] = properties
+	}
+
+	return schema
 }
 
 // Complete implements the llm.LLMClient interface using Responses API for optimal GPT-5 performance.
@@ -84,16 +116,8 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 			tool := &in.Tools[i]
 			// Convert tool definition to responses API format
 			properties := make(map[string]interface{})
-			for name := range tool.InputSchema.Properties {
-				prop := tool.InputSchema.Properties[name]
-				propDef := map[string]interface{}{
-					"type":        prop.Type,
-					"description": prop.Description,
-				}
-				if len(prop.Enum) > 0 {
-					propDef["enum"] = prop.Enum
-				}
-				properties[name] = propDef
+			for name, prop := range tool.InputSchema.Properties {
+				properties[name] = convertPropertyToSchema(&prop)
 			}
 
 			tools[i] = responses.ToolUnionParam{
