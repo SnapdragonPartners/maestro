@@ -26,10 +26,6 @@ func createTestLLMFactory(t *testing.T) *agent.LLMClientFactory {
 						MaxConcurrency:  5,
 					},
 					OpenAI: config.ProviderLimits{
-						TokensPerMinute: 100000,
-						MaxConcurrency:  3,
-					},
-					OpenAIOfficial: config.ProviderLimits{
 						TokensPerMinute: 150000,
 						MaxConcurrency:  5,
 					},

@@ -53,10 +53,18 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 		}
 	}
 
+	// Cap MaxTokens to model's actual limit to prevent API errors
+	maxTokens := in.MaxTokens
+	if modelInfo, exists := config.KnownModels[o.model]; exists && modelInfo.MaxOutputTokens > 0 {
+		if maxTokens > modelInfo.MaxOutputTokens {
+			maxTokens = modelInfo.MaxOutputTokens
+		}
+	}
+
 	// Create responses request params with GPT-5 optimized settings
 	params := responses.ResponseNewParams{
 		Model:           o.model,
-		MaxOutputTokens: openai.Int(int64(in.MaxTokens)),
+		MaxOutputTokens: openai.Int(int64(maxTokens)),
 		Input:           responses.ResponseNewParamsInputUnion{OfString: openai.String(inputText)},
 		// TODO: HARD-CODED GPT-5 PARAMETERS - make configurable later
 		// These parameters optimize GPT-5 for faster responses while maintaining quality

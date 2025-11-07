@@ -337,7 +337,7 @@ func TestProviderLimiterMap(t *testing.T) {
 			TokensPerMinute: 10000,
 			MaxConcurrency:  5,
 		},
-		"openai_official": {
+		"openai": {
 			TokensPerMinute: 5000,
 			MaxConcurrency:  3,
 		},
@@ -382,8 +382,8 @@ func TestProviderLimiterMap(t *testing.T) {
 		t.Error("GetAllStats() missing anthropic provider")
 	}
 
-	if _, exists := allStats["openai_official"]; !exists {
-		t.Error("GetAllStats() missing openai_official provider")
+	if _, exists := allStats["openai"]; !exists {
+		t.Error("GetAllStats() missing openai provider")
 	}
 }
 

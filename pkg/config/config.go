@@ -91,7 +91,7 @@ func LogInfo(format string, args ...interface{}) {
 // ModelInfo contains static information about a known LLM model.
 // This data is hardcoded in the application, not user-configurable.
 type ModelInfo struct {
-	Provider         string  // API provider (anthropic, openai, openai_official)
+	Provider         string  // API provider (anthropic, openai)
 	InputCPM         float64 // Cost per million input tokens (USD)
 	OutputCPM        float64 // Cost per million output tokens (USD)
 	MaxContextTokens int     // Maximum context window size in tokens
@@ -128,7 +128,7 @@ var KnownModels = map[string]ModelInfo{
 
 	// OpenAI o3 models
 	"o3-mini": {
-		Provider:         ProviderOpenAIOfficial,
+		Provider:         ProviderOpenAI,
 		InputCPM:         1.1,
 		OutputCPM:        4.4,
 		MaxContextTokens: 128000,
@@ -142,9 +142,18 @@ var KnownModels = map[string]ModelInfo{
 		MaxOutputTokens:  16384,
 	},
 
+	// OpenAI o4 models
+	"o4-mini": {
+		Provider:         ProviderOpenAI,
+		InputCPM:         1.1,
+		OutputCPM:        4.4,
+		MaxContextTokens: 128000,
+		MaxOutputTokens:  16384,
+	},
+
 	// GPT-5 (premium pricing)
 	"gpt-5": {
-		Provider:         ProviderOpenAIOfficial,
+		Provider:         ProviderOpenAI,
 		InputCPM:         20.0,
 		OutputCPM:        60.0,
 		MaxContextTokens: 128000,
@@ -164,9 +173,10 @@ type ProviderPattern struct {
 //nolint:gochecknoglobals // Intentional global for inference rules
 var ProviderPatterns = []ProviderPattern{
 	{"claude", ProviderAnthropic},
-	{"gpt", ProviderOpenAIOfficial},
-	{"o1", ProviderOpenAIOfficial},
-	{"o3", ProviderOpenAIOfficial},
+	{"gpt", ProviderOpenAI},
+	{"o1", ProviderOpenAI},
+	{"o3", ProviderOpenAI},
+	{"o4", ProviderOpenAI},
 }
 
 // GetModelProvider returns the API provider for a given model.
@@ -242,9 +252,8 @@ type ProviderLimits struct {
 
 // RateLimitConfig defines rate limiting configuration grouped by API provider.
 type RateLimitConfig struct {
-	Anthropic      ProviderLimits `json:"anthropic"`       // Rate limits for Anthropic models
-	OpenAI         ProviderLimits `json:"openai"`          // Rate limits for OpenAI models
-	OpenAIOfficial ProviderLimits `json:"openai_official"` // Rate limits for OpenAI Official models
+	Anthropic ProviderLimits `json:"anthropic"` // Rate limits for Anthropic models
+	OpenAI    ProviderLimits `json:"openai"`    // Rate limits for OpenAI models
 }
 
 // ProviderDefaults defines default rate limits for each provider.
@@ -257,10 +266,6 @@ var ProviderDefaults = map[string]ProviderLimits{
 		MaxConcurrency:  5,
 	},
 	ProviderOpenAI: {
-		TokensPerMinute: 100000,
-		MaxConcurrency:  3,
-	},
-	ProviderOpenAIOfficial: {
 		TokensPerMinute: 150000,
 		MaxConcurrency:  5,
 	},
@@ -348,10 +353,11 @@ const (
 	// Container image constants.
 	BootstrapContainerTag = "maestro-bootstrap:latest"
 	ModelOpenAIO3Mini     = "o3-mini"
+	ModelOpenAIO4Mini     = "o4-mini"
 	ModelOpenAIO3Latest   = ModelOpenAIO3
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
-	DefaultArchitectModel = ModelOpenAIO3Mini
+	DefaultArchitectModel = ModelOpenAIO4Mini
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -360,9 +366,8 @@ const (
 	SchemaVersion         = "1.0"
 
 	// Provider constants for middleware rate limiting.
-	ProviderAnthropic      = "anthropic"
-	ProviderOpenAI         = "openai"
-	ProviderOpenAIOfficial = "openai_official"
+	ProviderAnthropic = "anthropic"
+	ProviderOpenAI    = "openai"
 
 	// API key environment variable names.
 	EnvAnthropicAPIKey = "ANTHROPIC_API_KEY"
@@ -854,10 +859,6 @@ func createDefaultConfig() *Config {
 						MaxConcurrency:  5,
 					},
 					OpenAI: ProviderLimits{
-						TokensPerMinute: 100000,
-						MaxConcurrency:  3,
-					},
-					OpenAIOfficial: ProviderLimits{
 						TokensPerMinute: 150000,
 						MaxConcurrency:  5,
 					},
@@ -1085,9 +1086,6 @@ func applyDefaults(config *Config) {
 	if config.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute == 0 {
 		config.Agents.Resilience.RateLimit.OpenAI = ProviderDefaults[ProviderOpenAI]
 	}
-	if config.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute == 0 {
-		config.Agents.Resilience.RateLimit.OpenAIOfficial = ProviderDefaults[ProviderOpenAIOfficial]
-	}
 
 	if config.Agents.Resilience.Timeout == 0 {
 		config.Agents.Resilience.Timeout = 3 * time.Minute // Increased for GPT-5 reasoning time (was 60s)
@@ -1283,7 +1281,7 @@ func validateRequiredAPIKeys(cfg *Config) error {
 			switch provider {
 			case ProviderAnthropic:
 				envVar = EnvAnthropicAPIKey
-			case ProviderOpenAI, ProviderOpenAIOfficial:
+			case ProviderOpenAI:
 				envVar = EnvOpenAIAPIKey
 			default:
 				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
@@ -1297,7 +1295,7 @@ func validateRequiredAPIKeys(cfg *Config) error {
 			switch provider {
 			case ProviderAnthropic:
 				envVar = EnvAnthropicAPIKey
-			case ProviderOpenAI, ProviderOpenAIOfficial:
+			case ProviderOpenAI:
 				envVar = EnvOpenAIAPIKey
 			default:
 				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
@@ -1309,7 +1307,7 @@ func validateRequiredAPIKeys(cfg *Config) error {
 			switch provider {
 			case ProviderAnthropic:
 				envVar = EnvAnthropicAPIKey
-			case ProviderOpenAI, ProviderOpenAIOfficial:
+			case ProviderOpenAI:
 				envVar = EnvOpenAIAPIKey
 			default:
 				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
@@ -1480,7 +1478,7 @@ func GetAPIKey(provider string) (string, error) {
 	switch provider {
 	case ProviderAnthropic:
 		envVar = EnvAnthropicAPIKey
-	case ProviderOpenAI, ProviderOpenAIOfficial:
+	case ProviderOpenAI:
 		envVar = EnvOpenAIAPIKey // Both use the same API key
 	default:
 		return "", fmt.Errorf("unknown provider: %s", provider)
