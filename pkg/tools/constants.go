@@ -33,10 +33,11 @@ const (
 	ToolTodoUpdate   = "todo_update"
 
 	// Architect read tools.
-	ToolReadFile    = "read_file"
-	ToolListFiles   = "list_files"
-	ToolGetDiff     = "get_diff"
-	ToolSubmitReply = "submit_reply"
+	ToolReadFile      = "read_file"
+	ToolListFiles     = "list_files"
+	ToolGetDiff       = "get_diff"
+	ToolSubmitReply   = "submit_reply"
+	ToolSubmitStories = "submit_stories"
 )
 
 // State-specific tool availability - defines which tools are available in each state.

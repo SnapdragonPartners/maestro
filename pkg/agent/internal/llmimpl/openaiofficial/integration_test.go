@@ -132,7 +132,8 @@ func TestOpenAIOfficial_MCPToolInvocation(t *testing.T) {
 		t.Skip("Skipping integration test: OPENAI_API_KEY not set")
 	}
 
-	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "gpt-5")
+	// Use o4-mini for testing - supports Responses API with tool calling
+	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "o4-mini")
 
 	// Define a simple MCP tool for testing
 	toolDef := tools.ToolDefinition{

@@ -571,40 +571,79 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList 
 
 	// Convert tools.Tool interface to tools.ToolDefinition for CompletionRequest
 	var toolDefs []tools.ToolDefinition
+	var toolNames []string
 	if toolsList != nil {
 		toolDefs = make([]tools.ToolDefinition, len(toolsList))
+		toolNames = make([]string, len(toolsList))
 		for i, tool := range toolsList {
 			toolDefs[i] = tool.Definition()
+			toolNames[i] = tool.Name()
 		}
 	}
 
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     toolDefs,
+	// Create ToolProvider for tool execution
+	agentCtx := tools.AgentContext{
+		Executor:        d.executor, // Pass executor for read tools
+		ChatService:     nil,        // SCOPING doesn't use chat tools
+		ReadOnly:        true,       // Architect tools are read-only in SCOPING
+		NetworkDisabled: false,
+		WorkDir:         d.workDir,
+		Agent:           nil, // Architect doesn't implement Agent interface yet
+	}
+	toolProvider := tools.NewProvider(agentCtx, toolNames)
+
+	// Tool call iteration loop
+	maxIterations := 10
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		req := agent.CompletionRequest{
+			Messages:  messages,
+			MaxTokens: agent.ArchitectMaxTokens,
+			Tools:     toolDefs,
+		}
+
+		// Get LLM response
+		d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools (iteration %d)",
+			d.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs), iteration+1)
+
+		start := time.Now()
+		resp, err := d.llmClient.Complete(ctx, req)
+		duration := time.Since(start)
+
+		if err != nil {
+			d.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
+			return "", fmt.Errorf("LLM completion failed: %w", err)
+		}
+
+		d.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
+			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
+
+		// Handle LLM response with proper empty response logic
+		err = d.handleLLMResponse(resp)
+		if err != nil {
+			return "", fmt.Errorf("LLM response handling failed: %w", err)
+		}
+
+		// If no tool calls, return text content
+		if len(resp.ToolCalls) == 0 {
+			return resp.Content, nil
+		}
+
+		// Process tool calls
+		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
+		if err != nil {
+			return "", fmt.Errorf("tool processing failed: %w", err)
+		}
+
+		// If submit tool was called, return its response
+		if submitResponse != "" {
+			return submitResponse, nil
+		}
+
+		// Rebuild messages for next iteration
+		messages = d.buildMessagesWithContext("")
 	}
 
-	// Get LLM response using same pattern as coder
-	d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools",
-		d.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs))
-
-	start := time.Now()
-	resp, err := d.llmClient.Complete(ctx, req)
-	duration := time.Since(start)
-
-	if err != nil {
-		d.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
-		return "", fmt.Errorf("LLM completion failed: %w", err)
-	}
-
-	d.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars", duration.Seconds(), len(resp.Content))
-
-	// Handle LLM response with proper empty response logic (same as coder)
-	if err := d.handleLLMResponse(resp); err != nil {
-		return "", fmt.Errorf("LLM response handling failed: %w", err)
-	}
-
-	return resp.Content, nil
+	return "", fmt.Errorf("maximum tool iterations (%d) exceeded", maxIterations)
 }
 
 // processStatusUpdates runs as a goroutine to process story status updates from coders.
@@ -780,7 +819,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		toolCall := &toolCalls[i]
 		d.logger.Info("Executing architect tool: %s", toolCall.Name)
 
-		// Handle submit_reply tool - signals iteration completion
+		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
 		if toolCall.Name == tools.ToolSubmitReply {
 			response, ok := toolCall.Parameters["response"].(string)
 			if !ok || response == "" {
@@ -789,6 +828,34 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
 			return response, nil
+		}
+
+		// Handle submit_stories tool - signals SCOPING completion with structured data
+		if toolCall.Name == tools.ToolSubmitStories {
+			// Execute the tool to get validated JSON
+			tool, err := toolProvider.Get(toolCall.Name)
+			if err != nil {
+				return "", fmt.Errorf("submit_stories tool not found: %w", err)
+			}
+
+			result, err := tool.Exec(ctx, toolCall.Parameters)
+			if err != nil {
+				return "", fmt.Errorf("submit_stories validation failed: %w", err)
+			}
+
+			// Extract the stories JSON from the tool result
+			resultMap, ok := result.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("submit_stories returned unexpected result type")
+			}
+
+			storiesJSON, ok := resultMap["stories_json"].(string)
+			if !ok || storiesJSON == "" {
+				return "", fmt.Errorf("submit_stories did not return stories_json")
+			}
+
+			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
+			return storiesJSON, nil
 		}
 
 		// Get tool from ToolProvider and execute
@@ -884,16 +951,21 @@ func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
 }
 
 // getScopingTools creates read-only tools for the SCOPING phase.
-// These tools allow the architect to inspect its own workspace at /mnt/architect.
+// These tools allow the architect to inspect its own workspace at /mnt/architect
+// and submit structured stories via the submit_stories tool.
 func (d *Driver) getScopingTools() []tools.Tool {
-	if d.executor == nil {
-		d.logger.Warn("No executor available for scoping tools")
-		return nil
+	toolsList := []tools.Tool{
+		tools.NewSubmitStoriesTool(), // Primary completion tool
 	}
 
-	toolsList := []tools.Tool{
-		tools.NewReadFileTool(d.executor, "/mnt/architect", 1048576), // 1MB max
-		tools.NewListFilesTool(d.executor, "/mnt/architect", 1000),   // 1000 files max
+	// Add optional read tools if executor available
+	if d.executor != nil {
+		toolsList = append(toolsList,
+			tools.NewReadFileTool(d.executor, "/mnt/architect", 1048576), // 1MB max
+			tools.NewListFilesTool(d.executor, "/mnt/architect", 1000),   // 1000 files max
+		)
+	} else {
+		d.logger.Warn("No executor available for read tools in SCOPING")
 	}
 
 	return toolsList

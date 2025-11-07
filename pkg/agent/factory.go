@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
-	"orchestrator/pkg/agent/internal/llmimpl/openai"
 	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/middleware/logging"
@@ -47,7 +46,7 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 
 	// Initialize circuit breakers for each provider
 	circuitBreakers := make(map[string]circuit.Breaker)
-	for _, provider := range []string{string(config.ProviderAnthropic), string(config.ProviderOpenAI), string(config.ProviderOpenAIOfficial)} {
+	for _, provider := range []string{string(config.ProviderAnthropic), string(config.ProviderOpenAI)} {
 		circuitBreakers[provider] = circuit.New(circuit.Config{
 			FailureThreshold: cfg.Agents.Resilience.CircuitBreaker.FailureThreshold,
 			SuccessThreshold: cfg.Agents.Resilience.CircuitBreaker.SuccessThreshold,
@@ -64,10 +63,6 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		string(config.ProviderOpenAI): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency,
-		},
-		string(config.ProviderOpenAIOfficial): {
-			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAIOfficial.TokensPerMinute,
-			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAIOfficial.MaxConcurrency,
 		},
 	}
 
@@ -154,8 +149,8 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	case config.ProviderAnthropic:
 		rawClient = anthropic.NewClaudeClient(apiKey)
 	case config.ProviderOpenAI:
-		rawClient = openai.NewO3ClientWithModel(apiKey, modelName)
-	case config.ProviderOpenAIOfficial:
+		// Use official OpenAI SDK with Responses API for all OpenAI models
+		// Supports tool calling via Responses API (o4-mini, gpt-4o, etc.)
 		rawClient = openaiofficial.NewOfficialClientWithModel(apiKey, modelName)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)

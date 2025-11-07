@@ -496,6 +496,14 @@ func getSubmitReplySchema() InputSchema {
 	return NewSubmitReplyTool().Definition().InputSchema
 }
 
+func createSubmitStoriesTool(_ AgentContext) (Tool, error) {
+	return NewSubmitStoriesTool(), nil
+}
+
+func getSubmitStoriesSchema() InputSchema {
+	return NewSubmitStoriesTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -642,5 +650,11 @@ func init() {
 		Name:        ToolSubmitReply,
 		Description: "Submit your final response and exit iteration loop",
 		InputSchema: getSubmitReplySchema(),
+	})
+
+	Register(ToolSubmitStories, createSubmitStoriesTool, &ToolMeta{
+		Name:        ToolSubmitStories,
+		Description: "Submit analyzed requirements as structured stories (SCOPING phase completion)",
+		InputSchema: getSubmitStoriesSchema(),
 	})
 }

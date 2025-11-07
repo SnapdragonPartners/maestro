@@ -5,7 +5,7 @@ import (
 
 	"orchestrator/pkg/agent/internal/core"
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
-	"orchestrator/pkg/agent/internal/llmimpl/openai"
+	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/internal/runtime"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/msg"
@@ -100,9 +100,10 @@ func NewClaudeClient(apiKey string) LLMClient {
 	return anthropic.NewClaudeClient(apiKey)
 }
 
-// NewO3ClientWithModel creates a new O3 client with specific model.
+// NewO3ClientWithModel creates a new OpenAI client with specific model.
+// Uses official OpenAI SDK with Responses API.
 func NewO3ClientWithModel(apiKey, model string) LLMClient {
-	return openai.NewO3ClientWithModel(apiKey, model)
+	return openaiofficial.NewOfficialClientWithModel(apiKey, model)
 }
 
 // NewConfig creates a new agent configuration.
@@ -202,7 +203,8 @@ func NewClaudeClientWithModelAndLogger(apiKey, _ string, _ interface{}) LLMClien
 	return NewClaudeClient(apiKey)
 }
 
-// NewO3Client provides legacy test stub O3 client.
+// NewO3Client provides legacy test stub OpenAI client.
+// Uses official OpenAI SDK with Responses API.
 func NewO3Client(apiKey string) LLMClient {
 	return NewO3ClientWithModel(apiKey, "o1-preview")
 }
