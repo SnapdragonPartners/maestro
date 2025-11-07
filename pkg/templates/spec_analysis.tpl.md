@@ -29,14 +29,19 @@ Context is provided via conversation history.
 
 ## Available Tools
 
-You have access to the following tools to inspect the codebase:
+You have access to the following tools:
+
+**Exploration tools (optional):**
 - **read_file**: Read contents of files in the workspace to understand existing code structure and patterns
 - **list_files**: List files matching patterns to discover what exists in the codebase
 
-**When to use tools:**
-- Use `list_files` to discover relevant files (e.g., `*.go`, `*.py`, `src/**/*.ts`)
-- Use `read_file` to inspect existing code, configuration files, and documentation
-- Tool use is STRONGLY ENCOURAGED to ensure requirements align with the actual codebase structure
+**Completion tool (REQUIRED):**
+- **submit_stories**: Submit your analyzed requirements as structured stories (MUST be called when analysis is complete)
+
+**Tool usage instructions:**
+- OPTIONALLY use `list_files` to discover relevant files (e.g., `*.go`, `*.py`, `src/**/*.ts`)
+- OPTIONALLY use `read_file` to inspect existing code, configuration files, and documentation
+- MUST call `submit_stories` with your final analysis when done - this is how you complete this phase
 
 ## Instructions
 
@@ -71,29 +76,17 @@ For each requirement you identify:
 
 ## Output Format
 
-You MUST return valid JSON in exactly this format:
+When you have completed your analysis, you MUST call the `submit_stories` tool with the following parameters:
 
-```json
-{
-  "analysis": "Brief summary of what you found in the specification and the identified platform (e.g., 'Go-based project requiring module setup and linting configuration')",
-  "platform": "go",
-  "requirements": [
-    {
-      "title": "Concise, clear requirement title",
-      "description": "Detailed description of what needs to be implemented using platform-appropriate tools and examples",
-      "acceptance_criteria": [
-        "Specific, testable criterion 1 (using platform-specific tools)",
-        "Specific, testable criterion 2 (platform-consistent approach)", 
-        "Specific, testable criterion 3 (appropriate for identified platform)"
-      ],
-      "estimated_points": 3,
-      "dependencies": [],
-      "story_type": "app"
-    }
-  ],
-  "next_action": "STORY_GENERATION"
-}
-```
+- **analysis**: Brief summary of what you found in the specification and the identified platform (e.g., 'Go-based project requiring module setup and linting configuration')
+- **platform**: The identified platform (e.g., "go", "python", "nodejs")
+- **requirements**: Array of requirement objects, each containing:
+  - **title**: Concise, clear requirement title
+  - **description**: Detailed description of what needs to be implemented using platform-appropriate tools and examples
+  - **acceptance_criteria**: Array of 3-5 specific, testable criteria (platform-consistent)
+  - **estimated_points**: Complexity estimate (1-5)
+  - **dependencies**: Array of requirement titles this depends on
+  - **story_type**: Either "app" (application code) or "devops" (infrastructure)
 
 **Important Guidelines:**
 - **MAINTAIN PLATFORM CONSISTENCY**: Use only tools and approaches appropriate for the identified platform. Do not mix tools or concepts from different programming languages
