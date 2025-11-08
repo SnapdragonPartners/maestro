@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -137,21 +136,13 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (any, e
 		}
 	}
 
-	// Convert args to JSON string for consistent handling
-	jsonBytes, err := json.Marshal(map[string]any{
-		"analysis":     analysis,
-		"platform":     platform,
-		"requirements": requirements,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal stories data: %w", err)
-	}
-
-	// Return special signal that iteration loop should terminate
-	// The state handler will check for action="submit" to know to exit
+	// Return structured data directly (no JSON round-trip needed)
+	// The architect will convert this to Requirements directly
 	return map[string]any{
 		"success":      true,
 		"action":       "submit",
-		"stories_json": string(jsonBytes),
+		"analysis":     analysis,
+		"platform":     platform,
+		"requirements": requirements,
 	}, nil
 }

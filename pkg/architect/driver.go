@@ -832,7 +832,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 		// Handle submit_stories tool - signals SCOPING completion with structured data
 		if toolCall.Name == tools.ToolSubmitStories {
-			// Execute the tool to get validated JSON
+			// Execute the tool to get validated structured data
 			tool, err := toolProvider.Get(toolCall.Name)
 			if err != nil {
 				return "", fmt.Errorf("submit_stories tool not found: %w", err)
@@ -843,19 +843,11 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 				return "", fmt.Errorf("submit_stories validation failed: %w", err)
 			}
 
-			// Extract the stories JSON from the tool result
-			resultMap, ok := result.(map[string]any)
-			if !ok {
-				return "", fmt.Errorf("submit_stories returned unexpected result type")
-			}
-
-			storiesJSON, ok := resultMap["stories_json"].(string)
-			if !ok || storiesJSON == "" {
-				return "", fmt.Errorf("submit_stories did not return stories_json")
-			}
+			// Store the structured result in state data for scoping to access
+			d.stateData["submit_stories_result"] = result
 
 			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return storiesJSON, nil
+			return "SUBMIT_STORIES_COMPLETE", nil // Signal that stories were submitted
 		}
 
 		// Get tool from ToolProvider and execute

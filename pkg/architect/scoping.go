@@ -2,20 +2,17 @@ package architect
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/knowledge"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
-	"orchestrator/pkg/utils"
 )
 
 // Requirement represents a parsed requirement from a specification.
@@ -229,15 +226,29 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile,
 
 	// Get LLM response with read tools to inspect the codebase
 	scopingTools := d.getScopingTools()
-	llmAnalysis, err := d.callLLMWithTools(ctx, prompt, scopingTools)
+	signal, err := d.callLLMWithTools(ctx, prompt, scopingTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
 	}
 
-	d.stateData["llm_analysis"] = llmAnalysis
+	// Check if submit_stories tool was called
+	if signal != "SUBMIT_STORIES_COMPLETE" {
+		return nil, fmt.Errorf("expected submit_stories tool call, got: %s", signal)
+	}
 
-	// Parse LLM response to extract requirements.
-	return d.parseSpecAnalysisJSON(llmAnalysis)
+	// Extract structured data from stateData (stored by processArchitectToolCalls)
+	submitResult, ok := d.stateData["submit_stories_result"]
+	if !ok {
+		return nil, fmt.Errorf("submit_stories result not found in state data")
+	}
+
+	resultMap, ok := submitResult.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("submit_stories result has unexpected type")
+	}
+
+	// Convert structured tool result directly to Requirements (no JSON round-trip)
+	return d.convertToolResultToRequirements(resultMap)
 }
 
 // requirementToStoryContent converts a requirement to story title and rich markdown content.
@@ -298,81 +309,79 @@ func (d *Driver) getSpecFileFromMessage() string {
 	return ""
 }
 
-// parseSpecAnalysisJSON parses the LLM's JSON response to extract requirements.
-func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
-	// Try to extract JSON from the response.
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
-
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
-		return nil, fmt.Errorf("no valid JSON found in LLM response")
+// convertToolResultToRequirements converts the structured submit_stories tool result
+// directly to Requirements without any JSON serialization/deserialization.
+func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]Requirement, error) {
+	// Extract requirements array from tool result
+	requirementsAny, ok := toolResult["requirements"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("requirements not found or not an array in tool result")
 	}
 
-	jsonStr := response[jsonStart : jsonEnd+1]
-
-	// Define the expected LLM response structure.
-	//nolint:govet // JSON parsing struct, field order must match expected JSON
-	var llmResponse struct {
-		Analysis string `json:"analysis"`
-		//nolint:govet // JSON parsing struct, field order must match expected JSON
-		Requirements []struct {
-			Title              string   `json:"title"`
-			Description        string   `json:"description"`
-			AcceptanceCriteria []string `json:"acceptance_criteria"`
-			EstimatedPoints    int      `json:"estimated_points"`
-			Dependencies       []string `json:"dependencies,omitempty"`
-			StoryType          string   `json:"story_type,omitempty"` // Add story type field
-		} `json:"requirements"`
-		NextAction string `json:"next_action"`
+	if len(requirementsAny) == 0 {
+		return nil, fmt.Errorf("requirements array is empty")
 	}
 
-	// Log the JSON response length for debugging without cluttering logs
-
-	if err := json.Unmarshal([]byte(jsonStr), &llmResponse); err != nil {
-		// Enhanced error reporting with truncation detection
-		baseErr := fmt.Errorf("failed to parse LLM JSON response: %w", err)
-
-		// Check if this might be a truncation issue by comparing response length to token limits
-		// Using tiktoken to get accurate token count for O3 model (approximated with GPT-4 encoding)
-		responseTokens := utils.CountTokensSimple(response)
-		maxTokens := agent.ArchitectMaxTokens // Current MaxTokens limit from LLMClientAdapter
-
-		// If we're within 10% of the token limit, likely truncation
-		if float64(responseTokens) >= float64(maxTokens)*0.9 {
-			// Likely response was truncated due to token limits
-			return nil, fmt.Errorf("JSON parsing failed - likely truncated due to token limit (%d tokens, %.1f%% of %d limit): %w",
-				responseTokens, float64(responseTokens)/float64(maxTokens)*100, maxTokens, err)
+	// Convert each requirement from map to Requirement struct
+	requirements := make([]Requirement, 0, len(requirementsAny))
+	for i, reqAny := range requirementsAny {
+		reqMap, ok := reqAny.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("requirement %d is not a map", i)
 		}
 
-		// Not a truncation issue, provide standard error with response details
-		// Response analysis for debugging
+		// Extract fields with type assertions
+		title, _ := reqMap["title"].(string)
+		description, _ := reqMap["description"].(string)
+		storyType, _ := reqMap["story_type"].(string)
 
-		return nil, baseErr
-	}
+		// Handle acceptance criteria array
+		var acceptanceCriteria []string
+		if acAny, ok := reqMap["acceptance_criteria"].([]any); ok {
+			acceptanceCriteria = make([]string, 0, len(acAny))
+			for _, ac := range acAny {
+				if acStr, ok := ac.(string); ok {
+					acceptanceCriteria = append(acceptanceCriteria, acStr)
+				}
+			}
+		}
 
-	// Convert to internal Requirement format.
-	requirements := make([]Requirement, 0, len(llmResponse.Requirements))
-	for i := range llmResponse.Requirements {
-		req := &llmResponse.Requirements[i]
+		// Handle dependencies array
+		var dependencies []string
+		if depsAny, ok := reqMap["dependencies"].([]any); ok {
+			dependencies = make([]string, 0, len(depsAny))
+			for _, dep := range depsAny {
+				if depStr, ok := dep.(string); ok {
+					dependencies = append(dependencies, depStr)
+				}
+			}
+		}
+
+		// Handle estimated points (could be float64 or int)
+		estimatedPoints := 2 // Default
+		switch points := reqMap["estimated_points"].(type) {
+		case float64:
+			estimatedPoints = int(points)
+		case int:
+			estimatedPoints = points
+		}
+
 		requirement := Requirement{
-			Title:              req.Title,
-			Description:        req.Description,
-			AcceptanceCriteria: req.AcceptanceCriteria,
-			EstimatedPoints:    req.EstimatedPoints,
-			Dependencies:       req.Dependencies,
-			StoryType:          req.StoryType,
+			Title:              title,
+			Description:        description,
+			AcceptanceCriteria: acceptanceCriteria,
+			EstimatedPoints:    estimatedPoints,
+			Dependencies:       dependencies,
+			StoryType:          storyType,
 		}
 
-		// Validate and set reasonable defaults.
+		// Validate and set reasonable defaults
 		if requirement.EstimatedPoints < 1 || requirement.EstimatedPoints > 5 {
 			requirement.EstimatedPoints = 2 // Default to medium complexity
 		}
 
-		// Log the raw story_type value from JSON for debugging
-
 		// Validate story type and set default if invalid or missing
 		if !proto.IsValidStoryType(requirement.StoryType) {
-			// Invalid or empty story type - default to app
 			requirement.StoryType = string(proto.StoryTypeApp)
 		}
 
@@ -392,7 +401,7 @@ func (d *Driver) parseSpecAnalysisJSON(response string) ([]Requirement, error) {
 	}
 
 	if len(requirements) == 0 {
-		return nil, fmt.Errorf("no valid requirements extracted from LLM response")
+		return nil, fmt.Errorf("no valid requirements extracted from tool result")
 	}
 
 	return requirements, nil
