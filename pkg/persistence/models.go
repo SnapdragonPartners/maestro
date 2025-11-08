@@ -229,3 +229,41 @@ type ToolExecution struct {
 	DurationMS *int64    `json:"duration_ms,omitempty"` // Execution duration
 	CreatedAt  time.Time `json:"created_at"`
 }
+
+// PMConversation represents a PM interview conversation session.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type PMConversation struct {
+	ID            int64   `json:"id"`
+	SessionID     string  `json:"session_id"`
+	UserExpertise string  `json:"user_expertise"` // NON_TECHNICAL, BASIC, EXPERT
+	RepoURL       string  `json:"repo_url"`
+	CreatedAt     int64   `json:"created_at"` // Unix timestamp
+	UpdatedAt     int64   `json:"updated_at"` // Unix timestamp
+	Completed     bool    `json:"completed"`
+	SpecID        *string `json:"spec_id,omitempty"` // Set when spec is submitted
+}
+
+// PMMessage represents a single message in a PM conversation.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type PMMessage struct {
+	ID                    int64  `json:"id"`
+	ConversationSessionID string `json:"conversation_session_id"`
+	Role                  string `json:"role"` // 'user' or 'pm'
+	Content               string `json:"content"`
+	Timestamp             int64  `json:"timestamp"` // Unix timestamp
+}
+
+// PM expertise level constants.
+const (
+	PMExpertiseNonTechnical = "NON_TECHNICAL"
+	PMExpertiseBasic        = "BASIC"
+	PMExpertiseExpert       = "EXPERT"
+)
+
+// PM message role constants.
+const (
+	PMRoleUser = "user"
+	PMRolePM   = "pm"
+)
