@@ -349,6 +349,7 @@ const (
 	ModelClaudeSonnet4Old   = "claude-sonnet-4-20250514"
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
 	ModelClaudeSonnetLatest = ModelClaudeSonnet4
+	ModelClaudeOpus41       = "claude-opus-4-1"
 	ModelOpenAIO3           = "o3"
 
 	// Container image constants.
@@ -359,7 +360,7 @@ const (
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelOpenAIO4Mini
-	DefaultPMModel        = ModelClaudeSonnet4
+	DefaultPMModel        = ModelClaudeOpus41
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
