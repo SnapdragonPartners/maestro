@@ -86,8 +86,14 @@ func searchNodes(db *sql.DB, sessionID string, options RetrievalOptions) ([]stri
 
 	// Build FTS query
 	// FTS5 expects terms separated by OR for multi-term search
+	// Each term must be quoted to prevent column name interpretation
 	terms := strings.Fields(options.Terms)
-	ftsQuery := strings.Join(terms, " OR ")
+	quotedTerms := make([]string, len(terms))
+	for i, term := range terms {
+		// Quote each term to prevent SQL column name interpretation
+		quotedTerms[i] = fmt.Sprintf("%q", term)
+	}
+	ftsQuery := strings.Join(quotedTerms, " OR ")
 
 	// Build SQL query with level filter
 	query := `

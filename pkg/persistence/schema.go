@@ -379,7 +379,7 @@ func createSchema(db *sql.DB) error {
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
-			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','assigned','planning','coding','done')),
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done')),
 			priority INTEGER DEFAULT 0,
 			approved_plan TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),

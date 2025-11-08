@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/git"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -567,9 +568,13 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 						// Convert queue status to database status
 						var dbStatus string
 						switch story.GetStatus() {
-						case StatusPending:
+						case StatusNew, StatusPending:
 							dbStatus = persistence.StatusNew
-						case StatusAssigned:
+						case StatusDispatched:
+							dbStatus = persistence.StatusDispatched
+						case StatusPlanning:
+							dbStatus = persistence.StatusPlanning
+						case StatusCoding:
 							dbStatus = persistence.StatusCoding
 						case StatusDone:
 							dbStatus = persistence.StatusDone
@@ -712,6 +717,18 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 		mergeResponsePayload.Status = string(proto.ApprovalStatusApproved)
 		mergeResponsePayload.Feedback = "Pull request merged successfully"
 		mergeResponsePayload.MergeCommit = mergeResult.CommitSHA
+
+		// Update all dependent clones (architect, PM) to reflect the merge
+		cfg, cfgErr := config.GetConfig()
+		if cfgErr == nil {
+			registry := git.NewRegistry(d.workDir)
+			if updateErr := registry.UpdateDependentClones(ctx, cfg.Git.RepoURL, cfg.Git.TargetBranch, mergeResult.CommitSHA); updateErr != nil {
+				d.logger.Warn("⚠️  Failed to update dependent clones after merge: %v (merge succeeded, continuing)", updateErr)
+				// Don't fail the merge - it already succeeded. Clone updates can be retried later.
+			}
+		} else {
+			d.logger.Warn("⚠️  Failed to get config for clone updates: %v", cfgErr)
+		}
 
 		// Extract PR ID from URL for database storage
 		var prIDPtr *string
