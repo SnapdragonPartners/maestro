@@ -13,6 +13,7 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/workspace"
 )
 
 const (
@@ -77,22 +78,43 @@ func NewPM(
 	// Create context manager with PM model
 	contextManager := contextmgr.NewContextManagerWithModel(modelName)
 
-	// TODO: Create executor for read-only tools when tool system is integrated
-	// For now, PM will work without tools (interview logic doesn't strictly need them yet)
-	var executor *execpkg.ArchitectExecutor
+	// Ensure PM workspace exists (pm-001/ read-only clone)
+	pmWorkspace, workspaceErr := workspace.EnsurePMWorkspace(ctx, workDir)
+	if workspaceErr != nil {
+		return nil, fmt.Errorf("failed to ensure PM workspace: %w", workspaceErr)
+	}
+	logger := logx.NewLogger("pm")
+	logger.Info("PM workspace ready at: %s", pmWorkspace)
+
+	// Create and start PM container executor (same as architect - read-only tools)
+	// PM uses the same ArchitectExecutor for read-only file access
+	pmExecutor := execpkg.NewArchitectExecutor(
+		config.BootstrapContainerTag, // Use bootstrap image
+		workDir,                      // Project directory
+		cfg.Agents.MaxCoders,         // Number of coder workspaces to mount
+	)
+
+	// Start the PM container (one retry on failure)
+	if startErr := pmExecutor.Start(ctx); startErr != nil {
+		logger.Warn("Failed to start PM container, retrying once: %v", startErr)
+		// Retry once
+		if retryErr := pmExecutor.Start(ctx); retryErr != nil {
+			return nil, fmt.Errorf("failed to start PM container after retry: %w", retryErr)
+		}
+	}
 
 	return &Driver{
 		pmID:               pmID,
 		llmClient:          llmClient,
 		renderer:           renderer,
 		contextManager:     contextManager,
-		logger:             logx.NewLogger("pm"),
+		logger:             logger, // Use logger created above
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
 		interviewRequestCh: interviewRequestCh,
-		executor:           executor,
+		executor:           pmExecutor,
 		workDir:            workDir,
 	}, nil
 }

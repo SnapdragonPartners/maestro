@@ -70,6 +70,16 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	}
 	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
 
+	// Create and register PM agent (if enabled)
+	if updatedConfig.PM != nil && updatedConfig.PM.Enabled {
+		pmAgent, pmErr := supervisor.GetFactory().NewAgent(ctx, "pm-001", string(agent.TypePM))
+		if pmErr != nil {
+			return fmt.Errorf("failed to create PM: %w", pmErr)
+		}
+		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
+		k.Logger.Info("✅ Created and registered PM agent")
+	}
+
 	// Create and register coder agents based on config
 	numCoders := updatedConfig.Agents.MaxCoders
 	for i := 0; i < numCoders; i++ {
@@ -202,6 +212,16 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		return fmt.Errorf("failed to create architect: %w", err)
 	}
 	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
+
+	// Create and register PM agent (if enabled)
+	if k.Config.PM != nil && k.Config.PM.Enabled {
+		pmAgent, pmErr := supervisor.GetFactory().NewAgent(ctx, "pm-001", string(agent.TypePM))
+		if pmErr != nil {
+			return fmt.Errorf("failed to create PM: %w", pmErr)
+		}
+		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
+		k.Logger.Info("✅ Created and registered PM agent")
+	}
 
 	// Create and register coder agents based on config
 	numCoders := k.Config.Agents.MaxCoders

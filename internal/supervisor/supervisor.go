@@ -107,11 +107,13 @@ func DefaultRestartPolicy() RestartPolicy {
 	return RestartPolicy{
 		OnDone: map[string]RestartAction{
 			string(agent.TypeCoder):     RestartAgent, // Coders restart for next story
-			string(agent.TypeArchitect): RestartAgent, // Architects restart for next spec (NEW)
+			string(agent.TypeArchitect): RestartAgent, // Architects restart for next spec
+			string(agent.TypePM):        RestartAgent, // PM restarts for next interview
 		},
 		OnError: map[string]RestartAction{
 			string(agent.TypeCoder):     RestartAgent,  // Coders restart after errors
-			string(agent.TypeArchitect): FatalShutdown, // Architect errors are fatal (NEW)
+			string(agent.TypeArchitect): FatalShutdown, // Architect errors are fatal
+			string(agent.TypePM):        RestartAgent,  // PM restarts after errors (interview failures non-fatal)
 		},
 	}
 }
