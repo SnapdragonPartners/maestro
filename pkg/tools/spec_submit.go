@@ -7,18 +7,18 @@ import (
 	"orchestrator/pkg/specs"
 )
 
-// SubmitSpecTool allows PM agent to submit finalized specifications.
-type SubmitSpecTool struct{}
+// SpecSubmitTool allows PM agent to submit finalized specifications.
+type SpecSubmitTool struct{}
 
-// NewSubmitSpecTool creates a new submit spec tool instance.
-func NewSubmitSpecTool() *SubmitSpecTool {
-	return &SubmitSpecTool{}
+// NewSpecSubmitTool creates a new spec submit tool instance.
+func NewSpecSubmitTool() *SpecSubmitTool {
+	return &SpecSubmitTool{}
 }
 
 // Definition returns the tool's definition in Claude API format.
-func (s *SubmitSpecTool) Definition() ToolDefinition {
+func (s *SpecSubmitTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name:        "submit_spec",
+		Name:        "spec_submit",
 		Description: "Submit the finalized specification for validation and storage",
 		InputSchema: InputSchema{
 			Type: "object",
@@ -38,21 +38,21 @@ func (s *SubmitSpecTool) Definition() ToolDefinition {
 }
 
 // Name returns the tool identifier.
-func (s *SubmitSpecTool) Name() string {
-	return "submit_spec"
+func (s *SpecSubmitTool) Name() string {
+	return "spec_submit"
 }
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
-func (s *SubmitSpecTool) PromptDocumentation() string {
-	return `- **submit_spec** - Submit finalized specification for validation and storage
+func (s *SpecSubmitTool) PromptDocumentation() string {
+	return `- **spec_submit** - Submit finalized specification for validation and storage
   - Parameters: markdown (required), summary (required)
   - Validates spec against all PM validation rules before submission
   - Returns validation errors if spec does not pass
   - Use when you have completed the specification interview and drafted the full spec`
 }
 
-// Exec executes the submit spec operation.
-func (s *SubmitSpecTool) Exec(_ context.Context, args map[string]any) (any, error) {
+// Exec executes the spec submit operation.
+func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	// Extract markdown parameter.
 	markdown, ok := args["markdown"]
 	if !ok {

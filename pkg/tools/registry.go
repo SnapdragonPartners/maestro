@@ -504,12 +504,12 @@ func getSubmitStoriesSchema() InputSchema {
 	return NewSubmitStoriesTool().Definition().InputSchema
 }
 
-func createSubmitSpecTool(_ AgentContext) (Tool, error) {
-	return NewSubmitSpecTool(), nil
+func createSpecSubmitTool(_ AgentContext) (Tool, error) {
+	return NewSpecSubmitTool(), nil
 }
 
-func getSubmitSpecSchema() InputSchema {
-	return NewSubmitSpecTool().Definition().InputSchema
+func getSpecSubmitSchema() InputSchema {
+	return NewSpecSubmitTool().Definition().InputSchema
 }
 
 func createSpecFeedbackTool(_ AgentContext) (Tool, error) {
@@ -675,10 +675,10 @@ func init() {
 	})
 
 	// Register PM tools
-	Register(ToolSubmitSpec, createSubmitSpecTool, &ToolMeta{
-		Name:        ToolSubmitSpec,
+	Register(ToolSpecSubmit, createSpecSubmitTool, &ToolMeta{
+		Name:        ToolSpecSubmit,
 		Description: "Submit finalized specification for validation and storage (PM SUBMITTING phase)",
-		InputSchema: getSubmitSpecSchema(),
+		InputSchema: getSpecSubmitSchema(),
 	})
 
 	Register(ToolSpecFeedback, createSpecFeedbackTool, &ToolMeta{

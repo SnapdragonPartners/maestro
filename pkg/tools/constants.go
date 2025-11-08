@@ -40,7 +40,7 @@ const (
 	ToolSubmitStories = "submit_stories"
 
 	// PM tools.
-	ToolSubmitSpec   = "submit_spec"
+	ToolSpecSubmit   = "spec_submit"
 	ToolSpecFeedback = "spec_feedback"
 )
 
