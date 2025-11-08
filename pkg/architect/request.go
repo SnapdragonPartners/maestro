@@ -568,9 +568,13 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 						// Convert queue status to database status
 						var dbStatus string
 						switch story.GetStatus() {
-						case StatusPending:
+						case StatusNew, StatusPending:
 							dbStatus = persistence.StatusNew
-						case StatusAssigned:
+						case StatusDispatched:
+							dbStatus = persistence.StatusDispatched
+						case StatusPlanning:
+							dbStatus = persistence.StatusPlanning
+						case StatusCoding:
 							dbStatus = persistence.StatusCoding
 						case StatusDone:
 							dbStatus = persistence.StatusDone

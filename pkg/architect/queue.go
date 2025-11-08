@@ -19,9 +19,9 @@ const (
 	StatusNew StoryStatus = "new"
 	// StatusPending indicates a story is released to dispatcher queue, ready for assignment.
 	StatusPending StoryStatus = "pending"
-	// StatusAssigned indicates a story was picked up by coder, assignment created.
-	StatusAssigned StoryStatus = "assigned"
-	// StatusPlanning indicates a coder is planning the work.
+	// StatusDispatched indicates a story was sent to work queue, waiting for coder pickup.
+	StatusDispatched StoryStatus = "dispatched"
+	// StatusPlanning indicates a coder picked up the story and is planning the work.
 	StatusPlanning StoryStatus = "planning"
 	// StatusCoding indicates a coder is implementing the work.
 	StatusCoding StoryStatus = "coding"
@@ -131,9 +131,13 @@ func (q *Queue) FlushToDatabase() {
 		// Convert queue status to database status
 		var dbStatus string
 		switch queuedStory.GetStatus() {
-		case StatusPending:
+		case StatusNew, StatusPending:
 			dbStatus = persistence.StatusNew
-		case StatusAssigned:
+		case StatusDispatched:
+			dbStatus = persistence.StatusDispatched
+		case StatusPlanning:
+			dbStatus = persistence.StatusPlanning
+		case StatusCoding:
 			dbStatus = persistence.StatusCoding
 		case StatusDone:
 			dbStatus = persistence.StatusDone

@@ -357,7 +357,7 @@ func TestIDGeneration(t *testing.T) {
 }
 
 func TestValidStatus(t *testing.T) {
-	validStatuses := []string{StatusNew, StatusPending, StatusAssigned, StatusPlanning, StatusCoding, StatusDone}
+	validStatuses := []string{StatusNew, StatusPending, StatusDispatched, StatusPlanning, StatusCoding, StatusDone}
 
 	// Simple validation test - just check that the constants are defined correctly
 	for _, status := range validStatuses {

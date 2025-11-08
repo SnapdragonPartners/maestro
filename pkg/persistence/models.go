@@ -65,12 +65,12 @@ type StoryDependency struct {
 
 // Story status constants (mirrored from canonical in architect for database operations).
 const (
-	StatusNew      = "new"
-	StatusPending  = "pending"
-	StatusAssigned = "assigned"
-	StatusPlanning = "planning"
-	StatusCoding   = "coding"
-	StatusDone     = "done"
+	StatusNew        = "new"
+	StatusPending    = "pending"
+	StatusDispatched = "dispatched"
+	StatusPlanning   = "planning"
+	StatusCoding     = "coding"
+	StatusDone       = "done"
 )
 
 // GenerateSpecID generates a new UUID for a spec.

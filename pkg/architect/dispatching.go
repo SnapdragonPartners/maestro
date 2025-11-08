@@ -134,15 +134,15 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 	storyMsg.SetMetadata(proto.KeyStoryID, storyID)
 
 	// Send story to dispatcher.
-
 	dispatchEffect := &DispatchStoryEffect{Story: storyMsg}
 	if err := d.ExecuteEffect(ctx, dispatchEffect); err != nil {
 		return err
 	}
 
-	// Mark story as assigned AFTER successful channel send to prevent double-dispatch.
-	if err := d.queue.UpdateStoryStatus(storyID, StatusAssigned); err != nil {
-		return fmt.Errorf("failed to mark story as assigned: %w", err)
+	// Mark story as dispatched AFTER successful channel send to prevent double-dispatch.
+	// Status will be updated to 'planning' when a coder actually picks it up.
+	if err := d.queue.UpdateStoryStatus(storyID, StatusDispatched); err != nil {
+		return fmt.Errorf("failed to mark story as dispatched: %w", err)
 	}
 
 	return nil
@@ -186,7 +186,7 @@ func (d *Driver) logQueueState() {
 				story.ID, dependencyStatus, dependsOnStr))
 		case StatusDone:
 			completedStories = append(completedStories, story.ID)
-		case StatusAssigned:
+		case StatusDispatched, StatusPlanning, StatusCoding:
 			inProgressStories = append(inProgressStories, story.ID)
 		}
 	}
