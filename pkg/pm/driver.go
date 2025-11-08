@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
 	execpkg "orchestrator/pkg/exec"
@@ -31,7 +32,68 @@ type Driver struct {
 	workDir            string
 }
 
-// NewDriver creates a new PM agent driver.
+// NewPM creates a new PM agent with all dependencies initialized.
+// This is the main constructor used by the agent factory.
+func NewPM(
+	ctx context.Context,
+	pmID string,
+	dispatcher *dispatch.Dispatcher,
+	workDir string,
+	persistenceChannel chan<- *persistence.Request,
+	llmFactory *agent.LLMClientFactory,
+	interviewRequestCh <-chan *proto.AgentMsg,
+) (*Driver, error) {
+	// Check for context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("PM construction cancelled: %w", ctx.Err())
+	default:
+	}
+
+	// Get model name from config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+	modelName := cfg.Agents.PMModel
+
+	// Create LLM client from shared factory
+	llmClient, err := llmFactory.CreateClient(agent.TypePM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
+	}
+
+	// Create template renderer
+	renderer, err := templates.NewRenderer()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create template renderer: %w", err)
+	}
+
+	// Create context manager with PM model
+	contextManager := contextmgr.NewContextManagerWithModel(modelName)
+
+	// TODO: Create executor for read-only tools when tool system is integrated
+	// For now, PM will work without tools (interview logic doesn't strictly need them yet)
+	var executor *execpkg.ArchitectExecutor
+
+	return &Driver{
+		pmID:               pmID,
+		llmClient:          llmClient,
+		renderer:           renderer,
+		contextManager:     contextManager,
+		logger:             logx.NewLogger("pm"),
+		dispatcher:         dispatcher,
+		persistenceChannel: persistenceChannel,
+		currentState:       StateWaiting,
+		stateData:          make(map[string]any),
+		interviewRequestCh: interviewRequestCh,
+		executor:           executor,
+		workDir:            workDir,
+	}, nil
+}
+
+// NewDriver creates a new PM agent driver with provided dependencies.
+// This is primarily for testing. Production code should use NewPM.
 func NewDriver(
 	pmID string,
 	llmClient agent.LLMClient,
@@ -214,4 +276,11 @@ func (d *Driver) GetID() string {
 // GetState returns the current state.
 func (d *Driver) GetState() proto.State {
 	return d.currentState
+}
+
+// Shutdown gracefully shuts down the PM agent.
+func (d *Driver) Shutdown(_ context.Context) error {
+	d.logger.Info("🎯 PM agent %s shutting down gracefully", d.pmID)
+	// PM agent is stateless between interviews, no cleanup needed
+	return nil
 }

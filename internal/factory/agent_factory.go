@@ -14,6 +14,8 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/pm"
+	"orchestrator/pkg/proto"
 )
 
 // AgentFactory creates agents with minimal dependencies.
@@ -43,6 +45,8 @@ func (f *AgentFactory) NewAgent(ctx context.Context, agentID, agentType string) 
 		return f.createArchitect(ctx, agentID)
 	case string(agent.TypeCoder):
 		return f.createCoder(ctx, agentID)
+	case string(agent.TypePM):
+		return f.createPM(ctx, agentID)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
 	}
@@ -131,6 +135,46 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 	// Attach to dispatcher
 	f.dispatcher.Attach(coderAgent)
 	return coderAgent, nil
+}
+
+// createPM creates a new PM agent.
+func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.Agent, error) {
+	// Get current config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Check if PM is enabled
+	if cfg.PM != nil && !cfg.PM.Enabled {
+		return nil, fmt.Errorf("PM agent is disabled in configuration")
+	}
+
+	// Determine work directory from config
+	workDir := getWorkDirFromConfig(&cfg)
+
+	// Create interview request channel
+	// TODO: This should be wired to WebUI for receiving interview requests
+	// For now, create a buffered channel that will be used when WebUI integration is complete
+	interviewRequestCh := make(chan *proto.AgentMsg, 10)
+
+	// Create PM with shared LLM factory
+	pmAgent, err := pm.NewPM(
+		ctx,
+		agentID,
+		f.dispatcher,
+		workDir,
+		f.persistenceChannel,
+		f.llmFactory,       // Shared factory for rate limiting
+		interviewRequestCh, // Interview requests from WebUI
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PM: %w", err)
+	}
+
+	// Attach to dispatcher
+	f.dispatcher.Attach(pmAgent)
+	return pmAgent, nil
 }
 
 // getWorkDirFromConfig determines the work directory from configuration.
