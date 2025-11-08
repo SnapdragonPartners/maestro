@@ -23,11 +23,17 @@
 - ✅ State handler stubs (demonstrates flow, ready for LLM integration)
 - ✅ Test config updated with PM settings
 
-**Phase 2 Ready (Specs Package):** Next
-- Spec parsing (markdown with YAML frontmatter)
-- Binary validation (7 checks)
-- submit_spec tool
-- Integration with PM SUBMITTING state
+**Phase 2 Complete (Specs Package):** ✅
+- ✅ Spec parsing (markdown with YAML frontmatter) - 259 lines
+- ✅ Binary validation (7 checks) - DFS cycle detection, all validation rules
+- ✅ submit_spec tool - validates, returns errors or success with metadata
+- ✅ Comprehensive tests (22 test cases total, all passing)
+
+**Phase 3 In Progress (PM ↔ Architect Feedback Loop):**
+- Message-based spec submission (REQUEST/RESULT pattern)
+- spec_feedback tool for architect to request changes
+- submit_stories implicit approval
+- PM iteration loop on feedback
 
 **Phase 3 Pending (WebUI Integration):**
 - Interview endpoints
@@ -163,6 +169,58 @@ Make Maestro usable by non-technical users...
 ---
 
 ## Architecture
+
+### **PM ↔ Architect Feedback Loop (Message-Based)**
+
+**Design Philosophy:** Message-based channels (REQUEST/RESULT) instead of file-based polling. Database provides persistence, messages provide clean state transitions.
+
+**Spec Initiation Flow:**
+
+1. **Human starts project:**
+   - **Option A (Chat):** Human sends chat message → PM starts interview
+   - **Option B (File Upload):** Human uploads spec file → PM receives as first interview message
+   - PM monitors both chat channel and specs channel in WAITING state
+
+2. **PM conducts interview:**
+   - PM → INTERVIEWING state
+   - Chat loop with human, gathering requirements
+   - PM → DRAFTING state when ready
+   - LLM generates markdown spec with YAML frontmatter
+
+3. **PM submits spec to architect:**
+   - PM calls `submit_spec` tool
+   - Tool validates spec (7 binary checks)
+   - If valid: sends `REQUEST(type="spec_review", spec_markdown=..., summary=...)` to architect
+   - PM → WAITING state
+
+4. **Architect reviews spec:**
+   - Architect (in WAITING/MONITORING) receives REQUEST
+   - Architect → SCOPING state
+   - Architect can use read tools to inspect PM workspace if needed
+   - **Two outcomes:**
+     - **Feedback:** `spec_feedback(feedback="...")` → sends `RESULT(approved=false, feedback=...)` to PM
+     - **Approval:** `submit_stories(stories=[...])` → sends `RESULT(approved=true)` to PM + generates stories
+
+5. **PM handles response:**
+   - If `approved=false`: PM → INTERVIEWING with feedback in context
+   - If `approved=true`: PM → WAITING for next interview
+
+6. **Architect continues work:**
+   - After `submit_stories`: architect follows normal transition logic
+   - If stories exist (new OR incomplete) → DISPATCHING
+   - If 0 stories total → WAITING
+
+**Key Design Points:**
+- **No file-based polling** - All communication via REQUEST/RESULT messages
+- **Architect stays in SCOPING** - No special state needed, handles spec reviews in existing SCOPING state
+- **Implicit approval** - `submit_stories` means spec was approved (no separate approval message)
+- **Iteration support** - `spec_feedback` allows architect to request clarifications or improvements
+- **Architect doesn't block** - Can process multiple specs, dispatch stories, all while PM is conducting interviews
+
+**Channels:**
+- **Original specs channel** → PM only (human file uploads)
+- **PM → Architect channel** → REQUEST messages with spec reviews
+- **Architect → PM channel** → RESULT messages with feedback/approval
 
 ### **PM Agent Package Structure**
 
@@ -306,20 +364,26 @@ type AgentConfig struct {
 
 ### R-003: submit_spec Tool
 
-**Description:** Validate markdown spec, persist to database, send to architect.
+**Description:** Validate markdown spec and send REQUEST to architect for review.
 
 **Tool Interface:**
 ```go
 func (t *SubmitSpecTool) Exec(ctx context.Context, args map[string]any) (any, error)
 
 Input:
-  - spec_content: string (markdown with YAML frontmatter)
-  - session_id: string
+  - markdown: string (markdown with YAML frontmatter)
+  - summary: string (brief 1-2 sentence summary)
 
-Output:
-  - accepted: bool
-  - spec_id: string (if accepted)
-  - errors: []string (if rejected)
+Output (on validation failure):
+  - success: false
+  - validation_errors: []string
+  - message: "Specification validation failed with N errors"
+
+Output (on validation success):
+  - success: true
+  - message: "Specification validated and ready for submission"
+  - summary: string
+  - metadata: {title, version, priority, requirements_count}
 ```
 
 **Validation Checks (Binary Pass/Fail):**
@@ -331,18 +395,60 @@ Output:
 6. Dependency graph is acyclic
 7. In-scope list has ≥1 item
 
-**Side Effects:**
-1. Persist to `specs` table with generated `spec_id`
-2. Send message to architect's spec channel
-3. Mark PM conversation as completed in database
+**Side Effects (via Effects pattern):**
+1. Send `REQUEST(type="spec_review", spec_markdown=..., summary=...)` to architect
+2. PM transitions to WAITING state
 
 **Acceptance Criteria:**
-- [ ] Valid specs pass all checks and return `accepted: true`
-- [ ] Invalid specs return `accepted: false` with error details
-- [ ] Architect receives spec message immediately after submission
-- [ ] No partial persistence (atomic: all or nothing)
+- [x] Valid specs pass all checks and return `success: true`
+- [x] Invalid specs return `success: false` with error details
+- [ ] Architect receives REQUEST message (Effects integration pending)
+- [x] Tool validates using specs.Parse() and specs.Validate()
 
-### R-004: Clone Registry & Merge Hook
+### R-004: spec_feedback Tool (Architect)
+
+**Description:** Architect sends feedback/questions to PM about submitted spec.
+
+**Tool Interface:**
+```go
+func (t *SpecFeedbackTool) Exec(ctx context.Context, args map[string]any) (any, error)
+
+Input:
+  - feedback: string (questions, clarifications, or requested improvements)
+  - urgency: string (optional: "low" | "medium" | "high")
+
+Output:
+  - success: true
+  - message: "Feedback sent to PM"
+```
+
+**Side Effects (via Effects pattern):**
+1. Send `RESULT(approved=false, feedback=...)` to PM
+2. PM receives feedback and transitions to INTERVIEWING with feedback in context
+
+**Acceptance Criteria:**
+- [ ] Architect can call tool from SCOPING state
+- [ ] PM receives feedback and re-enters interview loop
+- [ ] Feedback appears in PM conversation context
+- [ ] Tool available alongside read tools and submit_stories
+
+### R-005: submit_stories Enhancement
+
+**Description:** Update submit_stories tool to send implicit approval to PM when spec is approved.
+
+**Side Effects (new):**
+1. Generate stories from spec (existing behavior)
+2. Send `RESULT(approved=true, from="architect-001", to="pm-001")` to PM (new)
+3. Append stories to architect's queue (existing behavior)
+4. Architect transitions based on story queue state (existing behavior)
+
+**Acceptance Criteria:**
+- [ ] PM receives APPROVED when architect calls submit_stories
+- [ ] PM transitions to WAITING after approval
+- [ ] Architect continues to DISPATCHING if stories exist
+- [ ] No changes to existing submit_stories validation or story generation
+
+### R-006: Clone Registry & Merge Hook
 
 **Description:** Lightweight registry abstraction, updates dependent clones after merges.
 
