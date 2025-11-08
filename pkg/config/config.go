@@ -292,6 +292,7 @@ type AgentConfig struct {
 	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
 	CoderModel     string           `json:"coder_model"`     // Model name for coder agents (mapped to provider via KnownModels)
 	ArchitectModel string           `json:"architect_model"` // Model name for architect agent (mapped to provider via KnownModels)
+	PMModel        string           `json:"pm_model"`        // Model name for PM agent (mapped to provider via KnownModels)
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
 	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
 	StateTimeout   time.Duration    `json:"state_timeout"`   // Global timeout for any state processing
@@ -358,6 +359,7 @@ const (
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelOpenAIO4Mini
+	DefaultPMModel        = ModelClaudeSonnet4
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -419,6 +421,13 @@ type LogsConfig struct {
 	RotationCount int `json:"rotation_count"` // Number of old log files to keep (default: 4)
 }
 
+// PMConfig defines PM agent configuration.
+type PMConfig struct {
+	Enabled           bool   `json:"enabled"`             // Whether PM agent is enabled (default: true)
+	MaxInterviewTurns int    `json:"max_interview_turns"` // Maximum conversation turns before forcing submission (default: 20)
+	DefaultExpertise  string `json:"default_expertise"`   // Default user expertise level: NON_TECHNICAL, BASIC, EXPERT (default: BASIC)
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -436,6 +445,7 @@ type Config struct {
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
 	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
 	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
+	PM        *PMConfig        `json:"pm"`        // PM agent settings
 	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
@@ -834,6 +844,7 @@ func createDefaultConfig() *Config {
 			MaxCoders:      2,
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
+			PMModel:        DefaultPMModel,
 			Metrics: MetricsConfig{
 				Enabled:       true,       // Enable metrics by default for development visibility
 				Exporter:      "internal", // Use internal aggregation by default
@@ -892,6 +903,11 @@ func createDefaultConfig() *Config {
 				Enabled:   true, // Enable secret scanning by default
 				TimeoutMs: 800,  // 800ms timeout for scanning
 			},
+		},
+		PM: &PMConfig{
+			Enabled:           true,    // Enabled by default
+			MaxInterviewTurns: 20,      // Maximum 20 turns per interview
+			DefaultExpertise:  "BASIC", // Default to BASIC expertise level
 		},
 		Logs: &LogsConfig{
 			RotationCount: 4, // Keep last 4 log files
@@ -1046,6 +1062,9 @@ func applyDefaults(config *Config) {
 	if config.Agents.ArchitectModel == "" {
 		config.Agents.ArchitectModel = DefaultArchitectModel
 	}
+	if config.Agents.PMModel == "" {
+		config.Agents.PMModel = DefaultPMModel
+	}
 
 	// Apply metrics defaults
 	if config.Agents.Metrics.Exporter == "" {
@@ -1119,6 +1138,16 @@ func applyDefaults(config *Config) {
 	}
 	// Note: chat.enabled defaults to false, scanner.enabled defaults to false
 	// If user wants chat, they must explicitly enable it
+
+	// Apply PM defaults
+	if config.PM.MaxInterviewTurns == 0 {
+		config.PM.MaxInterviewTurns = 20
+	}
+	if config.PM.DefaultExpertise == "" {
+		config.PM.DefaultExpertise = "BASIC"
+	}
+	// Note: PM.Enabled defaults to false (zero value), but we want true by default
+	// This is handled in createDefaultConfig for new configs
 
 	// Apply Logs defaults
 	if config.Logs.RotationCount == 0 {
