@@ -13,6 +13,7 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/utils"
 )
 
 // Requirement represents a parsed requirement from a specification.
@@ -312,10 +313,10 @@ func (d *Driver) getSpecFileFromMessage() string {
 // convertToolResultToRequirements converts the structured submit_stories tool result
 // directly to Requirements without any JSON serialization/deserialization.
 func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]Requirement, error) {
-	// Extract requirements array from tool result
-	requirementsAny, ok := toolResult["requirements"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("requirements not found or not an array in tool result")
+	// Extract requirements array from tool result using generic helper
+	requirementsAny, err := utils.GetMapField[[]any](toolResult, "requirements")
+	if err != nil {
+		return nil, fmt.Errorf("requirements field invalid: %w", err)
 	}
 
 	if len(requirementsAny) == 0 {
@@ -325,22 +326,22 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 	// Convert each requirement from map to Requirement struct
 	requirements := make([]Requirement, 0, len(requirementsAny))
 	for i, reqAny := range requirementsAny {
-		reqMap, ok := reqAny.(map[string]any)
+		reqMap, ok := utils.SafeAssert[map[string]any](reqAny)
 		if !ok {
 			return nil, fmt.Errorf("requirement %d is not a map", i)
 		}
 
-		// Extract fields with type assertions
-		title, _ := reqMap["title"].(string)
-		description, _ := reqMap["description"].(string)
-		storyType, _ := reqMap["story_type"].(string)
+		// Extract fields using generic helpers with defaults
+		title := utils.GetMapFieldOr(reqMap, "title", "")
+		description := utils.GetMapFieldOr(reqMap, "description", "")
+		storyType := utils.GetMapFieldOr(reqMap, "story_type", "")
 
 		// Handle acceptance criteria array
 		var acceptanceCriteria []string
-		if acAny, ok := reqMap["acceptance_criteria"].([]any); ok {
+		if acAny, ok := utils.SafeAssert[[]any](reqMap["acceptance_criteria"]); ok {
 			acceptanceCriteria = make([]string, 0, len(acAny))
 			for _, ac := range acAny {
-				if acStr, ok := ac.(string); ok {
+				if acStr, ok := utils.SafeAssert[string](ac); ok {
 					acceptanceCriteria = append(acceptanceCriteria, acStr)
 				}
 			}
@@ -348,21 +349,20 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 
 		// Handle dependencies array
 		var dependencies []string
-		if depsAny, ok := reqMap["dependencies"].([]any); ok {
+		if depsAny, ok := utils.SafeAssert[[]any](reqMap["dependencies"]); ok {
 			dependencies = make([]string, 0, len(depsAny))
 			for _, dep := range depsAny {
-				if depStr, ok := dep.(string); ok {
+				if depStr, ok := utils.SafeAssert[string](dep); ok {
 					dependencies = append(dependencies, depStr)
 				}
 			}
 		}
 
-		// Handle estimated points (could be float64 or int)
+		// Handle estimated points (could be float64 from JSON or int)
 		estimatedPoints := 2 // Default
-		switch points := reqMap["estimated_points"].(type) {
-		case float64:
+		if points, ok := utils.SafeAssert[float64](reqMap["estimated_points"]); ok {
 			estimatedPoints = int(points)
-		case int:
+		} else if points, ok := utils.SafeAssert[int](reqMap["estimated_points"]); ok {
 			estimatedPoints = points
 		}
 
