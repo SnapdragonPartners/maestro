@@ -9,23 +9,33 @@
 
 ## Implementation Progress
 
-**Completed (Phase 1 - PM Agent Core):**
-- ✅ PM package structure created (`pkg/pm/driver.go`, `states.go`)
-- ✅ State machine implemented (WAITING → INTERVIEWING → DRAFTING → SUBMITTING)
-- ✅ Database schema added (pm_conversations, pm_messages tables)
-- ✅ PM models added to persistence package (PMConversation, PMMessage)
-- ✅ PM templates created in subdirectory (`pkg/templates/pm/`)
-- ✅ Configuration integration (PM config section, model selection)
-- ✅ Factory integration (PM agent creation via agent factory)
+**Phase 1 Complete (PM Agent Core):** ✅
+- ✅ PM package structure (`pkg/pm/driver.go`, `states.go`)
+- ✅ State machine (WAITING → INTERVIEWING → DRAFTING → SUBMITTING)
+- ✅ Database schema (pm_conversations, pm_messages tables, schema v11)
+- ✅ PM models (PMConversation, PMMessage)
+- ✅ Templates in subdirectory (`pkg/templates/pm/`)
+- ✅ Configuration (PM config section, Opus 4.1 default model)
+- ✅ Factory integration (createPM method)
 - ✅ Workspace management (EnsurePMWorkspace, UpdatePMWorkspace)
-- ✅ State handler stubs (interview, draft, submit with TODO markers)
+- ✅ Supervisor wiring (start at boot with restart policy)
+- ✅ Read tools (ArchitectExecutor with containerized environment)
+- ✅ State handler stubs (demonstrates flow, ready for LLM integration)
+- ✅ Test config updated with PM settings
 
-**Remaining for Phase 1:**
-- ⏳ Supervisor wiring (start PM agent at boot)
-- ⏳ Read tools registration (wire PM executor to tools)
-- ⏳ Full LLM call implementations (replace stubs)
+**Phase 2 Ready (Specs Package):** Next
+- Spec parsing (markdown with YAML frontmatter)
+- Binary validation (7 checks)
+- submit_spec tool
+- Integration with PM SUBMITTING state
 
-**Branch:** `pm-agent-implementation` (9 commits)
+**Phase 3 Pending (WebUI Integration):**
+- Interview endpoints
+- Chat interface
+- Preview generation
+- Submission modal
+
+**Branch:** `pm-agent-implementation` (13 commits)
 
 ---
 

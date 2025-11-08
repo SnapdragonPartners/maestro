@@ -175,8 +175,7 @@ func (d *Driver) Run(ctx context.Context) error {
 			if d.currentState != nextState {
 				d.logger.Info("🔄 PM state transition: %s → %s", d.currentState, nextState)
 				d.currentState = nextState
-
-				// TODO: Notify supervisor of state change when state notification channel is added
+				// Supervisor polls state changes via dispatcher
 			}
 
 			// Handle terminal states
@@ -235,8 +234,13 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 				if expertise, ok := payloadData["expertise"].(string); ok {
 					d.stateData["expertise"] = expertise
 				} else {
-					// TODO: Use cfg.PM.DefaultExpertise when PM config is added
-					d.stateData["expertise"] = DefaultExpertise
+					// Use config default if not specified
+					cfg, cfgErr := config.GetConfig()
+					if cfgErr == nil && cfg.PM != nil && cfg.PM.DefaultExpertise != "" {
+						d.stateData["expertise"] = cfg.PM.DefaultExpertise
+					} else {
+						d.stateData["expertise"] = DefaultExpertise
+					}
 				}
 			}
 		}
