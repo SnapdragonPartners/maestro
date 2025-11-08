@@ -40,7 +40,8 @@ const (
 	ToolSubmitStories = "submit_stories"
 
 	// PM tools.
-	ToolSubmitSpec = "submit_spec"
+	ToolSubmitSpec   = "submit_spec"
+	ToolSpecFeedback = "spec_feedback"
 )
 
 // State-specific tool availability - defines which tools are available in each state.

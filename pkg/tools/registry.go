@@ -512,6 +512,14 @@ func getSubmitSpecSchema() InputSchema {
 	return NewSubmitSpecTool().Definition().InputSchema
 }
 
+func createSpecFeedbackTool(_ AgentContext) (Tool, error) {
+	return NewSpecFeedbackTool(), nil
+}
+
+func getSpecFeedbackSchema() InputSchema {
+	return NewSpecFeedbackTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -671,5 +679,11 @@ func init() {
 		Name:        ToolSubmitSpec,
 		Description: "Submit finalized specification for validation and storage (PM SUBMITTING phase)",
 		InputSchema: getSubmitSpecSchema(),
+	})
+
+	Register(ToolSpecFeedback, createSpecFeedbackTool, &ToolMeta{
+		Name:        ToolSpecFeedback,
+		Description: "Send feedback to PM about submitted specification (Architect SCOPING phase)",
+		InputSchema: getSpecFeedbackSchema(),
 	})
 }
