@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 10
+const CurrentSchemaVersion = 11
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -104,6 +104,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion9(db)
 	case 10:
 		return migrateToVersion10(db)
+	case 11:
+		return migrateToVersion11(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -341,6 +343,54 @@ func migrateToVersion10(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion11 adds PM conversation and message tables for interview tracking.
+func migrateToVersion11(db *sql.DB) error {
+	tables := []string{
+		// PM conversations table for interview state tracking
+		`CREATE TABLE IF NOT EXISTS pm_conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL UNIQUE,
+			user_expertise TEXT CHECK(user_expertise IN ('NON_TECHNICAL', 'BASIC', 'EXPERT')),
+			repo_url TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			completed INTEGER DEFAULT 0,
+			spec_id TEXT REFERENCES specs(id)
+		)`,
+
+		// PM messages table for conversation history
+		`CREATE TABLE IF NOT EXISTS pm_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_session_id TEXT NOT NULL,
+			role TEXT CHECK(role IN ('user', 'pm')) NOT NULL,
+			content TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			FOREIGN KEY(conversation_session_id) REFERENCES pm_conversations(session_id) ON DELETE CASCADE
+		)`,
+	}
+
+	// Create tables
+	for _, ddl := range tables {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("failed to create PM table: %w", err)
+		}
+	}
+
+	// Create indices
+	indices := []string{
+		"CREATE INDEX IF NOT EXISTS idx_pm_conversations_session ON pm_conversations(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_pm_messages_conversation ON pm_messages(conversation_session_id, timestamp)",
+	}
+
+	for _, idx := range indices {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create PM index: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 func createSchema(db *sql.DB) error {
 	// Enable WAL mode and foreign keys
@@ -497,6 +547,28 @@ func createSchema(db *sql.DB) error {
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 
+		// PM conversations table for interview state tracking
+		`CREATE TABLE IF NOT EXISTS pm_conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL UNIQUE,
+			user_expertise TEXT CHECK(user_expertise IN ('NON_TECHNICAL', 'BASIC', 'EXPERT')),
+			repo_url TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			completed INTEGER DEFAULT 0,
+			spec_id TEXT REFERENCES specs(id)
+		)`,
+
+		// PM messages table for conversation history
+		`CREATE TABLE IF NOT EXISTS pm_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_session_id TEXT NOT NULL,
+			role TEXT CHECK(role IN ('user', 'pm')) NOT NULL,
+			content TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			FOREIGN KEY(conversation_session_id) REFERENCES pm_conversations(session_id) ON DELETE CASCADE
+		)`,
+
 		// Knowledge graph nodes
 		`CREATE TABLE IF NOT EXISTS nodes (
 			id TEXT PRIMARY KEY,
@@ -588,6 +660,10 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_story ON tool_executions(story_id)",
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_tool ON tool_executions(tool_name)",
 		"CREATE INDEX IF NOT EXISTS idx_tool_exec_created ON tool_executions(created_at)",
+
+		// PM conversation indices
+		"CREATE INDEX IF NOT EXISTS idx_pm_conversations_session ON pm_conversations(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_pm_messages_conversation ON pm_messages(conversation_session_id, timestamp)",
 
 		// Knowledge graph indices
 		"CREATE INDEX IF NOT EXISTS idx_nodes_session ON nodes(session_id)",
