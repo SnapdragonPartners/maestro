@@ -478,3 +478,105 @@ func TestConcurrentRetrieval(t *testing.T) {
 		}
 	}
 }
+
+// TestFTS5QueryQuoting tests that search terms are properly quoted to prevent column name interpretation.
+// This is a regression test for the bug where terms like "trivia" caused "no such column: trivia" errors.
+func TestFTS5QueryQuoting(t *testing.T) {
+	db, sessionID := setupTestDBWithData(t)
+	defer db.Close()
+
+	// Add a node with text that could be misinterpreted as SQL column names
+	graph := &Graph{
+		Nodes: map[string]*Node{
+			"trivia-game": {
+				ID:          "trivia-game",
+				Type:        "component",
+				Level:       "implementation",
+				Status:      "current",
+				Description: "Astrology trivia game with questions about zodiac signs",
+				Tag:         "games",
+			},
+			"quiz-handler": {
+				ID:          "quiz-handler",
+				Type:        "component",
+				Level:       "implementation",
+				Status:      "current",
+				Description: "Handler for quiz questions and scoring",
+				Tag:         "quiz",
+			},
+		},
+		Edges: []*Edge{},
+	}
+
+	if err := IndexGraph(db, graph, sessionID); err != nil {
+		t.Fatalf("Failed to index test data: %v", err)
+	}
+
+	// Test cases with terms that could be interpreted as column names if not quoted
+	tests := []struct {
+		name        string
+		terms       string
+		wantNoError bool
+		mustInclude []string
+	}{
+		{
+			name:        "single word that looks like column name",
+			terms:       "trivia",
+			wantNoError: true,
+			mustInclude: []string{"trivia-game"},
+		},
+		{
+			name:        "multiple words that could be column names",
+			terms:       "trivia quiz questions",
+			wantNoError: true,
+			mustInclude: []string{"trivia-game", "quiz-handler"},
+		},
+		{
+			name:        "words with special meaning in SQL",
+			terms:       "astrology zodiac",
+			wantNoError: true,
+			mustInclude: []string{"trivia-game"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			options := RetrievalOptions{
+				Terms:      tt.terms,
+				Level:      "all",
+				MaxResults: 10,
+				Depth:      0,
+			}
+
+			result, err := Retrieve(db, sessionID, options)
+
+			// Check for the specific "no such column" error that this fix addresses
+			if err != nil {
+				if tt.wantNoError {
+					t.Fatalf("Retrieve() error = %v, want no error (terms should be quoted properly)", err)
+				}
+				// Check if it's the specific column name error we're protecting against
+				errMsg := err.Error()
+				if contains := func(s, substr string) bool {
+					return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr))
+				}(errMsg, "no such column"); contains {
+					t.Fatalf("Retrieve() failed with column name error: %v - FTS5 terms not properly quoted", err)
+				}
+			}
+
+			// Verify expected nodes are found
+			if result != nil && len(tt.mustInclude) > 0 {
+				subgraph, parseErr := ParseDOT(result.Subgraph)
+				if parseErr != nil {
+					t.Fatalf("Failed to parse result subgraph: %v", parseErr)
+				}
+
+				for _, mustHave := range tt.mustInclude {
+					if _, exists := subgraph.Nodes[mustHave]; !exists {
+						t.Errorf("Retrieve() missing expected node %q for terms %q", mustHave, tt.terms)
+					}
+				}
+			}
+		})
+	}
+}
