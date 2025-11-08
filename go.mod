@@ -10,15 +10,14 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.66.1
-	github.com/sashabaranov/go-openai v1.41.2
 	github.com/tiktoken-go/tokenizer v0.7.0
 	golang.org/x/crypto v0.43.0
 	golang.org/x/term v0.36.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.40.0
 )
 
 require (
-	github.com/awalterschulze/gographviz v2.0.3+incompatible // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
