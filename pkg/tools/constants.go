@@ -38,6 +38,9 @@ const (
 	ToolGetDiff       = "get_diff"
 	ToolSubmitReply   = "submit_reply"
 	ToolSubmitStories = "submit_stories"
+
+	// PM tools.
+	ToolSubmitSpec = "submit_spec"
 )
 
 // State-specific tool availability - defines which tools are available in each state.

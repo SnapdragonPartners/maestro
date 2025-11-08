@@ -1,0 +1,117 @@
+package tools
+
+import (
+	"context"
+	"fmt"
+
+	"orchestrator/pkg/specs"
+)
+
+// SubmitSpecTool allows PM agent to submit finalized specifications.
+type SubmitSpecTool struct{}
+
+// NewSubmitSpecTool creates a new submit spec tool instance.
+func NewSubmitSpecTool() *SubmitSpecTool {
+	return &SubmitSpecTool{}
+}
+
+// Definition returns the tool's definition in Claude API format.
+func (s *SubmitSpecTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "submit_spec",
+		Description: "Submit the finalized specification for validation and storage",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"markdown": {
+					Type:        "string",
+					Description: "The complete specification in markdown format with YAML frontmatter",
+				},
+				"summary": {
+					Type:        "string",
+					Description: "Brief summary of the specification (1-2 sentences)",
+				},
+			},
+			Required: []string{"markdown", "summary"},
+		},
+	}
+}
+
+// Name returns the tool identifier.
+func (s *SubmitSpecTool) Name() string {
+	return "submit_spec"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (s *SubmitSpecTool) PromptDocumentation() string {
+	return `- **submit_spec** - Submit finalized specification for validation and storage
+  - Parameters: markdown (required), summary (required)
+  - Validates spec against all PM validation rules before submission
+  - Returns validation errors if spec does not pass
+  - Use when you have completed the specification interview and drafted the full spec`
+}
+
+// Exec executes the submit spec operation.
+func (s *SubmitSpecTool) Exec(_ context.Context, args map[string]any) (any, error) {
+	// Extract markdown parameter.
+	markdown, ok := args["markdown"]
+	if !ok {
+		return nil, fmt.Errorf("markdown parameter is required")
+	}
+
+	markdownStr, ok := markdown.(string)
+	if !ok {
+		return nil, fmt.Errorf("markdown must be a string")
+	}
+
+	if markdownStr == "" {
+		return nil, fmt.Errorf("markdown cannot be empty")
+	}
+
+	// Extract summary parameter.
+	summary, ok := args["summary"]
+	if !ok {
+		return nil, fmt.Errorf("summary parameter is required")
+	}
+
+	summaryStr, ok := summary.(string)
+	if !ok {
+		return nil, fmt.Errorf("summary must be a string")
+	}
+
+	if summaryStr == "" {
+		return nil, fmt.Errorf("summary cannot be empty")
+	}
+
+	// Parse and validate the specification.
+	spec, err := specs.Parse(markdownStr)
+	if err != nil {
+		return map[string]any{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to parse specification: %v", err),
+		}, nil
+	}
+
+	// Validate the parsed specification.
+	result := specs.Validate(spec)
+	if !result.Passed {
+		return map[string]any{
+			"success":           false,
+			"validation_errors": result.Blocking,
+			"message":           fmt.Sprintf("Specification validation failed with %d errors", len(result.Blocking)),
+		}, nil
+	}
+
+	// Validation passed - return success with metadata.
+	return map[string]any{
+		"success": true,
+		"message": "Specification validated and ready for submission",
+		"summary": summaryStr,
+		"metadata": map[string]any{
+			"title":              spec.Title,
+			"version":            spec.Version,
+			"priority":           spec.Priority,
+			"requirements_count": len(spec.Requirements),
+		},
+	}, nil
+}
