@@ -225,6 +225,11 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile,
 		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
 	}
 
+	// Reset context for new SCOPING analysis (prevents confusion from stale history)
+	// This follows the same pattern as coder: render prompt, then reset context with that prompt
+	templateName := fmt.Sprintf("scoping-%s", specFile)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
+
 	// Get LLM response with read tools to inspect the codebase
 	scopingTools := d.getScopingTools()
 	signal, err := d.callLLMWithTools(ctx, prompt, scopingTools)
