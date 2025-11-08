@@ -15,11 +15,14 @@ const (
 
 	// TypeCoder represents a coder agent that implements code based on tasks.
 	TypeCoder Type = "coder"
+
+	// TypePM represents a PM agent that conducts specification interviews.
+	TypePM Type = "pm"
 )
 
 // IsValid checks if the agent type is valid.
 func (t Type) IsValid() bool {
-	return t == TypeArchitect || t == TypeCoder
+	return t == TypeArchitect || t == TypeCoder || t == TypePM
 }
 
 // String returns the string representation of the agent type.
@@ -31,7 +34,7 @@ func (t Type) String() string {
 func Parse(s string) (Type, error) {
 	t := Type(s)
 	if !t.IsValid() {
-		return "", fmt.Errorf("invalid agent type: %s (must be 'architect' or 'coder')", s)
+		return "", fmt.Errorf("invalid agent type: %s (must be 'architect', 'coder', or 'pm')", s)
 	}
 	return t, nil
 }
