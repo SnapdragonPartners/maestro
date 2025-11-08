@@ -102,16 +102,20 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, erro
 		}, nil
 	}
 
-	// Validation passed - return success with metadata.
+	// Validation passed - return success with metadata and spec data for REQUEST message.
 	return map[string]any{
-		"success": true,
-		"message": "Specification validated and ready for submission",
-		"summary": summaryStr,
+		"success":       true,
+		"message":       "Specification validated and ready for submission",
+		"summary":       summaryStr,
+		"spec_markdown": markdownStr, // Include for REQUEST message
 		"metadata": map[string]any{
 			"title":              spec.Title,
 			"version":            spec.Version,
 			"priority":           spec.Priority,
 			"requirements_count": len(spec.Requirements),
 		},
+		// Signal to PM driver to send REQUEST to architect
+		"send_request": true,
+		"request_type": "spec_review",
 	}, nil
 }
