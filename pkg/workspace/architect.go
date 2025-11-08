@@ -25,7 +25,7 @@ const defaultTargetBranch = "main"
 // 3. Checks out the target branch (main).
 // 4. Returns the workspace path.
 //
-//nolint:cyclop // Complexity from error handling and git operations is acceptable.
+//nolint:cyclop,dupl // Complexity and duplication acceptable - pattern shared with PM workspace.
 func EnsureArchitectWorkspace(ctx context.Context, projectDir string) (string, error) {
 	logger := logx.NewLogger("workspace")
 

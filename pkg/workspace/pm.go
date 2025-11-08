@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
@@ -60,16 +61,107 @@ func UpdatePMWorkspace(ctx context.Context, projectDir string) error {
 	return nil
 }
 
-// EnsurePMWorkspace creates or verifies the PM workspace clone.
-// This will be implemented when the PM agent is added to the system.
-// For now, this is a placeholder that returns an error if called.
-func EnsurePMWorkspace(_ context.Context, projectDir string) (string, error) {
-	// TODO: Implement PM workspace creation when PM agent is added
-	// This should:
-	// 1. Clone from mirror to <projectDir>/pm-001/
-	// 2. Checkout target branch
-	// 3. Return workspace path
+// EnsurePMWorkspace ensures the PM workspace exists and is up to date.
+// The PM workspace is a full git clone at <projectDir>/pm-001/ that provides
+// read-only access to the repository for the PM agent during interviews.
+//
+// This function:
+// 1. Creates pm-001/ directory if it doesn't exist.
+// 2. Clones from the local mirror (fast, network-efficient).
+// 3. Checks out the target branch.
+// 4. Returns the workspace path.
+//
+//nolint:cyclop,dupl // Complexity and duplication acceptable - mirrors architect workspace pattern.
+func EnsurePMWorkspace(ctx context.Context, projectDir string) (string, error) {
+	logger := logx.NewLogger("workspace-pm")
 
+	// Get git configuration
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config: %w", err)
+	}
+
+	if cfg.Git == nil {
+		return "", fmt.Errorf("git configuration not found")
+	}
+
+	targetBranch := cfg.Git.TargetBranch
+	if targetBranch == "" {
+		targetBranch = config.DefaultTargetBranch
+	}
+
+	// PM workspace path
 	pmWorkspace := filepath.Join(projectDir, "pm-001")
-	return pmWorkspace, fmt.Errorf("PM workspace creation not yet implemented (PM agent coming in future phase)")
+	absPMWorkspace, absErr := filepath.Abs(pmWorkspace)
+	if absErr != nil {
+		return "", fmt.Errorf("failed to resolve absolute path for PM workspace: %w", absErr)
+	}
+	pmWorkspace = absPMWorkspace
+
+	// Find the git mirror
+	mirrorDir := filepath.Join(projectDir, ".mirrors")
+	entries, err := os.ReadDir(mirrorDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read mirrors directory: %w", err)
+	}
+
+	var gitMirrorPath string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".git") {
+			gitMirrorPath = filepath.Join(mirrorDir, entry.Name())
+			break
+		}
+	}
+
+	if gitMirrorPath == "" {
+		return "", fmt.Errorf("no git mirror found in %s", mirrorDir)
+	}
+
+	// Check if workspace already exists
+	if stat, statErr := os.Stat(pmWorkspace); statErr == nil && stat.IsDir() {
+		// Workspace exists - check if it's a valid git clone
+		gitDir := filepath.Join(pmWorkspace, ".git")
+		if gitStat, gitStatErr := os.Stat(gitDir); gitStatErr == nil && gitStat.IsDir() {
+			// Valid clone exists - update it
+			logger.Info("PM workspace exists, updating to latest %s", targetBranch)
+
+			// Fetch latest changes
+			fetchCmd := exec.CommandContext(ctx, "git", "fetch", "--all", "--prune")
+			fetchCmd.Dir = pmWorkspace
+			if fetchErr := fetchCmd.Run(); fetchErr != nil {
+				logger.Warn("Failed to fetch updates: %v", fetchErr)
+				// Don't fail - workspace might still be usable
+			}
+
+			// Reset to target branch (PM workspace is read-only, safe to hard reset)
+			resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", "origin/"+targetBranch)
+			resetCmd.Dir = pmWorkspace
+			if resetErr := resetCmd.Run(); resetErr != nil {
+				logger.Warn("Failed to reset PM workspace: %v", resetErr)
+				// Don't fail - workspace might still be usable
+			}
+
+			return pmWorkspace, nil
+		}
+
+		// Directory exists but not a valid git clone - remove and recreate
+		logger.Warn("PM workspace exists but is not a valid git clone, recreating")
+		if removeErr := os.RemoveAll(pmWorkspace); removeErr != nil {
+			return "", fmt.Errorf("failed to remove invalid workspace: %w", removeErr)
+		}
+	}
+
+	// Create new clone from mirror
+	logger.Info("Creating PM workspace clone at %s", pmWorkspace)
+
+	// Clone from local mirror (fast and network-efficient)
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--branch", targetBranch, gitMirrorPath, pmWorkspace)
+
+	output, err := cloneCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to clone PM workspace: %w\nOutput: %s", err, string(output))
+	}
+
+	logger.Info("✅ Created PM workspace successfully")
+	return pmWorkspace, nil
 }
