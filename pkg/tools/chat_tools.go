@@ -82,10 +82,16 @@ func (c *ChatPostTool) Exec(ctx context.Context, args map[string]any) (any, erro
 	// Format author with @ prefix
 	author := chat.FormatAuthor(agentID)
 
+	// Determine channel based on agent type (simple heuristic for now)
+	// PM agents use 'product', all others use 'development'
+	channel := "development"
+	// TODO: This should be configured more robustly - perhaps store channel in context or agent config
+
 	// Post the message
 	req := &chat.PostRequest{
-		Author: author,
-		Text:   textStr,
+		Author:  author,
+		Text:    textStr,
+		Channel: channel,
 	}
 
 	resp, err := c.chatService.Post(ctx, req)

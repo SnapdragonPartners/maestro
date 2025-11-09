@@ -1109,7 +1109,8 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 
 	// Parse JSON request body
 	var reqBody struct {
-		Text string `json:"text"`
+		Text    string `json:"text"`
+		Channel string `json:"channel"` // Optional: defaults to 'development'
 	}
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1121,10 +1122,17 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default to development channel if not specified
+	channel := reqBody.Channel
+	if channel == "" {
+		channel = "development"
+	}
+
 	// Post message as "@human"
 	postReq := &chat.PostRequest{
-		Author: "@human",
-		Text:   reqBody.Text,
+		Author:  "@human",
+		Text:    reqBody.Text,
+		Channel: channel,
 	}
 
 	resp, err := s.chatService.Post(r.Context(), postReq)

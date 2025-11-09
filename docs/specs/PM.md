@@ -1,9 +1,9 @@
 # Maestro: Interactive Spec Development with PM Agent
 
-**Version:** 1.4 (Phase 4 Complete - WebUI Integration)
+**Version:** 1.5 (Multi-Channel Chat Complete)
 **Owner:** @dan
-**Last Updated:** 2025-11-09
-**Status:** Phase 1-4 Complete ✅ | Phase 5 (Interview Chat) Pending
+**Last Updated:** 2025-01-09
+**Status:** Phase 1-4 Complete ✅ | Multi-Channel Chat ✅ | Phase 5 (Interview Chat) Pending
 
 ---
 
@@ -50,7 +50,20 @@
 - 🚧 Preview generation (UI complete, backend placeholder - needs LLM integration)
 - 🚧 Spec submission (UI complete, backend placeholder - needs state transition wiring)
 
-**Branch:** `pm-agent-implementation` (13 commits)
+**Multi-Channel Chat System Complete:** ✅
+- ✅ Database schema v12 (channel column, composite PK for cursors)
+- ✅ In-memory canonical state (messages slice, agentCursors map)
+- ✅ Per-channel cursor management (agent_id, channel, session_id)
+- ✅ Agent registration system (RegisterAgent at construction time)
+- ✅ Channel-based access control (no cursor = no access)
+- ✅ Persistence layer updates (PostChatMessageWithType, GetChatCursor, UpdateChatCursor)
+- ✅ Agent factory wiring (Architect/Coder → development, PM → product)
+- ✅ WebUI endpoint updated (channel parameter support)
+- ✅ Frontend updated (maestro.js sends channel: "development")
+- ✅ Chat middleware compatibility (GetNew() handles multi-channel filtering)
+- ✅ All tests passing
+
+**Branch:** `debug` (multi-channel chat commits)
 
 ---
 

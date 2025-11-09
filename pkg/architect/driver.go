@@ -68,6 +68,7 @@ type ChatServiceInterface interface {
 type ChatPostRequest struct {
 	Author   string
 	Text     string
+	Channel  string
 	ReplyTo  *int64
 	PostType string
 }

@@ -76,6 +76,9 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 		return nil, fmt.Errorf("failed to create architect: %w", err)
 	}
 
+	// Register architect for chat channels
+	f.chatService.RegisterAgent(agentID, []string{"development"})
+
 	// Attach to dispatcher
 	f.dispatcher.Attach(architect)
 	return architect, nil
@@ -132,6 +135,9 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)
 	}
 
+	// Register coder for chat channels
+	f.chatService.RegisterAgent(agentID, []string{"development"})
+
 	// Attach to dispatcher
 	f.dispatcher.Attach(coderAgent)
 	return coderAgent, nil
@@ -171,6 +177,9 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PM: %w", err)
 	}
+
+	// Register PM for chat channels (product channel only)
+	f.chatService.RegisterAgent(agentID, []string{"product"})
 
 	// Attach to dispatcher
 	f.dispatcher.Attach(pmAgent)

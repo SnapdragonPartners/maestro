@@ -1,5 +1,5 @@
 // Maestro Web UI JavaScript
-const MAESTRO_UI_VERSION = 'v0.1.6-chat-fix';
+const MAESTRO_UI_VERSION = 'v0.1.7-multi-channel';
 
 class MaestroUI {
     constructor() {
@@ -1504,7 +1504,10 @@ class MaestroUI {
         sendSpinner.classList.remove('hidden');
 
         try {
-            const payload = { text };
+            const payload = {
+                text: text,
+                channel: 'development'  // Development chat uses development channel
+            };
 
             // Include reply_to if we're replying
             if (this.replyingToMessageId) {

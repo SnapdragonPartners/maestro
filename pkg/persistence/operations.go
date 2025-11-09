@@ -914,18 +914,18 @@ func (ops *DatabaseOperations) GetAllStoriesWithDependencies() ([]*Story, error)
 
 // PostChatMessage inserts a new chat message and returns the assigned ID.
 func (ops *DatabaseOperations) PostChatMessage(author, text, timestamp string) (int64, error) {
-	// Default to regular chat message with no reply
-	return ops.PostChatMessageWithType(author, text, timestamp, nil, "chat")
+	// Default to development channel, regular chat message with no reply
+	return ops.PostChatMessageWithType(author, text, timestamp, "development", nil, "chat")
 }
 
-// PostChatMessageWithType posts a chat message with optional reply_to and post_type.
-func (ops *DatabaseOperations) PostChatMessageWithType(author, text, timestamp string, replyTo *int64, postType string) (int64, error) {
+// PostChatMessageWithType posts a chat message with channel, optional reply_to and post_type.
+func (ops *DatabaseOperations) PostChatMessageWithType(author, text, timestamp, channel string, replyTo *int64, postType string) (int64, error) {
 	query := `
-		INSERT INTO chat (session_id, ts, author, text, reply_to, post_type)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO chat (session_id, channel, ts, author, text, reply_to, post_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 
-	result, err := ops.db.Exec(query, ops.sessionID, timestamp, author, text, replyTo, postType)
+	result, err := ops.db.Exec(query, ops.sessionID, channel, timestamp, author, text, replyTo, postType)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert chat message: %w", err)
 	}
@@ -941,7 +941,7 @@ func (ops *DatabaseOperations) PostChatMessageWithType(author, text, timestamp s
 // GetChatMessages returns all chat messages with id > sinceID for the current session.
 func (ops *DatabaseOperations) GetChatMessages(sinceID int64) ([]*ChatMessage, error) {
 	query := `
-		SELECT id, session_id, ts, author, text, reply_to, post_type
+		SELECT id, session_id, channel, ts, author, text, reply_to, post_type
 		FROM chat
 		WHERE session_id = ? AND id > ?
 		ORDER BY id ASC
@@ -958,7 +958,7 @@ func (ops *DatabaseOperations) GetChatMessages(sinceID int64) ([]*ChatMessage, e
 	var messages []*ChatMessage
 	for rows.Next() {
 		var msg ChatMessage
-		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Timestamp, &msg.Author, &msg.Text, &msg.ReplyTo, &msg.PostType)
+		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Channel, &msg.Timestamp, &msg.Author, &msg.Text, &msg.ReplyTo, &msg.PostType)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan chat message: %w", err)
 		}
@@ -976,7 +976,7 @@ func (ops *DatabaseOperations) GetChatMessages(sinceID int64) ([]*ChatMessage, e
 // Returns sql.ErrNoRows if no reply is found.
 func (ops *DatabaseOperations) GetChatMessageByReplyTo(messageID int64) (*ChatMessage, error) {
 	query := `
-		SELECT id, session_id, ts, author, text, reply_to, post_type
+		SELECT id, session_id, channel, ts, author, text, reply_to, post_type
 		FROM chat
 		WHERE session_id = ? AND reply_to = ?
 		ORDER BY id ASC
@@ -985,7 +985,7 @@ func (ops *DatabaseOperations) GetChatMessageByReplyTo(messageID int64) (*ChatMe
 
 	var msg ChatMessage
 	err := ops.db.QueryRow(query, ops.sessionID, messageID).Scan(
-		&msg.ID, &msg.SessionID, &msg.Timestamp, &msg.Author, &msg.Text, &msg.ReplyTo, &msg.PostType,
+		&msg.ID, &msg.SessionID, &msg.Channel, &msg.Timestamp, &msg.Author, &msg.Text, &msg.ReplyTo, &msg.PostType,
 	)
 
 	if err == sql.ErrNoRows {
@@ -998,34 +998,34 @@ func (ops *DatabaseOperations) GetChatMessageByReplyTo(messageID int64) (*ChatMe
 	return &msg, nil
 }
 
-// GetChatCursor returns the last read message ID for an agent.
-func (ops *DatabaseOperations) GetChatCursor(agentID string) (int64, error) {
-	query := `SELECT last_id FROM chat_cursor WHERE agent_id = ?`
+// GetChatCursor returns the last read message ID for an agent on a specific channel.
+func (ops *DatabaseOperations) GetChatCursor(agentID, channel string) (int64, error) {
+	query := `SELECT last_id FROM chat_cursor WHERE agent_id = ? AND channel = ? AND session_id = ?`
 
 	var lastID int64
-	err := ops.db.QueryRow(query, agentID).Scan(&lastID)
+	err := ops.db.QueryRow(query, agentID, channel, ops.sessionID).Scan(&lastID)
 	if err == sql.ErrNoRows {
 		// No cursor found - return 0 (will read all messages)
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("failed to get chat cursor for agent %s: %w", agentID, err)
+		return 0, fmt.Errorf("failed to get chat cursor for agent %s channel %s: %w", agentID, channel, err)
 	}
 
 	return lastID, nil
 }
 
-// UpdateChatCursor updates the last read message ID for an agent.
-func (ops *DatabaseOperations) UpdateChatCursor(agentID string, lastID int64) error {
+// UpdateChatCursor updates the last read message ID for an agent on a specific channel.
+func (ops *DatabaseOperations) UpdateChatCursor(agentID, channel string, lastID int64) error {
 	query := `
-		INSERT INTO chat_cursor (agent_id, last_id)
-		VALUES (?, ?)
-		ON CONFLICT(agent_id) DO UPDATE SET last_id = excluded.last_id
+		INSERT INTO chat_cursor (agent_id, channel, session_id, last_id)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(agent_id, channel, session_id) DO UPDATE SET last_id = excluded.last_id
 	`
 
-	_, err := ops.db.Exec(query, agentID, lastID)
+	_, err := ops.db.Exec(query, agentID, channel, ops.sessionID, lastID)
 	if err != nil {
-		return fmt.Errorf("failed to update chat cursor for agent %s: %w", agentID, err)
+		return fmt.Errorf("failed to update chat cursor for agent %s channel %s: %w", agentID, channel, err)
 	}
 
 	return nil
