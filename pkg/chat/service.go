@@ -247,6 +247,36 @@ func (s *Service) GetNew(_ context.Context, req *GetNewRequest) (*GetNewResponse
 	}, nil
 }
 
+// HaveNewMessages checks if an agent has new messages without retrieving them or updating cursors.
+// This is useful for polling to decide whether to make an LLM call.
+func (s *Service) HaveNewMessages(agentID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 1. Get agent's channel cursors
+	channelCursors, ok := s.agentCursors[agentID]
+	if !ok {
+		// Agent not registered - no access to any channels
+		return false
+	}
+
+	// 2. Check if any message exists that is newer than agent's cursor for accessible channels
+	for _, msg := range s.messages {
+		// Check if agent has access to this channel
+		cursor, hasAccess := channelCursors[msg.Channel]
+		if !hasAccess {
+			continue
+		}
+
+		// Check if message is newer than cursor
+		if msg.ID > cursor {
+			return true
+		}
+	}
+
+	return false
+}
+
 // UpdateCursor updates an agent's cursor to a new position across all channels.
 // This updates the cursor for ALL channels the agent has access to.
 func (s *Service) UpdateCursor(_ context.Context, agentID string, newPointer int64) error {

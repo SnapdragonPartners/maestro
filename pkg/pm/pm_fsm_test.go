@@ -12,9 +12,9 @@ func TestPMStateString(t *testing.T) {
 		expected string
 	}{
 		{StateWaiting, "WAITING"},
-		{StateInterviewing, "INTERVIEWING"},
-		{StateDrafting, "DRAFTING"},
-		{StateSubmitting, "SUBMITTING"},
+		{StateWorking, "INTERVIEWING"},
+		{StateWorking, "DRAFTING"},
+		{StateWorking, "SUBMITTING"},
 		{proto.StateDone, "DONE"},
 		{proto.StateError, "ERROR"},
 		{proto.State("INVALID"), "INVALID"}, // Invalid state
@@ -38,25 +38,25 @@ func TestIsValidPMTransition(t *testing.T) {
 		name string
 	}{
 		// WAITING transitions
-		{StateWaiting, StateInterviewing, "WAITING -> INTERVIEWING (interview starts)"},
-		{StateWaiting, StateSubmitting, "WAITING -> SUBMITTING (spec file upload)"},
+		{StateWaiting, StateWorking, "WAITING -> INTERVIEWING (interview starts)"},
+		{StateWaiting, StateWorking, "WAITING -> SUBMITTING (spec file upload)"},
 		{StateWaiting, proto.StateDone, "WAITING -> DONE (shutdown)"},
 
 		// INTERVIEWING transitions
-		{StateInterviewing, StateDrafting, "INTERVIEWING -> DRAFTING (ready to draft)"},
-		{StateInterviewing, proto.StateError, "INTERVIEWING -> ERROR (interview failed)"},
-		{StateInterviewing, proto.StateDone, "INTERVIEWING -> DONE (shutdown)"},
+		{StateWorking, StateWorking, "INTERVIEWING -> DRAFTING (ready to draft)"},
+		{StateWorking, proto.StateError, "INTERVIEWING -> ERROR (interview failed)"},
+		{StateWorking, proto.StateDone, "INTERVIEWING -> DONE (shutdown)"},
 
 		// DRAFTING transitions
-		{StateDrafting, StateSubmitting, "DRAFTING -> SUBMITTING (spec ready)"},
-		{StateDrafting, StateInterviewing, "DRAFTING -> INTERVIEWING (needs refinement)"},
-		{StateDrafting, proto.StateError, "DRAFTING -> ERROR (draft failed)"},
-		{StateDrafting, proto.StateDone, "DRAFTING -> DONE (shutdown)"},
+		{StateWorking, StateWorking, "DRAFTING -> SUBMITTING (spec ready)"},
+		{StateWorking, StateWorking, "DRAFTING -> INTERVIEWING (needs refinement)"},
+		{StateWorking, proto.StateError, "DRAFTING -> ERROR (draft failed)"},
+		{StateWorking, proto.StateDone, "DRAFTING -> DONE (shutdown)"},
 
 		// SUBMITTING transitions
-		{StateSubmitting, StateWaiting, "SUBMITTING -> WAITING (next interview)"},
-		{StateSubmitting, proto.StateError, "SUBMITTING -> ERROR (submit failed)"},
-		{StateSubmitting, proto.StateDone, "SUBMITTING -> DONE (shutdown)"},
+		{StateWorking, StateWaiting, "SUBMITTING -> WAITING (next interview)"},
+		{StateWorking, proto.StateError, "SUBMITTING -> ERROR (submit failed)"},
+		{StateWorking, proto.StateDone, "SUBMITTING -> DONE (shutdown)"},
 
 		// ERROR transitions
 		{proto.StateError, StateWaiting, "ERROR -> WAITING (restart)"},
@@ -80,30 +80,30 @@ func TestInvalidPMTransitions(t *testing.T) {
 		name string
 	}{
 		// Invalid WAITING transitions
-		{StateWaiting, StateDrafting, "WAITING -> DRAFTING (invalid)"},
+		{StateWaiting, StateWorking, "WAITING -> DRAFTING (invalid)"},
 		{StateWaiting, proto.StateError, "WAITING -> ERROR (invalid)"},
 
 		// Invalid INTERVIEWING transitions
-		{StateInterviewing, StateWaiting, "INTERVIEWING -> WAITING (invalid)"},
-		{StateInterviewing, StateSubmitting, "INTERVIEWING -> SUBMITTING (invalid)"},
+		{StateWorking, StateWaiting, "INTERVIEWING -> WAITING (invalid)"},
+		{StateWorking, StateWorking, "INTERVIEWING -> SUBMITTING (invalid)"},
 
 		// Invalid DRAFTING transitions
-		{StateDrafting, StateWaiting, "DRAFTING -> WAITING (invalid)"},
+		{StateWorking, StateWaiting, "DRAFTING -> WAITING (invalid)"},
 
 		// Invalid SUBMITTING transitions
-		{StateSubmitting, StateInterviewing, "SUBMITTING -> INTERVIEWING (invalid)"},
-		{StateSubmitting, StateDrafting, "SUBMITTING -> DRAFTING (invalid)"},
+		{StateWorking, StateWorking, "SUBMITTING -> INTERVIEWING (invalid)"},
+		{StateWorking, StateWorking, "SUBMITTING -> DRAFTING (invalid)"},
 
 		// Invalid DONE transitions (DONE should only transition to WAITING via restart policy)
-		{proto.StateDone, StateInterviewing, "DONE -> INTERVIEWING (invalid)"},
-		{proto.StateDone, StateDrafting, "DONE -> DRAFTING (invalid)"},
-		{proto.StateDone, StateSubmitting, "DONE -> SUBMITTING (invalid)"},
+		{proto.StateDone, StateWorking, "DONE -> INTERVIEWING (invalid)"},
+		{proto.StateDone, StateWorking, "DONE -> DRAFTING (invalid)"},
+		{proto.StateDone, StateWorking, "DONE -> SUBMITTING (invalid)"},
 		{proto.StateDone, proto.StateError, "DONE -> ERROR (invalid)"},
 
 		// Invalid ERROR transitions
-		{proto.StateError, StateInterviewing, "ERROR -> INTERVIEWING (invalid)"},
-		{proto.StateError, StateDrafting, "ERROR -> DRAFTING (invalid)"},
-		{proto.StateError, StateSubmitting, "ERROR -> SUBMITTING (invalid)"},
+		{proto.StateError, StateWorking, "ERROR -> INTERVIEWING (invalid)"},
+		{proto.StateError, StateWorking, "ERROR -> DRAFTING (invalid)"},
+		{proto.StateError, StateWorking, "ERROR -> SUBMITTING (invalid)"},
 	}
 
 	for _, test := range invalidTransitions {
@@ -119,9 +119,9 @@ func TestGetAllPMStates(t *testing.T) {
 	states := GetAllPMStates()
 	expected := []proto.State{
 		StateWaiting,
-		StateInterviewing,
-		StateDrafting,
-		StateSubmitting,
+		StateWorking,
+		StateWorking,
+		StateWorking,
 		proto.StateDone,
 		proto.StateError,
 	}
@@ -143,9 +143,9 @@ func TestIsTerminalState(t *testing.T) {
 		expected bool
 	}{
 		{StateWaiting, false},
-		{StateInterviewing, false},
-		{StateDrafting, false},
-		{StateSubmitting, false},
+		{StateWorking, false},
+		{StateWorking, false},
+		{StateWorking, false},
 		{proto.StateDone, true},
 		{proto.StateError, true},
 	}
@@ -164,9 +164,9 @@ func TestIsValidPMState(t *testing.T) {
 	// Test all valid states
 	validStates := []proto.State{
 		StateWaiting,
-		StateInterviewing,
-		StateDrafting,
-		StateSubmitting,
+		StateWorking,
+		StateWorking,
+		StateWorking,
 		proto.StateDone,
 		proto.StateError,
 	}
@@ -216,10 +216,10 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateInterviewing, StateSubmitting, proto.StateDone}},
-		{StateInterviewing, []proto.State{StateDrafting, proto.StateError, proto.StateDone}},
-		{StateDrafting, []proto.State{StateSubmitting, StateInterviewing, proto.StateError, proto.StateDone}},
-		{StateSubmitting, []proto.State{StateWaiting, proto.StateError, proto.StateDone}},
+		{StateWaiting, []proto.State{StateWorking, StateWorking, proto.StateDone}},
+		{StateWorking, []proto.State{StateWorking, proto.StateError, proto.StateDone}},
+		{StateWorking, []proto.State{StateWorking, StateWorking, proto.StateError, proto.StateDone}},
+		{StateWorking, []proto.State{StateWaiting, proto.StateError, proto.StateDone}},
 		{proto.StateError, []proto.State{StateWaiting, proto.StateDone}},
 	}
 
@@ -271,10 +271,10 @@ func TestPMStateFlow(t *testing.T) {
 		to   proto.State
 		desc string
 	}{
-		{StateWaiting, StateInterviewing, "User starts interview"},
-		{StateInterviewing, StateDrafting, "Interview complete, drafting spec"},
-		{StateDrafting, StateSubmitting, "Draft complete, submitting"},
-		{StateSubmitting, StateWaiting, "Submitted, ready for next interview"},
+		{StateWaiting, StateWorking, "User starts interview"},
+		{StateWorking, StateWorking, "Interview complete, drafting spec"},
+		{StateWorking, StateWorking, "Draft complete, submitting"},
+		{StateWorking, StateWaiting, "Submitted, ready for next interview"},
 	}
 
 	currentState := StateWaiting
@@ -294,7 +294,7 @@ func TestPMStateFlow(t *testing.T) {
 // TestPMErrorRecoveryFlow tests error handling and recovery.
 func TestPMErrorRecoveryFlow(t *testing.T) {
 	// Test error during interview
-	if !IsValidPMTransition(StateInterviewing, proto.StateError) {
+	if !IsValidPMTransition(StateWorking, proto.StateError) {
 		t.Error("Should be able to transition from INTERVIEWING to ERROR")
 	}
 	if !IsValidPMTransition(proto.StateError, StateWaiting) {
@@ -302,12 +302,12 @@ func TestPMErrorRecoveryFlow(t *testing.T) {
 	}
 
 	// Test error during drafting
-	if !IsValidPMTransition(StateDrafting, proto.StateError) {
+	if !IsValidPMTransition(StateWorking, proto.StateError) {
 		t.Error("Should be able to transition from DRAFTING to ERROR")
 	}
 
 	// Test error during submission
-	if !IsValidPMTransition(StateSubmitting, proto.StateError) {
+	if !IsValidPMTransition(StateWorking, proto.StateError) {
 		t.Error("Should be able to transition from SUBMITTING to ERROR")
 	}
 }
@@ -320,11 +320,11 @@ func TestPMRefinementLoop(t *testing.T) {
 		to   proto.State
 		desc string
 	}{
-		{StateWaiting, StateInterviewing, "Start interview"},
-		{StateInterviewing, StateDrafting, "First draft attempt"},
-		{StateDrafting, StateInterviewing, "Need more info, back to interview"},
-		{StateInterviewing, StateDrafting, "Second draft attempt"},
-		{StateDrafting, StateSubmitting, "Draft looks good"},
+		{StateWaiting, StateWorking, "Start interview"},
+		{StateWorking, StateWorking, "First draft attempt"},
+		{StateWorking, StateWorking, "Need more info, back to interview"},
+		{StateWorking, StateWorking, "Second draft attempt"},
+		{StateWorking, StateWorking, "Draft looks good"},
 	}
 
 	for _, tr := range transitions {
@@ -339,7 +339,7 @@ func TestPMRefinementLoop(t *testing.T) {
 // Benchmarks for performance validation.
 func BenchmarkIsValidPMTransition(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		IsValidPMTransition(StateWaiting, StateInterviewing)
+		IsValidPMTransition(StateWaiting, StateWorking)
 	}
 }
 

@@ -1,6 +1,6 @@
 # PM Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-01-08 (Initial version with Architect feedback loop)*
+*Last updated: 2025-01-09 (Simplified to WAITING/WORKING states with tool-driven flow)*
 
 This document is the **single source of truth** for the PM (Product Manager) agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -14,29 +14,22 @@ stateDiagram-v2
     %% ---------- ENTRY ----------
     [*] --> WAITING
 
-    %% ---------- INTERVIEW WORKFLOW ----------
-    WAITING       --> INTERVIEWING       : interview request from WebUI
-    WAITING       --> INTERVIEWING       : architect feedback (spec needs changes)
-    WAITING       --> SUBMITTING         : spec file upload (bypass interview)
+    %% ---------- SIMPLIFIED WORKFLOW ----------
+    WAITING       --> WORKING            : interview request OR spec upload OR architect feedback
     WAITING       --> DONE               : shutdown signal
 
-    INTERVIEWING  --> DRAFTING           : interview complete (max turns or user done)
-    INTERVIEWING  --> ERROR              : unrecoverable error
-    INTERVIEWING  --> DONE               : shutdown signal
+    WORKING       --> WAITING            : submit_spec succeeds (architect review)
+    WORKING       --> ERROR              : unrecoverable error
+    WORKING       --> DONE               : shutdown signal
 
-    DRAFTING      --> SUBMITTING         : draft spec generated
-    DRAFTING      --> INTERVIEWING       : draft needs refinement
-    DRAFTING      --> ERROR              : unrecoverable error
-    DRAFTING      --> DONE               : shutdown signal
+    %% Note: WORKING state has all PM tools available:
+    %% - chat_post: Communicate with user via product channel
+    %% - read_file, list_files: Explore codebase
+    %% - spec_submit: Validate and submit spec to architect
+    %% PM decides when to submit; tool execution handles state transition.
 
-    %% ---------- ARCHITECT FEEDBACK LOOP ----------
-    SUBMITTING    --> WAITING            : spec submitted to architect\n(waiting for RESULT)
-    SUBMITTING    --> ERROR              : validation failed
-    SUBMITTING    --> DONE               : shutdown signal
-
-    %% Note: WAITING receives architect RESULT message
-    %% - APPROVED → stay in WAITING for next interview/spec
-    %% - NEEDS_CHANGES → transition to INTERVIEWING with feedback
+    %% Note: Architect feedback arrives asynchronously via replyCh
+    %% PM checks replyCh non-blocking in WORKING state and adds to context
 
     %% ---------- ERROR RECOVERY ----------
     ERROR         --> WAITING            : reset after error
@@ -58,10 +51,8 @@ stateDiagram-v2
 
 | State              | Purpose                                                                        |
 | ------------------ | ------------------------------------------------------------------------------ |
-| **WAITING**        | Idle state waiting for interview request OR architect feedback.               |
-| **INTERVIEWING**   | Conducting requirements interview with user via WebUI chat.                   |
-| **DRAFTING**       | Generating markdown specification from conversation history.                  |
-| **SUBMITTING**     | Validating spec and sending to architect for review.                          |
+| **WAITING**        | Idle state waiting for interview request, spec upload, or architect feedback. |
+| **WORKING**        | Active work state - interviewing, drafting, and submitting via tools.         |
 | **DONE**           | Terminal state - PM agent shutdown.                                           |
 | **ERROR**          | Unrecoverable error state - resets to WAITING.                                |
 
@@ -69,21 +60,39 @@ stateDiagram-v2
 
 ## Key workflow patterns
 
-### Interview Initiation
+### Work Initiation
 
 PM can receive work in three ways:
 
-1. **New Interview**: User sends interview request via WebUI → PM enters INTERVIEWING
-2. **Iteration**: Architect sends RESULT(needs_changes) → PM enters INTERVIEWING with feedback context
-3. **Direct Spec Upload**: User uploads spec file directly → PM enters SUBMITTING (bypasses interview)
+1. **New Interview**: User sends interview request via WebUI → PM enters WORKING
+2. **Iteration**: Architect sends RESULT(needs_changes) → PM enters WORKING with feedback context
+3. **Direct Spec Upload**: User uploads spec file directly → PM enters WORKING with pre-loaded spec
 
-### Architect Feedback Loop
+All paths lead to WORKING state where PM has access to all tools.
+
+### Tool-Driven Workflow
+
+In WORKING state, PM has access to all tools:
+
+- **chat_post**: Communicate with user via product channel (pm-* agents route to product)
+- **read_file**: Read files from codebase for context
+- **list_files**: List files in codebase for exploration
+- **spec_submit**: Validate and submit spec to architect
+
+PM uses LLM reasoning to decide when to:
+- Ask user questions via chat_post
+- Explore codebase via read_file/list_files
+- Submit spec via spec_submit
+
+When spec_submit succeeds, PM transitions back to WAITING.
+
+### Architect Feedback Loop (Non-Blocking)
 
 1. **PM Submits Spec**:
-   - PM in SUBMITTING state calls `spec_submit` tool
+   - PM in WORKING state calls `spec_submit` tool
    - Tool validates spec (YAML frontmatter, required sections, dependencies)
-   - PM sends REQUEST(type=spec) message to architect
-   - PM transitions to WAITING (with `pending_request_id` in state)
+   - Tool sends REQUEST(type=spec) message to architect
+   - Tool returns success, PM transitions to WAITING
 
 2. **Architect Reviews**:
    - Architect receives REQUEST in handleSpecReview()
@@ -95,67 +104,59 @@ PM can receive work in three ways:
 3. **PM Receives Result**:
    - WAITING state monitors `replyCh` for RESULT message
    - **If APPROVED**: Clear state, stay in WAITING for next interview
-   - **If NEEDS_CHANGES**: Store feedback, transition to INTERVIEWING
+   - **If NEEDS_CHANGES**: Store feedback, transition to WORKING
 
-### Spec File Upload (Bypass Interview)
-
-PM can accept pre-written spec files to bypass the interview phase:
-
-1. **Spec Upload**: User/system sends spec file via `specCh`
-2. **Direct to SUBMITTING**: PM stores spec as `draft_spec` and transitions to SUBMITTING
-3. **Validation**: spec_submit tool validates the spec
-4. **Submission**: If valid, REQUEST sent to architect; if invalid, transitions to INTERVIEWING for fixes
-
-This bypass is useful for:
-- Production testing the spec review workflow
-- Submitting pre-written specifications
-- Iterating on specs after architect feedback without re-interviewing
+Alternatively, if PM is already WORKING when feedback arrives:
+- WORKING state checks `replyCh` non-blocking
+- If feedback available, adds to context for next LLM call
+- PM continues work with architect feedback incorporated
 
 ### Channel Monitoring
 
 The WAITING state uses a select statement to monitor:
 - `ctx.Done()` - Shutdown signal
 - `interviewRequestCh` - New interview requests from WebUI
-- `specCh` - Direct spec file uploads (bypass interview)
-- `replyCh` - Architect RESULT messages
+- `specCh` - Direct spec file uploads
+- `replyCh` - Architect RESULT messages (approval or feedback)
 
 ---
 
-## Interview workflow
+## Unified workflow in WORKING state
 
-### INTERVIEWING State
+### WORKING State
 
-- Conducts multi-turn conversation with user via WebUI chat
-- Uses LLM with read-only tools (`list_files`, `read_file`) to explore codebase
-- Tracks conversation history and turn count
-- Continues until:
-  - User signals completion
-  - Max turns reached (configured limit)
-  - User provides sufficient requirements
+The WORKING state unifies all PM activities (interviewing, drafting, submitting) into a single LLM-driven workflow with full tool access.
 
-### DRAFTING State
+**Available Tools:**
+- `chat_post` - Communicate with user via product channel
+- `read_file` - Read files from codebase for context
+- `list_files` - List files in workspace for exploration
+- `spec_submit` - Validate and submit specification to architect
 
-- Generates markdown specification from conversation
-- Uses spec generation template with LLM
-- Creates YAML frontmatter with metadata
-- Structures requirements with acceptance criteria
-- Validates basic format before submission
+**LLM Reasoning Flow:**
+1. PM receives conversation history and any architect feedback
+2. PM decides whether to:
+   - Ask clarifying questions via `chat_post`
+   - Explore codebase via `read_file`/`list_files`
+   - Draft specification internally
+   - Submit specification via `spec_submit`
+3. PM iterates until specification is ready
+4. PM calls `spec_submit` tool which:
+   - Validates YAML frontmatter
+   - Validates required sections (Vision, Scope, Requirements)
+   - Validates requirement IDs and dependencies
+   - Sends REQUEST message to architect
+   - Returns success → PM transitions to WAITING
 
-### SUBMITTING State
+**No State Transitions Within WORKING:**
+- PM doesn't transition between INTERVIEWING → DRAFTING → SUBMITTING
+- PM stays in WORKING and uses tools to accomplish all tasks
+- Only transition out of WORKING is via successful `spec_submit` → WAITING
 
-- Calls `spec_submit` tool for validation:
-  - YAML frontmatter validation
-  - Required sections (Vision, Scope, Requirements)
-  - Requirement ID format and uniqueness
-  - Acceptance criteria presence
-  - Dependency graph acyclicity
-- On validation success:
-  - Creates REQUEST message with spec content
-  - Sends to architect via Effects
-  - Transitions to WAITING with pending request tracking
-- On validation failure:
-  - Stores validation errors
-  - Returns to INTERVIEWING to fix issues
+**Async Feedback Handling:**
+- WORKING state checks `replyCh` non-blocking
+- If architect feedback arrives, adds to context
+- PM incorporates feedback in next LLM call
 
 ---
 
@@ -209,19 +210,11 @@ The WAITING state uses a select statement to monitor:
 
 | From State      | To State       | Trigger                                      |
 | --------------- | -------------- | -------------------------------------------- |
-| WAITING         | INTERVIEWING   | Interview request OR architect feedback      |
-| WAITING         | SUBMITTING     | Direct spec file upload                      |
+| WAITING         | WORKING        | Interview request OR spec upload OR feedback |
 | WAITING         | DONE           | Shutdown signal                              |
-| INTERVIEWING    | DRAFTING       | Interview complete                           |
-| INTERVIEWING    | ERROR          | Unrecoverable error                          |
-| INTERVIEWING    | DONE           | Shutdown signal                              |
-| DRAFTING        | SUBMITTING     | Draft generated                              |
-| DRAFTING        | INTERVIEWING   | Draft refinement needed                      |
-| DRAFTING        | ERROR          | Unrecoverable error                          |
-| DRAFTING        | DONE           | Shutdown signal                              |
-| SUBMITTING      | WAITING        | Spec submitted to architect                  |
-| SUBMITTING      | ERROR          | Validation failure                           |
-| SUBMITTING      | DONE           | Shutdown signal                              |
+| WORKING         | WAITING        | spec_submit succeeds                         |
+| WORKING         | ERROR          | Unrecoverable error                          |
+| WORKING         | DONE           | Shutdown signal                              |
 | ERROR           | WAITING        | Reset after error                            |
 | ERROR           | DONE           | Shutdown signal                              |
 

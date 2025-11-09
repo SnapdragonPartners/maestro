@@ -520,6 +520,14 @@ func getSpecFeedbackSchema() InputSchema {
 	return NewSpecFeedbackTool().Definition().InputSchema
 }
 
+func createAwaitUserTool(_ AgentContext) (Tool, error) {
+	return NewAwaitUserTool(), nil
+}
+
+func getAwaitUserSchema() InputSchema {
+	return NewAwaitUserTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -685,5 +693,11 @@ func init() {
 		Name:        ToolSpecFeedback,
 		Description: "Send feedback to PM about submitted specification (Architect SCOPING phase)",
 		InputSchema: getSpecFeedbackSchema(),
+	})
+
+	Register(ToolAwaitUser, createAwaitUserTool, &ToolMeta{
+		Name:        ToolAwaitUser,
+		Description: "Signal that PM is waiting for user response after asking a question",
+		InputSchema: getAwaitUserSchema(),
 	})
 }

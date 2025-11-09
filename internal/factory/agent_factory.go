@@ -164,7 +164,11 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 	// For now, create a buffered channel that will be used when WebUI integration is complete
 	interviewRequestCh := make(chan *proto.AgentMsg, 10)
 
-	// Create PM with shared LLM factory
+	// Register PM for chat channels (product channel only) BEFORE construction
+	// so chat service is ready when PM needs it
+	f.chatService.RegisterAgent(agentID, []string{"product"})
+
+	// Create PM with shared LLM factory and chat service
 	pmAgent, err := pm.NewPM(
 		ctx,
 		agentID,
@@ -173,13 +177,11 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 		f.persistenceChannel,
 		f.llmFactory,       // Shared factory for rate limiting
 		interviewRequestCh, // Interview requests from WebUI
+		f.chatService,      // Chat service for polling new messages
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PM: %w", err)
 	}
-
-	// Register PM for chat channels (product channel only)
-	f.chatService.RegisterAgent(agentID, []string{"product"})
 
 	// Attach to dispatcher
 	f.dispatcher.Attach(pmAgent)

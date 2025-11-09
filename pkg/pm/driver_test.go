@@ -197,7 +197,7 @@ func TestHandleWaitingReceivesArchitectFeedback(t *testing.T) {
 		}
 
 		// Verify transition to INTERVIEWING with feedback stored
-		if nextState != StateInterviewing {
+		if nextState != StateWorking {
 			t.Errorf("Expected transition to INTERVIEWING, got %s", nextState)
 		}
 		if feedback, ok := driver.stateData["architect_feedback"].(string); !ok || feedback == "" {
@@ -220,7 +220,7 @@ func TestHandleSubmittingValidSpec(t *testing.T) {
 	}
 
 	driver := createTestDriver(t, toolProvider)
-	driver.currentState = StateSubmitting
+	driver.currentState = StateWorking
 
 	// Start dispatcher for message sending
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -258,10 +258,10 @@ Test vision.
 
 	driver.stateData["draft_spec"] = validSpec
 
-	nextState, err := driver.handleSubmitting(ctx)
+	nextState, err := driver.handleWorking(ctx)
 
 	if err != nil {
-		t.Fatalf("handleSubmitting failed: %v", err)
+		t.Fatalf("handleWorking failed: %v", err)
 	}
 
 	// Verify transition to WAITING (spec submitted to architect)
@@ -289,7 +289,7 @@ func TestHandleSubmittingInvalidSpec(t *testing.T) {
 	}
 
 	driver := createTestDriver(t, toolProvider)
-	driver.currentState = StateSubmitting
+	driver.currentState = StateWorking
 
 	invalidSpec := `# Invalid Spec
 No frontmatter or requirements.
@@ -298,14 +298,14 @@ No frontmatter or requirements.
 	driver.stateData["draft_spec"] = invalidSpec
 
 	ctx := context.Background()
-	nextState, err := driver.handleSubmitting(ctx)
+	nextState, err := driver.handleWorking(ctx)
 
 	if err != nil {
-		t.Fatalf("handleSubmitting failed: %v", err)
+		t.Fatalf("handleWorking failed: %v", err)
 	}
 
 	// Verify transition back to INTERVIEWING (validation failed)
-	if nextState != StateInterviewing {
+	if nextState != StateWorking {
 		t.Errorf("Expected transition to INTERVIEWING, got %s", nextState)
 	}
 
@@ -318,10 +318,10 @@ No frontmatter or requirements.
 // TestHandleSubmittingNoDraftSpec tests SUBMITTING state without draft spec.
 func TestHandleSubmittingNoDraftSpec(t *testing.T) {
 	driver := createTestDriver(t, nil)
-	driver.currentState = StateSubmitting
+	driver.currentState = StateWorking
 
 	ctx := context.Background()
-	nextState, err := driver.handleSubmitting(ctx)
+	nextState, err := driver.handleWorking(ctx)
 
 	// Should return ERROR state and error
 	if err == nil {
@@ -355,8 +355,8 @@ func TestGetState(t *testing.T) {
 		t.Errorf("Expected state WAITING, got %s", driver.GetState())
 	}
 
-	driver.currentState = StateInterviewing
-	if driver.GetState() != StateInterviewing {
+	driver.currentState = StateWorking
+	if driver.GetState() != StateWorking {
 		t.Errorf("Expected state INTERVIEWING, got %s", driver.GetState())
 	}
 }

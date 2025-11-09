@@ -39,25 +39,37 @@ class MaestroUI {
     }
 
     setupEventListeners() {
-        // Upload area
+        // Upload area - check if elements exist first
         const uploadArea = document.getElementById('upload-area');
         const fileInput = document.getElementById('spec-file');
-        
-        uploadArea.addEventListener('click', () => fileInput.click());
-        uploadArea.addEventListener('dragover', this.handleDragOver.bind(this));
-        uploadArea.addEventListener('drop', this.handleDrop.bind(this));
-        fileInput.addEventListener('change', this.handleFileSelect.bind(this));
 
-        // Control buttons
-        document.getElementById('cancel-run').addEventListener('click', this.cancelRun.bind(this));
-        document.getElementById('refresh-data').addEventListener('click', this.refreshData.bind(this));
-        document.getElementById('show-escalations').addEventListener('click', this.showEscalations.bind(this));
-        document.getElementById('close-modal').addEventListener('click', this.closeModal.bind(this));
-        
+        if (uploadArea && fileInput) {
+            uploadArea.addEventListener('click', () => fileInput.click());
+            uploadArea.addEventListener('dragover', this.handleDragOver.bind(this));
+            uploadArea.addEventListener('drop', this.handleDrop.bind(this));
+            fileInput.addEventListener('change', this.handleFileSelect.bind(this));
+        }
+
+        // Control buttons - check if elements exist first
+        const cancelBtn = document.getElementById('cancel-run');
+        const refreshBtn = document.getElementById('refresh-data');
+        const escalationsBtn = document.getElementById('show-escalations');
+
+        if (cancelBtn) cancelBtn.addEventListener('click', this.cancelRun.bind(this));
+        if (refreshBtn) refreshBtn.addEventListener('click', this.refreshData.bind(this));
+        if (escalationsBtn) escalationsBtn.addEventListener('click', this.showEscalations.bind(this));
+
+        const closeModal = document.getElementById('close-modal');
+        if (closeModal) closeModal.addEventListener('click', this.closeModal.bind(this));
+
         // Log controls
-        document.getElementById('log-domain').addEventListener('change', this.onLogDomainChange.bind(this));
-        document.getElementById('autoscroll').addEventListener('change', this.onAutoscrollChange.bind(this));
-        document.getElementById('clear-logs').addEventListener('click', this.clearLogs.bind(this));
+        const logDomain = document.getElementById('log-domain');
+        const autoscroll = document.getElementById('autoscroll');
+        const clearLogs = document.getElementById('clear-logs');
+
+        if (logDomain) logDomain.addEventListener('change', this.onLogDomainChange.bind(this));
+        if (autoscroll) autoscroll.addEventListener('change', this.onAutoscrollChange.bind(this));
+        if (clearLogs) clearLogs.addEventListener('click', this.clearLogs.bind(this));
 
         // Chat controls
         const chatInput = document.getElementById('chat-input');

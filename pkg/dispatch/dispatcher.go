@@ -960,6 +960,8 @@ type AgentInfo struct {
 }
 
 // GetRegisteredAgents returns information about all registered agents.
+//
+//nolint:cyclop // Complexity from multiple agent type cases, acceptable for this function
 func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -994,6 +996,10 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 					case agent.TypeCoder:
 						if cfg.Agents != nil && cfg.Agents.CoderModel != "" {
 							modelName = cfg.Agents.CoderModel
+						}
+					case agent.TypePM:
+						if cfg.Agents != nil && cfg.Agents.PMModel != "" {
+							modelName = cfg.Agents.PMModel
 						}
 					}
 				}

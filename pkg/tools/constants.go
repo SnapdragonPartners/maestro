@@ -42,6 +42,7 @@ const (
 	// PM tools.
 	ToolSpecSubmit   = "spec_submit"
 	ToolSpecFeedback = "spec_feedback"
+	ToolAwaitUser    = "await_user"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -124,14 +125,15 @@ var (
 		ToolSubmitReply,
 	}
 
-	// PM SUBMITTING tools - spec validation and submission.
-	PMSubmittingTools = []string{
-		ToolSpecSubmit,
-	}
-
-	// PM INTERVIEWING/DRAFTING tools - read-only codebase exploration.
-	PMInterviewTools = []string{
+	// PM tools - unified tool set for WORKING state.
+	// PM has access to read-only codebase tools, chat, spec submission, and flow control.
+	// PM decides when to submit via spec_submit tool, transitioning back to WAITING.
+	PMTools = []string{
 		ToolReadFile,
 		ToolListFiles,
+		ToolChatPost,
+		ToolAwaitUser,
+		ToolSpecSubmit,
+		// TODO: Add ToolWebBrowser when implemented
 	}
 )

@@ -121,12 +121,14 @@ const (
 	// BudgetReviewResponseTemplate is the template for budget review responses.
 	BudgetReviewResponseTemplate StateTemplate = "budget_review_response.tpl.md"
 
-	// PMInterviewStartTemplate is the template for starting PM interviews.
+	// PMInterviewStartTemplate is the template for starting PM interviews (deprecated - use PMWorkingTemplate).
 	PMInterviewStartTemplate StateTemplate = "pm/interview_start.tpl.md"
-	// PMRequirementsGatheringTemplate is the template for ongoing PM requirements gathering.
+	// PMRequirementsGatheringTemplate is the template for ongoing PM requirements gathering (deprecated - use PMWorkingTemplate).
 	PMRequirementsGatheringTemplate StateTemplate = "pm/requirements_gathering.tpl.md"
-	// PMSpecGenerationTemplate is the template for generating specifications from interviews.
+	// PMSpecGenerationTemplate is the template for generating specifications from interviews (deprecated - use PMWorkingTemplate).
 	PMSpecGenerationTemplate StateTemplate = "pm/spec_generation.tpl.md"
+	// PMWorkingTemplate is the unified template for PM WORKING state (interviewing, drafting, submitting).
+	PMWorkingTemplate StateTemplate = "pm/working.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -185,6 +187,7 @@ func NewRenderer() (*Renderer, error) {
 		PMInterviewStartTemplate,
 		PMRequirementsGatheringTemplate,
 		PMSpecGenerationTemplate,
+		PMWorkingTemplate, // Unified PM template
 	}
 
 	for _, name := range templateNames {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent"
+	chatmiddleware "orchestrator/pkg/agent/middleware/chat"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -28,6 +30,12 @@ const (
 	DefaultExpertise = "BASIC"
 )
 
+// ChatServiceInterface defines the chat operations needed by PM.
+type ChatServiceInterface interface {
+	HaveNewMessages(agentID string) bool
+	GetNew(ctx context.Context, req *chat.GetNewRequest) (*chat.GetNewResponse, error)
+}
+
 // Driver implements the PM (Product Manager) agent.
 // PM conducts interviews with users to generate high-quality specifications.
 //
@@ -40,6 +48,7 @@ type Driver struct {
 	logger              *logx.Logger
 	dispatcher          *dispatch.Dispatcher
 	persistenceChannel  chan<- *persistence.Request
+	chatService         ChatServiceInterface // Chat service for polling new messages
 	currentState        proto.State
 	stateData           map[string]any
 	interviewRequestCh  <-chan *proto.AgentMsg
@@ -61,6 +70,7 @@ func NewPM(
 	persistenceChannel chan<- *persistence.Request,
 	llmFactory *agent.LLMClientFactory,
 	interviewRequestCh <-chan *proto.AgentMsg,
+	chatService ChatServiceInterface,
 ) (*Driver, error) {
 	// Check for context cancellation
 	select {
@@ -82,6 +92,10 @@ func NewPM(
 		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
 	}
 
+	// Wrap with chat injection middleware
+	logger := logx.NewLogger("pm")
+	llmClient = chatmiddleware.WrapWithChatInjection(llmClient, chatService, pmID, logger)
+
 	// Create template renderer
 	renderer, err := templates.NewRenderer()
 	if err != nil {
@@ -96,7 +110,6 @@ func NewPM(
 	if workspaceErr != nil {
 		return nil, fmt.Errorf("failed to ensure PM workspace: %w", workspaceErr)
 	}
-	logger := logx.NewLogger("pm")
 	logger.Info("PM workspace ready at: %s", pmWorkspace)
 
 	// Create and start PM container executor (same as architect - read-only tools)
@@ -116,14 +129,14 @@ func NewPM(
 		}
 	}
 
-	// Create tool provider for spec_submit tool
+	// Create tool provider with all PM tools (read_file, list_files, chat_post, spec_submit)
 	agentCtx := tools.AgentContext{
 		Executor:        pmExecutor,
 		ReadOnly:        true,
 		NetworkDisabled: true,
 		WorkDir:         pmWorkspace,
 	}
-	toolProvider := tools.NewProvider(agentCtx, tools.PMSubmittingTools)
+	toolProvider := tools.NewProvider(agentCtx, tools.PMTools)
 
 	return &Driver{
 		pmID:               pmID,
@@ -133,6 +146,7 @@ func NewPM(
 		logger:             logger, // Use logger created above
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
+		chatService:        chatService,
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
 		interviewRequestCh: interviewRequestCh,
@@ -221,12 +235,8 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 	switch d.currentState {
 	case StateWaiting:
 		return d.handleWaiting(ctx)
-	case StateInterviewing:
-		return d.handleInterviewing(ctx)
-	case StateDrafting:
-		return d.handleDrafting(ctx)
-	case StateSubmitting:
-		return d.handleSubmitting(ctx)
+	case StateWorking:
+		return d.handleWorking(ctx)
 	default:
 		return proto.StateError, fmt.Errorf("unknown state: %s", d.currentState)
 	}
@@ -277,12 +287,12 @@ func (d *Driver) handleSpecFileUpload(specMsg *proto.AgentMsg) (proto.State, err
 				return proto.StateError, fmt.Errorf("spec file upload missing spec_markdown")
 			}
 
-			// Store spec directly as draft (bypass interview and drafting)
+			// Store spec directly as draft (bypass interview)
 			d.stateData["draft_spec"] = specMarkdown
-			d.logger.Info("✅ Spec file loaded (%d bytes), transitioning to SUBMITTING", len(specMarkdown))
+			d.logger.Info("✅ Spec file loaded (%d bytes), transitioning to WORKING", len(specMarkdown))
 
-			// Transition directly to SUBMITTING to validate and send to architect
-			return StateSubmitting, nil
+			// Transition to WORKING to validate and submit via submit_spec tool
+			return StateWorking, nil
 		}
 	}
 
@@ -324,7 +334,7 @@ func (d *Driver) handleInterviewRequest(interviewMsg *proto.AgentMsg) (proto.Sta
 	d.stateData["conversation"] = []map[string]string{}
 	d.stateData["turn_count"] = 0
 
-	return StateInterviewing, nil
+	return StateWorking, nil
 }
 
 // handleArchitectResult processes a RESULT message from architect.
@@ -367,202 +377,30 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 	d.logger.Info("📝 Spec requires changes (status=%v) - feedback from architect: %s",
 		approvalResult.Status, approvalResult.Feedback)
 
-	// Store feedback in state
-	d.stateData["architect_feedback"] = approvalResult.Feedback
 	delete(d.stateData, "pending_request_id") // Clear pending request
 
-	// Return to INTERVIEWING to address feedback
-	return StateInterviewing, nil
-}
+	// Inject submitted spec and architect feedback into LLM context
+	// Both are added as user messages so they persist across LLM calls
+	if submittedSpec, ok := d.stateData["spec_markdown"].(string); ok {
+		d.stateData["draft_spec"] = submittedSpec
+		d.logger.Info("📋 Injecting submitted spec (%d bytes) and architect feedback into PM context", len(submittedSpec))
 
-// handleInterviewing conducts the interview conversation with the user.
-func (d *Driver) handleInterviewing(_ context.Context) (proto.State, error) {
-	d.logger.Info("🎯 PM conducting interview")
+		// Add submitted spec to context
+		specContextMsg := fmt.Sprintf("## Previously Submitted Specification\n\n```markdown\n%s\n```", submittedSpec)
+		d.contextManager.AddMessage("user", specContextMsg)
 
-	// Get conversation state
-	turnCount, _ := d.stateData["turn_count"].(int)
-	expertise, _ := d.stateData["expertise"].(string)
-	if expertise == "" {
-		expertise = DefaultExpertise
+		// Add architect feedback to context
+		feedbackMsg := fmt.Sprintf("## Architect Review Feedback\n\n%s\n\nPlease address this feedback and revise the specification.", approvalResult.Feedback)
+		d.contextManager.AddMessage("user", feedbackMsg)
+	} else {
+		d.logger.Warn("⚠️  No submitted spec found in state - PM will start from scratch")
+		// Still add feedback even if we don't have the original spec
+		feedbackMsg := fmt.Sprintf("## Architect Feedback\n\n%s", approvalResult.Feedback)
+		d.contextManager.AddMessage("user", feedbackMsg)
 	}
 
-	// Get max turns from config
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return proto.StateError, fmt.Errorf("failed to get config: %w", err)
-	}
-	maxTurns := cfg.PM.MaxInterviewTurns
-
-	d.logger.Info("Interview turn %d/%d (expertise: %s)", turnCount, maxTurns, expertise)
-
-	// Check if we've reached turn limit
-	if turnCount >= maxTurns {
-		d.logger.Info("Interview reached maximum turns, moving to drafting")
-		return StateDrafting, nil
-	}
-
-	// TODO: Full implementation requires:
-	// 1. Render interview template with conversation history
-	// 2. Call LLM with read-only tools (list_files, read_file)
-	// 3. Save PM response to conversation history in database
-	// 4. Wait for user response via WebUI chat
-	// 5. Save user response to conversation history
-	// 6. Check if interview is complete (user signals done)
-	// 7. Increment turn count and loop or transition to DRAFTING
-	//
-	// For now, this is a stub that transitions to DRAFTING after max turns.
-	// Real implementation will be added when WebUI integration is complete.
-
-	d.stateData["turn_count"] = turnCount + 1
-
-	// Stay in INTERVIEWING until max turns or user signals completion
-	return StateInterviewing, nil
-}
-
-// handleDrafting generates the markdown spec from the conversation.
-func (d *Driver) handleDrafting(_ context.Context) (proto.State, error) {
-	d.logger.Info("🎯 PM drafting specification")
-
-	// Get conversation history
-	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
-	expertise, _ := d.stateData["expertise"].(string)
-	if expertise == "" {
-		expertise = DefaultExpertise
-	}
-
-	d.logger.Info("Drafting spec from %d conversation messages (expertise: %s)", len(conversationHistory), expertise)
-
-	// TODO: Full implementation requires:
-	// 1. Render spec_generation template with conversation history
-	// 2. Call LLM to generate markdown spec with YAML frontmatter
-	// 3. Parse and validate the generated spec structure
-	// 4. Store draft spec in stateData["draft_spec"]
-	// 5. Transition to SUBMITTING for validation
-	//
-	// For now, this is a stub that creates a minimal draft.
-	// Real implementation will be added when template rendering and LLM calls are wired up.
-
-	// Create minimal draft spec for testing
-	draftSpec := `---
-version: "1.0"
-priority: must
----
-
-# Feature: Placeholder Specification
-
-## Vision
-This is a placeholder specification generated by the PM agent stub.
-
-## Scope
-### In Scope
-- Placeholder item 1
-
-### Out of Scope
-- Placeholder item 2
-
-## Requirements
-
-### R-001: Placeholder Requirement
-**Type:** functional
-**Priority:** must
-**Dependencies:** []
-
-**Description:** This is a placeholder requirement.
-
-**Acceptance Criteria:**
-- [ ] Placeholder criterion 1
-`
-
-	d.stateData["draft_spec"] = draftSpec
-	d.logger.Info("✅ Draft specification created (%d bytes)", len(draftSpec))
-
-	return StateSubmitting, nil
-}
-
-// handleSubmitting validates and submits the spec to the architect.
-func (d *Driver) handleSubmitting(ctx context.Context) (proto.State, error) {
-	d.logger.Info("🎯 PM submitting specification")
-
-	// Get draft spec from state
-	draftSpec, ok := d.stateData["draft_spec"].(string)
-	if !ok || draftSpec == "" {
-		d.logger.Error("No draft spec found in state")
-		return proto.StateError, fmt.Errorf("no draft spec to submit")
-	}
-
-	d.logger.Info("Validating draft spec (%d bytes)", len(draftSpec))
-
-	// Call spec_submit tool to validate spec
-	specSubmitTool, err := d.toolProvider.Get(tools.ToolSpecSubmit)
-	if err != nil {
-		d.logger.Error("Failed to get spec_submit tool: %v", err)
-		return proto.StateError, fmt.Errorf("failed to get spec_submit tool: %w", err)
-	}
-
-	// Create tool arguments
-	toolArgs := map[string]any{
-		"markdown": draftSpec,
-		"summary":  "Generated specification from PM interview", // Will be extracted from spec frontmatter
-	}
-
-	// Execute tool
-	toolResultAny, err := specSubmitTool.Exec(ctx, toolArgs)
-	if err != nil {
-		d.logger.Error("spec_submit tool execution failed: %v", err)
-		return proto.StateError, fmt.Errorf("spec_submit tool execution failed: %w", err)
-	}
-
-	// Convert result to map
-	toolResult, ok := toolResultAny.(map[string]any)
-	if !ok {
-		d.logger.Error("spec_submit tool returned unexpected result type: %T", toolResultAny)
-		return proto.StateError, fmt.Errorf("spec_submit tool returned unexpected result type")
-	}
-
-	// Check if tool signaled to send REQUEST
-	sendRequest, _ := toolResult["send_request"].(bool)
-	if !sendRequest {
-		// Validation failed - transition back to INTERVIEWING with feedback
-		d.logger.Warn("Spec validation failed, returning to interview")
-		if validationErrors, ok := toolResult["validation_errors"].([]string); ok {
-			d.stateData["validation_feedback"] = validationErrors
-		}
-		return StateInterviewing, nil
-	}
-
-	// Validation passed - create REQUEST message for architect
-	d.logger.Info("✅ Spec validation passed, sending REQUEST to architect")
-
-	summary, _ := toolResult["summary"].(string)
-	specMarkdown, _ := toolResult["spec_markdown"].(string)
-
-	// Create approval request payload for spec review
-	requestMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, d.pmID, "architect-001")
-	payload := &proto.ApprovalRequestPayload{
-		ApprovalType: proto.ApprovalTypeSpec,
-		Content:      summary,
-		Reason:       "PM has completed spec interview and generated specification for review",
-		Context:      fmt.Sprintf("Spec length: %d bytes", len(specMarkdown)),
-		Metadata: map[string]string{
-			"spec_markdown": specMarkdown,
-		},
-	}
-	requestMsg.SetTypedPayload(proto.NewApprovalRequestPayload(payload))
-
-	// Send REQUEST via Effects
-	effect := &SendMessageEffect{Message: requestMsg}
-	if err := d.ExecuteEffect(ctx, effect); err != nil {
-		d.logger.Error("Failed to send REQUEST to architect: %v", err)
-		return proto.StateError, fmt.Errorf("failed to send spec review request: %w", err)
-	}
-
-	d.logger.Info("✅ REQUEST sent to architect, transitioning to WAITING for RESULT")
-
-	// Store request ID to correlate with RESULT
-	d.stateData["pending_request_id"] = requestMsg.ID
-	d.stateData["spec_markdown"] = specMarkdown
-
-	return StateWaiting, nil
+	// Return to WORKING to address feedback
+	return StateWorking, nil
 }
 
 // GetID returns the PM agent's ID.
@@ -575,9 +413,87 @@ func (d *Driver) GetState() proto.State {
 	return d.currentState
 }
 
+// GetCurrentState returns the current state (required by agent.Driver interface).
+func (d *Driver) GetCurrentState() proto.State {
+	return d.currentState
+}
+
+// GetStateData returns a copy of the current state data (required by agent.Driver interface).
+func (d *Driver) GetStateData() map[string]any {
+	// Return a shallow copy to prevent external modification
+	stateCopy := make(map[string]any, len(d.stateData))
+	for k, v := range d.stateData {
+		stateCopy[k] = v
+	}
+	return stateCopy
+}
+
 // GetAgentType returns the agent type (required by agent.Driver interface).
 func (d *Driver) GetAgentType() agent.Type {
 	return agent.TypePM
+}
+
+// Initialize sets up the driver and loads any existing state (required by agent.Driver interface).
+func (d *Driver) Initialize(_ context.Context) error {
+	// PM agent doesn't need initialization - state is initialized in constructor
+	return nil
+}
+
+// Step executes a single step of the driver's state machine (required by agent.Driver interface).
+// Returns whether processing is complete.
+func (d *Driver) Step(ctx context.Context) (bool, error) {
+	// Execute current state
+	nextState, err := d.executeState(ctx)
+	if err != nil {
+		d.logger.Error("❌ PM agent state machine failed: %v", err)
+		nextState = proto.StateError
+	}
+
+	// Validate transition
+	if !IsValidPMTransition(d.currentState, nextState) {
+		d.logger.Error("❌ Invalid PM state transition: %s → %s", d.currentState, nextState)
+		nextState = proto.StateError
+	}
+
+	// Transition to next state
+	if d.currentState != nextState {
+		d.logger.Info("🔄 PM state transition: %s → %s", d.currentState, nextState)
+		d.currentState = nextState
+	}
+
+	// Handle terminal states
+	switch nextState {
+	case proto.StateDone:
+		return true, nil
+	case proto.StateError:
+		d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
+		d.currentState = StateWaiting
+		d.stateData = make(map[string]any)
+		return false, err
+	default:
+		return false, nil
+	}
+}
+
+// ValidateState checks if a state is valid for PM agent (required by agent.Driver interface).
+func (d *Driver) ValidateState(state proto.State) error {
+	validStates := d.GetValidStates()
+	for _, validState := range validStates {
+		if state == validState {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid state %s for PM agent", state)
+}
+
+// GetValidStates returns all valid states for PM agent (required by agent.Driver interface).
+func (d *Driver) GetValidStates() []proto.State {
+	return []proto.State{
+		StateWaiting,
+		StateWorking,
+		proto.StateError,
+		proto.StateDone,
+	}
 }
 
 // SetChannels sets the dispatcher channels for PM (required by ChannelReceiver interface).

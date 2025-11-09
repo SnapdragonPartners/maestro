@@ -108,6 +108,8 @@ func (f *LLMClientFactory) CreateClient(agentType Type) (LLMClient, error) {
 		modelName = f.config.Agents.CoderModel
 	case TypeArchitect:
 		modelName = f.config.Agents.ArchitectModel
+	case TypePM:
+		modelName = f.config.Agents.PMModel
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -123,6 +125,8 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 		modelName = f.config.Agents.CoderModel
 	case TypeArchitect:
 		modelName = f.config.Agents.ArchitectModel
+	case TypePM:
+		modelName = f.config.Agents.PMModel
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -181,6 +185,8 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		validationAgentType = validation.AgentTypeArchitect
 	case TypeCoder:
 		validationAgentType = validation.AgentTypeCoder
+	case TypePM:
+		validationAgentType = validation.AgentTypeCoder // PM uses coder-like validation (allows await_user)
 	default:
 		validationAgentType = validation.AgentTypeCoder // Default to coder (safer)
 	}

@@ -111,7 +111,7 @@ version: "1.0"
 Test feature vision.
 `,
 			expectSuccess:    false,
-			expectTransition: StateInterviewing,
+			expectTransition: StateWorking,
 		},
 	}
 

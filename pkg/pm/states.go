@@ -9,12 +9,10 @@ import (
 const (
 	// StateWaiting - PM is idle, waiting for interview request from WebUI.
 	StateWaiting proto.State = "WAITING"
-	// StateInterviewing - PM is conducting interview, gathering requirements.
-	StateInterviewing proto.State = "INTERVIEWING"
-	// StateDrafting - PM is generating markdown spec from conversation.
-	StateDrafting proto.State = "DRAFTING"
-	// StateSubmitting - PM is validating and submitting spec to architect.
-	StateSubmitting proto.State = "SUBMITTING"
+	// StateWorking - PM is actively working with user (interviewing, drafting, submitting).
+	// PM has access to all tools: chat_post, read_file, list_files, submit_spec.
+	// When submit_spec succeeds, PM transitions back to WAITING.
+	StateWorking proto.State = "WORKING"
 )
 
 // validTransitions defines the PM state machine transition rules.
@@ -22,23 +20,11 @@ const (
 //nolint:gochecknoglobals // Intentional package-level constant for state machine definition
 var validTransitions = map[proto.State][]proto.State{
 	StateWaiting: {
-		StateInterviewing,
-		StateSubmitting, // Direct spec file upload bypasses interview
+		StateWorking, // User starts interview or uploads spec
 		proto.StateDone,
 	},
-	StateInterviewing: {
-		StateDrafting,
-		proto.StateError,
-		proto.StateDone,
-	},
-	StateDrafting: {
-		StateSubmitting,
-		StateInterviewing, // Back to interview if draft needs refinement
-		proto.StateError,
-		proto.StateDone,
-	},
-	StateSubmitting: {
-		StateWaiting, // Return to waiting for next interview
+	StateWorking: {
+		StateWaiting, // submit_spec succeeds or architect approves
 		proto.StateError,
 		proto.StateDone,
 	},
@@ -72,9 +58,7 @@ func IsValidPMTransition(from, to proto.State) bool {
 func GetAllPMStates() []proto.State {
 	return []proto.State{
 		StateWaiting,
-		StateInterviewing,
-		StateDrafting,
-		StateSubmitting,
+		StateWorking,
 		proto.StateDone,
 		proto.StateError,
 	}
