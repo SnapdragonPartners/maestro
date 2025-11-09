@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 11
+const CurrentSchemaVersion = 12
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -106,6 +106,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion10(db)
 	case 11:
 		return migrateToVersion11(db)
+	case 12:
+		return migrateToVersion12(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -391,6 +393,70 @@ func migrateToVersion11(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion12 adds multi-channel support to chat system.
+// This migration:
+// 1. Adds channel column to chat table (defaults to 'development').
+// 2. Recreates chat_cursor with composite primary key (agent_id, channel, session_id).
+// 3. Migrates existing cursors to 'development' channel with current session_id.
+func migrateToVersion12(db *sql.DB) error {
+	// Get current session_id from config (we'll need to read it)
+	// For migration purposes, we'll query the most recent message's session_id
+	var sessionID string
+	err := db.QueryRow("SELECT session_id FROM chat ORDER BY id DESC LIMIT 1").Scan(&sessionID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to get session_id: %w", err)
+	}
+	// If no messages exist, use empty string (will be populated on first use)
+	if errors.Is(err, sql.ErrNoRows) {
+		sessionID = ""
+	}
+
+	migrations := []string{
+		// Step 1: Add channel column to chat table
+		"ALTER TABLE chat ADD COLUMN channel TEXT NOT NULL DEFAULT 'development'",
+
+		// Step 2: Create new index for channel-based queries
+		"CREATE INDEX IF NOT EXISTS idx_chat_channel_session ON chat(channel, session_id, id)",
+
+		// Step 3: Create new chat_cursor table with composite key
+		`CREATE TABLE chat_cursor_new (
+			agent_id TEXT NOT NULL,
+			channel TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			last_id INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (agent_id, channel, session_id)
+		)`,
+	}
+
+	for _, migration := range migrations {
+		if _, execErr := db.Exec(migration); execErr != nil {
+			return fmt.Errorf("migration failed (%s): %w", migration, execErr)
+		}
+	}
+
+	// Step 4: Migrate existing cursors to new table with 'development' channel
+	if sessionID != "" {
+		_, err = db.Exec(`
+			INSERT INTO chat_cursor_new (agent_id, channel, session_id, last_id)
+			SELECT agent_id, 'development', ?, last_id
+			FROM chat_cursor
+		`, sessionID)
+		if err != nil {
+			return fmt.Errorf("failed to migrate cursors: %w", err)
+		}
+	}
+
+	// Step 5: Drop old cursor table and rename new one
+	if _, err := db.Exec("DROP TABLE chat_cursor"); err != nil {
+		return fmt.Errorf("failed to drop old cursor table: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE chat_cursor_new RENAME TO chat_cursor"); err != nil {
+		return fmt.Errorf("failed to rename cursor table: %w", err)
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 func createSchema(db *sql.DB) error {
 	// Enable WAL mode and foreign keys
@@ -512,10 +578,11 @@ func createSchema(db *sql.DB) error {
 			feedback TEXT
 		)`,
 
-		// Chat messages table for agent collaboration
+		// Chat messages table for agent collaboration (multi-channel support)
 		`CREATE TABLE IF NOT EXISTS chat (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL,
+			channel TEXT NOT NULL DEFAULT 'development',
 			ts TEXT NOT NULL,
 			author TEXT NOT NULL,
 			text TEXT NOT NULL,
@@ -523,10 +590,13 @@ func createSchema(db *sql.DB) error {
 			post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate'))
 		)`,
 
-		// Chat cursor table for tracking agent read positions
+		// Chat cursor table for tracking agent read positions (per-channel, per-session)
 		`CREATE TABLE IF NOT EXISTS chat_cursor (
-			agent_id TEXT PRIMARY KEY,
-			last_id INTEGER NOT NULL DEFAULT 0
+			agent_id TEXT NOT NULL,
+			channel TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			last_id INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (agent_id, channel, session_id)
 		)`,
 
 		// Tool executions table for debugging and analysis
@@ -651,6 +721,7 @@ func createSchema(db *sql.DB) error {
 		// Chat indices
 		"CREATE INDEX IF NOT EXISTS idx_chat_session ON chat(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_chat_session_id ON chat(session_id, id)",
+		"CREATE INDEX IF NOT EXISTS idx_chat_channel_session ON chat(channel, session_id, id)",
 		"CREATE INDEX IF NOT EXISTS idx_chat_reply_to ON chat(reply_to)",
 		"CREATE INDEX IF NOT EXISTS idx_chat_post_type ON chat(post_type)",
 

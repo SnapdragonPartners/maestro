@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"orchestrator/pkg/config"
@@ -20,14 +21,24 @@ const (
 )
 
 // Service provides chat functionality with secret scanning and cursor management.
+// Architecture: In-memory canonical state with database as append-only log.
+//
+//nolint:govet // fieldalignment not critical for singleton service
 type Service struct {
 	dbOps   *persistence.DatabaseOperations
 	scanner SecretScanner
 	config  *config.ChatConfig
 	logger  *logx.Logger
+
+	// In-memory canonical state
+	messages     []*persistence.ChatMessage  // All messages (canonical source of truth)
+	agentCursors map[string]map[string]int64 // agent_id -> channel -> cursor
+
+	nextID int64 // Next message ID to assign
+	mu     sync.RWMutex
 }
 
-// NewService creates a new chat service.
+// NewService creates a new chat service with in-memory canonical state.
 func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *Service {
 	logger := logx.NewLogger("chat")
 
@@ -41,10 +52,30 @@ func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *
 	}
 
 	return &Service{
-		dbOps:   dbOps,
-		scanner: scanner,
-		config:  cfg,
-		logger:  logger,
+		dbOps:        dbOps,
+		scanner:      scanner,
+		config:       cfg,
+		logger:       logger,
+		messages:     make([]*persistence.ChatMessage, 0),
+		agentCursors: make(map[string]map[string]int64),
+		nextID:       1, // Start at 1 (0 reserved for "no messages")
+	}
+}
+
+// RegisterAgent initializes per-channel cursors for an agent.
+// This establishes which channels the agent has access to.
+// Access control is implicit: no cursor = no access to channel.
+func (s *Service) RegisterAgent(agentID string, channels []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.agentCursors[agentID] == nil {
+		s.agentCursors[agentID] = make(map[string]int64)
+	}
+
+	for _, channel := range channels {
+		s.agentCursors[agentID][channel] = 0
+		s.logger.Debug("Registered %s to channel %s", agentID, channel)
 	}
 }
 
@@ -52,6 +83,7 @@ func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *
 type PostRequest struct {
 	Author   string
 	Text     string
+	Channel  string // Required: 'development', 'product', etc.
 	ReplyTo  *int64 // Optional: ID of message being replied to
 	PostType string // Optional: 'chat', 'reply', or 'escalate' (defaults to 'chat')
 }

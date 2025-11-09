@@ -1,8 +1,8 @@
-# Maestro Agent Chat — Draft Spec (v0.2)
+# Maestro Agent Chat — Draft Spec (v0.3)
 
 ## Scope & Phasing
-- **Phase 1 (this spec):**
-  - Single shared channel `#maestro` for agents + `@human`.
+- **Phase 1 (implemented):**
+  - Single shared channel `#development` for coders + `@human`.
   - Architect is **not** involved in chat in Phase 1 (no wake-on-mention, no participation, excluded via LLM middleware).
   - MCP tools `chat.post` and `chat.getNew` registered via existing tool system.
   - SQLite-backed storage with session isolation (same DB as messages/stories).
@@ -10,7 +10,13 @@
   - Size limits enforced (no compaction in Phase 1 for API reads).
   - Retrieval of new chat messages occurs as the **final step** before each agent LLM call (via LLM middleware).
   - WebUI password authentication for security.
-- **Phase 2 (not in this spec):**
+- **Phase 2 (this update):**
+  - Multi-channel support (`#development`, `#product`) for PM agent integration.
+  - Per-channel cursors with agent registration at construction time.
+  - In-memory canonical state (messages slice) with DB as append-only log.
+  - Channel-based access control via cursor initialization.
+  - UI filters messages client-side based on channel.
+- **Phase 3 (future):**
   - Architect wake-on-mention, stateless context builder, etc. (documented later).
 
 ## Functional Requirements
@@ -29,15 +35,19 @@
   - WebUI elements related to chat must be hidden or replaced with a placeholder (“Chat disabled by configuration”).
 
 ### 3) Chat Transport (abstract behavior)
-- System exposes a single-channel chat with the following behaviors:
-  - **Post**: append a message (id, timestamp, session_id, author, text) to the channel after secret redaction and size enforcement.
-  - **Get New**: return all messages with `id > sinceId` **filtered by current session_id**. No compaction in Phase 1 (return all matching messages).
+- System exposes a **multi-channel** chat with the following behaviors:
+  - **Post**: append a message (id, timestamp, session_id, author, text, channel) to in-memory slice, then persist async to DB.
+  - **Get New**: return all messages from channels agent has access to, filtered by per-channel cursors.
+  - **Register Agent**: initialize per-channel cursors at agent construction time.
 - Message shape:
   - `id: integer (monotonic, increasing)`
   - `session_id: string` (UUID of current orchestrator session)
   - `ts: RFC3339 string`
   - `author: string` (one of the allowed forms above)
   - `text: string` (post-redaction; may include a single appended note if redactions occurred)
+  - `channel: string` (e.g., "development", "product")
+  - `reply_to: integer?` (optional reference to parent message)
+  - `post_type: string` (e.g., "chat", "reply", "escalate")
 
 ### 4) MCP Tool (capability `maestro.chat`)
 - **`chat.post`**
@@ -51,17 +61,22 @@
     - Persist to storage with assigned `id`, `ts`, and `session_id` (added automatically by persistence layer).
   - **Return**: `{ "id": number, "success": boolean }`
 - **`chat.getNew`**
-  - **Args**: None (agent ID and cursor tracked server-side)
+  - **Args**: None (agent ID tracked server-side)
   - **Behavior**:
-    - Service looks up agent's last cursor position via `chat_cursor` table.
-    - Retrieve messages with `id > cursor` **AND** `session_id = current_session`.
-    - No compaction in Phase 1 (return all matching messages).
+    - Service looks up agent's per-channel cursors from in-memory map.
+    - Filter in-memory messages slice by channels agent has access to.
+    - Return all messages with `id > cursor` for each accessible channel.
+    - No compaction (return all matching messages).
     - `newPointer` is the highest `id` returned (or cursor if none).
+    - **Channel access control**: If agent has no cursor for a channel, they cannot see messages from that channel.
   - **Return**:
     ```json
     {
-      "messages": [ { "id": 123, "ts": "...", "author": "@coder-17", "text": "..." } ],
-      "newPointer": 123
+      "messages": [
+        { "id": 123, "ts": "...", "author": "@coder-17", "text": "...", "channel": "development" },
+        { "id": 124, "ts": "...", "author": "@human", "text": "...", "channel": "development" }
+      ],
+      "newPointer": 124
     }
     ```
 
@@ -105,30 +120,62 @@
   - Scanner errors/timeouts: **fail-open** in Phase 1 (store original text) and log `scannerError=true`.
 - The scanner must be swappable (interface-driven internally), but only one scanner implementation is needed in Phase 1.
 
-### 9) Storage & Cursors
-- SQLite storage (same `maestro.db` as messages/stories):
-  - Table `chat(id INTEGER PK AUTOINCREMENT, session_id TEXT NOT NULL, ts TEXT, author TEXT, text TEXT)`.
-  - Table `chat_cursor(agent_id TEXT PK, last_id INTEGER NOT NULL DEFAULT 0)`.
-  - Index on `session_id` for filtering.
-- Session handling:
-  - `session_id` is automatically added by persistence layer (read from config).
-  - All queries filter by current `session_id` (like messages/stories).
-- Invariants:
-  - `id` is globally monotonic (across all sessions); rows are not deleted in Phase 1.
-  - Cursors are **managed in the chat service** and advanced after each agent LLM call via middleware.
+### 9) Storage & Cursors (Phase 2 Update)
 
-### 10) WebUI (inline on dashboard)
+**Architectural Principle: Database as Log**
+- **In-memory canonical state**: Chat service maintains `messages []` slice and `agentCursors map[agent][channel]cursor` in memory.
+- **Database as append-only log**: SQLite is for persistence, recovery, and WebUI polling only.
+- **Async persistence**: Messages are appended to in-memory slice first, then persisted async via persistence queue.
+
+**SQLite Schema (Phase 2):**
+```sql
+-- Chat messages with channel support
+CREATE TABLE chat (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    author TEXT NOT NULL,
+    text TEXT NOT NULL,
+    reply_to INTEGER REFERENCES chat(id),
+    post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate'))
+);
+CREATE INDEX idx_chat_channel_session ON chat(channel, session_id, id);
+
+-- Per-channel cursors with session isolation
+CREATE TABLE chat_cursor (
+    agent_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    last_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (agent_id, channel, session_id)
+);
+```
+
+**Cursor Management:**
+- Cursors initialized at agent construction via `RegisterAgent(agentID, channels)`.
+- Per-channel cursors enable access control: no cursor = no access to channel.
+- Cursors updated in-memory after each `GetNew()`, persisted async to DB.
+
+**Agent Registration:**
+- Coders: `RegisterAgent("coder-001", ["development"])`
+- PM: `RegisterAgent("pm-001", ["product"])`
+- Human: `RegisterAgent("@human", ["development", "product"])`
+
+### 10) WebUI (Phase 2 Update)
 - **Authentication**: Password-protected via environment variable `MAESTRO_WEBUI_PASSWORD` and config `webui.password`.
   - All WebUI endpoints require password (HTTP Basic Auth or session cookie).
   - Password validation on every request for Phase 1 (optimize later).
-- **Chat Pane**: Similar to Messages pane, shows timeline of chat messages.
-  - Timeline view with author chip + timestamp + text.
+- **Multi-Channel Panes**:
+  - **Development Chat Pane** (dashboard): Shows `channel='development'` messages only.
+  - **PM Interview Pane** (PM interface): Shows `channel='product'` messages only.
   - Auto-refresh via 1-second polling (like other panes).
-  - Composer at bottom that posts as `@human` via `POST /api/chat`.
+  - Composer at bottom posts as `@human` with channel parameter.
 - **API Endpoints**:
-  - `POST /api/chat` - Post message as `@human` (body: `{"text": "..."}`)
-  - `GET /api/chat` - Get all chat messages for current session (no `since` parameter in Phase 1)
-- No compaction notices in Phase 1 (all messages returned).
+  - `POST /api/chat` - Post message as `@human` (body: `{"text": "...", "channel": "development"}`)
+  - `GET /api/chat` - Get all chat messages for current session (returns all channels, UI filters client-side)
+- **Client-side filtering**: WebUI receives all messages user has access to, filters by channel for display.
+- No compaction notices (all messages returned).
 
 ## Non-Functional Requirements & Constraints
 - **Architect is excluded** from chat in Phase 1 (no architect consumption or posting).

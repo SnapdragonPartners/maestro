@@ -197,6 +197,7 @@ func GenerateAgentPlanID() string {
 type ChatMessage struct {
 	ID        int64  `json:"id"`
 	SessionID string `json:"session_id"`
+	Channel   string `json:"channel"` // Channel: 'development', 'product', etc.
 	Author    string `json:"author"`
 	Text      string `json:"text"`
 	Timestamp string `json:"ts"`
@@ -204,10 +205,12 @@ type ChatMessage struct {
 	PostType  string `json:"post_type"`          // Type: 'chat', 'reply', or 'escalate'
 }
 
-// ChatCursor tracks the last message ID read by an agent.
+// ChatCursor tracks the last message ID read by an agent (per-channel, per-session).
 type ChatCursor struct {
-	AgentID string `json:"agent_id"`
-	LastID  int64  `json:"last_id"`
+	AgentID   string `json:"agent_id"`
+	Channel   string `json:"channel"`
+	SessionID string `json:"session_id"`
+	LastID    int64  `json:"last_id"`
 }
 
 // ToolExecution represents a single tool execution for debugging and analysis.
