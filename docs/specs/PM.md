@@ -1,9 +1,9 @@
 # Maestro: Interactive Spec Development with PM Agent
 
-**Version:** 1.1 (Implementation Ready)
+**Version:** 1.4 (Phase 4 Complete - WebUI Integration)
 **Owner:** @dan
-**Last Updated:** 2025-01-08
-**Status:** Phase 1 Complete ✅ | Phase 2 Ready
+**Last Updated:** 2025-11-09
+**Status:** Phase 1-4 Complete ✅ | Phase 5 (Interview Chat) Pending
 
 ---
 
@@ -29,19 +29,66 @@
 - ✅ submit_spec tool - validates, returns errors or success with metadata
 - ✅ Comprehensive tests (22 test cases total, all passing)
 
-**Phase 3 In Progress (PM ↔ Architect Feedback Loop):**
-- Message-based spec submission (REQUEST/RESULT pattern)
-- spec_feedback tool for architect to request changes
-- submit_stories implicit approval
-- PM iteration loop on feedback
+**Phase 3 Complete (PM ↔ Architect Feedback Loop):** ✅
+- ✅ Message-based spec submission (REQUEST/RESULT pattern)
+- ✅ Spec file upload bypass (WAITING → SUBMITTING transition)
+- ✅ Tool provider integration (PMSubmittingTools, PMInterviewTools)
+- ✅ handleSubmitting calls actual spec_submit tool
+- ✅ handleWaiting monitors specCh, interviewRequestCh, replyCh
+- ✅ PM iteration loop on architect feedback (APPROVED → WAITING, NEEDS_CHANGES → INTERVIEWING)
+- ✅ Unit tests (driver_test.go, pm_fsm_test.go - all passing)
+- Note: spec_feedback tool and submit_stories approval handled by architect side
 
-**Phase 3 Pending (WebUI Integration):**
-- Interview endpoints
-- Chat interface
-- Preview generation
-- Submission modal
+**Phase 4 Complete (WebUI Integration):** ✅
+- ✅ PM backend endpoints (6 routes: start, chat, preview, submit, upload, status)
+- ✅ PM pane template (3 tabs: Upload, Interview, Preview)
+- ✅ PM JavaScript controller (PMController class with status polling)
+- ✅ Dashboard integration (PM pane as first-class component at top)
+- ✅ Spec file upload (fully functional - routes to PM's specCh)
+- ✅ PM status monitoring (2-second polling, color-coded badges)
+- 🚧 Interview chat (UI complete, backend placeholder - needs async architecture)
+- 🚧 Preview generation (UI complete, backend placeholder - needs LLM integration)
+- 🚧 Spec submission (UI complete, backend placeholder - needs state transition wiring)
 
 **Branch:** `pm-agent-implementation` (13 commits)
+
+---
+
+## Remaining Work
+
+### Phase 5: Interview & Preview Implementation (Async Architecture)
+
+**Interview Chat Backend:**
+- WebSocket or SSE implementation for real-time PM ↔ User communication
+- PM state machine support for INTERVIEWING state with LLM calls
+- Message persistence to pm_conversations/pm_messages tables
+- Turn counting and max turn enforcement
+
+**Preview Generation Backend:**
+- Database query for conversation history
+- LLM call to generate spec from interview (using pm/drafting template)
+- Markdown rendering in WebUI
+- Draft persistence to pm_conversations
+
+**Spec Submission Backend:**
+- Trigger PM state transition from WebUI
+- Full validation flow integration
+- Success/error feedback to user
+
+**Estimated Effort:** 2-3 days (async architecture design + implementation)
+
+### Production Testing Priorities
+
+**Ready for Testing Now:**
+1. ✅ Spec file upload (fully functional)
+2. ✅ PM status monitoring
+3. ✅ spec_submit tool validation
+4. ✅ PM → Architect REQUEST/RESULT flow
+
+**Requires Interview Implementation:**
+- End-to-end interview → draft → submit → architect review flow
+- Architect feedback → PM iteration loop
+- Conversation persistence and restoration
 
 ---
 

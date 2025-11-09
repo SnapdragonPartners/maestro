@@ -123,4 +123,15 @@ var (
 		ToolGetDiff,
 		ToolSubmitReply,
 	}
+
+	// PM SUBMITTING tools - spec validation and submission.
+	PMSubmittingTools = []string{
+		ToolSpecSubmit,
+	}
+
+	// PM INTERVIEWING/DRAFTING tools - read-only codebase exploration.
+	PMInterviewTools = []string{
+		ToolReadFile,
+		ToolListFiles,
+	}
 )

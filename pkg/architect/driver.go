@@ -29,6 +29,10 @@ const (
 	// Story type constants to avoid repetition and improve maintainability.
 	storyTypeDevOps = "devops"
 	storyTypeApp    = "app"
+
+	// Tool signal constants.
+	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
+	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 )
 
 // Driver manages the state machine for an architect workflow.
@@ -847,7 +851,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			d.stateData["submit_stories_result"] = result
 
 			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return "SUBMIT_STORIES_COMPLETE", nil // Signal that stories were submitted
+			return signalSubmitStoriesComplete, nil // Signal that stories were submitted
 		}
 
 		// Handle spec_feedback tool - architect sends feedback to PM
@@ -867,7 +871,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			d.stateData["spec_feedback_result"] = result
 
 			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
-			return "SPEC_FEEDBACK_SENT", nil // Signal that feedback was sent
+			return signalSpecFeedbackSent, nil // Signal that feedback was sent
 		}
 
 		// Get tool from ToolProvider and execute

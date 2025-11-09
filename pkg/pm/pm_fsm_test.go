@@ -39,6 +39,7 @@ func TestIsValidPMTransition(t *testing.T) {
 	}{
 		// WAITING transitions
 		{StateWaiting, StateInterviewing, "WAITING -> INTERVIEWING (interview starts)"},
+		{StateWaiting, StateSubmitting, "WAITING -> SUBMITTING (spec file upload)"},
 		{StateWaiting, proto.StateDone, "WAITING -> DONE (shutdown)"},
 
 		// INTERVIEWING transitions
@@ -80,7 +81,6 @@ func TestInvalidPMTransitions(t *testing.T) {
 	}{
 		// Invalid WAITING transitions
 		{StateWaiting, StateDrafting, "WAITING -> DRAFTING (invalid)"},
-		{StateWaiting, StateSubmitting, "WAITING -> SUBMITTING (invalid)"},
 		{StateWaiting, proto.StateError, "WAITING -> ERROR (invalid)"},
 
 		// Invalid INTERVIEWING transitions
@@ -216,7 +216,7 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateInterviewing, proto.StateDone}},
+		{StateWaiting, []proto.State{StateInterviewing, StateSubmitting, proto.StateDone}},
 		{StateInterviewing, []proto.State{StateDrafting, proto.StateError, proto.StateDone}},
 		{StateDrafting, []proto.State{StateSubmitting, StateInterviewing, proto.StateError, proto.StateDone}},
 		{StateSubmitting, []proto.State{StateWaiting, proto.StateError, proto.StateDone}},

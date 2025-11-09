@@ -23,6 +23,7 @@ const (
 var validTransitions = map[proto.State][]proto.State{
 	StateWaiting: {
 		StateInterviewing,
+		StateSubmitting, // Direct spec file upload bypasses interview
 		proto.StateDone,
 	},
 	StateInterviewing: {

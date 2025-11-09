@@ -1,6 +1,6 @@
 # Architect Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-08-18 (rev F - Merge-to-Dispatching Transition)*
+*Last updated: 2025-01-08 (rev G - PM Spec Review Integration)*
 
 This document is the **single source of truth** for the architect agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -12,11 +12,11 @@ Any code, tests, or diagrams must match this specification exactly.
 ```mermaid
 stateDiagram-v2
     %% ---------- ENTRY ----------
-    [*] --> WAITING              
+    [*] --> WAITING
 
     %% ---------- SPEC INTAKE ----------
-    WAITING       --> SCOPING            : spec received
-    WAITING       --> REQUEST            : question received  
+    WAITING       --> SCOPING            : spec file received
+    WAITING       --> REQUEST            : coder/PM request received
     WAITING       --> ERROR              : channel closed/abnormal shutdown
     SCOPING       --> DISPATCHING        : initial "ready" stories queued
     SCOPING       --> ERROR              : unrecoverable scoping error
@@ -28,9 +28,9 @@ stateDiagram-v2
     %% ---------- MAIN EVENT LOOP ----------
     MONITORING    --> REQUEST            : any coder request\n(question • plan • iter/tokens • code-review • merge)
     MONITORING    --> ERROR              : channel closed/abnormal shutdown
-    
+
     %% ---------- REQUEST HANDLING ----------
-    REQUEST       --> MONITORING         : approve (non-code) • request changes  
+    REQUEST       --> MONITORING         : approve (non-code) • request changes
     REQUEST       --> DISPATCHING        : successful merge → release dependent stories
     REQUEST       --> ESCALATED          : cannot answer → ask human
     REQUEST       --> ERROR              : abandon / unrecoverable
@@ -45,6 +45,7 @@ stateDiagram-v2
 
     %% ---------- NOTES ----------
     %% Self-loops (state → same state) are always valid and are used for states that wait for external events.
+    %% REQUEST state handles both coder requests AND PM spec review requests (ApprovalTypeSpec)
 ```
 
 ---
@@ -53,24 +54,50 @@ stateDiagram-v2
 
 | State            | Purpose                                                                        |
 | ---------------- | ------------------------------------------------------------------------------ |
-| **WAITING**      | Agent is idle, waiting for specification files to process.                    |
+| **WAITING**      | Agent is idle, waiting for specification files or requests to process.        |
 | **SCOPING**      | Parse specification and generate story files with dependencies.               |
 | **DISPATCHING**  | Load stories, check dependencies, and assign ready stories to coder agents.   |
 | **MONITORING**   | Monitor coder progress and wait for requests (questions, reviews, merges).    |
-| **REQUEST**      | Process coder requests: questions, plan/code reviews.                         |
+| **REQUEST**      | Process requests: coder questions/reviews/merges OR PM spec reviews.          |
 | **ESCALATED**    | Waiting for human intervention on complex business questions.                 |
 | **DONE**         | All stories completed successfully.                                           |
 | **ERROR**        | Unrecoverable error or workflow abandonment.                                  |
 
 ---
 
-## Key workflow changes (Merge Workflow)
+## Key workflow patterns
+
+### Merge Workflow
 
 - **Merge requests**: Coders send merge requests after code approval via REQUEST state
 - **Story completion**: Only happens after successful PR merge (not code approval)
 - **Dependency unlocking**: Triggered by merge success, enabling dependent stories
 - **Conflict handling**: Merge conflicts returned to coder for resolution
 - **Post-merge transition**: Successful merges transition from REQUEST → DISPATCHING to release dependent stories and update mirrors (not REQUEST → MONITORING)
+
+### PM Spec Review Workflow
+
+- **Spec review requests**: PM sends REQUEST(type=spec) after conducting interview and validating spec
+- **Review process**: Architect uses SCOPING tools in REQUEST state:
+  - `spec_feedback` - Send feedback/questions to PM (status: NEEDS_CHANGES)
+  - `submit_stories` - Approve spec and generate stories (status: APPROVED)
+- **Iterative review**: PM can resubmit improved spec after addressing feedback
+- **Approval outcome**: When architect calls `submit_stories`:
+  - Stories are generated and queued
+  - RESPONSE(approved=true) sent to PM
+  - Architect returns to MONITORING or DISPATCHING (depending on story queue state)
+
+### REQUEST State Handling
+
+The REQUEST state processes different types of approval requests based on `ApprovalType`:
+
+- **ApprovalTypePlan**: Coder plan approval (auto-approved, stored in database)
+- **ApprovalTypeCode**: Iterative code review with read tools (approve/request changes)
+- **ApprovalTypeCompletion**: Story completion approval (approve/request changes)
+- **ApprovalTypeBudgetReview**: Token/iteration budget increase requests
+- **ApprovalTypeSpec**: PM spec review with SCOPING tools (NEW - Phase 3)
+
+Each type uses appropriate review logic and tools for its domain.
 
 ---
 

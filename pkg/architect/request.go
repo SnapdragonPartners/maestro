@@ -364,6 +364,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		return d.handleIterativeApproval(ctx, requestMsg, approvalPayload)
 	}
 
+	// Handle spec review approval with SCOPING tools
+	if approvalType == proto.ApprovalTypeSpec && d.llmClient != nil {
+		return d.handleSpecReview(ctx, requestMsg, approvalPayload)
+	}
+
 	// Approval request processing will be logged to database only
 
 	// Persist plan to database if this is a plan approval request
@@ -1914,5 +1919,114 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	}
 
 	d.logger.Info("✅ Built question response via iterative exploration")
+	return response, nil
+}
+
+// handleSpecReview processes a spec review approval request from PM.
+// Uses SCOPING tools (spec_feedback, submit_stories) for iterative review.
+func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	d.logger.Info("🔍 Architect reviewing spec from PM")
+
+	// Extract spec markdown from metadata
+	specMarkdown, exists := approvalPayload.Metadata["spec_markdown"]
+	if !exists || specMarkdown == "" {
+		return nil, fmt.Errorf("spec_markdown not found in approval request metadata")
+	}
+
+	d.logger.Info("📄 Spec content length: %d bytes", len(specMarkdown))
+
+	// Prepare template data for spec review
+	templateData := &templates.TemplateData{
+		TaskContent: specMarkdown,
+		Extra: map[string]any{
+			"mode":    "spec_review",
+			"summary": approvalPayload.Content,
+			"reason":  approvalPayload.Reason,
+		},
+	}
+
+	// Render spec review template
+	prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, templateData, d.workDir, "ARCHITECT")
+	if err != nil {
+		return nil, fmt.Errorf("failed to render spec review template: %w", err)
+	}
+
+	// Reset context for new spec review
+	templateName := fmt.Sprintf("spec-review-%s", requestMsg.ID)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
+
+	// Get SCOPING tools for spec review (spec_feedback, submit_stories)
+	scopingTools := d.getScopingTools()
+
+	// Call LLM with SCOPING tools
+	signal, err := d.callLLMWithTools(ctx, prompt, scopingTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
+	}
+
+	// Process tool signal and create RESULT message
+	var approved bool
+	var feedback string
+
+	switch signal {
+	case signalSpecFeedbackSent:
+		// Architect requested changes via spec_feedback tool
+		approved = false
+
+		// Extract feedback from stateData
+		feedbackResult, ok := d.stateData["spec_feedback_result"]
+		if !ok {
+			return nil, fmt.Errorf("spec_feedback result not found in state data")
+		}
+
+		feedbackMap, ok := feedbackResult.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("spec_feedback result has unexpected type")
+		}
+
+		feedbackStr, ok := feedbackMap["feedback"].(string)
+		if !ok || feedbackStr == "" {
+			return nil, fmt.Errorf("feedback not found in spec_feedback result")
+		}
+
+		feedback = feedbackStr
+		d.logger.Info("📝 Architect requested spec changes: %s", feedback)
+
+	case signalSubmitStoriesComplete:
+		// Architect approved spec and generated stories via submit_stories tool
+		approved = true
+		feedback = "Spec approved - stories generated successfully"
+		d.logger.Info("✅ Architect approved spec and generated stories")
+
+	default:
+		return nil, fmt.Errorf("unexpected signal from spec review: %s", signal)
+	}
+
+	// Create RESPONSE message with approval result
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+
+	// Determine approval status
+	var status proto.ApprovalStatus
+	if approved {
+		status = proto.ApprovalStatusApproved
+	} else {
+		status = proto.ApprovalStatusNeedsChanges
+	}
+
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  requestMsg.Metadata["approval_id"],
+		Type:       proto.ApprovalTypeSpec,
+		Status:     status,
+		Feedback:   feedback,
+		ReviewedBy: d.architectID,
+		ReviewedAt: response.Timestamp,
+	}
+
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+	response.SetMetadata("approval_id", approvalResult.ID)
+
+	d.logger.Info("✅ Spec review complete - sending RESULT to PM (status=%v)", status)
 	return response, nil
 }

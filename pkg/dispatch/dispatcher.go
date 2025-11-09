@@ -212,6 +212,13 @@ func (d *Dispatcher) Attach(ag Agent) {
 				channelReceiver.SetChannels(d.storyCh, nil, replyCh)
 				channelReceiver.SetDispatcher(d)
 				return
+			case agent.TypePM:
+				d.logger.Info("Attached PM agent: %s with direct channel setup", agentID)
+				// PM receives spec requests via specCh (for file uploads) and gets reply channel for RESULT messages.
+				// PM does not process questionsCh (only architect does).
+				channelReceiver.SetChannels(d.specCh, nil, replyCh)
+				channelReceiver.SetDispatcher(d)
+				return
 			}
 		}
 	}
@@ -223,6 +230,8 @@ func (d *Dispatcher) Attach(ag Agent) {
 			d.logger.Info("Attached architect agent: %s", agentID)
 		case agent.TypeCoder:
 			d.logger.Info("Attached coder agent: %s", agentID)
+		case agent.TypePM:
+			d.logger.Info("Attached PM agent: %s", agentID)
 		}
 	} else {
 		d.logger.Warn("Agent %s does not implement Driver interface", agentID)

@@ -238,7 +238,7 @@ func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile,
 	}
 
 	// Check if submit_stories tool was called
-	if signal != "SUBMIT_STORIES_COMPLETE" {
+	if signal != signalSubmitStoriesComplete {
 		return nil, fmt.Errorf("expected submit_stories tool call, got: %s", signal)
 	}
 

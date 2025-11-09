@@ -23,35 +23,44 @@ Most frameworks require wrestling with Python versions, dependency hell, or comp
 
 ## Key Ideas
 
-### Architect vs. Coders
-- **Architect** (singleton):  
-  - Breaks specs into stories  
-  - Reviews and approves plans  
-  - Enforces principles (DRY, YAGNI, abstraction levels, test coverage)  
-  - Merges PRs  
-  - Does *not* write code directly  
+### Agent Roles
 
-- **Coders** (many):  
-  - Pull stories from a queue  
-  - Develop plans, then code  
-  - Must check in periodically  
-  - Run automated tests before completing work  
-  - Submit PRs for architect review  
+- **PM (Product Manager)** (singleton):
+  - Conducts interactive requirements interviews via web UI
+  - Generates detailed specifications with acceptance criteria
+  - Iterates with architect for spec approval
+  - Does *not* write stories directly
+
+- **Architect** (singleton):
+  - Breaks specs into stories
+  - Reviews and approves plans
+  - Enforces principles (DRY, YAGNI, abstraction levels, test coverage)
+  - Merges PRs
+  - Does *not* write code directly
+
+- **Coders** (many):
+  - Pull stories from a queue
+  - Develop plans, then code
+  - Must check in periodically
+  - Run automated tests before completing work
+  - Submit PRs for architect review
 
 Coders are goroutines that fully terminate and restart between stories. All state (stories, messages, progress, tokens, costs, etc.) is persisted in a SQLite database.
 
 ### Workflow at a Glance
-1. User provides a complex spec  
-2. Architect breaks it into stories and dispatches them  
-3. Coders plan, get approval, then implement  
-4. Architect reviews code + tests, merges PRs  
-5. Coders terminate, new ones spawn for new work  
+1. PM conducts interactive interview and generates spec (or user provides spec file)
+2. Architect reviews and approves spec (with iterative feedback if needed)
+3. Architect breaks spec into stories and dispatches them
+4. Coders plan, get approval, then implement
+5. Architect reviews code + tests, merges PRs
+6. Coders terminate, new ones spawn for new work
 
 If a coder stalls or fails, Maestro automatically retries or reassigns. Questions can bubble up to a human via CLI or web UI.
 
-See the canonical state diagrams for details:  
-- [Architect state machine](pkg/architect/STATES.md)  
-- [Coder state machine](pkg/coder/STATES.md)
+See the canonical state diagrams for details:
+- [PM state machine](pkg/pm/STATES.md) - Interactive spec generation and architect feedback
+- [Architect state machine](pkg/architect/STATES.md) - Spec review, story generation, and code oversight
+- [Coder state machine](pkg/coder/STATES.md) - Planning, coding, and testing workflow
 
 ---
 

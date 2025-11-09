@@ -142,6 +142,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
 	mux.HandleFunc("/api/healthz", s.requireAuth(s.handleHealth))
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
+
+	// PM agent endpoints - specification development
+	mux.HandleFunc("/api/pm/start", s.requireAuth(s.handlePMStart))
+	mux.HandleFunc("/api/pm/chat", s.requireAuth(s.handlePMChat))
+	mux.HandleFunc("/api/pm/preview", s.requireAuth(s.handlePMPreview))
+	mux.HandleFunc("/api/pm/submit", s.requireAuth(s.handlePMSubmit))
+	mux.HandleFunc("/api/pm/upload", s.requireAuth(s.handlePMUpload))
+	mux.HandleFunc("/api/pm/status", s.requireAuth(s.handlePMStatus))
 }
 
 // handleServicesStatus implements GET /api/services/status.
