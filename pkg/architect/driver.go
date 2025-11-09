@@ -850,6 +850,26 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			return "SUBMIT_STORIES_COMPLETE", nil // Signal that stories were submitted
 		}
 
+		// Handle spec_feedback tool - architect sends feedback to PM
+		if toolCall.Name == tools.ToolSpecFeedback {
+			// Execute the tool to validate feedback
+			tool, err := toolProvider.Get(toolCall.Name)
+			if err != nil {
+				return "", fmt.Errorf("spec_feedback tool not found: %w", err)
+			}
+
+			result, err := tool.Exec(ctx, toolCall.Parameters)
+			if err != nil {
+				return "", fmt.Errorf("spec_feedback validation failed: %w", err)
+			}
+
+			// Store the feedback result in state data for message sending
+			d.stateData["spec_feedback_result"] = result
+
+			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
+			return "SPEC_FEEDBACK_SENT", nil // Signal that feedback was sent
+		}
+
 		// Get tool from ToolProvider and execute
 		tool, err := toolProvider.Get(toolCall.Name)
 		if err != nil {
@@ -943,11 +963,12 @@ func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
 }
 
 // getScopingTools creates read-only tools for the SCOPING phase.
-// These tools allow the architect to inspect its own workspace at /mnt/architect
-// and submit structured stories via the submit_stories tool.
+// These tools allow the architect to inspect its own workspace at /mnt/architect,
+// submit structured stories via the submit_stories tool, and provide feedback to PM.
 func (d *Driver) getScopingTools() []tools.Tool {
 	toolsList := []tools.Tool{
 		tools.NewSubmitStoriesTool(), // Primary completion tool
+		tools.NewSpecFeedbackTool(),  // PM feedback tool
 	}
 
 	// Add optional read tools if executor available
