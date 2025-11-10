@@ -572,6 +572,22 @@ func (cm *ContextManager) AddAssistantMessage(content string) {
 	// Note: Compaction will be handled before the next LLM request, not here
 }
 
+// AddUserMessageDirect adds a user message directly to context, bypassing the buffer.
+// This is used by middleware that needs to persist messages across turns without buffering.
+func (cm *ContextManager) AddUserMessageDirect(provenance, content string) {
+	// Skip empty content
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+
+	// Add directly to messages array (bypassing user buffer)
+	cm.messages = append(cm.messages, Message{
+		Role:       "user",
+		Content:    strings.TrimSpace(content),
+		Provenance: provenance,
+	})
+}
+
 // GetUserBufferInfo returns information about the current user buffer state.
 func (cm *ContextManager) GetUserBufferInfo() map[string]any {
 	info := map[string]any{

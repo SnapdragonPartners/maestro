@@ -212,10 +212,22 @@ func (s *Service) GetNew(_ context.Context, req *GetNewRequest) (*GetNewResponse
 	var newMessages []*persistence.ChatMessage
 	maxCursor := int64(0)
 
+	// Format expected author string for this agent
+	expectedAuthor := FormatAuthor(req.AgentID)
+
 	for _, msg := range s.messages {
 		// Check if agent has access to this channel
 		cursor, hasAccess := channelCursors[msg.Channel]
 		if !hasAccess {
+			continue
+		}
+
+		// Skip messages from the agent itself (don't echo own messages)
+		if msg.Author == expectedAuthor {
+			// Still track cursor even for own messages
+			if msg.ID > maxCursor {
+				maxCursor = msg.ID
+			}
 			continue
 		}
 
@@ -261,10 +273,18 @@ func (s *Service) HaveNewMessages(agentID string) bool {
 	}
 
 	// 2. Check if any message exists that is newer than agent's cursor for accessible channels
+	// Format expected author string for this agent to exclude own messages
+	expectedAuthor := FormatAuthor(agentID)
+
 	for _, msg := range s.messages {
 		// Check if agent has access to this channel
 		cursor, hasAccess := channelCursors[msg.Channel]
 		if !hasAccess {
+			continue
+		}
+
+		// Skip messages from the agent itself (don't count own messages)
+		if msg.Author == expectedAuthor {
 			continue
 		}
 
@@ -310,6 +330,18 @@ func (s *Service) UpdateCursor(_ context.Context, agentID string, newPointer int
 	}()
 
 	return nil
+}
+
+// GetAllMessages returns all in-memory messages (for WebUI display).
+// This provides real-time access to the canonical message state.
+func (s *Service) GetAllMessages() []*persistence.ChatMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Return a copy to prevent external modification
+	messagesCopy := make([]*persistence.ChatMessage, len(s.messages))
+	copy(messagesCopy, s.messages)
+	return messagesCopy
 }
 
 // FormatAuthor ensures the author is in the correct format (@agent-id or @human).

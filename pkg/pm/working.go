@@ -20,21 +20,6 @@ import (
 func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	d.logger.Info("🎯 PM working (interviewing/drafting/submitting)")
 
-	// Check if we're awaiting user response
-	if awaitingUser, ok := d.stateData["awaiting_user_response"].(bool); ok && awaitingUser {
-		// Check for new messages without blocking
-		if !d.chatService.HaveNewMessages(d.pmID) {
-			d.logger.Debug("⏳ Awaiting user response, no new messages yet")
-			// Sleep briefly to avoid tight polling loop
-			time.Sleep(500 * time.Millisecond)
-			return StateWorking, nil
-		}
-
-		// New messages arrived! Clear the awaiting flag and proceed with LLM call
-		d.logger.Info("📬 New messages received, resuming PM workflow")
-		delete(d.stateData, "awaiting_user_response")
-	}
-
 	// Check for non-blocking architect feedback
 	select {
 	case resultMsg := <-d.replyCh:
@@ -92,6 +77,12 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		// Store pending request ID and transition to WAITING
 		// (Actual request ID will be set by sendSpecApprovalRequest)
 		return StateWaiting, nil
+	}
+
+	// Handle AWAIT_USER signal - transition to AWAIT_USER state
+	if signal == "AWAIT_USER" {
+		d.logger.Info("⏸️  PM transitioning to AWAIT_USER state")
+		return StateAwaitUser, nil
 	}
 
 	// Stay in WORKING - PM continues interviewing/drafting
@@ -223,8 +214,14 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 			continue
 		}
 
+		// Add agent_id to context for tool execution
+		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.pmID)
+
+		// Log tool parameters for debugging
+		d.logger.Debug("Tool %s parameters: %+v", toolCall.Name, toolCall.Parameters)
+
 		// Execute tool
-		result, err := tool.Exec(ctx, toolCall.Parameters)
+		result, err := tool.Exec(toolCtx, toolCall.Parameters)
 		if err != nil {
 			d.logger.Error("❌ Tool %s execution failed: %v", toolCall.Name, err)
 			// Add error result to context
@@ -234,16 +231,22 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 
 		// Convert result to string for context
 		resultStr := fmt.Sprintf("%v", result)
+		d.logger.Debug("Tool %s result: %s", toolCall.Name, resultStr)
 		d.contextManager.AddMessage("tool-result", resultStr)
+
+		// Check if this was a chat_post tool (automatically triggers await)
+		if toolCall.Name == "chat_post" {
+			d.logger.Info("💬 PM posted chat message, will await user response")
+			d.stateData["pending_await_user"] = true
+		}
 
 		// Handle special tool signals
 		if resultMap, ok := result.(map[string]any); ok {
 			// Check for await_user signal
 			if awaitUser, ok := resultMap["await_user"].(bool); ok && awaitUser {
-				d.logger.Info("⏸️  PM awaiting user response")
-				d.stateData["awaiting_user_response"] = true
-				// Continue processing other tools in this batch
-				continue
+				d.logger.Info("⏸️  PM await_user tool called")
+				// Set flag to return AWAIT_USER after processing all tools
+				d.stateData["pending_await_user"] = true
 			}
 
 			// Check for spec_submit signal
@@ -261,6 +264,12 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		}
 
 		d.logger.Info("✅ Tool %s completed successfully", toolCall.Name)
+	}
+
+	// After processing all tools, check if we should transition to AWAIT_USER
+	if pendingAwait, ok := d.stateData["pending_await_user"].(bool); ok && pendingAwait {
+		delete(d.stateData, "pending_await_user")
+		return "AWAIT_USER", nil
 	}
 
 	return "", nil

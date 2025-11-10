@@ -110,6 +110,7 @@ type Dispatcher struct {
 	// Phase 1: Channel-based queues.
 	storyCh           chan *proto.AgentMsg            // Ready stories for any coder (replaces sharedWorkQueue)
 	questionsCh       chan *proto.AgentMsg            // Questions/requests for architect (replaces architectRequestQueue)
+	pmRequestsCh      chan *proto.AgentMsg            // Interview requests for PM agent
 	statusUpdatesCh   chan *proto.StoryStatusUpdate   // Story status updates for architect (non-blocking)
 	requeueRequestsCh chan *proto.StoryRequeueRequest // Story requeue requests for architect (non-blocking)
 
@@ -160,6 +161,7 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		specCh:            make(chan *proto.AgentMsg, 10),                                             // Buffered channel for spec messages
 		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
+		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                             // Buffered channel for PM interview requests
 		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                   // Buffered channel for status updates
 		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                                 // Buffered channel for requeue requests
 		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
@@ -214,9 +216,9 @@ func (d *Dispatcher) Attach(ag Agent) {
 				return
 			case agent.TypePM:
 				d.logger.Info("Attached PM agent: %s with direct channel setup", agentID)
-				// PM receives spec requests via specCh (for file uploads) and gets reply channel for RESULT messages.
-				// PM does not process questionsCh (only architect does).
-				channelReceiver.SetChannels(d.specCh, nil, replyCh)
+				// PM receives interview requests via pmRequestsCh and gets reply channel for RESULT messages.
+				// First channel is for PM interview requests, second is unused (nil), third is reply channel.
+				channelReceiver.SetChannels(d.pmRequestsCh, nil, replyCh)
 				channelReceiver.SetDispatcher(d)
 				return
 			}
@@ -550,8 +552,10 @@ func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
-	// Validate story_id presence - only SPEC messages are allowed without story_id
-	if msg.Type != proto.MsgTypeSPEC {
+	// Validate story_id presence - only SPEC messages and PM-destined REQUEST messages are allowed without story_id
+	// PM REQUEST messages are for interview sessions and don't have stories yet
+	isPMRequest := msg.Type == proto.MsgTypeREQUEST && strings.HasPrefix(msg.ToAgent, "pm-")
+	if msg.Type != proto.MsgTypeSPEC && !isPMRequest {
 		// Story ID is now in metadata, not payload
 		storyIDStr, hasStoryID := msg.Metadata[proto.KeyStoryID]
 		if !hasStoryID {
@@ -568,6 +572,8 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		}
 
 		d.logger.Debug("✅ Message %s (%s) has valid story_id: %s", msg.ID, msg.Type, storyIDStr)
+	} else if isPMRequest {
+		d.logger.Debug("✅ Message %s (%s) is PM interview request - story_id not required", msg.ID, msg.Type)
 	}
 
 	// Resolve logical agent name to actual agent ID for all messages.
@@ -605,16 +611,30 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		}
 
 	case proto.MsgTypeREQUEST:
-		// All REQUEST kinds go to questionsCh for architect to process
-		// Architect will handle kind-based routing internally
-		select {
-		case d.questionsCh <- msg:
-			// Note: REQUEST processing and persistence handled by architect
-		case <-d.shutdown:
-			d.logger.Warn("❌ Shutdown in progress, dropping REQUEST %s", msg.ID)
-			return
-		default:
-			d.logger.Warn("❌ Questions channel full, dropping REQUEST %s", msg.ID)
+		// Route REQUEST messages based on target agent:
+		// - PM-destined requests go to pmRequestsCh (interview/spec submissions)
+		// - All other requests go to questionsCh for architect to process
+		if strings.HasPrefix(msg.ToAgent, "pm-") {
+			select {
+			case d.pmRequestsCh <- msg:
+				d.logger.Info("✅ REQUEST %s routed to PM", msg.ID)
+			case <-d.shutdown:
+				d.logger.Warn("❌ Shutdown in progress, dropping PM REQUEST %s", msg.ID)
+				return
+			default:
+				d.logger.Warn("❌ PM requests channel full, dropping REQUEST %s", msg.ID)
+			}
+		} else {
+			// Architect REQUEST processing
+			select {
+			case d.questionsCh <- msg:
+				// Note: REQUEST processing and persistence handled by architect
+			case <-d.shutdown:
+				d.logger.Warn("❌ Shutdown in progress, dropping REQUEST %s", msg.ID)
+				return
+			default:
+				d.logger.Warn("❌ Questions channel full, dropping REQUEST %s", msg.ID)
+			}
 		}
 
 	case proto.MsgTypeRESPONSE:

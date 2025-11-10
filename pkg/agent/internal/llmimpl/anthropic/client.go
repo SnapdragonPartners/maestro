@@ -343,6 +343,8 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 	resp, err := c.client.Messages.New(ctx, params)
 
 	if err != nil {
+		// Log the raw error for debugging
+		fmt.Printf("[DEBUG] Raw Anthropic API error: %v\n", err)
 		// Classify the error for proper retry handling
 		classifiedErr := c.classifyError(err, nil)
 		return llm.CompletionResponse{}, classifiedErr

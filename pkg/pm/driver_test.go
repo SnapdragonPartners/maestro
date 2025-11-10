@@ -370,8 +370,8 @@ func TestSetChannels(t *testing.T) {
 
 	driver.SetChannels(specCh, nil, replyCh)
 
-	if driver.specCh == nil {
-		t.Error("Expected specCh to be set")
+	if driver.interviewRequestCh == nil {
+		t.Error("Expected interviewRequestCh to be set")
 	}
 	if driver.replyCh == nil {
 		t.Error("Expected replyCh to be set")

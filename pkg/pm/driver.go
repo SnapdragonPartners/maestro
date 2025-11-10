@@ -30,12 +30,6 @@ const (
 	DefaultExpertise = "BASIC"
 )
 
-// ChatServiceInterface defines the chat operations needed by PM.
-type ChatServiceInterface interface {
-	HaveNewMessages(agentID string) bool
-	GetNew(ctx context.Context, req *chat.GetNewRequest) (*chat.GetNewResponse, error)
-}
-
 // Driver implements the PM (Product Manager) agent.
 // PM conducts interviews with users to generate high-quality specifications.
 //
@@ -48,13 +42,12 @@ type Driver struct {
 	logger              *logx.Logger
 	dispatcher          *dispatch.Dispatcher
 	persistenceChannel  chan<- *persistence.Request
-	chatService         ChatServiceInterface // Chat service for polling new messages
+	chatService         *chat.Service // Chat service for polling new messages
 	currentState        proto.State
 	stateData           map[string]any
-	interviewRequestCh  <-chan *proto.AgentMsg
+	interviewRequestCh  <-chan *proto.AgentMsg     // Receives interview start and spec upload requests
 	executor            *execpkg.ArchitectExecutor // PM uses same read-only executor as architect
 	workDir             string
-	specCh              <-chan *proto.AgentMsg // Receives spec requests (file uploads)
 	replyCh             <-chan *proto.AgentMsg // Receives RESULT messages from architect
 	stateNotificationCh chan<- *proto.StateChangeNotification
 	toolProvider        ToolProvider // Tool provider for spec_submit tool
@@ -70,7 +63,7 @@ func NewPM(
 	persistenceChannel chan<- *persistence.Request,
 	llmFactory *agent.LLMClientFactory,
 	interviewRequestCh <-chan *proto.AgentMsg,
-	chatService ChatServiceInterface,
+	chatService *chat.Service,
 ) (*Driver, error) {
 	// Check for context cancellation
 	select {
@@ -86,15 +79,8 @@ func NewPM(
 	}
 	modelName := cfg.Agents.PMModel
 
-	// Create LLM client from shared factory
-	llmClient, err := llmFactory.CreateClient(agent.TypePM)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
-	}
-
-	// Wrap with chat injection middleware
+	// Create logger first
 	logger := logx.NewLogger("pm")
-	llmClient = chatmiddleware.WrapWithChatInjection(llmClient, chatService, pmID, logger)
 
 	// Create template renderer
 	renderer, err := templates.NewRenderer()
@@ -132,18 +118,20 @@ func NewPM(
 	// Create tool provider with all PM tools (read_file, list_files, chat_post, spec_submit)
 	agentCtx := tools.AgentContext{
 		Executor:        pmExecutor,
+		ChatService:     chatService,
 		ReadOnly:        true,
 		NetworkDisabled: true,
 		WorkDir:         pmWorkspace,
 	}
 	toolProvider := tools.NewProvider(agentCtx, tools.PMTools)
 
-	return &Driver{
+	// Create driver first (without LLM client yet)
+	pmDriver := &Driver{
 		pmID:               pmID,
-		llmClient:          llmClient,
+		llmClient:          nil, // Will be set below
 		renderer:           renderer,
 		contextManager:     contextManager,
-		logger:             logger, // Use logger created above
+		logger:             logger,
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
 		chatService:        chatService,
@@ -153,7 +141,21 @@ func NewPM(
 		executor:           pmExecutor,
 		workDir:            workDir,
 		toolProvider:       toolProvider,
-	}, nil
+	}
+
+	// Now create LLM client with context (passing driver as StateProvider)
+	llmClient, err := llmFactory.CreateClientWithContext(agent.TypePM, pmDriver, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
+	}
+
+	// Wrap with chat injection middleware (pass context manager for persistence)
+	llmClient = chatmiddleware.WrapWithChatInjection(llmClient, chatService, pmID, logger, contextManager)
+
+	// Set the LLM client
+	pmDriver.llmClient = llmClient
+
+	return pmDriver, nil
 }
 
 // NewDriver creates a new PM agent driver with provided dependencies.
@@ -237,6 +239,8 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 		return d.handleWaiting(ctx)
 	case StateWorking:
 		return d.handleWorking(ctx)
+	case StateAwaitUser:
+		return d.handleAwaitUser(ctx)
 	default:
 		return proto.StateError, fmt.Errorf("unknown state: %s", d.currentState)
 	}
@@ -257,15 +261,41 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	case <-ctx.Done():
 		return proto.StateDone, nil
 
-	case interviewMsg := <-d.interviewRequestCh:
-		return d.handleInterviewRequest(interviewMsg)
-
-	case specMsg := <-d.specCh:
-		return d.handleSpecFileUpload(specMsg)
+	case requestMsg := <-d.interviewRequestCh:
+		// Handle REQUEST messages (both interview_start and spec_upload)
+		return d.handlePMRequest(requestMsg)
 
 	case resultMsg := <-d.replyCh:
 		return d.handleArchitectResult(resultMsg)
 	}
+}
+
+// handlePMRequest routes REQUEST messages to appropriate handlers based on type.
+func (d *Driver) handlePMRequest(requestMsg *proto.AgentMsg) (proto.State, error) {
+	if requestMsg == nil {
+		d.logger.Info("PM request channel closed, shutting down")
+		return proto.StateDone, nil
+	}
+
+	// Extract request type from payload
+	if typedPayload := requestMsg.GetTypedPayload(); typedPayload != nil {
+		if payloadData, err := typedPayload.ExtractGeneric(); err == nil {
+			requestType, _ := payloadData["type"].(string)
+
+			switch requestType {
+			case "interview_start":
+				return d.handleInterviewRequest(requestMsg)
+			case "spec_upload":
+				return d.handleSpecFileUpload(requestMsg)
+			default:
+				d.logger.Error("Unknown PM request type: %s", requestType)
+				return proto.StateError, fmt.Errorf("unknown request type: %s", requestType)
+			}
+		}
+	}
+
+	d.logger.Error("PM request missing type field")
+	return proto.StateError, fmt.Errorf("PM request missing type field")
 }
 
 // handleSpecFileUpload processes a directly uploaded spec file, bypassing the interview.
@@ -334,7 +364,9 @@ func (d *Driver) handleInterviewRequest(interviewMsg *proto.AgentMsg) (proto.Sta
 	d.stateData["conversation"] = []map[string]string{}
 	d.stateData["turn_count"] = 0
 
-	return StateWorking, nil
+	// Transition to AWAIT_USER - wait for user's first message
+	d.logger.Info("⏸️  PM transitioning to AWAIT_USER, waiting for user's first message")
+	return StateAwaitUser, nil
 }
 
 // handleArchitectResult processes a RESULT message from architect.
@@ -406,6 +438,11 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 // GetID returns the PM agent's ID.
 func (d *Driver) GetID() string {
 	return d.pmID
+}
+
+// GetStoryID returns an empty string as PM doesn't work on stories directly.
+func (d *Driver) GetStoryID() string {
+	return "" // PM doesn't have a story ID
 }
 
 // GetState returns the current state.
@@ -497,10 +534,10 @@ func (d *Driver) GetValidStates() []proto.State {
 }
 
 // SetChannels sets the dispatcher channels for PM (required by ChannelReceiver interface).
-// PM receives spec requests via specCh (for file uploads) and gets replyCh for RESULT messages.
-// questionsCh is nil for PM (only architect processes questions).
-func (d *Driver) SetChannels(specCh <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
-	d.specCh = specCh
+// PM receives interview/spec requests via first channel (pmRequestsCh from dispatcher) and gets replyCh for RESULT messages.
+// questionsCh (second parameter) is nil for PM (only architect processes questions).
+func (d *Driver) SetChannels(requestCh <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
+	d.interviewRequestCh = requestCh // Now receives both interview requests AND spec uploads via pmRequestsCh
 	d.replyCh = replyCh
 }
 

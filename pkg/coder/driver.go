@@ -557,7 +557,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 
 	// Wrap enhanced client with chat injection middleware if chat service is available
 	if chatService != nil {
-		enhancedClient = chatmw.WrapWithChatInjection(enhancedClient, chatService, agentID, logger)
+		enhancedClient = chatmw.WrapWithChatInjection(enhancedClient, chatService, agentID, logger, coder.contextManager)
 		logger.Info("💬 Chat injection middleware added to coder %s", agentID)
 	}
 

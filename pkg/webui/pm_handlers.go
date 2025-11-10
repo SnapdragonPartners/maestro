@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/proto"
 )
 
@@ -163,18 +164,25 @@ func (s *Server) handlePMChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: For MVP, we'll use a simplified approach:
-	// The PM agent doesn't have a synchronous chat API yet (it's designed for async state machine flow).
-	// For now, return a placeholder response. Full implementation requires:
-	// 1. PM agent to support synchronous chat calls via a new tool or message type
-	// 2. Or: WebUI polls for PM responses via a messages endpoint
-	// 3. Or: WebSockets for real-time bidirectional communication
-
+	// Post user message to product chat channel
 	s.logger.Info("PM chat message received (session: %s): %s", req.SessionID, req.Message)
 
-	// Placeholder response
+	postReq := &chat.PostRequest{
+		Author:  "@human",
+		Text:    req.Message,
+		Channel: "product",
+	}
+
+	ctx := r.Context()
+	if _, err := s.chatService.Post(ctx, postReq); err != nil {
+		s.logger.Error("Failed to post message to product chat: %v", err)
+		http.Error(w, "Failed to send message", http.StatusInternalServerError)
+		return
+	}
+
+	// Return success response (PM will see message via chat injection)
 	response := PMChatResponse{
-		Reply:     "PM chat integration coming soon. For now, use the upload feature to submit specifications.",
+		Reply:     "Message sent", // WebUI will poll for PM's response via chat endpoint
 		Timestamp: time.Now().Unix(),
 	}
 
