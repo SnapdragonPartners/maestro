@@ -72,16 +72,55 @@ func convertPropertyToSchema(prop *tools.Property) map[string]interface{} {
 //
 //nolint:gocritic // 80 bytes is reasonable for interface compliance
 func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest) (llm.CompletionResponse, error) {
-	// Combine messages into a single input string for responses API
+	// Combine messages into input text for Responses API
+	// Include structured tool calls and results in a format GPT-5 can understand
 	var inputText string
+
 	for i := range in.Messages {
 		msg := &in.Messages[i]
+
+		// Handle system messages
 		if msg.Role == "system" {
 			inputText += fmt.Sprintf("System: %s\n\n", msg.Content)
-		} else if msg.Role == "user" {
-			inputText += msg.Content
-		} else if msg.Role == "assistant" {
-			inputText += fmt.Sprintf("Assistant: %s\n\n", msg.Content)
+			continue
+		}
+
+		// Handle assistant messages (may include tool calls)
+		if msg.Role == "assistant" {
+			if msg.Content != "" {
+				inputText += fmt.Sprintf("Assistant: %s\n", msg.Content)
+			}
+			// Include tool calls in structured format
+			if len(msg.ToolCalls) > 0 {
+				for j := range msg.ToolCalls {
+					tc := &msg.ToolCalls[j]
+					paramsJSON, _ := json.Marshal(tc.Parameters)
+					inputText += fmt.Sprintf("[Tool Call: %s(%s) ID:%s]\n", tc.Name, string(paramsJSON), tc.ID)
+				}
+			}
+			inputText += "\n"
+			continue
+		}
+
+		// Handle user messages (may include tool results)
+		if msg.Role == "user" {
+			// Include tool results first
+			if len(msg.ToolResults) > 0 {
+				for j := range msg.ToolResults {
+					tr := &msg.ToolResults[j]
+					status := "Success"
+					if tr.IsError {
+						status = "Error"
+					}
+					inputText += fmt.Sprintf("[Tool Result ID:%s %s]: %s\n", tr.ToolCallID, status, tr.Content)
+				}
+			}
+			// Then user content
+			if msg.Content != "" {
+				inputText += msg.Content + "\n"
+			}
+			inputText += "\n"
+			continue
 		}
 	}
 
@@ -94,6 +133,7 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 	}
 
 	// Create responses request params with GPT-5 optimized settings
+	// Using string input with structured tool information embedded
 	params := responses.ResponseNewParams{
 		Model:           o.model,
 		MaxOutputTokens: openai.Int(int64(maxTokens)),

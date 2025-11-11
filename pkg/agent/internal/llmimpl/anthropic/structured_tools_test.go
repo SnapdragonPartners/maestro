@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
 
 	"orchestrator/pkg/agent/llm"
@@ -19,6 +20,7 @@ func TestStructuredToolCallsInMessages(t *testing.T) {
 		},
 	}
 
+	//nolint:govet // Content field intentionally set for testing
 	msg := llm.CompletionMessage{
 		Role:      llm.RoleAssistant,
 		Content:   "Let me check the files...",
@@ -44,6 +46,7 @@ func TestStructuredToolResultsInMessages(t *testing.T) {
 		IsError:    false,
 	}
 
+	//nolint:govet // Content field intentionally set for testing
 	msg := llm.CompletionMessage{
 		Role:        llm.RoleUser,
 		Content:     "Here are some additional thoughts...",
@@ -81,7 +84,7 @@ func TestContextManagerToolCallBatching(t *testing.T) {
 	cm.AddMessage("chat-injection", "That looks good to me!")
 
 	// Flush should combine tool result + human input in ONE user message
-	err := cm.FlushUserBuffer(nil)
+	err := cm.FlushUserBuffer(context.Background())
 	if err != nil {
 		t.Fatalf("FlushUserBuffer failed: %v", err)
 	}
