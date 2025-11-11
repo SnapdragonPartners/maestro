@@ -567,7 +567,7 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 // callLLMWithTools allows calling LLM with optional tools (used for SCOPING and REQUEST phases).
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
 	// Flush user buffer before LLM request (same as coder)
-	if err := d.contextManager.FlushUserBuffer(); err != nil {
+	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
 		return "", fmt.Errorf("failed to flush user buffer: %w", err)
 	}
 

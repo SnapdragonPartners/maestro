@@ -2,11 +2,13 @@
 package contextmgr
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 )
 
 // Message represents a single message in the conversation context.
@@ -42,7 +44,7 @@ type ContextManagerInterface interface {
 	// GetMessages returns all messages for backward compatibility
 	GetMessages() []Message
 	// FlushUserBuffer consolidates user buffer before LLM requests
-	FlushUserBuffer() error
+	FlushUserBuffer(ctx context.Context) error
 }
 
 // LLMContextManager extends ContextManagerInterface with LLM-specific methods.
@@ -53,15 +55,45 @@ type LLMContextManager interface {
 	AddAssistantMessage(content string)
 }
 
+// ChatService interface defines what we need from the chat service.
+type ChatService interface {
+	GetNew(ctx context.Context, req *GetNewRequest) (*GetNewResponse, error)
+	UpdateCursor(ctx context.Context, agentID string, newPointer int64) error
+}
+
+// GetNewRequest represents a request to get new messages for an agent.
+type GetNewRequest struct {
+	AgentID string
+}
+
+// GetNewResponse represents the response with new messages.
+type GetNewResponse struct {
+	Messages   []*ChatMessage `json:"messages"`
+	NewPointer int64          `json:"newPointer"`
+}
+
+// ChatMessage represents a chat message.
+//
+//nolint:govet // Field alignment less important than logical grouping
+type ChatMessage struct {
+	ID        int64
+	Author    string
+	Text      string
+	Channel   string
+	Timestamp string
+}
+
 // ContextManager manages conversation context and token counting.
 // Each instance is owned by a single agent goroutine, so no synchronization is needed.
 //
 //nolint:govet // Field alignment less important than logical grouping
 type ContextManager struct {
-	messages        []Message  // Core conversation messages
-	userBuffer      []Fragment // Buffer for user content with provenance
-	modelName       string     // Model name for determining context limits
-	currentTemplate string     // Current template name for change detection
+	messages        []Message   // Core conversation messages
+	userBuffer      []Fragment  // Buffer for user content with provenance
+	modelName       string      // Model name for determining context limits
+	currentTemplate string      // Current template name for change detection
+	chatService     ChatService // Optional chat service for message injection
+	agentID         string      // Agent ID for chat message fetching
 }
 
 // NewContextManager creates a new context manager instance.
@@ -79,6 +111,13 @@ func NewContextManagerWithModel(modelName string) *ContextManager {
 		userBuffer: make([]Fragment, 0),
 		modelName:  modelName,
 	}
+}
+
+// SetChatService configures chat message injection for this context manager.
+// If chatService is nil, chat injection is disabled.
+func (cm *ContextManager) SetChatService(chatService ChatService, agentID string) {
+	cm.chatService = chatService
+	cm.agentID = agentID
 }
 
 // AddMessage stores a provenance/content pair in the user buffer.
@@ -509,7 +548,21 @@ func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
 // FlushUserBuffer consolidates accumulated user messages into a single context message.
 // This should be called before each LLM request to ensure proper alternation.
 // Returns error if context compaction fails (indicating imminent token limit overflow).
-func (cm *ContextManager) FlushUserBuffer() error {
+//
+// Chat Injection: If chat service is configured, fetches and injects new chat messages
+// as late as possible (right before flushing), then updates cursor so messages aren't
+// re-injected on next turn.
+func (cm *ContextManager) FlushUserBuffer(ctx context.Context) error {
+	// STEP 1: Inject chat messages if chat service is configured
+	if cm.chatService != nil && cm.agentID != "" {
+		if err := cm.injectChatMessages(ctx); err != nil {
+			// Log but don't fail - chat injection is best-effort
+			logger := logx.NewLogger("contextmgr")
+			logger.Warn("Chat injection failed for %s: %v (continuing without chat)", cm.agentID, err)
+		}
+	}
+
+	// STEP 2: Handle empty buffer
 	if len(cm.userBuffer) == 0 {
 		// Add fallback message for empty buffer
 		cm.messages = append(cm.messages, Message{
@@ -520,7 +573,7 @@ func (cm *ContextManager) FlushUserBuffer() error {
 		// Still need to try compaction even with fallback message
 	}
 
-	// Consolidate buffer fragments into single user message (if any)
+	// STEP 3: Consolidate buffer fragments into single user message (if any)
 	if len(cm.userBuffer) > 0 {
 		contentParts := make([]string, 0, len(cm.userBuffer))
 		// Track provenance - use first fragment's provenance if all are the same, otherwise "mixed"
@@ -551,10 +604,86 @@ func (cm *ContextManager) FlushUserBuffer() error {
 		cm.userBuffer = cm.userBuffer[:0]
 	}
 
-	// Perform compaction after flushing but before LLM request
+	// STEP 4: Perform compaction after flushing but before LLM request
 	// Compaction failures indicate we would exceed LLM token limits, so fail fast
 	if err := cm.CompactIfNeeded(); err != nil {
 		return fmt.Errorf("context compaction failed before LLM request: %w", err)
+	}
+
+	return nil
+}
+
+// injectChatMessages fetches new chat messages and adds them directly to conversation.
+// Messages are persisted immediately (not buffered) and cursor is updated to prevent re-injection.
+func (cm *ContextManager) injectChatMessages(ctx context.Context) error {
+	logger := logx.NewLogger("contextmgr")
+
+	// Get configuration for chat limits
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Check if chat is enabled
+	if cfg.Chat == nil || !cfg.Chat.Enabled {
+		return nil // Chat disabled, nothing to inject
+	}
+
+	// Fetch new messages
+	resp, err := cm.chatService.GetNew(ctx, &GetNewRequest{AgentID: cm.agentID})
+	if err != nil {
+		return fmt.Errorf("failed to fetch new messages: %w", err)
+	}
+
+	// No new messages - nothing to do
+	if len(resp.Messages) == 0 {
+		return nil
+	}
+
+	// Limit to MaxNewMessages (most recent)
+	maxMessages := cfg.Chat.MaxNewMessages
+	if maxMessages <= 0 {
+		maxMessages = 100 // Default
+	}
+	newMessages := resp.Messages
+	if len(newMessages) > maxMessages {
+		newMessages = newMessages[len(newMessages)-maxMessages:]
+	}
+
+	// Add chat messages as individual conversation turns with proper roles
+	// This maintains natural conversation flow for the LLM
+	expectedAgentAuthor := fmt.Sprintf("@%s", cm.agentID)
+
+	for _, msg := range newMessages {
+		var role string
+		if msg.Author == "@human" {
+			role = "user"
+		} else if msg.Author == expectedAgentAuthor {
+			role = "assistant"
+		} else {
+			// Messages from other agents - format as user message with attribution
+			cm.messages = append(cm.messages, Message{
+				Role:       "user",
+				Content:    fmt.Sprintf("[Chat from %s]: %s", msg.Author, msg.Text),
+				Provenance: "chat-injection-other",
+			})
+			continue
+		}
+
+		// Add message with proper role for natural conversation
+		cm.messages = append(cm.messages, Message{
+			Role:       role,
+			Content:    msg.Text,
+			Provenance: "chat-injection",
+		})
+	}
+
+	logger.Info("💬 Injected %d chat messages into context for %s", len(newMessages), cm.agentID)
+
+	// Update cursor so these messages won't be injected again
+	if err := cm.chatService.UpdateCursor(ctx, cm.agentID, resp.NewPointer); err != nil {
+		logger.Warn("Failed to update chat cursor for %s: %v", cm.agentID, err)
+		// Continue anyway - message was injected successfully
 	}
 
 	return nil

@@ -122,7 +122,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Get LLM response with MCP tool support.
 	// Flush user buffer before LLM request
-	if err := c.contextManager.FlushUserBuffer(); err != nil {
+	if err := c.contextManager.FlushUserBuffer(ctx); err != nil {
 		return proto.StateError, false, fmt.Errorf("failed to flush user buffer: %w", err)
 	}
 

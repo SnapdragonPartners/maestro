@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent"
-	chatmiddleware "orchestrator/pkg/agent/middleware/chat"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
@@ -125,6 +124,13 @@ func NewPM(
 	}
 	toolProvider := tools.NewProvider(agentCtx, tools.PMTools)
 
+	// Configure chat service on context manager for automatic injection
+	if chatService != nil {
+		chatAdapter := contextmgr.NewChatServiceAdapter(chatService)
+		contextManager.SetChatService(chatAdapter, pmID)
+		logger.Info("💬 Chat injection configured for PM %s", pmID)
+	}
+
 	// Create driver first (without LLM client yet)
 	pmDriver := &Driver{
 		pmID:               pmID,
@@ -149,10 +155,7 @@ func NewPM(
 		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
 	}
 
-	// Wrap with chat injection middleware (pass context manager for persistence)
-	llmClient = chatmiddleware.WrapWithChatInjection(llmClient, chatService, pmID, logger, contextManager)
-
-	// Set the LLM client
+	// Set the LLM client (no middleware wrapper needed - chat injection is in FlushUserBuffer)
 	pmDriver.llmClient = llmClient
 
 	return pmDriver, nil
@@ -363,6 +366,19 @@ func (d *Driver) handleInterviewRequest(interviewMsg *proto.AgentMsg) (proto.Sta
 	// Initialize conversation history
 	d.stateData["conversation"] = []map[string]string{}
 	d.stateData["turn_count"] = 0
+
+	// Set system prompt ONCE at interview start
+	expertise, _ := d.stateData["expertise"].(string)
+	if expertise == "" {
+		expertise = DefaultExpertise
+	}
+	systemPrompt, err := d.renderWorkingPrompt()
+	if err != nil {
+		d.logger.Error("Failed to render system prompt: %v", err)
+		return proto.StateError, fmt.Errorf("failed to render system prompt: %w", err)
+	}
+	d.contextManager.ResetSystemPrompt(systemPrompt)
+	d.logger.Info("✅ PM system prompt set for interview (expertise: %s)", expertise)
 
 	// Transition to AWAIT_USER - wait for user's first message
 	d.logger.Info("⏸️  PM transitioning to AWAIT_USER, waiting for user's first message")

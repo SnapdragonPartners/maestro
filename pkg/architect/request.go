@@ -1479,7 +1479,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	}
 
 	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(); err != nil {
+	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
 		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
 	}
 
@@ -1788,7 +1788,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Flush user buffer before LLM request
-	if flushErr := d.contextManager.FlushUserBuffer(); flushErr != nil {
+	if flushErr := d.contextManager.FlushUserBuffer(ctx); flushErr != nil {
 		return nil, fmt.Errorf("failed to flush user buffer: %w", flushErr)
 	}
 

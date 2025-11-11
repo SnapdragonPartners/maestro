@@ -27,6 +27,7 @@ var validTransitions = map[proto.State][]proto.State{
 		proto.StateDone,
 	},
 	StateWorking: {
+		StateWorking,   // Stay in working while iterating through tool calls
 		StateAwaitUser, // await_user tool called - wait for user response
 		StateWaiting,   // submit_spec succeeds or architect approves
 		proto.StateError,

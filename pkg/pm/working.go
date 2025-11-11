@@ -49,14 +49,9 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 	d.logger.Info("PM working (turn %d/%d, expertise: %s)", turnCount, maxTurns, expertise)
 
-	// Render PM working prompt with current context
-	prompt, err := d.renderWorkingPrompt()
-	if err != nil {
-		return proto.StateError, fmt.Errorf("failed to render working prompt: %w", err)
-	}
-
-	// Call LLM with PM tools (chat_post, read_file, list_files, await_user, spec_submit)
-	signal, err := d.callLLMWithTools(ctx, prompt)
+	// System prompt was set at interview start - just use context manager's conversation
+	// No need to render a new prompt every turn
+	signal, err := d.callLLMWithTools(ctx, "")
 	if err != nil {
 		d.logger.Error("❌ PM LLM call failed: %v", err)
 		return proto.StateError, fmt.Errorf("LLM call failed: %w", err)
@@ -132,7 +127,7 @@ func (d *Driver) renderWorkingPrompt() (string, error) {
 // Similar to architect's callLLMWithTools but with PM-specific tool handling.
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
 	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(); err != nil {
+	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
 		return "", fmt.Errorf("failed to flush user buffer: %w", err)
 	}
 

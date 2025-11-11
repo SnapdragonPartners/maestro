@@ -216,10 +216,9 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateWorking, StateWorking, proto.StateDone}},
-		{StateWorking, []proto.State{StateWorking, proto.StateError, proto.StateDone}},
-		{StateWorking, []proto.State{StateWorking, StateWorking, proto.StateError, proto.StateDone}},
-		{StateWorking, []proto.State{StateWaiting, proto.StateError, proto.StateDone}},
+		{StateWaiting, []proto.State{StateAwaitUser, StateWorking, proto.StateDone}},
+		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StateWaiting, proto.StateError, proto.StateDone}},
+		{StateAwaitUser, []proto.State{StateAwaitUser, StateWorking, proto.StateError, proto.StateDone}},
 		{proto.StateError, []proto.State{StateWaiting, proto.StateDone}},
 	}
 

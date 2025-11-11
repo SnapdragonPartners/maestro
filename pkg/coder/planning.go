@@ -136,7 +136,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	c.logger.Info("🧑‍💻 Starting planning phase for story_type '%s'", storyType)
 
 	// Flush user buffer before LLM request
-	if err := c.contextManager.FlushUserBuffer(); err != nil {
+	if err := c.contextManager.FlushUserBuffer(ctx); err != nil {
 		return proto.StateError, false, fmt.Errorf("failed to flush user buffer: %w", err)
 	}
 

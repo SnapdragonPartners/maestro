@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
-	chatmw "orchestrator/pkg/agent/middleware/chat"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
@@ -548,6 +547,13 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		containerName:       "", // Will be set during setup
 	}
 
+	// Configure chat service on context manager for automatic injection
+	if chatService != nil {
+		chatAdapter := contextmgr.NewChatServiceAdapter(chatService)
+		coder.contextManager.SetChatService(chatAdapter, agentID)
+		logger.Info("💬 Chat injection configured for coder %s", agentID)
+	}
+
 	// Now that we have the coder (StateProvider), create enhanced client with metrics context
 	// Use the shared factory to ensure proper rate limiting
 	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
@@ -555,13 +561,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
 	}
 
-	// Wrap enhanced client with chat injection middleware if chat service is available
-	if chatService != nil {
-		enhancedClient = chatmw.WrapWithChatInjection(enhancedClient, chatService, agentID, logger, coder.contextManager)
-		logger.Info("💬 Chat injection middleware added to coder %s", agentID)
-	}
-
-	// Replace the client with the enhanced version
+	// Replace the client with the enhanced version (no middleware wrapper needed)
 	coder.llmClient = enhancedClient
 
 	// Set the clone manager.
