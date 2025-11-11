@@ -242,30 +242,40 @@ Make Maestro usable by non-technical users...
    - PM monitors both chat channel and specs channel in WAITING state
 
 2. **PM conducts interview:**
-   - PM → INTERVIEWING state
+   - PM → WORKING state (unified interview/drafting)
    - Chat loop with human, gathering requirements
-   - PM → DRAFTING state when ready
-   - LLM generates markdown spec with YAML frontmatter
+   - PM internally decides when spec is ready
 
-3. **PM submits spec to architect:**
-   - PM calls `submit_spec` tool
+3. **PM generates and validates spec:**
+   - PM calls `spec_submit` tool
    - Tool validates spec (7 binary checks)
-   - If valid: sends `REQUEST(type="spec_review", spec_markdown=..., summary=...)` to architect
-   - PM → WAITING state
+   - If valid: stores spec in state data, returns PREVIEW signal
+   - PM → PREVIEW state
+   - WebUI automatically switches to preview tab
 
-4. **Architect reviews spec:**
-   - Architect (in WAITING/MONITORING) receives REQUEST
+4. **User reviews spec in PREVIEW:**
+   - Rendered markdown displayed (read-only)
+   - **Two options:**
+     - **Continue Interview:** Inject "What changes would you like to make?" → PM → AWAIT_USER
+     - **Submit for Development:** Send REQUEST to architect → PM → AWAIT_ARCHITECT
+
+5. **PM awaits architect response (AWAIT_ARCHITECT):**
+   - Blocks on response channel waiting for RESULT message
+   - **Two outcomes:**
+     - **Feedback (approved=false):** Inject system message with architect feedback → PM → WORKING
+       - System message format: "The architect provided the following feedback on your spec. Address these issues and resubmit or ask the user for any needed clarifications. The user has not seen the raw feedback. <architect_response>"
+       - PM processes feedback, may ask user questions appropriate to their expertise level
+     - **Approval (approved=true):** PM → WAITING for next interview
+
+6. **Architect reviews spec (SCOPING):**
+   - Architect receives REQUEST
    - Architect → SCOPING state
    - Architect can use read tools to inspect PM workspace if needed
    - **Two outcomes:**
      - **Feedback:** `spec_feedback(feedback="...")` → sends `RESULT(approved=false, feedback=...)` to PM
      - **Approval:** `submit_stories(stories=[...])` → sends `RESULT(approved=true)` to PM + generates stories
 
-5. **PM handles response:**
-   - If `approved=false`: PM → INTERVIEWING with feedback in context
-   - If `approved=true`: PM → WAITING for next interview
-
-6. **Architect continues work:**
+7. **Architect continues work:**
    - After `submit_stories`: architect follows normal transition logic
    - If stories exist (new OR incomplete) → DISPATCHING
    - If 0 stories total → WAITING
@@ -286,11 +296,24 @@ Make Maestro usable by non-technical users...
 
 ```
 pkg/pm/
-├── driver.go           # State machine: WAITING → INTERVIEWING → DRAFTING → SUBMITTING
-├── interviewing.go     # Chat loop with user
-├── drafting.go         # LLM generates markdown spec
-├── submitting.go       # Validate, persist, send to architect
-└── templates.go        # Interview prompts by expertise (NON_TECHNICAL, BASIC, EXPERT)
+├── driver.go           # State machine coordinator
+├── states.go           # State definitions and transitions
+├── working.go          # WORKING state: interview, gather requirements, draft spec
+├── preview.go          # PREVIEW state: user reviews spec before submission
+├── await_user.go       # AWAIT_USER state: blocked waiting for user input
+├── await_architect.go  # AWAIT_ARCHITECT state: blocked waiting for architect feedback
+└── waiting.go          # WAITING state: ready for next interview
+```
+
+**State Machine Flow:**
+```
+WAITING → AWAIT_USER (interview starts)
+AWAIT_USER → WORKING (user responds)
+WORKING → PREVIEW (spec_submit tool called)
+PREVIEW → AWAIT_USER (user clicks "Continue Interview")
+PREVIEW → AWAIT_ARCHITECT (user clicks "Submit for Development")
+AWAIT_ARCHITECT → WORKING (architect provides feedback)
+AWAIT_ARCHITECT → WAITING (architect approves spec)
 ```
 
 ### **Specs Package Structure**
@@ -393,20 +416,24 @@ type AgentConfig struct {
 
 ### R-001: PM Agent Core
 
-**Description:** Singleton PM agent with state machine for conducting specification interviews.
+**Description:** Singleton PM agent with state machine for conducting specification interviews with user preview and approval.
 
 **State Machine:**
-- **WAITING** - Blocked on channel waiting for interview start from WebUI
-- **INTERVIEWING** - Chat loop with user, gathering requirements
-- **DRAFTING** - LLM generates markdown spec from conversation
-- **SUBMITTING** - Validate, persist, send to architect spec channel
+- **WAITING** - Ready for next interview, blocked on channels
+- **AWAIT_USER** - Blocked waiting for user input in chat
+- **WORKING** - Active LLM interaction: interview, gather requirements, draft spec
+- **PREVIEW** - User reviews rendered spec, chooses Continue Interview or Submit
+- **AWAIT_ARCHITECT** - Blocked on response channel waiting for architect feedback
 
 **Acceptance Criteria:**
 - [x] PM agent starts at boot with architect
-- [ ] PM responds to interview requests from WebUI (channel wired, WebUI endpoints pending)
+- [x] PM responds to interview requests from WebUI
 - [x] PM uses expertise-aware prompts (NON_TECHNICAL, BASIC, EXPERT)
-- [x] PM generates valid markdown specs from conversations (stub implementation)
+- [x] PM generates valid markdown specs from conversations
 - [x] PM handles multiple sequential interviews (state reset after completion)
+- [ ] PM transitions to PREVIEW state when spec_submit tool called
+- [ ] User can review spec and choose to continue interview or submit
+- [ ] PM processes architect feedback intelligently before asking user
 
 ### R-002: PM Workspace & Read Tools
 
@@ -424,7 +451,7 @@ type AgentConfig struct {
 
 ### R-003: submit_spec Tool
 
-**Description:** Validate markdown spec and send REQUEST to architect for review.
+**Description:** Validate markdown spec and prepare for user preview (does NOT submit to architect yet).
 
 **Tool Interface:**
 ```go
@@ -441,9 +468,10 @@ Output (on validation failure):
 
 Output (on validation success):
   - success: true
-  - message: "Specification validated and ready for submission"
+  - message: "Specification validated and ready for user review"
   - summary: string
   - metadata: {title, version, priority, requirements_count}
+  - signal: "PREVIEW" (triggers state transition)
 ```
 
 **Validation Checks (Binary Pass/Fail):**
@@ -455,14 +483,18 @@ Output (on validation success):
 6. Dependency graph is acyclic
 7. In-scope list has ≥1 item
 
-**Side Effects (via Effects pattern):**
-1. Send `REQUEST(type="spec_review", spec_markdown=..., summary=...)` to architect
-2. PM transitions to WAITING state
+**Behavior:**
+1. Validate spec using specs.Parse() and specs.Validate()
+2. If valid: store spec in PM state data (draft_spec_markdown, spec_metadata)
+3. Return success with PREVIEW signal
+4. PM transitions to PREVIEW state
+5. WebUI automatically switches to preview tab
 
 **Acceptance Criteria:**
 - [x] Valid specs pass all checks and return `success: true`
 - [x] Invalid specs return `success: false` with error details
-- [ ] Architect receives REQUEST message (Effects integration pending)
+- [ ] Tool stores spec in state data on success
+- [ ] Tool returns PREVIEW signal to trigger state transition
 - [x] Tool validates using specs.Parse() and specs.Validate()
 
 ### R-004: spec_feedback Tool (Architect)
