@@ -3,11 +3,11 @@ package pm
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -196,43 +196,22 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			}
 		}
 
-		// Add assistant response to context
-		if resp.Content != "" {
-			// Case 1: Normal response with content
-			d.contextManager.AddAssistantMessage(resp.Content)
-		} else if len(resp.ToolCalls) > 0 {
-			// Case 2: Tool-only response - create assistant message with tool calls and parameters
-			// This preserves what tools were called and with what arguments for the LLM's context
-			var parts []string
+		// Add assistant response to context with structured tool calls
+		if len(resp.ToolCalls) > 0 {
+			// Use structured tool call tracking
+			// Convert agent.ToolCall to contextmgr.ToolCall
+			toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
 			for i := range resp.ToolCalls {
-				toolCall := &resp.ToolCalls[i]
-				if toolCall.Name == "chat_ask_user" {
-					// For chat_ask_user, extract the message parameter as the assistant's question
-					if msg, ok := toolCall.Parameters["message"].(string); ok && msg != "" {
-						parts = append(parts, msg)
-					} else {
-						parts = append(parts, "[chat_ask_user called]")
-					}
-				} else {
-					// For other tools, format as tool_name(param1=value1, param2=value2)
-					paramStrs := make([]string, 0, len(toolCall.Parameters))
-					for key, val := range toolCall.Parameters {
-						// Format parameter values concisely
-						valStr := fmt.Sprintf("%v", val)
-						if len(valStr) > 50 {
-							valStr = valStr[:50] + "..."
-						}
-						paramStrs = append(paramStrs, fmt.Sprintf("%s=%q", key, valStr))
-					}
-					if len(paramStrs) > 0 {
-						parts = append(parts, fmt.Sprintf("[%s(%s)]", toolCall.Name, strings.Join(paramStrs, ", ")))
-					} else {
-						parts = append(parts, fmt.Sprintf("[%s()]", toolCall.Name))
-					}
+				toolCalls[i] = contextmgr.ToolCall{
+					ID:         resp.ToolCalls[i].ID,
+					Name:       resp.ToolCalls[i].Name,
+					Parameters: resp.ToolCalls[i].Parameters,
 				}
 			}
-			assistantMessage := strings.Join(parts, " ")
-			d.contextManager.AddAssistantMessage(assistantMessage)
+			d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+		} else {
+			// No tool calls - just content
+			d.contextManager.AddAssistantMessage(resp.Content)
 		}
 
 		// If no tool calls, return text content
@@ -271,7 +250,8 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		tool, err := d.toolProvider.Get(toolCall.Name)
 		if err != nil {
 			d.logger.Error("❌ Failed to get tool %s: %v", toolCall.Name, err)
-			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
+			// Add structured error result
+			d.contextManager.AddToolResult(toolCall.ID, fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err), true)
 			continue
 		}
 
@@ -285,15 +265,16 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		result, err := tool.Exec(toolCtx, toolCall.Parameters)
 		if err != nil {
 			d.logger.Error("❌ Tool %s execution failed: %v", toolCall.Name, err)
-			// Add error result to context
-			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s error: %v", toolCall.Name, err))
+			// Add structured error result
+			d.contextManager.AddToolResult(toolCall.ID, fmt.Sprintf("Tool %s error: %v", toolCall.Name, err), true)
 			continue
 		}
 
-		// Convert result to string for context
+		// Convert result to string for structured result
 		resultStr := fmt.Sprintf("%v", result)
 		d.logger.Debug("Tool %s result: %s", toolCall.Name, resultStr)
-		d.contextManager.AddMessage("tool-result", resultStr)
+		// Add structured tool result (not an error)
+		d.contextManager.AddToolResult(toolCall.ID, resultStr, false)
 
 		// Handle special tool signals
 		if resultMap, ok := result.(map[string]any); ok {
