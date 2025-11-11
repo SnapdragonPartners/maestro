@@ -207,40 +207,83 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 		msg := &alternatingMessages[i]
 		role := anthropic.MessageParamRole(msg.Role)
 
-		// Create text block with cache_control if specified
-		textBlock := anthropic.TextBlockParam{
-			Text: msg.Content,
-			Type: "text",
-		}
+		// Build content blocks array - can include text, tool_use, and tool_result blocks
+		var contentBlocks []anthropic.ContentBlockParamUnion
 
-		// Add cache_control if present (Anthropic prompt caching)
-		if msg.CacheControl != nil {
-			cacheControl := anthropic.NewCacheControlEphemeralParam()
-
-			// Set TTL if specified (defaults to 5m if not set)
-			if msg.CacheControl.TTL != "" {
-				switch msg.CacheControl.TTL {
-				case "5m":
-					cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
-				case "1h":
-					cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
-					// Default: SDK will use 5m default if TTL not set
-				}
+		// Add text content if present
+		if msg.Content != "" {
+			textBlock := anthropic.TextBlockParam{
+				Text: msg.Content,
+				Type: "text",
 			}
 
-			textBlock.CacheControl = cacheControl
+			// Add cache_control if present (Anthropic prompt caching)
+			if msg.CacheControl != nil {
+				cacheControl := anthropic.NewCacheControlEphemeralParam()
+
+				// Set TTL if specified (defaults to 5m if not set)
+				if msg.CacheControl.TTL != "" {
+					switch msg.CacheControl.TTL {
+					case "5m":
+						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+					case "1h":
+						cacheControl.TTL = anthropic.CacheControlEphemeralTTLTTL1h
+						// Default: SDK will use 5m default if TTL not set
+					}
+				}
+
+				textBlock.CacheControl = cacheControl
+			}
+
+			// Create content block for text
+			if msg.CacheControl != nil {
+				contentBlock := anthropic.ContentBlockParamUnion{}
+				contentBlock.OfText = &textBlock
+				contentBlocks = append(contentBlocks, contentBlock)
+			} else {
+				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(textBlock.Text))
+			}
+		}
+
+		// Add tool_use blocks for assistant messages with tool calls
+		for j := range msg.ToolCalls {
+			tc := &msg.ToolCalls[j]
+			toolUseBlock := anthropic.ToolUseBlockParam{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: tc.Parameters,
+			}
+			contentBlock := anthropic.ContentBlockParamUnion{}
+			contentBlock.OfToolUse = &toolUseBlock
+			contentBlocks = append(contentBlocks, contentBlock)
+		}
+
+		// Add tool_result blocks for user messages with tool results
+		for j := range msg.ToolResults {
+			tr := &msg.ToolResults[j]
+			// Create tool result content with text block
+			toolResultTextBlock := anthropic.TextBlockParam{
+				Text: tr.Content,
+				Type: "text",
+			}
+			toolResultContentUnion := anthropic.ToolResultBlockParamContentUnion{}
+			toolResultContentUnion.OfText = &toolResultTextBlock
+
+			toolResultBlock := anthropic.ToolResultBlockParam{
+				Type:      "tool_result",
+				ToolUseID: tr.ToolCallID,
+				Content:   []anthropic.ToolResultBlockParamContentUnion{toolResultContentUnion},
+				IsError:   anthropic.Bool(tr.IsError),
+			}
+			contentBlock := anthropic.ContentBlockParamUnion{}
+			contentBlock.OfToolResult = &toolResultBlock
+			contentBlocks = append(contentBlocks, contentBlock)
 		}
 
 		messageParam := anthropic.MessageParam{
 			Role:    role,
-			Content: []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(textBlock.Text)},
-		}
-
-		// If cache control was set, we need to use the full TextBlockParam instead of NewTextBlock
-		if msg.CacheControl != nil {
-			contentBlock := anthropic.ContentBlockParamUnion{}
-			contentBlock.OfText = &textBlock
-			messageParam.Content = []anthropic.ContentBlockParamUnion{contentBlock}
+			Content: contentBlocks,
 		}
 
 		messages = append(messages, messageParam)

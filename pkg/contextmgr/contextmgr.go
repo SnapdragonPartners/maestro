@@ -13,9 +13,11 @@ import (
 
 // Message represents a single message in the conversation context.
 type Message struct {
-	Role       string
-	Content    string
-	Provenance string // Source of content: "system-prompt", "tool-shell", "todo-status-update", etc.
+	Role        string
+	Content     string
+	Provenance  string       // Source of content: "system-prompt", "tool-shell", "todo-status-update", etc.
+	ToolCalls   []ToolCall   // Structured tool calls (for assistant messages)
+	ToolResults []ToolResult // Structured tool results (for user messages)
 }
 
 // Fragment represents a piece of content with provenance tracking.
@@ -83,17 +85,35 @@ type ChatMessage struct {
 	Timestamp string
 }
 
+// ToolCall represents a structured tool call from the LLM.
+//
+//nolint:govet // fieldalignment: logical grouping preferred over byte savings
+type ToolCall struct {
+	ID         string
+	Name       string
+	Parameters map[string]any
+}
+
+// ToolResult represents a structured tool execution result.
+type ToolResult struct {
+	ToolCallID string
+	Content    string
+	IsError    bool
+}
+
 // ContextManager manages conversation context and token counting.
 // Each instance is owned by a single agent goroutine, so no synchronization is needed.
 //
 //nolint:govet // Field alignment less important than logical grouping
 type ContextManager struct {
-	messages        []Message   // Core conversation messages
-	userBuffer      []Fragment  // Buffer for user content with provenance
-	modelName       string      // Model name for determining context limits
-	currentTemplate string      // Current template name for change detection
-	chatService     ChatService // Optional chat service for message injection
-	agentID         string      // Agent ID for chat message fetching
+	messages           []Message    // Core conversation messages
+	userBuffer         []Fragment   // Buffer for user content with provenance
+	modelName          string       // Model name for determining context limits
+	currentTemplate    string       // Current template name for change detection
+	chatService        ChatService  // Optional chat service for message injection
+	agentID            string       // Agent ID for chat message fetching
+	pendingToolCalls   []ToolCall   // Tool calls from last assistant message
+	pendingToolResults []ToolResult // Accumulated tool results for batching
 }
 
 // NewContextManager creates a new context manager instance.
@@ -552,6 +572,8 @@ func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
 // Chat Injection: If chat service is configured, fetches and injects new chat messages
 // as late as possible (right before flushing), then updates cursor so messages aren't
 // re-injected on next turn.
+//
+//nolint:cyclop // Complex logic for message batching and provenance tracking
 func (cm *ContextManager) FlushUserBuffer(ctx context.Context) error {
 	// STEP 1: Inject chat messages if chat service is configured
 	if cm.chatService != nil && cm.agentID != "" {
@@ -562,46 +584,63 @@ func (cm *ContextManager) FlushUserBuffer(ctx context.Context) error {
 		}
 	}
 
-	// STEP 2: Handle empty buffer
-	if len(cm.userBuffer) == 0 {
-		// Add fallback message for empty buffer
+	// STEP 2: Combine pending tool results + userBuffer into ONE user message
+	// This maintains proper user/assistant alternation
+	if len(cm.pendingToolResults) > 0 || len(cm.userBuffer) > 0 {
+		// Build combined content from userBuffer fragments
+		var combinedContent string
+		if len(cm.userBuffer) > 0 {
+			contentParts := make([]string, 0, len(cm.userBuffer))
+			for i := range cm.userBuffer {
+				fragment := &cm.userBuffer[i]
+				contentParts = append(contentParts, fragment.Content)
+			}
+			combinedContent = strings.Join(contentParts, "\n\n")
+		}
+
+		// Determine provenance based on what we're including
+		var provenance string
+		if len(cm.pendingToolResults) > 0 && combinedContent != "" {
+			provenance = "tool-results-and-content"
+		} else if len(cm.pendingToolResults) > 0 {
+			provenance = "tool-results-only"
+		} else if len(cm.userBuffer) > 0 {
+			// Use original provenance tracking logic for content-only
+			firstProvenance := cm.userBuffer[0].Provenance
+			allSameProvenance := true
+			for i := range cm.userBuffer {
+				if cm.userBuffer[i].Provenance != firstProvenance {
+					allSameProvenance = false
+					break
+				}
+			}
+			if allSameProvenance {
+				provenance = firstProvenance
+			} else {
+				provenance = "mixed"
+			}
+		}
+
+		// Create single user message with both tool results and content
+		// ToolResults will be used by API clients for proper formatting
+		cm.messages = append(cm.messages, Message{
+			Role:        "user",
+			Content:     combinedContent, // Can be empty if only tool results
+			Provenance:  provenance,
+			ToolResults: cm.pendingToolResults, // Include structured tool results
+		})
+
+		// Clear pending state
+		cm.pendingToolResults = nil
+		cm.userBuffer = cm.userBuffer[:0]
+	} else if len(cm.messages) == 0 || cm.messages[len(cm.messages)-1].Role != "user" {
+		// STEP 3: Handle empty buffer - only add fallback if we need a user message
+		// (i.e., no recent user message exists)
 		cm.messages = append(cm.messages, Message{
 			Role:       "user",
 			Content:    "No response from user, please try something else",
 			Provenance: "empty-buffer-fallback",
 		})
-		// Still need to try compaction even with fallback message
-	}
-
-	// STEP 3: Consolidate buffer fragments into single user message (if any)
-	if len(cm.userBuffer) > 0 {
-		contentParts := make([]string, 0, len(cm.userBuffer))
-		// Track provenance - use first fragment's provenance if all are the same, otherwise "mixed"
-		firstProvenance := cm.userBuffer[0].Provenance
-		allSameProvenance := true
-
-		for i := range cm.userBuffer {
-			fragment := &cm.userBuffer[i]
-			contentParts = append(contentParts, fragment.Content)
-			if fragment.Provenance != firstProvenance {
-				allSameProvenance = false
-			}
-		}
-
-		provenance := firstProvenance
-		if !allSameProvenance {
-			provenance = "mixed"
-		}
-
-		combinedContent := strings.Join(contentParts, "\n\n")
-		cm.messages = append(cm.messages, Message{
-			Role:       "user",
-			Content:    combinedContent,
-			Provenance: provenance,
-		})
-
-		// Clear the buffer
-		cm.userBuffer = cm.userBuffer[:0]
 	}
 
 	// STEP 4: Perform compaction after flushing but before LLM request
@@ -699,6 +738,31 @@ func (cm *ContextManager) AddAssistantMessage(content string) {
 		Provenance: "llm-response",
 	})
 	// Note: Compaction will be handled before the next LLM request, not here
+}
+
+// AddAssistantMessageWithTools adds an assistant message with structured tool calls.
+// This preserves tool call information for proper API formatting.
+func (cm *ContextManager) AddAssistantMessageWithTools(content string, toolCalls []ToolCall) {
+	// Store tool calls for linking with results
+	cm.pendingToolCalls = toolCalls
+
+	// Add assistant message to context with structured tool calls
+	cm.messages = append(cm.messages, Message{
+		Role:       "assistant",
+		Content:    strings.TrimSpace(content),
+		Provenance: "llm-response-with-tools",
+		ToolCalls:  toolCalls, // Include structured tool calls
+	})
+}
+
+// AddToolResult adds a tool execution result to the pending batch.
+// Tool results are accumulated and combined with human input in FlushUserBuffer.
+func (cm *ContextManager) AddToolResult(toolCallID, content string, isError bool) {
+	cm.pendingToolResults = append(cm.pendingToolResults, ToolResult{
+		ToolCallID: toolCallID,
+		Content:    content,
+		IsError:    isError,
+	})
 }
 
 // AddUserMessageDirect adds a user message directly to context, bypassing the buffer.
