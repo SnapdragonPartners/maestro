@@ -44,7 +44,7 @@ func TestIsValidPMTransition(t *testing.T) {
 		// WORKING transitions
 		{StateWorking, StateWorking, "WORKING -> WORKING (continue working)"},
 		{StateWorking, StateAwaitUser, "WORKING -> AWAIT_USER (needs user input)"},
-		{StateWorking, StateWaiting, "WORKING -> WAITING (cycle complete)"},
+		{StateWorking, StatePreview, "WORKING -> PREVIEW (spec ready for review)"},
 		{StateWorking, proto.StateError, "WORKING -> ERROR (work failed)"},
 		{StateWorking, proto.StateDone, "WORKING -> DONE (shutdown)"},
 
@@ -53,6 +53,20 @@ func TestIsValidPMTransition(t *testing.T) {
 		{StateAwaitUser, StateWorking, "AWAIT_USER -> WORKING (user responded)"},
 		{StateAwaitUser, proto.StateError, "AWAIT_USER -> ERROR (timeout/error)"},
 		{StateAwaitUser, proto.StateDone, "AWAIT_USER -> DONE (shutdown)"},
+
+		// PREVIEW transitions
+		{StatePreview, StatePreview, "PREVIEW -> PREVIEW (waiting for valid action)"},
+		{StatePreview, StateAwaitUser, "PREVIEW -> AWAIT_USER (continue interview)"},
+		{StatePreview, StateAwaitArchitect, "PREVIEW -> AWAIT_ARCHITECT (submit to architect)"},
+		{StatePreview, proto.StateError, "PREVIEW -> ERROR (error)"},
+		{StatePreview, proto.StateDone, "PREVIEW -> DONE (shutdown)"},
+
+		// AWAIT_ARCHITECT transitions
+		{StateAwaitArchitect, StateAwaitArchitect, "AWAIT_ARCHITECT -> AWAIT_ARCHITECT (still waiting)"},
+		{StateAwaitArchitect, StateWorking, "AWAIT_ARCHITECT -> WORKING (architect feedback)"},
+		{StateAwaitArchitect, StateWaiting, "AWAIT_ARCHITECT -> WAITING (architect approved)"},
+		{StateAwaitArchitect, proto.StateError, "AWAIT_ARCHITECT -> ERROR (error)"},
+		{StateAwaitArchitect, proto.StateDone, "AWAIT_ARCHITECT -> DONE (shutdown)"},
 
 		// ERROR transitions
 		{proto.StateError, StateWaiting, "ERROR -> WAITING (restart)"},
@@ -106,6 +120,8 @@ func TestGetAllPMStates(t *testing.T) {
 		StateWaiting,
 		StateWorking,
 		StateAwaitUser,
+		StatePreview,
+		StateAwaitArchitect,
 		proto.StateDone,
 		proto.StateError,
 	}
@@ -149,6 +165,8 @@ func TestIsValidPMState(t *testing.T) {
 		StateWaiting,
 		StateWorking,
 		StateAwaitUser,
+		StatePreview,
+		StateAwaitArchitect,
 		proto.StateDone,
 		proto.StateError,
 	}
@@ -199,8 +217,10 @@ func TestValidNextStates(t *testing.T) {
 		expected []proto.State
 	}{
 		{StateWaiting, []proto.State{StateAwaitUser, StateWorking, proto.StateDone}},
-		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StateWaiting, proto.StateError, proto.StateDone}},
+		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, proto.StateError, proto.StateDone}},
 		{StateAwaitUser, []proto.State{StateAwaitUser, StateWorking, proto.StateError, proto.StateDone}},
+		{StatePreview, []proto.State{StatePreview, StateAwaitUser, StateAwaitArchitect, proto.StateError, proto.StateDone}},
+		{StateAwaitArchitect, []proto.State{StateAwaitArchitect, StateWorking, StateWaiting, proto.StateError, proto.StateDone}},
 		{proto.StateError, []proto.State{StateWaiting, proto.StateDone}},
 	}
 
@@ -246,7 +266,7 @@ func TestTransitionMapIntegrity(t *testing.T) {
 
 // TestPMStateFlow tests the typical happy path flow through PM states.
 func TestPMStateFlow(t *testing.T) {
-	// Simulate a typical interview flow
+	// Simulate a typical interview flow with preview and architect review
 	transitions := []struct {
 		from proto.State
 		to   proto.State
@@ -256,7 +276,9 @@ func TestPMStateFlow(t *testing.T) {
 		{StateAwaitUser, StateWorking, "User responds"},
 		{StateWorking, StateAwaitUser, "PM asks follow-up"},
 		{StateAwaitUser, StateWorking, "User responds again"},
-		{StateWorking, StateWaiting, "PM submits spec, ready for next"},
+		{StateWorking, StatePreview, "PM generates spec for preview"},
+		{StatePreview, StateAwaitArchitect, "User submits for development"},
+		{StateAwaitArchitect, StateWaiting, "Architect approves spec"},
 	}
 
 	currentState := StateWaiting
@@ -292,6 +314,7 @@ func TestPMErrorRecoveryFlow(t *testing.T) {
 // TestPMIterativeConversation tests back-and-forth conversation flow.
 func TestPMIterativeConversation(t *testing.T) {
 	// This tests the iterative conversation where PM asks multiple questions
+	// and eventually goes through preview and architect approval
 	transitions := []struct {
 		from proto.State
 		to   proto.State
@@ -303,7 +326,9 @@ func TestPMIterativeConversation(t *testing.T) {
 		{StateAwaitUser, StateWorking, "User responds again"},
 		{StateWorking, StateAwaitUser, "PM asks final question"},
 		{StateAwaitUser, StateWorking, "User provides final input"},
-		{StateWorking, StateWaiting, "PM submits spec"},
+		{StateWorking, StatePreview, "PM generates spec for preview"},
+		{StatePreview, StateAwaitArchitect, "User submits to architect"},
+		{StateAwaitArchitect, StateWaiting, "Architect approves spec"},
 	}
 
 	for _, tr := range transitions {
