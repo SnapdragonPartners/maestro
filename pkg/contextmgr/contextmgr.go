@@ -700,21 +700,32 @@ func (cm *ContextManager) injectChatMessages(ctx context.Context) error {
 		} else if msg.Author == expectedAgentAuthor {
 			role = "assistant"
 		} else {
-			// Messages from other agents - format as user message with attribution
-			cm.messages = append(cm.messages, Message{
-				Role:       "user",
-				Content:    fmt.Sprintf("[Chat from %s]: %s", msg.Author, msg.Text),
+			// Messages from other agents - buffer as user content for batching
+			cm.userBuffer = append(cm.userBuffer, Fragment{
+				Timestamp:  time.Now(),
 				Provenance: "chat-injection-other",
+				Content:    fmt.Sprintf("[Chat from %s]: %s", msg.Author, msg.Text),
 			})
 			continue
 		}
 
-		// Add message with proper role for natural conversation
-		cm.messages = append(cm.messages, Message{
-			Role:       role,
-			Content:    msg.Text,
-			Provenance: "chat-injection",
-		})
+		// Add message based on role:
+		// - Assistant messages: add directly (can't be batched)
+		// - User messages: buffer for batching with tool results
+		if role == "assistant" {
+			cm.messages = append(cm.messages, Message{
+				Role:       role,
+				Content:    msg.Text,
+				Provenance: "chat-injection",
+			})
+		} else {
+			// User message - buffer for batching with tool results and other user content
+			cm.userBuffer = append(cm.userBuffer, Fragment{
+				Timestamp:  time.Now(),
+				Provenance: "chat-injection",
+				Content:    msg.Text,
+			})
+		}
 	}
 
 	logger.Info("💬 Injected %d chat messages into context for %s", len(newMessages), cm.agentID)

@@ -18,6 +18,11 @@ const (
 
 	// TruncationSuffix is appended to messages that exceed the max length.
 	TruncationSuffix = " … [truncated]"
+
+	// ChannelProduct is the channel for PM interviews and product discussions.
+	ChannelProduct = "product"
+	// ChannelDevelopment is the channel for general development chat.
+	ChannelDevelopment = "development"
 )
 
 // Service provides chat functionality with secret scanning and cursor management.

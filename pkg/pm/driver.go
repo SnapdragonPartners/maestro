@@ -44,8 +44,8 @@ type Driver struct {
 	chatService         *chat.Service // Chat service for polling new messages
 	currentState        proto.State
 	stateData           map[string]any
-	interviewRequestCh  <-chan *proto.AgentMsg     // Receives interview start and spec upload requests
-	executor            *execpkg.ArchitectExecutor // PM uses same read-only executor as architect
+	interviewRequestCh  <-chan *proto.AgentMsg // Receives interview start and spec upload requests
+	executor            execpkg.Executor       // PM executor for running tools
 	workDir             string
 	replyCh             <-chan *proto.AgentMsg // Receives RESULT messages from architect
 	stateNotificationCh chan<- *proto.StateChangeNotification
@@ -97,12 +97,11 @@ func NewPM(
 	}
 	logger.Info("PM workspace ready at: %s", pmWorkspace)
 
-	// Create and start PM container executor (same as architect - read-only tools)
-	// PM uses the same ArchitectExecutor for read-only file access
-	pmExecutor := execpkg.NewArchitectExecutor(
+	// Create and start PM container executor
+	// PM mounts only its own workspace at /workspace (same as coders)
+	pmExecutor := execpkg.NewPMExecutor(
 		config.BootstrapContainerTag, // Use bootstrap image
-		workDir,                      // Project directory
-		cfg.Agents.MaxCoders,         // Number of coder workspaces to mount
+		pmWorkspace,                  // PM's workspace directory
 	)
 
 	// Start the PM container (one retry on failure)
@@ -115,12 +114,13 @@ func NewPM(
 	}
 
 	// Create tool provider with all PM tools (read_file, list_files, chat_post, spec_submit)
+	// Note: WorkDir must be the container path, not host path
 	agentCtx := tools.AgentContext{
 		Executor:        pmExecutor,
 		ChatService:     chatService,
 		ReadOnly:        true,
 		NetworkDisabled: true,
-		WorkDir:         pmWorkspace,
+		WorkDir:         "/workspace", // Container path where pmWorkspace is mounted
 		AgentID:         pmID,
 	}
 	toolProvider := tools.NewProvider(&agentCtx, tools.PMTools)
@@ -172,7 +172,7 @@ func NewDriver(
 	dispatcher *dispatch.Dispatcher,
 	persistenceChannel chan<- *persistence.Request,
 	interviewRequestCh <-chan *proto.AgentMsg,
-	executor *execpkg.ArchitectExecutor, // PM uses same read-only executor as architect
+	executor execpkg.Executor, // PM executor for running tools
 	workDir string,
 ) *Driver {
 	return &Driver{

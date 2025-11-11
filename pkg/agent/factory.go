@@ -186,7 +186,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	case TypeCoder:
 		validationAgentType = validation.AgentTypeCoder
 	case TypePM:
-		validationAgentType = validation.AgentTypeCoder // PM uses coder-like validation (allows await_user)
+		validationAgentType = validation.AgentTypeArchitect // PM can respond with text (like architect)
 	default:
 		validationAgentType = validation.AgentTypeCoder // Default to coder (safer)
 	}

@@ -230,10 +230,10 @@ class PMController {
         if (!message || !this.sessionID) return;
 
         try {
-            // Add user message to UI immediately
-            this.addInterviewMessage('user', message);
+            // Clear input immediately
             input.value = '';
 
+            // Post message to chat API - maestro.js polling will display it
             const response = await fetch('/api/pm/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -248,11 +248,11 @@ class PMController {
                 throw new Error(error);
             }
 
-            const result = await response.json();
-            this.addInterviewMessage('pm', result.reply);
+            // Update message count (maestro.js polling handles display)
             this.messageCount++;
             document.getElementById('interview-message-count').textContent = `${this.messageCount} messages`;
         } catch (error) {
+            // Show error messages inline (not through chat system)
             this.addInterviewMessage('system', `Error: ${error.message}`);
         }
     }

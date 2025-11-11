@@ -12,9 +12,8 @@ func TestPMStateString(t *testing.T) {
 		expected string
 	}{
 		{StateWaiting, "WAITING"},
-		{StateWorking, "INTERVIEWING"},
-		{StateWorking, "DRAFTING"},
-		{StateWorking, "SUBMITTING"},
+		{StateWorking, "WORKING"},
+		{StateAwaitUser, "AWAIT_USER"},
 		{proto.StateDone, "DONE"},
 		{proto.StateError, "ERROR"},
 		{proto.State("INVALID"), "INVALID"}, // Invalid state
@@ -38,25 +37,22 @@ func TestIsValidPMTransition(t *testing.T) {
 		name string
 	}{
 		// WAITING transitions
-		{StateWaiting, StateWorking, "WAITING -> INTERVIEWING (interview starts)"},
-		{StateWaiting, StateWorking, "WAITING -> SUBMITTING (spec file upload)"},
+		{StateWaiting, StateAwaitUser, "WAITING -> AWAIT_USER (interview starts)"},
+		{StateWaiting, StateWorking, "WAITING -> WORKING (spec file upload)"},
 		{StateWaiting, proto.StateDone, "WAITING -> DONE (shutdown)"},
 
-		// INTERVIEWING transitions
-		{StateWorking, StateWorking, "INTERVIEWING -> DRAFTING (ready to draft)"},
-		{StateWorking, proto.StateError, "INTERVIEWING -> ERROR (interview failed)"},
-		{StateWorking, proto.StateDone, "INTERVIEWING -> DONE (shutdown)"},
+		// WORKING transitions
+		{StateWorking, StateWorking, "WORKING -> WORKING (continue working)"},
+		{StateWorking, StateAwaitUser, "WORKING -> AWAIT_USER (needs user input)"},
+		{StateWorking, StateWaiting, "WORKING -> WAITING (cycle complete)"},
+		{StateWorking, proto.StateError, "WORKING -> ERROR (work failed)"},
+		{StateWorking, proto.StateDone, "WORKING -> DONE (shutdown)"},
 
-		// DRAFTING transitions
-		{StateWorking, StateWorking, "DRAFTING -> SUBMITTING (spec ready)"},
-		{StateWorking, StateWorking, "DRAFTING -> INTERVIEWING (needs refinement)"},
-		{StateWorking, proto.StateError, "DRAFTING -> ERROR (draft failed)"},
-		{StateWorking, proto.StateDone, "DRAFTING -> DONE (shutdown)"},
-
-		// SUBMITTING transitions
-		{StateWorking, StateWaiting, "SUBMITTING -> WAITING (next interview)"},
-		{StateWorking, proto.StateError, "SUBMITTING -> ERROR (submit failed)"},
-		{StateWorking, proto.StateDone, "SUBMITTING -> DONE (shutdown)"},
+		// AWAIT_USER transitions
+		{StateAwaitUser, StateAwaitUser, "AWAIT_USER -> AWAIT_USER (still waiting)"},
+		{StateAwaitUser, StateWorking, "AWAIT_USER -> WORKING (user responded)"},
+		{StateAwaitUser, proto.StateError, "AWAIT_USER -> ERROR (timeout/error)"},
+		{StateAwaitUser, proto.StateDone, "AWAIT_USER -> DONE (shutdown)"},
 
 		// ERROR transitions
 		{proto.StateError, StateWaiting, "ERROR -> WAITING (restart)"},
@@ -80,30 +76,19 @@ func TestInvalidPMTransitions(t *testing.T) {
 		name string
 	}{
 		// Invalid WAITING transitions
-		{StateWaiting, StateWorking, "WAITING -> DRAFTING (invalid)"},
 		{StateWaiting, proto.StateError, "WAITING -> ERROR (invalid)"},
 
-		// Invalid INTERVIEWING transitions
-		{StateWorking, StateWaiting, "INTERVIEWING -> WAITING (invalid)"},
-		{StateWorking, StateWorking, "INTERVIEWING -> SUBMITTING (invalid)"},
-
-		// Invalid DRAFTING transitions
-		{StateWorking, StateWaiting, "DRAFTING -> WAITING (invalid)"},
-
-		// Invalid SUBMITTING transitions
-		{StateWorking, StateWorking, "SUBMITTING -> INTERVIEWING (invalid)"},
-		{StateWorking, StateWorking, "SUBMITTING -> DRAFTING (invalid)"},
+		// Invalid AWAIT_USER transitions
+		{StateAwaitUser, StateWaiting, "AWAIT_USER -> WAITING (invalid - must go through WORKING)"},
 
 		// Invalid DONE transitions (DONE should only transition to WAITING via restart policy)
-		{proto.StateDone, StateWorking, "DONE -> INTERVIEWING (invalid)"},
-		{proto.StateDone, StateWorking, "DONE -> DRAFTING (invalid)"},
-		{proto.StateDone, StateWorking, "DONE -> SUBMITTING (invalid)"},
+		{proto.StateDone, StateWorking, "DONE -> WORKING (invalid)"},
+		{proto.StateDone, StateAwaitUser, "DONE -> AWAIT_USER (invalid)"},
 		{proto.StateDone, proto.StateError, "DONE -> ERROR (invalid)"},
 
 		// Invalid ERROR transitions
-		{proto.StateError, StateWorking, "ERROR -> INTERVIEWING (invalid)"},
-		{proto.StateError, StateWorking, "ERROR -> DRAFTING (invalid)"},
-		{proto.StateError, StateWorking, "ERROR -> SUBMITTING (invalid)"},
+		{proto.StateError, StateWorking, "ERROR -> WORKING (invalid)"},
+		{proto.StateError, StateAwaitUser, "ERROR -> AWAIT_USER (invalid)"},
 	}
 
 	for _, test := range invalidTransitions {
@@ -120,8 +105,7 @@ func TestGetAllPMStates(t *testing.T) {
 	expected := []proto.State{
 		StateWaiting,
 		StateWorking,
-		StateWorking,
-		StateWorking,
+		StateAwaitUser,
 		proto.StateDone,
 		proto.StateError,
 	}
@@ -144,8 +128,7 @@ func TestIsTerminalState(t *testing.T) {
 	}{
 		{StateWaiting, false},
 		{StateWorking, false},
-		{StateWorking, false},
-		{StateWorking, false},
+		{StateAwaitUser, false},
 		{proto.StateDone, true},
 		{proto.StateError, true},
 	}
@@ -165,8 +148,7 @@ func TestIsValidPMState(t *testing.T) {
 	validStates := []proto.State{
 		StateWaiting,
 		StateWorking,
-		StateWorking,
-		StateWorking,
+		StateAwaitUser,
 		proto.StateDone,
 		proto.StateError,
 	}
@@ -270,10 +252,11 @@ func TestPMStateFlow(t *testing.T) {
 		to   proto.State
 		desc string
 	}{
-		{StateWaiting, StateWorking, "User starts interview"},
-		{StateWorking, StateWorking, "Interview complete, drafting spec"},
-		{StateWorking, StateWorking, "Draft complete, submitting"},
-		{StateWorking, StateWaiting, "Submitted, ready for next interview"},
+		{StateWaiting, StateAwaitUser, "PM asks initial question"},
+		{StateAwaitUser, StateWorking, "User responds"},
+		{StateWorking, StateAwaitUser, "PM asks follow-up"},
+		{StateAwaitUser, StateWorking, "User responds again"},
+		{StateWorking, StateWaiting, "PM submits spec, ready for next"},
 	}
 
 	currentState := StateWaiting
@@ -292,38 +275,35 @@ func TestPMStateFlow(t *testing.T) {
 
 // TestPMErrorRecoveryFlow tests error handling and recovery.
 func TestPMErrorRecoveryFlow(t *testing.T) {
-	// Test error during interview
+	// Test error during working
 	if !IsValidPMTransition(StateWorking, proto.StateError) {
-		t.Error("Should be able to transition from INTERVIEWING to ERROR")
+		t.Error("Should be able to transition from WORKING to ERROR")
 	}
 	if !IsValidPMTransition(proto.StateError, StateWaiting) {
 		t.Error("Should be able to recover from ERROR to WAITING")
 	}
 
-	// Test error during drafting
-	if !IsValidPMTransition(StateWorking, proto.StateError) {
-		t.Error("Should be able to transition from DRAFTING to ERROR")
-	}
-
-	// Test error during submission
-	if !IsValidPMTransition(StateWorking, proto.StateError) {
-		t.Error("Should be able to transition from SUBMITTING to ERROR")
+	// Test error during await
+	if !IsValidPMTransition(StateAwaitUser, proto.StateError) {
+		t.Error("Should be able to transition from AWAIT_USER to ERROR")
 	}
 }
 
-// TestPMRefinementLoop tests going back from DRAFTING to INTERVIEWING.
-func TestPMRefinementLoop(t *testing.T) {
-	// This tests the refinement loop where draft needs more info
+// TestPMIterativeConversation tests back-and-forth conversation flow.
+func TestPMIterativeConversation(t *testing.T) {
+	// This tests the iterative conversation where PM asks multiple questions
 	transitions := []struct {
 		from proto.State
 		to   proto.State
 		desc string
 	}{
-		{StateWaiting, StateWorking, "Start interview"},
-		{StateWorking, StateWorking, "First draft attempt"},
-		{StateWorking, StateWorking, "Need more info, back to interview"},
-		{StateWorking, StateWorking, "Second draft attempt"},
-		{StateWorking, StateWorking, "Draft looks good"},
+		{StateWaiting, StateAwaitUser, "Start interview"},
+		{StateAwaitUser, StateWorking, "User responds"},
+		{StateWorking, StateAwaitUser, "PM asks another question"},
+		{StateAwaitUser, StateWorking, "User responds again"},
+		{StateWorking, StateAwaitUser, "PM asks final question"},
+		{StateAwaitUser, StateWorking, "User provides final input"},
+		{StateWorking, StateWaiting, "PM submits spec"},
 	}
 
 	for _, tr := range transitions {
