@@ -331,9 +331,38 @@ func (d *Driver) buildMessagesWithContext(prompt string) []agent.CompletionMessa
 	messages := make([]agent.CompletionMessage, 0, len(contextMessages)+1)
 	for i := range contextMessages {
 		msg := &contextMessages[i]
+
+		// Convert contextmgr.ToolCall to agent.ToolCall
+		var agentToolCalls []agent.ToolCall
+		if len(msg.ToolCalls) > 0 {
+			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
+			for j := range msg.ToolCalls {
+				agentToolCalls[j] = agent.ToolCall{
+					ID:         msg.ToolCalls[j].ID,
+					Name:       msg.ToolCalls[j].Name,
+					Parameters: msg.ToolCalls[j].Parameters,
+				}
+			}
+		}
+
+		// Convert contextmgr.ToolResult to agent.ToolResult
+		var agentToolResults []agent.ToolResult
+		if len(msg.ToolResults) > 0 {
+			agentToolResults = make([]agent.ToolResult, len(msg.ToolResults))
+			for j := range msg.ToolResults {
+				agentToolResults[j] = agent.ToolResult{
+					ToolCallID: msg.ToolResults[j].ToolCallID,
+					Content:    msg.ToolResults[j].Content,
+					IsError:    msg.ToolResults[j].IsError,
+				}
+			}
+		}
+
 		messages = append(messages, agent.CompletionMessage{
-			Role:    agent.CompletionRole(msg.Role),
-			Content: msg.Content,
+			Role:        agent.CompletionRole(msg.Role),
+			Content:     msg.Content,
+			ToolCalls:   agentToolCalls,
+			ToolResults: agentToolResults,
 		})
 	}
 

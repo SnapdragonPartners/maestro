@@ -44,6 +44,9 @@ type (
 	// ToolCall represents a tool call from the LLM.
 	ToolCall = llm.ToolCall
 
+	// ToolResult represents a tool execution result.
+	ToolResult = llm.ToolResult
+
 	// Context provides runtime context for agents.
 	Context = runtime.Context
 
