@@ -3,12 +3,14 @@
 
 class PMController {
     constructor() {
-        this.currentTab = 'upload';
+        this.currentTab = 'interview';
         this.sessionID = null;
         this.messageCount = 0;
         this.pmState = 'UNKNOWN';
         this.initializeEventListeners();
         this.startStatusPolling();
+        // Activate interview tab on load
+        this.switchTab('interview');
     }
 
     initializeEventListeners() {
@@ -46,7 +48,6 @@ class PMController {
         document.getElementById('interview-input').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.sendInterviewMessage();
         });
-        document.getElementById('interview-done-btn').addEventListener('click', () => this.finishInterview());
 
         // Preview tab
         document.getElementById('generate-preview-btn').addEventListener('click', () => this.generatePreview());
@@ -277,11 +278,6 @@ class PMController {
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    finishInterview() {
-        // TODO: Implement finish interview flow
-        // For now, just show the preview tab
-        this.switchTab('preview');
-    }
 
     async generatePreview() {
         if (!this.sessionID) {

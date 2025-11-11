@@ -130,7 +130,7 @@ func (s *Server) handlePMStart(w http.ResponseWriter, r *http.Request) {
 	// Return session ID
 	response := PMStartResponse{
 		SessionID: sessionID,
-		Message:   "Interview session started successfully",
+		Message:   "Please describe what you want to work on and I'll help define it for implementation.",
 	}
 
 	w.Header().Set("Content-Type", "application/json")
