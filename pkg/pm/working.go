@@ -165,7 +165,17 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			if len(contentPreview) > 100 {
 				contentPreview = contentPreview[:100] + "..."
 			}
-			d.logger.Info("  [%d] Role: %s, Content: %q", i, msg.Role, contentPreview)
+
+			// Show tool calls and results in addition to content
+			toolInfo := ""
+			if len(msg.ToolCalls) > 0 {
+				toolInfo = fmt.Sprintf(", ToolCalls: %d", len(msg.ToolCalls))
+			}
+			if len(msg.ToolResults) > 0 {
+				toolInfo += fmt.Sprintf(", ToolResults: %d", len(msg.ToolResults))
+			}
+
+			d.logger.Info("  [%d] Role: %s, Content: %q%s", i, msg.Role, contentPreview, toolInfo)
 		}
 
 		start := time.Now()
