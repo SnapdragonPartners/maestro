@@ -63,17 +63,10 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	d.stateData["turn_count"] = turnCount + 1
 
 	// Handle terminal signals from tool processing
-	if signal == "SPEC_SUBMITTED" {
-		// Send approval REQUEST to architect
-		err := d.sendSpecApprovalRequest(ctx)
-		if err != nil {
-			d.logger.Error("❌ Failed to send spec approval request: %v", err)
-			return proto.StateError, fmt.Errorf("failed to send approval request: %w", err)
-		}
-
-		// Store pending request ID and transition to WAITING
-		// (Actual request ID will be set by sendSpecApprovalRequest)
-		return StateWaiting, nil
+	if signal == "SPEC_PREVIEW" {
+		// Transition to PREVIEW state for user review
+		d.logger.Info("📋 PM transitioning to PREVIEW state for user review")
+		return StatePreview, nil
 	}
 
 	// Handle AWAIT_USER signal - transition to AWAIT_USER state
@@ -402,17 +395,20 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 					d.stateData["pending_await_user"] = true
 				}
 
-				// Check for spec_submit signal
-				if sendRequest, ok := resultMap["send_request"].(bool); ok && sendRequest {
-					d.logger.Info("📤 PM spec_submit succeeded, storing spec_markdown")
+				// Check for spec_submit signal (new PREVIEW flow)
+				if previewReady, ok := resultMap["preview_ready"].(bool); ok && previewReady {
+					d.logger.Info("📋 PM spec_submit succeeded, preparing for user preview")
 
-					// Store spec_markdown for later use (architect feedback scenario)
+					// Store draft spec and metadata for PREVIEW state
 					if specMarkdown, ok := resultMap["spec_markdown"].(string); ok {
-						d.stateData["spec_markdown"] = specMarkdown
+						d.stateData["draft_spec_markdown"] = specMarkdown
+					}
+					if metadata, ok := resultMap["metadata"].(map[string]any); ok {
+						d.stateData["spec_metadata"] = metadata
 					}
 
-					// Return signal to indicate spec was submitted
-					return "SPEC_SUBMITTED", nil
+					// Return signal to transition to PREVIEW state
+					return "SPEC_PREVIEW", nil
 				}
 			}
 		}

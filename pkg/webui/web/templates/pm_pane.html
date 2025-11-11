@@ -118,9 +118,6 @@
             <p class="text-sm text-gray-600">
                 Preview the specification that will be submitted to the architect for review.
             </p>
-            <button id="generate-preview-btn" class="btn btn-primary">
-                Generate Preview
-            </button>
             <div id="preview-loading" class="hidden text-center py-8">
                 <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-maestro-blue mx-auto"></div>
                 <p class="mt-2 text-gray-600">Generating preview...</p>
@@ -131,7 +128,16 @@
                         <!-- Rendered markdown preview -->
                     </div>
                 </div>
-                <div class="mt-4 flex justify-end">
+                <div id="preview-actions" class="mt-4 flex justify-end space-x-3">
+                    <button id="continue-interview-btn" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors">
+                        Continue Interview
+                    </button>
+                    <button id="submit-to-architect-btn" class="btn btn-primary">
+                        Submit for Development
+                    </button>
+                </div>
+                <!-- Legacy submit button (kept for backward compatibility) -->
+                <div class="hidden mt-4 flex justify-end">
                     <button id="submit-spec-btn" class="btn btn-primary">
                         Submit to Architect
                     </button>

@@ -245,6 +245,10 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 		return d.handleWorking(ctx)
 	case StateAwaitUser:
 		return d.handleAwaitUser(ctx)
+	case StatePreview:
+		return d.handlePreview(ctx)
+	case StateAwaitArchitect:
+		return d.handleAwaitArchitect(ctx)
 	default:
 		return proto.StateError, fmt.Errorf("unknown state: %s", d.currentState)
 	}
@@ -568,6 +572,25 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
 	d.stateNotificationCh = stateNotifCh
 	d.logger.Debug("State notification channel set for PM")
+}
+
+// GetDraftSpec returns the draft specification markdown if available.
+// This is used by the WebUI to display the spec in PREVIEW state.
+// Returns empty string if no draft spec is available.
+func (d *Driver) GetDraftSpec() string {
+	if draftSpec, ok := d.stateData["draft_spec_markdown"].(string); ok {
+		return draftSpec
+	}
+	return ""
+}
+
+// GetDraftSpecMetadata returns the draft specification metadata if available.
+// Returns nil if no metadata is available.
+func (d *Driver) GetDraftSpecMetadata() map[string]any {
+	if metadata, ok := d.stateData["spec_metadata"].(map[string]any); ok {
+		return metadata
+	}
+	return nil
 }
 
 // Shutdown gracefully shuts down the PM agent.

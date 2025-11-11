@@ -192,38 +192,10 @@ func (s *Server) handlePMChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handlePMPreview implements GET /api/pm/preview - Generate a spec preview.
+// handlePMPreview implements GET /api/pm/preview - Legacy endpoint, redirects to /api/pm/preview/spec.
 func (s *Server) handlePMPreview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Get session ID from query params
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		http.Error(w, "session_id parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	s.logger.Info("PM preview requested for session: %s", sessionID)
-
-	// TODO: Full implementation requires:
-	// 1. PM agent to support preview generation (DRAFTING state trigger)
-	// 2. Database query to get conversation history
-	// 3. LLM call to generate spec from conversation
-	// 4. Return generated markdown
-
-	// Placeholder response
-	response := PMPreviewResponse{
-		Markdown: "# Preview coming soon\n\nThe PM agent preview feature is under development.",
-		Message:  "Preview generation not yet implemented",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.logger.Error("Failed to encode PM preview response: %v", err)
-	}
+	// Redirect to the new /api/pm/preview/spec endpoint
+	s.handlePMPreviewGet(w, r)
 }
 
 // handlePMSubmit implements POST /api/pm/submit - Submit a completed spec to the architect.
@@ -353,6 +325,138 @@ func (s *Server) handlePMUpload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// PMPreviewActionRequest represents a preview action request (continue interview or submit).
+type PMPreviewActionRequest struct {
+	SessionID string `json:"session_id"`
+	Action    string `json:"action"` // "continue_interview" or "submit_to_architect"
+}
+
+// PMPreviewActionResponse represents the response to a preview action.
+type PMPreviewActionResponse struct {
+	Message string `json:"message"`
+	Success bool   `json:"success"`
+}
+
+// handlePMPreviewAction implements POST /api/pm/preview/action - Handle preview actions.
+func (s *Server) handlePMPreviewAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var req PMPreviewActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.logger.Warn("Failed to parse PM preview action request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate inputs
+	if req.SessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Action != "continue_interview" && req.Action != "submit_to_architect" {
+		http.Error(w, "action must be 'continue_interview' or 'submit_to_architect'", http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("PM preview action received (session: %s, action: %s)", req.SessionID, req.Action)
+
+	// Create preview action message to PM
+	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "web-ui", "pm-001")
+	payload := map[string]any{
+		"type":       "preview_action",
+		"session_id": req.SessionID,
+		"action":     req.Action,
+	}
+	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, payload))
+
+	// Send to PM agent via interviewRequestCh
+	if err := s.dispatcher.DispatchMessage(msg); err != nil {
+		s.logger.Error("Failed to dispatch preview action to PM: %v", err)
+		http.Error(w, "Failed to send action to PM", http.StatusInternalServerError)
+		return
+	}
+
+	// Return success
+	response := PMPreviewActionResponse{
+		Success: true,
+		Message: fmt.Sprintf("Preview action '%s' sent to PM", req.Action),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.logger.Error("Failed to encode preview action response: %v", err)
+	}
+}
+
+// handlePMPreviewGet implements GET /api/pm/preview/spec - Get the current preview spec markdown.
+func (s *Server) handlePMPreviewGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get session ID from query params
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		http.Error(w, "session_id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("PM preview spec requested for session: %s", sessionID)
+
+	// Get PM agent from dispatcher
+	if s.dispatcher == nil {
+		http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	pmAgent := s.dispatcher.GetAgent("pm-001")
+	if pmAgent == nil {
+		http.Error(w, "PM agent not found", http.StatusNotFound)
+		return
+	}
+
+	// Type assert to PM driver to access GetDraftSpec method
+	// We need to import the pm package for this
+	type DraftSpecGetter interface {
+		GetDraftSpec() string
+	}
+
+	pmDriver, ok := pmAgent.(DraftSpecGetter)
+	if !ok {
+		s.logger.Error("PM agent does not implement DraftSpecGetter interface")
+		http.Error(w, "PM agent does not support draft spec retrieval", http.StatusInternalServerError)
+		return
+	}
+
+	// Get the draft spec
+	draftSpec := pmDriver.GetDraftSpec()
+	if draftSpec == "" {
+		response := PMPreviewResponse{
+			Markdown: "# No Specification Available\n\nThe specification is not yet ready. Please wait for the PM to complete the interview.",
+			Message:  "No draft spec available",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// Return the spec
+	response := PMPreviewResponse{
+		Markdown: draftSpec,
+		Message:  "Specification ready for review",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.logger.Error("Failed to encode PM preview spec response: %v", err)
+	}
+}
+
 // handlePMStatus implements GET /api/pm/status - Get PM agent status.
 func (s *Server) handlePMStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -376,10 +480,10 @@ func (s *Server) handlePMStatus(w http.ResponseWriter, r *http.Request) {
 	// Build response
 	response := PMStatusResponse{
 		State:        pmState,
-		HasSession:   false, // TODO: Check for active session in database
-		MessageCount: 0,     // TODO: Query message count from database
-		CanPreview:   pmState == "INTERVIEWING" || pmState == "DRAFTING",
-		CanSubmit:    pmState == "DRAFTING" || pmState == "SUBMITTING",
+		HasSession:   pmState != "WAITING", // Has session if not in WAITING state
+		MessageCount: 0,                    // TODO: Query message count from database
+		CanPreview:   false,                // Preview is automatic via spec_submit tool
+		CanSubmit:    false,                // Submit is automatic via preview actions
 	}
 
 	w.Header().Set("Content-Type", "application/json")

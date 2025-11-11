@@ -50,8 +50,9 @@ class PMController {
         });
 
         // Preview tab
-        document.getElementById('generate-preview-btn').addEventListener('click', () => this.generatePreview());
         document.getElementById('submit-spec-btn').addEventListener('click', () => this.submitSpec());
+        document.getElementById('continue-interview-btn').addEventListener('click', () => this.continueInterview());
+        document.getElementById('submit-to-architect-btn').addEventListener('click', () => this.submitToArchitect());
     }
 
     switchTab(tabName) {
@@ -101,13 +102,20 @@ class PMController {
             case 'WAITING':
                 badge.classList.add('bg-green-100', 'text-green-800');
                 break;
-            case 'INTERVIEWING':
+            case 'WORKING':
+            case 'AWAIT_USER':
                 badge.classList.add('bg-blue-100', 'text-blue-800');
                 break;
-            case 'DRAFTING':
+            case 'PREVIEW':
                 badge.classList.add('bg-yellow-100', 'text-yellow-800');
+                // Auto-switch to preview tab and load spec
+                if (this.currentTab !== 'preview') {
+                    this.switchTab('preview');
+                }
+                // Load the spec in PREVIEW state
+                this.loadPreviewSpec();
                 break;
-            case 'SUBMITTING':
+            case 'AWAIT_ARCHITECT':
                 badge.classList.add('bg-purple-100', 'text-purple-800');
                 break;
             case 'ERROR':
@@ -279,38 +287,6 @@ class PMController {
     }
 
 
-    async generatePreview() {
-        if (!this.sessionID) {
-            this.showPreviewError('No active interview session');
-            return;
-        }
-
-        try {
-            document.getElementById('generate-preview-btn').classList.add('hidden');
-            document.getElementById('preview-loading').classList.remove('hidden');
-            document.getElementById('preview-error').classList.add('hidden');
-
-            const response = await fetch(`/api/pm/preview?session_id=${this.sessionID}`);
-
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(error);
-            }
-
-            const result = await response.json();
-
-            // Render markdown preview
-            const previewDiv = document.getElementById('preview-markdown');
-            previewDiv.textContent = result.markdown; // TODO: Use markdown renderer
-
-            document.getElementById('preview-loading').classList.add('hidden');
-            document.getElementById('preview-container').classList.remove('hidden');
-        } catch (error) {
-            document.getElementById('preview-loading').classList.add('hidden');
-            this.showPreviewError(error.message);
-        }
-    }
-
     showPreviewError(message) {
         const errorDiv = document.getElementById('preview-error');
         const errorText = document.getElementById('preview-error-text');
@@ -357,6 +333,100 @@ class PMController {
             }
         } catch (error) {
             alert(`Failed to submit spec: ${error.message}`);
+        }
+    }
+
+    async loadPreviewSpec() {
+        try {
+            // Show loading state
+            document.getElementById('preview-error').classList.add('hidden');
+            document.getElementById('preview-loading').classList.remove('hidden');
+
+            // Use sessionID if available, otherwise use a placeholder since we always query pm-001
+            const sessionParam = this.sessionID || 'current';
+            const response = await fetch(`/api/pm/preview/spec?session_id=${sessionParam}`);
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(error);
+            }
+
+            const result = await response.json();
+
+            // Render markdown preview
+            const previewDiv = document.getElementById('preview-markdown');
+
+            // Display the spec markdown as preformatted text
+            // TODO: Use a proper markdown renderer library for better formatting
+            if (result.markdown && result.markdown.length > 0) {
+                // Wrap in a pre tag to preserve formatting
+                previewDiv.innerHTML = `<pre class="whitespace-pre-wrap text-sm">${this.escapeHtml(result.markdown)}</pre>`;
+            } else {
+                // No spec available
+                previewDiv.innerHTML = '<div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4"><p class="text-yellow-800"><strong>⏳ Specification Not Ready</strong></p><p class="text-sm text-yellow-600 mt-2">The specification is still being generated. Please wait...</p></div>';
+            }
+
+            // Show preview container with action buttons
+            document.getElementById('preview-loading').classList.add('hidden');
+            document.getElementById('preview-container').classList.remove('hidden');
+            document.getElementById('preview-actions').classList.remove('hidden');
+        } catch (error) {
+            document.getElementById('preview-loading').classList.add('hidden');
+            this.showPreviewError(error.message);
+        }
+    }
+
+    async continueInterview() {
+        try {
+            const sessionParam = this.sessionID || 'current';
+            const response = await fetch('/api/pm/preview/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionParam,
+                    action: 'continue_interview'
+                })
+            });
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(error);
+            }
+
+            // Switch back to interview tab
+            this.switchTab('interview');
+        } catch (error) {
+            alert(`Failed to continue interview: ${error.message}`);
+        }
+    }
+
+    async submitToArchitect() {
+        if (!confirm('Submit this specification to the architect for review and implementation?')) {
+            return;
+        }
+
+        try {
+            const sessionParam = this.sessionID || 'current';
+            const response = await fetch('/api/pm/preview/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: sessionParam,
+                    action: 'submit_to_architect'
+                })
+            });
+
+            if (!response.ok) {
+                const error = await response.text();
+                throw new Error(error);
+            }
+
+            alert('Specification submitted to architect! Waiting for review...');
+
+            // Hide action buttons during architect review
+            document.getElementById('preview-actions').classList.add('hidden');
+        } catch (error) {
+            alert(`Failed to submit to architect: ${error.message}`);
         }
     }
 

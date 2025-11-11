@@ -780,6 +780,14 @@ func (d *Dispatcher) resolveAgentName(logicalName string) string {
 	return logicalName
 }
 
+// GetAgent returns an agent by ID, or nil if not found.
+// The caller must type assert to the specific agent type if needed.
+func (d *Dispatcher) GetAgent(agentID string) Agent {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.agents[agentID]
+}
+
 // GetStats returns dispatcher statistics and status information.
 func (d *Dispatcher) GetStats() map[string]any {
 	d.mu.RLock()

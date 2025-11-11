@@ -15,6 +15,12 @@ const (
 	// StateAwaitUser - PM is blocked waiting for user's response in chat.
 	// Transitions back to WORKING when new chat messages arrive.
 	StateAwaitUser proto.State = "AWAIT_USER"
+	// StatePreview - PM has generated spec, user is reviewing in WebUI before submission to architect.
+	// User can choose to continue interview or submit to architect.
+	StatePreview proto.State = "PREVIEW"
+	// StateAwaitArchitect - PM is blocked waiting for architect's RESULT message (feedback or approval).
+	// Blocks on response channel (no polling).
+	StateAwaitArchitect proto.State = "AWAIT_ARCHITECT"
 )
 
 // validTransitions defines the PM state machine transition rules.
@@ -29,13 +35,27 @@ var validTransitions = map[proto.State][]proto.State{
 	StateWorking: {
 		StateWorking,   // Stay in working while iterating through tool calls
 		StateAwaitUser, // await_user tool called - wait for user response
-		StateWaiting,   // submit_spec succeeds or architect approves
+		StatePreview,   // spec_submit tool called - transition to user review
 		proto.StateError,
 		proto.StateDone,
 	},
 	StateAwaitUser: {
 		StateAwaitUser, // Stay in await state while polling for messages
 		StateWorking,   // New messages arrived - resume work
+		proto.StateError,
+		proto.StateDone,
+	},
+	StatePreview: {
+		StatePreview,        // Stay in preview while waiting for valid action
+		StateAwaitUser,      // User clicks "Continue Interview"
+		StateAwaitArchitect, // User clicks "Submit for Development"
+		proto.StateError,
+		proto.StateDone,
+	},
+	StateAwaitArchitect: {
+		StateAwaitArchitect, // Stay in await state while blocking on response channel
+		StateWorking,        // Architect provides feedback
+		StateWaiting,        // Architect approves spec
 		proto.StateError,
 		proto.StateDone,
 	},
@@ -71,6 +91,8 @@ func GetAllPMStates() []proto.State {
 		StateWaiting,
 		StateWorking,
 		StateAwaitUser,
+		StatePreview,
+		StateAwaitArchitect,
 		proto.StateDone,
 		proto.StateError,
 	}
