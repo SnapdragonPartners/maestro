@@ -1265,7 +1265,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 		WorkDir:         c.workDir,
 	}
 
-	return tools.NewProvider(agentCtx, planningTools)
+	return tools.NewProvider(&agentCtx, planningTools)
 }
 
 // createCodingToolProvider creates a ToolProvider for the coding state.
@@ -1288,7 +1288,7 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 		WorkDir:         c.workDir,
 	}
 
-	return tools.NewProvider(agentCtx, codingTools)
+	return tools.NewProvider(&agentCtx, codingTools)
 }
 
 // getBudgetReviewContent creates comprehensive budget review content using templates.

@@ -121,8 +121,9 @@ func NewPM(
 		ReadOnly:        true,
 		NetworkDisabled: true,
 		WorkDir:         pmWorkspace,
+		AgentID:         pmID,
 	}
-	toolProvider := tools.NewProvider(agentCtx, tools.PMTools)
+	toolProvider := tools.NewProvider(&agentCtx, tools.PMTools)
 
 	// Configure chat service on context manager for automatic injection
 	if chatService != nil {

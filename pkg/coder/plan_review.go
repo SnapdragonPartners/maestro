@@ -459,5 +459,5 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 
 	// Only include todos_add tool
 	todoTools := []string{tools.ToolTodosAdd}
-	return tools.NewProvider(agentCtx, todoTools)
+	return tools.NewProvider(&agentCtx, todoTools)
 }

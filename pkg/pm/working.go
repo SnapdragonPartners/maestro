@@ -3,6 +3,7 @@ package pm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -125,6 +126,8 @@ func (d *Driver) renderWorkingPrompt() (string, error) {
 
 // callLLMWithTools calls the LLM with PM tools in an iteration loop.
 // Similar to architect's callLLMWithTools but with PM-specific tool handling.
+//
+//nolint:cyclop // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
 	// Flush user buffer before LLM request
 	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
@@ -154,6 +157,17 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		d.logger.Info("🔄 Starting PM LLM call with %d messages, %d tools (iteration %d)",
 			len(messages), len(toolDefs), iteration+1)
 
+		// DEBUG: Log the actual messages being sent to LLM
+		d.logger.Info("📝 DEBUG - Messages sent to LLM:")
+		for i := range messages {
+			msg := &messages[i]
+			contentPreview := msg.Content
+			if len(contentPreview) > 100 {
+				contentPreview = contentPreview[:100] + "..."
+			}
+			d.logger.Info("  [%d] Role: %s, Content: %q", i, msg.Role, contentPreview)
+		}
+
 		start := time.Now()
 		resp, err := d.llmClient.Complete(ctx, req)
 		duration := time.Since(start)
@@ -166,8 +180,60 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		d.logger.Info("✅ PM LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
 			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
 
+		// DEBUG: Log response details
+		if resp.Content != "" {
+			contentPreview := resp.Content
+			if len(contentPreview) > 100 {
+				contentPreview = contentPreview[:100] + "..."
+			}
+			d.logger.Info("📝 DEBUG - Response content: %q", contentPreview)
+		}
+		if len(resp.ToolCalls) > 0 {
+			d.logger.Info("📝 DEBUG - Tool calls:")
+			for i := range resp.ToolCalls {
+				tc := &resp.ToolCalls[i]
+				d.logger.Info("  [%d] Tool: %s, Params: %+v", i, tc.Name, tc.Parameters)
+			}
+		}
+
 		// Add assistant response to context
-		d.contextManager.AddAssistantMessage(resp.Content)
+		if resp.Content != "" {
+			// Case 1: Normal response with content
+			d.contextManager.AddAssistantMessage(resp.Content)
+		} else if len(resp.ToolCalls) > 0 {
+			// Case 2: Tool-only response - create assistant message with tool calls and parameters
+			// This preserves what tools were called and with what arguments for the LLM's context
+			var parts []string
+			for i := range resp.ToolCalls {
+				toolCall := &resp.ToolCalls[i]
+				if toolCall.Name == "chat_ask_user" {
+					// For chat_ask_user, extract the message parameter as the assistant's question
+					if msg, ok := toolCall.Parameters["message"].(string); ok && msg != "" {
+						parts = append(parts, msg)
+					} else {
+						parts = append(parts, "[chat_ask_user called]")
+					}
+				} else {
+					// For other tools, format as tool_name(param1=value1, param2=value2)
+					paramStrs := make([]string, 0, len(toolCall.Parameters))
+					for key, val := range toolCall.Parameters {
+						// Format parameter values concisely
+						valStr := fmt.Sprintf("%v", val)
+						if len(valStr) > 50 {
+							valStr = valStr[:50] + "..."
+						}
+						paramStrs = append(paramStrs, fmt.Sprintf("%s=%q", key, valStr))
+					}
+					if len(paramStrs) > 0 {
+						parts = append(parts, fmt.Sprintf("[%s(%s)]", toolCall.Name, strings.Join(paramStrs, ", ")))
+					} else {
+						parts = append(parts, fmt.Sprintf("[%s()]", toolCall.Name))
+					}
+				}
+			}
+			assistantMessage := strings.Join(parts, " ")
+			d.contextManager.AddAssistantMessage(assistantMessage)
+		}
 
 		// If no tool calls, return text content
 		if len(resp.ToolCalls) == 0 {
@@ -228,12 +294,6 @@ func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolC
 		resultStr := fmt.Sprintf("%v", result)
 		d.logger.Debug("Tool %s result: %s", toolCall.Name, resultStr)
 		d.contextManager.AddMessage("tool-result", resultStr)
-
-		// Check if this was a chat_post tool (automatically triggers await)
-		if toolCall.Name == "chat_post" {
-			d.logger.Info("💬 PM posted chat message, will await user response")
-			d.stateData["pending_await_user"] = true
-		}
 
 		// Handle special tool signals
 		if resultMap, ok := result.(map[string]any); ok {

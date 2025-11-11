@@ -80,7 +80,7 @@ func ValidateAndSanitizeMessages(messages []CompletionMessage) ([]CompletionMess
 	// First sanitize all messages
 	sanitized := make([]CompletionMessage, len(messages))
 	for i := range messages {
-		sanitized[i] = msg.SanitizeMessage(messages[i])
+		sanitized[i] = msg.SanitizeMessage(&messages[i])
 	}
 
 	// Then validate the sanitized messages
@@ -158,7 +158,7 @@ func (bd *BaseDriver) GetCurrentState() proto.State { return proto.StateWaiting 
 func (bd *BaseDriver) GetStateData() map[string]any { return make(map[string]any) }
 
 // ValidateMessage provides legacy test stub message validation.
-func ValidateMessage(message CompletionMessage) error {
+func ValidateMessage(message *CompletionMessage) error {
 	if err := msg.ValidateMessage(message); err != nil {
 		return fmt.Errorf("validation error: %w", err)
 	}
@@ -174,7 +174,7 @@ func ValidateMessages(messages []CompletionMessage) error {
 }
 
 // SanitizeMessage provides legacy test stub message sanitization.
-func SanitizeMessage(message CompletionMessage) CompletionMessage {
+func SanitizeMessage(message *CompletionMessage) CompletionMessage {
 	return msg.SanitizeMessage(message)
 }
 

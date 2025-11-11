@@ -595,7 +595,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList 
 		WorkDir:         d.workDir,
 		Agent:           nil, // Architect doesn't implement Agent interface yet
 	}
-	toolProvider := tools.NewProvider(agentCtx, toolNames)
+	toolProvider := tools.NewProvider(&agentCtx, toolNames)
 
 	// Tool call iteration loop
 	maxIterations := 10
@@ -812,7 +812,7 @@ func (d *Driver) createReadToolProvider() *tools.ToolProvider {
 		Agent:           nil, // No agent reference needed for read tools
 	}
 
-	return tools.NewProvider(ctx, tools.ArchitectReadTools)
+	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
 }
 
 // processArchitectToolCalls processes tool calls for architect states (SCOPING/REQUEST).

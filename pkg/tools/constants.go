@@ -42,7 +42,7 @@ const (
 	// PM tools.
 	ToolSpecSubmit   = "spec_submit"
 	ToolSpecFeedback = "spec_feedback"
-	ToolAwaitUser    = "await_user"
+	ToolChatAskUser  = "chat_ask_user"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -132,7 +132,7 @@ var (
 		ToolReadFile,
 		ToolListFiles,
 		ToolChatPost,
-		ToolAwaitUser,
+		ToolChatAskUser,
 		ToolSpecSubmit,
 		// TODO: Add ToolWebBrowser when implemented
 	}

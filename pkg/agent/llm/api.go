@@ -43,10 +43,20 @@ type CacheControl struct {
 }
 
 // CompletionMessage represents a message in a completion request.
+// Supports both plain text and structured tool calls/results.
 type CompletionMessage struct {
 	Content      string
 	CacheControl *CacheControl `json:"cache_control,omitempty"` // Prompt caching marker
 	Role         CompletionRole
+
+	// ToolCalls contains structured tool invocations (for assistant messages)
+	// When present, this represents the assistant calling tools
+	ToolCalls []ToolCall
+
+	// ToolResults contains structured tool results (for user messages)
+	// When present alongside Content, both are included in the same message
+	// to maintain proper user/assistant alternation
+	ToolResults []ToolResult
 }
 
 // Use tools.ToolDefinition directly instead of separate agent.Tool.
@@ -56,6 +66,14 @@ type ToolCall struct {
 	Parameters map[string]any `json:"parameters"`
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
+}
+
+// ToolResult represents a tool execution result.
+// Used in user messages to provide structured tool results back to the LLM.
+type ToolResult struct {
+	ToolCallID string `json:"tool_call_id"` // Links back to the tool call
+	Content    string `json:"content"`      // Result data
+	IsError    bool   `json:"is_error"`     // Whether this is an error result
 }
 
 // CompletionRequest represents a request to generate a completion.

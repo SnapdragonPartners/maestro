@@ -41,7 +41,7 @@ func TestPlanInclusionInCodingTemplate(t *testing.T) {
 		NetworkDisabled: false,
 		WorkDir:         "/test/workspace",
 	}
-	coder.codingToolProvider = tools.NewProvider(agentCtx, tools.DevOpsCodingTools)
+	coder.codingToolProvider = tools.NewProvider(&agentCtx, tools.DevOpsCodingTools)
 
 	// Create a template renderer
 	renderer, err := templates.NewRenderer()
@@ -124,7 +124,7 @@ func TestPlanInclusionWithEmptyPlan(t *testing.T) {
 		NetworkDisabled: false,
 		WorkDir:         "/test/workspace",
 	}
-	coder.codingToolProvider = tools.NewProvider(agentCtx, tools.DevOpsCodingTools)
+	coder.codingToolProvider = tools.NewProvider(&agentCtx, tools.DevOpsCodingTools)
 
 	renderer, err := templates.NewRenderer()
 	if err != nil {
