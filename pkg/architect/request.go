@@ -1927,10 +1927,10 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	d.logger.Info("🔍 Architect reviewing spec from PM")
 
-	// Extract spec markdown from metadata
-	specMarkdown, exists := approvalPayload.Metadata["spec_markdown"]
-	if !exists || specMarkdown == "" {
-		return nil, fmt.Errorf("spec_markdown not found in approval request metadata")
+	// Extract spec markdown from Content (the critical field for approval requests)
+	specMarkdown := approvalPayload.Content
+	if specMarkdown == "" {
+		return nil, fmt.Errorf("spec markdown not found in approval request Content field")
 	}
 
 	d.logger.Info("📄 Spec content length: %d bytes", len(specMarkdown))
@@ -1939,9 +1939,8 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	templateData := &templates.TemplateData{
 		TaskContent: specMarkdown,
 		Extra: map[string]any{
-			"mode":    "spec_review",
-			"summary": approvalPayload.Content,
-			"reason":  approvalPayload.Reason,
+			"mode":   "spec_review",
+			"reason": approvalPayload.Reason,
 		},
 	}
 

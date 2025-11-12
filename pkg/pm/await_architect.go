@@ -31,16 +31,26 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			return proto.StateError, fmt.Errorf("expected RESPONSE message, got %s", msg.Type)
 		}
 
-		// Check if approved (metadata is map[string]string)
-		approvedStr := msg.Metadata["approved"]
-		if approvedStr == "" {
-			d.logger.Error("❌ Missing 'approved' field in RESPONSE message")
-			return proto.StateError, fmt.Errorf("missing 'approved' field")
+		// Parse ApprovalResponsePayload from the message
+		typedPayload := msg.GetTypedPayload()
+		if typedPayload == nil {
+			d.logger.Error("❌ No typed payload in RESPONSE message")
+			return proto.StateError, fmt.Errorf("no typed payload in RESPONSE message")
 		}
 
-		if approvedStr == "true" {
+		approvalResult, err := typedPayload.ExtractApprovalResponse()
+		if err != nil {
+			d.logger.Error("❌ Failed to parse approval response: %v", err)
+			return proto.StateError, fmt.Errorf("failed to parse approval response: %w", err)
+		}
+
+		// Check approval status
+		if approvalResult.Status == proto.ApprovalStatusApproved {
 			// Spec approved - transition to WAITING for next interview
 			d.logger.Info("✅ Spec APPROVED by architect")
+			if approvalResult.Feedback != "" {
+				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
+			}
 			// Clear draft spec from state data
 			delete(d.stateData, "draft_spec_markdown")
 			delete(d.stateData, "spec_metadata")
@@ -48,19 +58,18 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 		}
 
 		// Architect provided feedback - inject as system message and transition to WORKING
-		feedback := msg.Metadata["feedback"]
-		if feedback == "" {
-			d.logger.Error("❌ Missing 'feedback' field in RESPONSE message")
-			return proto.StateError, fmt.Errorf("missing 'feedback' field")
-		}
+		d.logger.Info("📝 Spec requires changes - feedback from architect (status=%s)", approvalResult.Status)
 
-		d.logger.Info("📝 Spec requires changes - feedback from architect")
+		if approvalResult.Feedback == "" {
+			d.logger.Error("❌ Missing feedback in NEEDS_CHANGES response")
+			return proto.StateError, fmt.Errorf("missing feedback in NEEDS_CHANGES response")
+		}
 
 		// Inject system message with architect feedback
 		systemMessage := fmt.Sprintf(
 			"The architect provided the following feedback on your spec. Address these issues and resubmit "+
 				"or ask the user for any needed clarifications. The user has not seen the raw feedback. %s",
-			feedback,
+			approvalResult.Feedback,
 		)
 		// Add as system-level guidance message
 		d.contextManager.AddMessage("architect-feedback", systemMessage)

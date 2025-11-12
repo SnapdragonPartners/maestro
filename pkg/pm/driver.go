@@ -3,6 +3,8 @@ package pm
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/chat"
@@ -27,6 +29,11 @@ type ToolProvider interface {
 const (
 	// DefaultExpertise is the default expertise level if none is specified.
 	DefaultExpertise = "BASIC"
+
+	// PreviewActionContinue represents the "continue interview" action in PREVIEW state.
+	PreviewActionContinue = "continue_interview"
+	// PreviewActionSubmit represents the "submit to architect" action in PREVIEW state.
+	PreviewActionSubmit = "submit_to_architect"
 )
 
 // Driver implements the PM (Product Manager) agent.
@@ -42,10 +49,10 @@ type Driver struct {
 	dispatcher          *dispatch.Dispatcher
 	persistenceChannel  chan<- *persistence.Request
 	chatService         *chat.Service // Chat service for polling new messages
+	mu                  sync.RWMutex  // Protects currentState and stateData from concurrent access
 	currentState        proto.State
 	stateData           map[string]any
-	interviewRequestCh  <-chan *proto.AgentMsg // Receives interview start and spec upload requests
-	executor            execpkg.Executor       // PM executor for running tools
+	executor            execpkg.Executor // PM executor for running tools
 	workDir             string
 	replyCh             <-chan *proto.AgentMsg // Receives RESULT messages from architect
 	stateNotificationCh chan<- *proto.StateChangeNotification
@@ -61,7 +68,6 @@ func NewPM(
 	workDir string,
 	persistenceChannel chan<- *persistence.Request,
 	llmFactory *agent.LLMClientFactory,
-	interviewRequestCh <-chan *proto.AgentMsg,
 	chatService *chat.Service,
 ) (*Driver, error) {
 	// Check for context cancellation
@@ -144,7 +150,6 @@ func NewPM(
 		chatService:        chatService,
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
-		interviewRequestCh: interviewRequestCh,
 		executor:           pmExecutor,
 		workDir:            workDir,
 		toolProvider:       toolProvider,
@@ -171,7 +176,6 @@ func NewDriver(
 	contextManager *contextmgr.ContextManager,
 	dispatcher *dispatch.Dispatcher,
 	persistenceChannel chan<- *persistence.Request,
-	interviewRequestCh <-chan *proto.AgentMsg,
 	executor execpkg.Executor, // PM executor for running tools
 	workDir string,
 ) *Driver {
@@ -185,7 +189,6 @@ func NewDriver(
 		persistenceChannel: persistenceChannel,
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
-		interviewRequestCh: interviewRequestCh,
 		executor:           executor,
 		workDir:            workDir,
 	}
@@ -201,6 +204,11 @@ func (d *Driver) Run(ctx context.Context) error {
 			d.logger.Info("🎯 PM agent %s received shutdown signal", d.pmID)
 			return fmt.Errorf("pm agent shutdown: %w", ctx.Err())
 		default:
+			// Capture state before executing handler
+			d.mu.RLock()
+			stateBefore := d.currentState
+			d.mu.RUnlock()
+
 			// Execute current state
 			nextState, err := d.executeState(ctx)
 			if err != nil {
@@ -208,29 +216,45 @@ func (d *Driver) Run(ctx context.Context) error {
 				nextState = proto.StateError
 			}
 
+			// Validate and apply state transition with mutex protection
+			d.mu.Lock()
+			currentState := d.currentState
+
+			// Check if state changed externally (via direct method call) while handler was running
+			if stateBefore != currentState {
+				d.logger.Debug("🔄 State changed externally during handler execution: %s → %s (ignoring handler return)", stateBefore, currentState)
+				// State was changed by direct method call - ignore handler's return value
+				// and continue with the new state
+				d.mu.Unlock()
+				continue
+			}
+
 			// Validate transition
-			if !IsValidPMTransition(d.currentState, nextState) {
-				d.logger.Error("❌ Invalid PM state transition: %s → %s", d.currentState, nextState)
+			if !IsValidPMTransition(currentState, nextState) {
+				d.logger.Error("❌ Invalid PM state transition: %s → %s", currentState, nextState)
 				nextState = proto.StateError
 			}
 
 			// Transition to next state
-			if d.currentState != nextState {
-				d.logger.Info("🔄 PM state transition: %s → %s", d.currentState, nextState)
+			if currentState != nextState {
+				d.logger.Info("🔄 PM state transition: %s → %s", currentState, nextState)
 				d.currentState = nextState
-				// Supervisor polls state changes via dispatcher
 			}
 
-			// Handle terminal states
-			switch nextState {
-			case proto.StateDone:
-				d.logger.Info("✅ PM agent %s shutting down", d.pmID)
-				return nil
-			case proto.StateError:
+			// Handle terminal states (need to check nextState after potential update)
+			terminalState := nextState
+			if terminalState == proto.StateError {
 				d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
 				// Reset to WAITING after error
 				d.currentState = StateWaiting
 				d.stateData = make(map[string]any)
+			}
+			d.mu.Unlock()
+
+			// Handle DONE outside of lock
+			if terminalState == proto.StateDone {
+				d.logger.Info("✅ PM agent %s shutting down", d.pmID)
+				return nil
 			}
 		}
 	}
@@ -238,7 +262,13 @@ func (d *Driver) Run(ctx context.Context) error {
 
 // executeState executes the current state and returns the next state.
 func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
-	switch d.currentState {
+	// Read current state with lock, then execute handler without lock
+	// (handlers may take time and should not hold the lock)
+	d.mu.RLock()
+	currentState := d.currentState
+	d.mu.RUnlock()
+
+	switch currentState {
 	case StateWaiting:
 		return d.handleWaiting(ctx)
 	case StateWorking:
@@ -250,144 +280,32 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 	case StateAwaitArchitect:
 		return d.handleAwaitArchitect(ctx)
 	default:
-		return proto.StateError, fmt.Errorf("unknown state: %s", d.currentState)
+		return proto.StateError, fmt.Errorf("unknown state: %s", currentState)
 	}
 }
 
-// handleWaiting blocks until an interview request, spec file, or RESULT message arrives.
+// handleWaiting waits for architect RESULT messages (feedback after spec submission).
+// User actions (start interview, upload spec) now directly modify state via methods.
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
-	// Check if we're waiting for RESULT from architect
-	pendingRequestID, hasPendingRequest := d.stateData["pending_request_id"].(string)
+	d.logger.Debug("🎯 PM in WAITING state - checking for state changes or architect feedback")
 
-	if hasPendingRequest {
-		d.logger.Info("🎯 PM waiting for RESULT from architect (request_id: %s)", pendingRequestID)
-	} else {
-		d.logger.Info("🎯 PM waiting for interview request or spec file")
-	}
-
+	// Check for architect RESULT messages (non-blocking)
 	select {
 	case <-ctx.Done():
+		d.logger.Info("⏹️  Context canceled while in WAITING")
 		return proto.StateDone, nil
-
-	case requestMsg := <-d.interviewRequestCh:
-		// Handle REQUEST messages (both interview_start and spec_upload)
-		return d.handlePMRequest(requestMsg)
 
 	case resultMsg := <-d.replyCh:
+		// RESULT message from architect (feedback after previous spec submission)
 		return d.handleArchitectResult(resultMsg)
+
+	default:
+		// No messages - sleep briefly to avoid tight loop
+		// Note: Direct method calls (StartInterview/UploadSpec) modify state directly,
+		// and the Run loop will detect the change and route to the new handler
+		time.Sleep(100 * time.Millisecond)
+		return StateWaiting, nil
 	}
-}
-
-// handlePMRequest routes REQUEST messages to appropriate handlers based on type.
-func (d *Driver) handlePMRequest(requestMsg *proto.AgentMsg) (proto.State, error) {
-	if requestMsg == nil {
-		d.logger.Info("PM request channel closed, shutting down")
-		return proto.StateDone, nil
-	}
-
-	// Extract request type from payload
-	if typedPayload := requestMsg.GetTypedPayload(); typedPayload != nil {
-		if payloadData, err := typedPayload.ExtractGeneric(); err == nil {
-			requestType, _ := payloadData["type"].(string)
-
-			switch requestType {
-			case "interview_start":
-				return d.handleInterviewRequest(requestMsg)
-			case "spec_upload":
-				return d.handleSpecFileUpload(requestMsg)
-			default:
-				d.logger.Error("Unknown PM request type: %s", requestType)
-				return proto.StateError, fmt.Errorf("unknown request type: %s", requestType)
-			}
-		}
-	}
-
-	d.logger.Error("PM request missing type field")
-	return proto.StateError, fmt.Errorf("PM request missing type field")
-}
-
-// handleSpecFileUpload processes a directly uploaded spec file, bypassing the interview.
-func (d *Driver) handleSpecFileUpload(specMsg *proto.AgentMsg) (proto.State, error) {
-	if specMsg == nil {
-		d.logger.Info("Spec channel closed, shutting down")
-		return proto.StateDone, nil
-	}
-
-	d.logger.Info("📄 PM received spec file upload: %s (bypassing interview)", specMsg.ID)
-
-	// Extract spec content from message
-	if typedPayload := specMsg.GetTypedPayload(); typedPayload != nil {
-		if payloadData, err := typedPayload.ExtractGeneric(); err == nil {
-			// Get spec markdown from payload
-			specMarkdown, ok := payloadData["spec_markdown"].(string)
-			if !ok || specMarkdown == "" {
-				d.logger.Error("Spec file upload missing spec_markdown field")
-				return proto.StateError, fmt.Errorf("spec file upload missing spec_markdown")
-			}
-
-			// Store spec directly as draft (bypass interview)
-			d.stateData["draft_spec"] = specMarkdown
-			d.logger.Info("✅ Spec file loaded (%d bytes), transitioning to WORKING", len(specMarkdown))
-
-			// Transition to WORKING to validate and submit via submit_spec tool
-			return StateWorking, nil
-		}
-	}
-
-	d.logger.Error("Failed to extract spec content from message")
-	return proto.StateError, fmt.Errorf("failed to extract spec content")
-}
-
-// handleInterviewRequest processes a new interview request from WebUI.
-func (d *Driver) handleInterviewRequest(interviewMsg *proto.AgentMsg) (proto.State, error) {
-	if interviewMsg == nil {
-		d.logger.Info("Interview request channel closed, shutting down")
-		return proto.StateDone, nil
-	}
-
-	d.logger.Info("🎯 PM received interview request: %s", interviewMsg.ID)
-
-	// Extract interview parameters from message
-	if typedPayload := interviewMsg.GetTypedPayload(); typedPayload != nil {
-		if payloadData, err := typedPayload.ExtractGeneric(); err == nil {
-			// Store session context
-			if sessionID, ok := payloadData["session_id"].(string); ok {
-				d.stateData["session_id"] = sessionID
-			}
-			if expertise, ok := payloadData["expertise"].(string); ok {
-				d.stateData["expertise"] = expertise
-			} else {
-				// Use config default if not specified
-				cfg, cfgErr := config.GetConfig()
-				if cfgErr == nil && cfg.PM != nil && cfg.PM.DefaultExpertise != "" {
-					d.stateData["expertise"] = cfg.PM.DefaultExpertise
-				} else {
-					d.stateData["expertise"] = DefaultExpertise
-				}
-			}
-		}
-	}
-
-	// Initialize conversation history
-	d.stateData["conversation"] = []map[string]string{}
-	d.stateData["turn_count"] = 0
-
-	// Set system prompt ONCE at interview start
-	expertise, _ := d.stateData["expertise"].(string)
-	if expertise == "" {
-		expertise = DefaultExpertise
-	}
-	systemPrompt, err := d.renderWorkingPrompt()
-	if err != nil {
-		d.logger.Error("Failed to render system prompt: %v", err)
-		return proto.StateError, fmt.Errorf("failed to render system prompt: %w", err)
-	}
-	d.contextManager.ResetSystemPrompt(systemPrompt)
-	d.logger.Info("✅ PM system prompt set for interview (expertise: %s)", expertise)
-
-	// Transition to AWAIT_USER - wait for user's first message
-	d.logger.Info("⏸️  PM transitioning to AWAIT_USER, waiting for user's first message")
-	return StateAwaitUser, nil
 }
 
 // handleArchitectResult processes a RESULT message from architect.
@@ -468,16 +386,22 @@ func (d *Driver) GetStoryID() string {
 
 // GetState returns the current state.
 func (d *Driver) GetState() proto.State {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.currentState
 }
 
 // GetCurrentState returns the current state (required by agent.Driver interface).
 func (d *Driver) GetCurrentState() proto.State {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.currentState
 }
 
 // GetStateData returns a copy of the current state data (required by agent.Driver interface).
 func (d *Driver) GetStateData() map[string]any {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	// Return a shallow copy to prevent external modification
 	stateCopy := make(map[string]any, len(d.stateData))
 	for k, v := range d.stateData {
@@ -507,26 +431,36 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 		nextState = proto.StateError
 	}
 
+	// Validate and apply state transition with mutex protection
+	d.mu.Lock()
+	currentState := d.currentState
+
 	// Validate transition
-	if !IsValidPMTransition(d.currentState, nextState) {
-		d.logger.Error("❌ Invalid PM state transition: %s → %s", d.currentState, nextState)
+	if !IsValidPMTransition(currentState, nextState) {
+		d.logger.Error("❌ Invalid PM state transition: %s → %s", currentState, nextState)
 		nextState = proto.StateError
 	}
 
 	// Transition to next state
-	if d.currentState != nextState {
-		d.logger.Info("🔄 PM state transition: %s → %s", d.currentState, nextState)
+	if currentState != nextState {
+		d.logger.Info("🔄 PM state transition: %s → %s", currentState, nextState)
 		d.currentState = nextState
 	}
 
 	// Handle terminal states
-	switch nextState {
-	case proto.StateDone:
-		return true, nil
-	case proto.StateError:
+	terminalState := nextState
+	if terminalState == proto.StateError {
 		d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
 		d.currentState = StateWaiting
 		d.stateData = make(map[string]any)
+	}
+	d.mu.Unlock()
+
+	// Return based on terminal state
+	switch terminalState {
+	case proto.StateDone:
+		return true, nil
+	case proto.StateError:
 		return false, err
 	default:
 		return false, nil
@@ -555,10 +489,10 @@ func (d *Driver) GetValidStates() []proto.State {
 }
 
 // SetChannels sets the dispatcher channels for PM (required by ChannelReceiver interface).
-// PM receives interview/spec requests via first channel (pmRequestsCh from dispatcher) and gets replyCh for RESULT messages.
+// PM only needs replyCh for RESULT messages from architect.
+// Interview requests and spec uploads come directly from WebUI via StartInterview/UploadSpec methods.
 // questionsCh (second parameter) is nil for PM (only architect processes questions).
-func (d *Driver) SetChannels(requestCh <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
-	d.interviewRequestCh = requestCh // Now receives both interview requests AND spec uploads via pmRequestsCh
+func (d *Driver) SetChannels(_ <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	d.replyCh = replyCh
 }
 
@@ -578,6 +512,8 @@ func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateCha
 // This is used by the WebUI to display the spec in PREVIEW state.
 // Returns empty string if no draft spec is available.
 func (d *Driver) GetDraftSpec() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	if draftSpec, ok := d.stateData["draft_spec_markdown"].(string); ok {
 		return draftSpec
 	}
@@ -587,10 +523,133 @@ func (d *Driver) GetDraftSpec() string {
 // GetDraftSpecMetadata returns the draft specification metadata if available.
 // Returns nil if no metadata is available.
 func (d *Driver) GetDraftSpecMetadata() map[string]any {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	if metadata, ok := d.stateData["spec_metadata"].(map[string]any); ok {
 		return metadata
 	}
 	return nil
+}
+
+// StartInterview initiates an interview session with the specified expertise level.
+// This is called by the WebUI when the user clicks "Start Interview".
+// Idempotent: succeeds if already in AWAIT_USER with same expertise (handles double-clicks).
+func (d *Driver) StartInterview(expertise string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Idempotency check: if already in AWAIT_USER with same expertise, succeed silently
+	if d.currentState == StateAwaitUser {
+		if existingExpertise, ok := d.stateData["user_expertise"].(string); ok && existingExpertise == expertise {
+			d.logger.Info("📝 Interview already started with expertise: %s - idempotent success", expertise)
+			return nil
+		}
+	}
+
+	// Validate state transition
+	if d.currentState != StateWaiting {
+		return fmt.Errorf("cannot start interview in state %s (must be WAITING)", d.currentState)
+	}
+
+	// Store expertise and transition to AWAIT_USER
+	d.stateData["user_expertise"] = expertise
+	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
+	d.currentState = StateAwaitUser
+
+	d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
+	return nil
+}
+
+// UploadSpec accepts an uploaded spec markdown file.
+// This is called by the WebUI when the user uploads a spec file.
+// Idempotent: succeeds if already in PREVIEW with same spec (handles double-submissions).
+func (d *Driver) UploadSpec(markdown string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Idempotency check: if already in PREVIEW with same spec, succeed silently
+	if d.currentState == StatePreview {
+		if existingSpec, ok := d.stateData["draft_spec_markdown"].(string); ok && existingSpec == markdown {
+			d.logger.Info("📤 Spec already uploaded (%d bytes) - idempotent success", len(markdown))
+			return nil
+		}
+	}
+
+	// Validate state transition
+	if d.currentState != StateWaiting {
+		return fmt.Errorf("cannot upload spec in state %s (must be WAITING)", d.currentState)
+	}
+
+	// Store spec and transition to PREVIEW
+	d.stateData["draft_spec_markdown"] = markdown
+	d.stateData["user_expertise"] = "EXPERT" // Infer highest proficiency for uploaded specs
+	d.contextManager.AddMessage("system", "User uploaded a specification file. You can answer questions about it if the user clicks 'Continue Interview'.")
+	d.currentState = StatePreview
+
+	d.logger.Info("📤 Spec uploaded (%d bytes) - transitioned to PREVIEW", len(markdown))
+	return nil
+}
+
+// PreviewAction handles preview actions from the WebUI.
+// This is called when the user clicks "Continue Interview" or "Submit for Development".
+// Valid actions: "continue_interview", "submit_to_architect".
+// Idempotent: succeeds if already in target state (handles double-clicks).
+func (d *Driver) PreviewAction(ctx context.Context, action string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Validate action first
+	if action != PreviewActionContinue && action != PreviewActionSubmit {
+		return fmt.Errorf("invalid preview action: %s (must be '%s' or '%s')", action, PreviewActionContinue, PreviewActionSubmit)
+	}
+
+	// Idempotency check: if already in target state, succeed silently
+	if action == PreviewActionContinue && d.currentState == StateAwaitUser {
+		d.logger.Info("🔄 Already in AWAIT_USER (continue interview) - idempotent success")
+		return nil
+	}
+	if action == PreviewActionSubmit && d.currentState == StateAwaitArchitect {
+		d.logger.Info("📤 Already in AWAIT_ARCHITECT (submitted) - idempotent success")
+		return nil
+	}
+
+	// Validate state transition
+	if d.currentState != StatePreview {
+		return fmt.Errorf("cannot perform preview action in state %s (must be PREVIEW)", d.currentState)
+	}
+
+	d.logger.Info("📋 Preview action: %s", action)
+
+	switch action {
+	case PreviewActionContinue:
+		// Inject question to context and transition to AWAIT_USER
+		d.contextManager.AddMessage("user-action", "What changes would you like to make?")
+		d.currentState = StateAwaitUser
+		d.logger.Info("🔄 User chose to continue interview - transitioned to AWAIT_USER")
+		return nil
+
+	case PreviewActionSubmit:
+		// Copy draft_spec_markdown to spec_markdown for sendSpecApprovalRequest
+		if draftSpec, ok := d.stateData["draft_spec_markdown"].(string); ok {
+			d.stateData["spec_markdown"] = draftSpec
+		}
+
+		// Send REQUEST to architect (this must be done while holding lock)
+		err := d.sendSpecApprovalRequest(ctx)
+		if err != nil {
+			d.logger.Error("❌ Failed to send spec approval request: %v", err)
+			d.currentState = proto.StateError
+			return fmt.Errorf("failed to send approval request: %w", err)
+		}
+
+		d.currentState = StateAwaitArchitect
+		d.logger.Info("✅ Spec submitted to architect - transitioned to AWAIT_ARCHITECT")
+		return nil
+
+	default:
+		// Should never reach here due to validation above
+		return fmt.Errorf("unknown preview action: %s", action)
+	}
 }
 
 // Shutdown gracefully shuts down the PM agent.

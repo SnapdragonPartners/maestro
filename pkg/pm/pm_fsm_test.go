@@ -37,8 +37,9 @@ func TestIsValidPMTransition(t *testing.T) {
 		name string
 	}{
 		// WAITING transitions
+		{StateWaiting, StateWaiting, "WAITING -> WAITING (polling for state changes)"},
 		{StateWaiting, StateAwaitUser, "WAITING -> AWAIT_USER (interview starts)"},
-		{StateWaiting, StateWorking, "WAITING -> WORKING (spec file upload)"},
+		{StateWaiting, StatePreview, "WAITING -> PREVIEW (spec file upload)"},
 		{StateWaiting, proto.StateDone, "WAITING -> DONE (shutdown)"},
 
 		// WORKING transitions
@@ -216,7 +217,7 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateAwaitUser, StateWorking, proto.StateDone}},
+		{StateWaiting, []proto.State{StateWaiting, StateAwaitUser, StatePreview, proto.StateDone}},
 		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, proto.StateError, proto.StateDone}},
 		{StateAwaitUser, []proto.State{StateAwaitUser, StateWorking, proto.StateError, proto.StateDone}},
 		{StatePreview, []proto.State{StatePreview, StateAwaitUser, StateAwaitArchitect, proto.StateError, proto.StateDone}},

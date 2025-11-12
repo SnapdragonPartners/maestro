@@ -860,7 +860,7 @@ type MessageEntry struct {
 	Type         string  `json:"type"`
 	From         string  `json:"from"`
 	To           string  `json:"to"`
-	StoryID      string  `json:"story_id,omitempty"`
+	StoryID      *string `json:"story_id,omitempty"` // Can be null for messages not associated with a story
 	Content      string  `json:"content"`
 }
 

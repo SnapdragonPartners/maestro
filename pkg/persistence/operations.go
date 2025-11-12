@@ -820,7 +820,7 @@ type RecentMessage struct {
 	Type         string // "REQUEST" or "RESPONSE"
 	FromAgent    string
 	ToAgent      string
-	StoryID      string
+	StoryID      *string // Can be NULL for messages not associated with a story (e.g., PM spec requests)
 	CreatedAt    string
 	Content      string
 }

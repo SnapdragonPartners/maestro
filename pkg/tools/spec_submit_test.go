@@ -104,19 +104,22 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 		t.Fatalf("Expected map result, got: %T", result)
 	}
 
+	// After removing strict validation, even "invalid" specs are accepted.
+	// The architect will provide feedback via the review process.
 	success, ok := resultMap["success"].(bool)
-	if !ok || success {
-		t.Errorf("Expected success=false for invalid spec, got: %v", resultMap)
+	if !ok || !success {
+		t.Errorf("Expected success=true (no strict validation), got: %v", resultMap)
 	}
 
-	// Verify validation errors are present.
-	errors, ok := resultMap["validation_errors"].([]string)
+	// Verify metadata is present (even if incomplete).
+	metadata, ok := resultMap["metadata"].(map[string]any)
 	if !ok {
-		t.Fatalf("Expected validation_errors array, got: %T", resultMap["validation_errors"])
+		t.Fatalf("Expected metadata map, got: %T", resultMap["metadata"])
 	}
 
-	if len(errors) == 0 {
-		t.Error("Expected validation errors, got none")
+	// Title should be parsed even from incomplete spec
+	if metadata["title"] != "Incomplete Spec" {
+		t.Errorf("Expected title 'Incomplete Spec', got: %v", metadata["title"])
 	}
 }
 

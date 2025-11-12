@@ -19,13 +19,13 @@ func NewSpecSubmitTool() *SpecSubmitTool {
 func (s *SpecSubmitTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "spec_submit",
-		Description: "Submit the finalized specification for validation and storage",
+		Description: "Submit the finalized specification for user review (architect will provide feedback on the spec later)",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"markdown": {
 					Type:        "string",
-					Description: "The complete specification in markdown format with YAML frontmatter",
+					Description: "The complete specification in markdown format (flexible format - architect will review)",
 				},
 				"summary": {
 					Type:        "string",
@@ -44,10 +44,9 @@ func (s *SpecSubmitTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (s *SpecSubmitTool) PromptDocumentation() string {
-	return `- **spec_submit** - Submit finalized specification for validation and storage
+	return `- **spec_submit** - Submit finalized specification for user review
   - Parameters: markdown (required), summary (required)
-  - Validates spec against all PM validation rules before submission
-  - Returns validation errors if spec does not pass
+  - Accepts flexible markdown format - architect will review and provide feedback
   - Use when you have completed the specification interview and drafted the full spec`
 }
 
@@ -83,37 +82,29 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, erro
 		return nil, fmt.Errorf("summary cannot be empty")
 	}
 
-	// Parse and validate the specification.
+	// Parse the specification to extract basic metadata (but don't enforce strict validation).
+	// The architect will review the spec and provide feedback if needed.
 	spec, err := specs.Parse(markdownStr)
-	if err != nil {
-		return map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to parse specification: %v", err),
-		}, nil
-	}
 
-	// Validate the parsed specification.
-	result := specs.Validate(spec)
-	if !result.Passed {
-		return map[string]any{
-			"success":           false,
-			"validation_errors": result.Blocking,
-			"message":           fmt.Sprintf("Specification validation failed with %d errors", len(result.Blocking)),
-		}, nil
-	}
-
-	// Validation passed - return success with metadata and spec data for PREVIEW state.
-	return map[string]any{
-		"success":       true,
-		"message":       "Specification validated and ready for user review",
-		"summary":       summaryStr,
-		"spec_markdown": markdownStr, // Store for preview display
-		"metadata": map[string]any{
+	// Build metadata (best effort - use empty values if parsing failed)
+	metadata := map[string]any{}
+	if err == nil && spec != nil {
+		metadata = map[string]any{
 			"title":              spec.Title,
 			"version":            spec.Version,
 			"priority":           spec.Priority,
 			"requirements_count": len(spec.Requirements),
-		},
+		}
+	}
+
+	// Accept the spec and let architect review - no strict validation here.
+	// This allows PM flexibility in spec format, and architect can request changes via feedback loop.
+	return map[string]any{
+		"success":       true,
+		"message":       "Specification accepted and ready for user review",
+		"summary":       summaryStr,
+		"spec_markdown": markdownStr, // Store for preview display
+		"metadata":      metadata,
 		// Signal to PM driver to transition to PREVIEW state
 		"preview_ready": true,
 	}, nil

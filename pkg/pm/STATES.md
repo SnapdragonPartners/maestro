@@ -1,6 +1,6 @@
 # PM Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-01-11 (Added PREVIEW and AWAIT_ARCHITECT states for user review workflow)*
+*Last updated: 2025-01-12 (Refactored to direct method calls with mutex protection; removed channel-based state changes)*
 
 This document is the **single source of truth** for the PM (Product Manager) agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -67,7 +67,7 @@ stateDiagram-v2
 
 | State                  | Purpose                                                                              |
 | ---------------------- | ------------------------------------------------------------------------------------ |
-| **WAITING**            | Idle state waiting for interview request, spec upload, or architect feedback.       |
+| **WAITING**            | Idle state. Public methods (StartInterview, UploadSpec, PreviewAction) trigger transitions. |
 | **AWAIT_USER**         | Blocked waiting for user's response in chat. Polls chat channel for new messages.   |
 | **WORKING**            | Active work state - interviewing, drafting, and calling tools.                      |
 | **PREVIEW**            | Spec ready for user review. User chooses to continue interview or submit.           |
@@ -83,9 +83,9 @@ stateDiagram-v2
 
 PM can receive work in three ways:
 
-1. **New Interview**: User sends interview request via WebUI → PM enters AWAIT_USER
+1. **New Interview**: User sends interview request via WebUI → PM.StartInterview() → AWAIT_USER
 2. **Iteration**: Architect sends RESULT(needs_changes) → PM enters WORKING with feedback context
-3. **Direct Spec Upload**: User uploads spec file directly → PM enters WORKING with pre-loaded spec
+3. **Direct Spec Upload**: User uploads spec file directly → PM.UploadSpec() → PREVIEW with pre-loaded spec
 
 ### Tool-Driven Workflow
 
@@ -153,21 +153,26 @@ PM uses LLM reasoning to decide when to:
    - **If NEEDS_CHANGES**: Store feedback, transition to WORKING
    - Feedback is injected into context for next LLM call
 
-### Channel Monitoring
+### State Change Mechanism
 
-The WAITING state uses a select statement to monitor:
-- `ctx.Done()` - Shutdown signal
-- `interviewRequestCh` - New interview requests from WebUI
-- `specCh` - Direct spec file uploads
-- `replyCh` - Architect RESULT messages (approval or feedback)
+**Direct Method Calls with Mutex Protection:**
+- Public methods (StartInterview, UploadSpec, PreviewAction) directly modify state with `sync.RWMutex`
+- Methods are idempotent - handle duplicate requests gracefully
+- State handlers are non-blocking and return their natural next state
+- Run loop captures state before handler execution and detects external changes
 
-The AWAIT_USER state polls the chat channel:
-- Periodically checks for new user messages
-- Transitions to WORKING when messages arrive
+**Run Loop Behavior:**
+1. Capture current state before calling handler
+2. Execute state handler (returns suggested next state)
+3. Re-check state after handler returns
+4. If state changed during handler execution, ignore handler return and continue with new state
+5. If state unchanged, validate and apply handler's returned state
 
-The AWAIT_ARCHITECT state blocks on response channel:
-- Waits for RESULT message from architect
-- No polling - true blocking wait
+**State Handler Responsibilities:**
+- Handlers return their natural next state (e.g., PREVIEW stays PREVIEW until PreviewAction called)
+- Handlers do NOT detect external state changes - that's the Run loop's job
+- Handlers use non-blocking select with default case to avoid tight loops
+- Handlers check `ctx.Done()` for shutdown signal
 
 ---
 
@@ -175,14 +180,13 @@ The AWAIT_ARCHITECT state blocks on response channel:
 
 ### WAITING State
 
-**Channels Monitored:**
-- `interviewRequestCh` - New interview requests
-- `specCh` - Direct spec file uploads
-- `replyCh` - Architect feedback/approval
-
 **Behavior:**
-- Blocks on select statement
-- Routes to appropriate next state based on input
+- Non-blocking - checks context cancellation with 100ms sleep
+- Returns StateWaiting (self-transition) until external method call changes state
+- Public methods trigger transitions:
+  - `StartInterview()` → AWAIT_USER
+  - `UploadSpec()` → PREVIEW
+- Architect feedback received via handleAwaitArchitect (not WAITING)
 
 ### AWAIT_USER State
 
@@ -215,34 +219,38 @@ The AWAIT_ARCHITECT state blocks on response channel:
 
 **Purpose:** User reviews spec before architect submission
 
-**Channels Monitored:**
-- `interviewRequestCh` - Receives user actions (continue_interview, submit_to_architect)
-- `ctx.Done()` - Shutdown signal
-
 **Behavior:**
-- Blocks on select statement
-- Handles two user actions:
-  - `continue_interview` → Injects "What changes would you like?" → AWAIT_USER
-  - `submit_to_architect` → Sends REQUEST to architect → AWAIT_ARCHITECT
+- Non-blocking - checks context cancellation with 100ms sleep
+- Returns StatePreview (self-transition) until PreviewAction() called
+- Validates draft spec exists in state data
+- Public method triggers transitions:
+  - `PreviewAction("continue_interview")` → AWAIT_USER
+  - `PreviewAction("submit_to_architect")` → AWAIT_ARCHITECT
 
 **WebUI Integration:**
 - WebUI polls `/api/pm/status` and auto-switches to preview tab
 - WebUI fetches spec via `/api/pm/preview/spec`
-- WebUI sends actions via `/api/pm/preview/action`
+- WebUI sends actions via `/api/pm/preview/action` (calls PreviewAction method)
 
 ### AWAIT_ARCHITECT State
 
 **Purpose:** Wait for architect's review response
 
-**Channels Monitored:**
-- `replyCh` - RESULT messages from architect
-- `ctx.Done()` - Shutdown signal
-
 **Behavior:**
-- Blocks on response channel (true blocking, no polling)
+- Polls message dispatcher for RESPONSE messages (1-second intervals)
+- Non-blocking with context cancellation check
 - Handles two outcomes:
-  - `RESULT(approved=true)` → Clear state, transition to WAITING
-  - `RESULT(approved=false)` → Store feedback, inject system message, transition to WORKING
+  - `ApprovalResult.Status == APPROVED` → Clear draft state, transition to WAITING
+  - `ApprovalResult.Status == NEEDS_CHANGES` → Store feedback, inject system message, transition to WORKING
+
+**Protocol Details:**
+- Sends REQUEST message with `ApprovalRequestPayload`:
+  - `ApprovalType`: `ApprovalTypeSpec`
+  - `Content`: Full spec markdown (critical field)
+  - `Reason`: Brief description of submission
+- Receives RESPONSE message with `ApprovalResult`:
+  - Uses `GetTypedPayload()` and `ExtractApprovalResponse()` for parsing
+  - Validates `ApprovalType` matches request
 
 **Feedback Handling:**
 - System message format: "The architect provided the following feedback on your spec. Address these issues and resubmit or ask the user for any needed clarifications. The user has not seen the raw feedback. <architect_response>"
@@ -296,8 +304,8 @@ The AWAIT_ARCHITECT state blocks on response channel:
 
 ### Internal Messages (WebUI → PM)
 
-**Interview Actions (via interviewRequestCh)**:
-- Type: String actions
+**Interview Actions (via PreviewAction method)**:
+- Type: String actions passed to public method
 - Values:
   - `"continue_interview"` - User wants to refine spec (PREVIEW → AWAIT_USER)
   - `"submit_to_architect"` - User approves spec for submission (PREVIEW → AWAIT_ARCHITECT)
@@ -308,8 +316,9 @@ The AWAIT_ARCHITECT state blocks on response channel:
 
 | From State          | To State            | Trigger                                          |
 | ------------------- | ------------------- | ------------------------------------------------ |
-| WAITING             | AWAIT_USER          | Interview request from WebUI                     |
-| WAITING             | WORKING             | Spec file upload (bypass interview)              |
+| WAITING             | WAITING             | Polling for state changes (no activity)          |
+| WAITING             | AWAIT_USER          | StartInterview() method called                   |
+| WAITING             | PREVIEW             | UploadSpec() method called                       |
 | WAITING             | DONE                | Shutdown signal                                  |
 | AWAIT_USER          | AWAIT_USER          | Still waiting for user input                     |
 | AWAIT_USER          | WORKING             | User sends message via chat                      |
@@ -320,9 +329,9 @@ The AWAIT_ARCHITECT state blocks on response channel:
 | WORKING             | PREVIEW             | spec_submit tool called (spec ready)             |
 | WORKING             | ERROR               | Unrecoverable error                              |
 | WORKING             | DONE                | Shutdown signal                                  |
-| PREVIEW             | PREVIEW             | Waiting for user action                          |
-| PREVIEW             | AWAIT_USER          | User clicks "Continue Interview"                 |
-| PREVIEW             | AWAIT_ARCHITECT     | User clicks "Submit for Development"             |
+| PREVIEW             | PREVIEW             | Polling for state changes (no action)            |
+| PREVIEW             | AWAIT_USER          | PreviewAction("continue_interview") called       |
+| PREVIEW             | AWAIT_ARCHITECT     | PreviewAction("submit_to_architect") called      |
 | PREVIEW             | ERROR               | Error                                            |
 | PREVIEW             | DONE                | Shutdown signal                                  |
 | AWAIT_ARCHITECT     | AWAIT_ARCHITECT     | Still waiting for architect response             |

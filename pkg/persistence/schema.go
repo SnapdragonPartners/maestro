@@ -537,7 +537,7 @@ func createSchema(db *sql.DB) error {
 			session_id TEXT NOT NULL,
 			story_id TEXT REFERENCES stories(id),
 			request_type TEXT NOT NULL CHECK (request_type IN ('question', 'approval')),
-			approval_type TEXT CHECK (approval_type IN ('plan', 'code', 'budget_review', 'completion')),
+			approval_type TEXT CHECK (approval_type IN ('plan', 'code', 'budget_review', 'completion', 'spec')),
 			from_agent TEXT NOT NULL,
 			to_agent TEXT NOT NULL,
 			content TEXT NOT NULL,
