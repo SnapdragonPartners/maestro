@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -1518,9 +1519,22 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
 
-	// Handle LLM response
-	if err := d.handleLLMResponse(resp); err != nil {
-		return nil, fmt.Errorf("LLM response handling failed: %w", err)
+	// Add assistant response to context with structured tool calls (same as PM pattern)
+	if len(resp.ToolCalls) > 0 {
+		// Use structured tool call tracking
+		// Convert agent.ToolCall to contextmgr.ToolCall
+		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolCalls[i] = contextmgr.ToolCall{
+				ID:         resp.ToolCalls[i].ID,
+				Name:       resp.ToolCalls[i].Name,
+				Parameters: resp.ToolCalls[i].Parameters,
+			}
+		}
+		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+	} else {
+		// No tool calls - just content
+		d.contextManager.AddAssistantMessage(resp.Content)
 	}
 
 	// Process tool calls
@@ -1827,9 +1841,22 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
 
-	// Handle LLM response
-	if err := d.handleLLMResponse(resp); err != nil {
-		return nil, fmt.Errorf("LLM response handling failed: %w", err)
+	// Add assistant response to context with structured tool calls (same as PM pattern)
+	if len(resp.ToolCalls) > 0 {
+		// Use structured tool call tracking
+		// Convert agent.ToolCall to contextmgr.ToolCall
+		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolCalls[i] = contextmgr.ToolCall{
+				ID:         resp.ToolCalls[i].ID,
+				Name:       resp.ToolCalls[i].Name,
+				Parameters: resp.ToolCalls[i].Parameters,
+			}
+		}
+		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+	} else {
+		// No tool calls - just content
+		d.contextManager.AddAssistantMessage(resp.Content)
 	}
 
 	// Process tool calls

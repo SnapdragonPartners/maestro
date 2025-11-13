@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -484,38 +483,6 @@ func (d *Driver) GetContextSummary() string {
 	return d.contextManager.GetContextSummary()
 }
 
-// handleLLMResponse handles LLM responses with proper empty response logic (same as coder).
-func (d *Driver) handleLLMResponse(resp agent.CompletionResponse) error {
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-
-	if resp.Content != "" {
-		// Case 1: Normal response with content
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		d.contextManager.AddAssistantMessage(resp.Content)
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		return nil
-	}
-
-	if len(resp.ToolCalls) > 0 {
-		// Case 2: Pure tool use - add placeholder for conversational continuity
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		toolNames := make([]string, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolNames[i] = resp.ToolCalls[i].Name
-		}
-		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
-		d.contextManager.AddAssistantMessage(placeholder)
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		return nil
-	}
-
-	// Case 3: True empty response - this is an error condition
-	// DO NOT add any message to context - let upstream handle the error
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-	d.logger.Error("🚨 TRUE EMPTY RESPONSE: No content and no tool calls")
-	return logx.Errorf("LLM returned empty response with no content and no tool calls")
-}
-
 // GetQueue returns the queue manager for external access.
 func (d *Driver) GetQueue() *Queue {
 	return d.queue
@@ -534,21 +501,57 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
-// buildMessagesWithContext creates completion messages with context history (same as coder).
-// This centralizes the pattern used across architect LLM calls with context isolation.
+// buildMessagesWithContext creates completion messages with context history.
+// Converts context manager messages (with structured ToolCalls and ToolResults) to CompletionMessage format.
+// Same pattern as PM's buildMessagesWithContext.
 func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
-	messages := []agent.CompletionMessage{
-		{Role: agent.RoleUser, Content: initialPrompt},
-	}
-
-	// Add conversation history from context manager (same as coder pattern).
-	// For architect, we typically reset context between templates, but if context exists, include it.
+	// Get conversation history from context manager
 	contextMessages := d.contextManager.GetMessages()
+
+	// Convert to CompletionMessage format
+	messages := make([]agent.CompletionMessage, 0, len(contextMessages)+1)
 	for i := range contextMessages {
 		msg := &contextMessages[i]
+
+		// Convert contextmgr.ToolCall to agent.ToolCall
+		var agentToolCalls []agent.ToolCall
+		if len(msg.ToolCalls) > 0 {
+			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
+			for j := range msg.ToolCalls {
+				agentToolCalls[j] = agent.ToolCall{
+					ID:         msg.ToolCalls[j].ID,
+					Name:       msg.ToolCalls[j].Name,
+					Parameters: msg.ToolCalls[j].Parameters,
+				}
+			}
+		}
+
+		// Convert contextmgr.ToolResult to agent.ToolResult
+		var agentToolResults []agent.ToolResult
+		if len(msg.ToolResults) > 0 {
+			agentToolResults = make([]agent.ToolResult, len(msg.ToolResults))
+			for j := range msg.ToolResults {
+				agentToolResults[j] = agent.ToolResult{
+					ToolCallID: msg.ToolResults[j].ToolCallID,
+					Content:    msg.ToolResults[j].Content,
+					IsError:    msg.ToolResults[j].IsError,
+				}
+			}
+		}
+
 		messages = append(messages, agent.CompletionMessage{
-			Role:    agent.CompletionRole(msg.Role),
-			Content: msg.Content,
+			Role:        agent.CompletionRole(msg.Role),
+			Content:     msg.Content,
+			ToolCalls:   agentToolCalls,
+			ToolResults: agentToolResults,
+		})
+	}
+
+	// Add the new prompt as a user message if provided
+	if initialPrompt != "" {
+		messages = append(messages, agent.CompletionMessage{
+			Role:    agent.RoleUser,
+			Content: initialPrompt,
 		})
 	}
 
@@ -619,13 +622,25 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList 
 		d.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
 			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
 
-		// Handle LLM response with proper empty response logic
-		err = d.handleLLMResponse(resp)
-		if err != nil {
-			return "", fmt.Errorf("LLM response handling failed: %w", err)
+		// Add assistant response to context with structured tool calls (same as PM pattern)
+		if len(resp.ToolCalls) > 0 {
+			// Use structured tool call tracking
+			// Convert agent.ToolCall to contextmgr.ToolCall
+			toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
+			for i := range resp.ToolCalls {
+				toolCalls[i] = contextmgr.ToolCall{
+					ID:         resp.ToolCalls[i].ID,
+					Name:       resp.ToolCalls[i].Name,
+					Parameters: resp.ToolCalls[i].Parameters,
+				}
+			}
+			d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+		} else {
+			// No tool calls - just content
+			d.contextManager.AddAssistantMessage(resp.Content)
 		}
 
-		// If no tool calls, return text content
+		// If no tool calls, return content
 		if len(resp.ToolCalls) == 0 {
 			return resp.Content, nil
 		}
@@ -639,6 +654,11 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList 
 		// If submit tool was called, return its response
 		if submitResponse != "" {
 			return submitResponse, nil
+		}
+
+		// Flush tool results into user message before next iteration (same as PM pattern)
+		if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
+			return "", fmt.Errorf("failed to flush tool results: %w", err)
 		}
 
 		// Rebuild messages for next iteration
@@ -905,63 +925,34 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 		d.logger.Debug("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
 
-		// Add tool result to context
-		d.addToolResultToContext(*toolCall, result)
+		// Add structured tool result to buffer (same as PM pattern)
+		// Convert result to string format
+		var resultStr string
+		var isError bool
+		if resultMap, ok := result.(map[string]any); ok {
+			// Check for success field
+			if success, ok := resultMap["success"].(bool); ok && !success {
+				isError = true
+				// Extract error message if present
+				if errMsg, ok := resultMap["error"].(string); ok {
+					resultStr = errMsg
+				} else {
+					resultStr = fmt.Sprintf("Tool failed: %v", result)
+				}
+			} else {
+				// Success - convert entire result to string
+				resultStr = fmt.Sprintf("%v", result)
+			}
+		} else {
+			// Non-map result - convert to string
+			resultStr = fmt.Sprintf("%v", result)
+		}
+
+		d.contextManager.AddToolResult(toolCall.ID, resultStr, isError)
 		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
 	}
 
 	return "", nil // No submit_reply detected
-}
-
-// addToolResultToContext adds tool execution results to context for LLM continuity.
-func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
-	// Convert result to user message format
-	var resultStr string
-	if resultMap, ok := result.(map[string]any); ok {
-		// Pretty print structured results
-		if success, ok := resultMap["success"].(bool); ok && success {
-			// Success case - format based on tool type
-			switch toolCall.Name {
-			case tools.ToolReadFile:
-				content, _ := resultMap["content"].(string)
-				path, _ := resultMap["path"].(string)
-				truncated, _ := resultMap["truncated"].(bool)
-				if truncated {
-					resultStr = fmt.Sprintf("File %s (truncated):\n%s", path, content)
-				} else {
-					resultStr = fmt.Sprintf("File %s:\n%s", path, content)
-				}
-			case tools.ToolListFiles:
-				files, _ := resultMap["files"].([]string)
-				count, _ := resultMap["count"].(int)
-				pattern, _ := resultMap["pattern"].(string)
-				resultStr = fmt.Sprintf("Found %d files matching '%s':\n%s", count, pattern, strings.Join(files, "\n"))
-			case tools.ToolGetDiff:
-				diff, _ := resultMap["diff"].(string)
-				path, _ := resultMap["path"].(string)
-				if path != "" {
-					resultStr = fmt.Sprintf("Git diff for %s:\n%s", path, diff)
-				} else {
-					resultStr = fmt.Sprintf("Git diff:\n%s", diff)
-				}
-			default:
-				resultStr = fmt.Sprintf("Tool %s result: %v", toolCall.Name, resultMap)
-			}
-		} else {
-			// Error case
-			if errorMsg, ok := resultMap["error"].(string); ok {
-				resultStr = fmt.Sprintf("Tool %s error: %s", toolCall.Name, errorMsg)
-			} else {
-				resultStr = fmt.Sprintf("Tool %s failed: %v", toolCall.Name, resultMap)
-			}
-		}
-	} else {
-		// Fallback for non-map results
-		resultStr = fmt.Sprintf("Tool %s result: %v", toolCall.Name, result)
-	}
-
-	// Add to context as user message (tool response)
-	d.contextManager.AddMessage("tool", resultStr)
 }
 
 // getScopingTools creates read-only tools for the SCOPING phase.
