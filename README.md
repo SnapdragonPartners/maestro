@@ -27,9 +27,11 @@ Most frameworks require wrestling with Python versions, dependency hell, or comp
 
 - **PM (Product Manager)** (singleton):
   - Conducts interactive requirements interviews via web UI
-  - Generates detailed specifications with acceptance criteria
-  - Iterates with architect for spec approval
-  - Does *not* write stories directly
+  - Adapts questions based on user expertise level (non-technical, basic, expert)
+  - Can read existing codebase to provide context-aware questions
+  - Generates detailed specifications with YAML frontmatter and acceptance criteria
+  - Iterates with architect for spec approval and refinement
+  - Does *not* write stories directly - that's the architect's job
 
 - **Architect** (singleton):
   - Breaks specs into stories
@@ -81,11 +83,12 @@ See the canonical state diagrams for details:
   - Either wrap your existing build tool or override targets in config  
   - Aggressive lint/test defaults (“turn checks up to 11”)  
 
-- **LLMs:**  
-  - Supports OpenAI & Anthropic models via official Go SDKs  
-  - Architect defaults: reasoning-oriented models  
-  - Coders default: coding-oriented models  
-  - Rate limiting handled internally via token buckets  
+- **LLMs:**
+  - Supports OpenAI & Anthropic models via official Go SDKs
+  - PM defaults: gpt-4o (fast conversational performance)
+  - Architect defaults: o3 (strong reasoning at reasonable price - upgrade to Claude Opus if budget allows)
+  - Coders default: Claude Sonnet 4.5 (coding-oriented)
+  - Rate limiting handled internally via token buckets
   - Local model support is on the roadmap  
 
 ---
@@ -131,7 +134,10 @@ maestro -projectdir myapp -bootstrap -git-repo https://github.com/SnapdragonPart
 maestro -projectdir myapp -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
 ```
 
-> **Step 5 (optional):** Open the web UI at [http://localhost:8080](http://localhost:8080).  
+> **Step 5 (optional):** Open the web UI at [http://localhost:8080](http://localhost:8080).
+> - Start a PM interview to generate a specification
+> - View stories, logs, and system metrics
+> - Monitor agent activity in real-time
 
 Config settings are in <projectdir>/.maestro/config.json.
 
@@ -149,32 +155,39 @@ Config settings are in <projectdir>/.maestro/config.json.
 
 ## Metrics & Dashboard
 
-Maestro tracks and displays:  
+Maestro tracks and displays:
+- PM interviews and generated specifications
 - Specs, stories, and todos
 - All tool use
-- All chat and agent-to-agent message logs  
-- Token use  
-- Dollar cost  
-- Wall-clock time  
+- All chat and agent-to-agent message logs
+- Token use
+- Dollar cost
+- Wall-clock time
 - Test results and code quality metrics  
 
 ---
 
 ## FAQ
 
-**Q: Do I have to use GitHub?**  
-Yes, for now. Maestro’s workflow relies on PRs and merges.  
+**Q: How do I start a new project?**
+Open the web UI at http://localhost:8080 and start a PM interview. The PM will ask questions about your requirements, read your existing codebase if applicable, and generate a specification. The architect will then review it and create stories for coders to implement.
 
-**Q: Can I skip Docker?**  
-No. Coders always run in Docker containers for isolation and reproducibility.  
+**Q: Can I provide my own specification instead of using the PM?**
+Yes. You can place a markdown specification file in your project directory and the architect will parse it directly, skipping the PM interview.
 
-**Q: Why doesn’t the architect write code?**  
-By design. The architect enforces engineering discipline, ensures coders don’t review their own work, and keeps technical debt low.  
+**Q: Do I have to use GitHub?**
+Yes, for now. Maestro's workflow relies on PRs and merges.
 
-**Q: Is this secure?**  
+**Q: Can I skip Docker?**
+No. Coders always run in Docker containers for isolation and reproducibility.
+
+**Q: Why doesn't the architect write code?**
+By design. The architect enforces engineering discipline, ensures coders don't review their own work, and keeps technical debt low.
+
+**Q: Is this secure?**
 Maestro is intended as a single-user tool running locally. It is at least as secure as other common LLM-based coding agents (probably more so due to Docker isolation), but since code is already exchanged with third-party LLMs, the trade-off of running root containers is considered acceptable.
 
-**Q: What happens if Maestro crashes?**  
+**Q: What happens if Maestro crashes?**
 All stories, states, tool use, messages, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.  
 
 ---

@@ -140,6 +140,15 @@ var KnownModels = map[string]ModelInfo{
 		MaxOutputTokens:  16384,
 	},
 
+	// OpenAI GPT models
+	"gpt-4o": {
+		Provider:         ProviderOpenAI,
+		InputCPM:         2.5,
+		OutputCPM:        10.0,
+		MaxContextTokens: 128000,
+		MaxOutputTokens:  4096,
+	},
+
 	// OpenAI o3 models
 	"o3-mini": {
 		Provider:         ProviderOpenAI,
@@ -376,10 +385,11 @@ const (
 	ModelOpenAIO3Mini     = "o3-mini"
 	ModelOpenAIO4Mini     = "o4-mini"
 	ModelOpenAIO3Latest   = ModelOpenAIO3
+	ModelGPT4o            = "gpt-4o"
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
-	DefaultArchitectModel = ModelOpenAIO4Mini
-	DefaultPMModel        = ModelClaudeOpus41
+	DefaultArchitectModel = ModelOpenAIO3
+	DefaultPMModel        = ModelGPT4o
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
