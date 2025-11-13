@@ -1501,7 +1501,12 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	}
 
 	// Build messages with context
-	messages := d.buildMessagesWithContext(prompt)
+	// Only pass prompt on first iteration - subsequent iterations use context history
+	var promptForMessages string
+	if iterationCount == 0 {
+		promptForMessages = prompt
+	}
+	messages := d.buildMessagesWithContext(promptForMessages)
 
 	// Get tool definitions for LLM
 	toolDefs := d.getArchitectToolsForLLM(toolProvider)
@@ -1823,7 +1828,12 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Build messages with context
-	messages := d.buildMessagesWithContext(prompt)
+	// Only pass prompt on first iteration - subsequent iterations use context history
+	var promptForMessages string
+	if iterationCount == 0 {
+		promptForMessages = prompt
+	}
+	messages := d.buildMessagesWithContext(promptForMessages)
 
 	// Get tool definitions for LLM
 	toolDefs := d.getArchitectToolsForLLM(toolProvider)
