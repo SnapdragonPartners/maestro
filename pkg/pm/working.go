@@ -133,6 +133,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		ToolProvider:   d.toolProvider, // PM's tool provider
 		MaxIterations:  10,
 		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
+		AgentID:        d.pmID,                   // Agent ID for tool context
 		DebugLogging:   false,                    // Enable for debugging: shows messages sent to LLM
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			// Process results and check for terminal signals

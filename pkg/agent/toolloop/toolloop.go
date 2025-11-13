@@ -35,6 +35,8 @@ func New(llmClient agent.LLMClient, logger *logx.Logger) *ToolLoop {
 }
 
 // Config defines how the tool loop behaves.
+//
+//nolint:govet // fieldalignment: struct fields ordered for clarity over memory alignment
 type Config struct {
 	// Context management (passed in, not owned by ToolLoop)
 	// Agent maintains ownership and may use different contexts per call (architect pattern)
@@ -53,10 +55,6 @@ type Config struct {
 	// Returns signal for state transition (e.g., "REQUEST_BUDGET")
 	OnIterationLimit func(ctx context.Context) (string, error)
 
-	// Initial prompt to add as user message (optional - may already be in context)
-	// If empty, uses existing context
-	InitialPrompt string
-
 	// Maximum tool call iterations
 	MaxIterations int
 
@@ -65,6 +63,14 @@ type Config struct {
 
 	// Debug settings
 	DebugLogging bool // Enable detailed debug logging for message formatting
+
+	// Initial prompt to add as user message (optional - may already be in context)
+	// If empty, uses existing context
+	InitialPrompt string
+
+	// Agent identification (optional - required for tools that need agent context)
+	// If set, will be added to context as tools.AgentIDContextKey when executing tools
+	AgentID string
 }
 
 // Run executes the tool loop with the given configuration.
@@ -182,9 +188,14 @@ func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (string, error) {
 				continue
 			}
 
-			// Execute tool
+			// Execute tool with agent context if provided
+			toolCtx := ctx
+			if cfg.AgentID != "" {
+				toolCtx = context.WithValue(ctx, tools.AgentIDContextKey, cfg.AgentID)
+			}
+
 			start := time.Now()
-			result, err := tool.Exec(ctx, toolCall.Parameters)
+			result, err := tool.Exec(toolCtx, toolCall.Parameters)
 			duration := time.Since(start)
 
 			if err != nil {
