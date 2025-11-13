@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -120,28 +121,38 @@ func ensureAlternation(messages []llm.CompletionMessage) (systemPrompt string, a
 	// Step 2: Merge consecutive non-assistant messages
 	var merged []llm.CompletionMessage
 	var currentUserParts []string
-	var currentUserCache *llm.CacheControl // Track cache control for merged message
+	var currentUserCache *llm.CacheControl  // Track cache control for merged message
+	var currentToolResults []llm.ToolResult // Track tool results for merged message
 
 	for i := range nonSystemMessages {
 		msg := &nonSystemMessages[i]
 
 		if msg.Role == llm.RoleAssistant {
 			// Flush any accumulated user messages first
-			if len(currentUserParts) > 0 {
+			if len(currentUserParts) > 0 || len(currentToolResults) > 0 {
 				merged = append(merged, llm.CompletionMessage{
 					Role:         llm.RoleUser,
 					Content:      strings.Join(currentUserParts, "\n\n"),
 					CacheControl: currentUserCache,
+					ToolResults:  currentToolResults,
 				})
 				currentUserParts = nil
 				currentUserCache = nil
+				currentToolResults = nil
 			}
 
 			// Add assistant message as-is
 			merged = append(merged, *msg)
 		} else {
 			// Accumulate non-assistant message (user, tool, etc. all become user)
-			currentUserParts = append(currentUserParts, msg.Content)
+			if msg.Content != "" {
+				currentUserParts = append(currentUserParts, msg.Content)
+			}
+
+			// Preserve tool results
+			if len(msg.ToolResults) > 0 {
+				currentToolResults = append(currentToolResults, msg.ToolResults...)
+			}
 
 			// Preserve cache control from last message in sequence (Anthropic only caches last block)
 			if msg.CacheControl != nil {
@@ -151,11 +162,12 @@ func ensureAlternation(messages []llm.CompletionMessage) (systemPrompt string, a
 	}
 
 	// Flush any remaining user messages
-	if len(currentUserParts) > 0 {
+	if len(currentUserParts) > 0 || len(currentToolResults) > 0 {
 		merged = append(merged, llm.CompletionMessage{
 			Role:         llm.RoleUser,
 			Content:      strings.Join(currentUserParts, "\n\n"),
 			CacheControl: currentUserCache,
+			ToolResults:  currentToolResults,
 		})
 	}
 
@@ -183,7 +195,34 @@ func ensureAlternation(messages []llm.CompletionMessage) (systemPrompt string, a
 		return "", nil, fmt.Errorf("last message must be user role, got: %s", lastMsg.Role)
 	}
 
+	// DEBUG: Log merged messages if debug logging enabled
+	if os.Getenv("DEBUG_LLM") == "1" {
+		fmt.Printf("[DEBUG ensureAlternation] Merged %d messages:\n", len(merged))
+		for i := range merged {
+			msg := &merged[i]
+			contentPreview := msg.Content
+			if len(contentPreview) > 50 {
+				contentPreview = contentPreview[:minInt(50, len(contentPreview))]
+			}
+			fmt.Printf("  [%d] Role=%s Content=%q ToolCalls=%d ToolResults=%d\n",
+				i, msg.Role, contentPreview, len(msg.ToolCalls), len(msg.ToolResults))
+			if len(msg.ToolResults) > 0 {
+				for j := range msg.ToolResults {
+					tr := &msg.ToolResults[j]
+					fmt.Printf("    ToolResult[%d] ID=%s IsError=%v\n", j, tr.ToolCallID, tr.IsError)
+				}
+			}
+		}
+	}
+
 	return systemPrompt, merged, nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Complete implements the llm.LLMClient interface.
@@ -210,7 +249,29 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 		// Build content blocks array - can include text, tool_use, and tool_result blocks
 		var contentBlocks []anthropic.ContentBlockParamUnion
 
-		// Add text content if present
+		// IMPORTANT: Add tool_result blocks FIRST for user messages (Anthropic requires them immediately after tool_use)
+		for j := range msg.ToolResults {
+			tr := &msg.ToolResults[j]
+			// Create tool result content with text block
+			toolResultTextBlock := anthropic.TextBlockParam{
+				Text: tr.Content,
+				Type: "text",
+			}
+			toolResultContentUnion := anthropic.ToolResultBlockParamContentUnion{}
+			toolResultContentUnion.OfText = &toolResultTextBlock
+
+			toolResultBlock := anthropic.ToolResultBlockParam{
+				Type:      "tool_result",
+				ToolUseID: tr.ToolCallID,
+				Content:   []anthropic.ToolResultBlockParamContentUnion{toolResultContentUnion},
+				IsError:   anthropic.Bool(tr.IsError),
+			}
+			contentBlock := anthropic.ContentBlockParamUnion{}
+			contentBlock.OfToolResult = &toolResultBlock
+			contentBlocks = append(contentBlocks, contentBlock)
+		}
+
+		// Add text content after tool results
 		if msg.Content != "" {
 			textBlock := anthropic.TextBlockParam{
 				Text: msg.Content,
@@ -256,28 +317,6 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 			}
 			contentBlock := anthropic.ContentBlockParamUnion{}
 			contentBlock.OfToolUse = &toolUseBlock
-			contentBlocks = append(contentBlocks, contentBlock)
-		}
-
-		// Add tool_result blocks for user messages with tool results
-		for j := range msg.ToolResults {
-			tr := &msg.ToolResults[j]
-			// Create tool result content with text block
-			toolResultTextBlock := anthropic.TextBlockParam{
-				Text: tr.Content,
-				Type: "text",
-			}
-			toolResultContentUnion := anthropic.ToolResultBlockParamContentUnion{}
-			toolResultContentUnion.OfText = &toolResultTextBlock
-
-			toolResultBlock := anthropic.ToolResultBlockParam{
-				Type:      "tool_result",
-				ToolUseID: tr.ToolCallID,
-				Content:   []anthropic.ToolResultBlockParamContentUnion{toolResultContentUnion},
-				IsError:   anthropic.Bool(tr.IsError),
-			}
-			contentBlock := anthropic.ContentBlockParamUnion{}
-			contentBlock.OfToolResult = &toolResultBlock
 			contentBlocks = append(contentBlocks, contentBlock)
 		}
 
@@ -378,6 +417,31 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 			// Default to auto for unknown values
 			params.ToolChoice = anthropic.ToolChoiceUnionParam{
 				OfAuto: &anthropic.ToolChoiceAutoParam{},
+			}
+		}
+	}
+
+	// DEBUG: Log what's being sent to Anthropic API if debug logging enabled
+	if os.Getenv("DEBUG_LLM") == "1" {
+		fmt.Printf("[DEBUG API Request] Sending %d messages to Anthropic:\n", len(messages))
+		for i := range messages {
+			msg := &messages[i]
+			fmt.Printf("  [%d] Role=%s ContentBlocks=%d\n", i, msg.Role, len(msg.Content))
+			// Try to inspect content blocks
+			for j, block := range msg.Content {
+				if block.OfText != nil {
+					textPreview := block.OfText.Text
+					if len(textPreview) > 50 {
+						textPreview = textPreview[:50]
+					}
+					fmt.Printf("    ContentBlock[%d] Type=text Text=%q\n", j, textPreview)
+				} else if block.OfToolUse != nil {
+					fmt.Printf("    ContentBlock[%d] Type=tool_use ID=%s Name=%s\n", j, block.OfToolUse.ID, block.OfToolUse.Name)
+				} else if block.OfToolResult != nil {
+					fmt.Printf("    ContentBlock[%d] Type=tool_result ToolUseID=%s\n", j, block.OfToolResult.ToolUseID)
+				} else {
+					fmt.Printf("    ContentBlock[%d] Type=unknown\n", j)
+				}
 			}
 		}
 	}

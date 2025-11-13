@@ -248,8 +248,6 @@ func createMockPMAgent(t *testing.T, dispatcher *dispatch.Dispatcher) *Driver {
 
 	contextManager := contextmgr.NewContextManagerWithModel("claude-sonnet-4")
 
-	interviewRequestCh := make(chan *proto.AgentMsg, 10)
-
 	driver := &Driver{
 		pmID:               "pm-test-001",
 		llmClient:          nil, // Mock LLM client
@@ -259,7 +257,6 @@ func createMockPMAgent(t *testing.T, dispatcher *dispatch.Dispatcher) *Driver {
 		persistenceChannel: make(chan *persistence.Request),
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
-		interviewRequestCh: interviewRequestCh,
 		workDir:            "/tmp/test-pm",
 	}
 

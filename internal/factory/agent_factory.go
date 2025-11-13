@@ -15,7 +15,6 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/pm"
-	"orchestrator/pkg/proto"
 )
 
 // AgentFactory creates agents with minimal dependencies.
@@ -159,25 +158,20 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 	// Determine work directory from config
 	workDir := getWorkDirFromConfig(&cfg)
 
-	// Create interview request channel
-	// TODO: This should be wired to WebUI for receiving interview requests
-	// For now, create a buffered channel that will be used when WebUI integration is complete
-	interviewRequestCh := make(chan *proto.AgentMsg, 10)
-
 	// Register PM for chat channels (product channel only) BEFORE construction
 	// so chat service is ready when PM needs it
 	f.chatService.RegisterAgent(agentID, []string{"product"})
 
 	// Create PM with shared LLM factory and chat service
+	// PM now uses direct methods (StartInterview, UploadSpec) called by WebUI handlers
 	pmAgent, err := pm.NewPM(
 		ctx,
 		agentID,
 		f.dispatcher,
 		workDir,
 		f.persistenceChannel,
-		f.llmFactory,       // Shared factory for rate limiting
-		interviewRequestCh, // Interview requests from WebUI
-		f.chatService,      // Chat service for polling new messages
+		f.llmFactory,  // Shared factory for rate limiting
+		f.chatService, // Chat service for polling new messages
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PM: %w", err)

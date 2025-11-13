@@ -596,6 +596,10 @@ func (cm *ContextManager) FlushUserBuffer(ctx context.Context) error {
 				contentParts = append(contentParts, fragment.Content)
 			}
 			combinedContent = strings.Join(contentParts, "\n\n")
+		} else if len(cm.pendingToolResults) > 0 {
+			// Add minimal content when we have tool results but no buffer content
+			// Anthropic API requires non-empty content field even with ToolResults
+			combinedContent = "Tool results:"
 		}
 
 		// Determine provenance based on what we're including

@@ -301,6 +301,11 @@ type MetricsConfig struct {
 	PrometheusURL string `json:"prometheus_url"` // Prometheus server URL for querying metrics
 }
 
+// DebugConfig defines configuration for debug logging.
+type DebugConfig struct {
+	LLMMessages bool `json:"llm_messages"` // Enable debug logging for LLM message formatting (default: false)
+}
+
 // AgentConfig defines which models to use and concurrency limits.
 type AgentConfig struct {
 	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
@@ -462,6 +467,7 @@ type Config struct {
 	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
 	PM        *PMConfig        `json:"pm"`        // PM agent settings
 	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
+	Debug     *DebugConfig     `json:"debug"`     // Debug settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -926,6 +932,9 @@ func createDefaultConfig() *Config {
 		},
 		Logs: &LogsConfig{
 			RotationCount: 4, // Keep last 4 log files
+		},
+		Debug: &DebugConfig{
+			LLMMessages: false, // Disabled by default
 		},
 	}
 }

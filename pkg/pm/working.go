@@ -80,6 +80,8 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 }
 
 // renderWorkingPrompt renders the PM working template with current state.
+//
+//nolint:unused // Reserved for future PM template rendering functionality
 func (d *Driver) renderWorkingPrompt() (string, error) {
 	// Get conversation history from state
 	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)

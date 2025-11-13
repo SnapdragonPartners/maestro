@@ -54,7 +54,6 @@ func createTestDriver(t *testing.T) *Driver {
 		t.Fatalf("Failed to create dispatcher: %v", err)
 	}
 	persistenceChannel := make(chan *persistence.Request, 100)
-	interviewRequestCh := make(chan *proto.AgentMsg, 10)
 
 	driver := &Driver{
 		pmID:               "pm-test-001",
@@ -66,7 +65,6 @@ func createTestDriver(t *testing.T) *Driver {
 		persistenceChannel: persistenceChannel,
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
-		interviewRequestCh: interviewRequestCh,
 		workDir:            "/tmp/test-pm",
 		toolProvider:       nil, // No tool provider needed for basic tests
 	}
@@ -115,9 +113,7 @@ func TestSetChannels(t *testing.T) {
 
 	driver.SetChannels(specCh, nil, replyCh)
 
-	if driver.interviewRequestCh == nil {
-		t.Error("Expected interviewRequestCh to be set")
-	}
+	// Only check replyCh - user input channels no longer exist (direct methods instead)
 	if driver.replyCh == nil {
 		t.Error("Expected replyCh to be set")
 	}

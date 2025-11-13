@@ -7,6 +7,7 @@ class PMController {
         this.sessionID = null;
         this.messageCount = 0;
         this.pmState = 'UNKNOWN';
+        this.previewLoaded = false; // Track if preview has been loaded
         this.initializeEventListeners();
         this.startStatusPolling();
         // Activate interview tab on load
@@ -90,7 +91,13 @@ class PMController {
     }
 
     updatePMStatus(status) {
+        const previousState = this.pmState;
         this.pmState = status.state;
+
+        // Reset previewLoaded flag when leaving PREVIEW state
+        if (previousState === 'PREVIEW' && status.state !== 'PREVIEW') {
+            this.previewLoaded = false;
+        }
 
         // Update status badge
         const badge = document.getElementById('pm-status-badge');
@@ -108,12 +115,15 @@ class PMController {
                 break;
             case 'PREVIEW':
                 badge.classList.add('bg-yellow-100', 'text-yellow-800');
-                // Auto-switch to preview tab and load spec
+                // Auto-switch to preview tab and load spec (only once)
                 if (this.currentTab !== 'preview') {
                     this.switchTab('preview');
                 }
-                // Load the spec in PREVIEW state
-                this.loadPreviewSpec();
+                // Load the spec only once when entering PREVIEW state
+                if (!this.previewLoaded) {
+                    this.previewLoaded = true;
+                    this.loadPreviewSpec();
+                }
                 break;
             case 'AWAIT_ARCHITECT':
                 badge.classList.add('bg-purple-100', 'text-purple-800');

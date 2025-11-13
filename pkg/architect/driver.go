@@ -610,6 +610,47 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList 
 		d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools (iteration %d)",
 			d.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs), iteration+1)
 
+		// DEBUG: Log the actual messages being sent to LLM
+		d.logger.Info("📝 DEBUG - Messages sent to LLM:")
+		for i := range messages {
+			msg := &messages[i]
+			contentPreview := msg.Content
+			if len(contentPreview) > 100 {
+				contentPreview = contentPreview[:100] + "..."
+			}
+
+			// Show tool calls and results in addition to content
+			toolInfo := ""
+			if len(msg.ToolCalls) > 0 {
+				toolInfo = fmt.Sprintf(", ToolCalls: %d", len(msg.ToolCalls))
+			}
+			if len(msg.ToolResults) > 0 {
+				toolInfo += fmt.Sprintf(", ToolResults: %d", len(msg.ToolResults))
+			}
+
+			d.logger.Info("  [%d] Role: %s, Content: %q%s", i, msg.Role, contentPreview, toolInfo)
+
+			// DEBUG: Log tool calls inline with assistant messages
+			if len(msg.ToolCalls) > 0 {
+				for j := range msg.ToolCalls {
+					tc := &msg.ToolCalls[j]
+					d.logger.Info("    ToolCall[%d] ID=%s Name=%s Params=%v", j, tc.ID, tc.Name, tc.Parameters)
+				}
+			}
+
+			// DEBUG: Log tool results inline with user messages
+			if len(msg.ToolResults) > 0 {
+				for j := range msg.ToolResults {
+					tr := &msg.ToolResults[j]
+					resultPreview := tr.Content
+					if len(resultPreview) > 200 {
+						resultPreview = resultPreview[:200] + "..."
+					}
+					d.logger.Info("    ToolResult[%d] ID=%s IsError=%v Content=%q", j, tr.ToolCallID, tr.IsError, resultPreview)
+				}
+			}
+		}
+
 		start := time.Now()
 		resp, err := d.llmClient.Complete(ctx, req)
 		duration := time.Since(start)

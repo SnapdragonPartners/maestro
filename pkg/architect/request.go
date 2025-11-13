@@ -2007,11 +2007,16 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	templateName := fmt.Sprintf("spec-review-%s", requestMsg.ID)
 	d.contextManager.ResetForNewTemplate(templateName, prompt)
 
+	// Add initial user message to start the conversation properly
+	// This prevents FlushUserBuffer from adding a fallback message
+	d.contextManager.AddMessage("user", "Please analyze this specification.")
+
 	// Get SCOPING tools for spec review (spec_feedback, submit_stories)
 	scopingTools := d.getScopingTools()
 
 	// Call LLM with SCOPING tools
-	signal, err := d.callLLMWithTools(ctx, prompt, scopingTools)
+	// Pass empty string since prompt was already set in system message and we added initial user message
+	signal, err := d.callLLMWithTools(ctx, "", scopingTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
 	}

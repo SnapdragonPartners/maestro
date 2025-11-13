@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,6 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/chat"
-	"orchestrator/pkg/proto"
 )
 
 const errDispatcherNotAvailable = "dispatcher not available"
@@ -107,22 +107,32 @@ func (s *Server) handlePMStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get PM agent from dispatcher
+	pmAgent := s.dispatcher.GetAgent("pm-001")
+	if pmAgent == nil {
+		http.Error(w, "PM agent not found", http.StatusNotFound)
+		return
+	}
+
+	// Type assert to PM driver to access StartInterview method
+	type InterviewStarter interface {
+		StartInterview(expertise string) error
+	}
+
+	pmDriver, ok := pmAgent.(InterviewStarter)
+	if !ok {
+		s.logger.Error("PM agent does not implement InterviewStarter interface")
+		http.Error(w, "PM agent does not support interview start", http.StatusInternalServerError)
+		return
+	}
+
 	// Generate session ID (use timestamp-based ID like message IDs)
 	sessionID := fmt.Sprintf("pm_session_%d", time.Now().UnixNano())
 
-	// Create interview request message
-	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "web-ui", "pm-001")
-	payload := map[string]any{
-		"type":       "interview_start",
-		"session_id": sessionID,
-		"expertise":  req.Expertise,
-	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, payload))
-
-	// Send to PM agent
+	// Call PM's StartInterview method directly
 	s.logger.Info("Starting PM interview session %s (expertise: %s)", sessionID, req.Expertise)
-	if err := s.dispatcher.DispatchMessage(msg); err != nil {
-		s.logger.Error("Failed to dispatch PM start message: %v", err)
+	if err := pmDriver.StartInterview(req.Expertise); err != nil {
+		s.logger.Error("Failed to start PM interview: %v", err)
 		http.Error(w, "Failed to start interview", http.StatusInternalServerError)
 		return
 	}
@@ -239,6 +249,8 @@ func (s *Server) handlePMSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePMUpload implements POST /api/pm/upload - Upload a spec file directly to PM (bypass interview).
+//
+//nolint:cyclop // HTTP handler with validation steps, acceptable complexity
 func (s *Server) handlePMUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -296,18 +308,29 @@ func (s *Server) handlePMUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create spec upload message to PM
-	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "web-ui", "pm-001")
-	payload := map[string]any{
-		"type":          "spec_upload",
-		"filename":      header.Filename,
-		"spec_markdown": string(content),
+	// Get PM agent from dispatcher
+	pmAgent := s.dispatcher.GetAgent("pm-001")
+	if pmAgent == nil {
+		http.Error(w, "PM agent not found", http.StatusNotFound)
+		return
 	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, payload))
 
-	s.logger.Info("Dispatching spec upload to PM: %s (%d bytes)", header.Filename, header.Size)
-	if err := s.dispatcher.DispatchMessage(msg); err != nil {
-		s.logger.Error("Failed to dispatch upload message to PM: %v", err)
+	// Type assert to PM driver to access UploadSpec method
+	type SpecUploader interface {
+		UploadSpec(markdown string) error
+	}
+
+	pmDriver, ok := pmAgent.(SpecUploader)
+	if !ok {
+		s.logger.Error("PM agent does not implement SpecUploader interface")
+		http.Error(w, "PM agent does not support spec upload", http.StatusInternalServerError)
+		return
+	}
+
+	// Call PM's UploadSpec method directly
+	s.logger.Info("Uploading spec to PM: %s (%d bytes)", header.Filename, header.Size)
+	if err := pmDriver.UploadSpec(string(content)); err != nil {
+		s.logger.Error("Failed to upload spec to PM: %v", err)
 		http.Error(w, "Failed to send spec to PM", http.StatusInternalServerError)
 		return
 	}
@@ -364,18 +387,29 @@ func (s *Server) handlePMPreviewAction(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("PM preview action received (session: %s, action: %s)", req.SessionID, req.Action)
 
-	// Create preview action message to PM
-	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "web-ui", "pm-001")
-	payload := map[string]any{
-		"type":       "preview_action",
-		"session_id": req.SessionID,
-		"action":     req.Action,
+	// Get PM agent from dispatcher
+	pmAgent := s.dispatcher.GetAgent("pm-001")
+	if pmAgent == nil {
+		http.Error(w, "PM agent not found", http.StatusNotFound)
+		return
 	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, payload))
 
-	// Send to PM agent via interviewRequestCh
-	if err := s.dispatcher.DispatchMessage(msg); err != nil {
-		s.logger.Error("Failed to dispatch preview action to PM: %v", err)
+	// Type assert to PM driver to access PreviewAction method
+	type PreviewActioner interface {
+		PreviewAction(ctx context.Context, action string) error
+	}
+
+	pmDriver, ok := pmAgent.(PreviewActioner)
+	if !ok {
+		s.logger.Error("PM agent does not implement PreviewActioner interface")
+		http.Error(w, "PM agent does not support preview actions", http.StatusInternalServerError)
+		return
+	}
+
+	// Call PM's PreviewAction method directly
+	ctx := r.Context()
+	if err := pmDriver.PreviewAction(ctx, req.Action); err != nil {
+		s.logger.Error("Failed to send preview action to PM: %v", err)
 		http.Error(w, "Failed to send action to PM", http.StatusInternalServerError)
 		return
 	}
