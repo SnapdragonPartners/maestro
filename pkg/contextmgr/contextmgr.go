@@ -547,6 +547,11 @@ func (cm *ContextManager) ResetForNewTemplate(templateName, systemPrompt string)
 		Provenance: "system-prompt",
 	}}
 	cm.userBuffer = cm.userBuffer[:0]
+
+	// Clear pending tool state to prevent stale tool_use_id references
+	cm.pendingToolCalls = nil
+	cm.pendingToolResults = nil
+
 	cm.currentTemplate = templateName
 }
 
