@@ -13,7 +13,6 @@ func TestArchitectStateString(t *testing.T) {
 		expected string
 	}{
 		{StateWaiting, "WAITING"},
-		{StateScoping, "SCOPING"},
 		{StateDispatching, "DISPATCHING"},
 		{StateMonitoring, "MONITORING"},
 		{StateRequest, "REQUEST"},
@@ -41,13 +40,8 @@ func TestIsValidArchitectTransition(t *testing.T) {
 		name string
 	}{
 		// WAITING transitions.
-		{StateWaiting, StateScoping, "WAITING -> SCOPING (spec received)"},
-		{StateWaiting, StateRequest, "WAITING -> REQUEST (question received)"},
+		{StateWaiting, StateRequest, "WAITING -> REQUEST (any request received)"},
 		{StateWaiting, StateError, "WAITING -> ERROR (channel closed/abnormal shutdown)"},
-
-		// SCOPING transitions.
-		{StateScoping, StateDispatching, "SCOPING -> DISPATCHING (stories queued)"},
-		{StateScoping, StateError, "SCOPING -> ERROR (unrecoverable error)"},
 
 		// DISPATCHING transitions.
 		{StateDispatching, StateMonitoring, "DISPATCHING -> MONITORING (stories on work-queue)"},
@@ -58,8 +52,9 @@ func TestIsValidArchitectTransition(t *testing.T) {
 		{StateMonitoring, StateError, "MONITORING -> ERROR (channel closed/abnormal shutdown)"},
 
 		// REQUEST transitions.
+		{StateRequest, StateWaiting, "REQUEST -> WAITING (no spec work)"},
 		{StateRequest, StateMonitoring, "REQUEST -> MONITORING (approve non-code/request changes)"},
-		{StateRequest, StateDispatching, "REQUEST -> DISPATCHING (successful merge)"},
+		{StateRequest, StateDispatching, "REQUEST -> DISPATCHING (successful merge or spec approval)"},
 		{StateRequest, StateEscalated, "REQUEST -> ESCALATED (cannot answer)"},
 		{StateRequest, StateError, "REQUEST -> ERROR (abandon/unrecoverable)"},
 
@@ -98,43 +93,28 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateWaiting, StateEscalated, "WAITING -> ESCALATED (invalid)"},
 		{StateWaiting, StateDone, "WAITING -> DONE (invalid)"},
 
-		// Invalid SCOPING transitions.
-		{StateScoping, StateWaiting, "SCOPING -> WAITING (invalid)"},
-		{StateScoping, StateMonitoring, "SCOPING -> MONITORING (invalid)"},
-		{StateScoping, StateRequest, "SCOPING -> REQUEST (invalid)"},
-		{StateScoping, StateEscalated, "SCOPING -> ESCALATED (invalid)"},
-		{StateScoping, StateDone, "SCOPING -> DONE (invalid)"},
-
 		// Invalid DISPATCHING transitions.
 		{StateDispatching, StateWaiting, "DISPATCHING -> WAITING (invalid)"},
-		{StateDispatching, StateScoping, "DISPATCHING -> SCOPING (invalid)"},
 		{StateDispatching, StateRequest, "DISPATCHING -> REQUEST (invalid)"},
 		{StateDispatching, StateEscalated, "DISPATCHING -> ESCALATED (invalid)"},
 		{StateDispatching, StateError, "DISPATCHING -> ERROR (invalid)"},
 
 		// Invalid MONITORING transitions.
 		{StateMonitoring, StateWaiting, "MONITORING -> WAITING (invalid)"},
-		{StateMonitoring, StateScoping, "MONITORING -> SCOPING (invalid)"},
 		{StateMonitoring, StateDispatching, "MONITORING -> DISPATCHING (invalid)"},
 		{StateMonitoring, StateEscalated, "MONITORING -> ESCALATED (invalid)"},
 		{StateMonitoring, StateDone, "MONITORING -> DONE (invalid)"},
 
-		// Invalid REQUEST transitions
-		{StateRequest, StateWaiting, "REQUEST -> WAITING (invalid)"},
-		{StateRequest, StateScoping, "REQUEST -> SCOPING (invalid)"},
+		// Invalid REQUEST transitions (REQUEST -> WAITING is now valid)
 		{StateRequest, StateDone, "REQUEST -> DONE (invalid)"},
 
 		// Invalid ESCALATED transitions.
 		{StateEscalated, StateWaiting, "ESCALATED -> WAITING (invalid)"},
-		{StateEscalated, StateScoping, "ESCALATED -> SCOPING (invalid)"},
 		{StateEscalated, StateDispatching, "ESCALATED -> DISPATCHING (invalid)"},
 		{StateEscalated, StateMonitoring, "ESCALATED -> MONITORING (invalid)"},
 		{StateEscalated, StateDone, "ESCALATED -> DONE (invalid)"},
 
-		// Invalid MERGING transitions.
-
 		// Invalid DONE transitions (can only go to WAITING)
-		{StateDone, StateScoping, "DONE -> SCOPING (invalid)"},
 		{StateDone, StateDispatching, "DONE -> DISPATCHING (invalid)"},
 		{StateDone, StateMonitoring, "DONE -> MONITORING (invalid)"},
 		{StateDone, StateRequest, "DONE -> REQUEST (invalid)"},
@@ -142,7 +122,6 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateDone, StateError, "DONE -> ERROR (invalid)"},
 
 		// Invalid ERROR transitions (can only go to WAITING)
-		{StateError, StateScoping, "ERROR -> SCOPING (invalid)"},
 		{StateError, StateDispatching, "ERROR -> DISPATCHING (invalid)"},
 		{StateError, StateMonitoring, "ERROR -> MONITORING (invalid)"},
 		{StateError, StateRequest, "ERROR -> REQUEST (invalid)"},
@@ -170,7 +149,6 @@ func TestGetAllArchitectStates(t *testing.T) {
 	states := GetAllArchitectStates()
 	expected := []proto.State{
 		StateWaiting,
-		StateScoping,
 		StateDispatching,
 		StateMonitoring,
 		StateRequest,
@@ -196,7 +174,6 @@ func TestIsTerminalState(t *testing.T) {
 		expected bool
 	}{
 		{StateWaiting, false},
-		{StateScoping, false},
 		{StateDispatching, false},
 		{StateMonitoring, false},
 		{StateRequest, false},
@@ -219,7 +196,6 @@ func TestIsValidArchitectState(t *testing.T) {
 	// Test all valid states.
 	validStates := []proto.State{
 		StateWaiting,
-		StateScoping,
 		StateDispatching,
 		StateMonitoring,
 		StateRequest,
@@ -272,9 +248,10 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateScoping, StateRequest, StateError}},
-		{StateScoping, []proto.State{StateDispatching, StateError}},
+		{StateWaiting, []proto.State{StateRequest, StateError}},
 		{StateDispatching, []proto.State{StateMonitoring, StateDone}},
+		{StateMonitoring, []proto.State{StateRequest, StateError}},
+		{StateRequest, []proto.State{StateWaiting, StateMonitoring, StateDispatching, StateEscalated, StateError}},
 		{StateEscalated, []proto.State{StateRequest, StateError}},
 		{StateDone, []proto.State{StateWaiting}},
 		{StateError, []proto.State{StateWaiting}},
@@ -323,7 +300,7 @@ func TestTransitionMapIntegrity(t *testing.T) {
 // Benchmarks for performance validation.
 func BenchmarkIsValidArchitectTransition(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		IsValidArchitectTransition(StateWaiting, StateScoping)
+		IsValidArchitectTransition(StateWaiting, StateRequest)
 	}
 }
 

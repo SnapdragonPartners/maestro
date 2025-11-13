@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -265,15 +266,31 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		}
 	}
 
+	// Check if spec was approved and loaded (PM spec approval flow)
+	var specApprovedAndLoaded bool
+	if approved, exists := d.stateData["spec_approved_and_loaded"]; exists {
+		if approvedBool, ok := approved.(bool); ok && approvedBool {
+			specApprovedAndLoaded = true
+			d.logger.Info("🎉 Spec approved and stories loaded, transitioning to DISPATCHING")
+		}
+	}
+
 	// Clear the processed request and acceptance signals
 	delete(d.stateData, "current_request")
 	delete(d.stateData, "last_response")
 	delete(d.stateData, "work_accepted")
 	delete(d.stateData, "accepted_story_id")
 	delete(d.stateData, "acceptance_type")
+	delete(d.stateData, "spec_approved_and_loaded")
 
-	// Determine next state - work acceptance (completion or merge) transitions to DISPATCHING
-	if workWasAccepted && d.ownsSpec() {
+	// Determine next state:
+	// 1. Spec approval (PM flow) → DISPATCHING
+	// 2. Work acceptance (completion or merge) → DISPATCHING
+	// 3. Owns spec but no acceptance → MONITORING
+	// 4. No spec ownership → WAITING
+	if specApprovedAndLoaded {
+		return StateDispatching, nil
+	} else if workWasAccepted && d.ownsSpec() {
 		return StateDispatching, nil
 	} else if d.ownsSpec() {
 		return StateMonitoring, nil
@@ -362,6 +379,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	// If using iteration and we have LLM and executor, use iterative review
 	if useIteration && d.llmClient != nil && d.executor != nil {
 		return d.handleIterativeApproval(ctx, requestMsg, approvalPayload)
+	}
+
+	// Handle spec review approval with spec review tools
+	if approvalType == proto.ApprovalTypeSpec && d.llmClient != nil {
+		return d.handleSpecReview(ctx, requestMsg, approvalPayload)
 	}
 
 	// Approval request processing will be logged to database only
@@ -1431,7 +1453,13 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, ErrEscalationTriggered
 	}
 
-	// Create tool provider (lazily, once per request)
+	// Extract coder ID from request (sender)
+	coderID := requestMsg.FromAgent
+	if coderID == "" {
+		return nil, fmt.Errorf("approval request message missing sender (FromAgent)")
+	}
+
+	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf("tool_provider_%s", storyID)
 	var toolProvider *tools.ToolProvider
 	if tp, exists := d.stateData[toolProviderKey]; exists {
@@ -1441,13 +1469,11 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 			return nil, fmt.Errorf("invalid tool provider type in state data")
 		}
 	} else {
-		toolProvider = d.createReadToolProvider()
+		// Create tool provider rooted at the coder's container workspace
+		toolProvider = d.createReadToolProviderForCoder(coderID)
 		d.stateData[toolProviderKey] = toolProvider
-		d.logger.Debug("Created read tool provider for approval %s", storyID)
+		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
 	}
-
-	// Get coder ID from request (extract from FromAgent)
-	coderID := requestMsg.FromAgent
 
 	// Build prompt based on approval type
 	var prompt string
@@ -1474,12 +1500,17 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	}
 
 	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(); err != nil {
+	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
 		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
 	}
 
 	// Build messages with context
-	messages := d.buildMessagesWithContext(prompt)
+	// Only pass prompt on first iteration - subsequent iterations use context history
+	var promptForMessages string
+	if iterationCount == 0 {
+		promptForMessages = prompt
+	}
+	messages := d.buildMessagesWithContext(promptForMessages)
 
 	// Get tool definitions for LLM
 	toolDefs := d.getArchitectToolsForLLM(toolProvider)
@@ -1497,9 +1528,22 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
 
-	// Handle LLM response
-	if err := d.handleLLMResponse(resp); err != nil {
-		return nil, fmt.Errorf("LLM response handling failed: %w", err)
+	// Add assistant response to context with structured tool calls (same as PM pattern)
+	if len(resp.ToolCalls) > 0 {
+		// Use structured tool call tracking
+		// Convert agent.ToolCall to contextmgr.ToolCall
+		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolCalls[i] = contextmgr.ToolCall{
+				ID:         resp.ToolCalls[i].ID,
+				Name:       resp.ToolCalls[i].Name,
+				Parameters: resp.ToolCalls[i].Parameters,
+			}
+		}
+		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+	} else {
+		// No tool calls - just content
+		d.contextManager.AddAssistantMessage(resp.Content)
 	}
 
 	// Process tool calls
@@ -1522,8 +1566,20 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, nil
 	}
 
-	// No tool calls and no submit_reply - this is an error
-	return nil, fmt.Errorf("LLM response contained no tool calls and no submit_reply signal")
+	// No tool calls - nudge the LLM to use submit_reply tool
+	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
+
+	// Increment iteration count before nudging
+	iterationCount++
+	d.stateData[iterationKey] = iterationCount
+
+	// Add nudge to context
+	nudgeMessage := "You must use the submit_reply tool to provide your decision. Please call submit_reply with your approval/rejection decision and reasoning."
+	d.contextManager.AddMessage("system", nudgeMessage)
+
+	// Return nil to signal continuation (state machine will call us again)
+	//nolint:nilnil // Intentional: nil response signals continuation after nudge
+	return nil, nil
 }
 
 // generateIterativeCodeReviewPrompt creates a prompt for iterative code review.
@@ -1557,13 +1613,20 @@ You are the architect reviewing code changes from %s for story: %s
 ## Your Task
 
 Review the code changes by:
-1. Use **list_files** to see what files the coder modified (pass coder_id: "%s")
+1. Use **list_files** to see what files the coder modified
 2. Use **read_file** to inspect specific files that need review
 3. Use **get_diff** to see the actual changes made
 4. Analyze the code quality, correctness, and adherence to requirements
 
-When you have completed your review, call **submit_reply** with your decision:
-- Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
+**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
+
+## REQUIRED: Submit Your Decision
+
+**You MUST call the submit_reply tool to provide your final decision.** Do not respond with text only.
+
+Call **submit_reply** with your decision in this format:
+- **response**: Your complete decision as a string
+- Must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
 - Follow with specific feedback explaining your decision
 
 ## Available Tools
@@ -1575,9 +1638,9 @@ When you have completed your review, call **submit_reply** with your decision:
 - You can explore the coder's workspace at /mnt/coders/%s
 - You have read-only access to all their files
 - Take your time to review thoroughly before submitting your decision
-- Use multiple tool calls to gather all information you need
+- **Remember: You MUST use submit_reply to send your final decision**
 
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, toolDocs, coderID)
+Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
 }
 
 // generateIterativeCompletionPrompt creates a prompt for iterative completion review.
@@ -1611,10 +1674,12 @@ You are the architect reviewing a completion request from %s for story: %s
 ## Your Task
 
 Verify the story is complete by:
-1. Use **list_files** to see what files were created/modified (pass coder_id: "%s")
+1. Use **list_files** to see what files were created/modified
 2. Use **read_file** to inspect the implementation
 3. Use **get_diff** to see all changes made vs main branch
 4. Verify all acceptance criteria are met
+
+**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
 
 When you have completed your review, call **submit_reply** with your decision:
 - Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
@@ -1631,7 +1696,7 @@ When you have completed your review, call **submit_reply** with your decision:
 - Check for code quality, tests, documentation as needed
 - Be thorough but fair in your assessment
 
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, toolDocs, coderID)
+Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
 }
 
 // getArchitectToolsForLLM converts tool metadata to LLM tool definitions.
@@ -1748,7 +1813,13 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, ErrEscalationTriggered
 	}
 
-	// Create tool provider (lazily, once per request)
+	// Extract coder ID from request (sender)
+	coderID := requestMsg.FromAgent
+	if coderID == "" {
+		return nil, fmt.Errorf("question message missing sender (FromAgent)")
+	}
+
+	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf("tool_provider_%s", requestMsg.ID)
 	var toolProvider *tools.ToolProvider
 	if tp, exists := d.stateData[toolProviderKey]; exists {
@@ -1758,13 +1829,11 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 			return nil, fmt.Errorf("invalid tool provider type in state data")
 		}
 	} else {
-		toolProvider = d.createReadToolProvider()
+		// Create tool provider rooted at the coder's container workspace
+		toolProvider = d.createReadToolProviderForCoder(coderID)
 		d.stateData[toolProviderKey] = toolProvider
-		d.logger.Debug("Created read tool provider for question %s", requestMsg.ID)
+		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s", coderID, coderID)
 	}
-
-	// Get coder ID from request
-	coderID := requestMsg.FromAgent
 
 	// Build prompt for technical question
 	prompt := d.generateIterativeQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
@@ -1783,12 +1852,17 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Flush user buffer before LLM request
-	if flushErr := d.contextManager.FlushUserBuffer(); flushErr != nil {
+	if flushErr := d.contextManager.FlushUserBuffer(ctx); flushErr != nil {
 		return nil, fmt.Errorf("failed to flush user buffer: %w", flushErr)
 	}
 
 	// Build messages with context
-	messages := d.buildMessagesWithContext(prompt)
+	// Only pass prompt on first iteration - subsequent iterations use context history
+	var promptForMessages string
+	if iterationCount == 0 {
+		promptForMessages = prompt
+	}
+	messages := d.buildMessagesWithContext(promptForMessages)
 
 	// Get tool definitions for LLM
 	toolDefs := d.getArchitectToolsForLLM(toolProvider)
@@ -1806,9 +1880,22 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
 
-	// Handle LLM response
-	if err := d.handleLLMResponse(resp); err != nil {
-		return nil, fmt.Errorf("LLM response handling failed: %w", err)
+	// Add assistant response to context with structured tool calls (same as PM pattern)
+	if len(resp.ToolCalls) > 0 {
+		// Use structured tool call tracking
+		// Convert agent.ToolCall to contextmgr.ToolCall
+		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolCalls[i] = contextmgr.ToolCall{
+				ID:         resp.ToolCalls[i].ID,
+				Name:       resp.ToolCalls[i].Name,
+				Parameters: resp.ToolCalls[i].Parameters,
+			}
+		}
+		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+	} else {
+		// No tool calls - just content
+		d.contextManager.AddAssistantMessage(resp.Content)
 	}
 
 	// Process tool calls
@@ -1830,8 +1917,20 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, nil
 	}
 
-	// No tool calls and no submit_reply - this is an error
-	return nil, fmt.Errorf("LLM response contained no tool calls and no submit_reply signal")
+	// No tool calls - nudge the LLM to use submit_reply tool
+	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
+
+	// Increment iteration count before nudging
+	iterationCount++
+	d.stateData[iterationKey] = iterationCount
+
+	// Add nudge to context
+	nudgeMessage := "You must use the submit_reply tool to provide your answer. Please call submit_reply with your response as the 'content' parameter."
+	d.contextManager.AddMessage("system", nudgeMessage)
+
+	// Return nil to signal continuation (state machine will call us again)
+	//nolint:nilnil // Intentional: nil response signals continuation after nudge
+	return nil, nil
 }
 
 // generateIterativeQuestionPrompt creates a prompt for iterative technical question answering.
@@ -1865,12 +1964,21 @@ You are the architect answering a technical question from %s working on story: %
 ## Your Task
 
 Answer the technical question by:
-1. Use **list_files** to see what files exist in the coder's workspace (pass coder_id: "%s")
+1. Use **list_files** to see what files exist in the coder's workspace
 2. Use **read_file** to inspect relevant code files that relate to the question
 3. Use **get_diff** to see what changes the coder has made so far
 4. Analyze the codebase context to provide an informed answer
 
-When you have formulated your answer, call **submit_reply** with your response:
+**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
+
+## REQUIRED: Submit Your Answer
+
+**You MUST call the submit_reply tool to provide your final answer.** Do not respond with text only.
+
+Call **submit_reply** with your response in this format:
+- **response**: Your complete answer as a string
+
+Your answer should:
 - Provide a clear, actionable answer to the question
 - Reference specific files, functions, or patterns when helpful
 - Suggest concrete next steps if applicable
@@ -1884,9 +1992,9 @@ When you have formulated your answer, call **submit_reply** with your response:
 - You can explore the coder's workspace at /mnt/coders/%s
 - You have read-only access to their files
 - Use the tools to understand context before answering
-- Provide specific, actionable guidance based on the actual code
+- **Remember: You MUST use submit_reply to send your final answer**
 
-Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, toolDocs, coderID)
+Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, coderID, toolDocs, coderID)
 }
 
 // buildQuestionResponseFromSubmit creates a question response from submit_reply content.
@@ -1914,5 +2022,130 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	}
 
 	d.logger.Info("✅ Built question response via iterative exploration")
+	return response, nil
+}
+
+// handleSpecReview processes a spec review approval request from PM.
+// Uses spec review tools (spec_feedback, submit_stories) for iterative review.
+func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	d.logger.Info("🔍 Architect reviewing spec from PM")
+
+	// Extract spec markdown from Content (the critical field for approval requests)
+	specMarkdown := approvalPayload.Content
+	if specMarkdown == "" {
+		return nil, fmt.Errorf("spec markdown not found in approval request Content field")
+	}
+
+	d.logger.Info("📄 Spec content length: %d bytes", len(specMarkdown))
+
+	// Prepare template data for spec review
+	templateData := &templates.TemplateData{
+		TaskContent: specMarkdown,
+		Extra: map[string]any{
+			"mode":   "spec_review",
+			"reason": approvalPayload.Reason,
+		},
+	}
+
+	// Render spec review template
+	prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, templateData, d.workDir, "ARCHITECT")
+	if err != nil {
+		return nil, fmt.Errorf("failed to render spec review template: %w", err)
+	}
+
+	// Reset context for new spec review
+	templateName := fmt.Sprintf("spec-review-%s", requestMsg.ID)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
+
+	// Add initial user message to start the conversation properly
+	// This prevents FlushUserBuffer from adding a fallback message
+	d.contextManager.AddMessage("user", "Please analyze this specification.")
+
+	// Get spec review tools (spec_feedback, submit_stories)
+	specReviewTools := d.getSpecReviewTools()
+
+	// Call LLM with spec review tools
+	// Pass empty string since prompt was already set in system message and we added initial user message
+	signal, err := d.callLLMWithTools(ctx, "", specReviewTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
+	}
+
+	// Process tool signal and create RESULT message
+	var approved bool
+	var feedback string
+
+	switch signal {
+	case signalSpecFeedbackSent:
+		// Architect requested changes via spec_feedback tool
+		approved = false
+
+		// Extract feedback from stateData
+		feedbackResult, ok := d.stateData["spec_feedback_result"]
+		if !ok {
+			return nil, fmt.Errorf("spec_feedback result not found in state data")
+		}
+
+		feedbackMap, ok := feedbackResult.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("spec_feedback result has unexpected type")
+		}
+
+		feedbackStr, ok := feedbackMap["feedback"].(string)
+		if !ok || feedbackStr == "" {
+			return nil, fmt.Errorf("feedback not found in spec_feedback result")
+		}
+
+		feedback = feedbackStr
+		d.logger.Info("📝 Architect requested spec changes: %s", feedback)
+
+	case signalSubmitStoriesComplete:
+		// Architect approved spec and generated stories via submit_stories tool
+		approved = true
+		d.logger.Info("✅ Architect approved spec and generated stories")
+
+		// Load stories into queue from submit_stories result
+		specID, storyIDs, err := d.loadStoriesFromSubmitResult(ctx, specMarkdown)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load stories after approval: %w", err)
+		}
+
+		feedback = fmt.Sprintf("Spec approved - %d stories generated successfully (spec_id: %s)", len(storyIDs), specID)
+		d.logger.Info("📦 Loaded %d stories into queue", len(storyIDs))
+
+		// Mark that we now own this spec and should transition to DISPATCHING
+		// This is checked by handleRequest to determine next state
+		d.stateData["spec_approved_and_loaded"] = true
+
+	default:
+		return nil, fmt.Errorf("unexpected signal from spec review: %s", signal)
+	}
+
+	// Create RESPONSE message with approval result
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+
+	// Determine approval status
+	var status proto.ApprovalStatus
+	if approved {
+		status = proto.ApprovalStatusApproved
+	} else {
+		status = proto.ApprovalStatusNeedsChanges
+	}
+
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  requestMsg.Metadata["approval_id"],
+		Type:       proto.ApprovalTypeSpec,
+		Status:     status,
+		Feedback:   feedback,
+		ReviewedBy: d.architectID,
+		ReviewedAt: response.Timestamp,
+	}
+
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+	response.SetMetadata("approval_id", approvalResult.ID)
+
+	d.logger.Info("✅ Spec review complete - sending RESULT to PM (status=%v)", status)
 	return response, nil
 }

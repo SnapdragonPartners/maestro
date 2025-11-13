@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/knowledge"
@@ -135,63 +136,73 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	// Log the rendered prompt for debugging
 	c.logger.Info("🧑‍💻 Starting planning phase for story_type '%s'", storyType)
 
-	// Flush user buffer before LLM request
-	if err := c.contextManager.FlushUserBuffer(); err != nil {
-		return proto.StateError, false, fmt.Errorf("failed to flush user buffer: %w", err)
+	// Use toolloop for LLM iteration with planning tools
+	loop := toolloop.New(c.llmClient, c.logger)
+
+	//nolint:dupl // Similar config in coding.go - intentional per-state configuration
+	cfg := &toolloop.Config{
+		ContextManager: c.contextManager,
+		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
+		ToolProvider:   c.planningToolProvider,
+		MaxIterations:  maxPlanningIterations,
+		MaxTokens:      8192, // Increased for exploration
+		AgentID:        c.agentID,
+		DebugLogging:   false,
+		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
+			return c.checkPlanningTerminal(ctx, sm, calls, results)
+		},
+		OnIterationLimit: func(_ context.Context) (string, error) {
+			c.logger.Info("⚠️  Planning reached max iterations, triggering budget review")
+			budgetEff := effect.NewBudgetReviewEffect(
+				fmt.Sprintf("Maximum planning iterations (%d) reached", maxPlanningIterations),
+				"Planning workflow needs additional iterations to complete exploration",
+				string(StatePlanning),
+			)
+			// Set story ID for dispatcher validation
+			budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
+			sm.SetStateData("budget_review_effect", budgetEff)
+			return string(StateBudgetReview), nil
+		},
 	}
 
-	// Get LLM response with tool support.
-	// Build messages starting with the planning prompt.
-	messages := c.buildMessagesWithContext(prompt)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: 8192,                       // Increased for exploration
-		Tools:     c.getPlanningToolsForLLM(), // Use story-type-specific planning tools
-		// Temperature: uses default 0.3 for exploration during planning
-	}
-
-	// Use base agent retry mechanism - exponential backoff is already implemented.
-	resp, llmErr := c.llmClient.Complete(ctx, req)
-	if llmErr != nil {
-		// Check if this is an empty response error that should trigger budget review
-		if c.isEmptyResponseError(llmErr) {
+	signal, err := loop.Run(ctx, cfg)
+	if err != nil {
+		// Check if this is an empty response error
+		if c.isEmptyResponseError(err) {
+			req := agent.CompletionRequest{MaxTokens: 8192}
 			return c.handleEmptyResponseError(sm, prompt, req, StatePlanning)
 		}
-
-		// For other errors, continue with normal error handling
-		return proto.StateError, false, logx.Wrap(llmErr, "failed to get LLM planning response")
+		return proto.StateError, false, logx.Wrap(err, "toolloop execution failed")
 	}
 
-	// Handle LLM response with proper empty response logic
-	if err := c.handleLLMResponse(resp); err != nil {
-		// True empty response - this is an error condition
-		return proto.StateError, false, err
+	// Handle terminal signals
+	switch signal {
+	case string(StateBudgetReview):
+		return StateBudgetReview, false, nil
+	case string(StateQuestion):
+		return StateQuestion, false, nil
+	case "PLAN_REVIEW":
+		return StatePlanReview, false, nil
+	case "":
+		// No signal, continue planning
+		c.logger.Info("🧑‍💻 Planning iteration completed, staying in PLANNING")
+		return StatePlanning, false, nil
+	default:
+		c.logger.Warn("Unknown signal from planning toolloop: %s", signal)
+		return StatePlanning, false, nil
 	}
-
-	// Process tool calls if any (when supported).
-	if len(resp.ToolCalls) > 0 {
-		return c.processPlanningToolCalls(ctx, sm, resp.ToolCalls)
-	}
-
-	// If no tool calls, continue in planning state
-	c.logger.Info("🧑‍💻 Planning iteration completed, staying in PLANNING for potential tool usage")
-	return StatePlanning, false, nil
 }
 
-// processPlanningToolCalls processes tool calls during planning phase.
-func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStateMachine, toolCalls []agent.ToolCall) (proto.State, bool, error) {
-	c.logger.Info("🧑‍💻 Processing %d planning tool calls", len(toolCalls))
+// checkPlanningTerminal examines tool calls and results for terminal signals during planning.
+func (c *Coder) checkPlanningTerminal(ctx context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
+	for i := range calls {
+		toolCall := &calls[i]
 
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		c.logger.Info("Executing planning tool: %s", toolCall.Name)
-
-		// Handle ask_question tool using Effects pattern.
+		// Check for ask_question tool - transition to QUESTION state
 		if toolCall.Name == tools.ToolAskQuestion {
-			// Extract question details from tool arguments.
+			// Extract question details from tool call parameters
 			question := utils.GetMapFieldOr[string](toolCall.Parameters, "question", "")
-			context := utils.GetMapFieldOr[string](toolCall.Parameters, "context", "")
+			contextStr := utils.GetMapFieldOr[string](toolCall.Parameters, "context", "")
 			urgency := utils.GetMapFieldOr[string](toolCall.Parameters, "urgency", "medium")
 
 			if question == "" {
@@ -199,99 +210,47 @@ func (c *Coder) processPlanningToolCalls(ctx context.Context, sm *agent.BaseStat
 				continue
 			}
 
-			// Store planning context before asking question.
-			c.storePlanningContext(sm)
+			// Store question data in state for QUESTION state to use
+			sm.SetStateData(KeyPendingQuestion, map[string]any{
+				"question": question,
+				"context":  contextStr,
+				"urgency":  urgency,
+				"origin":   string(StatePlanning),
+			})
 
-			// Create question effect
-			eff := effect.NewQuestionEffect(question, context, urgency, string(StatePlanning))
+			c.logger.Info("🧑‍💻 Planning detected ask_question, transitioning to QUESTION state")
+			return string(StateQuestion) // Signal state transition
+		}
 
-			// Set story_id for dispatcher validation
-			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
-			eff.StoryID = storyID
-
-			c.logger.Info("🧑‍💻 Asking question during planning")
-
-			// Execute the question effect (blocks until answer received)
-			result, err := c.ExecuteEffect(ctx, eff)
-			if err != nil {
-				c.logger.Error("🧑‍💻 Failed to get answer: %v", err)
-				// Add error to context for LLM to handle
-				errorMsg := fmt.Sprintf("Question failed: %v", err)
-				c.contextManager.AddMessage("question-error", errorMsg)
-				continue
-			}
-
-			// Process the answer
-			if questionResult, ok := result.(*effect.QuestionResult); ok {
-				// Answer received from architect (logged to database only)
-
-				// Add the Q&A to context so the LLM can see it
-				qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
-				c.contextManager.AddMessage("architect-answer", qaContent)
-
-				// Continue with planning using the answer
-			} else {
-				c.logger.Error("🧑‍💻 Invalid question result type: %T", result)
-			}
+		// Check if result contains next_state signal (submit_plan, mark_story_complete)
+		resultMap, ok := results[i].(map[string]any)
+		if !ok {
 			continue
 		}
 
-		// Get tool from ToolProvider and execute.
-		tool, err := c.planningToolProvider.Get(toolCall.Name)
-		if err != nil {
-			c.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
-			continue
-		}
+		// Check for next_state signal in tool result
+		if nextState, hasNextState := resultMap["next_state"]; hasNextState {
+			if nextStateStr, ok := nextState.(string); ok {
+				// Process via existing handler to maintain current behavior
+				newState, _, err := c.handleToolStateTransition(ctx, sm, toolCall.Name, nextStateStr, resultMap)
+				if err != nil {
+					c.logger.Error("Error handling tool state transition: %v", err)
+					continue
+				}
 
-		// Add agent_id to context for tools that need it (like chat tools)
-		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, c.agentID)
-
-		// Measure execution time and log tool execution to database
-		startTime := time.Now()
-		result, err := tool.Exec(toolCtx, toolCall.Parameters)
-		duration := time.Since(startTime)
-
-		// Log tool execution to database (fire-and-forget)
-		c.logToolExecution(toolCall, result, err, duration)
-
-		if err != nil {
-			if toolCall.Name == tools.ToolShell {
-				// For shell tool, provide cleaner logging without Docker details
-				c.logger.Info("Shell command failed: %v", err)
-			} else {
-				c.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			}
-			continue
-		}
-
-		// Handle tool results and state transitions.
-		if resultMap, ok := result.(map[string]any); ok {
-			if nextState, hasNextState := resultMap["next_state"]; hasNextState {
-				if nextStateStr, ok := nextState.(string); ok {
-					return c.handleToolStateTransition(ctx, sm, toolCall.Name, nextStateStr, resultMap)
+				// Map state to signal for toolloop
+				switch newState {
+				case StatePlanReview:
+					return "PLAN_REVIEW"
+				default:
+					c.logger.Warn("Unmapped terminal state from tool %s: %s", toolCall.Name, newState)
+					return string(newState)
 				}
 			}
 		}
-
-		// Add tool execution results to context using proper method.
-		c.addToolResultToContext(*toolCall, result)
-		c.logger.Info("Planning tool %s executed successfully", toolCall.Name)
 	}
 
-	// Continue planning after processing all tools
-	return StatePlanning, false, nil
-}
-
-// storePlanningContext stores the current planning context.
-func (c *Coder) storePlanningContext(sm *agent.BaseStateMachine) {
-	context := map[string]any{
-		"exploration_history": c.getExplorationHistory(),
-		"files_examined":      c.getFilesExamined(),
-		"current_findings":    c.getCurrentFindings(),
-		"timestamp":           time.Now().UTC(),
-	}
-	sm.SetStateData(KeyPlanningContextSaved, context)
-	c.logger.Debug("🧑‍💻 Stored planning context for QUESTION transition")
+	return "" // No terminal signal, continue loop
 }
 
 // handleToolStateTransition processes tool state transitions directly.

@@ -54,6 +54,7 @@ import (
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // Severity represents the severity level of agent errors.
@@ -88,8 +89,12 @@ type Agent interface {
 }
 
 // ChannelReceiver is an optional interface for agents that need direct channel access.
+// Different agent types use different channels:
+// - Architect: questionsCh (incoming requests), unused (was specCh), replyCh (outgoing responses).
+// - Coder: storyCh (incoming stories), unused, replyCh (outgoing responses).
+// - PM: pmRequestsCh (incoming interview requests), unused, replyCh (outgoing responses).
 type ChannelReceiver interface {
-	SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
+	SetChannels(incomingCh chan *proto.AgentMsg, unusedCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
 	SetDispatcher(dispatcher *Dispatcher)
 	SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification)
 }
@@ -110,6 +115,7 @@ type Dispatcher struct {
 	// Phase 1: Channel-based queues.
 	storyCh           chan *proto.AgentMsg            // Ready stories for any coder (replaces sharedWorkQueue)
 	questionsCh       chan *proto.AgentMsg            // Questions/requests for architect (replaces architectRequestQueue)
+	pmRequestsCh      chan *proto.AgentMsg            // Interview requests for PM agent
 	statusUpdatesCh   chan *proto.StoryStatusUpdate   // Story status updates for architect (non-blocking)
 	requeueRequestsCh chan *proto.StoryRequeueRequest // Story requeue requests for architect (non-blocking)
 
@@ -117,9 +123,7 @@ type Dispatcher struct {
 	replyChannels map[string]chan *proto.AgentMsg // Per-agent reply channels for ANSWER/RESULT messages
 
 	// Channel-based notifications for architect.
-	specCh         chan *proto.AgentMsg // Delivers spec messages to architect
-	architectID    string               // ID of the architect to notify
-	notificationMu sync.RWMutex         // Protects notification channels
+	notificationMu sync.RWMutex // Protects notification channels
 
 	// S-5: Metrics monitoring.
 	highUtilizationStart time.Time    // Track when high utilization started
@@ -157,9 +161,9 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:          make(chan struct{}),
 		running:           false,
-		specCh:            make(chan *proto.AgentMsg, 10),                                             // Buffered channel for spec messages
 		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
+		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                             // Buffered channel for PM interview requests
 		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                   // Buffered channel for status updates
 		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                                 // Buffered channel for requeue requests
 		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
@@ -193,16 +197,17 @@ func (d *Dispatcher) Attach(ag Agent) {
 	d.replyChannels[agentID] = replyCh
 
 	// Set up channels for agents that implement ChannelReceiver interface.
-	if channelReceiver, ok := ag.(ChannelReceiver); ok {
+	if channelReceiver, ok := utils.SafeAssert[ChannelReceiver](ag); ok {
 		// Set up state notification channel for all ChannelReceiver agents.
 		channelReceiver.SetStateNotificationChannel(d.stateChangeCh)
 
 		// Determine agent type to provide appropriate channels.
-		if agentDriver, ok := ag.(agent.Driver); ok {
+		if agentDriver, ok := utils.SafeAssert[agent.Driver](ag); ok {
 			switch agentDriver.GetAgentType() {
 			case agent.TypeArchitect:
 				d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
-				channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
+				// Architect receives requests via questionsCh, unused (was specCh), replyCh for responses
+				channelReceiver.SetChannels(d.questionsCh, nil, replyCh)
 				channelReceiver.SetDispatcher(d)
 				// TODO: Add status updates channel to architect interface
 				return
@@ -212,17 +217,26 @@ func (d *Dispatcher) Attach(ag Agent) {
 				channelReceiver.SetChannels(d.storyCh, nil, replyCh)
 				channelReceiver.SetDispatcher(d)
 				return
+			case agent.TypePM:
+				d.logger.Info("Attached PM agent: %s with direct channel setup", agentID)
+				// PM receives interview requests via pmRequestsCh and gets reply channel for RESULT messages.
+				// First channel is for PM interview requests, second is unused (nil), third is reply channel.
+				channelReceiver.SetChannels(d.pmRequestsCh, nil, replyCh)
+				channelReceiver.SetDispatcher(d)
+				return
 			}
 		}
 	}
 
 	// For other agents, log the attachment.
-	if agentDriver, ok := ag.(agent.Driver); ok {
+	if agentDriver, ok := utils.SafeAssert[agent.Driver](ag); ok {
 		switch agentDriver.GetAgentType() {
 		case agent.TypeArchitect:
 			d.logger.Info("Attached architect agent: %s", agentID)
 		case agent.TypeCoder:
 			d.logger.Info("Attached coder agent: %s", agentID)
+		case agent.TypePM:
+			d.logger.Info("Attached PM agent: %s", agentID)
 		}
 	} else {
 		d.logger.Warn("Agent %s does not implement Driver interface", agentID)
@@ -507,7 +521,7 @@ func (d *Dispatcher) checkZeroAgentCondition() {
 	coderCount := 0
 
 	for _, ag := range d.agents {
-		if agentDriver, ok := ag.(agent.Driver); ok {
+		if agentDriver, ok := utils.SafeAssert[agent.Driver](ag); ok {
 			switch agentDriver.GetAgentType() {
 			case agent.TypeArchitect:
 				architectCount++
@@ -541,8 +555,31 @@ func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
-	// Validate story_id presence - only SPEC messages are allowed without story_id
-	if msg.Type != proto.MsgTypeSPEC {
+	// Validate story_id presence - only SPEC messages and story-independent messages are allowed without story_id
+	// Story-independent messages include:
+	// 1. REQUEST with ApprovalTypeSpec - spec approval requests from PM to architect
+	// 2. RESPONSE to PM - spec approval responses from architect to PM
+	// 3. REQUEST to PM - interview requests (for future escalations)
+	isStoryIndependentMessage := false
+	if msg.Type == proto.MsgTypeREQUEST {
+		// Check if this is a spec approval request by examining the approval type in the payload
+		if payload := msg.GetTypedPayload(); payload != nil {
+			if approvalPayload, err := payload.ExtractApprovalRequest(); err == nil {
+				isStoryIndependentMessage = (approvalPayload.ApprovalType == proto.ApprovalTypeSpec)
+			}
+		}
+		// Also allow PM-destined requests (interview requests from WebUI)
+		if !isStoryIndependentMessage && strings.HasPrefix(msg.ToAgent, "pm-") {
+			isStoryIndependentMessage = true
+		}
+	} else if msg.Type == proto.MsgTypeRESPONSE {
+		// Check if this is a response to PM (spec approval responses)
+		if strings.HasPrefix(msg.ToAgent, "pm-") {
+			isStoryIndependentMessage = true
+		}
+	}
+
+	if msg.Type != proto.MsgTypeSPEC && !isStoryIndependentMessage {
 		// Story ID is now in metadata, not payload
 		storyIDStr, hasStoryID := msg.Metadata[proto.KeyStoryID]
 		if !hasStoryID {
@@ -559,6 +596,8 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		}
 
 		d.logger.Debug("✅ Message %s (%s) has valid story_id: %s", msg.ID, msg.Type, storyIDStr)
+	} else if isStoryIndependentMessage {
+		d.logger.Debug("✅ Message %s (%s) is story-independent message - story_id not required", msg.ID, msg.Type)
 	}
 
 	// Resolve logical agent name to actual agent ID for all messages.
@@ -585,27 +624,31 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			d.logger.Warn("❌ Story channel full, dropping STORY %s", msg.ID)
 		}
 
-	case proto.MsgTypeSPEC:
-		// SPEC messages go to architect via spec channel.
-		d.logger.Info("🔄 Dispatcher sending SPEC %s to architect via spec channel %p", msg.ID, d.specCh)
-		select {
-		case d.specCh <- msg:
-			d.logger.Info("✅ SPEC %s delivered to architect spec channel", msg.ID)
-		default:
-			d.logger.Warn("❌ Architect spec channel full, dropping SPEC %s", msg.ID)
-		}
-
 	case proto.MsgTypeREQUEST:
-		// All REQUEST kinds go to questionsCh for architect to process
-		// Architect will handle kind-based routing internally
-		select {
-		case d.questionsCh <- msg:
-			// Note: REQUEST processing and persistence handled by architect
-		case <-d.shutdown:
-			d.logger.Warn("❌ Shutdown in progress, dropping REQUEST %s", msg.ID)
-			return
-		default:
-			d.logger.Warn("❌ Questions channel full, dropping REQUEST %s", msg.ID)
+		// Route REQUEST messages based on target agent:
+		// - PM-destined requests go to pmRequestsCh (interview/spec submissions)
+		// - All other requests go to questionsCh for architect to process
+		if strings.HasPrefix(msg.ToAgent, "pm-") {
+			select {
+			case d.pmRequestsCh <- msg:
+				d.logger.Info("✅ REQUEST %s routed to PM", msg.ID)
+			case <-d.shutdown:
+				d.logger.Warn("❌ Shutdown in progress, dropping PM REQUEST %s", msg.ID)
+				return
+			default:
+				d.logger.Warn("❌ PM requests channel full, dropping REQUEST %s", msg.ID)
+			}
+		} else {
+			// Architect REQUEST processing
+			select {
+			case d.questionsCh <- msg:
+				// Note: REQUEST processing and persistence handled by architect
+			case <-d.shutdown:
+				d.logger.Warn("❌ Shutdown in progress, dropping REQUEST %s", msg.ID)
+				return
+			default:
+				d.logger.Warn("❌ Questions channel full, dropping REQUEST %s", msg.ID)
+			}
 		}
 
 	case proto.MsgTypeRESPONSE:
@@ -751,6 +794,14 @@ func (d *Dispatcher) resolveAgentName(logicalName string) string {
 	return logicalName
 }
 
+// GetAgent returns an agent by ID, or nil if not found.
+// The caller must type assert to the specific agent type if needed.
+func (d *Dispatcher) GetAgent(agentID string) Agent {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.agents[agentID]
+}
+
 // GetStats returns dispatcher statistics and status information.
 func (d *Dispatcher) GetStats() map[string]any {
 	d.mu.RLock()
@@ -818,35 +869,13 @@ func (d *Dispatcher) GetRequeueRequestsChannel() <-chan *proto.StoryRequeueReque
 	return d.requeueRequestsCh
 }
 
-// ArchitectChannels contains the channels returned to architects.
-type ArchitectChannels struct {
-	Specs <-chan *proto.AgentMsg // Delivers spec messages
-}
-
-// SubscribeArchitect allows the architect to get the spec channel.
-func (d *Dispatcher) SubscribeArchitect(architectID string) ArchitectChannels {
-	d.notificationMu.Lock()
-	defer d.notificationMu.Unlock()
-
-	d.architectID = architectID
-	d.logger.Info("🔔 Architect %s subscribed to spec notifications", architectID)
-	d.logger.Info("🔔 Spec channel %p provided to architect %s", d.specCh, architectID)
-
-	return ArchitectChannels{
-		Specs: d.specCh,
-	}
-}
+// Note: SubscribeArchitect and ArchitectChannels have been removed.
+// Specs now come through REQUEST messages like all other architect work.
 
 // closeAllChannels closes all dispatcher-owned channels for graceful shutdown.
 func (d *Dispatcher) closeAllChannels() {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
-
-	// Close specCh.
-	if d.specCh != nil {
-		close(d.specCh)
-		d.logger.Info("Closed spec channel")
-	}
 
 	// Close storyCh.
 	if d.storyCh != nil {
@@ -951,6 +980,8 @@ type AgentInfo struct {
 }
 
 // GetRegisteredAgents returns information about all registered agents.
+//
+//nolint:cyclop // Complexity from multiple agent type cases, acceptable for this function
 func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -958,7 +989,7 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	var agentInfos []AgentInfo
 	for id, agentInterface := range d.agents {
 		// Try to cast to Driver interface to get more information.
-		if driver, ok := agentInterface.(agent.Driver); ok {
+		if driver, ok := utils.SafeAssert[agent.Driver](agentInterface); ok {
 			// Get story ID from lease tracking
 			storyID := d.GetLease(id)
 
@@ -985,6 +1016,10 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 					case agent.TypeCoder:
 						if cfg.Agents != nil && cfg.Agents.CoderModel != "" {
 							modelName = cfg.Agents.CoderModel
+						}
+					case agent.TypePM:
+						if cfg.Agents != nil && cfg.Agents.PMModel != "" {
+							modelName = cfg.Agents.PMModel
 						}
 					}
 				}

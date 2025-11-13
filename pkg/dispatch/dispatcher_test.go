@@ -34,7 +34,7 @@ type mockChannelReceiver struct {
 	channels bool
 }
 
-func (m *mockChannelReceiver) SetChannels(_ <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, _ <-chan *proto.AgentMsg) {
+func (m *mockChannelReceiver) SetChannels(_ chan *proto.AgentMsg, _ chan *proto.AgentMsg, _ <-chan *proto.AgentMsg) {
 	m.channels = true
 }
 
@@ -577,15 +577,6 @@ func TestSendRequeue(t *testing.T) {
 	err = dispatcher.SendRequeue("agent-001", "test reason")
 	if err != nil {
 		t.Errorf("Expected no error with valid lease, got: %v", err)
-	}
-}
-
-func TestSubscribeArchitect(t *testing.T) {
-	dispatcher := createTestDispatcher(t)
-
-	channels := dispatcher.SubscribeArchitect("architect-001")
-	if channels.Specs == nil {
-		t.Error("Expected non-nil spec channel")
 	}
 }
 

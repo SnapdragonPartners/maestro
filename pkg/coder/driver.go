@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
-	chatmw "orchestrator/pkg/agent/middleware/chat"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
@@ -435,7 +434,7 @@ func (c *Coder) GetID() string {
 }
 
 // SetChannels implements the ChannelReceiver interface for dispatcher attachment.
-func (c *Coder) SetChannels(storyCh <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
+func (c *Coder) SetChannels(storyCh, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	c.storyCh = storyCh
 	c.replyCh = replyCh
 	c.logger.Info("🧑‍💻 Coder %s channels set: story=%p reply=%p", c.GetID(), storyCh, replyCh)
@@ -548,6 +547,13 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		containerName:       "", // Will be set during setup
 	}
 
+	// Configure chat service on context manager for automatic injection
+	if chatService != nil {
+		chatAdapter := contextmgr.NewChatServiceAdapter(chatService)
+		coder.contextManager.SetChatService(chatAdapter, agentID)
+		logger.Info("💬 Chat injection configured for coder %s", agentID)
+	}
+
 	// Now that we have the coder (StateProvider), create enhanced client with metrics context
 	// Use the shared factory to ensure proper rate limiting
 	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
@@ -555,13 +561,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
 	}
 
-	// Wrap enhanced client with chat injection middleware if chat service is available
-	if chatService != nil {
-		enhancedClient = chatmw.WrapWithChatInjection(enhancedClient, chatService, agentID, logger)
-		logger.Info("💬 Chat injection middleware added to coder %s", agentID)
-	}
-
-	// Replace the client with the enhanced version
+	// Replace the client with the enhanced version (no middleware wrapper needed)
 	coder.llmClient = enhancedClient
 
 	// Set the clone manager.
@@ -856,6 +856,8 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 		nextState, done, err = c.handleBudgetReview(ctx, sm)
 	case StateAwaitMerge:
 		nextState, done, err = c.handleAwaitMerge(ctx, sm)
+	case StateQuestion:
+		nextState, done, err = c.handleQuestion(ctx, sm)
 	case proto.StateDone:
 		nextState, done, err = c.handleDone(ctx, sm)
 	case proto.StateError:
@@ -1265,7 +1267,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 		WorkDir:         c.workDir,
 	}
 
-	return tools.NewProvider(agentCtx, planningTools)
+	return tools.NewProvider(&agentCtx, planningTools)
 }
 
 // createCodingToolProvider creates a ToolProvider for the coding state.
@@ -1288,7 +1290,7 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 		WorkDir:         c.workDir,
 	}
 
-	return tools.NewProvider(agentCtx, codingTools)
+	return tools.NewProvider(&agentCtx, codingTools)
 }
 
 // getBudgetReviewContent creates comprehensive budget review content using templates.

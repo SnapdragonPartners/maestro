@@ -142,6 +142,9 @@ const (
 
 	// ApprovalTypeCompletion indicates a story completion request.
 	ApprovalTypeCompletion ApprovalType = "completion"
+
+	// ApprovalTypeSpec indicates a specification approval request.
+	ApprovalTypeSpec ApprovalType = "spec"
 )
 
 // ApprovalRequest represents a request for approval (plan or code).

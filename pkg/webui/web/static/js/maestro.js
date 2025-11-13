@@ -1,5 +1,5 @@
 // Maestro Web UI JavaScript
-const MAESTRO_UI_VERSION = 'v0.1.6-chat-fix';
+const MAESTRO_UI_VERSION = 'v0.1.7-multi-channel';
 
 class MaestroUI {
     constructor() {
@@ -11,6 +11,10 @@ class MaestroUI {
         this.queuePollingIntervals = {};
         this.replyingToMessageId = null; // Track which message we're replying to
         this.replyingToAuthor = null;
+
+        // PM chat state
+        this.lastProductChatMessageId = 0;
+        this.pmSessionId = null;
 
         this.init();
     }
@@ -39,25 +43,29 @@ class MaestroUI {
     }
 
     setupEventListeners() {
-        // Upload area
-        const uploadArea = document.getElementById('upload-area');
-        const fileInput = document.getElementById('spec-file');
-        
-        uploadArea.addEventListener('click', () => fileInput.click());
-        uploadArea.addEventListener('dragover', this.handleDragOver.bind(this));
-        uploadArea.addEventListener('drop', this.handleDrop.bind(this));
-        fileInput.addEventListener('change', this.handleFileSelect.bind(this));
+        // NOTE: Upload functionality removed - all specs must go through PM
+        // See PM pane for spec upload interface
 
-        // Control buttons
-        document.getElementById('cancel-run').addEventListener('click', this.cancelRun.bind(this));
-        document.getElementById('refresh-data').addEventListener('click', this.refreshData.bind(this));
-        document.getElementById('show-escalations').addEventListener('click', this.showEscalations.bind(this));
-        document.getElementById('close-modal').addEventListener('click', this.closeModal.bind(this));
-        
+        // Control buttons - check if elements exist first
+        const cancelBtn = document.getElementById('cancel-run');
+        const refreshBtn = document.getElementById('refresh-data');
+        const escalationsBtn = document.getElementById('show-escalations');
+
+        if (cancelBtn) cancelBtn.addEventListener('click', this.cancelRun.bind(this));
+        if (refreshBtn) refreshBtn.addEventListener('click', this.refreshData.bind(this));
+        if (escalationsBtn) escalationsBtn.addEventListener('click', this.showEscalations.bind(this));
+
+        const closeModal = document.getElementById('close-modal');
+        if (closeModal) closeModal.addEventListener('click', this.closeModal.bind(this));
+
         // Log controls
-        document.getElementById('log-domain').addEventListener('change', this.onLogDomainChange.bind(this));
-        document.getElementById('autoscroll').addEventListener('change', this.onAutoscrollChange.bind(this));
-        document.getElementById('clear-logs').addEventListener('click', this.clearLogs.bind(this));
+        const logDomain = document.getElementById('log-domain');
+        const autoscroll = document.getElementById('autoscroll');
+        const clearLogs = document.getElementById('clear-logs');
+
+        if (logDomain) logDomain.addEventListener('change', this.onLogDomainChange.bind(this));
+        if (autoscroll) autoscroll.addEventListener('change', this.onAutoscrollChange.bind(this));
+        if (clearLogs) clearLogs.addEventListener('click', this.clearLogs.bind(this));
 
         // Chat controls
         const chatInput = document.getElementById('chat-input');
@@ -67,6 +75,25 @@ class MaestroUI {
             chatInput.addEventListener('input', this.onChatInput.bind(this));
             chatInput.addEventListener('keydown', this.onChatKeydown.bind(this));
             chatSend.addEventListener('click', this.sendChatMessage.bind(this));
+        }
+
+        // PM interview chat
+        const interviewInput = document.getElementById('interview-input');
+        const interviewSend = document.getElementById('interview-send-btn');
+        const startInterviewBtn = document.getElementById('start-interview-btn');
+
+        if (interviewInput && interviewSend) {
+            interviewInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendPMChatMessage();
+                }
+            });
+            interviewSend.addEventListener('click', this.sendPMChatMessage.bind(this));
+        }
+
+        if (startInterviewBtn) {
+            startInterviewBtn.addEventListener('click', this.startPMInterview.bind(this));
         }
     }
 
@@ -82,7 +109,7 @@ class MaestroUI {
         setInterval(() => this.pollStories(), this.pollingInterval);
         setInterval(() => this.pollLogs(), this.pollingInterval);
         setInterval(() => this.pollMessages(), this.pollingInterval);
-        setInterval(() => this.pollChat(), 2000); // Poll chat every 2 seconds
+        setInterval(() => this.pollChat(), 2000); // Poll chat every 2 seconds (handles all channels)
         setInterval(() => this.updateLastUpdated(), 1000);
     }
 
@@ -1015,65 +1042,8 @@ class MaestroUI {
         return typeMap[type] || 'border-gray-300';
     }
 
-    // File upload handling
-    handleDragOver(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.currentTarget.classList.add('border-blue-400', 'bg-blue-50');
-    }
-
-    handleDrop(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50');
-        
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            this.uploadFile(files[0]);
-        }
-    }
-
-    handleFileSelect(e) {
-        const file = e.target.files[0];
-        if (file) {
-            this.uploadFile(file);
-        }
-    }
-
-    async uploadFile(file) {
-        // Validate file
-        if (!file.name.endsWith('.md')) {
-            this.showToast('Only .md files are allowed', 'error');
-            return;
-        }
-        
-        if (file.size > 100 * 1024) { // 100KB
-            this.showToast('File too large (max 100KB)', 'error');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (response.ok) {
-                this.showToast('File uploaded successfully', 'success');
-                this.refreshData();
-            } else if (response.status === 409) {
-                this.showToast('Architect is busy', 'error');
-            } else {
-                this.showToast('Upload failed', 'error');
-            }
-        } catch (error) {
-            console.error('Upload error:', error);
-            this.showToast('Upload failed', 'error');
-        }
-    }
+    // NOTE: File upload handling (handleDragOver, handleDrop, handleFileSelect, uploadFile)
+    // removed - all uploads now go through PM pane
 
     // Queue management
     async toggleQueue(queueName) {
@@ -1292,7 +1262,17 @@ class MaestroUI {
             const messages = await response.json();
 
             if (messages && messages.length > 0) {
-                this.updateChatMessages(messages);
+                // Route messages to appropriate panes based on channel
+                const developmentMessages = messages.filter(m => m.channel === 'development' || !m.channel);
+                const productMessages = messages.filter(m => m.channel === 'product');
+
+                if (developmentMessages.length > 0) {
+                    this.updateChatMessages(developmentMessages, 'development');
+                }
+                if (productMessages.length > 0) {
+                    this.updateChatMessages(productMessages, 'product');
+                }
+
                 // Update lastChatMessageId to the highest ID received
                 const maxId = Math.max(...messages.map(m => m.id));
                 if (maxId > this.lastChatMessageId) {
@@ -1300,7 +1280,7 @@ class MaestroUI {
                 }
             } else if (this.lastChatMessageId === 0) {
                 // First load with no messages - show empty state
-                this.updateChatMessages([]);
+                this.updateChatMessages([], 'development');
             }
 
         } catch (error) {
@@ -1308,10 +1288,19 @@ class MaestroUI {
         }
     }
 
-    updateChatMessages(messages) {
-        const loading = document.getElementById('chat-loading');
-        const empty = document.getElementById('chat-empty');
-        const list = document.getElementById('chat-list');
+    updateChatMessages(messages, channel = 'development') {
+        // Get appropriate DOM elements based on channel
+        let loading, empty, list, chatMessages;
+        if (channel === 'product') {
+            list = document.getElementById('interview-messages');
+            chatMessages = document.getElementById('interview-chat-section');
+            // Product chat doesn't have loading/empty states in same way
+        } else {
+            loading = document.getElementById('chat-loading');
+            empty = document.getElementById('chat-empty');
+            list = document.getElementById('chat-list');
+            chatMessages = document.getElementById('chat-messages');
+        }
 
         // Hide loading state on first update
         if (loading && !loading.classList.contains('hidden')) {
@@ -1321,15 +1310,15 @@ class MaestroUI {
         if (!messages || messages.length === 0) {
             if (this.lastChatMessageId === 0) {
                 // Only show empty state on initial load with no messages
-                empty.classList.remove('hidden');
-                list.classList.add('hidden');
+                if (empty) empty.classList.remove('hidden');
+                if (list) list.classList.add('hidden');
             }
             return;
         }
 
         // We have messages - ensure list is visible
-        empty.classList.add('hidden');
-        list.classList.remove('hidden');
+        if (empty) empty.classList.add('hidden');
+        if (list) list.classList.remove('hidden');
 
         // Track escalations
         let hasNewEscalations = false;
@@ -1351,8 +1340,7 @@ class MaestroUI {
         }
 
         // Auto-scroll to bottom if enabled
-        if (this.chatAutoScroll) {
-            const chatMessages = document.getElementById('chat-messages');
+        if (this.chatAutoScroll && chatMessages) {
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
     }
@@ -1504,7 +1492,10 @@ class MaestroUI {
         sendSpinner.classList.remove('hidden');
 
         try {
-            const payload = { text };
+            const payload = {
+                text: text,
+                channel: 'development'  // Development chat uses development channel
+            };
 
             // Include reply_to if we're replying
             if (this.replyingToMessageId) {
@@ -1546,6 +1537,100 @@ class MaestroUI {
             button.disabled = false;
             sendText.classList.remove('hidden');
             sendSpinner.classList.add('hidden');
+        }
+    }
+
+    async startPMInterview() {
+        const expertiseSelect = document.getElementById('expertise-level');
+        const startButton = document.getElementById('start-interview-btn');
+        const startSection = document.getElementById('interview-start-section');
+        const chatSection = document.getElementById('interview-chat-section');
+
+        const expertise = expertiseSelect.value;
+
+        // Disable button
+        const originalText = startButton.textContent;
+        startButton.disabled = true;
+        startButton.textContent = 'Starting...';
+
+        try {
+            const response = await fetch('/api/pm/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ expertise })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to start interview');
+            }
+
+            const result = await response.json();
+            this.pmSessionId = result.session_id;
+
+            // Show chat section, hide start section
+            startSection.classList.add('hidden');
+            chatSection.classList.remove('hidden');
+
+            this.showToast('Interview started', 'success');
+
+        } catch (error) {
+            console.error('Error starting PM interview:', error);
+            this.showToast('Failed to start interview', 'error');
+            startButton.disabled = false;
+            startButton.textContent = originalText;
+        }
+    }
+
+    async sendPMChatMessage() {
+        const input = document.getElementById('interview-input');
+        const button = document.getElementById('interview-send-btn');
+
+        const text = input.value.trim();
+        if (!text) return;
+
+        if (!this.pmSessionId) {
+            this.showToast('No active PM session', 'error');
+            return;
+        }
+
+        // Disable input while sending
+        const originalButtonText = button.textContent;
+        input.disabled = true;
+        button.disabled = true;
+        button.textContent = 'Sending...';
+
+        try {
+            const response = await fetch('/api/pm/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: this.pmSessionId,
+                    message: text
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to send message');
+            }
+
+            // Clear input on success
+            input.value = '';
+
+            // Message will appear via polling
+            this.showToast('Message sent', 'success');
+
+        } catch (error) {
+            console.error('Error sending PM chat message:', error);
+            this.showToast('Failed to send message', 'error');
+        } finally {
+            // Re-enable input
+            input.disabled = false;
+            button.disabled = false;
+            button.textContent = originalButtonText;
         }
     }
 }

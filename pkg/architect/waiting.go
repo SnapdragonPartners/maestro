@@ -7,53 +7,35 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// handleWaiting blocks until a spec message or question is received.
+// handleWaiting blocks until a REQUEST message is received.
+// All work (specs, questions, approvals) comes through REQUEST messages now.
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	select {
 	case <-ctx.Done():
 		return StateError, fmt.Errorf("architect waiting cancelled: %w", ctx.Err())
-	case specMsg, ok := <-d.specCh:
+	case requestMsg, ok := <-d.questionsCh:
 		if !ok {
 			// Channel closed by dispatcher - abnormal shutdown
-			return StateError, fmt.Errorf("spec channel closed unexpectedly")
+			return StateError, fmt.Errorf("requests channel closed unexpectedly")
 		}
 
-		if specMsg == nil {
+		if requestMsg == nil {
 			// This shouldn't happen with proper channel management, but handle gracefully
 			return StateWaiting, nil
 		}
 
-		// Store the spec message for processing in SCOPING state.
-		d.stateData["spec_message"] = specMsg
-
-		return StateScoping, nil
-	case questionMsg, ok := <-d.questionsCh:
-		if !ok {
-			// Channel closed by dispatcher - abnormal shutdown
-			return StateError, fmt.Errorf("questions channel closed unexpectedly")
-		}
-
-		if questionMsg == nil {
-			// This shouldn't happen with proper channel management, but handle gracefully
-			return StateWaiting, nil
-		}
-		// Question message received, transitioning to REQUEST state for processing
-
-		// Store the question for processing in REQUEST state.
-		d.stateData["current_request"] = questionMsg
+		// Store the request for processing in REQUEST state
+		// This handles all types: spec reviews, questions, code approvals, etc.
+		d.stateData["current_request"] = requestMsg
 
 		return StateRequest, nil
 	}
 }
 
 // ownsSpec checks if the architect currently owns a spec.
+// Returns true if there are stories in the queue (indicating active spec work).
 func (d *Driver) ownsSpec() bool {
-	// Check if we have a spec message in state data.
-	if _, hasSpec := d.stateData["spec_message"]; hasSpec {
-		return true
-	}
-
-	// Check if we have stories in the queue (indicating we're working on a spec).
+	// Check if we have stories in the queue (indicating we're working on a spec)
 	if d.queue != nil && len(d.queue.GetAllStories()) > 0 {
 		return true
 	}

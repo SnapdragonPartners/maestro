@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -57,20 +58,25 @@ func TestInjectSpecMessage(t *testing.T) {
 	source := "test-source"
 	content := []byte("# Test Specification\n\nThis is a test spec.")
 
-	// Simulate the message creation logic from InjectSpec
-	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, source, string(agent.TypeArchitect))
+	// Simulate the message creation logic from InjectSpec (now uses REQUEST)
+	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, source, string(agent.TypeArchitect))
 
-	// Build spec payload with typed generic payload
-	specPayload := map[string]any{
-		"spec_content": string(content),
-		"type":         "spec_content",
+	// Build approval request payload (unified with PM flow)
+	approvalPayload := &proto.ApprovalRequestPayload{
+		ApprovalType: proto.ApprovalTypeSpec,
+		Content:      string(content),
+		Reason:       fmt.Sprintf("Spec submitted via %s", source),
+		Metadata:     make(map[string]string),
 	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
+	approvalPayload.Metadata["source"] = source
+
+	msg.SetTypedPayload(proto.NewApprovalRequestPayload(approvalPayload))
+	msg.SetMetadata("approval_id", proto.GenerateApprovalID())
 	msg.SetMetadata("source", source)
 
 	// Verify message structure
-	if msg.Type != proto.MsgTypeSPEC {
-		t.Errorf("Expected message type to be %s, got %s", proto.MsgTypeSPEC, msg.Type)
+	if msg.Type != proto.MsgTypeREQUEST {
+		t.Errorf("Expected message type to be %s, got %s", proto.MsgTypeREQUEST, msg.Type)
 	}
 
 	if msg.FromAgent != source {
@@ -81,31 +87,32 @@ func TestInjectSpecMessage(t *testing.T) {
 		t.Errorf("Expected message to to be %s, got %s", string(agent.TypeArchitect), msg.ToAgent)
 	}
 
-	// Check typed payload
+	// Check typed payload - should be ApprovalRequestPayload
 	typedPayload := msg.GetTypedPayload()
 	if typedPayload == nil {
 		t.Fatal("Expected typed payload to exist")
 	}
 
-	payloadData, err := typedPayload.ExtractGeneric()
+	approvalReq, err := typedPayload.ExtractApprovalRequest()
 	if err != nil {
-		t.Fatalf("Failed to extract payload: %v", err)
+		t.Fatalf("Failed to extract approval request payload: %v", err)
 	}
 
-	specContent, ok := payloadData["spec_content"].(string)
-	if !ok {
-		t.Error("Expected spec_content to be a string")
-	}
-	if specContent != string(content) {
-		t.Errorf("Expected spec_content payload to be %s, got %s", string(content), specContent)
+	if approvalReq.ApprovalType != proto.ApprovalTypeSpec {
+		t.Errorf("Expected approval type to be %s, got %s", proto.ApprovalTypeSpec, approvalReq.ApprovalType)
 	}
 
-	payloadType, ok := payloadData["type"].(string)
-	if !ok {
-		t.Error("Expected type payload to be a string")
+	if approvalReq.Content != string(content) {
+		t.Errorf("Expected content to be %s, got %s", string(content), approvalReq.Content)
 	}
-	if payloadType != "spec_content" {
-		t.Errorf("Expected type payload to be spec_content, got %s", payloadType)
+
+	expectedReason := fmt.Sprintf("Spec submitted via %s", source)
+	if approvalReq.Reason != expectedReason {
+		t.Errorf("Expected reason to be %s, got %s", expectedReason, approvalReq.Reason)
+	}
+
+	if approvalReq.Metadata["source"] != source {
+		t.Errorf("Expected metadata source to be %s, got %s", source, approvalReq.Metadata["source"])
 	}
 
 	// Check metadata

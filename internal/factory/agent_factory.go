@@ -14,6 +14,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/pm"
 )
 
 // AgentFactory creates agents with minimal dependencies.
@@ -43,6 +44,8 @@ func (f *AgentFactory) NewAgent(ctx context.Context, agentID, agentType string) 
 		return f.createArchitect(ctx, agentID)
 	case string(agent.TypeCoder):
 		return f.createCoder(ctx, agentID)
+	case string(agent.TypePM):
+		return f.createPM(ctx, agentID)
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
 	}
@@ -71,6 +74,9 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 	if err != nil {
 		return nil, fmt.Errorf("failed to create architect: %w", err)
 	}
+
+	// Register architect for chat channels
+	f.chatService.RegisterAgent(agentID, []string{"development"})
 
 	// Attach to dispatcher
 	f.dispatcher.Attach(architect)
@@ -128,9 +134,52 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)
 	}
 
+	// Register coder for chat channels
+	f.chatService.RegisterAgent(agentID, []string{"development"})
+
 	// Attach to dispatcher
 	f.dispatcher.Attach(coderAgent)
 	return coderAgent, nil
+}
+
+// createPM creates a new PM agent.
+func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.Agent, error) {
+	// Get current config
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Check if PM is enabled
+	if cfg.PM != nil && !cfg.PM.Enabled {
+		return nil, fmt.Errorf("PM agent is disabled in configuration")
+	}
+
+	// Determine work directory from config
+	workDir := getWorkDirFromConfig(&cfg)
+
+	// Register PM for chat channels (product channel only) BEFORE construction
+	// so chat service is ready when PM needs it
+	f.chatService.RegisterAgent(agentID, []string{"product"})
+
+	// Create PM with shared LLM factory and chat service
+	// PM now uses direct methods (StartInterview, UploadSpec) called by WebUI handlers
+	pmAgent, err := pm.NewPM(
+		ctx,
+		agentID,
+		f.dispatcher,
+		workDir,
+		f.persistenceChannel,
+		f.llmFactory,  // Shared factory for rate limiting
+		f.chatService, // Chat service for polling new messages
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PM: %w", err)
+	}
+
+	// Attach to dispatcher
+	f.dispatcher.Attach(pmAgent)
+	return pmAgent, nil
 }
 
 // getWorkDirFromConfig determines the work directory from configuration.

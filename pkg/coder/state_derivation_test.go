@@ -15,7 +15,7 @@ func TestGetAllCoderStates(t *testing.T) {
 	// Expected states based on current CoderTransitions map.
 	expectedStates := []proto.State{
 		StateSetup, StatePlanning, StateCoding, StateTesting,
-		StatePlanReview, StateCodeReview, StatePrepareMerge, StateBudgetReview, StateAwaitMerge,
+		StatePlanReview, StateCodeReview, StatePrepareMerge, StateBudgetReview, StateAwaitMerge, StateQuestion,
 	}
 
 	// Sort expected states for comparison.

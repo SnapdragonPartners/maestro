@@ -31,7 +31,7 @@ func ValidateMessages(messages []llm.CompletionMessage) error {
 
 	for i := range messages {
 		msg := &messages[i]
-		if err := ValidateMessage(*msg); err != nil {
+		if err := ValidateMessage(msg); err != nil {
 			return fmt.Errorf("message %d: %w", i, err)
 		}
 	}
@@ -40,7 +40,7 @@ func ValidateMessages(messages []llm.CompletionMessage) error {
 }
 
 // ValidateMessage validates a single completion message.
-func ValidateMessage(msg llm.CompletionMessage) error {
+func ValidateMessage(msg *llm.CompletionMessage) error {
 	// Validate role.
 	if err := ValidateRole(msg.Role); err != nil {
 		return err
@@ -135,7 +135,7 @@ func ValidateTokenCount(messages []llm.CompletionMessage, maxTokens int) error {
 }
 
 // SanitizeMessage cleans up a message to make it valid.
-func SanitizeMessage(msg llm.CompletionMessage) llm.CompletionMessage {
+func SanitizeMessage(msg *llm.CompletionMessage) llm.CompletionMessage {
 	// Clean up role.
 	roleStr := strings.TrimSpace(string(msg.Role))
 	role := llm.CompletionRole(roleStr)
@@ -164,8 +164,10 @@ func SanitizeMessage(msg llm.CompletionMessage) llm.CompletionMessage {
 	}
 
 	return llm.CompletionMessage{
-		Role:    role,
-		Content: content,
+		Role:        role,
+		Content:     content,
+		ToolCalls:   msg.ToolCalls,
+		ToolResults: msg.ToolResults,
 	}
 }
 
@@ -183,10 +185,10 @@ func ValidateAndSanitizeMessages(messages []llm.CompletionMessage) ([]llm.Comple
 
 	for i := range messages {
 		msg := &messages[i]
-		cleaned := SanitizeMessage(*msg)
+		cleaned := SanitizeMessage(msg)
 
 		// Validate the cleaned message.
-		if err := ValidateMessage(cleaned); err != nil {
+		if err := ValidateMessage(&cleaned); err != nil {
 			return nil, fmt.Errorf("failed to sanitize message: %w", err)
 		}
 

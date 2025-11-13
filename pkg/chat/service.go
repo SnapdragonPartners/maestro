@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"orchestrator/pkg/config"
@@ -17,17 +18,32 @@ const (
 
 	// TruncationSuffix is appended to messages that exceed the max length.
 	TruncationSuffix = " … [truncated]"
+
+	// ChannelProduct is the channel for PM interviews and product discussions.
+	ChannelProduct = "product"
+	// ChannelDevelopment is the channel for general development chat.
+	ChannelDevelopment = "development"
 )
 
 // Service provides chat functionality with secret scanning and cursor management.
+// Architecture: In-memory canonical state with database as append-only log.
+//
+//nolint:govet // fieldalignment not critical for singleton service
 type Service struct {
 	dbOps   *persistence.DatabaseOperations
 	scanner SecretScanner
 	config  *config.ChatConfig
 	logger  *logx.Logger
+
+	// In-memory canonical state
+	messages     []*persistence.ChatMessage  // All messages (canonical source of truth)
+	agentCursors map[string]map[string]int64 // agent_id -> channel -> cursor
+
+	nextID int64 // Next message ID to assign
+	mu     sync.RWMutex
 }
 
-// NewService creates a new chat service.
+// NewService creates a new chat service with in-memory canonical state.
 func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *Service {
 	logger := logx.NewLogger("chat")
 
@@ -41,10 +57,30 @@ func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *
 	}
 
 	return &Service{
-		dbOps:   dbOps,
-		scanner: scanner,
-		config:  cfg,
-		logger:  logger,
+		dbOps:        dbOps,
+		scanner:      scanner,
+		config:       cfg,
+		logger:       logger,
+		messages:     make([]*persistence.ChatMessage, 0),
+		agentCursors: make(map[string]map[string]int64),
+		nextID:       1, // Start at 1 (0 reserved for "no messages")
+	}
+}
+
+// RegisterAgent initializes per-channel cursors for an agent.
+// This establishes which channels the agent has access to.
+// Access control is implicit: no cursor = no access to channel.
+func (s *Service) RegisterAgent(agentID string, channels []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.agentCursors[agentID] == nil {
+		s.agentCursors[agentID] = make(map[string]int64)
+	}
+
+	for _, channel := range channels {
+		s.agentCursors[agentID][channel] = 0
+		s.logger.Debug("Registered %s to channel %s", agentID, channel)
 	}
 }
 
@@ -52,6 +88,7 @@ func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *
 type PostRequest struct {
 	Author   string
 	Text     string
+	Channel  string // Required: 'development', 'product', etc.
 	ReplyTo  *int64 // Optional: ID of message being replied to
 	PostType string // Optional: 'chat', 'reply', or 'escalate' (defaults to 'chat')
 }
@@ -74,9 +111,13 @@ type GetNewResponse struct {
 }
 
 // Post creates a new chat message with size enforcement and secret redaction.
+// Messages are appended to in-memory slice first (canonical state), then persisted async to DB.
 func (s *Service) Post(ctx context.Context, req *PostRequest) (*PostResponse, error) {
 	if req.Author == "" {
 		return nil, fmt.Errorf("author is required")
+	}
+	if req.Channel == "" {
+		return nil, fmt.Errorf("channel is required")
 	}
 
 	text := req.Text
@@ -109,75 +150,203 @@ func (s *Service) Post(ctx context.Context, req *PostRequest) (*PostResponse, er
 		postType = "chat"
 	}
 
-	// 4. Persist to database
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-	id, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.ReplyTo, postType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to persist chat message: %w", err)
+	// 4. Get session ID from config
+	sessionID := ""
+	if s.config != nil {
+		// TODO: Get session_id from global config once available
+		sessionID = "default" // Placeholder until config provides session_id
 	}
 
-	s.logger.Debug("Posted chat message id=%d author=%s type=%s length=%d", id, req.Author, postType, len(text))
+	// 5. Assign ID and append to in-memory slice (canonical state)
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	s.mu.Lock()
+	msgID := s.nextID
+	s.nextID++
+
+	msg := &persistence.ChatMessage{
+		ID:        msgID,
+		SessionID: sessionID,
+		Channel:   req.Channel,
+		Author:    req.Author,
+		Text:      text,
+		Timestamp: timestamp,
+		ReplyTo:   req.ReplyTo,
+		PostType:  postType,
+	}
+
+	s.messages = append(s.messages, msg)
+	s.mu.Unlock()
+
+	s.logger.Debug("Posted chat message id=%d author=%s channel=%s type=%s length=%d", msgID, req.Author, req.Channel, postType, len(text))
+
+	// 6. Async persist to database (fire-and-forget)
+	go func() {
+		_, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.Channel, req.ReplyTo, postType)
+		if err != nil {
+			s.logger.Warn("Failed to persist chat message to DB (id=%d): %v", msgID, err)
+		}
+	}()
 
 	return &PostResponse{
-		ID:      id,
+		ID:      msgID,
 		Success: true,
 	}, nil
 }
 
 // GetNew retrieves new messages for an agent since their last cursor position.
+// Returns all messages from all channels the agent has access to (filter in-memory).
 func (s *Service) GetNew(_ context.Context, req *GetNewRequest) (*GetNewResponse, error) {
 	if req.AgentID == "" {
 		return nil, fmt.Errorf("agent_id is required")
 	}
 
-	// 1. Get current cursor position
-	cursor, err := s.dbOps.GetChatCursor(req.AgentID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get cursor: %w", err)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 1. Get agent's channel cursors
+	channelCursors, ok := s.agentCursors[req.AgentID]
+	if !ok {
+		// Agent not registered - no access to any channels
+		return &GetNewResponse{
+			Messages:   []*persistence.ChatMessage{},
+			NewPointer: 0,
+		}, nil
 	}
 
-	// 2. Retrieve messages since cursor
-	messages, err := s.dbOps.GetChatMessages(cursor)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get messages: %w", err)
-	}
+	// 2. Filter in-memory messages by agent's channels and cursors
+	var newMessages []*persistence.ChatMessage
+	maxCursor := int64(0)
 
-	// 3. Calculate new pointer
-	newPointer := cursor
-	if len(messages) > 0 {
-		newPointer = messages[len(messages)-1].ID
-	}
+	// Format expected author string for this agent
+	expectedAuthor := FormatAuthor(req.AgentID)
 
-	// 4. Update cursor in database if we have new messages
-	if newPointer > cursor {
-		err = s.dbOps.UpdateChatCursor(req.AgentID, newPointer)
-		if err != nil {
-			// Log error but don't fail - messages were already retrieved
-			s.logger.Warn("Failed to update cursor for %s to %d: %v", req.AgentID, newPointer, err)
-		} else {
-			s.logger.Debug("Updated cursor for %s: %d -> %d (%d messages)", req.AgentID, cursor, newPointer, len(messages))
+	for _, msg := range s.messages {
+		// Check if agent has access to this channel
+		cursor, hasAccess := channelCursors[msg.Channel]
+		if !hasAccess {
+			continue
+		}
+
+		// Skip messages from the agent itself (don't echo own messages)
+		if msg.Author == expectedAuthor {
+			// Still track cursor even for own messages
+			if msg.ID > maxCursor {
+				maxCursor = msg.ID
+			}
+			continue
+		}
+
+		// Check if message is newer than cursor
+		if msg.ID > cursor {
+			newMessages = append(newMessages, msg)
+			if msg.ID > maxCursor {
+				maxCursor = msg.ID
+			}
 		}
 	}
 
+	// 3. Calculate new pointer (highest message ID seen across all channels)
+	newPointer := maxCursor
+	if newPointer == 0 {
+		// No new messages - use highest cursor value
+		for _, cursor := range channelCursors {
+			if cursor > newPointer {
+				newPointer = cursor
+			}
+		}
+	}
+
+	s.logger.Debug("GetNew for %s: %d new messages (pointer: %d)", req.AgentID, len(newMessages), newPointer)
+
 	return &GetNewResponse{
-		Messages:   messages,
+		Messages:   newMessages,
 		NewPointer: newPointer,
 	}, nil
 }
 
-// UpdateCursor updates an agent's cursor to a new position.
+// HaveNewMessages checks if an agent has new messages without retrieving them or updating cursors.
+// This is useful for polling to decide whether to make an LLM call.
+func (s *Service) HaveNewMessages(agentID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 1. Get agent's channel cursors
+	channelCursors, ok := s.agentCursors[agentID]
+	if !ok {
+		// Agent not registered - no access to any channels
+		return false
+	}
+
+	// 2. Check if any message exists that is newer than agent's cursor for accessible channels
+	// Format expected author string for this agent to exclude own messages
+	expectedAuthor := FormatAuthor(agentID)
+
+	for _, msg := range s.messages {
+		// Check if agent has access to this channel
+		cursor, hasAccess := channelCursors[msg.Channel]
+		if !hasAccess {
+			continue
+		}
+
+		// Skip messages from the agent itself (don't count own messages)
+		if msg.Author == expectedAuthor {
+			continue
+		}
+
+		// Check if message is newer than cursor
+		if msg.ID > cursor {
+			return true
+		}
+	}
+
+	return false
+}
+
+// UpdateCursor updates an agent's cursor to a new position across all channels.
+// This updates the cursor for ALL channels the agent has access to.
 func (s *Service) UpdateCursor(_ context.Context, agentID string, newPointer int64) error {
 	if agentID == "" {
 		return fmt.Errorf("agent_id is required")
 	}
 
-	err := s.dbOps.UpdateChatCursor(agentID, newPointer)
-	if err != nil {
-		return fmt.Errorf("failed to update cursor: %w", err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Update in-memory cursors for all channels
+	channelCursors, ok := s.agentCursors[agentID]
+	if !ok {
+		return fmt.Errorf("agent %s not registered", agentID)
 	}
 
-	s.logger.Debug("Updated cursor for %s to %d", agentID, newPointer)
+	for channel := range channelCursors {
+		channelCursors[channel] = newPointer
+	}
+
+	s.logger.Debug("Updated cursor for %s to %d (all channels)", agentID, newPointer)
+
+	// Async persist to database (fire-and-forget)
+	go func() {
+		for channel := range channelCursors {
+			err := s.dbOps.UpdateChatCursor(agentID, channel, newPointer)
+			if err != nil {
+				s.logger.Warn("Failed to persist cursor for %s channel %s: %v", agentID, channel, err)
+			}
+		}
+	}()
+
 	return nil
+}
+
+// GetAllMessages returns all in-memory messages (for WebUI display).
+// This provides real-time access to the canonical message state.
+func (s *Service) GetAllMessages() []*persistence.ChatMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Return a copy to prevent external modification
+	messagesCopy := make([]*persistence.ChatMessage, len(s.messages))
+	copy(messagesCopy, s.messages)
+	return messagesCopy
 }
 
 // FormatAuthor ensures the author is in the correct format (@agent-id or @human).

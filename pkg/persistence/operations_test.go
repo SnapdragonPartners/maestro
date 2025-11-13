@@ -992,3 +992,299 @@ func TestSessionIsolation(t *testing.T) {
 		}
 	})
 }
+
+// TestMessagePersistence verifies that all message types (REQUEST/RESPONSE with various approval types)
+// can be persisted and retrieved correctly.
+func TestMessagePersistence(t *testing.T) {
+	ops, cleanup := createTestDB(t)
+	defer cleanup()
+
+	// Create parent spec and story for message association
+	specID := GenerateSpecID()
+	spec := &Spec{ID: specID, Content: "Test spec for messages"}
+	if err := ops.UpsertSpec(spec); err != nil {
+		t.Fatalf("Failed to create spec: %v", err)
+	}
+
+	storyID, _ := GenerateStoryID()
+	story := &Story{
+		ID:        storyID,
+		SpecID:    specID,
+		Title:     "Test Story",
+		Content:   "Content",
+		Status:    StatusNew,
+		StoryType: "app",
+	}
+	if err := ops.UpsertStory(story); err != nil {
+		t.Fatalf("Failed to create story: %v", err)
+	}
+
+	// Test all approval request types
+	t.Run("ApprovalRequests", func(t *testing.T) {
+		approvalTypes := []struct {
+			name         string
+			approvalType string
+		}{
+			{"PlanApproval", "plan"},
+			{"CodeApproval", "code"},
+			{"BudgetReview", "budget_review"},
+			{"CompletionApproval", "completion"},
+			{"SpecApproval", "spec"},
+		}
+
+		for _, tt := range approvalTypes {
+			t.Run(tt.name, func(t *testing.T) {
+				req := &AgentRequest{
+					ID:           GenerateSpecID(),
+					StoryID:      &storyID,
+					RequestType:  "approval",
+					ApprovalType: &tt.approvalType,
+					FromAgent:    "coder-001",
+					ToAgent:      "architect-001",
+					Content:      fmt.Sprintf("Test %s approval request", tt.approvalType),
+					Reason:       &[]string{fmt.Sprintf("Requesting %s approval", tt.approvalType)}[0],
+					Context:      &[]string{"Test context"}[0],
+				}
+
+				// Upsert the request
+				if err := ops.UpsertAgentRequest(req); err != nil {
+					t.Fatalf("Failed to upsert %s request: %v", tt.approvalType, err)
+				}
+
+				// Retrieve requests by story
+				requests, err := ops.GetAgentRequestsByStory(storyID)
+				if err != nil {
+					t.Fatalf("Failed to get requests: %v", err)
+				}
+
+				// Find our request
+				found := false
+				for _, r := range requests {
+					if r.ID == req.ID {
+						found = true
+						if r.ApprovalType == nil || *r.ApprovalType != tt.approvalType {
+							t.Errorf("Expected approval_type %q, got %v", tt.approvalType, r.ApprovalType)
+						}
+						if r.Content != req.Content {
+							t.Errorf("Expected content %q, got %q", req.Content, r.Content)
+						}
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Request %s not found in retrieved requests", req.ID)
+				}
+			})
+		}
+	})
+
+	// Test question requests (non-approval)
+	t.Run("QuestionRequest", func(t *testing.T) {
+		req := &AgentRequest{
+			ID:          GenerateSpecID(),
+			StoryID:     &storyID,
+			RequestType: "question",
+			FromAgent:   "coder-001",
+			ToAgent:     "architect-001",
+			Content:     "How should I implement this feature?",
+			Context:     &[]string{"Coder needs architectural guidance"}[0],
+		}
+
+		if err := ops.UpsertAgentRequest(req); err != nil {
+			t.Fatalf("Failed to upsert question request: %v", err)
+		}
+
+		requests, err := ops.GetAgentRequestsByStory(storyID)
+		if err != nil {
+			t.Fatalf("Failed to get requests: %v", err)
+		}
+
+		found := false
+		for _, r := range requests {
+			if r.ID == req.ID {
+				found = true
+				if r.RequestType != "question" {
+					t.Errorf("Expected request_type 'question', got %q", r.RequestType)
+				}
+				if r.ApprovalType != nil {
+					t.Errorf("Expected nil approval_type for question, got %v", *r.ApprovalType)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Error("Question request not found")
+		}
+	})
+
+	// Test approval responses
+	t.Run("ApprovalResponses", func(t *testing.T) {
+		statuses := []struct {
+			name   string
+			status string
+		}{
+			{"Approved", "APPROVED"},
+			{"Rejected", "REJECTED"},
+			{"NeedsChanges", "NEEDS_CHANGES"},
+			{"Pending", "PENDING"},
+		}
+
+		for _, tt := range statuses {
+			t.Run(tt.name, func(t *testing.T) {
+				// Create a corresponding request first
+				reqID := GenerateSpecID()
+				req := &AgentRequest{
+					ID:           reqID,
+					StoryID:      &storyID,
+					RequestType:  "approval",
+					ApprovalType: &[]string{"code"}[0],
+					FromAgent:    "coder-001",
+					ToAgent:      "architect-001",
+					Content:      "Test code for approval",
+				}
+				if err := ops.UpsertAgentRequest(req); err != nil {
+					t.Fatalf("Failed to create request: %v", err)
+				}
+
+				// Create response
+				resp := &AgentResponse{
+					ID:           GenerateSpecID(),
+					RequestID:    &reqID,
+					StoryID:      &storyID,
+					ResponseType: "result",
+					FromAgent:    "architect-001",
+					ToAgent:      "coder-001",
+					Content:      fmt.Sprintf("Test %s response", tt.status),
+					Status:       &tt.status,
+				}
+
+				if err := ops.UpsertAgentResponse(resp); err != nil {
+					t.Fatalf("Failed to upsert response: %v", err)
+				}
+
+				// Retrieve responses by story
+				responses, err := ops.GetAgentResponsesByStory(storyID)
+				if err != nil {
+					t.Fatalf("Failed to get responses: %v", err)
+				}
+
+				// Find our response
+				found := false
+				for _, r := range responses {
+					if r.ID == resp.ID {
+						found = true
+						if r.Status == nil || *r.Status != tt.status {
+							t.Errorf("Expected status %q, got %v", tt.status, r.Status)
+						}
+						if r.ResponseType != "result" {
+							t.Errorf("Expected response_type 'result', got %q", r.ResponseType)
+						}
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Response %s not found", resp.ID)
+				}
+			})
+		}
+	})
+
+	// Test answer responses (non-approval)
+	t.Run("AnswerResponse", func(t *testing.T) {
+		// Create a question request first
+		reqID := GenerateSpecID()
+		req := &AgentRequest{
+			ID:          reqID,
+			StoryID:     &storyID,
+			RequestType: "question",
+			FromAgent:   "coder-001",
+			ToAgent:     "architect-001",
+			Content:     "How should I implement this?",
+		}
+		if err := ops.UpsertAgentRequest(req); err != nil {
+			t.Fatalf("Failed to create question: %v", err)
+		}
+
+		// Create answer response
+		resp := &AgentResponse{
+			ID:           GenerateSpecID(),
+			RequestID:    &reqID,
+			StoryID:      &storyID,
+			ResponseType: "answer",
+			FromAgent:    "architect-001",
+			ToAgent:      "coder-001",
+			Content:      "You should use the factory pattern here",
+		}
+
+		if err := ops.UpsertAgentResponse(resp); err != nil {
+			t.Fatalf("Failed to upsert answer: %v", err)
+		}
+
+		responses, err := ops.GetAgentResponsesByStory(storyID)
+		if err != nil {
+			t.Fatalf("Failed to get responses: %v", err)
+		}
+
+		// Find our answer response
+		found := false
+		for _, r := range responses {
+			if r.ID == resp.ID {
+				found = true
+				if r.ResponseType != "answer" {
+					t.Errorf("Expected response_type 'answer', got %q", r.ResponseType)
+				}
+				if r.Status != nil {
+					t.Errorf("Expected nil status for answer, got %v", *r.Status)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Error("Answer response not found")
+		}
+	})
+
+	// Test messages with NULL story_id (e.g., PM spec requests)
+	t.Run("MessagesWithoutStory", func(t *testing.T) {
+		// PM spec approval request (not associated with any story)
+		req := &AgentRequest{
+			ID:           GenerateSpecID(),
+			StoryID:      nil, // No story association
+			RequestType:  "approval",
+			ApprovalType: &[]string{"spec"}[0],
+			FromAgent:    "pm-001",
+			ToAgent:      "architect-001",
+			Content:      "Spec markdown content for approval",
+			Reason:       &[]string{"PM has completed specification"}[0],
+		}
+
+		if err := ops.UpsertAgentRequest(req); err != nil {
+			t.Fatalf("Failed to upsert PM spec request: %v", err)
+		}
+
+		// Retrieve via GetRecentMessages (which should handle NULL story_id)
+		// Use a higher limit since we've created many messages in previous sub-tests
+		messages, err := ops.GetRecentMessages(100)
+		if err != nil {
+			t.Fatalf("Failed to get recent messages: %v", err)
+		}
+
+		// Find our PM request
+		found := false
+		for _, msg := range messages {
+			if msg.ID == req.ID {
+				found = true
+				if msg.StoryID != nil {
+					t.Errorf("Expected nil story_id for PM request, got %v", *msg.StoryID)
+				}
+				if msg.ApprovalType == nil || *msg.ApprovalType != "spec" {
+					t.Errorf("Expected approval_type 'spec', got %v", msg.ApprovalType)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Error("PM spec request not found in recent messages")
+		}
+	})
+}

@@ -21,7 +21,8 @@ type AgentContext struct {
 	ReadOnly        bool
 	NetworkDisabled bool
 	WorkDir         string
-	Agent           Agent // Optional agent reference for state-aware tools
+	AgentID         string // Agent identifier for tools that need it
+	Agent           Agent  // Optional agent reference for state-aware tools
 }
 
 // Agent interface for tools that need access to agent state.
@@ -31,7 +32,7 @@ type Agent interface {
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
-type ToolFactory func(ctx AgentContext) (Tool, error)
+type ToolFactory func(ctx *AgentContext) (Tool, error)
 
 // ToolMeta contains metadata about a tool for documentation and discovery.
 type ToolMeta struct {
@@ -105,7 +106,7 @@ func ListTools() []ToolMeta {
 //
 //nolint:govet // fieldalignment: Logical grouping preferred over memory optimization
 type ToolProvider struct {
-	ctx      AgentContext
+	ctx      *AgentContext
 	tools    map[string]Tool
 	allowSet map[string]struct{}
 	mu       sync.Mutex
@@ -113,7 +114,7 @@ type ToolProvider struct {
 
 // NewProvider creates a new ToolProvider for the given agent context and allowed tools.
 // Automatically seals the global registry on first use.
-func NewProvider(ctx AgentContext, allowedTools []string) *ToolProvider {
+func NewProvider(ctx *AgentContext, allowedTools []string) *ToolProvider {
 	Seal() // Ensure registry is immutable
 
 	allowSet := make(map[string]struct{}, len(allowedTools))
@@ -212,7 +213,7 @@ func GenerateToolDocumentationForTools(tools []ToolMeta) string {
 // TOOL FACTORY FUNCTIONS
 
 // createShellTool creates a shell tool instance with the provided agent context.
-func createShellTool(ctx AgentContext) (Tool, error) {
+func createShellTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("shell tool requires an executor")
 	}
@@ -226,22 +227,22 @@ func createShellTool(ctx AgentContext) (Tool, error) {
 }
 
 // createSubmitPlanTool creates a submit plan tool instance.
-func createSubmitPlanTool(_ AgentContext) (Tool, error) {
+func createSubmitPlanTool(_ *AgentContext) (Tool, error) {
 	return NewSubmitPlanTool(), nil
 }
 
 // createAskQuestionTool creates an ask question tool instance.
-func createAskQuestionTool(_ AgentContext) (Tool, error) {
+func createAskQuestionTool(_ *AgentContext) (Tool, error) {
 	return NewAskQuestionTool(), nil
 }
 
 // createMarkStoryCompleteTool creates a mark story complete tool instance.
-func createMarkStoryCompleteTool(_ AgentContext) (Tool, error) {
+func createMarkStoryCompleteTool(_ *AgentContext) (Tool, error) {
 	return NewMarkStoryCompleteTool(), nil
 }
 
 // createBuildTool creates a build tool instance.
-func createBuildTool(_ AgentContext) (Tool, error) {
+func createBuildTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
 	// For now, create a temporary build service
 	buildSvc := build.NewBuildService()
@@ -249,7 +250,7 @@ func createBuildTool(_ AgentContext) (Tool, error) {
 }
 
 // createTestTool creates a test tool instance.
-func createTestTool(_ AgentContext) (Tool, error) {
+func createTestTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
 	// For now, create a temporary build service
 	buildSvc := build.NewBuildService()
@@ -257,7 +258,7 @@ func createTestTool(_ AgentContext) (Tool, error) {
 }
 
 // createLintTool creates a lint tool instance.
-func createLintTool(_ AgentContext) (Tool, error) {
+func createLintTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
 	// For now, create a temporary build service
 	buildSvc := build.NewBuildService()
@@ -265,12 +266,12 @@ func createLintTool(_ AgentContext) (Tool, error) {
 }
 
 // createDoneTool creates a done tool instance.
-func createDoneTool(_ AgentContext) (Tool, error) {
+func createDoneTool(_ *AgentContext) (Tool, error) {
 	return NewDoneTool(), nil
 }
 
 // createBackendInfoTool creates a backend info tool instance.
-func createBackendInfoTool(_ AgentContext) (Tool, error) {
+func createBackendInfoTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
 	// For now, create a temporary build service
 	buildSvc := build.NewBuildService()
@@ -278,7 +279,7 @@ func createBackendInfoTool(_ AgentContext) (Tool, error) {
 }
 
 // createContainerBuildTool creates a container build tool instance.
-func createContainerBuildTool(ctx AgentContext) (Tool, error) {
+func createContainerBuildTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container build tool requires an executor")
 	}
@@ -286,7 +287,7 @@ func createContainerBuildTool(ctx AgentContext) (Tool, error) {
 }
 
 // createContainerUpdateTool creates a container update tool instance.
-func createContainerUpdateTool(ctx AgentContext) (Tool, error) {
+func createContainerUpdateTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container update tool requires an executor")
 	}
@@ -294,7 +295,7 @@ func createContainerUpdateTool(ctx AgentContext) (Tool, error) {
 }
 
 // createContainerTestTool creates a unified container test tool instance.
-func createContainerTestTool(ctx AgentContext) (Tool, error) {
+func createContainerTestTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container test tool requires an executor")
 	}
@@ -312,12 +313,12 @@ func createContainerTestTool(ctx AgentContext) (Tool, error) {
 }
 
 // createContainerListTool creates a container list tool instance.
-func createContainerListTool(ctx AgentContext) (Tool, error) {
+func createContainerListTool(ctx *AgentContext) (Tool, error) {
 	return NewContainerListTool(ctx.Executor), nil
 }
 
 // createContainerSwitchTool creates a container switch tool instance.
-func createContainerSwitchTool(ctx AgentContext) (Tool, error) {
+func createContainerSwitchTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container switch tool requires an executor")
 	}
@@ -325,7 +326,7 @@ func createContainerSwitchTool(ctx AgentContext) (Tool, error) {
 }
 
 // createChatPostTool creates a chat post tool instance.
-func createChatPostTool(ctx AgentContext) (Tool, error) {
+func createChatPostTool(ctx *AgentContext) (Tool, error) {
 	if ctx.ChatService == nil {
 		return nil, fmt.Errorf("chat post tool requires a chat service")
 	}
@@ -333,7 +334,7 @@ func createChatPostTool(ctx AgentContext) (Tool, error) {
 }
 
 // createChatReadTool creates a chat read tool instance.
-func createChatReadTool(ctx AgentContext) (Tool, error) {
+func createChatReadTool(ctx *AgentContext) (Tool, error) {
 	if ctx.ChatService == nil {
 		return nil, fmt.Errorf("chat read tool requires a chat service")
 	}
@@ -413,17 +414,17 @@ func getChatReadSchema() InputSchema {
 }
 
 // createTodosAddTool creates an add todos tool instance.
-func createTodosAddTool(_ AgentContext) (Tool, error) {
+func createTodosAddTool(_ *AgentContext) (Tool, error) {
 	return NewTodosAddTool(), nil
 }
 
 // createTodoCompleteTool creates a todo complete tool instance.
-func createTodoCompleteTool(_ AgentContext) (Tool, error) {
+func createTodoCompleteTool(_ *AgentContext) (Tool, error) {
 	return NewTodoCompleteTool(), nil
 }
 
 // createTodoUpdateTool creates a todo update tool instance.
-func createTodoUpdateTool(_ AgentContext) (Tool, error) {
+func createTodoUpdateTool(_ *AgentContext) (Tool, error) {
 	return NewTodoUpdateTool(), nil
 }
 
@@ -440,7 +441,7 @@ func getTodoUpdateSchema() InputSchema {
 }
 
 // createReadFileTool creates a read_file tool instance.
-func createReadFileTool(ctx AgentContext) (Tool, error) {
+func createReadFileTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("read_file tool requires an executor")
 	}
@@ -454,7 +455,7 @@ func createReadFileTool(ctx AgentContext) (Tool, error) {
 }
 
 // createListFilesTool creates a list_files tool instance.
-func createListFilesTool(ctx AgentContext) (Tool, error) {
+func createListFilesTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("list_files tool requires an executor")
 	}
@@ -468,7 +469,7 @@ func createListFilesTool(ctx AgentContext) (Tool, error) {
 }
 
 // createGetDiffTool creates a get_diff tool instance.
-func createGetDiffTool(ctx AgentContext) (Tool, error) {
+func createGetDiffTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("get_diff tool requires an executor")
 	}
@@ -476,7 +477,7 @@ func createGetDiffTool(ctx AgentContext) (Tool, error) {
 }
 
 // createSubmitReplyTool creates a submit_reply tool instance.
-func createSubmitReplyTool(_ AgentContext) (Tool, error) {
+func createSubmitReplyTool(_ *AgentContext) (Tool, error) {
 	return NewSubmitReplyTool(), nil
 }
 
@@ -496,12 +497,46 @@ func getSubmitReplySchema() InputSchema {
 	return NewSubmitReplyTool().Definition().InputSchema
 }
 
-func createSubmitStoriesTool(_ AgentContext) (Tool, error) {
+func createSubmitStoriesTool(_ *AgentContext) (Tool, error) {
 	return NewSubmitStoriesTool(), nil
 }
 
 func getSubmitStoriesSchema() InputSchema {
 	return NewSubmitStoriesTool().Definition().InputSchema
+}
+
+func createSpecSubmitTool(_ *AgentContext) (Tool, error) {
+	return NewSpecSubmitTool(), nil
+}
+
+func getSpecSubmitSchema() InputSchema {
+	return NewSpecSubmitTool().Definition().InputSchema
+}
+
+func createSpecFeedbackTool(_ *AgentContext) (Tool, error) {
+	return NewSpecFeedbackTool(), nil
+}
+
+func getSpecFeedbackSchema() InputSchema {
+	return NewSpecFeedbackTool().Definition().InputSchema
+}
+
+func createChatAskUserTool(ctx *AgentContext) (Tool, error) {
+	// Get chat service from context
+	if ctx.ChatService == nil {
+		return nil, fmt.Errorf("chat_service not found in AgentContext")
+	}
+
+	// Get agent ID from context
+	if ctx.AgentID == "" {
+		return nil, fmt.Errorf("agent_id not found in AgentContext")
+	}
+
+	return NewChatAskUserTool(ctx.ChatService, ctx.AgentID), nil
+}
+
+func getChatAskUserSchema() InputSchema {
+	return NewChatAskUserTool(nil, "").Definition().InputSchema
 }
 
 // init registers all tools in the global registry using the factory pattern.
@@ -656,5 +691,24 @@ func init() {
 		Name:        ToolSubmitStories,
 		Description: "Submit analyzed requirements as structured stories (SCOPING phase completion)",
 		InputSchema: getSubmitStoriesSchema(),
+	})
+
+	// Register PM tools
+	Register(ToolSpecSubmit, createSpecSubmitTool, &ToolMeta{
+		Name:        ToolSpecSubmit,
+		Description: "Submit finalized specification for validation and storage (PM SUBMITTING phase)",
+		InputSchema: getSpecSubmitSchema(),
+	})
+
+	Register(ToolSpecFeedback, createSpecFeedbackTool, &ToolMeta{
+		Name:        ToolSpecFeedback,
+		Description: "Send feedback to PM about submitted specification (Architect SCOPING phase)",
+		InputSchema: getSpecFeedbackSchema(),
+	})
+
+	Register(ToolChatAskUser, createChatAskUserTool, &ToolMeta{
+		Name:        ToolChatAskUser,
+		Description: "Post a question to chat and wait for user response. Use when you need user input before proceeding.",
+		InputSchema: getChatAskUserSchema(),
 	})
 }

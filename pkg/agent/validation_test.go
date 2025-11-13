@@ -63,7 +63,7 @@ func TestValidateMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateMessage(tt.msg)
+			err := ValidateMessage(&tt.msg)
 
 			if tt.wantErr && err == nil {
 				t.Errorf("ValidateMessage() expected error but got none")
@@ -173,7 +173,7 @@ func TestSanitizeMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := SanitizeMessage(tt.input)
+			result := SanitizeMessage(&tt.input)
 
 			if result.Role != tt.expected.Role {
 				t.Errorf("SanitizeMessage() role = %v, want %v", result.Role, tt.expected.Role)

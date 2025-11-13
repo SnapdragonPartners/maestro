@@ -9,9 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,7 +26,6 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
-	"orchestrator/pkg/proto"
 )
 
 //go:embed web/templates/*.html
@@ -135,13 +132,23 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/agent/", s.requireAuth(s.handleAgent))
 	mux.HandleFunc("/api/queues", s.requireAuth(s.handleQueues))
 	mux.HandleFunc("/api/stories", s.requireAuth(s.handleStories))
-	mux.HandleFunc("/api/upload", s.requireAuth(s.handleUpload))
+	// NOTE: /api/upload removed - all specs must go through PM for validation
+	// Use /api/pm/upload instead
 	mux.HandleFunc("/api/answer", s.requireAuth(s.handleAnswer))
 	mux.HandleFunc("/api/shutdown", s.requireAuth(s.handleShutdown))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
 	mux.HandleFunc("/api/healthz", s.requireAuth(s.handleHealth))
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
+
+	// PM agent endpoints - specification development
+	mux.HandleFunc("/api/pm/start", s.requireAuth(s.handlePMStart))
+	mux.HandleFunc("/api/pm/chat", s.requireAuth(s.handlePMChat))
+	mux.HandleFunc("/api/pm/preview", s.requireAuth(s.handlePMPreview))
+	mux.HandleFunc("/api/pm/preview/action", s.requireAuth(s.handlePMPreviewAction))
+	mux.HandleFunc("/api/pm/preview/spec", s.requireAuth(s.handlePMPreviewGet))
+	mux.HandleFunc("/api/pm/upload", s.requireAuth(s.handlePMUpload))
+	mux.HandleFunc("/api/pm/status", s.requireAuth(s.handlePMStatus))
 }
 
 // handleServicesStatus implements GET /api/services/status.
@@ -436,156 +443,6 @@ func (s *Server) handleStories(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Debug("Served story information: %d stories", len(stories))
-}
-
-// handleUpload implements POST /api/upload.
-// validateUploadRequest validates the basic upload request.
-func (s *Server) validateUploadRequest(r *http.Request) error {
-	if r.Method != http.MethodPost {
-		return fmt.Errorf("method not allowed")
-	}
-
-	// Parse multipart form first (validate request format)
-	if err := r.ParseMultipartForm(100 << 10); err != nil { // 100 KB limit
-		return fmt.Errorf("invalid multipart form: %w", err)
-	}
-
-	return nil
-}
-
-// validateUploadFile validates the uploaded file.
-func (s *Server) validateUploadFile(_ multipart.File, header *multipart.FileHeader) error {
-	// Check file size (100 KB limit)
-	if header.Size > 100*1024 {
-		return fmt.Errorf("file too large: %d bytes", header.Size)
-	}
-
-	// Check file extension.
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".md") {
-		return fmt.Errorf("invalid file extension: %s", header.Filename)
-	}
-
-	return nil
-}
-
-// checkArchitectAvailability checks if architect is available.
-func (s *Server) checkArchitectAvailability() error {
-	architectState, err := s.findArchitectState()
-	if err != nil {
-		return err
-	}
-
-	if architectState != proto.StateWaiting.String() {
-		return fmt.Errorf("architect is busy")
-	}
-
-	return nil
-}
-
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	// Validate request
-	if err := s.validateUploadRequest(r); err != nil {
-		s.logger.Warn("Upload request validation failed: %v", err)
-		if err.Error() == "method not allowed" {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		} else {
-			http.Error(w, "Invalid multipart form", http.StatusBadRequest)
-		}
-		return
-	}
-
-	// Get the uploaded file.
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		s.logger.Warn("No file found in upload: %v", err)
-		http.Error(w, "No file provided", http.StatusBadRequest)
-		return
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			s.logger.Warn("Failed to close uploaded file: %v", closeErr)
-		}
-	}()
-
-	// Validate file
-	if validateErr := s.validateUploadFile(file, header); validateErr != nil {
-		s.logger.Warn("Upload file validation failed: %v", validateErr)
-		http.Error(w, validateErr.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Check architect availability
-	if availErr := s.checkArchitectAvailability(); availErr != nil {
-		s.logger.Warn("Architect availability check failed: %v", availErr)
-		if availErr.Error() == "dispatcher not available" {
-			http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
-		} else if availErr.Error() == "architect is busy" {
-			http.Error(w, "Architect is busy", http.StatusConflict)
-		} else {
-			http.Error(w, "Architect not available", http.StatusConflict)
-		}
-		return
-	}
-
-	// Create specs directory if it doesn't exist.
-	specsDir := filepath.Join(s.workDir, ".maestro", "specs")
-	if mkdirErr := os.MkdirAll(specsDir, 0755); mkdirErr != nil {
-		s.logger.Error("Failed to create specs directory: %v", mkdirErr)
-		http.Error(w, "Failed to create specs directory", http.StatusInternalServerError)
-		return
-	}
-
-	// Read file content.
-	content, err := io.ReadAll(file)
-	if err != nil {
-		s.logger.Error("Failed to read uploaded file: %v", err)
-		http.Error(w, "Failed to read file", http.StatusInternalServerError)
-		return
-	}
-
-	// Save file to specs directory.
-	filePath := filepath.Join(specsDir, header.Filename)
-	if err := os.WriteFile(filePath, content, 0644); err != nil {
-		s.logger.Error("Failed to save file: %v", err)
-		http.Error(w, "Failed to save file", http.StatusInternalServerError)
-		return
-	}
-
-	// Create and send SPEC message to architect (use logical name "architect")
-	// The dispatcher will resolve this to the actual architect agent.
-	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, "web-ui", "architect")
-
-	// Build SPEC payload with typed generic payload
-	specPayload := map[string]any{
-		"type":     "spec_upload",
-		"filename": header.Filename,
-		"filepath": filePath,
-		"size":     header.Size,
-		"content":  string(content), // Add the actual file content
-	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
-
-	s.logger.Info("Dispatching SPEC message %s to architect", msg.ID)
-	if err := s.dispatcher.DispatchMessage(msg); err != nil {
-		s.logger.Error("Failed to dispatch upload message: %v", err)
-		// Don't delete the file, but return error.
-		http.Error(w, "Failed to notify architect", http.StatusInternalServerError)
-		return
-	}
-
-	// Return success.
-	w.WriteHeader(http.StatusCreated)
-	response := map[string]any{
-		"message":  "File uploaded successfully",
-		"filename": header.Filename,
-		"size":     header.Size,
-	}
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.logger.Error("Failed to encode upload response: %v", err)
-	}
-
-	s.logger.Info("Successfully uploaded file: %s (%d bytes)", header.Filename, header.Size)
 }
 
 // handleDashboard serves the main dashboard page.
@@ -1002,7 +859,7 @@ type MessageEntry struct {
 	Type         string  `json:"type"`
 	From         string  `json:"from"`
 	To           string  `json:"to"`
-	StoryID      string  `json:"story_id,omitempty"`
+	StoryID      *string `json:"story_id,omitempty"` // Can be null for messages not associated with a story
 	Content      string  `json:"content"`
 }
 
@@ -1101,7 +958,8 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 
 	// Parse JSON request body
 	var reqBody struct {
-		Text string `json:"text"`
+		Text    string `json:"text"`
+		Channel string `json:"channel"` // Optional: defaults to 'development'
 	}
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1113,10 +971,17 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default to development channel if not specified
+	channel := reqBody.Channel
+	if channel == "" {
+		channel = "development"
+	}
+
 	// Post message as "@human"
 	postReq := &chat.PostRequest{
-		Author: "@human",
-		Text:   reqBody.Text,
+		Author:  "@human",
+		Text:    reqBody.Text,
+		Channel: channel,
 	}
 
 	resp, err := s.chatService.Post(r.Context(), postReq)
@@ -1142,81 +1007,31 @@ func (s *Server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 
 	// Get query parameter for cursor (optional)
 	cursorStr := r.URL.Query().Get("since")
-
-	// For now, just get all recent messages from the database directly
-	// The cursor will be used by agents, but web UI shows all messages
-	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		s.logger.Error("Failed to open database: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
-		return
-	}
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			s.logger.Warn("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Get session ID from config
-	cfg, err := config.GetConfig()
-	if err != nil {
-		s.logger.Error("Failed to get config: %v", err)
-		http.Error(w, "Configuration error", http.StatusInternalServerError)
-		return
-	}
-
-	// Query messages (session-isolated)
-	query := `
-		SELECT id, ts, author, text
-		FROM chat
-		WHERE session_id = ?
-		ORDER BY id ASC
-	`
-
-	// If cursor provided, only get messages after that ID
+	var cursorID int64
 	if cursorStr != "" {
-		query = `
-			SELECT id, ts, author, text
-			FROM chat
-			WHERE session_id = ? AND id > ?
-			ORDER BY id ASC
-		`
-	}
-
-	var rows *sql.Rows
-	if cursorStr != "" {
-		rows, err = db.Query(query, cfg.SessionID, cursorStr)
-	} else {
-		rows, err = db.Query(query, cfg.SessionID)
-	}
-
-	if err != nil {
-		s.logger.Error("Failed to query messages: %v", err)
-		http.Error(w, "Database query error", http.StatusInternalServerError)
-		return
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			s.logger.Warn("Failed to close rows: %v", closeErr)
+		if _, err := fmt.Sscanf(cursorStr, "%d", &cursorID); err != nil {
+			s.logger.Warn("Invalid cursor format: %s", cursorStr)
 		}
-	}()
+	}
 
-	// Build response
+	// Get all in-memory messages from chat service (canonical source of truth)
+	allMessages := s.chatService.GetAllMessages()
+
+	// Build response, filtering by cursor if provided
 	messages := []map[string]interface{}{}
-	for rows.Next() {
-		var id int64
-		var timestamp, author, text string
-		if err := rows.Scan(&id, &timestamp, &author, &text); err != nil {
-			s.logger.Error("Failed to scan row: %v", err)
-			continue
+	for _, msg := range allMessages {
+		if cursorID > 0 && msg.ID <= cursorID {
+			continue // Skip messages we've already seen
 		}
 
 		messages = append(messages, map[string]interface{}{
-			"id":        id,
-			"timestamp": timestamp,
-			"author":    author,
-			"text":      text,
+			"id":        msg.ID,
+			"timestamp": msg.Timestamp,
+			"author":    msg.Author,
+			"text":      msg.Text,
+			"channel":   msg.Channel,
+			"post_type": msg.PostType,
+			"reply_to":  msg.ReplyTo,
 		})
 	}
 

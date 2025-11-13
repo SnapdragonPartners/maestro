@@ -18,7 +18,7 @@ func TestToolProviderDevOpsPlanningTools(t *testing.T) {
 	}
 
 	// Create provider with DevOps planning tools
-	provider := NewProvider(agentCtx, DevOpsPlanningTools)
+	provider := NewProvider(&agentCtx, DevOpsPlanningTools)
 
 	// Get available tool metadata
 	toolMetas := provider.List()
@@ -67,7 +67,7 @@ func TestToolProviderAppPlanningTools(t *testing.T) {
 	}
 
 	// Create provider with App planning tools
-	provider := NewProvider(agentCtx, AppPlanningTools)
+	provider := NewProvider(&agentCtx, AppPlanningTools)
 
 	// Get available tool metadata
 	toolMetas := provider.List()
@@ -114,7 +114,7 @@ func TestToolProviderAppCodingTools(t *testing.T) {
 	}
 
 	// Create provider with App coding tools
-	provider := NewProvider(agentCtx, AppCodingTools)
+	provider := NewProvider(&agentCtx, AppCodingTools)
 
 	// Get available tool metadata
 	toolMetas := provider.List()
@@ -166,7 +166,7 @@ func TestToolProviderGenerateDocumentation(t *testing.T) {
 	}
 
 	// Test DevOps planning documentation
-	provider := NewProvider(agentCtx, DevOpsPlanningTools)
+	provider := NewProvider(&agentCtx, DevOpsPlanningTools)
 	doc := provider.GenerateToolDocumentation()
 
 	// Verify documentation is generated
@@ -198,7 +198,7 @@ func TestToolProviderCanRetrieveTools(t *testing.T) {
 	}
 
 	// Create provider
-	provider := NewProvider(agentCtx, []string{ToolShell, ToolSubmitPlan})
+	provider := NewProvider(&agentCtx, []string{ToolShell, ToolSubmitPlan})
 
 	// Test retrieving existing tool
 	shellTool, err := provider.Get(ToolShell)
@@ -274,7 +274,7 @@ func TestStoryTypeToolMapping(t *testing.T) {
 				WorkDir:         "/tmp",
 			}
 
-			provider := NewProvider(agentCtx, tt.expectedTools)
+			provider := NewProvider(&agentCtx, tt.expectedTools)
 			toolMetas := provider.List()
 
 			if len(toolMetas) != len(tt.expectedTools) {

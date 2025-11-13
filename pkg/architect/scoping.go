@@ -3,16 +3,12 @@ package architect
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/knowledge"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
-	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
 )
 
@@ -32,230 +28,8 @@ type Requirement struct {
 	StoryType          string            `json:"story_type"` // "devops" or "app"
 }
 
-// handleScoping processes the scoping phase using a clean linear flow.
-// 1. Create and persist spec record immediately
-// 2. Check for container context and add if needed
-// 3. Parse spec with LLM to get detailed requirements
-// 4. Convert requirements directly to stories with rich content
-// 5. Flush stories to database.
-func (d *Driver) handleScoping(ctx context.Context) (proto.State, error) {
-	// Extract spec file path from the SPEC message
-	specFile := d.getSpecFileFromMessage()
-	if specFile == "" {
-		return StateError, fmt.Errorf("no spec file path found in SPEC message")
-	}
-
-	// Get spec content - either from file or direct content
-	var rawSpecContent []byte
-	var err error
-
-	// Check if we have direct content from bootstrap
-	var hasContent bool
-	if specMsgData, exists := d.stateData["spec_message"]; exists {
-		if currentSpecMsg, ok := specMsgData.(*proto.AgentMsg); ok {
-			// Extract spec content from typed payload
-			if typedPayload := currentSpecMsg.GetTypedPayload(); typedPayload != nil {
-				if payloadData, extractErr := typedPayload.ExtractGeneric(); extractErr == nil {
-					if contentStr, ok := payloadData["spec_content"].(string); ok {
-						rawSpecContent = []byte(contentStr)
-						hasContent = true
-					}
-				}
-			}
-		}
-	}
-
-	if !hasContent {
-		// Fallback to file-based spec reading
-		rawSpecContent, err = os.ReadFile(specFile)
-		if err != nil {
-			return StateError, fmt.Errorf("failed to read spec file %s: %w", specFile, err)
-		}
-	}
-
-	// 1. Create and persist spec record immediately (for recovery)
-	specID := persistence.GenerateSpecID()
-	spec := &persistence.Spec{
-		ID:        specID,
-		Content:   string(rawSpecContent),
-		CreatedAt: time.Now(),
-	}
-	d.persistenceChannel <- &persistence.Request{
-		Operation: persistence.OpUpsertSpec,
-		Data:      spec,
-		Response:  nil,
-	}
-
-	// 2. Check for container context and add if needed (with retry enhancement)
-	containerContext := ""
-	retryCount := 0
-	if retryData, exists := d.stateData["container_retry_count"]; exists {
-		if count, ok := retryData.(int); ok {
-			retryCount = count
-		}
-	}
-
-	if !config.IsValidTargetImage() {
-		if retryCount == 0 {
-			// First attempt - standard container guidance
-			containerContext = `
-
-IMPORTANT CONSTRAINT: No valid target container image exists in this project. This means:
-- App stories require a containerized development environment to run properly
-- You MUST create at least one DevOps story first to build the target container
-- The first story (in dependency order) must be a DevOps story that creates a valid container
-
-Please ensure that:
-1. At least one DevOps story exists to build the target container environment
-2. The first story in dependency order is a DevOps story 
-3. DevOps stories handle container setup, build environment, or infrastructure
-4. App stories handle application code, features, and business logic within containers`
-		} else {
-			// Retry attempt - ENHANCED guidance
-			containerContext = `
-
-CRITICAL REQUIREMENT: Container Environment Setup - RETRY WITH ENHANCED GUIDANCE
-
-This project currently has NO VALID TARGET CONTAINER and your previous response did not include any DevOps stories.
-
-YOU MUST CREATE AT LEAST ONE DEVOPS STORY or the system cannot function. This is MANDATORY.
-
-DEVOPS STORY REQUIREMENTS:
-1. Story type MUST be "devops" (not "app")
-2. Must handle container setup, Dockerfile creation, or build environment
-3. Must be first in dependency order
-4. Example titles: "Set up development container", "Configure build environment", "Create Dockerfile"
-
-APP STORIES CANNOT RUN without a container environment. Every app story needs a DevOps story to run first.
-
-REQUIRED: Your response must include at least one DevOps story for container setup.`
-		}
-	}
-
-	// 3. Load architectural knowledge context for spec analysis
-	knowledgeContext := d.loadArchitecturalKnowledge()
-
-	// 4. Parse spec with LLM to get detailed requirements
-	if d.llmClient == nil {
-		return StateError, fmt.Errorf("LLM client not available - spec analysis requires LLM")
-	}
-
-	requirements, err := d.parseSpecWithLLM(ctx, string(rawSpecContent)+containerContext, specFile, knowledgeContext)
-	if err != nil {
-		return StateError, fmt.Errorf("LLM spec analysis failed: %w", err)
-	}
-
-	// 4. Convert requirements directly to stories with rich content
-	storyIDs := make([]string, 0, len(requirements))
-	for i := range requirements {
-		req := &requirements[i]
-		// Generate unique story ID
-		storyID, err := persistence.GenerateStoryID()
-		if err != nil {
-			return StateError, fmt.Errorf("failed to generate story ID: %w", err)
-		}
-
-		// Calculate dependencies based on order (simple dependency model)
-		var dependencies []string
-		if len(req.Dependencies) > 0 {
-			// Simple implementation: depend on all previous stories
-			for j := 0; j < i; j++ {
-				dependencies = append(dependencies, storyIDs[j])
-			}
-		}
-
-		// Convert requirement to rich story content
-		title, content := d.requirementToStoryContent(req)
-
-		// Add story to internal queue
-		d.queue.AddStory(storyID, specID, title, content, req.StoryType, dependencies, req.EstimatedPoints)
-		storyIDs = append(storyIDs, storyID)
-	}
-
-	// 5. Container validation and dependency fixing
-	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
-		// Check if this is a retry request
-		if strings.Contains(err.Error(), "retry_needed") {
-			d.logger.Info("🔄 Container validation triggered retry - clearing queue and restarting scoping")
-			d.queue.ClearAll()
-			return StateScoping, nil // Return to SCOPING state for retry
-		}
-		return StateError, fmt.Errorf("container validation failed: %w", err)
-	}
-
-	// 6. Flush stories to database
-	d.queue.FlushToDatabase()
-
-	// Mark spec as processed
-	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
-	d.persistenceChannel <- &persistence.Request{
-		Operation: persistence.OpUpsertSpec,
-		Data:      spec,
-		Response:  nil,
-	}
-
-	// Store completion state
-	d.stateData["spec_id"] = specID
-	d.stateData["story_ids"] = storyIDs
-	d.stateData["stories_generated"] = true
-	d.stateData["stories_count"] = len(storyIDs)
-
-	return StateDispatching, nil
-}
-
-// parseSpecWithLLM uses the LLM to analyze the specification with architectural knowledge context.
-func (d *Driver) parseSpecWithLLM(ctx context.Context, rawSpecContent, specFile, knowledgeContext string) ([]Requirement, error) {
-	// Check if renderer is available.
-	if d.renderer == nil {
-		return nil, fmt.Errorf("template renderer not available - falling back to deterministic parsing")
-	}
-
-	// LLM-first approach: send raw content directly to LLM with knowledge context.
-	templateData := &templates.TemplateData{
-		TaskContent: rawSpecContent,
-		Extra: map[string]any{
-			"spec_file_path":    specFile,
-			"mode":              "llm_analysis",
-			"knowledge_context": knowledgeContext,
-		},
-	}
-
-	prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, templateData, d.workDir, "ARCHITECT")
-	if err != nil {
-		return nil, fmt.Errorf("failed to render spec analysis template: %w", err)
-	}
-
-	// Reset context for new SCOPING analysis (prevents confusion from stale history)
-	// This follows the same pattern as coder: render prompt, then reset context with that prompt
-	templateName := fmt.Sprintf("scoping-%s", specFile)
-	d.contextManager.ResetForNewTemplate(templateName, prompt)
-
-	// Get LLM response with read tools to inspect the codebase
-	scopingTools := d.getScopingTools()
-	signal, err := d.callLLMWithTools(ctx, prompt, scopingTools)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get LLM response for spec parsing: %w", err)
-	}
-
-	// Check if submit_stories tool was called
-	if signal != "SUBMIT_STORIES_COMPLETE" {
-		return nil, fmt.Errorf("expected submit_stories tool call, got: %s", signal)
-	}
-
-	// Extract structured data from stateData (stored by processArchitectToolCalls)
-	submitResult, ok := d.stateData["submit_stories_result"]
-	if !ok {
-		return nil, fmt.Errorf("submit_stories result not found in state data")
-	}
-
-	resultMap, ok := submitResult.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("submit_stories result has unexpected type")
-	}
-
-	// Convert structured tool result directly to Requirements (no JSON round-trip)
-	return d.convertToolResultToRequirements(resultMap)
-}
+// Note: handleScoping, parseSpecWithLLM, getSpecFileFromMessage, and loadArchitecturalKnowledge
+// have been removed - specs now come through REQUEST messages and are processed in handleSpecReview().
 
 // requirementToStoryContent converts a requirement to story title and rich markdown content.
 // This is the single source of truth for how LLM requirements become story content.
@@ -269,50 +43,6 @@ func (d *Driver) requirementToStoryContent(req *Requirement) (string, string) {
 	}
 
 	return title, content
-}
-
-// getSpecFileFromMessage extracts the spec file path from the stored SPEC message.
-func (d *Driver) getSpecFileFromMessage() string {
-	// Get the stored spec message.
-	specMsgData, exists := d.stateData["spec_message"]
-	if !exists {
-		return ""
-	}
-
-	// Cast to AgentMsg.
-	specMsg, ok := specMsgData.(*proto.AgentMsg)
-	if !ok {
-		return ""
-	}
-
-	// Extract from typed payload
-	typedPayload := specMsg.GetTypedPayload()
-	if typedPayload == nil {
-		return ""
-	}
-
-	payloadData, err := typedPayload.ExtractGeneric()
-	if err != nil {
-		return ""
-	}
-
-	// Check if we have spec_content (bootstrap mode) - no file needed
-	if _, hasContent := payloadData["spec_content"]; hasContent {
-		return "<bootstrap-content>" // Return placeholder since actual content is handled elsewhere
-	}
-
-	// Extract spec file path from payload - try different keys.
-	if specFileStr, ok := payloadData["spec_file"].(string); ok {
-		return specFileStr
-	}
-	if specFileStr, ok := payloadData["file_path"].(string); ok {
-		return specFileStr
-	}
-	if specFileStr, ok := payloadData["filepath"].(string); ok {
-		return specFileStr
-	}
-
-	return ""
 }
 
 // convertToolResultToRequirements converts the structured submit_stories tool result
@@ -414,6 +144,101 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 
 // All story generation now uses the clean linear flow in handleScoping()
 
+// loadStoriesFromSubmitResult loads stories into the queue from submit_stories tool result.
+// This is called during spec review in REQUEST state (after PM spec approval).
+// Returns spec ID, story IDs, and error.
+func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown string) (string, []string, error) {
+	// 1. Extract structured data from stateData (stored by processArchitectToolCalls)
+	submitResult, ok := d.stateData["submit_stories_result"]
+	if !ok {
+		return "", nil, fmt.Errorf("submit_stories result not found in state data")
+	}
+
+	resultMap, ok := submitResult.(map[string]any)
+	if !ok {
+		return "", nil, fmt.Errorf("submit_stories result has unexpected type")
+	}
+
+	// 2. Convert structured tool result directly to Requirements (no JSON round-trip)
+	requirements, err := d.convertToolResultToRequirements(resultMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to convert tool result to requirements: %w", err)
+	}
+
+	// 3. Create and persist spec record
+	specID := persistence.GenerateSpecID()
+	spec := &persistence.Spec{
+		ID:        specID,
+		Content:   specMarkdown,
+		CreatedAt: time.Now(),
+	}
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpUpsertSpec,
+		Data:      spec,
+		Response:  nil,
+	}
+
+	// 4. Convert requirements to stories and add to queue
+	storyIDs := make([]string, 0, len(requirements))
+	for i := range requirements {
+		req := &requirements[i]
+		// Generate unique story ID
+		storyID, err := persistence.GenerateStoryID()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
+		}
+
+		// Calculate dependencies based on order (simple dependency model)
+		var dependencies []string
+		if len(req.Dependencies) > 0 {
+			// Simple implementation: depend on all previous stories
+			for j := 0; j < i; j++ {
+				dependencies = append(dependencies, storyIDs[j])
+			}
+		}
+
+		// Convert requirement to rich story content
+		title, content := d.requirementToStoryContent(req)
+
+		// Add story to internal queue
+		d.queue.AddStory(storyID, specID, title, content, req.StoryType, dependencies, req.EstimatedPoints)
+		storyIDs = append(storyIDs, storyID)
+	}
+
+	// 5. Container validation and dependency fixing
+	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
+		// Check if this is a retry request
+		if strings.Contains(err.Error(), "retry_needed") {
+			// During spec review, this would trigger a retry
+			// In REQUEST state after approval, we can't retry, so just log warning
+			d.logger.Warn("⚠️  Container validation would retry, but continuing with current stories")
+			// Clear the error and continue
+		} else {
+			return "", nil, fmt.Errorf("container validation failed: %w", err)
+		}
+	}
+
+	// 6. Flush stories to database
+	d.queue.FlushToDatabase()
+
+	// 7. Mark spec as processed
+	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpUpsertSpec,
+		Data:      spec,
+		Response:  nil,
+	}
+
+	// 8. Store completion state
+	d.stateData["spec_id"] = specID
+	d.stateData["story_ids"] = storyIDs
+	d.stateData["stories_generated"] = true
+	d.stateData["stories_count"] = len(storyIDs)
+
+	d.logger.Info("✅ Loaded %d stories from spec (spec_id: %s)", len(storyIDs), specID)
+	return specID, storyIDs, nil
+}
+
 // validateAndFixContainerDependencies implements hybrid container validation.
 // 1. If validateTargetContainer fails and DevOps story exists → fix DAG
 // 2. If validateTargetContainer fails and no DevOps story → retry LLM
@@ -509,51 +334,4 @@ func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
 
 	// Return special error that triggers retry flow
 	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")
-}
-
-// loadArchitecturalKnowledge loads the knowledge graph and filters to architecture-level nodes.
-// Returns formatted DOT graph string for inclusion in scoping template.
-func (d *Driver) loadArchitecturalKnowledge() string {
-	// Try to load knowledge.dot from workDir
-	knowledgePath := filepath.Join(d.workDir, ".maestro", "knowledge.dot")
-
-	// Check if file exists
-	content, err := os.ReadFile(knowledgePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			d.logger.Debug("📚 No knowledge.dot found, creating default graph")
-			// Create default knowledge graph if it doesn't exist
-			if mkdirErr := os.MkdirAll(filepath.Dir(knowledgePath), 0755); mkdirErr != nil {
-				d.logger.Warn("Failed to create .maestro directory: %v", mkdirErr)
-				return ""
-			}
-			if writeErr := os.WriteFile(knowledgePath, []byte(knowledge.DefaultKnowledgeGraph), 0644); writeErr != nil {
-				d.logger.Warn("Failed to write default knowledge graph: %v", writeErr)
-				return ""
-			}
-			content = []byte(knowledge.DefaultKnowledgeGraph)
-		} else {
-			d.logger.Warn("Failed to read knowledge.dot: %v", err)
-			return ""
-		}
-	}
-
-	// Parse the DOT graph
-	graph, err := knowledge.ParseDOT(string(content))
-	if err != nil {
-		d.logger.Warn("Failed to parse knowledge graph: %v", err)
-		return ""
-	}
-
-	// Filter to architecture-level nodes only
-	architectureGraph := graph.Filter(func(node *knowledge.Node) bool {
-		return node.Level == "architecture"
-	})
-
-	// Convert back to DOT format
-	architectureDOT := architectureGraph.ToDOT()
-
-	d.logger.Info("📚 Loaded architectural knowledge (%d nodes)", len(architectureGraph.Nodes))
-
-	return architectureDOT
 }

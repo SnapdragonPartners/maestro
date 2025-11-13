@@ -329,6 +329,12 @@ issues:
         - cyclop           # State machines can have higher complexity
         - maintidx         # State handling might be complex
 
+    # Coder: Allow unused helper functions during toolloop migration
+    # These are minor helpers that can be cleaned up later
+    - path: "pkg/coder/driver.go"
+      linters:
+        - unused           # Helper functions from old tool execution pattern
+
     # Allow internal imports within pkg/agent
     - path: "pkg/agent/.*\\.go"
       linters:

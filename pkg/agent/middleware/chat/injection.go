@@ -16,26 +16,34 @@ import (
 // Service interface defines what we need from the chat service.
 type Service interface {
 	GetNew(ctx context.Context, req *chat.GetNewRequest) (*chat.GetNewResponse, error)
+	UpdateCursor(ctx context.Context, agentID string, newPointer int64) error
+}
+
+// ContextManager interface defines what we need from the context manager.
+type ContextManager interface {
+	AddMessage(provenance, content string)
 }
 
 // WrapWithChatInjection wraps an existing LLM client with chat injection middleware.
 // This is used to add chat injection to already-constructed clients with full middleware chains.
-func WrapWithChatInjection(client agent.LLMClient, chatService Service, agentID string, logger *logx.Logger) agent.LLMClient {
+// If contextManager is provided, injected messages will be persisted to maintain conversation history.
+func WrapWithChatInjection(client agent.LLMClient, chatService Service, agentID string, logger *logx.Logger, contextManager ContextManager) agent.LLMClient {
 	if chatService == nil {
 		// No chat service - return client unchanged
 		return client
 	}
 
 	// Apply chat injection middleware
-	return llm.Chain(client, InjectionMiddleware(chatService, agentID, logger))
+	return llm.Chain(client, InjectionMiddleware(chatService, agentID, logger, contextManager))
 }
 
 // InjectionMiddleware creates middleware that injects new chat messages into LLM requests.
 // It fetches new messages before each LLM call and prepends them to the conversation context.
-// The chat service automatically manages cursor updates, so this middleware just fetches and formats.
+// After fetching messages, it updates the cursor so messages aren't repeatedly injected.
+// If contextManager is provided, injected messages are also added to it for persistence.
 //
 //nolint:funlen // Middleware requires both Complete and Stream implementations
-func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logger) func(agent.LLMClient) agent.LLMClient {
+func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logger, contextManager ContextManager) func(agent.LLMClient) agent.LLMClient {
 	// Shared logic for fetching and formatting chat messages
 	fetchAndFormatMessages := func(ctx context.Context) (*chat.GetNewResponse, agent.CompletionMessage, bool, error) {
 		// Get configuration to check if chat is enabled and get limits
@@ -69,6 +77,12 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 			return resp, agent.CompletionMessage{}, false, nil
 		}
 
+		// Update cursor so these messages won't be injected again
+		if err := chatService.UpdateCursor(ctx, agentID, resp.NewPointer); err != nil {
+			logger.Warn("Failed to update chat cursor for %s: %v", agentID, err)
+			// Continue anyway - message injection is best-effort
+		}
+
 		// Limit to MaxNewMessages (most recent)
 		if len(newMessages) > maxMessages {
 			newMessages = newMessages[len(newMessages)-maxMessages:]
@@ -89,6 +103,12 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 		injectedMessage := agent.CompletionMessage{
 			Role:    agent.RoleUser, // Use user role for system instructions
 			Content: chatContent.String(),
+		}
+
+		// Persist to context manager if provided (so messages persist across turns)
+		if contextManager != nil {
+			contextManager.AddMessage("chat", chatContent.String())
+			logger.Debug("💾 Persisted %d chat messages to context manager for %s", len(newMessages), agentID)
 		}
 
 		return resp, injectedMessage, true, nil

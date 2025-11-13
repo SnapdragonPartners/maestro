@@ -11,7 +11,7 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-//go:embed *.tpl.md
+//go:embed *.tpl.md pm/*.tpl.md
 var templateFS embed.FS
 
 // TemplateData holds the data for template rendering.
@@ -35,6 +35,11 @@ type TemplateData struct {
 	ContainerDockerfile string `json:"container_dockerfile,omitempty"`
 	// Dockerfile content for DevOps review templates
 	DockerfileContent string `json:"dockerfile_content,omitempty"`
+	// PM agent interview data
+	Expertise           string              `json:"expertise,omitempty"`            // User expertise level: NON_TECHNICAL, BASIC, EXPERT
+	ConversationHistory []map[string]string `json:"conversation_history,omitempty"` // PM conversation messages
+	TurnCount           int                 `json:"turn_count,omitempty"`           // Current turn number
+	MaxTurns            int                 `json:"max_turns,omitempty"`            // Maximum turns allowed
 }
 
 // StateTemplate represents a workflow state template.
@@ -115,6 +120,15 @@ const (
 	CompletionResponseTemplate StateTemplate = "completion_response.tpl.md"
 	// BudgetReviewResponseTemplate is the template for budget review responses.
 	BudgetReviewResponseTemplate StateTemplate = "budget_review_response.tpl.md"
+
+	// PMInterviewStartTemplate is the template for starting PM interviews (deprecated - use PMWorkingTemplate).
+	PMInterviewStartTemplate StateTemplate = "pm/interview_start.tpl.md"
+	// PMRequirementsGatheringTemplate is the template for ongoing PM requirements gathering (deprecated - use PMWorkingTemplate).
+	PMRequirementsGatheringTemplate StateTemplate = "pm/requirements_gathering.tpl.md"
+	// PMSpecGenerationTemplate is the template for generating specifications from interviews (deprecated - use PMWorkingTemplate).
+	PMSpecGenerationTemplate StateTemplate = "pm/spec_generation.tpl.md"
+	// PMWorkingTemplate is the unified template for PM WORKING state (interviewing, drafting, submitting).
+	PMWorkingTemplate StateTemplate = "pm/working.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -169,6 +183,11 @@ func NewRenderer() (*Renderer, error) {
 		CodeReviewResponseTemplate,
 		CompletionResponseTemplate,
 		BudgetReviewResponseTemplate,
+		// PM agent templates.
+		PMInterviewStartTemplate,
+		PMRequirementsGatheringTemplate,
+		PMSpecGenerationTemplate,
+		PMWorkingTemplate, // Unified PM template
 	}
 
 	for _, name := range templateNames {

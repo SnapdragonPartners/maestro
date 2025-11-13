@@ -70,6 +70,16 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	}
 	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
 
+	// Create and register PM agent (if enabled)
+	if updatedConfig.PM != nil && updatedConfig.PM.Enabled {
+		pmAgent, pmErr := supervisor.GetFactory().NewAgent(ctx, "pm-001", string(agent.TypePM))
+		if pmErr != nil {
+			return fmt.Errorf("failed to create PM: %w", pmErr)
+		}
+		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
+		k.Logger.Info("✅ Created and registered PM agent")
+	}
+
 	// Create and register coder agents based on config
 	numCoders := updatedConfig.Agents.MaxCoders
 	for i := 0; i < numCoders; i++ {
@@ -203,6 +213,16 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	}
 	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
 
+	// Create and register PM agent (if enabled)
+	if k.Config.PM != nil && k.Config.PM.Enabled {
+		pmAgent, pmErr := supervisor.GetFactory().NewAgent(ctx, "pm-001", string(agent.TypePM))
+		if pmErr != nil {
+			return fmt.Errorf("failed to create PM: %w", pmErr)
+		}
+		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
+		k.Logger.Info("✅ Created and registered PM agent")
+	}
+
 	// Create and register coder agents based on config
 	numCoders := k.Config.Agents.MaxCoders
 	for i := 0; i < numCoders; i++ {
@@ -273,22 +293,27 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 }
 
 // InjectSpec provides centralized spec injection into the dispatcher.
-// This consolidates the spec injection logic that was duplicated across flows.
+// Sends spec as REQUEST message (same protocol as PM) so architect handles it in REQUEST state.
 func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) error {
-	// Create spec message using the existing protocol (matches bootstrap.go pattern)
-	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, source, string(agent.TypeArchitect))
+	// Create REQUEST message with spec approval (unified with PM flow)
+	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, source, string(agent.TypeArchitect))
 
-	// Build spec payload with typed generic payload
-	specPayload := map[string]any{
-		"spec_content": string(content),
-		"type":         "spec_content", // Preserve existing protocol
+	// Build approval request payload
+	approvalPayload := &proto.ApprovalRequestPayload{
+		ApprovalType: proto.ApprovalTypeSpec,
+		Content:      string(content), // Spec markdown goes in Content field
+		Reason:       fmt.Sprintf("Spec submitted via %s", source),
+		Metadata:     make(map[string]string),
 	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
+	approvalPayload.Metadata["source"] = source
+
+	msg.SetTypedPayload(proto.NewApprovalRequestPayload(approvalPayload))
+	msg.SetMetadata("approval_id", proto.GenerateApprovalID())
 	msg.SetMetadata("source", source)
 
-	// Send via dispatcher (matches bootstrap.go pattern)
+	// Send via dispatcher
 	if err := dispatcher.DispatchMessage(msg); err != nil {
-		return fmt.Errorf("failed to dispatch spec message: %w", err)
+		return fmt.Errorf("failed to dispatch spec request: %w", err)
 	}
 	return nil
 }

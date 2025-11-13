@@ -62,7 +62,7 @@ func TestTemplateToolDocumentationIntegration(t *testing.T) {
 			}
 
 			// Create ToolProvider with the expected tools for this story type/state
-			provider := tools.NewProvider(agentCtx, tt.expectedTools)
+			provider := tools.NewProvider(&agentCtx, tt.expectedTools)
 
 			// Generate tool documentation
 			toolDoc := provider.GenerateToolDocumentation()
@@ -179,7 +179,7 @@ func TestCoderCreateToolProvider(t *testing.T) {
 		}
 
 		// Test DevOps planning tools
-		devopsProvider := tools.NewProvider(agentCtx, tools.DevOpsPlanningTools)
+		devopsProvider := tools.NewProvider(&agentCtx, tools.DevOpsPlanningTools)
 		devopsTools := devopsProvider.List()
 
 		expectedDevOpsCount := len(tools.DevOpsPlanningTools)
@@ -188,7 +188,7 @@ func TestCoderCreateToolProvider(t *testing.T) {
 		}
 
 		// Test App planning tools
-		appProvider := tools.NewProvider(agentCtx, tools.AppPlanningTools)
+		appProvider := tools.NewProvider(&agentCtx, tools.AppPlanningTools)
 		appTools := appProvider.List()
 
 		expectedAppCount := len(tools.AppPlanningTools)
@@ -208,7 +208,7 @@ func TestCoderCreateToolProvider(t *testing.T) {
 		}
 
 		// Test DevOps coding tools
-		devopsProvider := tools.NewProvider(agentCtx, tools.DevOpsCodingTools)
+		devopsProvider := tools.NewProvider(&agentCtx, tools.DevOpsCodingTools)
 		devopsTools := devopsProvider.List()
 
 		expectedDevOpsCount := len(tools.DevOpsCodingTools)
@@ -217,7 +217,7 @@ func TestCoderCreateToolProvider(t *testing.T) {
 		}
 
 		// Test App coding tools
-		appProvider := tools.NewProvider(agentCtx, tools.AppCodingTools)
+		appProvider := tools.NewProvider(&agentCtx, tools.AppCodingTools)
 		appTools := appProvider.List()
 
 		expectedAppCount := len(tools.AppCodingTools)
@@ -264,7 +264,7 @@ func TestToolProviderIntegrationWithStoryTypes(t *testing.T) {
 			}
 
 			// Create provider
-			provider := tools.NewProvider(agentCtx, expectedTools)
+			provider := tools.NewProvider(&agentCtx, expectedTools)
 
 			// Verify tool count
 			toolMetas := provider.List()

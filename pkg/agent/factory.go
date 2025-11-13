@@ -108,6 +108,8 @@ func (f *LLMClientFactory) CreateClient(agentType Type) (LLMClient, error) {
 		modelName = f.config.Agents.CoderModel
 	case TypeArchitect:
 		modelName = f.config.Agents.ArchitectModel
+	case TypePM:
+		modelName = f.config.Agents.PMModel
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -123,6 +125,8 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 		modelName = f.config.Agents.CoderModel
 	case TypeArchitect:
 		modelName = f.config.Agents.ArchitectModel
+	case TypePM:
+		modelName = f.config.Agents.PMModel
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -147,7 +151,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	var rawClient LLMClient
 	switch provider {
 	case config.ProviderAnthropic:
-		rawClient = anthropic.NewClaudeClient(apiKey)
+		rawClient = anthropic.NewClaudeClientWithModel(apiKey, modelName)
 	case config.ProviderOpenAI:
 		// Use official OpenAI SDK with Responses API for all OpenAI models
 		// Supports tool calling via Responses API (o4-mini, gpt-4o, etc.)
@@ -181,6 +185,8 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		validationAgentType = validation.AgentTypeArchitect
 	case TypeCoder:
 		validationAgentType = validation.AgentTypeCoder
+	case TypePM:
+		validationAgentType = validation.AgentTypeArchitect // PM can respond with text (like architect)
 	default:
 		validationAgentType = validation.AgentTypeCoder // Default to coder (safer)
 	}

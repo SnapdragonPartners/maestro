@@ -2,18 +2,22 @@
 package contextmgr
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 )
 
 // Message represents a single message in the conversation context.
 type Message struct {
-	Role       string
-	Content    string
-	Provenance string // Source of content: "system-prompt", "tool-shell", "todo-status-update", etc.
+	Role        string
+	Content     string
+	Provenance  string       // Source of content: "system-prompt", "tool-shell", "todo-status-update", etc.
+	ToolCalls   []ToolCall   // Structured tool calls (for assistant messages)
+	ToolResults []ToolResult // Structured tool results (for user messages)
 }
 
 // Fragment represents a piece of content with provenance tracking.
@@ -42,7 +46,7 @@ type ContextManagerInterface interface {
 	// GetMessages returns all messages for backward compatibility
 	GetMessages() []Message
 	// FlushUserBuffer consolidates user buffer before LLM requests
-	FlushUserBuffer() error
+	FlushUserBuffer(ctx context.Context) error
 }
 
 // LLMContextManager extends ContextManagerInterface with LLM-specific methods.
@@ -53,15 +57,63 @@ type LLMContextManager interface {
 	AddAssistantMessage(content string)
 }
 
+// ChatService interface defines what we need from the chat service.
+type ChatService interface {
+	GetNew(ctx context.Context, req *GetNewRequest) (*GetNewResponse, error)
+	UpdateCursor(ctx context.Context, agentID string, newPointer int64) error
+}
+
+// GetNewRequest represents a request to get new messages for an agent.
+type GetNewRequest struct {
+	AgentID string
+}
+
+// GetNewResponse represents the response with new messages.
+type GetNewResponse struct {
+	Messages   []*ChatMessage `json:"messages"`
+	NewPointer int64          `json:"newPointer"`
+}
+
+// ChatMessage represents a chat message.
+//
+//nolint:govet // Field alignment less important than logical grouping
+type ChatMessage struct {
+	ID        int64
+	Author    string
+	Text      string
+	Channel   string
+	Timestamp string
+}
+
+// ToolCall represents a structured tool call from the LLM.
+//
+//nolint:govet // fieldalignment: logical grouping preferred over byte savings
+type ToolCall struct {
+	ID         string
+	Name       string
+	Parameters map[string]any
+}
+
+// ToolResult represents a structured tool execution result.
+type ToolResult struct {
+	ToolCallID string
+	Content    string
+	IsError    bool
+}
+
 // ContextManager manages conversation context and token counting.
 // Each instance is owned by a single agent goroutine, so no synchronization is needed.
 //
 //nolint:govet // Field alignment less important than logical grouping
 type ContextManager struct {
-	messages        []Message  // Core conversation messages
-	userBuffer      []Fragment // Buffer for user content with provenance
-	modelName       string     // Model name for determining context limits
-	currentTemplate string     // Current template name for change detection
+	messages           []Message    // Core conversation messages
+	userBuffer         []Fragment   // Buffer for user content with provenance
+	modelName          string       // Model name for determining context limits
+	currentTemplate    string       // Current template name for change detection
+	chatService        ChatService  // Optional chat service for message injection
+	agentID            string       // Agent ID for chat message fetching
+	pendingToolCalls   []ToolCall   // Tool calls from last assistant message
+	pendingToolResults []ToolResult // Accumulated tool results for batching
 }
 
 // NewContextManager creates a new context manager instance.
@@ -79,6 +131,13 @@ func NewContextManagerWithModel(modelName string) *ContextManager {
 		userBuffer: make([]Fragment, 0),
 		modelName:  modelName,
 	}
+}
+
+// SetChatService configures chat message injection for this context manager.
+// If chatService is nil, chat injection is disabled.
+func (cm *ContextManager) SetChatService(chatService ChatService, agentID string) {
+	cm.chatService = chatService
+	cm.agentID = agentID
 }
 
 // AddMessage stores a provenance/content pair in the user buffer.
@@ -488,6 +547,11 @@ func (cm *ContextManager) ResetForNewTemplate(templateName, systemPrompt string)
 		Provenance: "system-prompt",
 	}}
 	cm.userBuffer = cm.userBuffer[:0]
+
+	// Clear pending tool state to prevent stale tool_use_id references
+	cm.pendingToolCalls = nil
+	cm.pendingToolResults = nil
+
 	cm.currentTemplate = templateName
 }
 
@@ -509,52 +573,176 @@ func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
 // FlushUserBuffer consolidates accumulated user messages into a single context message.
 // This should be called before each LLM request to ensure proper alternation.
 // Returns error if context compaction fails (indicating imminent token limit overflow).
-func (cm *ContextManager) FlushUserBuffer() error {
-	if len(cm.userBuffer) == 0 {
-		// Add fallback message for empty buffer
+//
+// Chat Injection: If chat service is configured, fetches and injects new chat messages
+// as late as possible (right before flushing), then updates cursor so messages aren't
+// re-injected on next turn.
+//
+//nolint:cyclop // Complex logic for message batching and provenance tracking
+func (cm *ContextManager) FlushUserBuffer(ctx context.Context) error {
+	// STEP 1: Inject chat messages if chat service is configured
+	if cm.chatService != nil && cm.agentID != "" {
+		if err := cm.injectChatMessages(ctx); err != nil {
+			// Log but don't fail - chat injection is best-effort
+			logger := logx.NewLogger("contextmgr")
+			logger.Warn("Chat injection failed for %s: %v (continuing without chat)", cm.agentID, err)
+		}
+	}
+
+	// STEP 2: Combine pending tool results + userBuffer into ONE user message
+	// This maintains proper user/assistant alternation
+	if len(cm.pendingToolResults) > 0 || len(cm.userBuffer) > 0 {
+		// Build combined content from userBuffer fragments
+		var combinedContent string
+		if len(cm.userBuffer) > 0 {
+			contentParts := make([]string, 0, len(cm.userBuffer))
+			for i := range cm.userBuffer {
+				fragment := &cm.userBuffer[i]
+				contentParts = append(contentParts, fragment.Content)
+			}
+			combinedContent = strings.Join(contentParts, "\n\n")
+		} else if len(cm.pendingToolResults) > 0 {
+			// Add minimal content when we have tool results but no buffer content
+			// Anthropic API requires non-empty content field even with ToolResults
+			combinedContent = "Tool results:"
+		}
+
+		// Determine provenance based on what we're including
+		var provenance string
+		if len(cm.pendingToolResults) > 0 && combinedContent != "" {
+			provenance = "tool-results-and-content"
+		} else if len(cm.pendingToolResults) > 0 {
+			provenance = "tool-results-only"
+		} else if len(cm.userBuffer) > 0 {
+			// Use original provenance tracking logic for content-only
+			firstProvenance := cm.userBuffer[0].Provenance
+			allSameProvenance := true
+			for i := range cm.userBuffer {
+				if cm.userBuffer[i].Provenance != firstProvenance {
+					allSameProvenance = false
+					break
+				}
+			}
+			if allSameProvenance {
+				provenance = firstProvenance
+			} else {
+				provenance = "mixed"
+			}
+		}
+
+		// Create single user message with both tool results and content
+		// ToolResults will be used by API clients for proper formatting
+		cm.messages = append(cm.messages, Message{
+			Role:        "user",
+			Content:     combinedContent, // Can be empty if only tool results
+			Provenance:  provenance,
+			ToolResults: cm.pendingToolResults, // Include structured tool results
+		})
+
+		// Clear pending state
+		cm.pendingToolResults = nil
+		cm.userBuffer = cm.userBuffer[:0]
+	} else if len(cm.messages) == 0 || cm.messages[len(cm.messages)-1].Role != "user" {
+		// STEP 3: Handle empty buffer - only add fallback if we need a user message
+		// (i.e., no recent user message exists)
 		cm.messages = append(cm.messages, Message{
 			Role:       "user",
 			Content:    "No response from user, please try something else",
 			Provenance: "empty-buffer-fallback",
 		})
-		// Still need to try compaction even with fallback message
 	}
 
-	// Consolidate buffer fragments into single user message (if any)
-	if len(cm.userBuffer) > 0 {
-		contentParts := make([]string, 0, len(cm.userBuffer))
-		// Track provenance - use first fragment's provenance if all are the same, otherwise "mixed"
-		firstProvenance := cm.userBuffer[0].Provenance
-		allSameProvenance := true
-
-		for i := range cm.userBuffer {
-			fragment := &cm.userBuffer[i]
-			contentParts = append(contentParts, fragment.Content)
-			if fragment.Provenance != firstProvenance {
-				allSameProvenance = false
-			}
-		}
-
-		provenance := firstProvenance
-		if !allSameProvenance {
-			provenance = "mixed"
-		}
-
-		combinedContent := strings.Join(contentParts, "\n\n")
-		cm.messages = append(cm.messages, Message{
-			Role:       "user",
-			Content:    combinedContent,
-			Provenance: provenance,
-		})
-
-		// Clear the buffer
-		cm.userBuffer = cm.userBuffer[:0]
-	}
-
-	// Perform compaction after flushing but before LLM request
+	// STEP 4: Perform compaction after flushing but before LLM request
 	// Compaction failures indicate we would exceed LLM token limits, so fail fast
 	if err := cm.CompactIfNeeded(); err != nil {
 		return fmt.Errorf("context compaction failed before LLM request: %w", err)
+	}
+
+	return nil
+}
+
+// injectChatMessages fetches new chat messages and adds them directly to conversation.
+// Messages are persisted immediately (not buffered) and cursor is updated to prevent re-injection.
+func (cm *ContextManager) injectChatMessages(ctx context.Context) error {
+	logger := logx.NewLogger("contextmgr")
+
+	// Get configuration for chat limits
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Check if chat is enabled
+	if cfg.Chat == nil || !cfg.Chat.Enabled {
+		return nil // Chat disabled, nothing to inject
+	}
+
+	// Fetch new messages
+	resp, err := cm.chatService.GetNew(ctx, &GetNewRequest{AgentID: cm.agentID})
+	if err != nil {
+		return fmt.Errorf("failed to fetch new messages: %w", err)
+	}
+
+	// No new messages - nothing to do
+	if len(resp.Messages) == 0 {
+		return nil
+	}
+
+	// Limit to MaxNewMessages (most recent)
+	maxMessages := cfg.Chat.MaxNewMessages
+	if maxMessages <= 0 {
+		maxMessages = 100 // Default
+	}
+	newMessages := resp.Messages
+	if len(newMessages) > maxMessages {
+		newMessages = newMessages[len(newMessages)-maxMessages:]
+	}
+
+	// Add chat messages as individual conversation turns with proper roles
+	// This maintains natural conversation flow for the LLM
+	expectedAgentAuthor := fmt.Sprintf("@%s", cm.agentID)
+
+	for _, msg := range newMessages {
+		var role string
+		if msg.Author == "@human" {
+			role = "user"
+		} else if msg.Author == expectedAgentAuthor {
+			role = "assistant"
+		} else {
+			// Messages from other agents - buffer as user content for batching
+			cm.userBuffer = append(cm.userBuffer, Fragment{
+				Timestamp:  time.Now(),
+				Provenance: "chat-injection-other",
+				Content:    fmt.Sprintf("[Chat from %s]: %s", msg.Author, msg.Text),
+			})
+			continue
+		}
+
+		// Add message based on role:
+		// - Assistant messages: add directly (can't be batched)
+		// - User messages: buffer for batching with tool results
+		if role == "assistant" {
+			cm.messages = append(cm.messages, Message{
+				Role:       role,
+				Content:    msg.Text,
+				Provenance: "chat-injection",
+			})
+		} else {
+			// User message - buffer for batching with tool results and other user content
+			cm.userBuffer = append(cm.userBuffer, Fragment{
+				Timestamp:  time.Now(),
+				Provenance: "chat-injection",
+				Content:    msg.Text,
+			})
+		}
+	}
+
+	logger.Info("💬 Injected %d chat messages into context for %s", len(newMessages), cm.agentID)
+
+	// Update cursor so these messages won't be injected again
+	if err := cm.chatService.UpdateCursor(ctx, cm.agentID, resp.NewPointer); err != nil {
+		logger.Warn("Failed to update chat cursor for %s: %v", cm.agentID, err)
+		// Continue anyway - message was injected successfully
 	}
 
 	return nil
@@ -570,6 +758,47 @@ func (cm *ContextManager) AddAssistantMessage(content string) {
 		Provenance: "llm-response",
 	})
 	// Note: Compaction will be handled before the next LLM request, not here
+}
+
+// AddAssistantMessageWithTools adds an assistant message with structured tool calls.
+// This preserves tool call information for proper API formatting.
+func (cm *ContextManager) AddAssistantMessageWithTools(content string, toolCalls []ToolCall) {
+	// Store tool calls for linking with results
+	cm.pendingToolCalls = toolCalls
+
+	// Add assistant message to context with structured tool calls
+	cm.messages = append(cm.messages, Message{
+		Role:       "assistant",
+		Content:    strings.TrimSpace(content),
+		Provenance: "llm-response-with-tools",
+		ToolCalls:  toolCalls, // Include structured tool calls
+	})
+}
+
+// AddToolResult adds a tool execution result to the pending batch.
+// Tool results are accumulated and combined with human input in FlushUserBuffer.
+func (cm *ContextManager) AddToolResult(toolCallID, content string, isError bool) {
+	cm.pendingToolResults = append(cm.pendingToolResults, ToolResult{
+		ToolCallID: toolCallID,
+		Content:    content,
+		IsError:    isError,
+	})
+}
+
+// AddUserMessageDirect adds a user message directly to context, bypassing the buffer.
+// This is used by middleware that needs to persist messages across turns without buffering.
+func (cm *ContextManager) AddUserMessageDirect(provenance, content string) {
+	// Skip empty content
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+
+	// Add directly to messages array (bypassing user buffer)
+	cm.messages = append(cm.messages, Message{
+		Role:       "user",
+		Content:    strings.TrimSpace(content),
+		Provenance: provenance,
+	})
 }
 
 // GetUserBufferInfo returns information about the current user buffer state.

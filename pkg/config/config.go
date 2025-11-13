@@ -125,6 +125,20 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  8192,
 	},
+	"claude-opus-4-1": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
+	"claude-opus-4-1-20250805": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
 
 	// OpenAI o3 models
 	"o3-mini": {
@@ -287,11 +301,17 @@ type MetricsConfig struct {
 	PrometheusURL string `json:"prometheus_url"` // Prometheus server URL for querying metrics
 }
 
+// DebugConfig defines configuration for debug logging.
+type DebugConfig struct {
+	LLMMessages bool `json:"llm_messages"` // Enable debug logging for LLM message formatting (default: false)
+}
+
 // AgentConfig defines which models to use and concurrency limits.
 type AgentConfig struct {
 	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
 	CoderModel     string           `json:"coder_model"`     // Model name for coder agents (mapped to provider via KnownModels)
 	ArchitectModel string           `json:"architect_model"` // Model name for architect agent (mapped to provider via KnownModels)
+	PMModel        string           `json:"pm_model"`        // Model name for PM agent (mapped to provider via KnownModels)
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
 	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
 	StateTimeout   time.Duration    `json:"state_timeout"`   // Global timeout for any state processing
@@ -348,6 +368,7 @@ const (
 	ModelClaudeSonnet4Old   = "claude-sonnet-4-20250514"
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
 	ModelClaudeSonnetLatest = ModelClaudeSonnet4
+	ModelClaudeOpus41       = "claude-opus-4-1"
 	ModelOpenAIO3           = "o3"
 
 	// Container image constants.
@@ -358,6 +379,7 @@ const (
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelOpenAIO4Mini
+	DefaultPMModel        = ModelClaudeOpus41
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -419,6 +441,13 @@ type LogsConfig struct {
 	RotationCount int `json:"rotation_count"` // Number of old log files to keep (default: 4)
 }
 
+// PMConfig defines PM agent configuration.
+type PMConfig struct {
+	Enabled           bool   `json:"enabled"`             // Whether PM agent is enabled (default: true)
+	MaxInterviewTurns int    `json:"max_interview_turns"` // Maximum conversation turns before forcing submission (default: 20)
+	DefaultExpertise  string `json:"default_expertise"`   // Default user expertise level: NON_TECHNICAL, BASIC, EXPERT (default: BASIC)
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -436,7 +465,9 @@ type Config struct {
 	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
 	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
 	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
+	PM        *PMConfig        `json:"pm"`        // PM agent settings
 	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
+	Debug     *DebugConfig     `json:"debug"`     // Debug settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -834,6 +865,7 @@ func createDefaultConfig() *Config {
 			MaxCoders:      2,
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
+			PMModel:        DefaultPMModel,
 			Metrics: MetricsConfig{
 				Enabled:       true,       // Enable metrics by default for development visibility
 				Exporter:      "internal", // Use internal aggregation by default
@@ -893,8 +925,16 @@ func createDefaultConfig() *Config {
 				TimeoutMs: 800,  // 800ms timeout for scanning
 			},
 		},
+		PM: &PMConfig{
+			Enabled:           true,    // Enabled by default
+			MaxInterviewTurns: 20,      // Maximum 20 turns per interview
+			DefaultExpertise:  "BASIC", // Default to BASIC expertise level
+		},
 		Logs: &LogsConfig{
 			RotationCount: 4, // Keep last 4 log files
+		},
+		Debug: &DebugConfig{
+			LLMMessages: false, // Disabled by default
 		},
 	}
 }
@@ -1046,6 +1086,9 @@ func applyDefaults(config *Config) {
 	if config.Agents.ArchitectModel == "" {
 		config.Agents.ArchitectModel = DefaultArchitectModel
 	}
+	if config.Agents.PMModel == "" {
+		config.Agents.PMModel = DefaultPMModel
+	}
 
 	// Apply metrics defaults
 	if config.Agents.Metrics.Exporter == "" {
@@ -1119,6 +1162,16 @@ func applyDefaults(config *Config) {
 	}
 	// Note: chat.enabled defaults to false, scanner.enabled defaults to false
 	// If user wants chat, they must explicitly enable it
+
+	// Apply PM defaults
+	if config.PM.MaxInterviewTurns == 0 {
+		config.PM.MaxInterviewTurns = 20
+	}
+	if config.PM.DefaultExpertise == "" {
+		config.PM.DefaultExpertise = "BASIC"
+	}
+	// Note: PM.Enabled defaults to false (zero value), but we want true by default
+	// This is handled in createDefaultConfig for new configs
 
 	// Apply Logs defaults
 	if config.Logs.RotationCount == 0 {

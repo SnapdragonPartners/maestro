@@ -6,10 +6,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -29,7 +29,49 @@ const (
 	// Story type constants to avoid repetition and improve maintainability.
 	storyTypeDevOps = "devops"
 	storyTypeApp    = "app"
+
+	// Tool signal constants.
+	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
+	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 )
+
+// listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
+// This allows architect to use toolloop with its dynamic tool list pattern.
+type listToolProvider struct {
+	toolsMap  map[string]tools.Tool
+	toolsList []tools.Tool
+}
+
+// newListToolProvider creates a ToolProvider from a list of tools.
+func newListToolProvider(toolsList []tools.Tool) *listToolProvider {
+	toolsMap := make(map[string]tools.Tool, len(toolsList))
+	for _, tool := range toolsList {
+		toolsMap[tool.Name()] = tool
+	}
+	return &listToolProvider{
+		toolsList: toolsList,
+		toolsMap:  toolsMap,
+	}
+}
+
+// Get retrieves a tool by name.
+func (p *listToolProvider) Get(name string) (tools.Tool, error) {
+	tool, ok := p.toolsMap[name]
+	if !ok {
+		return nil, fmt.Errorf("tool %s not found", name)
+	}
+	return tool, nil
+}
+
+// List returns tool metadata for all tools.
+func (p *listToolProvider) List() []tools.ToolMeta {
+	metas := make([]tools.ToolMeta, len(p.toolsList))
+	for i, tool := range p.toolsList {
+		def := tool.Definition()
+		metas[i] = tools.ToolMeta(def)
+	}
+	return metas
+}
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
@@ -42,8 +84,7 @@ type Driver struct {
 	logger              *logx.Logger                          // Logger with proper agent prefixing
 	executor            *execpkg.ArchitectExecutor            // Container executor for file access tools
 	chatService         ChatServiceInterface                  // Chat service for escalations (nil check required)
-	specCh              <-chan *proto.AgentMsg                // Read-only channel for spec messages
-	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for questions/requests
+	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel  chan<- *persistence.Request           // Channel for database operations
 	stateNotificationCh chan<- *proto.StateChangeNotification // Channel for state change notifications
@@ -64,6 +105,7 @@ type ChatServiceInterface interface {
 type ChatPostRequest struct {
 	Author   string
 	Text     string
+	Channel  string
 	ReplyTo  *int64
 	PostType string
 }
@@ -124,7 +166,6 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
 		// Channels will be set during Attach()
-		specCh:      nil,
 		questionsCh: nil,
 		replyCh:     nil,
 	}
@@ -199,8 +240,9 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 }
 
 // SetChannels sets the communication channels from the dispatcher.
-func (d *Driver) SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
-	d.specCh = specCh
+// All requests (specs, questions, approvals) come through questionsCh now.
+// The middle parameter (unusedCh) is unused - it was previously specCh before specs were unified with REQUEST messages.
+func (d *Driver) SetChannels(questionsCh, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	d.questionsCh = questionsCh
 	d.replyCh = replyCh
 }
@@ -293,7 +335,7 @@ func (d *Driver) shutdown() {
 // Step implements agent.Driver interface - executes one state transition.
 func (d *Driver) Step(ctx context.Context) (bool, error) {
 	// Ensure channels are attached.
-	if d.specCh == nil || d.questionsCh == nil {
+	if d.questionsCh == nil {
 		return false, fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
 
@@ -317,7 +359,7 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 // Run starts the architect's state machine loop in WAITING state.
 func (d *Driver) Run(ctx context.Context) error {
 	// Ensure channels are attached.
-	if d.specCh == nil || d.questionsCh == nil {
+	if d.questionsCh == nil {
 		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
 
@@ -373,10 +415,8 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	// Process state directly without timeout wrapper
 	switch d.currentState {
 	case StateWaiting:
-		// WAITING state - block until spec received.
+		// WAITING state - block until request received.
 		return d.handleWaiting(ctx)
-	case StateScoping:
-		return d.handleScoping(ctx)
 	case StateDispatching:
 		return d.handleDispatching(ctx)
 	case StateMonitoring:
@@ -482,38 +522,6 @@ func (d *Driver) GetContextSummary() string {
 	return d.contextManager.GetContextSummary()
 }
 
-// handleLLMResponse handles LLM responses with proper empty response logic (same as coder).
-func (d *Driver) handleLLMResponse(resp agent.CompletionResponse) error {
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-
-	if resp.Content != "" {
-		// Case 1: Normal response with content
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		d.contextManager.AddAssistantMessage(resp.Content)
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		return nil
-	}
-
-	if len(resp.ToolCalls) > 0 {
-		// Case 2: Pure tool use - add placeholder for conversational continuity
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		toolNames := make([]string, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolNames[i] = resp.ToolCalls[i].Name
-		}
-		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
-		d.contextManager.AddAssistantMessage(placeholder)
-		// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-		return nil
-	}
-
-	// Case 3: True empty response - this is an error condition
-	// DO NOT add any message to context - let upstream handle the error
-	// TODO: REMOVE DEBUG LOGGING - temporary debugging for middleware hang
-	d.logger.Error("🚨 TRUE EMPTY RESPONSE: No content and no tool calls")
-	return logx.Errorf("LLM returned empty response with no content and no tool calls")
-}
-
 // GetQueue returns the queue manager for external access.
 func (d *Driver) GetQueue() *Queue {
 	return d.queue
@@ -532,21 +540,57 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
-// buildMessagesWithContext creates completion messages with context history (same as coder).
-// This centralizes the pattern used across architect LLM calls with context isolation.
+// buildMessagesWithContext creates completion messages with context history.
+// Converts context manager messages (with structured ToolCalls and ToolResults) to CompletionMessage format.
+// Same pattern as PM's buildMessagesWithContext.
 func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
-	messages := []agent.CompletionMessage{
-		{Role: agent.RoleUser, Content: initialPrompt},
-	}
-
-	// Add conversation history from context manager (same as coder pattern).
-	// For architect, we typically reset context between templates, but if context exists, include it.
+	// Get conversation history from context manager
 	contextMessages := d.contextManager.GetMessages()
+
+	// Convert to CompletionMessage format
+	messages := make([]agent.CompletionMessage, 0, len(contextMessages)+1)
 	for i := range contextMessages {
 		msg := &contextMessages[i]
+
+		// Convert contextmgr.ToolCall to agent.ToolCall
+		var agentToolCalls []agent.ToolCall
+		if len(msg.ToolCalls) > 0 {
+			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
+			for j := range msg.ToolCalls {
+				agentToolCalls[j] = agent.ToolCall{
+					ID:         msg.ToolCalls[j].ID,
+					Name:       msg.ToolCalls[j].Name,
+					Parameters: msg.ToolCalls[j].Parameters,
+				}
+			}
+		}
+
+		// Convert contextmgr.ToolResult to agent.ToolResult
+		var agentToolResults []agent.ToolResult
+		if len(msg.ToolResults) > 0 {
+			agentToolResults = make([]agent.ToolResult, len(msg.ToolResults))
+			for j := range msg.ToolResults {
+				agentToolResults[j] = agent.ToolResult{
+					ToolCallID: msg.ToolResults[j].ToolCallID,
+					Content:    msg.ToolResults[j].Content,
+					IsError:    msg.ToolResults[j].IsError,
+				}
+			}
+		}
+
 		messages = append(messages, agent.CompletionMessage{
-			Role:    agent.CompletionRole(msg.Role),
-			Content: msg.Content,
+			Role:        agent.CompletionRole(msg.Role),
+			Content:     msg.Content,
+			ToolCalls:   agentToolCalls,
+			ToolResults: agentToolResults,
+		})
+	}
+
+	// Add the new prompt as a user message if provided
+	if initialPrompt != "" {
+		messages = append(messages, agent.CompletionMessage{
+			Role:    agent.RoleUser,
+			Content: initialPrompt,
 		})
 	}
 
@@ -559,91 +603,104 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 	return d.callLLMWithTools(ctx, prompt, nil)
 }
 
-// callLLMWithTools allows calling LLM with optional tools (used for SCOPING and REQUEST phases).
+// callLLMWithTools allows calling LLM with optional tools (used for spec review in REQUEST state).
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
-	// Flush user buffer before LLM request (same as coder)
-	if err := d.contextManager.FlushUserBuffer(); err != nil {
-		return "", fmt.Errorf("failed to flush user buffer: %w", err)
+	// Create ToolProvider adapter from toolsList
+	toolProvider := newListToolProvider(toolsList)
+
+	// Use toolloop abstraction for LLM tool calling loop
+	loop := toolloop.New(d.llmClient, d.logger)
+
+	cfg := &toolloop.Config{
+		ContextManager: d.contextManager,
+		InitialPrompt:  prompt,
+		ToolProvider:   toolProvider,
+		MaxIterations:  20, // Increased for complex spec review workflows
+		MaxTokens:      agent.ArchitectMaxTokens,
+		AgentID:        d.architectID, // Agent ID for tool context
+		DebugLogging:   false,         // Enable for debugging: shows messages sent to LLM
+		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
+			// Check for terminal tools and return signal
+			return d.checkTerminalTools(calls, results)
+		},
+		OnIterationLimit: func(_ context.Context) (string, error) {
+			// Architect returns error on iteration limit (no budget request)
+			return "", fmt.Errorf("maximum tool iterations exceeded")
+		},
 	}
 
-	// Build messages with context (same pattern as coder)
-	messages := d.buildMessagesWithContext(prompt)
+	signal, err := loop.Run(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("toolloop execution failed: %w", err)
+	}
 
-	// Convert tools.Tool interface to tools.ToolDefinition for CompletionRequest
-	var toolDefs []tools.ToolDefinition
-	var toolNames []string
-	if toolsList != nil {
-		toolDefs = make([]tools.ToolDefinition, len(toolsList))
-		toolNames = make([]string, len(toolsList))
-		for i, tool := range toolsList {
-			toolDefs[i] = tool.Definition()
-			toolNames[i] = tool.Name()
+	return signal, nil
+}
+
+// checkTerminalTools examines tool execution results for terminal signals.
+// Returns non-empty signal to trigger state transition.
+func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) string {
+	for i := range calls {
+		toolCall := &calls[i]
+
+		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
+		if toolCall.Name == tools.ToolSubmitReply {
+			response, ok := toolCall.Parameters["response"].(string)
+			if !ok || response == "" {
+				d.logger.Error("submit_reply tool called without response parameter")
+				continue
+			}
+
+			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
+			return response
+		}
+
+		// Handle submit_stories tool - signals spec review completion with structured data
+		if toolCall.Name == tools.ToolSubmitStories {
+			// Check if tool executed successfully from results
+			resultMap, ok := results[i].(map[string]any)
+			if !ok {
+				d.logger.Error("submit_stories tool result is not a map")
+				continue
+			}
+
+			// Check for errors
+			if success, ok := resultMap["success"].(bool); ok && !success {
+				d.logger.Error("submit_stories tool failed")
+				continue
+			}
+
+			// Store the structured result in state data for scoping to access
+			d.stateData["submit_stories_result"] = results[i]
+
+			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
+			return signalSubmitStoriesComplete
+		}
+
+		// Handle spec_feedback tool - architect sends feedback to PM
+		if toolCall.Name == tools.ToolSpecFeedback {
+			// Check if tool executed successfully from results
+			resultMap, ok := results[i].(map[string]any)
+			if !ok {
+				d.logger.Error("spec_feedback tool result is not a map")
+				continue
+			}
+
+			// Check for errors
+			if success, ok := resultMap["success"].(bool); ok && !success {
+				d.logger.Error("spec_feedback tool failed")
+				continue
+			}
+
+			// Store the feedback result in state data for message sending
+			d.stateData["spec_feedback_result"] = results[i]
+
+			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
+			return signalSpecFeedbackSent
 		}
 	}
 
-	// Create ToolProvider for tool execution
-	agentCtx := tools.AgentContext{
-		Executor:        d.executor, // Pass executor for read tools
-		ChatService:     nil,        // SCOPING doesn't use chat tools
-		ReadOnly:        true,       // Architect tools are read-only in SCOPING
-		NetworkDisabled: false,
-		WorkDir:         d.workDir,
-		Agent:           nil, // Architect doesn't implement Agent interface yet
-	}
-	toolProvider := tools.NewProvider(agentCtx, toolNames)
-
-	// Tool call iteration loop
-	maxIterations := 10
-	for iteration := 0; iteration < maxIterations; iteration++ {
-		req := agent.CompletionRequest{
-			Messages:  messages,
-			MaxTokens: agent.ArchitectMaxTokens,
-			Tools:     toolDefs,
-		}
-
-		// Get LLM response
-		d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools (iteration %d)",
-			d.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs), iteration+1)
-
-		start := time.Now()
-		resp, err := d.llmClient.Complete(ctx, req)
-		duration := time.Since(start)
-
-		if err != nil {
-			d.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
-			return "", fmt.Errorf("LLM completion failed: %w", err)
-		}
-
-		d.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
-			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
-
-		// Handle LLM response with proper empty response logic
-		err = d.handleLLMResponse(resp)
-		if err != nil {
-			return "", fmt.Errorf("LLM response handling failed: %w", err)
-		}
-
-		// If no tool calls, return text content
-		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil
-		}
-
-		// Process tool calls
-		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
-		if err != nil {
-			return "", fmt.Errorf("tool processing failed: %w", err)
-		}
-
-		// If submit tool was called, return its response
-		if submitResponse != "" {
-			return submitResponse, nil
-		}
-
-		// Rebuild messages for next iteration
-		messages = d.buildMessagesWithContext("")
-	}
-
-	return "", fmt.Errorf("maximum tool iterations (%d) exceeded", maxIterations)
+	return "" // Continue loop
 }
 
 // processStatusUpdates runs as a goroutine to process story status updates from coders.
@@ -796,21 +853,26 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	return false
 }
 
-// createReadToolProvider creates a tool provider with architect read tools.
-func (d *Driver) createReadToolProvider() *tools.ToolProvider {
+// createReadToolProviderForCoder creates a tool provider rooted at a specific coder's workspace.
+// coderID should be the agent ID (e.g., "coder-001").
+// The tools will be rooted at /mnt/coders/{coderID} inside the architect container.
+func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvider {
+	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
+	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
 	ctx := tools.AgentContext{
-		Executor:        d.executor, // Architect executor with read-only mounts
-		ChatService:     nil,        // No chat service needed for read tools
-		ReadOnly:        true,       // Architect tools are read-only
-		NetworkDisabled: false,      // Network allowed for architect
-		WorkDir:         d.workDir,
-		Agent:           nil, // No agent reference needed for read tools
+		Executor:        d.executor,       // Architect executor with read-only mounts
+		ChatService:     nil,              // No chat service needed for read tools
+		ReadOnly:        true,             // Architect tools are read-only
+		NetworkDisabled: false,            // Network allowed for architect
+		WorkDir:         containerWorkDir, // Use coder's container mount path
+		Agent:           nil,              // No agent reference needed for read tools
 	}
 
-	return tools.NewProvider(ctx, tools.ArchitectReadTools)
+	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
 }
 
-// processArchitectToolCalls processes tool calls for architect states (SCOPING/REQUEST).
+// processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
 // Returns the submit_reply response if detected, nil otherwise.
 func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
 	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
@@ -830,7 +892,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			return response, nil
 		}
 
-		// Handle submit_stories tool - signals SCOPING completion with structured data
+		// Handle submit_stories tool - signals spec review completion with structured data
 		if toolCall.Name == tools.ToolSubmitStories {
 			// Execute the tool to get validated structured data
 			tool, err := toolProvider.Get(toolCall.Name)
@@ -843,11 +905,31 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 				return "", fmt.Errorf("submit_stories validation failed: %w", err)
 			}
 
-			// Store the structured result in state data for scoping to access
+			// Store the structured result in state data for spec review to access
 			d.stateData["submit_stories_result"] = result
 
 			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return "SUBMIT_STORIES_COMPLETE", nil // Signal that stories were submitted
+			return signalSubmitStoriesComplete, nil // Signal that stories were submitted
+		}
+
+		// Handle spec_feedback tool - architect sends feedback to PM
+		if toolCall.Name == tools.ToolSpecFeedback {
+			// Execute the tool to validate feedback
+			tool, err := toolProvider.Get(toolCall.Name)
+			if err != nil {
+				return "", fmt.Errorf("spec_feedback tool not found: %w", err)
+			}
+
+			result, err := tool.Exec(ctx, toolCall.Parameters)
+			if err != nil {
+				return "", fmt.Errorf("spec_feedback validation failed: %w", err)
+			}
+
+			// Store the feedback result in state data for message sending
+			d.stateData["spec_feedback_result"] = result
+
+			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
+			return signalSpecFeedbackSent, nil // Signal that feedback was sent
 		}
 
 		// Get tool from ToolProvider and execute
@@ -883,71 +965,43 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 		d.logger.Debug("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
 
-		// Add tool result to context
-		d.addToolResultToContext(*toolCall, result)
+		// Add structured tool result to buffer (same as PM pattern)
+		// Convert result to string format
+		var resultStr string
+		var isError bool
+		if resultMap, ok := result.(map[string]any); ok {
+			// Check for success field
+			if success, ok := resultMap["success"].(bool); ok && !success {
+				isError = true
+				// Extract error message if present
+				if errMsg, ok := resultMap["error"].(string); ok {
+					resultStr = errMsg
+				} else {
+					resultStr = fmt.Sprintf("Tool failed: %v", result)
+				}
+			} else {
+				// Success - convert entire result to string
+				resultStr = fmt.Sprintf("%v", result)
+			}
+		} else {
+			// Non-map result - convert to string
+			resultStr = fmt.Sprintf("%v", result)
+		}
+
+		d.contextManager.AddToolResult(toolCall.ID, resultStr, isError)
 		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
 	}
 
 	return "", nil // No submit_reply detected
 }
 
-// addToolResultToContext adds tool execution results to context for LLM continuity.
-func (d *Driver) addToolResultToContext(toolCall agent.ToolCall, result any) {
-	// Convert result to user message format
-	var resultStr string
-	if resultMap, ok := result.(map[string]any); ok {
-		// Pretty print structured results
-		if success, ok := resultMap["success"].(bool); ok && success {
-			// Success case - format based on tool type
-			switch toolCall.Name {
-			case tools.ToolReadFile:
-				content, _ := resultMap["content"].(string)
-				path, _ := resultMap["path"].(string)
-				truncated, _ := resultMap["truncated"].(bool)
-				if truncated {
-					resultStr = fmt.Sprintf("File %s (truncated):\n%s", path, content)
-				} else {
-					resultStr = fmt.Sprintf("File %s:\n%s", path, content)
-				}
-			case tools.ToolListFiles:
-				files, _ := resultMap["files"].([]string)
-				count, _ := resultMap["count"].(int)
-				pattern, _ := resultMap["pattern"].(string)
-				resultStr = fmt.Sprintf("Found %d files matching '%s':\n%s", count, pattern, strings.Join(files, "\n"))
-			case tools.ToolGetDiff:
-				diff, _ := resultMap["diff"].(string)
-				path, _ := resultMap["path"].(string)
-				if path != "" {
-					resultStr = fmt.Sprintf("Git diff for %s:\n%s", path, diff)
-				} else {
-					resultStr = fmt.Sprintf("Git diff:\n%s", diff)
-				}
-			default:
-				resultStr = fmt.Sprintf("Tool %s result: %v", toolCall.Name, resultMap)
-			}
-		} else {
-			// Error case
-			if errorMsg, ok := resultMap["error"].(string); ok {
-				resultStr = fmt.Sprintf("Tool %s error: %s", toolCall.Name, errorMsg)
-			} else {
-				resultStr = fmt.Sprintf("Tool %s failed: %v", toolCall.Name, resultMap)
-			}
-		}
-	} else {
-		// Fallback for non-map results
-		resultStr = fmt.Sprintf("Tool %s result: %v", toolCall.Name, result)
-	}
-
-	// Add to context as user message (tool response)
-	d.contextManager.AddMessage("tool", resultStr)
-}
-
-// getScopingTools creates read-only tools for the SCOPING phase.
-// These tools allow the architect to inspect its own workspace at /mnt/architect
-// and submit structured stories via the submit_stories tool.
-func (d *Driver) getScopingTools() []tools.Tool {
+// getSpecReviewTools creates read-only tools for spec review in REQUEST state.
+// These tools allow the architect to inspect its own workspace at /mnt/architect,
+// submit structured stories via the submit_stories tool, and provide feedback to PM.
+func (d *Driver) getSpecReviewTools() []tools.Tool {
 	toolsList := []tools.Tool{
 		tools.NewSubmitStoriesTool(), // Primary completion tool
+		tools.NewSpecFeedbackTool(),  // PM feedback tool
 	}
 
 	// Add optional read tools if executor available
@@ -957,7 +1011,7 @@ func (d *Driver) getScopingTools() []tools.Tool {
 			tools.NewListFilesTool(d.executor, "/mnt/architect", 1000),   // 1000 files max
 		)
 	} else {
-		d.logger.Warn("No executor available for read tools in SCOPING")
+		d.logger.Warn("No executor available for read tools in spec review")
 	}
 
 	return toolsList

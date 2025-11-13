@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 // Helper function to add user message and flush buffer for testing.
 func addUserMessage(cm *ContextManager, content string) error {
 	cm.AddMessage("user", content)
-	return cm.FlushUserBuffer()
+	return cm.FlushUserBuffer(context.Background())
 }
 
 // Helper function to add any message role and flush buffer for testing.
@@ -24,7 +25,7 @@ func addMessageWithFlush(cm *ContextManager, role, content string) error {
 		return nil
 	}
 	cm.AddMessage(role, content)
-	return cm.FlushUserBuffer()
+	return cm.FlushUserBuffer(context.Background())
 }
 
 func TestNewContextManager(t *testing.T) {
@@ -50,7 +51,7 @@ func TestAddMessage(t *testing.T) {
 	cm.AddMessage("user", "Hello world")
 
 	// Messages go to user buffer first, need to flush to see them
-	if err := cm.FlushUserBuffer(); err != nil {
+	if err := cm.FlushUserBuffer(context.Background()); err != nil {
 		t.Errorf("FlushUserBuffer failed: %v", err)
 	}
 

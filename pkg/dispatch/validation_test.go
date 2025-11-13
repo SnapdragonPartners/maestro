@@ -611,17 +611,6 @@ func TestDispatcherContainerRegistry(t *testing.T) {
 	}
 }
 
-// TestDispatcherArchitectSubscription tests architect subscription functionality.
-func TestDispatcherArchitectSubscription(t *testing.T) {
-	dispatcher := createTestDispatcher(t)
-
-	// Test architect subscription
-	channels := dispatcher.SubscribeArchitect("architect-001")
-	if channels.Specs == nil {
-		t.Error("Expected non-nil spec channel in architect subscription")
-	}
-}
-
 // TestDispatcherReportError tests error reporting functionality.
 func TestDispatcherReportError(t *testing.T) {
 	dispatcher := createTestDispatcher(t)

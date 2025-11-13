@@ -82,10 +82,18 @@ func (c *ChatPostTool) Exec(ctx context.Context, args map[string]any) (any, erro
 	// Format author with @ prefix
 	author := chat.FormatAuthor(agentID)
 
+	// Determine channel based on agent ID pattern
+	// PM agents (pm-*) use 'product' channel, all others use 'development'
+	channel := "development"
+	if len(agentID) >= 3 && agentID[:3] == "pm-" {
+		channel = "product"
+	}
+
 	// Post the message
 	req := &chat.PostRequest{
-		Author: author,
-		Text:   textStr,
+		Author:  author,
+		Text:    textStr,
+		Channel: channel,
 	}
 
 	resp, err := c.chatService.Post(ctx, req)
