@@ -145,7 +145,7 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 // All story generation now uses the clean linear flow in handleScoping()
 
 // loadStoriesFromSubmitResult loads stories into the queue from submit_stories tool result.
-// This is called by both SCOPING (after LLM analysis) and REQUEST (after PM spec approval).
+// This is called during spec review in REQUEST state (after PM spec approval).
 // Returns spec ID, story IDs, and error.
 func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown string) (string, []string, error) {
 	// 1. Extract structured data from stateData (stored by processArchitectToolCalls)
@@ -209,8 +209,8 @@ func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown s
 	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
 		// Check if this is a retry request
 		if strings.Contains(err.Error(), "retry_needed") {
-			// For SCOPING state, this triggers a retry
-			// For REQUEST state, we can't retry (already approved), so just log warning
+			// During spec review, this would trigger a retry
+			// In REQUEST state after approval, we can't retry, so just log warning
 			d.logger.Warn("⚠️  Container validation would retry, but continuing with current stories")
 			// Clear the error and continue
 		} else {

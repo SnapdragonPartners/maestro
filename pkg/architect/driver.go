@@ -603,7 +603,7 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 	return d.callLLMWithTools(ctx, prompt, nil)
 }
 
-// callLLMWithTools allows calling LLM with optional tools (used for SCOPING and REQUEST phases).
+// callLLMWithTools allows calling LLM with optional tools (used for spec review in REQUEST state).
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
 	// Create ToolProvider adapter from toolsList
 	toolProvider := newListToolProvider(toolsList)
@@ -655,7 +655,7 @@ func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) strin
 			return response
 		}
 
-		// Handle submit_stories tool - signals SCOPING completion with structured data
+		// Handle submit_stories tool - signals spec review completion with structured data
 		if toolCall.Name == tools.ToolSubmitStories {
 			// Check if tool executed successfully from results
 			resultMap, ok := results[i].(map[string]any)
@@ -867,7 +867,7 @@ func (d *Driver) createReadToolProvider() *tools.ToolProvider {
 	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
 }
 
-// processArchitectToolCalls processes tool calls for architect states (SCOPING/REQUEST).
+// processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
 // Returns the submit_reply response if detected, nil otherwise.
 func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
 	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
@@ -887,7 +887,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			return response, nil
 		}
 
-		// Handle submit_stories tool - signals SCOPING completion with structured data
+		// Handle submit_stories tool - signals spec review completion with structured data
 		if toolCall.Name == tools.ToolSubmitStories {
 			// Execute the tool to get validated structured data
 			tool, err := toolProvider.Get(toolCall.Name)
@@ -900,7 +900,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 				return "", fmt.Errorf("submit_stories validation failed: %w", err)
 			}
 
-			// Store the structured result in state data for scoping to access
+			// Store the structured result in state data for spec review to access
 			d.stateData["submit_stories_result"] = result
 
 			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
@@ -990,10 +990,10 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 	return "", nil // No submit_reply detected
 }
 
-// getScopingTools creates read-only tools for the SCOPING phase.
+// getSpecReviewTools creates read-only tools for spec review in REQUEST state.
 // These tools allow the architect to inspect its own workspace at /mnt/architect,
 // submit structured stories via the submit_stories tool, and provide feedback to PM.
-func (d *Driver) getScopingTools() []tools.Tool {
+func (d *Driver) getSpecReviewTools() []tools.Tool {
 	toolsList := []tools.Tool{
 		tools.NewSubmitStoriesTool(), // Primary completion tool
 		tools.NewSpecFeedbackTool(),  // PM feedback tool
@@ -1006,7 +1006,7 @@ func (d *Driver) getScopingTools() []tools.Tool {
 			tools.NewListFilesTool(d.executor, "/mnt/architect", 1000),   // 1000 files max
 		)
 	} else {
-		d.logger.Warn("No executor available for read tools in SCOPING")
+		d.logger.Warn("No executor available for read tools in spec review")
 	}
 
 	return toolsList

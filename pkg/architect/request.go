@@ -381,7 +381,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		return d.handleIterativeApproval(ctx, requestMsg, approvalPayload)
 	}
 
-	// Handle spec review approval with SCOPING tools
+	// Handle spec review approval with spec review tools
 	if approvalType == proto.ApprovalTypeSpec && d.llmClient != nil {
 		return d.handleSpecReview(ctx, requestMsg, approvalPayload)
 	}
@@ -1976,7 +1976,7 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 }
 
 // handleSpecReview processes a spec review approval request from PM.
-// Uses SCOPING tools (spec_feedback, submit_stories) for iterative review.
+// Uses spec review tools (spec_feedback, submit_stories) for iterative review.
 func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	d.logger.Info("🔍 Architect reviewing spec from PM")
 
@@ -2011,12 +2011,12 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// This prevents FlushUserBuffer from adding a fallback message
 	d.contextManager.AddMessage("user", "Please analyze this specification.")
 
-	// Get SCOPING tools for spec review (spec_feedback, submit_stories)
-	scopingTools := d.getScopingTools()
+	// Get spec review tools (spec_feedback, submit_stories)
+	specReviewTools := d.getSpecReviewTools()
 
-	// Call LLM with SCOPING tools
+	// Call LLM with spec review tools
 	// Pass empty string since prompt was already set in system message and we added initial user message
-	signal, err := d.callLLMWithTools(ctx, "", scopingTools)
+	signal, err := d.callLLMWithTools(ctx, "", specReviewTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
 	}
