@@ -125,6 +125,20 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  8192,
 	},
+	"claude-opus-4-1": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
+	"claude-opus-4-1-20250805": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
 
 	// OpenAI o3 models
 	"o3-mini": {

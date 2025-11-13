@@ -151,7 +151,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	var rawClient LLMClient
 	switch provider {
 	case config.ProviderAnthropic:
-		rawClient = anthropic.NewClaudeClient(apiKey)
+		rawClient = anthropic.NewClaudeClientWithModel(apiKey, modelName)
 	case config.ProviderOpenAI:
 		// Use official OpenAI SDK with Responses API for all OpenAI models
 		// Supports tool calling via Responses API (o4-mini, gpt-4o, etc.)

@@ -46,8 +46,7 @@ type Driver struct {
 	logger              *logx.Logger                          // Logger with proper agent prefixing
 	executor            *execpkg.ArchitectExecutor            // Container executor for file access tools
 	chatService         ChatServiceInterface                  // Chat service for escalations (nil check required)
-	specCh              <-chan *proto.AgentMsg                // Read-only channel for spec messages
-	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for questions/requests
+	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel  chan<- *persistence.Request           // Channel for database operations
 	stateNotificationCh chan<- *proto.StateChangeNotification // Channel for state change notifications
@@ -129,7 +128,6 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
 		// Channels will be set during Attach()
-		specCh:      nil,
 		questionsCh: nil,
 		replyCh:     nil,
 	}
@@ -204,8 +202,9 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 }
 
 // SetChannels sets the communication channels from the dispatcher.
-func (d *Driver) SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
-	d.specCh = specCh
+// All requests (specs, questions, approvals) come through questionsCh now.
+// The middle parameter (unusedCh) is unused - it was previously specCh before specs were unified with REQUEST messages.
+func (d *Driver) SetChannels(questionsCh, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	d.questionsCh = questionsCh
 	d.replyCh = replyCh
 }
@@ -298,7 +297,7 @@ func (d *Driver) shutdown() {
 // Step implements agent.Driver interface - executes one state transition.
 func (d *Driver) Step(ctx context.Context) (bool, error) {
 	// Ensure channels are attached.
-	if d.specCh == nil || d.questionsCh == nil {
+	if d.questionsCh == nil {
 		return false, fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
 
@@ -322,7 +321,7 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 // Run starts the architect's state machine loop in WAITING state.
 func (d *Driver) Run(ctx context.Context) error {
 	// Ensure channels are attached.
-	if d.specCh == nil || d.questionsCh == nil {
+	if d.questionsCh == nil {
 		return fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
 
@@ -378,10 +377,8 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	// Process state directly without timeout wrapper
 	switch d.currentState {
 	case StateWaiting:
-		// WAITING state - block until spec received.
+		// WAITING state - block until request received.
 		return d.handleWaiting(ctx)
-	case StateScoping:
-		return d.handleScoping(ctx)
 	case StateDispatching:
 		return d.handleDispatching(ctx)
 	case StateMonitoring:

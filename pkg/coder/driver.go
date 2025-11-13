@@ -434,7 +434,7 @@ func (c *Coder) GetID() string {
 }
 
 // SetChannels implements the ChannelReceiver interface for dispatcher attachment.
-func (c *Coder) SetChannels(storyCh <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
+func (c *Coder) SetChannels(storyCh, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	c.storyCh = storyCh
 	c.replyCh = replyCh
 	c.logger.Info("🧑‍💻 Coder %s channels set: story=%p reply=%p", c.GetID(), storyCh, replyCh)

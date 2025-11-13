@@ -265,15 +265,31 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		}
 	}
 
+	// Check if spec was approved and loaded (PM spec approval flow)
+	var specApprovedAndLoaded bool
+	if approved, exists := d.stateData["spec_approved_and_loaded"]; exists {
+		if approvedBool, ok := approved.(bool); ok && approvedBool {
+			specApprovedAndLoaded = true
+			d.logger.Info("🎉 Spec approved and stories loaded, transitioning to DISPATCHING")
+		}
+	}
+
 	// Clear the processed request and acceptance signals
 	delete(d.stateData, "current_request")
 	delete(d.stateData, "last_response")
 	delete(d.stateData, "work_accepted")
 	delete(d.stateData, "accepted_story_id")
 	delete(d.stateData, "acceptance_type")
+	delete(d.stateData, "spec_approved_and_loaded")
 
-	// Determine next state - work acceptance (completion or merge) transitions to DISPATCHING
-	if workWasAccepted && d.ownsSpec() {
+	// Determine next state:
+	// 1. Spec approval (PM flow) → DISPATCHING
+	// 2. Work acceptance (completion or merge) → DISPATCHING
+	// 3. Owns spec but no acceptance → MONITORING
+	// 4. No spec ownership → WAITING
+	if specApprovedAndLoaded {
+		return StateDispatching, nil
+	} else if workWasAccepted && d.ownsSpec() {
 		return StateDispatching, nil
 	} else if d.ownsSpec() {
 		return StateMonitoring, nil
@@ -1994,8 +2010,20 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	case signalSubmitStoriesComplete:
 		// Architect approved spec and generated stories via submit_stories tool
 		approved = true
-		feedback = "Spec approved - stories generated successfully"
 		d.logger.Info("✅ Architect approved spec and generated stories")
+
+		// Load stories into queue from submit_stories result
+		specID, storyIDs, err := d.loadStoriesFromSubmitResult(ctx, specMarkdown)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load stories after approval: %w", err)
+		}
+
+		feedback = fmt.Sprintf("Spec approved - %d stories generated successfully (spec_id: %s)", len(storyIDs), specID)
+		d.logger.Info("📦 Loaded %d stories into queue", len(storyIDs))
+
+		// Mark that we now own this spec and should transition to DISPATCHING
+		// This is checked by handleRequest to determine next state
+		d.stateData["spec_approved_and_loaded"] = true
 
 	default:
 		return nil, fmt.Errorf("unexpected signal from spec review: %s", signal)

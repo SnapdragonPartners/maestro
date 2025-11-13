@@ -23,8 +23,9 @@ const (
 
 const (
 	// ArchitectMaxTokens defines the maximum tokens for architect LLM responses.
-	// Used for comprehensive spec analysis and story generation with O3.
-	ArchitectMaxTokens = 30000
+	// Used for spec analysis, story generation, and DAG creation.
+	// Set to 5000 to avoid Anthropic's streaming requirement while allowing reasonable story output.
+	ArchitectMaxTokens = 5000
 
 	// TemperatureDefault is the default temperature for planning, reviews, and judgment tasks.
 	// Allows some exploration and creativity while staying focused.

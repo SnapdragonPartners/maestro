@@ -491,8 +491,9 @@ func (d *Driver) GetValidStates() []proto.State {
 // SetChannels sets the dispatcher channels for PM (required by ChannelReceiver interface).
 // PM only needs replyCh for RESULT messages from architect.
 // Interview requests and spec uploads come directly from WebUI via StartInterview/UploadSpec methods.
-// questionsCh (second parameter) is nil for PM (only architect processes questions).
-func (d *Driver) SetChannels(_ <-chan *proto.AgentMsg, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
+// questionsCh (first parameter) is used by PM for interview request messages from dispatcher.
+// Second parameter is unused (nil).
+func (d *Driver) SetChannels(_, _ chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg) {
 	d.replyCh = replyCh
 }
 

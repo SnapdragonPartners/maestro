@@ -54,6 +54,7 @@ import (
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // Severity represents the severity level of agent errors.
@@ -88,8 +89,12 @@ type Agent interface {
 }
 
 // ChannelReceiver is an optional interface for agents that need direct channel access.
+// Different agent types use different channels:
+// - Architect: questionsCh (incoming requests), unused (was specCh), replyCh (outgoing responses).
+// - Coder: storyCh (incoming stories), unused, replyCh (outgoing responses).
+// - PM: pmRequestsCh (incoming interview requests), unused, replyCh (outgoing responses).
 type ChannelReceiver interface {
-	SetChannels(specCh <-chan *proto.AgentMsg, questionsCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
+	SetChannels(incomingCh chan *proto.AgentMsg, unusedCh chan *proto.AgentMsg, replyCh <-chan *proto.AgentMsg)
 	SetDispatcher(dispatcher *Dispatcher)
 	SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification)
 }
@@ -118,9 +123,7 @@ type Dispatcher struct {
 	replyChannels map[string]chan *proto.AgentMsg // Per-agent reply channels for ANSWER/RESULT messages
 
 	// Channel-based notifications for architect.
-	specCh         chan *proto.AgentMsg // Delivers spec messages to architect
-	architectID    string               // ID of the architect to notify
-	notificationMu sync.RWMutex         // Protects notification channels
+	notificationMu sync.RWMutex // Protects notification channels
 
 	// S-5: Metrics monitoring.
 	highUtilizationStart time.Time    // Track when high utilization started
@@ -158,7 +161,6 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:          make(chan struct{}),
 		running:           false,
-		specCh:            make(chan *proto.AgentMsg, 10),                                             // Buffered channel for spec messages
 		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
 		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                             // Buffered channel for PM interview requests
@@ -195,16 +197,17 @@ func (d *Dispatcher) Attach(ag Agent) {
 	d.replyChannels[agentID] = replyCh
 
 	// Set up channels for agents that implement ChannelReceiver interface.
-	if channelReceiver, ok := ag.(ChannelReceiver); ok {
+	if channelReceiver, ok := utils.SafeAssert[ChannelReceiver](ag); ok {
 		// Set up state notification channel for all ChannelReceiver agents.
 		channelReceiver.SetStateNotificationChannel(d.stateChangeCh)
 
 		// Determine agent type to provide appropriate channels.
-		if agentDriver, ok := ag.(agent.Driver); ok {
+		if agentDriver, ok := utils.SafeAssert[agent.Driver](ag); ok {
 			switch agentDriver.GetAgentType() {
 			case agent.TypeArchitect:
 				d.logger.Info("Attached architect agent: %s with direct channel setup", agentID)
-				channelReceiver.SetChannels(d.specCh, d.questionsCh, replyCh)
+				// Architect receives requests via questionsCh, unused (was specCh), replyCh for responses
+				channelReceiver.SetChannels(d.questionsCh, nil, replyCh)
 				channelReceiver.SetDispatcher(d)
 				// TODO: Add status updates channel to architect interface
 				return
@@ -226,7 +229,7 @@ func (d *Dispatcher) Attach(ag Agent) {
 	}
 
 	// For other agents, log the attachment.
-	if agentDriver, ok := ag.(agent.Driver); ok {
+	if agentDriver, ok := utils.SafeAssert[agent.Driver](ag); ok {
 		switch agentDriver.GetAgentType() {
 		case agent.TypeArchitect:
 			d.logger.Info("Attached architect agent: %s", agentID)
@@ -518,7 +521,7 @@ func (d *Dispatcher) checkZeroAgentCondition() {
 	coderCount := 0
 
 	for _, ag := range d.agents {
-		if agentDriver, ok := ag.(agent.Driver); ok {
+		if agentDriver, ok := utils.SafeAssert[agent.Driver](ag); ok {
 			switch agentDriver.GetAgentType() {
 			case agent.TypeArchitect:
 				architectCount++
@@ -552,10 +555,31 @@ func (d *Dispatcher) ReportError(agentID string, err error, severity Severity) {
 func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	d.logger.Info("Processing message %s: %s → %s (%s)", msg.ID, msg.FromAgent, msg.ToAgent, msg.Type)
 
-	// Validate story_id presence - only SPEC messages and PM-destined REQUEST messages are allowed without story_id
-	// PM REQUEST messages are for interview sessions and don't have stories yet
-	isPMRequest := msg.Type == proto.MsgTypeREQUEST && strings.HasPrefix(msg.ToAgent, "pm-")
-	if msg.Type != proto.MsgTypeSPEC && !isPMRequest {
+	// Validate story_id presence - only SPEC messages and story-independent messages are allowed without story_id
+	// Story-independent messages include:
+	// 1. REQUEST with ApprovalTypeSpec - spec approval requests from PM to architect
+	// 2. RESPONSE to PM - spec approval responses from architect to PM
+	// 3. REQUEST to PM - interview requests (for future escalations)
+	isStoryIndependentMessage := false
+	if msg.Type == proto.MsgTypeREQUEST {
+		// Check if this is a spec approval request by examining the approval type in the payload
+		if payload := msg.GetTypedPayload(); payload != nil {
+			if approvalPayload, err := payload.ExtractApprovalRequest(); err == nil {
+				isStoryIndependentMessage = (approvalPayload.ApprovalType == proto.ApprovalTypeSpec)
+			}
+		}
+		// Also allow PM-destined requests (interview requests from WebUI)
+		if !isStoryIndependentMessage && strings.HasPrefix(msg.ToAgent, "pm-") {
+			isStoryIndependentMessage = true
+		}
+	} else if msg.Type == proto.MsgTypeRESPONSE {
+		// Check if this is a response to PM (spec approval responses)
+		if strings.HasPrefix(msg.ToAgent, "pm-") {
+			isStoryIndependentMessage = true
+		}
+	}
+
+	if msg.Type != proto.MsgTypeSPEC && !isStoryIndependentMessage {
 		// Story ID is now in metadata, not payload
 		storyIDStr, hasStoryID := msg.Metadata[proto.KeyStoryID]
 		if !hasStoryID {
@@ -572,8 +596,8 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 		}
 
 		d.logger.Debug("✅ Message %s (%s) has valid story_id: %s", msg.ID, msg.Type, storyIDStr)
-	} else if isPMRequest {
-		d.logger.Debug("✅ Message %s (%s) is PM interview request - story_id not required", msg.ID, msg.Type)
+	} else if isStoryIndependentMessage {
+		d.logger.Debug("✅ Message %s (%s) is story-independent message - story_id not required", msg.ID, msg.Type)
 	}
 
 	// Resolve logical agent name to actual agent ID for all messages.
@@ -598,16 +622,6 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			return
 		default:
 			d.logger.Warn("❌ Story channel full, dropping STORY %s", msg.ID)
-		}
-
-	case proto.MsgTypeSPEC:
-		// SPEC messages go to architect via spec channel.
-		d.logger.Info("🔄 Dispatcher sending SPEC %s to architect via spec channel %p", msg.ID, d.specCh)
-		select {
-		case d.specCh <- msg:
-			d.logger.Info("✅ SPEC %s delivered to architect spec channel", msg.ID)
-		default:
-			d.logger.Warn("❌ Architect spec channel full, dropping SPEC %s", msg.ID)
 		}
 
 	case proto.MsgTypeREQUEST:
@@ -855,35 +869,13 @@ func (d *Dispatcher) GetRequeueRequestsChannel() <-chan *proto.StoryRequeueReque
 	return d.requeueRequestsCh
 }
 
-// ArchitectChannels contains the channels returned to architects.
-type ArchitectChannels struct {
-	Specs <-chan *proto.AgentMsg // Delivers spec messages
-}
-
-// SubscribeArchitect allows the architect to get the spec channel.
-func (d *Dispatcher) SubscribeArchitect(architectID string) ArchitectChannels {
-	d.notificationMu.Lock()
-	defer d.notificationMu.Unlock()
-
-	d.architectID = architectID
-	d.logger.Info("🔔 Architect %s subscribed to spec notifications", architectID)
-	d.logger.Info("🔔 Spec channel %p provided to architect %s", d.specCh, architectID)
-
-	return ArchitectChannels{
-		Specs: d.specCh,
-	}
-}
+// Note: SubscribeArchitect and ArchitectChannels have been removed.
+// Specs now come through REQUEST messages like all other architect work.
 
 // closeAllChannels closes all dispatcher-owned channels for graceful shutdown.
 func (d *Dispatcher) closeAllChannels() {
 	d.notificationMu.Lock()
 	defer d.notificationMu.Unlock()
-
-	// Close specCh.
-	if d.specCh != nil {
-		close(d.specCh)
-		d.logger.Info("Closed spec channel")
-	}
 
 	// Close storyCh.
 	if d.storyCh != nil {
@@ -997,7 +989,7 @@ func (d *Dispatcher) GetRegisteredAgents() []AgentInfo {
 	var agentInfos []AgentInfo
 	for id, agentInterface := range d.agents {
 		// Try to cast to Driver interface to get more information.
-		if driver, ok := agentInterface.(agent.Driver); ok {
+		if driver, ok := utils.SafeAssert[agent.Driver](agentInterface); ok {
 			// Get story ID from lease tracking
 			storyID := d.GetLease(id)
 

@@ -138,24 +138,11 @@ func TestDispatcherComprehensiveCoverage(t *testing.T) {
 		}
 	})
 
-	// Test 6: Questions and spec channel handling
-	t.Run("questions_spec_channels", func(t *testing.T) {
+	// Test 6: Questions channel handling
+	t.Run("questions_channels", func(t *testing.T) {
 		dispatcher := createTestDispatcher(t)
 
-		// Test architect subscription
-		channels := dispatcher.SubscribeArchitect("test-architect")
-		if channels.Specs == nil {
-			t.Error("Expected non-nil spec channel")
-		}
-
-		// Test spec message processing
-		specMsg := proto.NewAgentMsg(proto.MsgTypeSPEC, "orchestrator", "test-architect")
-		specMsg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, map[string]any{
-			proto.KeyContent: "Test spec",
-		}))
-		dispatcher.processMessage(ctx, specMsg)
-
-		// Test questions channel
+		// Test questions channel with REQUEST message
 		questionMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, "coder", "architect")
 		questionPayload := &proto.QuestionRequestPayload{
 			Text: "Test question",

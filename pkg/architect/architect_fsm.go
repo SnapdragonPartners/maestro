@@ -18,15 +18,12 @@ const (
 	// Entry state.
 	StateWaiting proto.State = "WAITING"
 
-	// Spec intake states.
-	StateScoping proto.State = "SCOPING"
-
 	// Story dispatch states.
 	StateDispatching proto.State = "DISPATCHING"
 
 	// Main event loop states.
 	StateMonitoring proto.State = "MONITORING"
-	StateRequest    proto.State = "REQUEST"
+	StateRequest    proto.State = "REQUEST" // Handles all requests: spec reviews, questions, approvals
 
 	// Human escalation states.
 	StateEscalated proto.State = "ESCALATED"
@@ -50,7 +47,7 @@ func ValidateState(state proto.State) error {
 // GetValidStates returns all valid states for architect agents.
 func GetValidStates() []proto.State {
 	return []proto.State{
-		StateWaiting, StateScoping, StateDispatching, StateMonitoring,
+		StateWaiting, StateDispatching, StateMonitoring,
 		StateRequest, StateEscalated, StateDone, StateError,
 	}
 }
@@ -59,11 +56,8 @@ func GetValidStates() []proto.State {
 // This is the single source of truth, derived directly from STATES.md.
 // Any code, tests, or diagrams must match this specification exactly.
 var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
-	// WAITING can transition to SCOPING when spec received, REQUEST when question received, or ERROR during abnormal shutdown.
-	StateWaiting: {StateScoping, StateRequest, StateError},
-
-	// SCOPING can transition to DISPATCHING when stories queued, or ERROR on unrecoverable error.
-	StateScoping: {StateDispatching, StateError},
+	// WAITING can transition to REQUEST when any request received (spec, question, approval), or ERROR during abnormal shutdown.
+	StateWaiting: {StateRequest, StateError},
 
 	// DISPATCHING can transition to MONITORING when stories placed on work-queue, or DONE when no stories left.
 	StateDispatching: {StateMonitoring, StateDone},
@@ -71,8 +65,8 @@ var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglob
 	// MONITORING can transition to REQUEST for any coder request, or ERROR on channel closure.
 	StateMonitoring: {StateRequest, StateError},
 
-	// REQUEST can transition to MONITORING (approve non-code/request changes), DISPATCHING (successful merges), ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
-	StateRequest: {StateMonitoring, StateDispatching, StateEscalated, StateError},
+	// REQUEST can transition to WAITING (no spec work), MONITORING (approve non-code/request changes), DISPATCHING (successful merges or spec approval), ESCALATED (cannot answer), or ERROR (abandon/unrecoverable).
+	StateRequest: {StateWaiting, StateMonitoring, StateDispatching, StateEscalated, StateError},
 
 	// ESCALATED can transition to REQUEST when human answer supplied, or ERROR on timeout/no answer.
 	StateEscalated: {StateRequest, StateError},
@@ -116,7 +110,6 @@ const DispatcherSendTimeout = 500 * time.Millisecond
 func GetAllArchitectStates() []proto.State {
 	return []proto.State{
 		StateWaiting,
-		StateScoping,
 		StateDispatching,
 		StateMonitoring,
 		StateRequest,

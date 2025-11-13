@@ -293,22 +293,27 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 }
 
 // InjectSpec provides centralized spec injection into the dispatcher.
-// This consolidates the spec injection logic that was duplicated across flows.
+// Sends spec as REQUEST message (same protocol as PM) so architect handles it in REQUEST state.
 func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) error {
-	// Create spec message using the existing protocol (matches bootstrap.go pattern)
-	msg := proto.NewAgentMsg(proto.MsgTypeSPEC, source, string(agent.TypeArchitect))
+	// Create REQUEST message with spec approval (unified with PM flow)
+	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, source, string(agent.TypeArchitect))
 
-	// Build spec payload with typed generic payload
-	specPayload := map[string]any{
-		"spec_content": string(content),
-		"type":         "spec_content", // Preserve existing protocol
+	// Build approval request payload
+	approvalPayload := &proto.ApprovalRequestPayload{
+		ApprovalType: proto.ApprovalTypeSpec,
+		Content:      string(content), // Spec markdown goes in Content field
+		Reason:       fmt.Sprintf("Spec submitted via %s", source),
+		Metadata:     make(map[string]string),
 	}
-	msg.SetTypedPayload(proto.NewGenericPayload(proto.PayloadKindGeneric, specPayload))
+	approvalPayload.Metadata["source"] = source
+
+	msg.SetTypedPayload(proto.NewApprovalRequestPayload(approvalPayload))
+	msg.SetMetadata("approval_id", proto.GenerateApprovalID())
 	msg.SetMetadata("source", source)
 
-	// Send via dispatcher (matches bootstrap.go pattern)
+	// Send via dispatcher
 	if err := dispatcher.DispatchMessage(msg); err != nil {
-		return fmt.Errorf("failed to dispatch spec message: %w", err)
+		return fmt.Errorf("failed to dispatch spec request: %w", err)
 	}
 	return nil
 }
