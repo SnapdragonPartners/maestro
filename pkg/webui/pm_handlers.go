@@ -45,18 +45,6 @@ type PMPreviewResponse struct {
 	Message  string `json:"message"`
 }
 
-// PMSubmitRequest represents a spec submission request.
-type PMSubmitRequest struct {
-	SessionID string `json:"session_id"`
-}
-
-// PMSubmitResponse represents the result of spec submission.
-type PMSubmitResponse struct {
-	Message string   `json:"message"`
-	Errors  []string `json:"errors,omitempty"`
-	Success bool     `json:"success"`
-}
-
 // PMStatusResponse represents the current PM agent status.
 type PMStatusResponse struct {
 	State        string `json:"state"`
@@ -206,46 +194,6 @@ func (s *Server) handlePMChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePMPreview(w http.ResponseWriter, r *http.Request) {
 	// Redirect to the new /api/pm/preview/spec endpoint
 	s.handlePMPreviewGet(w, r)
-}
-
-// handlePMSubmit implements POST /api/pm/submit - Submit a completed spec to the architect.
-func (s *Server) handlePMSubmit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse request body
-	var req PMSubmitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.logger.Warn("Failed to parse PM submit request: %v", err)
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.SessionID == "" {
-		http.Error(w, "session_id is required", http.StatusBadRequest)
-		return
-	}
-
-	s.logger.Info("PM spec submission requested for session: %s", req.SessionID)
-
-	// TODO: Full implementation requires:
-	// 1. PM agent to transition to SUBMITTING state
-	// 2. spec_submit tool validation
-	// 3. Send REQUEST to architect
-	// 4. Return success/failure based on validation
-
-	// Placeholder response
-	response := PMSubmitResponse{
-		Success: false,
-		Message: "Spec submission not yet implemented. Use file upload instead.",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.logger.Error("Failed to encode PM submit response: %v", err)
-	}
 }
 
 // handlePMUpload implements POST /api/pm/upload - Upload a spec file directly to PM (bypass interview).

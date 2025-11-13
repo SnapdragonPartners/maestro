@@ -51,7 +51,6 @@ class PMController {
         });
 
         // Preview tab
-        document.getElementById('submit-spec-btn').addEventListener('click', () => this.submitSpec());
         document.getElementById('continue-interview-btn').addEventListener('click', () => this.continueInterview());
         document.getElementById('submit-to-architect-btn').addEventListener('click', () => this.submitToArchitect());
     }
@@ -304,48 +303,6 @@ class PMController {
         errorDiv.classList.remove('hidden');
     }
 
-    async submitSpec() {
-        if (!this.sessionID) {
-            alert('No spec available to submit');
-            return;
-        }
-
-        if (!confirm('Submit this specification to the architect for review?')) {
-            return;
-        }
-
-        try {
-            const response = await fetch('/api/pm/submit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: this.sessionID })
-            });
-
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(error);
-            }
-
-            const result = await response.json();
-
-            if (result.success) {
-                alert('Specification submitted successfully!');
-                // Reset UI
-                this.sessionID = null;
-                this.messageCount = 0;
-                this.switchTab('upload');
-                document.getElementById('interview-start-section').classList.remove('hidden');
-                document.getElementById('interview-chat-section').classList.add('hidden');
-                document.getElementById('preview-container').classList.add('hidden');
-                document.getElementById('generate-preview-btn').classList.remove('hidden');
-            } else {
-                alert(`Submission failed: ${result.message}\n\nErrors:\n${result.errors.join('\n')}`);
-            }
-        } catch (error) {
-            alert(`Failed to submit spec: ${error.message}`);
-        }
-    }
-
     async loadPreviewSpec() {
         try {
             // Show loading state
@@ -431,7 +388,7 @@ class PMController {
                 throw new Error(error);
             }
 
-            alert('Specification submitted to architect! Waiting for review...');
+            // Success - UI will update via polling to show AWAIT_ARCHITECT state
 
             // Hide action buttons during architect review
             document.getElementById('preview-actions').classList.add('hidden');

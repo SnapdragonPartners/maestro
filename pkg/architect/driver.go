@@ -615,7 +615,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList 
 		ContextManager: d.contextManager,
 		InitialPrompt:  prompt,
 		ToolProvider:   toolProvider,
-		MaxIterations:  10,
+		MaxIterations:  20, // Increased for complex spec review workflows
 		MaxTokens:      agent.ArchitectMaxTokens,
 		AgentID:        d.architectID, // Agent ID for tool context
 		DebugLogging:   false,         // Enable for debugging: shows messages sent to LLM

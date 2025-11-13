@@ -147,7 +147,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pm/preview", s.requireAuth(s.handlePMPreview))
 	mux.HandleFunc("/api/pm/preview/action", s.requireAuth(s.handlePMPreviewAction))
 	mux.HandleFunc("/api/pm/preview/spec", s.requireAuth(s.handlePMPreviewGet))
-	mux.HandleFunc("/api/pm/submit", s.requireAuth(s.handlePMSubmit))
 	mux.HandleFunc("/api/pm/upload", s.requireAuth(s.handlePMUpload))
 	mux.HandleFunc("/api/pm/status", s.requireAuth(s.handlePMStatus))
 }
