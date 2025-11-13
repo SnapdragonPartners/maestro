@@ -856,6 +856,8 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 		nextState, done, err = c.handleBudgetReview(ctx, sm)
 	case StateAwaitMerge:
 		nextState, done, err = c.handleAwaitMerge(ctx, sm)
+	case StateQuestion:
+		nextState, done, err = c.handleQuestion(ctx, sm)
 	case proto.StateDone:
 		nextState, done, err = c.handleDone(ctx, sm)
 	case proto.StateError:
