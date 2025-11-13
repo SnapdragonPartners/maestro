@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
-	"orchestrator/pkg/agent/llm"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -256,6 +256,8 @@ func (c *Coder) getLastAssistantMessage() string {
 }
 
 // requestTodoList makes an LLM call to collect implementation todos after plan approval.
+//
+//nolint:unparam // bool parameter follows handler signature convention, always false for intermediate states
 func (c *Coder) requestTodoList(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Get plan from state
 	plan := utils.GetStateValueOr[string](sm, KeyPlan, "")
@@ -295,155 +297,49 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	// Create tool provider with only todos_add tool
 	todoToolProvider := c.createTodoCollectionToolProvider()
 
-	// Build messages with the prompt
-	messages := []agent.CompletionMessage{
-		{Role: agent.RoleUser, Content: prompt},
+	// Reset context for todo collection
+	c.contextManager.ResetForNewTemplate("todo_collection", prompt)
+
+	// Use toolloop for todo collection (single-pass with retry)
+	loop := toolloop.New(c.llmClient, c.logger)
+
+	cfg := &toolloop.Config{
+		ContextManager: c.contextManager,
+		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
+		ToolProvider:   todoToolProvider,
+		MaxIterations:  2,    // One call + one retry if needed
+		MaxTokens:      4096, // Sufficient for todo list
+		AgentID:        c.agentID,
+		DebugLogging:   false,
+		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
+			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
+		},
+		OnIterationLimit: func(_ context.Context) (string, error) {
+			c.logger.Error("📋 [TODO] Failed to collect todos after max iterations")
+			//nolint:goconst // "ERROR" signal used locally, not a project-wide constant
+			return "ERROR", logx.Errorf("LLM failed to provide todos after %d attempts", 2)
+		},
 	}
 
-	// Get tools for LLM
-	toolMetas := todoToolProvider.List()
-	toolDefinitions := make([]tools.ToolDefinition, 0, len(toolMetas))
-	for i := range toolMetas {
-		toolDefinitions = append(toolDefinitions, tools.ToolDefinition(toolMetas[i]))
-	}
-
-	// Make LLM call
-	req := agent.CompletionRequest{
-		Messages:    messages,
-		MaxTokens:   4096,
-		Temperature: llm.TemperatureDeterministic, // Deterministic output for todo collection
-		Tools:       toolDefinitions,
-	}
-
-	resp, err := c.llmClient.Complete(ctx, req)
+	signal, err := loop.Run(ctx, cfg)
 	if err != nil {
-		c.logger.Error("📋 [TODO] Failed to get LLM response for todo collection: %v", err)
-		return proto.StateError, false, logx.Wrap(err, "failed to get LLM response for todo collection")
+		return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
 	}
 
-	c.logger.Info("📋 [TODO] LLM responded with %d tool calls", len(resp.ToolCalls))
-
-	// Check if todos_add was called
-	var todosAddCalled bool
-	for i := range resp.ToolCalls {
-		toolCall := &resp.ToolCalls[i]
-		c.logger.Info("📋 [TODO] Tool call %d: %s with params: %v", i+1, toolCall.Name, toolCall.Parameters)
-
-		if toolCall.Name == tools.ToolTodosAdd {
-			todosAddCalled = true
-
-			// Log the todos parameter
-			if todosParam, ok := toolCall.Parameters["todos"]; ok {
-				c.logger.Info("📋 [TODO] Received todos parameter: %v (type: %T)", todosParam, todosParam)
-			} else {
-				c.logger.Warn("📋 [TODO] No 'todos' parameter in tool call")
-			}
-
-			// Execute the todos_add tool
-			tool, getErr := todoToolProvider.Get(tools.ToolTodosAdd)
-			if getErr != nil {
-				c.logger.Error("📋 [TODO] Failed to get todos_add tool: %v", getErr)
-				return proto.StateError, false, logx.Wrap(getErr, "failed to get todos_add tool")
-			}
-
-			result, execErr := tool.Exec(ctx, toolCall.Parameters)
-			if execErr != nil {
-				c.logger.Error("📋 [TODO] Tool execution failed: %v", execErr)
-				// Retry once - add error to context and ask again
-				return c.retryTodoCollection(ctx, sm, fmt.Sprintf("Error: %v. Please try again with valid todos.", execErr))
-			}
-
-			// Process the result using handler
-			if resultMap, ok := result.(map[string]any); ok {
-				nextState, _, handlerErr := c.handleTodosAdd(ctx, sm, resultMap)
-				if handlerErr != nil {
-					return proto.StateError, false, logx.Wrap(handlerErr, "failed to process todos_add result")
-				}
-				return nextState, false, nil
-			}
-		}
+	// Handle terminal signals
+	switch signal {
+	case "CODING":
+		// Todos collected successfully
+		return StateCoding, false, nil
+	case "ERROR":
+		return proto.StateError, false, logx.Errorf("todo collection failed")
+	case "":
+		// No signal - should not happen with MaxIterations=2
+		return proto.StateError, false, logx.Errorf("todo collection completed without signal")
+	default:
+		c.logger.Warn("Unknown signal from todo collection: %s", signal)
+		return proto.StateError, false, logx.Errorf("unexpected signal from todo collection: %s", signal)
 	}
-
-	if !todosAddCalled {
-		c.logger.Warn("📋 [TODO] LLM did not call todos_add tool, retrying once")
-		return c.retryTodoCollection(ctx, sm, "You must use the todos_add tool to submit your implementation todos. Please call todos_add now.")
-	}
-
-	// Should not reach here
-	return proto.StateError, false, logx.Errorf("unexpected state in requestTodoList")
-}
-
-// retryTodoCollection retries todo collection once if LLM doesn't use the tool.
-func (c *Coder) retryTodoCollection(ctx context.Context, sm *agent.BaseStateMachine, errorMsg string) (proto.State, bool, error) {
-	// Check if we've already retried
-	if utils.GetStateValueOr[bool](sm, "todo_collection_retried", false) {
-		return proto.StateError, false, logx.Errorf("LLM failed to provide todos even after retry")
-	}
-
-	// Mark that we've retried
-	sm.SetStateData("todo_collection_retried", true)
-
-	// Add error to context
-	c.contextManager.AddMessage("system", errorMsg)
-
-	// Create retry prompt
-	prompt := "Please use the todos_add tool now to submit 3-10 implementation todos based on your approved plan."
-
-	// Create tool provider
-	todoToolProvider := c.createTodoCollectionToolProvider()
-
-	// Build messages
-	messages := c.buildMessagesWithContext(prompt)
-
-	// Get tools for LLM
-	toolMetas := todoToolProvider.List()
-	toolDefinitions := make([]tools.ToolDefinition, 0, len(toolMetas))
-	for i := range toolMetas {
-		toolDefinitions = append(toolDefinitions, tools.ToolDefinition(toolMetas[i]))
-	}
-
-	// Make LLM call
-	req := agent.CompletionRequest{
-		Messages:    messages,
-		MaxTokens:   4096,
-		Temperature: llm.TemperatureDeterministic, // Deterministic output for todo collection
-		Tools:       toolDefinitions,
-	}
-
-	resp, err := c.llmClient.Complete(ctx, req)
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to get LLM response for todo collection retry")
-	}
-
-	// Check if todos_add was called
-	for i := range resp.ToolCalls {
-		toolCall := &resp.ToolCalls[i]
-		if toolCall.Name == tools.ToolTodosAdd {
-			// Execute the todos_add tool
-			tool, getErr := todoToolProvider.Get(tools.ToolTodosAdd)
-			if getErr != nil {
-				return proto.StateError, false, logx.Wrap(getErr, "failed to get todos_add tool")
-			}
-
-			result, execErr := tool.Exec(ctx, toolCall.Parameters)
-			if execErr != nil {
-				// Second failure - transition to ERROR
-				return proto.StateError, false, logx.Wrap(execErr, "todos_add tool failed on retry")
-			}
-
-			// Process the result using handler
-			if resultMap, ok := result.(map[string]any); ok {
-				nextState, _, handlerErr := c.handleTodosAdd(ctx, sm, resultMap)
-				if handlerErr != nil {
-					return proto.StateError, false, logx.Wrap(handlerErr, "failed to process todos_add result on retry")
-				}
-				return nextState, false, nil
-			}
-		}
-	}
-
-	// Still no todos_add call after retry - transition to ERROR
-	return proto.StateError, false, logx.Errorf("LLM failed to call todos_add even after retry")
 }
 
 // createTodoCollectionToolProvider creates a tool provider with only todos_add for todo collection phase.
@@ -460,4 +356,44 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 	// Only include todos_add tool
 	todoTools := []string{tools.ToolTodosAdd}
 	return tools.NewProvider(&agentCtx, todoTools)
+}
+
+// checkTodoCollectionTerminal checks if todos_add was called and processes it.
+func (c *Coder) checkTodoCollectionTerminal(ctx context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
+	// Check if todos_add was called
+	for i := range calls {
+		toolCall := &calls[i]
+		if toolCall.Name == tools.ToolTodosAdd {
+			c.logger.Info("📋 [TODO] todos_add tool called, processing result")
+
+			// Get the result for this tool call
+			if i >= len(results) {
+				c.logger.Error("📋 [TODO] No result available for todos_add call")
+				return "ERROR"
+			}
+
+			result := results[i]
+			resultMap, ok := result.(map[string]any)
+			if !ok {
+				c.logger.Error("📋 [TODO] Result is not a map: %T", result)
+				return "ERROR"
+			}
+
+			// Process the result using handler
+			_, _, err := c.handleTodosAdd(ctx, sm, resultMap)
+			if err != nil {
+				c.logger.Error("📋 [TODO] Failed to process todos: %v", err)
+				// Don't return ERROR - let toolloop continue for retry
+				return ""
+			}
+
+			// Todos successfully collected - signal transition to CODING
+			c.logger.Info("📋 [TODO] Todos collected successfully, ready for CODING")
+			return "CODING"
+		}
+	}
+
+	// No todos_add found - continue loop (will be retried or hit iteration limit)
+	c.logger.Warn("📋 [TODO] LLM did not call todos_add, continuing loop for retry")
+	return ""
 }
