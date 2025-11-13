@@ -1453,7 +1453,13 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, ErrEscalationTriggered
 	}
 
-	// Create tool provider (lazily, once per request)
+	// Extract coder ID from request (sender)
+	coderID := requestMsg.FromAgent
+	if coderID == "" {
+		return nil, fmt.Errorf("approval request message missing sender (FromAgent)")
+	}
+
+	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf("tool_provider_%s", storyID)
 	var toolProvider *tools.ToolProvider
 	if tp, exists := d.stateData[toolProviderKey]; exists {
@@ -1463,13 +1469,11 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 			return nil, fmt.Errorf("invalid tool provider type in state data")
 		}
 	} else {
-		toolProvider = d.createReadToolProvider()
+		// Create tool provider rooted at the coder's container workspace
+		toolProvider = d.createReadToolProviderForCoder(coderID)
 		d.stateData[toolProviderKey] = toolProvider
-		d.logger.Debug("Created read tool provider for approval %s", storyID)
+		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
 	}
-
-	// Get coder ID from request (extract from FromAgent)
-	coderID := requestMsg.FromAgent
 
 	// Build prompt based on approval type
 	var prompt string
@@ -1562,8 +1566,20 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, nil
 	}
 
-	// No tool calls and no submit_reply - this is an error
-	return nil, fmt.Errorf("LLM response contained no tool calls and no submit_reply signal")
+	// No tool calls - nudge the LLM to use submit_reply tool
+	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
+
+	// Increment iteration count before nudging
+	iterationCount++
+	d.stateData[iterationKey] = iterationCount
+
+	// Add nudge to context
+	nudgeMessage := "You must use the submit_reply tool to provide your decision. Please call submit_reply with your approval/rejection decision and reasoning."
+	d.contextManager.AddMessage("system", nudgeMessage)
+
+	// Return nil to signal continuation (state machine will call us again)
+	//nolint:nilnil // Intentional: nil response signals continuation after nudge
+	return nil, nil
 }
 
 // generateIterativeCodeReviewPrompt creates a prompt for iterative code review.
@@ -1597,13 +1613,20 @@ You are the architect reviewing code changes from %s for story: %s
 ## Your Task
 
 Review the code changes by:
-1. Use **list_files** to see what files the coder modified (pass coder_id: "%s")
+1. Use **list_files** to see what files the coder modified
 2. Use **read_file** to inspect specific files that need review
 3. Use **get_diff** to see the actual changes made
 4. Analyze the code quality, correctness, and adherence to requirements
 
-When you have completed your review, call **submit_reply** with your decision:
-- Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
+**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
+
+## REQUIRED: Submit Your Decision
+
+**You MUST call the submit_reply tool to provide your final decision.** Do not respond with text only.
+
+Call **submit_reply** with your decision in this format:
+- **response**: Your complete decision as a string
+- Must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
 - Follow with specific feedback explaining your decision
 
 ## Available Tools
@@ -1615,9 +1638,9 @@ When you have completed your review, call **submit_reply** with your decision:
 - You can explore the coder's workspace at /mnt/coders/%s
 - You have read-only access to all their files
 - Take your time to review thoroughly before submitting your decision
-- Use multiple tool calls to gather all information you need
+- **Remember: You MUST use submit_reply to send your final decision**
 
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, toolDocs, coderID)
+Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
 }
 
 // generateIterativeCompletionPrompt creates a prompt for iterative completion review.
@@ -1651,10 +1674,12 @@ You are the architect reviewing a completion request from %s for story: %s
 ## Your Task
 
 Verify the story is complete by:
-1. Use **list_files** to see what files were created/modified (pass coder_id: "%s")
+1. Use **list_files** to see what files were created/modified
 2. Use **read_file** to inspect the implementation
 3. Use **get_diff** to see all changes made vs main branch
 4. Verify all acceptance criteria are met
+
+**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
 
 When you have completed your review, call **submit_reply** with your decision:
 - Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
@@ -1671,7 +1696,7 @@ When you have completed your review, call **submit_reply** with your decision:
 - Check for code quality, tests, documentation as needed
 - Be thorough but fair in your assessment
 
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, toolDocs, coderID)
+Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
 }
 
 // getArchitectToolsForLLM converts tool metadata to LLM tool definitions.
@@ -1788,7 +1813,13 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, ErrEscalationTriggered
 	}
 
-	// Create tool provider (lazily, once per request)
+	// Extract coder ID from request (sender)
+	coderID := requestMsg.FromAgent
+	if coderID == "" {
+		return nil, fmt.Errorf("question message missing sender (FromAgent)")
+	}
+
+	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf("tool_provider_%s", requestMsg.ID)
 	var toolProvider *tools.ToolProvider
 	if tp, exists := d.stateData[toolProviderKey]; exists {
@@ -1798,13 +1829,11 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 			return nil, fmt.Errorf("invalid tool provider type in state data")
 		}
 	} else {
-		toolProvider = d.createReadToolProvider()
+		// Create tool provider rooted at the coder's container workspace
+		toolProvider = d.createReadToolProviderForCoder(coderID)
 		d.stateData[toolProviderKey] = toolProvider
-		d.logger.Debug("Created read tool provider for question %s", requestMsg.ID)
+		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s", coderID, coderID)
 	}
-
-	// Get coder ID from request
-	coderID := requestMsg.FromAgent
 
 	// Build prompt for technical question
 	prompt := d.generateIterativeQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
@@ -1888,8 +1917,20 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, nil
 	}
 
-	// No tool calls and no submit_reply - this is an error
-	return nil, fmt.Errorf("LLM response contained no tool calls and no submit_reply signal")
+	// No tool calls - nudge the LLM to use submit_reply tool
+	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
+
+	// Increment iteration count before nudging
+	iterationCount++
+	d.stateData[iterationKey] = iterationCount
+
+	// Add nudge to context
+	nudgeMessage := "You must use the submit_reply tool to provide your answer. Please call submit_reply with your response as the 'content' parameter."
+	d.contextManager.AddMessage("system", nudgeMessage)
+
+	// Return nil to signal continuation (state machine will call us again)
+	//nolint:nilnil // Intentional: nil response signals continuation after nudge
+	return nil, nil
 }
 
 // generateIterativeQuestionPrompt creates a prompt for iterative technical question answering.
@@ -1923,12 +1964,21 @@ You are the architect answering a technical question from %s working on story: %
 ## Your Task
 
 Answer the technical question by:
-1. Use **list_files** to see what files exist in the coder's workspace (pass coder_id: "%s")
+1. Use **list_files** to see what files exist in the coder's workspace
 2. Use **read_file** to inspect relevant code files that relate to the question
 3. Use **get_diff** to see what changes the coder has made so far
 4. Analyze the codebase context to provide an informed answer
 
-When you have formulated your answer, call **submit_reply** with your response:
+**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
+
+## REQUIRED: Submit Your Answer
+
+**You MUST call the submit_reply tool to provide your final answer.** Do not respond with text only.
+
+Call **submit_reply** with your response in this format:
+- **response**: Your complete answer as a string
+
+Your answer should:
 - Provide a clear, actionable answer to the question
 - Reference specific files, functions, or patterns when helpful
 - Suggest concrete next steps if applicable
@@ -1942,9 +1992,9 @@ When you have formulated your answer, call **submit_reply** with your response:
 - You can explore the coder's workspace at /mnt/coders/%s
 - You have read-only access to their files
 - Use the tools to understand context before answering
-- Provide specific, actionable guidance based on the actual code
+- **Remember: You MUST use submit_reply to send your final answer**
 
-Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, toolDocs, coderID)
+Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, coderID, toolDocs, coderID)
 }
 
 // buildQuestionResponseFromSubmit creates a question response from submit_reply content.

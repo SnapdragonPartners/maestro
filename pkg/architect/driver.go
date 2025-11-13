@@ -853,15 +853,20 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	return false
 }
 
-// createReadToolProvider creates a tool provider with architect read tools.
-func (d *Driver) createReadToolProvider() *tools.ToolProvider {
+// createReadToolProviderForCoder creates a tool provider rooted at a specific coder's workspace.
+// coderID should be the agent ID (e.g., "coder-001").
+// The tools will be rooted at /mnt/coders/{coderID} inside the architect container.
+func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvider {
+	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
+	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
 	ctx := tools.AgentContext{
-		Executor:        d.executor, // Architect executor with read-only mounts
-		ChatService:     nil,        // No chat service needed for read tools
-		ReadOnly:        true,       // Architect tools are read-only
-		NetworkDisabled: false,      // Network allowed for architect
-		WorkDir:         d.workDir,
-		Agent:           nil, // No agent reference needed for read tools
+		Executor:        d.executor,       // Architect executor with read-only mounts
+		ChatService:     nil,              // No chat service needed for read tools
+		ReadOnly:        true,             // Architect tools are read-only
+		NetworkDisabled: false,            // Network allowed for architect
+		WorkDir:         containerWorkDir, // Use coder's container mount path
+		Agent:           nil,              // No agent reference needed for read tools
 	}
 
 	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
