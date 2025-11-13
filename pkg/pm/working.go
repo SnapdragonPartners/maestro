@@ -6,12 +6,11 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
-	"orchestrator/pkg/tools"
 )
 
 // handleWorking manages PM's active work: interviewing, drafting, and submitting.
@@ -70,7 +69,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	}
 
 	// Handle AWAIT_USER signal - transition to AWAIT_USER state
-	if signal == "AWAIT_USER" {
+	if signal == string(StateAwaitUser) {
 		d.logger.Info("⏸️  PM transitioning to AWAIT_USER state")
 		return StateAwaitUser, nil
 	}
@@ -125,169 +124,113 @@ func (d *Driver) renderWorkingPrompt() (string, error) {
 //
 //nolint:cyclop,maintidx // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
-	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-		return "", fmt.Errorf("failed to flush user buffer: %w", err)
+	// Use toolloop abstraction for LLM tool calling loop
+	loop := toolloop.New(d.llmClient, d.logger)
+
+	cfg := &toolloop.Config{
+		ContextManager: d.contextManager,
+		InitialPrompt:  prompt,
+		ToolProvider:   d.toolProvider, // PM's tool provider
+		MaxIterations:  10,
+		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
+		DebugLogging:   false,                    // Enable for debugging: shows messages sent to LLM
+		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
+			// Process results and check for terminal signals
+			return d.checkTerminalTools(ctx, calls, results)
+		},
+		OnIterationLimit: func(ctx context.Context) (string, error) {
+			// Max iterations reached - ask LLM for update
+			return d.handleIterationLimit(ctx)
+		},
 	}
 
-	// Build messages with context
-	messages := d.buildMessagesWithContext(prompt)
-
-	// Get tool definitions from toolProvider
-	toolsList := d.toolProvider.List()
-	toolDefs := make([]tools.ToolDefinition, len(toolsList))
-	for i := range toolsList {
-		toolDefs[i] = tools.ToolDefinition(toolsList[i])
+	signal, err := loop.Run(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("toolloop execution failed: %w", err)
 	}
 
-	// Tool call iteration loop
-	maxIterations := 10
-	for iteration := 0; iteration < maxIterations; iteration++ {
-		req := agent.CompletionRequest{
-			Messages:  messages,
-			MaxTokens: agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
-			Tools:     toolDefs,
-		}
-
-		// Get LLM response
-		d.logger.Info("🔄 Starting PM LLM call with %d messages, %d tools (iteration %d)",
-			len(messages), len(toolDefs), iteration+1)
-
-		// DEBUG: Log the actual messages being sent to LLM
-		d.logger.Info("📝 DEBUG - Messages sent to LLM:")
-		for i := range messages {
-			msg := &messages[i]
-			contentPreview := msg.Content
-			if len(contentPreview) > 100 {
-				contentPreview = contentPreview[:100] + "..."
-			}
-
-			// Show tool calls and results in addition to content
-			toolInfo := ""
-			if len(msg.ToolCalls) > 0 {
-				toolInfo = fmt.Sprintf(", ToolCalls: %d", len(msg.ToolCalls))
-			}
-			if len(msg.ToolResults) > 0 {
-				toolInfo += fmt.Sprintf(", ToolResults: %d", len(msg.ToolResults))
-			}
-
-			d.logger.Info("  [%d] Role: %s, Content: %q%s", i, msg.Role, contentPreview, toolInfo)
-
-			// DEBUG: Log tool calls inline with assistant messages
-			if len(msg.ToolCalls) > 0 {
-				for j := range msg.ToolCalls {
-					tc := &msg.ToolCalls[j]
-					d.logger.Info("    ToolCall[%d] ID=%s Name=%s Params=%v", j, tc.ID, tc.Name, tc.Parameters)
-				}
-			}
-
-			// DEBUG: Log tool results inline with user messages
-			if len(msg.ToolResults) > 0 {
-				for j := range msg.ToolResults {
-					tr := &msg.ToolResults[j]
-					resultPreview := tr.Content
-					if len(resultPreview) > 200 {
-						resultPreview = resultPreview[:200] + "..."
+	// Handle special case: no tool calls means implicit ask_user
+	// This is detected when signal is empty and last message has no tools
+	if signal == "" {
+		contextMsgs := d.contextManager.GetMessages()
+		if len(contextMsgs) > 0 {
+			lastMsg := &contextMsgs[len(contextMsgs)-1]
+			if lastMsg.Role == "assistant" && len(lastMsg.ToolCalls) == 0 && lastMsg.Content != "" {
+				// Post PM's response to chat
+				if d.chatService != nil {
+					d.logger.Info("📤 Posting PM response to chat (%d chars)", len(lastMsg.Content))
+					postResp, postErr := d.chatService.Post(ctx, &chat.PostRequest{
+						Author:  fmt.Sprintf("@%s", d.pmID),
+						Text:    lastMsg.Content,
+						Channel: chat.ChannelProduct,
+					})
+					if postErr != nil {
+						d.logger.Error("❌ Failed to post PM response to chat: %v", postErr)
+					} else {
+						d.logger.Info("✅ Posted PM message to chat (id: %d)", postResp.ID)
 					}
-					d.logger.Info("    ToolResult[%d] ID=%s IsError=%v Content=%q", j, tr.ToolCallID, tr.IsError, resultPreview)
 				}
+				return string(StateAwaitUser), nil
 			}
 		}
-
-		start := time.Now()
-		resp, err := d.llmClient.Complete(ctx, req)
-		duration := time.Since(start)
-
-		if err != nil {
-			d.logger.Error("❌ PM LLM call failed after %.3gs: %v", duration.Seconds(), err)
-			return "", fmt.Errorf("LLM completion failed: %w", err)
-		}
-
-		d.logger.Info("✅ PM LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
-			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
-
-		// DEBUG: Log response details
-		if resp.Content != "" {
-			contentPreview := resp.Content
-			if len(contentPreview) > 100 {
-				contentPreview = contentPreview[:100] + "..."
-			}
-			d.logger.Info("📝 DEBUG - Response content: %q", contentPreview)
-		}
-		if len(resp.ToolCalls) > 0 {
-			d.logger.Info("📝 DEBUG - Tool calls:")
-			for i := range resp.ToolCalls {
-				tc := &resp.ToolCalls[i]
-				d.logger.Info("  [%d] Tool: %s, Params: %+v", i, tc.Name, tc.Parameters)
-			}
-		}
-
-		// Add assistant response to context with structured tool calls
-		if len(resp.ToolCalls) > 0 {
-			// Use structured tool call tracking
-			// Convert agent.ToolCall to contextmgr.ToolCall
-			toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
-			for i := range resp.ToolCalls {
-				toolCalls[i] = contextmgr.ToolCall{
-					ID:         resp.ToolCalls[i].ID,
-					Name:       resp.ToolCalls[i].Name,
-					Parameters: resp.ToolCalls[i].Parameters,
-				}
-			}
-			d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
-		} else {
-			// No tool calls - just content
-			d.contextManager.AddAssistantMessage(resp.Content)
-		}
-
-		// If no tool calls, post content to chat and transition to AWAIT_USER
-		// (treat as implicit chat_ask_user)
-		if len(resp.ToolCalls) == 0 {
-			if resp.Content != "" && d.chatService != nil {
-				d.logger.Info("📤 Posting PM response to chat (%d chars)", len(resp.Content))
-				// Post PM's message to chat in product channel
-				postResp, postErr := d.chatService.Post(ctx, &chat.PostRequest{
-					Author:  fmt.Sprintf("@%s", d.pmID),
-					Text:    resp.Content,
-					Channel: chat.ChannelProduct, // PM interviews happen in product channel
-				})
-				if postErr != nil {
-					d.logger.Error("❌ Failed to post PM response to chat: %v", postErr)
-					// Continue anyway - chat posting is best-effort
-				} else {
-					d.logger.Info("✅ Posted PM message to chat (id: %d)", postResp.ID)
-				}
-			} else if resp.Content == "" {
-				d.logger.Warn("⚠️  PM response has no content, skipping chat post")
-			} else if d.chatService == nil {
-				d.logger.Warn("⚠️  Chat service not configured, skipping chat post")
-			}
-			// Return AWAIT_USER signal to transition state
-			return string(StateAwaitUser), nil
-		}
-
-		// Process tool calls
-		signal, err := d.processPMToolCalls(ctx, resp.ToolCalls)
-		if err != nil {
-			return "", fmt.Errorf("tool processing failed: %w", err)
-		}
-
-		// If terminal tool was called, return signal
-		if signal != "" {
-			return signal, nil
-		}
-
-		// Flush tool results into user message before next iteration
-		if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-			return "", fmt.Errorf("failed to flush tool results: %w", err)
-		}
-
-		// Rebuild messages for next iteration
-		messages = d.buildMessagesWithContext("")
 	}
 
-	// Max iterations reached - ask LLM to provide update to user
-	d.logger.Info("⚠️  PM reached max tool iterations (%d), requesting update for user", maxIterations)
+	return signal, nil
+}
+
+// checkTerminalTools examines tool execution results for terminal signals.
+// Returns non-empty signal to trigger state transition.
+func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, results []any) string {
+	// Track if we saw await_user signal
+	sawAwaitUser := false
+
+	for i := range calls {
+		// Only process successful results
+		resultMap, ok := results[i].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Check for errors in result
+		if success, ok := resultMap["success"].(bool); ok && !success {
+			continue // Skip error results
+		}
+
+		// Check for spec_submit signal (PREVIEW flow)
+		if previewReady, ok := resultMap["preview_ready"].(bool); ok && previewReady {
+			d.logger.Info("📋 PM spec_submit succeeded, preparing for user preview")
+
+			// Store draft spec and metadata for PREVIEW state
+			if specMarkdown, ok := resultMap["spec_markdown"].(string); ok {
+				d.stateData["draft_spec_markdown"] = specMarkdown
+			}
+			if metadata, ok := resultMap["metadata"].(map[string]any); ok {
+				d.stateData["spec_metadata"] = metadata
+			}
+
+			// Return signal to transition to PREVIEW state
+			return "SPEC_PREVIEW"
+		}
+
+		// Check for await_user signal
+		if awaitUser, ok := resultMap["await_user"].(bool); ok && awaitUser {
+			d.logger.Info("⏸️  PM await_user tool called")
+			sawAwaitUser = true
+		}
+	}
+
+	// If we saw await_user, return that signal
+	if sawAwaitUser {
+		return string(StateAwaitUser)
+	}
+
+	return "" // Continue loop
+}
+
+// handleIterationLimit is called when max iterations is reached.
+// Asks LLM to provide update to user and returns AWAIT_USER signal.
+func (d *Driver) handleIterationLimit(ctx context.Context) (string, error) {
+	d.logger.Info("⚠️  PM reached max tool iterations, requesting update for user")
 
 	// Add a system message prompting for user update
 	d.contextManager.AddMessage("system-limit",
@@ -300,13 +243,13 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		return "", fmt.Errorf("failed to flush buffer for limit message: %w", err)
 	}
 
-	messages = d.buildMessagesWithContext("")
+	messages := d.buildMessagesWithContext("")
 
-	// Make one final call for the update
+	// Make one final call for the update (no tools)
 	req := agent.CompletionRequest{
 		Messages:  messages,
 		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     nil, // No tools for this final update call
+		Tools:     nil,
 	}
 
 	resp, err := d.llmClient.Complete(ctx, req)
@@ -317,112 +260,23 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	// Add response to context
 	d.contextManager.AddAssistantMessage(resp.Content)
 
-	// Return the update content - PM will stay in WORKING state
-	return resp.Content, nil
-}
-
-// processPMToolCalls processes tool calls from the LLM response.
-// Returns a signal string if a terminal tool was called (e.g., "SPEC_SUBMITTED").
-//
-//nolint:unparam,cyclop // error return for consistency, complexity from tool result handling
-func (d *Driver) processPMToolCalls(ctx context.Context, toolCalls []agent.ToolCall) (string, error) {
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		d.logger.Info("🔧 PM executing tool: %s", toolCall.Name)
-
-		// Get tool from provider
-		tool, err := d.toolProvider.Get(toolCall.Name)
-		if err != nil {
-			d.logger.Error("❌ Failed to get tool %s: %v", toolCall.Name, err)
-			// Add structured error result
-			d.contextManager.AddToolResult(toolCall.ID, fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err), true)
-			continue
-		}
-
-		// Add agent_id to context for tool execution
-		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.pmID)
-
-		// Log tool parameters for debugging
-		d.logger.Debug("Tool %s parameters: %+v", toolCall.Name, toolCall.Parameters)
-
-		// Execute tool
-		result, err := tool.Exec(toolCtx, toolCall.Parameters)
-		if err != nil {
-			d.logger.Error("❌ Tool %s execution failed: %v", toolCall.Name, err)
-			// Add structured error result
-			d.contextManager.AddToolResult(toolCall.ID, fmt.Sprintf("Tool %s error: %v", toolCall.Name, err), true)
-			continue
-		}
-
-		// Check if result indicates an error (MCP tools return errors in result map)
-		var resultStr string
-		var isError bool
-		if resultMap, ok := result.(map[string]any); ok {
-			// Check for success field
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				isError = true
-				// Extract error message if present
-				if errMsg, ok := resultMap["error"].(string); ok {
-					resultStr = errMsg
-				} else {
-					resultStr = fmt.Sprintf("Tool failed: %v", result)
-				}
-			} else {
-				// Success - convert entire result to string
-				resultStr = fmt.Sprintf("%v", result)
-			}
+	// Post update to chat
+	if resp.Content != "" && d.chatService != nil {
+		d.logger.Info("📤 Posting PM iteration limit update to chat (%d chars)", len(resp.Content))
+		postResp, postErr := d.chatService.Post(ctx, &chat.PostRequest{
+			Author:  fmt.Sprintf("@%s", d.pmID),
+			Text:    resp.Content,
+			Channel: chat.ChannelProduct,
+		})
+		if postErr != nil {
+			d.logger.Error("❌ Failed to post update to chat: %v", postErr)
 		} else {
-			// Non-map result - convert to string
-			resultStr = fmt.Sprintf("%v", result)
-		}
-
-		d.logger.Debug("Tool %s result (isError=%v): %s", toolCall.Name, isError, resultStr)
-		// Add structured tool result with proper error flag
-		d.contextManager.AddToolResult(toolCall.ID, resultStr, isError)
-
-		// Log completion status
-		if isError {
-			d.logger.Error("❌ Tool %s failed: %s", toolCall.Name, resultStr)
-		} else {
-			d.logger.Info("✅ Tool %s completed successfully", toolCall.Name)
-		}
-
-		// Handle special tool signals (only for successful results)
-		if !isError {
-			if resultMap, ok := result.(map[string]any); ok {
-				// Check for await_user signal
-				if awaitUser, ok := resultMap["await_user"].(bool); ok && awaitUser {
-					d.logger.Info("⏸️  PM await_user tool called")
-					// Set flag to return AWAIT_USER after processing all tools
-					d.stateData["pending_await_user"] = true
-				}
-
-				// Check for spec_submit signal (new PREVIEW flow)
-				if previewReady, ok := resultMap["preview_ready"].(bool); ok && previewReady {
-					d.logger.Info("📋 PM spec_submit succeeded, preparing for user preview")
-
-					// Store draft spec and metadata for PREVIEW state
-					if specMarkdown, ok := resultMap["spec_markdown"].(string); ok {
-						d.stateData["draft_spec_markdown"] = specMarkdown
-					}
-					if metadata, ok := resultMap["metadata"].(map[string]any); ok {
-						d.stateData["spec_metadata"] = metadata
-					}
-
-					// Return signal to transition to PREVIEW state
-					return "SPEC_PREVIEW", nil
-				}
-			}
+			d.logger.Info("✅ Posted iteration limit update to chat (id: %d)", postResp.ID)
 		}
 	}
 
-	// After processing all tools, check if we should transition to AWAIT_USER
-	if pendingAwait, ok := d.stateData["pending_await_user"].(bool); ok && pendingAwait {
-		delete(d.stateData, "pending_await_user")
-		return "AWAIT_USER", nil
-	}
-
-	return "", nil
+	// Return AWAIT_USER to transition and wait for user response
+	return string(StateAwaitUser), nil
 }
 
 // buildMessagesWithContext builds LLM messages with conversation history and context.
