@@ -486,8 +486,9 @@ func (s *Server) checkPMAvailability() error {
 		return fmt.Errorf("PM agent not found: %w", err)
 	}
 
-	// PM is ready if it's in WAITING state (not currently processing)
-	if pmState != "WAITING" {
+	// PM can accept uploads in WAITING (before interview) and AWAIT_USER (during interview)
+	// Block uploads when WORKING (actively processing)
+	if pmState != "WAITING" && pmState != "AWAIT_USER" {
 		return fmt.Errorf("PM agent is busy (state: %s)", pmState)
 	}
 
