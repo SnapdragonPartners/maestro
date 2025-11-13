@@ -22,7 +22,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version-file: go.mod  # automatically uses the Go version from go.mod
+          cache: true
 
       - name: Set up GoReleaser
         uses: goreleaser/goreleaser-action@v6
