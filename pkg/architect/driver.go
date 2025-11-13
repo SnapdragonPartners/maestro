@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -33,6 +34,44 @@ const (
 	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
 	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 )
+
+// listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
+// This allows architect to use toolloop with its dynamic tool list pattern.
+type listToolProvider struct {
+	toolsMap  map[string]tools.Tool
+	toolsList []tools.Tool
+}
+
+// newListToolProvider creates a ToolProvider from a list of tools.
+func newListToolProvider(toolsList []tools.Tool) *listToolProvider {
+	toolsMap := make(map[string]tools.Tool, len(toolsList))
+	for _, tool := range toolsList {
+		toolsMap[tool.Name()] = tool
+	}
+	return &listToolProvider{
+		toolsList: toolsList,
+		toolsMap:  toolsMap,
+	}
+}
+
+// Get retrieves a tool by name.
+func (p *listToolProvider) Get(name string) (tools.Tool, error) {
+	tool, ok := p.toolsMap[name]
+	if !ok {
+		return nil, fmt.Errorf("tool %s not found", name)
+	}
+	return tool, nil
+}
+
+// List returns tool metadata for all tools.
+func (p *listToolProvider) List() []tools.ToolMeta {
+	metas := make([]tools.ToolMeta, len(p.toolsList))
+	for i, tool := range p.toolsList {
+		def := tool.Definition()
+		metas[i] = tools.ToolMeta(def)
+	}
+	return metas
+}
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
@@ -566,147 +605,102 @@ func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string
 
 // callLLMWithTools allows calling LLM with optional tools (used for SCOPING and REQUEST phases).
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
-	// Flush user buffer before LLM request (same as coder)
-	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-		return "", fmt.Errorf("failed to flush user buffer: %w", err)
+	// Create ToolProvider adapter from toolsList
+	toolProvider := newListToolProvider(toolsList)
+
+	// Use toolloop abstraction for LLM tool calling loop
+	loop := toolloop.New(d.llmClient, d.logger)
+
+	cfg := &toolloop.Config{
+		ContextManager: d.contextManager,
+		InitialPrompt:  prompt,
+		ToolProvider:   toolProvider,
+		MaxIterations:  10,
+		MaxTokens:      agent.ArchitectMaxTokens,
+		AgentID:        d.architectID, // Agent ID for tool context
+		DebugLogging:   false,         // Enable for debugging: shows messages sent to LLM
+		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
+			// Check for terminal tools and return signal
+			return d.checkTerminalTools(calls, results)
+		},
+		OnIterationLimit: func(_ context.Context) (string, error) {
+			// Architect returns error on iteration limit (no budget request)
+			return "", fmt.Errorf("maximum tool iterations exceeded")
+		},
 	}
 
-	// Build messages with context (same pattern as coder)
-	messages := d.buildMessagesWithContext(prompt)
+	signal, err := loop.Run(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("toolloop execution failed: %w", err)
+	}
 
-	// Convert tools.Tool interface to tools.ToolDefinition for CompletionRequest
-	var toolDefs []tools.ToolDefinition
-	var toolNames []string
-	if toolsList != nil {
-		toolDefs = make([]tools.ToolDefinition, len(toolsList))
-		toolNames = make([]string, len(toolsList))
-		for i, tool := range toolsList {
-			toolDefs[i] = tool.Definition()
-			toolNames[i] = tool.Name()
+	return signal, nil
+}
+
+// checkTerminalTools examines tool execution results for terminal signals.
+// Returns non-empty signal to trigger state transition.
+func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) string {
+	for i := range calls {
+		toolCall := &calls[i]
+
+		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
+		if toolCall.Name == tools.ToolSubmitReply {
+			response, ok := toolCall.Parameters["response"].(string)
+			if !ok || response == "" {
+				d.logger.Error("submit_reply tool called without response parameter")
+				continue
+			}
+
+			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
+			return response
+		}
+
+		// Handle submit_stories tool - signals SCOPING completion with structured data
+		if toolCall.Name == tools.ToolSubmitStories {
+			// Check if tool executed successfully from results
+			resultMap, ok := results[i].(map[string]any)
+			if !ok {
+				d.logger.Error("submit_stories tool result is not a map")
+				continue
+			}
+
+			// Check for errors
+			if success, ok := resultMap["success"].(bool); ok && !success {
+				d.logger.Error("submit_stories tool failed")
+				continue
+			}
+
+			// Store the structured result in state data for scoping to access
+			d.stateData["submit_stories_result"] = results[i]
+
+			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
+			return signalSubmitStoriesComplete
+		}
+
+		// Handle spec_feedback tool - architect sends feedback to PM
+		if toolCall.Name == tools.ToolSpecFeedback {
+			// Check if tool executed successfully from results
+			resultMap, ok := results[i].(map[string]any)
+			if !ok {
+				d.logger.Error("spec_feedback tool result is not a map")
+				continue
+			}
+
+			// Check for errors
+			if success, ok := resultMap["success"].(bool); ok && !success {
+				d.logger.Error("spec_feedback tool failed")
+				continue
+			}
+
+			// Store the feedback result in state data for message sending
+			d.stateData["spec_feedback_result"] = results[i]
+
+			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
+			return signalSpecFeedbackSent
 		}
 	}
 
-	// Create ToolProvider for tool execution
-	agentCtx := tools.AgentContext{
-		Executor:        d.executor, // Pass executor for read tools
-		ChatService:     nil,        // SCOPING doesn't use chat tools
-		ReadOnly:        true,       // Architect tools are read-only in SCOPING
-		NetworkDisabled: false,
-		WorkDir:         d.workDir,
-		Agent:           nil, // Architect doesn't implement Agent interface yet
-	}
-	toolProvider := tools.NewProvider(&agentCtx, toolNames)
-
-	// Tool call iteration loop
-	maxIterations := 10
-	for iteration := 0; iteration < maxIterations; iteration++ {
-		req := agent.CompletionRequest{
-			Messages:  messages,
-			MaxTokens: agent.ArchitectMaxTokens,
-			Tools:     toolDefs,
-		}
-
-		// Get LLM response
-		d.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools (iteration %d)",
-			d.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs), iteration+1)
-
-		// DEBUG: Log the actual messages being sent to LLM
-		d.logger.Info("📝 DEBUG - Messages sent to LLM:")
-		for i := range messages {
-			msg := &messages[i]
-			contentPreview := msg.Content
-			if len(contentPreview) > 100 {
-				contentPreview = contentPreview[:100] + "..."
-			}
-
-			// Show tool calls and results in addition to content
-			toolInfo := ""
-			if len(msg.ToolCalls) > 0 {
-				toolInfo = fmt.Sprintf(", ToolCalls: %d", len(msg.ToolCalls))
-			}
-			if len(msg.ToolResults) > 0 {
-				toolInfo += fmt.Sprintf(", ToolResults: %d", len(msg.ToolResults))
-			}
-
-			d.logger.Info("  [%d] Role: %s, Content: %q%s", i, msg.Role, contentPreview, toolInfo)
-
-			// DEBUG: Log tool calls inline with assistant messages
-			if len(msg.ToolCalls) > 0 {
-				for j := range msg.ToolCalls {
-					tc := &msg.ToolCalls[j]
-					d.logger.Info("    ToolCall[%d] ID=%s Name=%s Params=%v", j, tc.ID, tc.Name, tc.Parameters)
-				}
-			}
-
-			// DEBUG: Log tool results inline with user messages
-			if len(msg.ToolResults) > 0 {
-				for j := range msg.ToolResults {
-					tr := &msg.ToolResults[j]
-					resultPreview := tr.Content
-					if len(resultPreview) > 200 {
-						resultPreview = resultPreview[:200] + "..."
-					}
-					d.logger.Info("    ToolResult[%d] ID=%s IsError=%v Content=%q", j, tr.ToolCallID, tr.IsError, resultPreview)
-				}
-			}
-		}
-
-		start := time.Now()
-		resp, err := d.llmClient.Complete(ctx, req)
-		duration := time.Since(start)
-
-		if err != nil {
-			d.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
-			return "", fmt.Errorf("LLM completion failed: %w", err)
-		}
-
-		d.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
-			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
-
-		// Add assistant response to context with structured tool calls (same as PM pattern)
-		if len(resp.ToolCalls) > 0 {
-			// Use structured tool call tracking
-			// Convert agent.ToolCall to contextmgr.ToolCall
-			toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
-			for i := range resp.ToolCalls {
-				toolCalls[i] = contextmgr.ToolCall{
-					ID:         resp.ToolCalls[i].ID,
-					Name:       resp.ToolCalls[i].Name,
-					Parameters: resp.ToolCalls[i].Parameters,
-				}
-			}
-			d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
-		} else {
-			// No tool calls - just content
-			d.contextManager.AddAssistantMessage(resp.Content)
-		}
-
-		// If no tool calls, return content
-		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil
-		}
-
-		// Process tool calls
-		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
-		if err != nil {
-			return "", fmt.Errorf("tool processing failed: %w", err)
-		}
-
-		// If submit tool was called, return its response
-		if submitResponse != "" {
-			return submitResponse, nil
-		}
-
-		// Flush tool results into user message before next iteration (same as PM pattern)
-		if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-			return "", fmt.Errorf("failed to flush tool results: %w", err)
-		}
-
-		// Rebuild messages for next iteration
-		messages = d.buildMessagesWithContext("")
-	}
-
-	return "", fmt.Errorf("maximum tool iterations (%d) exceeded", maxIterations)
+	return "" // Continue loop
 }
 
 // processStatusUpdates runs as a goroutine to process story status updates from coders.
