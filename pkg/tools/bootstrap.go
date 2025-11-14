@@ -22,7 +22,7 @@ func NewBootstrapTool() *BootstrapTool {
 func (b *BootstrapTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "bootstrap",
-		Description: "Configure bootstrap requirements for a new project (project name, git repository, platform). Must be called before spec_submit if project is not yet configured.",
+		Description: "Configure bootstrap requirements for a new project. IMPORTANT: You must ask the user for these values first - never make up or infer project details. Only call this after the user has provided: project name, GitHub repository URL, and primary platform.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -52,13 +52,14 @@ func (b *BootstrapTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (b *BootstrapTool) PromptDocumentation() string {
 	return `- **bootstrap** - Configure bootstrap requirements for a new project
+  - **CRITICAL**: You MUST ask the user for these values first - never make them up or infer them
   - Parameters:
-    - project_name (string, required): Project name
-    - git_url (string, required): GitHub repository URL (https://github.com/user/repo)
-    - platform (string, required): Primary platform (go, python, node, rust, etc.)
+    - project_name (string, required): Project name (ask the user)
+    - git_url (string, required): GitHub repository URL (ask the user for https://github.com/user/repo format)
+    - platform (string, required): Primary platform like go, python, node, rust (ask the user or infer from their description)
+  - Only call after gathering all required information from the user
   - Must be called before spec_submit if project is not yet configured
-  - Updates config.json with project metadata
-  - Validates git URL format`
+  - Updates config.json with project metadata`
 }
 
 // Exec executes the bootstrap configuration.

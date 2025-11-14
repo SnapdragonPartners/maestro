@@ -149,7 +149,7 @@ func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, er
 		}
 
 		// Render bootstrap prerequisites template
-		bootstrapMarkdown, renderErr := renderer.Render("pm/bootstrap_prerequisites.tpl.md", templateData)
+		bootstrapMarkdown, renderErr := renderer.Render(templates.PMBootstrapPrerequisitesTemplate, templateData)
 		if renderErr != nil {
 			return nil, fmt.Errorf("failed to render bootstrap prerequisites: %w", renderErr)
 		}

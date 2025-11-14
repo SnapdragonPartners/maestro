@@ -129,6 +129,8 @@ const (
 	PMSpecGenerationTemplate StateTemplate = "pm/spec_generation.tpl.md"
 	// PMWorkingTemplate is the unified template for PM WORKING state (interviewing, drafting, submitting).
 	PMWorkingTemplate StateTemplate = "pm/working.tpl.md"
+	// PMBootstrapPrerequisitesTemplate is the template for bootstrap prerequisites injected by spec_submit tool.
+	PMBootstrapPrerequisitesTemplate StateTemplate = "pm/bootstrap_prerequisites.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -187,7 +189,8 @@ func NewRenderer() (*Renderer, error) {
 		PMInterviewStartTemplate,
 		PMRequirementsGatheringTemplate,
 		PMSpecGenerationTemplate,
-		PMWorkingTemplate, // Unified PM template
+		PMWorkingTemplate,                // Unified PM template
+		PMBootstrapPrerequisitesTemplate, // Bootstrap prerequisites injected by spec_submit
 	}
 
 	for _, name := range templateNames {

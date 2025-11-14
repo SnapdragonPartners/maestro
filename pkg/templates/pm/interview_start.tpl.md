@@ -78,6 +78,12 @@ Be direct about bootstrap needs - expert users appreciate clarity.
 
 **Important:** Integrate bootstrap questions naturally into your interview flow. Don't make them feel like a separate checklist. Bootstrap is part of understanding the project holistically.
 
+**After gathering bootstrap info, you MUST call the bootstrap tool:**
+- Use `chat_ask_user` to gather: project_name, git_url, and platform from the user
+- Once you have all three values, call `bootstrap(project_name, git_url, platform)`
+- **NEVER make up or infer these values** - always ask the user directly
+- Only after bootstrap succeeds can you proceed with feature requirements gathering
+
 ### Git Repository Setup
 
 When asking about the Git repository:
