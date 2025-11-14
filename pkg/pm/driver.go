@@ -36,6 +36,14 @@ const (
 	PreviewActionSubmit = "submit_to_architect"
 )
 
+// State data keys for PM state management.
+const (
+	// StateKeyHasRepository indicates whether PM has git repository access.
+	StateKeyHasRepository = "has_repository"
+	// StateKeyUserExpertise stores the user's expertise level (NON_TECHNICAL, BASIC, EXPERT).
+	StateKeyUserExpertise = "user_expertise"
+)
+
 // Driver implements the PM (Product Manager) agent.
 // PM conducts interviews with users to generate high-quality specifications.
 //
@@ -96,12 +104,20 @@ func NewPM(
 	// Create context manager with PM model
 	contextManager := contextmgr.NewContextManagerWithModel(modelName)
 
-	// Ensure PM workspace exists (pm-001/ read-only clone)
+	// Ensure PM workspace exists (pm-001/ read-only clone or minimal workspace)
 	pmWorkspace, workspaceErr := workspace.EnsurePMWorkspace(ctx, workDir)
 	if workspaceErr != nil {
 		return nil, fmt.Errorf("failed to ensure PM workspace: %w", workspaceErr)
 	}
 	logger.Info("PM workspace ready at: %s", pmWorkspace)
+
+	// Determine if PM has repository access
+	hasRepository := cfg.Git != nil && cfg.Git.RepoURL != ""
+	if hasRepository {
+		logger.Info("PM has repository access: %s", cfg.Git.RepoURL)
+	} else {
+		logger.Info("PM starting in no-repo mode (bootstrap interview only)")
+	}
 
 	// Create and start PM container executor
 	// PM mounts only its own workspace at /workspace (same as coders)
@@ -138,6 +154,11 @@ func NewPM(
 		logger.Info("💬 Chat injection configured for PM %s", pmID)
 	}
 
+	// Create initial state data with repository availability
+	initialStateData := map[string]any{
+		StateKeyHasRepository: hasRepository,
+	}
+
 	// Create driver first (without LLM client yet)
 	pmDriver := &Driver{
 		pmID:               pmID,
@@ -149,7 +170,7 @@ func NewPM(
 		persistenceChannel: persistenceChannel,
 		chatService:        chatService,
 		currentState:       StateWaiting,
-		stateData:          make(map[string]any),
+		stateData:          initialStateData,
 		executor:           pmExecutor,
 		workDir:            workDir,
 		toolProvider:       toolProvider,
@@ -507,6 +528,17 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
 	d.stateNotificationCh = stateNotifCh
 	d.logger.Debug("State notification channel set for PM")
+}
+
+// HasRepository returns whether PM has git repository access.
+// Returns false if PM is running in no-repo/bootstrap mode.
+func (d *Driver) HasRepository() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if hasRepo, ok := d.stateData[StateKeyHasRepository].(bool); ok {
+		return hasRepo
+	}
+	return false
 }
 
 // GetDraftSpec returns the draft specification markdown if available.
