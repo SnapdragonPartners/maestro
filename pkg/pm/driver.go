@@ -598,15 +598,15 @@ func (d *Driver) StartInterview(expertise string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Idempotency check: if already in AWAIT_USER with same expertise, succeed silently
-	if d.currentState == StateAwaitUser {
+	// Idempotency check: if already in AWAIT_USER or WORKING with same expertise, succeed silently
+	if d.currentState == StateAwaitUser || d.currentState == StateWorking {
 		if existingExpertise, ok := d.stateData[StateKeyUserExpertise].(string); ok && existingExpertise == expertise {
 			d.logger.Info("📝 Interview already started with expertise: %s - idempotent success", expertise)
 			return nil
 		}
 	}
 
-	// Validate state transition
+	// Validate state transition - must be in WAITING to start
 	if d.currentState != StateWaiting {
 		return fmt.Errorf("cannot start interview in state %s (must be WAITING)", d.currentState)
 	}
@@ -619,6 +619,7 @@ func (d *Driver) StartInterview(expertise string) error {
 	d.logger.Info("🔍 Detecting bootstrap requirements (expertise: %s)", expertise)
 	detector := tools.NewBootstrapDetector(d.workDir)
 	reqs, err := detector.Detect(context.Background())
+	needsBootstrap := false
 	if err != nil {
 		d.logger.Warn("Bootstrap detection failed: %v", err)
 		// Continue without bootstrap detection - non-fatal
@@ -635,13 +636,26 @@ func (d *Driver) StartInterview(expertise string) error {
 			d.contextManager.AddMessage("system",
 				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
 					reqs.MissingComponents, reqs.DetectedPlatform))
+
+			// Check if project metadata is missing (determines if we need bootstrap gate)
+			cfg, cfgErr := config.GetConfig()
+			needsProjectConfig := (cfgErr != nil || cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "")
+			needsGitConfig := (cfgErr != nil || cfg.Git == nil || cfg.Git.RepoURL == "")
+			needsBootstrap = needsProjectConfig || needsGitConfig
 		}
 	}
 
-	// Transition to AWAIT_USER
-	d.currentState = StateAwaitUser
+	// Decide initial state based on bootstrap needs
+	if needsBootstrap {
+		// Start in WORKING so PM can proactively ask bootstrap questions
+		d.currentState = StateWorking
+		d.logger.Info("📝 Interview started (expertise: %s) - bootstrap needed, transitioned to WORKING for proactive setup", expertise)
+	} else {
+		// Start in AWAIT_USER - user will initiate feature discussion
+		d.currentState = StateAwaitUser
+		d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
+	}
 
-	d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
 	return nil
 }
 

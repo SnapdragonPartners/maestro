@@ -86,7 +86,9 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	return StateWorking, nil
 }
 
-// setupInterviewContext renders the interview start template with bootstrap awareness.
+// setupInterviewContext renders the appropriate interview template based on project state.
+// If bootstrap requirements are detected, uses focused bootstrap gate template.
+// Otherwise uses full interview start template.
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
 
@@ -96,35 +98,60 @@ func (d *Driver) setupInterviewContext() error {
 		expertise = DefaultExpertise
 	}
 
-	// Get bootstrap requirements
+	// Get conversation history if any
+	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
+
+	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
-	// Build template data
+	// Build base template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
-			"Expertise": expertise,
+			"Expertise":           expertise,
+			"ConversationHistory": conversationHistory,
 		},
 	}
 
-	// Add bootstrap context if requirements detected
+	// Select template based on bootstrap requirements
+	var templateName templates.StateTemplate
 	if bootstrapReqs != nil && len(bootstrapReqs.MissingComponents) > 0 {
-		templateData.Extra["BootstrapRequired"] = true
-		templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
-		templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
-		templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
-		templateData.Extra["HasRepository"] = !bootstrapReqs.NeedsGitRepo
-		templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
-		templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
-		templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
+		// Bootstrap required - check if project metadata is missing
+		// (knowledge graph, dockerfile, makefile can wait, but we need project info first)
+		cfg, err := config.GetConfig()
+		needsProjectConfig := (err != nil || cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "")
+		needsGitConfig := (err != nil || cfg.Git == nil || cfg.Git.RepoURL == "")
 
-		d.logger.Info("📋 Bootstrap context included: %d missing components, platform: %s",
-			len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
+		if needsProjectConfig || needsGitConfig {
+			// Use bootstrap gate template - PM needs to gather project metadata first
+			templateName = templates.PMBootstrapGateTemplate
+			d.logger.Info("📋 Using bootstrap gate template (missing project config: %v, git config: %v)",
+				needsProjectConfig, needsGitConfig)
+		} else {
+			// Project metadata configured, but other bootstrap requirements remain
+			// Use full interview template with bootstrap awareness
+			templateName = templates.PMInterviewStartTemplate
+			templateData.Extra["BootstrapRequired"] = true
+			templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
+			templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
+			templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
+			templateData.Extra["HasRepository"] = !bootstrapReqs.NeedsGitRepo
+			templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
+			templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
+			templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
+
+			d.logger.Info("📋 Using full interview template with bootstrap context: %d missing components, platform: %s",
+				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
+		}
+	} else {
+		// No bootstrap requirements - use full interview template
+		templateName = templates.PMInterviewStartTemplate
+		d.logger.Info("📋 Using full interview template (no bootstrap requirements)")
 	}
 
-	// Render interview start template
-	interviewPrompt, err := d.renderer.Render(templates.PMInterviewStartTemplate, templateData)
-	if err != nil {
-		return fmt.Errorf("failed to render interview template: %w", err)
+	// Render selected template
+	interviewPrompt, renderErr := d.renderer.Render(templateName, templateData)
+	if renderErr != nil {
+		return fmt.Errorf("failed to render interview template: %w", renderErr)
 	}
 
 	// Add as system message to guide the interview
@@ -248,6 +275,23 @@ func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, r
 			d.stateData["bootstrap_params"] = bootstrapParams
 			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
 				bootstrapParams["project_name"], bootstrapParams["platform"], bootstrapParams["git_url"])
+
+			// Inject system message to transition from bootstrap mode to full interview mode
+			transitionMsg := `# Bootstrap Complete
+
+Project configuration saved successfully:
+- Project: ` + bootstrapParams["project_name"] + `
+- Platform: ` + bootstrapParams["platform"] + `
+- Repository: ` + bootstrapParams["git_url"] + `
+
+You can now proceed with full requirements gathering for this project. You have access to additional tools:
+- **read_file** - Read file contents from the codebase
+- **list_files** - List files in the codebase (path, pattern, recursive)
+
+Begin the feature requirements interview by asking the user about what they want to build.`
+
+			d.contextManager.AddMessage("system", transitionMsg)
+			d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
 
 			// Don't return signal - continue loop for next tool call
 		}

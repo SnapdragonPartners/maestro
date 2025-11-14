@@ -97,19 +97,7 @@ func (b *BootstrapTool) Exec(_ context.Context, params map[string]any) (any, err
 	// Normalize platform to lowercase
 	platform = strings.ToLower(platform)
 
-	// Load config
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Get project directory for saving
-	projectDir, err := config.GetProjectDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get project directory: %w", err)
-	}
-
-	// Update project info
+	// Update project info (saves to disk automatically)
 	projectInfo := &config.ProjectInfo{
 		Name:            projectName,
 		PrimaryPlatform: platform,
@@ -118,7 +106,7 @@ func (b *BootstrapTool) Exec(_ context.Context, params map[string]any) (any, err
 		return nil, fmt.Errorf("failed to update project info: %w", err)
 	}
 
-	// Update git config
+	// Update git config (saves to disk automatically)
 	gitCfg := &config.GitConfig{
 		RepoURL:       gitURL,
 		TargetBranch:  "main", // Default target branch
@@ -131,10 +119,8 @@ func (b *BootstrapTool) Exec(_ context.Context, params map[string]any) (any, err
 		return nil, fmt.Errorf("failed to update git config: %w", err)
 	}
 
-	// Save config
-	if err := config.SaveConfig(&cfg, projectDir); err != nil {
-		return nil, fmt.Errorf("failed to save config: %w", err)
-	}
+	// UpdateProject and UpdateGit already saved the config to disk
+	// No need for explicit SaveConfig call
 
 	// Return success with bootstrap params
 	return map[string]any{

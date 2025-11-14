@@ -131,6 +131,8 @@ const (
 	PMWorkingTemplate StateTemplate = "pm/working.tpl.md"
 	// PMBootstrapPrerequisitesTemplate is the template for bootstrap prerequisites injected by spec_submit tool.
 	PMBootstrapPrerequisitesTemplate StateTemplate = "pm/bootstrap_prerequisites.tpl.md"
+	// PMBootstrapGateTemplate is the focused template for bootstrap-only mode (before project is configured).
+	PMBootstrapGateTemplate StateTemplate = "pm/bootstrap_gate.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -191,6 +193,7 @@ func NewRenderer() (*Renderer, error) {
 		PMSpecGenerationTemplate,
 		PMWorkingTemplate,                // Unified PM template
 		PMBootstrapPrerequisitesTemplate, // Bootstrap prerequisites injected by spec_submit
+		PMBootstrapGateTemplate,          // Bootstrap-only mode before project configured
 	}
 
 	for _, name := range templateNames {
