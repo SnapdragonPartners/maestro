@@ -42,6 +42,10 @@ const (
 	StateKeyHasRepository = "has_repository"
 	// StateKeyUserExpertise stores the user's expertise level (NON_TECHNICAL, BASIC, EXPERT).
 	StateKeyUserExpertise = "user_expertise"
+	// StateKeyBootstrapRequirements stores detected bootstrap requirements.
+	StateKeyBootstrapRequirements = "bootstrap_requirements"
+	// StateKeyDetectedPlatform stores the detected platform.
+	StateKeyDetectedPlatform = "detected_platform"
 )
 
 // Driver implements the PM (Product Manager) agent.
@@ -541,6 +545,28 @@ func (d *Driver) HasRepository() bool {
 	return false
 }
 
+// GetBootstrapRequirements returns the detected bootstrap requirements.
+// Returns nil if bootstrap detection hasn't run yet or failed.
+func (d *Driver) GetBootstrapRequirements() *BootstrapRequirements {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if reqs, ok := d.stateData[StateKeyBootstrapRequirements].(*BootstrapRequirements); ok {
+		return reqs
+	}
+	return nil
+}
+
+// GetDetectedPlatform returns the detected platform.
+// Returns empty string if platform hasn't been detected.
+func (d *Driver) GetDetectedPlatform() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if platform, ok := d.stateData[StateKeyDetectedPlatform].(string); ok {
+		return platform
+	}
+	return ""
+}
+
 // GetDraftSpec returns the draft specification markdown if available.
 // This is used by the WebUI to display the spec in PREVIEW state.
 // Returns empty string if no draft spec is available.
@@ -573,7 +599,7 @@ func (d *Driver) StartInterview(expertise string) error {
 
 	// Idempotency check: if already in AWAIT_USER with same expertise, succeed silently
 	if d.currentState == StateAwaitUser {
-		if existingExpertise, ok := d.stateData["user_expertise"].(string); ok && existingExpertise == expertise {
+		if existingExpertise, ok := d.stateData[StateKeyUserExpertise].(string); ok && existingExpertise == expertise {
 			d.logger.Info("📝 Interview already started with expertise: %s - idempotent success", expertise)
 			return nil
 		}
@@ -584,9 +610,34 @@ func (d *Driver) StartInterview(expertise string) error {
 		return fmt.Errorf("cannot start interview in state %s (must be WAITING)", d.currentState)
 	}
 
-	// Store expertise and transition to AWAIT_USER
-	d.stateData["user_expertise"] = expertise
+	// Store expertise level
+	d.stateData[StateKeyUserExpertise] = expertise
 	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
+
+	// Detect bootstrap requirements
+	d.logger.Info("🔍 Detecting bootstrap requirements (expertise: %s)", expertise)
+	detector := NewBootstrapDetector(d.workDir)
+	reqs, err := detector.Detect(context.Background())
+	if err != nil {
+		d.logger.Warn("Bootstrap detection failed: %v", err)
+		// Continue without bootstrap detection - non-fatal
+	} else {
+		// Store bootstrap requirements in state
+		d.stateData[StateKeyBootstrapRequirements] = reqs
+		d.stateData[StateKeyDetectedPlatform] = reqs.DetectedPlatform
+
+		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
+			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+
+		// Add detection summary to context
+		if len(reqs.MissingComponents) > 0 {
+			d.contextManager.AddMessage("system",
+				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
+					reqs.MissingComponents, reqs.DetectedPlatform))
+		}
+	}
+
+	// Transition to AWAIT_USER
 	d.currentState = StateAwaitUser
 
 	d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
