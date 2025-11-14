@@ -36,7 +36,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 	// Get conversation state
 	turnCount, _ := d.stateData["turn_count"].(int)
-	expertise, _ := d.stateData["expertise"].(string)
+	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
@@ -49,6 +49,14 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	maxTurns := cfg.PM.MaxInterviewTurns
 
 	d.logger.Info("PM working (turn %d/%d, expertise: %s)", turnCount, maxTurns, expertise)
+
+	// On first turn, set up the interview context with bootstrap awareness
+	if turnCount == 0 {
+		if setupErr := d.setupInterviewContext(); setupErr != nil {
+			d.logger.Warn("Failed to set up interview context: %v", setupErr)
+			// Continue anyway - non-fatal
+		}
+	}
 
 	// System prompt was set at interview start - just use context manager's conversation
 	// No need to render a new prompt every turn
@@ -76,6 +84,50 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 	// Stay in WORKING - PM continues interviewing/drafting
 	return StateWorking, nil
+}
+
+// setupInterviewContext renders the interview start template with bootstrap awareness.
+func (d *Driver) setupInterviewContext() error {
+	d.logger.Info("📝 Setting up interview context")
+
+	// Get expertise level
+	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
+	if expertise == "" {
+		expertise = DefaultExpertise
+	}
+
+	// Get bootstrap requirements
+	bootstrapReqs := d.GetBootstrapRequirements()
+
+	// Build template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Expertise": expertise,
+		},
+	}
+
+	// Add bootstrap context if requirements detected
+	if bootstrapReqs != nil && len(bootstrapReqs.MissingComponents) > 0 {
+		templateData.Extra["BootstrapRequired"] = true
+		templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
+		templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
+		templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
+
+		d.logger.Info("📋 Bootstrap context included: %d missing components, platform: %s",
+			len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
+	}
+
+	// Render interview start template
+	interviewPrompt, err := d.renderer.Render(templates.PMInterviewStartTemplate, templateData)
+	if err != nil {
+		return fmt.Errorf("failed to render interview template: %w", err)
+	}
+
+	// Add as system message to guide the interview
+	d.contextManager.AddMessage("system", interviewPrompt)
+
+	d.logger.Info("✅ Interview context configured")
+	return nil
 }
 
 // renderWorkingPrompt renders the PM working template with current state.
