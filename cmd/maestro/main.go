@@ -24,6 +24,7 @@ func main() {
 		specFile   = flag.String("spec-file", "", "Path to specification file")
 		noWebUI    = flag.Bool("nowebui", false, "Disable web UI")
 		bootstrap  = flag.Bool("bootstrap", false, "Run in bootstrap mode")
+		pmMode     = flag.Bool("pm", false, "Start PM agent directly (skip bootstrap)")
 		projectDir = flag.String("projectdir", ".", "Project directory")
 		tee        = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
 	)
@@ -41,7 +42,7 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	exitCode := run(*projectDir, *gitRepo, *specFile, *bootstrap, *noWebUI)
+	exitCode := run(*projectDir, *gitRepo, *specFile, *bootstrap, *pmMode, *noWebUI)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -53,7 +54,7 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, bootstrap, noWebUI bool) int {
+func run(projectDir, gitRepo, specFile string, bootstrap, pmMode, noWebUI bool) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
@@ -72,15 +73,17 @@ func run(projectDir, gitRepo, specFile string, bootstrap, noWebUI bool) int {
 		return 1
 	}
 
-	// Determine mode - auto-offer bootstrap if config was created from defaults
-	shouldBootstrap := bootstrap || configWasCreated
+	// Determine mode - auto-offer bootstrap if config was created from defaults (unless PM mode)
+	shouldBootstrap := (bootstrap || configWasCreated) && !pmMode
 	if shouldBootstrap && !bootstrap {
 		fmt.Printf("New configuration created - entering bootstrap mode to set up repository\n")
 	}
 
 	// Display mode and working directory
 	mode := "main"
-	if shouldBootstrap {
+	if pmMode {
+		mode = "PM"
+	} else if shouldBootstrap {
 		mode = "bootstrap"
 	}
 	config.LogInfo("🚀 Starting Maestro in %s mode", mode)
