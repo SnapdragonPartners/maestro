@@ -157,7 +157,7 @@ Your interview should cover these areas systematically:
 
 Use these tools to understand the existing codebase structure and reference relevant code during the interview.
 
-{{if .BootstrapRequired}}
+{{if .Extra.BootstrapRequired}}
 ## Specification Generation with Bootstrap
 
 When you're ready to generate the specification, ensure bootstrap requirements appear FIRST:
