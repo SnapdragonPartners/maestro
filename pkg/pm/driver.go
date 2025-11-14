@@ -576,9 +576,11 @@ func (d *Driver) UploadSpec(markdown string) error {
 		}
 	}
 
-	// Validate state transition
-	if d.currentState != StateWaiting {
-		return fmt.Errorf("cannot upload spec in state %s (must be WAITING)", d.currentState)
+	// Validate state transition - allow upload in WAITING or AWAIT_USER
+	// WAITING: before any interview started
+	// AWAIT_USER: during interview (allows user to upload spec instead of continuing interview)
+	if d.currentState != StateWaiting && d.currentState != StateAwaitUser {
+		return fmt.Errorf("cannot upload spec in state %s (must be WAITING or AWAIT_USER)", d.currentState)
 	}
 
 	// Store spec and transition to PREVIEW
