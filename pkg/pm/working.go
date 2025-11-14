@@ -112,6 +112,10 @@ func (d *Driver) setupInterviewContext() error {
 		templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
 		templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
 		templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
+		templateData.Extra["HasRepository"] = !bootstrapReqs.NeedsGitRepo
+		templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
+		templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
+		templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
 
 		d.logger.Info("📋 Bootstrap context included: %d missing components, platform: %s",
 			len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)

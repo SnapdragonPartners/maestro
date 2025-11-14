@@ -157,6 +157,79 @@ Your interview should cover these areas systematically:
 
 Use these tools to understand the existing codebase structure and reference relevant code during the interview.
 
+{{if .BootstrapRequired}}
+## Specification Generation with Bootstrap
+
+When you're ready to generate the specification, ensure bootstrap requirements appear FIRST:
+
+### R-001: Initialize Knowledge Graph (MUST - PRIORITY 1)
+**Type:** infrastructure
+**Priority:** must
+**Dependencies:** []
+
+**Description:**
+Create `.maestro/knowledge.dot` file with initial architectural patterns and rules. This establishes the foundational documentation structure for the project.
+
+**Acceptance Criteria:**
+- [ ] File created at `.maestro/knowledge.dot`
+- [ ] Contains DOC_GRAPH format with basic nodes
+- [ ] Includes error handling, testing, and documentation patterns
+- [ ] Platform-agnostic content suitable for any project
+
+{{if not .HasRepository}}
+### R-002: Configure Git Repository
+**Type:** infrastructure
+**Priority:** must
+**Dependencies:** [R-001]
+
+**Description:**
+Configure the project's GitHub repository (URL to be captured during interview).
+Ensure repository is initialized and accessible for development workflow.
+
+**Acceptance Criteria:**
+- [ ] Repository URL configured in `.maestro/config.json`
+- [ ] Repository is accessible and authenticated
+- [ ] Initial commit with project structure
+{{end}}
+
+{{if .NeedsDockerfile}}
+### R-00X: Create Development Dockerfile
+**Type:** infrastructure
+**Priority:** must
+**Dependencies:** [R-001, R-002]
+
+**Description:**
+Create Dockerfile for {{.DetectedPlatform}} development environment.
+Container will provide consistent build and test environment for all developers.
+
+**Acceptance Criteria:**
+- [ ] Dockerfile created with {{.DetectedPlatform}} base image
+- [ ] Development dependencies installed
+- [ ] Build tools configured
+- [ ] Container builds successfully
+{{end}}
+
+{{if .NeedsMakefile}}
+### R-00X: Create Build System (Makefile)
+**Type:** infrastructure
+**Priority:** must
+**Dependencies:** [R-001, R-002]
+
+**Description:**
+Create Makefile with standard targets for {{.DetectedPlatform}} project: build, test, lint, run.
+Provides consistent interface for development operations.
+
+**Acceptance Criteria:**
+- [ ] Makefile with `build` target
+- [ ] Makefile with `test` target
+- [ ] Makefile with `lint` target
+- [ ] Makefile with `run` target
+- [ ] All targets work in development container
+{{end}}
+
+**After bootstrap requirements, include the feature requirements gathered from the user interview.**
+{{end}}
+
 ## Your Turn
 
 {{if not .ConversationHistory}}
