@@ -160,15 +160,25 @@ Use these tools to understand the existing codebase structure and reference rele
 {{if .Extra.BootstrapRequired}}
 ## Specification Generation with Bootstrap
 
-When you're ready to generate the specification, ensure bootstrap requirements appear FIRST:
+**CRITICAL**: The development framework has the following bootstrap requirements in order to function. They must be included as prerequisites in the final spec unless they are already fulfilled. They are NOT just examples - they are literal requirement sections that MUST appear in your specification.
 
-### R-001: Initialize Knowledge Graph (MUST - PRIORITY 1)
+Bootstrap requirements are PREREQUISITES for all other work. The architect and coders cannot function without them.
+
+**When to include bootstrap requirements:**
+- Include ONLY the requirements for components that are MISSING or INCOMPLETE
+- During the interview, check if each component already exists and works properly
+- If a component exists (e.g., user already has a Dockerfile), OMIT that requirement
+- The bootstrap detector found these missing components: {{range .Extra.MissingComponents}}{{.}}, {{end}}
+
+When you generate the specification, place bootstrap prerequisites FIRST before any user features.
+
+### MANDATORY PREREQUISITE R-001: Initialize Knowledge Graph
 **Type:** infrastructure
 **Priority:** must
 **Dependencies:** []
 
 **Description:**
-Create `.maestro/knowledge.dot` file with initial architectural patterns and rules. This establishes the foundational documentation structure for the project.
+Create `.maestro/knowledge.dot` file with initial architectural patterns and rules. This establishes the foundational documentation structure for the project. The knowledge graph is REQUIRED for the architect to function - it cannot operate without this file.
 
 The default knowledge graph includes six core patterns and rules:
 - **error-handling**: Pattern for wrapping errors with context using fmt.Errorf
@@ -187,14 +197,14 @@ The default knowledge graph includes six core patterns and rules:
 - [ ] File matches DOC_GRAPH.md specification format
 
 {{if not .Extra.HasRepository}}
-### R-002: Configure Git Repository
+### MANDATORY PREREQUISITE R-002: Configure Git Repository
 **Type:** infrastructure
 **Priority:** must
 **Dependencies:** [R-001]
 
 **Description:**
 Configure the project's GitHub repository (URL to be captured during interview).
-Ensure repository is initialized and accessible for development workflow.
+Ensure repository is initialized and accessible for development workflow. Git repository is REQUIRED for the architect and coders to commit and merge code.
 
 **Acceptance Criteria:**
 - [ ] Repository URL configured in `.maestro/config.json`
@@ -203,14 +213,14 @@ Ensure repository is initialized and accessible for development workflow.
 {{end}}
 
 {{if .Extra.NeedsDockerfile}}
-### R-00X: Create Development Dockerfile
+### MANDATORY PREREQUISITE R-003: Create Development Dockerfile
 **Type:** infrastructure
 **Priority:** must
 **Dependencies:** [R-001, R-002]
 
 **Description:**
 Create Dockerfile for {{.Extra.DetectedPlatform}} development environment.
-Container will provide consistent build and test environment for all developers.
+Container will provide consistent build and test environment for all developers. Dockerfile is REQUIRED for coders to execute code in isolated environments.
 
 **Acceptance Criteria:**
 - [ ] Dockerfile created with {{.Extra.DetectedPlatform}} base image
@@ -220,14 +230,14 @@ Container will provide consistent build and test environment for all developers.
 {{end}}
 
 {{if .Extra.NeedsMakefile}}
-### R-00X: Create Build System (Makefile)
+### MANDATORY PREREQUISITE R-004: Create Build System (Makefile)
 **Type:** infrastructure
 **Priority:** must
 **Dependencies:** [R-001, R-002]
 
 **Description:**
 Create Makefile with standard targets for {{.Extra.DetectedPlatform}} project: build, test, lint, run.
-Provides consistent interface for development operations.
+Provides consistent interface for development operations. Makefile is REQUIRED for coders to build, test, and run code.
 
 **Acceptance Criteria:**
 - [ ] Makefile with `build` target
@@ -237,15 +247,53 @@ Provides consistent interface for development operations.
 - [ ] All targets work in development container
 {{end}}
 
-**After bootstrap requirements, include the feature requirements gathered from the user interview.**
+**EXAMPLE SPEC FORMAT - YOU MUST USE THIS STRUCTURE:**
+```markdown
+# Project Specification
+
+## Bootstrap Prerequisites (COPY THE SECTIONS ABOVE VERBATIM)
+
+### MANDATORY PREREQUISITE R-001: Initialize Knowledge Graph
+[Full text from above - copy EXACTLY including Description, Acceptance Criteria, etc.]
+
+### MANDATORY PREREQUISITE R-002: Configure Git Repository
+[Full text from above if needed]
+
+### MANDATORY PREREQUISITE R-003: Create Development Dockerfile
+[Full text from above if needed]
+
+### MANDATORY PREREQUISITE R-004: Create Build System (Makefile)
+[Full text from above if needed]
+
+## User Feature Requirements (AFTER all prerequisites)
+
+[Your gathered requirements here]
+```
+
+**CRITICAL**: The spec_submit tool expects the prerequisite sections FIRST, copied EXACTLY as shown above. Do NOT summarize or paraphrase them. Do NOT skip them. Copy the full "### MANDATORY PREREQUISITE R-00X" sections verbatim before adding user features.
 {{end}}
 
 ## Your Turn
 
-{{if not .Extra.ConversationHistory}}
-**Start the interview now.** Introduce yourself briefly, then ask your first question(s) to understand the user's vision and goals.
-{{else}}
-**Continue the interview.** Based on the conversation so far, ask your next question(s) to deepen understanding or explore a new area.
-{{end}}
+You have just received the user's input. Now you must respond using the available tools.
 
-Remember: Your goal is to gather enough information to generate a complete, well-structured specification. Take your time and be thorough.
+**CRITICAL:** You MUST use tools to communicate. Do NOT just generate text responses:
+
+- **Use `chat_ask_user`** - When you need information from the user (questions, clarifications)
+  - Call this tool with your question as the message parameter
+  - This will post your question to chat and wait for the user to respond
+
+- **Use `chat_post`** - For non-blocking updates or acknowledgments (optional)
+  - Post status updates without waiting for a response
+  - Use sparingly - prefer chat_ask_user for questions
+
+- **Use `spec_submit`** - When you have a complete specification ready
+  - Submit the final spec markdown and summary
+  - Only use when interview is complete
+
+**What to do RIGHT NOW:**
+1. Review the user's message above
+2. Call `chat_ask_user` with your next question or clarification request
+3. Keep questions focused: ask 1-3 related questions at a time
+
+Example: `chat_ask_user(message="What is the project name for this Go web server?")`

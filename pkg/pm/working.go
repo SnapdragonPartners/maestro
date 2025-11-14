@@ -190,7 +190,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		MaxIterations:  10,
 		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
 		AgentID:        d.pmID,                   // Agent ID for tool context
-		DebugLogging:   false,                    // Enable for debugging: shows messages sent to LLM
+		DebugLogging:   true,                     // Enable for debugging: shows messages sent to LLM
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			// Process results and check for terminal signals
 			return d.checkTerminalTools(ctx, calls, results)
@@ -206,32 +206,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		return "", fmt.Errorf("toolloop execution failed: %w", err)
 	}
 
-	// Handle special case: no tool calls means implicit ask_user
-	// This is detected when signal is empty and last message has no tools
-	if signal == "" {
-		contextMsgs := d.contextManager.GetMessages()
-		if len(contextMsgs) > 0 {
-			lastMsg := &contextMsgs[len(contextMsgs)-1]
-			if lastMsg.Role == "assistant" && len(lastMsg.ToolCalls) == 0 && lastMsg.Content != "" {
-				// Post PM's response to chat
-				if d.chatService != nil {
-					d.logger.Info("📤 Posting PM response to chat (%d chars)", len(lastMsg.Content))
-					postResp, postErr := d.chatService.Post(ctx, &chat.PostRequest{
-						Author:  fmt.Sprintf("@%s", d.pmID),
-						Text:    lastMsg.Content,
-						Channel: chat.ChannelProduct,
-					})
-					if postErr != nil {
-						d.logger.Error("❌ Failed to post PM response to chat: %v", postErr)
-					} else {
-						d.logger.Info("✅ Posted PM message to chat (id: %d)", postResp.ID)
-					}
-				}
-				return string(StateAwaitUser), nil
-			}
-		}
-	}
-
+	// Handle terminal signals from tool processing
 	return signal, nil
 }
 
