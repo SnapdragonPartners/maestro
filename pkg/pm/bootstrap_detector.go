@@ -1,0 +1,282 @@
+package pm
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
+)
+
+const (
+	// Platform names.
+	platformGeneric = "generic"
+	platformGo      = "go"
+	platformPython  = "python"
+	platformNode    = "node"
+	platformRust    = "rust"
+
+	// Expertise levels.
+	expertiseLevelExpert = "EXPERT"
+)
+
+// BootstrapDetector detects missing bootstrap components in a project.
+type BootstrapDetector struct {
+	logger     *logx.Logger
+	projectDir string
+}
+
+// BootstrapRequirements describes what bootstrap components are missing.
+//
+//nolint:govet // Field alignment optimized for clarity over memory efficiency
+type BootstrapRequirements struct {
+	NeedsBuildTargets   []string // List of missing Makefile targets
+	MissingComponents   []string // Human-readable list of missing items
+	DetectedPlatform    string   // Detected platform: go, python, node, generic
+	PlatformConfidence  float64  // Confidence score 0.0 to 1.0
+	NeedsGitRepo        bool     // True if no git repository is configured
+	NeedsDockerfile     bool     // True if no Dockerfile exists
+	NeedsMakefile       bool     // True if no Makefile exists or missing required targets
+	NeedsKnowledgeGraph bool     // True if .maestro/knowledge.dot doesn't exist
+}
+
+// BootstrapContext provides context for determining required questions.
+type BootstrapContext struct {
+	Expertise         string // NON_TECHNICAL, BASIC, EXPERT
+	Platform          string
+	ProjectDir        string
+	HasRepo           bool
+	HasDockerfile     bool
+	HasMakefile       bool
+	HasKnowledgeGraph bool
+}
+
+// NewBootstrapDetector creates a new bootstrap detector.
+func NewBootstrapDetector(projectDir string) *BootstrapDetector {
+	return &BootstrapDetector{
+		projectDir: projectDir,
+		logger:     logx.NewLogger("bootstrap-detector"),
+	}
+}
+
+// Detect analyzes the project and returns bootstrap requirements.
+func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, error) {
+	bd.logger.Info("Detecting bootstrap requirements in: %s", bd.projectDir)
+
+	reqs := &BootstrapRequirements{
+		MissingComponents: []string{},
+		NeedsBuildTargets: []string{},
+	}
+
+	// Check for git repository configuration
+	reqs.NeedsGitRepo = bd.detectMissingGitRepo()
+	if reqs.NeedsGitRepo {
+		reqs.MissingComponents = append(reqs.MissingComponents, "git repository")
+	}
+
+	// Check for Dockerfile
+	reqs.NeedsDockerfile = bd.detectMissingDockerfile()
+	if reqs.NeedsDockerfile {
+		reqs.MissingComponents = append(reqs.MissingComponents, "Dockerfile")
+	}
+
+	// Check for Makefile with required targets
+	reqs.NeedsMakefile, reqs.NeedsBuildTargets = bd.detectMissingMakefile()
+	if reqs.NeedsMakefile {
+		reqs.MissingComponents = append(reqs.MissingComponents, "Makefile with required targets")
+	}
+
+	// Check for knowledge graph
+	reqs.NeedsKnowledgeGraph = bd.detectMissingKnowledgeGraph()
+	if reqs.NeedsKnowledgeGraph {
+		reqs.MissingComponents = append(reqs.MissingComponents, "knowledge graph documentation")
+	}
+
+	// Detect platform
+	reqs.DetectedPlatform, reqs.PlatformConfidence = bd.detectPlatform()
+
+	bd.logger.Info("Bootstrap detection complete: %d components needed (platform: %s @ %.0f%%)",
+		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+
+	return reqs, nil
+}
+
+// detectMissingGitRepo checks if git repository is configured.
+func (bd *BootstrapDetector) detectMissingGitRepo() bool {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		bd.logger.Warn("Failed to get config: %v", err)
+		return true
+	}
+
+	// Git repo is missing if config has no Git section or no RepoURL
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		bd.logger.Debug("No git repository configured")
+		return true
+	}
+
+	bd.logger.Debug("Git repository configured: %s", cfg.Git.RepoURL)
+	return false
+}
+
+// detectMissingDockerfile checks if Dockerfile exists in project root.
+func (bd *BootstrapDetector) detectMissingDockerfile() bool {
+	dockerfilePath := filepath.Join(bd.projectDir, "Dockerfile")
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		bd.logger.Debug("Dockerfile not found at: %s", dockerfilePath)
+		return true
+	}
+
+	bd.logger.Debug("Dockerfile found at: %s", dockerfilePath)
+	return false
+}
+
+// detectMissingMakefile checks if Makefile exists and has required targets.
+func (bd *BootstrapDetector) detectMissingMakefile() (bool, []string) {
+	makefilePath := filepath.Join(bd.projectDir, "Makefile")
+
+	// Check if Makefile exists
+	content, err := os.ReadFile(makefilePath)
+	if err != nil {
+		bd.logger.Debug("Makefile not found at: %s", makefilePath)
+		// All targets are missing if Makefile doesn't exist
+		return true, []string{"build", "test", "lint", "run"}
+	}
+
+	// Check for required targets
+	requiredTargets := []string{"build", "test", "lint", "run"}
+	missingTargets := []string{}
+
+	makefileStr := string(content)
+	for _, target := range requiredTargets {
+		// Look for target definition: "target:" at start of line
+		targetPattern := "\n" + target + ":"
+		if !strings.Contains(makefileStr, targetPattern) && !strings.HasPrefix(makefileStr, target+":") {
+			missingTargets = append(missingTargets, target)
+		}
+	}
+
+	if len(missingTargets) > 0 {
+		bd.logger.Debug("Makefile missing targets: %v", missingTargets)
+		return true, missingTargets
+	}
+
+	bd.logger.Debug("Makefile found with all required targets")
+	return false, nil
+}
+
+// detectMissingKnowledgeGraph checks if knowledge graph documentation exists.
+func (bd *BootstrapDetector) detectMissingKnowledgeGraph() bool {
+	knowledgePath := filepath.Join(bd.projectDir, ".maestro", "knowledge.dot")
+	if _, err := os.Stat(knowledgePath); os.IsNotExist(err) {
+		bd.logger.Debug("Knowledge graph not found at: %s", knowledgePath)
+		return true
+	}
+
+	bd.logger.Debug("Knowledge graph found at: %s", knowledgePath)
+	return false
+}
+
+// detectPlatform attempts to detect the project platform from files.
+func (bd *BootstrapDetector) detectPlatform() (string, float64) {
+	// Platform indicators with their confidence weights
+	platformScores := map[string]float64{
+		platformGo:     0.0,
+		platformPython: 0.0,
+		platformNode:   0.0,
+		platformRust:   0.0,
+	}
+
+	// Check for platform-specific files
+	bd.checkPlatformFile("go.mod", platformGo, 0.9, platformScores)
+	bd.checkPlatformFile("go.sum", platformGo, 0.3, platformScores)
+	bd.checkPlatformFile("requirements.txt", platformPython, 0.7, platformScores)
+	bd.checkPlatformFile("pyproject.toml", platformPython, 0.9, platformScores)
+	bd.checkPlatformFile("setup.py", platformPython, 0.6, platformScores)
+	bd.checkPlatformFile("package.json", platformNode, 0.9, platformScores)
+	bd.checkPlatformFile("package-lock.json", platformNode, 0.5, platformScores)
+	bd.checkPlatformFile("yarn.lock", platformNode, 0.5, platformScores)
+	bd.checkPlatformFile("Cargo.toml", platformRust, 0.9, platformScores)
+
+	// Find platform with highest score
+	maxPlatform := platformGeneric
+	maxScore := 0.0
+
+	for platform, score := range platformScores {
+		if score > maxScore {
+			maxScore = score
+			maxPlatform = platform
+		}
+	}
+
+	// If no strong signal, default to generic with low confidence
+	if maxScore < 0.5 {
+		bd.logger.Debug("Platform detection uncertain, defaulting to generic")
+		return platformGeneric, 0.3
+	}
+
+	bd.logger.Debug("Detected platform: %s (confidence: %.0f%%)", maxPlatform, maxScore*100)
+	return maxPlatform, maxScore
+}
+
+// checkPlatformFile checks if a platform indicator file exists and updates scores.
+func (bd *BootstrapDetector) checkPlatformFile(filename, platform string, weight float64, scores map[string]float64) {
+	filePath := filepath.Join(bd.projectDir, filename)
+	if _, err := os.Stat(filePath); err == nil {
+		scores[platform] += weight
+		bd.logger.Debug("Found %s indicator: %s (weight: %.1f)", platform, filename, weight)
+	}
+}
+
+// GetRequiredQuestions returns questions needed based on bootstrap context and expertise.
+func (bd *BootstrapDetector) GetRequiredQuestions(ctx *BootstrapContext) []Question {
+	questions := []Question{}
+
+	// Git repository question (always needed if missing)
+	if !ctx.HasRepo {
+		questions = append(questions, Question{
+			ID:       "git_repo",
+			Text:     "What's the GitHub repository URL for this project? (I can help you create it if needed)",
+			Required: true,
+		})
+	}
+
+	// Platform confirmation (only for BASIC and EXPERT)
+	if ctx.Expertise != "NON_TECHNICAL" && ctx.Platform != "" && ctx.Platform != platformGeneric {
+		questions = append(questions, Question{
+			ID:       "confirm_platform",
+			Text:     fmt.Sprintf("This looks like a %s project. Is that correct?", ctx.Platform),
+			Required: false,
+		})
+	}
+
+	// Custom Dockerfile question (only for EXPERT)
+	if ctx.Expertise == expertiseLevelExpert && !ctx.HasDockerfile {
+		questions = append(questions, Question{
+			ID:       "custom_dockerfile",
+			Text:     "Would you like me to include a custom Dockerfile in the setup, or use the default development container?",
+			Required: false,
+		})
+	}
+
+	// Knowledge graph question (only for EXPERT)
+	if ctx.Expertise == expertiseLevelExpert && !ctx.HasKnowledgeGraph {
+		questions = append(questions, Question{
+			ID:       "initial_patterns",
+			Text:     "Are there any initial architectural patterns or rules you'd like documented in the knowledge graph?",
+			Required: false,
+		})
+	}
+
+	return questions
+}
+
+// Question represents an interview question.
+type Question struct {
+	ID       string
+	Text     string
+	Required bool
+}
