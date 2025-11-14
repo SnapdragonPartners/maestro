@@ -35,8 +35,12 @@ func EnsureArchitectWorkspace(ctx context.Context, projectDir string) (string, e
 		return "", fmt.Errorf("failed to get config: %w", err)
 	}
 
-	if cfg.Git == nil {
-		return "", fmt.Errorf("git configuration not found")
+	// If no git configured (PM bootstrap mode), return empty workspace path
+	// PM will handle bootstrap requirements and setup will happen later
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		logger.Info("No git repository configured - architect workspace will be created during bootstrap")
+		// Return a placeholder path but don't create anything
+		return filepath.Join(projectDir, "architect-001"), nil
 	}
 
 	targetBranch := cfg.Git.TargetBranch
