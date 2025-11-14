@@ -139,7 +139,7 @@ func NewPM(
 		}
 	}
 
-	// Create tool provider with all PM tools (read_file, list_files, chat_post, spec_submit)
+	// Create tool provider with all PM tools (read_file, list_files, chat_post, bootstrap, spec_submit)
 	// Note: WorkDir must be the container path, not host path
 	agentCtx := tools.AgentContext{
 		Executor:        pmExecutor,
@@ -148,6 +148,7 @@ func NewPM(
 		NetworkDisabled: true,
 		WorkDir:         "/workspace", // Container path where pmWorkspace is mounted
 		AgentID:         pmID,
+		ProjectDir:      workDir, // Host project directory for bootstrap detection
 	}
 	toolProvider := tools.NewProvider(&agentCtx, tools.PMTools)
 
@@ -547,10 +548,10 @@ func (d *Driver) HasRepository() bool {
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.
 // Returns nil if bootstrap detection hasn't run yet or failed.
-func (d *Driver) GetBootstrapRequirements() *BootstrapRequirements {
+func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if reqs, ok := d.stateData[StateKeyBootstrapRequirements].(*BootstrapRequirements); ok {
+	if reqs, ok := d.stateData[StateKeyBootstrapRequirements].(*tools.BootstrapRequirements); ok {
 		return reqs
 	}
 	return nil
@@ -616,7 +617,7 @@ func (d *Driver) StartInterview(expertise string) error {
 
 	// Detect bootstrap requirements
 	d.logger.Info("🔍 Detecting bootstrap requirements (expertise: %s)", expertise)
-	detector := NewBootstrapDetector(d.workDir)
+	detector := tools.NewBootstrapDetector(d.workDir)
 	reqs, err := detector.Detect(context.Background())
 	if err != nil {
 		d.logger.Warn("Bootstrap detection failed: %v", err)

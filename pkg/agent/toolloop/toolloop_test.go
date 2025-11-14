@@ -401,8 +401,8 @@ func TestToolError(t *testing.T) {
 					{ID: "call1", Name: "fail_tool", Parameters: map[string]any{}},
 				},
 			},
-			{Content: "Handled error", ToolCalls: nil},      // No tools - triggers reminder
-			{Content: "Still handled", ToolCalls: nil},      // Still no tools - triggers error
+			{Content: "Handled error", ToolCalls: nil}, // No tools - triggers reminder
+			{Content: "Still handled", ToolCalls: nil}, // Still no tools - triggers error
 		},
 	}
 

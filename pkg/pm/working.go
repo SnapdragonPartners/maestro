@@ -212,6 +212,8 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 // checkTerminalTools examines tool execution results for terminal signals.
 // Returns non-empty signal to trigger state transition.
+//
+//nolint:cyclop // Multiple terminal conditions (bootstrap, spec_submit, await_user) adds complexity
 func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, results []any) string {
 	// Track if we saw await_user signal
 	sawAwaitUser := false
@@ -226,6 +228,28 @@ func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, r
 		// Check for errors in result
 		if success, ok := resultMap["success"].(bool); ok && !success {
 			continue // Skip error results
+		}
+
+		// Check for bootstrap_configured signal
+		if bootstrapConfigured, ok := resultMap["bootstrap_configured"].(bool); ok && bootstrapConfigured {
+			d.logger.Info("🔧 PM bootstrap tool succeeded, configuration saved")
+
+			// Store bootstrap params in state for potential use
+			bootstrapParams := make(map[string]string)
+			if projectName, ok := resultMap["project_name"].(string); ok {
+				bootstrapParams["project_name"] = projectName
+			}
+			if gitURL, ok := resultMap["git_url"].(string); ok {
+				bootstrapParams["git_url"] = gitURL
+			}
+			if platform, ok := resultMap["platform"].(string); ok {
+				bootstrapParams["platform"] = platform
+			}
+			d.stateData["bootstrap_params"] = bootstrapParams
+			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
+				bootstrapParams["project_name"], bootstrapParams["platform"], bootstrapParams["git_url"])
+
+			// Don't return signal - continue loop for next tool call
 		}
 
 		// Check for spec_submit signal (PREVIEW flow)
