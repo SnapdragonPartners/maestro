@@ -170,11 +170,21 @@ When you're ready to generate the specification, ensure bootstrap requirements a
 **Description:**
 Create `.maestro/knowledge.dot` file with initial architectural patterns and rules. This establishes the foundational documentation structure for the project.
 
+The default knowledge graph includes six core patterns and rules:
+- **error-handling**: Pattern for wrapping errors with context using fmt.Errorf
+- **api-standards**: Rule for REST API OpenAPI 3.0 compliance
+- **test-coverage**: Rule requiring 80% minimum test coverage (critical priority)
+- **code-style**: Pattern for following language-specific style guides
+- **logging-standards**: Pattern for structured logging with appropriate levels
+- **security-headers**: Rule for HTTP security headers (critical priority)
+
 **Acceptance Criteria:**
 - [ ] File created at `.maestro/knowledge.dot`
-- [ ] Contains DOC_GRAPH format with basic nodes
-- [ ] Includes error handling, testing, and documentation patterns
+- [ ] Contains valid DOT format digraph named "ProjectKnowledge"
+- [ ] Includes six default nodes with proper attributes (type, level, status, description)
+- [ ] Two nodes marked as critical priority (test-coverage, security-headers)
 - [ ] Platform-agnostic content suitable for any project
+- [ ] File matches DOC_GRAPH.md specification format
 
 {{if not .HasRepository}}
 ### R-002: Configure Git Repository
