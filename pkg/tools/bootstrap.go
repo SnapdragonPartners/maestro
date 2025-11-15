@@ -4,18 +4,30 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
+	"orchestrator/pkg/workspace"
 )
 
 // BootstrapTool allows PM agent to configure bootstrap requirements for new projects.
-// This tool validates and stores project metadata in config.json.
-type BootstrapTool struct{}
+// This tool validates and stores project metadata in config.json, creates git mirror,
+// and refreshes agent workspaces.
+type BootstrapTool struct {
+	logger     *logx.Logger
+	projectDir string
+}
 
 // NewBootstrapTool creates a new bootstrap tool instance.
-func NewBootstrapTool() *BootstrapTool {
-	return &BootstrapTool{}
+func NewBootstrapTool(projectDir string) *BootstrapTool {
+	return &BootstrapTool{
+		logger:     logx.NewLogger("bootstrap-tool"),
+		projectDir: projectDir,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -63,7 +75,7 @@ func (b *BootstrapTool) PromptDocumentation() string {
 }
 
 // Exec executes the bootstrap configuration.
-func (b *BootstrapTool) Exec(_ context.Context, params map[string]any) (any, error) {
+func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, error) {
 	// Extract and validate project_name
 	projectName, ok := params["project_name"].(string)
 	if !ok || projectName == "" {
@@ -119,8 +131,21 @@ func (b *BootstrapTool) Exec(_ context.Context, params map[string]any) (any, err
 		return nil, fmt.Errorf("failed to update git config: %w", err)
 	}
 
-	// UpdateProject and UpdateGit already saved the config to disk
-	// No need for explicit SaveConfig call
+	// Create or update git mirror (validates URL is accessible)
+	b.logger.Info("Creating/updating git mirror for repository: %s", gitURL)
+	mirrorMgr := mirror.NewManager(b.projectDir)
+	mirrorPath, mirrorErr := mirrorMgr.EnsureMirror(ctx)
+	if mirrorErr != nil {
+		return nil, fmt.Errorf("failed to setup git mirror: %w", mirrorErr)
+	}
+	b.logger.Info("✅ Git mirror ready at: %s", mirrorPath)
+
+	// Refresh PM and architect workspaces if they already exist
+	// This populates them with clones from the newly created mirror
+	if refreshErr := b.refreshWorkspacesIfExist(ctx); refreshErr != nil {
+		// Non-fatal - just log warning
+		b.logger.Warn("Failed to refresh workspaces: %v", refreshErr)
+	}
 
 	// Return success with bootstrap params
 	return map[string]any{
@@ -131,4 +156,34 @@ func (b *BootstrapTool) Exec(_ context.Context, params map[string]any) (any, err
 		"git_url":              gitURL,
 		"platform":             platform,
 	}, nil
+}
+
+// refreshWorkspacesIfExist updates PM and architect workspaces if they already exist.
+// This is called after mirror creation to populate the workspaces with clones.
+// Non-fatal - returns error but bootstrap continues if this fails.
+func (b *BootstrapTool) refreshWorkspacesIfExist(ctx context.Context) error {
+	// Check if architect workspace directory exists
+	architectDir := filepath.Join(b.projectDir, "architect-001")
+	if _, err := os.Stat(architectDir); err == nil {
+		b.logger.Info("Refreshing architect workspace at %s", architectDir)
+		if _, updateErr := workspace.EnsureArchitectWorkspace(ctx, b.projectDir); updateErr != nil {
+			b.logger.Warn("Failed to refresh architect workspace: %v", updateErr)
+			// Continue to try PM workspace
+		} else {
+			b.logger.Info("✅ Architect workspace refreshed")
+		}
+	}
+
+	// Check if PM workspace directory exists
+	pmDir := filepath.Join(b.projectDir, "pm-001")
+	if _, err := os.Stat(pmDir); err == nil {
+		b.logger.Info("Refreshing PM workspace at %s", pmDir)
+		if _, updateErr := workspace.EnsurePMWorkspace(ctx, b.projectDir); updateErr != nil {
+			b.logger.Warn("Failed to refresh PM workspace: %v", updateErr)
+			return fmt.Errorf("PM workspace refresh failed: %w", updateErr)
+		}
+		b.logger.Info("✅ PM workspace refreshed")
+	}
+
+	return nil
 }

@@ -515,12 +515,12 @@ func getSpecSubmitSchema() InputSchema {
 	return NewSpecSubmitTool("").Definition().InputSchema
 }
 
-func createBootstrapTool(_ *AgentContext) (Tool, error) {
-	return NewBootstrapTool(), nil
+func createBootstrapTool(ctx *AgentContext) (Tool, error) {
+	return NewBootstrapTool(ctx.ProjectDir), nil
 }
 
 func getBootstrapSchema() InputSchema {
-	return NewBootstrapTool().Definition().InputSchema
+	return NewBootstrapTool("").Definition().InputSchema
 }
 
 func createSpecFeedbackTool(_ *AgentContext) (Tool, error) {

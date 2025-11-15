@@ -142,9 +142,9 @@ func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, er
 				"MissingComponents":  bootstrapReqs.MissingComponents,
 				"DetectedPlatform":   bootstrapReqs.DetectedPlatform,
 				"PlatformConfidence": bootstrapReqs.PlatformConfidence,
-				"HasRepository":      cfg.Git != nil && cfg.Git.RepoURL != "",
-				"NeedsDockerfile":    contains(bootstrapReqs.MissingComponents, "dockerfile"),
-				"NeedsMakefile":      contains(bootstrapReqs.MissingComponents, "makefile"),
+				"HasRepository":      !bootstrapReqs.NeedsGitRepo, // Use detector flag, not config
+				"NeedsDockerfile":    bootstrapReqs.NeedsDockerfile,
+				"NeedsMakefile":      bootstrapReqs.NeedsMakefile,
 			},
 		}
 
@@ -184,14 +184,4 @@ func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, er
 		// Signal to PM driver to transition to PREVIEW state
 		"preview_ready": true,
 	}, nil
-}
-
-// contains checks if a slice contains a string.
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

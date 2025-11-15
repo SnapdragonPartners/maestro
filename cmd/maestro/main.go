@@ -5,15 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
 )
 
@@ -225,33 +224,11 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		}
 	}
 
-	// 4. Create git mirror if git config exists
+	// 4. Create or update git mirror if git config exists
 	if cfg.Git != nil && cfg.Git.RepoURL != "" {
-		// Use the actual .mirrors directory in projectDir (not .maestro/mirrors)
-		mirrorDir := filepath.Join(projectDir, ".mirrors")
-		if err := os.MkdirAll(mirrorDir, 0755); err != nil {
-			return fmt.Errorf("failed to create .mirrors directory: %w", err)
-		}
-
-		// Extract repo name from URL for mirror directory
-		repoName := extractRepoName(cfg.Git.RepoURL)
-		repoMirrorPath := filepath.Join(mirrorDir, repoName)
-
-		// Check if mirror already exists by looking for HEAD file (bare repos don't have .git subdir)
-		if _, err := os.Stat(filepath.Join(repoMirrorPath, "HEAD")); os.IsNotExist(err) {
-			// Clone as bare mirror
-			config.LogInfo("📥 Creating git mirror for %s...", cfg.Git.RepoURL)
-			if err := cloneGitMirror(cfg.Git.RepoURL, repoMirrorPath); err != nil {
-				return fmt.Errorf("failed to create git mirror: %w", err)
-			}
-			config.LogInfo("✅ Git mirror created at %s", repoMirrorPath)
-		} else {
-			// Mirror exists - update it
-			config.LogInfo("📂 Git mirror exists at %s, updating...", repoMirrorPath)
-			if err := updateGitMirror(repoMirrorPath); err != nil {
-				return fmt.Errorf("failed to update git mirror: %w", err)
-			}
-			config.LogInfo("✅ Git mirror updated successfully")
+		mirrorMgr := mirror.NewManager(projectDir)
+		if _, err := mirrorMgr.EnsureMirror(context.Background()); err != nil {
+			return fmt.Errorf("failed to setup git mirror: %w", err)
 		}
 	}
 
@@ -358,41 +335,4 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 }
 
 // extractRepoName extracts the repository name from a Git URL.
-func extractRepoName(repoURL string) string {
-	// Remove .git suffix if present
-	repoURL = strings.TrimSuffix(repoURL, ".git")
-
-	// Extract the last path component
-	parts := strings.Split(repoURL, "/")
-	if len(parts) == 0 {
-		return "repo"
-	}
-
-	repoName := parts[len(parts)-1]
-	if repoName == "" {
-		return "repo"
-	}
-
-	return repoName
-}
-
-// cloneGitMirror creates a bare git mirror clone of the repository.
-func cloneGitMirror(repoURL, mirrorPath string) error {
-	cmd := exec.Command("git", "clone", "--mirror", repoURL, mirrorPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git clone --mirror failed: %w\nOutput: %s", err, string(output))
-	}
-	return nil
-}
-
-// updateGitMirror updates an existing bare mirror repository.
-func updateGitMirror(mirrorPath string) error {
-	cmd := exec.Command("git", "remote", "update")
-	cmd.Dir = mirrorPath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
-	}
-	return nil
-}
+// Mirror management functions have been moved to pkg/mirror package
