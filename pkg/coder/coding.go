@@ -182,6 +182,50 @@ func (c *Coder) checkCodingTerminal(_ context.Context, sm *agent.BaseStateMachin
 	for i := range calls {
 		toolCall := &calls[i]
 
+		// Handle todo_complete tool - mark todo as complete
+		if toolCall.Name == tools.ToolTodoComplete {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+
+			if err := c.handleTodoComplete(sm, index); err != nil {
+				c.logger.Error("📋 [TODO] Failed to complete todo: %v", err)
+				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error completing todo: %v", err))
+				continue
+			}
+
+			if index == -1 {
+				c.contextManager.AddMessage("tool", "Current todo marked complete, advanced to next todo")
+			} else {
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d marked complete", index))
+			}
+			continue
+		}
+
+		// Handle todo_update tool - update or remove todo by index
+		if toolCall.Name == tools.ToolTodoUpdate {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+			description := utils.GetMapFieldOr[string](toolCall.Parameters, "description", "")
+
+			if index < 0 {
+				c.logger.Error("📋 [TODO] todo_update called with invalid index")
+				c.contextManager.AddMessage("tool-error", "Error: valid index required for todo_update")
+				continue
+			}
+
+			if err := c.handleTodoUpdate(sm, index, description); err != nil {
+				c.logger.Error("📋 [TODO] Failed to update todo: %v", err)
+				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error updating todo: %v", err))
+				continue
+			}
+
+			action := "updated"
+			if description == "" {
+				action = "removed"
+			}
+			c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d %s", index, action))
+			c.logger.Info("✏️  Todo at index %d %s", index, action)
+			continue
+		}
+
 		// Check for ask_question tool - transition to QUESTION state
 		if toolCall.Name == tools.ToolAskQuestion {
 			// Extract question details from tool call parameters
