@@ -112,52 +112,51 @@ func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, er
 			// In production, config is always initialized during startup
 			bootstrapReqs = nil
 		} else {
-
-		// Check if project info is configured
-		if cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "" {
-			return nil, fmt.Errorf("bootstrap required (missing: %v) but project not configured - call bootstrap tool first with project_name, git_url, and platform",
-				bootstrapReqs.MissingComponents)
-		}
-
-		// Check if git is configured (if repository missing)
-		hasRepoMissing := false
-		for _, comp := range bootstrapReqs.MissingComponents {
-			if comp == "repository" {
-				hasRepoMissing = true
-				break
+			// Check if project info is configured
+			if cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "" {
+				return nil, fmt.Errorf("bootstrap required (missing: %v) but project not configured - call bootstrap tool first with project_name, git_url, and platform",
+					bootstrapReqs.MissingComponents)
 			}
-		}
-		if hasRepoMissing && (cfg.Git == nil || cfg.Git.RepoURL == "") {
-			return nil, fmt.Errorf("bootstrap required (missing repository) but git not configured - call bootstrap tool first")
-		}
 
-		// Project is configured - render bootstrap template and prepend
-		renderer, rendErr := templates.NewRenderer()
-		if rendErr != nil {
-			return nil, fmt.Errorf("failed to create template renderer: %w", rendErr)
-		}
+			// Check if git is configured (if repository missing)
+			hasRepoMissing := false
+			for _, comp := range bootstrapReqs.MissingComponents {
+				if comp == "repository" {
+					hasRepoMissing = true
+					break
+				}
+			}
+			if hasRepoMissing && (cfg.Git == nil || cfg.Git.RepoURL == "") {
+				return nil, fmt.Errorf("bootstrap required (missing repository) but git not configured - call bootstrap tool first")
+			}
 
-		// Build template data for bootstrap prerequisites
-		templateData := &templates.TemplateData{
-			Extra: map[string]any{
-				"BootstrapRequired":  true,
-				"MissingComponents":  bootstrapReqs.MissingComponents,
-				"DetectedPlatform":   bootstrapReqs.DetectedPlatform,
-				"PlatformConfidence": bootstrapReqs.PlatformConfidence,
-				"HasRepository":      !bootstrapReqs.NeedsGitRepo, // Use detector flag, not config
-				"NeedsDockerfile":    bootstrapReqs.NeedsDockerfile,
-				"NeedsMakefile":      bootstrapReqs.NeedsMakefile,
-			},
-		}
+			// Project is configured - render bootstrap template and prepend
+			renderer, rendErr := templates.NewRenderer()
+			if rendErr != nil {
+				return nil, fmt.Errorf("failed to create template renderer: %w", rendErr)
+			}
 
-		// Render bootstrap prerequisites template
-		bootstrapMarkdown, renderErr := renderer.Render(templates.PMBootstrapPrerequisitesTemplate, templateData)
-		if renderErr != nil {
-			return nil, fmt.Errorf("failed to render bootstrap prerequisites: %w", renderErr)
-		}
+			// Build template data for bootstrap prerequisites
+			templateData := &templates.TemplateData{
+				Extra: map[string]any{
+					"BootstrapRequired":  true,
+					"MissingComponents":  bootstrapReqs.MissingComponents,
+					"DetectedPlatform":   bootstrapReqs.DetectedPlatform,
+					"PlatformConfidence": bootstrapReqs.PlatformConfidence,
+					"HasRepository":      !bootstrapReqs.NeedsGitRepo, // Use detector flag, not config
+					"NeedsDockerfile":    bootstrapReqs.NeedsDockerfile,
+					"NeedsMakefile":      bootstrapReqs.NeedsMakefile,
+				},
+			}
 
-		// Prepend bootstrap prerequisites to user's spec
-		finalMarkdown = strings.TrimSpace(bootstrapMarkdown) + "\n\n" + strings.TrimSpace(markdownStr)
+			// Render bootstrap prerequisites template
+			bootstrapMarkdown, renderErr := renderer.Render(templates.PMBootstrapPrerequisitesTemplate, templateData)
+			if renderErr != nil {
+				return nil, fmt.Errorf("failed to render bootstrap prerequisites: %w", renderErr)
+			}
+
+			// Prepend bootstrap prerequisites to user's spec
+			finalMarkdown = strings.TrimSpace(bootstrapMarkdown) + "\n\n" + strings.TrimSpace(markdownStr)
 		}
 	}
 
