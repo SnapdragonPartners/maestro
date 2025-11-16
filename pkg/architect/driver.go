@@ -872,6 +872,23 @@ func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvi
 	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
 }
 
+// createReviewToolProvider creates a tool provider with only the review_complete tool
+// for single-turn approval reviews (Plan and BudgetReview).
+func (d *Driver) createReviewToolProvider() *tools.ToolProvider {
+	ctx := tools.AgentContext{
+		Executor:        d.executor, // Architect executor (not needed but required)
+		ChatService:     nil,        // No chat service needed
+		ReadOnly:        true,       // Read-only context
+		NetworkDisabled: false,      // Network allowed
+		WorkDir:         "",         // No workspace needed for review_complete
+		Agent:           nil,        // No agent reference needed
+	}
+
+	// Only provide review_complete tool for single-turn reviews
+	reviewTools := []string{tools.ToolReviewComplete}
+	return tools.NewProvider(&ctx, reviewTools)
+}
+
 // processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
 // Returns the submit_reply response if detected, nil otherwise.
 func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
@@ -890,6 +907,26 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
 			return response, nil
+		}
+
+		// Handle review_complete tool - signals single-turn review completion (for Plan/BudgetReview)
+		if toolCall.Name == tools.ToolReviewComplete {
+			// Execute the tool to get validated structured data
+			tool, err := toolProvider.Get(toolCall.Name)
+			if err != nil {
+				return "", fmt.Errorf("review_complete tool not found: %w", err)
+			}
+
+			result, err := tool.Exec(ctx, toolCall.Parameters)
+			if err != nil {
+				return "", fmt.Errorf("review_complete validation failed: %w", err)
+			}
+
+			// Store the structured result in state data for approval handling to access
+			d.stateData["review_complete_result"] = result
+
+			d.logger.Info("✅ Architect completed review via review_complete tool")
+			return "REVIEW_COMPLETE", nil // Signal that review is complete
 		}
 
 		// Handle submit_stories tool - signals spec review completion with structured data

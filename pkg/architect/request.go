@@ -386,6 +386,12 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		return d.handleSpecReview(ctx, requestMsg, approvalPayload)
 	}
 
+	// Handle single-turn reviews (Plan and BudgetReview) with review_complete tool
+	useSingleTurnReview := approvalType == proto.ApprovalTypePlan || approvalType == proto.ApprovalTypeBudgetReview
+	if useSingleTurnReview && d.llmClient != nil {
+		return d.handleSingleTurnReview(ctx, requestMsg, approvalPayload)
+	}
+
 	// Approval request processing will be logged to database only
 
 	// Persist plan to database if this is a plan approval request
@@ -1150,6 +1156,136 @@ Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with sp
 	return prompt
 }
 
+// generatePlanReviewPrompt creates a prompt for architect's plan review.
+func (d *Driver) generatePlanReviewPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) string {
+	storyID := requestMsg.Metadata["story_id"]
+	planContent := approvalPayload.Content
+
+	// Get story information from queue
+	var storyTitle, taskContent, knowledgePack string
+	if storyID != "" && d.queue != nil {
+		if story, exists := d.queue.GetStory(storyID); exists {
+			storyTitle = story.Title
+			taskContent = story.Content
+			// Get knowledge pack if available
+			if story.KnowledgePack != "" {
+				knowledgePack = story.KnowledgePack
+			}
+		}
+	}
+
+	// Fallback values
+	if storyTitle == "" {
+		storyTitle = "Unknown Story"
+	}
+	if taskContent == "" {
+		taskContent = "Task content not available"
+	}
+
+	// Create template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"StoryTitle":    storyTitle,
+			"TaskContent":   taskContent,
+			"PlanContent":   planContent,
+			"KnowledgePack": knowledgePack,
+		},
+	}
+
+	// Check if we have a renderer
+	if d.renderer == nil {
+		// Fallback to simple text if no renderer available
+		return fmt.Sprintf(`Plan Review Request
+
+Story: %s
+Task: %s
+
+Submitted Plan:
+%s
+
+Please review and provide decision: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
+			storyTitle, taskContent, planContent)
+	}
+
+	// Render template
+	prompt, err := d.renderer.Render(templates.PlanReviewArchitectTemplate, templateData)
+	if err != nil {
+		// Fallback to simple text
+		return fmt.Sprintf(`Plan Review Request
+
+Story: %s
+Task: %s
+
+Submitted Plan:
+%s
+
+Please review and provide decision: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
+			storyTitle, taskContent, planContent)
+	}
+
+	return prompt
+}
+
+// buildApprovalResponseFromReviewComplete builds an approval response from review_complete tool result.
+func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, statusStr, feedback string) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	storyID := requestMsg.Metadata["story_id"]
+
+	d.logger.Info("Building approval response: %s -> %s", approvalType, statusStr)
+
+	// Map string status to proto.ApprovalStatus
+	var status proto.ApprovalStatus
+	switch statusStr {
+	case "APPROVED":
+		status = proto.ApprovalStatusApproved
+	case "NEEDS_CHANGES":
+		status = proto.ApprovalStatusNeedsChanges
+	case "REJECTED":
+		status = proto.ApprovalStatusRejected
+	default:
+		// Should not happen due to tool validation, but handle gracefully
+		status = proto.ApprovalStatusNeedsChanges
+		d.logger.Warn("Unknown status %s, defaulting to NEEDS_CHANGES", statusStr)
+	}
+
+	if feedback == "" {
+		feedback = "Review completed via single-turn review"
+	}
+
+	// Create approval result
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  requestMsg.Metadata["approval_id"],
+		Type:       approvalType,
+		Status:     status,
+		Feedback:   feedback,
+		ReviewedBy: d.architectID,
+		ReviewedAt: time.Now().UTC(),
+	}
+
+	// Handle work acceptance for approved completions
+	if status == proto.ApprovalStatusApproved && approvalType == proto.ApprovalTypeCompletion {
+		if storyID != "" {
+			completionSummary := fmt.Sprintf("Story completed via single-turn review: %s", feedback)
+			d.handleWorkAccepted(ctx, storyID, "completion", nil, nil, &completionSummary)
+		}
+	}
+
+	// Create response message
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+
+	// Copy story_id to response metadata
+	if storyID != "" {
+		response.SetMetadata(proto.KeyStoryID, storyID)
+	}
+	response.SetMetadata("approval_id", approvalResult.ID)
+
+	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
+	return response, nil
+}
+
 // generateApprovalPrompt is a shared helper for story-type-aware approval prompts.
 func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any, appTemplate, devopsTemplate templates.StateTemplate, fallbackMsg string) string {
 	// Extract story ID from metadata to get story type from queue
@@ -1580,6 +1716,109 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Return nil to signal continuation (state machine will call us again)
 	//nolint:nilnil // Intentional: nil response signals continuation after nudge
 	return nil, nil
+}
+
+// handleSingleTurnReview handles single-turn approval reviews (Plan and BudgetReview)
+// that use the review_complete tool for structured responses.
+func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	storyID := requestMsg.Metadata["story_id"]
+
+	d.logger.Info("🔍 Starting single-turn review for %s (story: %s)", approvalType, storyID)
+
+	// Create tool provider with only review_complete tool
+	toolProvider := d.createReviewToolProvider()
+
+	// Build prompt based on approval type
+	var prompt string
+	switch approvalType {
+	case proto.ApprovalTypePlan:
+		prompt = d.generatePlanReviewPrompt(requestMsg, approvalPayload)
+	case proto.ApprovalTypeBudgetReview:
+		prompt = d.generateBudgetReviewPrompt(requestMsg)
+	default:
+		return nil, fmt.Errorf("unsupported single-turn review type: %s", approvalType)
+	}
+
+	// Reset context for this single-turn review
+	templateName := fmt.Sprintf("review-%s-%s", approvalType, storyID)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
+
+	// Flush user buffer before LLM request
+	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
+		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
+	}
+
+	// Build messages with context
+	messages := d.buildMessagesWithContext(prompt)
+
+	// Get tool definitions for LLM
+	toolDefs := d.getArchitectToolsForLLM(toolProvider)
+
+	req := agent.CompletionRequest{
+		Messages:  messages,
+		MaxTokens: agent.ArchitectMaxTokens,
+		Tools:     toolDefs,
+	}
+
+	// Call LLM
+	d.logger.Info("🔄 Calling LLM for single-turn review")
+	resp, err := d.llmClient.Complete(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("LLM completion failed: %w", err)
+	}
+
+	// Add assistant response to context
+	if len(resp.ToolCalls) > 0 {
+		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
+		for i := range resp.ToolCalls {
+			toolCalls[i] = contextmgr.ToolCall{
+				ID:         resp.ToolCalls[i].ID,
+				Name:       resp.ToolCalls[i].Name,
+				Parameters: resp.ToolCalls[i].Parameters,
+			}
+		}
+		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+	} else {
+		d.contextManager.AddAssistantMessage(resp.Content)
+	}
+
+	// Process tool calls
+	if len(resp.ToolCalls) == 0 {
+		return nil, fmt.Errorf("LLM did not call review_complete tool in single-turn review")
+	}
+
+	// Execute tools and check for review_complete
+	signal, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
+	if err != nil {
+		return nil, fmt.Errorf("tool processing failed: %w", err)
+	}
+
+	if signal != "REVIEW_COMPLETE" {
+		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", signal)
+	}
+
+	// Extract review result from state data
+	reviewResult, ok := d.stateData["review_complete_result"]
+	if !ok {
+		return nil, fmt.Errorf("review_complete_result not found in state data")
+	}
+
+	resultMap, ok := reviewResult.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("review_complete_result has invalid type")
+	}
+
+	status, _ := resultMap["status"].(string)
+	feedback, _ := resultMap["feedback"].(string)
+
+	d.logger.Info("✅ Single-turn review completed with status: %s", status)
+
+	// Clean up state data
+	delete(d.stateData, "review_complete_result")
+
+	// Build and return approval response
+	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
 }
 
 // generateIterativeCodeReviewPrompt creates a prompt for iterative code review.

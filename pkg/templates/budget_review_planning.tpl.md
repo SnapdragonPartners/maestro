@@ -89,14 +89,20 @@ The budget review request includes automated detection of universal failure patt
 - Agent repeatedly ignores guidance and cannot recover
 - **Effect**: Terminate task and transition to ERROR state
 
-## Response Format
+## Submitting Your Decision
 
-```json
-{
-  "status": "APPROVED|NEEDS_CHANGES|REJECTED",
-  "feedback": "Specific guidance on what the agent should do in planning state",
-  "reasoning": "Why you made this decision based on the evidence"
-}
+Use the `review_complete` tool to submit your decision:
+
+**Parameters:**
+- `status` (required): Must be one of: APPROVED, NEEDS_CHANGES, or REJECTED
+- `feedback` (required): Specific guidance explaining your decision and what the agent should do
+
+**Example:**
+```
+review_complete({
+  "status": "NEEDS_CHANGES",
+  "feedback": "Stop using git commands - the workspace is already current from SETUP. Focus on exploring the existing project structure with ls/cat/find, then submit your plan."
+})
 ```
 
-Provide concrete guidance for the planning phase.
+Provide concrete, actionable guidance for the planning phase.
