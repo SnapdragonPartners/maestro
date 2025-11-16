@@ -36,6 +36,18 @@ const (
 	PreviewActionSubmit = "submit_to_architect"
 )
 
+// State data keys for PM state management.
+const (
+	// StateKeyHasRepository indicates whether PM has git repository access.
+	StateKeyHasRepository = "has_repository"
+	// StateKeyUserExpertise stores the user's expertise level (NON_TECHNICAL, BASIC, EXPERT).
+	StateKeyUserExpertise = "user_expertise"
+	// StateKeyBootstrapRequirements stores detected bootstrap requirements.
+	StateKeyBootstrapRequirements = "bootstrap_requirements"
+	// StateKeyDetectedPlatform stores the detected platform.
+	StateKeyDetectedPlatform = "detected_platform"
+)
+
 // Driver implements the PM (Product Manager) agent.
 // PM conducts interviews with users to generate high-quality specifications.
 //
@@ -96,12 +108,20 @@ func NewPM(
 	// Create context manager with PM model
 	contextManager := contextmgr.NewContextManagerWithModel(modelName)
 
-	// Ensure PM workspace exists (pm-001/ read-only clone)
+	// Ensure PM workspace exists (pm-001/ read-only clone or minimal workspace)
 	pmWorkspace, workspaceErr := workspace.EnsurePMWorkspace(ctx, workDir)
 	if workspaceErr != nil {
 		return nil, fmt.Errorf("failed to ensure PM workspace: %w", workspaceErr)
 	}
 	logger.Info("PM workspace ready at: %s", pmWorkspace)
+
+	// Determine if PM has repository access
+	hasRepository := cfg.Git != nil && cfg.Git.RepoURL != ""
+	if hasRepository {
+		logger.Info("PM has repository access: %s", cfg.Git.RepoURL)
+	} else {
+		logger.Info("PM starting in no-repo mode (bootstrap interview only)")
+	}
 
 	// Create and start PM container executor
 	// PM mounts only its own workspace at /workspace (same as coders)
@@ -119,7 +139,7 @@ func NewPM(
 		}
 	}
 
-	// Create tool provider with all PM tools (read_file, list_files, chat_post, spec_submit)
+	// Create tool provider with all PM tools (read_file, list_files, chat_post, bootstrap, spec_submit)
 	// Note: WorkDir must be the container path, not host path
 	agentCtx := tools.AgentContext{
 		Executor:        pmExecutor,
@@ -128,6 +148,7 @@ func NewPM(
 		NetworkDisabled: true,
 		WorkDir:         "/workspace", // Container path where pmWorkspace is mounted
 		AgentID:         pmID,
+		ProjectDir:      workDir, // Host project directory for bootstrap detection
 	}
 	toolProvider := tools.NewProvider(&agentCtx, tools.PMTools)
 
@@ -136,6 +157,11 @@ func NewPM(
 		chatAdapter := contextmgr.NewChatServiceAdapter(chatService)
 		contextManager.SetChatService(chatAdapter, pmID)
 		logger.Info("💬 Chat injection configured for PM %s", pmID)
+	}
+
+	// Create initial state data with repository availability
+	initialStateData := map[string]any{
+		StateKeyHasRepository: hasRepository,
 	}
 
 	// Create driver first (without LLM client yet)
@@ -149,7 +175,7 @@ func NewPM(
 		persistenceChannel: persistenceChannel,
 		chatService:        chatService,
 		currentState:       StateWaiting,
-		stateData:          make(map[string]any),
+		stateData:          initialStateData,
 		executor:           pmExecutor,
 		workDir:            workDir,
 		toolProvider:       toolProvider,
@@ -509,6 +535,39 @@ func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateCha
 	d.logger.Debug("State notification channel set for PM")
 }
 
+// HasRepository returns whether PM has git repository access.
+// Returns false if PM is running in no-repo/bootstrap mode.
+func (d *Driver) HasRepository() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if hasRepo, ok := d.stateData[StateKeyHasRepository].(bool); ok {
+		return hasRepo
+	}
+	return false
+}
+
+// GetBootstrapRequirements returns the detected bootstrap requirements.
+// Returns nil if bootstrap detection hasn't run yet or failed.
+func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if reqs, ok := d.stateData[StateKeyBootstrapRequirements].(*tools.BootstrapRequirements); ok {
+		return reqs
+	}
+	return nil
+}
+
+// GetDetectedPlatform returns the detected platform.
+// Returns empty string if platform hasn't been detected.
+func (d *Driver) GetDetectedPlatform() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if platform, ok := d.stateData[StateKeyDetectedPlatform].(string); ok {
+		return platform
+	}
+	return ""
+}
+
 // GetDraftSpec returns the draft specification markdown if available.
 // This is used by the WebUI to display the spec in PREVIEW state.
 // Returns empty string if no draft spec is available.
@@ -539,25 +598,65 @@ func (d *Driver) StartInterview(expertise string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Idempotency check: if already in AWAIT_USER with same expertise, succeed silently
-	if d.currentState == StateAwaitUser {
-		if existingExpertise, ok := d.stateData["user_expertise"].(string); ok && existingExpertise == expertise {
+	// Idempotency check: if already in AWAIT_USER or WORKING with same expertise, succeed silently
+	if d.currentState == StateAwaitUser || d.currentState == StateWorking {
+		if existingExpertise, ok := d.stateData[StateKeyUserExpertise].(string); ok && existingExpertise == expertise {
 			d.logger.Info("📝 Interview already started with expertise: %s - idempotent success", expertise)
 			return nil
 		}
 	}
 
-	// Validate state transition
+	// Validate state transition - must be in WAITING to start
 	if d.currentState != StateWaiting {
 		return fmt.Errorf("cannot start interview in state %s (must be WAITING)", d.currentState)
 	}
 
-	// Store expertise and transition to AWAIT_USER
-	d.stateData["user_expertise"] = expertise
+	// Store expertise level
+	d.stateData[StateKeyUserExpertise] = expertise
 	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
-	d.currentState = StateAwaitUser
 
-	d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
+	// Detect bootstrap requirements
+	d.logger.Info("🔍 Detecting bootstrap requirements (expertise: %s)", expertise)
+	detector := tools.NewBootstrapDetector(d.workDir)
+	reqs, err := detector.Detect(context.Background())
+	needsBootstrap := false
+	if err != nil {
+		d.logger.Warn("Bootstrap detection failed: %v", err)
+		// Continue without bootstrap detection - non-fatal
+	} else {
+		// Store bootstrap requirements in state
+		d.stateData[StateKeyBootstrapRequirements] = reqs
+		d.stateData[StateKeyDetectedPlatform] = reqs.DetectedPlatform
+
+		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
+			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+
+		// Add detection summary to context if anything is missing
+		if reqs.HasAnyMissingComponents() {
+			d.contextManager.AddMessage("system",
+				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
+					reqs.MissingComponents, reqs.DetectedPlatform))
+
+			// Any missing components means we need bootstrap
+			// PM should be in WORKING mode to handle setup
+			needsBootstrap = true
+
+			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v",
+				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph)
+		}
+	}
+
+	// Decide initial state based on bootstrap needs
+	if needsBootstrap {
+		// Start in WORKING so PM can proactively ask bootstrap questions
+		d.currentState = StateWorking
+		d.logger.Info("📝 Interview started (expertise: %s) - bootstrap needed, transitioned to WORKING for proactive setup", expertise)
+	} else {
+		// Start in AWAIT_USER - user will initiate feature discussion
+		d.currentState = StateAwaitUser
+		d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
+	}
+
 	return nil
 }
 

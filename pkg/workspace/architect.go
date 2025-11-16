@@ -35,8 +35,19 @@ func EnsureArchitectWorkspace(ctx context.Context, projectDir string) (string, e
 		return "", fmt.Errorf("failed to get config: %w", err)
 	}
 
-	if cfg.Git == nil {
-		return "", fmt.Errorf("git configuration not found")
+	// If no git configured (PM bootstrap mode), create placeholder directory
+	// PM will handle bootstrap requirements and proper setup will happen later
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		logger.Info("No git repository configured - creating placeholder architect workspace for bootstrap mode")
+		architectWorkspace := filepath.Join(projectDir, "architect-001")
+
+		// Create the directory so container executor doesn't fail
+		if mkdirErr := os.MkdirAll(architectWorkspace, 0755); mkdirErr != nil {
+			return "", fmt.Errorf("failed to create placeholder architect workspace: %w", mkdirErr)
+		}
+
+		logger.Info("Created placeholder architect workspace at %s", architectWorkspace)
+		return architectWorkspace, nil
 	}
 
 	targetBranch := cfg.Git.TargetBranch

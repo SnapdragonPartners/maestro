@@ -127,9 +127,11 @@ func TestBasicFlow(t *testing.T) {
 	cm := contextmgr.NewContextManager()
 	logger := logx.NewLogger("test")
 
+	// Test no-tool safeguard: first response has no tools, second response after reminder errors
 	llmClient := &mockLLMClient{
 		responses: []agent.CompletionResponse{
-			{Content: "Hello, world!", ToolCalls: nil},
+			{Content: "Hello, world!", ToolCalls: nil},   // No tools - triggers reminder
+			{Content: "Still no tools!", ToolCalls: nil}, // Still no tools - triggers error
 		},
 	}
 
@@ -145,16 +147,17 @@ func TestBasicFlow(t *testing.T) {
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Should error on second no-tool response
+	if err == nil {
+		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
-	if signal != "Hello, world!" {
-		t.Errorf("expected signal 'Hello, world!', got %q", signal)
+	if signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", signal)
 	}
 
-	if llmClient.callCount != 1 {
-		t.Errorf("expected 1 LLM call, got %d", llmClient.callCount)
+	if llmClient.callCount != 2 {
+		t.Errorf("expected 2 LLM calls, got %d", llmClient.callCount)
 	}
 }
 
@@ -172,7 +175,8 @@ func TestSingleToolCall(t *testing.T) {
 					{ID: "call1", Name: "test_tool", Parameters: map[string]any{"arg": "value"}},
 				},
 			},
-			{Content: "Done!", ToolCalls: nil},
+			{Content: "Done!", ToolCalls: nil},      // No tools - triggers reminder
+			{Content: "Still done", ToolCalls: nil}, // Still no tools - triggers error
 		},
 	}
 
@@ -191,16 +195,17 @@ func TestSingleToolCall(t *testing.T) {
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Should error on second no-tool response
+	if err == nil {
+		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
-	if signal != "Done!" {
-		t.Errorf("expected signal 'Done!', got %q", signal)
+	if signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", signal)
 	}
 
-	if llmClient.callCount != 2 {
-		t.Errorf("expected 2 LLM calls, got %d", llmClient.callCount)
+	if llmClient.callCount != 3 {
+		t.Errorf("expected 3 LLM calls, got %d", llmClient.callCount)
 	}
 
 	if len(toolProvider.called) != 1 || toolProvider.called[0] != "test_tool" {
@@ -224,7 +229,8 @@ func TestMultipleTools(t *testing.T) {
 					{ID: "call3", Name: "tool3", Parameters: map[string]any{}},
 				},
 			},
-			{Content: "All done", ToolCalls: nil},
+			{Content: "All done", ToolCalls: nil},    // No tools - triggers reminder
+			{Content: "Really done", ToolCalls: nil}, // Still no tools - triggers error
 		},
 	}
 
@@ -245,8 +251,9 @@ func TestMultipleTools(t *testing.T) {
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Should error on second no-tool response
+	if err == nil {
+		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
 	// Verify all three tools were called
@@ -260,8 +267,8 @@ func TestMultipleTools(t *testing.T) {
 		}
 	}
 
-	if signal != "All done" {
-		t.Errorf("expected signal 'All done', got %q", signal)
+	if signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", signal)
 	}
 }
 
@@ -394,7 +401,8 @@ func TestToolError(t *testing.T) {
 					{ID: "call1", Name: "fail_tool", Parameters: map[string]any{}},
 				},
 			},
-			{Content: "Handled error", ToolCalls: nil},
+			{Content: "Handled error", ToolCalls: nil}, // No tools - triggers reminder
+			{Content: "Still handled", ToolCalls: nil}, // Still no tools - triggers error
 		},
 	}
 
@@ -412,17 +420,17 @@ func TestToolError(t *testing.T) {
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// Should error on second no-tool response
+	if err == nil {
+		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
-	// Loop should continue after tool error
-	if signal != "Handled error" {
-		t.Errorf("expected signal 'Handled error', got %q", signal)
+	if signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", signal)
 	}
 
-	if llmClient.callCount != 2 {
-		t.Errorf("expected 2 LLM calls, got %d", llmClient.callCount)
+	if llmClient.callCount != 3 {
+		t.Errorf("expected 3 LLM calls, got %d", llmClient.callCount)
 	}
 }
 

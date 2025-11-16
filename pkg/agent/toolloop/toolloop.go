@@ -107,6 +107,9 @@ func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (string, error) {
 		}
 	}
 
+	// Track consecutive turns without tool use
+	consecutiveNoToolTurns := 0
+
 	// Main iteration loop
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
 		// Flush user buffer before LLM request
@@ -163,9 +166,28 @@ func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (string, error) {
 			cfg.ContextManager.AddAssistantMessage(resp.Content)
 		}
 
-		// If no tool calls, return content as signal
+		// Handle no tool calls - this is problematic for unattended operation
 		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil
+			consecutiveNoToolTurns++
+			tl.logger.Warn("⚠️  No tools used in LLM response (consecutive count: %d)", consecutiveNoToolTurns)
+
+			if consecutiveNoToolTurns == 1 {
+				// First time - remind LLM to use tools and continue
+				tl.logger.Info("📝 Adding reminder to use tools")
+				reminderMsg := "No tools were used in your last call. Reasoning explanations are welcome, but make sure to use tools in your next call to advance the work."
+				cfg.ContextManager.AddMessage("user", reminderMsg)
+				continue // Continue loop with reminder
+			}
+
+			// Second consecutive time - error condition
+			tl.logger.Error("❌ LLM failed to use tools after reminder - transitioning to ERROR")
+			return "ERROR", fmt.Errorf("LLM did not use tools after reminder (consecutive no-tool turns: %d)", consecutiveNoToolTurns)
+		}
+
+		// Tools were used - reset counter
+		if consecutiveNoToolTurns > 0 {
+			tl.logger.Info("✅ Tools used again, resetting no-tool counter")
+			consecutiveNoToolTurns = 0
 		}
 
 		// Execute ALL tools (API requirement: every tool_use must have tool_result)

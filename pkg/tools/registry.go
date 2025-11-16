@@ -23,6 +23,7 @@ type AgentContext struct {
 	WorkDir         string
 	AgentID         string // Agent identifier for tools that need it
 	Agent           Agent  // Optional agent reference for state-aware tools
+	ProjectDir      string // Project directory for bootstrap detection and config access
 }
 
 // Agent interface for tools that need access to agent state.
@@ -505,12 +506,21 @@ func getSubmitStoriesSchema() InputSchema {
 	return NewSubmitStoriesTool().Definition().InputSchema
 }
 
-func createSpecSubmitTool(_ *AgentContext) (Tool, error) {
-	return NewSpecSubmitTool(), nil
+func createSpecSubmitTool(ctx *AgentContext) (Tool, error) {
+	return NewSpecSubmitTool(ctx.ProjectDir), nil
 }
 
 func getSpecSubmitSchema() InputSchema {
-	return NewSpecSubmitTool().Definition().InputSchema
+	// Use empty string for schema generation (projectDir not needed for schema)
+	return NewSpecSubmitTool("").Definition().InputSchema
+}
+
+func createBootstrapTool(ctx *AgentContext) (Tool, error) {
+	return NewBootstrapTool(ctx.ProjectDir), nil
+}
+
+func getBootstrapSchema() InputSchema {
+	return NewBootstrapTool("").Definition().InputSchema
 }
 
 func createSpecFeedbackTool(_ *AgentContext) (Tool, error) {
@@ -694,6 +704,12 @@ func init() {
 	})
 
 	// Register PM tools
+	Register(ToolBootstrap, createBootstrapTool, &ToolMeta{
+		Name:        ToolBootstrap,
+		Description: "Configure bootstrap requirements for new project (project name, git URL, platform)",
+		InputSchema: getBootstrapSchema(),
+	})
+
 	Register(ToolSpecSubmit, createSpecSubmitTool, &ToolMeta{
 		Name:        ToolSpecSubmit,
 		Description: "Submit finalized specification for validation and storage (PM SUBMITTING phase)",

@@ -36,7 +36,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 	// Get conversation state
 	turnCount, _ := d.stateData["turn_count"].(int)
-	expertise, _ := d.stateData["expertise"].(string)
+	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
@@ -49,6 +49,14 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	maxTurns := cfg.PM.MaxInterviewTurns
 
 	d.logger.Info("PM working (turn %d/%d, expertise: %s)", turnCount, maxTurns, expertise)
+
+	// On first turn, set up the interview context with bootstrap awareness
+	if turnCount == 0 {
+		if setupErr := d.setupInterviewContext(); setupErr != nil {
+			d.logger.Warn("Failed to set up interview context: %v", setupErr)
+			// Continue anyway - non-fatal
+		}
+	}
 
 	// System prompt was set at interview start - just use context manager's conversation
 	// No need to render a new prompt every turn
@@ -76,6 +84,75 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 	// Stay in WORKING - PM continues interviewing/drafting
 	return StateWorking, nil
+}
+
+// setupInterviewContext renders the appropriate interview template based on project state.
+// If bootstrap requirements are detected, uses focused bootstrap gate template.
+// Otherwise uses full interview start template.
+func (d *Driver) setupInterviewContext() error {
+	d.logger.Info("📝 Setting up interview context")
+
+	// Get expertise level
+	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
+	if expertise == "" {
+		expertise = DefaultExpertise
+	}
+
+	// Get conversation history if any
+	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
+
+	// Check for bootstrap requirements (this checks ALL components)
+	bootstrapReqs := d.GetBootstrapRequirements()
+
+	// Build base template data
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"Expertise":           expertise,
+			"ConversationHistory": conversationHistory,
+		},
+	}
+
+	// Select template based on bootstrap requirements
+	// Single source of truth: use bootstrap detector's methods
+	var templateName templates.StateTemplate
+	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
+		if bootstrapReqs.NeedsBootstrapGate() {
+			// Project metadata (name/platform/git) is missing - use focused bootstrap gate template
+			templateName = templates.PMBootstrapGateTemplate
+			d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
+				bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
+		} else {
+			// Project metadata is complete, but other components missing - use full interview with bootstrap context
+			templateName = templates.PMInterviewStartTemplate
+			templateData.Extra["BootstrapRequired"] = true
+			templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
+			templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
+			templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
+			templateData.Extra["HasRepository"] = !bootstrapReqs.NeedsGitRepo
+			templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
+			templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
+			templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
+
+			d.logger.Info("📋 Using full interview template with bootstrap context: %d missing components, platform: %s",
+				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
+		}
+	} else {
+		// No bootstrap requirements - use full interview template
+		templateName = templates.PMInterviewStartTemplate
+		d.logger.Info("📋 Using full interview template (no bootstrap requirements)")
+	}
+
+	// Render selected template
+	interviewPrompt, renderErr := d.renderer.Render(templateName, templateData)
+	if renderErr != nil {
+		return fmt.Errorf("failed to render interview template: %w", renderErr)
+	}
+
+	// Add as system message to guide the interview
+	d.contextManager.AddMessage("system", interviewPrompt)
+
+	d.logger.Info("✅ Interview context configured")
+	return nil
 }
 
 // renderWorkingPrompt renders the PM working template with current state.
@@ -134,7 +211,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		MaxIterations:  10,
 		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
 		AgentID:        d.pmID,                   // Agent ID for tool context
-		DebugLogging:   false,                    // Enable for debugging: shows messages sent to LLM
+		DebugLogging:   true,                     // Enable for debugging: shows messages sent to LLM
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			// Process results and check for terminal signals
 			return d.checkTerminalTools(ctx, calls, results)
@@ -150,37 +227,14 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		return "", fmt.Errorf("toolloop execution failed: %w", err)
 	}
 
-	// Handle special case: no tool calls means implicit ask_user
-	// This is detected when signal is empty and last message has no tools
-	if signal == "" {
-		contextMsgs := d.contextManager.GetMessages()
-		if len(contextMsgs) > 0 {
-			lastMsg := &contextMsgs[len(contextMsgs)-1]
-			if lastMsg.Role == "assistant" && len(lastMsg.ToolCalls) == 0 && lastMsg.Content != "" {
-				// Post PM's response to chat
-				if d.chatService != nil {
-					d.logger.Info("📤 Posting PM response to chat (%d chars)", len(lastMsg.Content))
-					postResp, postErr := d.chatService.Post(ctx, &chat.PostRequest{
-						Author:  fmt.Sprintf("@%s", d.pmID),
-						Text:    lastMsg.Content,
-						Channel: chat.ChannelProduct,
-					})
-					if postErr != nil {
-						d.logger.Error("❌ Failed to post PM response to chat: %v", postErr)
-					} else {
-						d.logger.Info("✅ Posted PM message to chat (id: %d)", postResp.ID)
-					}
-				}
-				return string(StateAwaitUser), nil
-			}
-		}
-	}
-
+	// Handle terminal signals from tool processing
 	return signal, nil
 }
 
 // checkTerminalTools examines tool execution results for terminal signals.
 // Returns non-empty signal to trigger state transition.
+//
+//nolint:cyclop // Multiple terminal conditions (bootstrap, spec_submit, await_user) adds complexity
 func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, results []any) string {
 	// Track if we saw await_user signal
 	sawAwaitUser := false
@@ -195,6 +249,45 @@ func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, r
 		// Check for errors in result
 		if success, ok := resultMap["success"].(bool); ok && !success {
 			continue // Skip error results
+		}
+
+		// Check for bootstrap_configured signal
+		if bootstrapConfigured, ok := resultMap["bootstrap_configured"].(bool); ok && bootstrapConfigured {
+			d.logger.Info("🔧 PM bootstrap tool succeeded, configuration saved")
+
+			// Store bootstrap params in state for potential use
+			bootstrapParams := make(map[string]string)
+			if projectName, ok := resultMap["project_name"].(string); ok {
+				bootstrapParams["project_name"] = projectName
+			}
+			if gitURL, ok := resultMap["git_url"].(string); ok {
+				bootstrapParams["git_url"] = gitURL
+			}
+			if platform, ok := resultMap["platform"].(string); ok {
+				bootstrapParams["platform"] = platform
+			}
+			d.stateData["bootstrap_params"] = bootstrapParams
+			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
+				bootstrapParams["project_name"], bootstrapParams["platform"], bootstrapParams["git_url"])
+
+			// Inject system message to transition from bootstrap mode to full interview mode
+			transitionMsg := `# Bootstrap Complete
+
+Project configuration saved successfully:
+- Project: ` + bootstrapParams["project_name"] + `
+- Platform: ` + bootstrapParams["platform"] + `
+- Repository: ` + bootstrapParams["git_url"] + `
+
+You can now proceed with full requirements gathering for this project. You have access to additional tools:
+- **read_file** - Read file contents from the codebase
+- **list_files** - List files in the codebase (path, pattern, recursive)
+
+Begin the feature requirements interview by asking the user about what they want to build.`
+
+			d.contextManager.AddMessage("system", transitionMsg)
+			d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
+
+			// Don't return signal - continue loop for next tool call
 		}
 
 		// Check for spec_submit signal (PREVIEW flow)
