@@ -389,7 +389,7 @@ const (
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelOpenAIO3
-	DefaultPMModel        = ModelGPT4o
+	DefaultPMModel        = "claude-opus-4-1-20250805"
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
