@@ -113,22 +113,16 @@ func (d *Driver) setupInterviewContext() error {
 	}
 
 	// Select template based on bootstrap requirements
+	// Single source of truth: use bootstrap detector's methods
 	var templateName templates.StateTemplate
-	if bootstrapReqs != nil && len(bootstrapReqs.MissingComponents) > 0 {
-		// Bootstrap required - check if project metadata is missing
-		// (knowledge graph, dockerfile, makefile can wait, but we need project info first)
-		cfg, err := config.GetConfig()
-		needsProjectConfig := (err != nil || cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "")
-		needsGitConfig := (err != nil || cfg.Git == nil || cfg.Git.RepoURL == "")
-
-		if needsProjectConfig || needsGitConfig {
-			// Use bootstrap gate template - PM needs to gather project metadata first
+	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
+		if bootstrapReqs.NeedsBootstrapGate() {
+			// Project metadata (name/platform/git) is missing - use focused bootstrap gate template
 			templateName = templates.PMBootstrapGateTemplate
-			d.logger.Info("📋 Using bootstrap gate template (missing project config: %v, git config: %v)",
-				needsProjectConfig, needsGitConfig)
+			d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
+				bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
 		} else {
-			// Project metadata configured, but other bootstrap requirements remain
-			// Use full interview template with bootstrap awareness
+			// Project metadata is complete, but other components missing - use full interview with bootstrap context
 			templateName = templates.PMInterviewStartTemplate
 			templateData.Extra["BootstrapRequired"] = true
 			templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents

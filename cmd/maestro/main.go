@@ -14,6 +14,7 @@ import (
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/tools"
 )
 
 func main() {
@@ -224,27 +225,46 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		}
 	}
 
-	// 4. Create or update git mirror if git config exists
+	// 4. Create or update git mirror if git config exists and is valid
+	// Use bootstrap detector to validate the git URL first
+	// If invalid, skip mirror creation and let PM bootstrap handle it
 	if cfg.Git != nil && cfg.Git.RepoURL != "" {
-		mirrorMgr := mirror.NewManager(projectDir)
-		if _, err := mirrorMgr.EnsureMirror(context.Background()); err != nil {
-			return fmt.Errorf("failed to setup git mirror: %w", err)
+		detector := tools.NewBootstrapDetector(projectDir)
+		reqs, detectErr := detector.Detect(context.Background())
+
+		if detectErr == nil && !reqs.NeedsGitRepo {
+			// Git repo is configured and valid - create/update mirror
+			mirrorMgr := mirror.NewManager(projectDir)
+			if _, err := mirrorMgr.EnsureMirror(context.Background()); err != nil {
+				return fmt.Errorf("failed to setup git mirror: %w", err)
+			}
+		} else {
+			// Git repo is invalid or missing - skip mirror creation
+			// PM bootstrap will handle this
+			config.LogInfo("⚠️  Git repository not configured or invalid - skipping mirror creation (PM will bootstrap)")
 		}
 	}
 
-	// 5. Pre-create coder workspace directories for container mounting
-	// Creates exactly max_coders directories (e.g., coder-001, coder-002, coder-003)
-	// These will be mounted read-only into the architect container
+	// 5. Pre-create all agent workspace directories for container mounting
+	// Pre-create architect and PM directories first
+	config.LogInfo("📁 Pre-creating agent workspace directories...")
+	agentDirs := []string{"architect-001", "pm-001"}
+
+	// Add coder directories
 	if cfg.Agents != nil && cfg.Agents.MaxCoders > 0 {
-		config.LogInfo("📁 Pre-creating %d coder workspace directories...", cfg.Agents.MaxCoders)
 		for i := 1; i <= cfg.Agents.MaxCoders; i++ {
-			coderDir := filepath.Join(projectDir, fmt.Sprintf("coder-%03d", i))
-			if err := os.MkdirAll(coderDir, 0755); err != nil {
-				return fmt.Errorf("failed to create workspace directory %s: %w", coderDir, err)
-			}
+			agentDirs = append(agentDirs, fmt.Sprintf("coder-%03d", i))
 		}
-		config.LogInfo("✅ Created %d coder workspace directories", cfg.Agents.MaxCoders)
 	}
+
+	// Create all directories
+	for _, dir := range agentDirs {
+		agentPath := filepath.Join(projectDir, dir)
+		if err := os.MkdirAll(agentPath, 0755); err != nil {
+			return fmt.Errorf("failed to create workspace directory %s: %w", dir, err)
+		}
+	}
+	config.LogInfo("✅ Created %d agent workspace directories", len(agentDirs))
 
 	config.LogInfo("✅ Project infrastructure verification completed for %s", projectDir)
 	return nil

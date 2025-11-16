@@ -43,20 +43,27 @@ Ensure repository is initialized and accessible for development workflow. Git re
 {{end}}
 
 {{if .Extra.NeedsDockerfile}}
-### MANDATORY PREREQUISITE R-003: Create Development Dockerfile
+### MANDATORY PREREQUISITE R-003: Create and Configure Development Container
 **Type:** infrastructure
 **Priority:** must
 **Dependencies:** [R-001, R-002]
 
 **Description:**
-Create Dockerfile for {{.Extra.DetectedPlatform}} development environment.
-Container will provide consistent build and test environment for all developers. Dockerfile is REQUIRED for coders to execute code in isolated environments.
+Create Dockerfile for {{.Extra.DetectedPlatform}} development environment, build the container image, and configure it as the target container for coder agents.
+Container provides consistent build and test environment for all developers. Container configuration is REQUIRED for coders to execute code in isolated environments.
+
+Coders have access to container management tools:
+- `container_build` - Build Docker images from Dockerfile
+- `container_test` - Test containers before making them active
+- `container_update` - Set the built container as the target image for all coders
 
 **Acceptance Criteria:**
 - [ ] Dockerfile created with {{.Extra.DetectedPlatform}} base image
-- [ ] Development dependencies installed
-- [ ] Build tools configured
-- [ ] Container builds successfully
+- [ ] Development dependencies installed (compilers, build tools, linters)
+- [ ] Build tools configured and tested
+- [ ] Container builds successfully using `container_build`
+- [ ] Container tested and validated using `container_test`
+- [ ] Container configured as target image using `container_update` tool
 {{end}}
 
 {{if .Extra.NeedsMakefile}}

@@ -631,17 +631,18 @@ func (d *Driver) StartInterview(expertise string) error {
 		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
 			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
 
-		// Add detection summary to context
-		if len(reqs.MissingComponents) > 0 {
+		// Add detection summary to context if anything is missing
+		if reqs.HasAnyMissingComponents() {
 			d.contextManager.AddMessage("system",
 				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
 					reqs.MissingComponents, reqs.DetectedPlatform))
 
-			// Check if project metadata is missing (determines if we need bootstrap gate)
-			cfg, cfgErr := config.GetConfig()
-			needsProjectConfig := (cfgErr != nil || cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "")
-			needsGitConfig := (cfgErr != nil || cfg.Git == nil || cfg.Git.RepoURL == "")
-			needsBootstrap = needsProjectConfig || needsGitConfig
+			// Any missing components means we need bootstrap
+			// PM should be in WORKING mode to handle setup
+			needsBootstrap = true
+
+			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v",
+				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph)
 		}
 	}
 

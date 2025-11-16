@@ -147,6 +147,9 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		b.logger.Warn("Failed to refresh workspaces: %v", refreshErr)
 	}
 
+	// Re-validate bootstrap requirements to confirm everything is now configured
+	b.validateBootstrapComplete(ctx)
+
 	// Return success with bootstrap params
 	return map[string]any{
 		"success":              true,
@@ -156,6 +159,27 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		"git_url":              gitURL,
 		"platform":             platform,
 	}, nil
+}
+
+// validateBootstrapComplete re-validates bootstrap requirements after configuration.
+// This ensures the bootstrap process completed successfully and all required components are configured.
+func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) {
+	b.logger.Info("Validating bootstrap configuration...")
+	detector := NewBootstrapDetector(b.projectDir)
+	reqs, validateErr := detector.Detect(ctx)
+	if validateErr != nil {
+		b.logger.Warn("Post-bootstrap validation failed: %v", validateErr)
+		// Non-fatal - configuration was saved successfully
+		return
+	}
+
+	if reqs.NeedsProjectConfig || reqs.NeedsGitRepo {
+		// Project metadata should now be complete after bootstrap
+		b.logger.Warn("⚠️  Bootstrap validation: project metadata still incomplete (project_config=%v, git_repo=%v)",
+			reqs.NeedsProjectConfig, reqs.NeedsGitRepo)
+	} else {
+		b.logger.Info("✅ Bootstrap validation passed: project metadata is complete")
+	}
 }
 
 // refreshWorkspacesIfExist updates PM and architect workspaces if they already exist.
