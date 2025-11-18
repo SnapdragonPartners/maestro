@@ -104,12 +104,30 @@ func (d *Driver) setupInterviewContext() error {
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
-	// Build base template data
+	// Get current config to check for existing values
+	cfg, cfgErr := config.GetConfig()
+
+	// Build base template data with existing config values
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
 			"Expertise":           expertise,
 			"ConversationHistory": conversationHistory,
 		},
+	}
+
+	// Add existing config values if available (so PM doesn't ask for them again)
+	if cfgErr == nil {
+		if cfg.Project.Name != "" {
+			templateData.Extra["ExistingProjectName"] = cfg.Project.Name
+		}
+		if cfg.Project.PrimaryPlatform != "" {
+			templateData.Extra["ExistingPlatform"] = cfg.Project.PrimaryPlatform
+		}
+		if cfg.Git.RepoURL != "" {
+			templateData.Extra["ExistingGitURL"] = cfg.Git.RepoURL
+		}
+	} else {
+		d.logger.Warn("Failed to get config: %v", cfgErr)
 	}
 
 	// Select template based on bootstrap requirements
