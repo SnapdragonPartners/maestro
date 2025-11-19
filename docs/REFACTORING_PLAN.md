@@ -9,9 +9,10 @@
 | 1.1 Response Formatters | ✅ Complete | `1f27f85` | 1h |
 | 1.2 Metadata Helpers | ✅ Complete | `3a72991`, `4414065` | 2h |
 | 1.3 StateData Constants | ✅ Complete | `7643e79`, `add4149` | 1.5h |
-| 1.4 Persistence Mappers | ✅ Complete | `6ccd8bf` | 1h |
+| 1.4 Persistence Mappers | ✅ Complete | `6ccd8bf`, `229c469` (tests) | 1h + 0.5h tests |
 
-**Phase 1 Total**: 5.5 hours (within 10-14h budget)
+**Phase 1 Total**: 6 hours (within 10-14h budget)
+**Test Coverage**: 9 comprehensive unit tests for persistence mappers
 
 ---
 
@@ -175,20 +176,29 @@ func buildAgentResponseFromMsg(request, response *proto.AgentMsg) *persistence.A
 ```
 
 **Results**:
-- Created `pkg/architect/persistence.go` with 134 lines
+- Created `pkg/architect/persistence.go` with 134 lines (2 pure functions)
+- Created `pkg/architect/persistence_test.go` with 422 lines (9 comprehensive tests)
 - Request persistence: 54 lines → 7 lines (87% reduction)
 - Response persistence: 73 lines → 22 lines (70% reduction)
 - Reduced request.go from 1314 lines to 1185 lines (10% reduction)
 - Pure functions, easy to test in isolation
 - Status validation warning kept in driver (separation of concerns)
 
+**Test Coverage**:
+- 9 unit tests covering all code paths
+- Tests for question/approval requests and responses
+- Tests for optional field handling and fallback logic
+- Tests for status validation (valid and invalid cases)
+- Tests for all 4 response kinds (question, approval, merge, requeue)
+
 **Impact**:
 - Testable persistence logic (pure functions)
 - Cleaner state machine code
 - Single place to change persistence schema
 - Clear separation: mappers extract data, driver handles persistence
+- High confidence in correctness through comprehensive tests
 
-**Actual Effort**: ~1 hour
+**Actual Effort**: ~1 hour implementation + ~0.5 hour tests = 1.5 hours total
 
 ---
 
