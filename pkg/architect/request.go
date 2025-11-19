@@ -47,8 +47,8 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		}
 
 		// Extract story_id from metadata
-		if storyIDStr, exists := requestMsg.Metadata["story_id"]; exists {
-			agentRequest.StoryID = &storyIDStr
+		if storyID := proto.GetStoryID(requestMsg); storyID != "" {
+			agentRequest.StoryID = &storyID
 		}
 
 		// Set request type and content based on unified REQUEST protocol
@@ -75,15 +75,9 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			}
 		}
 
-		// Set correlation ID from metadata
-		if correlationIDStr, exists := requestMsg.Metadata["correlation_id"]; exists {
-			agentRequest.CorrelationID = &correlationIDStr
-		}
-		if correlationIDStr, exists := requestMsg.Metadata["question_id"]; exists {
-			agentRequest.CorrelationID = &correlationIDStr
-		}
-		if correlationIDStr, exists := requestMsg.Metadata["approval_id"]; exists {
-			agentRequest.CorrelationID = &correlationIDStr
+		// Set correlation ID from metadata (tries correlation_id, question_id, approval_id)
+		if correlationID := proto.GetCorrelationID(requestMsg); correlationID != "" {
+			agentRequest.CorrelationID = &correlationID
 		}
 
 		// Set parent message ID
@@ -173,12 +167,11 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			// Set request ID for correlation
 			agentResponse.RequestID = &requestMsg.ID
 
-			// Extract story_id from metadata
-			if storyIDStr, exists := response.Metadata["story_id"]; exists {
-				agentResponse.StoryID = &storyIDStr
-			} else if storyIDStr, exists := requestMsg.Metadata["story_id"]; exists {
-				// Fallback to request message story_id
-				agentResponse.StoryID = &storyIDStr
+			// Extract story_id from metadata (try response first, fall back to request)
+			if storyID := proto.GetStoryID(response); storyID != "" {
+				agentResponse.StoryID = &storyID
+			} else if storyID := proto.GetStoryID(requestMsg); storyID != "" {
+				agentResponse.StoryID = &storyID
 			}
 
 			// Set response type and content based on message type
@@ -224,15 +217,9 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			default:
 			}
 
-			// Set correlation ID from metadata
-			if correlationIDStr, exists := response.Metadata["correlation_id"]; exists {
-				agentResponse.CorrelationID = &correlationIDStr
-			}
-			if correlationIDStr, exists := response.Metadata["question_id"]; exists {
-				agentResponse.CorrelationID = &correlationIDStr
-			}
-			if correlationIDStr, exists := response.Metadata["approval_id"]; exists {
-				agentResponse.CorrelationID = &correlationIDStr
+			// Set correlation ID from metadata (tries correlation_id, question_id, approval_id)
+			if correlationID := proto.GetCorrelationID(response); correlationID != "" {
+				agentResponse.CorrelationID = &correlationID
 			}
 
 			d.persistenceChannel <- &persistence.Request{
@@ -350,13 +337,14 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	}
 
 	// Copy correlation ID and story_id to metadata
-	if correlationIDStr, exists := questionMsg.Metadata["correlation_id"]; exists {
-		answerPayload.Metadata["correlation_id"] = correlationIDStr
-		response.SetMetadata("correlation_id", correlationIDStr)
+	// Copy metadata using helpers
+	if correlationID := proto.GetCorrelationID(questionMsg); correlationID != "" {
+		answerPayload.Metadata[proto.KeyCorrelationID] = correlationID
+		proto.SetCorrelationID(response, correlationID)
 	}
-	if storyIDStr, exists := questionMsg.Metadata["story_id"]; exists {
-		answerPayload.Metadata["story_id"] = storyIDStr
-		response.SetMetadata("story_id", storyIDStr)
+	if storyID := proto.GetStoryID(questionMsg); storyID != "" {
+		answerPayload.Metadata[proto.KeyStoryID] = storyID
+		proto.SetStoryID(response, storyID)
 	}
 
 	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
@@ -379,7 +367,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	content := approvalPayload.Content
 	approvalType := approvalPayload.ApprovalType
-	approvalIDString := requestMsg.Metadata["approval_id"]
+	approvalIDString := proto.GetApprovalID(requestMsg)
 
 	// Check if this approval type should use iteration pattern
 	useIteration := approvalType == proto.ApprovalTypeCode || approvalType == proto.ApprovalTypeCompletion
@@ -408,7 +396,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 		if planContent != "" {
 			// Extract story_id from metadata
-			storyIDStr := requestMsg.Metadata["story_id"]
+			storyIDStr := proto.GetStoryID(requestMsg)
 
 			// Debug logging for story_id validation
 			if storyIDStr == "" {
@@ -419,7 +407,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 			// Extract confidence if present
 			var confidenceStr *string
-			if conf, exists := approvalPayload.Metadata["confidence"]; exists && conf != "" {
+			if conf, exists := approvalPayload.Metadata[proto.KeyConfidence]; exists && conf != "" {
 				confidenceStr = &conf
 			}
 
@@ -591,11 +579,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	// Copy story_id from request metadata for dispatcher validation
 	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		response.SetMetadata(proto.KeyStoryID, storyID)
+		proto.SetStoryID(response, storyID)
 	}
 
 	// Copy approval_id to metadata
-	response.SetMetadata("approval_id", approvalResult.ID)
+	proto.SetApprovalID(response, approvalResult.ID)
 
 	// Approval result will be logged to database only
 
@@ -605,7 +593,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 // handleRequeueRequest processes a REQUEUE message (fire-and-forget).
 func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *proto.AgentMsg) error {
 	// Extract story_id from metadata
-	storyIDStr := requeueMsg.Metadata["story_id"]
+	storyIDStr := proto.GetStoryID(requeueMsg)
 
 	if storyIDStr == "" {
 		return fmt.Errorf("requeue request missing story_id")
@@ -630,7 +618,7 @@ func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *p
 // buildApprovalResponseFromReviewComplete builds an approval response from review_complete tool result.
 func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, statusStr, feedback string) (*proto.AgentMsg, error) {
 	approvalType := approvalPayload.ApprovalType
-	storyID := requestMsg.Metadata["story_id"]
+	storyID := proto.GetStoryID(requestMsg)
 
 	d.logger.Info("Building approval response: %s -> %s", approvalType, statusStr)
 
@@ -656,7 +644,7 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 	// Create approval result
 	approvalResult := &proto.ApprovalResult{
 		ID:         proto.GenerateApprovalID(),
-		RequestID:  requestMsg.Metadata["approval_id"],
+		RequestID:  proto.GetApprovalID(requestMsg),
 		Type:       approvalType,
 		Status:     status,
 		Feedback:   feedback,
@@ -679,9 +667,9 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 
 	// Copy story_id to response metadata
 	if storyID != "" {
-		response.SetMetadata(proto.KeyStoryID, storyID)
+		proto.SetStoryID(response, storyID)
 	}
-	response.SetMetadata("approval_id", approvalResult.ID)
+	proto.SetApprovalID(response, approvalResult.ID)
 
 	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
 	return response, nil
@@ -889,7 +877,7 @@ func (d *Driver) getBudgetReviewResponse(status proto.ApprovalStatus, feedback, 
 // handleIterativeApproval processes approval requests with iterative code exploration.
 func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	approvalType := approvalPayload.ApprovalType
-	storyID := requestMsg.Metadata["story_id"]
+	storyID := proto.GetStoryID(requestMsg)
 
 	d.logger.Info("🔍 Starting iterative approval for %s (story: %s)", approvalType, storyID)
 
@@ -995,7 +983,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 // Uses toolloop for retry/nudging and proper logging.
 func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	approvalType := approvalPayload.ApprovalType
-	storyID := requestMsg.Metadata["story_id"]
+	storyID := proto.GetStoryID(requestMsg)
 
 	d.logger.Info("🔍 Starting single-turn review for %s (story: %s)", approvalType, storyID)
 
@@ -1121,7 +1109,7 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 	// Create approval result
 	approvalResult := &proto.ApprovalResult{
 		ID:         proto.GenerateApprovalID(),
-		RequestID:  requestMsg.Metadata["approval_id"],
+		RequestID:  proto.GetApprovalID(requestMsg),
 		Type:       approvalPayload.ApprovalType,
 		Status:     status,
 		Feedback:   feedback,
@@ -1131,7 +1119,7 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 	// Handle work acceptance for approved completions
 	if status == proto.ApprovalStatusApproved && approvalPayload.ApprovalType == proto.ApprovalTypeCompletion {
-		storyID := requestMsg.Metadata["story_id"]
+		storyID := proto.GetStoryID(requestMsg)
 		if storyID != "" {
 			completionSummary := fmt.Sprintf("Story completed via iterative review: %s", feedback)
 			d.handleWorkAccepted(ctx, storyID, "completion", nil, nil, &completionSummary)
@@ -1145,9 +1133,9 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 	// Copy story_id to response metadata
 	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		response.SetMetadata(proto.KeyStoryID, storyID)
+		proto.SetStoryID(response, storyID)
 	}
-	response.SetMetadata("approval_id", approvalResult.ID)
+	proto.SetApprovalID(response, approvalResult.ID)
 
 	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
 	return response, nil
@@ -1166,7 +1154,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("failed to extract question request: %w", err)
 	}
 
-	storyID := requestMsg.Metadata["story_id"]
+	storyID := proto.GetStoryID(requestMsg)
 
 	d.logger.Info("🔍 Starting iterative question handling (story: %s)", storyID)
 
@@ -1313,7 +1301,7 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	}
 
 	// Add exploration metadata
-	answerPayload.Metadata["exploration_method"] = "iterative_with_tools"
+	answerPayload.Metadata[proto.KeyExplorationMethod] = "iterative_with_tools"
 
 	// Create response message
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
@@ -1321,11 +1309,9 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
 
 	// Copy story_id and question_id to response metadata
-	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		response.SetMetadata(proto.KeyStoryID, storyID)
-	}
-	if questionID, exists := requestMsg.Metadata["question_id"]; exists {
-		response.SetMetadata("question_id", questionID)
+	proto.CopyStoryMetadata(requestMsg, response)
+	if questionID := proto.GetQuestionID(requestMsg); questionID != "" {
+		proto.SetQuestionID(response, questionID)
 	}
 
 	d.logger.Info("✅ Built question response via iterative exploration")
