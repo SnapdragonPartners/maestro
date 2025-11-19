@@ -64,6 +64,11 @@ type Config struct {
 	// Debug settings
 	DebugLogging bool // Enable detailed debug logging for message formatting
 
+	// Single-turn mode: Expect terminal tool call in first iteration (allows retry/nudge but no multi-turn iteration)
+	// When true, CheckTerminal MUST return a non-empty signal after first successful tool execution
+	// Used for reviews and approvals that should complete in one interaction
+	SingleTurn bool
+
 	// Initial prompt to add as user message (optional - may already be in context)
 	// If empty, uses existing context
 	InitialPrompt string
@@ -84,6 +89,9 @@ func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (string, error) {
 	if cfg.ToolProvider == nil {
 		return "", fmt.Errorf("ToolProvider is required")
 	}
+	if cfg.CheckTerminal == nil {
+		return "", fmt.Errorf("CheckTerminal is required - every toolloop must have a way to exit")
+	}
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = 10 // Default
 	}
@@ -98,6 +106,9 @@ func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (string, error) {
 
 	// Get tool definitions
 	toolsList := cfg.ToolProvider.List()
+	if len(toolsList) == 0 {
+		return "", fmt.Errorf("ToolProvider must provide at least one tool - toolloop requires tools to function")
+	}
 	toolDefs := make([]tools.ToolDefinition, len(toolsList))
 	for i := range toolsList {
 		toolDefs[i] = tools.ToolDefinition{
@@ -246,6 +257,12 @@ func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (string, error) {
 		if signal != "" {
 			tl.logger.Info("✅ Tool execution signaled state transition: %s", signal)
 			return signal, nil
+		}
+
+		// SingleTurn mode: terminal tool must return signal
+		if cfg.SingleTurn {
+			tl.logger.Error("❌ SingleTurn mode: CheckTerminal did not return a signal after tool execution")
+			return "ERROR", fmt.Errorf("single-turn review did not complete - terminal tool must signal completion")
 		}
 
 		// Continue iteration

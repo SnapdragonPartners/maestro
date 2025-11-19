@@ -4,15 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/middleware/metrics"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
@@ -323,12 +322,27 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	if d.llmClient != nil {
 		prompt := fmt.Sprintf("Answer this coding question: %s", question)
 
-		// Get LLM response using centralized helper
-		llmAnswer, err := d.callLLMWithTemplate(ctx, prompt)
-		if err != nil {
-		} else {
+		// Reset context for this question
+		templateName := fmt.Sprintf("question-%s", questionMsg.ID)
+		d.contextManager.ResetForNewTemplate(templateName, prompt)
+
+		// Use toolloop with submit_reply tool
+		llmAnswer, err := d.toolLoop.Run(ctx, &toolloop.Config{
+			ContextManager: d.contextManager,
+			ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
+			CheckTerminal:  d.checkTerminalTools,
+			OnIterationLimit: func(_ context.Context) (string, error) {
+				return "", fmt.Errorf("maximum tool iterations exceeded for question answering")
+			},
+			MaxIterations: 10,
+			MaxTokens:     agent.ArchitectMaxTokens,
+			AgentID:       d.architectID,
+		})
+
+		if err == nil {
 			answer = llmAnswer
 		}
+		// Silently fall back to auto-response on error
 	}
 
 	// Create RESPONSE using unified protocol.
@@ -434,73 +448,12 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		}
 	}
 
-	// For now, auto-approve all requests until LLM integration.
+	// Fallback: auto-approve if none of the proper toolloop-based handlers were triggered
+	// This should only happen in degraded scenarios (no LLM client or missing dependencies)
 	approved := true
-	feedback := "Auto-approved: Request looks good, please proceed."
-
-	// If we have LLM client, use it for more intelligent review.
-	if d.llmClient != nil {
-		var prompt string
-		switch approvalType {
-		case proto.ApprovalTypeCompletion:
-			// Use story-type-aware completion approval templates
-			prompt = d.generateCompletionApprovalPrompt(requestMsg, content)
-		case proto.ApprovalTypeCode:
-			// Use story-type-aware code review templates
-			prompt = d.generateCodeReviewApprovalPrompt(requestMsg, content)
-		case proto.ApprovalTypeBudgetReview:
-			prompt = d.generateBudgetReviewPrompt(requestMsg)
-		default:
-			prompt = fmt.Sprintf("Review this request: %v", content)
-		}
-
-		// Get LLM response using centralized helper
-		llmFeedback, err := d.callLLMWithTemplate(ctx, prompt)
-		if err != nil {
-		} else {
-			feedback = llmFeedback
-			// For completion requests, parse three-status response
-			if approvalType == proto.ApprovalTypeCompletion {
-				responseUpper := strings.ToUpper(feedback)
-				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
-					approved = false
-					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmFeedback // Use the full LLM response as feedback
-				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
-					approved = false
-					feedback = llmFeedback
-				}
-				// APPROVED or any other response defaults to approved = true
-			}
-			// For budget review requests, parse structured response
-			if approvalType == proto.ApprovalTypeBudgetReview {
-				responseUpper := strings.ToUpper(feedback)
-				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
-					approved = false
-					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmFeedback // Use the full LLM response as feedback
-				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
-					approved = false
-					feedback = llmFeedback
-				}
-				// APPROVED or any other response defaults to approved = true
-			}
-			// For code review requests, parse three-status response
-			if approvalType == proto.ApprovalTypeCode {
-				responseUpper := strings.ToUpper(feedback)
-				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
-					approved = false
-					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmFeedback // Use the full LLM response as feedback
-				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
-					approved = false
-					feedback = llmFeedback
-				}
-				// APPROVED or any other response defaults to approved = true
-			}
-			// For other types, always approve in LLM mode for now.
-		}
-	}
+	feedback := "Auto-approved: Request looks good, please proceed (fallback mode - proper review handlers not available)."
+	d.logger.Warn("⚠️  Using auto-approve fallback for %s approval - proper toolloop-based handler not triggered (llmClient=%v, executor=%v)",
+		approvalType, d.llmClient != nil, d.executor != nil)
 
 	// Plan approval completed - artifacts now tracked in database
 
@@ -1286,108 +1239,6 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 	return response, nil
 }
 
-// generateApprovalPrompt is a shared helper for story-type-aware approval prompts.
-func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any, appTemplate, devopsTemplate templates.StateTemplate, fallbackMsg string) string {
-	// Extract story ID from metadata to get story type from queue
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story type and knowledge pack from queue (defaults to app if not found)
-	storyType := defaultStoryType
-	knowledgePack := ""
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyType = story.StoryType
-			knowledgePack = story.KnowledgePack
-		}
-	}
-
-	// Select appropriate template based on story type
-	var templateName templates.StateTemplate
-	if storyType == storyTypeDevOps {
-		templateName = devopsTemplate
-	} else {
-		templateName = appTemplate
-	}
-
-	// Create template data
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Content":       content,
-			"KnowledgePack": knowledgePack,
-		},
-	}
-
-	// Add Dockerfile content for DevOps stories
-	if storyType == storyTypeDevOps {
-		if dockerfileContent := d.getDockerfileContent(); dockerfileContent != "" {
-			templateData.DockerfileContent = dockerfileContent
-		}
-	}
-
-	// Render template using the same pattern as other methods
-	if d.renderer == nil {
-		// Fallback to simple prompt if renderer not available
-		return fmt.Sprintf("%s: %v", fallbackMsg, content)
-	}
-
-	prompt, err := d.renderer.Render(templateName, templateData)
-	if err != nil {
-		d.logger.Error("Failed to render approval template: %v", err)
-		// Fallback to simple prompt
-		return fmt.Sprintf("%s: %v", fallbackMsg, content)
-	}
-
-	return prompt
-}
-
-// getDockerfileContent reads the current Dockerfile content from the locally mounted repository.
-func (d *Driver) getDockerfileContent() string {
-	// Get config to find Dockerfile path
-	cfg, err := config.GetConfig()
-	if err != nil {
-		d.logger.Debug("Failed to get config for Dockerfile path: %v", err)
-		return ""
-	}
-
-	// Determine Dockerfile path (default to "Dockerfile" if not configured)
-	dockerfilePath := "Dockerfile"
-	if cfg.Container != nil && cfg.Container.Dockerfile != "" {
-		dockerfilePath = cfg.Container.Dockerfile
-	}
-
-	// Try to read the Dockerfile from the configured project directory
-	// The architect has access to the locally mounted repository through workDir
-	if d.workDir == "" {
-		d.logger.Debug("Work directory not set, cannot read Dockerfile")
-		return ""
-	}
-
-	fullPath := filepath.Join(d.workDir, dockerfilePath)
-	content, err := os.ReadFile(fullPath)
-	if err != nil {
-		d.logger.Debug("Could not read Dockerfile at %s: %v", fullPath, err)
-		return ""
-	}
-
-	return string(content)
-}
-
-// generateCompletionApprovalPrompt creates a story-type-aware prompt for completion approval requests.
-func (d *Driver) generateCompletionApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
-	return d.generateApprovalPrompt(requestMsg, content,
-		templates.AppCompletionApprovalTemplate,
-		templates.DevOpsCompletionApprovalTemplate,
-		"Review this story completion claim")
-}
-
-// generateCodeReviewApprovalPrompt creates a story-type-aware prompt for code review approval requests.
-func (d *Driver) generateCodeReviewApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
-	return d.generateApprovalPrompt(requestMsg, content,
-		templates.AppCodeReviewTemplate,
-		templates.DevOpsCodeReviewTemplate,
-		"Review this code implementation")
-}
-
 // handleWorkAccepted handles the unified flow for work acceptance (completion or merge).
 // This is the single path for marking stories as done, persisting to database, and signaling state transition.
 func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType string, prID, commitHash, completionSummary *string) {
@@ -1578,38 +1429,15 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Store story_id in state data for tool logging
 	d.stateData["current_story_id"] = storyID
 
-	// Check iteration limit
-	iterationKey := fmt.Sprintf("approval_iterations_%s", storyID)
-	if d.checkIterationLimit(iterationKey, StateRequest) {
-		d.logger.Error("❌ Hard iteration limit exceeded for approval %s - preparing escalation", storyID)
-		// Store additional escalation context
-		d.stateData["escalation_request_id"] = requestMsg.ID
-		d.stateData["escalation_story_id"] = storyID
-		// Signal escalation needed by returning sentinel error
-		return nil, ErrEscalationTriggered
-	}
-
 	// Extract coder ID from request (sender)
 	coderID := requestMsg.FromAgent
 	if coderID == "" {
 		return nil, fmt.Errorf("approval request message missing sender (FromAgent)")
 	}
 
-	// Create tool provider rooted at coder's workspace (lazily, once per request)
-	toolProviderKey := fmt.Sprintf("tool_provider_%s", storyID)
-	var toolProvider *tools.ToolProvider
-	if tp, exists := d.stateData[toolProviderKey]; exists {
-		var ok bool
-		toolProvider, ok = tp.(*tools.ToolProvider)
-		if !ok {
-			return nil, fmt.Errorf("invalid tool provider type in state data")
-		}
-	} else {
-		// Create tool provider rooted at the coder's container workspace
-		toolProvider = d.createReadToolProviderForCoder(coderID)
-		d.stateData[toolProviderKey] = toolProvider
-		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
-	}
+	// Create tool provider rooted at coder's workspace
+	toolProvider := d.createReadToolProviderForCoder(coderID)
+	d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
 
 	// Build prompt based on approval type
 	var prompt string
@@ -1622,112 +1450,87 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("unsupported iterative approval type: %s", approvalType)
 	}
 
-	// Reset context for this iteration (first iteration only)
-	iterationCount := 0
-	if val, exists := d.stateData[iterationKey]; exists {
-		if count, ok := val.(int); ok {
-			iterationCount = count
-		}
-	}
+	// Reset context for this approval
+	templateName := fmt.Sprintf("approval-%s-%s", approvalType, storyID)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
 
-	if iterationCount == 0 {
-		templateName := fmt.Sprintf("approval-%s-%s", approvalType, storyID)
-		d.contextManager.ResetForNewTemplate(templateName, prompt)
-	}
-
-	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
-	}
-
-	// Build messages with context
-	// Only pass prompt on first iteration - subsequent iterations use context history
-	var promptForMessages string
-	if iterationCount == 0 {
-		promptForMessages = prompt
-	}
-	messages := d.buildMessagesWithContext(promptForMessages)
-
-	// Get tool definitions for LLM
-	toolDefs := d.getArchitectToolsForLLM(toolProvider)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     toolDefs,
-	}
-
-	// Call LLM
-	d.logger.Info("🔄 Calling LLM for iterative approval (iteration %d)", iterationCount+1)
-	resp, err := d.llmClient.Complete(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("LLM completion failed: %w", err)
-	}
-
-	// Add assistant response to context with structured tool calls (same as PM pattern)
-	if len(resp.ToolCalls) > 0 {
-		// Use structured tool call tracking
-		// Convert agent.ToolCall to contextmgr.ToolCall
-		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolCalls[i] = contextmgr.ToolCall{
-				ID:         resp.ToolCalls[i].ID,
-				Name:       resp.ToolCalls[i].Name,
-				Parameters: resp.ToolCalls[i].Parameters,
+	// CheckTerminal: Look for submit_reply tool to get approval decision
+	checkTerminal := func(calls []agent.ToolCall, _ []any) string {
+		for i := range calls {
+			if calls[i].Name == tools.ToolSubmitReply {
+				// submit_reply tool was called - extract response from parameters
+				if response, ok := calls[i].Parameters["response"].(string); ok && response != "" {
+					// Store response for building approval result
+					d.stateData["submit_reply_response"] = response
+					return "SUBMIT_REPLY"
+				}
 			}
 		}
-		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
-	} else {
-		// No tool calls - just content
-		d.contextManager.AddAssistantMessage(resp.Content)
+		return "" // No terminal tool called, continue iteration
 	}
 
-	// Process tool calls
-	if len(resp.ToolCalls) > 0 {
-		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
-		if err != nil {
-			return nil, fmt.Errorf("tool processing failed: %w", err)
+	// OnIterationLimit: Check escalation limits and handle appropriately
+	onIterationLimit := func(_ context.Context) (string, error) {
+		iterationKey := fmt.Sprintf("approval_iterations_%s", storyID)
+		if d.checkIterationLimit(iterationKey, StateRequest) {
+			d.logger.Error("❌ Hard iteration limit exceeded for approval %s - preparing escalation", storyID)
+			// Store additional escalation context
+			d.stateData["escalation_request_id"] = requestMsg.ID
+			d.stateData["escalation_story_id"] = storyID
+			// Signal escalation needed by returning sentinel error
+			return "", ErrEscalationTriggered
 		}
-
-		// If submit_reply was called, use that response as the final decision
-		if submitResponse != "" {
-			d.logger.Info("✅ Architect submitted final decision via submit_reply")
-			return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, submitResponse)
-		}
-
-		// Otherwise, continue iteration (will be called again by state machine)
-		d.logger.Info("🔄 Tools executed, continuing iteration")
-		// Return nil response with no error to signal state machine to call us again
-		//nolint:nilnil // Intentional: nil response signals continuation, not an error
-		return nil, nil
+		return "", fmt.Errorf("maximum tool iterations exceeded for approval")
 	}
 
-	// No tool calls - nudge the LLM to use submit_reply tool
-	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
+	// Run toolloop for iterative approval
+	signal, err := d.toolLoop.Run(ctx, &toolloop.Config{
+		ContextManager:   d.contextManager,
+		ToolProvider:     toolProvider,
+		CheckTerminal:    checkTerminal,
+		OnIterationLimit: onIterationLimit,
+		MaxIterations:    20, // Allow multiple inspection iterations
+		MaxTokens:        agent.ArchitectMaxTokens,
+		AgentID:          d.architectID,
+	})
 
-	// Increment iteration count before nudging
-	iterationCount++
-	d.stateData[iterationKey] = iterationCount
+	if err != nil {
+		return nil, fmt.Errorf("iterative approval failed: %w", err)
+	}
 
-	// Add nudge to context
-	nudgeMessage := "You must use the submit_reply tool to provide your decision. Please call submit_reply with your approval/rejection decision and reasoning."
-	d.contextManager.AddMessage("system", nudgeMessage)
+	if signal != "SUBMIT_REPLY" {
+		return nil, fmt.Errorf("expected SUBMIT_REPLY signal, got: %s", signal)
+	}
 
-	// Return nil to signal continuation (state machine will call us again)
-	//nolint:nilnil // Intentional: nil response signals continuation after nudge
-	return nil, nil
+	// Extract submit_reply response from state data
+	submitResponse, ok := d.stateData["submit_reply_response"]
+	if !ok {
+		return nil, fmt.Errorf("submit_reply_response not found in state data")
+	}
+
+	submitResponseStr, ok := submitResponse.(string)
+	if !ok {
+		return nil, fmt.Errorf("submit_reply_response has invalid type")
+	}
+
+	d.logger.Info("✅ Architect submitted final decision via submit_reply")
+
+	// Clean up state data
+	delete(d.stateData, "submit_reply_response")
+	delete(d.stateData, "current_story_id")
+
+	// Build and return approval response
+	return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, submitResponseStr)
 }
 
 // handleSingleTurnReview handles single-turn approval reviews (Plan and BudgetReview)
 // that use the review_complete tool for structured responses.
+// Uses toolloop for retry/nudging and proper logging.
 func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	approvalType := approvalPayload.ApprovalType
 	storyID := requestMsg.Metadata["story_id"]
 
 	d.logger.Info("🔍 Starting single-turn review for %s (story: %s)", approvalType, storyID)
-
-	// Create tool provider with only review_complete tool
-	toolProvider := d.createReviewToolProvider()
 
 	// Build prompt based on approval type
 	var prompt string
@@ -1744,57 +1547,36 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	templateName := fmt.Sprintf("review-%s-%s", approvalType, storyID)
 	d.contextManager.ResetForNewTemplate(templateName, prompt)
 
-	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
-	}
-
-	// Build messages with context
-	messages := d.buildMessagesWithContext(prompt)
-
-	// Get tool definitions for LLM
-	toolDefs := d.getArchitectToolsForLLM(toolProvider)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     toolDefs,
-	}
-
-	// Call LLM
-	d.logger.Info("🔄 Calling LLM for single-turn review")
-	resp, err := d.llmClient.Complete(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("LLM completion failed: %w", err)
-	}
-
-	// Add assistant response to context
-	if len(resp.ToolCalls) > 0 {
-		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolCalls[i] = contextmgr.ToolCall{
-				ID:         resp.ToolCalls[i].ID,
-				Name:       resp.ToolCalls[i].Name,
-				Parameters: resp.ToolCalls[i].Parameters,
+	// CheckTerminal: Look for review_complete tool signal
+	checkTerminal := func(calls []agent.ToolCall, results []any) string {
+		for i := range calls {
+			if calls[i].Name == tools.ToolReviewComplete {
+				// review_complete tool was called - extract result and store in state
+				if resultMap, ok := results[i].(map[string]any); ok {
+					d.stateData["review_complete_result"] = resultMap
+					return signalReviewComplete
+				}
 			}
 		}
-		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
-	} else {
-		d.contextManager.AddAssistantMessage(resp.Content)
+		return "" // No terminal tool called
 	}
 
-	// Process tool calls
-	if len(resp.ToolCalls) == 0 {
-		return nil, fmt.Errorf("LLM did not call review_complete tool in single-turn review")
-	}
+	// Run toolloop in single-turn mode
+	signal, err := d.toolLoop.Run(ctx, &toolloop.Config{
+		ContextManager: d.contextManager,
+		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewReviewCompleteTool()}),
+		CheckTerminal:  checkTerminal,
+		MaxIterations:  3, // Allow nudge retries
+		MaxTokens:      agent.ArchitectMaxTokens,
+		SingleTurn:     true, // Enforce single-turn completion
+		AgentID:        d.architectID,
+	})
 
-	// Execute tools and check for review_complete
-	signal, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
 	if err != nil {
-		return nil, fmt.Errorf("tool processing failed: %w", err)
+		return nil, fmt.Errorf("single-turn review failed: %w", err)
 	}
 
-	if signal != "REVIEW_COMPLETE" {
+	if signal != signalReviewComplete {
 		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", signal)
 	}
 
@@ -2303,9 +2085,19 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Get spec review tools (spec_feedback, submit_stories)
 	specReviewTools := d.getSpecReviewTools()
 
-	// Call LLM with spec review tools
-	// Pass empty string since prompt was already set in system message and we added initial user message
-	signal, err := d.callLLMWithTools(ctx, "", specReviewTools)
+	// Run toolloop for spec review
+	signal, err := d.toolLoop.Run(ctx, &toolloop.Config{
+		ContextManager: d.contextManager,
+		ToolProvider:   newListToolProvider(specReviewTools),
+		CheckTerminal:  d.checkTerminalTools,
+		OnIterationLimit: func(_ context.Context) (string, error) {
+			return "", fmt.Errorf("maximum tool iterations exceeded")
+		},
+		MaxIterations: 20, // Increased for complex spec review workflows
+		MaxTokens:     agent.ArchitectMaxTokens,
+		AgentID:       d.architectID,
+	})
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
 	}

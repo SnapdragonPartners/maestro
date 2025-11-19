@@ -26,13 +26,10 @@ import (
 const (
 	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
 
-	// Story type constants to avoid repetition and improve maintainability.
-	storyTypeDevOps = "devops"
-	storyTypeApp    = "app"
-
 	// Tool signal constants.
 	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
 	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
+	signalReviewComplete        = "REVIEW_COMPLETE"
 )
 
 // listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
@@ -77,6 +74,7 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 type Driver struct {
 	contextManager      *contextmgr.ContextManager
 	llmClient           agent.LLMClient                       // LLM for intelligent responses
+	toolLoop            *toolloop.ToolLoop                    // Tool loop for LLM interactions
 	renderer            *templates.Renderer                   // Template renderer for prompts
 	queue               *Queue                                // Story queue manager
 	escalationHandler   *EscalationHandler                    // Escalation handler
@@ -152,12 +150,19 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 	escalationHandler := NewEscalationHandler(logsDir, queue)
 	logger := logx.NewLogger(architectID)
 
+	// Initialize toolloop if LLM client is available
+	var tl *toolloop.ToolLoop
+	if llmClient != nil {
+		tl = toolloop.New(llmClient, logger)
+	}
+
 	return &Driver{
 		architectID:        architectID,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
 		llmClient:          llmClient,
+		toolLoop:           tl,
 		renderer:           renderer,
 		workDir:            workDir,
 		queue:              queue,
@@ -597,46 +602,6 @@ func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.Completi
 	return messages
 }
 
-// callLLMWithTemplate renders a template and gets LLM response using the same pattern as coder.
-// This helper centralizes the architect's LLM call pattern with proper context management.
-func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string, error) {
-	return d.callLLMWithTools(ctx, prompt, nil)
-}
-
-// callLLMWithTools allows calling LLM with optional tools (used for spec review in REQUEST state).
-func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
-	// Create ToolProvider adapter from toolsList
-	toolProvider := newListToolProvider(toolsList)
-
-	// Use toolloop abstraction for LLM tool calling loop
-	loop := toolloop.New(d.llmClient, d.logger)
-
-	cfg := &toolloop.Config{
-		ContextManager: d.contextManager,
-		InitialPrompt:  prompt,
-		ToolProvider:   toolProvider,
-		MaxIterations:  20, // Increased for complex spec review workflows
-		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        d.architectID, // Agent ID for tool context
-		DebugLogging:   false,         // Enable for debugging: shows messages sent to LLM
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			// Check for terminal tools and return signal
-			return d.checkTerminalTools(calls, results)
-		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			// Architect returns error on iteration limit (no budget request)
-			return "", fmt.Errorf("maximum tool iterations exceeded")
-		},
-	}
-
-	signal, err := loop.Run(ctx, cfg)
-	if err != nil {
-		return "", fmt.Errorf("toolloop execution failed: %w", err)
-	}
-
-	return signal, nil
-}
-
 // checkTerminalTools examines tool execution results for terminal signals.
 // Returns non-empty signal to trigger state transition.
 func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) string {
@@ -872,23 +837,6 @@ func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvi
 	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
 }
 
-// createReviewToolProvider creates a tool provider with only the review_complete tool
-// for single-turn approval reviews (Plan and BudgetReview).
-func (d *Driver) createReviewToolProvider() *tools.ToolProvider {
-	ctx := tools.AgentContext{
-		Executor:        d.executor, // Architect executor (not needed but required)
-		ChatService:     nil,        // No chat service needed
-		ReadOnly:        true,       // Read-only context
-		NetworkDisabled: false,      // Network allowed
-		WorkDir:         "",         // No workspace needed for review_complete
-		Agent:           nil,        // No agent reference needed
-	}
-
-	// Only provide review_complete tool for single-turn reviews
-	reviewTools := []string{tools.ToolReviewComplete}
-	return tools.NewProvider(&ctx, reviewTools)
-}
-
 // processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
 // Returns the submit_reply response if detected, nil otherwise.
 func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
@@ -926,7 +874,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			d.stateData["review_complete_result"] = result
 
 			d.logger.Info("✅ Architect completed review via review_complete tool")
-			return "REVIEW_COMPLETE", nil // Signal that review is complete
+			return signalReviewComplete, nil // Signal that review is complete
 		}
 
 		// Handle submit_stories tool - signals spec review completion with structured data

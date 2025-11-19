@@ -136,6 +136,10 @@ func TestBasicFlow(t *testing.T) {
 	}
 
 	toolProvider := newMockToolProvider()
+	// Add a tool even though LLM won't use it - validation requires at least one tool
+	toolProvider.AddTool("dummy_tool", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"success": true}, nil
+	})
 
 	loop := toolloop.New(llmClient, logger)
 	cfg := toolloop.Config{
@@ -144,6 +148,9 @@ func TestBasicFlow(t *testing.T) {
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
 		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "" // Never signal completion - let it timeout/error
+		},
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
@@ -192,6 +199,9 @@ func TestSingleToolCall(t *testing.T) {
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
 		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "" // Never signal completion - let it timeout/error
+		},
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
@@ -248,6 +258,9 @@ func TestMultipleTools(t *testing.T) {
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
 		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "" // Never signal completion - let it timeout/error
+		},
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
@@ -363,6 +376,9 @@ func TestIterationLimit(t *testing.T) {
 		ToolProvider:   toolProvider,
 		MaxIterations:  3, // Hit limit
 		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "" // Never signal completion - let it hit iteration limit
+		},
 		OnIterationLimit: func(_ context.Context) (string, error) {
 			limitCalled = true
 			return "LIMIT_REACHED", nil
@@ -417,6 +433,9 @@ func TestToolError(t *testing.T) {
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
 		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "" // Never signal completion - let it timeout/error
+		},
 	}
 
 	signal, err := loop.Run(ctx, &cfg)
