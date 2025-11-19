@@ -2,16 +2,16 @@
 
 ## Progress Summary
 
-**Phase 1 Status**: 3/4 Complete (75%) ✅
+**Phase 1 Status**: ✅ **COMPLETE** (100%)
 
 | Task | Status | Commits | Effort |
 |------|--------|---------|--------|
 | 1.1 Response Formatters | ✅ Complete | `1f27f85` | 1h |
 | 1.2 Metadata Helpers | ✅ Complete | `3a72991`, `4414065` | 2h |
 | 1.3 StateData Constants | ✅ Complete | `7643e79`, `add4149` | 1.5h |
-| 1.4 Persistence Mappers | ⏳ In Progress | - | 4-5h est |
+| 1.4 Persistence Mappers | ✅ Complete | `6ccd8bf` | 1h |
 
-**Total Progress**: 4.5 hours completed out of 10-14 hours budgeted for Phase 1
+**Phase 1 Total**: 5.5 hours (within 10-14h budget)
 
 ---
 
@@ -154,13 +154,15 @@ const (
 
 ---
 
-### 1.4 Extract Persistence Mappers
+### 1.4 Extract Persistence Mappers ✅ **COMPLETE**
+
+**Status**: ✅ Completed in commit `6ccd8bf`
 
 **Files**: `pkg/architect/request.go` → new `pkg/architect/persistence.go`
 
 **Problem**:
-- Request persistence logic (lines 40-98) embedded in state machine
-- Response persistence logic (lines 166-243) embedded in state machine
+- Request persistence logic (lines 40-93) embedded in state machine
+- Response persistence logic (lines 113-185) embedded in state machine
 - Hard to test, hard to modify
 - Mixes concerns (routing + persistence)
 
@@ -172,12 +174,21 @@ func buildAgentRequestFromMsg(msg *proto.AgentMsg) *persistence.AgentRequest
 func buildAgentResponseFromMsg(request, response *proto.AgentMsg) *persistence.AgentResponse
 ```
 
+**Results**:
+- Created `pkg/architect/persistence.go` with 134 lines
+- Request persistence: 54 lines → 7 lines (87% reduction)
+- Response persistence: 73 lines → 22 lines (70% reduction)
+- Reduced request.go from 1314 lines to 1185 lines (10% reduction)
+- Pure functions, easy to test in isolation
+- Status validation warning kept in driver (separation of concerns)
+
 **Impact**:
 - Testable persistence logic (pure functions)
 - Cleaner state machine code
 - Single place to change persistence schema
+- Clear separation: mappers extract data, driver handles persistence
 
-**Effort**: 4-5 hours (extraction, testing)
+**Actual Effort**: ~1 hour
 
 ---
 
