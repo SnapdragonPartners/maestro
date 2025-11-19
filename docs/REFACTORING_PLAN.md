@@ -1,5 +1,20 @@
 # Architect Request Handler Refactoring Plan
 
+## Progress Summary
+
+**Phase 1 Status**: 3/4 Complete (75%) ✅
+
+| Task | Status | Commits | Effort |
+|------|--------|---------|--------|
+| 1.1 Response Formatters | ✅ Complete | `1f27f85` | 1h |
+| 1.2 Metadata Helpers | ✅ Complete | `3a72991`, `4414065` | 2h |
+| 1.3 StateData Constants | ✅ Complete | `7643e79`, `add4149` | 1.5h |
+| 1.4 Persistence Mappers | ⏳ In Progress | - | 4-5h est |
+
+**Total Progress**: 4.5 hours completed out of 10-14 hours budgeted for Phase 1
+
+---
+
 ## Overview
 
 This document outlines a comprehensive refactoring plan for the architect's request handling system, based on external code review feedback and internal analysis. The goals are:
@@ -20,7 +35,9 @@ This document outlines a comprehensive refactoring plan for the architect's requ
 
 ## Phase 1: Quick Wins (Low Risk, High Value)
 
-### 1.1 Consolidate Response Formatters
+### 1.1 Consolidate Response Formatters ✅ **COMPLETE**
+
+**Status**: ✅ Completed in commit `1f27f85`
 
 **Files**: `pkg/architect/request.go`
 
@@ -46,15 +63,17 @@ func (d *Driver) formatApprovalResponse(
 ) string
 ```
 
-**Impact**: Removes ~80 lines of duplication, single place to maintain template logic.
+**Impact**: Removed duplication, single place to maintain template logic. Four specific functions remain as thin wrappers for backwards compatibility.
 
-**Effort**: 1-2 hours
+**Actual Effort**: ~1 hour
 
 ---
 
-### 1.2 Centralize Metadata Access
+### 1.2 Centralize Metadata Access ✅ **COMPLETE**
 
-**Files**: `pkg/architect/request.go`, potentially `pkg/proto/message.go`
+**Status**: ✅ Completed in commits `3a72991` (helpers) + `4414065` (migration)
+
+**Files**: `pkg/proto/message.go`, `pkg/architect/request.go`
 
 **Problem**:
 - Inconsistent use of `proto.KeyStoryID` vs `"story_id"`
@@ -64,22 +83,31 @@ func (d *Driver) formatApprovalResponse(
 **Solution**: Create helper functions for common metadata operations.
 
 ```go
-// In pkg/proto/message.go or pkg/architect/metadata.go
+// In pkg/proto/message.go
 func GetStoryID(msg *AgentMsg) string
 func GetCorrelationID(msg *AgentMsg) string // tries correlation_id, question_id, approval_id
 func CopyStoryMetadata(src, dst *AgentMsg)
 func CopyCorrelationMetadata(src, dst *AgentMsg)
 ```
 
+**Results**:
+- Added constants: `KeyQuestionID`, `KeyApprovalID`, `KeyConfidence`, `KeyExplorationMethod`
+- Added 122 lines of helper functions in `pkg/proto/message.go`
+- Migrated 30+ call sites in `request.go`
+- Eliminated 14 lines of manual metadata access code
+- Consolidated repeated correlation ID fallback logic
+
 **Impact**: Type-safe metadata access, consistent key usage, easier to refactor metadata structure later.
 
-**Effort**: 2-3 hours
+**Actual Effort**: ~2 hours
 
 ---
 
-### 1.3 Add Const Keys for StateData
+### 1.3 Add Const Keys for StateData ✅ **COMPLETE**
 
-**Files**: `pkg/architect/driver.go` (or new `pkg/architect/state.go`)
+**Status**: ✅ Completed in commits `7643e79` (constants) + `add4149` (migration)
+
+**Files**: `pkg/architect/state_keys.go` (new), `pkg/architect/request.go`
 
 **Problem**:
 - Magic strings for stateData keys (`"current_request"`, `"work_accepted"`, etc.)
@@ -96,27 +124,33 @@ const (
     StateKeyWorkAccepted          = "work_accepted"
     StateKeyAcceptedStoryID       = "accepted_story_id"
     StateKeyAcceptanceType        = "acceptance_type"
-    StateKeySpecApprovedAndLoaded = "spec_approved_and_loaded"
+    StateKeySpecApprovedLoad      = "spec_approved_and_loaded"
     StateKeyCurrentStoryID        = "current_story_id"
-    StateKeySubmitReplyResponse   = "submit_reply_response"
-    StateKeyReviewCompleteResult  = "review_complete_result"
+    StateKeySubmitReply           = "submit_reply_response"
+    StateKeyReviewComplete        = "review_complete_result"
     StateKeyEscalationRequestID   = "escalation_request_id"
     StateKeyEscalationStoryID     = "escalation_story_id"
-    // Iteration counters use dynamic keys: fmt.Sprintf("approval_iterations_%s", storyID)
 )
 
-// Optional: Add typed accessors
-func (d *Driver) getCurrentRequest() (*proto.AgentMsg, bool)
-func (d *Driver) setCurrentRequest(msg *proto.AgentMsg)
-func (d *Driver) markWorkAccepted(storyID, acceptanceType string)
-func (d *Driver) clearRequestState()
+// Dynamic key patterns
+const (
+    StateKeyPatternApprovalIterations = "approval_iterations_%s"
+    StateKeyPatternQuestionIterations = "question_iterations_%s"
+    StateKeyPatternToolProvider       = "tool_provider_%s"
+)
 ```
 
-**Rationale**: Keep the map-based stateData (used throughout codebase, supports dynamic keys, survives across LLM calls) but add type safety at access points.
+**Results**:
+- Created `pkg/architect/state_keys.go` with 40 lines of constants
+- Migrated 22 stateData accesses in `request.go`
+- All static and dynamic keys now use constants
+- Zero magic strings remaining in stateData access
+
+**Rationale**: Kept the map-based stateData (used throughout codebase, supports dynamic keys, survives across LLM calls) but added type safety at access points.
 
 **Impact**: Compiler-enforced key names, easier refactoring, better code completion.
 
-**Effort**: 3-4 hours (finding all usages, updating, testing)
+**Actual Effort**: ~1.5 hours
 
 ---
 
