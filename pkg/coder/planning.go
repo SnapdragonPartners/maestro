@@ -140,7 +140,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	loop := toolloop.New(c.llmClient, c.logger)
 
 	//nolint:dupl // Similar config in coding.go - intentional per-state configuration
-	cfg := &toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   c.planningToolProvider,
@@ -151,21 +151,30 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkPlanningTerminal(ctx, sm, calls, results)
 		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			c.logger.Info("⚠️  Planning reached max iterations, triggering budget review")
-			budgetEff := effect.NewBudgetReviewEffect(
-				fmt.Sprintf("Maximum planning iterations (%d) reached", maxPlanningIterations),
-				"Planning workflow needs additional iterations to complete exploration",
-				string(StatePlanning),
-			)
-			// Set story ID for dispatcher validation
-			budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
-			sm.SetStateData("budget_review_effect", budgetEff)
-			return string(StateBudgetReview), nil
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			// No result extraction needed for planning
+			return struct{}{}, nil
+		},
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("planning_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
+			SoftLimit: maxPlanningIterations - 2, // Warn 2 iterations before limit
+			HardLimit: maxPlanningIterations,
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				c.logger.Info("⚠️  Planning reached max iterations (%d, key: %s), triggering budget review", count, key)
+				budgetEff := effect.NewBudgetReviewEffect(
+					fmt.Sprintf("Maximum planning iterations (%d) reached", maxPlanningIterations),
+					"Planning workflow needs additional iterations to complete exploration",
+					string(StatePlanning),
+				)
+				// Set story ID for dispatcher validation
+				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
+				sm.SetStateData("budget_review_effect", budgetEff)
+				return fmt.Errorf("max iterations reached - budget review required")
+			},
 		},
 	}
 
-	signal, err := loop.Run(ctx, cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(err) {

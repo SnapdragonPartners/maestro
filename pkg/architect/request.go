@@ -213,20 +213,18 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 		d.contextManager.ResetForNewTemplate(templateName, prompt)
 
 		// Use toolloop with submit_reply tool
-		llmAnswer, err := d.toolLoop.Run(ctx, &toolloop.Config{
+		_, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
 			ContextManager: d.contextManager,
 			ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
 			CheckTerminal:  d.checkTerminalTools,
-			OnIterationLimit: func(_ context.Context) (string, error) {
-				return "", fmt.Errorf("maximum tool iterations exceeded for question answering")
-			},
-			MaxIterations: 10,
-			MaxTokens:     agent.ArchitectMaxTokens,
-			AgentID:       d.architectID,
+			ExtractResult:  ExtractSubmitReply,
+			MaxIterations:  10,
+			MaxTokens:      agent.ArchitectMaxTokens,
+			AgentID:        d.architectID,
 		})
 
 		if err == nil {
-			answer = llmAnswer
+			answer = result.Response
 		}
 		// Silently fall back to auto-response on error
 	}
@@ -829,29 +827,31 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return "" // No terminal tool called, continue iteration
 	}
 
-	// OnIterationLimit: Check escalation limits and handle appropriately
-	onIterationLimit := func(_ context.Context) (string, error) {
-		iterationKey := fmt.Sprintf(StateKeyPatternApprovalIterations, storyID)
-		if d.checkIterationLimit(iterationKey, StateRequest) {
-			d.logger.Error("❌ Hard iteration limit exceeded for approval %s - preparing escalation", storyID)
-			// Store additional escalation context
-			d.stateData[StateKeyEscalationRequestID] = requestMsg.ID
-			d.stateData[StateKeyEscalationStoryID] = storyID
-			// Signal escalation needed by returning sentinel error
-			return "", ErrEscalationTriggered
-		}
-		return "", fmt.Errorf("maximum tool iterations exceeded for approval")
-	}
-
-	// Run toolloop for iterative approval
-	signal, err := d.toolLoop.Run(ctx, &toolloop.Config{
-		ContextManager:   d.contextManager,
-		ToolProvider:     toolProvider,
-		CheckTerminal:    checkTerminal,
-		OnIterationLimit: onIterationLimit,
-		MaxIterations:    20, // Allow multiple inspection iterations
-		MaxTokens:        agent.ArchitectMaxTokens,
-		AgentID:          d.architectID,
+	// Run toolloop for iterative approval with type-safe result extraction
+	signal, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+		ContextManager: d.contextManager,
+		ToolProvider:   toolProvider,
+		CheckTerminal:  checkTerminal,
+		ExtractResult:  ExtractSubmitReply,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("approval_%s", storyID),
+			SoftLimit: 8,  // Warn at 8 iterations
+			HardLimit: 16, // Escalate at 16 iterations
+			OnSoftLimit: func(count int) {
+				d.logger.Warn("⚠️  Approval iteration soft limit reached (%d iterations) for story %s", count, storyID)
+			},
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				d.logger.Error("❌ Approval iteration hard limit reached (%d iterations) for story %s - escalating", count, storyID)
+				d.logger.Info("Escalation key: %s", key)
+				// Set escalation state data for state machine
+				d.stateData[StateKeyEscalationRequestID] = requestMsg.ID
+				d.stateData[StateKeyEscalationStoryID] = storyID
+				return fmt.Errorf("maximum iterations exceeded for approval - escalation required")
+			},
+		},
+		MaxIterations: 20, // Allow multiple inspection iterations
+		MaxTokens:     agent.ArchitectMaxTokens,
+		AgentID:       d.architectID,
 	})
 
 	if err != nil {
@@ -862,25 +862,13 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("expected SUBMIT_REPLY signal, got: %s", signal)
 	}
 
-	// Extract submit_reply response from state data
-	submitResponse, ok := d.stateData[StateKeySubmitReply]
-	if !ok {
-		return nil, fmt.Errorf("submit_reply_response not found in state data")
-	}
-
-	submitResponseStr, ok := submitResponse.(string)
-	if !ok {
-		return nil, fmt.Errorf("submit_reply_response has invalid type")
-	}
-
 	d.logger.Info("✅ Architect submitted final decision via submit_reply")
 
-	// Clean up state data
-	delete(d.stateData, "submit_reply_response")
+	// Clean up state data (submit_reply_response no longer stored)
 	delete(d.stateData, "current_story_id")
 
 	// Build and return approval response
-	return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, submitResponseStr)
+	return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, result.Response)
 }
 
 // handleSingleTurnReview handles single-turn approval reviews (Plan and BudgetReview)
@@ -921,11 +909,12 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		return "" // No terminal tool called
 	}
 
-	// Run toolloop in single-turn mode
-	signal, err := d.toolLoop.Run(ctx, &toolloop.Config{
+	// Run toolloop in single-turn mode with type-safe result extraction
+	signal, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
 		ContextManager: d.contextManager,
 		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewReviewCompleteTool()}),
 		CheckTerminal:  checkTerminal,
+		ExtractResult:  ExtractReviewComplete,
 		MaxIterations:  3, // Allow nudge retries
 		MaxTokens:      agent.ArchitectMaxTokens,
 		SingleTurn:     true, // Enforce single-turn completion
@@ -940,27 +929,12 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", signal)
 	}
 
-	// Extract review result from state data
-	reviewResult, ok := d.stateData[StateKeyReviewComplete]
-	if !ok {
-		return nil, fmt.Errorf("review_complete_result not found in state data")
-	}
+	d.logger.Info("✅ Single-turn review completed with status: %s", result.Status)
 
-	resultMap, ok := reviewResult.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("review_complete_result has invalid type")
-	}
-
-	status, _ := resultMap["status"].(string)
-	feedback, _ := resultMap["feedback"].(string)
-
-	d.logger.Info("✅ Single-turn review completed with status: %s", status)
-
-	// Clean up state data
-	delete(d.stateData, "review_complete_result")
+	// Clean up state data (review_complete_result no longer stored)
 
 	// Build and return approval response
-	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
+	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, result.Status, result.Feedback)
 }
 
 // getArchitectToolsForLLM converts tool metadata to LLM tool definitions.

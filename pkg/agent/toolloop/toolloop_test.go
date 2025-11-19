@@ -142,7 +142,7 @@ func TestBasicFlow(t *testing.T) {
 	})
 
 	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: cm,
 		InitialPrompt:  "Say hello",
 		ToolProvider:   toolProvider,
@@ -151,9 +151,12 @@ func TestBasicFlow(t *testing.T) {
 		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
 			return "" // Never signal completion - let it timeout/error
 		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
 	if err == nil {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
@@ -193,7 +196,7 @@ func TestSingleToolCall(t *testing.T) {
 	})
 
 	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: cm,
 		InitialPrompt:  "Run test",
 		ToolProvider:   toolProvider,
@@ -202,9 +205,12 @@ func TestSingleToolCall(t *testing.T) {
 		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
 			return "" // Never signal completion - let it timeout/error
 		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
 	if err == nil {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
@@ -253,7 +259,7 @@ func TestMultipleTools(t *testing.T) {
 	}
 
 	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: cm,
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
@@ -261,9 +267,12 @@ func TestMultipleTools(t *testing.T) {
 		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
 			return "" // Never signal completion - let it timeout/error
 		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
 	if err == nil {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
@@ -309,7 +318,7 @@ func TestTerminalSignal(t *testing.T) {
 
 	terminalCalled := false
 	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: cm,
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
@@ -328,9 +337,12 @@ func TestTerminalSignal(t *testing.T) {
 			}
 			return ""
 		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -349,7 +361,7 @@ func TestTerminalSignal(t *testing.T) {
 	}
 }
 
-// TestIterationLimit tests that OnIterationLimit is called.
+// TestIterationLimit tests that Escalation.OnHardLimit is called.
 func TestIterationLimit(t *testing.T) {
 	ctx := context.Background()
 	cm := contextmgr.NewContextManager()
@@ -369,9 +381,9 @@ func TestIterationLimit(t *testing.T) {
 		return map[string]any{"success": true}, nil
 	})
 
-	limitCalled := false
+	hardLimitCalled := false
 	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: cm,
 		ToolProvider:   toolProvider,
 		MaxIterations:  3, // Hit limit
@@ -379,23 +391,36 @@ func TestIterationLimit(t *testing.T) {
 		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
 			return "" // Never signal completion - let it hit iteration limit
 		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			limitCalled = true
-			return "LIMIT_REACHED", nil
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
+		Escalation: &toolloop.EscalationConfig{
+			Key:       "test_escalation",
+			HardLimit: 3,
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				hardLimitCalled = true
+				if key != "test_escalation" {
+					t.Errorf("expected key 'test_escalation', got %q", key)
+				}
+				if count != 3 {
+					t.Errorf("expected count 3, got %d", count)
+				}
+				return errors.New("hard limit reached")
+			},
 		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	if err == nil {
+		t.Fatal("expected error for hard limit exceeded")
 	}
 
-	if !limitCalled {
-		t.Error("expected OnIterationLimit to be called")
+	if !hardLimitCalled {
+		t.Error("expected OnHardLimit to be called")
 	}
 
-	if signal != "LIMIT_REACHED" {
-		t.Errorf("expected signal 'LIMIT_REACHED', got %q", signal)
+	if signal != "" {
+		t.Errorf("expected empty signal on hard limit error, got %q", signal)
 	}
 
 	if llmClient.callCount != 3 {
@@ -428,7 +453,7 @@ func TestToolError(t *testing.T) {
 	})
 
 	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: cm,
 		ToolProvider:   toolProvider,
 		MaxIterations:  5,
@@ -436,9 +461,12 @@ func TestToolError(t *testing.T) {
 		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
 			return "" // Never signal completion - let it timeout/error
 		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
 	if err == nil {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
@@ -465,22 +493,56 @@ func TestMissingConfig(t *testing.T) {
 	loop := toolloop.New(llmClient, logger)
 
 	// Test missing ContextManager
-	cfg := toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ToolProvider:  newMockToolProvider(),
 		MaxIterations: 5,
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
-	_, err := loop.Run(ctx, &cfg)
+	_, _, err := toolloop.Run(loop, ctx, cfg)
 	if err == nil || err.Error() != "ContextManager is required" {
 		t.Errorf("expected ContextManager required error, got %v", err)
 	}
 
 	// Test missing ToolProvider
-	cfg = toolloop.Config{
+	cfg = &toolloop.Config[struct{}]{
 		ContextManager: contextmgr.NewContextManager(),
 		MaxIterations:  5,
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
 	}
-	_, err = loop.Run(ctx, &cfg)
+	_, _, err = toolloop.Run(loop, ctx, cfg)
 	if err == nil || err.Error() != "ToolProvider is required" {
 		t.Errorf("expected ToolProvider required error, got %v", err)
+	}
+
+	// Test missing CheckTerminal
+	cfg = &toolloop.Config[struct{}]{
+		ContextManager: contextmgr.NewContextManager(),
+		ToolProvider:   newMockToolProvider(),
+		MaxIterations:  5,
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
+	}
+	_, _, err = toolloop.Run(loop, ctx, cfg)
+	if err == nil || err.Error() != "CheckTerminal is required - every toolloop must have a way to exit" {
+		t.Errorf("expected CheckTerminal required error, got %v", err)
+	}
+
+	// Test missing ExtractResult
+	cfg = &toolloop.Config[struct{}]{
+		ContextManager: contextmgr.NewContextManager(),
+		ToolProvider:   newMockToolProvider(),
+		MaxIterations:  5,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return ""
+		},
+	}
+	_, _, err = toolloop.Run(loop, ctx, cfg)
+	if err == nil || err.Error() != "ExtractResult is required for type-safe result extraction" {
+		t.Errorf("expected ExtractResult required error, got %v", err)
 	}
 }

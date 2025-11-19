@@ -49,17 +49,15 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Get spec review tools (spec_feedback, submit_stories)
 	specReviewTools := d.getSpecReviewTools()
 
-	// Run toolloop for spec review
-	signal, err := d.toolLoop.Run(ctx, &toolloop.Config{
+	// Run toolloop for spec review with type-safe result extraction
+	signal, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SpecReviewResult]{
 		ContextManager: d.contextManager,
 		ToolProvider:   newListToolProvider(specReviewTools),
 		CheckTerminal:  d.checkTerminalTools,
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			return "", fmt.Errorf("maximum tool iterations exceeded")
-		},
-		MaxIterations: 20, // Increased for complex spec review workflows
-		MaxTokens:     agent.ArchitectMaxTokens,
-		AgentID:       d.architectID,
+		ExtractResult:  ExtractSpecReview,
+		MaxIterations:  20, // Increased for complex spec review workflows
+		MaxTokens:      agent.ArchitectMaxTokens,
+		AgentID:        d.architectID,
 	})
 
 	if err != nil {
@@ -73,30 +71,13 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	switch signal {
 	case signalSpecFeedbackSent:
 		// Architect requested changes via spec_feedback tool
-		approved = false
-
-		// Extract feedback from stateData
-		feedbackResult, ok := d.stateData["spec_feedback_result"]
-		if !ok {
-			return nil, fmt.Errorf("spec_feedback result not found in state data")
-		}
-
-		feedbackMap, ok := feedbackResult.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("spec_feedback result has unexpected type")
-		}
-
-		feedbackStr, ok := feedbackMap["feedback"].(string)
-		if !ok || feedbackStr == "" {
-			return nil, fmt.Errorf("feedback not found in spec_feedback result")
-		}
-
-		feedback = feedbackStr
+		approved = result.Approved // Should be false
+		feedback = result.Feedback
 		d.logger.Info("📝 Architect requested spec changes: %s", feedback)
 
 	case signalSubmitStoriesComplete:
 		// Architect approved spec and generated stories via submit_stories tool
-		approved = true
+		approved = result.Approved // Should be true
 		d.logger.Info("✅ Architect approved spec and generated stories")
 
 		// Load stories into queue from submit_stories result

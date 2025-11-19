@@ -151,25 +151,27 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 	qh.driver.contextManager.ResetForNewTemplate(templateName, prompt)
 
 	// Use toolloop with submit_reply tool to get structured answer
-	answer, err := qh.driver.toolLoop.Run(ctx, &toolloop.Config{
+	signal, result, err := toolloop.Run(qh.driver.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
 		ContextManager: qh.driver.contextManager,
 		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
 		CheckTerminal:  qh.driver.checkTerminalTools,
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			return "", fmt.Errorf("maximum tool iterations exceeded for question answering")
-		},
-		MaxIterations: 10,
-		MaxTokens:     agent.ArchitectMaxTokens,
-		AgentID:       qh.driver.architectID,
+		ExtractResult:  ExtractSubmitReply,
+		MaxIterations:  10,
+		MaxTokens:      agent.ArchitectMaxTokens,
+		AgentID:        qh.driver.architectID,
 	})
 
 	if err != nil {
 		return fmt.Errorf("failed to get LLM response for question: %w", err)
 	}
 
+	if signal == "" {
+		return fmt.Errorf("no terminal signal received from question answering loop")
+	}
+
 	// Update question record.
 	now := time.Now().UTC()
-	pendingQ.Answer = answer
+	pendingQ.Answer = result.Response
 	pendingQ.Status = questionStatusAnswered
 	pendingQ.AnsweredAt = &now
 

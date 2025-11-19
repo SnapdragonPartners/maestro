@@ -303,7 +303,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	// Use toolloop for todo collection (single-pass with retry)
 	loop := toolloop.New(c.llmClient, c.logger)
 
-	cfg := &toolloop.Config{
+	cfg := &toolloop.Config[struct{}]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   todoToolProvider,
@@ -314,14 +314,21 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
 		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			c.logger.Error("📋 [TODO] Failed to collect todos after max iterations")
-			//nolint:goconst // "ERROR" signal used locally, not a project-wide constant
-			return "ERROR", logx.Errorf("LLM failed to provide todos after %d attempts", 2)
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			// No result extraction needed for todo collection
+			return struct{}{}, nil
+		},
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
+			HardLimit: 2,
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations (key: %s)", count, key)
+				return logx.Errorf("LLM failed to provide todos after %d attempts", count)
+			},
 		},
 	}
 
-	signal, err := loop.Run(ctx, cfg)
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
 	}
@@ -331,8 +338,6 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	case "CODING":
 		// Todos collected successfully
 		return StateCoding, false, nil
-	case "ERROR":
-		return proto.StateError, false, logx.Errorf("todo collection failed")
 	case "":
 		// No signal - should not happen with MaxIterations=2
 		return proto.StateError, false, logx.Errorf("todo collection completed without signal")
@@ -369,14 +374,14 @@ func (c *Coder) checkTodoCollectionTerminal(ctx context.Context, sm *agent.BaseS
 			// Get the result for this tool call
 			if i >= len(results) {
 				c.logger.Error("📋 [TODO] No result available for todos_add call")
-				return "ERROR"
+				return "" // Let toolloop handle missing result
 			}
 
 			result := results[i]
 			resultMap, ok := result.(map[string]any)
 			if !ok {
 				c.logger.Error("📋 [TODO] Result is not a map: %T", result)
-				return "ERROR"
+				return "" // Let toolloop continue for retry
 			}
 
 			// Process the result using handler
