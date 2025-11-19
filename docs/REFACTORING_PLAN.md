@@ -161,17 +161,25 @@ func buildAgentResponseFromMsg(request, response *proto.AgentMsg) *persistence.A
 
 **Solution**: Make result extraction and escalation handling first-class features of toolloop.
 
-#### New API Design
+#### New API Design with Generics
+
+**Key Decision: Use Go generics for type-safe result extraction**
+
+Feedback from OpenAI confirms this is an excellent use case for generics:
+- Result type varies per call (type parameter, not value parameter)
+- Only 3-4 distinct result types across the system
+- Call-site knows the desired type at compile-time
+- Eliminates runtime type assertions in critical infrastructure
 
 ```go
-// ResultExtractor is called after terminal signal to extract typed result
-type ResultExtractor func(calls []agent.ToolCall, results []any) (any, error)
-
 // EscalationHandler is called when hard iteration limit reached
 type EscalationHandler func(ctx context.Context, key string, count int) error
 
-// Config for toolloop execution
-type Config struct {
+// ExtractFunc extracts typed result from tool calls
+type ExtractFunc[T any] func(calls []agent.ToolCall, results []any) (T, error)
+
+// Config for toolloop execution - GENERIC over result type T
+type Config[T any] struct {
     // Core requirements
     ContextManager *contextmgr.ContextManager
     ToolProvider   ToolProvider
@@ -179,12 +187,10 @@ type Config struct {
     // Terminal detection (required)
     CheckTerminal func(calls []agent.ToolCall, results []any) string
 
-    // Result extraction (required for handlers that need output)
-    // Return nil if no result needed (e.g., fire-and-forget operations)
-    ExtractResult ResultExtractor
+    // Result extraction (required) - type-safe!
+    ExtractResult ExtractFunc[T]
 
     // Escalation handling (required)
-    // Provides escalation key, soft limit, hard limit, and handler
     Escalation *EscalationConfig
 
     // Limits
@@ -213,19 +219,31 @@ type EscalationConfig struct {
     OnHardLimit EscalationHandler // Required: called at hard limit
 }
 
-// Run executes the tool loop and returns (signal, result, error)
-// - signal: empty string for normal completion, non-empty for state transition
-// - result: typed result from ExtractResult (nil if ExtractResult returns nil)
-// - error: any error that occurred
-func (tl *ToolLoop) Run(ctx context.Context, cfg *Config) (signal string, result any, err error)
+// ToolLoop remains NON-GENERIC (important!)
+type ToolLoop struct {
+    llmClient agent.LLMClient
+    logger    *logx.Logger
+}
+
+// Run is a GENERIC METHOD that returns type-safe results
+// The method is generic, not the struct, so ToolLoop can handle any result type
+func (tl *ToolLoop) Run[T any](ctx context.Context, cfg Config[T]) (signal string, result T, err error)
 ```
+
+**Why this shape?**
+- ToolLoop struct is not tied to a single result type for its lifetime
+- Avoids proliferation of `ToolLoop[string]`, `ToolLoop[Review]`, etc.
+- Generic receiver types cannot satisfy interfaces (breaks mocking/testing)
+- Type inference works: compiler infers `T` from `cfg`, no need to write `Run[Foo](...)`
+- This is the idiomatic Go 1.22-1.24 pattern per OpenAI guidance
 
 #### Migration Strategy
 
-1. Update toolloop.Run signature to return `(string, any, error)`
-2. Make ExtractResult required (can return nil for no-result cases)
-3. Make Escalation required (all LLM loops should have limits)
+1. Make Config generic: `type Config[T any] struct { ... }`
+2. Update Run signature: `func (tl *ToolLoop) Run[T any](ctx context.Context, cfg Config[T]) (string, T, error)`
+3. Define result types for each use case (see examples below)
 4. Update all call sites (compiler will catch them)
+5. Remove all manual type assertions like `result.(string)`
 
 **Breaking Changes**: Yes, but pre-release and compiler-enforced
 
@@ -295,14 +313,19 @@ func (d *Driver) handleIterativeApproval(...) (*proto.AgentMsg, error) {
 }
 ```
 
-**After**:
+**After (with generics)**:
 ```go
+// Define result type for submit_reply tool (once, at package level)
+type SubmitReplyResult struct {
+    Response string
+}
+
 func (d *Driver) handleIterativeApproval(...) (*proto.AgentMsg, error) {
     // 1. Build prompt
     prompt := d.generateCodePrompt(...)
 
-    // 2. Run toolloop with extraction and escalation
-    signal, result, err := d.toolLoop.Run(ctx, &toolloop.Config{
+    // 2. Run toolloop with type-safe extraction and escalation
+    signal, result, err := d.toolLoop.Run(ctx, toolloop.Config[SubmitReplyResult]{
         ContextManager: d.contextManager,
         ToolProvider:   toolProvider,
         InitialPrompt:  prompt,
@@ -316,15 +339,16 @@ func (d *Driver) handleIterativeApproval(...) (*proto.AgentMsg, error) {
             return ""
         },
 
-        ExtractResult: func(calls []agent.ToolCall, _ []any) (any, error) {
+        // Type-safe extraction - returns SubmitReplyResult, not any
+        ExtractResult: func(calls []agent.ToolCall, _ []any) (SubmitReplyResult, error) {
             for _, call := range calls {
                 if call.Name == tools.ToolSubmitReply {
                     if response, ok := call.Parameters["response"].(string); ok && response != "" {
-                        return response, nil
+                        return SubmitReplyResult{Response: response}, nil
                     }
                 }
             }
-            return nil, fmt.Errorf("submit_reply response not found")
+            return SubmitReplyResult{}, fmt.Errorf("submit_reply response not found")
         },
 
         Escalation: &toolloop.EscalationConfig{
@@ -346,9 +370,42 @@ func (d *Driver) handleIterativeApproval(...) (*proto.AgentMsg, error) {
         return nil, fmt.Errorf("iterative approval failed: %w", err)
     }
 
-    // 3. Build response (result is already extracted and typed)
-    return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, result.(string))
+    // 3. Build response - NO TYPE ASSERTION NEEDED!
+    //    result is already SubmitReplyResult, fully type-safe
+    return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, result.Response)
 }
+```
+
+**Result Types to Define:**
+
+```go
+// In pkg/architect/results.go (new file)
+
+// SubmitReplyResult is returned from submit_reply tool calls (code/completion review)
+type SubmitReplyResult struct {
+    Response string
+}
+
+// ReviewCompleteResult is returned from review_complete tool calls (plan/budget review)
+type ReviewCompleteResult struct {
+    Status   string
+    Feedback string
+}
+
+// SpecFeedbackResult is returned from spec review operations
+type SpecFeedbackResult struct {
+    Approved bool
+    Feedback string
+    Stories  []string
+}
+```
+
+**Key Benefits:**
+- ✅ Zero runtime type assertions at call sites
+- ✅ Compiler catches mismatched types
+- ✅ Clear documentation of what each handler produces
+- ✅ Better IDE autocomplete (knows `result.Response` exists)
+- ✅ Safe refactoring (rename `Response` field, compiler finds all uses)
 ```
 
 **Handlers to migrate**:
