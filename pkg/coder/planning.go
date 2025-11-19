@@ -140,7 +140,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	loop := toolloop.New(c.llmClient, c.logger)
 
 	//nolint:dupl // Similar config in coding.go - intentional per-state configuration
-	cfg := &toolloop.Config[struct{}]{
+	cfg := &toolloop.Config[PlanningResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   c.planningToolProvider,
@@ -151,10 +151,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkPlanningTerminal(ctx, sm, calls, results)
 		},
-		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
-			// No result extraction needed for planning
-			return struct{}{}, nil
-		},
+		ExtractResult: ExtractPlanningResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("planning_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxPlanningIterations - 2, // Warn 2 iterations before limit
@@ -174,7 +171,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(err) {
@@ -182,6 +179,11 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 			return c.handleEmptyResponseError(sm, prompt, req, StatePlanning)
 		}
 		return proto.StateError, false, logx.Wrap(err, "toolloop execution failed")
+	}
+
+	// Process extracted result based on signal
+	if err := c.processPlanningResult(sm, &result); err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to process planning result")
 	}
 
 	// Handle terminal signals
@@ -203,7 +205,8 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 }
 
 // checkPlanningTerminal examines tool calls and results for terminal signals during planning.
-func (c *Coder) checkPlanningTerminal(ctx context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
+// ONLY checks for signals - does not extract or process data (that's done by ExtractPlanningResult).
+func (c *Coder) checkPlanningTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
 	for i := range calls {
 		toolCall := &calls[i]
 
@@ -240,21 +243,8 @@ func (c *Coder) checkPlanningTerminal(ctx context.Context, sm *agent.BaseStateMa
 		// Check for next_state signal in tool result
 		if nextState, hasNextState := resultMap["next_state"]; hasNextState {
 			if nextStateStr, ok := nextState.(string); ok {
-				// Process via existing handler to maintain current behavior
-				newState, _, err := c.handleToolStateTransition(ctx, sm, toolCall.Name, nextStateStr, resultMap)
-				if err != nil {
-					c.logger.Error("Error handling tool state transition: %v", err)
-					continue
-				}
-
-				// Map state to signal for toolloop
-				switch newState {
-				case StatePlanReview:
-					return "PLAN_REVIEW"
-				default:
-					c.logger.Warn("Unmapped terminal state from tool %s: %s", toolCall.Name, newState)
-					return string(newState)
-				}
+				c.logger.Info("🧑‍💻 Tool %s signaled next_state: %s", toolCall.Name, nextStateStr)
+				return nextStateStr // Return signal directly
 			}
 		}
 	}
@@ -262,115 +252,50 @@ func (c *Coder) checkPlanningTerminal(ctx context.Context, sm *agent.BaseStateMa
 	return "" // No terminal signal, continue loop
 }
 
-// handleToolStateTransition processes tool state transitions directly.
-func (c *Coder) handleToolStateTransition(ctx context.Context, sm *agent.BaseStateMachine, toolName, nextState string, resultMap map[string]any) (proto.State, bool, error) {
-	// Log the transition.
-	if message, hasMessage := resultMap["message"].(string); hasMessage {
-		c.logger.Info("Tool %s: %s", toolName, message)
-	}
+// processPlanningResult processes the extracted result from planning toolloop.
+// Stores data in stateData and performs any necessary side effects.
+//
+//nolint:unparam // error return reserved for future validation logic
+func (c *Coder) processPlanningResult(sm *agent.BaseStateMachine, result *PlanningResult) error {
+	// Only process if we have plan data (i.e., submit_plan was called)
+	if result.Signal == SignalPlanReview && result.Plan != "" {
+		c.logger.Info("✅ Planning result extracted: plan (%d chars), confidence: %s",
+			len(result.Plan), result.Confidence)
 
-	// Handle tool-specific state transitions.
-	switch toolName {
-	case tools.ToolSubmitPlan:
-		return c.handlePlanSubmissionDirect(ctx, sm, resultMap)
+		// Get knowledge pack from result or fall back to state data
+		knowledgePack := result.KnowledgePack
+		if knowledgePack == "" {
+			knowledgePack = utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
+		}
 
-	case tools.ToolMarkStoryComplete:
-		return c.handleCompletionSubmissionDirect(ctx, sm, resultMap)
+		// Store plan data using typed constants
+		sm.SetStateData(string(stateDataKeyPlan), result.Plan)
+		sm.SetStateData(string(stateDataKeyPlanConfidence), result.Confidence)
+		sm.SetStateData(string(stateDataKeyExplorationSummary), result.ExplorationSummary)
+		sm.SetStateData(string(stateDataKeyPlanRisks), result.Risks)
+		sm.SetStateData(string(stateDataKeyPlanTodos), result.Todos)
+		sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
-	case tools.ToolAskQuestion:
-		// Questions handled inline via Effects pattern
-		c.logger.Info("🧑‍💻 Question handled inline via Effects pattern, continuing in PLANNING")
-		return StatePlanning, false, nil
-
-	default:
-		c.logger.Info("🧑‍💻 Tool %s requested unknown state transition: %s, staying in PLANNING", toolName, nextState)
-		return StatePlanning, false, nil
-	}
-}
-
-// handlePlanSubmissionDirect processes submit_plan tool results directly.
-func (c *Coder) handlePlanSubmissionDirect(_ context.Context, sm *agent.BaseStateMachine, resultMap map[string]any) (proto.State, bool, error) {
-	plan := utils.GetMapFieldOr[string](resultMap, "plan", "")
-	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
-	explorationSummary := utils.GetMapFieldOr[string](resultMap, "exploration_summary", "")
-	risks := utils.GetMapFieldOr[string](resultMap, "risks", "")
-	todos := utils.GetMapFieldOr[[]any](resultMap, "todos", []any{})
-
-	// Get knowledge pack from result or fall back to state data
-	knowledgePack := utils.GetMapFieldOr[string](resultMap, "knowledge_pack", "")
-	if knowledgePack == "" {
-		knowledgePack = utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
-	}
-
-	// Convert todos to structured format.
-	planTodos := make([]PlanTodo, len(todos))
-	for i, todoItem := range todos {
-		if todoMap, ok := utils.SafeAssert[map[string]any](todoItem); ok {
-			planTodos[i] = PlanTodo{
-				ID:          utils.GetMapFieldOr[string](todoMap, "id", ""),
-				Description: utils.GetMapFieldOr[string](todoMap, "description", ""),
-				Completed:   utils.GetMapFieldOr[bool](todoMap, "completed", false),
+		// Store knowledge pack via persistence if available
+		if knowledgePack != "" {
+			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+			if storyID != "" {
+				c.storeKnowledgePack(storyID, knowledgePack)
 			}
 		}
-	}
 
-	// Store plan data using typed constants.
-	sm.SetStateData(string(stateDataKeyPlan), plan)
-	sm.SetStateData(string(stateDataKeyPlanConfidence), confidence)
-	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
-	sm.SetStateData(string(stateDataKeyPlanRisks), risks)
-	sm.SetStateData(string(stateDataKeyPlanTodos), planTodos)
-	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
-
-	// Store knowledge pack via persistence if available
-	if knowledgePack != "" {
-		storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
-		if storyID != "" {
-			c.storeKnowledgePack(storyID, knowledgePack)
+		// Store plan approval request for PLAN_REVIEW state to handle
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: result.Plan,
+			Reason:  fmt.Sprintf("Enhanced plan requires approval (confidence: %s)", result.Confidence),
+			Type:    proto.ApprovalTypePlan,
 		}
+
+		c.logger.Info("🧑‍💻 Plan data stored, ready for PLAN_REVIEW transition")
 	}
 
-	// Store plan approval request for PLAN_REVIEW state to handle
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: plan,
-		Reason:  fmt.Sprintf("Enhanced plan requires approval (confidence: %s)", confidence),
-		Type:    proto.ApprovalTypePlan,
-	}
-
-	c.logger.Info("🧑‍💻 Plan submitted, transitioning to PLAN_REVIEW for approval via Effects")
-
-	return StatePlanReview, false, nil
-}
-
-// handleCompletionSubmissionDirect processes mark_story_complete tool results directly.
-func (c *Coder) handleCompletionSubmissionDirect(_ context.Context, sm *agent.BaseStateMachine, resultMap map[string]any) (proto.State, bool, error) {
-	reason := utils.GetMapFieldOr[string](resultMap, "reason", "")
-	evidence := utils.GetMapFieldOr[string](resultMap, "evidence", "")
-	confidence := utils.GetMapFieldOr[string](resultMap, "confidence", "")
-
-	// Get story type to check for DevOps completion requirements
-	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
-
-	// DevOps completion gate: must have valid target image
-	if storyType == string(proto.StoryTypeDevOps) && !config.IsValidTargetImage() {
-		return proto.StateError, false, fmt.Errorf("DevOps story cannot be completed without a valid target container. You must create a valid target container and run the container_update tool to proceed. Current reason: %s", reason)
-	}
-
-	// Store completion timestamp
-	sm.SetStateData(KeyCompletionSubmittedAt, time.Now().UTC())
-
-	// Store completion approval request for PLAN_REVIEW state to handle
-	c.pendingApprovalRequest = &ApprovalRequest{
-		ID:      proto.GenerateApprovalID(),
-		Content: fmt.Sprintf("Story completion request:\n\nReason: %s\n\nEvidence: %s\n\nConfidence: %s", reason, evidence, confidence),
-		Reason:  fmt.Sprintf("Story completion requires approval (confidence: %s)", confidence),
-		Type:    proto.ApprovalTypeCompletion,
-	}
-
-	c.logger.Info("🧑‍💻 Completion submitted, transitioning to PLAN_REVIEW for approval via Effects")
-
-	return StatePlanReview, false, nil
+	return nil
 }
 
 // Context management placeholder helper methods for planning.

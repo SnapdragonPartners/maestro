@@ -1,0 +1,137 @@
+package coder
+
+import (
+	"fmt"
+
+	"orchestrator/pkg/agent"
+	"orchestrator/pkg/utils"
+)
+
+// Signal constants for Coder workflows.
+const (
+	SignalPlanReview    = "PLAN_REVIEW"
+	SignalTesting       = "TESTING"
+	SignalQuestion      = "QUESTION"
+	SignalBudgetReview  = "BUDGET_REVIEW"
+	SignalStoryComplete = "STORY_COMPLETE"
+	SignalTodoCollected = "CODING"
+)
+
+// PlanningResult contains the outcome of the planning phase toolloop.
+// Captures data from submit_plan tool.
+//
+//nolint:govet // String fields are logically grouped, optimization not beneficial for this result type
+type PlanningResult struct {
+	Signal             string
+	Plan               string
+	Confidence         string
+	ExplorationSummary string
+	Risks              string
+	Todos              []PlanTodo
+	KnowledgePack      string
+}
+
+// CodingResult contains the outcome of the coding phase toolloop.
+// Captures data from todo operations and testing requests.
+type CodingResult struct {
+	Signal         string
+	TodosCompleted []string
+	TestingRequest bool
+}
+
+// ExtractPlanningResult extracts the result from planning phase tools.
+// Returns the appropriate result based on which terminal tool was called.
+func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResult, error) {
+	result := PlanningResult{}
+
+	for i := range calls {
+		// Only process successful results
+		resultMap, ok := results[i].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Check for errors in result
+		if success, ok := resultMap["success"].(bool); ok && !success {
+			continue // Skip error results
+		}
+
+		// Check for next_state signal (submit_plan)
+		if nextState, ok := resultMap["next_state"].(string); ok {
+			result.Signal = nextState
+
+			// Extract plan data from submit_plan
+			if calls[i].Name == "submit_plan" {
+				result.Plan = utils.GetMapFieldOr[string](resultMap, "plan", "")
+				result.Confidence = utils.GetMapFieldOr[string](resultMap, "confidence", "")
+				result.ExplorationSummary = utils.GetMapFieldOr[string](resultMap, "exploration_summary", "")
+				result.Risks = utils.GetMapFieldOr[string](resultMap, "risks", "")
+				result.KnowledgePack = utils.GetMapFieldOr[string](resultMap, "knowledge_pack", "")
+
+				// Extract todos if present
+				todos := utils.GetMapFieldOr[[]any](resultMap, "todos", []any{})
+				result.Todos = make([]PlanTodo, len(todos))
+				for j, todoItem := range todos {
+					if todoMap, ok := utils.SafeAssert[map[string]any](todoItem); ok {
+						result.Todos[j] = PlanTodo{
+							ID:          utils.GetMapFieldOr[string](todoMap, "id", ""),
+							Description: utils.GetMapFieldOr[string](todoMap, "description", ""),
+							Completed:   utils.GetMapFieldOr[bool](todoMap, "completed", false),
+						}
+					}
+				}
+			}
+
+			return result, nil
+		}
+	}
+
+	// No terminal tool was called - this is not an error, just means continue looping
+	return PlanningResult{}, fmt.Errorf("no terminal tool was called in planning phase")
+}
+
+// ExtractCodingResult extracts the result from coding phase tools.
+func ExtractCodingResult(calls []agent.ToolCall, results []any) (CodingResult, error) {
+	result := CodingResult{}
+	todosCompleted := []string{}
+
+	for i := range calls {
+		// Only process successful results
+		resultMap, ok := results[i].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Check for errors in result
+		if success, ok := resultMap["success"].(bool); ok && !success {
+			continue // Skip error results
+		}
+
+		// Track todo_complete calls
+		if calls[i].Name == "todo_complete" {
+			if todoID, ok := resultMap["todo_id"].(string); ok {
+				todosCompleted = append(todosCompleted, todoID)
+			}
+		}
+
+		// Check for next_state signal (request_testing)
+		if nextState, ok := resultMap["next_state"].(string); ok {
+			result.Signal = nextState
+			result.TodosCompleted = todosCompleted
+			if nextState == SignalTesting {
+				result.TestingRequest = true
+			}
+			return result, nil
+		}
+	}
+
+	// No terminal signal - store what we have so far
+	result.TodosCompleted = todosCompleted
+	if len(result.TodosCompleted) > 0 {
+		// Had some activity, just no terminal signal yet
+		return result, nil
+	}
+
+	// No terminal tool was called
+	return CodingResult{}, fmt.Errorf("no terminal tool was called in coding phase")
+}
