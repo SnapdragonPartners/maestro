@@ -39,52 +39,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// Persist request to database (fire-and-forget)
 	if d.persistenceChannel != nil {
-		agentRequest := &persistence.AgentRequest{
-			ID:        requestMsg.ID,
-			FromAgent: requestMsg.FromAgent,
-			ToAgent:   requestMsg.ToAgent,
-			CreatedAt: requestMsg.Timestamp,
-		}
-
-		// Extract story_id from metadata
-		if storyID := proto.GetStoryID(requestMsg); storyID != "" {
-			agentRequest.StoryID = &storyID
-		}
-
-		// Set request type and content based on unified REQUEST protocol
-		if requestMsg.Type == proto.MsgTypeREQUEST {
-			agentRequest.RequestType = persistence.RequestTypeApproval
-
-			// Extract content from typed payload
-			if typedPayload := requestMsg.GetTypedPayload(); typedPayload != nil {
-				switch typedPayload.Kind {
-				case proto.PayloadKindQuestionRequest:
-					if q, err := typedPayload.ExtractQuestionRequest(); err == nil {
-						agentRequest.Content = q.Text
-					}
-				case proto.PayloadKindApprovalRequest:
-					if a, err := typedPayload.ExtractApprovalRequest(); err == nil {
-						agentRequest.Content = a.Content
-						approvalTypeStr := a.ApprovalType.String()
-						agentRequest.ApprovalType = &approvalTypeStr
-						if a.Reason != "" {
-							agentRequest.Reason = &a.Reason
-						}
-					}
-				}
-			}
-		}
-
-		// Set correlation ID from metadata (tries correlation_id, question_id, approval_id)
-		if correlationID := proto.GetCorrelationID(requestMsg); correlationID != "" {
-			agentRequest.CorrelationID = &correlationID
-		}
-
-		// Set parent message ID
-		if requestMsg.ParentMsgID != "" {
-			agentRequest.ParentMsgID = &requestMsg.ParentMsgID
-		}
-
+		agentRequest := buildAgentRequestFromMsg(requestMsg)
 		d.persistenceChannel <- &persistence.Request{
 			Operation: persistence.OpUpsertAgentRequest,
 			Data:      agentRequest,
@@ -157,69 +112,19 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 		// Persist response to database (fire-and-forget)
 		if d.persistenceChannel != nil {
-			agentResponse := &persistence.AgentResponse{
-				ID:        response.ID,
-				FromAgent: response.FromAgent,
-				ToAgent:   response.ToAgent,
-				CreatedAt: response.Timestamp,
-			}
+			agentResponse := buildAgentResponseFromMsg(requestMsg, response)
 
-			// Set request ID for correlation
-			agentResponse.RequestID = &requestMsg.ID
-
-			// Extract story_id from metadata (try response first, fall back to request)
-			if storyID := proto.GetStoryID(response); storyID != "" {
-				agentResponse.StoryID = &storyID
-			} else if storyID := proto.GetStoryID(requestMsg); storyID != "" {
-				agentResponse.StoryID = &storyID
-			}
-
-			// Set response type and content based on message type
-			switch response.Type {
-			case proto.MsgTypeRESPONSE:
-				// Handle unified RESPONSE protocol with typed payloads
-				responseKind, hasKind := proto.GetResponseKind(response)
-				if hasKind {
-					switch responseKind {
-					case proto.ResponseKindQuestion:
-						agentResponse.ResponseType = persistence.ResponseTypeAnswer
-						if typedPayload := response.GetTypedPayload(); typedPayload != nil {
-							if q, err := typedPayload.ExtractQuestionResponse(); err == nil {
-								agentResponse.Content = q.AnswerText
-							}
-						}
-					case proto.ResponseKindApproval, proto.ResponseKindExecution, proto.ResponseKindMerge, proto.ResponseKindRequeue:
-						agentResponse.ResponseType = persistence.ResponseTypeResult
-					default:
-						agentResponse.ResponseType = persistence.ResponseTypeResult
-					}
-				} else {
-					agentResponse.ResponseType = persistence.ResponseTypeResult
-				}
-
-				// Extract approval response if present
+			// Log warning if status validation failed (mapper silently ignores invalid statuses)
+			if agentResponse.Status == nil {
 				if typedPayload := response.GetTypedPayload(); typedPayload != nil {
 					if typedPayload.Kind == proto.PayloadKindApprovalResponse {
 						if result, err := typedPayload.ExtractApprovalResponse(); err == nil {
-							// Content contains the feedback/response text
-							agentResponse.Content = result.Feedback
-
-							// Validate status against CHECK constraint
-							if validStatus, valid := proto.ValidateApprovalStatus(string(result.Status)); valid {
-								validStatusStr := string(validStatus)
-								agentResponse.Status = &validStatusStr
-							} else {
+							if _, valid := proto.ValidateApprovalStatus(string(result.Status)); !valid {
 								d.logger.Warn("Invalid approval status '%s' from ApprovalResult ignored", result.Status)
 							}
 						}
 					}
 				}
-			default:
-			}
-
-			// Set correlation ID from metadata (tries correlation_id, question_id, approval_id)
-			if correlationID := proto.GetCorrelationID(response); correlationID != "" {
-				agentResponse.CorrelationID = &correlationID
 			}
 
 			d.persistenceChannel <- &persistence.Request{
