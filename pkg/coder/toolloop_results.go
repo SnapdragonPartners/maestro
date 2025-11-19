@@ -39,6 +39,13 @@ type CodingResult struct {
 	TestingRequest bool
 }
 
+// TodoCollectionResult contains the outcome of the todo collection phase.
+// Captures the list of todos extracted from todos_add tool.
+type TodoCollectionResult struct {
+	Signal string
+	Todos  []string
+}
+
 // ExtractPlanningResult extracts the result from planning phase tools.
 // Returns the appropriate result based on which terminal tool was called.
 func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResult, error) {
@@ -91,36 +98,33 @@ func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResul
 }
 
 // ExtractCodingResult extracts the result from coding phase tools.
-func ExtractCodingResult(calls []agent.ToolCall, results []any) (CodingResult, error) {
+func ExtractCodingResult(calls []agent.ToolCall, _ []any) (CodingResult, error) {
 	result := CodingResult{}
 	todosCompleted := []string{}
 
 	for i := range calls {
-		// Only process successful results
-		resultMap, ok := results[i].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// Check for errors in result
-		if success, ok := resultMap["success"].(bool); ok && !success {
-			continue // Skip error results
-		}
-
-		// Track todo_complete calls
+		// Track todo_complete calls (side effects happen in checkCodingTerminal)
 		if calls[i].Name == "todo_complete" {
-			if todoID, ok := resultMap["todo_id"].(string); ok {
-				todosCompleted = append(todosCompleted, todoID)
+			// Extract index from parameters for tracking
+			if index, ok := calls[i].Parameters["index"].(float64); ok {
+				todosCompleted = append(todosCompleted, fmt.Sprintf("index_%d", int(index)))
+			} else {
+				todosCompleted = append(todosCompleted, "current")
 			}
 		}
 
-		// Check for next_state signal (request_testing)
-		if nextState, ok := resultMap["next_state"].(string); ok {
-			result.Signal = nextState
+		// Check for done tool signal (transitions to TESTING)
+		if calls[i].Name == "done" {
+			result.Signal = SignalTesting
 			result.TodosCompleted = todosCompleted
-			if nextState == SignalTesting {
-				result.TestingRequest = true
-			}
+			result.TestingRequest = true
+			return result, nil
+		}
+
+		// Check for ask_question signal
+		if calls[i].Name == "ask_question" {
+			result.Signal = SignalQuestion
+			result.TodosCompleted = todosCompleted
 			return result, nil
 		}
 	}
@@ -134,4 +138,38 @@ func ExtractCodingResult(calls []agent.ToolCall, results []any) (CodingResult, e
 
 	// No terminal tool was called
 	return CodingResult{}, fmt.Errorf("no terminal tool was called in coding phase")
+}
+
+// ExtractTodoCollectionResult extracts the result from todo collection phase.
+func ExtractTodoCollectionResult(_ []agent.ToolCall, results []any) (TodoCollectionResult, error) {
+	result := TodoCollectionResult{}
+
+	for i := range results {
+		resultMap, ok := results[i].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// Check for errors
+		if success, ok := resultMap["success"].(bool); ok && !success {
+			continue
+		}
+
+		// Extract todos from todos_add result
+		if todosRaw, ok := resultMap["todos"]; ok {
+			if todosArray, ok := todosRaw.([]any); ok {
+				todos := make([]string, 0, len(todosArray))
+				for _, todoItem := range todosArray {
+					if todoStr, ok := todoItem.(string); ok {
+						todos = append(todos, todoStr)
+					}
+				}
+				result.Todos = todos
+				result.Signal = SignalTodoCollected // "CODING"
+				return result, nil
+			}
+		}
+	}
+
+	return TodoCollectionResult{}, fmt.Errorf("no todos found in todo collection phase")
 }

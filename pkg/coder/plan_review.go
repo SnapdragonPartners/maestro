@@ -303,7 +303,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	// Use toolloop for todo collection (single-pass with retry)
 	loop := toolloop.New(c.llmClient, c.logger)
 
-	cfg := &toolloop.Config[struct{}]{
+	cfg := &toolloop.Config[TodoCollectionResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   todoToolProvider,
@@ -314,10 +314,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
 		},
-		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
-			// No result extraction needed for todo collection
-			return struct{}{}, nil
-		},
+		ExtractResult: ExtractTodoCollectionResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			HardLimit: 2,
@@ -328,9 +325,18 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
+	}
+
+	// Process extracted todos
+	if len(result.Todos) > 0 {
+		c.logger.Info("📋 [TODO] Extracted %d todos from LLM", len(result.Todos))
+		// Convert string todos to TodoList
+		if err := c.processTodoCollectionResult(sm, &result); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to process todos")
+		}
 	}
 
 	// Handle terminal signals
@@ -363,42 +369,56 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, todoTools)
 }
 
-// checkTodoCollectionTerminal checks if todos_add was called and processes it.
-func (c *Coder) checkTodoCollectionTerminal(ctx context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
+// checkTodoCollectionTerminal checks if todos_add was called (signal only - no data extraction).
+func (c *Coder) checkTodoCollectionTerminal(_ context.Context, _ *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
 	// Check if todos_add was called
 	for i := range calls {
-		toolCall := &calls[i]
-		if toolCall.Name == tools.ToolTodosAdd {
-			c.logger.Info("📋 [TODO] todos_add tool called, processing result")
-
-			// Get the result for this tool call
-			if i >= len(results) {
-				c.logger.Error("📋 [TODO] No result available for todos_add call")
-				return "" // Let toolloop handle missing result
+		if calls[i].Name == tools.ToolTodosAdd {
+			// Check if result is successful
+			if i < len(results) {
+				if resultMap, ok := results[i].(map[string]any); ok {
+					if success, ok := resultMap["success"].(bool); ok && success {
+						c.logger.Info("📋 [TODO] todos_add succeeded, signaling CODING transition")
+						return "CODING"
+					}
+				}
 			}
-
-			result := results[i]
-			resultMap, ok := result.(map[string]any)
-			if !ok {
-				c.logger.Error("📋 [TODO] Result is not a map: %T", result)
-				return "" // Let toolloop continue for retry
-			}
-
-			// Process the result using handler
-			_, _, err := c.handleTodosAdd(ctx, sm, resultMap)
-			if err != nil {
-				c.logger.Error("📋 [TODO] Failed to process todos: %v", err)
-				// Don't return ERROR - let toolloop continue for retry
-				return ""
-			}
-
-			// Todos successfully collected - signal transition to CODING
-			c.logger.Info("📋 [TODO] Todos collected successfully, ready for CODING")
-			return "CODING"
+			// If we got here, the tool was called but failed or had invalid result
+			c.logger.Warn("📋 [TODO] todos_add called but result was unsuccessful")
+			return "" // Continue loop for retry
 		}
 	}
 
 	// No todos_add found - continue loop (will be retried or hit iteration limit)
 	c.logger.Warn("📋 [TODO] LLM did not call todos_add, continuing loop for retry")
 	return ""
+}
+
+// processTodoCollectionResult processes the extracted todos from todo collection phase.
+//
+//nolint:unparam // error return reserved for future validation logic
+func (c *Coder) processTodoCollectionResult(sm *agent.BaseStateMachine, result *TodoCollectionResult) error {
+	if len(result.Todos) == 0 {
+		return nil
+	}
+
+	// Create todo list from extracted todos
+	items := make([]TodoItem, len(result.Todos))
+	for i, todoDesc := range result.Todos {
+		items[i] = TodoItem{
+			Description: todoDesc,
+			Completed:   false,
+		}
+	}
+
+	todoList := &TodoList{
+		Items:   items,
+		Current: 0,
+	}
+
+	c.todoList = todoList
+	sm.SetStateData("todo_list", todoList)
+
+	c.logger.Info("📋 [TODO] Created todo list with %d items", len(result.Todos))
+	return nil
 }

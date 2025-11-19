@@ -124,7 +124,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	loop := toolloop.New(c.llmClient, c.logger)
 
 	//nolint:dupl // Similar config in planning.go - intentional per-state configuration
-	cfg := &toolloop.Config[struct{}]{
+	cfg := &toolloop.Config[CodingResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   c.codingToolProvider,
@@ -135,10 +135,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkCodingTerminal(ctx, sm, calls, results)
 		},
-		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
-			// No result extraction needed for coding
-			return struct{}{}, nil
-		},
+		ExtractResult: ExtractCodingResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxCodingIterations - 2, // Warn 2 iterations before limit
@@ -158,7 +155,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(err) {
@@ -166,6 +163,11 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			return c.handleEmptyResponseError(sm, prompt, req, StateCoding)
 		}
 		return proto.StateError, false, logx.Wrap(err, "toolloop execution failed")
+	}
+
+	// Log extracted result for visibility
+	if len(result.TodosCompleted) > 0 {
+		c.logger.Info("✅ Coding iteration completed %d todos", len(result.TodosCompleted))
 	}
 
 	// Handle terminal signals
