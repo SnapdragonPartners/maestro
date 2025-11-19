@@ -326,35 +326,38 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 			return "ERROR", zero, fmt.Errorf("single-turn review did not complete - terminal tool must signal completion")
 		}
 
+		// Check escalation limits before continuing iteration
+		if cfg.Escalation != nil {
+			// Current iteration count (1-indexed for user-facing logging)
+			currentIteration := iteration + 1
+
+			// Check soft limit (warning only, continues execution)
+			if cfg.Escalation.SoftLimit > 0 && currentIteration == cfg.Escalation.SoftLimit {
+				tl.logger.Warn("⚠️  Soft iteration limit (%d) reached for key '%s'", cfg.Escalation.SoftLimit, cfg.Escalation.Key)
+				if cfg.Escalation.OnSoftLimit != nil {
+					cfg.Escalation.OnSoftLimit(currentIteration)
+				}
+			}
+
+			// Check hard limit (stops execution immediately)
+			if cfg.Escalation.HardLimit > 0 && currentIteration >= cfg.Escalation.HardLimit {
+				tl.logger.Error("❌ Hard iteration limit (%d) reached for key '%s' - escalating", cfg.Escalation.HardLimit, cfg.Escalation.Key)
+				if cfg.Escalation.OnHardLimit != nil {
+					err := cfg.Escalation.OnHardLimit(ctx, cfg.Escalation.Key, currentIteration)
+					if err != nil {
+						return "", zero, fmt.Errorf("escalation handler failed: %w", err)
+					}
+				}
+				return "", zero, fmt.Errorf("hard iteration limit (%d) exceeded for key '%s'", cfg.Escalation.HardLimit, cfg.Escalation.Key)
+			}
+		}
+
 		// Continue iteration
 		tl.logger.Info("🔄 Tools executed, continuing iteration")
 	}
 
-	// Iteration limit reached
+	// Iteration limit reached - no escalation configured or limits not reached yet
 	tl.logger.Warn("⚠️  Maximum tool iterations (%d) reached", cfg.MaxIterations)
-
-	// Handle escalation if configured
-	if cfg.Escalation != nil {
-		// Check soft limit
-		if cfg.Escalation.SoftLimit > 0 && cfg.MaxIterations >= cfg.Escalation.SoftLimit {
-			tl.logger.Warn("⚠️  Soft iteration limit (%d) reached for key '%s'", cfg.Escalation.SoftLimit, cfg.Escalation.Key)
-			if cfg.Escalation.OnSoftLimit != nil {
-				cfg.Escalation.OnSoftLimit(cfg.MaxIterations)
-			}
-		}
-
-		// Check hard limit
-		if cfg.Escalation.HardLimit > 0 && cfg.MaxIterations >= cfg.Escalation.HardLimit {
-			tl.logger.Error("❌ Hard iteration limit (%d) reached for key '%s' - escalating", cfg.Escalation.HardLimit, cfg.Escalation.Key)
-			if cfg.Escalation.OnHardLimit != nil {
-				err := cfg.Escalation.OnHardLimit(ctx, cfg.Escalation.Key, cfg.MaxIterations)
-				if err != nil {
-					return "", zero, fmt.Errorf("escalation handler failed: %w", err)
-				}
-			}
-			return "", zero, fmt.Errorf("hard iteration limit (%d) exceeded for key '%s'", cfg.Escalation.HardLimit, cfg.Escalation.Key)
-		}
-	}
 
 	return "", zero, fmt.Errorf("maximum tool iterations (%d) exceeded", cfg.MaxIterations)
 }

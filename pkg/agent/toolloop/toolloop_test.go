@@ -3,6 +3,8 @@ package toolloop_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -544,5 +546,313 @@ func TestMissingConfig(t *testing.T) {
 	_, _, err = toolloop.Run(loop, ctx, cfg)
 	if err == nil || err.Error() != "ExtractResult is required for type-safe result extraction" {
 		t.Errorf("expected ExtractResult required error, got %v", err)
+	}
+}
+
+// TestResultExtraction tests that ExtractResult properly extracts typed results.
+func TestResultExtraction(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// Define a custom result type
+	type TestResult struct {
+		Value   string
+		Success bool
+	}
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Calling result tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "result_tool", Parameters: map[string]any{"value": "test_data"}},
+				},
+			},
+		},
+	}
+
+	toolProvider := newMockToolProvider()
+	toolProvider.AddTool("result_tool", func(_ context.Context, params map[string]any) (any, error) {
+		return map[string]any{"success": true, "value": params["value"]}, nil
+	})
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[TestResult]{
+		ContextManager: cm,
+		ToolProvider:   toolProvider,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		CheckTerminal: func(calls []agent.ToolCall, _ []any) string {
+			// Signal terminal when result_tool is called
+			for i := range calls {
+				if calls[i].Name == "result_tool" {
+					return "RESULT_READY"
+				}
+			}
+			return ""
+		},
+		ExtractResult: func(calls []agent.ToolCall, results []any) (TestResult, error) {
+			// Extract result from result_tool
+			for i := range calls {
+				if calls[i].Name == "result_tool" {
+					if resultMap, ok := results[i].(map[string]any); ok {
+						value, valueOK := resultMap["value"].(string)
+						success, successOK := resultMap["success"].(bool)
+						if !valueOK || !successOK {
+							return TestResult{}, errors.New("invalid result data types")
+						}
+						return TestResult{
+							Value:   value,
+							Success: success,
+						}, nil
+					}
+				}
+			}
+			return TestResult{}, errors.New("result_tool not found")
+		},
+	}
+
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if signal != "RESULT_READY" {
+		t.Errorf("expected signal 'RESULT_READY', got %q", signal)
+	}
+
+	if result.Value != "test_data" {
+		t.Errorf("expected result.Value='test_data', got %q", result.Value)
+	}
+
+	if !result.Success {
+		t.Error("expected result.Success=true, got false")
+	}
+}
+
+// TestResultExtractionError tests that ExtractResult errors are properly handled.
+func TestResultExtractionError(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Calling tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "some_tool", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	toolProvider := newMockToolProvider()
+	toolProvider.AddTool("some_tool", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"success": true}, nil
+	})
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		ToolProvider:   toolProvider,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "DONE" // Signal terminal immediately
+		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (string, error) {
+			// Extraction fails
+			return "", errors.New("extraction failed: missing required data")
+		},
+	}
+
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
+
+	// Should return error from ExtractResult
+	if err == nil {
+		t.Fatal("expected error from ExtractResult, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "extraction failed") {
+		t.Errorf("expected extraction error, got %v", err)
+	}
+
+	if signal != "DONE" {
+		t.Errorf("expected signal 'DONE', got %q", signal)
+	}
+
+	if result != "" {
+		t.Errorf("expected empty result on error, got %q", result)
+	}
+}
+
+// TestEscalationSoftLimit tests that OnSoftLimit callback is invoked.
+func TestEscalationSoftLimit(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// LLM calls 5 times before terminal
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{Content: "Call 1", ToolCalls: []agent.ToolCall{{ID: "1", Name: "tool1", Parameters: map[string]any{}}}},
+			{Content: "Call 2", ToolCalls: []agent.ToolCall{{ID: "2", Name: "tool1", Parameters: map[string]any{}}}},
+			{Content: "Call 3", ToolCalls: []agent.ToolCall{{ID: "3", Name: "tool1", Parameters: map[string]any{}}}},
+			{Content: "Call 4", ToolCalls: []agent.ToolCall{{ID: "4", Name: "tool1", Parameters: map[string]any{}}}},
+			{Content: "Done", ToolCalls: []agent.ToolCall{{ID: "5", Name: "done_tool", Parameters: map[string]any{}}}},
+		},
+	}
+
+	toolProvider := newMockToolProvider()
+	toolProvider.AddTool("tool1", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"success": true}, nil
+	})
+	toolProvider.AddTool("done_tool", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"success": true, "done": true}, nil
+	})
+
+	softLimitCalled := false
+	softLimitCount := 0
+	hardLimitCalled := false
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[struct{}]{
+		ContextManager: cm,
+		ToolProvider:   toolProvider,
+		MaxIterations:  10,
+		MaxTokens:      1000,
+		CheckTerminal: func(calls []agent.ToolCall, _ []any) string {
+			// Terminal when done_tool is called
+			for i := range calls {
+				if calls[i].Name == "done_tool" {
+					return "DONE"
+				}
+			}
+			return ""
+		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
+		Escalation: &toolloop.EscalationConfig{
+			Key:       "test_soft_limit",
+			SoftLimit: 3, // Warn at 3 iterations
+			HardLimit: 10,
+			OnSoftLimit: func(count int) {
+				softLimitCalled = true
+				softLimitCount = count
+			},
+			OnHardLimit: func(_ context.Context, _ string, _ int) error {
+				hardLimitCalled = true
+				return errors.New("hard limit")
+			},
+		},
+	}
+
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if signal != "DONE" {
+		t.Errorf("expected signal 'DONE', got %q", signal)
+	}
+
+	if !softLimitCalled {
+		t.Error("expected OnSoftLimit to be called")
+	}
+
+	if softLimitCount != 3 {
+		t.Errorf("expected soft limit count 3, got %d", softLimitCount)
+	}
+
+	if hardLimitCalled {
+		t.Error("OnHardLimit should not have been called")
+	}
+}
+
+// TestEscalationHardLimit tests that OnHardLimit stops execution.
+func TestEscalationHardLimit(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// LLM calls indefinitely
+	responses := make([]agent.CompletionResponse, 10)
+	for i := range responses {
+		responses[i] = agent.CompletionResponse{
+			Content:   fmt.Sprintf("Call %d", i+1),
+			ToolCalls: []agent.ToolCall{{ID: fmt.Sprintf("%d", i+1), Name: "tool1", Parameters: map[string]any{}}},
+		}
+	}
+	llmClient := &mockLLMClient{responses: responses}
+
+	toolProvider := newMockToolProvider()
+	toolProvider.AddTool("tool1", func(_ context.Context, _ map[string]any) (any, error) {
+		return map[string]any{"success": true}, nil
+	})
+
+	hardLimitCalled := false
+	hardLimitKey := ""
+	hardLimitCount := 0
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[struct{}]{
+		ContextManager: cm,
+		ToolProvider:   toolProvider,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		CheckTerminal: func(_ []agent.ToolCall, _ []any) string {
+			return "" // Never signal - will hit hard limit
+		},
+		ExtractResult: func(_ []agent.ToolCall, _ []any) (struct{}, error) {
+			return struct{}{}, nil
+		},
+		Escalation: &toolloop.EscalationConfig{
+			Key:       "test_hard_limit",
+			SoftLimit: 3,
+			HardLimit: 5,
+			OnSoftLimit: func(_ int) {
+				// Soft limit callback
+			},
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				hardLimitCalled = true
+				hardLimitKey = key
+				hardLimitCount = count
+				return errors.New("escalation required")
+			},
+		},
+	}
+
+	signal, _, err := toolloop.Run(loop, ctx, cfg)
+
+	// Should error from OnHardLimit
+	if err == nil {
+		t.Fatal("expected error from OnHardLimit, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "escalation required") {
+		t.Errorf("expected escalation error, got %v", err)
+	}
+
+	if !hardLimitCalled {
+		t.Error("expected OnHardLimit to be called")
+	}
+
+	if hardLimitKey != "test_hard_limit" {
+		t.Errorf("expected key 'test_hard_limit', got %q", hardLimitKey)
+	}
+
+	if hardLimitCount != 5 {
+		t.Errorf("expected hard limit count 5, got %d", hardLimitCount)
+	}
+
+	if signal != "" {
+		t.Errorf("expected empty signal on error, got %q", signal)
+	}
+
+	if llmClient.callCount != 5 {
+		t.Errorf("expected 5 LLM calls before hard limit, got %d", llmClient.callCount)
 	}
 }
