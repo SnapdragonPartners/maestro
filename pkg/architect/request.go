@@ -778,8 +778,64 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 
 // Response formatting methods using templates
 
-// getPlanApprovalResponse formats a plan approval response using templates.
-func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback string) string {
+// ResponseKind identifies the type of approval response for formatting.
+type ResponseKind string
+
+const (
+	// ResponseKindPlan represents plan approval responses.
+	ResponseKindPlan ResponseKind = "plan"
+	// ResponseKindCode represents code review responses.
+	ResponseKindCode ResponseKind = "code"
+	// ResponseKindCompletion represents completion review responses.
+	ResponseKindCompletion ResponseKind = "completion"
+	// ResponseKindBudget represents budget review responses.
+	ResponseKindBudget ResponseKind = "budget"
+)
+
+// responseFormatConfig defines template and fallback for each response kind.
+type responseFormatConfig struct {
+	template       templates.StateTemplate
+	fallbackPrefix string
+}
+
+// getResponseFormats returns the mapping of response kinds to their formatting configuration.
+// Defined as a function to avoid global variable linter warning.
+func getResponseFormats() map[ResponseKind]responseFormatConfig {
+	return map[ResponseKind]responseFormatConfig{
+		ResponseKindPlan: {
+			template:       templates.PlanApprovalResponseTemplate,
+			fallbackPrefix: "Plan Review",
+		},
+		ResponseKindCode: {
+			template:       templates.CodeReviewResponseTemplate,
+			fallbackPrefix: "Code Review",
+		},
+		ResponseKindCompletion: {
+			template:       templates.CompletionResponseTemplate,
+			fallbackPrefix: "Completion Review",
+		},
+		ResponseKindBudget: {
+			template:       templates.BudgetReviewResponseTemplate,
+			fallbackPrefix: "Budget Review",
+		},
+	}
+}
+
+// formatApprovalResponse formats an approval response using templates.
+// Consolidated formatter for all approval response types.
+func (d *Driver) formatApprovalResponse(
+	kind ResponseKind,
+	status proto.ApprovalStatus,
+	feedback string,
+	extra map[string]any,
+) string {
+	cfg, exists := getResponseFormats()[kind]
+	if !exists {
+		d.logger.Warn("Unknown response kind: %s, using generic format", kind)
+		return fmt.Sprintf("Review: %s\n\n%s", status, feedback)
+	}
+
+	// Build template data with status and feedback
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
 			"Status":   string(status),
@@ -787,84 +843,47 @@ func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback s
 		},
 	}
 
-	if d.renderer == nil {
-		return fmt.Sprintf("Plan Review: %s\n\n%s", status, feedback)
+	// Merge any extra fields
+	for k, v := range extra {
+		templateData.Extra[k] = v
 	}
 
-	content, err := d.renderer.Render(templates.PlanApprovalResponseTemplate, templateData)
+	// Fallback format if no renderer
+	fallback := fmt.Sprintf("%s: %s\n\n%s", cfg.fallbackPrefix, status, feedback)
+
+	if d.renderer == nil {
+		return fallback
+	}
+
+	content, err := d.renderer.Render(cfg.template, templateData)
 	if err != nil {
-		d.logger.Warn("Failed to render plan approval response: %v", err)
-		return fmt.Sprintf("Plan Review: %s\n\n%s", status, feedback)
+		d.logger.Warn("Failed to render %s response: %v", kind, err)
+		return fallback
 	}
 
 	return content
+}
+
+// getPlanApprovalResponse formats a plan approval response using templates.
+func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback string) string {
+	return d.formatApprovalResponse(ResponseKindPlan, status, feedback, nil)
 }
 
 // getCodeReviewResponse formats a code review response using templates.
 func (d *Driver) getCodeReviewResponse(status proto.ApprovalStatus, feedback string) string {
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Status":   string(status),
-			"Feedback": feedback,
-		},
-	}
-
-	if d.renderer == nil {
-		return fmt.Sprintf("Code Review: %s\n\n%s", status, feedback)
-	}
-
-	content, err := d.renderer.Render(templates.CodeReviewResponseTemplate, templateData)
-	if err != nil {
-		d.logger.Warn("Failed to render code review response: %v", err)
-		return fmt.Sprintf("Code Review: %s\n\n%s", status, feedback)
-	}
-
-	return content
+	return d.formatApprovalResponse(ResponseKindCode, status, feedback, nil)
 }
 
 // getCompletionResponse formats a completion review response using templates.
 func (d *Driver) getCompletionResponse(status proto.ApprovalStatus, feedback string) string {
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Status":   string(status),
-			"Feedback": feedback,
-		},
-	}
-
-	if d.renderer == nil {
-		return fmt.Sprintf("Completion Review: %s\n\n%s", status, feedback)
-	}
-
-	content, err := d.renderer.Render(templates.CompletionResponseTemplate, templateData)
-	if err != nil {
-		d.logger.Warn("Failed to render completion response: %v", err)
-		return fmt.Sprintf("Completion Review: %s\n\n%s", status, feedback)
-	}
-
-	return content
+	return d.formatApprovalResponse(ResponseKindCompletion, status, feedback, nil)
 }
 
 // getBudgetReviewResponse formats a budget review response using templates.
 func (d *Driver) getBudgetReviewResponse(status proto.ApprovalStatus, feedback, originState string) string {
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Status":      string(status),
-			"Feedback":    feedback,
-			"OriginState": originState,
-		},
-	}
-
-	if d.renderer == nil {
-		return fmt.Sprintf("Budget Review: %s\n\n%s", status, feedback)
-	}
-
-	content, err := d.renderer.Render(templates.BudgetReviewResponseTemplate, templateData)
-	if err != nil {
-		d.logger.Warn("Failed to render budget review response: %v", err)
-		return fmt.Sprintf("Budget Review: %s\n\n%s", status, feedback)
-	}
-
-	return content
+	return d.formatApprovalResponse(ResponseKindBudget, status, feedback, map[string]any{
+		"OriginState": originState,
+	})
 }
 
 // handleIterativeApproval processes approval requests with iterative code exploration.
