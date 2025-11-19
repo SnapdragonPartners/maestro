@@ -627,76 +627,6 @@ func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *p
 	return nil
 }
 
-// generatePlanReviewPrompt creates a prompt for architect's plan review.
-func (d *Driver) generatePlanReviewPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) string {
-	storyID := requestMsg.Metadata["story_id"]
-	planContent := approvalPayload.Content
-
-	// Get story information from queue
-	var storyTitle, taskContent, knowledgePack string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			taskContent = story.Content
-			// Get knowledge pack if available
-			if story.KnowledgePack != "" {
-				knowledgePack = story.KnowledgePack
-			}
-		}
-	}
-
-	// Fallback values
-	if storyTitle == "" {
-		storyTitle = "Unknown Story"
-	}
-	if taskContent == "" {
-		taskContent = "Task content not available"
-	}
-
-	// Create template data
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"StoryTitle":    storyTitle,
-			"TaskContent":   taskContent,
-			"PlanContent":   planContent,
-			"KnowledgePack": knowledgePack,
-		},
-	}
-
-	// Check if we have a renderer
-	if d.renderer == nil {
-		// Fallback to simple text if no renderer available
-		return fmt.Sprintf(`Plan Review Request
-
-Story: %s
-Task: %s
-
-Submitted Plan:
-%s
-
-Please review and provide decision: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
-			storyTitle, taskContent, planContent)
-	}
-
-	// Render template
-	prompt, err := d.renderer.Render(templates.PlanReviewArchitectTemplate, templateData)
-	if err != nil {
-		// Fallback to simple text
-		return fmt.Sprintf(`Plan Review Request
-
-Story: %s
-Task: %s
-
-Submitted Plan:
-%s
-
-Please review and provide decision: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
-			storyTitle, taskContent, planContent)
-	}
-
-	return prompt
-}
-
 // buildApprovalResponseFromReviewComplete builds an approval response from review_complete tool result.
 func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, statusStr, feedback string) (*proto.AgentMsg, error) {
 	approvalType := approvalPayload.ApprovalType
@@ -961,9 +891,9 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	var prompt string
 	switch approvalType {
 	case proto.ApprovalTypeCode:
-		prompt = d.generateIterativeCodeReviewPrompt(requestMsg, approvalPayload, coderID, toolProvider)
+		prompt = d.generateCodePrompt(requestMsg, approvalPayload, coderID, toolProvider)
 	case proto.ApprovalTypeCompletion:
-		prompt = d.generateIterativeCompletionPrompt(requestMsg, approvalPayload, coderID, toolProvider)
+		prompt = d.generateCompletionPrompt(requestMsg, approvalPayload, coderID, toolProvider)
 	default:
 		return nil, fmt.Errorf("unsupported iterative approval type: %s", approvalType)
 	}
@@ -1054,7 +984,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	var prompt string
 	switch approvalType {
 	case proto.ApprovalTypePlan:
-		prompt = d.generatePlanReviewPrompt(requestMsg, approvalPayload)
+		prompt = d.generatePlanPrompt(requestMsg, approvalPayload)
 	case proto.ApprovalTypeBudgetReview:
 		prompt = d.generateBudgetPrompt(requestMsg)
 	default:
@@ -1119,123 +1049,6 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	// Build and return approval response
 	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
-}
-
-// generateIterativeCodeReviewPrompt creates a prompt for iterative code review.
-//
-//nolint:dupl // Similar structure to completion prompt but intentionally different content
-func (d *Driver) generateIterativeCodeReviewPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story info from queue for context
-	var storyTitle, storyContent string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyContent = story.Content
-		}
-	}
-
-	toolDocs := toolProvider.GenerateToolDocumentation()
-
-	return fmt.Sprintf(`# Code Review Request (Iterative)
-
-You are the architect reviewing code changes from %s for story: %s
-
-**Story Title:** %s
-**Story Content:**
-%s
-
-**Code Submission:**
-%s
-
-## Your Task
-
-Review the code changes by:
-1. Use **list_files** to see what files the coder modified
-2. Use **read_file** to inspect specific files that need review
-3. Use **get_diff** to see the actual changes made
-4. Analyze the code quality, correctness, and adherence to requirements
-
-**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
-
-## REQUIRED: Submit Your Decision
-
-**You MUST call the submit_reply tool to provide your final decision.** Do not respond with text only.
-
-Call **submit_reply** with your decision in this format:
-- **response**: Your complete decision as a string
-- Must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
-- Follow with specific feedback explaining your decision
-
-## Available Tools
-
-%s
-
-## Important Notes
-
-- You can explore the coder's workspace at /mnt/coders/%s
-- You have read-only access to all their files
-- Take your time to review thoroughly before submitting your decision
-- **Remember: You MUST use submit_reply to send your final decision**
-
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
-}
-
-// generateIterativeCompletionPrompt creates a prompt for iterative completion review.
-//
-//nolint:dupl // Similar structure to code review prompt but intentionally different content
-func (d *Driver) generateIterativeCompletionPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story info from queue for context
-	var storyTitle, storyContent string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyContent = story.Content
-		}
-	}
-
-	toolDocs := toolProvider.GenerateToolDocumentation()
-
-	return fmt.Sprintf(`# Story Completion Review Request (Iterative)
-
-You are the architect reviewing a completion request from %s for story: %s
-
-**Story Title:** %s
-**Story Content:**
-%s
-
-**Completion Claim:**
-%s
-
-## Your Task
-
-Verify the story is complete by:
-1. Use **list_files** to see what files were created/modified
-2. Use **read_file** to inspect the implementation
-3. Use **get_diff** to see all changes made vs main branch
-4. Verify all acceptance criteria are met
-
-**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
-
-When you have completed your review, call **submit_reply** with your decision:
-- Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
-- Provide specific feedback on what's complete or what still needs work
-
-## Available Tools
-
-%s
-
-## Important Notes
-
-- You can explore the coder's workspace at /mnt/coders/%s
-- Verify the implementation matches the story requirements
-- Check for code quality, tests, documentation as needed
-- Be thorough but fair in your assessment
-
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
 }
 
 // getArchitectToolsForLLM converts tool metadata to LLM tool definitions.
@@ -1375,7 +1188,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Build prompt for technical question
-	prompt := d.generateIterativeQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
+	prompt := d.generateQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
 
 	// Reset context for this iteration (first iteration only)
 	iterationCount := 0
@@ -1470,70 +1283,6 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Return nil to signal continuation (state machine will call us again)
 	//nolint:nilnil // Intentional: nil response signals continuation after nudge
 	return nil, nil
-}
-
-// generateIterativeQuestionPrompt creates a prompt for iterative technical question answering.
-//
-//nolint:dupl // Similar structure to other prompts but intentionally different content
-func (d *Driver) generateIterativeQuestionPrompt(requestMsg *proto.AgentMsg, questionPayload *proto.QuestionRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story info from queue for context
-	var storyTitle, storyContent string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyContent = story.Content
-		}
-	}
-
-	toolDocs := toolProvider.GenerateToolDocumentation()
-
-	return fmt.Sprintf(`# Technical Question from Coder (Iterative)
-
-You are the architect answering a technical question from %s working on story: %s
-
-**Story Title:** %s
-**Story Content:**
-%s
-
-**Question:**
-%s
-
-## Your Task
-
-Answer the technical question by:
-1. Use **list_files** to see what files exist in the coder's workspace
-2. Use **read_file** to inspect relevant code files that relate to the question
-3. Use **get_diff** to see what changes the coder has made so far
-4. Analyze the codebase context to provide an informed answer
-
-**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
-
-## REQUIRED: Submit Your Answer
-
-**You MUST call the submit_reply tool to provide your final answer.** Do not respond with text only.
-
-Call **submit_reply** with your response in this format:
-- **response**: Your complete answer as a string
-
-Your answer should:
-- Provide a clear, actionable answer to the question
-- Reference specific files, functions, or patterns when helpful
-- Suggest concrete next steps if applicable
-
-## Available Tools
-
-%s
-
-## Important Notes
-
-- You can explore the coder's workspace at /mnt/coders/%s
-- You have read-only access to their files
-- Use the tools to understand context before answering
-- **Remember: You MUST use submit_reply to send your final answer**
-
-Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, coderID, toolDocs, coderID)
 }
 
 // buildQuestionResponseFromSubmit creates a question response from submit_reply content.
