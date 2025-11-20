@@ -137,7 +137,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	c.logger.Info("🧑‍💻 Starting planning phase for story_type '%s'", storyType)
 
 	// Use toolloop for LLM iteration with planning tools
-	loop := toolloop.New(c.llmClient, c.logger)
+	loop := toolloop.New(c.LLMClient, c.logger)
 
 	//nolint:dupl // Similar config in coding.go - intentional per-state configuration
 	cfg := &toolloop.Config[PlanningResult]{

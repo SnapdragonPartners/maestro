@@ -52,9 +52,8 @@ const (
 //
 //nolint:govet // Prefer logical grouping over memory optimization
 type Driver struct {
-	*agent.BaseStateMachine // Embed state machine for proper state management
+	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
 	pmID                    string
-	llmClient               agent.LLMClient // Typed LLM client (shadows base's untyped field)
 	renderer                *templates.Renderer
 	contextManager          *contextmgr.ContextManager
 	logger                  *logx.Logger
@@ -165,7 +164,6 @@ func NewPM(
 	pmDriver := &Driver{
 		BaseStateMachine:   sm,
 		pmID:               pmID,
-		llmClient:          nil, // Will be set below
 		renderer:           renderer,
 		contextManager:     contextManager,
 		logger:             logger,
@@ -183,8 +181,7 @@ func NewPM(
 		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
 	}
 
-	// Set the LLM client in both places
-	pmDriver.llmClient = llmClient
+	// Set the LLM client via SetLLMClient (sets BaseStateMachine.LLMClient)
 	sm.SetLLMClient(llmClient)
 
 	return pmDriver, nil
@@ -205,7 +202,7 @@ func NewDriver(
 	// Create BaseStateMachine with PM transition table
 	sm := agent.NewBaseStateMachine(pmID, StateWaiting, nil, validTransitions)
 
-	// Set LLM client in both places
+	// Set LLM client via BaseStateMachine
 	if llmClient != nil {
 		sm.SetLLMClient(llmClient)
 	}
@@ -213,7 +210,6 @@ func NewDriver(
 	return &Driver{
 		BaseStateMachine:   sm,
 		pmID:               pmID,
-		llmClient:          llmClient,
 		renderer:           renderer,
 		contextManager:     contextManager,
 		logger:             logx.NewLogger("pm"),

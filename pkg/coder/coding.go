@@ -121,7 +121,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	c.logger.Info("🧑‍💻 Starting coding phase for story_type '%s'", storyType)
 
 	// Use toolloop for LLM iteration with coding tools
-	loop := toolloop.New(c.llmClient, c.logger)
+	loop := toolloop.New(c.LLMClient, c.logger)
 
 	//nolint:dupl // Similar config in planning.go - intentional per-state configuration
 	cfg := &toolloop.Config[CodingResult]{

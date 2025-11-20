@@ -72,9 +72,8 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	*agent.BaseStateMachine // Embed state machine for proper state management
+	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
 	contextManager          *contextmgr.ContextManager
-	llmClient               agent.LLMClient             // Typed LLM client (shadows base's untyped field)
 	toolLoop                *toolloop.ToolLoop          // Tool loop for LLM interactions
 	renderer                *templates.Renderer         // Template renderer for prompts
 	queue                   *Queue                      // Story queue manager
@@ -156,7 +155,6 @@ func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, w
 		BaseStateMachine:   sm,
 		architectID:        architectID,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
-		llmClient:          nil, // Set via SetLLMClient
 		toolLoop:           nil, // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
@@ -249,9 +247,8 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 // SetLLMClient sets the LLM client and initializes the toolLoop.
 // Must be called after construction before the architect can process work.
 func (d *Driver) SetLLMClient(llmClient agent.LLMClient) {
-	d.llmClient = llmClient
-	d.toolLoop = toolloop.New(llmClient, d.logger)
 	d.BaseStateMachine.SetLLMClient(llmClient)
+	d.toolLoop = toolloop.New(llmClient, d.logger)
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.

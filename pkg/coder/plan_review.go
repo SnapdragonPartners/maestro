@@ -301,7 +301,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	c.contextManager.ResetForNewTemplate("todo_collection", prompt)
 
 	// Use toolloop for todo collection (single-pass with retry)
-	loop := toolloop.New(c.llmClient, c.logger)
+	loop := toolloop.New(c.LLMClient, c.logger)
 
 	cfg := &toolloop.Config[TodoCollectionResult]{
 		ContextManager: c.contextManager,

@@ -226,7 +226,7 @@ func (d *Driver) renderWorkingPrompt() (string, error) {
 //nolint:cyclop,maintidx // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
 	// Use toolloop abstraction for LLM tool calling loop
-	loop := toolloop.New(d.llmClient, d.logger)
+	loop := toolloop.New(d.LLMClient, d.logger)
 
 	cfg := &toolloop.Config[WorkingResult]{
 		ContextManager: d.contextManager,

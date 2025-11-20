@@ -65,7 +65,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		switch requestKind {
 		case proto.RequestKindQuestion:
 			// Use iterative question handling if we have LLM and executor
-			if d.llmClient != nil && d.executor != nil {
+			if d.LLMClient != nil && d.executor != nil {
 				response, err = d.handleIterativeQuestion(ctx, requestMsg)
 			} else {
 				response, err = d.handleQuestionRequest(ctx, requestMsg)
@@ -212,7 +212,7 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	answer := "Auto-response: Question received and acknowledged. Please proceed with your implementation."
 
 	// If we have LLM client, use it for more intelligent responses.
-	if d.llmClient != nil {
+	if d.LLMClient != nil {
 		prompt := fmt.Sprintf("Answer this coding question: %s", question)
 
 		// Reset context for this question
@@ -283,18 +283,18 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	useIteration := approvalType == proto.ApprovalTypeCode || approvalType == proto.ApprovalTypeCompletion
 
 	// If using iteration and we have LLM and executor, use iterative review
-	if useIteration && d.llmClient != nil && d.executor != nil {
+	if useIteration && d.LLMClient != nil && d.executor != nil {
 		return d.handleIterativeApproval(ctx, requestMsg, approvalPayload)
 	}
 
 	// Handle spec review approval with spec review tools
-	if approvalType == proto.ApprovalTypeSpec && d.llmClient != nil {
+	if approvalType == proto.ApprovalTypeSpec && d.LLMClient != nil {
 		return d.handleSpecReview(ctx, requestMsg, approvalPayload)
 	}
 
 	// Handle single-turn reviews (Plan and BudgetReview) with review_complete tool
 	useSingleTurnReview := approvalType == proto.ApprovalTypePlan || approvalType == proto.ApprovalTypeBudgetReview
-	if useSingleTurnReview && d.llmClient != nil {
+	if useSingleTurnReview && d.LLMClient != nil {
 		return d.handleSingleTurnReview(ctx, requestMsg, approvalPayload)
 	}
 
@@ -345,7 +345,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	approved := true
 	feedback := "Auto-approved: Request looks good, please proceed (fallback mode - proper review handlers not available)."
 	d.logger.Warn("⚠️  Using auto-approve fallback for %s approval - proper toolloop-based handler not triggered (llmClient=%v, executor=%v)",
-		approvalType, d.llmClient != nil, d.executor != nil)
+		approvalType, d.LLMClient != nil, d.executor != nil)
 
 	// Plan approval completed - artifacts now tracked in database
 
@@ -1123,7 +1123,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Call LLM
 	d.logger.Info("🔄 Calling LLM for iterative question (iteration %d)", iterationCount+1)
-	resp, err := d.llmClient.Complete(ctx, req)
+	resp, err := d.LLMClient.Complete(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}

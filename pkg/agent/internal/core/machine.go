@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
@@ -16,14 +17,6 @@ import (
 // Forward reference to avoid circular imports.
 type StateTimeoutWrapper interface {
 	ProcessWithTimeout(ctx context.Context, currentState proto.State, processor func(context.Context) (proto.State, bool, error)) (proto.State, bool, error)
-}
-
-// LLMClient is a minimal interface for LLM interactions.
-// Forward reference to avoid circular imports with pkg/agent/llm.
-// The actual implementation is in pkg/agent/llm/api.go.
-type LLMClient interface {
-	// We only need the interface to exist for the field type
-	// No methods needed here - agents use their own typed client
 }
 
 const (
@@ -96,8 +89,9 @@ type BaseStateMachine struct {
 	// Timeout wrapper for state processing (from agent package)
 	timeoutWrapper StateTimeoutWrapper
 
-	// LLM client for agent interactions (set after construction to avoid chicken-and-egg with middleware)
-	llmClient LLMClient
+	// LLMClient for agent interactions (set after construction to avoid chicken-and-egg with middleware).
+	// Exported so agents can access via embedding.
+	LLMClient llm.LLMClient
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table.
@@ -364,17 +358,17 @@ func (sm *BaseStateMachine) SetTimeoutWrapper(wrapper StateTimeoutWrapper) {
 
 // SetLLMClient sets the LLM client for agent interactions.
 // Must be called after construction before the agent can process work.
-func (sm *BaseStateMachine) SetLLMClient(client LLMClient) {
+func (sm *BaseStateMachine) SetLLMClient(client llm.LLMClient) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.llmClient = client
+	sm.LLMClient = client
 }
 
 // GetLLMClient returns the configured LLM client.
-func (sm *BaseStateMachine) GetLLMClient() LLMClient {
+func (sm *BaseStateMachine) GetLLMClient() llm.LLMClient {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	return sm.llmClient
+	return sm.LLMClient
 }
 
 // ProcessStateWithTimeout wraps state processing with timeout handling if configured.

@@ -43,11 +43,10 @@ const (
 //
 //nolint:govet // fieldalignment: keeping current field order for code clarity
 type Coder struct {
-	*agent.BaseStateMachine // Directly embed state machine
+	*agent.BaseStateMachine // Directly embed state machine (provides llmClient field)
 	agentConfig             *agent.Config
 	agentID                 string
 	contextManager          *contextmgr.ContextManager
-	llmClient               agent.LLMClient
 	renderer                *templates.Renderer
 	logger                  *logx.Logger
 	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
@@ -526,7 +525,6 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		agentConfig:         agentCfg,
 		agentID:             agentID,
 		contextManager:      contextmgr.NewContextManagerWithModel(modelName),
-		llmClient:           nil, // Will be set below
 		renderer:            renderer,
 		workDir:             workDir,
 		originalWorkDir:     workDir,
