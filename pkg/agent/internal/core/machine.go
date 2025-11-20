@@ -348,6 +348,13 @@ func (sm *BaseStateMachine) SetStateNotificationChannel(ch chan<- *proto.StateCh
 	sm.stateNotifCh = ch
 }
 
+// HasStateNotificationChannel returns true if the state notification channel is set.
+func (sm *BaseStateMachine) HasStateNotificationChannel() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.stateNotifCh != nil
+}
+
 // SetTimeoutWrapper sets the timeout wrapper for state processing.
 func (sm *BaseStateMachine) SetTimeoutWrapper(wrapper StateTimeoutWrapper) {
 	sm.mu.Lock()

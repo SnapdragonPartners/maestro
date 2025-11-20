@@ -74,19 +74,18 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 type Driver struct {
 	*agent.BaseStateMachine // Embed state machine for proper state management
 	contextManager          *contextmgr.ContextManager
-	llmClient               agent.LLMClient                       // Typed LLM client (shadows base's untyped field)
-	toolLoop                *toolloop.ToolLoop                    // Tool loop for LLM interactions
-	renderer                *templates.Renderer                   // Template renderer for prompts
-	queue                   *Queue                                // Story queue manager
-	escalationHandler       *EscalationHandler                    // Escalation handler
-	dispatcher              *dispatch.Dispatcher                  // Dispatcher for sending messages
-	logger                  *logx.Logger                          // Logger with proper agent prefixing
-	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
-	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
-	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
-	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
-	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
-	stateNotificationCh     chan<- *proto.StateChangeNotification // Channel for state change notifications
+	llmClient               agent.LLMClient             // Typed LLM client (shadows base's untyped field)
+	toolLoop                *toolloop.ToolLoop          // Tool loop for LLM interactions
+	renderer                *templates.Renderer         // Template renderer for prompts
+	queue                   *Queue                      // Story queue manager
+	escalationHandler       *EscalationHandler          // Escalation handler
+	dispatcher              *dispatch.Dispatcher        // Dispatcher for sending messages
+	logger                  *logx.Logger                // Logger with proper agent prefixing
+	executor                *execpkg.ArchitectExecutor  // Container executor for file access tools
+	chatService             ChatServiceInterface        // Chat service for escalations (nil check required)
+	questionsCh             chan *proto.AgentMsg        // Bi-directional channel for requests (specs, questions, approvals)
+	replyCh                 <-chan *proto.AgentMsg      // Read-only channel for replies
+	persistenceChannel      chan<- *persistence.Request // Channel for database operations
 	architectID             string
 	workDir                 string // Workspace directory
 }
@@ -257,12 +256,30 @@ func (d *Driver) SetLLMClient(llmClient agent.LLMClient) {
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
 func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
-	d.stateNotificationCh = stateNotifCh
+	// Delegate to BaseStateMachine - it handles all state transitions
+	d.BaseStateMachine.SetStateNotificationChannel(stateNotifCh)
 	d.logger.Debug("State notification channel set for architect")
 }
 
 // Initialize sets up the driver and loads any existing state.
 func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
+	// Validate required channels are set
+	if d.questionsCh == nil {
+		return fmt.Errorf("architect %s: questions channel not set (call SetChannels before Initialize)", d.architectID)
+	}
+	if d.replyCh == nil {
+		return fmt.Errorf("architect %s: reply channel not set (call SetChannels before Initialize)", d.architectID)
+	}
+	if d.BaseStateMachine == nil {
+		return fmt.Errorf("architect %s: BaseStateMachine not initialized", d.architectID)
+	}
+
+	// Verify state notification channel is set on BaseStateMachine
+	// This is critical for state transitions to be properly tracked
+	if !d.BaseStateMachine.HasStateNotificationChannel() {
+		d.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
+	}
+
 	// Start fresh - no filesystem state persistence
 	// State management is now handled by SQLite for system-level resume functionality
 	d.logger.Info("Starting architect fresh for ID: %s (filesystem state persistence removed)", d.architectID)

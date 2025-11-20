@@ -427,7 +427,18 @@ func (d *Driver) GetAgentType() agent.Type {
 
 // Initialize sets up the driver and loads any existing state (required by agent.Driver interface).
 func (d *Driver) Initialize(_ context.Context) error {
-	// PM agent doesn't need initialization - state is initialized in constructor
+	// Validate required channels and BaseStateMachine are set
+	if d.BaseStateMachine == nil {
+		return fmt.Errorf("PM %s: BaseStateMachine not initialized", d.pmID)
+	}
+
+	// Verify state notification channel is set on BaseStateMachine
+	// This is critical for state transitions to be properly tracked
+	if !d.BaseStateMachine.HasStateNotificationChannel() {
+		d.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
+	}
+
+	d.logger.Info("PM agent %s initialized in state: %s", d.pmID, d.GetCurrentState())
 	return nil
 }
 

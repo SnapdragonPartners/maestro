@@ -1089,9 +1089,22 @@ func (c *Coder) Shutdown(ctx context.Context) error {
 
 // Initialize sets up the coder and loads any existing state (required for Driver interface).
 func (c *Coder) Initialize(ctx context.Context) error {
+	// Validate BaseStateMachine is set
+	if c.BaseStateMachine == nil {
+		return fmt.Errorf("coder %s: BaseStateMachine not initialized", c.GetID())
+	}
+
+	// Verify state notification channel is set on BaseStateMachine
+	// This is critical for state transitions to be properly tracked
+	if !c.BaseStateMachine.HasStateNotificationChannel() {
+		c.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
+	}
+
 	if err := c.BaseStateMachine.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize coder state machine: %w", err)
 	}
+
+	c.logger.Info("Coder %s initialized in state: %s", c.GetID(), c.GetCurrentState())
 	return nil
 }
 
