@@ -31,8 +31,8 @@ func (m *mockAgent) GetCurrentState() proto.State {
 	return proto.State(m.state)
 }
 
-func (m *mockAgent) GetStateData() map[string]any {
-	return make(map[string]any)
+func (m *mockAgent) GetStateData() agent.StateData {
+	return make(agent.StateData)
 }
 
 func (m *mockAgent) ValidateState(_ proto.State) error {

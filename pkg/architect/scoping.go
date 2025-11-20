@@ -148,8 +148,11 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 // This is called during spec review in REQUEST state (after PM spec approval).
 // Returns spec ID, story IDs, and error.
 func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown string) (string, []string, error) {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// 1. Extract structured data from stateData (stored by processArchitectToolCalls)
-	submitResult, ok := d.stateData["submit_stories_result"]
+	submitResult, ok := stateData["submit_stories_result"]
 	if !ok {
 		return "", nil, fmt.Errorf("submit_stories result not found in state data")
 	}
@@ -230,10 +233,10 @@ func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown s
 	}
 
 	// 8. Store completion state
-	d.stateData["spec_id"] = specID
-	d.stateData["story_ids"] = storyIDs
-	d.stateData["stories_generated"] = true
-	d.stateData["stories_count"] = len(storyIDs)
+	d.SetStateData("spec_id", specID)
+	d.SetStateData("story_ids", storyIDs)
+	d.SetStateData("stories_generated", true)
+	d.SetStateData("stories_count", len(storyIDs))
 
 	d.logger.Info("✅ Loaded %d stories from spec (spec_id: %s)", len(storyIDs), specID)
 	return specID, storyIDs, nil
@@ -311,9 +314,12 @@ func (d *Driver) fixContainerDependencies(devopsStories, appStories []*QueuedSto
 
 // retryWithContainerGuidance retries LLM with enhanced container guidance following the empty response retry pattern.
 func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get retry counter from state data (0 if not set)
 	retryCount := 0
-	if retryData, exists := d.stateData["container_retry_count"]; exists {
+	if retryData, exists := stateData["container_retry_count"]; exists {
 		if count, ok := retryData.(int); ok {
 			retryCount = count
 		}
@@ -330,7 +336,7 @@ func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
 	d.logger.Warn("🔄 RETRY ATTEMPT %d: Re-running story generation with enhanced container guidance", retryCount+1)
 
 	// Increment retry counter for enhanced guidance in the next iteration
-	d.stateData["container_retry_count"] = retryCount + 1
+	d.SetStateData("container_retry_count", retryCount+1)
 
 	// Return special error that triggers retry flow
 	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")

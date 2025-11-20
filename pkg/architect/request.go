@@ -31,8 +31,11 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// State: processing coder request
 
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get the current request from state data.
-	requestMsg, exists := d.stateData[StateKeyCurrentRequest].(*proto.AgentMsg)
+	requestMsg, exists := stateData[StateKeyCurrentRequest].(*proto.AgentMsg)
 	if !exists || requestMsg == nil {
 		return StateError, fmt.Errorf("no current request found")
 	}
@@ -108,7 +111,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		}
 
 		// Store the response in state data for merge success detection
-		d.stateData[StateKeyLastResponse] = response
+		d.SetStateData(StateKeyLastResponse, response)
 
 		// Persist response to database (fire-and-forget)
 		if d.persistenceChannel != nil {
@@ -138,12 +141,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// Check if work was accepted (completion or merge)
 	var workWasAccepted bool
-	if accepted, exists := d.stateData[StateKeyWorkAccepted]; exists {
+	if accepted, exists := stateData[StateKeyWorkAccepted]; exists {
 		if acceptedBool, ok := accepted.(bool); ok && acceptedBool {
 			workWasAccepted = true
 			// Log the acceptance details for debugging
-			if storyID, exists := d.stateData[StateKeyAcceptedStoryID]; exists {
-				if acceptanceType, exists := d.stateData[StateKeyAcceptanceType]; exists {
+			if storyID, exists := stateData[StateKeyAcceptedStoryID]; exists {
+				if acceptanceType, exists := stateData[StateKeyAcceptanceType]; exists {
 					d.logger.Info("🎉 Detected work acceptance for story %v via %v, transitioning to DISPATCHING to release dependent stories",
 						storyID, acceptanceType)
 				}
@@ -153,7 +156,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// Check if spec was approved and loaded (PM spec approval flow)
 	var specApprovedAndLoaded bool
-	if approved, exists := d.stateData[StateKeySpecApprovedLoad]; exists {
+	if approved, exists := stateData[StateKeySpecApprovedLoad]; exists {
 		if approvedBool, ok := approved.(bool); ok && approvedBool {
 			specApprovedAndLoaded = true
 			d.logger.Info("🎉 Spec approved and stories loaded, transitioning to DISPATCHING")
@@ -161,12 +164,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	}
 
 	// Clear the processed request and acceptance signals
-	delete(d.stateData, "current_request")
-	delete(d.stateData, "last_response")
-	delete(d.stateData, "work_accepted")
-	delete(d.stateData, "accepted_story_id")
-	delete(d.stateData, "acceptance_type")
-	delete(d.stateData, "spec_approved_and_loaded")
+	d.SetStateData("current_request", nil)
+	d.SetStateData("last_response", nil)
+	d.SetStateData("work_accepted", nil)
+	d.SetStateData("accepted_story_id", nil)
+	d.SetStateData("acceptance_type", nil)
+	d.SetStateData("spec_approved_and_loaded", nil)
 
 	// Determine next state:
 	// 1. Spec approval (PM flow) → DISPATCHING
@@ -662,9 +665,9 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	}
 
 	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)
-	d.stateData[StateKeyWorkAccepted] = true
-	d.stateData[StateKeyAcceptedStoryID] = storyID
-	d.stateData[StateKeyAcceptanceType] = acceptanceType
+	d.SetStateData(StateKeyWorkAccepted, true)
+	d.SetStateData(StateKeyAcceptedStoryID, storyID)
+	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
 }
 
 // Response formatting methods using templates
@@ -785,7 +788,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	d.logger.Info("🔍 Starting iterative approval for %s (story: %s)", approvalType, storyID)
 
 	// Store story_id in state data for tool logging
-	d.stateData[StateKeyCurrentStoryID] = storyID
+	d.SetStateData(StateKeyCurrentStoryID, storyID)
 
 	// Extract coder ID from request (sender)
 	coderID := requestMsg.FromAgent
@@ -819,7 +822,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 				// submit_reply tool was called - extract response from parameters
 				if response, ok := calls[i].Parameters["response"].(string); ok && response != "" {
 					// Store response for building approval result
-					d.stateData[StateKeySubmitReply] = response
+					d.SetStateData(StateKeySubmitReply, response)
 					return "SUBMIT_REPLY"
 				}
 			}
@@ -844,8 +847,8 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 				d.logger.Error("❌ Approval iteration hard limit reached (%d iterations) for story %s - escalating", count, storyID)
 				d.logger.Info("Escalation key: %s", key)
 				// Set escalation state data for state machine
-				d.stateData[StateKeyEscalationRequestID] = requestMsg.ID
-				d.stateData[StateKeyEscalationStoryID] = storyID
+				d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
+				d.SetStateData(StateKeyEscalationStoryID, storyID)
 				return fmt.Errorf("maximum iterations exceeded for approval - escalation required")
 			},
 		},
@@ -865,7 +868,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	d.logger.Info("✅ Architect submitted final decision via submit_reply")
 
 	// Clean up state data (submit_reply_response no longer stored)
-	delete(d.stateData, "current_story_id")
+	d.SetStateData("current_story_id", nil)
 
 	// Build and return approval response
 	return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, result.Response)
@@ -901,7 +904,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 			if calls[i].Name == tools.ToolReviewComplete {
 				// review_complete tool was called - extract result and store in state
 				if resultMap, ok := results[i].(map[string]any); ok {
-					d.stateData[StateKeyReviewComplete] = resultMap
+					d.SetStateData(StateKeyReviewComplete, resultMap)
 					return signalReviewComplete
 				}
 			}
@@ -1022,6 +1025,9 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 // handleIterativeQuestion processes question requests with iterative code exploration.
 func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Extract question from typed payload
 	typedPayload := requestMsg.GetTypedPayload()
 	if typedPayload == nil {
@@ -1038,15 +1044,15 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	d.logger.Info("🔍 Starting iterative question handling (story: %s)", storyID)
 
 	// Store story_id in state data for tool logging
-	d.stateData[StateKeyCurrentStoryID] = storyID
+	d.SetStateData(StateKeyCurrentStoryID, storyID)
 
 	// Check iteration limit
 	iterationKey := fmt.Sprintf(StateKeyPatternQuestionIterations, requestMsg.ID)
 	if d.checkIterationLimit(iterationKey, StateRequest) {
 		d.logger.Error("❌ Hard iteration limit exceeded for question %s - preparing escalation", requestMsg.ID)
 		// Store additional escalation context
-		d.stateData[StateKeyEscalationRequestID] = requestMsg.ID
-		d.stateData[StateKeyEscalationStoryID] = storyID
+		d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
+		d.SetStateData(StateKeyEscalationStoryID, storyID)
 		// Signal escalation needed by returning sentinel error
 		return nil, ErrEscalationTriggered
 	}
@@ -1060,7 +1066,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf(StateKeyPatternToolProvider, requestMsg.ID)
 	var toolProvider *tools.ToolProvider
-	if tp, exists := d.stateData[toolProviderKey]; exists {
+	if tp, exists := stateData[toolProviderKey]; exists {
 		var ok bool
 		toolProvider, ok = tp.(*tools.ToolProvider)
 		if !ok {
@@ -1069,7 +1075,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	} else {
 		// Create tool provider rooted at the coder's container workspace
 		toolProvider = d.createReadToolProviderForCoder(coderID)
-		d.stateData[toolProviderKey] = toolProvider
+		d.SetStateData(toolProviderKey, toolProvider)
 		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s", coderID, coderID)
 	}
 
@@ -1078,7 +1084,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Reset context for this iteration (first iteration only)
 	iterationCount := 0
-	if val, exists := d.stateData[iterationKey]; exists {
+	if val, exists := stateData[iterationKey]; exists {
 		if count, ok := val.(int); ok {
 			iterationCount = count
 		}
@@ -1160,7 +1166,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Increment iteration count before nudging
 	iterationCount++
-	d.stateData[iterationKey] = iterationCount
+	d.SetStateData(iterationKey, iterationCount)
 
 	// Add nudge to context
 	nudgeMessage := "You must use the submit_reply tool to provide your answer. Please call submit_reply with your response as the 'content' parameter."

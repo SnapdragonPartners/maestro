@@ -7,6 +7,10 @@ import (
 	"orchestrator/pkg/proto"
 )
 
+// StateData is a type alias for state data maps.
+// This allows external packages (like tests) to use the correct type.
+type StateData = core.StateData
+
 // Driver represents a generic agent driver interface.
 type Driver interface {
 	// Initialize sets up the driver and loads any existing state.

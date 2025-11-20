@@ -91,7 +91,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 
 		// Mark that we now own this spec and should transition to DISPATCHING
 		// This is checked by handleRequest to determine next state
-		d.stateData["spec_approved_and_loaded"] = true
+		d.SetStateData("spec_approved_and_loaded", true)
 
 	default:
 		return nil, fmt.Errorf("unexpected signal from spec review: %s", signal)
