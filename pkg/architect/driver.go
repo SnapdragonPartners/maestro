@@ -126,7 +126,8 @@ type ChatMessage struct {
 var ErrEscalationTriggered = fmt.Errorf("escalation triggered due to iteration limit")
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
+// LLM client must be set separately via SetLLMClient after construction.
+func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -150,19 +151,13 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 	escalationHandler := NewEscalationHandler(logsDir, queue)
 	logger := logx.NewLogger(architectID)
 
-	// Initialize toolloop if LLM client is available
-	var tl *toolloop.ToolLoop
-	if llmClient != nil {
-		tl = toolloop.New(llmClient, logger)
-	}
-
 	return &Driver{
 		architectID:        architectID,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
 		currentState:       StateWaiting,
 		stateData:          make(map[string]any),
-		llmClient:          llmClient,
-		toolLoop:           tl,
+		llmClient:          nil, // Set via SetLLMClient
+		toolLoop:           nil, // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
 		queue:              queue,
@@ -195,14 +190,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	}
 	modelName := cfg.Agents.ArchitectModel
 
-	// Create basic LLM client from shared factory (no metrics context yet, need architect instance first)
-	llmClient, err := llmFactory.CreateClient(agent.TypeArchitect)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
-	}
-
-	// Create architect with LLM integration
-	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
+	// Create architect without LLM client first (chicken-and-egg: client needs architect as StateProvider)
+	architect := NewDriver(architectID, modelName, dispatcher, workDir, persistenceChannel)
 
 	// Ensure architect workspace exists before starting container
 	architectWorkspace, wsErr := workspace.EnsureArchitectWorkspace(ctx, workDir)
@@ -231,15 +220,14 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	// Store executor in architect
 	architect.executor = architectExecutor
 
-	// Enhance client with metrics context now that we have the architect (StateProvider)
-	// Use the shared factory to ensure proper rate limiting
-	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeArchitect, architect, architect.logger)
+	// Now create LLM client with full middleware (architect instance available as StateProvider)
+	llmClient, err := llmFactory.CreateClientWithContext(agent.TypeArchitect, architect, architect.logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create enhanced architect LLM client: %w", err)
+		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
 	}
 
-	// Replace the client with the enhanced version
-	architect.llmClient = enhancedClient
+	// Set the LLM client (also initializes toolLoop)
+	architect.SetLLMClient(llmClient)
 
 	return architect, nil
 }
@@ -256,6 +244,13 @@ func (d *Driver) SetChannels(questionsCh, _ chan *proto.AgentMsg, replyCh <-chan
 func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 	// Architect already has dispatcher from constructor, but update it for consistency.
 	d.dispatcher = dispatcher
+}
+
+// SetLLMClient sets the LLM client and initializes the toolLoop.
+// Must be called after construction before the architect can process work.
+func (d *Driver) SetLLMClient(llmClient agent.LLMClient) {
+	d.llmClient = llmClient
+	d.toolLoop = toolloop.New(llmClient, d.logger)
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.

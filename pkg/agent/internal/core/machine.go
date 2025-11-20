@@ -18,6 +18,14 @@ type StateTimeoutWrapper interface {
 	ProcessWithTimeout(ctx context.Context, currentState proto.State, processor func(context.Context) (proto.State, bool, error)) (proto.State, bool, error)
 }
 
+// LLMClient is a minimal interface for LLM interactions.
+// Forward reference to avoid circular imports with pkg/agent/llm.
+// The actual implementation is in pkg/agent/llm/api.go.
+type LLMClient interface {
+	// We only need the interface to exist for the field type
+	// No methods needed here - agents use their own typed client
+}
+
 const (
 	// DefaultMaxRetries is the default maximum number of retries for operations.
 	DefaultMaxRetries = 3
@@ -87,6 +95,9 @@ type BaseStateMachine struct {
 
 	// Timeout wrapper for state processing (from agent package)
 	timeoutWrapper StateTimeoutWrapper
+
+	// LLM client for agent interactions (set after construction to avoid chicken-and-egg with middleware)
+	llmClient LLMClient
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table.
@@ -342,6 +353,21 @@ func (sm *BaseStateMachine) SetTimeoutWrapper(wrapper StateTimeoutWrapper) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.timeoutWrapper = wrapper
+}
+
+// SetLLMClient sets the LLM client for agent interactions.
+// Must be called after construction before the agent can process work.
+func (sm *BaseStateMachine) SetLLMClient(client LLMClient) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.llmClient = client
+}
+
+// GetLLMClient returns the configured LLM client.
+func (sm *BaseStateMachine) GetLLMClient() LLMClient {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.llmClient
 }
 
 // ProcessStateWithTimeout wraps state processing with timeout handling if configured.

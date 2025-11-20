@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"orchestrator/pkg/agent/internal/core"
 	"orchestrator/pkg/proto"
 )
 
@@ -22,7 +23,7 @@ type Driver interface {
 	GetCurrentState() proto.State
 
 	// GetStateData returns a copy of the current state data.
-	GetStateData() map[string]any
+	GetStateData() core.StateData
 
 	// GetAgentType returns the type of the agent.
 	GetAgentType() Type

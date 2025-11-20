@@ -27,15 +27,16 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		if resultMsg != nil {
 			d.logger.Info("📨 Received async feedback from architect")
 			// Store feedback in context for next LLM call
-			d.stateData["architect_feedback"] = resultMsg
+			d.SetStateData("architect_feedback", resultMsg)
 		}
 	default:
 		// No feedback yet, continue working
 	}
 
 	// Get conversation state
-	turnCount, _ := d.stateData["turn_count"].(int)
-	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
+	stateData := d.GetStateData()
+	turnCount, _ := stateData["turn_count"].(int)
+	expertise, _ := stateData[StateKeyUserExpertise].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
@@ -66,7 +67,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	}
 
 	// Increment turn count
-	d.stateData["turn_count"] = turnCount + 1
+	d.SetStateData("turn_count", turnCount+1)
 
 	// Handle terminal signals from tool processing
 	if signal == "SPEC_PREVIEW" {
@@ -91,14 +92,17 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
 
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get expertise level
-	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
+	expertise, _ := stateData[StateKeyUserExpertise].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
 
 	// Get conversation history if any
-	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
+	conversationHistory, _ := stateData["conversation"].([]map[string]string)
 
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
@@ -176,18 +180,21 @@ func (d *Driver) setupInterviewContext() error {
 //
 //nolint:unused // Reserved for future PM template rendering functionality
 func (d *Driver) renderWorkingPrompt() (string, error) {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get conversation history from state
-	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
-	expertise, _ := d.stateData["expertise"].(string)
+	conversationHistory, _ := stateData["conversation"].([]map[string]string)
+	expertise, _ := stateData["expertise"].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
 
 	// Get architect feedback if present
-	architectFeedback, _ := d.stateData["architect_feedback"].(string)
+	architectFeedback, _ := stateData["architect_feedback"].(string)
 
 	// Get draft spec if present
-	draftSpec, _ := d.stateData["draft_spec"].(string)
+	draftSpec, _ := stateData["draft_spec"].(string)
 
 	// Build template data
 	templateData := &templates.TemplateData{
@@ -256,7 +263,7 @@ func (d *Driver) processPMResult(result WorkingResult) error {
 	switch result.Signal {
 	case SignalBootstrapComplete:
 		// Store bootstrap params
-		d.stateData["bootstrap_params"] = result.BootstrapParams
+		d.SetStateData("bootstrap_params", result.BootstrapParams)
 		d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
 			result.BootstrapParams["project_name"],
 			result.BootstrapParams["platform"],
@@ -284,8 +291,8 @@ Begin the feature requirements interview by asking the user about what they want
 
 	case SignalSpecPreview:
 		// Store draft spec and metadata for PREVIEW state
-		d.stateData["draft_spec_markdown"] = result.SpecMarkdown
-		d.stateData["spec_metadata"] = result.SpecMetadata
+		d.SetStateData("draft_spec_markdown", result.SpecMarkdown)
+		d.SetStateData("spec_metadata", result.SpecMetadata)
 		d.logger.Info("📋 Stored spec for preview (%d bytes)", len(result.SpecMarkdown))
 
 	case SignalAwaitUser:
@@ -363,8 +370,11 @@ func (d *Driver) checkTerminalTools(_ context.Context, _ []agent.ToolCall, resul
 
 // sendSpecApprovalRequest sends an approval REQUEST message to the architect.
 func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get spec markdown from state
-	specMarkdown, ok := d.stateData["spec_markdown"].(string)
+	specMarkdown, ok := stateData["spec_markdown"].(string)
 	if !ok || specMarkdown == "" {
 		return fmt.Errorf("no spec_markdown found in state")
 	}
@@ -393,7 +403,7 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	}
 
 	// Store pending request ID for tracking
-	d.stateData["pending_request_id"] = requestMsg.ID
+	d.SetStateData("pending_request_id", requestMsg.ID)
 	d.logger.Info("📤 Sent spec approval REQUEST to architect (id: %s)", requestMsg.ID)
 
 	return nil

@@ -1,8 +1,6 @@
 package pm
 
 import (
-	"fmt"
-
 	"orchestrator/pkg/agent"
 )
 
@@ -99,5 +97,5 @@ func ExtractPMWorkingResult(calls []agent.ToolCall, results []any) (WorkingResul
 	}
 
 	// No terminal tool was called - this is not an error, just means continue looping
-	return WorkingResult{}, fmt.Errorf("no terminal tool was called in PM working phase")
+	return WorkingResult{}, nil
 }

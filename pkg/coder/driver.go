@@ -470,13 +470,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	default:
 	}
 
-	// Create basic LLM client from shared factory (no metrics context yet, need coder instance first)
-	llmClient, err := llmFactory.CreateClient(agent.TypeCoder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
-	}
-
-	// Create basic coder - use helper to inline the basic construction
+	// Create coder without LLM client first (chicken-and-egg: client needs coder as StateProvider)
 	logger := logx.NewLogger(agentID)
 
 	// Validate work directory exists
@@ -532,7 +526,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		agentConfig:         agentCfg,
 		agentID:             agentID,
 		contextManager:      contextmgr.NewContextManagerWithModel(modelName),
-		llmClient:           llmClient,
+		llmClient:           nil, // Will be set below
 		renderer:            renderer,
 		workDir:             workDir,
 		originalWorkDir:     workDir,
@@ -554,15 +548,15 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		logger.Info("💬 Chat injection configured for coder %s", agentID)
 	}
 
-	// Now that we have the coder (StateProvider), create enhanced client with metrics context
+	// Now that we have the coder (StateProvider), create LLM client with full middleware
 	// Use the shared factory to ensure proper rate limiting
-	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
+	llmClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
+		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
 	}
 
-	// Replace the client with the enhanced version (no middleware wrapper needed)
-	coder.llmClient = enhancedClient
+	// Set the LLM client
+	coder.SetLLMClient(llmClient)
 
 	// Set the clone manager.
 	coder.cloneManager = cloneManager
@@ -1007,11 +1001,6 @@ func (c *Coder) GetContextSummary() string {
 	}
 
 	return summary
-}
-
-// GetStateData returns the current state data.
-func (c *Coder) GetStateData() map[string]any {
-	return c.BaseStateMachine.GetStateData()
 }
 
 // GetStoryID returns the current story ID from agent state.

@@ -29,6 +29,7 @@ const (
 var validTransitions = map[proto.State][]proto.State{
 	StateWaiting: {
 		StateWaiting,   // Stay in waiting while polling for state changes
+		StateWorking,   // User starts interview - PM begins working
 		StateAwaitUser, // User starts interview - wait for first message
 		StatePreview,   // User uploads spec file - go directly to preview
 		proto.StateDone,
