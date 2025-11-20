@@ -139,6 +139,10 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Response sent and persisted to database
 	}
 
+	// Get fresh state data after processing to see any changes made during request handling
+	// (GetStateData returns a copy, so the stateData variable from line 35 is stale)
+	stateData = d.GetStateData()
+
 	// Check if work was accepted (completion or merge)
 	var workWasAccepted bool
 	if accepted, exists := stateData[StateKeyWorkAccepted]; exists {
