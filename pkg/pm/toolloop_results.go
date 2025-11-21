@@ -2,6 +2,7 @@ package pm
 
 import (
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 )
 
 // Signal constants for PM working phase.
@@ -96,6 +97,6 @@ func ExtractPMWorkingResult(calls []agent.ToolCall, results []any) (WorkingResul
 		return result, nil
 	}
 
-	// No terminal tool was called - this is not an error, just means continue looping
-	return WorkingResult{}, nil
+	// No terminal tool was called
+	return WorkingResult{}, toolloop.ErrNoTerminalTool
 }

@@ -1,9 +1,8 @@
 package architect
 
 import (
-	"fmt"
-
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/tools"
 )
 
@@ -13,18 +12,19 @@ type SubmitReplyResult struct {
 }
 
 // ExtractSubmitReply extracts the response from a submit_reply tool call.
-// Returns error if submit_reply was not called or response is empty.
+// Returns ErrNoTerminalTool if submit_reply was not called.
+// Returns ErrInvalidResult if response parameter is missing or empty.
 func ExtractSubmitReply(calls []agent.ToolCall, _ []any) (SubmitReplyResult, error) {
 	for i := range calls {
 		if calls[i].Name == tools.ToolSubmitReply {
 			response, ok := calls[i].Parameters["response"].(string)
 			if !ok || response == "" {
-				return SubmitReplyResult{}, fmt.Errorf("submit_reply called without valid response parameter")
+				return SubmitReplyResult{}, toolloop.ErrInvalidResult
 			}
 			return SubmitReplyResult{Response: response}, nil
 		}
 	}
-	return SubmitReplyResult{}, fmt.Errorf("submit_reply tool was not called")
+	return SubmitReplyResult{}, toolloop.ErrNoTerminalTool
 }
 
 // SpecReviewResult contains the outcome of a spec review (feedback or approval).
@@ -36,7 +36,8 @@ type SpecReviewResult struct {
 }
 
 // ExtractSpecReview extracts the result from spec review tools (spec_feedback or submit_stories).
-// Returns error if neither tool was called successfully.
+// Returns ErrNoTerminalTool if neither tool was called successfully.
+// Returns ErrInvalidResult if tool payload is malformed.
 func ExtractSpecReview(calls []agent.ToolCall, results []any) (SpecReviewResult, error) {
 	for i := range calls {
 		toolCall := &calls[i]
@@ -56,7 +57,7 @@ func ExtractSpecReview(calls []agent.ToolCall, results []any) (SpecReviewResult,
 
 			feedback, ok := resultMap["feedback"].(string)
 			if !ok || feedback == "" {
-				return SpecReviewResult{}, fmt.Errorf("spec_feedback result missing feedback field")
+				return SpecReviewResult{}, toolloop.ErrInvalidResult
 			}
 
 			return SpecReviewResult{
@@ -85,7 +86,7 @@ func ExtractSpecReview(calls []agent.ToolCall, results []any) (SpecReviewResult,
 		}
 	}
 
-	return SpecReviewResult{}, fmt.Errorf("neither spec_feedback nor submit_stories tool was called successfully")
+	return SpecReviewResult{}, toolloop.ErrNoTerminalTool
 }
 
 // ReviewCompleteResult contains the outcome of a review_complete tool call.
@@ -95,7 +96,7 @@ type ReviewCompleteResult struct {
 }
 
 // ExtractReviewComplete extracts the result from a review_complete tool call.
-// Returns error if review_complete was not called successfully.
+// Returns ErrNoTerminalTool if review_complete was not called successfully.
 func ExtractReviewComplete(calls []agent.ToolCall, results []any) (ReviewCompleteResult, error) {
 	for i := range calls {
 		if calls[i].Name != tools.ToolReviewComplete {
@@ -122,5 +123,5 @@ func ExtractReviewComplete(calls []agent.ToolCall, results []any) (ReviewComplet
 		}, nil
 	}
 
-	return ReviewCompleteResult{}, fmt.Errorf("review_complete tool was not called successfully")
+	return ReviewCompleteResult{}, toolloop.ErrNoTerminalTool
 }
