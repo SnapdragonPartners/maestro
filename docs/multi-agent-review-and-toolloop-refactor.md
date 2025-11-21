@@ -1009,3 +1009,60 @@ See proposal §3.3.1 for detailed before/after example showing:
 - Result extraction and processing
 
 Representative callsite: `pkg/coder/planning.go:176-214`
+
+---
+
+## 6. Implementation Progress
+
+### Phase 1: Runtime Unification (§2.1) - ✅ COMPLETED
+
+**PR:** `refactor/runtime-unification`
+
+**Status:** Implemented and tested
+
+**Changes:**
+- Fixed `BaseRuntime.ReceiveMessage` to use actual `replyCh` instead of broken local channel
+- Added `replyCh` parameter to `BaseRuntime` constructor
+- Updated all three agents (Architect, PM, Coder) to pass `replyCh` to `BaseRuntime`
+- Removed Coder's custom `ReceiveMessage` override (no longer needed)
+- Removed Coder's `coder *Coder` field from Runtime struct
+- All three agents now have identical Runtime implementations
+
+**Test Coverage:**
+- **Unit tests** (`pkg/effect/baseruntime_test.go`): 11 tests covering all `ReceiveMessage` scenarios
+  - Success case with correct message type
+  - Wrong message type error
+  - Timeout handling
+  - Nil channel error
+  - Closed channel error
+  - Nil message error
+  - SendMessage success and error cases
+  - GetAgentID/GetAgentRole accessors
+  - Logging methods
+
+- **Integration tests** (`pkg/effect/integration_test.go`): 5 test scenarios
+  - `AwaitQuestionEffect` end-to-end with BaseRuntime
+  - `BudgetReviewEffect` end-to-end with BaseRuntime
+  - Question effect timeout behavior
+  - Wrong response type handling
+  - All three agents (Coder, Architect, PM) can use blocking effects
+
+**Coverage improvement:** `pkg/effect` coverage increased from 4.2% to 48.7%
+
+**Files modified:**
+- `pkg/effect/baseruntime.go` - Added replyCh field and fixed ReceiveMessage
+- `pkg/architect/effects.go` - Updated Runtime to pass replyCh
+- `pkg/pm/effects.go` - Updated Runtime to pass replyCh
+- `pkg/coder/driver.go` - Simplified Runtime, removed override
+- `pkg/coder/driver_simple_test.go` - Updated test for new signature
+- `pkg/effect/baseruntime_test.go` - **NEW** - Comprehensive unit tests
+- `pkg/effect/integration_test.go` - **NEW** - End-to-end integration tests
+
+**Outcomes:**
+- ✅ Latent bug in `BaseRuntime.ReceiveMessage` fixed
+- ✅ All agents can now safely use blocking effects (questions, budget reviews, approvals)
+- ✅ Coder special case eliminated - all Runtime implementations identical
+- ✅ Architecture is honest - `ReceiveMessage` actually works as documented
+- ✅ Comprehensive test coverage prevents regression
+
+**Next Phase:** ID Unification (§2.7)
