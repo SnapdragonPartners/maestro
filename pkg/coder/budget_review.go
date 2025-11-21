@@ -58,6 +58,9 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 	// Get origin state from stored data.
 	originStr := utils.GetStateValueOr[string](sm, KeyOrigin, "")
 
+	c.logger.Info("🔍 Budget review processing: status=%s, origin=%q (expected CODING=%q or PLANNING=%q)",
+		status, originStr, string(StateCoding), string(StatePlanning))
+
 	switch status {
 	case proto.ApprovalStatusApproved:
 		// CONTINUE/PIVOT - return to origin state and reset counter.

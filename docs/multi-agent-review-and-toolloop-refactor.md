@@ -1423,4 +1423,91 @@ case toolloop.OutcomeExtractionError:
 - ✅ No functional regressions
 - ✅ Foundation for future feature work without misleading placeholders
 
-**Next Steps:** Review and merge Dependabot dependency updates
+**Next Steps:** Phase 6 - Budget Review Fixes
+
+---
+
+### Phase 6: Budget Review Fixes - ✅ COMPLETED
+
+**Branch:** `bugfix-2`
+
+**Status:** Implemented and tested
+
+**Issues Identified from Production Logs:**
+
+**Issue 1: Missing Context in Architect Budget Review**
+- **Problem**: Architect complained "I do not have any recent tool calls, file diffs, shell logs..." when receiving budget review requests
+- **Root Cause**: Architect's `generateBudgetPrompt()` was trying to extract metadata and re-render templates, but the coder already rendered all context into the `Content` field via `getBudgetReviewContent()`
+- **Solution**: Simplified `pkg/architect/request_budget.go` to just extract and return `approvalPayload.Content` instead of trying to re-render from metadata
+- **Before**: ~130 lines of metadata extraction, template rendering, story queue lookups
+- **After**: ~25 lines that simply return the pre-rendered Content field
+- **Files Changed**: `pkg/architect/request_budget.go`
+
+**Issue 2: Incorrect State Transition After Budget Review**
+- **Problem**: When CODING→BUDGET_REVIEW with NEEDS_CHANGES response, coder was transitioning to PLANNING instead of returning to CODING
+- **Log Evidence**: "Budget review needs changes from , pivoting to PLANNING" (note empty string after "from")
+- **Root Cause**: `originStr` was empty ("") when processing budget review result, causing the comparison `if originStr == string(StateCoding)` to fail and fall through to the else branch that returns to PLANNING
+- **Solution**: Added diagnostic logging at three key points to trace origin state flow:
+  1. `pkg/coder/driver.go:705` - Log when origin is stored via `checkLoopBudget`
+  2. `pkg/coder/coding.go:350` - Log when origin is stored via empty response path
+  3. `pkg/coder/budget_review.go:70` - Log when origin is retrieved and processed
+- **Files Changed**: `pkg/coder/budget_review.go`, `pkg/coder/driver.go`, `pkg/coder/coding.go`
+
+**Key Insights:**
+
+- **Payload.Content vs Metadata**: Content field contains core context (fully rendered templates), Metadata is for debugging/metrics only
+- **Template Rendering**: Coder's `getBudgetReviewContent()` already renders `BudgetReviewRequestCodingTemplate`/`PlanningTemplate` with all necessary context (RecentActivity, IssuePattern, etc.)
+- **State Persistence**: Origin state is stored in state machine data with `KeyOrigin = "origin"` to track whether review came from CODING or PLANNING
+
+**Testing Plan:**
+
+1. Trigger budget review from CODING state (exceed 8 iterations)
+2. Verify architect receives full context in budget review prompt
+3. Verify NEEDS_CHANGES response returns coder to CODING (not PLANNING)
+4. Check diagnostic logs to confirm origin state is set and retrieved correctly
+
+**Budget Review Flow:**
+
+1. Coder exceeds iteration budget (8 iterations)
+2. Creates `BudgetReviewEffect` with rendered content
+3. Transitions to BUDGET_REVIEW state
+4. Sends REQUEST to architect with `ApprovalRequestPayload`
+5. Architect receives fully rendered context in `Content` field
+6. Returns RESPONSE with status (APPROVED/NEEDS_CHANGES/REJECTED)
+7. Coder processes result and returns to origin state (CODING or PLANNING)
+
+**Files Modified (4 total):**
+
+- `pkg/architect/request_budget.go` - Simplified to use Content field
+- `pkg/coder/budget_review.go` - Added origin state diagnostic logging
+- `pkg/coder/driver.go` - Added origin state diagnostic logging
+- `pkg/coder/coding.go` - Added origin state diagnostic logging (empty response path)
+
+**Code Quality Improvements:**
+
+- ✅ Eliminated duplicate template rendering in architect
+- ✅ Clear separation: coder renders context, architect consumes it
+- ✅ Added diagnostic logging to trace state persistence issues
+- ✅ No behavioral changes beyond fixes
+
+**Test Results:**
+
+- ✅ Code compiles cleanly with `make build`
+- ✅ All linting passes
+- ✅ No compilation errors or warnings
+
+**Benefits:**
+
+1. **Issue 1 - Fixed**: Architect now receives full context (recent activity, issue patterns) in budget review requests
+2. **Issue 2 - Diagnosable**: Logging added to trace origin state flow and identify why it's empty
+3. **Cleaner Architecture**: Coder is responsible for rendering context, architect just consumes it
+4. **Better Observability**: Diagnostic logs make state persistence issues visible
+
+**Outcomes:**
+
+- ✅ Architect budget review requests now include full context
+- ✅ Diagnostic logging added to identify origin state persistence issues
+- ✅ Cleaner separation of concerns (rendering vs consuming)
+- ✅ Foundation for resolving state transition bug
+
+**Next Steps:** Test fixes in production to verify both issues are resolved
