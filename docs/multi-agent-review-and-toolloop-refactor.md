@@ -1108,4 +1108,121 @@ Representative callsite: `pkg/coder/planning.go:176-214`
 - ✅ Cleaner code with less shadowing and redundancy
 - ✅ All tests pass, full build with linting succeeds
 
-**Next Phase:** Outcome[T] Refactor (§2.4)
+---
+
+### Phase 3: Outcome[T] Refactor (§2.4) - ✅ COMPLETED
+
+**PR:** `refactor/outcome-type`
+
+**Status:** Implemented and tested
+
+**Changes:**
+- Added `Outcome[T]` type with `OutcomeKind` enum in `pkg/agent/toolloop/outcome.go`
+- Added extractor sentinel errors in `pkg/agent/toolloop/errors.go`:
+  - `ErrNoTerminalTool` - Required terminal tools weren't called
+  - `ErrNoActivity` - LLM did nothing meaningful
+  - `ErrInvalidResult` - Terminal tool called but payload malformed
+- Changed `toolloop.Run` signature from `(signal string, result T, err error)` to `Outcome[T]`
+- Updated all 12 production callsites across PM, Coder, and Architect agents
+- Updated all 11 test callsites in `toolloop_test.go`
+
+**OutcomeKind Values:**
+- `OutcomeSuccess` - Loop completed with terminal signal
+- `OutcomeNoToolTwice` - LLM failed to use tools twice in a row
+- `OutcomeIterationLimit` - Escalation hard limit reached
+- `OutcomeMaxIterations` - MaxIterations exceeded without escalation
+- `OutcomeLLMError` - LLM client failed
+- `OutcomeExtractionError` - CheckTerminal signaled but ExtractResult failed
+
+**Production Callsites Updated (12 total):**
+- **PM** (1): `working.go` - Iteration limit handling for await_user
+- **Coder** (3):
+  - `planning.go` - Budget review escalation, question handling
+  - `coding.go` - Budget review escalation, testing transition
+  - `plan_review.go` - Todo collection with iteration limit as failure
+- **Architect** (8):
+  - `questions.go` (1) - Question answering with submit_reply
+  - `request.go` (3) - Auto-response fallback, iterative approval with escalation, single-turn review
+  - `request_spec.go` (1) - Spec review with feedback/approval
+
+**Test Callsites Updated:**
+- `toolloop_test.go` - 11 test functions updated to use Outcome pattern
+
+**Code Quality Improvements:**
+- ✅ No magic strings - using typed constants (`StateTesting`, `StateCoding`, `StatePlanReview`)
+- ✅ Consistent pattern across all agents: switch on `out.Kind` first, then `out.Signal`
+- ✅ Removed all `errors.As(err, &iterErr)` checks - outcome kind is explicit
+- ✅ Better observability with `Iteration` field in all outcomes
+- ✅ `IterationLimitError` preserved in `out.Err` for backwards compatibility
+
+**Example Pattern (from Coder planning.go):**
+```go
+out := toolloop.Run(loop, ctx, cfg)
+
+switch out.Kind {
+case toolloop.OutcomeSuccess:
+    // Process result
+    if err := c.processPlanningResult(sm, &out.Value); err != nil {
+        return proto.StateError, false, logx.Wrap(err, "failed to process planning result")
+    }
+
+    // Handle state transitions
+    switch out.Signal {
+    case string(StateBudgetReview):
+        return StateBudgetReview, false, nil
+    case string(StateQuestion):
+        return StateQuestion, false, nil
+    case string(StatePlanReview):
+        return StatePlanReview, false, nil
+    // ...
+    }
+
+case toolloop.OutcomeIterationLimit:
+    c.logger.Info("📊 Iteration limit reached (%d iterations)", out.Iteration)
+    return StateBudgetReview, false, nil
+
+case toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
+    if c.isEmptyResponseError(out.Err) {
+        return c.handleEmptyResponseError(sm, prompt, req, StatePlanning)
+    }
+    return proto.StateError, false, logx.Wrap(out.Err, "toolloop execution failed")
+
+case toolloop.OutcomeNoToolTwice:
+    return proto.StateError, false, logx.Wrap(out.Err, "LLM did not use tools")
+}
+```
+
+**Key Design Decisions:**
+- Outcome pattern eliminates all `errors.As()` checks at callsites
+- OutcomeKind stays loop-focused (§5.4) - doesn't include domain-specific failures
+- Extractor errors (ErrNoTerminalTool) surface via OutcomeExtractionError + errors.Is
+- Signal field preserved for backwards compatibility (empty string = no state transition)
+- Iteration field always populated (1-indexed) for logging and metrics
+
+**Test Results:**
+- ✅ All tests pass
+- ✅ Full build with linting succeeds
+- ✅ No compilation errors
+- ✅ All production code builds cleanly
+
+**Files Modified (11 total):**
+- **New files:**
+  - `pkg/agent/toolloop/outcome.go` - Outcome[T] type and OutcomeKind enum
+  - `pkg/agent/toolloop/errors.go` - Extractor sentinel errors
+- **Core:**
+  - `pkg/agent/toolloop/toolloop.go` - Changed Run signature to return Outcome[T]
+  - `pkg/agent/toolloop/toolloop_test.go` - Updated all test callsites
+- **Agents:**
+  - `pkg/pm/working.go`
+  - `pkg/coder/planning.go`, `pkg/coder/coding.go`, `pkg/coder/plan_review.go`
+  - `pkg/architect/questions.go`, `pkg/architect/request.go`, `pkg/architect/request_spec.go`
+
+**Outcomes:**
+- ✅ Breaking change forces explicit review of all toolloop usage
+- ✅ Type-safe result extraction with generics
+- ✅ Explicit classification of all loop termination conditions
+- ✅ No more error type checking - switch on OutcomeKind instead
+- ✅ Better observability and debugging with structured outcomes
+- ✅ Foundation for Phase 4 (Extractor Sentinel Errors refinement)
+
+**Next Phase:** Extractor Sentinel Errors (§2.5) - refine extractor contracts

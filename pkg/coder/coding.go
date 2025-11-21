@@ -2,7 +2,6 @@ package coder
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -157,44 +156,52 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		},
 	}
 
-	signal, result, err := toolloop.Run(loop, ctx, cfg)
-	if err != nil {
-		// Check if this is an iteration limit error (normal escalation path)
-		var iterErr *toolloop.IterationLimitError
-		if errors.As(err, &iterErr) {
-			// OnHardLimit already stored BudgetReviewEffect in state
-			c.logger.Info("📊 Iteration limit reached (%d iterations), transitioning to BUDGET_REVIEW", iterErr.Iteration)
-			return StateBudgetReview, false, nil
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Switch on outcome kind first
+	switch out.Kind {
+	case toolloop.OutcomeSuccess:
+		// Log extracted result for visibility
+		if len(out.Value.TodosCompleted) > 0 {
+			c.logger.Info("✅ Coding iteration completed %d todos", len(out.Value.TodosCompleted))
 		}
 
+		// Handle terminal signals from successful completion
+		switch out.Signal {
+		case string(StateBudgetReview):
+			return StateBudgetReview, false, nil
+		case string(StateQuestion):
+			return StateQuestion, false, nil
+		case string(StateTesting):
+			return StateTesting, false, nil
+		case "":
+			// No signal, continue coding
+			c.logger.Info("🧑‍💻 Coding iteration completed, continuing in CODING")
+			return StateCoding, false, nil
+		default:
+			c.logger.Warn("Unknown signal from coding toolloop: %s", out.Signal)
+			return StateCoding, false, nil
+		}
+
+	case toolloop.OutcomeIterationLimit:
+		// OnHardLimit already stored BudgetReviewEffect in state
+		c.logger.Info("📊 Iteration limit reached (%d iterations), transitioning to BUDGET_REVIEW", out.Iteration)
+		return StateBudgetReview, false, nil
+
+	case toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
 		// Check if this is an empty response error
-		if c.isEmptyResponseError(err) {
+		if c.isEmptyResponseError(out.Err) {
 			req := agent.CompletionRequest{MaxTokens: 8192}
 			return c.handleEmptyResponseError(sm, prompt, req, StateCoding)
 		}
-		return proto.StateError, false, logx.Wrap(err, "toolloop execution failed")
-	}
+		return proto.StateError, false, logx.Wrap(out.Err, "toolloop execution failed")
 
-	// Log extracted result for visibility
-	if len(result.TodosCompleted) > 0 {
-		c.logger.Info("✅ Coding iteration completed %d todos", len(result.TodosCompleted))
-	}
+	case toolloop.OutcomeNoToolTwice:
+		// LLM failed to use tools - treat as error
+		return proto.StateError, false, logx.Wrap(out.Err, "LLM did not use tools in coding")
 
-	// Handle terminal signals
-	switch signal {
-	case string(StateBudgetReview):
-		return StateBudgetReview, false, nil
-	case string(StateQuestion):
-		return StateQuestion, false, nil
-	case "TESTING":
-		return StateTesting, false, nil
-	case "":
-		// No signal, continue coding
-		c.logger.Info("🧑‍💻 Coding iteration completed, continuing in CODING")
-		return StateCoding, false, nil
 	default:
-		c.logger.Warn("Unknown signal from coding toolloop: %s", signal)
-		return StateCoding, false, nil
+		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
 }
 

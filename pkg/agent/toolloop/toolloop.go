@@ -131,33 +131,42 @@ type Config[T any] struct {
 	AgentID string
 }
 
-// Run executes the tool loop with type-safe result extraction, returning signal string, typed result T, and error.
+// Run executes the tool loop with type-safe result extraction, returning an Outcome[T].
 //
-// Signal meanings:
-// - Empty string = normal completion (no state transition)
-// - Non-empty = state transition requested (e.g., "SUBMIT_REPLY", "ERROR")
+// The Outcome contains:
+// - Kind: What happened (Success, IterationLimit, LLMError, etc.)
+// - Signal: State transition signal (e.g., "PLAN_REVIEW", "TESTING") when Kind == OutcomeSuccess
+// - Value: Extracted result from ExtractResult when Kind == OutcomeSuccess
+// - Err: Underlying error for non-Success outcomes
+// - Iteration: 1-indexed iteration count when outcome occurred
 //
-// Result is extracted via cfg.ExtractResult when terminal condition is reached.
-// Zero value of T is returned if no terminal condition or extraction fails.
+// Callers should switch on out.Kind first, then examine Signal/Value inside OutcomeSuccess branch.
 //
-// Usage: signal, result, err := toolloop.Run[string](tl, ctx, cfg)
+// Usage:
+//
+//	out := toolloop.Run[CodingResult](tl, ctx, cfg)
+//	switch out.Kind {
+//	case toolloop.OutcomeSuccess:
+//	    // Handle out.Signal and out.Value
+//	case toolloop.OutcomeIterationLimit:
+//	    // Handle budget review escalation
+//	// ...
+//	}
 //
 //nolint:godot // Type parameter T in comment confuses godot linter
-func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal string, result T, err error) {
+func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 	// Validate configuration
-	var zero T // Zero value for error returns
-
 	if cfg.ContextManager == nil {
-		return "", zero, fmt.Errorf("ContextManager is required")
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ContextManager is required")}
 	}
 	if cfg.ToolProvider == nil {
-		return "", zero, fmt.Errorf("ToolProvider is required")
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ToolProvider is required")}
 	}
 	if cfg.CheckTerminal == nil {
-		return "", zero, fmt.Errorf("CheckTerminal is required - every toolloop must have a way to exit")
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("CheckTerminal is required - every toolloop must have a way to exit")}
 	}
 	if cfg.ExtractResult == nil {
-		return "", zero, fmt.Errorf("ExtractResult is required for type-safe result extraction")
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ExtractResult is required for type-safe result extraction")}
 	}
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = 10 // Default
@@ -174,7 +183,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 	// Get tool definitions
 	toolsList := cfg.ToolProvider.List()
 	if len(toolsList) == 0 {
-		return "", zero, fmt.Errorf("ToolProvider must provide at least one tool - toolloop requires tools to function")
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ToolProvider must provide at least one tool - toolloop requires tools to function")}
 	}
 	toolDefs := make([]tools.ToolDefinition, len(toolsList))
 	for i := range toolsList {
@@ -190,9 +199,15 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 
 	// Main iteration loop
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
+		currentIteration := iteration + 1 // 1-indexed for user-facing logs
+
 		// Flush user buffer before LLM request
 		if err := cfg.ContextManager.FlushUserBuffer(ctx); err != nil {
-			return "", zero, fmt.Errorf("failed to flush user buffer: %w", err)
+			return Outcome[T]{
+				Kind:      OutcomeLLMError,
+				Err:       fmt.Errorf("failed to flush user buffer: %w", err),
+				Iteration: currentIteration,
+			}
 		}
 
 		// Build messages from context
@@ -207,7 +222,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 
 		// Log request details
 		tl.logger.Info("🔄 Starting LLM call to model '%s' with %d messages, %d max tokens, %d tools (iteration %d)",
-			tl.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs), iteration+1)
+			tl.llmClient.GetModelName(), len(messages), req.MaxTokens, len(toolDefs), currentIteration)
 
 		// DEBUG: Log the actual messages being sent to LLM if debug logging enabled
 		if cfg.DebugLogging {
@@ -221,7 +236,11 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 
 		if err != nil {
 			tl.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
-			return "", zero, fmt.Errorf("LLM completion failed: %w", err)
+			return Outcome[T]{
+				Kind:      OutcomeLLMError,
+				Err:       fmt.Errorf("LLM completion failed: %w", err),
+				Iteration: currentIteration,
+			}
 		}
 
 		tl.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
@@ -257,9 +276,14 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 				continue // Continue loop with reminder
 			}
 
-			// Second consecutive time - error condition
-			tl.logger.Error("❌ LLM failed to use tools after reminder - transitioning to ERROR")
-			return "ERROR", zero, fmt.Errorf("LLM did not use tools after reminder (consecutive no-tool turns: %d)", consecutiveNoToolTurns)
+			// Second consecutive time - return OutcomeNoToolTwice
+			tl.logger.Error("❌ LLM failed to use tools after reminder - OutcomeNoToolTwice")
+			return Outcome[T]{
+				Kind:      OutcomeNoToolTwice,
+				Signal:    "ERROR", // Legacy compatibility - agents can check this
+				Err:       fmt.Errorf("LLM did not use tools after reminder (consecutive no-tool turns: %d)", consecutiveNoToolTurns),
+				Iteration: currentIteration,
+			}
 		}
 
 		// Tools were used - reset counter
@@ -328,23 +352,35 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 			extractedResult, err := cfg.ExtractResult(resp.ToolCalls, results)
 			if err != nil {
 				tl.logger.Error("❌ Failed to extract result: %v", err)
-				return signal, zero, fmt.Errorf("result extraction failed: %w", err)
+				return Outcome[T]{
+					Kind:      OutcomeExtractionError,
+					Signal:    signal, // Preserve signal even though extraction failed
+					Err:       fmt.Errorf("result extraction failed: %w", err),
+					Iteration: currentIteration,
+				}
 			}
 
-			return signal, extractedResult, nil
+			return Outcome[T]{
+				Kind:      OutcomeSuccess,
+				Signal:    signal,
+				Value:     extractedResult,
+				Iteration: currentIteration,
+			}
 		}
 
 		// SingleTurn mode: terminal tool must return signal
 		if cfg.SingleTurn {
 			tl.logger.Error("❌ SingleTurn mode: CheckTerminal did not return a signal after tool execution")
-			return "ERROR", zero, fmt.Errorf("single-turn review did not complete - terminal tool must signal completion")
+			return Outcome[T]{
+				Kind:      OutcomeExtractionError,
+				Signal:    "ERROR",
+				Err:       fmt.Errorf("single-turn review did not complete - terminal tool must signal completion"),
+				Iteration: currentIteration,
+			}
 		}
 
 		// Check escalation limits before continuing iteration
 		if cfg.Escalation != nil {
-			// Current iteration count (1-indexed for user-facing logging)
-			currentIteration := iteration + 1
-
 			// Check soft limit (warning only, continues execution)
 			if cfg.Escalation.SoftLimit > 0 && currentIteration == cfg.Escalation.SoftLimit {
 				tl.logger.Warn("⚠️  Soft iteration limit (%d) reached for key '%s'", cfg.Escalation.SoftLimit, cfg.Escalation.Key)
@@ -359,13 +395,21 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 				if cfg.Escalation.OnHardLimit != nil {
 					err := cfg.Escalation.OnHardLimit(ctx, cfg.Escalation.Key, currentIteration)
 					if err != nil {
-						return "", zero, fmt.Errorf("escalation handler failed: %w", err)
+						return Outcome[T]{
+							Kind:      OutcomeLLMError, // Handler failure is treated as system error
+							Err:       fmt.Errorf("escalation handler failed: %w", err),
+							Iteration: currentIteration,
+						}
 					}
 				}
-				// Return typed error for explicit control flow
-				return "", zero, &IterationLimitError{
-					Key:       cfg.Escalation.Key,
-					Limit:     cfg.Escalation.HardLimit,
+				// Return OutcomeIterationLimit with typed error preserved for backwards compatibility
+				return Outcome[T]{
+					Kind: OutcomeIterationLimit,
+					Err: &IterationLimitError{
+						Key:       cfg.Escalation.Key,
+						Limit:     cfg.Escalation.HardLimit,
+						Iteration: currentIteration,
+					},
 					Iteration: currentIteration,
 				}
 			}
@@ -378,7 +422,11 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 	// Iteration limit reached - no escalation configured or limits not reached yet
 	tl.logger.Warn("⚠️  Maximum tool iterations (%d) reached", cfg.MaxIterations)
 
-	return "", zero, fmt.Errorf("maximum tool iterations (%d) exceeded", cfg.MaxIterations)
+	return Outcome[T]{
+		Kind:      OutcomeMaxIterations,
+		Err:       fmt.Errorf("maximum tool iterations (%d) exceeded", cfg.MaxIterations),
+		Iteration: cfg.MaxIterations,
+	}
 }
 
 // buildMessages converts context manager messages to agent.CompletionMessage format.

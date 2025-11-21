@@ -50,7 +50,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	specReviewTools := d.getSpecReviewTools()
 
 	// Run toolloop for spec review with type-safe result extraction
-	signal, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SpecReviewResult]{
+	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SpecReviewResult]{
 		ContextManager: d.contextManager,
 		ToolProvider:   newListToolProvider(specReviewTools),
 		CheckTerminal:  d.checkTerminalTools,
@@ -60,24 +60,25 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		AgentID:        d.GetAgentID(),
 	})
 
-	if err != nil {
-		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
+	// Handle outcome
+	if out.Kind != toolloop.OutcomeSuccess {
+		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", out.Err)
 	}
 
 	// Process tool signal and create RESULT message
 	var approved bool
 	var feedback string
 
-	switch signal {
+	switch out.Signal {
 	case signalSpecFeedbackSent:
 		// Architect requested changes via spec_feedback tool
-		approved = result.Approved // Should be false
-		feedback = result.Feedback
+		approved = out.Value.Approved // Should be false
+		feedback = out.Value.Feedback
 		d.logger.Info("📝 Architect requested spec changes: %s", feedback)
 
 	case signalSubmitStoriesComplete:
 		// Architect approved spec and generated stories via submit_stories tool
-		approved = result.Approved // Should be true
+		approved = out.Value.Approved // Should be true
 		d.logger.Info("✅ Architect approved spec and generated stories")
 
 		// Load stories into queue from submit_stories result
@@ -94,7 +95,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		d.SetStateData("spec_approved_and_loaded", true)
 
 	default:
-		return nil, fmt.Errorf("unexpected signal from spec review: %s", signal)
+		return nil, fmt.Errorf("unexpected signal from spec review: %s", out.Signal)
 	}
 
 	// Create RESPONSE message with approval result

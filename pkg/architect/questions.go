@@ -151,7 +151,7 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 	qh.driver.contextManager.ResetForNewTemplate(templateName, prompt)
 
 	// Use toolloop with submit_reply tool to get structured answer
-	signal, result, err := toolloop.Run(qh.driver.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+	out := toolloop.Run(qh.driver.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
 		ContextManager: qh.driver.contextManager,
 		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
 		CheckTerminal:  qh.driver.checkTerminalTools,
@@ -161,17 +161,18 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 		AgentID:        qh.driver.GetAgentID(),
 	})
 
-	if err != nil {
-		return fmt.Errorf("failed to get LLM response for question: %w", err)
+	// Handle outcome
+	if out.Kind != toolloop.OutcomeSuccess {
+		return fmt.Errorf("failed to get LLM response for question: %w", out.Err)
 	}
 
-	if signal == "" {
+	if out.Signal == "" {
 		return fmt.Errorf("no terminal signal received from question answering loop")
 	}
 
 	// Update question record.
 	now := time.Now().UTC()
-	pendingQ.Answer = result.Response
+	pendingQ.Answer = out.Value.Response
 	pendingQ.Status = questionStatusAnswered
 	pendingQ.AnsweredAt = &now
 
