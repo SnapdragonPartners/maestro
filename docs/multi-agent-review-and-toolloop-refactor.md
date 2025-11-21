@@ -1226,3 +1226,118 @@ case toolloop.OutcomeNoToolTwice:
 - ✅ Foundation for Phase 4 (Extractor Sentinel Errors refinement)
 
 **Next Phase:** Extractor Sentinel Errors (§2.5) - refine extractor contracts
+
+---
+
+### Phase 4: Extractor Sentinel Errors (§2.5) - ✅ COMPLETED
+
+**PR:** `refactor/extractor-sentinel-errors`
+
+**Status:** Implemented and tested
+
+**Changes:**
+- Unified all extractor functions to use sentinel errors from `pkg/agent/toolloop/errors.go`
+- Replaced inconsistent error messages with shared error vocabulary
+- Replaced `fmt.Printf` debug statements with structured logging via `logx.Logger`
+- All extractors now follow same contract for error handling
+
+**Sentinel Error Contract:**
+
+All extractors now follow this contract:
+- Return `(value, nil)` when semantics are satisfied
+- Return `toolloop.ErrNoTerminalTool` when required tools weren't called OR no terminal signal was produced
+- Return `toolloop.ErrNoActivity` when LLM did literally nothing (no tools called, no edits)
+- Return `toolloop.ErrInvalidResult` when a terminal tool was called but payload is malformed
+
+**Extractors Updated (7 total):**
+
+1. **PM Extractor** (`pkg/pm/toolloop_results.go`):
+   - `ExtractPMWorkingResult` - Now returns `ErrNoTerminalTool` instead of `WorkingResult{}, nil`
+
+2. **Coder Extractors** (`pkg/coder/toolloop_results.go`):
+   - `ExtractPlanningResult` - Returns `ErrNoTerminalTool` (was generic error message)
+   - `ExtractCodingResult` - Returns `ErrNoActivity` when no tools used (was generic error)
+   - `ExtractTodoCollectionResult` - Returns `ErrNoTerminalTool` (was verbose error message)
+   - Replaced `fmt.Printf("DEBUG...")` with `logger.Debug()` structured logging
+
+3. **Architect Extractors** (`pkg/architect/toolloop_results.go`):
+   - `ExtractSubmitReply` - Returns `ErrNoTerminalTool` when submit_reply not called, `ErrInvalidResult` when response empty
+   - `ExtractSpecReview` - Returns `ErrNoTerminalTool` (was generic error), `ErrInvalidResult` for malformed feedback
+   - `ExtractReviewComplete` - Returns `ErrNoTerminalTool` (was generic error)
+
+**Before/After Example (ExtractSubmitReply):**
+
+```go
+// BEFORE:
+return SubmitReplyResult{}, fmt.Errorf("submit_reply tool was not called")
+return SubmitReplyResult{}, fmt.Errorf("submit_reply called without valid response parameter")
+
+// AFTER:
+return SubmitReplyResult{}, toolloop.ErrNoTerminalTool
+return SubmitReplyResult{}, toolloop.ErrInvalidResult
+```
+
+**Logging Improvements:**
+
+Replaced debug prints with structured logging:
+```go
+// BEFORE:
+fmt.Printf("DEBUG ExtractTodoCollectionResult: received %d results\n", len(results))
+fmt.Printf("DEBUG result[%d] type=%T value=%+v\n", i, r, r)
+
+// AFTER:
+logger := logx.NewLogger("coder.extractor")
+logger.Debug("ExtractTodoCollectionResult: received %d results", len(results))
+logger.Debug("result[%d] type=%T value=%+v", i, r, r)
+```
+
+**Impact on OutcomeExtractionError:**
+
+These sentinel errors now flow through `toolloop.Run` and surface as `OutcomeExtractionError`. Agents can check for specific extractor failures:
+
+```go
+case toolloop.OutcomeExtractionError:
+    if errors.Is(out.Err, toolloop.ErrNoTerminalTool) {
+        // Handle missing terminal tool specifically
+    }
+    if errors.Is(out.Err, toolloop.ErrNoActivity) {
+        // Handle no activity specifically
+    }
+    if errors.Is(out.Err, toolloop.ErrInvalidResult) {
+        // Handle malformed payload specifically
+    }
+```
+
+**Benefits:**
+
+1. **Consistent Error Semantics:** All extractors use the same vocabulary for failures
+2. **Better Debugging:** Structured logging with logger levels instead of raw prints
+3. **Fine-Grained Handling:** Agents can distinguish between different extraction failures via `errors.Is()`
+4. **Easier Metrics:** Uniform errors make it trivial to track "how often does LLM fail to call terminal tool?"
+5. **No More Ad-Hoc Messages:** Shared sentinel errors eliminate divergent error handling across agents
+
+**Test Results:**
+- ✅ All tests pass (no test changes required - sentinel errors are wrapped in OutcomeExtractionError)
+- ✅ Full build with linting succeeds
+- ✅ No behavioral changes - just improved error classification
+
+**Files Modified (3 total):**
+- `pkg/pm/toolloop_results.go` - 1 extractor updated
+- `pkg/coder/toolloop_results.go` - 3 extractors updated + logging improvements
+- `pkg/architect/toolloop_results.go` - 3 extractors updated
+
+**Design Decisions:**
+
+- **No changes to toolloop.go:** Sentinel errors flow through existing `OutcomeExtractionError` path
+- **No changes to agent callsites:** Agents already handle `OutcomeExtractionError`, sentinel errors just add granularity
+- **Backwards compatible:** Existing error handling continues to work, `errors.Is()` checks are optional
+- **Structured logging:** Debug output now respects log levels and can be filtered/disabled
+
+**Outcomes:**
+- ✅ Unified error vocabulary across all extractors
+- ✅ Removed all `fmt.Printf` debug statements
+- ✅ Improved observability with structured logging
+- ✅ Foundation for metrics/monitoring (easy to count sentinel error occurrences)
+- ✅ Cleaner extractor contracts - clear separation of error cases
+
+**Next Phase:** Cleanup (§2.6) - remove dead code and finalize refactor

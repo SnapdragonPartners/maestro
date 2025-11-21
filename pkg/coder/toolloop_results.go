@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/utils"
 )
 
@@ -93,8 +95,8 @@ func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResul
 		}
 	}
 
-	// No terminal tool was called - this is not an error, just means continue looping
-	return PlanningResult{}, fmt.Errorf("no terminal tool was called in planning phase")
+	// No terminal tool was called
+	return PlanningResult{}, toolloop.ErrNoTerminalTool
 }
 
 // ExtractCodingResult extracts the result from coding phase tools.
@@ -136,23 +138,24 @@ func ExtractCodingResult(calls []agent.ToolCall, _ []any) (CodingResult, error) 
 		return result, nil
 	}
 
-	// No terminal tool was called
-	return CodingResult{}, fmt.Errorf("no terminal tool was called in coding phase")
+	// No terminal tool was called and no activity
+	return CodingResult{}, toolloop.ErrNoActivity
 }
 
 // ExtractTodoCollectionResult extracts the result from todo collection phase.
 func ExtractTodoCollectionResult(_ []agent.ToolCall, results []any) (TodoCollectionResult, error) {
 	result := TodoCollectionResult{}
+	logger := logx.NewLogger("coder.extractor")
 
-	// Debug: log what we're extracting from
+	// Check if we have any results
 	if len(results) == 0 {
-		return TodoCollectionResult{}, fmt.Errorf("no tool results to extract todos from")
+		return TodoCollectionResult{}, toolloop.ErrNoActivity
 	}
 
-	// DEBUG: Print what we actually received
-	fmt.Printf("DEBUG ExtractTodoCollectionResult: received %d results\n", len(results))
+	// Debug logging for extraction
+	logger.Debug("ExtractTodoCollectionResult: received %d results", len(results))
 	for i, r := range results {
-		fmt.Printf("DEBUG result[%d] type=%T value=%+v\n", i, r, r)
+		logger.Debug("result[%d] type=%T value=%+v", i, r, r)
 	}
 
 	for i := range results {
@@ -208,5 +211,5 @@ func ExtractTodoCollectionResult(_ []agent.ToolCall, results []any) (TodoCollect
 	}
 
 	// If we got here, we found results but no todos
-	return TodoCollectionResult{}, fmt.Errorf("no todos found in todo collection phase (found %d results, but no valid todos)", len(results))
+	return TodoCollectionResult{}, toolloop.ErrNoTerminalTool
 }
