@@ -131,7 +131,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		ToolProvider:   c.codingToolProvider,
 		MaxIterations:  maxCodingIterations,
 		MaxTokens:      8192, // Increased for comprehensive code generation
-		AgentID:        c.agentID,
+		AgentID:        c.GetAgentID(),
 		DebugLogging:   false,
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkCodingTerminal(ctx, sm, calls, results)

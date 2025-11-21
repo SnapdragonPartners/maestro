@@ -57,7 +57,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		ExtractResult:  ExtractSpecReview,
 		MaxIterations:  20, // Increased for complex spec review workflows
 		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        d.architectID,
+		AgentID:        d.GetAgentID(),
 	})
 
 	if err != nil {
@@ -98,7 +98,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	}
 
 	// Create RESPONSE message with approval result
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
 
 	// Determine approval status
@@ -115,7 +115,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		Type:       proto.ApprovalTypeSpec,
 		Status:     status,
 		Feedback:   feedback,
-		ReviewedBy: d.architectID,
+		ReviewedBy: d.GetAgentID(),
 		ReviewedAt: response.Timestamp,
 	}
 

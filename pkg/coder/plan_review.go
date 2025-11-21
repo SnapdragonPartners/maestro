@@ -310,7 +310,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		ToolProvider:   todoToolProvider,
 		MaxIterations:  2,    // One call + one retry if needed
 		MaxTokens:      4096, // Sufficient for todo list
-		AgentID:        c.agentID,
+		AgentID:        c.GetAgentID(),
 		DebugLogging:   true, // Enable verbose logging for debugging
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)

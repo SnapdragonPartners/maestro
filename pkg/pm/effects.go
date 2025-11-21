@@ -48,7 +48,7 @@ func (e *SendMessageEffect) Execute(_ context.Context, runtime effect.Runtime) (
 
 // ExecuteEffect executes a single Effect using the PM's runtime.
 func (d *Driver) ExecuteEffect(ctx context.Context, eff effect.Effect) error {
-	runtime := NewRuntime(d.dispatcher, d.logger, d.pmID, d.replyCh)
+	runtime := NewRuntime(d.dispatcher, d.logger, d.GetAgentID(), d.replyCh)
 	_, err := eff.Execute(ctx, runtime)
 	if err != nil {
 		return fmt.Errorf("effect execution failed: %w", err)

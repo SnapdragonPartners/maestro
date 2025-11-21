@@ -52,8 +52,7 @@ const (
 //
 //nolint:govet // Prefer logical grouping over memory optimization
 type Driver struct {
-	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
-	pmID                    string
+	*agent.BaseStateMachine // Embed state machine (provides LLMClient field and GetAgentID())
 	renderer                *templates.Renderer
 	contextManager          *contextmgr.ContextManager
 	logger                  *logx.Logger
@@ -163,7 +162,6 @@ func NewPM(
 	// Create driver first (without LLM client yet)
 	pmDriver := &Driver{
 		BaseStateMachine:   sm,
-		pmID:               pmID,
 		renderer:           renderer,
 		contextManager:     contextManager,
 		logger:             logger,
@@ -209,7 +207,6 @@ func NewDriver(
 
 	return &Driver{
 		BaseStateMachine:   sm,
-		pmID:               pmID,
 		renderer:           renderer,
 		contextManager:     contextManager,
 		logger:             logx.NewLogger("pm"),
@@ -222,12 +219,12 @@ func NewDriver(
 
 // Run starts the PM agent's main loop.
 func (d *Driver) Run(ctx context.Context) error {
-	d.logger.Info("🎯 PM agent %s starting", d.pmID)
+	d.logger.Info("🎯 PM agent %s starting", d.GetAgentID())
 
 	for {
 		select {
 		case <-ctx.Done():
-			d.logger.Info("🎯 PM agent %s received shutdown signal", d.pmID)
+			d.logger.Info("🎯 PM agent %s received shutdown signal", d.GetAgentID())
 			return fmt.Errorf("pm agent shutdown: %w", ctx.Err())
 		default:
 			// Capture state before executing handler
@@ -266,7 +263,7 @@ func (d *Driver) Run(ctx context.Context) error {
 			// Handle terminal states
 			terminalState := d.GetCurrentState()
 			if terminalState == proto.StateError {
-				d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
+				d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.GetAgentID())
 				// Reset to WAITING after error and clear state data
 				_ = d.TransitionTo(ctx, StateWaiting, nil)
 				// Clear all state data
@@ -277,7 +274,7 @@ func (d *Driver) Run(ctx context.Context) error {
 
 			// Handle DONE
 			if terminalState == proto.StateDone {
-				d.logger.Info("✅ PM agent %s shutting down", d.pmID)
+				d.logger.Info("✅ PM agent %s shutting down", d.GetAgentID())
 				return nil
 			}
 		}
@@ -403,7 +400,7 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 
 // GetID returns the PM agent's ID.
 func (d *Driver) GetID() string {
-	return d.pmID
+	return d.GetAgentID()
 }
 
 // GetStoryID returns an empty string as PM doesn't work on stories directly.
@@ -425,7 +422,7 @@ func (d *Driver) GetAgentType() agent.Type {
 func (d *Driver) Initialize(_ context.Context) error {
 	// Validate required channels and BaseStateMachine are set
 	if d.BaseStateMachine == nil {
-		return fmt.Errorf("PM %s: BaseStateMachine not initialized", d.pmID)
+		return fmt.Errorf("PM %s: BaseStateMachine not initialized", d.GetAgentID())
 	}
 
 	// Verify state notification channel is set on BaseStateMachine
@@ -434,7 +431,7 @@ func (d *Driver) Initialize(_ context.Context) error {
 		d.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
 	}
 
-	d.logger.Info("PM agent %s initialized in state: %s", d.pmID, d.GetCurrentState())
+	d.logger.Info("PM agent %s initialized in state: %s", d.GetAgentID(), d.GetCurrentState())
 	return nil
 }
 
@@ -466,7 +463,7 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 	// Handle terminal states
 	terminalState := d.GetCurrentState()
 	if terminalState == proto.StateError {
-		d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
+		d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.GetAgentID())
 		_ = d.TransitionTo(ctx, StateWaiting, nil)
 		// Clear all state data
 		for key := range d.GetStateData() {
@@ -740,7 +737,7 @@ func (d *Driver) PreviewAction(ctx context.Context, action string) error {
 
 // Shutdown gracefully shuts down the PM agent.
 func (d *Driver) Shutdown(_ context.Context) error {
-	d.logger.Info("🎯 PM agent %s shutting down gracefully", d.pmID)
+	d.logger.Info("🎯 PM agent %s shutting down gracefully", d.GetAgentID())
 	// PM agent is stateless between interviews, no cleanup needed
 	return nil
 }

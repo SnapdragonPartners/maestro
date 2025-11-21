@@ -34,15 +34,17 @@ func createBasicCoder(t *testing.T) *Coder {
 		Context: context.Background(),
 	})
 
+	// Create BaseStateMachine
+	sm := agent.NewBaseStateMachine(agentConfig.ID, proto.StateWaiting, nil, CoderTransitions)
+
 	return &Coder{
-		agentConfig:     agentConfig,
-		agentID:         "test-coder-001",
-		contextManager:  contextMgr,
-		renderer:        renderer,
-		logger:          logger,
-		workDir:         tempDir,
-		originalWorkDir: tempDir,
-		codingBudget:    3,
+		BaseStateMachine: sm,
+		contextManager:   contextMgr,
+		renderer:         renderer,
+		logger:           logger,
+		workDir:          tempDir,
+		originalWorkDir:  tempDir,
+		codingBudget:     3,
 	}
 }
 
@@ -146,7 +148,7 @@ func TestCoderToolProviders(t *testing.T) {
 func TestRuntimeOperations(t *testing.T) {
 	coder := createBasicCoder(t)
 	replyCh := make(chan *proto.AgentMsg, 1)
-	runtime := NewRuntime(coder.dispatcher, coder.logger, coder.agentID, replyCh)
+	runtime := NewRuntime(coder.dispatcher, coder.logger, coder.GetAgentID(), replyCh)
 
 	// Test GetAgentID
 	agentID := runtime.GetAgentID()
