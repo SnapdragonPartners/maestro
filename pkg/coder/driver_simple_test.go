@@ -235,27 +235,6 @@ func TestCoderStateConstants(t *testing.T) {
 	}
 }
 
-// Test helper functions that are just simple getters.
-func TestCoderHelperFunctions(t *testing.T) {
-	coder := createBasicCoder(t)
-
-	// Test exploration history functions - these return hardcoded values
-	history := coder.getExplorationHistory()
-	if history == nil {
-		t.Error("Expected non-nil exploration history")
-	}
-
-	files := coder.getFilesExamined()
-	if files == nil {
-		t.Error("Expected non-nil files examined")
-	}
-
-	findings := coder.getCurrentFindings()
-	if findings == nil {
-		t.Error("Expected non-nil current findings")
-	}
-}
-
 // Test auto action constants.
 func TestAutoActionConstants(t *testing.T) {
 	actions := []AutoAction{

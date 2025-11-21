@@ -83,8 +83,6 @@ func (c *Coder) handleTodoUpdate(sm *agent.BaseStateMachine, index int, newDescr
 
 // getTodoListStatus returns a formatted string showing current todo status.
 // Used by templates to display current todo in CODING state.
-//
-//nolint:unused // Will be used in templates next
 func (c *Coder) getTodoListStatus() string {
 	if c.todoList == nil || len(c.todoList.Items) == 0 {
 		return "No todo list available"
@@ -125,24 +123,7 @@ func (c *Coder) getTodoListStatus() string {
 	return status
 }
 
-// loadTodoListFromState loads the todo list from state data (for restarts).
-// Called during agent initialization to restore todo list after restart.
-//
-//nolint:unused // Will be used in agent initialization next
-func (c *Coder) loadTodoListFromState(sm *agent.BaseStateMachine) {
-	if todoData, exists := sm.GetStateValue("todo_list"); exists {
-		if todoList, ok := todoData.(*TodoList); ok {
-			c.todoList = todoList
-			c.logger.Info("📋 [TODO] Restored todo list from state: %d items, %d completed",
-				c.todoList.GetTotalCount(),
-				c.todoList.GetCompletedCount())
-		}
-	}
-}
-
 // joinStrings joins strings (helper for getTodoListStatus).
-//
-//nolint:unused // Used by getTodoListStatus
 func joinStrings(strs []string, sep string) string {
 	if len(strs) == 0 {
 		return ""
