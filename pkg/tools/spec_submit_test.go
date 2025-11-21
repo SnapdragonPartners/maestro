@@ -47,7 +47,7 @@ This spec is missing required sections.
 `
 
 func TestSpecSubmitTool_ValidSpec(t *testing.T) {
-	tool := NewSpecSubmitTool()
+	tool := NewSpecSubmitTool("")
 	ctx := context.Background()
 
 	args := map[string]any{
@@ -86,7 +86,7 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 }
 
 func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
-	tool := NewSpecSubmitTool()
+	tool := NewSpecSubmitTool("")
 	ctx := context.Background()
 
 	args := map[string]any{
@@ -124,7 +124,7 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 }
 
 func TestSpecSubmitTool_MissingMarkdown(t *testing.T) {
-	tool := NewSpecSubmitTool()
+	tool := NewSpecSubmitTool("")
 	ctx := context.Background()
 
 	args := map[string]any{
@@ -138,7 +138,7 @@ func TestSpecSubmitTool_MissingMarkdown(t *testing.T) {
 }
 
 func TestSpecSubmitTool_MissingSummary(t *testing.T) {
-	tool := NewSpecSubmitTool()
+	tool := NewSpecSubmitTool("")
 	ctx := context.Background()
 
 	args := map[string]any{
@@ -152,7 +152,7 @@ func TestSpecSubmitTool_MissingSummary(t *testing.T) {
 }
 
 func TestSpecSubmitTool_EmptyMarkdown(t *testing.T) {
-	tool := NewSpecSubmitTool()
+	tool := NewSpecSubmitTool("")
 	ctx := context.Background()
 
 	args := map[string]any{
@@ -167,7 +167,7 @@ func TestSpecSubmitTool_EmptyMarkdown(t *testing.T) {
 }
 
 func TestSpecSubmitTool_Definition(t *testing.T) {
-	tool := NewSpecSubmitTool()
+	tool := NewSpecSubmitTool("")
 	def := tool.Definition()
 
 	if def.Name != "spec_submit" {

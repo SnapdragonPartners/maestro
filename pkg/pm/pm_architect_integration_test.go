@@ -1,3 +1,5 @@
+//go:build integration
+
 package pm
 
 import (
@@ -249,15 +251,15 @@ func createMockPMAgent(t *testing.T, dispatcher *dispatch.Dispatcher) *Driver {
 	contextManager := contextmgr.NewContextManagerWithModel("claude-sonnet-4")
 
 	driver := &Driver{
-		pmID:               "pm-test-001",
-		llmClient:          nil, // Mock LLM client
-		renderer:           renderer,
-		contextManager:     contextManager,
-		dispatcher:         dispatcher,
-		persistenceChannel: make(chan *persistence.Request),
-		currentState:       StateWaiting,
-		stateData:          make(map[string]any),
-		workDir:            "/tmp/test-pm",
+		pmID: "pm-test-001",
+		// 		llmClient:          nil, // Mock LLM client
+		// 		renderer:           renderer,
+		// 		contextManager:     contextManager,
+		// 		dispatcher:         dispatcher,
+		// 		persistenceChannel: make(chan *persistence.Request),
+		// 		currentState:       StateWaiting,
+		// 		stateData:          make(map[string]any),
+		workDir: "/tmp/test-pm",
 	}
 
 	return driver

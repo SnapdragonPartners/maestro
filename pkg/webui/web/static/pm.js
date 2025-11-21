@@ -160,7 +160,9 @@ class PMController {
             return;
         }
 
-        if (this.pmState !== 'WAITING') {
+        // Allow upload in WAITING (before interview) and AWAIT_USER (during interview)
+        // Block upload in WORKING (actively processing)
+        if (this.pmState !== 'WAITING' && this.pmState !== 'AWAIT_USER') {
             this.showUploadStatus(`PM is busy (state: ${this.pmState})`, 'error');
             return;
         }

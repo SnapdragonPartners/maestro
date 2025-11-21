@@ -279,12 +279,13 @@ class MaestroUI {
         try {
             const response = await fetch('/api/agents');
             if (!response.ok) throw new Error('Failed to fetch agents');
-            
+
             const agents = await response.json();
             this.updateAgentGrid(agents);
             this.checkEscalations(agents);
+            this.updatePMStatus(agents);
             this.setConnectionStatus(true);
-            
+
         } catch (error) {
             console.error('Error polling agents:', error);
             this.handleConnectionError();
@@ -392,6 +393,65 @@ class MaestroUI {
             'ESCALATED': 'state-escalated'
         };
         return stateMap[state] || 'bg-gray-100 text-gray-800';
+    }
+
+    updatePMStatus(agents) {
+        // Find the PM agent (architect-pm)
+        const pmAgent = agents.find(agent => agent.id === 'architect-pm' || agent.role === 'pm');
+
+        const statusBadge = document.getElementById('pm-status-badge');
+        const sendBtn = document.getElementById('interview-send-btn');
+        const interviewInput = document.getElementById('interview-input');
+
+        if (!pmAgent) {
+            // PM not found - disable and show unknown
+            if (statusBadge) {
+                statusBadge.textContent = 'NOT AVAILABLE';
+                statusBadge.className = 'px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600';
+            }
+            if (sendBtn) sendBtn.disabled = true;
+            return;
+        }
+
+        // Update status badge
+        if (statusBadge) {
+            statusBadge.textContent = pmAgent.state || 'UNKNOWN';
+
+            // Style based on state
+            const stateStyles = {
+                'AWAIT_USER': 'bg-green-100 text-green-800',
+                'WAITING': 'bg-gray-100 text-gray-600',
+                'WORKING': 'bg-blue-100 text-blue-800',
+                'ERROR': 'bg-red-100 text-red-800'
+            };
+
+            statusBadge.className = `px-3 py-1 rounded-full text-sm font-medium ${stateStyles[pmAgent.state] || 'bg-gray-100 text-gray-600'}`;
+        }
+
+        // Enable Send button only in AWAIT_USER state
+        if (sendBtn) {
+            const isAwaitingUser = pmAgent.state === 'AWAIT_USER';
+            sendBtn.disabled = !isAwaitingUser;
+
+            // Optionally update button text (not required but nice to have)
+            if (!isAwaitingUser && pmAgent.state === 'WORKING') {
+                sendBtn.textContent = 'Working...';
+            } else {
+                sendBtn.textContent = 'Send';
+            }
+        }
+
+        // Also disable input field when PM is not awaiting user
+        if (interviewInput) {
+            const isAwaitingUser = pmAgent.state === 'AWAIT_USER';
+            interviewInput.disabled = !isAwaitingUser;
+
+            if (!isAwaitingUser) {
+                interviewInput.placeholder = 'PM is working...';
+            } else {
+                interviewInput.placeholder = 'Type your response...';
+            }
+        }
     }
 
     updateStories(stories) {

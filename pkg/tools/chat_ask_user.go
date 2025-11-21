@@ -26,7 +26,7 @@ func NewChatAskUserTool(chatService *chat.Service, agentID string) *ChatAskUserT
 func (a *ChatAskUserTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "chat_ask_user",
-		Description: "Post a question to chat and wait for user response. Use when you need user input before proceeding. For status updates that don't need a response, use chat_post instead.",
+		Description: "Post a question to chat AND wait for user response. This tool both posts the message and blocks until user replies. Do NOT call chat_post before this - just call chat_ask_user with your question. For non-blocking status updates, use chat_post instead.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -47,12 +47,13 @@ func (a *ChatAskUserTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (a *ChatAskUserTool) PromptDocumentation() string {
-	return `- **chat_ask_user** - Post a question to chat and wait for user response
+	return `- **chat_ask_user** - Post a question to chat AND wait for user response
   - Parameters:
     - message (string, required): The question or request to post
+  - This tool BOTH posts the message AND blocks until user responds
+  - Do NOT call chat_post before this - just use chat_ask_user with your question
   - Use when you need user input to continue (clarification, decisions, more details)
-  - Blocks until user responds
-  - For non-blocking updates, use chat_post instead`
+  - For non-blocking status updates, use chat_post instead`
 }
 
 // Exec executes the chat_ask_user operation.

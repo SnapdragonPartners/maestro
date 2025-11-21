@@ -173,6 +173,10 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 			}
 		}
 		params.Tools = tools
+		// Require tool use - models must call at least one tool
+		params.ToolChoice = responses.ResponseNewParamsToolChoiceUnion{
+			OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsRequired),
+		}
 	}
 
 	resp, err := o.client.Responses.New(ctx, params)

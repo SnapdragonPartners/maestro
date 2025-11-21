@@ -104,6 +104,12 @@ const (
 	KeyFilePath        = "file_path"
 	KeyBackend         = "backend"
 
+	// Additional tracking keys (extending unified protocol keys above).
+	KeyQuestionID        = "question_id"
+	KeyApprovalID        = "approval_id"
+	KeyConfidence        = "confidence"
+	KeyExplorationMethod = "exploration_method"
+
 	// Resource request keys.
 	KeyRequestedTokens     = "requestedTokens"
 	KeyRequestedIterations = "requestedIterations"
@@ -651,4 +657,120 @@ type StoryRequeueRequest struct {
 	AgentID   string    `json:"agent_id"`
 	Reason    string    `json:"reason"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// Metadata helper functions
+
+// GetStoryID returns the story_id from message metadata, or empty string if not present.
+func GetStoryID(msg *AgentMsg) string {
+	if msg == nil || msg.Metadata == nil {
+		return ""
+	}
+	return msg.Metadata[KeyStoryID]
+}
+
+// SetStoryID sets the story_id in message metadata.
+func SetStoryID(msg *AgentMsg, storyID string) {
+	if msg == nil {
+		return
+	}
+	msg.SetMetadata(KeyStoryID, storyID)
+}
+
+// GetCorrelationID returns the correlation ID from message metadata.
+// Tries correlation_id, question_id, and approval_id in that order.
+// Returns empty string if none are present.
+func GetCorrelationID(msg *AgentMsg) string {
+	if msg == nil || msg.Metadata == nil {
+		return ""
+	}
+
+	// Try correlation_id first
+	if id, exists := msg.Metadata[KeyCorrelationID]; exists && id != "" {
+		return id
+	}
+
+	// Try question_id
+	if id, exists := msg.Metadata[KeyQuestionID]; exists && id != "" {
+		return id
+	}
+
+	// Try approval_id
+	if id, exists := msg.Metadata[KeyApprovalID]; exists && id != "" {
+		return id
+	}
+
+	return ""
+}
+
+// SetCorrelationID sets the correlation_id in message metadata.
+func SetCorrelationID(msg *AgentMsg, correlationID string) {
+	if msg == nil {
+		return
+	}
+	msg.SetMetadata(KeyCorrelationID, correlationID)
+}
+
+// GetApprovalID returns the approval_id from message metadata, or empty string if not present.
+func GetApprovalID(msg *AgentMsg) string {
+	if msg == nil || msg.Metadata == nil {
+		return ""
+	}
+	return msg.Metadata[KeyApprovalID]
+}
+
+// SetApprovalID sets the approval_id in message metadata.
+func SetApprovalID(msg *AgentMsg, approvalID string) {
+	if msg == nil {
+		return
+	}
+	msg.SetMetadata(KeyApprovalID, approvalID)
+}
+
+// GetQuestionID returns the question_id from message metadata, or empty string if not present.
+func GetQuestionID(msg *AgentMsg) string {
+	if msg == nil || msg.Metadata == nil {
+		return ""
+	}
+	return msg.Metadata[KeyQuestionID]
+}
+
+// SetQuestionID sets the question_id in message metadata.
+func SetQuestionID(msg *AgentMsg, questionID string) {
+	if msg == nil {
+		return
+	}
+	msg.SetMetadata(KeyQuestionID, questionID)
+}
+
+// CopyStoryMetadata copies story_id from src to dst if present in src.
+func CopyStoryMetadata(src, dst *AgentMsg) {
+	if storyID := GetStoryID(src); storyID != "" {
+		SetStoryID(dst, storyID)
+	}
+}
+
+// CopyCorrelationMetadata copies correlation metadata (correlation_id, question_id, or approval_id)
+// from src to dst. Preserves the original key used in src.
+func CopyCorrelationMetadata(src, dst *AgentMsg) {
+	if src == nil || src.Metadata == nil || dst == nil {
+		return
+	}
+
+	// Copy correlation_id if present
+	if id, exists := src.Metadata[KeyCorrelationID]; exists && id != "" {
+		SetCorrelationID(dst, id)
+		return
+	}
+
+	// Copy question_id if present
+	if id, exists := src.Metadata[KeyQuestionID]; exists && id != "" {
+		SetQuestionID(dst, id)
+		return
+	}
+
+	// Copy approval_id if present
+	if id, exists := src.Metadata[KeyApprovalID]; exists && id != "" {
+		SetApprovalID(dst, id)
+	}
 }

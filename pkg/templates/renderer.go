@@ -99,6 +99,8 @@ const (
 
 	// PlanApprovalRequestTemplate is the template for plan approval request content (coder → architect).
 	PlanApprovalRequestTemplate StateTemplate = "plan_approval_request.tpl.md"
+	// PlanReviewArchitectTemplate is the template for architect's plan review prompt.
+	PlanReviewArchitectTemplate StateTemplate = "plan_review_architect.tpl.md"
 	// CodeReviewRequestTemplate is the template for code review request content.
 	CodeReviewRequestTemplate StateTemplate = "code_review_request.tpl.md"
 	// CompletionRequestTemplate is the template for completion request content.
@@ -129,6 +131,10 @@ const (
 	PMSpecGenerationTemplate StateTemplate = "pm/spec_generation.tpl.md"
 	// PMWorkingTemplate is the unified template for PM WORKING state (interviewing, drafting, submitting).
 	PMWorkingTemplate StateTemplate = "pm/working.tpl.md"
+	// PMBootstrapPrerequisitesTemplate is the template for bootstrap prerequisites injected by spec_submit tool.
+	PMBootstrapPrerequisitesTemplate StateTemplate = "pm/bootstrap_prerequisites.tpl.md"
+	// PMBootstrapGateTemplate is the focused template for bootstrap-only mode (before project is configured).
+	PMBootstrapGateTemplate StateTemplate = "pm/bootstrap_gate.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -172,6 +178,7 @@ func NewRenderer() (*Renderer, error) {
 		DevOpsCodeReviewTemplate,
 		// Request content templates (coder → architect).
 		PlanApprovalRequestTemplate,
+		PlanReviewArchitectTemplate,
 		CodeReviewRequestTemplate,
 		CompletionRequestTemplate,
 		MergeRequestTemplate,
@@ -187,7 +194,9 @@ func NewRenderer() (*Renderer, error) {
 		PMInterviewStartTemplate,
 		PMRequirementsGatheringTemplate,
 		PMSpecGenerationTemplate,
-		PMWorkingTemplate, // Unified PM template
+		PMWorkingTemplate,                // Unified PM template
+		PMBootstrapPrerequisitesTemplate, // Bootstrap prerequisites injected by spec_submit
+		PMBootstrapGateTemplate,          // Bootstrap-only mode before project configured
 	}
 
 	for _, name := range templateNames {

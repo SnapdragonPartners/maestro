@@ -13,8 +13,11 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	// State: managing queue and assigning stories
 	d.logger.Info("🚀 DISPATCHING: Starting dependency resolution and story assignment")
 
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Initialize queue if not already done.
-	if _, exists := d.stateData["queue_initialized"]; !exists {
+	if _, exists := stateData["queue_initialized"]; !exists {
 		d.logger.Info("🚀 DISPATCHING: Initializing queue (recovery scenario)")
 		// Queue should already be populated during SCOPING phase
 		// Only load from database if this is a recovery scenario
@@ -30,14 +33,14 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 			return StateError, fmt.Errorf("critical: failed to persist queue state: %w", err)
 		}
 
-		d.stateData["queue_initialized"] = true
-		d.stateData["queue_management_completed_at"] = time.Now().UTC()
+		d.SetStateData("queue_initialized", true)
+		d.SetStateData("queue_management_completed_at", time.Now().UTC())
 
 		// Get queue summary for logging.
 		summary := d.queue.GetQueueSummary()
 		d.logger.Info("🚀 DISPATCHING: queue initialized - %d stories (%d ready)",
 			summary["total_stories"], summary["ready_stories"])
-		d.stateData["queue_summary"] = summary
+		d.SetStateData("queue_summary", summary)
 	}
 
 	// Log current queue state for debugging
@@ -102,7 +105,7 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 // sendStoryToDispatcher sends a story to the dispatcher.
 func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) error {
 	// Create story message for the dispatcher ("coder" targets any available coder).
-	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
+	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
 	// Build story payload
 	payloadData := make(map[string]any)
@@ -309,7 +312,7 @@ func (d *Driver) persistQueueState() error {
 	}
 
 	// Store queue data in state data for persistence.
-	d.stateData["queue_json"] = string(queueData)
+	d.SetStateData("queue_json", string(queueData))
 
 	return nil
 }

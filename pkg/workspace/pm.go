@@ -62,13 +62,17 @@ func UpdatePMWorkspace(ctx context.Context, projectDir string) error {
 }
 
 // EnsurePMWorkspace ensures the PM workspace exists and is up to date.
-// The PM workspace is a full git clone at <projectDir>/pm-001/ that provides
-// read-only access to the repository for the PM agent during interviews.
+// The PM workspace can operate in two modes:
+//
+//  1. With Repository: A full git clone at <projectDir>/pm-001/ that provides
+//     read-only access to the repository for the PM agent during interviews.
+//  2. Without Repository: A minimal empty directory for conducting interviews
+//     when no git repository has been configured yet (bootstrap mode).
 //
 // This function:
 // 1. Creates pm-001/ directory if it doesn't exist.
-// 2. Clones from the local mirror (fast, network-efficient).
-// 3. Checks out the target branch.
+// 2. If git is configured: Clones from the local mirror (fast, network-efficient).
+// 3. If no git: Returns empty workspace for interview-only mode.
 // 4. Returns the workspace path.
 //
 //nolint:cyclop,dupl // Complexity and duplication acceptable - mirrors architect workspace pattern.
@@ -81,22 +85,35 @@ func EnsurePMWorkspace(ctx context.Context, projectDir string) (string, error) {
 		return "", fmt.Errorf("failed to get config: %w", err)
 	}
 
-	if cfg.Git == nil {
-		return "", fmt.Errorf("git configuration not found")
-	}
-
-	targetBranch := cfg.Git.TargetBranch
-	if targetBranch == "" {
-		targetBranch = config.DefaultTargetBranch
-	}
-
-	// PM workspace path
+	// PM workspace path (always the same location)
 	pmWorkspace := filepath.Join(projectDir, "pm-001")
 	absPMWorkspace, absErr := filepath.Abs(pmWorkspace)
 	if absErr != nil {
 		return "", fmt.Errorf("failed to resolve absolute path for PM workspace: %w", absErr)
 	}
 	pmWorkspace = absPMWorkspace
+
+	// Check if git is configured with a repository URL
+	hasGitRepo := cfg.Git != nil && cfg.Git.RepoURL != ""
+
+	if !hasGitRepo {
+		// No git repository configured - create minimal workspace for interview-only mode
+		logger.Info("No git repository configured, creating minimal PM workspace for interviews")
+
+		// Create workspace directory if it doesn't exist
+		if mkdirErr := os.MkdirAll(pmWorkspace, 0755); mkdirErr != nil {
+			return "", fmt.Errorf("failed to create PM workspace directory: %w", mkdirErr)
+		}
+
+		logger.Info("✅ Created minimal PM workspace (no-repo mode) at %s", pmWorkspace)
+		return pmWorkspace, nil
+	}
+
+	// Git is configured - proceed with repository clone
+	targetBranch := cfg.Git.TargetBranch
+	if targetBranch == "" {
+		targetBranch = config.DefaultTargetBranch
+	}
 
 	// Find the git mirror
 	mirrorDir := filepath.Join(projectDir, ".mirrors")

@@ -5,16 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/tools"
 )
 
 func main() {
@@ -24,6 +24,7 @@ func main() {
 		specFile   = flag.String("spec-file", "", "Path to specification file")
 		noWebUI    = flag.Bool("nowebui", false, "Disable web UI")
 		bootstrap  = flag.Bool("bootstrap", false, "Run in bootstrap mode")
+		pmMode     = flag.Bool("pm", false, "Start PM agent directly (skip bootstrap)")
 		projectDir = flag.String("projectdir", ".", "Project directory")
 		tee        = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
 	)
@@ -41,7 +42,7 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	exitCode := run(*projectDir, *gitRepo, *specFile, *bootstrap, *noWebUI)
+	exitCode := run(*projectDir, *gitRepo, *specFile, *bootstrap, *pmMode, *noWebUI)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -53,7 +54,7 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, bootstrap, noWebUI bool) int {
+func run(projectDir, gitRepo, specFile string, bootstrap, pmMode, noWebUI bool) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
@@ -72,15 +73,17 @@ func run(projectDir, gitRepo, specFile string, bootstrap, noWebUI bool) int {
 		return 1
 	}
 
-	// Determine mode - auto-offer bootstrap if config was created from defaults
-	shouldBootstrap := bootstrap || configWasCreated
+	// Determine mode - auto-offer bootstrap if config was created from defaults (unless PM mode)
+	shouldBootstrap := (bootstrap || configWasCreated) && !pmMode
 	if shouldBootstrap && !bootstrap {
 		fmt.Printf("New configuration created - entering bootstrap mode to set up repository\n")
 	}
 
 	// Display mode and working directory
 	mode := "main"
-	if shouldBootstrap {
+	if pmMode {
+		mode = "PM"
+	} else if shouldBootstrap {
 		mode = "bootstrap"
 	}
 	config.LogInfo("🚀 Starting Maestro in %s mode", mode)
@@ -222,49 +225,46 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		}
 	}
 
-	// 4. Create git mirror if git config exists
+	// 4. Create or update git mirror if git config exists and is valid
+	// Use bootstrap detector to validate the git URL first
+	// If invalid, skip mirror creation and let PM bootstrap handle it
 	if cfg.Git != nil && cfg.Git.RepoURL != "" {
-		// Use the actual .mirrors directory in projectDir (not .maestro/mirrors)
-		mirrorDir := filepath.Join(projectDir, ".mirrors")
-		if err := os.MkdirAll(mirrorDir, 0755); err != nil {
-			return fmt.Errorf("failed to create .mirrors directory: %w", err)
-		}
+		detector := tools.NewBootstrapDetector(projectDir)
+		reqs, detectErr := detector.Detect(context.Background())
 
-		// Extract repo name from URL for mirror directory
-		repoName := extractRepoName(cfg.Git.RepoURL)
-		repoMirrorPath := filepath.Join(mirrorDir, repoName)
-
-		// Check if mirror already exists by looking for HEAD file (bare repos don't have .git subdir)
-		if _, err := os.Stat(filepath.Join(repoMirrorPath, "HEAD")); os.IsNotExist(err) {
-			// Clone as bare mirror
-			config.LogInfo("📥 Creating git mirror for %s...", cfg.Git.RepoURL)
-			if err := cloneGitMirror(cfg.Git.RepoURL, repoMirrorPath); err != nil {
-				return fmt.Errorf("failed to create git mirror: %w", err)
+		if detectErr == nil && !reqs.NeedsGitRepo {
+			// Git repo is configured and valid - create/update mirror
+			mirrorMgr := mirror.NewManager(projectDir)
+			if _, err := mirrorMgr.EnsureMirror(context.Background()); err != nil {
+				return fmt.Errorf("failed to setup git mirror: %w", err)
 			}
-			config.LogInfo("✅ Git mirror created at %s", repoMirrorPath)
 		} else {
-			// Mirror exists - update it
-			config.LogInfo("📂 Git mirror exists at %s, updating...", repoMirrorPath)
-			if err := updateGitMirror(repoMirrorPath); err != nil {
-				return fmt.Errorf("failed to update git mirror: %w", err)
-			}
-			config.LogInfo("✅ Git mirror updated successfully")
+			// Git repo is invalid or missing - skip mirror creation
+			// PM bootstrap will handle this
+			config.LogInfo("⚠️  Git repository not configured or invalid - skipping mirror creation (PM will bootstrap)")
 		}
 	}
 
-	// 5. Pre-create coder workspace directories for container mounting
-	// Creates exactly max_coders directories (e.g., coder-001, coder-002, coder-003)
-	// These will be mounted read-only into the architect container
+	// 5. Pre-create all agent workspace directories for container mounting
+	// Pre-create architect and PM directories first
+	config.LogInfo("📁 Pre-creating agent workspace directories...")
+	agentDirs := []string{"architect-001", "pm-001"}
+
+	// Add coder directories
 	if cfg.Agents != nil && cfg.Agents.MaxCoders > 0 {
-		config.LogInfo("📁 Pre-creating %d coder workspace directories...", cfg.Agents.MaxCoders)
 		for i := 1; i <= cfg.Agents.MaxCoders; i++ {
-			coderDir := filepath.Join(projectDir, fmt.Sprintf("coder-%03d", i))
-			if err := os.MkdirAll(coderDir, 0755); err != nil {
-				return fmt.Errorf("failed to create workspace directory %s: %w", coderDir, err)
-			}
+			agentDirs = append(agentDirs, fmt.Sprintf("coder-%03d", i))
 		}
-		config.LogInfo("✅ Created %d coder workspace directories", cfg.Agents.MaxCoders)
 	}
+
+	// Create all directories
+	for _, dir := range agentDirs {
+		agentPath := filepath.Join(projectDir, dir)
+		if err := os.MkdirAll(agentPath, 0755); err != nil {
+			return fmt.Errorf("failed to create workspace directory %s: %w", dir, err)
+		}
+	}
+	config.LogInfo("✅ Created %d agent workspace directories", len(agentDirs))
 
 	config.LogInfo("✅ Project infrastructure verification completed for %s", projectDir)
 	return nil
@@ -355,41 +355,4 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 }
 
 // extractRepoName extracts the repository name from a Git URL.
-func extractRepoName(repoURL string) string {
-	// Remove .git suffix if present
-	repoURL = strings.TrimSuffix(repoURL, ".git")
-
-	// Extract the last path component
-	parts := strings.Split(repoURL, "/")
-	if len(parts) == 0 {
-		return "repo"
-	}
-
-	repoName := parts[len(parts)-1]
-	if repoName == "" {
-		return "repo"
-	}
-
-	return repoName
-}
-
-// cloneGitMirror creates a bare git mirror clone of the repository.
-func cloneGitMirror(repoURL, mirrorPath string) error {
-	cmd := exec.Command("git", "clone", "--mirror", repoURL, mirrorPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git clone --mirror failed: %w\nOutput: %s", err, string(output))
-	}
-	return nil
-}
-
-// updateGitMirror updates an existing bare mirror repository.
-func updateGitMirror(mirrorPath string) error {
-	cmd := exec.Command("git", "remote", "update")
-	cmd.Dir = mirrorPath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
-	}
-	return nil
-}
+// Mirror management functions have been moved to pkg/mirror package
