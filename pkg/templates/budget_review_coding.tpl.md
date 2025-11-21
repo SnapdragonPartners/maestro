@@ -111,14 +111,20 @@ The budget review request includes automated detection of universal failure patt
 - Story requirements cannot be met with current resources
 - **Effect**: Terminate task and transition to ERROR state
 
-## Response Format
+## Submitting Your Decision
 
-```json
-{
-  "status": "APPROVED|NEEDS_CHANGES|REJECTED",
-  "feedback": "Specific guidance on how to proceed with implementation (used when NEEDS_CHANGES)",
-  "reasoning": "Why you made this decision based on the evidence"
-}
+Use the `review_complete` tool to submit your decision:
+
+**Parameters:**
+- `status` (required): Must be one of: APPROVED, NEEDS_CHANGES, or REJECTED
+- `feedback` (required): Specific guidance explaining your decision and how to proceed
+
+**Example:**
+```
+review_complete({
+  "status": "NEEDS_CHANGES",
+  "feedback": "You're stuck in a build loop. The approved plan says to use 'make build' but you keep trying 'go build'. Follow the plan: run 'make build' to build the project."
+})
 ```
 
 **Important**: When using NEEDS_CHANGES from CODING state, the agent will return to CODING (not PLANNING) with your feedback guidance. Provide concrete implementation guidance that helps the agent proceed with coding tasks.

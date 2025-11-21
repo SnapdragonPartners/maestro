@@ -3,8 +3,13 @@ package agent
 import (
 	"context"
 
+	"orchestrator/pkg/agent/internal/core"
 	"orchestrator/pkg/proto"
 )
+
+// StateData is a type alias for state data maps.
+// This allows external packages (like tests) to use the correct type.
+type StateData = core.StateData
 
 // Driver represents a generic agent driver interface.
 type Driver interface {
@@ -22,7 +27,7 @@ type Driver interface {
 	GetCurrentState() proto.State
 
 	// GetStateData returns a copy of the current state data.
-	GetStateData() map[string]any
+	GetStateData() core.StateData
 
 	// GetAgentType returns the type of the agent.
 	GetAgentType() Type

@@ -43,11 +43,10 @@ const (
 //
 //nolint:govet // fieldalignment: keeping current field order for code clarity
 type Coder struct {
-	*agent.BaseStateMachine // Directly embed state machine
+	*agent.BaseStateMachine // Directly embed state machine (provides llmClient field)
 	agentConfig             *agent.Config
 	agentID                 string
 	contextManager          *contextmgr.ContextManager
-	llmClient               agent.LLMClient
 	renderer                *templates.Renderer
 	logger                  *logx.Logger
 	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
@@ -470,13 +469,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	default:
 	}
 
-	// Create basic LLM client from shared factory (no metrics context yet, need coder instance first)
-	llmClient, err := llmFactory.CreateClient(agent.TypeCoder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
-	}
-
-	// Create basic coder - use helper to inline the basic construction
+	// Create coder without LLM client first (chicken-and-egg: client needs coder as StateProvider)
 	logger := logx.NewLogger(agentID)
 
 	// Validate work directory exists
@@ -532,7 +525,6 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		agentConfig:         agentCfg,
 		agentID:             agentID,
 		contextManager:      contextmgr.NewContextManagerWithModel(modelName),
-		llmClient:           llmClient,
 		renderer:            renderer,
 		workDir:             workDir,
 		originalWorkDir:     workDir,
@@ -554,15 +546,15 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		logger.Info("💬 Chat injection configured for coder %s", agentID)
 	}
 
-	// Now that we have the coder (StateProvider), create enhanced client with metrics context
+	// Now that we have the coder (StateProvider), create LLM client with full middleware
 	// Use the shared factory to ensure proper rate limiting
-	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
+	llmClient, err := llmFactory.CreateClientWithContext(agent.TypeCoder, coder, coder.logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create enhanced coder LLM client: %w", err)
+		return nil, fmt.Errorf("failed to create coder LLM client: %w", err)
 	}
 
-	// Replace the client with the enhanced version (no middleware wrapper needed)
-	coder.llmClient = enhancedClient
+	// Set the LLM client
+	coder.SetLLMClient(llmClient)
 
 	// Set the clone manager.
 	coder.cloneManager = cloneManager
@@ -573,35 +565,6 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	}
 
 	return coder, nil
-}
-
-// handleLLMResponse handles LLM responses with proper empty response logic (same as architect).
-func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
-	if resp.Content != "" {
-		// Case 1: Normal response with content
-		c.contextManager.AddAssistantMessage(resp.Content)
-		// Clear empty response flag on successful response
-		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
-		return nil
-	}
-
-	if len(resp.ToolCalls) > 0 {
-		// Case 2: Pure tool use - add placeholder for conversational continuity
-		toolNames := make([]string, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolNames[i] = resp.ToolCalls[i].Name
-		}
-		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
-		c.contextManager.AddAssistantMessage(placeholder)
-		// Clear empty response flag on successful response with tool calls
-		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
-		return nil
-	}
-
-	// Case 3: True empty response - this is an error condition
-	// DO NOT add any message to context - let upstream handle the error
-	c.logger.Error("🚨 TRUE EMPTY RESPONSE: No content and no tool calls")
-	return logx.Errorf("LLM returned empty response with no content and no tool calls")
 }
 
 // getRecentToolActivity returns a summary of the last N tool calls and their results.
@@ -1009,11 +972,6 @@ func (c *Coder) GetContextSummary() string {
 	return summary
 }
 
-// GetStateData returns the current state data.
-func (c *Coder) GetStateData() map[string]any {
-	return c.BaseStateMachine.GetStateData()
-}
-
 // GetStoryID returns the current story ID from agent state.
 // Implements StateProvider interface for metrics collection.
 func (c *Coder) GetStoryID() string {
@@ -1100,9 +1058,22 @@ func (c *Coder) Shutdown(ctx context.Context) error {
 
 // Initialize sets up the coder and loads any existing state (required for Driver interface).
 func (c *Coder) Initialize(ctx context.Context) error {
+	// Validate BaseStateMachine is set
+	if c.BaseStateMachine == nil {
+		return fmt.Errorf("coder %s: BaseStateMachine not initialized", c.GetID())
+	}
+
+	// Verify state notification channel is set on BaseStateMachine
+	// This is critical for state transitions to be properly tracked
+	if !c.BaseStateMachine.HasStateNotificationChannel() {
+		c.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
+	}
+
 	if err := c.BaseStateMachine.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize coder state machine: %w", err)
 	}
+
+	c.logger.Info("Coder %s initialized in state: %s", c.GetID(), c.GetCurrentState())
 	return nil
 }
 

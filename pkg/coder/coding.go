@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -121,10 +122,10 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	c.logger.Info("🧑‍💻 Starting coding phase for story_type '%s'", storyType)
 
 	// Use toolloop for LLM iteration with coding tools
-	loop := toolloop.New(c.llmClient, c.logger)
+	loop := toolloop.New(c.LLMClient, c.logger)
 
 	//nolint:dupl // Similar config in planning.go - intentional per-state configuration
-	cfg := &toolloop.Config{
+	cfg := &toolloop.Config[CodingResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   c.codingToolProvider,
@@ -135,28 +136,48 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkCodingTerminal(ctx, sm, calls, results)
 		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			c.logger.Info("⚠️  Coding reached max iterations, triggering budget review")
-			budgetEff := effect.NewBudgetReviewEffect(
-				fmt.Sprintf("Maximum coding iterations (%d) reached", maxCodingIterations),
-				"Coding workflow needs additional iterations to complete",
-				string(StateCoding),
-			)
-			// Set story ID for dispatcher validation
-			budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
-			sm.SetStateData("budget_review_effect", budgetEff)
-			return string(StateBudgetReview), nil
+		ExtractResult: ExtractCodingResult,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
+			SoftLimit: maxCodingIterations - 2, // Warn 2 iterations before limit
+			HardLimit: maxCodingIterations,
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				c.logger.Info("⚠️  Coding reached max iterations (%d, key: %s), triggering budget review", count, key)
+				budgetEff := effect.NewBudgetReviewEffect(
+					fmt.Sprintf("Maximum coding iterations (%d) reached", maxCodingIterations),
+					"Coding workflow needs additional iterations to complete",
+					string(StateCoding),
+				)
+				// Set story ID for dispatcher validation
+				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
+				sm.SetStateData("budget_review_effect", budgetEff)
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
+			},
 		},
 	}
 
-	signal, err := loop.Run(ctx, cfg)
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
+		// Check if this is an iteration limit error (normal escalation path)
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// OnHardLimit already stored BudgetReviewEffect in state
+			c.logger.Info("📊 Iteration limit reached (%d iterations), transitioning to BUDGET_REVIEW", iterErr.Iteration)
+			return StateBudgetReview, false, nil
+		}
+
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(err) {
 			req := agent.CompletionRequest{MaxTokens: 8192}
 			return c.handleEmptyResponseError(sm, prompt, req, StateCoding)
 		}
 		return proto.StateError, false, logx.Wrap(err, "toolloop execution failed")
+	}
+
+	// Log extracted result for visibility
+	if len(result.TodosCompleted) > 0 {
+		c.logger.Info("✅ Coding iteration completed %d todos", len(result.TodosCompleted))
 	}
 
 	// Handle terminal signals
@@ -181,6 +202,50 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 func (c *Coder) checkCodingTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, _ []any) string {
 	for i := range calls {
 		toolCall := &calls[i]
+
+		// Handle todo_complete tool - mark todo as complete
+		if toolCall.Name == tools.ToolTodoComplete {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+
+			if err := c.handleTodoComplete(sm, index); err != nil {
+				c.logger.Error("📋 [TODO] Failed to complete todo: %v", err)
+				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error completing todo: %v", err))
+				continue
+			}
+
+			if index == -1 {
+				c.contextManager.AddMessage("tool", "Current todo marked complete, advanced to next todo")
+			} else {
+				c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d marked complete", index))
+			}
+			continue
+		}
+
+		// Handle todo_update tool - update or remove todo by index
+		if toolCall.Name == tools.ToolTodoUpdate {
+			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
+			description := utils.GetMapFieldOr[string](toolCall.Parameters, "description", "")
+
+			if index < 0 {
+				c.logger.Error("📋 [TODO] todo_update called with invalid index")
+				c.contextManager.AddMessage("tool-error", "Error: valid index required for todo_update")
+				continue
+			}
+
+			if err := c.handleTodoUpdate(sm, index, description); err != nil {
+				c.logger.Error("📋 [TODO] Failed to update todo: %v", err)
+				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error updating todo: %v", err))
+				continue
+			}
+
+			action := "updated"
+			if description == "" {
+				action = "removed"
+			}
+			c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d %s", index, action))
+			c.logger.Info("✏️  Todo at index %d %s", index, action)
+			continue
+		}
 
 		// Check for ask_question tool - transition to QUESTION state
 		if toolCall.Name == tools.ToolAskQuestion {
@@ -277,8 +342,8 @@ func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt stri
 	sm.SetStateData(KeyOrigin, string(originState))
 	sm.SetStateData("budget_review_effect", budgetReviewEff)
 
-	// Add requesting permission message to preserve alternation
-	c.contextManager.AddAssistantMessage("requesting permission to continue")
+	// Note: Don't add fabricated assistant messages - only LLM responses should be assistant messages
+	// The context will naturally have proper alternation from the previous LLM call
 
 	c.logger.Info("🧑‍💻 Empty response in %s - escalating to budget review", originState)
 	return StateBudgetReview, false, nil

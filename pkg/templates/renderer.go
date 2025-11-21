@@ -99,6 +99,8 @@ const (
 
 	// PlanApprovalRequestTemplate is the template for plan approval request content (coder → architect).
 	PlanApprovalRequestTemplate StateTemplate = "plan_approval_request.tpl.md"
+	// PlanReviewArchitectTemplate is the template for architect's plan review prompt.
+	PlanReviewArchitectTemplate StateTemplate = "plan_review_architect.tpl.md"
 	// CodeReviewRequestTemplate is the template for code review request content.
 	CodeReviewRequestTemplate StateTemplate = "code_review_request.tpl.md"
 	// CompletionRequestTemplate is the template for completion request content.
@@ -176,6 +178,7 @@ func NewRenderer() (*Renderer, error) {
 		DevOpsCodeReviewTemplate,
 		// Request content templates (coder → architect).
 		PlanApprovalRequestTemplate,
+		PlanReviewArchitectTemplate,
 		CodeReviewRequestTemplate,
 		CompletionRequestTemplate,
 		MergeRequestTemplate,

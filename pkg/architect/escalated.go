@@ -14,19 +14,22 @@ import (
 func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	d.logger.Info("🚨 Entered ESCALATED state - waiting for human guidance")
 
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get escalation context from state data
-	originState, ok := d.stateData["escalation_origin_state"].(string)
+	originState, ok := stateData["escalation_origin_state"].(string)
 	if !ok || originState == "" {
 		return StateError, fmt.Errorf("escalation_origin_state not found in state data")
 	}
 
-	iterationCount, ok := d.stateData["escalation_iteration_count"].(int)
+	iterationCount, ok := stateData["escalation_iteration_count"].(int)
 	if !ok {
 		iterationCount = 0 // Default if not found
 	}
 
-	requestID, _ := d.stateData["escalation_request_id"].(string)
-	storyID, _ := d.stateData["escalation_story_id"].(string)
+	requestID, _ := stateData["escalation_request_id"].(string)
+	storyID, _ := stateData["escalation_story_id"].(string)
 
 	// Check if chat service is available
 	if d.chatService == nil {
@@ -35,7 +38,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	}
 
 	// Check if we've already posted an escalation message
-	escalationMsgID, hasPosted := d.stateData["escalation_message_id"].(int64)
+	escalationMsgID, hasPosted := stateData["escalation_message_id"].(int64)
 
 	if !hasPosted {
 		// First time in ESCALATED state - post escalation message
@@ -54,14 +57,14 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 		}
 
 		escalationMsgID = resp.ID
-		d.stateData["escalation_message_id"] = escalationMsgID
-		d.stateData["escalated_at"] = time.Now()
+		d.SetStateData("escalation_message_id", escalationMsgID)
+		d.SetStateData("escalated_at", time.Now())
 
 		d.logger.Info("📢 Posted escalation message (id=%d) - waiting for human reply", escalationMsgID)
 	}
 
 	// Check escalation timeout (2 hours)
-	escalatedAt, _ := d.stateData["escalated_at"].(time.Time)
+	escalatedAt, _ := stateData["escalated_at"].(time.Time)
 	if !escalatedAt.IsZero() {
 		timeSinceEscalation := time.Since(escalatedAt)
 		if timeSinceEscalation > EscalationTimeout {
@@ -105,15 +108,15 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 
 	// Reset iteration counter for the origin state
 	originStateIterationKey := fmt.Sprintf("%s_iterations", originState)
-	d.stateData[originStateIterationKey] = 0
+	d.SetStateData(originStateIterationKey, 0)
 
-	// Clear escalation state data
-	delete(d.stateData, "escalation_message_id")
-	delete(d.stateData, "escalation_origin_state")
-	delete(d.stateData, "escalation_iteration_count")
-	delete(d.stateData, "escalation_request_id")
-	delete(d.stateData, "escalation_story_id")
-	delete(d.stateData, "escalated_at")
+	// Clear escalation state data (set to nil to clear)
+	d.SetStateData("escalation_message_id", nil)
+	d.SetStateData("escalation_origin_state", nil)
+	d.SetStateData("escalation_iteration_count", nil)
+	d.SetStateData("escalation_request_id", nil)
+	d.SetStateData("escalation_story_id", nil)
+	d.SetStateData("escalated_at", nil)
 
 	// Return to REQUEST state (where escalations originate from)
 	d.logger.Info("↩️  Returning to REQUEST state with human guidance")

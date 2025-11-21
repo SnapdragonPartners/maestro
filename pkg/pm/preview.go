@@ -15,9 +15,8 @@ func (d *Driver) handlePreview(ctx context.Context) (proto.State, error) {
 	d.logger.Debug("📋 PM in PREVIEW state - waiting for user action")
 
 	// Verify we have a draft spec in state data
-	d.mu.RLock()
-	draftSpec, ok := d.stateData["draft_spec_markdown"].(string)
-	d.mu.RUnlock()
+	stateData := d.GetStateData()
+	draftSpec, ok := stateData["draft_spec_markdown"].(string)
 
 	if !ok || draftSpec == "" {
 		d.logger.Error("❌ No draft spec found in state data")

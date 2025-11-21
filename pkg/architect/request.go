@@ -4,19 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
-	"orchestrator/pkg/agent/middleware/metrics"
-	"orchestrator/pkg/coder"
-	"orchestrator/pkg/config"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/contextmgr"
-	"orchestrator/pkg/git"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -38,66 +31,18 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// State: processing coder request
 
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get the current request from state data.
-	requestMsg, exists := d.stateData["current_request"].(*proto.AgentMsg)
+	requestMsg, exists := stateData[StateKeyCurrentRequest].(*proto.AgentMsg)
 	if !exists || requestMsg == nil {
 		return StateError, fmt.Errorf("no current request found")
 	}
 
 	// Persist request to database (fire-and-forget)
 	if d.persistenceChannel != nil {
-		agentRequest := &persistence.AgentRequest{
-			ID:        requestMsg.ID,
-			FromAgent: requestMsg.FromAgent,
-			ToAgent:   requestMsg.ToAgent,
-			CreatedAt: requestMsg.Timestamp,
-		}
-
-		// Extract story_id from metadata
-		if storyIDStr, exists := requestMsg.Metadata["story_id"]; exists {
-			agentRequest.StoryID = &storyIDStr
-		}
-
-		// Set request type and content based on unified REQUEST protocol
-		if requestMsg.Type == proto.MsgTypeREQUEST {
-			agentRequest.RequestType = persistence.RequestTypeApproval
-
-			// Extract content from typed payload
-			if typedPayload := requestMsg.GetTypedPayload(); typedPayload != nil {
-				switch typedPayload.Kind {
-				case proto.PayloadKindQuestionRequest:
-					if q, err := typedPayload.ExtractQuestionRequest(); err == nil {
-						agentRequest.Content = q.Text
-					}
-				case proto.PayloadKindApprovalRequest:
-					if a, err := typedPayload.ExtractApprovalRequest(); err == nil {
-						agentRequest.Content = a.Content
-						approvalTypeStr := a.ApprovalType.String()
-						agentRequest.ApprovalType = &approvalTypeStr
-						if a.Reason != "" {
-							agentRequest.Reason = &a.Reason
-						}
-					}
-				}
-			}
-		}
-
-		// Set correlation ID from metadata
-		if correlationIDStr, exists := requestMsg.Metadata["correlation_id"]; exists {
-			agentRequest.CorrelationID = &correlationIDStr
-		}
-		if correlationIDStr, exists := requestMsg.Metadata["question_id"]; exists {
-			agentRequest.CorrelationID = &correlationIDStr
-		}
-		if correlationIDStr, exists := requestMsg.Metadata["approval_id"]; exists {
-			agentRequest.CorrelationID = &correlationIDStr
-		}
-
-		// Set parent message ID
-		if requestMsg.ParentMsgID != "" {
-			agentRequest.ParentMsgID = &requestMsg.ParentMsgID
-		}
-
+		agentRequest := buildAgentRequestFromMsg(requestMsg)
 		d.persistenceChannel <- &persistence.Request{
 			Operation: persistence.OpUpsertAgentRequest,
 			Data:      agentRequest,
@@ -120,7 +65,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		switch requestKind {
 		case proto.RequestKindQuestion:
 			// Use iterative question handling if we have LLM and executor
-			if d.llmClient != nil && d.executor != nil {
+			if d.LLMClient != nil && d.executor != nil {
 				response, err = d.handleIterativeQuestion(ctx, requestMsg)
 			} else {
 				response, err = d.handleQuestionRequest(ctx, requestMsg)
@@ -166,80 +111,23 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		}
 
 		// Store the response in state data for merge success detection
-		d.stateData["last_response"] = response
+		d.SetStateData(StateKeyLastResponse, response)
 
 		// Persist response to database (fire-and-forget)
 		if d.persistenceChannel != nil {
-			agentResponse := &persistence.AgentResponse{
-				ID:        response.ID,
-				FromAgent: response.FromAgent,
-				ToAgent:   response.ToAgent,
-				CreatedAt: response.Timestamp,
-			}
+			agentResponse := buildAgentResponseFromMsg(requestMsg, response)
 
-			// Set request ID for correlation
-			agentResponse.RequestID = &requestMsg.ID
-
-			// Extract story_id from metadata
-			if storyIDStr, exists := response.Metadata["story_id"]; exists {
-				agentResponse.StoryID = &storyIDStr
-			} else if storyIDStr, exists := requestMsg.Metadata["story_id"]; exists {
-				// Fallback to request message story_id
-				agentResponse.StoryID = &storyIDStr
-			}
-
-			// Set response type and content based on message type
-			switch response.Type {
-			case proto.MsgTypeRESPONSE:
-				// Handle unified RESPONSE protocol with typed payloads
-				responseKind, hasKind := proto.GetResponseKind(response)
-				if hasKind {
-					switch responseKind {
-					case proto.ResponseKindQuestion:
-						agentResponse.ResponseType = persistence.ResponseTypeAnswer
-						if typedPayload := response.GetTypedPayload(); typedPayload != nil {
-							if q, err := typedPayload.ExtractQuestionResponse(); err == nil {
-								agentResponse.Content = q.AnswerText
-							}
-						}
-					case proto.ResponseKindApproval, proto.ResponseKindExecution, proto.ResponseKindMerge, proto.ResponseKindRequeue:
-						agentResponse.ResponseType = persistence.ResponseTypeResult
-					default:
-						agentResponse.ResponseType = persistence.ResponseTypeResult
-					}
-				} else {
-					agentResponse.ResponseType = persistence.ResponseTypeResult
-				}
-
-				// Extract approval response if present
+			// Log warning if status validation failed (mapper silently ignores invalid statuses)
+			if agentResponse.Status == nil {
 				if typedPayload := response.GetTypedPayload(); typedPayload != nil {
 					if typedPayload.Kind == proto.PayloadKindApprovalResponse {
 						if result, err := typedPayload.ExtractApprovalResponse(); err == nil {
-							// Content contains the feedback/response text
-							agentResponse.Content = result.Feedback
-
-							// Validate status against CHECK constraint
-							if validStatus, valid := proto.ValidateApprovalStatus(string(result.Status)); valid {
-								validStatusStr := string(validStatus)
-								agentResponse.Status = &validStatusStr
-							} else {
+							if _, valid := proto.ValidateApprovalStatus(string(result.Status)); !valid {
 								d.logger.Warn("Invalid approval status '%s' from ApprovalResult ignored", result.Status)
 							}
 						}
 					}
 				}
-			default:
-			}
-
-			// Set correlation ID from metadata
-			if correlationIDStr, exists := response.Metadata["correlation_id"]; exists {
-				agentResponse.CorrelationID = &correlationIDStr
-			}
-			if correlationIDStr, exists := response.Metadata["question_id"]; exists {
-				agentResponse.CorrelationID = &correlationIDStr
-			}
-			if correlationIDStr, exists := response.Metadata["approval_id"]; exists {
-				agentResponse.CorrelationID = &correlationIDStr
 			}
 
 			d.persistenceChannel <- &persistence.Request{
@@ -251,14 +139,18 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Response sent and persisted to database
 	}
 
+	// Get fresh state data after processing to see any changes made during request handling
+	// (GetStateData returns a copy, so the stateData variable from line 35 is stale)
+	stateData = d.GetStateData()
+
 	// Check if work was accepted (completion or merge)
 	var workWasAccepted bool
-	if accepted, exists := d.stateData["work_accepted"]; exists {
+	if accepted, exists := stateData[StateKeyWorkAccepted]; exists {
 		if acceptedBool, ok := accepted.(bool); ok && acceptedBool {
 			workWasAccepted = true
 			// Log the acceptance details for debugging
-			if storyID, exists := d.stateData["accepted_story_id"]; exists {
-				if acceptanceType, exists := d.stateData["acceptance_type"]; exists {
+			if storyID, exists := stateData[StateKeyAcceptedStoryID]; exists {
+				if acceptanceType, exists := stateData[StateKeyAcceptanceType]; exists {
 					d.logger.Info("🎉 Detected work acceptance for story %v via %v, transitioning to DISPATCHING to release dependent stories",
 						storyID, acceptanceType)
 				}
@@ -268,7 +160,7 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// Check if spec was approved and loaded (PM spec approval flow)
 	var specApprovedAndLoaded bool
-	if approved, exists := d.stateData["spec_approved_and_loaded"]; exists {
+	if approved, exists := stateData[StateKeySpecApprovedLoad]; exists {
 		if approvedBool, ok := approved.(bool); ok && approvedBool {
 			specApprovedAndLoaded = true
 			d.logger.Info("🎉 Spec approved and stories loaded, transitioning to DISPATCHING")
@@ -276,12 +168,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	}
 
 	// Clear the processed request and acceptance signals
-	delete(d.stateData, "current_request")
-	delete(d.stateData, "last_response")
-	delete(d.stateData, "work_accepted")
-	delete(d.stateData, "accepted_story_id")
-	delete(d.stateData, "acceptance_type")
-	delete(d.stateData, "spec_approved_and_loaded")
+	d.SetStateData("current_request", nil)
+	d.SetStateData("last_response", nil)
+	d.SetStateData("work_accepted", nil)
+	d.SetStateData("accepted_story_id", nil)
+	d.SetStateData("acceptance_type", nil)
+	d.SetStateData("spec_approved_and_loaded", nil)
 
 	// Determine next state:
 	// 1. Spec approval (PM flow) → DISPATCHING
@@ -320,15 +212,28 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	answer := "Auto-response: Question received and acknowledged. Please proceed with your implementation."
 
 	// If we have LLM client, use it for more intelligent responses.
-	if d.llmClient != nil {
+	if d.LLMClient != nil {
 		prompt := fmt.Sprintf("Answer this coding question: %s", question)
 
-		// Get LLM response using centralized helper
-		llmAnswer, err := d.callLLMWithTemplate(ctx, prompt)
-		if err != nil {
-		} else {
-			answer = llmAnswer
+		// Reset context for this question
+		templateName := fmt.Sprintf("question-%s", questionMsg.ID)
+		d.contextManager.ResetForNewTemplate(templateName, prompt)
+
+		// Use toolloop with submit_reply tool
+		_, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+			ContextManager: d.contextManager,
+			ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
+			CheckTerminal:  d.checkTerminalTools,
+			ExtractResult:  ExtractSubmitReply,
+			MaxIterations:  10,
+			MaxTokens:      agent.ArchitectMaxTokens,
+			AgentID:        d.architectID,
+		})
+
+		if err == nil {
+			answer = result.Response
 		}
+		// Silently fall back to auto-response on error
 	}
 
 	// Create RESPONSE using unified protocol.
@@ -342,13 +247,14 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	}
 
 	// Copy correlation ID and story_id to metadata
-	if correlationIDStr, exists := questionMsg.Metadata["correlation_id"]; exists {
-		answerPayload.Metadata["correlation_id"] = correlationIDStr
-		response.SetMetadata("correlation_id", correlationIDStr)
+	// Copy metadata using helpers
+	if correlationID := proto.GetCorrelationID(questionMsg); correlationID != "" {
+		answerPayload.Metadata[proto.KeyCorrelationID] = correlationID
+		proto.SetCorrelationID(response, correlationID)
 	}
-	if storyIDStr, exists := questionMsg.Metadata["story_id"]; exists {
-		answerPayload.Metadata["story_id"] = storyIDStr
-		response.SetMetadata("story_id", storyIDStr)
+	if storyID := proto.GetStoryID(questionMsg); storyID != "" {
+		answerPayload.Metadata[proto.KeyStoryID] = storyID
+		proto.SetStoryID(response, storyID)
 	}
 
 	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
@@ -371,19 +277,25 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	content := approvalPayload.Content
 	approvalType := approvalPayload.ApprovalType
-	approvalIDString := requestMsg.Metadata["approval_id"]
+	approvalIDString := proto.GetApprovalID(requestMsg)
 
 	// Check if this approval type should use iteration pattern
 	useIteration := approvalType == proto.ApprovalTypeCode || approvalType == proto.ApprovalTypeCompletion
 
 	// If using iteration and we have LLM and executor, use iterative review
-	if useIteration && d.llmClient != nil && d.executor != nil {
+	if useIteration && d.LLMClient != nil && d.executor != nil {
 		return d.handleIterativeApproval(ctx, requestMsg, approvalPayload)
 	}
 
 	// Handle spec review approval with spec review tools
-	if approvalType == proto.ApprovalTypeSpec && d.llmClient != nil {
+	if approvalType == proto.ApprovalTypeSpec && d.LLMClient != nil {
 		return d.handleSpecReview(ctx, requestMsg, approvalPayload)
+	}
+
+	// Handle single-turn reviews (Plan and BudgetReview) with review_complete tool
+	useSingleTurnReview := approvalType == proto.ApprovalTypePlan || approvalType == proto.ApprovalTypeBudgetReview
+	if useSingleTurnReview && d.LLMClient != nil {
+		return d.handleSingleTurnReview(ctx, requestMsg, approvalPayload)
 	}
 
 	// Approval request processing will be logged to database only
@@ -394,7 +306,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 		if planContent != "" {
 			// Extract story_id from metadata
-			storyIDStr := requestMsg.Metadata["story_id"]
+			storyIDStr := proto.GetStoryID(requestMsg)
 
 			// Debug logging for story_id validation
 			if storyIDStr == "" {
@@ -405,7 +317,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 			// Extract confidence if present
 			var confidenceStr *string
-			if conf, exists := approvalPayload.Metadata["confidence"]; exists && conf != "" {
+			if conf, exists := approvalPayload.Metadata[proto.KeyConfidence]; exists && conf != "" {
 				confidenceStr = &conf
 			}
 
@@ -428,73 +340,12 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		}
 	}
 
-	// For now, auto-approve all requests until LLM integration.
+	// Fallback: auto-approve if none of the proper toolloop-based handlers were triggered
+	// This should only happen in degraded scenarios (no LLM client or missing dependencies)
 	approved := true
-	feedback := "Auto-approved: Request looks good, please proceed."
-
-	// If we have LLM client, use it for more intelligent review.
-	if d.llmClient != nil {
-		var prompt string
-		switch approvalType {
-		case proto.ApprovalTypeCompletion:
-			// Use story-type-aware completion approval templates
-			prompt = d.generateCompletionApprovalPrompt(requestMsg, content)
-		case proto.ApprovalTypeCode:
-			// Use story-type-aware code review templates
-			prompt = d.generateCodeReviewApprovalPrompt(requestMsg, content)
-		case proto.ApprovalTypeBudgetReview:
-			prompt = d.generateBudgetReviewPrompt(requestMsg)
-		default:
-			prompt = fmt.Sprintf("Review this request: %v", content)
-		}
-
-		// Get LLM response using centralized helper
-		llmFeedback, err := d.callLLMWithTemplate(ctx, prompt)
-		if err != nil {
-		} else {
-			feedback = llmFeedback
-			// For completion requests, parse three-status response
-			if approvalType == proto.ApprovalTypeCompletion {
-				responseUpper := strings.ToUpper(feedback)
-				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
-					approved = false
-					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmFeedback // Use the full LLM response as feedback
-				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
-					approved = false
-					feedback = llmFeedback
-				}
-				// APPROVED or any other response defaults to approved = true
-			}
-			// For budget review requests, parse structured response
-			if approvalType == proto.ApprovalTypeBudgetReview {
-				responseUpper := strings.ToUpper(feedback)
-				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
-					approved = false
-					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmFeedback // Use the full LLM response as feedback
-				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
-					approved = false
-					feedback = llmFeedback
-				}
-				// APPROVED or any other response defaults to approved = true
-			}
-			// For code review requests, parse three-status response
-			if approvalType == proto.ApprovalTypeCode {
-				responseUpper := strings.ToUpper(feedback)
-				if strings.Contains(responseUpper, string(proto.ApprovalStatusNeedsChanges)) {
-					approved = false
-					// Store the specific status to preserve NEEDS_CHANGES vs REJECTED distinction
-					feedback = llmFeedback // Use the full LLM response as feedback
-				} else if strings.Contains(responseUpper, string(proto.ApprovalStatusRejected)) {
-					approved = false
-					feedback = llmFeedback
-				}
-				// APPROVED or any other response defaults to approved = true
-			}
-			// For other types, always approve in LLM mode for now.
-		}
-	}
+	feedback := "Auto-approved: Request looks good, please proceed (fallback mode - proper review handlers not available)."
+	d.logger.Warn("⚠️  Using auto-approve fallback for %s approval - proper toolloop-based handler not triggered (llmClient=%v, executor=%v)",
+		approvalType, d.LLMClient != nil, d.executor != nil)
 
 	// Plan approval completed - artifacts now tracked in database
 
@@ -638,11 +489,11 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 
 	// Copy story_id from request metadata for dispatcher validation
 	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		response.SetMetadata(proto.KeyStoryID, storyID)
+		proto.SetStoryID(response, storyID)
 	}
 
 	// Copy approval_id to metadata
-	response.SetMetadata("approval_id", approvalResult.ID)
+	proto.SetApprovalID(response, approvalResult.ID)
 
 	// Approval result will be logged to database only
 
@@ -652,7 +503,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 // handleRequeueRequest processes a REQUEUE message (fire-and-forget).
 func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *proto.AgentMsg) error {
 	// Extract story_id from metadata
-	storyIDStr := requeueMsg.Metadata["story_id"]
+	storyIDStr := proto.GetStoryID(requeueMsg)
 
 	if storyIDStr == "" {
 		return fmt.Errorf("requeue request missing story_id")
@@ -674,582 +525,64 @@ func (d *Driver) handleRequeueRequest(_ /* ctx */ context.Context, requeueMsg *p
 	return nil
 }
 
-// handleMergeRequest processes a merge REQUEST message and returns a RESULT.
-func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract merge request from typed payload
-	typedPayload := request.GetTypedPayload()
-	if typedPayload == nil {
-		return nil, fmt.Errorf("merge request message missing typed payload")
+// buildApprovalResponseFromReviewComplete builds an approval response from review_complete tool result.
+func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, statusStr, feedback string) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	storyID := proto.GetStoryID(requestMsg)
+
+	d.logger.Info("Building approval response: %s -> %s", approvalType, statusStr)
+
+	// Map string status to proto.ApprovalStatus
+	var status proto.ApprovalStatus
+	switch statusStr {
+	case "APPROVED":
+		status = proto.ApprovalStatusApproved
+	case "NEEDS_CHANGES":
+		status = proto.ApprovalStatusNeedsChanges
+	case "REJECTED":
+		status = proto.ApprovalStatusRejected
+	default:
+		// Should not happen due to tool validation, but handle gracefully
+		status = proto.ApprovalStatusNeedsChanges
+		d.logger.Warn("Unknown status %s, defaulting to NEEDS_CHANGES", statusStr)
 	}
 
-	mergePayload, err := typedPayload.ExtractGeneric()
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract merge request: %w", err)
+	if feedback == "" {
+		feedback = "Review completed via single-turn review"
 	}
 
-	// Extract fields from payload
-	prURLStr, _ := mergePayload["pr_url"].(string)
-	branchNameStr, _ := mergePayload["branch_name"].(string)
-
-	// Extract story_id from metadata
-	storyIDStr := request.Metadata["story_id"]
-
-	d.logger.Info("🔀 Processing merge request for story %s: PR=%s, branch=%s", storyIDStr, prURLStr, branchNameStr)
-
-	// Attempt merge using GitHub CLI.
-	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, branchNameStr, storyIDStr)
-
-	// Create RESPONSE using unified protocol.
-	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, request.FromAgent)
-	resultMsg.ParentMsgID = request.ID
-
-	// Copy story_id from request metadata for dispatcher validation
-	if storyID, exists := request.Metadata[proto.KeyStoryID]; exists {
-		resultMsg.SetMetadata(proto.KeyStoryID, storyID)
+	// Create approval result
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  proto.GetApprovalID(requestMsg),
+		Type:       approvalType,
+		Status:     status,
+		Feedback:   feedback,
+		ReviewedBy: d.architectID,
+		ReviewedAt: time.Now().UTC(),
 	}
 
-	// Build merge response payload (typed)
-	mergeResponsePayload := &proto.MergeResponsePayload{
-		Metadata: make(map[string]string),
-	}
-
-	if err != nil {
-		// Categorize error for appropriate response
-		status, feedback := d.categorizeMergeError(err)
-		d.logger.Error("🔀 Merge failed for story %s: %s (status: %s)", storyIDStr, err.Error(), status)
-
-		mergeResponsePayload.Status = string(status)
-		mergeResponsePayload.Feedback = feedback
-		if status == proto.ApprovalStatusNeedsChanges {
-			mergeResponsePayload.ErrorDetails = err.Error() // Preserve detailed error for debugging
-		}
-	} else if mergeResult != nil && mergeResult.HasConflicts {
-		// Merge conflicts are always recoverable
-		// Check if knowledge.dot is among the conflicting files and provide specific guidance
-		conflictFeedback := d.generateConflictGuidance(mergeResult.ConflictInfo)
-		d.logger.Warn("🔀 Merge conflicts for story %s: %s", storyIDStr, mergeResult.ConflictInfo)
-
-		mergeResponsePayload.Status = string(proto.ApprovalStatusNeedsChanges)
-		mergeResponsePayload.Feedback = conflictFeedback
-		mergeResponsePayload.ConflictDetails = mergeResult.ConflictInfo
-	} else {
-		// Success
-		d.logger.Info("🔀 Merge successful for story %s: commit %s", storyIDStr, mergeResult.CommitSHA)
-
-		mergeResponsePayload.Status = string(proto.ApprovalStatusApproved)
-		mergeResponsePayload.Feedback = "Pull request merged successfully"
-		mergeResponsePayload.MergeCommit = mergeResult.CommitSHA
-
-		// Update all dependent clones (architect, PM) to reflect the merge
-		cfg, cfgErr := config.GetConfig()
-		if cfgErr == nil {
-			registry := git.NewRegistry(d.workDir)
-			if updateErr := registry.UpdateDependentClones(ctx, cfg.Git.RepoURL, cfg.Git.TargetBranch, mergeResult.CommitSHA); updateErr != nil {
-				d.logger.Warn("⚠️  Failed to update dependent clones after merge: %v (merge succeeded, continuing)", updateErr)
-				// Don't fail the merge - it already succeeded. Clone updates can be retried later.
-			}
-		} else {
-			d.logger.Warn("⚠️  Failed to get config for clone updates: %v", cfgErr)
-		}
-
-		// Extract PR ID from URL for database storage
-		var prIDPtr *string
-		if prURLStr != "" {
-			prID := extractPRIDFromURL(prURLStr)
-			if prID != "" {
-				prIDPtr = &prID
-			}
-		}
-
-		// Prepare completion summary
-		completionSummary := fmt.Sprintf("Story completed via merge. PR: %s, Commit: %s", prURLStr, mergeResult.CommitSHA)
-
-		// Handle work acceptance (queue completion, database persistence, state transition signal)
-		d.handleWorkAccepted(ctx, storyIDStr, "merge", prIDPtr, &mergeResult.CommitSHA, &completionSummary)
-	}
-
-	// Set typed merge response payload
-	resultMsg.SetTypedPayload(proto.NewMergeResponsePayload(mergeResponsePayload))
-
-	return resultMsg, nil
-}
-
-// queryStoryMetrics retrieves metrics for a story from the internal metrics recorder.
-func (d *Driver) queryStoryMetrics(_ context.Context, storyID string) *metrics.StoryMetrics {
-	cfg, err := config.GetConfig()
-	if err != nil {
-		d.logger.Warn("📊 Failed to get config for metrics query: %v", err)
-		return nil
-	}
-
-	if cfg.Agents == nil || !cfg.Agents.Metrics.Enabled {
-		d.logger.Warn("📊 Metrics not enabled - skipping metrics query")
-		return nil
-	}
-
-	d.logger.Info("📊 Querying internal metrics for completed story %s", storyID)
-
-	// Get the internal metrics recorder (singleton)
-	recorder := metrics.NewInternalRecorder()
-	storyMetrics := recorder.GetStoryMetrics(storyID)
-
-	if storyMetrics != nil {
-		d.logger.Info("📊 Story %s metrics: prompt tokens: %d, completion tokens: %d, total tokens: %d, total cost: $%.6f",
-			storyID, storyMetrics.PromptTokens, storyMetrics.CompletionTokens, storyMetrics.TotalTokens, storyMetrics.TotalCost)
-	} else {
-		d.logger.Warn("📊 No metrics found for story %s", storyID)
-	}
-
-	return storyMetrics
-}
-
-// extractPRIDFromURL extracts the PR number from a GitHub PR URL.
-func extractPRIDFromURL(prURL string) string {
-	// Extract PR number from URLs like:
-	// https://github.com/owner/repo/pull/123
-	// https://api.github.com/repos/owner/repo/pulls/123
-	parts := strings.Split(prURL, "/")
-	if len(parts) > 0 {
-		// Get the last part which should be the PR number
-		lastPart := parts[len(parts)-1]
-		// Validate it's numeric
-		if _, err := strconv.Atoi(lastPart); err == nil {
-			return lastPart
-		}
-	}
-	return ""
-}
-
-// MergeAttemptResult represents the result of a merge attempt.
-//
-//nolint:govet // Simple result struct, logical grouping preferred
-type MergeAttemptResult struct {
-	HasConflicts bool
-	ConflictInfo string
-	CommitSHA    string
-}
-
-// generateConflictGuidance creates detailed guidance for resolving merge conflicts.
-// Provides specific instructions for knowledge.dot conflicts.
-func (d *Driver) generateConflictGuidance(conflictInfo string) string {
-	hasKnowledgeConflict := strings.Contains(conflictInfo, ".maestro/knowledge.dot") || strings.Contains(conflictInfo, "knowledge.dot")
-
-	if hasKnowledgeConflict {
-		return `Merge conflicts detected, including in the knowledge graph.
-
-**KNOWLEDGE GRAPH CONFLICT RESOLUTION**
-
-The knowledge graph (.maestro/knowledge.dot) has conflicts. Please resolve carefully:
-
-1. **Pull the latest main branch**:
-   ` + "`" + `git pull origin main` + "`" + `
-
-2. **Open .maestro/knowledge.dot and resolve conflicts**:
-   - **Keep all unique nodes from both branches** (no data loss)
-   - **For duplicate node IDs with different content**:
-     * Prefer status='current' over 'deprecated' or 'legacy'
-     * Merge complementary descriptions if both add value
-     * Choose the more specific/detailed example
-     * Use the higher priority value (critical > high > medium > low)
-   - **Preserve all unique edges** (relationships)
-   - **Remove conflict markers** (<<<<<<, =======, >>>>>>>)
-   - **Ensure valid DOT syntax** after resolution
-
-3. **Validate the merged file**:
-   - Check that all nodes have required fields (type, level, status, description)
-   - Verify all enum values are correct (see schema in DOC_GRAPH.md)
-   - Ensure edge references point to existing nodes
-   - Confirm DOT syntax is valid (no trailing commas, balanced braces)
-
-4. **Commit and push**:
-   ` + "`" + `git add .maestro/knowledge.dot` + "`" + `
-   ` + "`" + `git commit -m "Resolved knowledge graph conflicts"` + "`" + `
-   ` + "`" + `git push` + "`" + `
-
-5. **Resubmit the PR** for review
-
-The knowledge graph is critical for architectural consistency. Take time to merge thoughtfully.
-
-**OTHER CONFLICTS**:
-` + conflictInfo
-	}
-
-	// Standard conflict message for non-knowledge files
-	return fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit:\n\n%s", conflictInfo)
-}
-
-// attemptPRMerge attempts to merge a PR using GitHub CLI.
-func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID string) (*MergeAttemptResult, error) {
-	// Use gh CLI to merge PR with squash strategy and branch deletion.
-	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	d.logger.Debug("🔀 Checking GitHub CLI availability")
-	// Check if gh is available.
-	if _, err := exec.LookPath("gh"); err != nil {
-		d.logger.Error("🔀 GitHub CLI not found in PATH: %v", err)
-		return nil, fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
-	}
-
-	// If no PR URL provided, use branch name to find or create the PR.
-	var cmd *exec.Cmd
-	var output []byte
-	var err error
-
-	if prURL == "" || prURL == " " {
-		if branchName == "" {
-			d.logger.Error("🔀 No PR URL or branch name provided for merge")
-			return nil, fmt.Errorf("no PR URL or branch name provided for merge")
-		}
-
-		d.logger.Info("🔀 Looking for existing PR for branch: %s", branchName)
-		// First, try to find an existing PR for this branch.
-		listCmd := exec.CommandContext(mergeCtx, "gh", "pr", "list", "--head", branchName, "--json", "number,url")
-		d.logger.Debug("🔀 Executing: %s", listCmd.String())
-		listOutput, listErr := listCmd.CombinedOutput()
-		d.logger.Debug("🔀 PR list output: %s", string(listOutput))
-
-		if listErr == nil && len(listOutput) > 0 && string(listOutput) != "[]" {
-			// Found existing PR, try to merge it.
-			d.logger.Info("🔀 Found existing PR, attempting merge for branch: %s", branchName)
-			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
-			d.logger.Debug("🔀 Executing merge: %s", cmd.String())
-			output, err = cmd.CombinedOutput()
-		} else {
-			// No PR found, create one first then merge.
-			d.logger.Info("🔀 No existing PR found, creating new PR for branch: %s", branchName)
-
-			// Create PR.
-			createCmd := exec.CommandContext(mergeCtx, "gh", "pr", "create",
-				"--title", fmt.Sprintf("Story merge: %s", storyID),
-				"--body", fmt.Sprintf("Automated merge for story %s", storyID),
-				"--base", "main",
-				"--head", branchName)
-			d.logger.Debug("🔀 Executing PR create: %s", createCmd.String())
-			createOutput, createErr := createCmd.CombinedOutput()
-			d.logger.Debug("🔀 PR create output: %s", string(createOutput))
-
-			if createErr != nil {
-				d.logger.Error("🔀 Failed to create PR for branch %s: %v\nOutput: %s", branchName, createErr, string(createOutput))
-				return nil, fmt.Errorf("failed to create PR for branch %s: %w\nOutput: %s", branchName, createErr, string(createOutput))
-			}
-
-			d.logger.Info("🔀 PR created successfully, now attempting merge")
-			// Now try to merge the newly created PR.
-			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
-			d.logger.Debug("🔀 Executing merge: %s", cmd.String())
-			output, err = cmd.CombinedOutput()
-		}
-	} else {
-		d.logger.Info("🔀 Attempting to merge PR URL: %s", prURL)
-		cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
-		d.logger.Debug("🔀 Executing merge: %s", cmd.String())
-		output, err = cmd.CombinedOutput()
-	}
-
-	d.logger.Debug("🔀 Merge command output: %s", string(output))
-	result := &MergeAttemptResult{}
-
-	if err != nil {
-		d.logger.Error("🔀 Merge command failed: %v\nOutput: %s", err, string(output))
-
-		// Check if error is due to merge conflicts.
-		outputStr := strings.ToLower(string(output))
-		if strings.Contains(outputStr, "conflict") || strings.Contains(outputStr, "merge conflict") {
-			d.logger.Warn("🔀 Merge conflicts detected: %s", string(output))
-			result.HasConflicts = true
-			result.ConflictInfo = string(output)
-			return result, nil // Not an error, just conflicts
-		}
-
-		// Other error (permissions, network, etc.).
-		return nil, fmt.Errorf("gh pr merge failed: %w\nOutput: %s", err, string(output))
-	}
-
-	d.logger.Info("🔀 Merge command completed successfully")
-	// Success - merge completed successfully
-
-	// TODO: Parse commit SHA from gh output if needed
-	result.CommitSHA = "merged" // Placeholder until we parse actual SHA
-
-	return result, nil
-}
-
-// categorizeMergeError categorizes a merge error into appropriate status and feedback.
-func (d *Driver) categorizeMergeError(err error) (proto.ApprovalStatus, string) {
-	errorStr := strings.ToLower(err.Error())
-
-	// Recoverable errors (NEEDS_CHANGES) - coder can potentially fix these
-	if strings.Contains(errorStr, "conflict") || strings.Contains(errorStr, "merge conflict") {
-		return proto.ApprovalStatusNeedsChanges, "Merge conflicts detected. Resolve conflicts and resubmit."
-	}
-	if strings.Contains(errorStr, "no pull request found") || strings.Contains(errorStr, "could not resolve to a pull request") {
-		return proto.ApprovalStatusNeedsChanges, "Pull request not found. Ensure the PR is created and accessible."
-	}
-	if strings.Contains(errorStr, "permission denied") || strings.Contains(errorStr, "forbidden") {
-		return proto.ApprovalStatusNeedsChanges, "Permission denied for merge. Check repository access and branch protection rules."
-	}
-	if strings.Contains(errorStr, "branch") && (strings.Contains(errorStr, "not found") || strings.Contains(errorStr, "does not exist")) {
-		return proto.ApprovalStatusNeedsChanges, "Branch not found. Ensure the branch exists and is pushed to remote."
-	}
-	if strings.Contains(errorStr, "network") || strings.Contains(errorStr, "timeout") || strings.Contains(errorStr, "connection") {
-		return proto.ApprovalStatusNeedsChanges, "Network error during merge. Please retry."
-	}
-	if strings.Contains(errorStr, "not mergeable") || strings.Contains(errorStr, "cannot be merged") {
-		return proto.ApprovalStatusNeedsChanges, "Pull request is not mergeable. Check for conflicts or required status checks."
-	}
-	if strings.Contains(errorStr, "required status check") || strings.Contains(errorStr, "check") {
-		return proto.ApprovalStatusNeedsChanges, "Required status checks not passing. Ensure all checks pass before merge."
-	}
-
-	// Unrecoverable errors (REJECTED) - fundamental issues
-	if strings.Contains(errorStr, "gh") && strings.Contains(errorStr, "not found") {
-		return proto.ApprovalStatusRejected, "GitHub CLI (gh) not available. Cannot perform merge operations."
-	}
-	if strings.Contains(errorStr, "not a git repository") || strings.Contains(errorStr, "repository") && strings.Contains(errorStr, "not found") {
-		return proto.ApprovalStatusRejected, "Git repository not properly configured. Cannot perform merge operations."
-	}
-	if strings.Contains(errorStr, "authentication failed") && strings.Contains(errorStr, "token") {
-		return proto.ApprovalStatusRejected, "GitHub authentication not configured. Cannot access repository."
-	}
-
-	// Default to NEEDS_CHANGES for unknown errors (safer to allow retry)
-	return proto.ApprovalStatusNeedsChanges, fmt.Sprintf("Merge failed with error: %s. Please investigate and retry.", err.Error())
-}
-
-// generateBudgetReviewPrompt creates an enhanced prompt for budget review requests using templates.
-func (d *Driver) generateBudgetReviewPrompt(requestMsg *proto.AgentMsg) string {
-	// Extract data from typed payload
-	typedPayload := requestMsg.GetTypedPayload()
-	if typedPayload == nil {
-		d.logger.Warn("Budget review request missing typed payload, using defaults")
-		return "Budget review request missing data"
-	}
-
-	payloadData, err := typedPayload.ExtractGeneric()
-	if err != nil {
-		d.logger.Warn("Failed to extract budget review payload: %v", err)
-		return "Budget review request data extraction failed"
-	}
-
-	// Extract fields with safe type assertions and defaults
-	storyID, _ := payloadData["story_id"].(string)
-	origin, _ := payloadData["origin"].(string)
-	loops, _ := payloadData["loops"].(int)
-	maxLoops, _ := payloadData["max_loops"].(int)
-	contextSize, _ := payloadData["context_size"].(int)
-	phaseTokens, _ := payloadData["phase_tokens"].(int)
-	phaseCostUSD, _ := payloadData["phase_cost_usd"].(float64)
-	totalLLMCalls, _ := payloadData["total_llm_calls"].(int)
-	recentActivity, _ := payloadData["recent_activity"].(string)
-	issuePattern, _ := payloadData["issue_pattern"].(string)
-
-	// Get story information from queue
-	var storyTitle, storyType, specContent, approvedPlan string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyType = story.StoryType
-			// For CODING state reviews, include the approved plan for context
-			if origin == string(coder.StateCoding) && story.ApprovedPlan != "" {
-				approvedPlan = story.ApprovedPlan
-			}
-			// TODO: For now, we add a placeholder for spec content
-			// In a future enhancement, we could fetch the actual spec content
-			// using the story.SpecID and the persistence channel
-			specContent = fmt.Sprintf("Spec ID: %s (full context available on request)", story.SpecID)
+	// Handle work acceptance for approved completions
+	if status == proto.ApprovalStatusApproved && approvalType == proto.ApprovalTypeCompletion {
+		if storyID != "" {
+			completionSummary := fmt.Sprintf("Story completed via single-turn review: %s", feedback)
+			d.handleWorkAccepted(ctx, storyID, "completion", nil, nil, &completionSummary)
 		}
 	}
 
-	// Fallback values
-	if storyTitle == "" {
-		storyTitle = "Unknown Story"
+	// Create response message
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+
+	// Copy story_id to response metadata
+	if storyID != "" {
+		proto.SetStoryID(response, storyID)
 	}
-	if storyType == "" {
-		storyType = defaultStoryType // default
-	}
-	if recentActivity == "" {
-		recentActivity = "No recent activity data available"
-	}
-	if issuePattern == "" {
-		issuePattern = "No issue pattern detected"
-	}
-	if specContent == "" {
-		specContent = "Spec context not available"
-	}
+	proto.SetApprovalID(response, approvalResult.ID)
 
-	// Select template based on current state
-	var templateName templates.StateTemplate
-	if origin == string(coder.StatePlanning) {
-		templateName = templates.BudgetReviewPlanningTemplate
-	} else {
-		templateName = templates.BudgetReviewCodingTemplate
-	}
-
-	// Create template data
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"StoryID":        storyID,
-			"StoryTitle":     storyTitle,
-			"StoryType":      storyType,
-			"CurrentState":   origin,
-			"Loops":          loops,
-			"MaxLoops":       maxLoops,
-			"ContextSize":    contextSize,
-			"PhaseTokens":    phaseTokens,
-			"PhaseCostUSD":   phaseCostUSD,
-			"TotalLLMCalls":  totalLLMCalls,
-			"RecentActivity": recentActivity,
-			"IssuePattern":   issuePattern,
-			"SpecContent":    specContent,
-			"ApprovedPlan":   approvedPlan, // Include approved plan for CODING state context
-		},
-	}
-
-	// Check if we have a renderer
-	if d.renderer == nil {
-		// Fallback to simple text if no renderer available
-		return fmt.Sprintf(`Budget Review Request
-
-Story: %s (ID: %s)
-Type: %s
-Current State: %s
-Budget Exceeded: %d/%d iterations
-
-Recent Activity:
-%s
-
-Issue Analysis:
-%s
-
-Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
-			storyTitle, storyID, storyType, origin, loops, maxLoops, recentActivity, issuePattern)
-	}
-
-	// Render template
-	prompt, err := d.renderer.Render(templateName, templateData)
-	if err != nil {
-		// Fallback to simple text
-		return fmt.Sprintf(`Budget Review Request
-
-Story: %s (ID: %s)  
-Type: %s
-Current State: %s
-Budget Exceeded: %d/%d iterations
-
-Recent Activity:
-%s
-
-Issue Analysis:
-%s
-
-Please review and provide guidance: APPROVED, NEEDS_CHANGES, or REJECTED with specific feedback.`,
-			storyTitle, storyID, storyType, origin, loops, maxLoops, recentActivity, issuePattern)
-	}
-
-	return prompt
-}
-
-// generateApprovalPrompt is a shared helper for story-type-aware approval prompts.
-func (d *Driver) generateApprovalPrompt(requestMsg *proto.AgentMsg, content any, appTemplate, devopsTemplate templates.StateTemplate, fallbackMsg string) string {
-	// Extract story ID from metadata to get story type from queue
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story type and knowledge pack from queue (defaults to app if not found)
-	storyType := defaultStoryType
-	knowledgePack := ""
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyType = story.StoryType
-			knowledgePack = story.KnowledgePack
-		}
-	}
-
-	// Select appropriate template based on story type
-	var templateName templates.StateTemplate
-	if storyType == storyTypeDevOps {
-		templateName = devopsTemplate
-	} else {
-		templateName = appTemplate
-	}
-
-	// Create template data
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Content":       content,
-			"KnowledgePack": knowledgePack,
-		},
-	}
-
-	// Add Dockerfile content for DevOps stories
-	if storyType == storyTypeDevOps {
-		if dockerfileContent := d.getDockerfileContent(); dockerfileContent != "" {
-			templateData.DockerfileContent = dockerfileContent
-		}
-	}
-
-	// Render template using the same pattern as other methods
-	if d.renderer == nil {
-		// Fallback to simple prompt if renderer not available
-		return fmt.Sprintf("%s: %v", fallbackMsg, content)
-	}
-
-	prompt, err := d.renderer.Render(templateName, templateData)
-	if err != nil {
-		d.logger.Error("Failed to render approval template: %v", err)
-		// Fallback to simple prompt
-		return fmt.Sprintf("%s: %v", fallbackMsg, content)
-	}
-
-	return prompt
-}
-
-// getDockerfileContent reads the current Dockerfile content from the locally mounted repository.
-func (d *Driver) getDockerfileContent() string {
-	// Get config to find Dockerfile path
-	cfg, err := config.GetConfig()
-	if err != nil {
-		d.logger.Debug("Failed to get config for Dockerfile path: %v", err)
-		return ""
-	}
-
-	// Determine Dockerfile path (default to "Dockerfile" if not configured)
-	dockerfilePath := "Dockerfile"
-	if cfg.Container != nil && cfg.Container.Dockerfile != "" {
-		dockerfilePath = cfg.Container.Dockerfile
-	}
-
-	// Try to read the Dockerfile from the configured project directory
-	// The architect has access to the locally mounted repository through workDir
-	if d.workDir == "" {
-		d.logger.Debug("Work directory not set, cannot read Dockerfile")
-		return ""
-	}
-
-	fullPath := filepath.Join(d.workDir, dockerfilePath)
-	content, err := os.ReadFile(fullPath)
-	if err != nil {
-		d.logger.Debug("Could not read Dockerfile at %s: %v", fullPath, err)
-		return ""
-	}
-
-	return string(content)
-}
-
-// generateCompletionApprovalPrompt creates a story-type-aware prompt for completion approval requests.
-func (d *Driver) generateCompletionApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
-	return d.generateApprovalPrompt(requestMsg, content,
-		templates.AppCompletionApprovalTemplate,
-		templates.DevOpsCompletionApprovalTemplate,
-		"Review this story completion claim")
-}
-
-// generateCodeReviewApprovalPrompt creates a story-type-aware prompt for code review approval requests.
-func (d *Driver) generateCodeReviewApprovalPrompt(requestMsg *proto.AgentMsg, content any) string {
-	return d.generateApprovalPrompt(requestMsg, content,
-		templates.AppCodeReviewTemplate,
-		templates.DevOpsCodeReviewTemplate,
-		"Review this code implementation")
+	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
+	return response, nil
 }
 
 // handleWorkAccepted handles the unified flow for work acceptance (completion or merge).
@@ -1336,15 +669,71 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	}
 
 	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)
-	d.stateData["work_accepted"] = true
-	d.stateData["accepted_story_id"] = storyID
-	d.stateData["acceptance_type"] = acceptanceType
+	d.SetStateData(StateKeyWorkAccepted, true)
+	d.SetStateData(StateKeyAcceptedStoryID, storyID)
+	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
 }
 
 // Response formatting methods using templates
 
-// getPlanApprovalResponse formats a plan approval response using templates.
-func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback string) string {
+// ResponseKind identifies the type of approval response for formatting.
+type ResponseKind string
+
+const (
+	// ResponseKindPlan represents plan approval responses.
+	ResponseKindPlan ResponseKind = "plan"
+	// ResponseKindCode represents code review responses.
+	ResponseKindCode ResponseKind = "code"
+	// ResponseKindCompletion represents completion review responses.
+	ResponseKindCompletion ResponseKind = "completion"
+	// ResponseKindBudget represents budget review responses.
+	ResponseKindBudget ResponseKind = "budget"
+)
+
+// responseFormatConfig defines template and fallback for each response kind.
+type responseFormatConfig struct {
+	template       templates.StateTemplate
+	fallbackPrefix string
+}
+
+// getResponseFormats returns the mapping of response kinds to their formatting configuration.
+// Defined as a function to avoid global variable linter warning.
+func getResponseFormats() map[ResponseKind]responseFormatConfig {
+	return map[ResponseKind]responseFormatConfig{
+		ResponseKindPlan: {
+			template:       templates.PlanApprovalResponseTemplate,
+			fallbackPrefix: "Plan Review",
+		},
+		ResponseKindCode: {
+			template:       templates.CodeReviewResponseTemplate,
+			fallbackPrefix: "Code Review",
+		},
+		ResponseKindCompletion: {
+			template:       templates.CompletionResponseTemplate,
+			fallbackPrefix: "Completion Review",
+		},
+		ResponseKindBudget: {
+			template:       templates.BudgetReviewResponseTemplate,
+			fallbackPrefix: "Budget Review",
+		},
+	}
+}
+
+// formatApprovalResponse formats an approval response using templates.
+// Consolidated formatter for all approval response types.
+func (d *Driver) formatApprovalResponse(
+	kind ResponseKind,
+	status proto.ApprovalStatus,
+	feedback string,
+	extra map[string]any,
+) string {
+	cfg, exists := getResponseFormats()[kind]
+	if !exists {
+		d.logger.Warn("Unknown response kind: %s, using generic format", kind)
+		return fmt.Sprintf("Review: %s\n\n%s", status, feedback)
+	}
+
+	// Build template data with status and feedback
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
 			"Status":   string(status),
@@ -1352,106 +741,58 @@ func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback s
 		},
 	}
 
-	if d.renderer == nil {
-		return fmt.Sprintf("Plan Review: %s\n\n%s", status, feedback)
+	// Merge any extra fields
+	for k, v := range extra {
+		templateData.Extra[k] = v
 	}
 
-	content, err := d.renderer.Render(templates.PlanApprovalResponseTemplate, templateData)
+	// Fallback format if no renderer
+	fallback := fmt.Sprintf("%s: %s\n\n%s", cfg.fallbackPrefix, status, feedback)
+
+	if d.renderer == nil {
+		return fallback
+	}
+
+	content, err := d.renderer.Render(cfg.template, templateData)
 	if err != nil {
-		d.logger.Warn("Failed to render plan approval response: %v", err)
-		return fmt.Sprintf("Plan Review: %s\n\n%s", status, feedback)
+		d.logger.Warn("Failed to render %s response: %v", kind, err)
+		return fallback
 	}
 
 	return content
+}
+
+// getPlanApprovalResponse formats a plan approval response using templates.
+func (d *Driver) getPlanApprovalResponse(status proto.ApprovalStatus, feedback string) string {
+	return d.formatApprovalResponse(ResponseKindPlan, status, feedback, nil)
 }
 
 // getCodeReviewResponse formats a code review response using templates.
 func (d *Driver) getCodeReviewResponse(status proto.ApprovalStatus, feedback string) string {
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Status":   string(status),
-			"Feedback": feedback,
-		},
-	}
-
-	if d.renderer == nil {
-		return fmt.Sprintf("Code Review: %s\n\n%s", status, feedback)
-	}
-
-	content, err := d.renderer.Render(templates.CodeReviewResponseTemplate, templateData)
-	if err != nil {
-		d.logger.Warn("Failed to render code review response: %v", err)
-		return fmt.Sprintf("Code Review: %s\n\n%s", status, feedback)
-	}
-
-	return content
+	return d.formatApprovalResponse(ResponseKindCode, status, feedback, nil)
 }
 
 // getCompletionResponse formats a completion review response using templates.
 func (d *Driver) getCompletionResponse(status proto.ApprovalStatus, feedback string) string {
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Status":   string(status),
-			"Feedback": feedback,
-		},
-	}
-
-	if d.renderer == nil {
-		return fmt.Sprintf("Completion Review: %s\n\n%s", status, feedback)
-	}
-
-	content, err := d.renderer.Render(templates.CompletionResponseTemplate, templateData)
-	if err != nil {
-		d.logger.Warn("Failed to render completion response: %v", err)
-		return fmt.Sprintf("Completion Review: %s\n\n%s", status, feedback)
-	}
-
-	return content
+	return d.formatApprovalResponse(ResponseKindCompletion, status, feedback, nil)
 }
 
 // getBudgetReviewResponse formats a budget review response using templates.
 func (d *Driver) getBudgetReviewResponse(status proto.ApprovalStatus, feedback, originState string) string {
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Status":      string(status),
-			"Feedback":    feedback,
-			"OriginState": originState,
-		},
-	}
-
-	if d.renderer == nil {
-		return fmt.Sprintf("Budget Review: %s\n\n%s", status, feedback)
-	}
-
-	content, err := d.renderer.Render(templates.BudgetReviewResponseTemplate, templateData)
-	if err != nil {
-		d.logger.Warn("Failed to render budget review response: %v", err)
-		return fmt.Sprintf("Budget Review: %s\n\n%s", status, feedback)
-	}
-
-	return content
+	return d.formatApprovalResponse(ResponseKindBudget, status, feedback, map[string]any{
+		"OriginState": originState,
+	})
 }
 
 // handleIterativeApproval processes approval requests with iterative code exploration.
 func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	approvalType := approvalPayload.ApprovalType
-	storyID := requestMsg.Metadata["story_id"]
+	storyID := proto.GetStoryID(requestMsg)
 
 	d.logger.Info("🔍 Starting iterative approval for %s (story: %s)", approvalType, storyID)
 
 	// Store story_id in state data for tool logging
-	d.stateData["current_story_id"] = storyID
-
-	// Check iteration limit
-	iterationKey := fmt.Sprintf("approval_iterations_%s", storyID)
-	if d.checkIterationLimit(iterationKey, StateRequest) {
-		d.logger.Error("❌ Hard iteration limit exceeded for approval %s - preparing escalation", storyID)
-		// Store additional escalation context
-		d.stateData["escalation_request_id"] = requestMsg.ID
-		d.stateData["escalation_story_id"] = storyID
-		// Signal escalation needed by returning sentinel error
-		return nil, ErrEscalationTriggered
-	}
+	d.SetStateData(StateKeyCurrentStoryID, storyID)
 
 	// Extract coder ID from request (sender)
 	coderID := requestMsg.FromAgent
@@ -1459,244 +800,156 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("approval request message missing sender (FromAgent)")
 	}
 
-	// Create tool provider rooted at coder's workspace (lazily, once per request)
-	toolProviderKey := fmt.Sprintf("tool_provider_%s", storyID)
-	var toolProvider *tools.ToolProvider
-	if tp, exists := d.stateData[toolProviderKey]; exists {
-		var ok bool
-		toolProvider, ok = tp.(*tools.ToolProvider)
-		if !ok {
-			return nil, fmt.Errorf("invalid tool provider type in state data")
-		}
-	} else {
-		// Create tool provider rooted at the coder's container workspace
-		toolProvider = d.createReadToolProviderForCoder(coderID)
-		d.stateData[toolProviderKey] = toolProvider
-		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
-	}
+	// Create tool provider rooted at coder's workspace
+	toolProvider := d.createReadToolProviderForCoder(coderID)
+	d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
 
 	// Build prompt based on approval type
 	var prompt string
 	switch approvalType {
 	case proto.ApprovalTypeCode:
-		prompt = d.generateIterativeCodeReviewPrompt(requestMsg, approvalPayload, coderID, toolProvider)
+		prompt = d.generateCodePrompt(requestMsg, approvalPayload, coderID, toolProvider)
 	case proto.ApprovalTypeCompletion:
-		prompt = d.generateIterativeCompletionPrompt(requestMsg, approvalPayload, coderID, toolProvider)
+		prompt = d.generateCompletionPrompt(requestMsg, approvalPayload, coderID, toolProvider)
 	default:
 		return nil, fmt.Errorf("unsupported iterative approval type: %s", approvalType)
 	}
 
-	// Reset context for this iteration (first iteration only)
-	iterationCount := 0
-	if val, exists := d.stateData[iterationKey]; exists {
-		if count, ok := val.(int); ok {
-			iterationCount = count
-		}
-	}
+	// Reset context for this approval
+	templateName := fmt.Sprintf("approval-%s-%s", approvalType, storyID)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
 
-	if iterationCount == 0 {
-		templateName := fmt.Sprintf("approval-%s-%s", approvalType, storyID)
-		d.contextManager.ResetForNewTemplate(templateName, prompt)
-	}
-
-	// Flush user buffer before LLM request
-	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-		return nil, fmt.Errorf("failed to flush user buffer: %w", err)
-	}
-
-	// Build messages with context
-	// Only pass prompt on first iteration - subsequent iterations use context history
-	var promptForMessages string
-	if iterationCount == 0 {
-		promptForMessages = prompt
-	}
-	messages := d.buildMessagesWithContext(promptForMessages)
-
-	// Get tool definitions for LLM
-	toolDefs := d.getArchitectToolsForLLM(toolProvider)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     toolDefs,
-	}
-
-	// Call LLM
-	d.logger.Info("🔄 Calling LLM for iterative approval (iteration %d)", iterationCount+1)
-	resp, err := d.llmClient.Complete(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("LLM completion failed: %w", err)
-	}
-
-	// Add assistant response to context with structured tool calls (same as PM pattern)
-	if len(resp.ToolCalls) > 0 {
-		// Use structured tool call tracking
-		// Convert agent.ToolCall to contextmgr.ToolCall
-		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolCalls[i] = contextmgr.ToolCall{
-				ID:         resp.ToolCalls[i].ID,
-				Name:       resp.ToolCalls[i].Name,
-				Parameters: resp.ToolCalls[i].Parameters,
+	// CheckTerminal: Look for submit_reply tool to get approval decision
+	checkTerminal := func(calls []agent.ToolCall, _ []any) string {
+		for i := range calls {
+			if calls[i].Name == tools.ToolSubmitReply {
+				// submit_reply tool was called - extract response from parameters
+				if response, ok := calls[i].Parameters["response"].(string); ok && response != "" {
+					// Store response for building approval result
+					d.SetStateData(StateKeySubmitReply, response)
+					return "SUBMIT_REPLY"
+				}
 			}
 		}
-		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
-	} else {
-		// No tool calls - just content
-		d.contextManager.AddAssistantMessage(resp.Content)
+		return "" // No terminal tool called, continue iteration
 	}
 
-	// Process tool calls
-	if len(resp.ToolCalls) > 0 {
-		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
-		if err != nil {
-			return nil, fmt.Errorf("tool processing failed: %w", err)
-		}
+	// Run toolloop for iterative approval with type-safe result extraction
+	signal, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+		ContextManager: d.contextManager,
+		ToolProvider:   toolProvider,
+		CheckTerminal:  checkTerminal,
+		ExtractResult:  ExtractSubmitReply,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("approval_%s", storyID),
+			SoftLimit: 8,  // Warn at 8 iterations
+			HardLimit: 16, // Escalate at 16 iterations
+			OnSoftLimit: func(count int) {
+				d.logger.Warn("⚠️  Approval iteration soft limit reached (%d iterations) for story %s", count, storyID)
+			},
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				d.logger.Error("❌ Approval iteration hard limit reached (%d iterations) for story %s - escalating", count, storyID)
+				d.logger.Info("Escalation key: %s", key)
+				// Set escalation state data for state machine
+				d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
+				d.SetStateData(StateKeyEscalationStoryID, storyID)
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
+			},
+		},
+		MaxIterations: 20, // Allow multiple inspection iterations
+		MaxTokens:     agent.ArchitectMaxTokens,
+		AgentID:       d.architectID,
+	})
 
-		// If submit_reply was called, use that response as the final decision
-		if submitResponse != "" {
-			d.logger.Info("✅ Architect submitted final decision via submit_reply")
-			return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, submitResponse)
+	if err != nil {
+		// Check if this is an iteration limit error (normal escalation path)
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// OnHardLimit already stored escalation state data
+			d.logger.Info("📊 Iteration limit reached (%d iterations), returning escalation sentinel", iterErr.Iteration)
+			return nil, ErrEscalationTriggered
 		}
-
-		// Otherwise, continue iteration (will be called again by state machine)
-		d.logger.Info("🔄 Tools executed, continuing iteration")
-		// Return nil response with no error to signal state machine to call us again
-		//nolint:nilnil // Intentional: nil response signals continuation, not an error
-		return nil, nil
+		return nil, fmt.Errorf("iterative approval failed: %w", err)
 	}
 
-	// No tool calls - nudge the LLM to use submit_reply tool
-	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
+	if signal != "SUBMIT_REPLY" {
+		return nil, fmt.Errorf("expected SUBMIT_REPLY signal, got: %s", signal)
+	}
 
-	// Increment iteration count before nudging
-	iterationCount++
-	d.stateData[iterationKey] = iterationCount
+	d.logger.Info("✅ Architect submitted final decision via submit_reply")
 
-	// Add nudge to context
-	nudgeMessage := "You must use the submit_reply tool to provide your decision. Please call submit_reply with your approval/rejection decision and reasoning."
-	d.contextManager.AddMessage("system", nudgeMessage)
+	// Clean up state data (submit_reply_response no longer stored)
+	d.SetStateData("current_story_id", nil)
 
-	// Return nil to signal continuation (state machine will call us again)
-	//nolint:nilnil // Intentional: nil response signals continuation after nudge
-	return nil, nil
+	// Build and return approval response
+	return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, result.Response)
 }
 
-// generateIterativeCodeReviewPrompt creates a prompt for iterative code review.
-//
-//nolint:dupl // Similar structure to completion prompt but intentionally different content
-func (d *Driver) generateIterativeCodeReviewPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	storyID := requestMsg.Metadata["story_id"]
+// handleSingleTurnReview handles single-turn approval reviews (Plan and BudgetReview)
+// that use the review_complete tool for structured responses.
+// Uses toolloop for retry/nudging and proper logging.
+func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	storyID := proto.GetStoryID(requestMsg)
 
-	// Get story info from queue for context
-	var storyTitle, storyContent string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyContent = story.Content
-		}
+	d.logger.Info("🔍 Starting single-turn review for %s (story: %s)", approvalType, storyID)
+
+	// Build prompt based on approval type
+	var prompt string
+	switch approvalType {
+	case proto.ApprovalTypePlan:
+		prompt = d.generatePlanPrompt(requestMsg, approvalPayload)
+	case proto.ApprovalTypeBudgetReview:
+		prompt = d.generateBudgetPrompt(requestMsg)
+	default:
+		return nil, fmt.Errorf("unsupported single-turn review type: %s", approvalType)
 	}
 
-	toolDocs := toolProvider.GenerateToolDocumentation()
+	// Reset context for this single-turn review
+	templateName := fmt.Sprintf("review-%s-%s", approvalType, storyID)
+	d.contextManager.ResetForNewTemplate(templateName, prompt)
 
-	return fmt.Sprintf(`# Code Review Request (Iterative)
-
-You are the architect reviewing code changes from %s for story: %s
-
-**Story Title:** %s
-**Story Content:**
-%s
-
-**Code Submission:**
-%s
-
-## Your Task
-
-Review the code changes by:
-1. Use **list_files** to see what files the coder modified
-2. Use **read_file** to inspect specific files that need review
-3. Use **get_diff** to see the actual changes made
-4. Analyze the code quality, correctness, and adherence to requirements
-
-**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
-
-## REQUIRED: Submit Your Decision
-
-**You MUST call the submit_reply tool to provide your final decision.** Do not respond with text only.
-
-Call **submit_reply** with your decision in this format:
-- **response**: Your complete decision as a string
-- Must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
-- Follow with specific feedback explaining your decision
-
-## Available Tools
-
-%s
-
-## Important Notes
-
-- You can explore the coder's workspace at /mnt/coders/%s
-- You have read-only access to all their files
-- Take your time to review thoroughly before submitting your decision
-- **Remember: You MUST use submit_reply to send your final decision**
-
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
-}
-
-// generateIterativeCompletionPrompt creates a prompt for iterative completion review.
-//
-//nolint:dupl // Similar structure to code review prompt but intentionally different content
-func (d *Driver) generateIterativeCompletionPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story info from queue for context
-	var storyTitle, storyContent string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyContent = story.Content
+	// CheckTerminal: Look for review_complete tool signal
+	checkTerminal := func(calls []agent.ToolCall, results []any) string {
+		for i := range calls {
+			if calls[i].Name == tools.ToolReviewComplete {
+				// review_complete tool was called - extract result and store in state
+				if resultMap, ok := results[i].(map[string]any); ok {
+					d.SetStateData(StateKeyReviewComplete, resultMap)
+					return signalReviewComplete
+				}
+			}
 		}
+		return "" // No terminal tool called
 	}
 
-	toolDocs := toolProvider.GenerateToolDocumentation()
+	// Run toolloop in single-turn mode with type-safe result extraction
+	signal, result, err := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
+		ContextManager: d.contextManager,
+		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewReviewCompleteTool()}),
+		CheckTerminal:  checkTerminal,
+		ExtractResult:  ExtractReviewComplete,
+		MaxIterations:  3, // Allow nudge retries
+		MaxTokens:      agent.ArchitectMaxTokens,
+		SingleTurn:     true, // Enforce single-turn completion
+		AgentID:        d.architectID,
+	})
 
-	return fmt.Sprintf(`# Story Completion Review Request (Iterative)
+	if err != nil {
+		return nil, fmt.Errorf("single-turn review failed: %w", err)
+	}
 
-You are the architect reviewing a completion request from %s for story: %s
+	if signal != signalReviewComplete {
+		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", signal)
+	}
 
-**Story Title:** %s
-**Story Content:**
-%s
+	d.logger.Info("✅ Single-turn review completed with status: %s", result.Status)
 
-**Completion Claim:**
-%s
+	// Clean up state data (review_complete_result no longer stored)
 
-## Your Task
-
-Verify the story is complete by:
-1. Use **list_files** to see what files were created/modified
-2. Use **read_file** to inspect the implementation
-3. Use **get_diff** to see all changes made vs main branch
-4. Verify all acceptance criteria are met
-
-**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
-
-When you have completed your review, call **submit_reply** with your decision:
-- Your response must start with one of: APPROVED, NEEDS_CHANGES, or REJECTED
-- Provide specific feedback on what's complete or what still needs work
-
-## Available Tools
-
-%s
-
-## Important Notes
-
-- You can explore the coder's workspace at /mnt/coders/%s
-- Verify the implementation matches the story requirements
-- Check for code quality, tests, documentation as needed
-- Be thorough but fair in your assessment
-
-Begin your review now.`, coderID, storyID, storyTitle, storyContent, approvalPayload.Content, coderID, coderID, toolDocs, coderID)
+	// Build and return approval response
+	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, result.Status, result.Feedback)
 }
 
 // getArchitectToolsForLLM converts tool metadata to LLM tool definitions.
@@ -1750,7 +1003,7 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 	// Create approval result
 	approvalResult := &proto.ApprovalResult{
 		ID:         proto.GenerateApprovalID(),
-		RequestID:  requestMsg.Metadata["approval_id"],
+		RequestID:  proto.GetApprovalID(requestMsg),
 		Type:       approvalPayload.ApprovalType,
 		Status:     status,
 		Feedback:   feedback,
@@ -1760,7 +1013,7 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 	// Handle work acceptance for approved completions
 	if status == proto.ApprovalStatusApproved && approvalPayload.ApprovalType == proto.ApprovalTypeCompletion {
-		storyID := requestMsg.Metadata["story_id"]
+		storyID := proto.GetStoryID(requestMsg)
 		if storyID != "" {
 			completionSummary := fmt.Sprintf("Story completed via iterative review: %s", feedback)
 			d.handleWorkAccepted(ctx, storyID, "completion", nil, nil, &completionSummary)
@@ -1774,9 +1027,9 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 	// Copy story_id to response metadata
 	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		response.SetMetadata(proto.KeyStoryID, storyID)
+		proto.SetStoryID(response, storyID)
 	}
-	response.SetMetadata("approval_id", approvalResult.ID)
+	proto.SetApprovalID(response, approvalResult.ID)
 
 	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
 	return response, nil
@@ -1784,6 +1037,9 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 // handleIterativeQuestion processes question requests with iterative code exploration.
 func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Extract question from typed payload
 	typedPayload := requestMsg.GetTypedPayload()
 	if typedPayload == nil {
@@ -1795,20 +1051,20 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("failed to extract question request: %w", err)
 	}
 
-	storyID := requestMsg.Metadata["story_id"]
+	storyID := proto.GetStoryID(requestMsg)
 
 	d.logger.Info("🔍 Starting iterative question handling (story: %s)", storyID)
 
 	// Store story_id in state data for tool logging
-	d.stateData["current_story_id"] = storyID
+	d.SetStateData(StateKeyCurrentStoryID, storyID)
 
 	// Check iteration limit
-	iterationKey := fmt.Sprintf("question_iterations_%s", requestMsg.ID)
+	iterationKey := fmt.Sprintf(StateKeyPatternQuestionIterations, requestMsg.ID)
 	if d.checkIterationLimit(iterationKey, StateRequest) {
 		d.logger.Error("❌ Hard iteration limit exceeded for question %s - preparing escalation", requestMsg.ID)
 		// Store additional escalation context
-		d.stateData["escalation_request_id"] = requestMsg.ID
-		d.stateData["escalation_story_id"] = storyID
+		d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
+		d.SetStateData(StateKeyEscalationStoryID, storyID)
 		// Signal escalation needed by returning sentinel error
 		return nil, ErrEscalationTriggered
 	}
@@ -1820,9 +1076,9 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Create tool provider rooted at coder's workspace (lazily, once per request)
-	toolProviderKey := fmt.Sprintf("tool_provider_%s", requestMsg.ID)
+	toolProviderKey := fmt.Sprintf(StateKeyPatternToolProvider, requestMsg.ID)
 	var toolProvider *tools.ToolProvider
-	if tp, exists := d.stateData[toolProviderKey]; exists {
+	if tp, exists := stateData[toolProviderKey]; exists {
 		var ok bool
 		toolProvider, ok = tp.(*tools.ToolProvider)
 		if !ok {
@@ -1831,16 +1087,16 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	} else {
 		// Create tool provider rooted at the coder's container workspace
 		toolProvider = d.createReadToolProviderForCoder(coderID)
-		d.stateData[toolProviderKey] = toolProvider
+		d.SetStateData(toolProviderKey, toolProvider)
 		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s", coderID, coderID)
 	}
 
 	// Build prompt for technical question
-	prompt := d.generateIterativeQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
+	prompt := d.generateQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
 
 	// Reset context for this iteration (first iteration only)
 	iterationCount := 0
-	if val, exists := d.stateData[iterationKey]; exists {
+	if val, exists := stateData[iterationKey]; exists {
 		if count, ok := val.(int); ok {
 			iterationCount = count
 		}
@@ -1875,7 +1131,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Call LLM
 	d.logger.Info("🔄 Calling LLM for iterative question (iteration %d)", iterationCount+1)
-	resp, err := d.llmClient.Complete(ctx, req)
+	resp, err := d.LLMClient.Complete(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
@@ -1922,7 +1178,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Increment iteration count before nudging
 	iterationCount++
-	d.stateData[iterationKey] = iterationCount
+	d.SetStateData(iterationKey, iterationCount)
 
 	// Add nudge to context
 	nudgeMessage := "You must use the submit_reply tool to provide your answer. Please call submit_reply with your response as the 'content' parameter."
@@ -1931,70 +1187,6 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Return nil to signal continuation (state machine will call us again)
 	//nolint:nilnil // Intentional: nil response signals continuation after nudge
 	return nil, nil
-}
-
-// generateIterativeQuestionPrompt creates a prompt for iterative technical question answering.
-//
-//nolint:dupl // Similar structure to other prompts but intentionally different content
-func (d *Driver) generateIterativeQuestionPrompt(requestMsg *proto.AgentMsg, questionPayload *proto.QuestionRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	storyID := requestMsg.Metadata["story_id"]
-
-	// Get story info from queue for context
-	var storyTitle, storyContent string
-	if storyID != "" && d.queue != nil {
-		if story, exists := d.queue.GetStory(storyID); exists {
-			storyTitle = story.Title
-			storyContent = story.Content
-		}
-	}
-
-	toolDocs := toolProvider.GenerateToolDocumentation()
-
-	return fmt.Sprintf(`# Technical Question from Coder (Iterative)
-
-You are the architect answering a technical question from %s working on story: %s
-
-**Story Title:** %s
-**Story Content:**
-%s
-
-**Question:**
-%s
-
-## Your Task
-
-Answer the technical question by:
-1. Use **list_files** to see what files exist in the coder's workspace
-2. Use **read_file** to inspect relevant code files that relate to the question
-3. Use **get_diff** to see what changes the coder has made so far
-4. Analyze the codebase context to provide an informed answer
-
-**Note:** Your read tools are automatically rooted at %s's workspace (/mnt/coders/%s), so paths are relative to their working directory
-
-## REQUIRED: Submit Your Answer
-
-**You MUST call the submit_reply tool to provide your final answer.** Do not respond with text only.
-
-Call **submit_reply** with your response in this format:
-- **response**: Your complete answer as a string
-
-Your answer should:
-- Provide a clear, actionable answer to the question
-- Reference specific files, functions, or patterns when helpful
-- Suggest concrete next steps if applicable
-
-## Available Tools
-
-%s
-
-## Important Notes
-
-- You can explore the coder's workspace at /mnt/coders/%s
-- You have read-only access to their files
-- Use the tools to understand context before answering
-- **Remember: You MUST use submit_reply to send your final answer**
-
-Begin answering the question now.`, coderID, storyID, storyTitle, storyContent, questionPayload.Text, coderID, coderID, toolDocs, coderID)
 }
 
 // buildQuestionResponseFromSubmit creates a question response from submit_reply content.
@@ -2006,7 +1198,7 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	}
 
 	// Add exploration metadata
-	answerPayload.Metadata["exploration_method"] = "iterative_with_tools"
+	answerPayload.Metadata[proto.KeyExplorationMethod] = "iterative_with_tools"
 
 	// Create response message
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
@@ -2014,138 +1206,11 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
 
 	// Copy story_id and question_id to response metadata
-	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		response.SetMetadata(proto.KeyStoryID, storyID)
-	}
-	if questionID, exists := requestMsg.Metadata["question_id"]; exists {
-		response.SetMetadata("question_id", questionID)
+	proto.CopyStoryMetadata(requestMsg, response)
+	if questionID := proto.GetQuestionID(requestMsg); questionID != "" {
+		proto.SetQuestionID(response, questionID)
 	}
 
 	d.logger.Info("✅ Built question response via iterative exploration")
-	return response, nil
-}
-
-// handleSpecReview processes a spec review approval request from PM.
-// Uses spec review tools (spec_feedback, submit_stories) for iterative review.
-func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
-	d.logger.Info("🔍 Architect reviewing spec from PM")
-
-	// Extract spec markdown from Content (the critical field for approval requests)
-	specMarkdown := approvalPayload.Content
-	if specMarkdown == "" {
-		return nil, fmt.Errorf("spec markdown not found in approval request Content field")
-	}
-
-	d.logger.Info("📄 Spec content length: %d bytes", len(specMarkdown))
-
-	// Prepare template data for spec review
-	templateData := &templates.TemplateData{
-		TaskContent: specMarkdown,
-		Extra: map[string]any{
-			"mode":   "spec_review",
-			"reason": approvalPayload.Reason,
-		},
-	}
-
-	// Render spec review template
-	prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, templateData, d.workDir, "ARCHITECT")
-	if err != nil {
-		return nil, fmt.Errorf("failed to render spec review template: %w", err)
-	}
-
-	// Reset context for new spec review
-	templateName := fmt.Sprintf("spec-review-%s", requestMsg.ID)
-	d.contextManager.ResetForNewTemplate(templateName, prompt)
-
-	// Add initial user message to start the conversation properly
-	// This prevents FlushUserBuffer from adding a fallback message
-	d.contextManager.AddMessage("user", "Please analyze this specification.")
-
-	// Get spec review tools (spec_feedback, submit_stories)
-	specReviewTools := d.getSpecReviewTools()
-
-	// Call LLM with spec review tools
-	// Pass empty string since prompt was already set in system message and we added initial user message
-	signal, err := d.callLLMWithTools(ctx, "", specReviewTools)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get LLM response for spec review: %w", err)
-	}
-
-	// Process tool signal and create RESULT message
-	var approved bool
-	var feedback string
-
-	switch signal {
-	case signalSpecFeedbackSent:
-		// Architect requested changes via spec_feedback tool
-		approved = false
-
-		// Extract feedback from stateData
-		feedbackResult, ok := d.stateData["spec_feedback_result"]
-		if !ok {
-			return nil, fmt.Errorf("spec_feedback result not found in state data")
-		}
-
-		feedbackMap, ok := feedbackResult.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("spec_feedback result has unexpected type")
-		}
-
-		feedbackStr, ok := feedbackMap["feedback"].(string)
-		if !ok || feedbackStr == "" {
-			return nil, fmt.Errorf("feedback not found in spec_feedback result")
-		}
-
-		feedback = feedbackStr
-		d.logger.Info("📝 Architect requested spec changes: %s", feedback)
-
-	case signalSubmitStoriesComplete:
-		// Architect approved spec and generated stories via submit_stories tool
-		approved = true
-		d.logger.Info("✅ Architect approved spec and generated stories")
-
-		// Load stories into queue from submit_stories result
-		specID, storyIDs, err := d.loadStoriesFromSubmitResult(ctx, specMarkdown)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load stories after approval: %w", err)
-		}
-
-		feedback = fmt.Sprintf("Spec approved - %d stories generated successfully (spec_id: %s)", len(storyIDs), specID)
-		d.logger.Info("📦 Loaded %d stories into queue", len(storyIDs))
-
-		// Mark that we now own this spec and should transition to DISPATCHING
-		// This is checked by handleRequest to determine next state
-		d.stateData["spec_approved_and_loaded"] = true
-
-	default:
-		return nil, fmt.Errorf("unexpected signal from spec review: %s", signal)
-	}
-
-	// Create RESPONSE message with approval result
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
-	response.ParentMsgID = requestMsg.ID
-
-	// Determine approval status
-	var status proto.ApprovalStatus
-	if approved {
-		status = proto.ApprovalStatusApproved
-	} else {
-		status = proto.ApprovalStatusNeedsChanges
-	}
-
-	approvalResult := &proto.ApprovalResult{
-		ID:         proto.GenerateApprovalID(),
-		RequestID:  requestMsg.Metadata["approval_id"],
-		Type:       proto.ApprovalTypeSpec,
-		Status:     status,
-		Feedback:   feedback,
-		ReviewedBy: d.architectID,
-		ReviewedAt: response.Timestamp,
-	}
-
-	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
-	response.SetMetadata("approval_id", approvalResult.ID)
-
-	d.logger.Info("✅ Spec review complete - sending RESULT to PM (status=%v)", status)
 	return response, nil
 }

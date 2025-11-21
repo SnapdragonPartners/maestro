@@ -2,12 +2,12 @@ package pm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
-	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -28,15 +28,16 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		if resultMsg != nil {
 			d.logger.Info("📨 Received async feedback from architect")
 			// Store feedback in context for next LLM call
-			d.stateData["architect_feedback"] = resultMsg
+			d.SetStateData("architect_feedback", resultMsg)
 		}
 	default:
 		// No feedback yet, continue working
 	}
 
 	// Get conversation state
-	turnCount, _ := d.stateData["turn_count"].(int)
-	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
+	stateData := d.GetStateData()
+	turnCount, _ := stateData["turn_count"].(int)
+	expertise, _ := stateData[StateKeyUserExpertise].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
@@ -67,7 +68,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	}
 
 	// Increment turn count
-	d.stateData["turn_count"] = turnCount + 1
+	d.SetStateData("turn_count", turnCount+1)
 
 	// Handle terminal signals from tool processing
 	if signal == "SPEC_PREVIEW" {
@@ -92,24 +93,45 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
 
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get expertise level
-	expertise, _ := d.stateData[StateKeyUserExpertise].(string)
+	expertise, _ := stateData[StateKeyUserExpertise].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
 
 	// Get conversation history if any
-	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
+	conversationHistory, _ := stateData["conversation"].([]map[string]string)
 
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
-	// Build base template data
+	// Get current config to check for existing values
+	cfg, cfgErr := config.GetConfig()
+
+	// Build base template data with existing config values
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
 			"Expertise":           expertise,
 			"ConversationHistory": conversationHistory,
 		},
+	}
+
+	// Add existing config values if available (so PM doesn't ask for them again)
+	if cfgErr == nil {
+		if cfg.Project.Name != "" {
+			templateData.Extra["ExistingProjectName"] = cfg.Project.Name
+		}
+		if cfg.Project.PrimaryPlatform != "" {
+			templateData.Extra["ExistingPlatform"] = cfg.Project.PrimaryPlatform
+		}
+		if cfg.Git.RepoURL != "" {
+			templateData.Extra["ExistingGitURL"] = cfg.Git.RepoURL
+		}
+	} else {
+		d.logger.Warn("Failed to get config: %v", cfgErr)
 	}
 
 	// Select template based on bootstrap requirements
@@ -159,18 +181,21 @@ func (d *Driver) setupInterviewContext() error {
 //
 //nolint:unused // Reserved for future PM template rendering functionality
 func (d *Driver) renderWorkingPrompt() (string, error) {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get conversation history from state
-	conversationHistory, _ := d.stateData["conversation"].([]map[string]string)
-	expertise, _ := d.stateData["expertise"].(string)
+	conversationHistory, _ := stateData["conversation"].([]map[string]string)
+	expertise, _ := stateData["expertise"].(string)
 	if expertise == "" {
 		expertise = DefaultExpertise
 	}
 
 	// Get architect feedback if present
-	architectFeedback, _ := d.stateData["architect_feedback"].(string)
+	architectFeedback, _ := stateData["architect_feedback"].(string)
 
 	// Get draft spec if present
-	draftSpec, _ := d.stateData["draft_spec"].(string)
+	draftSpec, _ := stateData["draft_spec"].(string)
 
 	// Build template data
 	templateData := &templates.TemplateData{
@@ -202,9 +227,9 @@ func (d *Driver) renderWorkingPrompt() (string, error) {
 //nolint:cyclop,maintidx // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
 	// Use toolloop abstraction for LLM tool calling loop
-	loop := toolloop.New(d.llmClient, d.logger)
+	loop := toolloop.New(d.LLMClient, d.logger)
 
-	cfg := &toolloop.Config{
+	cfg := &toolloop.Config[WorkingResult]{
 		ContextManager: d.contextManager,
 		InitialPrompt:  prompt,
 		ToolProvider:   d.toolProvider, // PM's tool provider
@@ -216,30 +241,116 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			// Process results and check for terminal signals
 			return d.checkTerminalTools(ctx, calls, results)
 		},
-		OnIterationLimit: func(ctx context.Context) (string, error) {
-			// Max iterations reached - ask LLM for update
-			return d.handleIterationLimit(ctx)
+		ExtractResult: ExtractPMWorkingResult,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("pm_working_%s", d.pmID),
+			SoftLimit: 8,  // Warn at 8 iterations
+			HardLimit: 10, // Require user status update at 10 iterations
+			OnSoftLimit: func(count int) {
+				d.logger.Warn("⚠️  PM iteration soft limit reached (%d iterations)", count)
+			},
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				d.logger.Error("❌ PM iteration hard limit reached (%d iterations) - must call await_user with status", count)
+				d.SetStateData("iteration_limit_reached", true)
+				d.SetStateData("iteration_limit_key", key)
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
+			},
 		},
 	}
 
-	signal, err := loop.Run(ctx, cfg)
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
+		// Check if this is an iteration limit error
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// PM must have called await_user with a status update before hitting limit
+			// Check if signal indicates await_user was called
+			if signal == SignalAwaitUser || result.AwaitUser {
+				d.logger.Info("✅ PM reached iteration limit but provided status update via await_user")
+				// Return AWAIT_USER signal - valid completion with status update
+				return SignalAwaitUser, nil
+			}
+
+			// PM hit limit without providing status - this is an error
+			d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling await_user", iterErr.Iteration)
+			return "", fmt.Errorf("PM must call await_user with status update before iteration limit: %w", iterErr)
+		}
 		return "", fmt.Errorf("toolloop execution failed: %w", err)
+	}
+
+	// Process extracted result based on signal
+	if err := d.processPMResult(result); err != nil {
+		return "", fmt.Errorf("failed to process PM result: %w", err)
 	}
 
 	// Handle terminal signals from tool processing
 	return signal, nil
 }
 
+// processPMResult processes the extracted result from PM's toolloop.
+// Stores data in stateData and performs any necessary side effects (e.g., injecting messages).
+func (d *Driver) processPMResult(result WorkingResult) error {
+	switch result.Signal {
+	case SignalBootstrapComplete:
+		// Store bootstrap params
+		d.SetStateData("bootstrap_params", result.BootstrapParams)
+		d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
+			result.BootstrapParams["project_name"],
+			result.BootstrapParams["platform"],
+			result.BootstrapParams["git_url"])
+
+		// Inject system message to transition from bootstrap mode to full interview mode
+		transitionMsg := fmt.Sprintf(`# Bootstrap Complete
+
+Project configuration saved successfully:
+- Project: %s
+- Platform: %s
+- Repository: %s
+
+You can now proceed with full requirements gathering for this project. You have access to additional tools:
+- **read_file** - Read file contents from the codebase
+- **list_files** - List files in the codebase (path, pattern, recursive)
+
+Begin the feature requirements interview by asking the user about what they want to build.`,
+			result.BootstrapParams["project_name"],
+			result.BootstrapParams["platform"],
+			result.BootstrapParams["git_url"])
+
+		d.contextManager.AddMessage("system", transitionMsg)
+		d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
+
+	case SignalSpecPreview:
+		// Store draft spec and metadata for PREVIEW state
+		d.SetStateData("draft_spec_markdown", result.SpecMarkdown)
+		d.SetStateData("spec_metadata", result.SpecMetadata)
+		d.logger.Info("📋 Stored spec for preview (%d bytes)", len(result.SpecMarkdown))
+
+	case SignalAwaitUser:
+		// No data to store for await_user, just log
+		d.logger.Info("⏸️  PM waiting for user response")
+
+	case "":
+		// No signal - this is fine, toolloop will continue
+		return nil
+
+	default:
+		return fmt.Errorf("unknown PM signal: %s", result.Signal)
+	}
+
+	return nil
+}
+
 // checkTerminalTools examines tool execution results for terminal signals.
 // Returns non-empty signal to trigger state transition.
 //
 //nolint:cyclop // Multiple terminal conditions (bootstrap, spec_submit, await_user) adds complexity
-func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, results []any) string {
-	// Track if we saw await_user signal
+func (d *Driver) checkTerminalTools(_ context.Context, _ []agent.ToolCall, results []any) string {
+	// Check results for terminal signals only - data extraction happens in ExtractPMWorkingResult
 	sawAwaitUser := false
+	sawBootstrap := false
 
-	for i := range calls {
+	for i := range results {
 		// Only process successful results
 		resultMap, ok := results[i].(map[string]any)
 		if !ok {
@@ -253,56 +364,14 @@ func (d *Driver) checkTerminalTools(_ context.Context, calls []agent.ToolCall, r
 
 		// Check for bootstrap_configured signal
 		if bootstrapConfigured, ok := resultMap["bootstrap_configured"].(bool); ok && bootstrapConfigured {
-			d.logger.Info("🔧 PM bootstrap tool succeeded, configuration saved")
-
-			// Store bootstrap params in state for potential use
-			bootstrapParams := make(map[string]string)
-			if projectName, ok := resultMap["project_name"].(string); ok {
-				bootstrapParams["project_name"] = projectName
-			}
-			if gitURL, ok := resultMap["git_url"].(string); ok {
-				bootstrapParams["git_url"] = gitURL
-			}
-			if platform, ok := resultMap["platform"].(string); ok {
-				bootstrapParams["platform"] = platform
-			}
-			d.stateData["bootstrap_params"] = bootstrapParams
-			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
-				bootstrapParams["project_name"], bootstrapParams["platform"], bootstrapParams["git_url"])
-
-			// Inject system message to transition from bootstrap mode to full interview mode
-			transitionMsg := `# Bootstrap Complete
-
-Project configuration saved successfully:
-- Project: ` + bootstrapParams["project_name"] + `
-- Platform: ` + bootstrapParams["platform"] + `
-- Repository: ` + bootstrapParams["git_url"] + `
-
-You can now proceed with full requirements gathering for this project. You have access to additional tools:
-- **read_file** - Read file contents from the codebase
-- **list_files** - List files in the codebase (path, pattern, recursive)
-
-Begin the feature requirements interview by asking the user about what they want to build.`
-
-			d.contextManager.AddMessage("system", transitionMsg)
-			d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
-
-			// Don't return signal - continue loop for next tool call
+			d.logger.Info("🔧 PM bootstrap tool succeeded")
+			sawBootstrap = true
+			// Don't return yet - continue checking for other signals
 		}
 
-		// Check for spec_submit signal (PREVIEW flow)
+		// Check for spec_submit signal (PREVIEW flow) - this is terminal
 		if previewReady, ok := resultMap["preview_ready"].(bool); ok && previewReady {
-			d.logger.Info("📋 PM spec_submit succeeded, preparing for user preview")
-
-			// Store draft spec and metadata for PREVIEW state
-			if specMarkdown, ok := resultMap["spec_markdown"].(string); ok {
-				d.stateData["draft_spec_markdown"] = specMarkdown
-			}
-			if metadata, ok := resultMap["metadata"].(map[string]any); ok {
-				d.stateData["spec_metadata"] = metadata
-			}
-
-			// Return signal to transition to PREVIEW state
+			d.logger.Info("📋 PM spec_submit succeeded, transitioning to PREVIEW")
 			return "SPEC_PREVIEW"
 		}
 
@@ -311,6 +380,12 @@ Begin the feature requirements interview by asking the user about what they want
 			d.logger.Info("⏸️  PM await_user tool called")
 			sawAwaitUser = true
 		}
+	}
+
+	// Bootstrap is not terminal - PM continues after bootstrap completes
+	// The data will be available in the result and processed by calling code
+	if sawBootstrap {
+		d.logger.Info("Bootstrap complete, continuing PM workflow")
 	}
 
 	// If we saw await_user, return that signal
@@ -323,116 +398,14 @@ Begin the feature requirements interview by asking the user about what they want
 
 // handleIterationLimit is called when max iterations is reached.
 // Asks LLM to provide update to user and returns AWAIT_USER signal.
-func (d *Driver) handleIterationLimit(ctx context.Context) (string, error) {
-	d.logger.Info("⚠️  PM reached max tool iterations, requesting update for user")
-
-	// Add a system message prompting for user update
-	d.contextManager.AddMessage("system-limit",
-		"You've reached the tool call limit for this iteration. Please provide a brief update to the user about "+
-			"what you've learned so far, and ask if they'd like you to continue gathering information "+
-			"or if you have enough context to proceed. You can use more tools after the user responds.")
-
-	// Flush and get final response
-	if err := d.contextManager.FlushUserBuffer(ctx); err != nil {
-		return "", fmt.Errorf("failed to flush buffer for limit message: %w", err)
-	}
-
-	messages := d.buildMessagesWithContext("")
-
-	// Make one final call for the update (no tools)
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     nil,
-	}
-
-	resp, err := d.llmClient.Complete(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf("failed to get user update after iteration limit: %w", err)
-	}
-
-	// Add response to context
-	d.contextManager.AddAssistantMessage(resp.Content)
-
-	// Post update to chat
-	if resp.Content != "" && d.chatService != nil {
-		d.logger.Info("📤 Posting PM iteration limit update to chat (%d chars)", len(resp.Content))
-		postResp, postErr := d.chatService.Post(ctx, &chat.PostRequest{
-			Author:  fmt.Sprintf("@%s", d.pmID),
-			Text:    resp.Content,
-			Channel: chat.ChannelProduct,
-		})
-		if postErr != nil {
-			d.logger.Error("❌ Failed to post update to chat: %v", postErr)
-		} else {
-			d.logger.Info("✅ Posted iteration limit update to chat (id: %d)", postResp.ID)
-		}
-	}
-
-	// Return AWAIT_USER to transition and wait for user response
-	return string(StateAwaitUser), nil
-}
-
-// buildMessagesWithContext builds LLM messages with conversation history and context.
-func (d *Driver) buildMessagesWithContext(prompt string) []agent.CompletionMessage {
-	// Get conversation history from context manager
-	// This includes chat messages injected by middleware
-	contextMessages := d.contextManager.GetMessages()
-
-	// Convert to CompletionMessage format
-	messages := make([]agent.CompletionMessage, 0, len(contextMessages)+1)
-	for i := range contextMessages {
-		msg := &contextMessages[i]
-
-		// Convert contextmgr.ToolCall to agent.ToolCall
-		var agentToolCalls []agent.ToolCall
-		if len(msg.ToolCalls) > 0 {
-			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
-			for j := range msg.ToolCalls {
-				agentToolCalls[j] = agent.ToolCall{
-					ID:         msg.ToolCalls[j].ID,
-					Name:       msg.ToolCalls[j].Name,
-					Parameters: msg.ToolCalls[j].Parameters,
-				}
-			}
-		}
-
-		// Convert contextmgr.ToolResult to agent.ToolResult
-		var agentToolResults []agent.ToolResult
-		if len(msg.ToolResults) > 0 {
-			agentToolResults = make([]agent.ToolResult, len(msg.ToolResults))
-			for j := range msg.ToolResults {
-				agentToolResults[j] = agent.ToolResult{
-					ToolCallID: msg.ToolResults[j].ToolCallID,
-					Content:    msg.ToolResults[j].Content,
-					IsError:    msg.ToolResults[j].IsError,
-				}
-			}
-		}
-
-		messages = append(messages, agent.CompletionMessage{
-			Role:        agent.CompletionRole(msg.Role),
-			Content:     msg.Content,
-			ToolCalls:   agentToolCalls,
-			ToolResults: agentToolResults,
-		})
-	}
-
-	// Add the new prompt as a user message
-	if prompt != "" {
-		messages = append(messages, agent.CompletionMessage{
-			Role:    agent.RoleUser,
-			Content: prompt,
-		})
-	}
-
-	return messages
-}
 
 // sendSpecApprovalRequest sends an approval REQUEST message to the architect.
 func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
+	// Get state data
+	stateData := d.GetStateData()
+
 	// Get spec markdown from state
-	specMarkdown, ok := d.stateData["spec_markdown"].(string)
+	specMarkdown, ok := stateData["spec_markdown"].(string)
 	if !ok || specMarkdown == "" {
 		return fmt.Errorf("no spec_markdown found in state")
 	}
@@ -461,7 +434,7 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	}
 
 	// Store pending request ID for tracking
-	d.stateData["pending_request_id"] = requestMsg.ID
+	d.SetStateData("pending_request_id", requestMsg.ID)
 	d.logger.Info("📤 Sent spec approval REQUEST to architect (id: %s)", requestMsg.ID)
 
 	return nil

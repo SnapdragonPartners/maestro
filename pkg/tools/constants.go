@@ -33,11 +33,12 @@ const (
 	ToolTodoUpdate   = "todo_update"
 
 	// Architect read tools.
-	ToolReadFile      = "read_file"
-	ToolListFiles     = "list_files"
-	ToolGetDiff       = "get_diff"
-	ToolSubmitReply   = "submit_reply"
-	ToolSubmitStories = "submit_stories"
+	ToolReadFile       = "read_file"
+	ToolListFiles      = "list_files"
+	ToolGetDiff        = "get_diff"
+	ToolSubmitReply    = "submit_reply"
+	ToolSubmitStories  = "submit_stories"
+	ToolReviewComplete = "review_complete"
 
 	// PM tools.
 	ToolSpecSubmit   = "spec_submit"

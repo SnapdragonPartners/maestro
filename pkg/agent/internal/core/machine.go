@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
@@ -87,6 +88,10 @@ type BaseStateMachine struct {
 
 	// Timeout wrapper for state processing (from agent package)
 	timeoutWrapper StateTimeoutWrapper
+
+	// LLMClient for agent interactions (set after construction to avoid chicken-and-egg with middleware).
+	// Exported so agents can access via embedding.
+	LLMClient llm.LLMClient
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table.
@@ -337,11 +342,33 @@ func (sm *BaseStateMachine) SetStateNotificationChannel(ch chan<- *proto.StateCh
 	sm.stateNotifCh = ch
 }
 
+// HasStateNotificationChannel returns true if the state notification channel is set.
+func (sm *BaseStateMachine) HasStateNotificationChannel() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.stateNotifCh != nil
+}
+
 // SetTimeoutWrapper sets the timeout wrapper for state processing.
 func (sm *BaseStateMachine) SetTimeoutWrapper(wrapper StateTimeoutWrapper) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.timeoutWrapper = wrapper
+}
+
+// SetLLMClient sets the LLM client for agent interactions.
+// Must be called after construction before the agent can process work.
+func (sm *BaseStateMachine) SetLLMClient(client llm.LLMClient) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.LLMClient = client
+}
+
+// GetLLMClient returns the configured LLM client.
+func (sm *BaseStateMachine) GetLLMClient() llm.LLMClient {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.LLMClient
 }
 
 // ProcessStateWithTimeout wraps state processing with timeout handling if configured.

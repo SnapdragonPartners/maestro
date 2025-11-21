@@ -3,7 +3,6 @@ package pm
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -53,22 +52,18 @@ const (
 //
 //nolint:govet // Prefer logical grouping over memory optimization
 type Driver struct {
-	pmID                string
-	llmClient           agent.LLMClient
-	renderer            *templates.Renderer
-	contextManager      *contextmgr.ContextManager
-	logger              *logx.Logger
-	dispatcher          *dispatch.Dispatcher
-	persistenceChannel  chan<- *persistence.Request
-	chatService         *chat.Service // Chat service for polling new messages
-	mu                  sync.RWMutex  // Protects currentState and stateData from concurrent access
-	currentState        proto.State
-	stateData           map[string]any
-	executor            execpkg.Executor // PM executor for running tools
-	workDir             string
-	replyCh             <-chan *proto.AgentMsg // Receives RESULT messages from architect
-	stateNotificationCh chan<- *proto.StateChangeNotification
-	toolProvider        ToolProvider // Tool provider for spec_submit tool
+	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
+	pmID                    string
+	renderer                *templates.Renderer
+	contextManager          *contextmgr.ContextManager
+	logger                  *logx.Logger
+	dispatcher              *dispatch.Dispatcher
+	persistenceChannel      chan<- *persistence.Request
+	chatService             *chat.Service    // Chat service for polling new messages
+	executor                execpkg.Executor // PM executor for running tools
+	workDir                 string
+	replyCh                 <-chan *proto.AgentMsg // Receives RESULT messages from architect
+	toolProvider            ToolProvider           // Tool provider for spec_submit tool
 }
 
 // NewPM creates a new PM agent with all dependencies initialized.
@@ -159,23 +154,22 @@ func NewPM(
 		logger.Info("💬 Chat injection configured for PM %s", pmID)
 	}
 
-	// Create initial state data with repository availability
-	initialStateData := map[string]any{
-		StateKeyHasRepository: hasRepository,
-	}
+	// Create BaseStateMachine with PM transition table
+	sm := agent.NewBaseStateMachine(pmID, StateWaiting, nil, validTransitions)
+
+	// Set initial state data with repository availability
+	sm.SetStateData(StateKeyHasRepository, hasRepository)
 
 	// Create driver first (without LLM client yet)
 	pmDriver := &Driver{
+		BaseStateMachine:   sm,
 		pmID:               pmID,
-		llmClient:          nil, // Will be set below
 		renderer:           renderer,
 		contextManager:     contextManager,
 		logger:             logger,
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
 		chatService:        chatService,
-		currentState:       StateWaiting,
-		stateData:          initialStateData,
 		executor:           pmExecutor,
 		workDir:            workDir,
 		toolProvider:       toolProvider,
@@ -187,8 +181,8 @@ func NewPM(
 		return nil, fmt.Errorf("failed to create LLM client for PM: %w", err)
 	}
 
-	// Set the LLM client (no middleware wrapper needed - chat injection is in FlushUserBuffer)
-	pmDriver.llmClient = llmClient
+	// Set the LLM client via SetLLMClient (sets BaseStateMachine.LLMClient)
+	sm.SetLLMClient(llmClient)
 
 	return pmDriver, nil
 }
@@ -205,16 +199,22 @@ func NewDriver(
 	executor execpkg.Executor, // PM executor for running tools
 	workDir string,
 ) *Driver {
+	// Create BaseStateMachine with PM transition table
+	sm := agent.NewBaseStateMachine(pmID, StateWaiting, nil, validTransitions)
+
+	// Set LLM client via BaseStateMachine
+	if llmClient != nil {
+		sm.SetLLMClient(llmClient)
+	}
+
 	return &Driver{
+		BaseStateMachine:   sm,
 		pmID:               pmID,
-		llmClient:          llmClient,
 		renderer:           renderer,
 		contextManager:     contextManager,
 		logger:             logx.NewLogger("pm"),
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
-		currentState:       StateWaiting,
-		stateData:          make(map[string]any),
 		executor:           executor,
 		workDir:            workDir,
 	}
@@ -231,9 +231,7 @@ func (d *Driver) Run(ctx context.Context) error {
 			return fmt.Errorf("pm agent shutdown: %w", ctx.Err())
 		default:
 			// Capture state before executing handler
-			d.mu.RLock()
-			stateBefore := d.currentState
-			d.mu.RUnlock()
+			stateBefore := d.GetCurrentState()
 
 			// Execute current state
 			nextState, err := d.executeState(ctx)
@@ -242,42 +240,42 @@ func (d *Driver) Run(ctx context.Context) error {
 				nextState = proto.StateError
 			}
 
-			// Validate and apply state transition with mutex protection
-			d.mu.Lock()
-			currentState := d.currentState
+			// Get current state to check for external changes
+			currentState := d.GetCurrentState()
 
 			// Check if state changed externally (via direct method call) while handler was running
 			if stateBefore != currentState {
 				d.logger.Debug("🔄 State changed externally during handler execution: %s → %s (ignoring handler return)", stateBefore, currentState)
 				// State was changed by direct method call - ignore handler's return value
 				// and continue with the new state
-				d.mu.Unlock()
 				continue
 			}
 
-			// Validate transition
-			if !IsValidPMTransition(currentState, nextState) {
-				d.logger.Error("❌ Invalid PM state transition: %s → %s", currentState, nextState)
-				nextState = proto.StateError
-			}
-
-			// Transition to next state
+			// Transition to next state (BaseStateMachine handles validation)
 			if currentState != nextState {
-				d.logger.Info("🔄 PM state transition: %s → %s", currentState, nextState)
-				d.currentState = nextState
+				err := d.TransitionTo(ctx, nextState, nil)
+				if err != nil {
+					d.logger.Error("❌ PM state transition failed: %s → %s: %v", currentState, nextState, err)
+					// Force transition to ERROR on validation failure
+					_ = d.TransitionTo(ctx, proto.StateError, nil)
+				} else {
+					d.logger.Info("🔄 PM state transition: %s → %s", currentState, nextState)
+				}
 			}
 
-			// Handle terminal states (need to check nextState after potential update)
-			terminalState := nextState
+			// Handle terminal states
+			terminalState := d.GetCurrentState()
 			if terminalState == proto.StateError {
 				d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
-				// Reset to WAITING after error
-				d.currentState = StateWaiting
-				d.stateData = make(map[string]any)
+				// Reset to WAITING after error and clear state data
+				_ = d.TransitionTo(ctx, StateWaiting, nil)
+				// Clear all state data
+				for key := range d.GetStateData() {
+					d.SetStateData(key, nil)
+				}
 			}
-			d.mu.Unlock()
 
-			// Handle DONE outside of lock
+			// Handle DONE
 			if terminalState == proto.StateDone {
 				d.logger.Info("✅ PM agent %s shutting down", d.pmID)
 				return nil
@@ -288,11 +286,8 @@ func (d *Driver) Run(ctx context.Context) error {
 
 // executeState executes the current state and returns the next state.
 func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
-	// Read current state with lock, then execute handler without lock
-	// (handlers may take time and should not hold the lock)
-	d.mu.RLock()
-	currentState := d.currentState
-	d.mu.RUnlock()
+	// Get current state from BaseStateMachine (thread-safe)
+	currentState := d.GetCurrentState()
 
 	switch currentState {
 	case StateWaiting:
@@ -365,8 +360,10 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 	// Check approval status
 	if approvalResult.Status == proto.ApprovalStatusApproved {
 		d.logger.Info("✅ Spec APPROVED by architect")
-		// Clear state for next interview
-		d.stateData = make(map[string]any)
+		// Clear state data for next interview
+		for key := range d.GetStateData() {
+			d.SetStateData(key, nil)
+		}
 		return StateWaiting, nil
 	}
 
@@ -374,12 +371,16 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 	d.logger.Info("📝 Spec requires changes (status=%v) - feedback from architect: %s",
 		approvalResult.Status, approvalResult.Feedback)
 
-	delete(d.stateData, "pending_request_id") // Clear pending request
+	// Clear pending request from state
+	stateData := d.GetStateData()
+	if _, hasPending := stateData["pending_request_id"]; hasPending {
+		d.SetStateData("pending_request_id", nil)
+	}
 
 	// Inject submitted spec and architect feedback into LLM context
 	// Both are added as user messages so they persist across LLM calls
-	if submittedSpec, ok := d.stateData["spec_markdown"].(string); ok {
-		d.stateData["draft_spec"] = submittedSpec
+	if submittedSpec, ok := stateData["spec_markdown"].(string); ok {
+		d.SetStateData("draft_spec", submittedSpec)
 		d.logger.Info("📋 Injecting submitted spec (%d bytes) and architect feedback into PM context", len(submittedSpec))
 
 		// Add submitted spec to context
@@ -410,30 +411,9 @@ func (d *Driver) GetStoryID() string {
 	return "" // PM doesn't have a story ID
 }
 
-// GetState returns the current state.
+// GetState returns the current state (alias for GetCurrentState for backward compatibility).
 func (d *Driver) GetState() proto.State {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.currentState
-}
-
-// GetCurrentState returns the current state (required by agent.Driver interface).
-func (d *Driver) GetCurrentState() proto.State {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.currentState
-}
-
-// GetStateData returns a copy of the current state data (required by agent.Driver interface).
-func (d *Driver) GetStateData() map[string]any {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	// Return a shallow copy to prevent external modification
-	stateCopy := make(map[string]any, len(d.stateData))
-	for k, v := range d.stateData {
-		stateCopy[k] = v
-	}
-	return stateCopy
+	return d.GetCurrentState()
 }
 
 // GetAgentType returns the agent type (required by agent.Driver interface).
@@ -443,7 +423,18 @@ func (d *Driver) GetAgentType() agent.Type {
 
 // Initialize sets up the driver and loads any existing state (required by agent.Driver interface).
 func (d *Driver) Initialize(_ context.Context) error {
-	// PM agent doesn't need initialization - state is initialized in constructor
+	// Validate required channels and BaseStateMachine are set
+	if d.BaseStateMachine == nil {
+		return fmt.Errorf("PM %s: BaseStateMachine not initialized", d.pmID)
+	}
+
+	// Verify state notification channel is set on BaseStateMachine
+	// This is critical for state transitions to be properly tracked
+	if !d.BaseStateMachine.HasStateNotificationChannel() {
+		d.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
+	}
+
+	d.logger.Info("PM agent %s initialized in state: %s", d.pmID, d.GetCurrentState())
 	return nil
 }
 
@@ -457,30 +448,31 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 		nextState = proto.StateError
 	}
 
-	// Validate and apply state transition with mutex protection
-	d.mu.Lock()
-	currentState := d.currentState
+	// Get current state
+	currentState := d.GetCurrentState()
 
-	// Validate transition
-	if !IsValidPMTransition(currentState, nextState) {
-		d.logger.Error("❌ Invalid PM state transition: %s → %s", currentState, nextState)
-		nextState = proto.StateError
-	}
-
-	// Transition to next state
+	// Transition to next state using BaseStateMachine (handles validation)
 	if currentState != nextState {
-		d.logger.Info("🔄 PM state transition: %s → %s", currentState, nextState)
-		d.currentState = nextState
+		transitionErr := d.TransitionTo(ctx, nextState, nil)
+		if transitionErr != nil {
+			d.logger.Error("❌ PM state transition failed: %s → %s: %v", currentState, nextState, transitionErr)
+			// Force transition to ERROR on validation failure
+			_ = d.TransitionTo(ctx, proto.StateError, nil)
+		} else {
+			d.logger.Info("🔄 PM state transition: %s → %s", currentState, nextState)
+		}
 	}
 
 	// Handle terminal states
-	terminalState := nextState
+	terminalState := d.GetCurrentState()
 	if terminalState == proto.StateError {
 		d.logger.Error("⚠️  PM agent %s in ERROR state, resetting to WAITING", d.pmID)
-		d.currentState = StateWaiting
-		d.stateData = make(map[string]any)
+		_ = d.TransitionTo(ctx, StateWaiting, nil)
+		// Clear all state data
+		for key := range d.GetStateData() {
+			d.SetStateData(key, nil)
+		}
 	}
-	d.mu.Unlock()
 
 	// Return based on terminal state
 	switch terminalState {
@@ -495,23 +487,15 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 
 // ValidateState checks if a state is valid for PM agent (required by agent.Driver interface).
 func (d *Driver) ValidateState(state proto.State) error {
-	validStates := d.GetValidStates()
-	for _, validState := range validStates {
-		if state == validState {
-			return nil
-		}
+	if !IsValidPMState(state) {
+		return fmt.Errorf("invalid state %s for PM agent", state)
 	}
-	return fmt.Errorf("invalid state %s for PM agent", state)
+	return nil
 }
 
 // GetValidStates returns all valid states for PM agent (required by agent.Driver interface).
 func (d *Driver) GetValidStates() []proto.State {
-	return []proto.State{
-		StateWaiting,
-		StateWorking,
-		proto.StateError,
-		proto.StateDone,
-	}
+	return GetAllPMStates()
 }
 
 // SetChannels sets the dispatcher channels for PM (required by ChannelReceiver interface).
@@ -531,16 +515,16 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 
 // SetStateNotificationChannel sets the state notification channel (required by ChannelReceiver interface).
 func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
-	d.stateNotificationCh = stateNotifCh
+	// Delegate to BaseStateMachine
+	d.BaseStateMachine.SetStateNotificationChannel(stateNotifCh)
 	d.logger.Debug("State notification channel set for PM")
 }
 
 // HasRepository returns whether PM has git repository access.
 // Returns false if PM is running in no-repo/bootstrap mode.
 func (d *Driver) HasRepository() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if hasRepo, ok := d.stateData[StateKeyHasRepository].(bool); ok {
+	stateData := d.GetStateData()
+	if hasRepo, ok := stateData[StateKeyHasRepository].(bool); ok {
 		return hasRepo
 	}
 	return false
@@ -549,9 +533,8 @@ func (d *Driver) HasRepository() bool {
 // GetBootstrapRequirements returns the detected bootstrap requirements.
 // Returns nil if bootstrap detection hasn't run yet or failed.
 func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if reqs, ok := d.stateData[StateKeyBootstrapRequirements].(*tools.BootstrapRequirements); ok {
+	stateData := d.GetStateData()
+	if reqs, ok := stateData[StateKeyBootstrapRequirements].(*tools.BootstrapRequirements); ok {
 		return reqs
 	}
 	return nil
@@ -560,9 +543,8 @@ func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
 // GetDetectedPlatform returns the detected platform.
 // Returns empty string if platform hasn't been detected.
 func (d *Driver) GetDetectedPlatform() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if platform, ok := d.stateData[StateKeyDetectedPlatform].(string); ok {
+	stateData := d.GetStateData()
+	if platform, ok := stateData[StateKeyDetectedPlatform].(string); ok {
 		return platform
 	}
 	return ""
@@ -572,9 +554,8 @@ func (d *Driver) GetDetectedPlatform() string {
 // This is used by the WebUI to display the spec in PREVIEW state.
 // Returns empty string if no draft spec is available.
 func (d *Driver) GetDraftSpec() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if draftSpec, ok := d.stateData["draft_spec_markdown"].(string); ok {
+	stateData := d.GetStateData()
+	if draftSpec, ok := stateData["draft_spec_markdown"].(string); ok {
 		return draftSpec
 	}
 	return ""
@@ -583,9 +564,8 @@ func (d *Driver) GetDraftSpec() string {
 // GetDraftSpecMetadata returns the draft specification metadata if available.
 // Returns nil if no metadata is available.
 func (d *Driver) GetDraftSpecMetadata() map[string]any {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if metadata, ok := d.stateData["spec_metadata"].(map[string]any); ok {
+	stateData := d.GetStateData()
+	if metadata, ok := stateData["spec_metadata"].(map[string]any); ok {
 		return metadata
 	}
 	return nil
@@ -595,24 +575,23 @@ func (d *Driver) GetDraftSpecMetadata() map[string]any {
 // This is called by the WebUI when the user clicks "Start Interview".
 // Idempotent: succeeds if already in AWAIT_USER with same expertise (handles double-clicks).
 func (d *Driver) StartInterview(expertise string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// Idempotency check: if already in AWAIT_USER or WORKING with same expertise, succeed silently
-	if d.currentState == StateAwaitUser || d.currentState == StateWorking {
-		if existingExpertise, ok := d.stateData[StateKeyUserExpertise].(string); ok && existingExpertise == expertise {
+	currentState := d.GetCurrentState()
+	stateData := d.GetStateData()
+	if currentState == StateAwaitUser || currentState == StateWorking {
+		if existingExpertise, ok := stateData[StateKeyUserExpertise].(string); ok && existingExpertise == expertise {
 			d.logger.Info("📝 Interview already started with expertise: %s - idempotent success", expertise)
 			return nil
 		}
 	}
 
 	// Validate state transition - must be in WAITING to start
-	if d.currentState != StateWaiting {
-		return fmt.Errorf("cannot start interview in state %s (must be WAITING)", d.currentState)
+	if currentState != StateWaiting {
+		return fmt.Errorf("cannot start interview in state %s (must be WAITING)", currentState)
 	}
 
 	// Store expertise level
-	d.stateData[StateKeyUserExpertise] = expertise
+	d.SetStateData(StateKeyUserExpertise, expertise)
 	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
 
 	// Detect bootstrap requirements
@@ -625,8 +604,8 @@ func (d *Driver) StartInterview(expertise string) error {
 		// Continue without bootstrap detection - non-fatal
 	} else {
 		// Store bootstrap requirements in state
-		d.stateData[StateKeyBootstrapRequirements] = reqs
-		d.stateData[StateKeyDetectedPlatform] = reqs.DetectedPlatform
+		d.SetStateData(StateKeyBootstrapRequirements, reqs)
+		d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
 
 		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
 			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
@@ -647,13 +626,20 @@ func (d *Driver) StartInterview(expertise string) error {
 	}
 
 	// Decide initial state based on bootstrap needs
+	ctx := context.Background()
 	if needsBootstrap {
 		// Start in WORKING so PM can proactively ask bootstrap questions
-		d.currentState = StateWorking
+		if err := d.TransitionTo(ctx, StateWorking, nil); err != nil {
+			d.logger.Error("❌ Failed to transition to WORKING: %v", err)
+			return fmt.Errorf("failed to transition to WORKING: %w", err)
+		}
 		d.logger.Info("📝 Interview started (expertise: %s) - bootstrap needed, transitioned to WORKING for proactive setup", expertise)
 	} else {
 		// Start in AWAIT_USER - user will initiate feature discussion
-		d.currentState = StateAwaitUser
+		if err := d.TransitionTo(ctx, StateAwaitUser, nil); err != nil {
+			d.logger.Error("❌ Failed to transition to AWAIT_USER: %v", err)
+			return fmt.Errorf("failed to transition to AWAIT_USER: %w", err)
+		}
 		d.logger.Info("📝 Interview started (expertise: %s) - transitioned to AWAIT_USER", expertise)
 	}
 
@@ -664,12 +650,11 @@ func (d *Driver) StartInterview(expertise string) error {
 // This is called by the WebUI when the user uploads a spec file.
 // Idempotent: succeeds if already in PREVIEW with same spec (handles double-submissions).
 func (d *Driver) UploadSpec(markdown string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// Idempotency check: if already in PREVIEW with same spec, succeed silently
-	if d.currentState == StatePreview {
-		if existingSpec, ok := d.stateData["draft_spec_markdown"].(string); ok && existingSpec == markdown {
+	currentState := d.GetCurrentState()
+	stateData := d.GetStateData()
+	if currentState == StatePreview {
+		if existingSpec, ok := stateData["draft_spec_markdown"].(string); ok && existingSpec == markdown {
 			d.logger.Info("📤 Spec already uploaded (%d bytes) - idempotent success", len(markdown))
 			return nil
 		}
@@ -678,15 +663,16 @@ func (d *Driver) UploadSpec(markdown string) error {
 	// Validate state transition - allow upload in WAITING or AWAIT_USER
 	// WAITING: before any interview started
 	// AWAIT_USER: during interview (allows user to upload spec instead of continuing interview)
-	if d.currentState != StateWaiting && d.currentState != StateAwaitUser {
-		return fmt.Errorf("cannot upload spec in state %s (must be WAITING or AWAIT_USER)", d.currentState)
+	if currentState != StateWaiting && currentState != StateAwaitUser {
+		return fmt.Errorf("cannot upload spec in state %s (must be WAITING or AWAIT_USER)", currentState)
 	}
 
 	// Store spec and transition to PREVIEW
-	d.stateData["draft_spec_markdown"] = markdown
-	d.stateData["user_expertise"] = "EXPERT" // Infer highest proficiency for uploaded specs
+	d.SetStateData("draft_spec_markdown", markdown)
+	d.SetStateData("user_expertise", "EXPERT") // Infer highest proficiency for uploaded specs
 	d.contextManager.AddMessage("system", "User uploaded a specification file. You can answer questions about it if the user clicks 'Continue Interview'.")
-	d.currentState = StatePreview
+	ctx := context.Background()
+	_ = d.TransitionTo(ctx, StatePreview, nil)
 
 	d.logger.Info("📤 Spec uploaded (%d bytes) - transitioned to PREVIEW", len(markdown))
 	return nil
@@ -697,27 +683,24 @@ func (d *Driver) UploadSpec(markdown string) error {
 // Valid actions: "continue_interview", "submit_to_architect".
 // Idempotent: succeeds if already in target state (handles double-clicks).
 func (d *Driver) PreviewAction(ctx context.Context, action string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// Validate action first
 	if action != PreviewActionContinue && action != PreviewActionSubmit {
 		return fmt.Errorf("invalid preview action: %s (must be '%s' or '%s')", action, PreviewActionContinue, PreviewActionSubmit)
 	}
 
 	// Idempotency check: if already in target state, succeed silently
-	if action == PreviewActionContinue && d.currentState == StateAwaitUser {
+	if action == PreviewActionContinue && d.GetCurrentState() == StateAwaitUser {
 		d.logger.Info("🔄 Already in AWAIT_USER (continue interview) - idempotent success")
 		return nil
 	}
-	if action == PreviewActionSubmit && d.currentState == StateAwaitArchitect {
+	if action == PreviewActionSubmit && d.GetCurrentState() == StateAwaitArchitect {
 		d.logger.Info("📤 Already in AWAIT_ARCHITECT (submitted) - idempotent success")
 		return nil
 	}
 
 	// Validate state transition
-	if d.currentState != StatePreview {
-		return fmt.Errorf("cannot perform preview action in state %s (must be PREVIEW)", d.currentState)
+	if d.GetCurrentState() != StatePreview {
+		return fmt.Errorf("cannot perform preview action in state %s (must be PREVIEW)", d.GetCurrentState())
 	}
 
 	d.logger.Info("📋 Preview action: %s", action)
@@ -726,25 +709,26 @@ func (d *Driver) PreviewAction(ctx context.Context, action string) error {
 	case PreviewActionContinue:
 		// Inject question to context and transition to AWAIT_USER
 		d.contextManager.AddMessage("user-action", "What changes would you like to make?")
-		d.currentState = StateAwaitUser
+		_ = d.TransitionTo(ctx, StateAwaitUser, nil)
 		d.logger.Info("🔄 User chose to continue interview - transitioned to AWAIT_USER")
 		return nil
 
 	case PreviewActionSubmit:
 		// Copy draft_spec_markdown to spec_markdown for sendSpecApprovalRequest
-		if draftSpec, ok := d.stateData["draft_spec_markdown"].(string); ok {
-			d.stateData["spec_markdown"] = draftSpec
+		stateData := d.GetStateData()
+		if draftSpec, ok := stateData["draft_spec_markdown"].(string); ok {
+			d.SetStateData("spec_markdown", draftSpec)
 		}
 
-		// Send REQUEST to architect (this must be done while holding lock)
+		// Send REQUEST to architect
 		err := d.sendSpecApprovalRequest(ctx)
 		if err != nil {
 			d.logger.Error("❌ Failed to send spec approval request: %v", err)
-			d.currentState = proto.StateError
+			_ = d.TransitionTo(ctx, proto.StateError, nil)
 			return fmt.Errorf("failed to send approval request: %w", err)
 		}
 
-		d.currentState = StateAwaitArchitect
+		_ = d.TransitionTo(ctx, StateAwaitArchitect, nil)
 		d.logger.Info("✅ Spec submitted to architect - transitioned to AWAIT_ARCHITECT")
 		return nil
 

@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,13 +33,13 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		planContent := c.getPlanApprovalContent(sm)
 		storyID := c.GetStoryID()                                               // Use the getter method I created
 		eff = effect.NewPlanApprovalEffectWithStoryID(planContent, "", storyID) // Task content is now in planContent template
-		c.contextManager.AddAssistantMessage("Plan review phase: requesting architect approval")
+		// Note: Don't add assistant message here - would violate alternation after submit_plan tool result
 
 	case proto.ApprovalTypeCompletion:
 		completionContent := c.getCompletionContent(sm)
 		storyID := c.GetStoryID()                                                           // Use the getter method I created
 		eff = effect.NewCompletionApprovalEffectWithStoryID(completionContent, "", storyID) // Files created is now in completionContent template
-		c.contextManager.AddAssistantMessage("Completion review phase: requesting architect approval")
+		// Note: Don't add assistant message here - would violate alternation after done tool result
 
 	default:
 		return proto.StateError, false, logx.Errorf("unsupported approval type: %s", approvalType)
@@ -82,9 +83,9 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 			}
 		}
 
-		// Add feedback to context for visibility
+		// Add feedback to context for visibility (as user role for proper alternation)
 		if approvalResult.Feedback != "" {
-			c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
+			c.contextManager.AddMessage("user", fmt.Sprintf("Architect feedback: %s", approvalResult.Feedback))
 		}
 
 		// Return to appropriate state based on approval type
@@ -100,7 +101,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		} else {
 			c.logger.Info("🧑‍💻 %s rejected, returning to PLANNING with feedback", approvalType)
 			if approvalResult.Feedback != "" {
-				c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
+				c.contextManager.AddMessage("user", fmt.Sprintf("Architect feedback: %s", approvalResult.Feedback))
 			}
 			return StatePlanning, false, nil
 		}
@@ -301,29 +302,50 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	c.contextManager.ResetForNewTemplate("todo_collection", prompt)
 
 	// Use toolloop for todo collection (single-pass with retry)
-	loop := toolloop.New(c.llmClient, c.logger)
+	loop := toolloop.New(c.LLMClient, c.logger)
 
-	cfg := &toolloop.Config{
+	cfg := &toolloop.Config[TodoCollectionResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		ToolProvider:   todoToolProvider,
 		MaxIterations:  2,    // One call + one retry if needed
 		MaxTokens:      4096, // Sufficient for todo list
 		AgentID:        c.agentID,
-		DebugLogging:   false,
+		DebugLogging:   true, // Enable verbose logging for debugging
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
 		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			c.logger.Error("📋 [TODO] Failed to collect todos after max iterations")
-			//nolint:goconst // "ERROR" signal used locally, not a project-wide constant
-			return "ERROR", logx.Errorf("LLM failed to provide todos after %d attempts", 2)
+		ExtractResult: ExtractTodoCollectionResult,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
+			HardLimit: 2,
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations (key: %s)", count, key)
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
+			},
 		},
 	}
 
-	signal, err := loop.Run(ctx, cfg)
+	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
+		// Check if this is an iteration limit error
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// For todo collection, hitting limit is a failure (not budget review)
+			c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations", iterErr.Iteration)
+			return proto.StateError, false, logx.Errorf("LLM failed to provide todos after %d attempts", iterErr.Iteration)
+		}
 		return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
+	}
+
+	// Process extracted todos
+	if len(result.Todos) > 0 {
+		c.logger.Info("📋 [TODO] Extracted %d todos from LLM", len(result.Todos))
+		// Convert string todos to TodoList
+		if err := c.processTodoCollectionResult(sm, &result); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to process todos")
+		}
 	}
 
 	// Handle terminal signals
@@ -331,8 +353,6 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	case "CODING":
 		// Todos collected successfully
 		return StateCoding, false, nil
-	case "ERROR":
-		return proto.StateError, false, logx.Errorf("todo collection failed")
 	case "":
 		// No signal - should not happen with MaxIterations=2
 		return proto.StateError, false, logx.Errorf("todo collection completed without signal")
@@ -358,42 +378,56 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, todoTools)
 }
 
-// checkTodoCollectionTerminal checks if todos_add was called and processes it.
-func (c *Coder) checkTodoCollectionTerminal(ctx context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
+// checkTodoCollectionTerminal checks if todos_add was called (signal only - no data extraction).
+func (c *Coder) checkTodoCollectionTerminal(_ context.Context, _ *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
 	// Check if todos_add was called
 	for i := range calls {
-		toolCall := &calls[i]
-		if toolCall.Name == tools.ToolTodosAdd {
-			c.logger.Info("📋 [TODO] todos_add tool called, processing result")
-
-			// Get the result for this tool call
-			if i >= len(results) {
-				c.logger.Error("📋 [TODO] No result available for todos_add call")
-				return "ERROR"
+		if calls[i].Name == tools.ToolTodosAdd {
+			// Check if result is successful
+			if i < len(results) {
+				if resultMap, ok := results[i].(map[string]any); ok {
+					if success, ok := resultMap["success"].(bool); ok && success {
+						c.logger.Info("📋 [TODO] todos_add succeeded, signaling CODING transition")
+						return "CODING"
+					}
+				}
 			}
-
-			result := results[i]
-			resultMap, ok := result.(map[string]any)
-			if !ok {
-				c.logger.Error("📋 [TODO] Result is not a map: %T", result)
-				return "ERROR"
-			}
-
-			// Process the result using handler
-			_, _, err := c.handleTodosAdd(ctx, sm, resultMap)
-			if err != nil {
-				c.logger.Error("📋 [TODO] Failed to process todos: %v", err)
-				// Don't return ERROR - let toolloop continue for retry
-				return ""
-			}
-
-			// Todos successfully collected - signal transition to CODING
-			c.logger.Info("📋 [TODO] Todos collected successfully, ready for CODING")
-			return "CODING"
+			// If we got here, the tool was called but failed or had invalid result
+			c.logger.Warn("📋 [TODO] todos_add called but result was unsuccessful")
+			return "" // Continue loop for retry
 		}
 	}
 
 	// No todos_add found - continue loop (will be retried or hit iteration limit)
 	c.logger.Warn("📋 [TODO] LLM did not call todos_add, continuing loop for retry")
 	return ""
+}
+
+// processTodoCollectionResult processes the extracted todos from todo collection phase.
+//
+//nolint:unparam // error return reserved for future validation logic
+func (c *Coder) processTodoCollectionResult(sm *agent.BaseStateMachine, result *TodoCollectionResult) error {
+	if len(result.Todos) == 0 {
+		return nil
+	}
+
+	// Create todo list from extracted todos
+	items := make([]TodoItem, len(result.Todos))
+	for i, todoDesc := range result.Todos {
+		items[i] = TodoItem{
+			Description: todoDesc,
+			Completed:   false,
+		}
+	}
+
+	todoList := &TodoList{
+		Items:   items,
+		Current: 0,
+	}
+
+	c.todoList = todoList
+	sm.SetStateData("todo_list", todoList)
+
+	c.logger.Info("📋 [TODO] Created todo list with %d items", len(result.Todos))
+	return nil
 }

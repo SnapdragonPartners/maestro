@@ -15,8 +15,9 @@ stateDiagram-v2
     [*] --> WAITING
 
     %% ---------- MAIN WORKFLOW ----------
-    WAITING       --> AWAIT_USER          : interview request from WebUI
-    WAITING       --> WORKING             : spec upload (bypass interview)
+    WAITING       --> WORKING             : interview request (bootstrap needed)
+    WAITING       --> AWAIT_USER          : interview request (no bootstrap)
+    WAITING       --> PREVIEW             : spec upload (bypass interview)
     WAITING       --> DONE                : shutdown signal
 
     AWAIT_USER    --> AWAIT_USER          : still waiting for user input
@@ -83,7 +84,9 @@ stateDiagram-v2
 
 PM can receive work in three ways:
 
-1. **New Interview**: User sends interview request via WebUI → PM.StartInterview() → AWAIT_USER
+1. **New Interview**: User sends interview request via WebUI → PM.StartInterview()
+   - If bootstrap needed: → WORKING (PM proactively sets up project)
+   - If no bootstrap: → AWAIT_USER (PM waits for user to describe feature)
 2. **Iteration**: Architect sends RESULT(needs_changes) → PM enters WORKING with feedback context
 3. **Direct Spec Upload**: User uploads spec file directly → PM.UploadSpec() → PREVIEW with pre-loaded spec
 
@@ -317,7 +320,8 @@ PM uses LLM reasoning to decide when to:
 | From State          | To State            | Trigger                                          |
 | ------------------- | ------------------- | ------------------------------------------------ |
 | WAITING             | WAITING             | Polling for state changes (no activity)          |
-| WAITING             | AWAIT_USER          | StartInterview() method called                   |
+| WAITING             | WORKING             | StartInterview() with bootstrap needed           |
+| WAITING             | AWAIT_USER          | StartInterview() with no bootstrap               |
 | WAITING             | PREVIEW             | UploadSpec() method called                       |
 | WAITING             | DONE                | Shutdown signal                                  |
 | AWAIT_USER          | AWAIT_USER          | Still waiting for user input                     |

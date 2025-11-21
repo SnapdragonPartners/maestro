@@ -365,6 +365,15 @@ func (bd *BootstrapDetector) detectMissingKnowledgeGraph() bool {
 
 // detectPlatform attempts to detect the project platform from files.
 func (bd *BootstrapDetector) detectPlatform() (string, float64) {
+	// If platform is already set in config, use it with 100% confidence
+	cfg, err := config.GetConfig()
+	if err == nil && cfg.Project.PrimaryPlatform != "" {
+		platform := cfg.Project.PrimaryPlatform
+		bd.logger.Debug("Using platform from config: %s (100%% confidence)", platform)
+		return platform, 1.0
+	}
+
+	// Otherwise, scan files to detect platform
 	// Platform indicators with their confidence weights
 	platformScores := map[string]float64{
 		platformGo:     0.0,

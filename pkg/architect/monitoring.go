@@ -30,7 +30,7 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 			return StateMonitoring, nil
 		}
 		// Store the question for processing in REQUEST state.
-		d.stateData["current_request"] = questionMsg
+		d.SetStateData("current_request", questionMsg)
 		return StateRequest, nil
 
 	case <-time.After(HeartbeatInterval):

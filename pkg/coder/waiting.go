@@ -13,7 +13,7 @@ import (
 // handleWaiting processes the WAITING state.
 func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	logx.DebugState(ctx, "coder", "enter", "WAITING")
-	c.contextManager.AddAssistantMessage("Waiting for task assignment")
+	// Note: Don't add fabricated assistant messages - only LLM responses should be assistant messages
 
 	// First check if we already have a task from previous processing.
 	taskContent, exists := sm.GetStateValue(string(stateDataKeyTaskContent))

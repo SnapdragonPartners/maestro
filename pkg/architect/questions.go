@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/tools"
 )
 
 const (
@@ -144,15 +146,32 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 		return fmt.Errorf("failed to render Q&A template: %w", err)
 	}
 
-	// Get LLM response using centralized helper
-	answer, err := qh.driver.callLLMWithTemplate(ctx, prompt)
+	// Reset context for this Q&A
+	templateName := fmt.Sprintf("qa-%s", pendingQ.ID)
+	qh.driver.contextManager.ResetForNewTemplate(templateName, prompt)
+
+	// Use toolloop with submit_reply tool to get structured answer
+	signal, result, err := toolloop.Run(qh.driver.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+		ContextManager: qh.driver.contextManager,
+		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
+		CheckTerminal:  qh.driver.checkTerminalTools,
+		ExtractResult:  ExtractSubmitReply,
+		MaxIterations:  10,
+		MaxTokens:      agent.ArchitectMaxTokens,
+		AgentID:        qh.driver.architectID,
+	})
+
 	if err != nil {
 		return fmt.Errorf("failed to get LLM response for question: %w", err)
 	}
 
+	if signal == "" {
+		return fmt.Errorf("no terminal signal received from question answering loop")
+	}
+
 	// Update question record.
 	now := time.Now().UTC()
-	pendingQ.Answer = answer
+	pendingQ.Answer = result.Response
 	pendingQ.Status = questionStatusAnswered
 	pendingQ.AnsweredAt = &now
 
