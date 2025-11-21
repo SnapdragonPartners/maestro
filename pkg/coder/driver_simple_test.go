@@ -145,7 +145,8 @@ func TestCoderToolProviders(t *testing.T) {
 
 func TestRuntimeOperations(t *testing.T) {
 	coder := createBasicCoder(t)
-	runtime := NewRuntime(coder)
+	replyCh := make(chan *proto.AgentMsg, 1)
+	runtime := NewRuntime(coder.dispatcher, coder.logger, coder.agentID, replyCh)
 
 	// Test GetAgentID
 	agentID := runtime.GetAgentID()
