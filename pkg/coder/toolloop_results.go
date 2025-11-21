@@ -144,9 +144,35 @@ func ExtractCodingResult(calls []agent.ToolCall, _ []any) (CodingResult, error) 
 func ExtractTodoCollectionResult(_ []agent.ToolCall, results []any) (TodoCollectionResult, error) {
 	result := TodoCollectionResult{}
 
+	// Debug: log what we're extracting from
+	if len(results) == 0 {
+		return TodoCollectionResult{}, fmt.Errorf("no tool results to extract todos from")
+	}
+
+	// DEBUG: Print what we actually received
+	fmt.Printf("DEBUG ExtractTodoCollectionResult: received %d results\n", len(results))
+	for i, r := range results {
+		fmt.Printf("DEBUG result[%d] type=%T value=%+v\n", i, r, r)
+	}
+
 	for i := range results {
 		resultMap, ok := results[i].(map[string]any)
 		if !ok {
+			// Debug: result is not a map - check if it's a slice
+			if todosArray, ok := results[i].([]any); ok {
+				// Direct array of todos (legacy format?)
+				todos := make([]string, 0, len(todosArray))
+				for _, todoItem := range todosArray {
+					if todoStr, ok := todoItem.(string); ok {
+						todos = append(todos, todoStr)
+					}
+				}
+				if len(todos) > 0 {
+					result.Todos = todos
+					result.Signal = SignalTodoCollected // "CODING"
+					return result, nil
+				}
+			}
 			continue
 		}
 
@@ -157,19 +183,30 @@ func ExtractTodoCollectionResult(_ []agent.ToolCall, results []any) (TodoCollect
 
 		// Extract todos from todos_add result
 		if todosRaw, ok := resultMap["todos"]; ok {
-			if todosArray, ok := todosRaw.([]any); ok {
-				todos := make([]string, 0, len(todosArray))
-				for _, todoItem := range todosArray {
+			// Use type switch to handle different formats
+			switch v := todosRaw.(type) {
+			case []any:
+				todos := make([]string, 0, len(v))
+				for _, todoItem := range v {
 					if todoStr, ok := todoItem.(string); ok {
 						todos = append(todos, todoStr)
 					}
 				}
-				result.Todos = todos
-				result.Signal = SignalTodoCollected // "CODING"
-				return result, nil
+				if len(todos) > 0 {
+					result.Todos = todos
+					result.Signal = SignalTodoCollected // "CODING"
+					return result, nil
+				}
+			case []string:
+				if len(v) > 0 {
+					result.Todos = v
+					result.Signal = SignalTodoCollected
+					return result, nil
+				}
 			}
 		}
 	}
 
-	return TodoCollectionResult{}, fmt.Errorf("no todos found in todo collection phase")
+	// If we got here, we found results but no todos
+	return TodoCollectionResult{}, fmt.Errorf("no todos found in todo collection phase (found %d results, but no valid todos)", len(results))
 }

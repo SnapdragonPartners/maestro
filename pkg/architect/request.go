@@ -853,7 +853,8 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 				// Set escalation state data for state machine
 				d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
 				d.SetStateData(StateKeyEscalationStoryID, storyID)
-				return fmt.Errorf("maximum iterations exceeded for approval - escalation required")
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
 			},
 		},
 		MaxIterations: 20, // Allow multiple inspection iterations
@@ -862,6 +863,13 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	})
 
 	if err != nil {
+		// Check if this is an iteration limit error (normal escalation path)
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// OnHardLimit already stored escalation state data
+			d.logger.Info("📊 Iteration limit reached (%d iterations), returning escalation sentinel", iterErr.Iteration)
+			return nil, ErrEscalationTriggered
+		}
 		return nil, fmt.Errorf("iterative approval failed: %w", err)
 	}
 

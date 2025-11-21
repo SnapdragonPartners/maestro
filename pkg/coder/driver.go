@@ -567,35 +567,6 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	return coder, nil
 }
 
-// handleLLMResponse handles LLM responses with proper empty response logic (same as architect).
-func (c *Coder) handleLLMResponse(resp agent.CompletionResponse) error {
-	if resp.Content != "" {
-		// Case 1: Normal response with content
-		c.contextManager.AddAssistantMessage(resp.Content)
-		// Clear empty response flag on successful response
-		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
-		return nil
-	}
-
-	if len(resp.ToolCalls) > 0 {
-		// Case 2: Pure tool use - add placeholder for conversational continuity
-		toolNames := make([]string, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolNames[i] = resp.ToolCalls[i].Name
-		}
-		placeholder := fmt.Sprintf("Tool %s invoked", strings.Join(toolNames, ", "))
-		c.contextManager.AddAssistantMessage(placeholder)
-		// Clear empty response flag on successful response with tool calls
-		c.BaseStateMachine.SetStateData(KeyEmptyResponse, false)
-		return nil
-	}
-
-	// Case 3: True empty response - this is an error condition
-	// DO NOT add any message to context - let upstream handle the error
-	c.logger.Error("🚨 TRUE EMPTY RESPONSE: No content and no tool calls")
-	return logx.Errorf("LLM returned empty response with no content and no tool calls")
-}
-
 // getRecentToolActivity returns a summary of the last N tool calls and their results.
 func (c *Coder) getRecentToolActivity(limit int) string {
 	if c.contextManager == nil {

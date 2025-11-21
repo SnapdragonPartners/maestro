@@ -27,6 +27,20 @@ type ExtractFunc[T any] func(calls []agent.ToolCall, results []any) (T, error)
 // It should handle escalation (e.g., notify humans, post to chat) and return an error.
 type EscalationHandler func(ctx context.Context, key string, count int) error
 
+// IterationLimitError is returned when the hard iteration limit is exceeded.
+// This is a normal termination condition (like io.EOF), not a failure.
+// Callers should check for this error type and handle it as a control-flow branch.
+type IterationLimitError struct {
+	Key       string
+	Limit     int
+	Iteration int
+}
+
+func (e *IterationLimitError) Error() string {
+	return fmt.Sprintf("iteration limit (%d) exceeded for key %q at iteration %d",
+		e.Limit, e.Key, e.Iteration)
+}
+
 // EscalationConfig defines iteration limits and escalation behavior.
 //
 //nolint:govet // Function pointers are logically grouped with their limits
@@ -348,7 +362,12 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) (signal strin
 						return "", zero, fmt.Errorf("escalation handler failed: %w", err)
 					}
 				}
-				return "", zero, fmt.Errorf("hard iteration limit (%d) exceeded for key '%s'", cfg.Escalation.HardLimit, cfg.Escalation.Key)
+				// Return typed error for explicit control flow
+				return "", zero, &IterationLimitError{
+					Key:       cfg.Escalation.Key,
+					Limit:     cfg.Escalation.HardLimit,
+					Iteration: currentIteration,
+				}
 			}
 		}
 

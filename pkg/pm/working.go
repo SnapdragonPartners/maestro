@@ -2,6 +2,7 @@ package pm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -241,10 +242,40 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			return d.checkTerminalTools(ctx, calls, results)
 		},
 		ExtractResult: ExtractPMWorkingResult,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("pm_working_%s", d.pmID),
+			SoftLimit: 8,  // Warn at 8 iterations
+			HardLimit: 10, // Require user status update at 10 iterations
+			OnSoftLimit: func(count int) {
+				d.logger.Warn("⚠️  PM iteration soft limit reached (%d iterations)", count)
+			},
+			OnHardLimit: func(_ context.Context, key string, count int) error {
+				d.logger.Error("❌ PM iteration hard limit reached (%d iterations) - must call await_user with status", count)
+				d.SetStateData("iteration_limit_reached", true)
+				d.SetStateData("iteration_limit_key", key)
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
+			},
+		},
 	}
 
 	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
+		// Check if this is an iteration limit error
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// PM must have called await_user with a status update before hitting limit
+			// Check if signal indicates await_user was called
+			if signal == SignalAwaitUser || result.AwaitUser {
+				d.logger.Info("✅ PM reached iteration limit but provided status update via await_user")
+				// Return AWAIT_USER signal - valid completion with status update
+				return SignalAwaitUser, nil
+			}
+
+			// PM hit limit without providing status - this is an error
+			d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling await_user", iterErr.Iteration)
+			return "", fmt.Errorf("PM must call await_user with status update before iteration limit: %w", iterErr)
+		}
 		return "", fmt.Errorf("toolloop execution failed: %w", err)
 	}
 

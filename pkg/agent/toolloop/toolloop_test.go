@@ -407,7 +407,8 @@ func TestIterationLimit(t *testing.T) {
 				if count != 3 {
 					t.Errorf("expected count 3, got %d", count)
 				}
-				return errors.New("hard limit reached")
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
 			},
 		},
 	}
@@ -415,6 +416,24 @@ func TestIterationLimit(t *testing.T) {
 	signal, _, err := toolloop.Run(loop, ctx, cfg)
 	if err == nil {
 		t.Fatal("expected error for hard limit exceeded")
+	}
+
+	// Verify we got the typed IterationLimitError
+	var iterErr *toolloop.IterationLimitError
+	if !errors.As(err, &iterErr) {
+		t.Fatalf("expected IterationLimitError, got %T: %v", err, err)
+	}
+
+	if iterErr.Key != "test_escalation" {
+		t.Errorf("expected IterationLimitError.Key='test_escalation', got %q", iterErr.Key)
+	}
+
+	if iterErr.Limit != 3 {
+		t.Errorf("expected IterationLimitError.Limit=3, got %d", iterErr.Limit)
+	}
+
+	if iterErr.Iteration != 3 {
+		t.Errorf("expected IterationLimitError.Iteration=3, got %d", iterErr.Iteration)
 	}
 
 	if !hardLimitCalled {
@@ -820,20 +839,35 @@ func TestEscalationHardLimit(t *testing.T) {
 				hardLimitCalled = true
 				hardLimitKey = key
 				hardLimitCount = count
-				return errors.New("escalation required")
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
 			},
 		},
 	}
 
 	signal, _, err := toolloop.Run(loop, ctx, cfg)
 
-	// Should error from OnHardLimit
+	// Should get IterationLimitError
 	if err == nil {
-		t.Fatal("expected error from OnHardLimit, got nil")
+		t.Fatal("expected IterationLimitError, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "escalation required") {
-		t.Errorf("expected escalation error, got %v", err)
+	// Verify we got the typed IterationLimitError
+	var iterErr *toolloop.IterationLimitError
+	if !errors.As(err, &iterErr) {
+		t.Fatalf("expected IterationLimitError, got %T: %v", err, err)
+	}
+
+	if iterErr.Key != "test_hard_limit" {
+		t.Errorf("expected IterationLimitError.Key='test_hard_limit', got %q", iterErr.Key)
+	}
+
+	if iterErr.Limit != 5 {
+		t.Errorf("expected IterationLimitError.Limit=5, got %d", iterErr.Limit)
+	}
+
+	if iterErr.Iteration != 5 {
+		t.Errorf("expected IterationLimitError.Iteration=5, got %d", iterErr.Iteration)
 	}
 
 	if !hardLimitCalled {

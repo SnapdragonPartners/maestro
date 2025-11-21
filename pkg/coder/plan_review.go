@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,13 +33,13 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		planContent := c.getPlanApprovalContent(sm)
 		storyID := c.GetStoryID()                                               // Use the getter method I created
 		eff = effect.NewPlanApprovalEffectWithStoryID(planContent, "", storyID) // Task content is now in planContent template
-		c.contextManager.AddAssistantMessage("Plan review phase: requesting architect approval")
+		// Note: Don't add assistant message here - would violate alternation after submit_plan tool result
 
 	case proto.ApprovalTypeCompletion:
 		completionContent := c.getCompletionContent(sm)
 		storyID := c.GetStoryID()                                                           // Use the getter method I created
 		eff = effect.NewCompletionApprovalEffectWithStoryID(completionContent, "", storyID) // Files created is now in completionContent template
-		c.contextManager.AddAssistantMessage("Completion review phase: requesting architect approval")
+		// Note: Don't add assistant message here - would violate alternation after done tool result
 
 	default:
 		return proto.StateError, false, logx.Errorf("unsupported approval type: %s", approvalType)
@@ -82,9 +83,9 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 			}
 		}
 
-		// Add feedback to context for visibility
+		// Add feedback to context for visibility (as user role for proper alternation)
 		if approvalResult.Feedback != "" {
-			c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
+			c.contextManager.AddMessage("user", fmt.Sprintf("Architect feedback: %s", approvalResult.Feedback))
 		}
 
 		// Return to appropriate state based on approval type
@@ -100,7 +101,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 		} else {
 			c.logger.Info("🧑‍💻 %s rejected, returning to PLANNING with feedback", approvalType)
 			if approvalResult.Feedback != "" {
-				c.contextManager.AddMessage("architect", fmt.Sprintf("Feedback: %s", approvalResult.Feedback))
+				c.contextManager.AddMessage("user", fmt.Sprintf("Architect feedback: %s", approvalResult.Feedback))
 			}
 			return StatePlanning, false, nil
 		}
@@ -310,7 +311,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		MaxIterations:  2,    // One call + one retry if needed
 		MaxTokens:      4096, // Sufficient for todo list
 		AgentID:        c.agentID,
-		DebugLogging:   false,
+		DebugLogging:   true, // Enable verbose logging for debugging
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
 		},
@@ -320,13 +321,21 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 			HardLimit: 2,
 			OnHardLimit: func(_ context.Context, key string, count int) error {
 				c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations (key: %s)", count, key)
-				return logx.Errorf("LLM failed to provide todos after %d attempts", count)
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
 			},
 		},
 	}
 
 	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
+		// Check if this is an iteration limit error
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// For todo collection, hitting limit is a failure (not budget review)
+			c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations", iterErr.Iteration)
+			return proto.StateError, false, logx.Errorf("LLM failed to provide todos after %d attempts", iterErr.Iteration)
+		}
 		return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
 	}
 

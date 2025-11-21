@@ -29,7 +29,7 @@ func NewChatPostTool(chatService *chat.Service) *ChatPostTool {
 func (c *ChatPostTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "chat_post",
-		Description: "Post a message to the agent chat channel. Use this to communicate with other agents or ask questions in the shared chat.",
+		Description: "Post a status update or non-blocking message to the chat channel. Does NOT wait for response. For questions that need user input before proceeding, use chat_ask_user instead.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -50,10 +50,11 @@ func (c *ChatPostTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ChatPostTool) PromptDocumentation() string {
-	return `- **chat_post** - Post a message to the agent chat channel
+	return `- **chat_post** - Post a status update or non-blocking message
   - Parameters: text (required)
-  - Use to communicate with other agents or ask questions in shared chat
-  - Messages are visible to all agents in the current session`
+  - Does NOT wait for response - use for progress updates, status messages
+  - For questions that need user input, use chat_ask_user instead (it posts AND waits)
+  - Messages are visible to all agents and users in the current session`
 }
 
 // Exec posts a message to the chat channel.

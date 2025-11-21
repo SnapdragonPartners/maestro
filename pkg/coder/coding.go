@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -150,13 +151,22 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 				// Set story ID for dispatcher validation
 				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
 				sm.SetStateData("budget_review_effect", budgetEff)
-				return fmt.Errorf("max iterations reached - budget review required")
+				// Return nil so toolloop returns IterationLimitError (not this error)
+				return nil
 			},
 		},
 	}
 
 	signal, result, err := toolloop.Run(loop, ctx, cfg)
 	if err != nil {
+		// Check if this is an iteration limit error (normal escalation path)
+		var iterErr *toolloop.IterationLimitError
+		if errors.As(err, &iterErr) {
+			// OnHardLimit already stored BudgetReviewEffect in state
+			c.logger.Info("📊 Iteration limit reached (%d iterations), transitioning to BUDGET_REVIEW", iterErr.Iteration)
+			return StateBudgetReview, false, nil
+		}
+
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(err) {
 			req := agent.CompletionRequest{MaxTokens: 8192}
@@ -332,8 +342,8 @@ func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt stri
 	sm.SetStateData(KeyOrigin, string(originState))
 	sm.SetStateData("budget_review_effect", budgetReviewEff)
 
-	// Add requesting permission message to preserve alternation
-	c.contextManager.AddAssistantMessage("requesting permission to continue")
+	// Note: Don't add fabricated assistant messages - only LLM responses should be assistant messages
+	// The context will naturally have proper alternation from the previous LLM call
 
 	c.logger.Info("🧑‍💻 Empty response in %s - escalating to budget review", originState)
 	return StateBudgetReview, false, nil
