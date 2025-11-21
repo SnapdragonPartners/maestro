@@ -1341,3 +1341,86 @@ case toolloop.OutcomeExtractionError:
 - ✅ Cleaner extractor contracts - clear separation of error cases
 
 **Next Phase:** Cleanup (§2.6) - remove dead code and finalize refactor
+
+---
+
+### Phase 5: Cleanup (§2.6) - ✅ COMPLETED
+
+**PR:** `refactor/cleanup-dead-code`
+
+**Status:** Implemented and tested
+
+**Changes:**
+- Removed dead code identified in the proposal (§2.6)
+- Removed unused functions and constants across PM, Coder, and Architect
+- Fixed incorrect `//nolint:unused` comments
+
+**Dead Code Removed:**
+
+1. **Coder Package** (`pkg/coder/`):
+   - ❌ Removed `loadTodoListFromState` - Never called, marked with `//nolint:unused`
+   - ❌ Removed `getExplorationHistory()` - Always returned empty `[]string{}`
+   - ❌ Removed `getFilesExamined()` - Always returned empty `[]string{}`
+   - ❌ Removed `getCurrentFindings()` - Always returned empty `map[string]any{}`
+   - ❌ Removed test `TestCoderHelperFunctions` - Only tested the above placeholder functions
+   - ✅ Kept `joinStrings` - Actually used by `getTodoListStatus` (removed incorrect nolint comment)
+   - ✅ Fixed `getTodoListStatus` - Removed incorrect `//nolint:unused` comment (function is actually used in coding.go)
+
+2. **PM Package** (`pkg/pm/`):
+   - ❌ Removed `renderWorkingPrompt()` - Never called, 43 lines of dead template rendering code
+
+3. **Architect Package** (`pkg/architect/`):
+   - ❌ Removed `acceptanceCriteriaHeader` constant - Never referenced
+
+**Impact:**
+
+- **Lines removed:** ~70 lines of truly dead code
+- **Files modified:** 4 files
+  - `pkg/coder/planning.go` - Removed 3 placeholder helper functions
+  - `pkg/coder/todo_handlers.go` - Removed unused function, fixed nolint comments
+  - `pkg/coder/driver_simple_test.go` - Removed test for dead helpers
+  - `pkg/pm/working.go` - Removed unused rendering function
+  - `pkg/architect/driver.go` - Removed unused constant
+
+**Design Decisions:**
+
+1. **Conservative Approach:** Only removed code explicitly identified in proposal + obvious unused items found during scan
+2. **Preserved Active Code:** Kept `joinStrings` and `getTodoListStatus` despite incorrect nolint markers because they ARE used
+3. **Test Cleanup:** Removed legacy test that only tested placeholder functions
+4. **No Functional Changes:** All removals are pure dead code - no behavioral changes
+
+**Why These Were Dead:**
+
+- **Exploration Helpers:** Placeholders for future feature that was never implemented. Always returned empty structures.
+- **loadTodoListFromState:** Intended for state restoration but never wired into initialization flow.
+- **renderWorkingPrompt:** Template rendering function that was superseded by toolloop-based PM working flow.
+- **acceptanceCriteriaHeader:** Leftover constant from refactoring, no longer used in any templates.
+
+**Test Results:**
+- ✅ All tests pass
+- ✅ Full build with linting succeeds
+- ✅ No compilation errors or warnings
+- ✅ No behavioral changes
+
+**Benefits:**
+
+1. **Reduced Codebase Size:** ~70 lines of dead code eliminated
+2. **Clearer Intent:** Removed misleading nolint comments that suggested code would be used "next"
+3. **Easier Maintenance:** Fewer functions to maintain and reason about
+4. **Better Code Quality:** Removes confusion about what code is actually active vs placeholder
+
+**Files Modified (4 total):**
+- `pkg/coder/planning.go` - Removed 3 placeholder helpers
+- `pkg/coder/todo_handlers.go` - Removed unused function + fixed comments
+- `pkg/coder/driver_simple_test.go` - Removed obsolete test
+- `pkg/pm/working.go` - Removed unused rendering function
+- `pkg/architect/driver.go` - Removed unused constant
+
+**Outcomes:**
+- ✅ All dead code from proposal removed
+- ✅ Incorrect nolint comments fixed
+- ✅ Codebase is cleaner and more maintainable
+- ✅ No functional regressions
+- ✅ Foundation for future feature work without misleading placeholders
+
+**Next Steps:** Review and merge Dependabot dependency updates

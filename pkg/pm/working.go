@@ -176,50 +176,6 @@ func (d *Driver) setupInterviewContext() error {
 	return nil
 }
 
-// renderWorkingPrompt renders the PM working template with current state.
-//
-//nolint:unused // Reserved for future PM template rendering functionality
-func (d *Driver) renderWorkingPrompt() (string, error) {
-	// Get state data
-	stateData := d.GetStateData()
-
-	// Get conversation history from state
-	conversationHistory, _ := stateData["conversation"].([]map[string]string)
-	expertise, _ := stateData["expertise"].(string)
-	if expertise == "" {
-		expertise = DefaultExpertise
-	}
-
-	// Get architect feedback if present
-	architectFeedback, _ := stateData["architect_feedback"].(string)
-
-	// Get draft spec if present
-	draftSpec, _ := stateData["draft_spec"].(string)
-
-	// Build template data
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"Expertise":           expertise,
-			"ConversationHistory": conversationHistory,
-			"ArchitectFeedback":   architectFeedback,
-			"DraftSpec":           draftSpec,
-		},
-	}
-
-	// Render template with user instructions
-	prompt, err := d.renderer.RenderWithUserInstructions(
-		templates.PMWorkingTemplate,
-		templateData,
-		d.workDir,
-		"PM",
-	)
-	if err != nil {
-		return "", fmt.Errorf("failed to render PM working template: %w", err)
-	}
-
-	return prompt, nil
-}
-
 // callLLMWithTools calls the LLM with PM tools in an iteration loop.
 // Similar to architect's callLLMWithTools but with PM-specific tool handling.
 //

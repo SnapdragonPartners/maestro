@@ -22,11 +22,8 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-// Story content constants.
+// Tool signal constants.
 const (
-	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
-
-	// Tool signal constants.
 	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
 	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 	signalReviewComplete        = "REVIEW_COMPLETE"

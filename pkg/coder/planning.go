@@ -315,11 +315,6 @@ func (c *Coder) processPlanningResult(sm *agent.BaseStateMachine, result *Planni
 	return nil
 }
 
-// Context management placeholder helper methods for planning.
-func (c *Coder) getExplorationHistory() any { return []string{} }
-func (c *Coder) getFilesExamined() any      { return []string{} }
-func (c *Coder) getCurrentFindings() any    { return map[string]any{} }
-
 // retrieveKnowledgePack extracts key terms from story content and retrieves relevant knowledge.
 func (c *Coder) retrieveKnowledgePack(_ context.Context, taskContent string) (string, error) {
 	// Parse story content to extract description and acceptance criteria
