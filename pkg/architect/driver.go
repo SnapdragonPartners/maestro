@@ -85,8 +85,7 @@ type Driver struct {
 	questionsCh             chan *proto.AgentMsg        // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh                 <-chan *proto.AgentMsg      // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request // Channel for database operations
-	architectID             string
-	workDir                 string // Workspace directory
+	workDir                 string                      // Workspace directory
 }
 
 // ChatServiceInterface defines the interface for chat operations needed by architect.
@@ -153,7 +152,6 @@ func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, w
 
 	return &Driver{
 		BaseStateMachine:   sm,
-		architectID:        architectID,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
 		toolLoop:           nil, // Set via SetLLMClient
 		renderer:           renderer,
@@ -262,13 +260,13 @@ func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateCha
 func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
 	// Validate required channels are set
 	if d.questionsCh == nil {
-		return fmt.Errorf("architect %s: questions channel not set (call SetChannels before Initialize)", d.architectID)
+		return fmt.Errorf("architect %s: questions channel not set (call SetChannels before Initialize)", d.GetAgentID())
 	}
 	if d.replyCh == nil {
-		return fmt.Errorf("architect %s: reply channel not set (call SetChannels before Initialize)", d.architectID)
+		return fmt.Errorf("architect %s: reply channel not set (call SetChannels before Initialize)", d.GetAgentID())
 	}
 	if d.BaseStateMachine == nil {
-		return fmt.Errorf("architect %s: BaseStateMachine not initialized", d.architectID)
+		return fmt.Errorf("architect %s: BaseStateMachine not initialized", d.GetAgentID())
 	}
 
 	// Verify state notification channel is set on BaseStateMachine
@@ -279,7 +277,7 @@ func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
 
 	// Start fresh - no filesystem state persistence
 	// State management is now handled by SQLite for system-level resume functionality
-	d.logger.Info("Starting architect fresh for ID: %s (filesystem state persistence removed)", d.architectID)
+	d.logger.Info("Starting architect fresh for ID: %s (filesystem state persistence removed)", d.GetAgentID())
 
 	d.logger.Info("Architect initialized in state: %s", d.GetCurrentState())
 
@@ -288,7 +286,7 @@ func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
 
 // GetID returns the architect ID (implements Agent interface).
 func (d *Driver) GetID() string {
-	return d.architectID
+	return d.GetAgentID()
 }
 
 // GetStoryID returns the current story ID (implements StateProvider interface for metrics).
@@ -668,7 +666,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			// Also dispatch the story back to the work queue (like DISPATCHING state does)
 			if story, exists := d.queue.stories[requeueRequest.StoryID]; exists && story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
-				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
+				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
 				// Build story payload
 				payloadData := map[string]any{
@@ -857,7 +855,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		}
 
 		// Add agent_id to context for tools that need it
-		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.architectID)
+		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.GetAgentID())
 
 		// Execute tool
 		startTime := time.Now()
@@ -872,7 +870,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 				storyID = sidStr
 			}
 		}
-		agent.LogToolExecution(toolCall, result, err, duration, d.architectID, storyID, d.persistenceChannel)
+		agent.LogToolExecution(toolCall, result, err, duration, d.GetAgentID(), storyID, d.persistenceChannel)
 
 		if err != nil {
 			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)

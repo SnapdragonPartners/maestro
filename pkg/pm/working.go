@@ -235,7 +235,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		ToolProvider:   d.toolProvider, // PM's tool provider
 		MaxIterations:  10,
 		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
-		AgentID:        d.pmID,                   // Agent ID for tool context
+		AgentID:        d.GetAgentID(),           // Agent ID for tool context
 		DebugLogging:   true,                     // Enable for debugging: shows messages sent to LLM
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			// Process results and check for terminal signals
@@ -243,7 +243,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		},
 		ExtractResult: ExtractPMWorkingResult,
 		Escalation: &toolloop.EscalationConfig{
-			Key:       fmt.Sprintf("pm_working_%s", d.pmID),
+			Key:       fmt.Sprintf("pm_working_%s", d.GetAgentID()),
 			SoftLimit: 8,  // Warn at 8 iterations
 			HardLimit: 10, // Require user status update at 10 iterations
 			OnSoftLimit: func(count int) {
@@ -423,7 +423,7 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	requestMsg := &proto.AgentMsg{
 		ID:        fmt.Sprintf("pm-spec-req-%d", time.Now().UnixNano()),
 		Type:      proto.MsgTypeREQUEST,
-		FromAgent: d.pmID,
+		FromAgent: d.GetAgentID(),
 		ToAgent:   "architect-001", // TODO: Get architect ID from config or dispatcher
 		Payload:   proto.NewApprovalRequestPayload(approvalPayload),
 	}

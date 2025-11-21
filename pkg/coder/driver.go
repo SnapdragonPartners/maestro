@@ -5,7 +5,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,9 +42,7 @@ const (
 //
 //nolint:govet // fieldalignment: keeping current field order for code clarity
 type Coder struct {
-	*agent.BaseStateMachine // Directly embed state machine (provides llmClient field)
-	agentConfig             *agent.Config
-	agentID                 string
+	*agent.BaseStateMachine // Directly embed state machine (provides llmClient field and GetAgentID())
 	contextManager          *contextmgr.ContextManager
 	renderer                *templates.Renderer
 	logger                  *logx.Logger
@@ -84,7 +81,7 @@ func NewRuntime(dispatcher *dispatch.Dispatcher, logger *logx.Logger, agentID st
 
 // ExecuteEffect executes an effect using the coder's runtime environment.
 func (c *Coder) ExecuteEffect(ctx context.Context, eff effect.Effect) (any, error) {
-	runtime := NewRuntime(c.dispatcher, c.logger, c.agentID, c.replyCh)
+	runtime := NewRuntime(c.dispatcher, c.logger, c.GetAgentID(), c.replyCh)
 	result, err := eff.Execute(ctx, runtime)
 	if err != nil {
 		return nil, fmt.Errorf("effect execution failed: %w", err)
@@ -403,7 +400,7 @@ type Question struct {
 
 // GetID implements the dispatch.Agent interface.
 func (c *Coder) GetID() string {
-	return c.agentConfig.ID
+	return c.GetAgentID()
 }
 
 // SetChannels implements the ChannelReceiver interface for dispatcher attachment.
@@ -461,32 +458,12 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		fmt.Printf("ERROR: Failed to initialize coder template renderer: %v\n", err)
 	}
 
-	// Create agent context with logger.
-	agentCtx := &agent.Context{
-		Context: context.Background(),
-		Logger:  log.New(os.Stdout, fmt.Sprintf("[%s] ", agentID), log.LstdFlags),
-		Store:   nil, // State persistence handled by SQLite
-		WorkDir: workDir,
-	}
-
 	// Get model name from config for context manager
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 	modelName := cfg.Agents.CoderModel
-
-	// Create agent config.
-	agentCfg := &agent.Config{
-		ID:      agentID,
-		Type:    "coder",
-		Context: *agentCtx,
-		LLMConfig: &agent.LLMConfig{
-			MaxContextTokens: getMaxContextTokens(modelName),
-			MaxOutputTokens:  getMaxReplyTokens(modelName),
-			CompactIfOver:    2000, // Default buffer
-		},
-	}
 
 	// Create state machine
 	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, nil, CoderTransitions)
@@ -496,8 +473,6 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 
 	coder := &Coder{
 		BaseStateMachine:    sm,
-		agentConfig:         agentCfg,
-		agentID:             agentID,
 		contextManager:      contextmgr.NewContextManagerWithModel(modelName),
 		renderer:            renderer,
 		workDir:             workDir,
@@ -826,7 +801,7 @@ const agentIDKey contextKeyAgentID = "agent_id"
 // ProcessTask initiates task processing with the new agent foundation.
 func (c *Coder) ProcessTask(ctx context.Context, taskContent string) error {
 	// Add agent ID to context for debug logging.
-	ctx = context.WithValue(ctx, agentIDKey, c.agentConfig.ID)
+	ctx = context.WithValue(ctx, agentIDKey, c.GetAgentID())
 
 	logx.DebugFlow(ctx, "coder", "task-processing", "starting", fmt.Sprintf("content=%d chars", len(taskContent)))
 
@@ -1398,5 +1373,5 @@ func (c *Coder) logToolExecution(toolCall *agent.ToolCall, result any, execErr e
 	storyIDStr, _ := stateData["story_id"].(string)
 
 	// Delegate to shared implementation in pkg/agent
-	agent.LogToolExecution(toolCall, result, execErr, duration, c.agentID, storyIDStr, c.persistenceChannel)
+	agent.LogToolExecution(toolCall, result, execErr, duration, c.GetAgentID(), storyIDStr, c.persistenceChannel)
 }

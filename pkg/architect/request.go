@@ -227,7 +227,7 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 			ExtractResult:  ExtractSubmitReply,
 			MaxIterations:  10,
 			MaxTokens:      agent.ArchitectMaxTokens,
-			AgentID:        d.architectID,
+			AgentID:        d.GetAgentID(),
 		})
 
 		if err == nil {
@@ -237,7 +237,7 @@ func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.A
 	}
 
 	// Create RESPONSE using unified protocol.
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, questionMsg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), questionMsg.FromAgent)
 	response.ParentMsgID = questionMsg.ID
 
 	// Set typed question response payload
@@ -366,7 +366,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 		Type:       approvalType,
 		Status:     proto.ApprovalStatusApproved,
 		Feedback:   "", // Will be set after status determination and formatting
-		ReviewedBy: d.architectID,
+		ReviewedBy: d.GetAgentID(),
 		ReviewedAt: time.Now().UTC(),
 	}
 
@@ -481,7 +481,7 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	}
 
 	// Create RESPONSE using unified protocol with typed approval response payload.
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
 
 	// Set typed approval response payload
@@ -558,7 +558,7 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 		Type:       approvalType,
 		Status:     status,
 		Feedback:   feedback,
-		ReviewedBy: d.architectID,
+		ReviewedBy: d.GetAgentID(),
 		ReviewedAt: time.Now().UTC(),
 	}
 
@@ -571,7 +571,7 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 	}
 
 	// Create response message
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
 	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
 
@@ -859,7 +859,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		},
 		MaxIterations: 20, // Allow multiple inspection iterations
 		MaxTokens:     agent.ArchitectMaxTokens,
-		AgentID:       d.architectID,
+		AgentID:       d.GetAgentID(),
 	})
 
 	if err != nil {
@@ -933,7 +933,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		MaxIterations:  3, // Allow nudge retries
 		MaxTokens:      agent.ArchitectMaxTokens,
 		SingleTurn:     true, // Enforce single-turn completion
-		AgentID:        d.architectID,
+		AgentID:        d.GetAgentID(),
 	})
 
 	if err != nil {
@@ -1007,7 +1007,7 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 		Type:       approvalPayload.ApprovalType,
 		Status:     status,
 		Feedback:   feedback,
-		ReviewedBy: d.architectID,
+		ReviewedBy: d.GetAgentID(),
 		ReviewedAt: time.Now().UTC(),
 	}
 
@@ -1021,7 +1021,7 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 	}
 
 	// Create response message
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
 	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
 
@@ -1201,7 +1201,7 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	answerPayload.Metadata[proto.KeyExplorationMethod] = "iterative_with_tools"
 
 	// Create response message
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, requestMsg.FromAgent)
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
 	response.ParentMsgID = requestMsg.ID
 	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
 

@@ -147,7 +147,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		ToolProvider:   c.planningToolProvider,
 		MaxIterations:  maxPlanningIterations,
 		MaxTokens:      8192, // Increased for exploration
-		AgentID:        c.agentID,
+		AgentID:        c.GetAgentID(),
 		DebugLogging:   false,
 		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
 			return c.checkPlanningTerminal(ctx, sm, calls, results)

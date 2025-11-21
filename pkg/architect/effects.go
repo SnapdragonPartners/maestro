@@ -94,7 +94,7 @@ func (e *DispatchStoryEffect) Execute(_ context.Context, runtime effect.Runtime)
 
 // ExecuteEffect executes a single Effect using the architect's runtime.
 func (d *Driver) ExecuteEffect(ctx context.Context, eff effect.Effect) error {
-	runtime := NewRuntime(d.dispatcher, d.logger, d.architectID, d.replyCh)
+	runtime := NewRuntime(d.dispatcher, d.logger, d.GetAgentID(), d.replyCh)
 	_, err := eff.Execute(ctx, runtime)
 	if err != nil {
 		return fmt.Errorf("effect execution failed: %w", err)

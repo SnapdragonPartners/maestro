@@ -105,7 +105,7 @@ func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 // sendStoryToDispatcher sends a story to the dispatcher.
 func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) error {
 	// Create story message for the dispatcher ("coder" targets any available coder).
-	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
+	storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
 	// Build story payload
 	payloadData := make(map[string]any)

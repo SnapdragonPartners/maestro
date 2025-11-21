@@ -40,7 +40,7 @@ func (d *Driver) handleMergeRequest(ctx context.Context, request *proto.AgentMsg
 	mergeResult, err := d.attemptPRMerge(ctx, prURLStr, branchNameStr, storyIDStr)
 
 	// Create RESPONSE using unified protocol.
-	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.architectID, request.FromAgent)
+	resultMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), request.FromAgent)
 	resultMsg.ParentMsgID = request.ID
 
 	// Copy story_id from request metadata for dispatcher validation

@@ -1047,22 +1047,65 @@ Representative callsite: `pkg/coder/planning.go:176-214`
   - Wrong response type handling
   - All three agents (Coder, Architect, PM) can use blocking effects
 
-**Coverage improvement:** `pkg/effect` coverage increased from 4.2% to 48.7%
+**Coverage improvement:** BaseRuntime coverage increased from 4.2% to 48.7%
+
+---
+
+### Phase 2: ID Unification (§2.7) - ✅ COMPLETED
+
+**PR:** `refactor/id-unification`
+
+**Status:** Implemented and tested
+
+**Changes:**
+- Removed duplicate `agentID` field from `Coder` struct
+- Removed duplicate `architectID` field from `Architect` struct
+- Removed duplicate `pmID` field from `PM` struct
+- All agents now use `BaseStateMachine.GetAgentID()` universally
+- Updated all callsites across all three agents:
+  - Coder: `driver.go`, `planning.go`, `plan_review.go`, `coding.go`, `driver_simple_test.go`
+  - Architect: `driver.go`, `dispatching.go`, `escalated.go`, `questions.go`, `request.go`, `request_merge.go`, `request_spec.go`
+  - PM: `driver.go`, `await_user.go`, `effects.go`, `working.go`
+- Removed unused `agentConfig` and `agentCtx` variables from Coder
+- Removed unused "log" import from coder driver
+
+**Key Design Decision:**
+- User insight: "why special case coder? why not get rid of the shadow and just use c.GetAgentID() universally?"
+- Result: No special cases - all agents follow identical pattern
+- Single source of truth: `agent.Config.ID` → `BaseStateMachine.agentID` → `GetAgentID()` accessor
+
+**Test Coverage:**
+- All existing tests pass (cached results)
+- Full build with linting passes
+- No compilation errors remain
 
 **Files modified:**
-- `pkg/effect/baseruntime.go` - Added replyCh field and fixed ReceiveMessage
-- `pkg/architect/effects.go` - Updated Runtime to pass replyCh
-- `pkg/pm/effects.go` - Updated Runtime to pass replyCh
-- `pkg/coder/driver.go` - Simplified Runtime, removed override
-- `pkg/coder/driver_simple_test.go` - Updated test for new signature
-- `pkg/effect/baseruntime_test.go` - **NEW** - Comprehensive unit tests
-- `pkg/effect/integration_test.go` - **NEW** - End-to-end integration tests
+- **Coder:**
+  - `pkg/coder/driver.go` - Removed `agentID` field, use `GetAgentID()` everywhere
+  - `pkg/coder/planning.go` - Updated toolloop config to use `GetAgentID()`
+  - `pkg/coder/plan_review.go` - Updated toolloop config to use `GetAgentID()`
+  - `pkg/coder/coding.go` - Updated toolloop config to use `GetAgentID()`
+  - `pkg/coder/driver_simple_test.go` - Updated test to create BaseStateMachine
+- **Architect:**
+  - `pkg/architect/driver.go` - Removed `architectID` field
+  - `pkg/architect/dispatching.go` - Replaced `d.architectID` with `d.GetAgentID()`
+  - `pkg/architect/escalated.go` - Replaced `d.architectID` with `d.GetAgentID()`
+  - `pkg/architect/questions.go` - Replaced all ID references with `GetAgentID()`
+  - `pkg/architect/request.go` - Replaced `d.architectID` with `d.GetAgentID()`
+  - `pkg/architect/request_merge.go` - Replaced `d.architectID` with `d.GetAgentID()`
+  - `pkg/architect/request_spec.go` - Replaced `d.architectID` with `d.GetAgentID()`
+  - `pkg/architect/effects.go` - Updated Runtime to use `GetAgentID()`
+- **PM:**
+  - `pkg/pm/driver.go` - Removed `pmID` field
+  - `pkg/pm/await_user.go` - Replaced `d.pmID` with `d.GetAgentID()`
+  - `pkg/pm/effects.go` - Replaced `d.pmID` with `d.GetAgentID()`
+  - `pkg/pm/working.go` - Replaced all `d.pmID` references with `d.GetAgentID()`
 
 **Outcomes:**
-- ✅ Latent bug in `BaseRuntime.ReceiveMessage` fixed
-- ✅ All agents can now safely use blocking effects (questions, budget reviews, approvals)
-- ✅ Coder special case eliminated - all Runtime implementations identical
-- ✅ Architecture is honest - `ReceiveMessage` actually works as documented
-- ✅ Comprehensive test coverage prevents regression
+- ✅ Zero duplicate ID fields across all agents
+- ✅ Single source of truth: `BaseStateMachine.GetAgentID()` used universally
+- ✅ No special cases - all agents follow identical pattern
+- ✅ Cleaner code with less shadowing and redundancy
+- ✅ All tests pass, full build with linting succeeds
 
-**Next Phase:** ID Unification (§2.7)
+**Next Phase:** Outcome[T] Refactor (§2.4)

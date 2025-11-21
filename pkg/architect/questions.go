@@ -158,7 +158,7 @@ func (qh *QuestionHandler) answerTechnicalQuestion(ctx context.Context, pendingQ
 		ExtractResult:  ExtractSubmitReply,
 		MaxIterations:  10,
 		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        qh.driver.architectID,
+		AgentID:        qh.driver.GetAgentID(),
 	})
 
 	if err != nil {
