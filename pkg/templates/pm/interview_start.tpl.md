@@ -78,11 +78,23 @@ Be direct about bootstrap needs - expert users appreciate clarity.
 
 **Important:** Integrate bootstrap questions naturally into your interview flow. Don't make them feel like a separate checklist. Bootstrap is part of understanding the project holistically.
 
+{{if or .Extra.ExistingProjectName .Extra.ExistingGitURL .Extra.ExistingPlatform}}
+**Existing Project Configuration:**
+{{if .Extra.ExistingProjectName}}- ✅ Project Name: `{{.Extra.ExistingProjectName}}`{{end}}
+{{if .Extra.ExistingGitURL}}- ✅ Git Repository: `{{.Extra.ExistingGitURL}}`{{end}}
+{{if .Extra.ExistingPlatform}}- ✅ Platform: `{{.Extra.ExistingPlatform}}`{{end}}
+
+**Quick confirmation, then move forward:**
+1. Briefly confirm the project basics with the user (use existing values above)
+2. Call `bootstrap(project_name="{{if .Extra.ExistingProjectName}}{{.Extra.ExistingProjectName}}{{else}}<from user>{{end}}", git_url="{{if .Extra.ExistingGitURL}}{{.Extra.ExistingGitURL}}{{else}}<from user>{{end}}", platform="{{if .Extra.ExistingPlatform}}{{.Extra.ExistingPlatform}}{{else}}<from user>{{end}}")`
+3. Immediately ask: "What features would you like to build?"
+{{else}}
 **After gathering bootstrap info, you MUST call the bootstrap tool:**
 - Use `chat_ask_user` to gather: project_name, git_url, and platform from the user
 - Once you have all three values, call `bootstrap(project_name, git_url, platform)`
 - **NEVER make up or infer these values** - always ask the user directly
 - Only after bootstrap succeeds can you proceed with feature requirements gathering
+{{end}}
 
 ### Git Repository Setup
 

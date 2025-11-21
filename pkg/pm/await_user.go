@@ -15,7 +15,7 @@ func (d *Driver) handleAwaitUser(ctx context.Context) (proto.State, error) {
 	d.logger.Debug("⏳ PM awaiting user response")
 
 	// Check for new messages without blocking
-	if !d.chatService.HaveNewMessages(d.pmID) {
+	if !d.chatService.HaveNewMessages(d.GetAgentID()) {
 		// No new messages yet - sleep briefly to avoid tight polling
 		time.Sleep(500 * time.Millisecond)
 		return StateAwaitUser, nil

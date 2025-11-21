@@ -47,7 +47,7 @@ func (m *mockChannelReceiver) Initialize(_ context.Context) error   { return nil
 func (m *mockChannelReceiver) Run(_ context.Context) error          { return nil }
 func (m *mockChannelReceiver) Step(_ context.Context) (bool, error) { return false, nil }
 func (m *mockChannelReceiver) GetCurrentState() proto.State         { return proto.StateWaiting }
-func (m *mockChannelReceiver) GetStateData() map[string]any         { return make(map[string]any) }
+func (m *mockChannelReceiver) GetStateData() agent.StateData        { return make(agent.StateData) }
 func (m *mockChannelReceiver) GetAgentType() agent.Type {
 	if m.agentType != "" {
 		return m.agentType

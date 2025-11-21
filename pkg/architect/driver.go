@@ -22,17 +22,11 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-// Story content constants.
+// Tool signal constants.
 const (
-	acceptanceCriteriaHeader = "## Acceptance Criteria\n" //nolint:unused
-
-	// Story type constants to avoid repetition and improve maintainability.
-	storyTypeDevOps = "devops"
-	storyTypeApp    = "app"
-
-	// Tool signal constants.
 	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
 	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
+	signalReviewComplete        = "REVIEW_COMPLETE"
 )
 
 // listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
@@ -75,23 +69,20 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 
 // Driver manages the state machine for an architect workflow.
 type Driver struct {
-	contextManager      *contextmgr.ContextManager
-	llmClient           agent.LLMClient                       // LLM for intelligent responses
-	renderer            *templates.Renderer                   // Template renderer for prompts
-	queue               *Queue                                // Story queue manager
-	escalationHandler   *EscalationHandler                    // Escalation handler
-	dispatcher          *dispatch.Dispatcher                  // Dispatcher for sending messages
-	logger              *logx.Logger                          // Logger with proper agent prefixing
-	executor            *execpkg.ArchitectExecutor            // Container executor for file access tools
-	chatService         ChatServiceInterface                  // Chat service for escalations (nil check required)
-	questionsCh         chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
-	replyCh             <-chan *proto.AgentMsg                // Read-only channel for replies
-	persistenceChannel  chan<- *persistence.Request           // Channel for database operations
-	stateNotificationCh chan<- *proto.StateChangeNotification // Channel for state change notifications
-	stateData           map[string]any
-	architectID         string
-	workDir             string // Workspace directory
-	currentState        proto.State
+	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
+	contextManager          *contextmgr.ContextManager
+	toolLoop                *toolloop.ToolLoop          // Tool loop for LLM interactions
+	renderer                *templates.Renderer         // Template renderer for prompts
+	queue                   *Queue                      // Story queue manager
+	escalationHandler       *EscalationHandler          // Escalation handler
+	dispatcher              *dispatch.Dispatcher        // Dispatcher for sending messages
+	logger                  *logx.Logger                // Logger with proper agent prefixing
+	executor                *execpkg.ArchitectExecutor  // Container executor for file access tools
+	chatService             ChatServiceInterface        // Chat service for escalations (nil check required)
+	questionsCh             chan *proto.AgentMsg        // Bi-directional channel for requests (specs, questions, approvals)
+	replyCh                 <-chan *proto.AgentMsg      // Read-only channel for replies
+	persistenceChannel      chan<- *persistence.Request // Channel for database operations
+	workDir                 string                      // Workspace directory
 }
 
 // ChatServiceInterface defines the interface for chat operations needed by architect.
@@ -128,7 +119,8 @@ type ChatMessage struct {
 var ErrEscalationTriggered = fmt.Errorf("escalation triggered due to iteration limit")
 
 // NewDriver creates a new architect driver instance.
-func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
+// LLM client must be set separately via SetLLMClient after construction.
+func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -152,12 +144,13 @@ func NewDriver(architectID, modelName string, llmClient agent.LLMClient, dispatc
 	escalationHandler := NewEscalationHandler(logsDir, queue)
 	logger := logx.NewLogger(architectID)
 
+	// Create BaseStateMachine with architect transition table
+	sm := agent.NewBaseStateMachine(architectID, StateWaiting, nil, architectTransitions)
+
 	return &Driver{
-		architectID:        architectID,
+		BaseStateMachine:   sm,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
-		currentState:       StateWaiting,
-		stateData:          make(map[string]any),
-		llmClient:          llmClient,
+		toolLoop:           nil, // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
 		queue:              queue,
@@ -190,14 +183,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	}
 	modelName := cfg.Agents.ArchitectModel
 
-	// Create basic LLM client from shared factory (no metrics context yet, need architect instance first)
-	llmClient, err := llmFactory.CreateClient(agent.TypeArchitect)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
-	}
-
-	// Create architect with LLM integration
-	architect := NewDriver(architectID, modelName, llmClient, dispatcher, workDir, persistenceChannel)
+	// Create architect without LLM client first (chicken-and-egg: client needs architect as StateProvider)
+	architect := NewDriver(architectID, modelName, dispatcher, workDir, persistenceChannel)
 
 	// Ensure architect workspace exists before starting container
 	architectWorkspace, wsErr := workspace.EnsureArchitectWorkspace(ctx, workDir)
@@ -226,15 +213,14 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	// Store executor in architect
 	architect.executor = architectExecutor
 
-	// Enhance client with metrics context now that we have the architect (StateProvider)
-	// Use the shared factory to ensure proper rate limiting
-	enhancedClient, err := llmFactory.CreateClientWithContext(agent.TypeArchitect, architect, architect.logger)
+	// Now create LLM client with full middleware (architect instance available as StateProvider)
+	llmClient, err := llmFactory.CreateClientWithContext(agent.TypeArchitect, architect, architect.logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create enhanced architect LLM client: %w", err)
+		return nil, fmt.Errorf("failed to create architect LLM client: %w", err)
 	}
 
-	// Replace the client with the enhanced version
-	architect.llmClient = enhancedClient
+	// Set the LLM client (also initializes toolLoop and sets on BaseStateMachine)
+	architect.SetLLMClient(llmClient)
 
 	return architect, nil
 }
@@ -253,54 +239,51 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 	d.dispatcher = dispatcher
 }
 
+// SetLLMClient sets the LLM client and initializes the toolLoop.
+// Must be called after construction before the architect can process work.
+func (d *Driver) SetLLMClient(llmClient agent.LLMClient) {
+	d.BaseStateMachine.SetLLMClient(llmClient)
+	d.toolLoop = toolloop.New(llmClient, d.logger)
+}
+
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
 func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateChangeNotification) {
-	d.stateNotificationCh = stateNotifCh
+	// Delegate to BaseStateMachine - it handles all state transitions
+	d.BaseStateMachine.SetStateNotificationChannel(stateNotifCh)
 	d.logger.Debug("State notification channel set for architect")
 }
 
 // Initialize sets up the driver and loads any existing state.
 func (d *Driver) Initialize(_ /* ctx */ context.Context) error {
-	// Start fresh - no filesystem state persistence
-	// State management is now handled by SQLite for system-level resume functionality
-	d.logger.Info("Starting architect fresh for ID: %s (filesystem state persistence removed)", d.architectID)
-	savedState := ""
-	savedData := make(map[string]any)
-
-	// If we have saved state, restore it.
-	if savedState != "" {
-		d.logger.Info("Found saved state: %s, restoring...", savedState)
-		// Convert string state to proto.State.
-		loadedState := d.stringToState(savedState)
-		if loadedState == StateError && savedState != "Error" {
-			d.logger.Warn("loaded unknown state '%s', setting to ERROR", savedState)
-		}
-		d.currentState = loadedState
-		d.stateData = savedData
-		d.logger.Info("Restored architect to state: %s", d.currentState)
-	} else {
-		d.logger.Info("No saved state found, starting fresh")
+	// Validate required channels are set
+	if d.questionsCh == nil {
+		return fmt.Errorf("architect %s: questions channel not set (call SetChannels before Initialize)", d.GetAgentID())
+	}
+	if d.replyCh == nil {
+		return fmt.Errorf("architect %s: reply channel not set (call SetChannels before Initialize)", d.GetAgentID())
+	}
+	if d.BaseStateMachine == nil {
+		return fmt.Errorf("architect %s: BaseStateMachine not initialized", d.GetAgentID())
 	}
 
-	d.logger.Info("Architect initialized")
+	// Verify state notification channel is set on BaseStateMachine
+	// This is critical for state transitions to be properly tracked
+	if !d.BaseStateMachine.HasStateNotificationChannel() {
+		d.logger.Warn("⚠️  State notification channel not set on BaseStateMachine - state changes won't be tracked")
+	}
+
+	// Start fresh - no filesystem state persistence
+	// State management is now handled by SQLite for system-level resume functionality
+	d.logger.Info("Starting architect fresh for ID: %s (filesystem state persistence removed)", d.GetAgentID())
+
+	d.logger.Info("Architect initialized in state: %s", d.GetCurrentState())
 
 	return nil
 }
 
-// stringToState converts a string state to proto.State.
-// Returns StateError for unknown states.
-func (d *Driver) stringToState(stateStr string) proto.State {
-	// Direct string to proto.State conversion since we're using string constants.
-	state := proto.State(stateStr)
-	if err := ValidateState(state); err != nil {
-		return StateError
-	}
-	return state
-}
-
 // GetID returns the architect ID (implements Agent interface).
 func (d *Driver) GetID() string {
-	return d.architectID
+	return d.GetAgentID()
 }
 
 // GetStoryID returns the current story ID (implements StateProvider interface for metrics).
@@ -339,10 +322,13 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("architect not properly attached to dispatcher - channels are nil")
 	}
 
+	// Get current state for error reporting
+	currentState := d.GetCurrentState()
+
 	// Process current state to get next state.
 	nextState, err := d.processCurrentState(ctx)
 	if err != nil {
-		return false, fmt.Errorf("state processing error in %s: %w", d.currentState, err)
+		return false, fmt.Errorf("state processing error in %s: %w", currentState, err)
 	}
 
 	// Check if we're done (reached terminal state).
@@ -351,7 +337,9 @@ func (d *Driver) Step(ctx context.Context) (bool, error) {
 	}
 
 	// Transition to next state.
-	d.transitionTo(ctx, nextState, nil)
+	if err := d.TransitionTo(ctx, nextState, nil); err != nil {
+		return false, fmt.Errorf("failed to transition from %s to %s: %w", currentState, nextState, err)
+	}
 
 	return false, nil
 }
@@ -369,10 +357,8 @@ func (d *Driver) Run(ctx context.Context) error {
 	// Start requeue requests processor goroutine.
 	go d.processRequeueRequests(ctx)
 
-	// Start in WAITING state, ready to receive specs.
-	d.currentState = StateWaiting
-	d.stateData = make(map[string]any)
-	d.stateData["started_at"] = time.Now().UTC()
+	// Initialize state data
+	d.SetStateData("started_at", time.Now().UTC())
 
 	// Run the state machine loop.
 	for {
@@ -384,7 +370,8 @@ func (d *Driver) Run(ctx context.Context) error {
 		}
 
 		// Check if we're already in a terminal state.
-		if d.currentState == StateDone || d.currentState == StateError {
+		currentState := d.GetCurrentState()
+		if currentState == StateDone || currentState == StateError {
 			break
 		}
 
@@ -394,15 +381,20 @@ func (d *Driver) Run(ctx context.Context) error {
 		nextState, err := d.processCurrentState(ctx)
 		if err != nil {
 			// Transition to error state.
-			d.transitionTo(ctx, StateError, map[string]any{
+			if transErr := d.TransitionTo(ctx, StateError, map[string]any{
 				"error":        err.Error(),
-				"failed_state": d.currentState.String(),
-			})
+				"failed_state": currentState.String(),
+			}); transErr != nil {
+				d.logger.Error("Failed to transition to ERROR: %v", transErr)
+			}
 			return err
 		}
 
-		// Transition to next state (always call transitionTo - let it handle self-transitions).
-		d.transitionTo(ctx, nextState, nil)
+		// Transition to next state (always call TransitionTo - let it handle self-transitions).
+		if err := d.TransitionTo(ctx, nextState, nil); err != nil {
+			d.logger.Error("Failed to transition from %s to %s: %v", currentState, nextState, err)
+			return fmt.Errorf("failed state transition: %w", err)
+		}
 
 		// Context compaction now handled automatically by middleware in contextManager.AddMessage()
 	}
@@ -413,7 +405,8 @@ func (d *Driver) Run(ctx context.Context) error {
 // processCurrentState handles the logic for the current state.
 func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	// Process state directly without timeout wrapper
-	switch d.currentState {
+	currentState := d.GetCurrentState()
+	switch currentState {
 	case StateWaiting:
 		// WAITING state - block until request received.
 		return d.handleWaiting(ctx)
@@ -432,74 +425,8 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 		// ERROR is a terminal state - should not continue processing.
 		return StateError, nil
 	default:
-		return StateError, fmt.Errorf("unknown state: %s", d.currentState)
+		return StateError, fmt.Errorf("unknown state: %s", currentState)
 	}
-}
-
-// transitionTo moves the driver to a new state and persists it.
-func (d *Driver) transitionTo(_ context.Context, newState proto.State, additionalData map[string]any) {
-	oldState := d.currentState
-	d.currentState = newState
-
-	// Add transition metadata.
-	d.stateData["previous_state"] = oldState.String()
-	d.stateData["current_state"] = newState.String()
-	d.stateData["transition_at"] = time.Now().UTC()
-
-	// Special handling for ESCALATED state - record escalation timestamp for timeout guard.
-	if newState == StateEscalated {
-		d.stateData["escalated_at"] = time.Now().UTC()
-		d.logger.Info("entered ESCALATED state - timeout guard set for %v", EscalationTimeout)
-	}
-
-	// Merge additional data if provided.
-	for k, v := range additionalData {
-		d.stateData[k] = v
-	}
-
-	// Send state change notification if channel is available
-	if d.stateNotificationCh != nil {
-		notification := &proto.StateChangeNotification{
-			AgentID:   d.architectID,
-			FromState: oldState,
-			ToState:   newState,
-		}
-
-		// Safe channel send with panic recovery for closed channel
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					d.logger.Debug("State notification channel closed, could not send %s -> %s transition", oldState, newState)
-				}
-			}()
-
-			// Non-blocking send to prevent deadlock
-			select {
-			case d.stateNotificationCh <- notification:
-				d.logger.Debug("Sent state change notification: %s -> %s", oldState, newState)
-			default:
-				d.logger.Warn("State notification channel full, could not send %s -> %s transition", oldState, newState)
-			}
-		}()
-	}
-
-	// No filesystem state persistence - state transitions are tracked in memory only
-
-	// State transition completed
-}
-
-// GetCurrentState returns the current state of the driver.
-func (d *Driver) GetCurrentState() proto.State {
-	return d.currentState
-}
-
-// GetStateData returns a copy of the current state data.
-func (d *Driver) GetStateData() map[string]any {
-	result := make(map[string]any)
-	for k, v := range d.stateData {
-		result[k] = v
-	}
-	return result
 }
 
 // GetAgentType returns the type of the agent.
@@ -509,12 +436,15 @@ func (d *Driver) GetAgentType() agent.Type {
 
 // ValidateState checks if a state is valid for this architect agent.
 func (d *Driver) ValidateState(state proto.State) error {
-	return ValidateState(state)
+	if !IsValidArchitectState(state) {
+		return fmt.Errorf("invalid state %s for architect agent", state)
+	}
+	return nil
 }
 
 // GetValidStates returns all valid states for this architect agent.
 func (d *Driver) GetValidStates() []proto.State {
-	return GetValidStates()
+	return GetAllArchitectStates()
 }
 
 // GetContextSummary returns a summary of the current context.
@@ -597,46 +527,6 @@ func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.Completi
 	return messages
 }
 
-// callLLMWithTemplate renders a template and gets LLM response using the same pattern as coder.
-// This helper centralizes the architect's LLM call pattern with proper context management.
-func (d *Driver) callLLMWithTemplate(ctx context.Context, prompt string) (string, error) {
-	return d.callLLMWithTools(ctx, prompt, nil)
-}
-
-// callLLMWithTools allows calling LLM with optional tools (used for spec review in REQUEST state).
-func (d *Driver) callLLMWithTools(ctx context.Context, prompt string, toolsList []tools.Tool) (string, error) {
-	// Create ToolProvider adapter from toolsList
-	toolProvider := newListToolProvider(toolsList)
-
-	// Use toolloop abstraction for LLM tool calling loop
-	loop := toolloop.New(d.llmClient, d.logger)
-
-	cfg := &toolloop.Config{
-		ContextManager: d.contextManager,
-		InitialPrompt:  prompt,
-		ToolProvider:   toolProvider,
-		MaxIterations:  20, // Increased for complex spec review workflows
-		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        d.architectID, // Agent ID for tool context
-		DebugLogging:   false,         // Enable for debugging: shows messages sent to LLM
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			// Check for terminal tools and return signal
-			return d.checkTerminalTools(calls, results)
-		},
-		OnIterationLimit: func(_ context.Context) (string, error) {
-			// Architect returns error on iteration limit (no budget request)
-			return "", fmt.Errorf("maximum tool iterations exceeded")
-		},
-	}
-
-	signal, err := loop.Run(ctx, cfg)
-	if err != nil {
-		return "", fmt.Errorf("toolloop execution failed: %w", err)
-	}
-
-	return signal, nil
-}
-
 // checkTerminalTools examines tool execution results for terminal signals.
 // Returns non-empty signal to trigger state transition.
 func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) string {
@@ -671,7 +561,7 @@ func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) strin
 			}
 
 			// Store the structured result in state data for scoping to access
-			d.stateData["submit_stories_result"] = results[i]
+			d.SetStateData("submit_stories_result", results[i])
 
 			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
 			return signalSubmitStoriesComplete
@@ -693,7 +583,7 @@ func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) strin
 			}
 
 			// Store the feedback result in state data for message sending
-			d.stateData["spec_feedback_result"] = results[i]
+			d.SetStateData("spec_feedback_result", results[i])
 
 			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
 			return signalSpecFeedbackSent
@@ -773,7 +663,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			// Also dispatch the story back to the work queue (like DISPATCHING state does)
 			if story, exists := d.queue.stories[requeueRequest.StoryID]; exists && story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
-				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.architectID, "coder")
+				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
 				// Build story payload
 				payloadData := map[string]any{
@@ -819,8 +709,9 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	const hardLimit = 16
 
 	// Get current iteration count
+	stateData := d.GetStateData()
 	iterationCount := 0
-	if val, exists := d.stateData[stateDataKey]; exists {
+	if val, exists := stateData[stateDataKey]; exists {
 		if count, ok := val.(int); ok {
 			iterationCount = count
 		}
@@ -828,7 +719,7 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 
 	// Increment iteration count
 	iterationCount++
-	d.stateData[stateDataKey] = iterationCount
+	d.SetStateData(stateDataKey, iterationCount)
 
 	// Check soft limit (warning only)
 	if iterationCount == softLimit {
@@ -843,8 +734,8 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	if iterationCount >= hardLimit {
 		d.logger.Error("❌ Hard iteration limit (%d) exceeded in %s - escalating to human", hardLimit, stateName)
 		// Store escalation context for ESCALATE state
-		d.stateData["escalation_origin_state"] = string(stateName)
-		d.stateData["escalation_iteration_count"] = iterationCount
+		d.SetStateData("escalation_origin_state", string(stateName))
+		d.SetStateData("escalation_iteration_count", iterationCount)
 		// Additional context will be added by caller (request_id, story_id)
 		return true
 	}
@@ -892,6 +783,26 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			return response, nil
 		}
 
+		// Handle review_complete tool - signals single-turn review completion (for Plan/BudgetReview)
+		if toolCall.Name == tools.ToolReviewComplete {
+			// Execute the tool to get validated structured data
+			tool, err := toolProvider.Get(toolCall.Name)
+			if err != nil {
+				return "", fmt.Errorf("review_complete tool not found: %w", err)
+			}
+
+			result, err := tool.Exec(ctx, toolCall.Parameters)
+			if err != nil {
+				return "", fmt.Errorf("review_complete validation failed: %w", err)
+			}
+
+			// Store the structured result in state data for approval handling to access
+			d.SetStateData("review_complete_result", result)
+
+			d.logger.Info("✅ Architect completed review via review_complete tool")
+			return signalReviewComplete, nil // Signal that review is complete
+		}
+
 		// Handle submit_stories tool - signals spec review completion with structured data
 		if toolCall.Name == tools.ToolSubmitStories {
 			// Execute the tool to get validated structured data
@@ -906,7 +817,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			}
 
 			// Store the structured result in state data for spec review to access
-			d.stateData["submit_stories_result"] = result
+			d.SetStateData("submit_stories_result", result)
 
 			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
 			return signalSubmitStoriesComplete, nil // Signal that stories were submitted
@@ -926,7 +837,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			}
 
 			// Store the feedback result in state data for message sending
-			d.stateData["spec_feedback_result"] = result
+			d.SetStateData("spec_feedback_result", result)
 
 			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
 			return signalSpecFeedbackSent, nil // Signal that feedback was sent
@@ -941,7 +852,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		}
 
 		// Add agent_id to context for tools that need it
-		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.architectID)
+		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.GetAgentID())
 
 		// Execute tool
 		startTime := time.Now()
@@ -949,13 +860,14 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		duration := time.Since(startTime)
 
 		// Log tool execution to database (fire-and-forget)
+		stateData := d.GetStateData()
 		storyID := ""
-		if sid, exists := d.stateData["current_story_id"]; exists {
+		if sid, exists := stateData["current_story_id"]; exists {
 			if sidStr, ok := sid.(string); ok {
 				storyID = sidStr
 			}
 		}
-		agent.LogToolExecution(toolCall, result, err, duration, d.architectID, storyID, d.persistenceChannel)
+		agent.LogToolExecution(toolCall, result, err, duration, d.GetAgentID(), storyID, d.persistenceChannel)
 
 		if err != nil {
 			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)

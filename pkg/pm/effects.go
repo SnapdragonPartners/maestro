@@ -16,8 +16,8 @@ type Runtime struct {
 }
 
 // NewRuntime creates a new runtime for PM effects.
-func NewRuntime(dispatcher *dispatch.Dispatcher, logger *logx.Logger, agentID string) *Runtime {
-	baseRuntime := effect.NewBaseRuntime(dispatcher, logger, agentID, "pm")
+func NewRuntime(dispatcher *dispatch.Dispatcher, logger *logx.Logger, agentID string, replyCh <-chan *proto.AgentMsg) *Runtime {
+	baseRuntime := effect.NewBaseRuntime(dispatcher, logger, agentID, "pm", replyCh)
 	return &Runtime{
 		BaseRuntime: baseRuntime,
 	}
@@ -48,7 +48,7 @@ func (e *SendMessageEffect) Execute(_ context.Context, runtime effect.Runtime) (
 
 // ExecuteEffect executes a single Effect using the PM's runtime.
 func (d *Driver) ExecuteEffect(ctx context.Context, eff effect.Effect) error {
-	runtime := NewRuntime(d.dispatcher, d.logger, d.pmID)
+	runtime := NewRuntime(d.dispatcher, d.logger, d.GetAgentID(), d.replyCh)
 	_, err := eff.Execute(ctx, runtime)
 	if err != nil {
 		return fmt.Errorf("effect execution failed: %w", err)

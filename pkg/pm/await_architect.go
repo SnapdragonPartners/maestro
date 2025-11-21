@@ -52,8 +52,8 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
 			}
 			// Clear draft spec from state data
-			delete(d.stateData, "draft_spec_markdown")
-			delete(d.stateData, "spec_metadata")
+			d.SetStateData("draft_spec_markdown", nil)
+			d.SetStateData("spec_metadata", nil)
 			return StateWaiting, nil
 		}
 

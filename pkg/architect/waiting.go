@@ -26,7 +26,7 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 
 		// Store the request for processing in REQUEST state
 		// This handles all types: spec reviews, questions, code approvals, etc.
-		d.stateData["current_request"] = requestMsg
+		d.SetStateData("current_request", requestMsg)
 
 		return StateRequest, nil
 	}

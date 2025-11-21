@@ -14,6 +14,11 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
 - **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl` with daily rotation
 - **Configuration** (`pkg/config/`) - JSON config loader with environment variable overrides
 - **Agent Foundation** (`pkg/agent/`) - Core LLM abstractions, state machine interfaces, and foundational components
+  - **Toolloop System** (`pkg/agent/toolloop/`) - Generic LLM tool-calling loop with type-safe result extraction
+    - Uses Go generics (`Config[T any]`) for typed result extraction
+    - Separation of concerns: `CheckTerminal` (signals) vs `ExtractResult` (data)
+    - Escalation support with soft/hard limits for iteration management
+    - All agents use proper result types (no no-op extractors)
 - **Coder State Machine** (`pkg/coder/`) - Coder-specific state machine for structured coding workflows
 - **Architect State Machine** (`pkg/architect/`) - Architect-specific state machine for spec processing and coordination
 - **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
@@ -55,6 +60,94 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **Escalation Support**: When architect exceeds iteration limits, escalation messages are posted with `post_type: 'escalate'`, displayed prominently in WebUI with reply functionality for human guidance
 
 5. System maintains event logs and handles graceful shutdown with STATUS.md dumps
+
+## Toolloop Pattern
+
+The toolloop system (`pkg/agent/toolloop/`) provides a generic, type-safe abstraction for LLM tool-calling loops used by all agents.
+
+### Design Principles
+
+**Clean Separation of Concerns:**
+- `CheckTerminal(calls, results) string` - Determines if workflow is complete (returns signal)
+  - "Are we done?" - Only checks for terminal conditions
+  - Returns signals like "PLAN_REVIEW", "CODING", "TESTING", "DONE", etc.
+  - Does NOT extract data from tool calls
+- `ExtractResult(calls, results) (T, error)` - Extracts typed data from tool execution
+  - "What happened?" - Type-safe data extraction
+  - Returns strongly-typed result structs (e.g., `PlanningResult`, `SubmitReplyResult`)
+  - Called automatically when terminal signal is detected
+- Process function - Stores extracted data in state machine
+  - Handles side effects (logging, persistence, state updates)
+
+### Usage Pattern
+
+```go
+// 1. Define result type
+type PlanningResult struct {
+    Signal string
+    Plan   string
+    // ... other fields
+}
+
+// 2. Create extraction function
+func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResult, error) {
+    // Extract data from tool calls/results
+}
+
+// 3. Configure toolloop with type parameter
+cfg := &toolloop.Config[PlanningResult]{
+    ContextManager: contextManager,
+    ToolProvider:   toolProvider,
+    MaxIterations:  10,
+    CheckTerminal:  checkTerminalFunc,  // Only checks signals
+    ExtractResult:  ExtractPlanningResult,  // Type-safe extraction
+    Escalation: &toolloop.EscalationConfig{
+        Key:       "planning_story123",
+        SoftLimit: 8,   // Warning at 8 iterations
+        HardLimit: 16,  // Stop at 16 iterations
+        OnSoftLimit: func(count int) { /* log warning */ },
+        OnHardLimit: func(ctx, key string, count int) error { /* escalate */ },
+    },
+}
+
+// 4. Run toolloop and get typed result
+signal, result, err := toolloop.Run(loop, ctx, cfg)
+
+// 5. Process extracted result
+processPlanningResult(&result)  // Store in state, log, etc.
+
+// 6. Handle terminal signal
+switch signal {
+case "PLAN_REVIEW": return StatePlanReview
+// ...
+}
+```
+
+### Result Types by Agent
+
+**Architect** (`pkg/architect/toolloop_results.go`):
+- `SubmitReplyResult` - Question/request responses
+- `SpecReviewResult` - Spec approval decisions
+- `ReviewCompleteResult` - Code review outcomes
+
+**PM** (`pkg/pm/toolloop_results.go`):
+- `WorkingResult` - Bootstrap params, spec content, await_user flag
+
+**Coder** (`pkg/coder/toolloop_results.go`):
+- `PlanningResult` - Plan, confidence, exploration, risks, todos, knowledge pack
+- `CodingResult` - Todo completions, testing requests
+- `TodoCollectionResult` - Extracted todo list
+
+### Escalation Management
+
+The escalation system manages iteration limits and human intervention:
+
+- **Soft Limit**: Warning threshold (e.g., 8 iterations) - callback invoked, execution continues
+- **Hard Limit**: Stop threshold (e.g., 16 iterations) - execution halted, escalation triggered
+- **Escalation Handler**: Posts to chat, waits for human guidance, returns error to stop loop
+- **Per-Story Keys**: Each story has unique escalation key for independent tracking
+
+All iteration counts are 1-indexed for user-facing logs.
 
 ## Container Architecture
 

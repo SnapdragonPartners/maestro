@@ -17,20 +17,25 @@ type MessageDispatcher interface {
 
 // BaseRuntime provides the standard implementation of Runtime interface.
 // It can be embedded or used directly by agents to provide effect execution capabilities.
+//
+//nolint:govet // fieldalignment: keeping fields in logical order (dispatcher/logger/channels then IDs/roles)
 type BaseRuntime struct {
 	dispatcher MessageDispatcher
 	logger     *logx.Logger
+	replyCh    <-chan *proto.AgentMsg // Reply channel for receiving RESPONSE messages
 	agentID    string
 	agentRole  string
 }
 
 // NewBaseRuntime creates a new BaseRuntime with the specified dependencies.
-func NewBaseRuntime(dispatcher MessageDispatcher, logger *logx.Logger, agentID, agentRole string) *BaseRuntime {
+// The replyCh parameter is the reply channel from the dispatcher for receiving RESPONSE messages.
+func NewBaseRuntime(dispatcher MessageDispatcher, logger *logx.Logger, agentID, agentRole string, replyCh <-chan *proto.AgentMsg) *BaseRuntime {
 	return &BaseRuntime{
 		dispatcher: dispatcher,
 		logger:     logger,
 		agentID:    agentID,
 		agentRole:  agentRole,
+		replyCh:    replyCh,
 	}
 }
 
@@ -48,19 +53,24 @@ func (r *BaseRuntime) SendMessage(msg *proto.AgentMsg) error {
 }
 
 // ReceiveMessage implements the Messaging interface.
+// Blocks waiting for a message of the expected type from the reply channel.
 func (r *BaseRuntime) ReceiveMessage(ctx context.Context, expectedType proto.MsgType) (*proto.AgentMsg, error) {
+	if r.replyCh == nil {
+		return nil, fmt.Errorf("reply channel not configured for agent %s", r.agentID)
+	}
+
 	r.logger.Debug("🔄 BaseRuntime waiting for %s message for agent %s", expectedType, r.agentID)
 
-	// Create a receiver channel for this agent
-	receiverCh := make(chan *proto.AgentMsg, 10)
-
-	// Register with dispatcher to receive messages for this agent
-	// Note: This is a simplified implementation - actual message receiving
-	// would depend on how the dispatcher routes messages to agents
 	select {
-	case msg := <-receiverCh:
+	case msg, ok := <-r.replyCh:
+		if !ok {
+			return nil, fmt.Errorf("reply channel closed unexpectedly for agent %s", r.agentID)
+		}
+		if msg == nil {
+			return nil, fmt.Errorf("received nil message for agent %s", r.agentID)
+		}
 		if msg.Type != expectedType {
-			return nil, fmt.Errorf("expected message type %s, got %s", expectedType, msg.Type)
+			return nil, fmt.Errorf("expected message type %s but received %s for agent %s", expectedType, msg.Type, r.agentID)
 		}
 		r.logger.Debug("✅ Received expected %s message %s", expectedType, msg.ID)
 		return msg, nil
