@@ -2,7 +2,6 @@ package coder
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -327,38 +326,43 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		},
 	}
 
-	signal, result, err := toolloop.Run(loop, ctx, cfg)
-	if err != nil {
-		// Check if this is an iteration limit error
-		var iterErr *toolloop.IterationLimitError
-		if errors.As(err, &iterErr) {
-			// For todo collection, hitting limit is a failure (not budget review)
-			c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations", iterErr.Iteration)
-			return proto.StateError, false, logx.Errorf("LLM failed to provide todos after %d attempts", iterErr.Iteration)
-		}
-		return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
-	}
+	out := toolloop.Run(loop, ctx, cfg)
 
-	// Process extracted todos
-	if len(result.Todos) > 0 {
-		c.logger.Info("📋 [TODO] Extracted %d todos from LLM", len(result.Todos))
-		// Convert string todos to TodoList
-		if err := c.processTodoCollectionResult(sm, &result); err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to process todos")
+	// Switch on outcome kind first
+	switch out.Kind {
+	case toolloop.OutcomeSuccess:
+		// Process extracted todos
+		if len(out.Value.Todos) > 0 {
+			c.logger.Info("📋 [TODO] Extracted %d todos from LLM", len(out.Value.Todos))
+			// Convert string todos to TodoList
+			if err := c.processTodoCollectionResult(sm, &out.Value); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to process todos")
+			}
 		}
-	}
 
-	// Handle terminal signals
-	switch signal {
-	case "CODING":
-		// Todos collected successfully
-		return StateCoding, false, nil
-	case "":
-		// No signal - should not happen with MaxIterations=2
-		return proto.StateError, false, logx.Errorf("todo collection completed without signal")
+		// Handle terminal signals from successful completion
+		switch out.Signal {
+		case string(StateCoding):
+			// Todos collected successfully
+			return StateCoding, false, nil
+		case "":
+			// No signal - should not happen with MaxIterations=2
+			return proto.StateError, false, logx.Errorf("todo collection completed without signal")
+		default:
+			c.logger.Warn("Unknown signal from todo collection: %s", out.Signal)
+			return proto.StateError, false, logx.Errorf("unexpected signal from todo collection: %s", out.Signal)
+		}
+
+	case toolloop.OutcomeIterationLimit:
+		// For todo collection, hitting limit is a failure (not budget review)
+		c.logger.Error("📋 [TODO] Failed to collect todos after %d iterations", out.Iteration)
+		return proto.StateError, false, logx.Errorf("LLM failed to provide todos after %d attempts", out.Iteration)
+
+	case toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError, toolloop.OutcomeNoToolTwice:
+		return proto.StateError, false, logx.Wrap(out.Err, "failed to collect todo list")
+
 	default:
-		c.logger.Warn("Unknown signal from todo collection: %s", signal)
-		return proto.StateError, false, logx.Errorf("unexpected signal from todo collection: %s", signal)
+		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
 }
 

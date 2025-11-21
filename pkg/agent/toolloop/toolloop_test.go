@@ -158,14 +158,14 @@ func TestBasicFlow(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	out := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
-	if err == nil {
+	if out.Kind == toolloop.OutcomeSuccess {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
-	if signal != "ERROR" {
-		t.Errorf("expected signal 'ERROR', got %q", signal)
+	if out.Signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", out.Signal)
 	}
 
 	if llmClient.callCount != 2 {
@@ -212,14 +212,14 @@ func TestSingleToolCall(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	out := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
-	if err == nil {
+	if out.Kind == toolloop.OutcomeSuccess {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
-	if signal != "ERROR" {
-		t.Errorf("expected signal 'ERROR', got %q", signal)
+	if out.Signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", out.Signal)
 	}
 
 	if llmClient.callCount != 3 {
@@ -274,9 +274,9 @@ func TestMultipleTools(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	out := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
-	if err == nil {
+	if out.Kind == toolloop.OutcomeSuccess {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
@@ -291,8 +291,8 @@ func TestMultipleTools(t *testing.T) {
 		}
 	}
 
-	if signal != "ERROR" {
-		t.Errorf("expected signal 'ERROR', got %q", signal)
+	if out.Signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", out.Signal)
 	}
 }
 
@@ -344,17 +344,17 @@ func TestTerminalSignal(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeSuccess {
+		t.Fatalf("unexpected error: %v", out.Err)
 	}
 
 	if !terminalCalled {
 		t.Error("expected CheckTerminal to be called")
 	}
 
-	if signal != "SUBMITTED" {
-		t.Errorf("expected signal 'SUBMITTED', got %q", signal)
+	if out.Signal != "SUBMITTED" {
+		t.Errorf("expected signal 'SUBMITTED', got %q", out.Signal)
 	}
 
 	// Should only call LLM once (terminal signal exits loop)
@@ -413,15 +413,15 @@ func TestIterationLimit(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
-	if err == nil {
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind == toolloop.OutcomeSuccess {
 		t.Fatal("expected error for hard limit exceeded")
 	}
 
 	// Verify we got the typed IterationLimitError
 	var iterErr *toolloop.IterationLimitError
-	if !errors.As(err, &iterErr) {
-		t.Fatalf("expected IterationLimitError, got %T: %v", err, err)
+	if !errors.As(out.Err, &iterErr) {
+		t.Fatalf("expected IterationLimitError, got %T: %v", out.Err, out.Err)
 	}
 
 	if iterErr.Key != "test_escalation" {
@@ -440,8 +440,8 @@ func TestIterationLimit(t *testing.T) {
 		t.Error("expected OnHardLimit to be called")
 	}
 
-	if signal != "" {
-		t.Errorf("expected empty signal on hard limit error, got %q", signal)
+	if out.Signal != "" {
+		t.Errorf("expected empty signal on hard limit error, got %q", out.Signal)
 	}
 
 	if llmClient.callCount != 3 {
@@ -487,14 +487,14 @@ func TestToolError(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	out := toolloop.Run(loop, ctx, cfg)
 	// Should error on second no-tool response
-	if err == nil {
+	if out.Kind == toolloop.OutcomeSuccess {
 		t.Fatal("expected error for consecutive no-tool responses, got nil")
 	}
 
-	if signal != "ERROR" {
-		t.Errorf("expected signal 'ERROR', got %q", signal)
+	if out.Signal != "ERROR" {
+		t.Errorf("expected signal 'ERROR', got %q", out.Signal)
 	}
 
 	if llmClient.callCount != 3 {
@@ -521,9 +521,9 @@ func TestMissingConfig(t *testing.T) {
 			return struct{}{}, nil
 		},
 	}
-	_, _, err := toolloop.Run(loop, ctx, cfg)
-	if err == nil || err.Error() != "ContextManager is required" {
-		t.Errorf("expected ContextManager required error, got %v", err)
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind == toolloop.OutcomeSuccess || out.Err.Error() != "ContextManager is required" {
+		t.Errorf("expected ContextManager required error, got %v", out.Err)
 	}
 
 	// Test missing ToolProvider
@@ -534,9 +534,9 @@ func TestMissingConfig(t *testing.T) {
 			return struct{}{}, nil
 		},
 	}
-	_, _, err = toolloop.Run(loop, ctx, cfg)
-	if err == nil || err.Error() != "ToolProvider is required" {
-		t.Errorf("expected ToolProvider required error, got %v", err)
+	out = toolloop.Run(loop, ctx, cfg)
+	if out.Kind == toolloop.OutcomeSuccess || out.Err.Error() != "ToolProvider is required" {
+		t.Errorf("expected ToolProvider required error, got %v", out.Err)
 	}
 
 	// Test missing CheckTerminal
@@ -548,9 +548,9 @@ func TestMissingConfig(t *testing.T) {
 			return struct{}{}, nil
 		},
 	}
-	_, _, err = toolloop.Run(loop, ctx, cfg)
-	if err == nil || err.Error() != "CheckTerminal is required - every toolloop must have a way to exit" {
-		t.Errorf("expected CheckTerminal required error, got %v", err)
+	out = toolloop.Run(loop, ctx, cfg)
+	if out.Kind == toolloop.OutcomeSuccess || out.Err.Error() != "CheckTerminal is required - every toolloop must have a way to exit" {
+		t.Errorf("expected CheckTerminal required error, got %v", out.Err)
 	}
 
 	// Test missing ExtractResult
@@ -562,9 +562,9 @@ func TestMissingConfig(t *testing.T) {
 			return ""
 		},
 	}
-	_, _, err = toolloop.Run(loop, ctx, cfg)
-	if err == nil || err.Error() != "ExtractResult is required for type-safe result extraction" {
-		t.Errorf("expected ExtractResult required error, got %v", err)
+	out = toolloop.Run(loop, ctx, cfg)
+	if out.Kind == toolloop.OutcomeSuccess || out.Err.Error() != "ExtractResult is required for type-safe result extraction" {
+		t.Errorf("expected ExtractResult required error, got %v", out.Err)
 	}
 }
 
@@ -632,20 +632,20 @@ func TestResultExtraction(t *testing.T) {
 		},
 	}
 
-	signal, result, err := toolloop.Run(loop, ctx, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeSuccess {
+		t.Fatalf("unexpected outcome: %v, err: %v", out.Kind, out.Err)
 	}
 
-	if signal != "RESULT_READY" {
-		t.Errorf("expected signal 'RESULT_READY', got %q", signal)
+	if out.Signal != "RESULT_READY" {
+		t.Errorf("expected signal 'RESULT_READY', got %q", out.Signal)
 	}
 
-	if result.Value != "test_data" {
-		t.Errorf("expected result.Value='test_data', got %q", result.Value)
+	if out.Value.Value != "test_data" {
+		t.Errorf("expected result.Value='test_data', got %q", out.Value.Value)
 	}
 
-	if !result.Success {
+	if !out.Value.Success {
 		t.Error("expected result.Success=true, got false")
 	}
 }
@@ -687,23 +687,27 @@ func TestResultExtractionError(t *testing.T) {
 		},
 	}
 
-	signal, result, err := toolloop.Run(loop, ctx, cfg)
+	out := toolloop.Run(loop, ctx, cfg)
 
-	// Should return error from ExtractResult
-	if err == nil {
+	// Should return OutcomeExtractionError with error from ExtractResult
+	if out.Kind != toolloop.OutcomeExtractionError {
+		t.Fatalf("expected OutcomeExtractionError, got %v", out.Kind)
+	}
+
+	if out.Err == nil {
 		t.Fatal("expected error from ExtractResult, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "extraction failed") {
-		t.Errorf("expected extraction error, got %v", err)
+	if !strings.Contains(out.Err.Error(), "extraction failed") {
+		t.Errorf("expected extraction error, got %v", out.Err)
 	}
 
-	if signal != "DONE" {
-		t.Errorf("expected signal 'DONE', got %q", signal)
+	if out.Signal != "DONE" {
+		t.Errorf("expected signal 'DONE', got %q", out.Signal)
 	}
 
-	if result != "" {
-		t.Errorf("expected empty result on error, got %q", result)
+	if out.Value != "" {
+		t.Errorf("expected empty result on error, got %q", out.Value)
 	}
 }
 
@@ -769,13 +773,13 @@ func TestEscalationSoftLimit(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeSuccess {
+		t.Fatalf("unexpected error: %v", out.Err)
 	}
 
-	if signal != "DONE" {
-		t.Errorf("expected signal 'DONE', got %q", signal)
+	if out.Signal != "DONE" {
+		t.Errorf("expected signal 'DONE', got %q", out.Signal)
 	}
 
 	if !softLimitCalled {
@@ -845,17 +849,17 @@ func TestEscalationHardLimit(t *testing.T) {
 		},
 	}
 
-	signal, _, err := toolloop.Run(loop, ctx, cfg)
+	out := toolloop.Run(loop, ctx, cfg)
 
 	// Should get IterationLimitError
-	if err == nil {
+	if out.Kind == toolloop.OutcomeSuccess {
 		t.Fatal("expected IterationLimitError, got nil")
 	}
 
 	// Verify we got the typed IterationLimitError
 	var iterErr *toolloop.IterationLimitError
-	if !errors.As(err, &iterErr) {
-		t.Fatalf("expected IterationLimitError, got %T: %v", err, err)
+	if !errors.As(out.Err, &iterErr) {
+		t.Fatalf("expected IterationLimitError, got %T: %v", out.Err, out.Err)
 	}
 
 	if iterErr.Key != "test_hard_limit" {
@@ -882,8 +886,8 @@ func TestEscalationHardLimit(t *testing.T) {
 		t.Errorf("expected hard limit count 5, got %d", hardLimitCount)
 	}
 
-	if signal != "" {
-		t.Errorf("expected empty signal on error, got %q", signal)
+	if out.Signal != "" {
+		t.Errorf("expected empty signal on error, got %q", out.Signal)
 	}
 
 	if llmClient.callCount != 5 {

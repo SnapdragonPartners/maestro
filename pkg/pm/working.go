@@ -2,7 +2,6 @@ package pm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -259,33 +258,38 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		},
 	}
 
-	signal, result, err := toolloop.Run(loop, ctx, cfg)
-	if err != nil {
-		// Check if this is an iteration limit error
-		var iterErr *toolloop.IterationLimitError
-		if errors.As(err, &iterErr) {
-			// PM must have called await_user with a status update before hitting limit
-			// Check if signal indicates await_user was called
-			if signal == SignalAwaitUser || result.AwaitUser {
-				d.logger.Info("✅ PM reached iteration limit but provided status update via await_user")
-				// Return AWAIT_USER signal - valid completion with status update
-				return SignalAwaitUser, nil
-			}
+	out := toolloop.Run(loop, ctx, cfg)
 
-			// PM hit limit without providing status - this is an error
-			d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling await_user", iterErr.Iteration)
-			return "", fmt.Errorf("PM must call await_user with status update before iteration limit: %w", iterErr)
+	// Switch on outcome kind first
+	switch out.Kind {
+	case toolloop.OutcomeSuccess:
+		// Process extracted result based on signal
+		if err := d.processPMResult(out.Value); err != nil {
+			return "", fmt.Errorf("failed to process PM result: %w", err)
 		}
-		return "", fmt.Errorf("toolloop execution failed: %w", err)
-	}
+		// Handle terminal signals from tool processing
+		return out.Signal, nil
 
-	// Process extracted result based on signal
-	if err := d.processPMResult(result); err != nil {
-		return "", fmt.Errorf("failed to process PM result: %w", err)
-	}
+	case toolloop.OutcomeIterationLimit:
+		// PM must have called await_user with a status update before hitting limit
+		// Check if signal indicates await_user was called
+		if out.Signal == SignalAwaitUser || out.Value.AwaitUser {
+			d.logger.Info("✅ PM reached iteration limit but provided status update via await_user")
+			// Return AWAIT_USER signal - valid completion with status update
+			return SignalAwaitUser, nil
+		}
 
-	// Handle terminal signals from tool processing
-	return signal, nil
+		// PM hit limit without providing status - this is an error
+		d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling await_user", out.Iteration)
+		return "", fmt.Errorf("PM must call await_user with status update before iteration limit: %w", out.Err)
+
+	case toolloop.OutcomeNoToolTwice, toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
+		// All other errors are treated as toolloop failures
+		return "", fmt.Errorf("toolloop execution failed: %w", out.Err)
+
+	default:
+		return "", fmt.Errorf("unknown toolloop outcome kind: %v", out.Kind)
+	}
 }
 
 // processPMResult processes the extracted result from PM's toolloop.
