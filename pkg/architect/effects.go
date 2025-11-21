@@ -16,8 +16,8 @@ type Runtime struct {
 }
 
 // NewRuntime creates a new runtime for architect effects.
-func NewRuntime(dispatcher *dispatch.Dispatcher, logger *logx.Logger, agentID string) *Runtime {
-	baseRuntime := effect.NewBaseRuntime(dispatcher, logger, agentID, "architect")
+func NewRuntime(dispatcher *dispatch.Dispatcher, logger *logx.Logger, agentID string, replyCh <-chan *proto.AgentMsg) *Runtime {
+	baseRuntime := effect.NewBaseRuntime(dispatcher, logger, agentID, "architect", replyCh)
 	return &Runtime{
 		BaseRuntime: baseRuntime,
 	}
@@ -94,7 +94,7 @@ func (e *DispatchStoryEffect) Execute(_ context.Context, runtime effect.Runtime)
 
 // ExecuteEffect executes a single Effect using the architect's runtime.
 func (d *Driver) ExecuteEffect(ctx context.Context, eff effect.Effect) error {
-	runtime := NewRuntime(d.dispatcher, d.logger, d.architectID)
+	runtime := NewRuntime(d.dispatcher, d.logger, d.architectID, d.replyCh)
 	_, err := eff.Execute(ctx, runtime)
 	if err != nil {
 		return fmt.Errorf("effect execution failed: %w", err)

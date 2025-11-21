@@ -72,45 +72,19 @@ type Coder struct {
 // Runtime extends BaseRuntime with coder-specific capabilities.
 type Runtime struct {
 	*effect.BaseRuntime
-	coder *Coder
 }
 
 // NewRuntime creates a new runtime for coder effects.
-func NewRuntime(coder *Coder) *Runtime {
-	baseRuntime := effect.NewBaseRuntime(coder.dispatcher, coder.logger, coder.agentID, "coder")
+func NewRuntime(dispatcher *dispatch.Dispatcher, logger *logx.Logger, agentID string, replyCh <-chan *proto.AgentMsg) *Runtime {
+	baseRuntime := effect.NewBaseRuntime(dispatcher, logger, agentID, "coder", replyCh)
 	return &Runtime{
 		BaseRuntime: baseRuntime,
-		coder:       coder,
-	}
-}
-
-// ReceiveMessage overrides BaseRuntime to use coder's reply channel.
-func (r *Runtime) ReceiveMessage(ctx context.Context, expectedType proto.MsgType) (*proto.AgentMsg, error) {
-	// Use the coder's replyCh for receiving messages
-	if r.coder.replyCh == nil {
-		return nil, fmt.Errorf("reply channel not available")
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("receive message cancelled: %w", ctx.Err())
-	case msg, ok := <-r.coder.replyCh:
-		if !ok {
-			return nil, fmt.Errorf("reply channel closed unexpectedly")
-		}
-		if msg == nil {
-			return nil, fmt.Errorf("received nil message")
-		}
-		if msg.Type != expectedType {
-			return nil, fmt.Errorf("expected message type %s but received %s", expectedType, msg.Type)
-		}
-		return msg, nil
 	}
 }
 
 // ExecuteEffect executes an effect using the coder's runtime environment.
 func (c *Coder) ExecuteEffect(ctx context.Context, eff effect.Effect) (any, error) {
-	runtime := NewRuntime(c)
+	runtime := NewRuntime(c.dispatcher, c.logger, c.agentID, c.replyCh)
 	result, err := eff.Execute(ctx, runtime)
 	if err != nil {
 		return nil, fmt.Errorf("effect execution failed: %w", err)
