@@ -558,16 +558,49 @@ func (cm *ContextManager) ResetForNewTemplate(templateName, systemPrompt string)
 // truncateOutputIfNeeded truncates verbose tool output to prevent context overload.
 // Implements centralized tool output truncation as recommended by expert guidance.
 func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
-	const maxOutputLength = 2000 // Maximum length for tool outputs
+	// Get context limits for this model
+	maxContext, _ := cm.getContextLimits()
 
-	// Only truncate if content exceeds the limit
-	if len(content) <= maxOutputLength {
-		return content
+	// Reserve 20% of context for response and buffer
+	const reserveRatio = 0.20
+	buffer := int(float64(maxContext) * reserveRatio)
+	maxSafeContent := maxContext - buffer
+
+	// Calculate current context usage (existing messages + buffered content)
+	currentTokens := cm.CountTokens()
+
+	// Check if this single message is larger than the entire safe context limit
+	// (This catches pathologically large inputs like massive log files)
+	if len(content) > maxSafeContent {
+		truncated := content[:maxSafeContent]
+		return truncated + fmt.Sprintf("\n\n[... content truncated: original size %d chars exceeded safe context limit of %d chars ...]",
+			len(content), maxSafeContent)
 	}
 
-	// Truncate and add clear indicator
-	truncated := content[:maxOutputLength]
-	return truncated + "\n\n[... output truncated after " + fmt.Sprintf("%d", maxOutputLength) + " characters for context management ...]"
+	// Check if adding this content would overflow the safe context limit
+	projectedTotal := currentTokens + len(content)
+	if projectedTotal > maxSafeContent {
+		// Calculate how much we can safely add
+		available := maxSafeContent - currentTokens
+		if available <= 0 {
+			// Context is already at or over limit - this should trigger compaction
+			// But return a minimal truncated message to prevent complete failure
+			const minSize = 1000
+			if len(content) > minSize {
+				return content[:minSize] + fmt.Sprintf("\n\n[... content truncated: context at capacity (%d/%d tokens) ...]",
+					currentTokens, maxSafeContent)
+			}
+		}
+
+		// Truncate to fit available space
+		if len(content) > available {
+			return content[:available] + fmt.Sprintf("\n\n[... content truncated to fit context: %d chars of %d shown ...]",
+				available, len(content))
+		}
+	}
+
+	// Content fits comfortably, no truncation needed
+	return content
 }
 
 // FlushUserBuffer consolidates accumulated user messages into a single context message.

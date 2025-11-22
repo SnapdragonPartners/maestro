@@ -21,7 +21,8 @@ type WorkingResult struct {
 	Signal string
 
 	// Bootstrap data (when bootstrap_configured=true)
-	BootstrapParams map[string]string
+	BootstrapParams   map[string]string
+	BootstrapMarkdown string // Rendered bootstrap prerequisites markdown
 
 	// Spec preview data (when preview_ready=true)
 	SpecMarkdown string
@@ -63,6 +64,9 @@ func ExtractPMWorkingResult(calls []agent.ToolCall, results []any) (WorkingResul
 			}
 			if platform, ok := resultMap["platform"].(string); ok {
 				result.BootstrapParams["platform"] = platform
+			}
+			if bootstrapMarkdown, ok := resultMap["bootstrap_markdown"].(string); ok {
+				result.BootstrapMarkdown = bootstrapMarkdown
 			}
 
 			// Don't return yet - continue checking for other signals in case of multiple tools

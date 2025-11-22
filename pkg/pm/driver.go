@@ -687,15 +687,32 @@ func (d *Driver) UploadSpec(markdown string) error {
 		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
 			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
 
-		// Add uploaded spec to context
-		d.contextManager.AddMessage("system",
-			fmt.Sprintf("User uploaded a specification file (%d bytes). You should extract any bootstrap information from it (project name, platform, git URL, etc.) and only ask the user for missing details.", len(markdown)))
-
 		// Check if bootstrap questions need answering
 		if reqs.HasAnyMissingComponents() {
-			d.contextManager.AddMessage("system",
-				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s. Parse the uploaded spec to extract bootstrap details before asking the user.",
-					reqs.MissingComponents, reqs.DetectedPlatform))
+			// Add uploaded spec content and bootstrap instructions to context
+			specMessage := fmt.Sprintf(`# User Uploaded Specification File
+
+The user has uploaded a specification file (%d bytes). **Parse this spec to extract bootstrap information before asking the user any questions.**
+
+**Look for these details in the spec:**
+1. **Project Name** - Often in title, frontmatter, or introduction
+2. **Git Repository URL** - May be mentioned in deployment, setup, or configuration sections
+3. **Primary Platform** - Look for language/framework mentions (go, python, node, rust, etc.)
+
+**After parsing the spec:**
+- Extract any bootstrap values you find
+- ONLY ask the user for values that are genuinely missing or ambiguous in the spec
+- Do NOT ask the user to re-provide information that's clearly stated in their spec
+
+**Bootstrap Analysis:**
+- Missing components: %v
+- Detected platform: %s (%.0f%%%% confidence)
+
+**The uploaded specification:**
+`+"```markdown\n%s\n```",
+				len(markdown), reqs.MissingComponents, reqs.DetectedPlatform, reqs.PlatformConfidence*100, markdown)
+
+			d.contextManager.AddMessage("system", specMessage)
 			needsBootstrap = true
 
 			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v",
@@ -707,6 +724,7 @@ func (d *Driver) UploadSpec(markdown string) error {
 	ctx := context.Background()
 	if needsBootstrap {
 		// Transition to WORKING so PM can extract bootstrap info from spec and ask missing questions
+		// PM will use chat_post tool to ask questions, then transition to AWAIT_USER via await_user tool
 		if err := d.TransitionTo(ctx, StateWorking, nil); err != nil {
 			d.logger.Error("❌ Failed to transition to WORKING: %v", err)
 			return fmt.Errorf("failed to transition to WORKING: %w", err)

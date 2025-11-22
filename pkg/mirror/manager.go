@@ -186,19 +186,26 @@ func updateGitMirror(ctx context.Context, mirrorPath string) error {
 // isEmptyMirror checks if a bare mirror repository has any commits.
 // Returns true if the repository has no refs in refs/heads/.
 func (m *Manager) isEmptyMirror(mirrorPath string) (bool, error) {
-	// Check if refs/heads/ directory is empty
-	refsDir := filepath.Join(mirrorPath, "refs", "heads")
-	entries, err := os.ReadDir(refsDir)
+	// Use git rev-list to check if any commits exist
+	// This is more reliable than checking refs since it directly checks for commit history
+	cmd := exec.Command("git", "rev-list", "--all", "--count")
+	cmd.Dir = mirrorPath
+	output, err := cmd.CombinedOutput()
+
 	if err != nil {
-		// If directory doesn't exist, repository is empty
-		if os.IsNotExist(err) {
-			return true, nil
-		}
-		return false, fmt.Errorf("failed to read refs/heads: %w", err)
+		// Check if this is a "does not have any commits yet" error (exit code 0, output "0")
+		// vs an actual git failure. For truly empty repos, git rev-list still succeeds.
+		return false, fmt.Errorf("git rev-list failed: %w\nOutput: %s", err, string(output))
 	}
 
-	// If no entries, repository is empty
-	return len(entries) == 0, nil
+	// Parse commit count
+	commitCountStr := strings.TrimSpace(string(output))
+	if commitCountStr == "" || commitCountStr == "0" {
+		return true, nil
+	}
+
+	// Repository has commits, not empty
+	return false, nil
 }
 
 // initializeEmptyRepository creates an initial commit in an empty repository.

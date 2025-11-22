@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/mirror"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/workspace"
 )
 
@@ -75,6 +76,8 @@ func (b *BootstrapTool) PromptDocumentation() string {
 }
 
 // Exec executes the bootstrap configuration.
+//
+//nolint:cyclop // Bootstrap involves validation, config updates, mirror creation, and workspace refresh
 func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, error) {
 	// Extract and validate project_name
 	projectName, ok := params["project_name"].(string)
@@ -148,9 +151,21 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 	}
 
 	// Re-validate bootstrap requirements to confirm everything is now configured
-	b.validateBootstrapComplete(ctx)
+	bootstrapReqs := b.validateBootstrapComplete(ctx)
 
-	// Return success with bootstrap params
+	// Render bootstrap markdown if requirements exist
+	var bootstrapMarkdown string
+	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
+		rendered, renderErr := b.renderBootstrapMarkdown(bootstrapReqs)
+		if renderErr != nil {
+			b.logger.Warn("Failed to render bootstrap markdown: %v", renderErr)
+			// Non-fatal - continue without rendered markdown
+		} else {
+			bootstrapMarkdown = rendered
+		}
+	}
+
+	// Return success with bootstrap params and rendered markdown
 	return map[string]any{
 		"success":              true,
 		"message":              "Bootstrap configuration saved successfully",
@@ -158,19 +173,21 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		"project_name":         projectName,
 		"git_url":              gitURL,
 		"platform":             platform,
+		"bootstrap_markdown":   bootstrapMarkdown, // Rendered markdown for PM to store
 	}, nil
 }
 
 // validateBootstrapComplete re-validates bootstrap requirements after configuration.
 // This ensures the bootstrap process completed successfully and all required components are configured.
-func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) {
+// Returns the bootstrap requirements for rendering.
+func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) *BootstrapRequirements {
 	b.logger.Info("Validating bootstrap configuration...")
 	detector := NewBootstrapDetector(b.projectDir)
 	reqs, validateErr := detector.Detect(ctx)
 	if validateErr != nil {
 		b.logger.Warn("Post-bootstrap validation failed: %v", validateErr)
 		// Non-fatal - configuration was saved successfully
-		return
+		return nil
 	}
 
 	if reqs.NeedsProjectConfig || reqs.NeedsGitRepo {
@@ -180,6 +197,35 @@ func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) {
 	} else {
 		b.logger.Info("✅ Bootstrap validation passed: project metadata is complete")
 	}
+
+	return reqs
+}
+
+// renderBootstrapMarkdown renders the bootstrap prerequisites template.
+func (b *BootstrapTool) renderBootstrapMarkdown(reqs *BootstrapRequirements) (string, error) {
+	renderer, err := templates.NewRenderer()
+	if err != nil {
+		return "", fmt.Errorf("failed to create template renderer: %w", err)
+	}
+
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"BootstrapRequired":   true,
+			"MissingComponents":   reqs.MissingComponents,
+			"DetectedPlatform":    reqs.DetectedPlatform,
+			"PlatformConfidence":  reqs.PlatformConfidence,
+			"HasRepository":       !reqs.NeedsGitRepo,
+			"NeedsDockerfile":     reqs.NeedsDockerfile,
+			"NeedsMakefile":       reqs.NeedsMakefile,
+			"NeedsKnowledgeGraph": reqs.NeedsKnowledgeGraph,
+		},
+	}
+
+	markdown, err := renderer.Render(templates.PMBootstrapPrerequisitesTemplate, templateData)
+	if err != nil {
+		return "", fmt.Errorf("failed to render bootstrap prerequisites template: %w", err)
+	}
+	return markdown, nil
 }
 
 // refreshWorkspacesIfExist updates PM and architect workspaces if they already exist.

@@ -111,6 +111,20 @@ class PMController {
             case 'WORKING':
             case 'AWAIT_USER':
                 badge.classList.add('bg-blue-100', 'text-blue-800');
+                // Auto-switch to interview tab when PM is actively working or awaiting user response
+                // This handles the case where spec upload transitions to WORKING for bootstrap questions
+                if (this.currentTab === 'upload' && status.has_session) {
+                    this.switchTab('interview');
+                    // Show chat interface (session is already started by upload)
+                    document.getElementById('interview-start-section').classList.add('hidden');
+                    document.getElementById('interview-chat-section').classList.remove('hidden');
+
+                    // Set session ID so maestro.js knows there's an active session
+                    // Use a pseudo-session ID for spec upload workflow
+                    if (!window.maestroUI.pmSessionId) {
+                        window.maestroUI.pmSessionId = `pm_upload_${Date.now()}`;
+                    }
+                }
                 break;
             case 'PREVIEW':
                 badge.classList.add('bg-yellow-100', 'text-yellow-800');
