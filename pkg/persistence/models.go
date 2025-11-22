@@ -55,6 +55,7 @@ type Story struct {
 	DependsOn       []string `json:"depends_on" db:"-"`       // Story dependencies
 	EstimatedPoints int      `json:"estimated_points" db:"-"` // Estimation points
 	KnowledgePack   string   `json:"knowledge_pack" db:"-"`   // Relevant knowledge subgraph (DOT format)
+	Express         bool     `json:"express" db:"-"`          // Skip planning, fast-path to coding (knowledge updates, hotfixes)
 }
 
 // StoryDependency represents a dependency relationship between stories.

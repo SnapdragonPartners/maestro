@@ -43,6 +43,7 @@ const (
 	KeyErrorMessage            = "error_message"
 	KeyStoryMessageID          = "story_message_id"
 	KeyStoryID                 = "story_id"
+	KeyExpress                 = "express" // Express story flag (skip planning)
 	KeyQuestionSubmitted       = "question_submitted"
 	KeyPlanSubmitted           = "plan_submitted"
 	KeyStoryCompletedAt        = "story_completed_at"
@@ -114,8 +115,8 @@ var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// WAITING can transition to SETUP when receiving task assignment, ERROR during shutdown, or DONE for clean shutdown.
 	proto.StateWaiting: {StateSetup, proto.StateError, proto.StateDone},
 
-	// SETUP prepares workspace (mirror, clone, branch) then goes to PLANNING.
-	StateSetup: {StatePlanning, proto.StateError},
+	// SETUP prepares workspace (mirror, clone, branch) then goes to PLANNING, or directly to CODING for express stories.
+	StateSetup: {StatePlanning, StateCoding, proto.StateError},
 
 	// PLANNING can submit plan for review, exceed budget (→BUDGET_REVIEW), or ask architect questions (→QUESTION).
 	StatePlanning: {StatePlanReview, StateBudgetReview, StateQuestion},

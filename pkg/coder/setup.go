@@ -78,18 +78,41 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 		}
 	}
 
-	// Update story status to PLANNING via dispatcher (non-blocking)
+	// Check if this is an express story (knowledge update, hotfix, etc.)
+	// Express stories skip planning and go straight to coding
+	isExpress := false
+	if expressVal, exists := sm.GetStateValue(KeyExpress); exists {
+		if express, ok := expressVal.(bool); ok && express {
+			isExpress = true
+			c.logger.Info("⚡ Express story detected - skipping planning phase")
+		}
+	}
+
+	// Update story status via dispatcher (non-blocking)
+	nextStatus := "planning"
+	if isExpress {
+		nextStatus = "coding"
+	}
 	if c.dispatcher != nil {
-		if err := c.dispatcher.UpdateStoryStatus(storyIDStr, "planning"); err != nil {
-			c.logger.Warn("Failed to update story status to planning: %v", err)
+		if err := c.dispatcher.UpdateStoryStatus(storyIDStr, nextStatus); err != nil {
+			c.logger.Warn("Failed to update story status to %s: %v", nextStatus, err)
 			// Continue anyway - status update failure shouldn't block the workflow
 		} else {
-			c.logger.Info("✅ Story %s status updated to PLANNING", storyIDStr)
+			c.logger.Info("✅ Story %s status updated to %s", storyIDStr, strings.ToUpper(nextStatus))
 		}
 	}
 
 	// Tools registered globally by orchestrator at startup
 	// No need to register tools per-story or per-agent
+
+	// Express stories skip planning and go straight to coding with read-write workspace
+	if isExpress {
+		// Reconfigure workspace as read-write for coding
+		if err := c.configureWorkspaceMount(ctx, false, "coding"); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to configure coding container for express story")
+		}
+		return StateCoding, false, nil
+	}
 
 	return StatePlanning, false, nil
 }
