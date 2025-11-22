@@ -645,6 +645,8 @@ func (d *Driver) StartInterview(expertise string) error {
 
 // UploadSpec accepts an uploaded spec markdown file.
 // This is called by the WebUI when the user uploads a spec file.
+// Runs bootstrap detection and transitions to WORKING if bootstrap questions need answering,
+// or directly to PREVIEW if bootstrap is complete.
 // Idempotent: succeeds if already in PREVIEW with same spec (handles double-submissions).
 func (d *Driver) UploadSpec(markdown string) error {
 	// Idempotency check: if already in PREVIEW with same spec, succeed silently
@@ -664,14 +666,62 @@ func (d *Driver) UploadSpec(markdown string) error {
 		return fmt.Errorf("cannot upload spec in state %s (must be WAITING or AWAIT_USER)", currentState)
 	}
 
-	// Store spec and transition to PREVIEW
+	// Store spec and infer expert level (user provided their own spec)
 	d.SetStateData("draft_spec_markdown", markdown)
-	d.SetStateData("user_expertise", "EXPERT") // Infer highest proficiency for uploaded specs
-	d.contextManager.AddMessage("system", "User uploaded a specification file. You can answer questions about it if the user clicks 'Continue Interview'.")
-	ctx := context.Background()
-	_ = d.TransitionTo(ctx, StatePreview, nil)
+	d.SetStateData("user_expertise", "EXPERT")
+	d.SetStateData("spec_uploaded", true) // Flag to indicate spec was uploaded vs generated
 
-	d.logger.Info("📤 Spec uploaded (%d bytes) - transitioned to PREVIEW", len(markdown))
+	// Detect bootstrap requirements (same as StartInterview)
+	d.logger.Info("🔍 Detecting bootstrap requirements for uploaded spec")
+	detector := tools.NewBootstrapDetector(d.workDir)
+	reqs, err := detector.Detect(context.Background())
+	needsBootstrap := false
+	if err != nil {
+		d.logger.Warn("Bootstrap detection failed: %v", err)
+		// Continue without bootstrap detection - non-fatal
+	} else {
+		// Store bootstrap requirements in state
+		d.SetStateData(StateKeyBootstrapRequirements, reqs)
+		d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
+
+		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
+			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+
+		// Add uploaded spec to context
+		d.contextManager.AddMessage("system",
+			fmt.Sprintf("User uploaded a specification file (%d bytes). You should extract any bootstrap information from it (project name, platform, git URL, etc.) and only ask the user for missing details.", len(markdown)))
+
+		// Check if bootstrap questions need answering
+		if reqs.HasAnyMissingComponents() {
+			d.contextManager.AddMessage("system",
+				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s. Parse the uploaded spec to extract bootstrap details before asking the user.",
+					reqs.MissingComponents, reqs.DetectedPlatform))
+			needsBootstrap = true
+
+			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v",
+				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph)
+		}
+	}
+
+	// Decide target state based on bootstrap needs
+	ctx := context.Background()
+	if needsBootstrap {
+		// Transition to WORKING so PM can extract bootstrap info from spec and ask missing questions
+		if err := d.TransitionTo(ctx, StateWorking, nil); err != nil {
+			d.logger.Error("❌ Failed to transition to WORKING: %v", err)
+			return fmt.Errorf("failed to transition to WORKING: %w", err)
+		}
+		d.logger.Info("📤 Spec uploaded (%d bytes) - bootstrap needed, transitioned to WORKING to extract info and fill gaps", len(markdown))
+	} else {
+		// Bootstrap complete - go directly to PREVIEW
+		d.contextManager.AddMessage("system", "User uploaded a specification file. Bootstrap requirements are satisfied. You can answer questions about it if the user clicks 'Continue Interview'.")
+		if err := d.TransitionTo(ctx, StatePreview, nil); err != nil {
+			d.logger.Error("❌ Failed to transition to PREVIEW: %v", err)
+			return fmt.Errorf("failed to transition to PREVIEW: %w", err)
+		}
+		d.logger.Info("📤 Spec uploaded (%d bytes) - bootstrap complete, transitioned to PREVIEW", len(markdown))
+	}
+
 	return nil
 }
 

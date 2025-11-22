@@ -88,6 +88,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 // setupInterviewContext renders the appropriate interview template based on project state.
 // If bootstrap requirements are detected, uses focused bootstrap gate template.
+// If spec was uploaded, adds it to context for parsing.
 // Otherwise uses full interview start template.
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
@@ -104,6 +105,10 @@ func (d *Driver) setupInterviewContext() error {
 	// Get conversation history if any
 	conversationHistory, _ := stateData["conversation"].([]map[string]string)
 
+	// Check if spec was uploaded (vs being generated through interview)
+	specUploaded, _ := stateData["spec_uploaded"].(bool)
+	uploadedSpec, _ := stateData["draft_spec_markdown"].(string)
+
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
@@ -116,6 +121,12 @@ func (d *Driver) setupInterviewContext() error {
 			"Expertise":           expertise,
 			"ConversationHistory": conversationHistory,
 		},
+	}
+
+	// If spec was uploaded, add it to template data for parsing
+	if specUploaded && uploadedSpec != "" {
+		templateData.Extra["UploadedSpec"] = uploadedSpec
+		d.logger.Info("📄 Uploaded spec detected (%d bytes) - will extract bootstrap info from it", len(uploadedSpec))
 	}
 
 	// Add existing config values if available (so PM doesn't ask for them again)
