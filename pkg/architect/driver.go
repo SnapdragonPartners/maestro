@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -28,6 +29,20 @@ const (
 	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 	signalReviewComplete        = "REVIEW_COMPLETE"
 )
+
+// KnowledgeEntry represents a knowledge graph entry to be persisted.
+//
+//nolint:govet // fieldalignment: logical grouping preferred over memory optimization
+type KnowledgeEntry struct {
+	AgentID   string    // Agent that recorded this knowledge
+	StoryID   string    // Story context where this was recorded
+	Category  string    // Knowledge category (architecture, convention, etc.)
+	Title     string    // Brief title for the entry
+	Content   string    // The knowledge content
+	Rationale string    // Why this is important or why decision was made
+	Scope     string    // Applicability: story, spec, project
+	Timestamp time.Time // When this was recorded
+}
 
 // listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
 // This allows architect to use toolloop with its dynamic tool list pattern.
@@ -68,21 +83,26 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 }
 
 // Driver manages the state machine for an architect workflow.
+//
+//nolint:govet // fieldalignment: logical grouping preferred over memory optimization
 type Driver struct {
-	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
-	contextManager          *contextmgr.ContextManager
-	toolLoop                *toolloop.ToolLoop          // Tool loop for LLM interactions
-	renderer                *templates.Renderer         // Template renderer for prompts
-	queue                   *Queue                      // Story queue manager
-	escalationHandler       *EscalationHandler          // Escalation handler
-	dispatcher              *dispatch.Dispatcher        // Dispatcher for sending messages
-	logger                  *logx.Logger                // Logger with proper agent prefixing
-	executor                *execpkg.ArchitectExecutor  // Container executor for file access tools
-	chatService             ChatServiceInterface        // Chat service for escalations (nil check required)
-	questionsCh             chan *proto.AgentMsg        // Bi-directional channel for requests (specs, questions, approvals)
-	replyCh                 <-chan *proto.AgentMsg      // Read-only channel for replies
-	persistenceChannel      chan<- *persistence.Request // Channel for database operations
-	workDir                 string                      // Workspace directory
+	*agent.BaseStateMachine                                       // Embed state machine (provides LLMClient field)
+	agentContexts           map[string]*contextmgr.ContextManager // Per-agent contexts (key: agent_id)
+	contextMutex            sync.RWMutex                          // Protect agentContexts map
+	knowledgeBuffer         []KnowledgeEntry                      // Accumulated knowledge entries for persistence
+	knowledgeMutex          sync.Mutex                            //nolint:unused // Protect knowledgeBuffer (remove nolint when knowledge recording is implemented)
+	toolLoop                *toolloop.ToolLoop                    // Tool loop for LLM interactions
+	renderer                *templates.Renderer                   // Template renderer for prompts
+	queue                   *Queue                                // Story queue manager
+	escalationHandler       *EscalationHandler                    // Escalation handler
+	dispatcher              *dispatch.Dispatcher                  // Dispatcher for sending messages
+	logger                  *logx.Logger                          // Logger with proper agent prefixing
+	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
+	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
+	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
+	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
+	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
+	workDir                 string                                // Workspace directory
 }
 
 // ChatServiceInterface defines the interface for chat operations needed by architect.
@@ -120,7 +140,7 @@ var ErrEscalationTriggered = fmt.Errorf("escalation triggered due to iteration l
 
 // NewDriver creates a new architect driver instance.
 // LLM client must be set separately via SetLLMClient after construction.
-func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -149,8 +169,9 @@ func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, w
 
 	return &Driver{
 		BaseStateMachine:   sm,
-		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
-		toolLoop:           nil, // Set via SetLLMClient
+		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
+		knowledgeBuffer:    make([]KnowledgeEntry, 0),                   // Initialize knowledge buffer
+		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
 		queue:              queue,
@@ -244,6 +265,110 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 func (d *Driver) SetLLMClient(llmClient agent.LLMClient) {
 	d.BaseStateMachine.SetLLMClient(llmClient)
 	d.toolLoop = toolloop.New(llmClient, d.logger)
+}
+
+// getContextForAgent retrieves or creates a context manager for the specified agent.
+// This enables per-agent conversation continuity within story boundaries.
+// Thread-safe with read-write lock protection.
+func (d *Driver) getContextForAgent(agentID string) *contextmgr.ContextManager {
+	// Fast path: read lock to check if context exists
+	d.contextMutex.RLock()
+	cm, exists := d.agentContexts[agentID]
+	d.contextMutex.RUnlock()
+
+	if exists {
+		return cm
+	}
+
+	// Slow path: create new context with write lock
+	d.contextMutex.Lock()
+	defer d.contextMutex.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine might have created it)
+	if cm, exists = d.agentContexts[agentID]; exists {
+		return cm
+	}
+
+	// Create new context manager for this agent
+	modelName := ""
+	if d.LLMClient != nil {
+		cfg, err := config.GetConfig()
+		if err == nil {
+			modelName = cfg.Agents.ArchitectModel
+		}
+	}
+
+	cm = contextmgr.NewContextManagerWithModel(modelName)
+
+	// Note: Chat service integration for per-agent contexts will be added
+	// when needed - currently chat uses single architect context
+
+	d.agentContexts[agentID] = cm
+	d.logger.Debug("Created new context for agent %s", agentID)
+
+	return cm
+}
+
+// ResetAgentContext resets the context for an agent when they start a new story.
+// Called when a coder transitions to SETUP state with a new story assignment.
+func (d *Driver) ResetAgentContext(agentID string) error {
+	// Get current story for this agent from dispatcher
+	storyID := d.dispatcher.GetStoryForAgent(agentID)
+	if storyID == "" {
+		return fmt.Errorf("no story found for agent %s", agentID)
+	}
+
+	// Get or create context for this agent
+	cm := d.getContextForAgent(agentID)
+
+	// Build comprehensive system prompt
+	systemPrompt, err := d.buildSystemPrompt(agentID, storyID)
+	if err != nil {
+		return fmt.Errorf("failed to build system prompt: %w", err)
+	}
+
+	// Reset context with story-scoped template name
+	templateName := fmt.Sprintf("agent-%s-story-%s", agentID, storyID)
+	cm.ResetForNewTemplate(templateName, systemPrompt)
+
+	d.logger.Info("✅ Reset context for agent %s (story %s)", agentID, storyID)
+
+	return nil
+}
+
+// buildSystemPrompt creates the comprehensive system prompt for an agent context.
+// This prompt contains persistent context for the entire story lifecycle.
+func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
+	// Get story details from queue
+	story, exists := d.queue.GetStory(storyID)
+	if !exists {
+		return "", fmt.Errorf("story %s not found in queue", storyID)
+	}
+
+	// Build template data with story information
+	data := &templates.TemplateData{
+		Extra: map[string]any{
+			"AgentID":       agentID,
+			"StoryID":       storyID,
+			"StoryTitle":    story.Title,
+			"StoryContent":  story.Content,
+			"KnowledgePack": story.KnowledgePack,
+			"SpecID":        story.SpecID,
+		},
+	}
+
+	// Template renderer is required
+	if d.renderer == nil {
+		return "", fmt.Errorf("template renderer not initialized")
+	}
+
+	// Render architect system prompt
+	prompt, err := d.renderer.Render(templates.ArchitectSystemTemplate, data)
+	if err != nil {
+		return "", fmt.Errorf("failed to render architect system template: %w", err)
+	}
+
+	return prompt, nil
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
@@ -447,11 +572,6 @@ func (d *Driver) GetValidStates() []proto.State {
 	return GetAllArchitectStates()
 }
 
-// GetContextSummary returns a summary of the current context.
-func (d *Driver) GetContextSummary() string {
-	return d.contextManager.GetContextSummary()
-}
-
 // GetQueue returns the queue manager for external access.
 func (d *Driver) GetQueue() *Queue {
 	return d.queue
@@ -470,15 +590,9 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
-// buildMessagesWithContext creates completion messages with context history.
-// Converts context manager messages (with structured ToolCalls and ToolResults) to CompletionMessage format.
-// Same pattern as PM's buildMessagesWithContext.
-func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
-	// Get conversation history from context manager
-	contextMessages := d.contextManager.GetMessages()
-
-	// Convert to CompletionMessage format
-	messages := make([]agent.CompletionMessage, 0, len(contextMessages)+1)
+// convertContextMessages converts contextmgr.Message format to agent.CompletionMessage format.
+func convertContextMessages(contextMessages []contextmgr.Message) []agent.CompletionMessage {
+	messages := make([]agent.CompletionMessage, 0, len(contextMessages))
 	for i := range contextMessages {
 		msg := &contextMessages[i]
 
@@ -515,15 +629,6 @@ func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.Completi
 			ToolResults: agentToolResults,
 		})
 	}
-
-	// Add the new prompt as a user message if provided
-	if initialPrompt != "" {
-		messages = append(messages, agent.CompletionMessage{
-			Role:    agent.RoleUser,
-			Content: initialPrompt,
-		})
-	}
-
 	return messages
 }
 
@@ -704,7 +809,8 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 // checkIterationLimit checks if the architect has exceeded iteration limits.
 // Returns true if hard limit exceeded (should escalate), false otherwise.
 // Soft limit triggers warning, hard limit triggers escalation to ESCALATE state.
-func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State) bool {
+// Takes context manager parameter to add warnings to the correct agent-specific context.
+func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State, cm *contextmgr.ContextManager) bool {
 	const softLimit = 8
 	const hardLimit = 16
 
@@ -724,9 +830,9 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	// Check soft limit (warning only)
 	if iterationCount == softLimit {
 		d.logger.Warn("⚠️  Soft iteration limit (%d) reached in %s - architect should consider finalizing analysis", softLimit, stateName)
-		// Add warning to context for LLM to see
+		// Add warning to agent-specific context for LLM to see
 		warningMsg := fmt.Sprintf("Warning: You have used %d iterations in this phase. Consider finalizing your analysis soon to avoid escalation.", softLimit)
-		d.contextManager.AddMessage("system-warning", warningMsg)
+		cm.AddMessage("system-warning", warningMsg)
 		return false
 	}
 
@@ -765,7 +871,8 @@ func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvi
 
 // processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
 // Returns the submit_reply response if detected, nil otherwise.
-func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
+// Takes context manager parameter to add tool results to the correct agent-specific context.
+func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider, cm *contextmgr.ContextManager) (string, error) {
 	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
 
 	for i := range toolCalls {
@@ -847,7 +954,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		tool, err := toolProvider.Get(toolCall.Name)
 		if err != nil {
 			d.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
-			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
+			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
 			continue
 		}
 
@@ -871,7 +978,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 		if err != nil {
 			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
+			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
 			continue
 		}
 
@@ -900,7 +1007,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			resultStr = fmt.Sprintf("%v", result)
 		}
 
-		d.contextManager.AddToolResult(toolCall.ID, resultStr, isError)
+		cm.AddToolResult(toolCall.ID, resultStr, isError)
 		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
 	}
 

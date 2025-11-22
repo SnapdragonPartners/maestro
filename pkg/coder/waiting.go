@@ -98,11 +98,23 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 			c.logger.Info("🧑‍💻 No story_type payload found, using default 'app'")
 		}
 
-		// Store the task content, story ID, and story type for use in later states.
+		// Extract express flag from the payload (knowledge updates, hotfixes, etc.)
+		isExpress := false
+		if expressPayload, exists := payloadData["express"]; exists {
+			if express, ok := expressPayload.(bool); ok {
+				isExpress = express
+				if isExpress {
+					c.logger.Info("⚡ Express story detected - will skip planning phase")
+				}
+			}
+		}
+
+		// Store the task content, story ID, story type, and express flag for use in later states.
 		sm.SetStateData(string(stateDataKeyTaskContent), contentStr)
 		sm.SetStateData(KeyStoryMessageID, storyMsg.ID)
 		sm.SetStateData(KeyStoryID, storyIDStr)        // For workspace manager - use actual story ID
 		sm.SetStateData(proto.KeyStoryType, storyType) // Store story type for testing decisions
+		sm.SetStateData(KeyExpress, isExpress)         // Store express flag for planning bypass
 		sm.SetStateData(string(stateDataKeyStartedAt), time.Now().UTC())
 
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "received story message")

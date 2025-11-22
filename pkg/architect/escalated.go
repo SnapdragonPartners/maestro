@@ -30,6 +30,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 
 	requestID, _ := stateData["escalation_request_id"].(string)
 	storyID, _ := stateData["escalation_story_id"].(string)
+	agentID, _ := stateData["escalation_agent_id"].(string)
 
 	// Check if chat service is available
 	if d.chatService == nil {
@@ -100,11 +101,16 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	// Got a reply!
 	d.logger.Info("✅ Received human reply (id=%d) to escalation", reply.ID)
 
-	// Add human guidance to context
-	d.contextManager.AddMessage("system", fmt.Sprintf(
-		"🧑 HUMAN GUIDANCE: %s\n\nPlease incorporate this guidance and continue with your task.",
-		reply.Text,
-	))
+	// Add human guidance to agent-specific context
+	if agentID != "" {
+		cm := d.getContextForAgent(agentID)
+		cm.AddMessage("system", fmt.Sprintf(
+			"🧑 HUMAN GUIDANCE: %s\n\nPlease incorporate this guidance and continue with your task.",
+			reply.Text,
+		))
+	} else {
+		d.logger.Warn("No agent_id found in escalation context - cannot add human guidance to specific context")
+	}
 
 	// Reset iteration counter for the origin state
 	originStateIterationKey := fmt.Sprintf("%s_iterations", originState)
@@ -116,6 +122,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	d.SetStateData("escalation_iteration_count", nil)
 	d.SetStateData("escalation_request_id", nil)
 	d.SetStateData("escalation_story_id", nil)
+	d.SetStateData("escalation_agent_id", nil)
 	d.SetStateData("escalated_at", nil)
 
 	// Return to REQUEST state (where escalations originate from)
