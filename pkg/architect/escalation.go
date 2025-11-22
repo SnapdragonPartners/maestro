@@ -67,41 +67,6 @@ func NewEscalationHandler(logsDir string, queue *Queue) *EscalationHandler {
 	return handler
 }
 
-// EscalateBusinessQuestion escalates a business question to human intervention.
-func (eh *EscalationHandler) EscalateBusinessQuestion(_ context.Context, pendingQ *PendingQuestion) error {
-	// Create escalation entry.
-	escalation := &EscalationEntry{
-		ID:          fmt.Sprintf("esc_%s_%d", pendingQ.ID, time.Now().Unix()),
-		StoryID:     pendingQ.StoryID,
-		AgentID:     pendingQ.AgentID,
-		Type:        "business_question",
-		Question:    pendingQ.Question,
-		Context:     pendingQ.Context,
-		EscalatedAt: time.Now().UTC(),
-		Status:      "pending",
-		Priority:    eh.determinePriority(pendingQ.Question, pendingQ.Context),
-	}
-
-	// Store escalation.
-	eh.escalations[escalation.ID] = escalation
-
-	// Log to escalations.jsonl.
-	if err := eh.logEscalation(escalation); err != nil {
-		return fmt.Errorf("failed to log escalation: %w", err)
-	}
-
-	// Update story status to await human feedback.
-	if err := eh.queue.UpdateStoryStatus(escalation.StoryID, StatusPending); err != nil {
-		return fmt.Errorf("failed to mark story %s as awaiting human feedback: %w", escalation.StoryID, err)
-	}
-
-	logx.Infof("escalated business question %s for story %s (priority: %s)",
-		escalation.ID, escalation.StoryID, escalation.Priority)
-	logx.Infof("   Question: %s", truncateString(escalation.Question, 100))
-
-	return nil
-}
-
 // EscalateReviewFailure escalates repeated code review failures to human intervention.
 func (eh *EscalationHandler) EscalateReviewFailure(_ context.Context, storyID, agentID string, failureCount int, lastReview string) error {
 	// Create escalation entry for review failure.
@@ -239,50 +204,6 @@ func (eh *EscalationHandler) loadEscalations() error {
 	}
 
 	return nil
-}
-
-// determinePriority determines the priority of a business question.
-func (eh *EscalationHandler) determinePriority(question string, _ map[string]any) string {
-	questionLower := strings.ToLower(question)
-
-	// Critical priority keywords.
-	criticalKeywords := []string{
-		"critical", "urgent", "emergency", "blocker", "security",
-		"data loss", "outage", "production", "customer impact",
-	}
-
-	for _, keyword := range criticalKeywords {
-		if strings.Contains(questionLower, keyword) {
-			return "critical"
-		}
-	}
-
-	// High priority keywords.
-	highKeywords := []string{
-		"important", "asap", "deadline", "revenue", "compliance",
-		"legal", "regulation", "audit", "risk",
-	}
-
-	for _, keyword := range highKeywords {
-		if strings.Contains(questionLower, keyword) {
-			return "high"
-		}
-	}
-
-	// Medium priority keywords.
-	mediumKeywords := []string{
-		"business", "requirement", "stakeholder", "customer",
-		"policy", "strategy", "roadmap", "feature",
-	}
-
-	for _, keyword := range mediumKeywords {
-		if strings.Contains(questionLower, keyword) {
-			return "medium"
-		}
-	}
-
-	// Default to low priority.
-	return "low"
 }
 
 // GetEscalations returns all escalations, optionally filtered by status.

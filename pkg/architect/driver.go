@@ -87,7 +87,6 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 //nolint:govet // fieldalignment: logical grouping preferred over memory optimization
 type Driver struct {
 	*agent.BaseStateMachine                                       // Embed state machine (provides LLMClient field)
-	contextManager          *contextmgr.ContextManager            // Legacy: Single context (kept for backward compatibility)
 	agentContexts           map[string]*contextmgr.ContextManager // Per-agent contexts (key: agent_id)
 	contextMutex            sync.RWMutex                          // Protect agentContexts map
 	knowledgeBuffer         []KnowledgeEntry                      // Accumulated knowledge entries for persistence
@@ -141,7 +140,7 @@ var ErrEscalationTriggered = fmt.Errorf("escalation triggered due to iteration l
 
 // NewDriver creates a new architect driver instance.
 // LLM client must be set separately via SetLLMClient after construction.
-func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
+func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request) *Driver {
 	renderer, err := templates.NewRenderer()
 	if err != nil {
 		// Log the error but continue with nil renderer for graceful degradation.
@@ -170,7 +169,6 @@ func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, w
 
 	return &Driver{
 		BaseStateMachine:   sm,
-		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
 		knowledgeBuffer:    make([]KnowledgeEntry, 0),                   // Initialize knowledge buffer
 		toolLoop:           nil,                                         // Set via SetLLMClient
@@ -572,11 +570,6 @@ func (d *Driver) ValidateState(state proto.State) error {
 // GetValidStates returns all valid states for this architect agent.
 func (d *Driver) GetValidStates() []proto.State {
 	return GetAllArchitectStates()
-}
-
-// GetContextSummary returns a summary of the current context.
-func (d *Driver) GetContextSummary() string {
-	return d.contextManager.GetContextSummary()
 }
 
 // GetQueue returns the queue manager for external access.
