@@ -38,20 +38,23 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("failed to render spec review template: %w", err)
 	}
 
-	// Reset context for new spec review
-	templateName := fmt.Sprintf("spec-review-%s", requestMsg.ID)
-	d.contextManager.ResetForNewTemplate(templateName, prompt)
+	// Get agent-specific context (PM agent)
+	agentID := requestMsg.FromAgent
+	cm := d.getContextForAgent(agentID)
+
+	// Add spec review prompt as user message to preserve context continuity
+	cm.AddMessage("architect-spec-review-prompt", prompt)
 
 	// Add initial user message to start the conversation properly
 	// This prevents FlushUserBuffer from adding a fallback message
-	d.contextManager.AddMessage("user", "Please analyze this specification.")
+	cm.AddMessage("user", "Please analyze this specification.")
 
 	// Get spec review tools (spec_feedback, submit_stories)
 	specReviewTools := d.getSpecReviewTools()
 
 	// Run toolloop for spec review with type-safe result extraction
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SpecReviewResult]{
-		ContextManager: d.contextManager,
+		ContextManager: cm,
 		ToolProvider:   newListToolProvider(specReviewTools),
 		CheckTerminal:  d.checkTerminalTools,
 		ExtractResult:  ExtractSpecReview,

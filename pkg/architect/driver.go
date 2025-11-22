@@ -818,7 +818,8 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 // checkIterationLimit checks if the architect has exceeded iteration limits.
 // Returns true if hard limit exceeded (should escalate), false otherwise.
 // Soft limit triggers warning, hard limit triggers escalation to ESCALATE state.
-func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State) bool {
+// Takes context manager parameter to add warnings to the correct agent-specific context.
+func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State, cm *contextmgr.ContextManager) bool {
 	const softLimit = 8
 	const hardLimit = 16
 
@@ -838,9 +839,9 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State)
 	// Check soft limit (warning only)
 	if iterationCount == softLimit {
 		d.logger.Warn("⚠️  Soft iteration limit (%d) reached in %s - architect should consider finalizing analysis", softLimit, stateName)
-		// Add warning to context for LLM to see
+		// Add warning to agent-specific context for LLM to see
 		warningMsg := fmt.Sprintf("Warning: You have used %d iterations in this phase. Consider finalizing your analysis soon to avoid escalation.", softLimit)
-		d.contextManager.AddMessage("system-warning", warningMsg)
+		cm.AddMessage("system-warning", warningMsg)
 		return false
 	}
 
@@ -879,7 +880,8 @@ func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvi
 
 // processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
 // Returns the submit_reply response if detected, nil otherwise.
-func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider) (string, error) {
+// Takes context manager parameter to add tool results to the correct agent-specific context.
+func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider, cm *contextmgr.ContextManager) (string, error) {
 	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
 
 	for i := range toolCalls {
@@ -961,7 +963,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 		tool, err := toolProvider.Get(toolCall.Name)
 		if err != nil {
 			d.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
-			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
+			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
 			continue
 		}
 
@@ -985,7 +987,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 
 		if err != nil {
 			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			d.contextManager.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
+			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
 			continue
 		}
 
@@ -1014,7 +1016,7 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 			resultStr = fmt.Sprintf("%v", result)
 		}
 
-		d.contextManager.AddToolResult(toolCall.ID, resultStr, isError)
+		cm.AddToolResult(toolCall.ID, resultStr, isError)
 		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
 	}
 

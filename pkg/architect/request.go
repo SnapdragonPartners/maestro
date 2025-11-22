@@ -60,12 +60,8 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 		switch requestKind {
 		case proto.RequestKindQuestion:
-			// Use iterative question handling if we have LLM and executor
-			if d.LLMClient != nil && d.executor != nil {
-				response, err = d.handleIterativeQuestion(ctx, requestMsg)
-			} else {
-				response, err = d.handleQuestionRequest(ctx, requestMsg)
-			}
+			// Always use iterative question handling with robust LLM toolloop
+			response, err = d.handleIterativeQuestion(ctx, requestMsg)
 		case proto.RequestKindApproval:
 			response, err = d.handleApprovalRequest(ctx, requestMsg)
 		case proto.RequestKindMerge:
@@ -185,77 +181,6 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	} else {
 		return StateWaiting, nil
 	}
-}
-
-// handleQuestionRequest processes a QUESTION message and returns an ANSWER.
-func (d *Driver) handleQuestionRequest(ctx context.Context, questionMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract question from typed payload
-	typedPayload := questionMsg.GetTypedPayload()
-	if typedPayload == nil {
-		return nil, fmt.Errorf("question message missing typed payload")
-	}
-
-	questionPayload, err := typedPayload.ExtractQuestionRequest()
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract question request: %w", err)
-	}
-
-	question := questionPayload.Text
-
-	// Question processing will be logged to database only
-
-	// For now, provide simple auto-response until LLM integration.
-	answer := "Auto-response: Question received and acknowledged. Please proceed with your implementation."
-
-	// If we have LLM client, use it for more intelligent responses.
-	if d.LLMClient != nil {
-		prompt := fmt.Sprintf("Answer this coding question: %s", question)
-
-		// Reset context for this question
-		templateName := fmt.Sprintf("question-%s", questionMsg.ID)
-		d.contextManager.ResetForNewTemplate(templateName, prompt)
-
-		// Use toolloop with submit_reply tool
-		out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
-			ContextManager: d.contextManager,
-			ToolProvider:   newListToolProvider([]tools.Tool{tools.NewSubmitReplyTool()}),
-			CheckTerminal:  d.checkTerminalTools,
-			ExtractResult:  ExtractSubmitReply,
-			MaxIterations:  10,
-			MaxTokens:      agent.ArchitectMaxTokens,
-			AgentID:        d.GetAgentID(),
-		})
-
-		if out.Kind == toolloop.OutcomeSuccess {
-			answer = out.Value.Response
-		}
-		// Silently fall back to auto-response on error
-	}
-
-	// Create RESPONSE using unified protocol.
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), questionMsg.FromAgent)
-	response.ParentMsgID = questionMsg.ID
-
-	// Set typed question response payload
-	answerPayload := &proto.QuestionResponsePayload{
-		AnswerText: answer,
-		Metadata:   make(map[string]string),
-	}
-
-	// Copy correlation ID and story_id to metadata
-	// Copy metadata using helpers
-	if correlationID := proto.GetCorrelationID(questionMsg); correlationID != "" {
-		answerPayload.Metadata[proto.KeyCorrelationID] = correlationID
-		proto.SetCorrelationID(response, correlationID)
-	}
-	if storyID := proto.GetStoryID(questionMsg); storyID != "" {
-		answerPayload.Metadata[proto.KeyStoryID] = storyID
-		proto.SetStoryID(response, storyID)
-	}
-
-	response.SetTypedPayload(proto.NewQuestionResponsePayload(answerPayload))
-
-	return response, nil
 }
 
 // handleApprovalRequest processes a REQUEST message and returns a RESULT.
@@ -1059,17 +984,6 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Store story_id in state data for tool logging
 	d.SetStateData(StateKeyCurrentStoryID, storyID)
 
-	// Check iteration limit
-	iterationKey := fmt.Sprintf(StateKeyPatternQuestionIterations, requestMsg.ID)
-	if d.checkIterationLimit(iterationKey, StateRequest) {
-		d.logger.Error("❌ Hard iteration limit exceeded for question %s - preparing escalation", requestMsg.ID)
-		// Store additional escalation context
-		d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
-		d.SetStateData(StateKeyEscalationStoryID, storyID)
-		// Signal escalation needed by returning sentinel error
-		return nil, ErrEscalationTriggered
-	}
-
 	// Extract coder ID from request (sender)
 	coderID := requestMsg.FromAgent
 	if coderID == "" {
@@ -1078,6 +992,18 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Get agent-specific context
 	cm := d.getContextForAgent(coderID)
+
+	// Check iteration limit before proceeding
+	iterationKey := fmt.Sprintf(StateKeyPatternQuestionIterations, requestMsg.ID)
+	if d.checkIterationLimit(iterationKey, StateRequest, cm) {
+		d.logger.Error("❌ Hard iteration limit exceeded for question %s - preparing escalation", requestMsg.ID)
+		// Store additional escalation context
+		d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
+		d.SetStateData(StateKeyEscalationStoryID, storyID)
+		d.SetStateData(StateKeyEscalationAgentID, coderID)
+		// Signal escalation needed by returning sentinel error
+		return nil, ErrEscalationTriggered
+	}
 
 	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf(StateKeyPatternToolProvider, requestMsg.ID)
@@ -1156,7 +1082,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 
 	// Process tool calls
 	if len(resp.ToolCalls) > 0 {
-		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider)
+		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider, cm)
 		if err != nil {
 			return nil, fmt.Errorf("tool processing failed: %w", err)
 		}
