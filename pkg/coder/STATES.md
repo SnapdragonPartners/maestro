@@ -4,7 +4,7 @@ Here's the complete current **STATES.md** content, inline for easy copy-paste:
 
 # Coder Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-08-19 (rev I - Added CODE_REVIEW → DONE transition for completion approvals)*
+*Last updated: 2025-11-22 (rev J - Added SETUP → CODING transition for express stories)*
 
 This document is the **single source of truth** for the coder agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -22,6 +22,7 @@ stateDiagram-v2
     WAITING --> SETUP                  : receive task
     WAITING --> ERROR                  : shutdown/nil messages
     SETUP   --> PLANNING               : workspace ready
+    SETUP   --> CODING                 : express story (skip planning)
     SETUP   --> ERROR                  : workspace setup failed
 
     %% Planning phase
@@ -78,7 +79,7 @@ stateDiagram-v2
 | State               | Purpose                                                                        |
 | ------------------- | ------------------------------------------------------------------------------ |
 | **WAITING**         | Agent is idle, waiting for the orchestrator to assign new work.                |
-| **SETUP**           | Initialize Git workspace and create story branch.                              |
+| **SETUP**           | Initialize Git workspace and create story branch. Express stories skip PLANNING and go directly to CODING. |
 | **PLANNING**        | Draft a high-level implementation plan.                                        |
 | **PLAN\_REVIEW**    | Architect reviews plan or completion request; approves, requests changes, or abandons. |
 | **CODING**          | Implement the approved plan or fix test failures/review issues.                |
@@ -98,7 +99,7 @@ stateDiagram-v2
 | From \ To           | WAITING | SETUP | PLAN\_REVIEW | PLANNING | CODING | TESTING | CODE\_REVIEW | PREPARE\_MERGE | BUDGET\_REVIEW | AWAIT\_MERGE | QUESTION | DONE | ERROR |
 | ------------------- | ------- | ----- | ------------ | -------- | ------ | ------- | ------------ | -------------- | -------------- | ------------ | -------- | ---- | ----- |
 | **WAITING**         | –       | ✔︎    | –            | –        | –      | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
-| **SETUP**           | –       | –     | –            | ✔︎       | –      | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
+| **SETUP**           | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
 | **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –            | –              | ✔︎             | –            | ✔︎       | –    | –     |
 | **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | ✔︎   | ✔︎    |
 | **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –            | –              | ✔︎             | –            | ✔︎       | –    | ✔︎    |
@@ -202,13 +203,47 @@ WAITING → SETUP → PLANNING → CODING → TESTING → CODE_REVIEW → PREPAR
 5. All issues resolved in unified CODING state with appropriate context
 
 ### Agent Restart Workflow:
-- **Story completion**: `AWAIT_MERGE → DONE` (merge successful)  
+- **Story completion**: `AWAIT_MERGE → DONE` (merge successful)
 - **Error recovery**: Any state → `ERROR` (unrecoverable failure)
 - **Terminal states**: Both DONE and ERROR are truly terminal - agents do no work
 - **Orchestrator actions**: On DONE/ERROR states, orchestrator handles all cleanup and restart
 - **Lease system**: Orchestrator tracks story assignments and requeues failed stories automatically
 - **Complete cleanup**: All resources deleted (workspace, containers, state) for clean slate
 - **Future metrics**: Orchestrator will aggregate metrics across agent restarts (not yet implemented)
+
+---
+
+## Express Stories (Fast-Path Workflow)
+
+Express stories provide a streamlined workflow for small, focused changes that don't require planning:
+
+### Use Cases:
+- **Knowledge updates**: Adding entries to project knowledge base
+- **Hotfixes**: Critical bug fixes that need immediate implementation
+- **Small file edits**: Minor changes to documentation or configuration
+- **Maintenance tasks**: Routine updates that follow established patterns
+
+### Express Story Flow:
+```
+WAITING → SETUP → CODING → TESTING → CODE_REVIEW → PREPARE_MERGE → AWAIT_MERGE → DONE
+```
+
+The express workflow **skips the PLANNING state entirely**, going directly from SETUP to CODING.
+
+### Implementation Details:
+- Stories are marked with `Express: true` field in the Story struct
+- Normal story routing is used (no separate channels for MVP)
+- WAITING state extracts express flag from story payload
+- SETUP state detects express flag and transitions directly to CODING
+- Workspace is configured as read-write for coding immediately after setup
+- No plan or todos are required - coding prompt works with empty values
+
+### Benefits:
+- **Reduced latency**: Skip planning overhead for straightforward tasks
+- **Cost efficiency**: Fewer LLM API calls for simple changes
+- **Appropriate for scope**: Matches workflow complexity to task complexity
+
+Express stories still go through full code review, testing, and merge workflow to maintain quality standards.
 
 ---
 
