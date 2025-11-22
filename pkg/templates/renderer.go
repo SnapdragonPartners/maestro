@@ -135,6 +135,9 @@ const (
 	PMBootstrapPrerequisitesTemplate StateTemplate = "pm/bootstrap_prerequisites.tpl.md"
 	// PMBootstrapGateTemplate is the focused template for bootstrap-only mode (before project is configured).
 	PMBootstrapGateTemplate StateTemplate = "pm/bootstrap_gate.tpl.md"
+
+	// ArchitectSystemTemplate is the system prompt for architect agent per-agent contexts.
+	ArchitectSystemTemplate StateTemplate = "architect/system_prompt.tmpl"
 )
 
 // Renderer handles template rendering for workflow states.
@@ -169,6 +172,7 @@ func NewRenderer() (*Renderer, error) {
 		GitConfigFailureTemplate,
 		GitHubAuthFailureTemplate,
 		// Architect agent templates.
+		ArchitectSystemTemplate,
 		BudgetReviewPlanningTemplate,
 		BudgetReviewCodingTemplate,
 		SpecAnalysisTemplate,

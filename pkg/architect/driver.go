@@ -348,7 +348,6 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 	}
 
 	// Build template data with story information
-	// Note: SpecID comes from the story, not from a separate spec object
 	data := &templates.TemplateData{
 		Extra: map[string]any{
 			"AgentID":       agentID,
@@ -356,23 +355,21 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 			"StoryTitle":    story.Title,
 			"StoryContent":  story.Content,
 			"KnowledgePack": story.KnowledgePack,
-			"SpecID":        story.SpecID,
 		},
 	}
 
-	// Use template renderer if available
-	if d.renderer != nil {
-		// Note: templates.ArchitectSystemTemplate will be defined in Phase 3
-		// For now, use a placeholder template name
-		prompt, err := d.renderer.Render("architect_system", data)
-		if err != nil {
-			return "", fmt.Errorf("template render failed: %w", err)
-		}
-		return prompt, nil
+	// Template renderer is required
+	if d.renderer == nil {
+		return "", fmt.Errorf("template renderer not initialized")
 	}
 
-	// No fallback - template failure is an error
-	return "", fmt.Errorf("template renderer not initialized")
+	// Render architect system prompt
+	prompt, err := d.renderer.Render(templates.ArchitectSystemTemplate, data)
+	if err != nil {
+		return "", fmt.Errorf("failed to render architect system template: %w", err)
+	}
+
+	return prompt, nil
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
