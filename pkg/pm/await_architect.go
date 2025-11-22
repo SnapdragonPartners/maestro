@@ -51,9 +51,11 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			if approvalResult.Feedback != "" {
 				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
 			}
-			// Clear draft spec from state data
+			// Clear draft spec and bootstrap requirements from state data
 			d.SetStateData("draft_spec_markdown", nil)
 			d.SetStateData("spec_metadata", nil)
+			d.SetStateData(StateKeyBootstrapRequirements, nil)
+			d.SetStateData("bootstrap_params", nil)
 			return StateWaiting, nil
 		}
 

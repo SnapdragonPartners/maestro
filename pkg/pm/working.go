@@ -10,6 +10,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	"orchestrator/pkg/tools"
 )
 
 // handleWorking manages PM's active work: interviewing, drafting, and submitting.
@@ -88,6 +89,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 
 // setupInterviewContext renders the appropriate interview template based on project state.
 // If bootstrap requirements are detected, uses focused bootstrap gate template.
+// If spec was uploaded, adds it to context for parsing.
 // Otherwise uses full interview start template.
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
@@ -104,6 +106,10 @@ func (d *Driver) setupInterviewContext() error {
 	// Get conversation history if any
 	conversationHistory, _ := stateData["conversation"].([]map[string]string)
 
+	// Check if spec was uploaded (vs being generated through interview)
+	specUploaded, _ := stateData["spec_uploaded"].(bool)
+	uploadedSpec, _ := stateData["draft_spec_markdown"].(string)
+
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
@@ -116,6 +122,12 @@ func (d *Driver) setupInterviewContext() error {
 			"Expertise":           expertise,
 			"ConversationHistory": conversationHistory,
 		},
+	}
+
+	// If spec was uploaded, add it to template data for parsing
+	if specUploaded && uploadedSpec != "" {
+		templateData.Extra["UploadedSpec"] = uploadedSpec
+		d.logger.Info("📄 Uploaded spec detected (%d bytes) - will extract bootstrap info from it", len(uploadedSpec))
 	}
 
 	// Add existing config values if available (so PM doesn't ask for them again)
@@ -181,6 +193,17 @@ func (d *Driver) setupInterviewContext() error {
 //
 //nolint:cyclop,maintidx // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
+	// Inject bootstrap markdown into spec_submit tool if it exists in state
+	if bootstrapMarkdown, ok := d.GetStateData()[StateKeyBootstrapRequirements].(string); ok && bootstrapMarkdown != "" {
+		// Get spec_submit tool and inject bootstrap markdown
+		if specSubmitTool, err := d.toolProvider.Get("spec_submit"); err == nil {
+			if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
+				submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
+				d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
+			}
+		}
+	}
+
 	// Use toolloop abstraction for LLM tool calling loop
 	loop := toolloop.New(d.LLMClient, d.logger)
 
@@ -253,8 +276,9 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 func (d *Driver) processPMResult(result WorkingResult) error {
 	switch result.Signal {
 	case SignalBootstrapComplete:
-		// Store bootstrap params
+		// Store bootstrap params and rendered markdown
 		d.SetStateData("bootstrap_params", result.BootstrapParams)
+		d.SetStateData(StateKeyBootstrapRequirements, result.BootstrapMarkdown)
 		d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
 			result.BootstrapParams["project_name"],
 			result.BootstrapParams["platform"],

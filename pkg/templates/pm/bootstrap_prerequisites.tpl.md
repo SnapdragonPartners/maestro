@@ -1,8 +1,10 @@
-# Bootstrap Prerequisites
+# Requirements
+
+## Infrastructure Prerequisites
 
 The following infrastructure requirements must be completed before implementing user features. These are system prerequisites that enable the development framework to function.
 
-**Note:** Stories are numbered sequentially. The architect will determine optimal execution order and any dependencies during scoping.
+**Note:** Some requirements may have sequential numbering. This is purely for convenience. Optimal order and dependencies will be established during scoping.
 
 {{if .Extra.NeedsDockerfile}}
 ### MANDATORY PREREQUISITE R-001: Create and Configure Development Container
@@ -72,23 +74,6 @@ Provides consistent interface for development operations. Makefile is REQUIRED f
 
 
 {{end}}
-{{if not .Extra.HasRepository}}
-### MANDATORY PREREQUISITE R-{{if .Extra.NeedsDockerfile}}{{if .Extra.NeedsKnowledgeGraph}}{{if .Extra.NeedsMakefile}}004{{else}}003{{end}}{{else}}{{if .Extra.NeedsMakefile}}003{{else}}002{{end}}{{end}}{{else}}{{if .Extra.NeedsKnowledgeGraph}}{{if .Extra.NeedsMakefile}}003{{else}}002{{end}}{{else}}{{if .Extra.NeedsMakefile}}002{{else}}001{{end}}{{end}}{{end}}: Configure Git Repository
-**Type:** infrastructure
-**Priority:** must
 
-**Description:**
-Configure the project's GitHub repository (URL configured via bootstrap tool).
-Ensure repository is initialized and accessible for development workflow. Git repository is REQUIRED for the architect and coders to commit and merge code.
-
-**Acceptance Criteria:**
-- [ ] Repository URL configured in `.maestro/config.json`
-- [ ] Repository is accessible and authenticated
-- [ ] Initial commit with project structure
-
-
-{{end}}
----
-
-# User Requirements
+## Application Features
 

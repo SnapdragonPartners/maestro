@@ -5,21 +5,28 @@ import (
 	"fmt"
 	"strings"
 
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/specs"
-	"orchestrator/pkg/templates"
 )
 
 // SpecSubmitTool allows PM agent to submit finalized specifications.
 type SpecSubmitTool struct {
-	projectDir string
+	projectDir        string
+	bootstrapMarkdown string // Injected bootstrap requirements markdown
 }
 
 // NewSpecSubmitTool creates a new spec submit tool instance.
 func NewSpecSubmitTool(projectDir string) *SpecSubmitTool {
 	return &SpecSubmitTool{
-		projectDir: projectDir,
+		projectDir:        projectDir,
+		bootstrapMarkdown: "", // Will be injected by PM if bootstrap requirements exist
 	}
+}
+
+// SetBootstrapMarkdown injects bootstrap requirements markdown from PM state.
+// This allows spec_submit to automatically prepend bootstrap requirements without
+// the LLM needing to handle them explicitly.
+func (s *SpecSubmitTool) SetBootstrapMarkdown(markdown string) {
+	s.bootstrapMarkdown = markdown
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -60,9 +67,7 @@ func (s *SpecSubmitTool) PromptDocumentation() string {
 }
 
 // Exec executes the spec submit operation.
-//
-//nolint:cyclop // Bootstrap detection and template rendering adds complexity
-func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, error) {
 	// Extract markdown parameter.
 	markdown, ok := args["markdown"]
 	if !ok {
@@ -93,71 +98,11 @@ func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, er
 		return nil, fmt.Errorf("summary cannot be empty")
 	}
 
-	// Check if bootstrap is required
-	detector := NewBootstrapDetector(s.projectDir)
-	bootstrapReqs, err := detector.Detect(ctx)
-	if err != nil {
-		// Non-fatal - just log and continue without bootstrap
-		// (bootstrap detection is best-effort)
-		bootstrapReqs = nil
-	}
-
-	// If bootstrap is required, check if project is configured
+	// Concatenate bootstrap markdown (if any) with user spec
+	// Bootstrap markdown is injected by PM from state - LLM never sees it
 	finalMarkdown := markdownStr
-	if bootstrapReqs != nil && len(bootstrapReqs.MissingComponents) > 0 {
-		// Bootstrap is required - check if config has project info
-		cfg, cfgErr := config.GetConfig()
-		if cfgErr != nil {
-			// Config not initialized (likely test environment) - skip bootstrap prepending
-			// In production, config is always initialized during startup
-			bootstrapReqs = nil
-		} else {
-			// Check if project info is configured
-			if cfg.Project.Name == "" || cfg.Project.PrimaryPlatform == "" {
-				return nil, fmt.Errorf("bootstrap required (missing: %v) but project not configured - call bootstrap tool first with project_name, git_url, and platform",
-					bootstrapReqs.MissingComponents)
-			}
-
-			// Check if git is configured (if repository missing)
-			hasRepoMissing := false
-			for _, comp := range bootstrapReqs.MissingComponents {
-				if comp == "repository" {
-					hasRepoMissing = true
-					break
-				}
-			}
-			if hasRepoMissing && (cfg.Git == nil || cfg.Git.RepoURL == "") {
-				return nil, fmt.Errorf("bootstrap required (missing repository) but git not configured - call bootstrap tool first")
-			}
-
-			// Project is configured - render bootstrap template and prepend
-			renderer, rendErr := templates.NewRenderer()
-			if rendErr != nil {
-				return nil, fmt.Errorf("failed to create template renderer: %w", rendErr)
-			}
-
-			// Build template data for bootstrap prerequisites
-			templateData := &templates.TemplateData{
-				Extra: map[string]any{
-					"BootstrapRequired":  true,
-					"MissingComponents":  bootstrapReqs.MissingComponents,
-					"DetectedPlatform":   bootstrapReqs.DetectedPlatform,
-					"PlatformConfidence": bootstrapReqs.PlatformConfidence,
-					"HasRepository":      !bootstrapReqs.NeedsGitRepo, // Use detector flag, not config
-					"NeedsDockerfile":    bootstrapReqs.NeedsDockerfile,
-					"NeedsMakefile":      bootstrapReqs.NeedsMakefile,
-				},
-			}
-
-			// Render bootstrap prerequisites template
-			bootstrapMarkdown, renderErr := renderer.Render(templates.PMBootstrapPrerequisitesTemplate, templateData)
-			if renderErr != nil {
-				return nil, fmt.Errorf("failed to render bootstrap prerequisites: %w", renderErr)
-			}
-
-			// Prepend bootstrap prerequisites to user's spec
-			finalMarkdown = strings.TrimSpace(bootstrapMarkdown) + "\n\n" + strings.TrimSpace(markdownStr)
-		}
+	if s.bootstrapMarkdown != "" {
+		finalMarkdown = strings.TrimSpace(s.bootstrapMarkdown) + "\n\n" + strings.TrimSpace(markdownStr)
 	}
 
 	// Parse the specification to extract basic metadata (but don't enforce strict validation).
