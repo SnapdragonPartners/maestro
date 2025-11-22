@@ -1076,6 +1076,12 @@ func (d *Dispatcher) ClearLease(agentID string) {
 	}
 }
 
+// GetStoryForAgent returns the story ID that an agent is currently working on.
+// This is a semantic alias for GetLease to improve code readability in multi-context scenarios.
+func (d *Dispatcher) GetStoryForAgent(agentID string) string {
+	return d.GetLease(agentID)
+}
+
 // SendRequeue sends a requeue message for the story currently assigned to the given agent.
 func (d *Dispatcher) SendRequeue(agentID, reason string) error {
 	storyID := d.GetLease(agentID)

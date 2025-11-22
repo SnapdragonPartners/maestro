@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -28,6 +29,20 @@ const (
 	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 	signalReviewComplete        = "REVIEW_COMPLETE"
 )
+
+// KnowledgeEntry represents a knowledge graph entry to be persisted.
+//
+//nolint:govet // fieldalignment: logical grouping preferred over memory optimization
+type KnowledgeEntry struct {
+	AgentID   string    // Agent that recorded this knowledge
+	StoryID   string    // Story context where this was recorded
+	Category  string    // Knowledge category (architecture, convention, etc.)
+	Title     string    // Brief title for the entry
+	Content   string    // The knowledge content
+	Rationale string    // Why this is important or why decision was made
+	Scope     string    // Applicability: story, spec, project
+	Timestamp time.Time // When this was recorded
+}
 
 // listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
 // This allows architect to use toolloop with its dynamic tool list pattern.
@@ -68,21 +83,27 @@ func (p *listToolProvider) List() []tools.ToolMeta {
 }
 
 // Driver manages the state machine for an architect workflow.
+//
+//nolint:govet // fieldalignment: logical grouping preferred over memory optimization
 type Driver struct {
-	*agent.BaseStateMachine // Embed state machine (provides LLMClient field)
-	contextManager          *contextmgr.ContextManager
-	toolLoop                *toolloop.ToolLoop          // Tool loop for LLM interactions
-	renderer                *templates.Renderer         // Template renderer for prompts
-	queue                   *Queue                      // Story queue manager
-	escalationHandler       *EscalationHandler          // Escalation handler
-	dispatcher              *dispatch.Dispatcher        // Dispatcher for sending messages
-	logger                  *logx.Logger                // Logger with proper agent prefixing
-	executor                *execpkg.ArchitectExecutor  // Container executor for file access tools
-	chatService             ChatServiceInterface        // Chat service for escalations (nil check required)
-	questionsCh             chan *proto.AgentMsg        // Bi-directional channel for requests (specs, questions, approvals)
-	replyCh                 <-chan *proto.AgentMsg      // Read-only channel for replies
-	persistenceChannel      chan<- *persistence.Request // Channel for database operations
-	workDir                 string                      // Workspace directory
+	*agent.BaseStateMachine                                       // Embed state machine (provides LLMClient field)
+	contextManager          *contextmgr.ContextManager            // Legacy: Single context (kept for backward compatibility)
+	agentContexts           map[string]*contextmgr.ContextManager // Per-agent contexts (key: agent_id)
+	contextMutex            sync.RWMutex                          // Protect agentContexts map
+	knowledgeBuffer         []KnowledgeEntry                      // Accumulated knowledge entries for persistence
+	knowledgeMutex          sync.Mutex                            //nolint:unused // Protect knowledgeBuffer (remove nolint when knowledge recording is implemented)
+	toolLoop                *toolloop.ToolLoop                    // Tool loop for LLM interactions
+	renderer                *templates.Renderer                   // Template renderer for prompts
+	queue                   *Queue                                // Story queue manager
+	escalationHandler       *EscalationHandler                    // Escalation handler
+	dispatcher              *dispatch.Dispatcher                  // Dispatcher for sending messages
+	logger                  *logx.Logger                          // Logger with proper agent prefixing
+	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
+	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
+	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
+	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
+	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
+	workDir                 string                                // Workspace directory
 }
 
 // ChatServiceInterface defines the interface for chat operations needed by architect.
@@ -150,7 +171,9 @@ func NewDriver(architectID, modelName string, dispatcher *dispatch.Dispatcher, w
 	return &Driver{
 		BaseStateMachine:   sm,
 		contextManager:     contextmgr.NewContextManagerWithModel(modelName),
-		toolLoop:           nil, // Set via SetLLMClient
+		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
+		knowledgeBuffer:    make([]KnowledgeEntry, 0),                   // Initialize knowledge buffer
+		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
 		queue:              queue,
@@ -244,6 +267,112 @@ func (d *Driver) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 func (d *Driver) SetLLMClient(llmClient agent.LLMClient) {
 	d.BaseStateMachine.SetLLMClient(llmClient)
 	d.toolLoop = toolloop.New(llmClient, d.logger)
+}
+
+// getContextForAgent retrieves or creates a context manager for the specified agent.
+// This enables per-agent conversation continuity within story boundaries.
+// Thread-safe with read-write lock protection.
+func (d *Driver) getContextForAgent(agentID string) *contextmgr.ContextManager {
+	// Fast path: read lock to check if context exists
+	d.contextMutex.RLock()
+	cm, exists := d.agentContexts[agentID]
+	d.contextMutex.RUnlock()
+
+	if exists {
+		return cm
+	}
+
+	// Slow path: create new context with write lock
+	d.contextMutex.Lock()
+	defer d.contextMutex.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine might have created it)
+	if cm, exists = d.agentContexts[agentID]; exists {
+		return cm
+	}
+
+	// Create new context manager for this agent
+	modelName := ""
+	if d.LLMClient != nil {
+		cfg, err := config.GetConfig()
+		if err == nil {
+			modelName = cfg.Agents.ArchitectModel
+		}
+	}
+
+	cm = contextmgr.NewContextManagerWithModel(modelName)
+
+	// Note: Chat service integration for per-agent contexts will be added
+	// when needed - currently chat uses single architect context
+
+	d.agentContexts[agentID] = cm
+	d.logger.Debug("Created new context for agent %s", agentID)
+
+	return cm
+}
+
+// ResetAgentContext resets the context for an agent when they start a new story.
+// Called when a coder transitions to SETUP state with a new story assignment.
+func (d *Driver) ResetAgentContext(agentID string) error {
+	// Get current story for this agent from dispatcher
+	storyID := d.dispatcher.GetStoryForAgent(agentID)
+	if storyID == "" {
+		return fmt.Errorf("no story found for agent %s", agentID)
+	}
+
+	// Get or create context for this agent
+	cm := d.getContextForAgent(agentID)
+
+	// Build comprehensive system prompt
+	systemPrompt, err := d.buildSystemPrompt(agentID, storyID)
+	if err != nil {
+		return fmt.Errorf("failed to build system prompt: %w", err)
+	}
+
+	// Reset context with story-scoped template name
+	templateName := fmt.Sprintf("agent-%s-story-%s", agentID, storyID)
+	cm.ResetForNewTemplate(templateName, systemPrompt)
+
+	d.logger.Info("✅ Reset context for agent %s (story %s)", agentID, storyID)
+
+	return nil
+}
+
+// buildSystemPrompt creates the comprehensive system prompt for an agent context.
+// This prompt contains persistent context for the entire story lifecycle.
+func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
+	// Get story details from queue
+	story, exists := d.queue.GetStory(storyID)
+	if !exists {
+		return "", fmt.Errorf("story %s not found in queue", storyID)
+	}
+
+	// Build template data with story information
+	// Note: SpecID comes from the story, not from a separate spec object
+	data := &templates.TemplateData{
+		Extra: map[string]any{
+			"AgentID":       agentID,
+			"StoryID":       storyID,
+			"StoryTitle":    story.Title,
+			"StoryContent":  story.Content,
+			"KnowledgePack": story.KnowledgePack,
+			"SpecID":        story.SpecID,
+		},
+	}
+
+	// Use template renderer if available
+	if d.renderer != nil {
+		// Note: templates.ArchitectSystemTemplate will be defined in Phase 3
+		// For now, use a placeholder template name
+		prompt, err := d.renderer.Render("architect_system", data)
+		if err != nil {
+			return "", fmt.Errorf("template render failed: %w", err)
+		}
+		return prompt, nil
+	}
+
+	// No fallback - template failure is an error
+	return "", fmt.Errorf("template renderer not initialized")
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
