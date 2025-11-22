@@ -599,15 +599,9 @@ func (d *Driver) GetEscalationHandler() *EscalationHandler {
 	return d.escalationHandler
 }
 
-// buildMessagesWithContext creates completion messages with context history.
-// Converts context manager messages (with structured ToolCalls and ToolResults) to CompletionMessage format.
-// Same pattern as PM's buildMessagesWithContext.
-func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.CompletionMessage {
-	// Get conversation history from context manager
-	contextMessages := d.contextManager.GetMessages()
-
-	// Convert to CompletionMessage format
-	messages := make([]agent.CompletionMessage, 0, len(contextMessages)+1)
+// convertContextMessages converts contextmgr.Message format to agent.CompletionMessage format.
+func convertContextMessages(contextMessages []contextmgr.Message) []agent.CompletionMessage {
+	messages := make([]agent.CompletionMessage, 0, len(contextMessages))
 	for i := range contextMessages {
 		msg := &contextMessages[i]
 
@@ -644,15 +638,6 @@ func (d *Driver) buildMessagesWithContext(initialPrompt string) []agent.Completi
 			ToolResults: agentToolResults,
 		})
 	}
-
-	// Add the new prompt as a user message if provided
-	if initialPrompt != "" {
-		messages = append(messages, agent.CompletionMessage{
-			Role:    agent.RoleUser,
-			Content: initialPrompt,
-		})
-	}
-
 	return messages
 }
 

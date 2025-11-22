@@ -796,6 +796,9 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("approval request message missing sender (FromAgent)")
 	}
 
+	// Get agent-specific context
+	cm := d.getContextForAgent(coderID)
+
 	// Create tool provider rooted at coder's workspace
 	toolProvider := d.createReadToolProviderForCoder(coderID)
 	d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
@@ -811,9 +814,8 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("unsupported iterative approval type: %s", approvalType)
 	}
 
-	// Reset context for this approval
-	templateName := fmt.Sprintf("approval-%s-%s", approvalType, storyID)
-	d.contextManager.ResetForNewTemplate(templateName, prompt)
+	// Add approval prompt as user message to preserve context continuity
+	cm.AddMessage("architect-approval-prompt", prompt)
 
 	// CheckTerminal: Look for submit_reply tool to get approval decision
 	checkTerminal := func(calls []agent.ToolCall, _ []any) string {
@@ -832,7 +834,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 
 	// Run toolloop for iterative approval with type-safe result extraction
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
-		ContextManager: d.contextManager,
+		ContextManager: cm, // Use agent-specific context
 		ToolProvider:   toolProvider,
 		CheckTerminal:  checkTerminal,
 		ExtractResult:  ExtractSubmitReply,
@@ -890,6 +892,10 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	d.logger.Info("🔍 Starting single-turn review for %s (story: %s)", approvalType, storyID)
 
+	// Get agent-specific context
+	agentID := requestMsg.FromAgent
+	cm := d.getContextForAgent(agentID)
+
 	// Build prompt based on approval type
 	var prompt string
 	switch approvalType {
@@ -901,9 +907,8 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		return nil, fmt.Errorf("unsupported single-turn review type: %s", approvalType)
 	}
 
-	// Reset context for this single-turn review
-	templateName := fmt.Sprintf("review-%s-%s", approvalType, storyID)
-	d.contextManager.ResetForNewTemplate(templateName, prompt)
+	// Add review prompt as user message to preserve context continuity
+	cm.AddMessage("architect-review-prompt", prompt)
 
 	// CheckTerminal: Look for review_complete tool signal
 	checkTerminal := func(calls []agent.ToolCall, results []any) string {
@@ -921,7 +926,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	// Run toolloop in single-turn mode with type-safe result extraction
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
-		ContextManager: d.contextManager,
+		ContextManager: cm, // Use agent-specific context
 		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewReviewCompleteTool()}),
 		CheckTerminal:  checkTerminal,
 		ExtractResult:  ExtractReviewComplete,
@@ -1071,6 +1076,9 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("question message missing sender (FromAgent)")
 	}
 
+	// Get agent-specific context
+	cm := d.getContextForAgent(coderID)
+
 	// Create tool provider rooted at coder's workspace (lazily, once per request)
 	toolProviderKey := fmt.Sprintf(StateKeyPatternToolProvider, requestMsg.ID)
 	var toolProvider *tools.ToolProvider
@@ -1090,7 +1098,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Build prompt for technical question
 	prompt := d.generateQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
 
-	// Reset context for this iteration (first iteration only)
+	// Check iteration count to determine if this is first iteration
 	iterationCount := 0
 	if val, exists := stateData[iterationKey]; exists {
 		if count, ok := val.(int); ok {
@@ -1099,22 +1107,18 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	if iterationCount == 0 {
-		templateName := fmt.Sprintf("question-%s", requestMsg.ID)
-		d.contextManager.ResetForNewTemplate(templateName, prompt)
+		// First iteration: add prompt as user message to preserve context continuity
+		cm.AddMessage("architect-question-prompt", prompt)
 	}
 
 	// Flush user buffer before LLM request
-	if flushErr := d.contextManager.FlushUserBuffer(ctx); flushErr != nil {
+	if flushErr := cm.FlushUserBuffer(ctx); flushErr != nil {
 		return nil, fmt.Errorf("failed to flush user buffer: %w", flushErr)
 	}
 
-	// Build messages with context
-	// Only pass prompt on first iteration - subsequent iterations use context history
-	var promptForMessages string
-	if iterationCount == 0 {
-		promptForMessages = prompt
-	}
-	messages := d.buildMessagesWithContext(promptForMessages)
+	// Build messages from agent-specific context
+	contextMessages := cm.GetMessages()
+	messages := convertContextMessages(contextMessages)
 
 	// Get tool definitions for LLM
 	toolDefs := d.getArchitectToolsForLLM(toolProvider)
@@ -1132,7 +1136,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("LLM completion failed: %w", err)
 	}
 
-	// Add assistant response to context with structured tool calls (same as PM pattern)
+	// Add assistant response to agent-specific context with structured tool calls
 	if len(resp.ToolCalls) > 0 {
 		// Use structured tool call tracking
 		// Convert agent.ToolCall to contextmgr.ToolCall
@@ -1144,10 +1148,10 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 				Parameters: resp.ToolCalls[i].Parameters,
 			}
 		}
-		d.contextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
+		cm.AddAssistantMessageWithTools(resp.Content, toolCalls)
 	} else {
 		// No tool calls - just content
-		d.contextManager.AddAssistantMessage(resp.Content)
+		cm.AddAssistantMessage(resp.Content)
 	}
 
 	// Process tool calls
@@ -1176,9 +1180,9 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	iterationCount++
 	d.SetStateData(iterationKey, iterationCount)
 
-	// Add nudge to context
+	// Add nudge to agent-specific context
 	nudgeMessage := "You must use the submit_reply tool to provide your answer. Please call submit_reply with your response as the 'content' parameter."
-	d.contextManager.AddMessage("system", nudgeMessage)
+	cm.AddMessage("system", nudgeMessage)
 
 	// Return nil to signal continuation (state machine will call us again)
 	//nolint:nilnil // Intentional: nil response signals continuation after nudge
