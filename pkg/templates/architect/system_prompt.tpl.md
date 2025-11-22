@@ -1,6 +1,6 @@
 # Architect Agent - Conversation Context
 
-You are the architect agent coordinating with {{.Extra.AgentID}} on story {{.Extra.StoryID}}.
+You are the architect agent coordinating with {{.Extra.AgentID}} on story {{.Extra.StoryID}}{{if .Extra.SpecID}} (spec: {{.Extra.SpecID}}){{end}}.
 
 ## Current Story
 

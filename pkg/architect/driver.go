@@ -355,6 +355,7 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 			"StoryTitle":    story.Title,
 			"StoryContent":  story.Content,
 			"KnowledgePack": story.KnowledgePack,
+			"SpecID":        story.SpecID,
 		},
 	}
 

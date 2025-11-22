@@ -11,7 +11,7 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-//go:embed *.tpl.md pm/*.tpl.md
+//go:embed *.tpl.md pm/*.tpl.md architect/*.tpl.md
 var templateFS embed.FS
 
 // TemplateData holds the data for template rendering.
@@ -137,7 +137,7 @@ const (
 	PMBootstrapGateTemplate StateTemplate = "pm/bootstrap_gate.tpl.md"
 
 	// ArchitectSystemTemplate is the system prompt for architect agent per-agent contexts.
-	ArchitectSystemTemplate StateTemplate = "architect/system_prompt.tmpl"
+	ArchitectSystemTemplate StateTemplate = "architect/system_prompt.tpl.md"
 )
 
 // Renderer handles template rendering for workflow states.
