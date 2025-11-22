@@ -16,10 +16,6 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-const (
-	defaultStoryType = "app"
-)
-
 // handleRequest processes the request phase (handling coder requests).
 func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	// Check for context cancellation first.

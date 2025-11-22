@@ -142,14 +142,24 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			HardLimit: maxCodingIterations,
 			OnHardLimit: func(_ context.Context, key string, count int) error {
 				c.logger.Info("⚠️  Coding reached max iterations (%d, key: %s), triggering budget review", count, key)
+
+				// Render full budget review content with template (same as checkLoopBudget)
+				content := c.getBudgetReviewContent(sm, StateCoding, count, maxCodingIterations)
+				if content == "" {
+					return logx.Errorf("failed to generate budget review content - cannot proceed without proper context for architect")
+				}
+
 				budgetEff := effect.NewBudgetReviewEffect(
-					fmt.Sprintf("Maximum coding iterations (%d) reached", maxCodingIterations),
+					content,
 					"Coding workflow needs additional iterations to complete",
 					string(StateCoding),
 				)
 				// Set story ID for dispatcher validation
 				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
 				sm.SetStateData("budget_review_effect", budgetEff)
+				// Store origin state so budget review knows where to return
+				sm.SetStateData(KeyOrigin, string(StateCoding))
+				c.logger.Info("🔍 Toolloop iteration limit: stored origin=%q in state data", string(StateCoding))
 				// Return nil so toolloop returns IterationLimitError (not this error)
 				return nil
 			},
@@ -347,6 +357,7 @@ func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt stri
 
 	// Store origin state and effect for BUDGET_REVIEW state to execute
 	sm.SetStateData(KeyOrigin, string(originState))
+	c.logger.Info("🔍 Empty response: stored origin=%q in state data", string(originState))
 	sm.SetStateData("budget_review_effect", budgetReviewEff)
 
 	// Note: Don't add fabricated assistant messages - only LLM responses should be assistant messages

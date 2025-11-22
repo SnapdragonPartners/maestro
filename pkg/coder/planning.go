@@ -158,14 +158,24 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 			HardLimit: maxPlanningIterations,
 			OnHardLimit: func(_ context.Context, key string, count int) error {
 				c.logger.Info("⚠️  Planning reached max iterations (%d, key: %s), triggering budget review", count, key)
+
+				// Render full budget review content with template (same as checkLoopBudget)
+				content := c.getBudgetReviewContent(sm, StatePlanning, count, maxPlanningIterations)
+				if content == "" {
+					return logx.Errorf("failed to generate budget review content - cannot proceed without proper context for architect")
+				}
+
 				budgetEff := effect.NewBudgetReviewEffect(
-					fmt.Sprintf("Maximum planning iterations (%d) reached", maxPlanningIterations),
+					content,
 					"Planning workflow needs additional iterations to complete exploration",
 					string(StatePlanning),
 				)
 				// Set story ID for dispatcher validation
 				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
 				sm.SetStateData("budget_review_effect", budgetEff)
+				// Store origin state so budget review knows where to return
+				sm.SetStateData(KeyOrigin, string(StatePlanning))
+				c.logger.Info("🔍 Toolloop iteration limit: stored origin=%q in state data", string(StatePlanning))
 				// Return nil so toolloop returns IterationLimitError (not this error)
 				return nil
 			},

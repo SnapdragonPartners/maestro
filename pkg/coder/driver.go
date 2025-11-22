@@ -699,9 +699,14 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 	if iterationCount >= budget {
 		// Build comprehensive budget review content
 		content := c.getBudgetReviewContent(sm, origin, iterationCount, budget)
+		if content == "" {
+			c.logger.Error("Failed to generate budget review content - cannot proceed without proper context for architect")
+			return nil, false
+		}
 
 		// Store origin state for later use.
 		sm.SetStateData(KeyOrigin, string(origin))
+		c.logger.Info("🔍 Budget exceeded: stored origin=%q in state data", string(origin))
 
 		// Create BudgetReviewEffect with comprehensive payload
 		extraPayload := map[string]any{
@@ -1252,16 +1257,21 @@ func (c *Coder) getBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.
 		},
 	}
 
-	// Render template
+	// Render template - no fallback, must have proper context for architect
 	if c.renderer == nil {
-		// Fallback if no renderer available
-		return fmt.Sprintf("Budget exceeded in %s state (%d/%d iterations). Story: %s", origin, iterationCount, budget, storyID)
+		c.logger.Error("Cannot render budget review content: renderer is nil")
+		return ""
 	}
 
 	content, err := c.renderer.Render(templateName, templateData)
 	if err != nil {
-		c.logger.Warn("Failed to render budget review template: %v", err)
-		return fmt.Sprintf("Budget exceeded in %s state (%d/%d iterations). Story: %s", origin, iterationCount, budget, storyID)
+		c.logger.Error("Failed to render budget review template: %v", err)
+		return ""
+	}
+
+	if content == "" {
+		c.logger.Error("Budget review template rendered empty content")
+		return ""
 	}
 
 	return content
