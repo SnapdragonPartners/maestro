@@ -36,6 +36,7 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **REVIEWING**: Evaluate code submissions and provide approval/feedback (REQUEST→RESULT)
      - **Iterative Approval with Read Tools**: Architect can use MCP read tools to inspect coder workspaces (read_file, list_files, get_diff, submit_reply) before approving
      - **Iteration Limits**: Soft limit at 8 iterations (warning), hard limit at 16 iterations (escalation)
+     - **Per-Agent Context Management**: Architect maintains separate conversation contexts for each agent it communicates with, preserving conversation continuity within story boundaries while enabling clean resets when agents move to new stories
    - **ESCALATED**: Wait for human intervention when iteration limits exceeded or cannot answer (2-hour timeout)
 
 2. **Coder Workflow**: Implements stories through state machine:
@@ -60,6 +61,40 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - **Escalation Support**: When architect exceeds iteration limits, escalation messages are posted with `post_type: 'escalate'`, displayed prominently in WebUI with reply functionality for human guidance
 
 5. System maintains event logs and handles graceful shutdown with STATUS.md dumps
+
+## Architect Context Management
+
+The architect maintains **per-agent conversation contexts** to eliminate contradictory feedback and preserve conversation continuity throughout story lifecycles.
+
+### Key Design
+- **One context per agent**: Each agent the architect communicates with (coders, PM) gets a dedicated `ContextManager`
+- **Thread-safe access**: `sync.RWMutex` with double-check locking prevents race conditions during concurrent context creation
+- **Persistent system prompts**: Each context starts with a comprehensive system prompt containing:
+  - Agent ID and story ID
+  - Full story details (title, content, spec ID)
+  - Knowledge pack (relevant project knowledge)
+  - Role descriptions and available tools
+- **90% smaller request prompts**: Request-specific prompts now contain just the request content + brief instruction (story context in system prompt)
+- **Context lifecycle**: Contexts reset when agents start new stories (SETUP state transition), preserving history within story boundaries
+
+### Implementation
+- **Location**: `pkg/architect/driver.go` - `agentContexts map[string]*contextmgr.ContextManager`
+- **Context creation**: `getContextForAgent(agentID)` - Creates or retrieves agent-specific context
+- **Context reset**: `ResetAgentContext(agentID)` - Called when coder enters SETUP state for new story
+- **System prompt**: `buildSystemPrompt(agentID, storyID)` - Generates persistent context from story data
+- **All request handlers** use agent-specific contexts:
+  - `handleSingleTurnReview()` - Single-turn spec/plan reviews
+  - `handleIterativeQuestion()` - Multi-turn Q&A with workspace inspection
+  - `handleIterativeApproval()` - Multi-turn code reviews
+  - `handleSpecReview()` - PM spec approval
+
+### Benefits
+- **No contradictory feedback**: Architect remembers previous interactions within story
+- **Efficient prompts**: 90% reduction in prompt size by eliminating repeated story context
+- **Clean boundaries**: Each story starts with fresh context to avoid cross-contamination
+- **Scalable**: Supports multiple concurrent conversations with different agents
+
+See `docs/ARCHITECT_CONTEXT.md` for detailed implementation history and design decisions.
 
 ## Toolloop Pattern
 

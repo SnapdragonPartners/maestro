@@ -37,6 +37,7 @@ Most frameworks require wrestling with Python versions, dependency hell, or comp
   - Breaks specs into stories
   - Reviews and approves plans
   - Enforces principles (DRY, YAGNI, abstraction levels, test coverage)
+  - Maintains separate conversation contexts for each agent to preserve continuity and avoid contradictory feedback
   - Merges PRs
   - Does *not* write code directly
 
