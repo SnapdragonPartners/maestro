@@ -18,7 +18,11 @@ func (d *Driver) generateCompletionPrompt(requestMsg *proto.AgentMsg, approvalPa
 
 %s
 
-Please verify completion by reviewing their workspace, checking all acceptance criteria are met, and provide your decision using submit_reply.
+Please verify completion by reviewing their workspace and checking that ALL acceptance criteria in the story (shown in the system prompt above) are met.
+
+The story acceptance criteria are the authoritative definition of "done". Each criterion must be satisfied for approval.
+
+Provide your decision using submit_reply.
 
 Your response must start with: APPROVED, NEEDS_CHANGES, or REJECTED`, approvalPayload.Content)
 }

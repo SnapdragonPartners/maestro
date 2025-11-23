@@ -724,9 +724,9 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Get agent-specific context
 	cm := d.getContextForAgent(coderID)
 
-	// Create tool provider rooted at coder's workspace
-	toolProvider := d.createReadToolProviderForCoder(coderID)
-	d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval)", coderID, coderID)
+	// Create tool provider rooted at coder's workspace with get_diff for code reviews
+	toolProvider := d.createReadToolProviderForCoder(coderID, true)
+	d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval with get_diff)", coderID, coderID)
 
 	// Build prompt based on approval type
 	var prompt string
@@ -783,6 +783,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		MaxIterations: 20, // Allow multiple inspection iterations
 		MaxTokens:     agent.ArchitectMaxTokens,
 		AgentID:       d.GetAgentID(),
+		DebugLogging:  true, // Enable toolloop debug logging
 	})
 
 	// Handle outcome
@@ -849,16 +850,36 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		return "" // No terminal tool called
 	}
 
+	// Create tool provider with review_complete tool
+	// Single-turn reviews only get the terminal tool (review_complete)
+	// Plan reviews don't need workspace inspection - the plan itself contains the description
+	// Budget reviews similarly only need to make a decision based on the request content
+	agentCtx := tools.AgentContext{
+		Executor:        d.executor,
+		ChatService:     nil,
+		ReadOnly:        true,
+		NetworkDisabled: false,
+		WorkDir:         "/mnt/architect", // Not used for single-turn reviews
+		Agent:           nil,
+	}
+
+	// Both plan and budget reviews only get review_complete tool
+	allowedTools := []string{tools.ToolReviewComplete}
+	d.logger.Debug("Created tool provider for single-turn review (%s) with review_complete only", approvalType)
+
+	toolProvider := tools.NewProvider(&agentCtx, allowedTools)
+
 	// Run toolloop in single-turn mode with type-safe result extraction
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
 		ContextManager: cm, // Use agent-specific context
-		ToolProvider:   newListToolProvider([]tools.Tool{tools.NewReviewCompleteTool()}),
+		ToolProvider:   toolProvider,
 		CheckTerminal:  checkTerminal,
 		ExtractResult:  ExtractReviewComplete,
 		MaxIterations:  3, // Allow nudge retries
 		MaxTokens:      agent.ArchitectMaxTokens,
 		SingleTurn:     true, // Enforce single-turn completion
 		AgentID:        d.GetAgentID(),
+		DebugLogging:   true, // Enable toolloop debug logging
 	})
 
 	// Handle outcome
@@ -1015,10 +1036,10 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 			return nil, fmt.Errorf("invalid tool provider type in state data")
 		}
 	} else {
-		// Create tool provider rooted at the coder's container workspace
-		toolProvider = d.createReadToolProviderForCoder(coderID)
+		// Create tool provider rooted at the coder's container workspace (no get_diff for questions)
+		toolProvider = d.createReadToolProviderForCoder(coderID, false)
 		d.SetStateData(toolProviderKey, toolProvider)
-		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s", coderID, coderID)
+		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (question without get_diff)", coderID, coderID)
 	}
 
 	// Build prompt for technical question

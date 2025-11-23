@@ -61,6 +61,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		MaxIterations:  20, // Increased for complex spec review workflows
 		MaxTokens:      agent.ArchitectMaxTokens,
 		AgentID:        d.GetAgentID(),
+		DebugLogging:   true, // Enable toolloop debug logging
 	})
 
 	// Handle outcome

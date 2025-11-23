@@ -18,7 +18,11 @@ func (d *Driver) generateCodePrompt(requestMsg *proto.AgentMsg, approvalPayload 
 
 %s
 
-Please review the code changes, inspect their workspace, and provide your decision using submit_reply.
+Please review the code changes against the story acceptance criteria (shown in the system prompt above). Inspect their workspace to verify each acceptance criterion is met.
+
+The story acceptance criteria are the authoritative requirements. Do not introduce new requirements or reference external specifications not mentioned in the story.
+
+Provide your decision using submit_reply.
 
 Your response must start with: APPROVED, NEEDS_CHANGES, or REJECTED`, approvalPayload.Content)
 }
