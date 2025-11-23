@@ -853,7 +853,8 @@ func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State,
 // createReadToolProviderForCoder creates a tool provider rooted at a specific coder's workspace.
 // coderID should be the agent ID (e.g., "coder-001").
 // The tools will be rooted at /mnt/coders/{coderID} inside the architect container.
-func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvider {
+// includeGetDiff determines whether to include get_diff tool (useful for code reviews, not for questions).
+func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
 
@@ -866,7 +867,18 @@ func (d *Driver) createReadToolProviderForCoder(coderID string) *tools.ToolProvi
 		Agent:           nil,              // No agent reference needed for read tools
 	}
 
-	return tools.NewProvider(&ctx, tools.ArchitectReadTools)
+	// Build tool list: always include read_file, list_files, submit_reply
+	// Optionally include get_diff for code reviews
+	allowedTools := []string{
+		tools.ToolReadFile,
+		tools.ToolListFiles,
+		tools.ToolSubmitReply, // Terminal tool for iterative reviews
+	}
+	if includeGetDiff {
+		allowedTools = append(allowedTools, tools.ToolGetDiff)
+	}
+
+	return tools.NewProvider(&ctx, allowedTools)
 }
 
 // processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).

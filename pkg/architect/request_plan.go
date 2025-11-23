@@ -15,7 +15,11 @@ func (d *Driver) generatePlanPrompt(requestMsg *proto.AgentMsg, approvalPayload 
 
 %s
 
-Please review the plan and provide your decision using review_complete.
+Please review the plan against the story acceptance criteria (shown in the system prompt above). The acceptance criteria are the authoritative requirements - verify the plan addresses each one.
+
+If the plan contradicts the story requirements, request changes with specific reference to which acceptance criteria are not met.
+
+Provide your decision using review_complete.
 
 Your decision must be: APPROVED, NEEDS_CHANGES, or REJECTED`, approvalPayload.Content)
 }
