@@ -115,13 +115,17 @@ func NewSubmitPlanTool() *SubmitPlanTool {
 func (s *SubmitPlanTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "submit_plan",
-		Description: "Submit your final implementation plan to advance to review phase",
+		Description: "Submit your plan or mark the story as already complete",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
+				"is_complete": {
+					Type:        "boolean",
+					Description: "True if story is already fully implemented (no coding needed), false if submitting an implementation plan for approval",
+				},
 				"plan": {
 					Type:        "string",
-					Description: "Your complete implementation plan (JSON or markdown format)",
+					Description: "If is_complete=false: your implementation plan ready for architect approval (will be broken into todos in next phase). If is_complete=true: evidence showing the story is already implemented",
 				},
 				"confidence": {
 					Type:        "string",
@@ -130,27 +134,14 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 				},
 				"exploration_summary": {
 					Type:        "string",
-					Description: "Summary of files explored and key findings",
-				},
-				"risks": {
-					Type:        "string",
-					Description: "Potential risks or challenges identified (optional)",
-				},
-				"todos": {
-					Type:        "array",
-					Description: "Ordered list of implementation tasks (imperative, 5-15 words)",
-					Items: &Property{
-						Type: "string",
-					},
-					MinItems: &[]int{1}[0],
-					MaxItems: &[]int{25}[0],
+					Description: "Summary of files explored and key findings (optional)",
 				},
 				"knowledge_pack": {
 					Type:        "string",
 					Description: "Relevant knowledge graph subgraph in DOT format (auto-populated, optional)",
 				},
 			},
-			Required: []string{"plan", "confidence", "todos"},
+			Required: []string{"is_complete", "plan", "confidence"},
 		},
 	}
 }
@@ -162,16 +153,28 @@ func (s *SubmitPlanTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (s *SubmitPlanTool) PromptDocumentation() string {
-	return `- **submit_plan** - Submit your final implementation plan
-  - Parameters: plan, confidence, exploration_summary, risks, todos (required)
-  - Advances to PLAN_REVIEW state for architect approval
-  - Required todos must be ordered list of implementation tasks (1-25 items)`
+	return `- **submit_plan** - Submit implementation plan OR mark story as already complete
+  - Parameters: is_complete (boolean), plan, confidence (all required), exploration_summary (optional)
+  - If is_complete=false: provide implementation plan ready for architect approval (will be broken into todos in next phase, advances to PLAN_REVIEW)
+  - If is_complete=true: provide evidence that story is already done (advances to STORY_COMPLETE for architect verification)`
 }
 
 // Exec executes the submit plan operation.
 //
 //nolint:cyclop // Complex plan validation logic, acceptable for this use case
 func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, error) {
+	// Check is_complete flag (required)
+	isComplete, ok := args["is_complete"]
+	if !ok {
+		return nil, fmt.Errorf("is_complete parameter is required")
+	}
+
+	isCompleteBool, ok := isComplete.(bool)
+	if !ok {
+		return nil, fmt.Errorf("is_complete must be a boolean")
+	}
+
+	// Validate plan (required for both modes)
 	plan, ok := args["plan"]
 	if !ok {
 		return nil, fmt.Errorf("plan parameter is required")
@@ -186,6 +189,7 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 		return nil, fmt.Errorf("plan cannot be empty")
 	}
 
+	// Validate confidence (required for both modes)
 	confidence, ok := args["confidence"]
 	if !ok {
 		return nil, fmt.Errorf("confidence parameter is required")
@@ -212,59 +216,6 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 		}
 	}
 
-	// Extract optional risks.
-	risks := ""
-	if riskVal, hasRisk := args["risks"]; hasRisk {
-		if riskStr, ok := riskVal.(string); ok {
-			risks = riskStr
-		}
-	}
-
-	// Extract and validate todos.
-	todos, hasTodos := args["todos"]
-	if !hasTodos {
-		return nil, fmt.Errorf("todos parameter is required")
-	}
-
-	var validatedTodos []map[string]any
-	if hasTodos {
-		todosArray, ok := todos.([]any)
-		if !ok {
-			return nil, fmt.Errorf("todos must be an array")
-		}
-
-		if len(todosArray) > 0 {
-			// Convert string todos to structured format.
-			validatedTodos = make([]map[string]any, len(todosArray))
-			for i, todoItem := range todosArray {
-				todoStr, ok := todoItem.(string)
-				if !ok {
-					return nil, fmt.Errorf("todo item %d must be a string", i)
-				}
-				if todoStr == "" {
-					return nil, fmt.Errorf("todo item %d cannot be empty", i)
-				}
-
-				validatedTodos[i] = map[string]any{
-					"id":          fmt.Sprintf("todo_%03d", i+1),
-					"description": todoStr,
-					"completed":   false,
-				}
-			}
-		}
-	}
-
-	// Create default todo if none provided.
-	if len(validatedTodos) == 0 {
-		validatedTodos = []map[string]any{
-			{
-				"id":          "todo_001",
-				"description": "Implement task according to plan",
-				"completed":   false,
-			},
-		}
-	}
-
 	// Extract optional knowledge_pack.
 	knowledgePack := ""
 	if packVal, hasPack := args["knowledge_pack"]; hasPack {
@@ -273,121 +224,28 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 		}
 	}
 
+	// Mode 1: Story already complete - no coding needed
+	if isCompleteBool {
+		return map[string]any{
+			"success":             true,
+			"message":             "Story marked as complete, requesting architect verification",
+			"plan":                planStr, // Contains evidence
+			"confidence":          confidenceStr,
+			"exploration_summary": explorationSummary,
+			"knowledge_pack":      knowledgePack,
+			"next_state":          "STORY_COMPLETE",
+		}, nil
+	}
+
+	// Mode 2: Implementation plan - will be broken into todos in next phase
 	return map[string]any{
 		"success":             true,
-		"message":             "Plan submitted successfully, advancing to PLAN_REVIEW",
+		"message":             "Plan submitted successfully, advancing to PLAN_REVIEW for architect approval",
 		"plan":                planStr,
 		"confidence":          confidenceStr,
 		"exploration_summary": explorationSummary,
-		"risks":               risks,
-		"todos":               validatedTodos,
 		"knowledge_pack":      knowledgePack,
 		"next_state":          "PLAN_REVIEW",
 	}, nil
 }
 
-// MarkStoryCompleteTool signals that story requirements are already implemented.
-type MarkStoryCompleteTool struct{}
-
-// NewMarkStoryCompleteTool creates a new mark story complete tool instance.
-func NewMarkStoryCompleteTool() *MarkStoryCompleteTool {
-	return &MarkStoryCompleteTool{}
-}
-
-// Definition returns the tool's definition in Claude API format.
-func (m *MarkStoryCompleteTool) Definition() ToolDefinition {
-	return ToolDefinition{
-		Name:        "mark_story_complete",
-		Description: "Signal that the story requirements are already fully implemented",
-		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"reason": {
-					Type:        "string",
-					Description: "Clear explanation of why the story is already complete",
-				},
-				"evidence": {
-					Type:        "string",
-					Description: "File paths and code evidence supporting the completion claim",
-				},
-				"confidence": {
-					Type:        "string",
-					Description: "Your confidence level in this assessment",
-					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
-				},
-			},
-			Required: []string{"reason", "evidence", "confidence"},
-		},
-	}
-}
-
-// Name returns the tool identifier.
-func (m *MarkStoryCompleteTool) Name() string {
-	return "mark_story_complete"
-}
-
-// PromptDocumentation returns markdown documentation for LLM prompts.
-func (m *MarkStoryCompleteTool) PromptDocumentation() string {
-	return `- **mark_story_complete** - Mark story as complete if already fully implemented
-  - Parameters: reason, evidence, confidence (all required)
-  - Use when exploration reveals the story is already FULLY implemented
-  - Transitions directly to completion without coding phase`
-}
-
-// Exec executes the mark story complete operation.
-func (m *MarkStoryCompleteTool) Exec(_ context.Context, args map[string]any) (any, error) {
-	reason, ok := args["reason"]
-	if !ok {
-		return nil, fmt.Errorf("reason parameter is required")
-	}
-
-	reasonStr, ok := reason.(string)
-	if !ok {
-		return nil, fmt.Errorf("reason must be a string")
-	}
-
-	if reasonStr == "" {
-		return nil, fmt.Errorf("reason cannot be empty")
-	}
-
-	evidence, ok := args["evidence"]
-	if !ok {
-		return nil, fmt.Errorf("evidence parameter is required")
-	}
-
-	evidenceStr, ok := evidence.(string)
-	if !ok {
-		return nil, fmt.Errorf("evidence must be a string")
-	}
-
-	if evidenceStr == "" {
-		return nil, fmt.Errorf("evidence cannot be empty")
-	}
-
-	confidence, ok := args["confidence"]
-	if !ok {
-		return nil, fmt.Errorf("confidence parameter is required")
-	}
-
-	confidenceStr, ok := confidence.(string)
-	if !ok {
-		return nil, fmt.Errorf("confidence must be a string")
-	}
-
-	// Validate confidence level.
-	switch proto.Confidence(confidenceStr) {
-	case proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow:
-		// Valid confidence level.
-	default:
-		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
-	}
-
-	return map[string]any{
-		"success":    true,
-		"message":    "Story completion request submitted, requesting architect approval",
-		"reason":     reasonStr,
-		"evidence":   evidenceStr,
-		"confidence": confidenceStr,
-		"next_state": "COMPLETION_REVIEW",
-	}, nil
-}
