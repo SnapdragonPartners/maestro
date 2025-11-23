@@ -153,7 +153,7 @@ func TestTemplateToolDocumentationIntegration(t *testing.T) {
 
 			// Verify planning templates include planning-specific tools
 			if tt.state == "planning" {
-				planningTools := []string{tools.ToolSubmitPlan, tools.ToolAskQuestion, tools.ToolMarkStoryComplete}
+				planningTools := []string{tools.ToolSubmitPlan, tools.ToolAskQuestion}
 				for _, planTool := range planningTools {
 					if !strings.Contains(renderedTemplate, planTool) {
 						t.Errorf("Planning template %s should contain tool: %s", tt.name, planTool)

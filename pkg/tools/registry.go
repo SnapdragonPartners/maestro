@@ -237,10 +237,6 @@ func createAskQuestionTool(_ *AgentContext) (Tool, error) {
 	return NewAskQuestionTool(), nil
 }
 
-// createMarkStoryCompleteTool creates a mark story complete tool instance.
-func createMarkStoryCompleteTool(_ *AgentContext) (Tool, error) {
-	return NewMarkStoryCompleteTool(), nil
-}
 
 // createBuildTool creates a build tool instance.
 func createBuildTool(_ *AgentContext) (Tool, error) {
@@ -356,9 +352,6 @@ func getAskQuestionSchema() InputSchema {
 	return NewAskQuestionTool().Definition().InputSchema
 }
 
-func getMarkStoryCompleteSchema() InputSchema {
-	return NewMarkStoryCompleteTool().Definition().InputSchema
-}
 
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
@@ -564,12 +557,6 @@ func init() {
 		Name:        ToolAskQuestion,
 		Description: "Ask the architect for clarification or guidance during planning",
 		InputSchema: getAskQuestionSchema(),
-	})
-
-	Register(ToolMarkStoryComplete, createMarkStoryCompleteTool, &ToolMeta{
-		Name:        ToolMarkStoryComplete,
-		Description: "Signal that the story requirements are already fully implemented",
-		InputSchema: getMarkStoryCompleteSchema(),
 	})
 
 	// Register development tools
