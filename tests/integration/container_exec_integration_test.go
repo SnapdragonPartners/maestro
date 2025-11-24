@@ -15,17 +15,6 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// mockTestAgent implements tools.Agent interface for testing.
-type mockTestAgent struct{}
-
-func (m *mockTestAgent) GetCurrentState() proto.State {
-	return proto.State("PLANNING") // Default to read-only state
-}
-
-func (m *mockTestAgent) GetHostWorkspacePath() string {
-	return "/tmp/test-workspace"
-}
-
 // TestContainerExecIntegration tests the container_test tool in command execution mode using the container test framework.
 // This test runs the real MCP tool inside a container environment to match production behavior.
 func TestContainerExecIntegration(t *testing.T) {

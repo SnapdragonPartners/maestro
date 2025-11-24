@@ -73,21 +73,19 @@ func (m *AlwaysApprovalMockArchitect) ProcessMessage(_ context.Context, msg *pro
 
 	switch msg.Type {
 	case proto.MsgTypeREQUEST:
-		// Handle unified REQUEST protocol based on kind
-		if kindRaw, exists := msg.GetPayload(proto.KeyKind); exists {
-			if kindStr, ok := kindRaw.(string); ok {
-				switch proto.RequestKind(kindStr) {
-				case proto.RequestKindQuestion:
-					return m.handleQuestion(msg)
-				case proto.RequestKindApproval:
-					return m.handleApprovalRequest(msg)
-				default:
-					return nil, fmt.Errorf("unsupported request kind: %s", kindStr)
-				}
-			}
+		// Handle unified REQUEST protocol based on payload kind
+		if msg.Payload == nil {
+			return nil, fmt.Errorf("REQUEST message missing payload")
 		}
-		// Fallback for legacy REQUEST messages without kind
-		return m.handleApprovalRequest(msg)
+
+		switch msg.Payload.Kind {
+		case proto.PayloadKindQuestionRequest:
+			return m.handleQuestion(msg)
+		case proto.PayloadKindApprovalRequest:
+			return m.handleApprovalRequest(msg)
+		default:
+			return nil, fmt.Errorf("unsupported payload kind: %s", msg.Payload.Kind)
+		}
 	case proto.MsgTypeRESPONSE:
 		// Just acknowledge response messages.
 		return m.createAcknowledgment(msg), nil
@@ -98,40 +96,49 @@ func (m *AlwaysApprovalMockArchitect) ProcessMessage(_ context.Context, msg *pro
 
 // handleApprovalRequest processes approval requests.
 func (m *AlwaysApprovalMockArchitect) handleApprovalRequest(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract approval type from the request.
-	approvalType := "plan" // default
-	if reqApprovalType, exists := msg.GetPayload("approval_type"); exists {
-		if approvalTypeStr, ok := reqApprovalType.(string); ok {
-			approvalType = approvalTypeStr
-		}
+	// Extract approval request from payload
+	approvalReq, err := msg.Payload.ExtractApprovalRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract approval request: %w", err)
 	}
-
-	// Create approval response.
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
-	response.ParentMsgID = msg.ID
 
 	// Create approval result
 	approvalResult := &proto.ApprovalResult{
-		ID:         response.ID + "_approval",
+		ID:         fmt.Sprintf("approval-%d", time.Now().UnixNano()),
 		RequestID:  msg.ID,
-		Type:       proto.ApprovalType(approvalType),
+		Type:       approvalReq.ApprovalType,
 		Status:     proto.ApprovalStatus(m.response.Status),
 		Feedback:   m.response.Feedback,
 		ReviewedBy: m.id,
 		ReviewedAt: time.Now(),
 	}
 
-	response.SetPayload("approval_result", approvalResult)
+	// Create response message
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
+	response.ParentMsgID = msg.ID
+	response.Payload = proto.NewApprovalResponsePayload(approvalResult)
 
 	return response, nil
 }
 
 // handleQuestion processes question messages.
 func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// For simplicity, always provide a helpful answer.
+	// Extract question request from payload
+	_, err := msg.Payload.ExtractQuestionRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract question request: %w", err)
+	}
+
+	// Create question response payload
+	questionResp := &proto.QuestionResponsePayload{
+		AnswerText: "Please continue with your current approach. It looks good.",
+		Confidence: proto.ConfidenceHigh,
+	}
+
+	// Create response message
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyAnswer, "Please continue with your current approach. It looks good.")
+	response.Payload = proto.NewQuestionResponsePayload(questionResp)
 
 	return response, nil
 }
@@ -140,7 +147,7 @@ func (m *AlwaysApprovalMockArchitect) handleQuestion(msg *proto.AgentMsg) (*prot
 func (m *AlwaysApprovalMockArchitect) createAcknowledgment(msg *proto.AgentMsg) *proto.AgentMsg {
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, "acknowledged")
+	// Simple acknowledgment doesn't need a payload
 	return response
 }
 
@@ -217,21 +224,19 @@ func (m *ChangesRequestedMockArchitect) ProcessMessage(_ context.Context, msg *p
 
 	switch msg.Type {
 	case proto.MsgTypeREQUEST:
-		// Handle unified REQUEST protocol based on kind
-		if kindRaw, exists := msg.GetPayload(proto.KeyKind); exists {
-			if kindStr, ok := kindRaw.(string); ok {
-				switch proto.RequestKind(kindStr) {
-				case proto.RequestKindQuestion:
-					return m.handleQuestion(msg)
-				case proto.RequestKindApproval:
-					return m.handleApprovalRequest(msg)
-				default:
-					return nil, fmt.Errorf("unsupported request kind: %s", kindStr)
-				}
-			}
+		// Handle unified REQUEST protocol based on payload kind
+		if msg.Payload == nil {
+			return nil, fmt.Errorf("REQUEST message missing payload")
 		}
-		// Fallback for legacy REQUEST messages without kind
-		return m.handleApprovalRequest(msg)
+
+		switch msg.Payload.Kind {
+		case proto.PayloadKindQuestionRequest:
+			return m.handleQuestion(msg)
+		case proto.PayloadKindApprovalRequest:
+			return m.handleApprovalRequest(msg)
+		default:
+			return nil, fmt.Errorf("unsupported payload kind: %s", msg.Payload.Kind)
+		}
 	case proto.MsgTypeRESPONSE:
 		return m.createAcknowledgment(msg), nil
 	default:
@@ -241,49 +246,59 @@ func (m *ChangesRequestedMockArchitect) ProcessMessage(_ context.Context, msg *p
 
 // handleApprovalRequest processes approval requests with rejection logic.
 func (m *ChangesRequestedMockArchitect) handleApprovalRequest(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Extract approval type.
-	approvalType := "plan"
-	if reqApprovalType, exists := msg.GetPayload("approval_type"); exists {
-		if approvalTypeStr, ok := reqApprovalType.(string); ok {
-			approvalType = approvalTypeStr
-		}
+	// Extract approval request from payload
+	approvalReq, err := msg.Payload.ExtractApprovalRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract approval request: %w", err)
 	}
 
 	// Determine status based on rejection count.
-	status := "APPROVED"
+	status := proto.ApprovalStatusApproved
 	feedback := "Plan looks good!"
 
 	if m.currentRejections < m.rejectCount {
-		status = "NEEDS_CHANGES"
+		status = proto.ApprovalStatusNeedsChanges
 		feedback = m.feedback
 		m.currentRejections++
 	}
 
-	// Create response.
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
-	response.ParentMsgID = msg.ID
-
 	// Create approval result
 	approvalResult := &proto.ApprovalResult{
-		ID:         response.ID + "_approval",
+		ID:         fmt.Sprintf("approval-%d", time.Now().UnixNano()),
 		RequestID:  msg.ID,
-		Type:       proto.ApprovalType(approvalType),
-		Status:     proto.ApprovalStatus(status),
+		Type:       approvalReq.ApprovalType,
+		Status:     status,
 		Feedback:   feedback,
 		ReviewedBy: m.id,
 		ReviewedAt: time.Now(),
 	}
 
-	response.SetPayload("approval_result", approvalResult)
+	// Create response message
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
+	response.ParentMsgID = msg.ID
+	response.Payload = proto.NewApprovalResponsePayload(approvalResult)
 
 	return response, nil
 }
 
 // handleQuestion processes questions.
 func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*proto.AgentMsg, error) {
+	// Extract question request from payload
+	_, err := msg.Payload.ExtractQuestionRequest()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract question request: %w", err)
+	}
+
+	// Create question response payload
+	questionResp := &proto.QuestionResponsePayload{
+		AnswerText: "Please revise based on the feedback provided.",
+		Confidence: proto.ConfidenceMedium,
+	}
+
+	// Create response message
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyAnswer, "Please revise based on the feedback provided.")
+	response.Payload = proto.NewQuestionResponsePayload(questionResp)
 
 	return response, nil
 }
@@ -292,7 +307,7 @@ func (m *ChangesRequestedMockArchitect) handleQuestion(msg *proto.AgentMsg) (*pr
 func (m *ChangesRequestedMockArchitect) createAcknowledgment(msg *proto.AgentMsg) *proto.AgentMsg {
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload(proto.KeyStatus, "acknowledged")
+	// Simple acknowledgment doesn't need a payload
 	return response
 }
 
@@ -347,10 +362,10 @@ func (m *MalformedResponseMockArchitect) ProcessMessage(_ context.Context, msg *
 		return m.response(msg), nil
 	}
 
-	// Default malformed response.
+	// Default malformed response (no payload is malformed).
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, m.id, msg.FromAgent)
 	response.ParentMsgID = msg.ID
-	response.SetPayload("invalid_field", "malformed_value")
+	// Intentionally leave payload empty/nil for malformed response testing
 	return response, nil
 }
 

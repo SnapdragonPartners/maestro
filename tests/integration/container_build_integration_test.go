@@ -165,12 +165,6 @@ CMD ["echo", "Hello from test container"]
 	}
 }
 
-// isDockerAvailable checks if Docker is available on the system
-func isDockerAvailable() bool {
-	cmd := osexec.Command("docker", "version")
-	return cmd.Run() == nil
-}
-
 // isContainerBuilt checks if a container image exists on the host Docker daemon
 func isContainerBuilt(containerName string) bool {
 	cmd := osexec.Command("docker", "images", "-q", containerName)

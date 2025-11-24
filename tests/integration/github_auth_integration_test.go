@@ -168,9 +168,3 @@ func extractRepoPathForTest(repoURL string) string {
 
 	return ""
 }
-
-// isDockerAvailable checks if Docker is available for testing.
-func isDockerAvailable() bool {
-	_, err := os.Stat("/var/run/docker.sock")
-	return err == nil
-}
