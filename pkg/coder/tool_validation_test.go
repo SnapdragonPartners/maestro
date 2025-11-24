@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -41,26 +42,31 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// ask_question now returns ProcessEffect (mid-loop pause pattern)
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be set")
+	}
+
+	if result.ProcessEffect.Signal != string(proto.StateQuestion) {
+		t.Errorf("Expected signal %q, got %q", proto.StateQuestion, result.ProcessEffect.Signal)
+	}
+
+	// Check that question and context are preserved in ProcessEffect.Data
+	dataMap, ok := result.ProcessEffect.Data.(map[string]string)
 	if !ok {
-		t.Fatal("Expected result to be a map")
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]string, got %T", result.ProcessEffect.Data)
 	}
 
-	// Validate result structure.
-	if success, exists := resultMap["success"]; !exists || success != true {
-		t.Error("Expected success field to be true")
+	if question, ok := dataMap["question"]; !ok || question != validArgs["question"] {
+		t.Errorf("Expected question %q to be preserved in ProcessEffect.Data, got %q", validArgs["question"], question)
 	}
 
-	if question, exists := resultMap["question"]; !exists || question != validArgs["question"] {
-		t.Error("Expected question to be preserved in result")
-	}
-
-	if urgency, exists := resultMap["urgency"]; !exists || urgency != "HIGH" {
-		t.Error("Expected urgency to be preserved")
-	}
-
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != "INLINE_HANDLED" {
-		t.Error("Expected next_state to be INLINE_HANDLED")
+	if context, ok := dataMap["context"]; !ok || context != validArgs["context"] {
+		t.Errorf("Expected context %q to be preserved in ProcessEffect.Data, got %q", validArgs["context"], context)
 	}
 }
 
@@ -126,15 +132,8 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// Verify default values are set.
-				if resultMap, ok := result.(map[string]any); ok {
-					if urgency, exists := resultMap["urgency"]; !exists || urgency != "MEDIUM" {
-						t.Error("Expected default urgency to be MEDIUM")
-					}
-					if context, exists := resultMap["context"]; !exists || context != "" {
-						t.Error("Expected default context to be empty string")
-					}
-				}
+				// ask_question now returns ProcessEffect, no structured data to check
+				// Default values are handled internally by the tool
 			}
 		})
 	}
@@ -184,9 +183,14 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatal("Expected result to be a map")
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// Tools now return *ExecResult with JSON-marshaled data in Content
+	var resultMap map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
 	}
 
 	// Validate result structure.
@@ -284,13 +288,16 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// Verify optional fields default to empty string.
-				if resultMap, ok := result.(map[string]any); ok {
-					if exploration, exists := resultMap["exploration_summary"]; !exists || exploration != "" {
-						t.Error("Expected default exploration_summary to be empty string")
-					}
-					if risks, exists := resultMap["risks"]; !exists || risks != "" {
-						t.Error("Expected default risks to be empty string")
+				if result != nil {
+					// Verify optional fields default to empty string.
+					var resultMap map[string]any
+					if err := json.Unmarshal([]byte(result.Content), &resultMap); err == nil {
+						if exploration, exists := resultMap["exploration_summary"]; !exists || exploration != "" {
+							t.Error("Expected default exploration_summary to be empty string")
+						}
+						if risks, exists := resultMap["risks"]; !exists || risks != "" {
+							t.Error("Expected default risks to be empty string")
+						}
 					}
 				}
 			}

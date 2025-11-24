@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"orchestrator/pkg/tools"
@@ -69,10 +70,14 @@ func TestTodoToolValidation(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 
-			// Verify result structure
-			resultMap, ok := result.(map[string]any)
-			if !ok {
-				t.Fatalf("Expected result to be map[string]any, got %T", result)
+			if result == nil {
+				t.Fatal("Expected non-nil result")
+			}
+
+			// Tools now return *ExecResult with JSON-marshaled data in Content
+			var resultMap map[string]any
+			if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+				t.Fatalf("Failed to unmarshal result content: %v", err)
 			}
 
 			if success, ok := resultMap["success"].(bool); !ok || !success {
@@ -80,15 +85,22 @@ func TestTodoToolValidation(t *testing.T) {
 			}
 
 			// Verify tool returns []string (this is what the handler must handle)
-			if validatedTodos, ok := resultMap["todos"].([]string); !ok {
-				t.Errorf("Expected validated todos as []string, got %T", resultMap["todos"])
+			todosRaw, ok := resultMap["todos"]
+			if !ok {
+				t.Error("Expected 'todos' field in result")
 			} else {
-				originalTodos, ok := tt.args["todos"].([]any)
+				// JSON unmarshals arrays as []any
+				todosArray, ok := todosRaw.([]any)
 				if !ok {
-					t.Fatalf("Test setup error: todos should be []any")
-				}
-				if len(validatedTodos) != len(originalTodos) {
-					t.Errorf("Expected %d validated todos, got %d", len(originalTodos), len(validatedTodos))
+					t.Errorf("Expected todos as []any from JSON, got %T", todosRaw)
+				} else {
+					originalTodos, ok := tt.args["todos"].([]any)
+					if !ok {
+						t.Fatalf("Test setup error: todos should be []any")
+					}
+					if len(todosArray) != len(originalTodos) {
+						t.Errorf("Expected %d validated todos, got %d", len(originalTodos), len(todosArray))
+					}
 				}
 			}
 		})
