@@ -7,10 +7,12 @@ import (
 	"flag"
 	"os"
 	osexec "os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"orchestrator/pkg/coder"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
@@ -187,6 +189,32 @@ func SetupTestEnvironment(t *testing.T) {
 	// Set a temporary log directory for this test.
 	logDir := t.TempDir()
 	_ = os.Setenv("DEBUG_LOG_DIR", logDir)
+}
+
+// SetupTestConfig initializes config with minimal test settings for container validation.
+// Uses a public repo so tests can run without authentication.
+func SetupTestConfig(t *testing.T) {
+	t.Helper()
+
+	// Create minimal config for container validation tests
+	// Using anthropic-sdk-python as a public repo that anyone can access (read-only API calls)
+	testConfig := `{
+		"git": {
+			"repo_url": "https://github.com/anthropics/anthropic-sdk-python.git"
+		}
+	}`
+
+	configPath := filepath.Join(t.TempDir(), "test-config.json")
+	if err := os.WriteFile(configPath, []byte(testConfig), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	// Set CONFIG_PATH env var so config can be loaded by any code path
+	_ = os.Setenv("CONFIG_PATH", configPath)
+
+	if err := config.LoadConfig(configPath); err != nil {
+		t.Fatalf("Failed to load test config: %v", err)
+	}
 }
 
 // AssertNoChannelMessages verifies that a channel has no pending messages.

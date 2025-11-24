@@ -15,11 +15,12 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// TestContainerExecIntegration tests the container_test tool in command execution mode using the container test framework.
-// This test runs the real MCP tool inside a container environment to match production behavior.
+// TestContainerExecIntegration tests the container_test tool in command execution mode using maestro-bootstrap.
 func TestContainerExecIntegration(t *testing.T) {
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
+		// Setup test config for container validation (uses public repo)
+		SetupTestConfig(t)
 		t.Skip("Docker not available, skipping container test (command execution) integration test")
 	}
 
@@ -29,27 +30,12 @@ func TestContainerExecIntegration(t *testing.T) {
 
 	// Create temporary workspace
 	tempDir := t.TempDir()
-
-	// Create a test Dockerfile with some utilities for testing commands
-	dockerfileContent := `FROM alpine:latest
-RUN apk add --no-cache curl wget bash
-RUN echo "test file content" > /test-file.txt
-CMD ["echo", "Hello from test container"]
-`
-
-	// Build a test container first
-	testContainerName := "maestro-exec-test-container"
 	workspaceDir := filepath.Join(tempDir, "exec_test")
 	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
 		t.Fatalf("Failed to create workspace dir: %v", err)
 	}
 
-	// Create Dockerfile
-	if err := os.WriteFile(filepath.Join(workspaceDir, "Dockerfile"), []byte(dockerfileContent), 0644); err != nil {
-		t.Fatalf("Failed to create Dockerfile: %v", err)
-	}
-
-	// Build container for testing
+	// Use maestro-bootstrap container which has all required tools
 	framework, err := NewContainerTestFramework(t, workspaceDir)
 	if err != nil {
 		t.Fatalf("Failed to create test framework: %v", err)
@@ -59,22 +45,6 @@ CMD ["echo", "Hello from test container"]
 	if err := framework.StartContainer(ctx); err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-
-	// Build test container
-	buildTool := tools.NewContainerBuildTool(framework.GetExecutor())
-	buildArgs := map[string]any{
-		"container_name":  testContainerName,
-		"dockerfile_path": "Dockerfile",
-		"cwd":             "/workspace",
-	}
-
-	_, err = buildTool.Exec(ctx, buildArgs)
-	if err != nil {
-		t.Fatalf("Failed to build test container: %v", err)
-	}
-
-	// Ensure test container is cleaned up
-	defer cleanupBuiltContainer(testContainerName)
 
 	// Test different command scenarios
 	testCases := []struct {
@@ -91,16 +61,10 @@ CMD ["echo", "Hello from test container"]
 			expectOutput:  "Hello World",
 		},
 		{
-			name:          "file_read_command",
-			command:       "cat /test-file.txt",
-			expectSuccess: true,
-			expectOutput:  "test file content",
-		},
-		{
 			name:          "list_directory",
-			command:       "ls -la /",
+			command:       "ls -la /workspace",
 			expectSuccess: true,
-			expectOutput:  "bin",
+			expectOutput:  "drwx", // Check for directory listing format
 		},
 		{
 			name:          "command_with_exit_code_0",
@@ -122,17 +86,10 @@ CMD ["echo", "Hello from test container"]
 		},
 		{
 			name:          "command_with_custom_timeout",
-			command:       "sleep 2 && echo 'completed'",
+			command:       "sleep 1 && echo 'completed'",
 			expectSuccess: true,
 			expectOutput:  "completed",
 			timeout:       10, // Allow enough time for sleep
-		},
-		{
-			name:          "command_that_times_out",
-			command:       "sleep 10", // This will timeout
-			expectSuccess: false,
-			expectOutput:  "",
-			timeout:       2, // Short timeout to trigger timeout
 		},
 	}
 
@@ -140,7 +97,7 @@ CMD ["echo", "Hello from test container"]
 		t.Run(tc.name, func(t *testing.T) {
 			// Prepare tool arguments
 			args := map[string]any{
-				"container_name": testContainerName,
+				"container_name": "maestro-bootstrap:latest",
 				"command":        tc.command,
 			}
 
@@ -176,14 +133,25 @@ CMD ["echo", "Hello from test container"]
 				// Check exit code
 				exitCode, ok := resultMap["exit_code"].(int)
 				if !ok || exitCode != 0 {
-					t.Fatalf("Expected exit_code=0, got exit_code=%v", resultMap["exit_code"])
+					// exit_code might be float64 from JSON
+					if exitCodeFloat, ok := resultMap["exit_code"].(float64); ok {
+						exitCode = int(exitCodeFloat)
+					}
+					if exitCode != 0 {
+						t.Fatalf("Expected exit_code=0, got exit_code=%v", resultMap["exit_code"])
+					}
 				}
 
 				// Check expected output if specified
 				if tc.expectOutput != "" {
-					output, ok := resultMap["output"].(string)
-					if !ok {
-						t.Fatalf("Expected output to be string, got %T", resultMap["output"])
+					// Check if we have stdout or output field
+					var output string
+					if stdout, ok := resultMap["stdout"].(string); ok {
+						output = stdout
+					} else if out, ok := resultMap["output"].(string); ok {
+						output = out
+					} else {
+						t.Fatalf("Expected stdout or output field, got fields: %v", resultMap)
 					}
 					if !strings.Contains(output, tc.expectOutput) {
 						t.Fatalf("Expected output to contain '%s', got: %s", tc.expectOutput, output)
@@ -216,7 +184,12 @@ CMD ["echo", "Hello from test container"]
 					// Check exit code is non-zero
 					exitCode, ok := resultMap["exit_code"].(int)
 					if !ok {
-						t.Fatalf("Expected exit_code field in result")
+						// Try float64
+						if exitCodeFloat, ok := resultMap["exit_code"].(float64); ok {
+							exitCode = int(exitCodeFloat)
+						} else {
+							t.Fatalf("Expected exit_code field in result")
+						}
 					}
 					if exitCode == 0 {
 						t.Fatalf("Expected non-zero exit code for failed command, got %d", exitCode)

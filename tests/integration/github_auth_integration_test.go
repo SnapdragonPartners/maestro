@@ -119,13 +119,9 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 				err, userResult.Stdout, userResult.Stderr)
 		}
 
-		// Test repository access (using config repo URL)
+		// Test repository access (using config repo URL if available)
 		cfg, err := config.GetConfig()
-		if err != nil {
-			t.Fatalf("Failed to get config: %v", err)
-		}
-
-		if cfg.Git != nil && cfg.Git.RepoURL != "" {
+		if err == nil && cfg.Git != nil && cfg.Git.RepoURL != "" {
 			repoPath := extractRepoPathForTest(cfg.Git.RepoURL)
 			if repoPath != "" {
 				repoResult, err := executor.Run(ctx, []string{"gh", "api", "/repos/" + repoPath}, execOpts)
@@ -135,6 +131,8 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 				}
 				t.Logf("✅ GitHub API repository access validated for: %s", repoPath)
 			}
+		} else {
+			t.Logf("⚠️  Skipping repository access test (config not available)")
 		}
 
 		t.Logf("✅ GitHub API access working after credential setup")

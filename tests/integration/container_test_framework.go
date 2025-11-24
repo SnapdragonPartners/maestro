@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	osexec "os/exec"
 	"testing"
 	"time"
 
@@ -159,4 +160,20 @@ func (f *ContainerTestFramework) Cleanup(ctx context.Context) {
 	if f.containerName != "" {
 		_ = f.executor.StopContainer(ctx, f.containerName)
 	}
+}
+
+// cleanupBuiltContainer removes a Docker container image by name.
+//
+//nolint:unused // Used by integration tests with build tags
+func cleanupBuiltContainer(containerName string) {
+	cmd := osexec.Command("docker", "rmi", "-f", containerName)
+	_ = cmd.Run() // Ignore errors - container might not exist
+}
+
+// isContainerBuilt checks if a Docker container image exists.
+//
+//nolint:unused // Used by integration tests with build tags
+func isContainerBuilt(containerName string) bool {
+	cmd := osexec.Command("docker", "image", "inspect", containerName)
+	return cmd.Run() == nil
 }
