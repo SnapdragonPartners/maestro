@@ -5,6 +5,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	osexec "os/exec"
@@ -120,7 +121,7 @@ CMD ["echo", "Hello from test container"]
 			defer cleanupBuiltContainer(tc.containerName)
 
 			// Prepare tool arguments
-			args := map[string]interface{}{
+			args := map[string]any{
 				"container_name":  tc.containerName,
 				"dockerfile_path": tc.dockerfilePath,
 				"cwd":             "/workspace",
@@ -137,9 +138,9 @@ CMD ["echo", "Hello from test container"]
 				}
 
 				// Verify result structure
-				resultMap, ok := result.(map[string]interface{})
-				if !ok {
-					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
+				var resultMap map[string]any
+				if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr != nil {
+					t.Fatalf("Failed to unmarshal result: %v", unmarshalErr)
 				}
 
 				success, ok := resultMap["success"].(bool)

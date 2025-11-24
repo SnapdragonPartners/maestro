@@ -5,12 +5,12 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
 
@@ -125,7 +125,7 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 
 			// First build the container
 			buildTool := tools.NewContainerBuildTool(framework.GetExecutor())
-			buildArgs := map[string]interface{}{
+			buildArgs := map[string]any{
 				"container_name":  tc.containerName,
 				"dockerfile_path": "Dockerfile",
 				"cwd":             "/workspace",
@@ -146,7 +146,7 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 			containerTestTool := tools.NewContainerTestTool(framework.GetExecutor(), mockAgent, framework.GetProjectDir())
 
 			// Prepare tool arguments for boot test mode (no command, ttl_seconds=0)
-			args := map[string]interface{}{
+			args := map[string]any{
 				"container_name": tc.containerName,
 				"ttl_seconds":    0, // Boot test mode
 			}
@@ -164,10 +164,10 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 					t.Fatalf("Boot test failed unexpectedly: %v", err)
 				}
 
-				// Verify result structure
-				resultMap, ok := result.(map[string]interface{})
-				if !ok {
-					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
+				// Verify result structure - unmarshal from ExecResult.Content
+				var resultMap map[string]any
+				if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+					t.Fatalf("Failed to unmarshal result: %v", err)
 				}
 
 				// Check success field
@@ -200,9 +200,9 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 					t.Logf("✅ Expected tool error occurred: %v", err)
 				} else {
 					// Check if tool returned failure in result
-					resultMap, ok := result.(map[string]interface{})
-					if !ok {
-						t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
+					var resultMap map[string]any
+					if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr != nil {
+						t.Fatalf("Failed to unmarshal result: %v", unmarshalErr)
 					}
 
 					success, ok := resultMap["success"].(bool)
@@ -252,10 +252,11 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	containerTestTool := tools.NewContainerTestTool(framework.GetExecutor())
+	mockAgent := &mockTestAgent{}
+	containerTestTool := tools.NewContainerTestTool(framework.GetExecutor(), mockAgent, framework.GetProjectDir())
 
 	t.Run("nonexistent_container", func(t *testing.T) {
-		args := map[string]interface{}{
+		args := map[string]any{
 			"container_name": "nonexistent-container-xyz",
 			"ttl_seconds":    0, // Boot test mode
 		}
@@ -264,7 +265,8 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 
 		// Should fail because container doesn't exist
 		if err == nil {
-			if resultMap, ok := result.(map[string]interface{}); ok {
+			var resultMap map[string]any
+			if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr == nil {
 				if success, ok := resultMap["success"].(bool); ok && success {
 					t.Fatalf("Expected container test (boot mode) to fail for nonexistent container")
 				}
@@ -275,7 +277,7 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 	})
 
 	t.Run("timeout_limit_enforcement", func(t *testing.T) {
-		args := map[string]interface{}{
+		args := map[string]any{
 			"container_name":  "test-container",
 			"timeout_seconds": 100, // Above max limit of 60
 			"ttl_seconds":     0,   // Boot test mode
@@ -285,7 +287,8 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 
 		// Should either limit timeout to 60 or fail cleanly
 		if err == nil {
-			if resultMap, ok := result.(map[string]interface{}); ok {
+			var resultMap map[string]any
+			if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr == nil {
 				if timeout, ok := resultMap["timeout"]; ok {
 					if timeoutInt, ok := timeout.(int); ok && timeoutInt > 60 {
 						t.Fatalf("Timeout should be limited to 60 seconds, got %d", timeoutInt)

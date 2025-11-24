@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
@@ -106,7 +104,6 @@ func ExpectMessage(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duratio
 		}
 	}
 }
-
 
 // MessageMatchers contains common message matching functions.
 type MessageMatchers struct{}

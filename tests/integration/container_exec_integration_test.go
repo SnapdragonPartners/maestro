@@ -5,13 +5,13 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"orchestrator/pkg/proto"
 	"orchestrator/pkg/tools"
 )
 
@@ -62,7 +62,7 @@ CMD ["echo", "Hello from test container"]
 
 	// Build test container
 	buildTool := tools.NewContainerBuildTool(framework.GetExecutor())
-	buildArgs := map[string]interface{}{
+	buildArgs := map[string]any{
 		"container_name":  testContainerName,
 		"dockerfile_path": "Dockerfile",
 		"cwd":             "/workspace",
@@ -139,7 +139,7 @@ CMD ["echo", "Hello from test container"]
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Prepare tool arguments
-			args := map[string]interface{}{
+			args := map[string]any{
 				"container_name": testContainerName,
 				"command":        tc.command,
 			}
@@ -162,9 +162,9 @@ CMD ["echo", "Hello from test container"]
 				}
 
 				// Verify result structure
-				resultMap, ok := result.(map[string]interface{})
-				if !ok {
-					t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
+				var resultMap map[string]any
+				if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr != nil {
+					t.Fatalf("Failed to unmarshal result: %v", unmarshalErr)
 				}
 
 				// Check success field
@@ -199,9 +199,9 @@ CMD ["echo", "Hello from test container"]
 					t.Logf("✅ Expected tool error occurred: %v", err)
 				} else {
 					// Check if tool returned failure in result
-					resultMap, ok := result.(map[string]interface{})
-					if !ok {
-						t.Fatalf("Expected result to be map[string]interface{}, got %T", result)
+					var resultMap map[string]any
+					if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr != nil {
+						t.Fatalf("Failed to unmarshal result: %v", unmarshalErr)
 					}
 
 					success, ok := resultMap["success"].(bool)
@@ -231,10 +231,13 @@ CMD ["echo", "Hello from test container"]
 						if !strings.Contains(err.Error(), tc.expectOutput) {
 							t.Logf("Warning: Expected error to contain '%s', got: %v", tc.expectOutput, err)
 						}
-					} else if resultMap, ok := result.(map[string]interface{}); ok {
-						if stderr, ok := resultMap["stderr"].(string); ok {
-							if !strings.Contains(stderr, tc.expectOutput) {
-								t.Logf("Warning: Expected stderr to contain '%s', got: %s", tc.expectOutput, stderr)
+					} else {
+						var resultMap map[string]any
+						if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr == nil {
+							if stderr, ok := resultMap["stderr"].(string); ok {
+								if !strings.Contains(stderr, tc.expectOutput) {
+									t.Logf("Warning: Expected stderr to contain '%s', got: %s", tc.expectOutput, stderr)
+								}
 							}
 						}
 					}

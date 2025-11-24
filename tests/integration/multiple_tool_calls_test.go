@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,32 +63,32 @@ func TestMultipleToolCallsExecution(t *testing.T) {
 	// Test multiple shell commands that would be typical in discovery phase
 	multipleCommands := []struct {
 		name string
-		args map[string]interface{}
+		args map[string]any
 	}{
 		{
 			name: "shell",
-			args: map[string]interface{}{
+			args: map[string]any{
 				"cmd": "ls -la /workspace",
 				"cwd": "/workspace",
 			},
 		},
 		{
 			name: "shell",
-			args: map[string]interface{}{
+			args: map[string]any{
 				"cmd": "find /workspace -name '*.go' -type f",
 				"cwd": "/workspace",
 			},
 		},
 		{
 			name: "shell",
-			args: map[string]interface{}{
+			args: map[string]any{
 				"cmd": "cat /workspace/go.mod",
 				"cwd": "/workspace",
 			},
 		},
 		{
 			name: "shell",
-			args: map[string]interface{}{
+			args: map[string]any{
 				"cmd": "cat /workspace/README.md",
 				"cwd": "/workspace",
 			},
@@ -109,7 +110,8 @@ func TestMultipleToolCallsExecution(t *testing.T) {
 		}
 
 		// Extract command output for verification
-		if resultMap, ok := result.(map[string]interface{}); ok {
+		var resultMap map[string]any
+		if unmarshalErr := json.Unmarshal([]byte(result.Content), &resultMap); unmarshalErr == nil {
 			if stdout, exists := resultMap["stdout"]; exists {
 				stdoutStr := stdout.(string)
 				results = append(results, stdoutStr)

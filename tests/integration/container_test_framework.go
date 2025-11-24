@@ -31,9 +31,9 @@ type HarnessResult struct {
 	Success   bool        `json:"success"`
 	ToolName  string      `json:"tool_name"`
 	Duration  string      `json:"duration"`
-	Result    interface{} `json:"result,omitempty"`
+	Result    any `json:"result,omitempty"`
 	Error     string      `json:"error,omitempty"`
-	Arguments interface{} `json:"arguments"`
+	Arguments any `json:"arguments"`
 }
 
 // NewContainerTestFramework creates a new container-based testing framework.
@@ -52,6 +52,11 @@ func NewContainerTestFramework(t *testing.T, workspaceDir string) (*ContainerTes
 // GetExecutor returns the executor for creating tools with the same execution context as production.
 func (f *ContainerTestFramework) GetExecutor() *dockerexec.LongRunningDockerExec {
 	return f.executor
+}
+
+// GetProjectDir returns the workspace directory path.
+func (f *ContainerTestFramework) GetProjectDir() string {
+	return f.workspaceDir
 }
 
 // StartContainer starts the maestro-bootstrap container with proper mounts.
@@ -92,7 +97,7 @@ func (f *ContainerTestFramework) StartContainer(ctx context.Context) error {
 }
 
 // ExecuteTool executes an MCP tool inside the container using the harness.
-func (f *ContainerTestFramework) ExecuteTool(ctx context.Context, toolName string, args map[string]interface{}) (*HarnessResult, error) {
+func (f *ContainerTestFramework) ExecuteTool(ctx context.Context, toolName string, args map[string]any) (*HarnessResult, error) {
 	// Marshal arguments to JSON
 	argsJSON, err := json.Marshal(args)
 	if err != nil {
@@ -122,7 +127,7 @@ func (f *ContainerTestFramework) ExecuteTool(ctx context.Context, toolName strin
 }
 
 // ExecuteToolExpectSuccess executes a tool and expects it to succeed.
-func (f *ContainerTestFramework) ExecuteToolExpectSuccess(ctx context.Context, toolName string, args map[string]interface{}) interface{} {
+func (f *ContainerTestFramework) ExecuteToolExpectSuccess(ctx context.Context, toolName string, args map[string]any) any {
 	result, err := f.ExecuteTool(ctx, toolName, args)
 	if err != nil {
 		f.t.Fatalf("Tool execution failed: %v", err)
@@ -136,7 +141,7 @@ func (f *ContainerTestFramework) ExecuteToolExpectSuccess(ctx context.Context, t
 }
 
 // ExecuteToolExpectFailure executes a tool and expects it to fail.
-func (f *ContainerTestFramework) ExecuteToolExpectFailure(ctx context.Context, toolName string, args map[string]interface{}) string {
+func (f *ContainerTestFramework) ExecuteToolExpectFailure(ctx context.Context, toolName string, args map[string]any) string {
 	result, err := f.ExecuteTool(ctx, toolName, args)
 	if err != nil {
 		f.t.Fatalf("Tool execution failed: %v", err)
