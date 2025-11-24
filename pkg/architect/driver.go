@@ -26,7 +26,6 @@ import (
 // Tool signal constants.
 const (
 	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
-	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
 	signalReviewComplete        = "REVIEW_COMPLETE"
 )
 
@@ -632,72 +631,6 @@ func convertContextMessages(contextMessages []contextmgr.Message) []agent.Comple
 	return messages
 }
 
-// checkTerminalTools examines tool execution results for terminal signals.
-// Returns non-empty signal to trigger state transition.
-func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) string {
-	for i := range calls {
-		toolCall := &calls[i]
-
-		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
-		if toolCall.Name == tools.ToolSubmitReply {
-			response, ok := toolCall.Parameters["response"].(string)
-			if !ok || response == "" {
-				d.logger.Error("submit_reply tool called without response parameter")
-				continue
-			}
-
-			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
-			return response
-		}
-
-		// Handle submit_stories tool - signals spec review completion with structured data
-		if toolCall.Name == tools.ToolSubmitStories {
-			// Check if tool executed successfully from results
-			resultMap, ok := results[i].(map[string]any)
-			if !ok {
-				d.logger.Error("submit_stories tool result is not a map")
-				continue
-			}
-
-			// Check for errors
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				d.logger.Error("submit_stories tool failed")
-				continue
-			}
-
-			// Store the structured result in state data for scoping to access
-			d.SetStateData("submit_stories_result", results[i])
-
-			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return signalSubmitStoriesComplete
-		}
-
-		// Handle spec_feedback tool - architect sends feedback to PM
-		if toolCall.Name == tools.ToolSpecFeedback {
-			// Check if tool executed successfully from results
-			resultMap, ok := results[i].(map[string]any)
-			if !ok {
-				d.logger.Error("spec_feedback tool result is not a map")
-				continue
-			}
-
-			// Check for errors
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				d.logger.Error("spec_feedback tool failed")
-				continue
-			}
-
-			// Store the feedback result in state data for message sending
-			d.SetStateData("spec_feedback_result", results[i])
-
-			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
-			return signalSpecFeedbackSent
-		}
-	}
-
-	return "" // Continue loop
-}
-
 // processStatusUpdates runs as a goroutine to process story status updates from coders.
 // This provides a non-blocking way for coders to update story status without waiting for architect availability.
 func (d *Driver) processStatusUpdates(ctx context.Context) {
@@ -881,158 +814,13 @@ func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff b
 	return tools.NewProvider(&ctx, allowedTools)
 }
 
-// processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
-// Returns the submit_reply response if detected, nil otherwise.
-// Takes context manager parameter to add tool results to the correct agent-specific context.
-func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider, cm *contextmgr.ContextManager) (string, error) {
-	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
-
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		d.logger.Info("Executing architect tool: %s", toolCall.Name)
-
-		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
-		if toolCall.Name == tools.ToolSubmitReply {
-			response, ok := toolCall.Parameters["response"].(string)
-			if !ok || response == "" {
-				return "", fmt.Errorf("submit_reply tool called without response parameter")
-			}
-
-			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
-			return response, nil
-		}
-
-		// Handle review_complete tool - signals single-turn review completion (for Plan/BudgetReview)
-		if toolCall.Name == tools.ToolReviewComplete {
-			// Execute the tool to get validated structured data
-			tool, err := toolProvider.Get(toolCall.Name)
-			if err != nil {
-				return "", fmt.Errorf("review_complete tool not found: %w", err)
-			}
-
-			result, err := tool.Exec(ctx, toolCall.Parameters)
-			if err != nil {
-				return "", fmt.Errorf("review_complete validation failed: %w", err)
-			}
-
-			// Store the structured result in state data for approval handling to access
-			d.SetStateData("review_complete_result", result)
-
-			d.logger.Info("✅ Architect completed review via review_complete tool")
-			return signalReviewComplete, nil // Signal that review is complete
-		}
-
-		// Handle submit_stories tool - signals spec review completion with structured data
-		if toolCall.Name == tools.ToolSubmitStories {
-			// Execute the tool to get validated structured data
-			tool, err := toolProvider.Get(toolCall.Name)
-			if err != nil {
-				return "", fmt.Errorf("submit_stories tool not found: %w", err)
-			}
-
-			result, err := tool.Exec(ctx, toolCall.Parameters)
-			if err != nil {
-				return "", fmt.Errorf("submit_stories validation failed: %w", err)
-			}
-
-			// Store the structured result in state data for spec review to access
-			d.SetStateData("submit_stories_result", result)
-
-			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return signalSubmitStoriesComplete, nil // Signal that stories were submitted
-		}
-
-		// Handle spec_feedback tool - architect sends feedback to PM
-		if toolCall.Name == tools.ToolSpecFeedback {
-			// Execute the tool to validate feedback
-			tool, err := toolProvider.Get(toolCall.Name)
-			if err != nil {
-				return "", fmt.Errorf("spec_feedback tool not found: %w", err)
-			}
-
-			result, err := tool.Exec(ctx, toolCall.Parameters)
-			if err != nil {
-				return "", fmt.Errorf("spec_feedback validation failed: %w", err)
-			}
-
-			// Store the feedback result in state data for message sending
-			d.SetStateData("spec_feedback_result", result)
-
-			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
-			return signalSpecFeedbackSent, nil // Signal that feedback was sent
-		}
-
-		// Get tool from ToolProvider and execute
-		tool, err := toolProvider.Get(toolCall.Name)
-		if err != nil {
-			d.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
-			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
-			continue
-		}
-
-		// Add agent_id to context for tools that need it
-		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.GetAgentID())
-
-		// Execute tool
-		startTime := time.Now()
-		result, err := tool.Exec(toolCtx, toolCall.Parameters)
-		duration := time.Since(startTime)
-
-		// Log tool execution to database (fire-and-forget)
-		stateData := d.GetStateData()
-		storyID := ""
-		if sid, exists := stateData["current_story_id"]; exists {
-			if sidStr, ok := sid.(string); ok {
-				storyID = sidStr
-			}
-		}
-		agent.LogToolExecution(toolCall, result, err, duration, d.GetAgentID(), storyID, d.persistenceChannel)
-
-		if err != nil {
-			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
-			continue
-		}
-
-		d.logger.Debug("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
-
-		// Add structured tool result to buffer (same as PM pattern)
-		// Convert result to string format
-		var resultStr string
-		var isError bool
-		if resultMap, ok := result.(map[string]any); ok {
-			// Check for success field
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				isError = true
-				// Extract error message if present
-				if errMsg, ok := resultMap["error"].(string); ok {
-					resultStr = errMsg
-				} else {
-					resultStr = fmt.Sprintf("Tool failed: %v", result)
-				}
-			} else {
-				// Success - convert entire result to string
-				resultStr = fmt.Sprintf("%v", result)
-			}
-		} else {
-			// Non-map result - convert to string
-			resultStr = fmt.Sprintf("%v", result)
-		}
-
-		cm.AddToolResult(toolCall.ID, resultStr, isError)
-		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
-	}
-
-	return "", nil // No submit_reply detected
-}
-
 // getSpecReviewTools creates read-only tools for spec review in REQUEST state.
 // These tools allow the architect to inspect its own workspace at /mnt/architect,
 // submit structured stories via the submit_stories tool, and provide feedback to PM.
 func (d *Driver) getSpecReviewTools() []tools.Tool {
 	toolsList := []tools.Tool{
-		tools.NewSubmitStoriesTool(), // Primary completion tool
-		tools.NewSpecFeedbackTool(),  // PM feedback tool
+		tools.NewReviewCompleteTool(), // Review decision tool (first loop)
+		tools.NewSubmitStoriesTool(),  // Story generation tool (second loop)
 	}
 
 	// Add optional read tools if executor available

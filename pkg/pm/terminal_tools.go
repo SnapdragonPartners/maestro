@@ -30,7 +30,7 @@ func (t *SpecSubmitTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
-func (t *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
 

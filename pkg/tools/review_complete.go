@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -55,7 +56,7 @@ func (t *ReviewCompleteTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract and validate status
 	status, ok := args["status"].(string)
 	if !ok || status == "" {
@@ -83,10 +84,17 @@ func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (any, 
 
 	// Return special signal that review is complete
 	// The state handler will check for action="review_complete" to know to exit
-	return map[string]any{
+	result := map[string]any{
 		"success":  true,
 		"action":   "review_complete",
 		"status":   status,
 		"feedback": feedback,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

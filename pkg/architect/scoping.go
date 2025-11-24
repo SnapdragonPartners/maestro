@@ -151,7 +151,7 @@ func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown s
 	// Get state data
 	stateData := d.GetStateData()
 
-	// 1. Extract structured data from stateData (stored by processArchitectToolCalls)
+	// 1. Extract structured data from stateData (stored by toolloop after submit_stories execution)
 	submitResult, ok := stateData["submit_stories_result"]
 	if !ok {
 		return "", nil, fmt.Errorf("submit_stories result not found in state data")

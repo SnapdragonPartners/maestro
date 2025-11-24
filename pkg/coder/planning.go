@@ -137,21 +137,38 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	c.logger.Info("🧑‍💻 Starting planning phase for story_type '%s'", storyType)
 
 	// Use toolloop for LLM iteration with planning tools
+	// Get submit_plan tool and wrap it as terminal tool
+	submitPlanTool, err := c.planningToolProvider.Get(tools.ToolSubmitPlan)
+	if err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to get submit_plan tool")
+	}
+	terminalTool := NewPlanSubmitTool(submitPlanTool)
+
+	// Get all general tools (everything except submit_plan)
+	allTools := c.planningToolProvider.List()
+	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	for _, meta := range allTools {
+		if meta.Name != tools.ToolSubmitPlan {
+			tool, err := c.planningToolProvider.Get(meta.Name)
+			if err != nil {
+				return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("failed to get tool %s", meta.Name))
+			}
+			generalTools = append(generalTools, tool)
+		}
+	}
+
 	loop := toolloop.New(c.LLMClient, c.logger)
 
 	//nolint:dupl // Similar config in coding.go - intentional per-state configuration
 	cfg := &toolloop.Config[PlanningResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		ToolProvider:   c.planningToolProvider,
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
 		MaxIterations:  maxPlanningIterations,
 		MaxTokens:      8192, // Increased for exploration
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   false,
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			return c.checkPlanningTerminal(ctx, sm, calls, results)
-		},
-		ExtractResult: ExtractPlanningResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("planning_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxPlanningIterations - 2, // Warn 2 iterations before limit

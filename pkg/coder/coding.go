@@ -120,6 +120,27 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	// Log the rendered prompt for debugging
 	c.logger.Info("🧑‍💻 Starting coding phase for story_type '%s'", storyType)
 
+	// Get done tool and wrap it as terminal tool
+	doneTool, err := c.codingToolProvider.Get(tools.ToolDone)
+	if err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to get done tool")
+	}
+	terminalTool := NewDoneTool(doneTool)
+
+	// Get all general tools (everything except done)
+	// ask_question is now a general tool that returns ProcessEffect
+	allTools := c.codingToolProvider.List()
+	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	for _, meta := range allTools {
+		if meta.Name != tools.ToolDone {
+			tool, err := c.codingToolProvider.Get(meta.Name)
+			if err != nil {
+				return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("failed to get tool %s", meta.Name))
+			}
+			generalTools = append(generalTools, tool)
+		}
+	}
+
 	// Use toolloop for LLM iteration with coding tools
 	loop := toolloop.New(c.LLMClient, c.logger)
 
@@ -127,15 +148,12 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	cfg := &toolloop.Config[CodingResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		ToolProvider:   c.codingToolProvider,
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
 		MaxIterations:  maxCodingIterations,
 		MaxTokens:      8192, // Increased for comprehensive code generation
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   false,
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			return c.checkCodingTerminal(ctx, sm, calls, results)
-		},
-		ExtractResult: ExtractCodingResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxCodingIterations - 2, // Warn 2 iterations before limit
@@ -170,28 +188,33 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Switch on outcome kind first
 	switch out.Kind {
+	case toolloop.OutcomeProcessEffect:
+		// Tool returned ProcessEffect to pause the loop for async effect processing
+		c.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
+
+		// Route based on signal (state constant)
+		switch out.Signal {
+		case string(proto.StateQuestion):
+			// ask_question was called - extract question data from ProcessEffect
+			if err := c.storePendingQuestionFromProcessEffect(sm, out); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to store pending question")
+			}
+			c.logger.Info("🧑‍💻 Question submitted, transitioning to QUESTION state")
+			return StateQuestion, false, nil
+		default:
+			return proto.StateError, false, logx.Errorf("unknown ProcessEffect signal: %s", out.Signal)
+		}
+
 	case toolloop.OutcomeSuccess:
+		// Terminal tool (done) was called
 		// Log extracted result for visibility
 		if len(out.Value.TodosCompleted) > 0 {
 			c.logger.Info("✅ Coding iteration completed %d todos", len(out.Value.TodosCompleted))
 		}
 
-		// Handle terminal signals from successful completion
-		switch out.Signal {
-		case string(StateBudgetReview):
-			return StateBudgetReview, false, nil
-		case string(StateQuestion):
-			return StateQuestion, false, nil
-		case string(StateTesting):
-			return StateTesting, false, nil
-		case "":
-			// No signal, continue coding
-			c.logger.Info("🧑‍💻 Coding iteration completed, continuing in CODING")
-			return StateCoding, false, nil
-		default:
-			c.logger.Warn("Unknown signal from coding toolloop: %s", out.Signal)
-			return StateCoding, false, nil
-		}
+		// Done tool was called - advance to testing
+		c.logger.Info("🧑‍💻 Done tool detected, advancing to TESTING")
+		return StateTesting, false, nil
 
 	case toolloop.OutcomeIterationLimit:
 		// OnHardLimit already stored BudgetReviewEffect in state
@@ -215,7 +238,52 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	}
 }
 
+// storePendingQuestionFromProcessEffect stores question details from ProcessEffect.Data in state for QUESTION state.
+func (c *Coder) storePendingQuestionFromProcessEffect(sm *agent.BaseStateMachine, out toolloop.Outcome[CodingResult]) error {
+	// Extract question data from ProcessEffect.Data
+	effectData, ok := out.EffectData.(map[string]string)
+	if !ok {
+		return logx.Errorf("ProcessEffect.Data is not map[string]string: %T", out.EffectData)
+	}
+
+	question, ok := effectData["question"]
+	if !ok || question == "" {
+		return logx.Errorf("ProcessEffect.Data missing 'question' field")
+	}
+
+	context := effectData["context"] // Optional, may be empty
+
+	// Store in state for QUESTION state to use
+	questionData := map[string]any{
+		"question": question,
+		"context":  context,
+		"origin":   string(StateCoding),
+	}
+
+	sm.SetStateData(KeyPendingQuestion, questionData)
+	c.logger.Info("🧑‍💻 Stored pending question: %s", question)
+	return nil
+}
+
+// storePendingQuestion stores question details from CodingResult in state for QUESTION state.
+// DEPRECATED: Old pattern - kept for reference during transition. Remove after POC validation.
+func (c *Coder) storePendingQuestion(sm *agent.BaseStateMachine, out toolloop.Outcome[CodingResult]) error {
+	// Extract question data from result
+	questionData := map[string]any{
+		"question": out.Value.Question,
+		"context":  out.Value.Context,
+		"urgency":  out.Value.Urgency,
+		"origin":   string(StateCoding),
+	}
+
+	// Store in state for QUESTION state to use
+	sm.SetStateData(KeyPendingQuestion, questionData)
+	c.logger.Info("🧑‍💻 Stored pending question: %s (urgency: %s)", out.Value.Question, out.Value.Urgency)
+	return nil
+}
+
 // checkCodingTerminal examines tool calls and results for terminal signals during coding.
+// DEPRECATED: No longer used with new toolloop architecture. Kept for reference.
 func (c *Coder) checkCodingTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, _ []any) string {
 	for i := range calls {
 		toolCall := &calls[i]

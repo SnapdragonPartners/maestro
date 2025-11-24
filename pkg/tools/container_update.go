@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -62,7 +63,7 @@ func (c *ContainerUpdateTool) PromptDocumentation() string {
 }
 
 // Exec executes the container configuration update operation.
-func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract required parameters
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
 	if containerName == "" {
@@ -76,7 +77,7 @@ func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (an
 }
 
 // updateContainerConfiguration updates the complete container configuration atomically.
-func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, containerName, dockerfilePath string) (any, error) {
+func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, containerName, dockerfilePath string) (*ExecResult, error) {
 	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s", containerName, dockerfilePath)
 
 	// Validate container capabilities before updating configuration
@@ -84,25 +85,35 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 	validationResult := ValidateContainerCapabilities(ctx, hostExecutor, containerName)
 
 	if !validationResult.Success {
-		return map[string]any{
+		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
 			"validation":     validationResult,
 			"error": fmt.Sprintf("Container validation failed: %s. Cannot update configuration to use container that lacks required tools: %v",
 				validationResult.Message, validationResult.MissingTools),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Get the current image ID for the container to pin it automatically
 	imageID, err := c.getContainerImageID(ctx, containerName)
 	if err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
 			"error":          fmt.Sprintf("Failed to get image ID for container '%s': %v", containerName, err),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Update project configuration with container name and dockerfile path
@@ -112,23 +123,35 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 
 	// Pin the image ID for consistency
 	if err := config.SetPinnedImageID(imageID); err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
 			"error":          fmt.Sprintf("Failed to pin image ID %s: %v", imageID, err),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	log.Printf("INFO container_update: Updated container config: %s, dockerfile: %s, pinned image: %s", containerName, dockerfilePath, imageID)
 
-	return map[string]any{
+	result := map[string]any{
 		"success":         true,
 		"container_name":  containerName,
 		"dockerfile":      dockerfilePath,
 		"pinned_image_id": imageID,
 		"message":         fmt.Sprintf("Successfully updated container '%s' with dockerfile '%s' and pinned image ID '%s'", containerName, dockerfilePath, imageID),
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // updateProjectConfig updates the project configuration with the new container name and dockerfile path.

@@ -303,18 +303,23 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	// Use toolloop for todo collection (single-pass with retry)
 	loop := toolloop.New(c.LLMClient, c.logger)
 
+	// Get todos_add tool and wrap it as terminal tool
+	todosAddTool, err := todoToolProvider.Get(tools.ToolTodosAdd)
+	if err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to get todos_add tool")
+	}
+	terminalTool := NewTodosAddTool(todosAddTool)
+
+	// No general tools in this phase - just the terminal tool
 	cfg := &toolloop.Config[TodoCollectionResult]{
 		ContextManager: c.contextManager,
-		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		ToolProvider:   todoToolProvider,
+		InitialPrompt:  "",             // Prompt already in context via ResetForNewTemplate
+		GeneralTools:   []tools.Tool{}, // No general tools
+		TerminalTool:   terminalTool,
 		MaxIterations:  2,    // One call + one retry if needed
 		MaxTokens:      4096, // Sufficient for todo list
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   true, // Enable verbose logging for debugging
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
-		},
-		ExtractResult: ExtractTodoCollectionResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			HardLimit: 2,

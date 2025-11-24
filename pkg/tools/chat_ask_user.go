@@ -57,7 +57,7 @@ func (a *ChatAskUserTool) PromptDocumentation() string {
 }
 
 // Exec executes the chat_ask_user operation.
-func (a *ChatAskUserTool) Exec(ctx context.Context, params map[string]any) (any, error) {
+func (a *ChatAskUserTool) Exec(ctx context.Context, params map[string]any) (*ExecResult, error) {
 	// Extract message parameter
 	message, ok := params["message"].(string)
 	if !ok || message == "" {
@@ -78,10 +78,15 @@ func (a *ChatAskUserTool) Exec(ctx context.Context, params map[string]any) (any,
 		}
 	}
 
-	// Signal to PM driver to transition to AWAIT_USER state
-	return map[string]any{
-		"success":    true,
-		"message":    "Question posted, waiting for user response",
-		"await_user": true, // Signal to PM driver to pause until user responds
+	// Return ProcessEffect to pause the loop and transition to AWAIT_USER state
+	// Similar to ask_question tool for coder, this pauses the PM loop for async user response
+	return &ExecResult{
+		Content: "Question posted to chat, waiting for user response",
+		ProcessEffect: &ProcessEffect{
+			Signal: "AWAIT_USER", // PM will handle this state transition
+			Data: map[string]string{
+				"message": message,
+			},
+		},
 	}, nil
 }

@@ -9,7 +9,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
-	"orchestrator/pkg/contextmgr"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -742,27 +742,31 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Add approval prompt as user message to preserve context continuity
 	cm.AddMessage("architect-approval-prompt", prompt)
 
-	// CheckTerminal: Look for submit_reply tool to get approval decision
-	checkTerminal := func(calls []agent.ToolCall, _ []any) string {
-		for i := range calls {
-			if calls[i].Name == tools.ToolSubmitReply {
-				// submit_reply tool was called - extract response from parameters
-				if response, ok := calls[i].Parameters["response"].(string); ok && response != "" {
-					// Store response for building approval result
-					d.SetStateData(StateKeySubmitReply, response)
-					return "SUBMIT_REPLY"
-				}
+	// Get review_complete tool and wrap as terminal tool
+	reviewCompleteToolRaw, err := toolProvider.Get(tools.ToolReviewComplete)
+	if err != nil {
+		return nil, logx.Wrap(err, "failed to get review_complete tool")
+	}
+	terminalTool := NewReviewCompleteTool(reviewCompleteToolRaw)
+
+	// Get all general tools (everything except review_complete)
+	allTools := toolProvider.List()
+	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	for _, meta := range allTools {
+		if meta.Name != tools.ToolReviewComplete {
+			tool, err := toolProvider.Get(meta.Name)
+			if err != nil {
+				return nil, logx.Wrap(err, fmt.Sprintf("failed to get tool %s", meta.Name))
 			}
+			generalTools = append(generalTools, tool)
 		}
-		return "" // No terminal tool called, continue iteration
 	}
 
 	// Run toolloop for iterative approval with type-safe result extraction
-	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
 		ContextManager: cm, // Use agent-specific context
-		ToolProvider:   toolProvider,
-		CheckTerminal:  checkTerminal,
-		ExtractResult:  ExtractSubmitReply,
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("approval_%s", storyID),
 			SoftLimit: 8,  // Warn at 8 iterations
@@ -796,17 +800,17 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("iterative approval failed: %w", out.Err)
 	}
 
-	if out.Signal != "SUBMIT_REPLY" {
-		return nil, fmt.Errorf("expected SUBMIT_REPLY signal, got: %s", out.Signal)
+	if out.Signal != signalReviewComplete {
+		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", out.Signal)
 	}
 
-	d.logger.Info("✅ Architect submitted final decision via submit_reply")
+	d.logger.Info("✅ Architect completed iterative review with status: %s", out.Value.Status)
 
-	// Clean up state data (submit_reply_response no longer stored)
+	// Clean up state data
 	d.SetStateData("current_story_id", nil)
 
 	// Build and return approval response
-	return d.buildApprovalResponseFromSubmit(ctx, requestMsg, approvalPayload, out.Value.Response)
+	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, out.Value.Status, out.Value.Feedback)
 }
 
 // handleSingleTurnReview handles single-turn approval reviews (Plan and BudgetReview)
@@ -836,20 +840,6 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	// Add review prompt as user message to preserve context continuity
 	cm.AddMessage("architect-review-prompt", prompt)
 
-	// CheckTerminal: Look for review_complete tool signal
-	checkTerminal := func(calls []agent.ToolCall, results []any) string {
-		for i := range calls {
-			if calls[i].Name == tools.ToolReviewComplete {
-				// review_complete tool was called - extract result and store in state
-				if resultMap, ok := results[i].(map[string]any); ok {
-					d.SetStateData(StateKeyReviewComplete, resultMap)
-					return signalReviewComplete
-				}
-			}
-		}
-		return "" // No terminal tool called
-	}
-
 	// Create tool provider with review_complete tool
 	// Single-turn reviews only get the terminal tool (review_complete)
 	// Plan reviews don't need workspace inspection - the plan itself contains the description
@@ -869,12 +859,21 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	toolProvider := tools.NewProvider(&agentCtx, allowedTools)
 
+	// Get review_complete tool and wrap as terminal tool
+	reviewCompleteToolRaw, err := toolProvider.Get(tools.ToolReviewComplete)
+	if err != nil {
+		return nil, logx.Wrap(err, "failed to get review_complete tool")
+	}
+	terminalTool := NewReviewCompleteTool(reviewCompleteToolRaw)
+
+	// No general tools - only the terminal tool
+	generalTools := []tools.Tool{}
+
 	// Run toolloop in single-turn mode with type-safe result extraction
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
 		ContextManager: cm, // Use agent-specific context
-		ToolProvider:   toolProvider,
-		CheckTerminal:  checkTerminal,
-		ExtractResult:  ExtractReviewComplete,
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
 		MaxIterations:  3, // Allow nudge retries
 		MaxTokens:      agent.ArchitectMaxTokens,
 		SingleTurn:     true, // Enforce single-turn completion
@@ -984,9 +983,6 @@ func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg
 
 // handleIterativeQuestion processes question requests with iterative code exploration.
 func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
-	// Get state data
-	stateData := d.GetStateData()
-
 	// Extract question from typed payload
 	typedPayload := requestMsg.GetTypedPayload()
 	if typedPayload == nil {
@@ -999,141 +995,83 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	storyID := proto.GetStoryID(requestMsg)
+	coderID := requestMsg.FromAgent
+	if coderID == "" {
+		return nil, fmt.Errorf("question message missing sender (FromAgent)")
+	}
 
 	d.logger.Info("🔍 Starting iterative question handling (story: %s)", storyID)
 
 	// Store story_id in state data for tool logging
 	d.SetStateData(StateKeyCurrentStoryID, storyID)
 
-	// Extract coder ID from request (sender)
-	coderID := requestMsg.FromAgent
-	if coderID == "" {
-		return nil, fmt.Errorf("question message missing sender (FromAgent)")
-	}
-
 	// Get agent-specific context
 	cm := d.getContextForAgent(coderID)
 
-	// Check iteration limit before proceeding
-	iterationKey := fmt.Sprintf(StateKeyPatternQuestionIterations, requestMsg.ID)
-	if d.checkIterationLimit(iterationKey, StateRequest, cm) {
-		d.logger.Error("❌ Hard iteration limit exceeded for question %s - preparing escalation", requestMsg.ID)
-		// Store additional escalation context
-		d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
-		d.SetStateData(StateKeyEscalationStoryID, storyID)
-		d.SetStateData(StateKeyEscalationAgentID, coderID)
-		// Signal escalation needed by returning sentinel error
-		return nil, ErrEscalationTriggered
-	}
-
-	// Create tool provider rooted at coder's workspace (lazily, once per request)
-	toolProviderKey := fmt.Sprintf(StateKeyPatternToolProvider, requestMsg.ID)
-	var toolProvider *tools.ToolProvider
-	if tp, exists := stateData[toolProviderKey]; exists {
-		var ok bool
-		toolProvider, ok = tp.(*tools.ToolProvider)
-		if !ok {
-			return nil, fmt.Errorf("invalid tool provider type in state data")
-		}
-	} else {
-		// Create tool provider rooted at the coder's container workspace (no get_diff for questions)
-		toolProvider = d.createReadToolProviderForCoder(coderID, false)
-		d.SetStateData(toolProviderKey, toolProvider)
-		d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (question without get_diff)", coderID, coderID)
-	}
-
-	// Build prompt for technical question
+	// Build prompt for technical question (on first call only)
+	// Create tool provider rooted at the coder's container workspace (no get_diff for questions)
+	toolProvider := d.createReadToolProviderForCoder(coderID, false)
 	prompt := d.generateQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
 
-	// Check iteration count to determine if this is first iteration
-	iterationCount := 0
-	if val, exists := stateData[iterationKey]; exists {
-		if count, ok := val.(int); ok {
-			iterationCount = count
-		}
-	}
+	// Add question prompt as user message to preserve context continuity
+	cm.AddMessage("architect-question-prompt", prompt)
 
-	if iterationCount == 0 {
-		// First iteration: add prompt as user message to preserve context continuity
-		cm.AddMessage("architect-question-prompt", prompt)
-	}
-
-	// Flush user buffer before LLM request
-	if flushErr := cm.FlushUserBuffer(ctx); flushErr != nil {
-		return nil, fmt.Errorf("failed to flush user buffer: %w", flushErr)
-	}
-
-	// Build messages from agent-specific context
-	contextMessages := cm.GetMessages()
-	messages := convertContextMessages(contextMessages)
-
-	// Get tool definitions for LLM
-	toolDefs := d.getArchitectToolsForLLM(toolProvider)
-
-	req := agent.CompletionRequest{
-		Messages:  messages,
-		MaxTokens: agent.ArchitectMaxTokens,
-		Tools:     toolDefs,
-	}
-
-	// Call LLM
-	d.logger.Info("🔄 Calling LLM for iterative question (iteration %d)", iterationCount+1)
-	resp, err := d.LLMClient.Complete(ctx, req)
+	// Get submit_reply tool and wrap as terminal tool
+	submitReplyToolRaw, err := toolProvider.Get(tools.ToolSubmitReply)
 	if err != nil {
-		return nil, fmt.Errorf("LLM completion failed: %w", err)
+		return nil, logx.Wrap(err, "failed to get submit_reply tool")
+	}
+	terminalTool := NewSubmitReplyTool(submitReplyToolRaw)
+
+	// Get general tools (read_file, list_files)
+	var generalTools []tools.Tool
+	for _, toolName := range []string{tools.ToolReadFile, tools.ToolListFiles} {
+		if tool, err := toolProvider.Get(toolName); err == nil {
+			generalTools = append(generalTools, tool)
+		}
 	}
 
-	// Add assistant response to agent-specific context with structured tool calls
-	if len(resp.ToolCalls) > 0 {
-		// Use structured tool call tracking
-		// Convert agent.ToolCall to contextmgr.ToolCall
-		toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
-		for i := range resp.ToolCalls {
-			toolCalls[i] = contextmgr.ToolCall{
-				ID:         resp.ToolCalls[i].ID,
-				Name:       resp.ToolCalls[i].Name,
-				Parameters: resp.ToolCalls[i].Parameters,
-			}
+	// Run toolloop with submit_reply as terminal tool
+	d.logger.Info("🔍 Starting iterative question loop")
+	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
+		ContextManager: cm,
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
+		MaxIterations:  20, // Allow exploration of workspace
+		MaxTokens:      agent.ArchitectMaxTokens,
+		AgentID:        d.GetAgentID(),
+		DebugLogging:   true,
+		Escalation: &toolloop.EscalationConfig{
+			Key:       fmt.Sprintf("question-%s", requestMsg.ID),
+			SoftLimit: 8,
+			HardLimit: 16,
+			OnSoftLimit: func(count int) {
+				d.logger.Warn("⚠️  Iteration %d: Approaching hard limit for question %s", count, requestMsg.ID)
+			},
+			OnHardLimit: func(ctx context.Context, key string, count int) error {
+				d.logger.Error("❌ Hard iteration limit exceeded for question %s - escalating", requestMsg.ID)
+				// Store escalation context for state machine
+				d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
+				d.SetStateData(StateKeyEscalationStoryID, storyID)
+				d.SetStateData(StateKeyEscalationAgentID, coderID)
+				return ErrEscalationTriggered
+			},
+		},
+	})
+
+	// Handle toolloop outcome
+	if out.Kind != toolloop.OutcomeSuccess {
+		// Check if escalation was triggered
+		if out.Err != nil && out.Err.Error() == ErrEscalationTriggered.Error() {
+			return nil, ErrEscalationTriggered
 		}
-		cm.AddAssistantMessageWithTools(resp.Content, toolCalls)
-	} else {
-		// No tool calls - just content
-		cm.AddAssistantMessage(resp.Content)
+		return nil, fmt.Errorf("question handling failed: %w", out.Err)
 	}
 
-	// Process tool calls
-	if len(resp.ToolCalls) > 0 {
-		submitResponse, err := d.processArchitectToolCalls(ctx, resp.ToolCalls, toolProvider, cm)
-		if err != nil {
-			return nil, fmt.Errorf("tool processing failed: %w", err)
-		}
+	d.logger.Info("✅ Architect answered question via submit_reply")
 
-		// If submit_reply was called, use that response as the final answer
-		if submitResponse != "" {
-			d.logger.Info("✅ Architect submitted answer via submit_reply")
-			return d.buildQuestionResponseFromSubmit(requestMsg, submitResponse)
-		}
-
-		// Otherwise, continue iteration (will be called again by state machine)
-		d.logger.Info("🔄 Tools executed, continuing iteration")
-		//nolint:nilnil // Intentional: nil response signals continuation, not an error
-		return nil, nil
-	}
-
-	// No tool calls - nudge the LLM to use submit_reply tool
-	d.logger.Warn("⚠️  LLM responded without tool calls, nudging to use submit_reply")
-
-	// Increment iteration count before nudging
-	iterationCount++
-	d.SetStateData(iterationKey, iterationCount)
-
-	// Add nudge to agent-specific context
-	nudgeMessage := "You must use the submit_reply tool to provide your answer. Please call submit_reply with your response as the 'content' parameter."
-	cm.AddMessage("system", nudgeMessage)
-
-	// Return nil to signal continuation (state machine will call us again)
-	//nolint:nilnil // Intentional: nil response signals continuation after nudge
-	return nil, nil
+	// Build response message with the answer
+	return d.buildQuestionResponseFromSubmit(requestMsg, out.Value.Response)
 }
 
 // buildQuestionResponseFromSubmit creates a question response from submit_reply content.

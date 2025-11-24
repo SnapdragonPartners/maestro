@@ -30,7 +30,7 @@ func (t *PlanSubmitTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
-func (t *PlanSubmitTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *PlanSubmitTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
 
@@ -69,7 +69,7 @@ func (t *DoneTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
-func (t *DoneTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *DoneTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
 
@@ -108,7 +108,7 @@ func (t *AskQuestionTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
-func (t *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
 
@@ -147,7 +147,7 @@ func (t *TodosAddTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
-func (t *TodosAddTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *TodosAddTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
 

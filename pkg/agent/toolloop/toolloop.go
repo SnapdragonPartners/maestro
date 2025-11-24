@@ -298,6 +298,8 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		// Execute ALL tools (API requirement: every tool_use must have tool_result)
 		tl.logger.Info("Processing %d tool calls", len(resp.ToolCalls))
 		results := make([]any, len(resp.ToolCalls))
+		var pendingEffect *tools.ProcessEffect
+
 		for i := range resp.ToolCalls {
 			toolCall := &resp.ToolCalls[i]
 			tl.logger.Info("Executing tool: %s", toolCall.Name)
@@ -322,23 +324,52 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 
 			start := time.Now()
-			result, err := tool.Exec(toolCtx, toolCall.Parameters)
+			execResult, err := tool.Exec(toolCtx, toolCall.Parameters)
 			duration := time.Since(start)
 
+			// Generate tool result content for LLM context
+			var content string
+			var isError bool
 			if err != nil {
 				tl.logger.Error("Tool %s failed after %.3fs: %v", toolCall.Name, duration.Seconds(), err)
-				results[i] = map[string]any{
-					"success": false,
-					"error":   err.Error(),
-				}
+				content = fmt.Sprintf("Tool failed: %v", err)
+				isError = true
 			} else {
 				tl.logger.Info("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
-				results[i] = result
+
+				// Use provided content or generate simple acknowledgment
+				if execResult.Content != "" {
+					content = execResult.Content
+				} else {
+					content = "Tool executed successfully"
+				}
+				isError = false
+
+				// Check if this tool wants to exit the loop for async effect processing
+				if execResult.ProcessEffect != nil && execResult.ProcessEffect.Signal != "" {
+					tl.logger.Info("🔔 Tool %s returned ProcessEffect with signal: %s", toolCall.Name, execResult.ProcessEffect.Signal)
+					pendingEffect = execResult.ProcessEffect
+				}
 			}
 
+			// Store content for terminal tool extraction (some terminal tools may inspect tool results)
+			results[i] = content
+
 			// Add tool result to context
-			resultStr, isError := formatToolResult(result, err)
-			cfg.ContextManager.AddToolResult(toolCall.ID, resultStr, isError)
+			cfg.ContextManager.AddToolResult(toolCall.ID, content, isError)
+		}
+
+		// Check if any tool requested loop exit for effect processing
+		if pendingEffect != nil {
+			tl.logger.Info("🛑 Exiting toolloop early - ProcessEffect signal: %s", pendingEffect.Signal)
+			var zero T
+			return Outcome[T]{
+				Kind:       OutcomeProcessEffect,
+				Signal:     pendingEffect.Signal,
+				EffectData: pendingEffect.Data,
+				Value:      zero,
+				Iteration:  currentIteration,
+			}
 		}
 
 		// Check if terminal tool was called

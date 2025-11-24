@@ -12,6 +12,11 @@ const (
 	// Value field contains the extracted result from ExtractResult.
 	OutcomeSuccess OutcomeKind = iota
 
+	// OutcomeProcessEffect indicates a tool returned ProcessEffect to pause the loop.
+	// Signal field contains the effect signal (e.g., "QUESTION", "BUDGET_REVIEW").
+	// The state machine should process the async effect and then transition back to continue the loop.
+	OutcomeProcessEffect
+
 	// OutcomeNoToolTwice indicates the LLM failed to use tools twice in a row.
 	// This is a loop-level guard that prevents infinite loops when LLM ignores tools.
 	OutcomeNoToolTwice
@@ -40,6 +45,8 @@ func (k OutcomeKind) String() string {
 	switch k {
 	case OutcomeSuccess:
 		return "Success"
+	case OutcomeProcessEffect:
+		return "ProcessEffect"
 	case OutcomeNoToolTwice:
 		return "NoToolTwice"
 	case OutcomeIterationLimit:
@@ -63,10 +70,16 @@ type Outcome[T any] struct {
 	// Kind categorizes what happened during the loop (success, error, limit, etc.).
 	Kind OutcomeKind
 
-	// Signal is the terminal signal from CheckTerminal (e.g., "PLAN_REVIEW", "TESTING").
-	// Only meaningful when Kind == OutcomeSuccess.
+	// Signal is the terminal signal or ProcessEffect signal.
+	// For OutcomeSuccess: terminal tool name (e.g., "submit_plan", "done")
+	// For OutcomeProcessEffect: state to transition to (e.g., "QUESTION")
 	// Empty string means normal completion with no state transition.
 	Signal string
+
+	// EffectData contains data from ProcessEffect when Kind == OutcomeProcessEffect.
+	// Only valid when Kind == OutcomeProcessEffect.
+	// Contains effect-specific data (e.g., question text, budget info).
+	EffectData any
 
 	// Value is the extracted result from ExtractResult.
 	// Only valid when Kind == OutcomeSuccess.

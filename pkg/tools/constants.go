@@ -40,10 +40,9 @@ const (
 	ToolReviewComplete = "review_complete"
 
 	// PM tools.
-	ToolSpecSubmit   = "spec_submit"
-	ToolSpecFeedback = "spec_feedback"
-	ToolChatAskUser  = "chat_ask_user"
-	ToolBootstrap    = "bootstrap"
+	ToolSpecSubmit  = "spec_submit"
+	ToolChatAskUser = "chat_ask_user"
+	ToolBootstrap   = "bootstrap"
 )
 
 // State-specific tool availability - defines which tools are available in each state.

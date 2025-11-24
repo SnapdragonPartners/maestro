@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -57,6 +58,27 @@ type ToolResult struct {
 	Content   any    `json:"content"`
 }
 
+// ProcessEffect represents a signal from a tool that the toolloop should exit
+// so that the state machine can process an async Effect.
+//
+// Example: ask_question tool needs to wait for an architect's answer.
+// The tool returns a ProcessEffect with signal StateQuestion, the loop exits,
+// and the state machine transitions to QUESTION state to handle the Effect.
+type ProcessEffect struct {
+	Signal string // State to transition to (use state constants, e.g., string(coder.StateQuestion))
+	Data   any    // Optional data for the effect (e.g., question text, budget info)
+}
+
+// ExecResult is the result of executing a tool.
+// Tools return this to indicate what the LLM should see and whether to pause the loop.
+//
+// Content field is optional - if empty, toolloop generates automatic acknowledgment.
+// ProcessEffect field signals that the loop should pause for async effect processing.
+type ExecResult struct {
+	Content       string         // What to show LLM (empty = auto-generate "Tool executed successfully")
+	ProcessEffect *ProcessEffect // nil = continue looping, non-nil = exit loop with signal
+}
+
 // Tool represents an MCP tool.
 // Renamed from ToolChannel - has nothing to do with channels.
 type Tool interface {
@@ -65,7 +87,10 @@ type Tool interface {
 	// Name returns the tool's identifier.
 	Name() string
 	// Exec executes the tool with the given arguments.
-	Exec(ctx context.Context, args map[string]any) (any, error)
+	// Returns ExecResult containing optional content for LLM and optional ProcessEffect to pause loop.
+	// If ProcessEffect is non-nil, the toolloop will exit with the specified signal,
+	// allowing the state machine to process an async Effect.
+	Exec(ctx context.Context, args map[string]any) (*ExecResult, error)
 	// PromptDocumentation returns markdown documentation for LLM prompts.
 	PromptDocumentation() string
 }
@@ -137,7 +162,7 @@ func (s *ShellTool) PromptDocumentation() string {
 }
 
 // Exec executes a shell command with proper validation.
-func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Validate required cmd argument.
 	cmd, hasCmd := args["cmd"]
 	if !hasCmd {
@@ -166,7 +191,7 @@ func (s *ShellTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 }
 
 // executeShellCommand performs actual shell command execution using the executor interface.
-func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (any, error) {
+func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string) (*ExecResult, error) {
 	// Create ExecOpts with the shell command and security settings.
 	opts := exec.Opts{
 		WorkDir:         cwd,
@@ -200,5 +225,10 @@ func (s *ShellTool) executeShellCommand(ctx context.Context, cmdStr, cwd string)
 		"duration":  result.Duration.String(),
 	}
 
-	return response, nil
+	content, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal shell result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

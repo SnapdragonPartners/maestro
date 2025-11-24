@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -46,7 +47,7 @@ func (t *SubmitReplyTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *SubmitReplyTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *SubmitReplyTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract response argument
 	response, ok := args["response"].(string)
 	if !ok || response == "" {
@@ -55,9 +56,16 @@ func (t *SubmitReplyTool) Exec(_ context.Context, args map[string]any) (any, err
 
 	// Return special signal that iteration loop should terminate
 	// The state handler will check for action="submit" to know to exit
-	return map[string]any{
+	result := map[string]any{
 		"success":  true,
 		"action":   "submit",
 		"response": response,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

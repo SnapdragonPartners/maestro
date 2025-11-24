@@ -24,12 +24,9 @@ type WorkingResult struct {
 	BootstrapParams   map[string]string
 	BootstrapMarkdown string // Rendered bootstrap prerequisites markdown
 
-	// Spec preview data (when preview_ready=true)
+	// Spec preview data (when preview_ready=true from spec_submit)
 	SpecMarkdown string
 	SpecMetadata map[string]any
-
-	// AwaitUser flag (when await_user=true)
-	AwaitUser bool
 }
 
 // ExtractPMWorkingResult extracts the result from PM's working phase tools.
@@ -73,7 +70,7 @@ func ExtractPMWorkingResult(calls []agent.ToolCall, results []any) (WorkingResul
 			continue
 		}
 
-		// Check for spec_submit signal (PREVIEW flow)
+		// Check for spec_submit signal (PREVIEW flow) - THE ONLY terminal signal
 		if previewReady, ok := resultMap["preview_ready"].(bool); ok && previewReady {
 			result.Signal = SignalSpecPreview
 
@@ -84,20 +81,13 @@ func ExtractPMWorkingResult(calls []agent.ToolCall, results []any) (WorkingResul
 				result.SpecMetadata = metadata
 			}
 
-			// This is a terminal signal - return immediately
+			// This is the terminal signal - return immediately
 			return result, nil
-		}
-
-		// Check for await_user signal
-		if awaitUser, ok := resultMap["await_user"].(bool); ok && awaitUser {
-			result.Signal = SignalAwaitUser
-			result.AwaitUser = true
-			// Don't return yet - spec_preview takes precedence if both are present
 		}
 	}
 
-	// If we found any signal, return it
-	if result.Signal != "" {
+	// Bootstrap is not terminal - continue loop after storing data
+	if result.Signal == SignalBootstrapComplete {
 		return result, nil
 	}
 

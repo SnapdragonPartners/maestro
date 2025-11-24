@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -67,7 +68,7 @@ func (s *SpecSubmitTool) PromptDocumentation() string {
 }
 
 // Exec executes the spec submit operation.
-func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract markdown parameter.
 	markdown, ok := args["markdown"]
 	if !ok {
@@ -122,7 +123,7 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, erro
 
 	// Accept the spec and let architect review - no strict validation here.
 	// This allows PM flexibility in spec format, and architect can request changes via feedback loop.
-	return map[string]any{
+	result := map[string]any{
 		"success":       true,
 		"message":       "Specification accepted and ready for user review",
 		"summary":       summaryStr,
@@ -130,5 +131,12 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (any, erro
 		"metadata":      metadata,
 		// Signal to PM driver to transition to PREVIEW state
 		"preview_ready": true,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

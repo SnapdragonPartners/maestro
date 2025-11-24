@@ -39,6 +39,10 @@ type CodingResult struct {
 	Signal         string
 	TodosCompleted []string
 	TestingRequest bool
+	// Question data (when Signal == SignalQuestion)
+	Question string
+	Context  string
+	Urgency  string
 }
 
 // TodoCollectionResult contains the outcome of the todo collection phase.
@@ -127,6 +131,10 @@ func ExtractCodingResult(calls []agent.ToolCall, _ []any) (CodingResult, error) 
 		if calls[i].Name == "ask_question" {
 			result.Signal = SignalQuestion
 			result.TodosCompleted = todosCompleted
+			// Extract question parameters
+			result.Question = utils.GetMapFieldOr[string](calls[i].Parameters, "question", "")
+			result.Context = utils.GetMapFieldOr[string](calls[i].Parameters, "context", "")
+			result.Urgency = utils.GetMapFieldOr[string](calls[i].Parameters, "urgency", "medium")
 			return result, nil
 		}
 	}

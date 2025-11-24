@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -93,7 +94,7 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Validate required fields
 	analysis, ok := args["analysis"].(string)
 	if !ok || analysis == "" {
@@ -138,11 +139,18 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (any, e
 
 	// Return structured data directly (no JSON round-trip needed)
 	// The architect will convert this to Requirements directly
-	return map[string]any{
+	result := map[string]any{
 		"success":      true,
 		"action":       "submit",
 		"analysis":     analysis,
 		"platform":     platform,
 		"requirements": requirements,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

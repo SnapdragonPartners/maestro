@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -78,7 +79,7 @@ func (b *BootstrapTool) PromptDocumentation() string {
 // Exec executes the bootstrap configuration.
 //
 //nolint:cyclop // Bootstrap involves validation, config updates, mirror creation, and workspace refresh
-func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, error) {
+func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecResult, error) {
 	// Extract and validate project_name
 	projectName, ok := params["project_name"].(string)
 	if !ok || projectName == "" {
@@ -166,7 +167,7 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 	}
 
 	// Return success with bootstrap params and rendered markdown
-	return map[string]any{
+	result := map[string]any{
 		"success":              true,
 		"message":              "Bootstrap configuration saved successfully",
 		"bootstrap_configured": true,
@@ -174,7 +175,14 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		"git_url":              gitURL,
 		"platform":             platform,
 		"bootstrap_markdown":   bootstrapMarkdown, // Rendered markdown for PM to store
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // validateBootstrapComplete re-validates bootstrap requirements after configuration.

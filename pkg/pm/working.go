@@ -8,6 +8,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -193,14 +194,32 @@ func (d *Driver) setupInterviewContext() error {
 //
 //nolint:cyclop,maintidx // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
+	// Get spec_submit tool and wrap as terminal tool
+	specSubmitToolRaw, err := d.toolProvider.Get(tools.ToolSpecSubmit)
+	if err != nil {
+		return "", logx.Wrap(err, "failed to get spec_submit tool")
+	}
+
 	// Inject bootstrap markdown into spec_submit tool if it exists in state
 	if bootstrapMarkdown, ok := d.GetStateData()[StateKeyBootstrapRequirements].(string); ok && bootstrapMarkdown != "" {
-		// Get spec_submit tool and inject bootstrap markdown
-		if specSubmitTool, err := d.toolProvider.Get("spec_submit"); err == nil {
-			if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
-				submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
-				d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
+		if submitTool, ok := specSubmitToolRaw.(*tools.SpecSubmitTool); ok {
+			submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
+			d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
+		}
+	}
+
+	terminalTool := NewSpecSubmitTool(specSubmitToolRaw)
+
+	// Get all general tools (everything except spec_submit)
+	allTools := d.toolProvider.List()
+	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	for _, meta := range allTools {
+		if meta.Name != tools.ToolSpecSubmit {
+			tool, err := d.toolProvider.Get(meta.Name)
+			if err != nil {
+				return "", logx.Wrap(err, fmt.Sprintf("failed to get tool %s", meta.Name))
 			}
+			generalTools = append(generalTools, tool)
 		}
 	}
 
@@ -210,16 +229,12 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	cfg := &toolloop.Config[WorkingResult]{
 		ContextManager: d.contextManager,
 		InitialPrompt:  prompt,
-		ToolProvider:   d.toolProvider, // PM's tool provider
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
 		MaxIterations:  10,
 		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
 		AgentID:        d.GetAgentID(),           // Agent ID for tool context
 		DebugLogging:   true,                     // Enable for debugging: shows messages sent to LLM
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			// Process results and check for terminal signals
-			return d.checkTerminalTools(ctx, calls, results)
-		},
-		ExtractResult: ExtractPMWorkingResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("pm_working_%s", d.GetAgentID()),
 			SoftLimit: 8,  // Warn at 8 iterations
@@ -241,6 +256,20 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 	// Switch on outcome kind first
 	switch out.Kind {
+	case toolloop.OutcomeProcessEffect:
+		// Tool returned ProcessEffect to pause the loop
+		d.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
+
+		// Route based on signal
+		switch out.Signal {
+		case "AWAIT_USER":
+			// chat_ask_user was called - transition to AWAIT_USER state
+			d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
+			return SignalAwaitUser, nil
+		default:
+			return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
+		}
+
 	case toolloop.OutcomeSuccess:
 		// Process extracted result based on signal
 		if err := d.processPMResult(out.Value); err != nil {
@@ -250,17 +279,10 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		return out.Signal, nil
 
 	case toolloop.OutcomeIterationLimit:
-		// PM must have called await_user with a status update before hitting limit
-		// Check if signal indicates await_user was called
-		if out.Signal == SignalAwaitUser || out.Value.AwaitUser {
-			d.logger.Info("✅ PM reached iteration limit but provided status update via await_user")
-			// Return AWAIT_USER signal - valid completion with status update
-			return SignalAwaitUser, nil
-		}
-
-		// PM hit limit without providing status - this is an error
-		d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling await_user", out.Iteration)
-		return "", fmt.Errorf("PM must call await_user with status update before iteration limit: %w", out.Err)
+		// PM hit iteration limit - this should not happen as PM should call chat_ask_user
+		// before reaching the limit to provide status updates
+		d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling chat_ask_user", out.Iteration)
+		return "", fmt.Errorf("PM must call chat_ask_user with status update before iteration limit: %w", out.Err)
 
 	case toolloop.OutcomeNoToolTwice, toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
 		// All other errors are treated as toolloop failures

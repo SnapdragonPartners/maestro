@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"orchestrator/pkg/proto"
@@ -31,11 +32,6 @@ func (a *AskQuestionTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Relevant context from your exploration (file paths, code snippets, etc.)",
 				},
-				"urgency": {
-					Type:        "string",
-					Description: "How critical this question is for proceeding",
-					Enum:        []string{string(proto.PriorityLow), string(proto.PriorityMedium), string(proto.PriorityHigh)},
-				},
 			},
 			Required: []string{"question"},
 		},
@@ -50,13 +46,14 @@ func (a *AskQuestionTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (a *AskQuestionTool) PromptDocumentation() string {
 	return `- **ask_question** - Ask architect for clarification during planning
-  - Parameters: question (required), context, urgency
-  - Handled inline via Effects pattern, blocks until architect's answer received
+  - Parameters: question (required), context (optional)
+  - Pauses work until architect's answer is received
   - Use when you need guidance on requirements or technical decisions`
 }
 
 // Exec executes the ask question operation.
-func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, error) {
+// Returns ProcessEffect to pause the toolloop and transition to QUESTION state.
+func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	question, ok := args["question"]
 	if !ok {
 		return nil, fmt.Errorf("question parameter is required")
@@ -79,27 +76,17 @@ func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (any, err
 		}
 	}
 
-	// Extract optional urgency (default to MEDIUM)
-	urgency := string(proto.PriorityMedium)
-	if urgVal, hasUrg := args["urgency"]; hasUrg {
-		if urgStr, ok := urgVal.(string); ok {
-			// Validate urgency level.
-			switch urgStr {
-			case string(proto.PriorityLow), string(proto.PriorityMedium), string(proto.PriorityHigh):
-				urgency = urgStr
-			default:
-				return nil, fmt.Errorf("urgency must be %s, %s, or %s", proto.PriorityLow, proto.PriorityMedium, proto.PriorityHigh)
-			}
-		}
-	}
-
-	return map[string]any{
-		"success":    true,
-		"message":    "Question handled inline via Effects pattern",
-		"question":   questionStr,
-		"context":    context,
-		"urgency":    urgency,
-		"next_state": "INLINE_HANDLED",
+	// Return ProcessEffect to pause the loop and transition to QUESTION state
+	// The question data is stored in ProcessEffect.Data for the state machine to process
+	return &ExecResult{
+		Content: "Question submitted to architect",
+		ProcessEffect: &ProcessEffect{
+			Signal: string(proto.StateQuestion),
+			Data: map[string]string{
+				"question": questionStr,
+				"context":  context,
+			},
+		},
 	}, nil
 }
 
@@ -162,7 +149,7 @@ func (s *SubmitPlanTool) PromptDocumentation() string {
 // Exec executes the submit plan operation.
 //
 //nolint:cyclop // Complex plan validation logic, acceptable for this use case
-func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Check is_complete flag (required)
 	isComplete, ok := args["is_complete"]
 	if !ok {
@@ -226,7 +213,7 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 
 	// Mode 1: Story already complete - no coding needed
 	if isCompleteBool {
-		return map[string]any{
+		result := map[string]any{
 			"success":             true,
 			"message":             "Story marked as complete, requesting architect verification",
 			"plan":                planStr, // Contains evidence
@@ -234,11 +221,16 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 			"exploration_summary": explorationSummary,
 			"knowledge_pack":      knowledgePack,
 			"next_state":          "STORY_COMPLETE",
-		}, nil
+		}
+		content, err := json.Marshal(result)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", err)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Mode 2: Implementation plan - will be broken into todos in next phase
-	return map[string]any{
+	result := map[string]any{
 		"success":             true,
 		"message":             "Plan submitted successfully, advancing to PLAN_REVIEW for architect approval",
 		"plan":                planStr,
@@ -246,6 +238,10 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (any, erro
 		"exploration_summary": explorationSummary,
 		"knowledge_pack":      knowledgePack,
 		"next_state":          "PLAN_REVIEW",
-	}, nil
+	}
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	return &ExecResult{Content: string(content)}, nil
 }
-

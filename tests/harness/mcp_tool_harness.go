@@ -53,8 +53,6 @@ func createToolByName(toolName string) (tools.Tool, error) {
 		return tools.NewAskQuestionTool(), nil
 	case tools.ToolSubmitPlan:
 		return tools.NewSubmitPlanTool(), nil
-	case tools.ToolMarkStoryComplete:
-		return tools.NewMarkStoryCompleteTool(), nil
 	case tools.ToolDone:
 		return tools.NewDoneTool(), nil
 	// Add more tools as needed - CreateMakefile doesn't have a constant yet

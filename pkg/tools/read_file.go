@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -62,7 +63,7 @@ func (t *ReadFileTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract path argument
 	path, ok := args["path"].(string)
 	if !ok || path == "" {
@@ -72,10 +73,15 @@ func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (any, erro
 	// Clean path to prevent directory traversal
 	cleanPath := filepath.Clean(path)
 	if strings.HasPrefix(cleanPath, "..") {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   "path cannot contain directory traversal (..) attempts",
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Construct full path using workspace root
@@ -86,25 +92,42 @@ func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (any, erro
 
 	result, err := t.executor.Run(ctx, cmd, nil)
 	if err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("file not found or not readable: %s (error: %v)", path, err),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 	if result.ExitCode != 0 {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("file not found or not readable: %s (exit code: %d)", path, result.ExitCode),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Check if truncated (output length equals max size)
 	truncated := len(result.Stdout) >= int(t.maxSizeBytes)
 
-	return map[string]any{
+	resultMap := map[string]any{
 		"success":   true,
 		"content":   result.Stdout,
 		"path":      path,
 		"truncated": truncated,
-	}, nil
+	}
+
+	content, err := json.Marshal(resultMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

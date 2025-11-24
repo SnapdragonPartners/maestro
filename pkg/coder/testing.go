@@ -268,18 +268,10 @@ func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr s
 		return false, err.Error()
 	}
 
-	// Check if build was successful
-	if resultMap, ok := result.(map[string]any); ok {
-		if success, exists := resultMap["success"].(bool); exists && success {
-			c.logger.Info("Container build test successful")
-			return true, ""
-		}
-		if message, exists := resultMap["message"].(string); exists {
-			return false, message
-		}
-	}
-
-	return false, "Container build completed but success status unclear"
+	// ExecResult contains formatted content for LLM
+	// Success is implied by no error; content describes the outcome
+	c.logger.Info("Container build test successful: %s", result.Content)
+	return true, result.Content
 }
 
 // runContainerBootTesting runs container_test tool in boot test mode for testing.
@@ -302,18 +294,10 @@ func (c *Coder) runContainerBootTesting(ctx context.Context, containerName strin
 		return false, err.Error()
 	}
 
-	// Check if boot test was successful
-	if resultMap, ok := result.(map[string]any); ok {
-		if success, exists := resultMap["success"].(bool); exists && success {
-			c.logger.Info("Container boot test successful")
-			return true, ""
-		}
-		if message, exists := resultMap["message"].(string); exists {
-			return false, message
-		}
-	}
-
-	return false, "Container boot test completed but success status unclear"
+	// ExecResult contains formatted content for LLM
+	// Success is implied by no error; content describes the outcome
+	c.logger.Info("Container boot test successful: %s", result.Content)
+	return true, result.Content
 }
 
 // handleLegacyTesting handles the general testing approach for non-DevOps stories.

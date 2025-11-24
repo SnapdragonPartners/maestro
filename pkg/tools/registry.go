@@ -237,7 +237,6 @@ func createAskQuestionTool(_ *AgentContext) (Tool, error) {
 	return NewAskQuestionTool(), nil
 }
 
-
 // createBuildTool creates a build tool instance.
 func createBuildTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
@@ -351,7 +350,6 @@ func getSubmitPlanSchema() InputSchema {
 func getAskQuestionSchema() InputSchema {
 	return NewAskQuestionTool().Definition().InputSchema
 }
-
 
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
@@ -514,14 +512,6 @@ func createBootstrapTool(ctx *AgentContext) (Tool, error) {
 
 func getBootstrapSchema() InputSchema {
 	return NewBootstrapTool("").Definition().InputSchema
-}
-
-func createSpecFeedbackTool(_ *AgentContext) (Tool, error) {
-	return NewSpecFeedbackTool(), nil
-}
-
-func getSpecFeedbackSchema() InputSchema {
-	return NewSpecFeedbackTool().Definition().InputSchema
 }
 
 func createChatAskUserTool(ctx *AgentContext) (Tool, error) {
@@ -701,12 +691,6 @@ func init() {
 		Name:        ToolSpecSubmit,
 		Description: "Submit finalized specification for validation and storage (PM SUBMITTING phase)",
 		InputSchema: getSpecSubmitSchema(),
-	})
-
-	Register(ToolSpecFeedback, createSpecFeedbackTool, &ToolMeta{
-		Name:        ToolSpecFeedback,
-		Description: "Send feedback to PM about submitted specification (Architect SCOPING phase)",
-		InputSchema: getSpecFeedbackSchema(),
 	})
 
 	Register(ToolChatAskUser, createChatAskUserTool, &ToolMeta{

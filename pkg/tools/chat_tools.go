@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"orchestrator/pkg/chat"
@@ -58,7 +59,7 @@ func (c *ChatPostTool) PromptDocumentation() string {
 }
 
 // Exec posts a message to the chat channel.
-func (c *ChatPostTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (c *ChatPostTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract text parameter
 	text, ok := args["text"]
 	if !ok {
@@ -102,11 +103,18 @@ func (c *ChatPostTool) Exec(ctx context.Context, args map[string]any) (any, erro
 		return nil, fmt.Errorf("failed to post chat message: %w", err)
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success": true,
 		"message": fmt.Sprintf("Message posted successfully (id: %d)", resp.ID),
 		"id":      resp.ID,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // ChatReadTool retrieves new messages from the agent chat channel.
@@ -148,7 +156,7 @@ func (c *ChatReadTool) PromptDocumentation() string {
 }
 
 // Exec retrieves new messages and updates the cursor.
-func (c *ChatReadTool) Exec(ctx context.Context, _ map[string]any) (any, error) {
+func (c *ChatReadTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult, error) {
 	// Get agent ID from context
 	agentID, ok := ctx.Value(AgentIDContextKey).(string)
 	if !ok || agentID == "" {
@@ -171,28 +179,36 @@ func (c *ChatReadTool) Exec(ctx context.Context, _ map[string]any) (any, error) 
 	}
 
 	// Format response
+	var result map[string]any
 	if len(resp.Messages) == 0 {
-		return map[string]any{
+		result = map[string]any{
 			"success": true,
 			"message": "No new messages",
 			"count":   0,
-		}, nil
-	}
+		}
+	} else {
+		// Build message list
+		messages := make([]map[string]any, len(resp.Messages))
+		for i, msg := range resp.Messages {
+			messages[i] = map[string]any{
+				"timestamp": msg.Timestamp,
+				"author":    msg.Author,
+				"text":      msg.Text,
+			}
+		}
 
-	// Build message list
-	messages := make([]map[string]any, len(resp.Messages))
-	for i, msg := range resp.Messages {
-		messages[i] = map[string]any{
-			"timestamp": msg.Timestamp,
-			"author":    msg.Author,
-			"text":      msg.Text,
+		result = map[string]any{
+			"success":  true,
+			"message":  fmt.Sprintf("Found %d new message(s)", len(resp.Messages)),
+			"count":    len(resp.Messages),
+			"messages": messages,
 		}
 	}
 
-	return map[string]any{
-		"success":  true,
-		"message":  fmt.Sprintf("Found %d new message(s)", len(resp.Messages)),
-		"count":    len(resp.Messages),
-		"messages": messages,
-	}, nil
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
