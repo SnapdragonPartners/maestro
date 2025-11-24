@@ -147,6 +147,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	// Get all general tools (everything except submit_plan)
 	allTools := c.planningToolProvider.List()
 	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	//nolint:gocritic // ToolMeta is 80 bytes but value semantics preferred here
 	for _, meta := range allTools {
 		if meta.Name != tools.ToolSubmitPlan {
 			tool, err := c.planningToolProvider.Get(meta.Name)
@@ -246,54 +247,6 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	default:
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
-}
-
-// checkPlanningTerminal examines tool calls and results for terminal signals during planning.
-// ONLY checks for signals - does not extract or process data (that's done by ExtractPlanningResult).
-func (c *Coder) checkPlanningTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
-	for i := range calls {
-		toolCall := &calls[i]
-
-		// Check for ask_question tool - transition to QUESTION state
-		if toolCall.Name == tools.ToolAskQuestion {
-			// Extract question details from tool call parameters
-			question := utils.GetMapFieldOr[string](toolCall.Parameters, "question", "")
-			contextStr := utils.GetMapFieldOr[string](toolCall.Parameters, "context", "")
-			urgency := utils.GetMapFieldOr[string](toolCall.Parameters, "urgency", "medium")
-
-			if question == "" {
-				c.logger.Error("Ask question tool called without question parameter")
-				continue
-			}
-
-			// Store question data in state for QUESTION state to use
-			sm.SetStateData(KeyPendingQuestion, map[string]any{
-				"question": question,
-				"context":  contextStr,
-				"urgency":  urgency,
-				"origin":   string(StatePlanning),
-			})
-
-			c.logger.Info("🧑‍💻 Planning detected ask_question, transitioning to QUESTION state")
-			return string(StateQuestion) // Signal state transition
-		}
-
-		// Check if result contains next_state signal (submit_plan, mark_story_complete)
-		resultMap, ok := results[i].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// Check for next_state signal in tool result
-		if nextState, hasNextState := resultMap["next_state"]; hasNextState {
-			if nextStateStr, ok := nextState.(string); ok {
-				c.logger.Info("🧑‍💻 Tool %s signaled next_state: %s", toolCall.Name, nextStateStr)
-				return nextStateStr // Return signal directly
-			}
-		}
-	}
-
-	return "" // No terminal signal, continue loop
 }
 
 // processPlanningResult processes the extracted result from planning toolloop.

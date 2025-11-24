@@ -43,44 +43,6 @@ type KnowledgeEntry struct {
 	Timestamp time.Time // When this was recorded
 }
 
-// listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
-// This allows architect to use toolloop with its dynamic tool list pattern.
-type listToolProvider struct {
-	toolsMap  map[string]tools.Tool
-	toolsList []tools.Tool
-}
-
-// newListToolProvider creates a ToolProvider from a list of tools.
-func newListToolProvider(toolsList []tools.Tool) *listToolProvider {
-	toolsMap := make(map[string]tools.Tool, len(toolsList))
-	for _, tool := range toolsList {
-		toolsMap[tool.Name()] = tool
-	}
-	return &listToolProvider{
-		toolsList: toolsList,
-		toolsMap:  toolsMap,
-	}
-}
-
-// Get retrieves a tool by name.
-func (p *listToolProvider) Get(name string) (tools.Tool, error) {
-	tool, ok := p.toolsMap[name]
-	if !ok {
-		return nil, fmt.Errorf("tool %s not found", name)
-	}
-	return tool, nil
-}
-
-// List returns tool metadata for all tools.
-func (p *listToolProvider) List() []tools.ToolMeta {
-	metas := make([]tools.ToolMeta, len(p.toolsList))
-	for i, tool := range p.toolsList {
-		def := tool.Definition()
-		metas[i] = tools.ToolMeta(def)
-	}
-	return metas
-}
-
 // Driver manages the state machine for an architect workflow.
 //
 //nolint:govet // fieldalignment: logical grouping preferred over memory optimization
@@ -737,50 +699,6 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// checkIterationLimit checks if the architect has exceeded iteration limits.
-// Returns true if hard limit exceeded (should escalate), false otherwise.
-// Soft limit triggers warning, hard limit triggers escalation to ESCALATE state.
-// Takes context manager parameter to add warnings to the correct agent-specific context.
-func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State, cm *contextmgr.ContextManager) bool {
-	const softLimit = 8
-	const hardLimit = 16
-
-	// Get current iteration count
-	stateData := d.GetStateData()
-	iterationCount := 0
-	if val, exists := stateData[stateDataKey]; exists {
-		if count, ok := val.(int); ok {
-			iterationCount = count
-		}
-	}
-
-	// Increment iteration count
-	iterationCount++
-	d.SetStateData(stateDataKey, iterationCount)
-
-	// Check soft limit (warning only)
-	if iterationCount == softLimit {
-		d.logger.Warn("⚠️  Soft iteration limit (%d) reached in %s - architect should consider finalizing analysis", softLimit, stateName)
-		// Add warning to agent-specific context for LLM to see
-		warningMsg := fmt.Sprintf("Warning: You have used %d iterations in this phase. Consider finalizing your analysis soon to avoid escalation.", softLimit)
-		cm.AddMessage("system-warning", warningMsg)
-		return false
-	}
-
-	// Check hard limit (escalate)
-	if iterationCount >= hardLimit {
-		d.logger.Error("❌ Hard iteration limit (%d) exceeded in %s - escalating to human", hardLimit, stateName)
-		// Store escalation context for ESCALATE state
-		d.SetStateData("escalation_origin_state", string(stateName))
-		d.SetStateData("escalation_iteration_count", iterationCount)
-		// Additional context will be added by caller (request_id, story_id)
-		return true
-	}
-
-	d.logger.Debug("Iteration %d/%d (soft: %d, hard: %d) in %s", iterationCount, hardLimit, softLimit, hardLimit, stateName)
-	return false
 }
 
 // createReadToolProviderForCoder creates a tool provider rooted at a specific coder's workspace.

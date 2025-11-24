@@ -174,8 +174,8 @@ func (c *ChatReadTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult,
 	}
 
 	// Update cursor to new pointer
-	if err := c.chatService.UpdateCursor(ctx, agentID, resp.NewPointer); err != nil {
-		return nil, fmt.Errorf("failed to update cursor: %w", err)
+	if updateErr := c.chatService.UpdateCursor(ctx, agentID, resp.NewPointer); updateErr != nil {
+		return nil, fmt.Errorf("failed to update cursor: %w", updateErr)
 	}
 
 	// Format response

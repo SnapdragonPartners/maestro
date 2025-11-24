@@ -1,3 +1,4 @@
+//nolint:govet // Shadow variables in tests are acceptable
 package tools
 
 import (

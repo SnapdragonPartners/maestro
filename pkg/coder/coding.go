@@ -131,6 +131,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	// ask_question is now a general tool that returns ProcessEffect
 	allTools := c.codingToolProvider.List()
 	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	//nolint:gocritic // ToolMeta is 80 bytes but value semantics preferred here
 	for _, meta := range allTools {
 		if meta.Name != tools.ToolDone {
 			tool, err := c.codingToolProvider.Get(meta.Name)
@@ -263,136 +264,6 @@ func (c *Coder) storePendingQuestionFromProcessEffect(sm *agent.BaseStateMachine
 	sm.SetStateData(KeyPendingQuestion, questionData)
 	c.logger.Info("🧑‍💻 Stored pending question: %s", question)
 	return nil
-}
-
-// storePendingQuestion stores question details from CodingResult in state for QUESTION state.
-// Deprecated: Old pattern - kept for reference during transition. Remove after POC validation.
-func (c *Coder) storePendingQuestion(sm *agent.BaseStateMachine, out toolloop.Outcome[CodingResult]) error {
-	// Extract question data from result
-	questionData := map[string]any{
-		"question": out.Value.Question,
-		"context":  out.Value.Context,
-		"urgency":  out.Value.Urgency,
-		"origin":   string(StateCoding),
-	}
-
-	// Store in state for QUESTION state to use
-	sm.SetStateData(KeyPendingQuestion, questionData)
-	c.logger.Info("🧑‍💻 Stored pending question: %s (urgency: %s)", out.Value.Question, out.Value.Urgency)
-	return nil
-}
-
-// checkCodingTerminal examines tool calls and results for terminal signals during coding.
-// Deprecated: No longer used with new toolloop architecture. Kept for reference.
-func (c *Coder) checkCodingTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, _ []any) string {
-	for i := range calls {
-		toolCall := &calls[i]
-
-		// Handle todo_complete tool - mark todo as complete
-		if toolCall.Name == tools.ToolTodoComplete {
-			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
-
-			if err := c.handleTodoComplete(sm, index); err != nil {
-				c.logger.Error("📋 [TODO] Failed to complete todo: %v", err)
-				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error completing todo: %v", err))
-				continue
-			}
-
-			if index == -1 {
-				c.contextManager.AddMessage("tool", "Current todo marked complete, advanced to next todo")
-			} else {
-				c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d marked complete", index))
-			}
-			continue
-		}
-
-		// Handle todo_update tool - update or remove todo by index
-		if toolCall.Name == tools.ToolTodoUpdate {
-			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
-			description := utils.GetMapFieldOr[string](toolCall.Parameters, "description", "")
-
-			if index < 0 {
-				c.logger.Error("📋 [TODO] todo_update called with invalid index")
-				c.contextManager.AddMessage("tool-error", "Error: valid index required for todo_update")
-				continue
-			}
-
-			if err := c.handleTodoUpdate(sm, index, description); err != nil {
-				c.logger.Error("📋 [TODO] Failed to update todo: %v", err)
-				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error updating todo: %v", err))
-				continue
-			}
-
-			action := "updated"
-			if description == "" {
-				action = "removed"
-			}
-			c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d %s", index, action))
-			c.logger.Info("✏️  Todo at index %d %s", index, action)
-			continue
-		}
-
-		// Check for ask_question tool - transition to QUESTION state
-		if toolCall.Name == tools.ToolAskQuestion {
-			// Extract question details from tool call parameters
-			question := utils.GetMapFieldOr[string](toolCall.Parameters, "question", "")
-			contextStr := utils.GetMapFieldOr[string](toolCall.Parameters, "context", "")
-			urgency := utils.GetMapFieldOr[string](toolCall.Parameters, "urgency", "medium")
-
-			if question == "" {
-				c.logger.Error("Ask question tool called without question parameter")
-				continue
-			}
-
-			// Store question data in state for QUESTION state to use
-			sm.SetStateData(KeyPendingQuestion, map[string]any{
-				"question": question,
-				"context":  contextStr,
-				"urgency":  urgency,
-				"origin":   string(StateCoding),
-			})
-
-			c.logger.Info("🧑‍💻 Coding detected ask_question, transitioning to QUESTION state")
-			return string(StateQuestion) // Signal state transition
-		}
-
-		// Check for done tool - validate todos and transition to TESTING
-		if toolCall.Name == tools.ToolDone {
-			c.logger.Info("🧑‍💻 Done tool detected - validating todos before transition")
-
-			// Check if all todos are complete before allowing story completion
-			if c.todoList != nil {
-				incompleteTodos := []TodoItem{}
-				for _, todo := range c.todoList.Items {
-					if !todo.Completed {
-						incompleteTodos = append(incompleteTodos, todo)
-					}
-				}
-
-				if len(incompleteTodos) > 0 {
-					// Block completion - tell agent to complete todos first
-					c.logger.Info("🧑‍💻 Done tool blocked: %d todos not marked complete", len(incompleteTodos))
-					errorMsg := fmt.Sprintf("Cannot mark story as done: %d todos are not marked complete. If this work is already completed, use the todo_complete tool to mark them complete before marking the story as done.\n\nIncomplete todos:", len(incompleteTodos))
-					for idx, todo := range incompleteTodos {
-						errorMsg += fmt.Sprintf("\n  %d. %s", idx+1, todo.Description)
-					}
-					c.contextManager.AddMessage("tool-error", errorMsg)
-					c.logger.Info("📋 [TODO] Blocking done: %s", errorMsg)
-					continue // Don't signal transition, continue loop
-				}
-			}
-
-			// All todos complete - store summary and signal transition
-			summary := utils.GetMapFieldOr[string](toolCall.Parameters, "summary", "")
-			sm.SetStateData(KeyCompletionDetails, summary)
-			c.logger.Info("🧑‍💻 Done tool validated - transitioning to TESTING with summary: %q", summary)
-
-			return "TESTING" // Signal transition to TESTING
-		}
-	}
-
-	// No terminal signal, continue loop
-	return ""
 }
 
 // isEmptyResponseError checks if an error is an empty response error that should trigger budget review.

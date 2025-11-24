@@ -752,6 +752,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Get all general tools (everything except review_complete)
 	allTools := toolProvider.List()
 	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	//nolint:gocritic // ToolMeta is 80 bytes but value semantics preferred here
 	for _, meta := range allTools {
 		if meta.Name != tools.ToolReviewComplete {
 			tool, err := toolProvider.Get(meta.Name)
@@ -898,89 +899,6 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, out.Value.Status, out.Value.Feedback)
 }
 
-// getArchitectToolsForLLM converts tool metadata to LLM tool definitions.
-func (d *Driver) getArchitectToolsForLLM(toolProvider *tools.ToolProvider) []tools.ToolDefinition {
-	toolMetas := toolProvider.List()
-	toolDefs := make([]tools.ToolDefinition, len(toolMetas))
-
-	for i := range toolMetas {
-		meta := &toolMetas[i]
-		// Tool definitions from ToolProvider are already in the correct format
-		toolDefs[i] = tools.ToolDefinition{
-			Name:        meta.Name,
-			Description: meta.Description,
-			InputSchema: meta.InputSchema,
-		}
-	}
-
-	return toolDefs
-}
-
-// buildApprovalResponseFromSubmit creates an approval response from submit_reply content.
-func (d *Driver) buildApprovalResponseFromSubmit(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, submitResponse string) (*proto.AgentMsg, error) {
-	// Parse the submit response to extract status and feedback
-	responseUpper := strings.ToUpper(submitResponse)
-
-	var status proto.ApprovalStatus
-	var feedback string
-
-	if strings.HasPrefix(responseUpper, "APPROVED") {
-		status = proto.ApprovalStatusApproved
-		feedback = strings.TrimSpace(strings.TrimPrefix(submitResponse, "APPROVED"))
-		feedback = strings.TrimSpace(strings.TrimPrefix(feedback, ":"))
-	} else if strings.HasPrefix(responseUpper, "NEEDS_CHANGES") {
-		status = proto.ApprovalStatusNeedsChanges
-		feedback = strings.TrimSpace(strings.TrimPrefix(submitResponse, "NEEDS_CHANGES"))
-		feedback = strings.TrimSpace(strings.TrimPrefix(feedback, ":"))
-	} else if strings.HasPrefix(responseUpper, "REJECTED") {
-		status = proto.ApprovalStatusRejected
-		feedback = strings.TrimSpace(strings.TrimPrefix(submitResponse, "REJECTED"))
-		feedback = strings.TrimSpace(strings.TrimPrefix(feedback, ":"))
-	} else {
-		// Default to needs changes if format is unclear
-		status = proto.ApprovalStatusNeedsChanges
-		feedback = submitResponse
-	}
-
-	if feedback == "" {
-		feedback = "Review completed via iterative exploration"
-	}
-
-	// Create approval result
-	approvalResult := &proto.ApprovalResult{
-		ID:         proto.GenerateApprovalID(),
-		RequestID:  proto.GetApprovalID(requestMsg),
-		Type:       approvalPayload.ApprovalType,
-		Status:     status,
-		Feedback:   feedback,
-		ReviewedBy: d.GetAgentID(),
-		ReviewedAt: time.Now().UTC(),
-	}
-
-	// Handle work acceptance for approved completions
-	if status == proto.ApprovalStatusApproved && approvalPayload.ApprovalType == proto.ApprovalTypeCompletion {
-		storyID := proto.GetStoryID(requestMsg)
-		if storyID != "" {
-			completionSummary := fmt.Sprintf("Story completed via iterative review: %s", feedback)
-			d.handleWorkAccepted(ctx, storyID, "completion", nil, nil, &completionSummary)
-		}
-	}
-
-	// Create response message
-	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
-	response.ParentMsgID = requestMsg.ID
-	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
-
-	// Copy story_id to response metadata
-	if storyID, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
-		proto.SetStoryID(response, storyID)
-	}
-	proto.SetApprovalID(response, approvalResult.ID)
-
-	d.logger.Info("✅ Built approval response: %s - %s", status, feedback)
-	return response, nil
-}
-
 // handleIterativeQuestion processes question requests with iterative code exploration.
 func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
 	// Extract question from typed payload
@@ -1048,7 +966,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 			OnSoftLimit: func(count int) {
 				d.logger.Warn("⚠️  Iteration %d: Approaching hard limit for question %s", count, requestMsg.ID)
 			},
-			OnHardLimit: func(ctx context.Context, key string, count int) error {
+			OnHardLimit: func(_ context.Context, _ string, _ int) error {
 				d.logger.Error("❌ Hard iteration limit exceeded for question %s - escalating", requestMsg.ID)
 				// Store escalation context for state machine
 				d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)

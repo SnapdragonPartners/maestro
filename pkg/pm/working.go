@@ -213,6 +213,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	// Get all general tools (everything except spec_submit)
 	allTools := d.toolProvider.List()
 	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	//nolint:gocritic // ToolMeta is 80 bytes but value semantics preferred here
 	for _, meta := range allTools {
 		if meta.Name != tools.ToolSpecSubmit {
 			tool, err := d.toolProvider.Get(meta.Name)
@@ -345,61 +346,6 @@ Begin the feature requirements interview by asking the user about what they want
 	}
 
 	return nil
-}
-
-// checkTerminalTools examines tool execution results for terminal signals.
-// Returns non-empty signal to trigger state transition.
-//
-//nolint:cyclop // Multiple terminal conditions (bootstrap, spec_submit, await_user) adds complexity
-func (d *Driver) checkTerminalTools(_ context.Context, _ []agent.ToolCall, results []any) string {
-	// Check results for terminal signals only - data extraction happens in ExtractPMWorkingResult
-	sawAwaitUser := false
-	sawBootstrap := false
-
-	for i := range results {
-		// Only process successful results
-		resultMap, ok := results[i].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// Check for errors in result
-		if success, ok := resultMap["success"].(bool); ok && !success {
-			continue // Skip error results
-		}
-
-		// Check for bootstrap_configured signal
-		if bootstrapConfigured, ok := resultMap["bootstrap_configured"].(bool); ok && bootstrapConfigured {
-			d.logger.Info("🔧 PM bootstrap tool succeeded")
-			sawBootstrap = true
-			// Don't return yet - continue checking for other signals
-		}
-
-		// Check for spec_submit signal (PREVIEW flow) - this is terminal
-		if previewReady, ok := resultMap["preview_ready"].(bool); ok && previewReady {
-			d.logger.Info("📋 PM spec_submit succeeded, transitioning to PREVIEW")
-			return "SPEC_PREVIEW"
-		}
-
-		// Check for await_user signal
-		if awaitUser, ok := resultMap["await_user"].(bool); ok && awaitUser {
-			d.logger.Info("⏸️  PM await_user tool called")
-			sawAwaitUser = true
-		}
-	}
-
-	// Bootstrap is not terminal - PM continues after bootstrap completes
-	// The data will be available in the result and processed by calling code
-	if sawBootstrap {
-		d.logger.Info("Bootstrap complete, continuing PM workflow")
-	}
-
-	// If we saw await_user, return that signal
-	if sawAwaitUser {
-		return string(StateAwaitUser)
-	}
-
-	return "" // Continue loop
 }
 
 // handleIterationLimit is called when max iterations is reached.

@@ -387,31 +387,6 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, todoTools)
 }
 
-// checkTodoCollectionTerminal checks if todos_add was called (signal only - no data extraction).
-func (c *Coder) checkTodoCollectionTerminal(_ context.Context, _ *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
-	// Check if todos_add was called
-	for i := range calls {
-		if calls[i].Name == tools.ToolTodosAdd {
-			// Check if result is successful
-			if i < len(results) {
-				if resultMap, ok := results[i].(map[string]any); ok {
-					if success, ok := resultMap["success"].(bool); ok && success {
-						c.logger.Info("📋 [TODO] todos_add succeeded, signaling CODING transition")
-						return "CODING"
-					}
-				}
-			}
-			// If we got here, the tool was called but failed or had invalid result
-			c.logger.Warn("📋 [TODO] todos_add called but result was unsuccessful")
-			return "" // Continue loop for retry
-		}
-	}
-
-	// No todos_add found - continue loop (will be retried or hit iteration limit)
-	c.logger.Warn("📋 [TODO] LLM did not call todos_add, continuing loop for retry")
-	return ""
-}
-
 // processTodoCollectionResult processes the extracted todos from todo collection phase.
 //
 //nolint:unparam // error return reserved for future validation logic

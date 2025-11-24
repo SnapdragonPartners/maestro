@@ -118,8 +118,8 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 		Name:            projectName,
 		PrimaryPlatform: platform,
 	}
-	if err := config.UpdateProject(projectInfo); err != nil {
-		return nil, fmt.Errorf("failed to update project info: %w", err)
+	if updateErr := config.UpdateProject(projectInfo); updateErr != nil {
+		return nil, fmt.Errorf("failed to update project info: %w", updateErr)
 	}
 
 	// Update git config (saves to disk automatically)
@@ -131,8 +131,8 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 		GitUserName:   "Maestro {AGENT_ID}",
 		GitUserEmail:  "maestro-{AGENT_ID}@localhost",
 	}
-	if err := config.UpdateGit(gitCfg); err != nil {
-		return nil, fmt.Errorf("failed to update git config: %w", err)
+	if updateErr := config.UpdateGit(gitCfg); updateErr != nil {
+		return nil, fmt.Errorf("failed to update git config: %w", updateErr)
 	}
 
 	// Create or update git mirror (validates URL is accessible)

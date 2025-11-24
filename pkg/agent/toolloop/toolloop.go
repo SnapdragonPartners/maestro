@@ -505,44 +505,6 @@ func buildMessages(cm *contextmgr.ContextManager) []agent.CompletionMessage {
 	return messages
 }
 
-// formatToolResult converts tool execution result to string format for context.
-func formatToolResult(result any, err error) (string, bool) {
-	const maxToolOutputLength = 2000 // Maximum length for tool outputs
-
-	if err != nil {
-		errStr := fmt.Sprintf("Tool failed: %v", err)
-		if len(errStr) > maxToolOutputLength {
-			errStr = errStr[:maxToolOutputLength] + "\n\n[... error message truncated after 2000 characters ...]"
-		}
-		return errStr, true
-	}
-
-	// Check if result is a map with success field
-	if resultMap, ok := result.(map[string]any); ok {
-		if success, ok := resultMap["success"].(bool); ok && !success {
-			// Error result
-			if errMsg, ok := resultMap["error"].(string); ok {
-				if len(errMsg) > maxToolOutputLength {
-					errMsg = errMsg[:maxToolOutputLength] + "\n\n[... error message truncated after 2000 characters ...]"
-				}
-				return errMsg, true
-			}
-			errStr := fmt.Sprintf("Tool failed: %v", result)
-			if len(errStr) > maxToolOutputLength {
-				errStr = errStr[:maxToolOutputLength] + "\n\n[... error output truncated after 2000 characters ...]"
-			}
-			return errStr, true
-		}
-	}
-
-	// Success - convert to string and truncate if needed
-	resultStr := fmt.Sprintf("%v", result)
-	if len(resultStr) > maxToolOutputLength {
-		resultStr = resultStr[:maxToolOutputLength] + "\n\n[... tool output truncated after 2000 characters for context management ...]"
-	}
-	return resultStr, false
-}
-
 // logMessages logs detailed message information for debugging.
 func (tl *ToolLoop) logMessages(messages []agent.CompletionMessage) {
 	tl.logger.Info("📝 DEBUG - Messages sent to LLM:")

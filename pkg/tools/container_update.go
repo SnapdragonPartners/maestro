@@ -117,17 +117,17 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 	}
 
 	// Update project configuration with container name and dockerfile path
-	if err := c.updateProjectConfig(containerName, dockerfilePath); err != nil {
-		return nil, fmt.Errorf("failed to update project config: %w", err)
+	if updateErr := c.updateProjectConfig(containerName, dockerfilePath); updateErr != nil {
+		return nil, fmt.Errorf("failed to update project config: %w", updateErr)
 	}
 
 	// Pin the image ID for consistency
-	if err := config.SetPinnedImageID(imageID); err != nil {
+	if updateErr := config.SetPinnedImageID(imageID); updateErr != nil {
 		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
-			"error":          fmt.Sprintf("Failed to pin image ID %s: %v", imageID, err),
+			"error":          fmt.Sprintf("Failed to pin image ID %s: %v", imageID, updateErr),
 		}
 		content, marshalErr := json.Marshal(response)
 		if marshalErr != nil {

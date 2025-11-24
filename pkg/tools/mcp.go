@@ -64,6 +64,8 @@ type ToolResult struct {
 // Example: ask_question tool needs to wait for an architect's answer.
 // The tool returns a ProcessEffect with signal StateQuestion, the loop exits,
 // and the state machine transitions to QUESTION state to handle the Effect.
+//
+//nolint:govet // Field alignment optimization not critical for this effect type
 type ProcessEffect struct {
 	Signal string // State to transition to (use state constants, e.g., string(coder.StateQuestion))
 	Data   any    // Optional data for the effect (e.g., question text, budget info)
@@ -74,6 +76,8 @@ type ProcessEffect struct {
 //
 // Content field is optional - if empty, toolloop generates automatic acknowledgment.
 // ProcessEffect field signals that the loop should pause for async effect processing.
+//
+//nolint:govet // Field alignment optimization not critical for this result type
 type ExecResult struct {
 	Content       string         // What to show LLM (empty = auto-generate "Tool executed successfully")
 	ProcessEffect *ProcessEffect // nil = continue looping, non-nil = exit loop with signal

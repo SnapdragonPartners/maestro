@@ -71,12 +71,12 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*E
 	}
 
 	// Update the agent's container configuration to use the new container
-	if err := c.updateAgentContainer(containerName); err != nil {
+	if updateErr := c.updateAgentContainer(containerName); updateErr != nil {
 		response := map[string]any{
 			"success":             false,
 			"requested_container": containerName,
 			"current_container":   c.getCurrentContainer(),
-			"error":               fmt.Sprintf("Failed to update agent configuration: %v", err),
+			"error":               fmt.Sprintf("Failed to update agent configuration: %v", updateErr),
 			"fallback_available":  true,
 		}
 		content, marshalErr := json.Marshal(response)
