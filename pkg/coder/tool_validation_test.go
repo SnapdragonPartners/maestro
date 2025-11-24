@@ -101,18 +101,17 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 			errorMsg:    "question must be a string",
 		},
 		{
-			name: "Invalid urgency level",
-			args: map[string]any{
-				"question": "Valid question?",
-				"urgency":  "INVALID",
-			},
-			expectError: true,
-			errorMsg:    "urgency must be LOW, MEDIUM, or HIGH",
-		},
-		{
 			name: "Valid with defaults",
 			args: map[string]any{
 				"question": "Valid question without optional params?",
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid with context",
+			args: map[string]any{
+				"question": "Valid question with context?",
+				"context":  "Some additional context",
 			},
 			expectError: false,
 		},
@@ -150,7 +149,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 
 	// Test required parameters.
-	expectedRequired := []string{"plan", "confidence", "todos"}
+	expectedRequired := []string{"is_complete", "plan", "confidence"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
 	}
@@ -168,14 +167,14 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		}
 	}
 
-	// Test valid execution.
+	// Test valid execution (implementation plan mode).
 	ctx := context.Background()
 	validArgs := map[string]any{
+		"is_complete":         false, // Submitting a plan for approval
 		"plan":                "Detailed implementation plan...",
 		"confidence":          string(proto.ConfidenceHigh),
 		"exploration_summary": "Explored 15 files, found 3 patterns",
-		"risks":               "Potential performance impact on auth flow",
-		"todos":               []any{"Implement authentication logic", "Add validation", "Update tests"},
+		"knowledge_pack":      "digraph KG { A -> B; }",
 	}
 
 	result, err := tool.Exec(ctx, validArgs)
@@ -224,41 +223,53 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		errorMsg    string
 	}{
 		{
+			name:        "Missing is_complete parameter",
+			args:        map[string]any{"plan": "Some plan", "confidence": string(proto.ConfidenceHigh)},
+			expectError: true,
+			errorMsg:    "is_complete parameter is required",
+		},
+		{
 			name:        "Missing plan parameter",
-			args:        map[string]any{"confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"is_complete": false, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan parameter is required",
 		},
 		{
 			name:        "Missing confidence parameter",
-			args:        map[string]any{"plan": "Some plan"},
+			args:        map[string]any{"is_complete": false, "plan": "Some plan"},
 			expectError: true,
 			errorMsg:    "confidence parameter is required",
 		},
 		{
+			name:        "Invalid is_complete type",
+			args:        map[string]any{"is_complete": "invalid", "plan": "Some plan", "confidence": string(proto.ConfidenceHigh)},
+			expectError: true,
+			errorMsg:    "is_complete must be a boolean",
+		},
+		{
 			name:        "Empty plan",
-			args:        map[string]any{"plan": "", "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"is_complete": false, "plan": "", "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan cannot be empty",
 		},
 		{
 			name:        "Invalid plan type",
-			args:        map[string]any{"plan": 123, "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"is_complete": false, "plan": 123, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan must be a string",
 		},
 		{
 			name:        "Invalid confidence type",
-			args:        map[string]any{"plan": "Valid plan", "confidence": 123},
+			args:        map[string]any{"is_complete": false, "plan": "Valid plan", "confidence": 123},
 			expectError: true,
 			errorMsg:    "confidence must be a string",
 		},
 		{
 			name: "Invalid confidence level",
 			args: map[string]any{
-				"plan":       "Valid plan",
-				"confidence": "INVALID",
-				"todos":      []any{"Some task"},
+				"is_complete": false,
+				"plan":        "Valid plan",
+				"confidence":  "INVALID",
 			},
 			expectError: true,
 			errorMsg:    fmt.Sprintf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow),
@@ -266,9 +277,9 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		{
 			name: "Valid with minimal parameters",
 			args: map[string]any{
-				"plan":       "Minimal valid plan",
-				"confidence": "MEDIUM",
-				"todos":      []any{"Implement feature"},
+				"is_complete": false,
+				"plan":        "Minimal valid plan",
+				"confidence":  "MEDIUM",
 			},
 			expectError: false,
 		},
@@ -295,8 +306,8 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 						if exploration, exists := resultMap["exploration_summary"]; !exists || exploration != "" {
 							t.Error("Expected default exploration_summary to be empty string")
 						}
-						if risks, exists := resultMap["risks"]; !exists || risks != "" {
-							t.Error("Expected default risks to be empty string")
+						if knowledgePack, exists := resultMap["knowledge_pack"]; !exists || knowledgePack != "" {
+							t.Error("Expected default knowledge_pack to be empty string")
 						}
 					}
 				}

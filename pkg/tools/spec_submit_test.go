@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -60,9 +61,13 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected map result, got: %T", result)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	var resultMap map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
 	}
 
 	success, ok := resultMap["success"].(bool)
@@ -80,7 +85,8 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 		t.Errorf("Expected title 'Test Feature', got: %v", metadata["title"])
 	}
 
-	if metadata["requirements_count"] != 1 {
+	// JSON unmarshals numbers as float64
+	if reqCount, ok := metadata["requirements_count"].(float64); !ok || reqCount != 1.0 {
 		t.Errorf("Expected 1 requirement, got: %v", metadata["requirements_count"])
 	}
 }
@@ -99,9 +105,13 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected map result, got: %T", result)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	var resultMap map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
 	}
 
 	// After removing strict validation, even "invalid" specs are accepted.

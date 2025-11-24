@@ -35,6 +35,8 @@ type PlanningResult struct {
 
 // CodingResult contains the outcome of the coding phase toolloop.
 // Captures data from todo operations and testing requests.
+//
+//nolint:govet // Field alignment optimization not critical for this result type
 type CodingResult struct {
 	Signal         string
 	TodosCompleted []string

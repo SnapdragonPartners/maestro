@@ -266,7 +266,7 @@ func (c *Coder) storePendingQuestionFromProcessEffect(sm *agent.BaseStateMachine
 }
 
 // storePendingQuestion stores question details from CodingResult in state for QUESTION state.
-// DEPRECATED: Old pattern - kept for reference during transition. Remove after POC validation.
+// Deprecated: Old pattern - kept for reference during transition. Remove after POC validation.
 func (c *Coder) storePendingQuestion(sm *agent.BaseStateMachine, out toolloop.Outcome[CodingResult]) error {
 	// Extract question data from result
 	questionData := map[string]any{
@@ -283,7 +283,7 @@ func (c *Coder) storePendingQuestion(sm *agent.BaseStateMachine, out toolloop.Ou
 }
 
 // checkCodingTerminal examines tool calls and results for terminal signals during coding.
-// DEPRECATED: No longer used with new toolloop architecture. Kept for reference.
+// Deprecated: No longer used with new toolloop architecture. Kept for reference.
 func (c *Coder) checkCodingTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, _ []any) string {
 	for i := range calls {
 		toolCall := &calls[i]

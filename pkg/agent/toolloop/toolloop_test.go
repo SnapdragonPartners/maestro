@@ -74,11 +74,10 @@ func (m *mockGeneralTool) PromptDocumentation() string {
 
 // Mock terminal tool for testing.
 type mockTerminalTool struct {
-	name         string
-	checkFunc    func([]agent.ToolCall, []any) string
-	extractFunc  func([]agent.ToolCall, []any) (string, error)
-	execFunc     func(context.Context, map[string]any) (*tools.ExecResult, error)
-	called       *[]string
+	name        string
+	extractFunc func([]agent.ToolCall, []any) (string, error)
+	execFunc    func(context.Context, map[string]any) (*tools.ExecResult, error)
+	called      *[]string
 }
 
 func (m *mockTerminalTool) Name() string {
@@ -141,10 +140,10 @@ func TestBasicTerminalTool(t *testing.T) {
 	terminalTool := &mockTerminalTool{
 		name:   "submit",
 		called: &called,
-		execFunc: func(_ context.Context, params map[string]any) (*tools.ExecResult, error) {
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
 			return &tools.ExecResult{Content: "submitted"}, nil
 		},
-		extractFunc: func(calls []agent.ToolCall, results []any) (string, error) {
+		extractFunc: func(calls []agent.ToolCall, _ []any) (string, error) {
 			for i := range calls {
 				if calls[i].Name == "submit" {
 					if val, ok := calls[i].Parameters["value"].(string); ok {
@@ -593,7 +592,7 @@ func TestProcessEffect(t *testing.T) {
 	generalTool := &mockGeneralTool{
 		name: "ask",
 		execFunc: func(_ context.Context, params map[string]any) (*tools.ExecResult, error) {
-			question := params["question"].(string)
+			question, _ := params["question"].(string)
 			return &tools.ExecResult{
 				Content: "Question posted",
 				ProcessEffect: &tools.ProcessEffect{

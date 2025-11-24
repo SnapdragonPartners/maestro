@@ -9,7 +9,7 @@ import (
 )
 
 // PlanSubmitTool is a terminal tool that wraps submit_plan for the planning phase.
-// Signals: PLAN_REVIEW
+// Signals: PLAN_REVIEW.
 type PlanSubmitTool struct {
 	underlying tools.Tool
 }
@@ -30,6 +30,8 @@ func (t *PlanSubmitTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *PlanSubmitTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
@@ -48,7 +50,7 @@ func (t *PlanSubmitTool) ExtractResult(calls []agent.ToolCall, results []any) (P
 var _ toolloop.TerminalTool[PlanningResult] = (*PlanSubmitTool)(nil)
 
 // DoneTool is a terminal tool that wraps done for the coding phase.
-// Signals: TESTING
+// Signals: TESTING.
 type DoneTool struct {
 	underlying tools.Tool
 }
@@ -69,6 +71,8 @@ func (t *DoneTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *DoneTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
@@ -87,7 +91,7 @@ func (t *DoneTool) ExtractResult(calls []agent.ToolCall, results []any) (CodingR
 var _ toolloop.TerminalTool[CodingResult] = (*DoneTool)(nil)
 
 // AskQuestionTool is a terminal tool that wraps ask_question for the coding phase.
-// Signals: QUESTION
+// Signals: QUESTION.
 type AskQuestionTool struct {
 	underlying tools.Tool
 }
@@ -108,6 +112,8 @@ func (t *AskQuestionTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
@@ -126,7 +132,7 @@ func (t *AskQuestionTool) ExtractResult(calls []agent.ToolCall, results []any) (
 var _ toolloop.TerminalTool[CodingResult] = (*AskQuestionTool)(nil)
 
 // TodosAddTool is a terminal tool that wraps todos_add for the plan review phase.
-// Signals: CODING
+// Signals: CODING.
 type TodosAddTool struct {
 	underlying tools.Tool
 }
@@ -147,6 +153,8 @@ func (t *TodosAddTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *TodosAddTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }

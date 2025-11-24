@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -75,9 +76,13 @@ lint:
 			t.Errorf("Tool execution failed: %v", err)
 		}
 
-		resultMap, err := utils.AssertMapStringAny(result)
-		if err != nil {
-			t.Errorf("Expected result to be map[string]any: %v", err)
+		if result == nil {
+			t.Fatal("Expected non-nil result")
+		}
+
+		var resultMap map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
 		success, err := utils.GetMapField[bool](resultMap, "success")
@@ -118,9 +123,13 @@ lint:
 			t.Errorf("Tool execution failed: %v", err)
 		}
 
-		resultMap, ok := result.(map[string]any)
-		if !ok {
-			t.Error("Expected result to be map[string]any")
+		if result == nil {
+			t.Fatal("Expected non-nil result")
+		}
+
+		var resultMap map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
 		if success, err := utils.GetMapField[bool](resultMap, "success"); err != nil || !success {
@@ -169,9 +178,13 @@ lint:
 			t.Errorf("Tool execution failed: %v", err)
 		}
 
-		resultMap, ok := result.(map[string]any)
-		if !ok {
-			t.Error("Expected result to be map[string]any")
+		if result == nil {
+			t.Fatal("Expected non-nil result")
+		}
+
+		var resultMap map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
 		// Tests might pass or fail, but tool execution should succeed.
@@ -213,9 +226,13 @@ lint:
 			t.Errorf("Tool execution failed: %v", err)
 		}
 
-		resultMap, ok := result.(map[string]any)
-		if !ok {
-			t.Error("Expected result to be map[string]any")
+		if result == nil {
+			t.Fatal("Expected non-nil result")
+		}
+
+		var resultMap map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
 		// Lint might pass or fail, but tool execution should succeed.
@@ -250,9 +267,13 @@ lint:
 			t.Errorf("Tool execution should not return Go error, got: %v", err)
 		}
 
-		resultMap, ok := result.(map[string]any)
-		if !ok {
-			t.Error("Expected result to be map[string]any")
+		if result == nil {
+			t.Fatal("Expected non-nil result")
+		}
+
+		var resultMap map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
 		// Should have success=false and an error message for invalid path

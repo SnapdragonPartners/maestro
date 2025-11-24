@@ -30,6 +30,8 @@ func (t *SubmitReplyTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *SubmitReplyTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
@@ -69,6 +71,8 @@ func (t *ReviewCompleteTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *ReviewCompleteTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
@@ -108,6 +112,8 @@ func (t *SubmitStoriesTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *SubmitStoriesTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }

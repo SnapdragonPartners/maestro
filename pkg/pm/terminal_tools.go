@@ -30,6 +30,8 @@ func (t *SpecSubmitTool) Definition() tools.ToolDefinition {
 }
 
 // Exec executes the underlying tool.
+//
+//nolint:wrapcheck // Direct forwarding to underlying tool
 func (t *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (*tools.ExecResult, error) {
 	return t.underlying.Exec(ctx, args)
 }
