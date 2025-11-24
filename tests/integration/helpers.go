@@ -16,14 +16,23 @@ import (
 )
 
 // mockTestAgent implements tools.Agent interface for testing.
-type mockTestAgent struct{}
+type mockTestAgent struct {
+	hostWorkspacePath string
+}
+
+func newMockTestAgent(hostWorkspacePath string) *mockTestAgent {
+	return &mockTestAgent{hostWorkspacePath: hostWorkspacePath}
+}
 
 func (m *mockTestAgent) GetCurrentState() proto.State {
 	return proto.State("PLANNING") // Default to read-only state
 }
 
 func (m *mockTestAgent) GetHostWorkspacePath() string {
-	return "/tmp/test-workspace"
+	if m.hostWorkspacePath != "" {
+		return m.hostWorkspacePath
+	}
+	return "/tmp/test-workspace" // Fallback for backwards compatibility
 }
 
 var _ tools.Agent = (*mockTestAgent)(nil)

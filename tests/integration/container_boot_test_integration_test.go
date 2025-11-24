@@ -142,7 +142,7 @@ CMD ["sh", "-c", "sleep 2 && sleep 3600"]`,
 			}
 
 			// Now test the container_test tool in boot test mode
-			mockAgent := &mockTestAgent{}
+			mockAgent := newMockTestAgent(framework.GetProjectDir())
 			containerTestTool := tools.NewContainerTestTool(framework.GetExecutor(), mockAgent, framework.GetProjectDir())
 
 			// Prepare tool arguments for boot test mode (no command, ttl_seconds=0)
@@ -252,7 +252,7 @@ func TestContainerBootTestEdgeCases(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	mockAgent := &mockTestAgent{}
+	mockAgent := newMockTestAgent(framework.GetProjectDir())
 	containerTestTool := tools.NewContainerTestTool(framework.GetExecutor(), mockAgent, framework.GetProjectDir())
 
 	t.Run("nonexistent_container", func(t *testing.T) {

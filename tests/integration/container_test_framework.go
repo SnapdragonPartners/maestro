@@ -28,12 +28,12 @@ type ContainerTestFramework struct {
 //
 //nolint:govet // fieldalignment: prefer logical grouping over memory optimization
 type HarnessResult struct {
-	Success   bool        `json:"success"`
-	ToolName  string      `json:"tool_name"`
-	Duration  string      `json:"duration"`
-	Result    any `json:"result,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	Arguments any `json:"arguments"`
+	Success   bool   `json:"success"`
+	ToolName  string `json:"tool_name"`
+	Duration  string `json:"duration"`
+	Result    any    `json:"result,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Arguments any    `json:"arguments"`
 }
 
 // NewContainerTestFramework creates a new container-based testing framework.

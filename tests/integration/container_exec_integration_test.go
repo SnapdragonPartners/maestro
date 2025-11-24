@@ -150,7 +150,7 @@ CMD ["echo", "Hello from test container"]
 			}
 
 			// Create container test tool with mock agent context
-			mockAgent := &mockTestAgent{}
+			mockAgent := newMockTestAgent(framework.GetProjectDir())
 			tool := tools.NewContainerTestTool(framework.GetExecutor(), mockAgent, framework.GetProjectDir())
 
 			// Execute the tool
