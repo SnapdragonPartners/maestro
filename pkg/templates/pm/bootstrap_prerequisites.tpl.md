@@ -49,10 +49,15 @@ The default knowledge graph includes six core patterns and rules:
 **Acceptance Criteria:**
 - [ ] File created at `.maestro/knowledge.dot`
 - [ ] Contains valid DOT format digraph named "ProjectKnowledge"
-- [ ] Includes six default nodes with proper attributes (type, level, status, description)
+- [ ] Includes six default nodes with proper attributes:
+  - Required attributes: type (pattern|rule), level (architecture|implementation), status (current|deprecated|future|legacy), description (non-empty)
+  - Optional attributes: tag, component, path, example
+  - Rules must have priority (critical|high|medium|low)
 - [ ] Two nodes marked as critical priority (test-coverage, security-headers)
 - [ ] Platform-agnostic content suitable for any project
-- [ ] File matches DOC_GRAPH.md specification format
+- [ ] File validates as syntactically correct DOT format
+
+**Reference Documentation:** Detailed format specification is available at `.maestro/DOC_GRAPH.md` in the repository for coders who need additional context
 
 
 {{end}}

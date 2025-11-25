@@ -11,7 +11,7 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-//go:embed *.tpl.md pm/*.tpl.md architect/*.tpl.md
+//go:embed pm/*.tpl.md architect/*.tpl.md coder/*.tpl.md
 var templateFS embed.FS
 
 // TemplateData holds the data for template rendering.
@@ -46,82 +46,83 @@ type TemplateData struct {
 type StateTemplate string
 
 const (
-	// DevOpsPlanningTemplate is the template for DevOps planning state.
-	DevOpsPlanningTemplate StateTemplate = "devops_planning.tpl.md"
+	// DevOpsPlanningTemplate is the template for DevOps planning state (coder state template).
+	DevOpsPlanningTemplate StateTemplate = "coder/devops_planning.tpl.md"
 	// AppPlanningTemplate is the template for App planning state.
-	AppPlanningTemplate StateTemplate = "app_planning.tpl.md"
+	AppPlanningTemplate StateTemplate = "coder/app_planning.tpl.md"
 	// DevOpsCodingTemplate is the template for DevOps coding tasks.
-	DevOpsCodingTemplate StateTemplate = "devops_coding.tpl.md"
+	DevOpsCodingTemplate StateTemplate = "coder/devops_coding.tpl.md"
 	// AppCodingTemplate is the template for App coding tasks.
-	AppCodingTemplate StateTemplate = "app_coding.tpl.md"
+	AppCodingTemplate StateTemplate = "coder/app_coding.tpl.md"
 	// TestingTemplate is the template for coder testing state.
-	TestingTemplate StateTemplate = "testing.tpl.md"
+	TestingTemplate StateTemplate = "coder/testing.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
-	ApprovalTemplate StateTemplate = "approval.tpl.md"
+	ApprovalTemplate StateTemplate = "coder/approval.tpl.md"
 	// AppCompletionApprovalTemplate is the template for app story completion approval.
-	AppCompletionApprovalTemplate StateTemplate = "app_completion_approval.tpl.md"
+	AppCompletionApprovalTemplate StateTemplate = "coder/app_completion_approval.tpl.md"
 	// DevOpsCompletionApprovalTemplate is the template for devops story completion approval.
-	DevOpsCompletionApprovalTemplate StateTemplate = "devops_completion_approval.tpl.md"
+	DevOpsCompletionApprovalTemplate StateTemplate = "coder/devops_completion_approval.tpl.md"
 	// TestFailureInstructionsTemplate is the mini-template for app test failure instructions.
-	TestFailureInstructionsTemplate StateTemplate = "test_failure_instructions.tpl.md"
+	TestFailureInstructionsTemplate StateTemplate = "coder/test_failure_instructions.tpl.md"
 	// DevOpsTestFailureInstructionsTemplate is the mini-template for devops test failure instructions.
-	DevOpsTestFailureInstructionsTemplate StateTemplate = "devops_test_failure_instructions.tpl.md"
+	DevOpsTestFailureInstructionsTemplate StateTemplate = "coder/devops_test_failure_instructions.tpl.md"
 	// BudgetReviewFeedbackTemplate is the mini-template for budget review feedback.
-	BudgetReviewFeedbackTemplate StateTemplate = "budget_review_feedback.tpl.md"
+	BudgetReviewFeedbackTemplate StateTemplate = "coder/budget_review_feedback.tpl.md"
 	// MergeFailureFeedbackTemplate is the mini-template for merge failure feedback.
-	MergeFailureFeedbackTemplate StateTemplate = "merge_failure_feedback.tpl.md"
+	MergeFailureFeedbackTemplate StateTemplate = "coder/merge_failure_feedback.tpl.md"
 	// GitCommitFailureTemplate is the mini-template for git commit failures.
-	GitCommitFailureTemplate StateTemplate = "git_commit_failure.tpl.md"
+	GitCommitFailureTemplate StateTemplate = "coder/git_commit_failure.tpl.md"
 	// GitPushFailureTemplate is the mini-template for git push failures.
-	GitPushFailureTemplate StateTemplate = "git_push_failure.tpl.md"
+	GitPushFailureTemplate StateTemplate = "coder/git_push_failure.tpl.md"
 	// PRCreationFailureTemplate is the mini-template for pull request creation failures.
-	PRCreationFailureTemplate StateTemplate = "pr_creation_failure.tpl.md"
+	PRCreationFailureTemplate StateTemplate = "coder/pr_creation_failure.tpl.md"
 	// GitConfigFailureTemplate is the mini-template for git configuration failures.
-	GitConfigFailureTemplate StateTemplate = "git_config_failure.tpl.md"
+	GitConfigFailureTemplate StateTemplate = "coder/git_config_failure.tpl.md"
 	// GitHubAuthFailureTemplate is the mini-template for GitHub authentication failures.
-	GitHubAuthFailureTemplate StateTemplate = "github_auth_failure.tpl.md"
+	GitHubAuthFailureTemplate StateTemplate = "coder/github_auth_failure.tpl.md"
 	// AppCodeReviewTemplate is the template for app story code review approval.
-	AppCodeReviewTemplate StateTemplate = "app_code_review.tpl.md"
+	AppCodeReviewTemplate StateTemplate = "coder/app_code_review.tpl.md"
 	// DevOpsCodeReviewTemplate is the template for devops story code review approval.
-	DevOpsCodeReviewTemplate StateTemplate = "devops_code_review.tpl.md"
+	DevOpsCodeReviewTemplate StateTemplate = "coder/devops_code_review.tpl.md"
 
-	// BudgetReviewPlanningTemplate is the template for architect budget review in planning state.
-	BudgetReviewPlanningTemplate StateTemplate = "budget_review_planning.tpl.md"
+	// BudgetReviewPlanningTemplate is the template for architect budget review in planning state (architect state template).
+	BudgetReviewPlanningTemplate StateTemplate = "architect/budget_review_planning.tpl.md"
 	// BudgetReviewCodingTemplate is the template for architect budget review in coding state.
-	BudgetReviewCodingTemplate StateTemplate = "budget_review_coding.tpl.md"
-
-	// SpecAnalysisTemplate is the template for architect spec analysis state.
-	SpecAnalysisTemplate StateTemplate = "spec_analysis.tpl.md"
+	BudgetReviewCodingTemplate StateTemplate = "architect/budget_review_coding.tpl.md"
+	// SpecReviewTemplate is the template for architect spec review (first phase - review with review_complete).
+	SpecReviewTemplate StateTemplate = "architect/spec_review.tpl.md"
+	// SpecAnalysisTemplate is the template for architect story generation (second phase - after approval).
+	SpecAnalysisTemplate StateTemplate = "architect/spec_analysis.tpl.md"
 	// TechnicalQATemplate is the template for architect technical Q&A state.
-	TechnicalQATemplate StateTemplate = "technical_qa.tpl.md"
+	TechnicalQATemplate StateTemplate = "architect/technical_qa.tpl.md"
 	// CodeReviewTemplate is the template for architect code review state.
-	CodeReviewTemplate StateTemplate = "code_review.tpl.md"
+	CodeReviewTemplate StateTemplate = "architect/code_review.tpl.md"
 
-	// PlanApprovalRequestTemplate is the template for plan approval request content (coder → architect).
-	PlanApprovalRequestTemplate StateTemplate = "plan_approval_request.tpl.md"
-	// PlanReviewArchitectTemplate is the template for architect's plan review prompt.
-	PlanReviewArchitectTemplate StateTemplate = "plan_review_architect.tpl.md"
+	// PlanApprovalRequestTemplate is the template for plan approval request content (coder → architect, coder-originated request template).
+	PlanApprovalRequestTemplate StateTemplate = "coder/plan_approval_request.tpl.md"
 	// CodeReviewRequestTemplate is the template for code review request content.
-	CodeReviewRequestTemplate StateTemplate = "code_review_request.tpl.md"
+	CodeReviewRequestTemplate StateTemplate = "coder/code_review_request.tpl.md"
 	// CompletionRequestTemplate is the template for completion request content.
-	CompletionRequestTemplate StateTemplate = "completion_request.tpl.md"
+	CompletionRequestTemplate StateTemplate = "coder/completion_request.tpl.md"
 	// MergeRequestTemplate is the template for merge request content.
-	MergeRequestTemplate StateTemplate = "merge_request.tpl.md"
+	MergeRequestTemplate StateTemplate = "coder/merge_request.tpl.md"
 	// BudgetReviewRequestPlanningTemplate is the template for budget review request content in planning state.
-	BudgetReviewRequestPlanningTemplate StateTemplate = "budget_review_request_planning.tpl.md"
+	BudgetReviewRequestPlanningTemplate StateTemplate = "coder/budget_review_request_planning.tpl.md"
 	// BudgetReviewRequestCodingTemplate is the template for budget review request content in coding state.
-	BudgetReviewRequestCodingTemplate StateTemplate = "budget_review_request_coding.tpl.md"
+	BudgetReviewRequestCodingTemplate StateTemplate = "coder/budget_review_request_coding.tpl.md"
 	// QuestionRequestTemplate is the template for question request content.
-	QuestionRequestTemplate StateTemplate = "question_request.tpl.md"
+	QuestionRequestTemplate StateTemplate = "coder/question_request.tpl.md"
 
-	// PlanApprovalResponseTemplate is the template for plan approval responses (architect → coder).
-	PlanApprovalResponseTemplate StateTemplate = "plan_approval_response.tpl.md"
+	// PlanApprovalResponseTemplate is the template for plan approval responses (architect → coder, architect-originated response template).
+	PlanApprovalResponseTemplate StateTemplate = "architect/plan_approval_response.tpl.md"
+	// PlanReviewArchitectTemplate is the template for architect's plan review prompt.
+	PlanReviewArchitectTemplate StateTemplate = "architect/plan_review_architect.tpl.md"
 	// CodeReviewResponseTemplate is the template for code review responses.
-	CodeReviewResponseTemplate StateTemplate = "code_review_response.tpl.md"
+	CodeReviewResponseTemplate StateTemplate = "architect/code_review_response.tpl.md"
 	// CompletionResponseTemplate is the template for completion review responses.
-	CompletionResponseTemplate StateTemplate = "completion_response.tpl.md"
+	CompletionResponseTemplate StateTemplate = "architect/completion_response.tpl.md"
 	// BudgetReviewResponseTemplate is the template for budget review responses.
-	BudgetReviewResponseTemplate StateTemplate = "budget_review_response.tpl.md"
+	BudgetReviewResponseTemplate StateTemplate = "architect/budget_review_response.tpl.md"
 
 	// PMInterviewStartTemplate is the template for starting PM interviews (deprecated - use PMWorkingTemplate).
 	PMInterviewStartTemplate StateTemplate = "pm/interview_start.tpl.md"
@@ -175,6 +176,7 @@ func NewRenderer() (*Renderer, error) {
 		ArchitectSystemTemplate,
 		BudgetReviewPlanningTemplate,
 		BudgetReviewCodingTemplate,
+		SpecReviewTemplate,
 		SpecAnalysisTemplate,
 		TechnicalQATemplate,
 		CodeReviewTemplate,

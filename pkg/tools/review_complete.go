@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -82,19 +81,16 @@ func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (*Exec
 		return nil, fmt.Errorf("feedback is required and must be a non-empty string")
 	}
 
-	// Return special signal that review is complete
-	// The state handler will check for action="review_complete" to know to exit
-	result := map[string]any{
-		"success":  true,
-		"action":   "review_complete",
-		"status":   status,
-		"feedback": feedback,
-	}
-
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	return &ExecResult{Content: string(content)}, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: fmt.Sprintf("Review completed with status: %s", status),
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalReviewComplete,
+			Data: map[string]any{
+				"status":   status,
+				"feedback": feedback,
+			},
+		},
+	}, nil
 }

@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 )
 
@@ -65,29 +64,41 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 		t.Fatal("Expected non-nil result")
 	}
 
-	var resultMap map[string]any
-	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
-		t.Fatalf("Failed to unmarshal result content: %v", err)
+	// Check that ProcessEffect is present with correct signal
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be present")
 	}
 
-	success, ok := resultMap["success"].(bool)
-	if !ok || !success {
-		t.Errorf("Expected success=true, got: %v", resultMap)
+	if result.ProcessEffect.Signal != SignalSpecPreview {
+		t.Errorf("Expected signal %s, got: %s", SignalSpecPreview, result.ProcessEffect.Signal)
 	}
 
-	// Verify metadata is present.
-	metadata, ok := resultMap["metadata"].(map[string]any)
+	// Check ProcessEffect.Data contains expected fields
+	data, ok := result.ProcessEffect.Data.(map[string]any)
 	if !ok {
-		t.Fatalf("Expected metadata map, got: %T", resultMap["metadata"])
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
+	}
+
+	// Verify spec_markdown is present
+	specMarkdown, ok := data["spec_markdown"].(string)
+	if !ok || specMarkdown == "" {
+		t.Errorf("Expected spec_markdown in ProcessEffect.Data, got: %v", data)
+	}
+
+	// Verify metadata is present
+	metadata, ok := data["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected metadata map, got: %T", data["metadata"])
 	}
 
 	if metadata["title"] != "Test Feature" {
 		t.Errorf("Expected title 'Test Feature', got: %v", metadata["title"])
 	}
 
-	// JSON unmarshals numbers as float64
-	if reqCount, ok := metadata["requirements_count"].(float64); !ok || reqCount != 1.0 {
-		t.Errorf("Expected 1 requirement, got: %v", metadata["requirements_count"])
+	// Verify requirements count
+	reqCount := metadata["requirements_count"]
+	if reqCount != 1 {
+		t.Errorf("Expected 1 requirement, got: %v (type: %T)", reqCount, reqCount)
 	}
 }
 
@@ -109,22 +120,31 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 		t.Fatal("Expected non-nil result")
 	}
 
-	var resultMap map[string]any
-	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
-		t.Fatalf("Failed to unmarshal result content: %v", err)
+	// Check that ProcessEffect is present with correct signal
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be present")
 	}
 
-	// After removing strict validation, even "invalid" specs are accepted.
-	// The architect will provide feedback via the review process.
-	success, ok := resultMap["success"].(bool)
-	if !ok || !success {
-		t.Errorf("Expected success=true (no strict validation), got: %v", resultMap)
+	if result.ProcessEffect.Signal != SignalSpecPreview {
+		t.Errorf("Expected signal %s, got: %s", SignalSpecPreview, result.ProcessEffect.Signal)
+	}
+
+	// Check ProcessEffect.Data contains expected fields
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
+	}
+
+	// Verify spec_markdown is present
+	specMarkdown, ok := data["spec_markdown"].(string)
+	if !ok || specMarkdown == "" {
+		t.Errorf("Expected spec_markdown in ProcessEffect.Data, got: %v", data)
 	}
 
 	// Verify metadata is present (even if incomplete).
-	metadata, ok := resultMap["metadata"].(map[string]any)
+	metadata, ok := data["metadata"].(map[string]any)
 	if !ok {
-		t.Fatalf("Expected metadata map, got: %T", resultMap["metadata"])
+		t.Fatalf("Expected metadata map, got: %T", data["metadata"])
 	}
 
 	// Title should be parsed even from incomplete spec

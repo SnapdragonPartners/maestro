@@ -125,7 +125,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to get done tool")
 	}
-	terminalTool := NewDoneTool(doneTool)
+	terminalTool := doneTool
 
 	// Get all general tools (everything except done)
 	// ask_question is now a general tool that returns ProcessEffect
@@ -202,20 +202,19 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			}
 			c.logger.Info("🧑‍💻 Question submitted, transitioning to QUESTION state")
 			return StateQuestion, false, nil
+		case tools.SignalTesting:
+			// done tool was called - extract summary from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return proto.StateError, false, logx.Errorf("TESTING effect data is not map[string]any: %T", out.EffectData)
+			}
+			summary, _ := effectData["summary"].(string)
+			c.logger.Info("🧑‍💻 Done tool detected: %s", summary)
+			c.logger.Info("🧑‍💻 Advancing to TESTING state")
+			return StateTesting, false, nil
 		default:
 			return proto.StateError, false, logx.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 		}
-
-	case toolloop.OutcomeSuccess:
-		// Terminal tool (done) was called
-		// Log extracted result for visibility
-		if len(out.Value.TodosCompleted) > 0 {
-			c.logger.Info("✅ Coding iteration completed %d todos", len(out.Value.TodosCompleted))
-		}
-
-		// Done tool was called - advance to testing
-		c.logger.Info("🧑‍💻 Done tool detected, advancing to TESTING")
-		return StateTesting, false, nil
 
 	case toolloop.OutcomeIterationLimit:
 		// OnHardLimit already stored BudgetReviewEffect in state

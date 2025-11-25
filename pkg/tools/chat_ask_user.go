@@ -83,7 +83,7 @@ func (a *ChatAskUserTool) Exec(ctx context.Context, params map[string]any) (*Exe
 	return &ExecResult{
 		Content: "Question posted to chat, waiting for user response",
 		ProcessEffect: &ProcessEffect{
-			Signal: "AWAIT_USER", // PM will handle this state transition
+			Signal: SignalAwaitUser, // PM will handle this state transition
 			Data: map[string]string{
 				"message": message,
 			},

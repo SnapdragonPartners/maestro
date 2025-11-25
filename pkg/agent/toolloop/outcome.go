@@ -7,15 +7,11 @@ import "fmt"
 type OutcomeKind int
 
 const (
-	// OutcomeSuccess indicates the loop completed successfully with a terminal signal.
-	// Signal field contains the state transition signal (e.g., "PLAN_REVIEW", "TESTING").
-	// Value field contains the extracted result from ExtractResult.
-	OutcomeSuccess OutcomeKind = iota
-
-	// OutcomeProcessEffect indicates a tool returned ProcessEffect to pause the loop.
-	// Signal field contains the effect signal (e.g., "QUESTION", "BUDGET_REVIEW").
-	// The state machine should process the async effect and then transition back to continue the loop.
-	OutcomeProcessEffect
+	// OutcomeProcessEffect indicates a tool returned ProcessEffect to pause/exit the loop.
+	// This is the normal success path - terminal tools return ProcessEffect to signal completion.
+	// Signal field contains the effect signal (e.g., "PLAN_REVIEW", "TESTING", "QUESTION").
+	// EffectData field contains structured data from ProcessEffect.Data.
+	OutcomeProcessEffect OutcomeKind = iota
 
 	// OutcomeNoToolTwice indicates the LLM failed to use tools twice in a row.
 	// This is a loop-level guard that prevents infinite loops when LLM ignores tools.
@@ -43,8 +39,6 @@ const (
 // String returns human-readable name for OutcomeKind.
 func (k OutcomeKind) String() string {
 	switch k {
-	case OutcomeSuccess:
-		return "Success"
 	case OutcomeProcessEffect:
 		return "ProcessEffect"
 	case OutcomeNoToolTwice:
@@ -70,23 +64,22 @@ type Outcome[T any] struct {
 	// Kind categorizes what happened during the loop (success, error, limit, etc.).
 	Kind OutcomeKind
 
-	// Signal is the terminal signal or ProcessEffect signal.
-	// For OutcomeSuccess: terminal tool name (e.g., "submit_plan", "done")
-	// For OutcomeProcessEffect: state to transition to (e.g., "QUESTION")
-	// Empty string means normal completion with no state transition.
+	// Signal is the ProcessEffect signal indicating state transition.
+	// For OutcomeProcessEffect: state/signal to transition to (e.g., "PLAN_REVIEW", "TESTING", "QUESTION")
+	// Empty string for all error outcomes.
 	Signal string
 
-	// EffectData contains data from ProcessEffect when Kind == OutcomeProcessEffect.
+	// EffectData contains data from ProcessEffect.Data when Kind == OutcomeProcessEffect.
 	// Only valid when Kind == OutcomeProcessEffect.
-	// Contains effect-specific data (e.g., question text, budget info).
+	// Contains effect-specific structured data (e.g., plan content, question text, todos list).
 	EffectData any
 
-	// Value is the extracted result from ExtractResult.
-	// Only valid when Kind == OutcomeSuccess.
-	// Zero value of T for all other outcomes.
+	// Value is the extracted result from ExtractResult (legacy).
+	// Currently unused - all data now passed via EffectData.
+	// Kept for backwards compatibility during migration, will be removed.
 	Value T
 
-	// Err is the underlying error (non-nil for all non-Success outcomes).
+	// Err is the underlying error (non-nil for all error outcomes, nil for OutcomeProcessEffect).
 	// For OutcomeExtractionError, check with errors.Is for sentinel errors:
 	//   - errors.Is(out.Err, ErrNoTerminalTool)
 	//   - errors.Is(out.Err, ErrNoActivity)

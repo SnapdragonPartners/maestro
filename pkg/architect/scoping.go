@@ -144,26 +144,12 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 
 // All story generation now uses the clean linear flow in handleScoping()
 
-// loadStoriesFromSubmitResult loads stories into the queue from submit_stories tool result.
+// loadStoriesFromSubmitResultData loads stories into the queue from ProcessEffect.Data.
 // This is called during spec review in REQUEST state (after PM spec approval).
 // Returns spec ID, story IDs, and error.
-func (d *Driver) loadStoriesFromSubmitResult(ctx context.Context, specMarkdown string) (string, []string, error) {
-	// Get state data
-	stateData := d.GetStateData()
-
-	// 1. Extract structured data from stateData (stored by toolloop after submit_stories execution)
-	submitResult, ok := stateData["submit_stories_result"]
-	if !ok {
-		return "", nil, fmt.Errorf("submit_stories result not found in state data")
-	}
-
-	resultMap, ok := submitResult.(map[string]any)
-	if !ok {
-		return "", nil, fmt.Errorf("submit_stories result has unexpected type")
-	}
-
-	// 2. Convert structured tool result directly to Requirements (no JSON round-trip)
-	requirements, err := d.convertToolResultToRequirements(resultMap)
+func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdown string, effectData map[string]any) (string, []string, error) {
+	// Convert ProcessEffect.Data directly to Requirements (no JSON round-trip)
+	requirements, err := d.convertToolResultToRequirements(effectData)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to convert tool result to requirements: %w", err)
 	}

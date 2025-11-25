@@ -2,7 +2,6 @@ package coder
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"orchestrator/pkg/tools"
@@ -74,25 +73,25 @@ func TestTodoToolValidation(t *testing.T) {
 				t.Fatal("Expected non-nil result")
 			}
 
-			// Tools now return *ExecResult with JSON-marshaled data in Content
-			var resultMap map[string]any
-			if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
-				t.Fatalf("Failed to unmarshal result content: %v", err)
+			// Tools now return data via ProcessEffect.Data
+			if result.ProcessEffect == nil {
+				t.Fatal("Expected ProcessEffect to be present")
 			}
 
-			if success, ok := resultMap["success"].(bool); !ok || !success {
-				t.Error("Expected success=true in result")
+			data, ok := result.ProcessEffect.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
 			}
 
 			// Verify tool returns []string (this is what the handler must handle)
-			todosRaw, ok := resultMap["todos"]
+			todosRaw, ok := data["todos"]
 			if !ok {
-				t.Error("Expected 'todos' field in result")
+				t.Error("Expected 'todos' field in ProcessEffect.Data")
 			} else {
-				// JSON unmarshals arrays as []any
-				todosArray, ok := todosRaw.([]any)
+				// ProcessEffect.Data should already have []string
+				todosArray, ok := todosRaw.([]string)
 				if !ok {
-					t.Errorf("Expected todos as []any from JSON, got %T", todosRaw)
+					t.Errorf("Expected todos as []string, got %T", todosRaw)
 				} else {
 					originalTodos, ok := tt.args["todos"].([]any)
 					if !ok {

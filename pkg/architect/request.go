@@ -743,11 +743,11 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	cm.AddMessage("architect-approval-prompt", prompt)
 
 	// Get review_complete tool and wrap as terminal tool
-	reviewCompleteToolRaw, err := toolProvider.Get(tools.ToolReviewComplete)
+	reviewCompleteTool, err := toolProvider.Get(tools.ToolReviewComplete)
 	if err != nil {
 		return nil, logx.Wrap(err, "failed to get review_complete tool")
 	}
-	terminalTool := NewReviewCompleteTool(reviewCompleteToolRaw)
+	terminalTool := reviewCompleteTool
 
 	// Get all general tools (everything except review_complete)
 	allTools := toolProvider.List()
@@ -797,21 +797,30 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		d.logger.Info("📊 Iteration limit reached (%d iterations), returning escalation sentinel", out.Iteration)
 		return nil, ErrEscalationTriggered
 	}
-	if out.Kind != toolloop.OutcomeSuccess {
+	if out.Kind != toolloop.OutcomeProcessEffect {
 		return nil, fmt.Errorf("iterative approval failed: %w", out.Err)
 	}
 
-	if out.Signal != signalReviewComplete {
+	if out.Signal != tools.SignalReviewComplete {
 		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", out.Signal)
 	}
 
-	d.logger.Info("✅ Architect completed iterative review with status: %s", out.Value.Status)
+	// Extract review data from ProcessEffect.Data
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+	}
+
+	status, _ := effectData["status"].(string)
+	feedback, _ := effectData["feedback"].(string)
+
+	d.logger.Info("✅ Architect completed iterative review with status: %s", status)
 
 	// Clean up state data
 	d.SetStateData("current_story_id", nil)
 
 	// Build and return approval response
-	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, out.Value.Status, out.Value.Feedback)
+	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
 }
 
 // handleSingleTurnReview handles single-turn approval reviews (Plan and BudgetReview)
@@ -861,11 +870,11 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	toolProvider := tools.NewProvider(&agentCtx, allowedTools)
 
 	// Get review_complete tool and wrap as terminal tool
-	reviewCompleteToolRaw, err := toolProvider.Get(tools.ToolReviewComplete)
+	reviewCompleteTool, err := toolProvider.Get(tools.ToolReviewComplete)
 	if err != nil {
 		return nil, logx.Wrap(err, "failed to get review_complete tool")
 	}
-	terminalTool := NewReviewCompleteTool(reviewCompleteToolRaw)
+	terminalTool := reviewCompleteTool
 
 	// No general tools - only the terminal tool
 	generalTools := []tools.Tool{}
@@ -883,20 +892,29 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	})
 
 	// Handle outcome
-	if out.Kind != toolloop.OutcomeSuccess {
+	if out.Kind != toolloop.OutcomeProcessEffect {
 		return nil, fmt.Errorf("single-turn review failed: %w", out.Err)
 	}
 
-	if out.Signal != signalReviewComplete {
+	if out.Signal != tools.SignalReviewComplete {
 		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", out.Signal)
 	}
 
-	d.logger.Info("✅ Single-turn review completed with status: %s", out.Value.Status)
+	// Extract review data from ProcessEffect.Data
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+	}
+
+	status, _ := effectData["status"].(string)
+	feedback, _ := effectData["feedback"].(string)
+
+	d.logger.Info("✅ Single-turn review completed with status: %s", status)
 
 	// Clean up state data (review_complete_result no longer stored)
 
 	// Build and return approval response
-	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, out.Value.Status, out.Value.Feedback)
+	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
 }
 
 // handleIterativeQuestion processes question requests with iterative code exploration.
@@ -935,11 +953,11 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	cm.AddMessage("architect-question-prompt", prompt)
 
 	// Get submit_reply tool and wrap as terminal tool
-	submitReplyToolRaw, err := toolProvider.Get(tools.ToolSubmitReply)
+	submitReplyTool, err := toolProvider.Get(tools.ToolSubmitReply)
 	if err != nil {
 		return nil, logx.Wrap(err, "failed to get submit_reply tool")
 	}
-	terminalTool := NewSubmitReplyTool(submitReplyToolRaw)
+	terminalTool := submitReplyTool
 
 	// Get general tools (read_file, list_files)
 	var generalTools []tools.Tool
@@ -978,7 +996,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	})
 
 	// Handle toolloop outcome
-	if out.Kind != toolloop.OutcomeSuccess {
+	if out.Kind != toolloop.OutcomeProcessEffect {
 		// Check if escalation was triggered
 		if out.Err != nil && out.Err.Error() == ErrEscalationTriggered.Error() {
 			return nil, ErrEscalationTriggered
@@ -986,10 +1004,22 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		return nil, fmt.Errorf("question handling failed: %w", out.Err)
 	}
 
+	// Verify we got REPLY_SUBMITTED signal
+	if out.Signal != tools.SignalReplySubmitted {
+		return nil, fmt.Errorf("expected REPLY_SUBMITTED signal, got: %s", out.Signal)
+	}
+
+	// Extract response from ProcessEffect.Data
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("REPLY_SUBMITTED effect data is not map[string]any: %T", out.EffectData)
+	}
+
+	response, _ := effectData["response"].(string)
 	d.logger.Info("✅ Architect answered question via submit_reply")
 
 	// Build response message with the answer
-	return d.buildQuestionResponseFromSubmit(requestMsg, out.Value.Response)
+	return d.buildQuestionResponseFromSubmit(requestMsg, response)
 }
 
 // buildQuestionResponseFromSubmit creates a question response from submit_reply content.

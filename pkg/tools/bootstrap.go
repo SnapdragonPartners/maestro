@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -166,23 +165,20 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 		}
 	}
 
-	// Return success with bootstrap params and rendered markdown
-	result := map[string]any{
-		"success":              true,
-		"message":              "Bootstrap configuration saved successfully",
-		"bootstrap_configured": true,
-		"project_name":         projectName,
-		"git_url":              gitURL,
-		"platform":             platform,
-		"bootstrap_markdown":   bootstrapMarkdown, // Rendered markdown for PM to store
-	}
-
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	return &ExecResult{Content: string(content)}, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: "Bootstrap configuration saved successfully",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalBootstrapComplete,
+			Data: map[string]any{
+				"project_name":       projectName,
+				"git_url":            gitURL,
+				"platform":           platform,
+				"bootstrap_markdown": bootstrapMarkdown, // Rendered markdown for PM to store
+			},
+		},
+	}, nil
 }
 
 // validateBootstrapComplete re-validates bootstrap requirements after configuration.

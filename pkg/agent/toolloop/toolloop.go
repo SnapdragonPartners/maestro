@@ -19,14 +19,20 @@ type ToolProvider interface {
 	List() []tools.ToolMeta
 }
 
-// TerminalTool represents a tool that signals completion and extracts typed results.
+// TerminalTool represents a tool that signals loop completion.
 // Every toolloop must have exactly one terminal tool that defines the exit condition.
 // This enforces the "one goal, one exit" principle at compile time.
+//
+// Terminal tools SHOULD return ProcessEffect with Signal and Data in their Exec() method.
+// If a terminal tool is called without returning ProcessEffect, toolloop will auto-wrap it
+// with a generic "TERMINAL_COMPLETE" signal to avoid runtime errors (since we can't enforce
+// ProcessEffect at compile time).
+//
+// The generic type TResult is no longer used for extraction - kept for backwards compatibility.
+// TODO: Remove TResult generic parameter once all code migrated to ProcessEffect pattern.
 type TerminalTool[TResult any] interface {
 	tools.Tool
-	// ExtractResult extracts typed result from tool calls and results.
-	// Called when this terminal tool is detected in the tool execution.
-	ExtractResult(calls []agent.ToolCall, results []any) (TResult, error)
+	// Terminal tools implement Exec() to return ProcessEffect with signal and structured data
 }
 
 // EscalationHandler is called when the hard iteration limit is reached.
@@ -130,23 +136,23 @@ type Config[T any] struct {
 	AgentID string
 }
 
-// Run executes the tool loop with type-safe result extraction, returning an Outcome[T].
+// Run executes the tool loop with ProcessEffect-based terminal signaling, returning an Outcome[T].
 //
 // The Outcome contains:
-// - Kind: What happened (Success, IterationLimit, LLMError, etc.)
-// - Signal: State transition signal (e.g., "PLAN_REVIEW", "TESTING") when Kind == OutcomeSuccess
-// - Value: Extracted result from ExtractResult when Kind == OutcomeSuccess
-// - Err: Underlying error for non-Success outcomes
+// - Kind: What happened (ProcessEffect, IterationLimit, LLMError, etc.)
+// - Signal: State transition signal (e.g., "PLAN_REVIEW", "TESTING") when Kind == OutcomeProcessEffect
+// - EffectData: Structured data from ProcessEffect.Data when Kind == OutcomeProcessEffect
+// - Err: Underlying error for error outcomes (nil for OutcomeProcessEffect)
 // - Iteration: 1-indexed iteration count when outcome occurred
 //
-// Callers should switch on out.Kind first, then examine Signal/Value inside OutcomeSuccess branch.
+// Callers should switch on out.Kind first, then examine Signal/EffectData inside OutcomeProcessEffect branch.
 //
 // Usage:
 //
 //	out := toolloop.Run[CodingResult](tl, ctx, cfg)
 //	switch out.Kind {
-//	case toolloop.OutcomeSuccess:
-//	    // Handle out.Signal and out.Value
+//	case toolloop.OutcomeProcessEffect:
+//	    // Handle out.Signal and extract data from out.EffectData
 //	case toolloop.OutcomeIterationLimit:
 //	    // Handle budget review escalation
 //	// ...
@@ -297,7 +303,6 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 
 		// Execute ALL tools (API requirement: every tool_use must have tool_result)
 		tl.logger.Info("Processing %d tool calls", len(resp.ToolCalls))
-		results := make([]any, len(resp.ToolCalls))
 		var pendingEffect *tools.ProcessEffect
 
 		for i := range resp.ToolCalls {
@@ -308,10 +313,6 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			tool, err := toolProvider.Get(toolCall.Name)
 			if err != nil {
 				tl.logger.Error("Failed to get tool %s: %v", toolCall.Name, err)
-				results[i] = map[string]any{
-					"success": false,
-					"error":   err.Error(),
-				}
 				// Add error result to context
 				cfg.ContextManager.AddToolResult(toolCall.ID, err.Error(), true)
 				continue
@@ -352,9 +353,6 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				}
 			}
 
-			// Store content for terminal tool extraction (some terminal tools may inspect tool results)
-			results[i] = content
-
 			// Add tool result to context
 			cfg.ContextManager.AddToolResult(toolCall.ID, content, isError)
 		}
@@ -373,28 +371,20 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		}
 
 		// Check if terminal tool was called
+		// Terminal tools should use ProcessEffect pattern - they would have exited above
+		// If terminal tool was called but didn't return ProcessEffect, auto-wrap with generic signal
 		for i := range resp.ToolCalls {
 			if resp.ToolCalls[i].Name == terminalToolName {
-				tl.logger.Info("✅ Terminal tool '%s' detected", terminalToolName)
-
-				// Extract result from terminal tool
-				extractedResult, err := cfg.TerminalTool.ExtractResult(resp.ToolCalls, results)
-				if err != nil {
-					tl.logger.Error("❌ Failed to extract result from terminal tool: %v", err)
-					return Outcome[T]{
-						Kind:      OutcomeExtractionError,
-						Signal:    terminalToolName,
-						Err:       fmt.Errorf("result extraction failed: %w", err),
-						Iteration: currentIteration,
-					}
-				}
-
-				// Terminal tool called - return success
+				// Terminal tool was called but didn't return ProcessEffect
+				// Auto-wrap to avoid runtime errors (we can't enforce ProcessEffect at compile time)
+				tl.logger.Warn("⚠️  Terminal tool '%s' was called but did not return ProcessEffect - auto-wrapping with TERMINAL_COMPLETE signal", terminalToolName)
+				var zero T
 				return Outcome[T]{
-					Kind:      OutcomeSuccess,
-					Signal:    terminalToolName,
-					Value:     extractedResult,
-					Iteration: currentIteration,
+					Kind:       OutcomeProcessEffect,
+					Signal:     "TERMINAL_COMPLETE",
+					EffectData: map[string]any{"tool": terminalToolName},
+					Value:      zero,
+					Iteration:  currentIteration,
 				}
 			}
 		}

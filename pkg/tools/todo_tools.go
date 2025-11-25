@@ -82,18 +82,17 @@ func (t *TodosAddTool) Exec(_ context.Context, args map[string]any) (*ExecResult
 		validatedTodos[i] = todoStr
 	}
 
-	result := map[string]any{
-		"success": true,
-		"message": "Todos added successfully",
-		"todos":   validatedTodos,
-	}
-
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	return &ExecResult{Content: string(content)}, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: fmt.Sprintf("Added %d todos successfully", len(validatedTodos)),
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalCoding, // Signal to continue/start coding with todos
+			Data: map[string]any{
+				"todos": validatedTodos,
+			},
+		},
+	}, nil
 }
 
 // TodoCompleteTool marks a todo as complete (current by default, or specified by index).

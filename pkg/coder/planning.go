@@ -142,7 +142,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	if err != nil {
 		return proto.StateError, false, logx.Wrap(err, "failed to get submit_plan tool")
 	}
-	terminalTool := NewPlanSubmitTool(submitPlanTool)
+	terminalTool := submitPlanTool
 
 	// Get all general tools (everything except submit_plan)
 	allTools := c.planningToolProvider.List()
@@ -204,24 +204,29 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 
 	// Switch on outcome kind first
 	switch out.Kind {
-	case toolloop.OutcomeSuccess:
-		// Process extracted result
-		if err := c.processPlanningResult(sm, &out.Value); err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to process planning result")
-		}
+	case toolloop.OutcomeProcessEffect:
+		// Tool returned ProcessEffect to pause the loop
+		c.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
 
-		// Handle terminal signals from successful completion
+		// Handle terminal signals based on tool's ProcessEffect signal
 		switch out.Signal {
 		case string(StateBudgetReview):
 			return StateBudgetReview, false, nil
 		case string(StateQuestion):
 			return StateQuestion, false, nil
-		case string(StatePlanReview):
+		case tools.SignalPlanReview:
+			// submit_plan was called - extract data from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return proto.StateError, false, logx.Errorf("PLAN_REVIEW effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			// Extract and store plan data
+			if err := c.processPlanDataFromEffect(sm, effectData); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to process plan data")
+			}
+
 			return StatePlanReview, false, nil
-		case "":
-			// No signal, continue planning
-			c.logger.Info("🧑‍💻 Planning iteration completed, staying in PLANNING")
-			return StatePlanning, false, nil
 		default:
 			c.logger.Warn("Unknown signal from planning toolloop: %s", out.Signal)
 			return StatePlanning, false, nil
@@ -252,7 +257,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 // processPlanningResult processes the extracted result from planning toolloop.
 // Stores data in stateData and performs any necessary side effects.
 //
-//nolint:unparam // error return reserved for future validation logic
+//nolint:unparam,unused // error return reserved for future validation logic; Legacy - will be removed
 func (c *Coder) processPlanningResult(sm *agent.BaseStateMachine, result *PlanningResult) error {
 	// Only process if we have plan data (i.e., submit_plan was called)
 	if result.Signal == SignalPlanReview && result.Plan != "" {
@@ -292,6 +297,61 @@ func (c *Coder) processPlanningResult(sm *agent.BaseStateMachine, result *Planni
 		c.logger.Info("🧑‍💻 Plan data stored, ready for PLAN_REVIEW transition")
 	}
 
+	return nil
+}
+
+// TODO: LEGACY - Remove processPlanningResult once all code paths use processPlanDataFromEffect.
+// This function is kept temporarily for any code that might still reference it during migration.
+//
+//nolint:unused // Legacy function - will be removed after migration verification.
+
+// processPlanDataFromEffect extracts and stores plan data from ProcessEffect.Data.
+// Called when submit_plan tool returns ProcessEffect with SignalPlanReview.
+//
+//nolint:unparam // error return reserved for future validation logic
+func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData map[string]any) error {
+	// Extract plan data from effect
+	plan, _ := effectData["plan"].(string)
+	confidence, _ := effectData["confidence"].(string)
+	explorationSummary, _ := effectData["exploration_summary"].(string)
+	knowledgePack, _ := effectData["knowledge_pack"].(string)
+	isComplete, _ := effectData["is_complete"].(bool)
+
+	if plan == "" {
+		return fmt.Errorf("plan is required in ProcessEffect.Data")
+	}
+
+	c.logger.Info("✅ Planning data extracted from ProcessEffect: plan (%d chars), confidence: %s, is_complete: %v",
+		len(plan), confidence, isComplete)
+
+	// Get knowledge pack from effect or fall back to state data
+	if knowledgePack == "" {
+		knowledgePack = utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
+	}
+
+	// Store plan data using typed constants
+	sm.SetStateData(string(stateDataKeyPlan), plan)
+	sm.SetStateData(string(stateDataKeyPlanConfidence), confidence)
+	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
+	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
+
+	// Store knowledge pack via persistence if available
+	if knowledgePack != "" {
+		storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+		if storyID != "" {
+			c.storeKnowledgePack(storyID, knowledgePack)
+		}
+	}
+
+	// Store plan approval request for PLAN_REVIEW state to handle
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: plan,
+		Reason:  fmt.Sprintf("Plan requires approval (confidence: %s, is_complete: %v)", confidence, isComplete),
+		Type:    proto.ApprovalTypePlan,
+	}
+
+	c.logger.Info("🧑‍💻 Plan data stored, ready for PLAN_REVIEW transition")
 	return nil
 }
 

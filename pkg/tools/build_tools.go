@@ -385,21 +385,23 @@ func (d *DoneTool) PromptDocumentation() string {
 
 // Exec executes the done operation.
 func (d *DoneTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
-	result := map[string]any{
-		"success": true,
-		"message": "Task marked as complete, advancing to TESTING state",
-	}
-
 	// Extract summary
-	if summary, ok := args["summary"].(string); ok && summary != "" {
-		result["summary"] = summary
+	summary, ok := args["summary"].(string)
+	if !ok || summary == "" {
+		return nil, fmt.Errorf("summary is required and must be a non-empty string")
 	}
 
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal done result: %w", err)
-	}
-	return &ExecResult{Content: string(content)}, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: "Task marked as complete, advancing to TESTING state",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalTesting,
+			Data: map[string]any{
+				"summary": summary,
+			},
+		},
+	}, nil
 }
 
 // BackendInfoTool provides MCP interface for backend information.

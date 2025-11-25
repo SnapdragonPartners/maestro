@@ -194,21 +194,21 @@ func (d *Driver) setupInterviewContext() error {
 //
 //nolint:cyclop,maintidx // Complex tool iteration logic, refactoring would reduce readability
 func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, error) {
-	// Get spec_submit tool and wrap as terminal tool
-	specSubmitToolRaw, err := d.toolProvider.Get(tools.ToolSpecSubmit)
+	// Get spec_submit tool
+	specSubmitTool, err := d.toolProvider.Get(tools.ToolSpecSubmit)
 	if err != nil {
 		return "", logx.Wrap(err, "failed to get spec_submit tool")
 	}
 
 	// Inject bootstrap markdown into spec_submit tool if it exists in state
 	if bootstrapMarkdown, ok := d.GetStateData()[StateKeyBootstrapRequirements].(string); ok && bootstrapMarkdown != "" {
-		if submitTool, ok := specSubmitToolRaw.(*tools.SpecSubmitTool); ok {
+		if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
 			submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
 			d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
 		}
 	}
 
-	terminalTool := NewSpecSubmitTool(specSubmitToolRaw)
+	terminalTool := specSubmitTool
 
 	// Get all general tools (everything except spec_submit)
 	allTools := d.toolProvider.List()
@@ -263,21 +263,77 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 		// Route based on signal
 		switch out.Signal {
-		case "AWAIT_USER":
+		case tools.SignalBootstrapComplete:
+			// bootstrap tool was called - extract data from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("BOOTSTRAP_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			// Extract bootstrap data from ProcessEffect.Data
+			projectName, _ := effectData["project_name"].(string)
+			gitURL, _ := effectData["git_url"].(string)
+			platform, _ := effectData["platform"].(string)
+			bootstrapMarkdown, _ := effectData["bootstrap_markdown"].(string)
+
+			// Store in state
+			bootstrapParams := map[string]string{
+				"project_name": projectName,
+				"git_url":      gitURL,
+				"platform":     platform,
+			}
+			d.SetStateData("bootstrap_params", bootstrapParams)
+			d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
+			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
+
+			// Inject system message to transition from bootstrap mode to full interview mode
+			transitionMsg := fmt.Sprintf(`# Bootstrap Complete
+
+Project configuration saved successfully:
+- Project: %s
+- Platform: %s
+- Repository: %s
+
+You can now proceed with full requirements gathering for this project. You have access to additional tools:
+- **read_file** - Read file contents from the codebase
+- **list_files** - List files in the codebase (path, pattern, recursive)
+
+Begin the feature requirements interview by asking the user about what they want to build.`,
+				projectName, platform, gitURL)
+
+			d.contextManager.AddMessage("system", transitionMsg)
+			d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
+
+			// Continue in WORKING state (not terminal - PM continues interviewing)
+			return "", nil
+
+		case tools.SignalSpecPreview:
+			// spec_submit was called - extract data from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			// Extract spec data from ProcessEffect.Data (not from results array)
+			specMarkdown, _ := effectData["spec_markdown"].(string)
+			summary, _ := effectData["summary"].(string)
+			metadata, _ := effectData["metadata"].(map[string]any)
+
+			// Store in state for PREVIEW state
+			d.SetStateData("draft_spec_markdown", specMarkdown)
+			d.SetStateData("spec_metadata", metadata)
+			d.logger.Info("📋 Stored spec for preview (%d bytes, summary: %s)", len(specMarkdown), summary)
+
+			return SignalSpecPreview, nil
+
+		case tools.SignalAwaitUser:
 			// chat_ask_user was called - transition to AWAIT_USER state
 			d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
 			return SignalAwaitUser, nil
+
 		default:
 			return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 		}
-
-	case toolloop.OutcomeSuccess:
-		// Process extracted result based on signal
-		if err := d.processPMResult(out.Value); err != nil {
-			return "", fmt.Errorf("failed to process PM result: %w", err)
-		}
-		// Handle terminal signals from tool processing
-		return out.Signal, nil
 
 	case toolloop.OutcomeIterationLimit:
 		// PM hit iteration limit - this should not happen as PM should call chat_ask_user
@@ -296,6 +352,8 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 // processPMResult processes the extracted result from PM's toolloop.
 // Stores data in stateData and performs any necessary side effects (e.g., injecting messages).
+//
+//nolint:unused // Legacy - will be removed after verifying all PM flows use ProcessEffect pattern.
 func (d *Driver) processPMResult(result WorkingResult) error {
 	switch result.Signal {
 	case SignalBootstrapComplete:

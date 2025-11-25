@@ -140,17 +140,21 @@ func TestBasicTerminalTool(t *testing.T) {
 	terminalTool := &mockTerminalTool{
 		name:   "submit",
 		called: &called,
-		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
-			return &tools.ExecResult{Content: "submitted"}, nil
+		execFunc: func(_ context.Context, args map[string]any) (*tools.ExecResult, error) {
+			// Return ProcessEffect with signal and data
+			val, _ := args["value"].(string)
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "SUBMIT_COMPLETE",
+					Data: map[string]any{
+						"value": val,
+					},
+				},
+			}, nil
 		},
-		extractFunc: func(calls []agent.ToolCall, _ []any) (string, error) {
-			for i := range calls {
-				if calls[i].Name == "submit" {
-					if val, ok := calls[i].Parameters["value"].(string); ok {
-						return val, nil
-					}
-				}
-			}
+		extractFunc: func(_ []agent.ToolCall, _ []any) (string, error) {
+			// Legacy - not used anymore
 			return "", toolloop.ErrNoTerminalTool
 		},
 	}
@@ -166,12 +170,23 @@ func TestBasicTerminalTool(t *testing.T) {
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
-	if out.Kind != toolloop.OutcomeSuccess {
-		t.Fatalf("unexpected error: %v", out.Err)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("unexpected outcome: %v, error: %v", out.Kind, out.Err)
 	}
 
-	if out.Value != "test" {
-		t.Errorf("expected result 'test', got %q", out.Value)
+	if out.Signal != "SUBMIT_COMPLETE" {
+		t.Errorf("expected signal 'SUBMIT_COMPLETE', got %q", out.Signal)
+	}
+
+	// Extract value from EffectData
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		t.Fatalf("expected EffectData to be map[string]any, got %T", out.EffectData)
+	}
+
+	value, _ := effectData["value"].(string)
+	if value != "test" {
+		t.Errorf("expected value 'test', got %q", value)
 	}
 
 	if len(called) != 1 || called[0] != "submit" {
@@ -218,6 +233,19 @@ func TestGeneralToolsBeforeTerminal(t *testing.T) {
 	terminalTool := &mockTerminalTool{
 		name:   "submit",
 		called: &called,
+		execFunc: func(_ context.Context, args map[string]any) (*tools.ExecResult, error) {
+			// Return ProcessEffect with signal and data
+			data, _ := args["data"].(string)
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "SUBMIT_COMPLETE",
+					Data: map[string]any{
+						"value": data,
+					},
+				},
+			}, nil
+		},
 		extractFunc: func(calls []agent.ToolCall, _ []any) (string, error) {
 			for i := range calls {
 				if calls[i].Name == "submit" {
@@ -241,12 +269,23 @@ func TestGeneralToolsBeforeTerminal(t *testing.T) {
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
-	if out.Kind != toolloop.OutcomeSuccess {
-		t.Fatalf("unexpected error: %v", out.Err)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("unexpected outcome: %v, error: %v", out.Kind, out.Err)
 	}
 
-	if out.Value != "processed" {
-		t.Errorf("expected result 'processed', got %q", out.Value)
+	if out.Signal != "SUBMIT_COMPLETE" {
+		t.Errorf("expected signal 'SUBMIT_COMPLETE', got %q", out.Signal)
+	}
+
+	// Extract value from EffectData
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		t.Fatalf("expected EffectData to be map[string]any, got %T", out.EffectData)
+	}
+
+	value, _ := effectData["value"].(string)
+	if value != "processed" {
+		t.Errorf("expected value 'processed', got %q", value)
 	}
 
 	if len(called) != 2 {
@@ -318,8 +357,8 @@ func TestIterationLimit(t *testing.T) {
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
-	if out.Kind == toolloop.OutcomeSuccess {
-		t.Fatal("expected error for hard limit exceeded")
+	if out.Kind == toolloop.OutcomeProcessEffect {
+		t.Fatal("expected error for hard limit exceeded, not ProcessEffect")
 	}
 
 	var iterErr *toolloop.IterationLimitError
@@ -373,6 +412,19 @@ func TestSoftLimit(t *testing.T) {
 
 	terminalTool := &mockTerminalTool{
 		name: "submit",
+		execFunc: func(_ context.Context, args map[string]any) (*tools.ExecResult, error) {
+			// Return ProcessEffect with signal and data
+			result, _ := args["result"].(string)
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "SUBMIT_COMPLETE",
+					Data: map[string]any{
+						"value": result,
+					},
+				},
+			}, nil
+		},
 		extractFunc: func(calls []agent.ToolCall, _ []any) (string, error) {
 			for i := range calls {
 				if calls[i].Name == "submit" {
@@ -412,12 +464,23 @@ func TestSoftLimit(t *testing.T) {
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
-	if out.Kind != toolloop.OutcomeSuccess {
-		t.Fatalf("unexpected error: %v", out.Err)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("unexpected outcome: %v, error: %v", out.Kind, out.Err)
 	}
 
-	if out.Value != "ok" {
-		t.Errorf("expected result 'ok', got %q", out.Value)
+	if out.Signal != "SUBMIT_COMPLETE" {
+		t.Errorf("expected signal 'SUBMIT_COMPLETE', got %q", out.Signal)
+	}
+
+	// Extract value from EffectData
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		t.Fatalf("expected EffectData to be map[string]any, got %T", out.EffectData)
+	}
+
+	value, _ := effectData["value"].(string)
+	if value != "ok" {
+		t.Errorf("expected value 'ok', got %q", value)
 	}
 
 	if !softLimitCalled {
@@ -433,8 +496,8 @@ func TestSoftLimit(t *testing.T) {
 	}
 }
 
-// TestExtractionError tests that extraction errors are properly handled.
-func TestExtractionError(t *testing.T) {
+// TestAutoWrap tests that terminal tools without ProcessEffect are auto-wrapped.
+func TestAutoWrap(t *testing.T) {
 	ctx := context.Background()
 	cm := contextmgr.NewContextManager()
 	logger := logx.NewLogger("test")
@@ -450,8 +513,10 @@ func TestExtractionError(t *testing.T) {
 		},
 	}
 
+	// Terminal tool that doesn't return ProcessEffect - should be auto-wrapped
 	terminalTool := &mockTerminalTool{
 		name: "submit",
+		// No execFunc - will use default that doesn't return ProcessEffect
 		extractFunc: func(_ []agent.ToolCall, _ []any) (string, error) {
 			return "", errors.New("extraction failed: missing required data")
 		},
@@ -469,19 +534,24 @@ func TestExtractionError(t *testing.T) {
 
 	out := toolloop.Run(loop, ctx, cfg)
 
-	if out.Kind != toolloop.OutcomeExtractionError {
-		t.Fatalf("expected OutcomeExtractionError, got %v", out.Kind)
+	// Should succeed with auto-wrap, not fail with extraction error
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("expected OutcomeProcessEffect (auto-wrapped), got %v with error: %v", out.Kind, out.Err)
 	}
 
-	if out.Err == nil {
-		t.Fatal("expected extraction error, got nil")
-	}
-	if out.Err.Error() != "result extraction failed: extraction failed: missing required data" {
-		t.Errorf("expected 'result extraction failed: extraction failed: missing required data', got %v", out.Err)
+	if out.Signal != "TERMINAL_COMPLETE" {
+		t.Errorf("expected auto-wrap signal 'TERMINAL_COMPLETE', got %q", out.Signal)
 	}
 
-	if out.Value != "" {
-		t.Errorf("expected empty result on error, got %q", out.Value)
+	// Verify auto-wrap EffectData contains tool name
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		t.Fatalf("expected EffectData to be map[string]any, got %T", out.EffectData)
+	}
+
+	toolName, _ := effectData["tool"].(string)
+	if toolName != "submit" {
+		t.Errorf("expected tool name 'submit' in auto-wrap data, got %q", toolName)
 	}
 }
 
@@ -505,6 +575,18 @@ func TestNoTerminalTool(t *testing.T) {
 
 	terminalTool := &mockTerminalTool{
 		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			// Return ProcessEffect with signal and data
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "SUBMIT_COMPLETE",
+					Data: map[string]any{
+						"value": "done",
+					},
+				},
+			}, nil
+		},
 		extractFunc: func(calls []agent.ToolCall, _ []any) (string, error) {
 			for i := range calls {
 				if calls[i].Name == "submit" {
@@ -526,12 +608,23 @@ func TestNoTerminalTool(t *testing.T) {
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
-	if out.Kind != toolloop.OutcomeSuccess {
-		t.Fatalf("unexpected error: %v", out.Err)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("unexpected outcome: %v, error: %v", out.Kind, out.Err)
 	}
 
-	if out.Value != "done" {
-		t.Errorf("expected result 'done', got %q", out.Value)
+	if out.Signal != "SUBMIT_COMPLETE" {
+		t.Errorf("expected signal 'SUBMIT_COMPLETE', got %q", out.Signal)
+	}
+
+	// Extract value from EffectData
+	effectData, ok := out.EffectData.(map[string]any)
+	if !ok {
+		t.Fatalf("expected EffectData to be map[string]any, got %T", out.EffectData)
+	}
+
+	value, _ := effectData["value"].(string)
+	if value != "done" {
+		t.Errorf("expected value 'done', got %q", value)
 	}
 
 	if llmClient.callCount != 3 {
@@ -557,7 +650,7 @@ func TestMissingConfig(t *testing.T) {
 		MaxIterations: 5,
 	}
 	out := toolloop.Run(loop, ctx, cfg)
-	if out.Kind == toolloop.OutcomeSuccess || out.Err.Error() != "ContextManager is required" {
+	if out.Kind == toolloop.OutcomeProcessEffect || out.Err.Error() != "ContextManager is required" {
 		t.Errorf("expected ContextManager required error, got %v", out.Err)
 	}
 
@@ -567,7 +660,7 @@ func TestMissingConfig(t *testing.T) {
 		MaxIterations:  5,
 	}
 	out = toolloop.Run(loop, ctx, cfg)
-	if out.Kind == toolloop.OutcomeSuccess || out.Err.Error() != "TerminalTool is required - every toolloop must have exactly one terminal tool" {
+	if out.Kind == toolloop.OutcomeProcessEffect || out.Err.Error() != "TerminalTool is required - every toolloop must have exactly one terminal tool" {
 		t.Errorf("expected TerminalTool required error, got %v", out.Err)
 	}
 }

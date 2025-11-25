@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"orchestrator/pkg/proto"
@@ -211,37 +210,37 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 		}
 	}
 
-	// Mode 1: Story already complete - no coding needed
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
 	if isCompleteBool {
-		result := map[string]any{
-			"success":             true,
-			"message":             "Story marked as complete, requesting architect verification",
-			"plan":                planStr, // Contains evidence
-			"confidence":          confidenceStr,
-			"exploration_summary": explorationSummary,
-			"knowledge_pack":      knowledgePack,
-			"next_state":          "STORY_COMPLETE",
-		}
-		content, err := json.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		return &ExecResult{Content: string(content)}, nil
+		// Mode 1: Story already complete - no coding needed
+		return &ExecResult{
+			Content: "Story marked as complete, requesting architect verification",
+			ProcessEffect: &ProcessEffect{
+				Signal: SignalPlanReview, // Uses same signal, state machine checks is_complete flag
+				Data: map[string]any{
+					"is_complete":         true,
+					"plan":                planStr, // Contains evidence
+					"confidence":          confidenceStr,
+					"exploration_summary": explorationSummary,
+					"knowledge_pack":      knowledgePack,
+				},
+			},
+		}, nil
 	}
 
 	// Mode 2: Implementation plan - will be broken into todos in next phase
-	result := map[string]any{
-		"success":             true,
-		"message":             "Plan submitted successfully, advancing to PLAN_REVIEW for architect approval",
-		"plan":                planStr,
-		"confidence":          confidenceStr,
-		"exploration_summary": explorationSummary,
-		"knowledge_pack":      knowledgePack,
-		"next_state":          "PLAN_REVIEW",
-	}
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-	return &ExecResult{Content: string(content)}, nil
+	return &ExecResult{
+		Content: "Plan submitted successfully, advancing to PLAN_REVIEW for architect approval",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalPlanReview,
+			Data: map[string]any{
+				"is_complete":         false,
+				"plan":                planStr,
+				"confidence":          confidenceStr,
+				"exploration_summary": explorationSummary,
+				"knowledge_pack":      knowledgePack,
+			},
+		},
+	}, nil
 }

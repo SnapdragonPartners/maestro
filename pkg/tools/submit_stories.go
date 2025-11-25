@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -137,20 +136,17 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 		}
 	}
 
-	// Return structured data directly (no JSON round-trip needed)
-	// The architect will convert this to Requirements directly
-	result := map[string]any{
-		"success":      true,
-		"action":       "submit",
-		"analysis":     analysis,
-		"platform":     platform,
-		"requirements": requirements,
-	}
-
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	return &ExecResult{Content: string(content)}, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: fmt.Sprintf("Stories submitted successfully (%d requirements identified for platform: %s)", len(requirements), platform),
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalStoriesSubmitted,
+			Data: map[string]any{
+				"analysis":     analysis,
+				"platform":     platform,
+				"requirements": requirements,
+			},
+		},
+	}, nil
 }

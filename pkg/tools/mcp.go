@@ -67,9 +67,29 @@ type ToolResult struct {
 //
 //nolint:govet // Field alignment optimization not critical for this effect type
 type ProcessEffect struct {
-	Signal string // State to transition to (use state constants, e.g., string(coder.StateQuestion))
+	Signal string // State to transition to (use signal constants, e.g., SignalReplySubmitted)
 	Data   any    // Optional data for the effect (e.g., question text, budget info)
 }
+
+// ProcessEffect signal constants - use these instead of magic strings.
+// These represent the signals that tools return to pause toolloop execution
+// and allow state machines to process async effects.
+const (
+	// PM signals.
+	SignalSpecPreview       = "SPEC_PREVIEW"       // spec_submit tool ready for user review
+	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE" // bootstrap tool completed configuration
+	SignalAwaitUser         = "AWAIT_USER"         // chat_ask_user tool waiting for human response
+
+	// Architect signals.
+	SignalReplySubmitted   = "REPLY_SUBMITTED"   // submit_reply tool answered question
+	SignalReviewComplete   = "REVIEW_COMPLETE"   // review_complete tool finished code review
+	SignalStoriesSubmitted = "STORIES_SUBMITTED" // submit_stories tool submitted story list
+
+	// Coder signals.
+	SignalPlanReview = "PLAN_REVIEW" // submit_plan tool ready for architect review
+	SignalCoding     = "CODING"      // todos_add tool ready to start coding
+	SignalTesting    = "TESTING"     // done tool ready for testing phase
+)
 
 // ExecResult is the result of executing a tool.
 // Tools return this to indicate what the LLM should see and whether to pause the loop.

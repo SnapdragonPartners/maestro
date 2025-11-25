@@ -23,11 +23,8 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-// Tool signal constants.
-const (
-	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
-	signalReviewComplete        = "REVIEW_COMPLETE"
-)
+// Tool signal constants - all signals now use centralized constants from tools package.
+// See tools.Signal* constants for the complete list.
 
 // KnowledgeEntry represents a knowledge graph entry to be persisted.
 //

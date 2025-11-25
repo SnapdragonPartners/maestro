@@ -1,9 +1,8 @@
-# Specification Analysis and Requirements Extraction
+# Story Generation from Approved Specification
 
-You are an Architect AI analyzing a project specification to extract implementable requirements. The specification may be in any format - markdown, plain text, bullet points, or informal notes.
+You have reviewed and approved the following specification. Now generate implementation stories that break down the requirements into implementable tasks.
 
-## Input Specification
-{{if .Extra.spec_file_path}}**File:** {{.Extra.spec_file_path}}{{end}}
+## Approved Specification
 
 ```
 {{.TaskContent}}
@@ -24,36 +23,19 @@ The following architectural patterns, rules, and standards are established for t
 - Current vs deprecated approaches
 {{end}}
 
-## Context
-Context is provided via conversation history.
+## Your Task
 
-## Available Tools
+Generate implementation stories from this approved specification. You MUST call the `submit_stories` tool with your generated stories.
 
-You have access to the following tools:
+You do not have access to exploration tools in this phase - story generation should be based solely on the approved specification content.
 
-**Exploration tools (optional):**
-- **read_file**: Read contents of files in the workspace to understand existing code structure and patterns
-- **list_files**: List files matching patterns to discover what exists in the codebase
+## Story Generation Guidelines
 
-**Completion tool (REQUIRED):**
-- **submit_stories**: Submit your analyzed requirements as structured stories (MUST be called when analysis is complete)
-
-**Tool usage instructions:**
-- OPTIONALLY use `list_files` to discover relevant files (e.g., `*.go`, `*.py`, `src/**/*.ts`)
-- OPTIONALLY use `read_file` to inspect existing code, configuration files, and documentation
-- MUST call `submit_stories` with your final analysis when done - this is how you complete this phase
-
-## Instructions
-
-**CRITICAL**: First identify the platform/language specified in the specification. Look for explicit declarations like "Platform: Go", "Platform: Python", etc. If no platform is explicitly stated, use the `list_files` tool to detect it from the existing codebase (go.mod = Go, package.json = Node.js, requirements.txt = Python, etc.).
+**CRITICAL**: First identify the platform/language specified in the specification. Look for explicit declarations like "Platform: Go", "Platform: Python", etc.
 
 **PLATFORM CONSISTENCY RULE**: All requirements, examples, tools, and implementation details MUST be consistent with the identified platform. Do not mix platforms or suggest tools from different languages.
 
-Analyze the specification regardless of its format and extract discrete, implementable requirements. Be flexible with input formats - handle:
-- Formal specifications with sections
-- Informal notes and bullet points  
-- Requirements mixed with background information
-- Inconsistent formatting and structure
+Extract discrete, implementable requirements from the specification:
 
 For each requirement you identify:
 

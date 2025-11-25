@@ -10,19 +10,151 @@ This document demonstrates the ProcessEffect pattern implementation using `ask_q
 
 **Solution**: Tools return `ProcessEffect` to signal "pause this loop, process async effect, then resume."
 
+## Architecture: Tool vs State Machine Responsibilities
+
+### Core Principle: Tools Are Stateless, State Machines Have Context
+
+**Tools' Responsibility:**
+- Extract and validate data from LLM parameters
+- Return human-readable messages for LLM context (`ExecResult.Content`)
+- Return structured data for state machine processing (`ProcessEffect.Data`)
+- **Tools do NOT create Effects** - they don't have enough context
+
+**State Machine's Responsibility:**
+- Extract data from `ProcessEffect.Data`
+- Add system context (agent ID, story ID, session info)
+- **State machine creates Effects** with complete context
+- Store data in state for subsequent state transitions
+
+**Why This Separation:**
+1. **Tools are pure functions** - No access to agent state, story context, session info
+2. **Effects need full context** - For dispatcher routing, persistence, audit trails
+3. **State machines orchestrate** - They know who, what, when, why
+
+### Example: ask_question Flow
+
+**Tool (Stateless):**
+```go
+func (a *AskQuestionTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
+    // Extract from LLM parameters
+    question := args["question"].(string)
+    context := args["context"].(string)
+
+    return &ExecResult{
+        Content: "Question submitted to architect", // For LLM context
+        ProcessEffect: &ProcessEffect{
+            Signal: "QUESTION",
+            Data: map[string]string{  // Raw data for state machine
+                "question": question,
+                "context":  context,
+                "urgency":  urgency,
+            },
+        },
+    }, nil
+}
+```
+
+**State Machine (Has Context):**
+```go
+case toolloop.OutcomeProcessEffect:
+    if out.Signal == "QUESTION" {
+        // Extract raw data from tool
+        effectData := out.EffectData.(map[string]string)
+
+        // State machine creates Effect with full context
+        effect := effect.NewQuestionEffect(
+            c.storyID,              // State machine knows this
+            c.GetAgentID(),         // State machine knows this
+            effectData["question"], // From tool
+            effectData["context"],  // From tool
+        )
+
+        // Store and transition
+        sm.SetStateData("pending_question", effect)
+        return StateQuestion, false, nil
+    }
+```
+
+## ExecResult Fields: Content vs ProcessEffect.Data
+
+### Content Field - For LLM Context Only
+
+**Purpose:** Human-readable message added to LLM conversation history
+
+**Added to context via:** `contextManager.AddToolResult(toolCall.ID, content, isError)`
+
+**Examples:**
+- `"Question submitted to architect"`
+- `"Specification accepted and ready for review"`
+- `"File created successfully: src/main.go"`
+- Empty string = auto-generated "Tool executed successfully"
+
+**NOT for:** Structured data extraction by state machine
+
+### ProcessEffect.Data Field - For State Machine Processing
+
+**Purpose:** Structured data that state machine needs to create Effects or make decisions
+
+**Accessed via:** `out.EffectData` in state machine after `OutcomeProcessEffect`
+
+**Examples:**
+- Question details: `{question, context, urgency}`
+- Spec content: `{spec_markdown, metadata, bootstrap_params}`
+- File paths: `{file_path, content_preview}`
+
+**NOT for:** LLM context (LLM only sees Content string)
+
+### Anti-Pattern: Returning JSON in Content
+
+❌ **Wrong:**
+```go
+// Tool returns structured data as JSON string in Content
+result := map[string]any{
+    "spec_markdown": markdown,
+    "metadata": metadata,
+}
+content, _ := json.Marshal(result)
+return &ExecResult{Content: string(content)}, nil
+```
+
+**Problems:**
+1. LLM sees ugly JSON in context instead of human-readable message
+2. State machine must parse JSON from `results[]` array (brittle)
+3. Violates separation: Content is for LLM, Data is for state machine
+
+✅ **Correct:**
+```go
+// Tool returns human message in Content, structured data in ProcessEffect.Data
+return &ExecResult{
+    Content: "Specification submitted successfully",
+    ProcessEffect: &ProcessEffect{
+        Signal: "SPEC_PREVIEW",
+        Data: map[string]any{
+            "spec_markdown": markdown,
+            "metadata": metadata,
+        },
+    },
+}, nil
+```
+
+**Benefits:**
+1. LLM sees clean status message
+2. State machine extracts typed data from `out.EffectData`
+3. Clear separation of concerns
+
 ## Key Components
 
 ### 1. ProcessEffect Type (`pkg/tools/mcp.go`)
 
 ```go
 type ProcessEffect struct {
-    Signal string // e.g., "QUESTION", "BUDGET_REVIEW"
-    Data   any    // Question data, budget info, etc.
+    Signal string // e.g., "QUESTION", "BUDGET_REVIEW", "SPEC_PREVIEW"
+    Data   any    // Structured data for state machine (NOT added to LLM context)
 }
 
 type ExecResult struct {
-    Result        any            // Optional rich output for LLM (nil = auto-ack)
-    ProcessEffect *ProcessEffect // nil = continue, non-nil = pause
+    Content       string         // Human-readable message for LLM context
+    ProcessEffect *ProcessEffect // nil = continue, non-nil = pause loop
 }
 ```
 

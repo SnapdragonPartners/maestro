@@ -24,31 +24,38 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 
 	d.logger.Info("📄 Spec content length: %d bytes", len(specMarkdown))
 
-	// Prepare template data for spec review
-	templateData := &templates.TemplateData{
-		TaskContent: specMarkdown,
-		Extra: map[string]any{
-			"mode":   "spec_review",
-			"reason": approvalPayload.Reason,
-		},
-	}
-
-	// Render spec review template
-	prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, templateData, d.workDir, "ARCHITECT")
-	if err != nil {
-		return nil, fmt.Errorf("failed to render spec review template: %w", err)
-	}
-
 	// Get agent-specific context (PM agent)
 	agentID := requestMsg.FromAgent
 	cm := d.getContextForAgent(agentID)
 
-	// Add spec review prompt as user message to preserve context continuity
-	cm.AddMessage("architect-spec-review-prompt", prompt)
+	// Check if this is a resubmission (context already has spec review prompt)
+	isResubmission := len(cm.GetMessages()) > 0
 
-	// Add initial user message to start the conversation properly
-	// This prevents FlushUserBuffer from adding a fallback message
-	cm.AddMessage("user", "Please analyze this specification.")
+	// Only add spec review prompt for initial submission
+	if !isResubmission {
+		// Prepare template data for spec review
+		templateData := &templates.TemplateData{
+			TaskContent: specMarkdown,
+			Extra: map[string]any{
+				"reason": approvalPayload.Reason,
+			},
+		}
+
+		// Render spec review template (first toolloop phase)
+		prompt, err := d.renderer.RenderWithUserInstructions(templates.SpecReviewTemplate, templateData, d.workDir, "ARCHITECT")
+		if err != nil {
+			return nil, fmt.Errorf("failed to render spec review template: %w", err)
+		}
+
+		// Add spec review prompt as user message to start the conversation
+		cm.AddMessage("user", prompt)
+		d.logger.Info("📝 Added spec review prompt to context (initial submission)")
+	} else {
+		// Resubmission - just add updated spec content as user message
+		resubmitMsg := fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n```\n%s\n```", specMarkdown)
+		cm.AddMessage("user", resubmitMsg)
+		d.logger.Info("📝 Added revised spec to context (resubmission)")
+	}
 
 	// FIRST TOOLLOOP: Iterative spec review with review_complete
 	// Get review_complete tool and general tools (read_file, list_files)
@@ -71,7 +78,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	}
 
 	// Wrap review_complete as terminal tool
-	terminalTool := NewReviewCompleteTool(reviewCompleteTool)
+	terminalTool := reviewCompleteTool
 
 	// Run first toolloop: iterative review with review_complete
 	d.logger.Info("🔍 Starting iterative spec review loop")
@@ -86,19 +93,26 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	})
 
 	// Handle review outcome
-	if reviewOut.Kind != toolloop.OutcomeSuccess {
+	if reviewOut.Kind != toolloop.OutcomeProcessEffect {
 		return nil, fmt.Errorf("spec review failed: %w", reviewOut.Err)
 	}
 
-	if reviewOut.Signal != signalReviewComplete {
+	if reviewOut.Signal != tools.SignalReviewComplete {
 		return nil, fmt.Errorf("expected REVIEW_COMPLETE signal, got: %s", reviewOut.Signal)
 	}
 
-	d.logger.Info("✅ Spec review completed with status: %s", reviewOut.Value.Status)
+	// Extract review data from ProcessEffect.Data
+	effectData, ok := reviewOut.EffectData.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", reviewOut.EffectData)
+	}
+
+	status, _ := effectData["status"].(string)
+	feedback, _ := effectData["feedback"].(string)
+
+	d.logger.Info("✅ Spec review completed with status: %s", status)
 
 	// Extract review decision
-	status := reviewOut.Value.Status
-	feedback := reviewOut.Value.Feedback
 	approved := (status == "APPROVED")
 
 	// If NOT approved, return feedback immediately (no story generation)
@@ -147,24 +161,23 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("submit_stories tool not found")
 	}
 
-	// Create story generation prompt
-	storyGenPrompt := fmt.Sprintf(`You have approved the specification. Now generate implementation stories using the submit_stories tool.
+	// Prepare template data for story generation
+	storyGenData := &templates.TemplateData{
+		TaskContent: specMarkdown,
+		Extra:       map[string]any{},
+	}
 
-The specification you approved:
-%s
-
-Generate clear, actionable stories that break down the implementation into manageable tasks. Each story should have:
-- Clear title and description
-- Specific acceptance criteria
-- Appropriate dependencies
-
-Call submit_stories with the generated stories.`, specMarkdown)
+	// Render story generation template (second toolloop phase)
+	storyGenPrompt, err := d.renderer.RenderWithUserInstructions(templates.SpecAnalysisTemplate, storyGenData, d.workDir, "ARCHITECT")
+	if err != nil {
+		return nil, fmt.Errorf("failed to render story generation template: %w", err)
+	}
 
 	// Add story generation prompt to context
-	cm.AddMessage("architect-story-generation", storyGenPrompt)
+	cm.AddMessage("user", storyGenPrompt)
 
 	// Wrap submit_stories as terminal tool
-	storiesTerminal := NewSubmitStoriesTool(submitStoriesTool)
+	storiesTerminal := submitStoriesTool
 
 	// Run second toolloop: single-pass story generation
 	storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
@@ -179,20 +192,26 @@ Call submit_stories with the generated stories.`, specMarkdown)
 	})
 
 	// Handle story generation outcome
-	if storiesOut.Kind != toolloop.OutcomeSuccess {
+	if storiesOut.Kind != toolloop.OutcomeProcessEffect {
 		return nil, fmt.Errorf("story generation failed: %w", storiesOut.Err)
 	}
 
-	if storiesOut.Signal != signalSubmitStoriesComplete {
-		return nil, fmt.Errorf("expected SUBMIT_STORIES signal, got: %s", storiesOut.Signal)
+	if storiesOut.Signal != tools.SignalStoriesSubmitted {
+		return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
+	}
+
+	// Extract stories data from ProcessEffect.Data
+	effectData, ok = storiesOut.EffectData.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("STORIES_SUBMITTED effect data is not map[string]any: %T", storiesOut.EffectData)
 	}
 
 	d.logger.Info("✅ Stories generated successfully")
 
-	// Load stories into queue
-	specID, storyIDs, err := d.loadStoriesFromSubmitResult(ctx, specMarkdown)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load stories after approval: %w", err)
+	// Load stories into queue (pass effectData instead of out.Value)
+	specID, storyIDs, loadErr := d.loadStoriesFromSubmitResultData(ctx, specMarkdown, effectData)
+	if loadErr != nil {
+		return nil, fmt.Errorf("failed to load stories after approval: %w", loadErr)
 	}
 
 	feedback = fmt.Sprintf("Spec approved - %d stories generated successfully (spec_id: %s)", len(storyIDs), specID)

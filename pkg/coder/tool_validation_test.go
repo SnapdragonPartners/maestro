@@ -186,27 +186,31 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Fatal("Expected non-nil result")
 	}
 
-	// Tools now return *ExecResult with JSON-marshaled data in Content
-	var resultMap map[string]any
-	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
-		t.Fatalf("Failed to unmarshal result content: %v", err)
+	// Tools now return data via ProcessEffect.Data
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be present")
+	}
+
+	if result.ProcessEffect.Signal != tools.SignalPlanReview {
+		t.Errorf("Expected signal %s, got: %s", tools.SignalPlanReview, result.ProcessEffect.Signal)
+	}
+
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
 	}
 
 	// Validate result structure.
-	if success, exists := resultMap["success"]; !exists || success != true {
-		t.Error("Expected success field to be true")
+	if plan, exists := data["plan"]; !exists || plan != validArgs["plan"] {
+		t.Error("Expected plan to be preserved in ProcessEffect.Data")
 	}
 
-	if plan, exists := resultMap["plan"]; !exists || plan != validArgs["plan"] {
-		t.Error("Expected plan to be preserved in result")
+	if confidence, exists := data["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
+		t.Error("Expected confidence to be preserved in ProcessEffect.Data")
 	}
 
-	if confidence, exists := resultMap["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
-		t.Error("Expected confidence to be preserved")
-	}
-
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != string(StatePlanReview) {
-		t.Error("Expected next_state to be PLAN_REVIEW")
+	if isComplete, exists := data["is_complete"]; !exists || isComplete != false {
+		t.Error("Expected is_complete=false in ProcessEffect.Data")
 	}
 }
 

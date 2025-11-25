@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -54,18 +53,15 @@ func (t *SubmitReplyTool) Exec(_ context.Context, args map[string]any) (*ExecRes
 		return nil, fmt.Errorf("response is required and must be a non-empty string")
 	}
 
-	// Return special signal that iteration loop should terminate
-	// The state handler will check for action="submit" to know to exit
-	result := map[string]any{
-		"success":  true,
-		"action":   "submit",
-		"response": response,
-	}
-
-	content, err := json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-
-	return &ExecResult{Content: string(content)}, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: "Reply submitted successfully",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalReplySubmitted,
+			Data: map[string]any{
+				"response": response,
+			},
+		},
+	}, nil
 }
