@@ -16,13 +16,16 @@ import (
 func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	d.logger.Info("🔍 Architect reviewing spec from PM")
 
-	// Extract spec markdown from Content (the critical field for approval requests)
-	specMarkdown := approvalPayload.Content
-	if specMarkdown == "" {
-		return nil, fmt.Errorf("spec markdown not found in approval request Content field")
+	// Extract spec markdown from Content (user requirements)
+	userSpec := approvalPayload.Content
+	if userSpec == "" {
+		return nil, fmt.Errorf("user spec not found in approval request Content field")
 	}
 
-	d.logger.Info("📄 Spec content length: %d bytes", len(specMarkdown))
+	// Extract infrastructure spec (bootstrap requirements) if present
+	infrastructureSpec := approvalPayload.InfrastructureSpec
+
+	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes", len(userSpec), len(infrastructureSpec))
 
 	// Get agent-specific context (PM agent)
 	agentID := requestMsg.FromAgent
@@ -35,9 +38,10 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	if !isResubmission {
 		// Prepare template data for spec review
 		templateData := &templates.TemplateData{
-			TaskContent: specMarkdown,
+			TaskContent: userSpec, // User requirements in main content
 			Extra: map[string]any{
-				"reason": approvalPayload.Reason,
+				"reason":              approvalPayload.Reason,
+				"infrastructure_spec": infrastructureSpec, // Infrastructure requirements (bootstrap) if any
 			},
 		}
 
@@ -51,8 +55,8 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		cm.AddMessage("user", prompt)
 		d.logger.Info("📝 Added spec review prompt to context (initial submission)")
 	} else {
-		// Resubmission - just add updated spec content as user message
-		resubmitMsg := fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n```\n%s\n```", specMarkdown)
+		// Resubmission - add updated spec content as user message (user requirements only)
+		resubmitMsg := fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n```\n%s\n```", userSpec)
 		cm.AddMessage("user", resubmitMsg)
 		d.logger.Info("📝 Added revised spec to context (resubmission)")
 	}
@@ -161,9 +165,15 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("submit_stories tool not found")
 	}
 
+	// For story generation, concatenate infrastructure + user specs (stories need complete spec)
+	completeSpec := userSpec
+	if infrastructureSpec != "" {
+		completeSpec = infrastructureSpec + "\n\n" + userSpec
+	}
+
 	// Prepare template data for story generation
 	storyGenData := &templates.TemplateData{
-		TaskContent: specMarkdown,
+		TaskContent: completeSpec,
 		Extra:       map[string]any{},
 	}
 
@@ -208,8 +218,8 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 
 	d.logger.Info("✅ Stories generated successfully")
 
-	// Load stories into queue (pass effectData instead of out.Value)
-	specID, storyIDs, loadErr := d.loadStoriesFromSubmitResultData(ctx, specMarkdown, effectData)
+	// Load stories into queue (pass effectData and complete spec instead of out.Value)
+	specID, storyIDs, loadErr := d.loadStoriesFromSubmitResultData(ctx, completeSpec, effectData)
 	if loadErr != nil {
 		return nil, fmt.Errorf("failed to load stories after approval: %w", loadErr)
 	}

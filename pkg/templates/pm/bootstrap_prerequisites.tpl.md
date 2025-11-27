@@ -38,23 +38,20 @@ Coders have access to container management tools:
 **Description:**
 Create `.maestro/knowledge.dot` file with initial architectural patterns and rules. This establishes the foundational documentation structure for the project. The knowledge graph is REQUIRED for the architect to function - it cannot operate without this file.
 
-The default knowledge graph includes six core patterns and rules:
-- **error-handling**: Pattern for wrapping errors with context using fmt.Errorf
-- **api-standards**: Rule for REST API OpenAPI 3.0 compliance
-- **test-coverage**: Rule requiring 80% minimum test coverage (critical priority)
+The architect will select appropriate initial patterns and rules based on the project platform and requirements. Common examples include:
 - **code-style**: Pattern for following language-specific style guides
 - **logging-standards**: Pattern for structured logging with appropriate levels
-- **security-headers**: Rule for HTTP security headers (critical priority)
+- **error-handling**: Pattern for error handling appropriate to the platform
+- Additional patterns/rules as appropriate for the specific platform and application type (e.g., API standards, security requirements, testing guidelines)
 
 **Acceptance Criteria:**
 - [ ] File created at `.maestro/knowledge.dot`
 - [ ] Contains valid DOT format digraph named "ProjectKnowledge"
-- [ ] Includes six default nodes with proper attributes:
+- [ ] Includes at least one node (required for validation) with proper attributes appropriate to the platform:
   - Required attributes: type (pattern|rule), level (architecture|implementation), status (current|deprecated|future|legacy), description (non-empty)
   - Optional attributes: tag, component, path, example
   - Rules must have priority (critical|high|medium|low)
-- [ ] Two nodes marked as critical priority (test-coverage, security-headers)
-- [ ] Platform-agnostic content suitable for any project
+- [ ] Content is appropriate for the project's platform and application type
 - [ ] File validates as syntactically correct DOT format
 
 **Reference Documentation:** Detailed format specification is available at `.maestro/DOC_GRAPH.md` in the repository for coders who need additional context

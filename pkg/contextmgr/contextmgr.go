@@ -451,6 +451,7 @@ func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {
 func (cm *ContextManager) Clear() {
 	cm.messages = cm.messages[:0]
 	cm.userBuffer = cm.userBuffer[:0]
+	cm.pendingToolResults = nil // Also clear pending tool results
 }
 
 // GetMessageCount returns the number of messages in the context.

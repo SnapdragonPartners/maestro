@@ -114,6 +114,9 @@ func (d *Driver) setupInterviewContext() error {
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
+	// Check if bootstrap markdown already exists in state (indicates bootstrap config is complete)
+	bootstrapMarkdown, hasBootstrapMarkdown := stateData[StateKeyBootstrapRequirements].(string)
+
 	// Get current config to check for existing values
 	cfg, cfgErr := config.GetConfig()
 
@@ -148,8 +151,9 @@ func (d *Driver) setupInterviewContext() error {
 
 	// Select template based on bootstrap requirements
 	// Single source of truth: use bootstrap detector's methods
+	// BUT: if bootstrap markdown already exists in state, config is complete - skip bootstrap context
 	var templateName templates.StateTemplate
-	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
+	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() && !hasBootstrapMarkdown {
 		if bootstrapReqs.NeedsBootstrapGate() {
 			// Project metadata (name/platform/git) is missing - use focused bootstrap gate template
 			templateName = templates.PMBootstrapGateTemplate
@@ -171,9 +175,14 @@ func (d *Driver) setupInterviewContext() error {
 				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
 		}
 	} else {
-		// No bootstrap requirements - use full interview template
+		// Either no bootstrap needed OR bootstrap config already complete (markdown exists in state)
+		// Use clean interview template without bootstrap context
 		templateName = templates.PMInterviewStartTemplate
-		d.logger.Info("📋 Using full interview template (no bootstrap requirements)")
+		if hasBootstrapMarkdown {
+			d.logger.Info("📋 Using clean interview template (bootstrap config complete, markdown exists: %d bytes)", len(bootstrapMarkdown))
+		} else {
+			d.logger.Info("📋 Using full interview template (no bootstrap requirements)")
+		}
 	}
 
 	// Render selected template
@@ -275,6 +284,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			gitURL, _ := effectData["git_url"].(string)
 			platform, _ := effectData["platform"].(string)
 			bootstrapMarkdown, _ := effectData["bootstrap_markdown"].(string)
+			resetContext, _ := effectData["reset_context"].(bool)
 
 			// Store in state
 			bootstrapParams := map[string]string{
@@ -286,25 +296,28 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
 			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
 
-			// Inject system message to transition from bootstrap mode to full interview mode
-			transitionMsg := fmt.Sprintf(`# Bootstrap Complete
+			// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)
+			if resetContext {
+				d.logger.Info("🔄 Resetting context as requested by bootstrap tool")
+				d.contextManager.Clear()
 
-Project configuration saved successfully:
-- Project: %s
-- Platform: %s
-- Repository: %s
+				// Rebuild context from interview template
+				if setupErr := d.setupInterviewContext(); setupErr != nil {
+					d.logger.Warn("Failed to rebuild interview context: %v", setupErr)
+				} else {
+					d.logger.Info("✅ PM context rebuilt for user requirements gathering")
+				}
 
-You can now proceed with full requirements gathering for this project. You have access to additional tools:
-- **read_file** - Read file contents from the codebase
-- **list_files** - List files in the codebase (path, pattern, recursive)
+				// If spec was uploaded, re-inject it after context reset
+				if specUploaded, _ := d.GetStateData()["spec_uploaded"].(bool); specUploaded {
+					if uploadedSpec, ok := d.GetStateData()["draft_spec_markdown"].(string); ok && uploadedSpec != "" {
+						specMsg := fmt.Sprintf("The user has provided the following specification document. Please extract the **user feature requirements** from it (ignore any infrastructure/bootstrap requirements as those have been handled):\n\n```markdown\n%s\n```", uploadedSpec)
+						d.contextManager.AddMessage("user", specMsg)
+						d.logger.Info("📄 Re-injected uploaded spec (%d bytes) after context reset", len(uploadedSpec))
+					}
+				}
+			}
 
-Begin the feature requirements interview by asking the user about what they want to build.`,
-				projectName, platform, gitURL)
-
-			d.contextManager.AddMessage("system", transitionMsg)
-			d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
-
-			// Continue in WORKING state (not terminal - PM continues interviewing)
 			return "", nil
 
 		case tools.SignalSpecPreview:
@@ -314,15 +327,27 @@ Begin the feature requirements interview by asking the user about what they want
 				return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
 			}
 
-			// Extract spec data from ProcessEffect.Data (not from results array)
-			specMarkdown, _ := effectData["spec_markdown"].(string)
+			// Extract spec data from ProcessEffect.Data (infrastructure and user specs are separate)
+			infrastructureSpec, _ := effectData["infrastructure_spec"].(string)
+			userSpec, _ := effectData["user_spec"].(string)
 			summary, _ := effectData["summary"].(string)
 			metadata, _ := effectData["metadata"].(map[string]any)
 
-			// Store in state for PREVIEW state
-			d.SetStateData("draft_spec_markdown", specMarkdown)
+			// Store both specs separately in state for PREVIEW state and later submission to architect
+			d.SetStateData("infrastructure_spec", infrastructureSpec)
+			d.SetStateData("user_spec", userSpec)
 			d.SetStateData("spec_metadata", metadata)
-			d.logger.Info("📋 Stored spec for preview (%d bytes, summary: %s)", len(specMarkdown), summary)
+
+			// For backward compatibility with WebUI preview, concatenate for display
+			// (WebUI expects draft_spec_markdown for preview display)
+			draftSpecMarkdown := userSpec
+			if infrastructureSpec != "" {
+				draftSpecMarkdown = infrastructureSpec + "\n\n" + userSpec
+			}
+			d.SetStateData("draft_spec_markdown", draftSpecMarkdown)
+
+			d.logger.Info("📋 Stored spec for preview (infrastructure: %d bytes, user: %d bytes, summary: %s)",
+				len(infrastructureSpec), len(userSpec), summary)
 
 			return SignalSpecPreview, nil
 
@@ -414,19 +439,22 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	// Get state data
 	stateData := d.GetStateData()
 
-	// Get spec markdown from state
-	specMarkdown, ok := stateData["spec_markdown"].(string)
-	if !ok || specMarkdown == "" {
-		return fmt.Errorf("no spec_markdown found in state")
+	// Get infrastructure and user specs from state
+	infrastructureSpec, _ := stateData["infrastructure_spec"].(string)
+	userSpec, ok := stateData["user_spec"].(string)
+	if !ok || userSpec == "" {
+		return fmt.Errorf("no user_spec found in state")
 	}
 
-	// Create approval request payload
+	// Create approval request payload with both specs
+	// Content field contains user requirements, InfrastructureSpec is separate
 	approvalPayload := &proto.ApprovalRequestPayload{
-		ApprovalType: proto.ApprovalTypeSpec,
-		Content:      specMarkdown,
-		Reason:       "PM has completed specification and requests architect review",
-		Context:      "Specification ready for validation and story generation",
-		Confidence:   proto.ConfidenceHigh,
+		ApprovalType:       proto.ApprovalTypeSpec,
+		Content:            userSpec,           // User requirements only
+		InfrastructureSpec: infrastructureSpec, // Infrastructure requirements (bootstrap) if any
+		Reason:             "PM has completed specification and requests architect review",
+		Context:            "Specification ready for validation and story generation",
+		Confidence:         proto.ConfidenceHigh,
 	}
 
 	// Create REQUEST message
@@ -445,7 +473,8 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 
 	// Store pending request ID for tracking
 	d.SetStateData("pending_request_id", requestMsg.ID)
-	d.logger.Info("📤 Sent spec approval REQUEST to architect (id: %s)", requestMsg.ID)
+	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, infrastructure: %d bytes, id: %s)",
+		len(userSpec), len(infrastructureSpec), requestMsg.ID)
 
 	return nil
 }

@@ -176,6 +176,7 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 				"git_url":            gitURL,
 				"platform":           platform,
 				"bootstrap_markdown": bootstrapMarkdown, // Rendered markdown for PM to store
+				"reset_context":      true,              // Signal PM to reset context after this tool
 			},
 		},
 	}, nil

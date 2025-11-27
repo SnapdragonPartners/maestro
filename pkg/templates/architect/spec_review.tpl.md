@@ -2,7 +2,23 @@
 
 The PM has submitted or resubmitted the following specification for your review.
 
-## Specification Content
+{{if .Extra.infrastructure_spec}}
+## Infrastructure Prerequisites (Minimum Baseline)
+
+The following infrastructure requirements represent the **minimum baseline** needed prior to any application development. These affect the functionality of all coding agents and are non-negotiable.
+
+**Important:**
+- User requirements below may **enhance or add detail** to these baseline requirements
+- User requirements **cannot reduce or contradict** these minimums
+- If user requirements appear to conflict with infrastructure requirements, the user requirements take precedence only if they are **more comprehensive** (e.g., user specifies detailed testing requirements that supersede the baseline)
+- You should resolve any apparent contradictions by choosing the more complete/comprehensive approach without requesting PM clarification
+
+```
+{{.Extra.infrastructure_spec}}
+```
+
+{{end}}
+## User Requirements
 
 ```
 {{.TaskContent}}
@@ -43,7 +59,7 @@ Review this specification for completeness, clarity, and implementability. You m
 3. **Feasibility**: Are requirements technically feasible?
 4. **Platform Consistency**: Are all requirements appropriate for the project's platform/language?
 5. **Missing Information**: Are there gaps that need clarification?
-6. **Bootstrap/User Conflicts**: If bootstrap prerequisites and user requirements contradict, use your judgment to harmonize them. Bootstrap requirements generally supersede user requirements when they impact coder functionality (e.g., build tools, linting setup, containerization). Make reasonable decisions to resolve conflicts rather than requesting PM clarification unless the contradiction is fundamental.
+6. **Requirement Harmonization**: When user requirements overlap with infrastructure baselines, ensure the more comprehensive approach is taken (user requirements can enhance but not reduce infrastructure minimums)
 
 **Decision Criteria:**
 

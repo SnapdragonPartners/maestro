@@ -79,10 +79,16 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
 	}
 
-	// Verify spec_markdown is present
-	specMarkdown, ok := data["spec_markdown"].(string)
-	if !ok || specMarkdown == "" {
-		t.Errorf("Expected spec_markdown in ProcessEffect.Data, got: %v", data)
+	// Verify user_spec is present
+	userSpec, ok := data["user_spec"].(string)
+	if !ok || userSpec == "" {
+		t.Errorf("Expected user_spec in ProcessEffect.Data, got: %v", data)
+	}
+
+	// Verify infrastructure_spec is present (can be empty)
+	_, ok = data["infrastructure_spec"].(string)
+	if !ok {
+		t.Errorf("Expected infrastructure_spec in ProcessEffect.Data, got: %v", data)
 	}
 
 	// Verify metadata is present
@@ -135,10 +141,16 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
 	}
 
-	// Verify spec_markdown is present
-	specMarkdown, ok := data["spec_markdown"].(string)
-	if !ok || specMarkdown == "" {
-		t.Errorf("Expected spec_markdown in ProcessEffect.Data, got: %v", data)
+	// Verify user_spec is present
+	userSpec, ok := data["user_spec"].(string)
+	if !ok || userSpec == "" {
+		t.Errorf("Expected user_spec in ProcessEffect.Data, got: %v", data)
+	}
+
+	// Verify infrastructure_spec is present (can be empty)
+	_, ok = data["infrastructure_spec"].(string)
+	if !ok {
+		t.Errorf("Expected infrastructure_spec in ProcessEffect.Data, got: %v", data)
 	}
 
 	// Verify metadata is present (even if incomplete).

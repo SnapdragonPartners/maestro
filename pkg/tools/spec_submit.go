@@ -98,16 +98,9 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 		return nil, fmt.Errorf("summary cannot be empty")
 	}
 
-	// Concatenate bootstrap markdown (if any) with user spec
-	// Bootstrap markdown is injected by PM from state - LLM never sees it
-	finalMarkdown := markdownStr
-	if s.bootstrapMarkdown != "" {
-		finalMarkdown = strings.TrimSpace(s.bootstrapMarkdown) + "\n\n" + strings.TrimSpace(markdownStr)
-	}
-
-	// Parse the specification to extract basic metadata (but don't enforce strict validation).
+	// Parse the user specification to extract basic metadata (but don't enforce strict validation).
 	// The architect will review the spec and provide feedback if needed.
-	spec, err := specs.Parse(finalMarkdown)
+	spec, err := specs.Parse(markdownStr)
 
 	// Build metadata (best effort - use empty values if parsing failed)
 	metadata := map[string]any{}
@@ -125,14 +118,16 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 
 	// Return human-readable message for LLM context
 	// Return structured data via ProcessEffect.Data for state machine
+	// Infrastructure spec (bootstrap markdown) and user spec are kept separate
 	return &ExecResult{
 		Content: "Specification accepted and ready for user review",
 		ProcessEffect: &ProcessEffect{
 			Signal: SignalSpecPreview,
 			Data: map[string]any{
-				"spec_markdown": finalMarkdown, // Final markdown with bootstrap prerequisites
-				"summary":       summaryStr,
-				"metadata":      metadata,
+				"infrastructure_spec": strings.TrimSpace(s.bootstrapMarkdown), // Infrastructure requirements (bootstrap) - empty if none
+				"user_spec":           strings.TrimSpace(markdownStr),         // User requirements (from LLM)
+				"summary":             summaryStr,
+				"metadata":            metadata,
 			},
 		},
 	}, nil
