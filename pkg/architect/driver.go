@@ -698,11 +698,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 	}
 }
 
-// createReadToolProviderForCoder creates a tool provider rooted at a specific coder's workspace.
-// coderID should be the agent ID (e.g., "coder-001").
-// The tools will be rooted at /mnt/coders/{coderID} inside the architect container.
-// includeGetDiff determines whether to include get_diff tool (useful for code reviews, not for questions).
-func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
+// createReviewToolProviderForCoder creates a tool provider for structured reviews (approvals).
+// Includes read_file, list_files, review_complete, and optionally get_diff.
+func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
 
@@ -715,15 +713,40 @@ func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff b
 		Agent:           nil,              // No agent reference needed for read tools
 	}
 
-	// Build tool list: always include read_file, list_files, submit_reply
+	// Build tool list: read tools + review_complete terminal tool
 	// Optionally include get_diff for code reviews
 	allowedTools := []string{
 		tools.ToolReadFile,
 		tools.ToolListFiles,
-		tools.ToolSubmitReply, // Terminal tool for iterative reviews
+		tools.ToolReviewComplete, // Terminal tool for structured reviews
 	}
 	if includeGetDiff {
 		allowedTools = append(allowedTools, tools.ToolGetDiff)
+	}
+
+	return tools.NewProvider(&ctx, allowedTools)
+}
+
+// createQuestionToolProviderForCoder creates a tool provider for answering questions.
+// Includes read_file, list_files, and submit_reply.
+func (d *Driver) createQuestionToolProviderForCoder(coderID string) *tools.ToolProvider {
+	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
+	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
+	ctx := tools.AgentContext{
+		Executor:        d.executor,       // Architect executor with read-only mounts
+		ChatService:     nil,              // No chat service needed for read tools
+		ReadOnly:        true,             // Architect tools are read-only
+		NetworkDisabled: false,            // Network allowed for architect
+		WorkDir:         containerWorkDir, // Use coder's container mount path
+		Agent:           nil,              // No agent reference needed for read tools
+	}
+
+	// Build tool list: read tools + submit_reply terminal tool
+	allowedTools := []string{
+		tools.ToolReadFile,
+		tools.ToolListFiles,
+		tools.ToolSubmitReply, // Terminal tool for text replies
 	}
 
 	return tools.NewProvider(&ctx, allowedTools)

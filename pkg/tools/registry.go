@@ -532,6 +532,14 @@ func getChatAskUserSchema() InputSchema {
 	return NewChatAskUserTool(nil, "").Definition().InputSchema
 }
 
+func createReviewCompleteTool(_ *AgentContext) (Tool, error) {
+	return NewReviewCompleteTool(), nil
+}
+
+func getReviewCompleteSchema() InputSchema {
+	return NewReviewCompleteTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -697,5 +705,12 @@ func init() {
 		Name:        ToolChatAskUser,
 		Description: "Post a question to chat and wait for user response. Use when you need user input before proceeding.",
 		InputSchema: getChatAskUserSchema(),
+	})
+
+	// Register review_complete tool for architect reviews
+	Register(ToolReviewComplete, createReviewCompleteTool, &ToolMeta{
+		Name:        ToolReviewComplete,
+		Description: "Complete a review with decision (APPROVED, NEEDS_CHANGES, or REJECTED) and feedback",
+		InputSchema: getReviewCompleteSchema(),
 	})
 }

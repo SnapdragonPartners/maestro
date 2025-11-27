@@ -724,9 +724,9 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	// Get agent-specific context
 	cm := d.getContextForAgent(coderID)
 
-	// Create tool provider rooted at coder's workspace with get_diff for code reviews
-	toolProvider := d.createReadToolProviderForCoder(coderID, true)
-	d.logger.Debug("Created tool provider for coder %s at /mnt/coders/%s (approval with get_diff)", coderID, coderID)
+	// Create tool provider rooted at coder's workspace with review_complete and get_diff
+	toolProvider := d.createReviewToolProviderForCoder(coderID, true)
+	d.logger.Debug("Created review tool provider for coder %s at /mnt/coders/%s (with get_diff)", coderID, coderID)
 
 	// Build prompt based on approval type
 	var prompt string
@@ -945,8 +945,8 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	cm := d.getContextForAgent(coderID)
 
 	// Build prompt for technical question (on first call only)
-	// Create tool provider rooted at the coder's container workspace (no get_diff for questions)
-	toolProvider := d.createReadToolProviderForCoder(coderID, false)
+	// Create tool provider rooted at the coder's container workspace with submit_reply
+	toolProvider := d.createQuestionToolProviderForCoder(coderID)
 	prompt := d.generateQuestionPrompt(requestMsg, questionPayload, coderID, toolProvider)
 
 	// Add question prompt as user message to preserve context continuity
