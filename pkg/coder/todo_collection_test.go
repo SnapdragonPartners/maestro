@@ -69,26 +69,37 @@ func TestTodoToolValidation(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 
-			// Verify result structure
-			resultMap, ok := result.(map[string]any)
-			if !ok {
-				t.Fatalf("Expected result to be map[string]any, got %T", result)
+			if result == nil {
+				t.Fatal("Expected non-nil result")
 			}
 
-			if success, ok := resultMap["success"].(bool); !ok || !success {
-				t.Error("Expected success=true in result")
+			// Tools now return data via ProcessEffect.Data
+			if result.ProcessEffect == nil {
+				t.Fatal("Expected ProcessEffect to be present")
+			}
+
+			data, ok := result.ProcessEffect.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
 			}
 
 			// Verify tool returns []string (this is what the handler must handle)
-			if validatedTodos, ok := resultMap["todos"].([]string); !ok {
-				t.Errorf("Expected validated todos as []string, got %T", resultMap["todos"])
+			todosRaw, ok := data["todos"]
+			if !ok {
+				t.Error("Expected 'todos' field in ProcessEffect.Data")
 			} else {
-				originalTodos, ok := tt.args["todos"].([]any)
+				// ProcessEffect.Data should already have []string
+				todosArray, ok := todosRaw.([]string)
 				if !ok {
-					t.Fatalf("Test setup error: todos should be []any")
-				}
-				if len(validatedTodos) != len(originalTodos) {
-					t.Errorf("Expected %d validated todos, got %d", len(originalTodos), len(validatedTodos))
+					t.Errorf("Expected todos as []string, got %T", todosRaw)
+				} else {
+					originalTodos, ok := tt.args["todos"].([]any)
+					if !ok {
+						t.Fatalf("Test setup error: todos should be []any")
+					}
+					if len(todosArray) != len(originalTodos) {
+						t.Errorf("Expected %d validated todos, got %d", len(originalTodos), len(todosArray))
+					}
 				}
 			}
 		})

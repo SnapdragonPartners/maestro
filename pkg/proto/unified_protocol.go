@@ -100,12 +100,13 @@ type QuestionResponsePayload struct {
 
 // ApprovalRequestPayload represents the payload for approval requests.
 type ApprovalRequestPayload struct {
-	ApprovalType ApprovalType      `json:"approval_type"`        // Type of approval (plan, code, budget, etc.)
-	Content      string            `json:"content"`              // What needs approval
-	Reason       string            `json:"reason"`               // Why approval is needed
-	Context      string            `json:"context,omitempty"`    // Additional context
-	Confidence   Confidence        `json:"confidence,omitempty"` // Requester's confidence
-	Metadata     map[string]string `json:"metadata,omitempty"`   // Approval-specific metadata
+	ApprovalType       ApprovalType      `json:"approval_type"`                 // Type of approval (plan, code, budget, etc.)
+	Content            string            `json:"content"`                       // What needs approval
+	Reason             string            `json:"reason"`                        // Why approval is needed
+	Context            string            `json:"context,omitempty"`             // Additional context
+	Confidence         Confidence        `json:"confidence,omitempty"`          // Requester's confidence
+	InfrastructureSpec string            `json:"infrastructure_spec,omitempty"` // Infrastructure requirements (bootstrap) - PM spec approval only
+	Metadata           map[string]string `json:"metadata,omitempty"`            // Approval-specific metadata
 }
 
 // ApprovalResponsePayload represents the payload for approval responses.

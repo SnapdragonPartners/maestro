@@ -109,10 +109,8 @@ class PMController {
                 badge.classList.add('bg-green-100', 'text-green-800');
                 break;
             case 'WORKING':
-            case 'AWAIT_USER':
                 badge.classList.add('bg-blue-100', 'text-blue-800');
-                // Auto-switch to interview tab when PM is actively working or awaiting user response
-                // This handles the case where spec upload transitions to WORKING for bootstrap questions
+                // Auto-switch to interview tab when PM transitions from upload to WORKING for bootstrap questions
                 if (this.currentTab === 'upload' && status.has_session) {
                     this.switchTab('interview');
                     // Show chat interface (session is already started by upload)
@@ -123,6 +121,19 @@ class PMController {
                     // Use a pseudo-session ID for spec upload workflow
                     if (!window.maestroUI.pmSessionId) {
                         window.maestroUI.pmSessionId = `pm_upload_${Date.now()}`;
+                    }
+                }
+                break;
+            case 'AWAIT_USER':
+                badge.classList.add('bg-blue-100', 'text-blue-800');
+                // Always switch to interview tab when PM is awaiting user response
+                // This handles both initial interviews and architect feedback cycles
+                if (this.currentTab !== 'interview') {
+                    this.switchTab('interview');
+                    // Ensure chat interface is visible if session exists
+                    if (status.has_session) {
+                        document.getElementById('interview-start-section').classList.add('hidden');
+                        document.getElementById('interview-chat-section').classList.remove('hidden');
                     }
                 }
                 break;

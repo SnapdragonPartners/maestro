@@ -23,12 +23,8 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-// Tool signal constants.
-const (
-	signalSubmitStoriesComplete = "SUBMIT_STORIES_COMPLETE"
-	signalSpecFeedbackSent      = "SPEC_FEEDBACK_SENT"
-	signalReviewComplete        = "REVIEW_COMPLETE"
-)
+// Tool signal constants - all signals now use centralized constants from tools package.
+// See tools.Signal* constants for the complete list.
 
 // KnowledgeEntry represents a knowledge graph entry to be persisted.
 //
@@ -42,44 +38,6 @@ type KnowledgeEntry struct {
 	Rationale string    // Why this is important or why decision was made
 	Scope     string    // Applicability: story, spec, project
 	Timestamp time.Time // When this was recorded
-}
-
-// listToolProvider adapts a slice of tools.Tool to implement toolloop.ToolProvider.
-// This allows architect to use toolloop with its dynamic tool list pattern.
-type listToolProvider struct {
-	toolsMap  map[string]tools.Tool
-	toolsList []tools.Tool
-}
-
-// newListToolProvider creates a ToolProvider from a list of tools.
-func newListToolProvider(toolsList []tools.Tool) *listToolProvider {
-	toolsMap := make(map[string]tools.Tool, len(toolsList))
-	for _, tool := range toolsList {
-		toolsMap[tool.Name()] = tool
-	}
-	return &listToolProvider{
-		toolsList: toolsList,
-		toolsMap:  toolsMap,
-	}
-}
-
-// Get retrieves a tool by name.
-func (p *listToolProvider) Get(name string) (tools.Tool, error) {
-	tool, ok := p.toolsMap[name]
-	if !ok {
-		return nil, fmt.Errorf("tool %s not found", name)
-	}
-	return tool, nil
-}
-
-// List returns tool metadata for all tools.
-func (p *listToolProvider) List() []tools.ToolMeta {
-	metas := make([]tools.ToolMeta, len(p.toolsList))
-	for i, tool := range p.toolsList {
-		def := tool.Definition()
-		metas[i] = tools.ToolMeta(def)
-	}
-	return metas
 }
 
 // Driver manages the state machine for an architect workflow.
@@ -632,72 +590,6 @@ func convertContextMessages(contextMessages []contextmgr.Message) []agent.Comple
 	return messages
 }
 
-// checkTerminalTools examines tool execution results for terminal signals.
-// Returns non-empty signal to trigger state transition.
-func (d *Driver) checkTerminalTools(calls []agent.ToolCall, results []any) string {
-	for i := range calls {
-		toolCall := &calls[i]
-
-		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
-		if toolCall.Name == tools.ToolSubmitReply {
-			response, ok := toolCall.Parameters["response"].(string)
-			if !ok || response == "" {
-				d.logger.Error("submit_reply tool called without response parameter")
-				continue
-			}
-
-			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
-			return response
-		}
-
-		// Handle submit_stories tool - signals spec review completion with structured data
-		if toolCall.Name == tools.ToolSubmitStories {
-			// Check if tool executed successfully from results
-			resultMap, ok := results[i].(map[string]any)
-			if !ok {
-				d.logger.Error("submit_stories tool result is not a map")
-				continue
-			}
-
-			// Check for errors
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				d.logger.Error("submit_stories tool failed")
-				continue
-			}
-
-			// Store the structured result in state data for scoping to access
-			d.SetStateData("submit_stories_result", results[i])
-
-			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return signalSubmitStoriesComplete
-		}
-
-		// Handle spec_feedback tool - architect sends feedback to PM
-		if toolCall.Name == tools.ToolSpecFeedback {
-			// Check if tool executed successfully from results
-			resultMap, ok := results[i].(map[string]any)
-			if !ok {
-				d.logger.Error("spec_feedback tool result is not a map")
-				continue
-			}
-
-			// Check for errors
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				d.logger.Error("spec_feedback tool failed")
-				continue
-			}
-
-			// Store the feedback result in state data for message sending
-			d.SetStateData("spec_feedback_result", results[i])
-
-			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
-			return signalSpecFeedbackSent
-		}
-	}
-
-	return "" // Continue loop
-}
-
 // processStatusUpdates runs as a goroutine to process story status updates from coders.
 // This provides a non-blocking way for coders to update story status without waiting for architect availability.
 func (d *Driver) processStatusUpdates(ctx context.Context) {
@@ -806,55 +698,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 	}
 }
 
-// checkIterationLimit checks if the architect has exceeded iteration limits.
-// Returns true if hard limit exceeded (should escalate), false otherwise.
-// Soft limit triggers warning, hard limit triggers escalation to ESCALATE state.
-// Takes context manager parameter to add warnings to the correct agent-specific context.
-func (d *Driver) checkIterationLimit(stateDataKey string, stateName proto.State, cm *contextmgr.ContextManager) bool {
-	const softLimit = 8
-	const hardLimit = 16
-
-	// Get current iteration count
-	stateData := d.GetStateData()
-	iterationCount := 0
-	if val, exists := stateData[stateDataKey]; exists {
-		if count, ok := val.(int); ok {
-			iterationCount = count
-		}
-	}
-
-	// Increment iteration count
-	iterationCount++
-	d.SetStateData(stateDataKey, iterationCount)
-
-	// Check soft limit (warning only)
-	if iterationCount == softLimit {
-		d.logger.Warn("⚠️  Soft iteration limit (%d) reached in %s - architect should consider finalizing analysis", softLimit, stateName)
-		// Add warning to agent-specific context for LLM to see
-		warningMsg := fmt.Sprintf("Warning: You have used %d iterations in this phase. Consider finalizing your analysis soon to avoid escalation.", softLimit)
-		cm.AddMessage("system-warning", warningMsg)
-		return false
-	}
-
-	// Check hard limit (escalate)
-	if iterationCount >= hardLimit {
-		d.logger.Error("❌ Hard iteration limit (%d) exceeded in %s - escalating to human", hardLimit, stateName)
-		// Store escalation context for ESCALATE state
-		d.SetStateData("escalation_origin_state", string(stateName))
-		d.SetStateData("escalation_iteration_count", iterationCount)
-		// Additional context will be added by caller (request_id, story_id)
-		return true
-	}
-
-	d.logger.Debug("Iteration %d/%d (soft: %d, hard: %d) in %s", iterationCount, hardLimit, softLimit, hardLimit, stateName)
-	return false
-}
-
-// createReadToolProviderForCoder creates a tool provider rooted at a specific coder's workspace.
-// coderID should be the agent ID (e.g., "coder-001").
-// The tools will be rooted at /mnt/coders/{coderID} inside the architect container.
-// includeGetDiff determines whether to include get_diff tool (useful for code reviews, not for questions).
-func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
+// createReviewToolProviderForCoder creates a tool provider for structured reviews (approvals).
+// Includes read_file, list_files, review_complete, and optionally get_diff.
+func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
 
@@ -867,12 +713,12 @@ func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff b
 		Agent:           nil,              // No agent reference needed for read tools
 	}
 
-	// Build tool list: always include read_file, list_files, submit_reply
+	// Build tool list: read tools + review_complete terminal tool
 	// Optionally include get_diff for code reviews
 	allowedTools := []string{
 		tools.ToolReadFile,
 		tools.ToolListFiles,
-		tools.ToolSubmitReply, // Terminal tool for iterative reviews
+		tools.ToolReviewComplete, // Terminal tool for structured reviews
 	}
 	if includeGetDiff {
 		allowedTools = append(allowedTools, tools.ToolGetDiff)
@@ -881,149 +727,29 @@ func (d *Driver) createReadToolProviderForCoder(coderID string, includeGetDiff b
 	return tools.NewProvider(&ctx, allowedTools)
 }
 
-// processArchitectToolCalls processes tool calls for architect states (REQUEST for spec review and coder questions).
-// Returns the submit_reply response if detected, nil otherwise.
-// Takes context manager parameter to add tool results to the correct agent-specific context.
-func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agent.ToolCall, toolProvider *tools.ToolProvider, cm *contextmgr.ContextManager) (string, error) {
-	d.logger.Info("Processing %d architect tool calls", len(toolCalls))
+// createQuestionToolProviderForCoder creates a tool provider for answering questions.
+// Includes read_file, list_files, and submit_reply.
+func (d *Driver) createQuestionToolProviderForCoder(coderID string) *tools.ToolProvider {
+	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
+	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
 
-	for i := range toolCalls {
-		toolCall := &toolCalls[i]
-		d.logger.Info("Executing architect tool: %s", toolCall.Name)
-
-		// Handle submit_reply tool - signals iteration completion (for REQUEST/ANSWERING states)
-		if toolCall.Name == tools.ToolSubmitReply {
-			response, ok := toolCall.Parameters["response"].(string)
-			if !ok || response == "" {
-				return "", fmt.Errorf("submit_reply tool called without response parameter")
-			}
-
-			d.logger.Info("✅ Architect submitted reply via submit_reply tool")
-			return response, nil
-		}
-
-		// Handle review_complete tool - signals single-turn review completion (for Plan/BudgetReview)
-		if toolCall.Name == tools.ToolReviewComplete {
-			// Execute the tool to get validated structured data
-			tool, err := toolProvider.Get(toolCall.Name)
-			if err != nil {
-				return "", fmt.Errorf("review_complete tool not found: %w", err)
-			}
-
-			result, err := tool.Exec(ctx, toolCall.Parameters)
-			if err != nil {
-				return "", fmt.Errorf("review_complete validation failed: %w", err)
-			}
-
-			// Store the structured result in state data for approval handling to access
-			d.SetStateData("review_complete_result", result)
-
-			d.logger.Info("✅ Architect completed review via review_complete tool")
-			return signalReviewComplete, nil // Signal that review is complete
-		}
-
-		// Handle submit_stories tool - signals spec review completion with structured data
-		if toolCall.Name == tools.ToolSubmitStories {
-			// Execute the tool to get validated structured data
-			tool, err := toolProvider.Get(toolCall.Name)
-			if err != nil {
-				return "", fmt.Errorf("submit_stories tool not found: %w", err)
-			}
-
-			result, err := tool.Exec(ctx, toolCall.Parameters)
-			if err != nil {
-				return "", fmt.Errorf("submit_stories validation failed: %w", err)
-			}
-
-			// Store the structured result in state data for spec review to access
-			d.SetStateData("submit_stories_result", result)
-
-			d.logger.Info("✅ Architect submitted stories via submit_stories tool")
-			return signalSubmitStoriesComplete, nil // Signal that stories were submitted
-		}
-
-		// Handle spec_feedback tool - architect sends feedback to PM
-		if toolCall.Name == tools.ToolSpecFeedback {
-			// Execute the tool to validate feedback
-			tool, err := toolProvider.Get(toolCall.Name)
-			if err != nil {
-				return "", fmt.Errorf("spec_feedback tool not found: %w", err)
-			}
-
-			result, err := tool.Exec(ctx, toolCall.Parameters)
-			if err != nil {
-				return "", fmt.Errorf("spec_feedback validation failed: %w", err)
-			}
-
-			// Store the feedback result in state data for message sending
-			d.SetStateData("spec_feedback_result", result)
-
-			d.logger.Info("✅ Architect sent feedback to PM via spec_feedback tool")
-			return signalSpecFeedbackSent, nil // Signal that feedback was sent
-		}
-
-		// Get tool from ToolProvider and execute
-		tool, err := toolProvider.Get(toolCall.Name)
-		if err != nil {
-			d.logger.Error("Tool not found in ToolProvider: %s", toolCall.Name)
-			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s not found: %v", toolCall.Name, err))
-			continue
-		}
-
-		// Add agent_id to context for tools that need it
-		toolCtx := context.WithValue(ctx, tools.AgentIDContextKey, d.GetAgentID())
-
-		// Execute tool
-		startTime := time.Now()
-		result, err := tool.Exec(toolCtx, toolCall.Parameters)
-		duration := time.Since(startTime)
-
-		// Log tool execution to database (fire-and-forget)
-		stateData := d.GetStateData()
-		storyID := ""
-		if sid, exists := stateData["current_story_id"]; exists {
-			if sidStr, ok := sid.(string); ok {
-				storyID = sidStr
-			}
-		}
-		agent.LogToolExecution(toolCall, result, err, duration, d.GetAgentID(), storyID, d.persistenceChannel)
-
-		if err != nil {
-			d.logger.Info("Tool execution failed for %s: %v", toolCall.Name, err)
-			cm.AddMessage("tool-error", fmt.Sprintf("Tool %s failed: %v", toolCall.Name, err))
-			continue
-		}
-
-		d.logger.Debug("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
-
-		// Add structured tool result to buffer (same as PM pattern)
-		// Convert result to string format
-		var resultStr string
-		var isError bool
-		if resultMap, ok := result.(map[string]any); ok {
-			// Check for success field
-			if success, ok := resultMap["success"].(bool); ok && !success {
-				isError = true
-				// Extract error message if present
-				if errMsg, ok := resultMap["error"].(string); ok {
-					resultStr = errMsg
-				} else {
-					resultStr = fmt.Sprintf("Tool failed: %v", result)
-				}
-			} else {
-				// Success - convert entire result to string
-				resultStr = fmt.Sprintf("%v", result)
-			}
-		} else {
-			// Non-map result - convert to string
-			resultStr = fmt.Sprintf("%v", result)
-		}
-
-		cm.AddToolResult(toolCall.ID, resultStr, isError)
-		d.logger.Info("Architect tool %s executed successfully", toolCall.Name)
+	ctx := tools.AgentContext{
+		Executor:        d.executor,       // Architect executor with read-only mounts
+		ChatService:     nil,              // No chat service needed for read tools
+		ReadOnly:        true,             // Architect tools are read-only
+		NetworkDisabled: false,            // Network allowed for architect
+		WorkDir:         containerWorkDir, // Use coder's container mount path
+		Agent:           nil,              // No agent reference needed for read tools
 	}
 
-	return "", nil // No submit_reply detected
+	// Build tool list: read tools + submit_reply terminal tool
+	allowedTools := []string{
+		tools.ToolReadFile,
+		tools.ToolListFiles,
+		tools.ToolSubmitReply, // Terminal tool for text replies
+	}
+
+	return tools.NewProvider(&ctx, allowedTools)
 }
 
 // getSpecReviewTools creates read-only tools for spec review in REQUEST state.
@@ -1031,8 +757,8 @@ func (d *Driver) processArchitectToolCalls(ctx context.Context, toolCalls []agen
 // submit structured stories via the submit_stories tool, and provide feedback to PM.
 func (d *Driver) getSpecReviewTools() []tools.Tool {
 	toolsList := []tools.Tool{
-		tools.NewSubmitStoriesTool(), // Primary completion tool
-		tools.NewSpecFeedbackTool(),  // PM feedback tool
+		tools.NewReviewCompleteTool(), // Review decision tool (first loop)
+		tools.NewSubmitStoriesTool(),  // Story generation tool (second loop)
 	}
 
 	// Add optional read tools if executor available

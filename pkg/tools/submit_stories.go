@@ -93,7 +93,7 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Validate required fields
 	analysis, ok := args["analysis"].(string)
 	if !ok || analysis == "" {
@@ -136,13 +136,17 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (any, e
 		}
 	}
 
-	// Return structured data directly (no JSON round-trip needed)
-	// The architect will convert this to Requirements directly
-	return map[string]any{
-		"success":      true,
-		"action":       "submit",
-		"analysis":     analysis,
-		"platform":     platform,
-		"requirements": requirements,
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: fmt.Sprintf("Stories submitted successfully (%d requirements identified for platform: %s)", len(requirements), platform),
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalStoriesSubmitted,
+			Data: map[string]any{
+				"analysis":     analysis,
+				"platform":     platform,
+				"requirements": requirements,
+			},
+		},
 	}, nil
 }

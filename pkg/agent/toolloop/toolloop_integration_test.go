@@ -4,386 +4,525 @@ package toolloop_test
 
 import (
 	"context"
-	"os"
+	"errors"
+	"fmt"
 	"testing"
 
 	"orchestrator/pkg/agent"
-	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
-	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
 )
 
-// Integration tests with real LLMs
-// Run with: go test -tags=integration ./pkg/agent/toolloop -v
-
-// TestGPT4oBasicToolCall tests gpt-4o with a simple tool
-func TestGPT4oBasicToolCall(t *testing.T) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		t.Skip("OPENAI_API_KEY not set")
+// TestIterationLimitError tests the IterationLimitError.Error() method.
+func TestIterationLimitError(t *testing.T) {
+	err := &toolloop.IterationLimitError{
+		Key:       "test-key",
+		Limit:     10,
+		Iteration: 10,
 	}
 
-	ctx := context.Background()
-	cm := contextmgr.NewContextManager()
-	logger := logx.NewLogger("integration-test")
-
-	// Create OpenAI client
-	llmClient := openaiofficial.NewOfficialClientWithModel(apiKey, "gpt-4o-mini")
-
-	// Create simple calculator tool
-	toolProvider := newCalculatorToolProvider()
-
-	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
-		ContextManager: cm,
-		InitialPrompt:  "Calculate 5 + 3 using the calculator tool",
-		ToolProvider:   toolProvider,
-		MaxIterations:  3,
-		MaxTokens:      1000,
-		DebugLogging:   false,
-	}
-
-	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("toolloop failed: %v", err)
-	}
-
-	t.Logf("GPT-4o completed with signal: %q", signal)
-
-	// Verify tool was called
-	if len(toolProvider.callHistory) == 0 {
-		t.Error("expected calculator tool to be called")
+	expectedMsg := `iteration limit (10) exceeded for key "test-key" at iteration 10`
+	if err.Error() != expectedMsg {
+		t.Errorf("Expected error message %q, got %q", expectedMsg, err.Error())
 	}
 }
 
-// TestSonnetBasicToolCall tests Claude Sonnet with a simple tool
-func TestSonnetBasicToolCall(t *testing.T) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		t.Skip("ANTHROPIC_API_KEY not set")
-	}
-
+// TestLLMError tests handling of LLM client errors.
+func TestLLMError(t *testing.T) {
 	ctx := context.Background()
 	cm := contextmgr.NewContextManager()
-	logger := logx.NewLogger("integration-test")
+	logger := logx.NewLogger("test")
 
-	// Create Anthropic client
-	llmClient := anthropic.NewClaudeClientWithModel(apiKey, "claude-sonnet-4-5")
-
-	// Create simple calculator tool
-	toolProvider := newCalculatorToolProvider()
-
-	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
-		ContextManager: cm,
-		InitialPrompt:  "Calculate 5 + 3 using the calculator tool",
-		ToolProvider:   toolProvider,
-		MaxIterations:  3,
-		MaxTokens:      1000,
-		DebugLogging:   false,
+	// LLM that returns an error
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{},
+		// Will return "no more mock responses" error on first call
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("toolloop failed: %v", err)
-	}
-
-	t.Logf("Sonnet completed with signal: %q", signal)
-
-	// Verify tool was called
-	if len(toolProvider.callHistory) == 0 {
-		t.Error("expected calculator tool to be called")
-	}
-}
-
-// TestGPT4oTerminalSignal tests terminal signal detection
-func TestGPT4oTerminalSignal(t *testing.T) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
-
-	ctx := context.Background()
-	cm := contextmgr.NewContextManager()
-	logger := logx.NewLogger("integration-test")
-
-	llmClient := openaiofficial.NewOfficialClientWithModel(apiKey, "gpt-4o-mini")
-
-	// Create tool provider with submit tool
-	toolProvider := newSubmitToolProvider()
-
-	terminalDetected := false
-	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
-		ContextManager: cm,
-		InitialPrompt:  "Submit the result 'Task completed successfully' using the submit tool",
-		ToolProvider:   toolProvider,
-		MaxIterations:  3,
-		MaxTokens:      1000,
-		DebugLogging:   false,
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			for i := range calls {
-				if calls[i].Name == "submit" {
-					terminalDetected = true
-					if resultMap, ok := results[i].(map[string]any); ok {
-						if result, ok := resultMap["result"].(string); ok {
-							return result
-						}
-					}
-				}
-			}
-			return ""
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "DONE",
+					Data:   map[string]any{},
+				},
+			}, nil
 		},
 	}
 
-	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("toolloop failed: %v", err)
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
 	}
 
-	if !terminalDetected {
-		t.Error("expected terminal signal to be detected")
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should return error outcome
+	if out.Kind == toolloop.OutcomeProcessEffect {
+		t.Fatal("Expected error outcome, got ProcessEffect")
 	}
 
-	if signal == "" {
-		t.Error("expected non-empty signal from terminal tool")
+	if out.Err == nil {
+		t.Fatal("Expected error, got nil")
 	}
 
-	t.Logf("Terminal signal detected: %q", signal)
+	// Check for error message (wrapped with additional context)
+	expectedMsg := "LLM completion failed: no more mock responses"
+	if out.Err.Error() != expectedMsg {
+		t.Errorf("Expected error %q, got: %v", expectedMsg, out.Err)
+	}
 }
 
-// TestSonnetMultipleTools tests Sonnet with multiple tool calls in one turn
-func TestSonnetMultipleTools(t *testing.T) {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		t.Skip("ANTHROPIC_API_KEY not set")
-	}
-
+// TestToolExecutionError tests handling of tool execution errors.
+// Tool errors are logged but don't stop the loop - the LLM gets an error result
+// and can decide how to proceed.
+func TestToolExecutionError(t *testing.T) {
 	ctx := context.Background()
 	cm := contextmgr.NewContextManager()
-	logger := logx.NewLogger("integration-test")
+	logger := logx.NewLogger("test")
 
-	llmClient := anthropic.NewClaudeClientWithModel(apiKey, "claude-sonnet-4-5")
-
-	// Create tool provider with calculator
-	toolProvider := newCalculatorToolProvider()
-
-	loop := toolloop.New(llmClient, logger)
-	cfg := toolloop.Config{
-		ContextManager: cm,
-		InitialPrompt:  "Calculate both 5+3 and 10+7 using the calculator tool",
-		ToolProvider:   toolProvider,
-		MaxIterations:  3,
-		MaxTokens:      1000,
-		DebugLogging:   false,
-	}
-
-	signal, err := loop.Run(ctx, &cfg)
-	if err != nil {
-		t.Fatalf("toolloop failed: %v", err)
-	}
-
-	t.Logf("Sonnet completed with signal: %q", signal)
-
-	// Verify multiple calls were made
-	callHistory := toolProvider.callHistory
-	if len(callHistory) < 2 {
-		t.Errorf("expected at least 2 calculator calls, got %d", len(callHistory))
-	}
-
-	t.Logf("Calculator was called %d times", len(callHistory))
-}
-
-// calculatorProvider implements a simple calculator tool for testing
-type calculatorProvider struct {
-	callHistory []map[string]any
-}
-
-func newCalculatorToolProvider() *calculatorProvider {
-	return &calculatorProvider{
-		callHistory: make([]map[string]any, 0),
-	}
-}
-
-func (p *calculatorProvider) Get(name string) (tools.Tool, error) {
-	if name != "calculator" {
-		return nil, nil
-	}
-	return &calculatorTool{provider: p}, nil
-}
-
-func (p *calculatorProvider) List() []tools.ToolMeta {
-	return []tools.ToolMeta{
-		{
-			Name:        "calculator",
-			Description: "Performs basic arithmetic operations",
-			InputSchema: tools.InputSchema{
-				Type: "object",
-				Properties: map[string]tools.Property{
-					"operation": {
-						Type:        "string",
-						Description: "The operation to perform: add, subtract, multiply, divide",
-						Enum:        []string{"add", "subtract", "multiply", "divide"},
-					},
-					"a": {
-						Type:        "number",
-						Description: "First number",
-					},
-					"b": {
-						Type:        "number",
-						Description: "Second number",
-					},
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Calling tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "failing-tool", Parameters: map[string]any{}},
 				},
-				Required: []string{"operation", "a", "b"},
+			},
+			{
+				Content: "Recovering from error",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call2", Name: "submit", Parameters: map[string]any{}},
+				},
 			},
 		},
 	}
-}
 
-type calculatorTool struct {
-	provider *calculatorProvider
-}
-
-func (t *calculatorTool) Name() string {
-	return "calculator"
-}
-
-func (t *calculatorTool) Description() string {
-	return "Performs basic arithmetic operations"
-}
-
-func (t *calculatorTool) Definition() tools.ToolDefinition {
-	return tools.ToolDefinition{
-		Name:        "calculator",
-		Description: "Performs basic arithmetic operations",
-		InputSchema: tools.InputSchema{
-			Type: "object",
-			Properties: map[string]tools.Property{
-				"operation": {
-					Type:        "string",
-					Description: "The operation to perform",
-					Enum:        []string{"add", "subtract", "multiply", "divide"},
-				},
-				"a": {
-					Type:        "number",
-					Description: "First number",
-				},
-				"b": {
-					Type:        "number",
-					Description: "Second number",
-				},
-			},
-			Required: []string{"operation", "a", "b"},
+	failingTool := &mockGeneralTool{
+		name: "failing-tool",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return nil, errors.New("tool execution failed")
 		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "recovered",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "COMPLETE",
+					Data:   map[string]any{},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{failingTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Tool errors don't stop the loop - the LLM can recover
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect after recovery, got %v with error: %v", out.Kind, out.Err)
+	}
+
+	if out.Signal != "COMPLETE" {
+		t.Errorf("Expected signal 'COMPLETE', got %q", out.Signal)
+	}
+
+	if llmClient.callCount != 2 {
+		t.Errorf("Expected 2 LLM calls (error + recovery), got %d", llmClient.callCount)
 	}
 }
 
-func (t *calculatorTool) Exec(_ context.Context, params map[string]any) (any, error) {
-	// Record call
-	t.provider.callHistory = append(t.provider.callHistory, params)
+// TestContextCancellation tests handling of context cancellation.
+func TestContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
 
-	operation, _ := params["operation"].(string)
-	a, _ := params["a"].(float64)
-	b, _ := params["b"].(float64)
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
 
-	var result float64
-	switch operation {
-	case "add":
-		result = a + b
-	case "subtract":
-		result = a - b
-	case "multiply":
-		result = a * b
-	case "divide":
-		if b == 0 {
-			return map[string]any{"success": false, "error": "division by zero"}, nil
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Should not reach here",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "submit", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should return error outcome due to context cancellation
+	if out.Kind == toolloop.OutcomeProcessEffect {
+		t.Fatal("Expected error outcome due to context cancellation, got ProcessEffect")
+	}
+
+	if out.Err == nil {
+		t.Fatal("Expected context cancellation error, got nil")
+	}
+
+	if !errors.Is(out.Err, context.Canceled) {
+		t.Errorf("Expected context.Canceled error, got: %v", out.Err)
+	}
+}
+
+// TestMultipleToolCalls tests handling of multiple tool calls in a single iteration.
+func TestMultipleToolCalls(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	var executionOrder []string
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Multiple tools",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "read", Parameters: map[string]any{"file": "a.txt"}},
+					{ID: "call2", Name: "read", Parameters: map[string]any{"file": "b.txt"}},
+					{ID: "call3", Name: "read", Parameters: map[string]any{"file": "c.txt"}},
+				},
+			},
+			{
+				Content: "Done",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call4", Name: "submit", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	readTool := &mockGeneralTool{
+		name: "read",
+		execFunc: func(_ context.Context, params map[string]any) (*tools.ExecResult, error) {
+			file, _ := params["file"].(string)
+			executionOrder = append(executionOrder, file)
+			return &tools.ExecResult{Content: fmt.Sprintf("read %s", file)}, nil
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			executionOrder = append(executionOrder, "submit")
+			return &tools.ExecResult{
+				Content: "done",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "COMPLETE",
+					Data:   map[string]any{},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{readTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect, got %v with error: %v", out.Kind, out.Err)
+	}
+
+	// Verify all tools were called in order
+	expectedOrder := []string{"a.txt", "b.txt", "c.txt", "submit"}
+	if len(executionOrder) != len(expectedOrder) {
+		t.Fatalf("Expected %d tool calls, got %d", len(expectedOrder), len(executionOrder))
+	}
+
+	for i, expected := range expectedOrder {
+		if executionOrder[i] != expected {
+			t.Errorf("Tool call %d: expected %q, got %q", i, expected, executionOrder[i])
 		}
-		result = a / b
-	default:
-		return map[string]any{"success": false, "error": "unknown operation"}, nil
 	}
-
-	return map[string]any{
-		"success": true,
-		"result":  result,
-	}, nil
 }
 
-func (t *calculatorTool) PromptDocumentation() string {
-	return "Calculator: performs basic arithmetic (add, subtract, multiply, divide)"
-}
+// TestSingleTurnMode tests that SingleTurn mode enforces immediate terminal tool usage.
+func TestSingleTurnMode(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
 
-// submitToolProvider implements a submit tool for testing terminal signals
-type submitToolProvider struct{}
-
-func newSubmitToolProvider() *submitToolProvider {
-	return &submitToolProvider{}
-}
-
-func (p *submitToolProvider) Get(name string) (tools.Tool, error) {
-	if name != "submit" {
-		return nil, nil
-	}
-	return &submitTool{}, nil
-}
-
-func (p *submitToolProvider) List() []tools.ToolMeta {
-	return []tools.ToolMeta{
-		{
-			Name:        "submit",
-			Description: "Submit a final result",
-			InputSchema: tools.InputSchema{
-				Type: "object",
-				Properties: map[string]tools.Property{
-					"result": {
-						Type:        "string",
-						Description: "The result to submit",
-					},
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "General tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "read", Parameters: map[string]any{}},
 				},
-				Required: []string{"result"},
 			},
 		},
 	}
-}
 
-type submitTool struct{}
+	generalTool := &mockGeneralTool{
+		name: "read",
+	}
 
-func (t *submitTool) Name() string {
-	return "submit"
-}
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+	}
 
-func (t *submitTool) Description() string {
-	return "Submit a final result"
-}
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{generalTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+		SingleTurn:     true, // Enforce single-turn mode
+	}
 
-func (t *submitTool) Definition() tools.ToolDefinition {
-	return tools.ToolDefinition{
-		Name:        "submit",
-		Description: "Submit a final result",
-		InputSchema: tools.InputSchema{
-			Type: "object",
-			Properties: map[string]tools.Property{
-				"result": {
-					Type:        "string",
-					Description: "The result to submit",
-				},
-			},
-			Required: []string{"result"},
-		},
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should error because SingleTurn requires terminal tool on first call
+	if out.Kind == toolloop.OutcomeProcessEffect {
+		t.Fatal("Expected error in SingleTurn mode when general tool is called, got ProcessEffect")
+	}
+
+	if out.Err == nil {
+		t.Fatal("Expected error in SingleTurn mode, got nil")
 	}
 }
 
-func (t *submitTool) Exec(_ context.Context, params map[string]any) (any, error) {
-	result, _ := params["result"].(string)
-	return map[string]any{
-		"success": true,
-		"result":  result,
-	}, nil
+// TestEmptyToolCalls tests handling of LLM response with no tool calls.
+func TestEmptyToolCalls(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content:   "Just text, no tools",
+				ToolCalls: []agent.ToolCall{}, // Empty tool calls
+			},
+			{
+				Content: "Now calling tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "submit", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "done",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "COMPLETE",
+					Data:   map[string]any{},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect, got %v with error: %v", out.Kind, out.Err)
+	}
+
+	// Should succeed after second iteration with actual tool call
+	if out.Signal != "COMPLETE" {
+		t.Errorf("Expected signal 'COMPLETE', got %q", out.Signal)
+	}
+
+	if llmClient.callCount != 2 {
+		t.Errorf("Expected 2 LLM calls, got %d", llmClient.callCount)
+	}
 }
 
-func (t *submitTool) PromptDocumentation() string {
-	return "Submit: submit a final result (terminal action)"
+// TestUnknownToolCall tests handling of tool calls for tools not in the registry.
+func TestUnknownToolCall(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Calling unknown tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "unknown-tool", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should return error for unknown tool
+	if out.Kind == toolloop.OutcomeProcessEffect {
+		t.Fatal("Expected error for unknown tool, got ProcessEffect")
+	}
+
+	if out.Err == nil {
+		t.Fatal("Expected error for unknown tool, got nil")
+	}
+}
+
+// TestDebugLogging tests that debug logging doesn't break execution.
+func TestDebugLogging(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Calling terminal tool",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "submit", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "done",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "COMPLETE",
+					Data:   map[string]any{},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+		DebugLogging:   true, // Enable debug logging
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect with debug logging enabled, got %v with error: %v", out.Kind, out.Err)
+	}
+
+	if out.Signal != "COMPLETE" {
+		t.Errorf("Expected signal 'COMPLETE', got %q", out.Signal)
+	}
+}
+
+// TestMaxTokensConfiguration tests that MaxTokens is properly configured.
+func TestMaxTokensConfiguration(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Done",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "submit", Parameters: map[string]any{}},
+				},
+			},
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "done",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "COMPLETE",
+					Data:   map[string]any{},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+
+	// Test with custom MaxTokens
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      8000, // Custom token limit
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect, got %v with error: %v", out.Kind, out.Err)
+	}
 }

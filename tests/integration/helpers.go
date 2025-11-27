@@ -6,14 +6,44 @@ import (
 	"context"
 	"flag"
 	"os"
+	osexec "os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
-	"orchestrator/pkg/build"
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/tools"
 )
+
+// mockTestAgent implements tools.Agent interface for testing.
+type mockTestAgent struct {
+	hostWorkspacePath string
+}
+
+func newMockTestAgent(hostWorkspacePath string) *mockTestAgent {
+	return &mockTestAgent{hostWorkspacePath: hostWorkspacePath}
+}
+
+func (m *mockTestAgent) GetCurrentState() proto.State {
+	return proto.State("PLANNING") // Default to read-only state
+}
+
+func (m *mockTestAgent) GetHostWorkspacePath() string {
+	if m.hostWorkspacePath != "" {
+		return m.hostWorkspacePath
+	}
+	return "/tmp/test-workspace" // Fallback for backwards compatibility
+}
+
+var _ tools.Agent = (*mockTestAgent)(nil)
+
+// isDockerAvailable checks if Docker is available by running docker version.
+func isDockerAvailable() bool {
+	cmd := osexec.Command("docker", "version")
+	return cmd.Run() == nil
+}
 
 // Helper function to get API key for tests.
 func getTestAPIKey(t *testing.T) string {
@@ -86,80 +116,6 @@ func ExpectMessage(t *testing.T, ch <-chan *proto.AgentMsg, timeout time.Duratio
 	}
 }
 
-// CreateTestCoder creates a coder driver for testing.
-func CreateTestCoder(t *testing.T, coderID string) *coder.Coder {
-	t.Helper()
-
-	// Create temporary directory for this coder.
-	tempDir := t.TempDir()
-
-	// No state store needed for integration tests
-
-	// Create minimal model config.
-	modelCfg := &config.Model{
-		Name:           config.ModelClaudeSonnetLatest,
-		MaxTPM:         50000,
-		DailyBudget:    200.0,
-		MaxConnections: 4,
-		CPM:            3.0,
-	}
-
-	// Create BuildService for MCP tools.
-	buildService := build.NewBuildService()
-
-	// Create coder driver.
-	// NewCoder signature: (agentID, _, workDir string, modelConfig *config.Model, _ string, cloneManager *CloneManager, buildService *build.Service)
-	driver, err := coder.NewCoder(context.Background(), coderID, tempDir, modelCfg, nil, buildService)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
-	}
-
-	// Initialize the driver.
-	if err := driver.Initialize(context.Background()); err != nil {
-		t.Fatalf("Failed to initialize coder driver %s: %v", coderID, err)
-	}
-
-	return driver
-}
-
-// CreateTestCoderWithAgent creates a coder driver with specific model configuration for testing.
-func CreateTestCoderWithAgent(t *testing.T, coderID string, modelConfig *config.Model) *coder.Coder {
-	t.Helper()
-
-	// Create temporary directory for this coder.
-	tempDir := t.TempDir()
-
-	// No state store needed for integration tests
-
-	// Use provided model config or create default
-	if modelConfig == nil {
-		modelConfig = &config.Model{
-			Name:           config.ModelClaudeSonnetLatest,
-			MaxTPM:         50000,
-			DailyBudget:    200.0,
-			MaxConnections: 4,
-			CPM:            3.0,
-		}
-	}
-
-	// Create BuildService for MCP tools.
-	buildService := build.NewBuildService()
-
-	// Create coder driver with model configuration.
-	driver, err := coder.NewCoder(context.Background(), coderID, tempDir, modelConfig, nil, buildService)
-	if err != nil {
-		t.Fatalf("Failed to create coder driver %s: %v", coderID, err)
-	}
-
-	// Initialize the driver.
-	err = driver.Initialize(context.Background())
-	if err != nil {
-		t.Fatalf("Failed to initialize coder driver %s: %v", coderID, err)
-	}
-
-	return driver
-}
-
 // MessageMatchers contains common message matching functions.
 type MessageMatchers struct{}
 
@@ -170,22 +126,19 @@ func (MessageMatchers) MatchRequestType(requestType string) func(*proto.AgentMsg
 			return false
 		}
 
-		reqType, exists := msg.GetPayload("request_type")
-		if !exists {
+		if msg.Payload == nil {
 			return false
 		}
 
-		reqTypeStr, ok := reqType.(string)
-		if !ok {
+		// Match based on payload kind
+		switch requestType {
+		case "approval":
+			return msg.Payload.Kind == proto.PayloadKindApprovalRequest
+		case "question":
+			return msg.Payload.Kind == proto.PayloadKindQuestionRequest
+		default:
 			return false
 		}
-
-		parsedType, err := func(s string) (string, error) { return s, nil }(reqTypeStr)
-		if err != nil {
-			return false
-		}
-
-		return parsedType == requestType
 	}
 }
 
@@ -196,17 +149,21 @@ func (MessageMatchers) MatchResultWithStatus(status string) func(*proto.AgentMsg
 			return false
 		}
 
-		msgStatus, exists := msg.GetPayload(proto.KeyStatus)
-		if !exists {
+		if msg.Payload == nil {
 			return false
 		}
 
-		msgStatusStr, ok := msgStatus.(string)
-		if !ok {
-			return false
+		// Extract approval response to check decision/status
+		if msg.Payload.Kind == proto.PayloadKindApprovalResponse {
+			approvalResult, err := msg.Payload.ExtractApprovalResponse()
+			if err != nil {
+				return false
+			}
+			return string(approvalResult.Status) == status
 		}
 
-		return msgStatusStr == status
+		// For other response types, match against payload kind or generic status
+		return false
 	}
 }
 
@@ -232,6 +189,32 @@ func SetupTestEnvironment(t *testing.T) {
 	// Set a temporary log directory for this test.
 	logDir := t.TempDir()
 	_ = os.Setenv("DEBUG_LOG_DIR", logDir)
+}
+
+// SetupTestConfig initializes config with minimal test settings for container validation.
+// Uses a public repo so tests can run without authentication.
+func SetupTestConfig(t *testing.T) {
+	t.Helper()
+
+	// Create minimal config for container validation tests
+	// Using anthropic-sdk-python as a public repo that anyone can access (read-only API calls)
+	testConfig := `{
+		"git": {
+			"repo_url": "https://github.com/anthropics/anthropic-sdk-python.git"
+		}
+	}`
+
+	configPath := filepath.Join(t.TempDir(), "test-config.json")
+	if err := os.WriteFile(configPath, []byte(testConfig), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	// Set CONFIG_PATH env var so config can be loaded by any code path
+	_ = os.Setenv("CONFIG_PATH", configPath)
+
+	if err := config.LoadConfig(configPath); err != nil {
+		t.Fatalf("Failed to load test config: %v", err)
+	}
 }
 
 // AssertNoChannelMessages verifies that a channel has no pending messages.

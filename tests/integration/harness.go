@@ -14,10 +14,6 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-const (
-	approvalTypePlan = "plan"
-)
-
 // TestHarness manages multi-agent integration test scenarios.
 type TestHarness struct {
 	t *testing.T
@@ -299,20 +295,24 @@ func (h *TestHarness) stepCoder(ctx context.Context, coderID string, coderAgent 
 
 // createApprovalRequestMessage creates a REQUEST message for architect approval.
 func (h *TestHarness) createApprovalRequestMessage(coderID, content, reason string) *proto.AgentMsg {
-	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, coderID, h.architect.GetID())
-	msg.SetPayload("request_type", "approval")
-
 	// Determine approval type based on coder state or reason.
-	approvalType := approvalTypePlan // Default
+	approvalType := proto.ApprovalTypePlan // Default
 	if h.coders[coderID] != nil {
 		currentState := h.coders[coderID].Driver.GetCurrentState()
 		if currentState == coder.StateCodeReview {
-			approvalType = "code"
+			approvalType = proto.ApprovalTypeCode
 		}
 	}
 
-	msg.SetPayload("approval_type", approvalType)
-	msg.SetPayload(proto.KeyContent, content)
-	msg.SetPayload("reason", reason)
+	// Create structured approval request payload
+	payload := &proto.ApprovalRequestPayload{
+		ApprovalType: approvalType,
+		Content:      content,
+		Reason:       reason,
+		Confidence:   proto.ConfidenceMedium,
+	}
+
+	msg := proto.NewAgentMsg(proto.MsgTypeREQUEST, coderID, h.architect.GetID())
+	msg.Payload = proto.NewApprovalRequestPayload(payload)
 	return msg
 }

@@ -237,11 +237,6 @@ func createAskQuestionTool(_ *AgentContext) (Tool, error) {
 	return NewAskQuestionTool(), nil
 }
 
-// createMarkStoryCompleteTool creates a mark story complete tool instance.
-func createMarkStoryCompleteTool(_ *AgentContext) (Tool, error) {
-	return NewMarkStoryCompleteTool(), nil
-}
-
 // createBuildTool creates a build tool instance.
 func createBuildTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
@@ -354,10 +349,6 @@ func getSubmitPlanSchema() InputSchema {
 
 func getAskQuestionSchema() InputSchema {
 	return NewAskQuestionTool().Definition().InputSchema
-}
-
-func getMarkStoryCompleteSchema() InputSchema {
-	return NewMarkStoryCompleteTool().Definition().InputSchema
 }
 
 func getBuildSchema() InputSchema {
@@ -523,14 +514,6 @@ func getBootstrapSchema() InputSchema {
 	return NewBootstrapTool("").Definition().InputSchema
 }
 
-func createSpecFeedbackTool(_ *AgentContext) (Tool, error) {
-	return NewSpecFeedbackTool(), nil
-}
-
-func getSpecFeedbackSchema() InputSchema {
-	return NewSpecFeedbackTool().Definition().InputSchema
-}
-
 func createChatAskUserTool(ctx *AgentContext) (Tool, error) {
 	// Get chat service from context
 	if ctx.ChatService == nil {
@@ -549,6 +532,14 @@ func getChatAskUserSchema() InputSchema {
 	return NewChatAskUserTool(nil, "").Definition().InputSchema
 }
 
+func createReviewCompleteTool(_ *AgentContext) (Tool, error) {
+	return NewReviewCompleteTool(), nil
+}
+
+func getReviewCompleteSchema() InputSchema {
+	return NewReviewCompleteTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -564,12 +555,6 @@ func init() {
 		Name:        ToolAskQuestion,
 		Description: "Ask the architect for clarification or guidance during planning",
 		InputSchema: getAskQuestionSchema(),
-	})
-
-	Register(ToolMarkStoryComplete, createMarkStoryCompleteTool, &ToolMeta{
-		Name:        ToolMarkStoryComplete,
-		Description: "Signal that the story requirements are already fully implemented",
-		InputSchema: getMarkStoryCompleteSchema(),
 	})
 
 	// Register development tools
@@ -716,15 +701,16 @@ func init() {
 		InputSchema: getSpecSubmitSchema(),
 	})
 
-	Register(ToolSpecFeedback, createSpecFeedbackTool, &ToolMeta{
-		Name:        ToolSpecFeedback,
-		Description: "Send feedback to PM about submitted specification (Architect SCOPING phase)",
-		InputSchema: getSpecFeedbackSchema(),
-	})
-
 	Register(ToolChatAskUser, createChatAskUserTool, &ToolMeta{
 		Name:        ToolChatAskUser,
 		Description: "Post a question to chat and wait for user response. Use when you need user input before proceeding.",
 		InputSchema: getChatAskUserSchema(),
+	})
+
+	// Register review_complete tool for architect reviews
+	Register(ToolReviewComplete, createReviewCompleteTool, &ToolMeta{
+		Name:        ToolReviewComplete,
+		Description: "Complete a review with decision (APPROVED, NEEDS_CHANGES, or REJECTED) and feedback",
+		InputSchema: getReviewCompleteSchema(),
 	})
 }

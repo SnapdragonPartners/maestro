@@ -55,7 +55,7 @@ func (t *ReviewCompleteTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract and validate status
 	status, ok := args["status"].(string)
 	if !ok || status == "" {
@@ -81,12 +81,16 @@ func (t *ReviewCompleteTool) Exec(_ context.Context, args map[string]any) (any, 
 		return nil, fmt.Errorf("feedback is required and must be a non-empty string")
 	}
 
-	// Return special signal that review is complete
-	// The state handler will check for action="review_complete" to know to exit
-	return map[string]any{
-		"success":  true,
-		"action":   "review_complete",
-		"status":   status,
-		"feedback": feedback,
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: fmt.Sprintf("Review completed with status: %s", status),
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalReviewComplete,
+			Data: map[string]any{
+				"status":   status,
+				"feedback": feedback,
+			},
+		},
 	}, nil
 }

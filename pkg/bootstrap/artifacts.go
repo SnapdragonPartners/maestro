@@ -89,6 +89,14 @@ func (g *ArtifactGenerator) generateCoreArtifacts(_ /* ctx */ context.Context, b
 		return nil, fmt.Errorf("failed to create .maestro directory: %w", err)
 	}
 
+	// Copy DOC_GRAPH.md reference documentation to .maestro/.
+	if err := g.copyDocGraphReference(maestroDir); err != nil {
+		g.logger.Warn("Failed to copy DOC_GRAPH.md reference: %v", err)
+		// Non-fatal - continue with bootstrap
+	} else {
+		files = append(files, ".maestro/DOC_GRAPH.md")
+	}
+
 	// Create .maestro/makefiles subdirectory.
 	makefilesDir := filepath.Join(maestroDir, "makefiles")
 	if err := os.MkdirAll(makefilesDir, 0755); err != nil {
@@ -1470,4 +1478,32 @@ jobs:
 	}
 
 	return g.writeFile(".github/workflows/ci.yaml", content)
+}
+
+// copyDocGraphReference copies the DOC_GRAPH.md reference documentation to the .maestro directory.
+func (g *ArtifactGenerator) copyDocGraphReference(maestroDir string) error {
+	// Find DOC_GRAPH.md in the maestro docs directory.
+	// This assumes we're running from the maestro repository.
+	docsPath := filepath.Join(filepath.Dir(filepath.Dir(maestroDir)), "docs", "DOC_GRAPH.md")
+
+	// Try to read the source file.
+	content, err := os.ReadFile(docsPath)
+	if err != nil {
+		// If not found, try relative to project root (for development).
+		// This handles the case where bootstrap is run from within the maestro repo.
+		docsPath = filepath.Join("docs", "DOC_GRAPH.md")
+		content, err = os.ReadFile(docsPath)
+		if err != nil {
+			return fmt.Errorf("DOC_GRAPH.md not found: %w", err)
+		}
+	}
+
+	// Write to .maestro/DOC_GRAPH.md in the target project.
+	destPath := filepath.Join(maestroDir, "DOC_GRAPH.md")
+	if err := os.WriteFile(destPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to write DOC_GRAPH.md: %w", err)
+	}
+
+	g.logger.Info("Copied DOC_GRAPH.md reference documentation to .maestro/")
+	return nil
 }

@@ -4,9 +4,8 @@ package tools
 // and enable compile-time checking.
 const (
 	// Planning tools.
-	ToolSubmitPlan        = "submit_plan"
-	ToolAskQuestion       = "ask_question"
-	ToolMarkStoryComplete = "mark_story_complete"
+	ToolSubmitPlan  = "submit_plan"
+	ToolAskQuestion = "ask_question"
 
 	// Development tools.
 	ToolShell       = "shell"
@@ -41,10 +40,9 @@ const (
 	ToolReviewComplete = "review_complete"
 
 	// PM tools.
-	ToolSpecSubmit   = "spec_submit"
-	ToolSpecFeedback = "spec_feedback"
-	ToolChatAskUser  = "chat_ask_user"
-	ToolBootstrap    = "bootstrap"
+	ToolSpecSubmit  = "spec_submit"
+	ToolChatAskUser = "chat_ask_user"
+	ToolBootstrap   = "bootstrap"
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -57,7 +55,6 @@ var (
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
-		ToolMarkStoryComplete,
 		ToolChatPost,
 		ToolChatRead,
 	}
@@ -68,7 +65,6 @@ var (
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
-		ToolMarkStoryComplete,
 		ToolContainerTest,
 		ToolContainerList,
 		ToolChatPost,

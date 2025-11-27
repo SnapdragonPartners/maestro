@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -41,26 +42,31 @@ func TestAskQuestionToolValidation(t *testing.T) {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// ask_question now returns ProcessEffect (mid-loop pause pattern)
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be set")
+	}
+
+	if result.ProcessEffect.Signal != string(proto.StateQuestion) {
+		t.Errorf("Expected signal %q, got %q", proto.StateQuestion, result.ProcessEffect.Signal)
+	}
+
+	// Check that question and context are preserved in ProcessEffect.Data
+	dataMap, ok := result.ProcessEffect.Data.(map[string]string)
 	if !ok {
-		t.Fatal("Expected result to be a map")
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]string, got %T", result.ProcessEffect.Data)
 	}
 
-	// Validate result structure.
-	if success, exists := resultMap["success"]; !exists || success != true {
-		t.Error("Expected success field to be true")
+	if question, ok := dataMap["question"]; !ok || question != validArgs["question"] {
+		t.Errorf("Expected question %q to be preserved in ProcessEffect.Data, got %q", validArgs["question"], question)
 	}
 
-	if question, exists := resultMap["question"]; !exists || question != validArgs["question"] {
-		t.Error("Expected question to be preserved in result")
-	}
-
-	if urgency, exists := resultMap["urgency"]; !exists || urgency != "HIGH" {
-		t.Error("Expected urgency to be preserved")
-	}
-
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != "INLINE_HANDLED" {
-		t.Error("Expected next_state to be INLINE_HANDLED")
+	if context, ok := dataMap["context"]; !ok || context != validArgs["context"] {
+		t.Errorf("Expected context %q to be preserved in ProcessEffect.Data, got %q", validArgs["context"], context)
 	}
 }
 
@@ -95,18 +101,17 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 			errorMsg:    "question must be a string",
 		},
 		{
-			name: "Invalid urgency level",
-			args: map[string]any{
-				"question": "Valid question?",
-				"urgency":  "INVALID",
-			},
-			expectError: true,
-			errorMsg:    "urgency must be LOW, MEDIUM, or HIGH",
-		},
-		{
 			name: "Valid with defaults",
 			args: map[string]any{
 				"question": "Valid question without optional params?",
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid with context",
+			args: map[string]any{
+				"question": "Valid question with context?",
+				"context":  "Some additional context",
 			},
 			expectError: false,
 		},
@@ -126,15 +131,8 @@ func TestAskQuestionToolErrorHandling(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// Verify default values are set.
-				if resultMap, ok := result.(map[string]any); ok {
-					if urgency, exists := resultMap["urgency"]; !exists || urgency != "MEDIUM" {
-						t.Error("Expected default urgency to be MEDIUM")
-					}
-					if context, exists := resultMap["context"]; !exists || context != "" {
-						t.Error("Expected default context to be empty string")
-					}
-				}
+				// ask_question now returns ProcessEffect, no structured data to check
+				// Default values are handled internally by the tool
 			}
 		})
 	}
@@ -151,7 +149,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 
 	// Test required parameters.
-	expectedRequired := []string{"plan", "confidence", "todos"}
+	expectedRequired := []string{"is_complete", "plan", "confidence"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
 	}
@@ -169,14 +167,14 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		}
 	}
 
-	// Test valid execution.
+	// Test valid execution (implementation plan mode).
 	ctx := context.Background()
 	validArgs := map[string]any{
+		"is_complete":         false, // Submitting a plan for approval
 		"plan":                "Detailed implementation plan...",
 		"confidence":          string(proto.ConfidenceHigh),
 		"exploration_summary": "Explored 15 files, found 3 patterns",
-		"risks":               "Potential performance impact on auth flow",
-		"todos":               []any{"Implement authentication logic", "Add validation", "Update tests"},
+		"knowledge_pack":      "digraph KG { A -> B; }",
 	}
 
 	result, err := tool.Exec(ctx, validArgs)
@@ -184,26 +182,35 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 		t.Fatalf("Expected successful execution, got error: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	// Tools now return data via ProcessEffect.Data
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be present")
+	}
+
+	if result.ProcessEffect.Signal != tools.SignalPlanReview {
+		t.Errorf("Expected signal %s, got: %s", tools.SignalPlanReview, result.ProcessEffect.Signal)
+	}
+
+	data, ok := result.ProcessEffect.Data.(map[string]any)
 	if !ok {
-		t.Fatal("Expected result to be a map")
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
 	}
 
 	// Validate result structure.
-	if success, exists := resultMap["success"]; !exists || success != true {
-		t.Error("Expected success field to be true")
+	if plan, exists := data["plan"]; !exists || plan != validArgs["plan"] {
+		t.Error("Expected plan to be preserved in ProcessEffect.Data")
 	}
 
-	if plan, exists := resultMap["plan"]; !exists || plan != validArgs["plan"] {
-		t.Error("Expected plan to be preserved in result")
+	if confidence, exists := data["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
+		t.Error("Expected confidence to be preserved in ProcessEffect.Data")
 	}
 
-	if confidence, exists := resultMap["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
-		t.Error("Expected confidence to be preserved")
-	}
-
-	if nextState, exists := resultMap["next_state"]; !exists || nextState != string(StatePlanReview) {
-		t.Error("Expected next_state to be PLAN_REVIEW")
+	if isComplete, exists := data["is_complete"]; !exists || isComplete != false {
+		t.Error("Expected is_complete=false in ProcessEffect.Data")
 	}
 }
 
@@ -220,41 +227,53 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		errorMsg    string
 	}{
 		{
+			name:        "Missing is_complete parameter",
+			args:        map[string]any{"plan": "Some plan", "confidence": string(proto.ConfidenceHigh)},
+			expectError: true,
+			errorMsg:    "is_complete parameter is required",
+		},
+		{
 			name:        "Missing plan parameter",
-			args:        map[string]any{"confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"is_complete": false, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan parameter is required",
 		},
 		{
 			name:        "Missing confidence parameter",
-			args:        map[string]any{"plan": "Some plan"},
+			args:        map[string]any{"is_complete": false, "plan": "Some plan"},
 			expectError: true,
 			errorMsg:    "confidence parameter is required",
 		},
 		{
+			name:        "Invalid is_complete type",
+			args:        map[string]any{"is_complete": "invalid", "plan": "Some plan", "confidence": string(proto.ConfidenceHigh)},
+			expectError: true,
+			errorMsg:    "is_complete must be a boolean",
+		},
+		{
 			name:        "Empty plan",
-			args:        map[string]any{"plan": "", "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"is_complete": false, "plan": "", "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan cannot be empty",
 		},
 		{
 			name:        "Invalid plan type",
-			args:        map[string]any{"plan": 123, "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"is_complete": false, "plan": 123, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan must be a string",
 		},
 		{
 			name:        "Invalid confidence type",
-			args:        map[string]any{"plan": "Valid plan", "confidence": 123},
+			args:        map[string]any{"is_complete": false, "plan": "Valid plan", "confidence": 123},
 			expectError: true,
 			errorMsg:    "confidence must be a string",
 		},
 		{
 			name: "Invalid confidence level",
 			args: map[string]any{
-				"plan":       "Valid plan",
-				"confidence": "INVALID",
-				"todos":      []any{"Some task"},
+				"is_complete": false,
+				"plan":        "Valid plan",
+				"confidence":  "INVALID",
 			},
 			expectError: true,
 			errorMsg:    fmt.Sprintf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow),
@@ -262,9 +281,9 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		{
 			name: "Valid with minimal parameters",
 			args: map[string]any{
-				"plan":       "Minimal valid plan",
-				"confidence": "MEDIUM",
-				"todos":      []any{"Implement feature"},
+				"is_complete": false,
+				"plan":        "Minimal valid plan",
+				"confidence":  "MEDIUM",
 			},
 			expectError: false,
 		},
@@ -284,13 +303,16 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 				if err != nil {
 					t.Errorf("Expected no error but got: %v", err)
 				}
-				// Verify optional fields default to empty string.
-				if resultMap, ok := result.(map[string]any); ok {
-					if exploration, exists := resultMap["exploration_summary"]; !exists || exploration != "" {
-						t.Error("Expected default exploration_summary to be empty string")
-					}
-					if risks, exists := resultMap["risks"]; !exists || risks != "" {
-						t.Error("Expected default risks to be empty string")
+				if result != nil {
+					// Verify optional fields default to empty string.
+					var resultMap map[string]any
+					if err := json.Unmarshal([]byte(result.Content), &resultMap); err == nil {
+						if exploration, exists := resultMap["exploration_summary"]; !exists || exploration != "" {
+							t.Error("Expected default exploration_summary to be empty string")
+						}
+						if knowledgePack, exists := resultMap["knowledge_pack"]; !exists || knowledgePack != "" {
+							t.Error("Expected default knowledge_pack to be empty string")
+						}
 					}
 				}
 			}

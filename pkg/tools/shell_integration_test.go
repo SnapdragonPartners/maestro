@@ -1,7 +1,9 @@
+//nolint:govet // Shadow variables in tests are acceptable
 package tools
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"orchestrator/pkg/exec"
@@ -22,9 +24,13 @@ func TestShellTool_WithLocalExecutor(t *testing.T) {
 		t.Fatalf("Shell tool execution failed: %v", err)
 	}
 
-	resultMap, err := utils.AssertMapStringAny(result)
-	if err != nil {
-		t.Fatalf("Expected result to be map[string]any: %v", err)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	var resultMap map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
 	}
 
 	stdout, err := utils.GetMapField[string](resultMap, "stdout")
@@ -36,11 +42,13 @@ func TestShellTool_WithLocalExecutor(t *testing.T) {
 		t.Error("Expected non-empty stdout")
 	}
 
-	exitCode, err := utils.GetMapField[int](resultMap, "exit_code")
+	// JSON unmarshals numbers as float64, convert to int
+	exitCodeFloat, err := utils.GetMapField[float64](resultMap, "exit_code")
 	if err != nil {
 		t.Fatalf("Expected exit_code field: %v", err)
 	}
 
+	exitCode := int(exitCodeFloat)
 	if exitCode != 0 {
 		t.Errorf("Expected exit code 0, got %d", exitCode)
 	}

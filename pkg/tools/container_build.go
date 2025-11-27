@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -72,7 +73,7 @@ func (c *ContainerBuildTool) PromptDocumentation() string {
 // Exec executes the container build operation.
 //
 //nolint:cyclop // Temporary debugging code increases complexity
-func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract working directory
 	cwd := extractWorkingDirectory(args)
 
@@ -114,40 +115,57 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (any
 }
 
 // buildAndTestContainer builds and tests a container, returning the result map.
-func (c *ContainerBuildTool) buildAndTestContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) (any, error) {
+func (c *ContainerBuildTool) buildAndTestContainer(ctx context.Context, cwd, containerName, dockerfilePath, platform string) (*ExecResult, error) {
 	// Build the container
 	if err := c.buildContainer(ctx, cwd, containerName, dockerfilePath, platform); err != nil {
 		// Return structured response with build failure details (error already includes stdout/stderr)
-		return map[string]any{
+		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
 			"platform":       platform,
 			"error":          fmt.Sprintf("Failed to build container: %v", err),
 			"stage":          "build",
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Test the container
 	if err := c.testContainer(ctx, containerName); err != nil {
 		// Return structured response with test failure details (error already includes stdout/stderr)
-		return map[string]any{
+		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
 			"platform":       platform,
 			"error":          fmt.Sprintf("Container built successfully but failed testing: %v", err),
 			"stage":          "test",
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":        true,
 		"container_name": containerName,
 		"dockerfile":     dockerfilePath,
 		"platform":       platform,
 		"message":        fmt.Sprintf("Successfully built container '%s'", containerName),
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // buildContainer builds the Docker container from the specified dockerfile using buildx or docker build as fallback.
