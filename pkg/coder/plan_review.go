@@ -350,19 +350,10 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 			return proto.StateError, false, logx.Errorf("CODING effect data is not map[string]any: %T", out.EffectData)
 		}
 
-		todosArray, ok := effectData["todos"].([]any)
-		if !ok {
-			return proto.StateError, false, logx.Errorf("todos field is not []any: %T", effectData["todos"])
-		}
-
-		// Convert to []string
-		todos := make([]string, len(todosArray))
-		for i, t := range todosArray {
-			todoStr, ok := t.(string)
-			if !ok {
-				return proto.StateError, false, logx.Errorf("todo %d is not string: %T", i, t)
-			}
-			todos[i] = todoStr
+		// Extract todos array (should be []string from tool)
+		todos, err := utils.GetMapField[[]string](effectData, "todos")
+		if err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to extract todos from ProcessEffect")
 		}
 
 		c.logger.Info("📋 [TODO] Extracted %d todos from ProcessEffect", len(todos))
