@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
+	"orchestrator/pkg/agent/internal/llmimpl/google"
 	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/middleware/logging"
@@ -46,7 +47,11 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 
 	// Initialize circuit breakers for each provider
 	circuitBreakers := make(map[string]circuit.Breaker)
-	for _, provider := range []string{string(config.ProviderAnthropic), string(config.ProviderOpenAI)} {
+	for _, provider := range []string{
+		string(config.ProviderAnthropic),
+		string(config.ProviderOpenAI),
+		string(config.ProviderGoogle),
+	} {
 		circuitBreakers[provider] = circuit.New(circuit.Config{
 			FailureThreshold: cfg.Agents.Resilience.CircuitBreaker.FailureThreshold,
 			SuccessThreshold: cfg.Agents.Resilience.CircuitBreaker.SuccessThreshold,
@@ -63,6 +68,10 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		string(config.ProviderOpenAI): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.OpenAI.MaxConcurrency,
+		},
+		string(config.ProviderGoogle): {
+			TokensPerMinute: cfg.Agents.Resilience.RateLimit.Google.TokensPerMinute,
+			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.Google.MaxConcurrency,
 		},
 	}
 
@@ -156,6 +165,8 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		// Use official OpenAI SDK with Responses API for all OpenAI models
 		// Supports tool calling via Responses API (o4-mini, gpt-4o, etc.)
 		rawClient = openaiofficial.NewOfficialClientWithModel(apiKey, modelName)
+	case config.ProviderGoogle:
+		rawClient = google.NewGeminiClientWithModel(apiKey, modelName)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}

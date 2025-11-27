@@ -334,7 +334,11 @@ projectDir/                    # Binary location or CLI specified
 ### LLM Abstraction
 All AI model interactions go through the unified `LLMClient` interface in `pkg/agent/`:
 - `ClaudeClient` - Anthropic Claude integration
-- `O3Client` - OpenAI O3 integration  
+- `O3Client` - OpenAI O3 integration
+- `GeminiClient` - Google Gemini integration (3 Pro, 2.5 Flash, 2.0 Flash)
+  - 1M token context window for large codebases
+  - Thought signature preservation for multi-turn tool calling
+  - Function calling with mode "ANY" for required tool use
 - Easily extensible for new LLM providers
 
 ## Story-Driven Development

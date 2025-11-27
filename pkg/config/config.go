@@ -198,7 +198,7 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 1048576,
 		MaxOutputTokens:  65536,
 	},
-	"gemini-3-pro": {
+	"gemini-3-pro-preview": {
 		Provider:         ProviderGoogle,
 		InputCPM:         2.0,
 		OutputCPM:        12.0,
