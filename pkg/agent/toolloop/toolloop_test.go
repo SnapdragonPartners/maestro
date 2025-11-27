@@ -19,7 +19,14 @@ type mockLLMClient struct {
 	callCount int
 }
 
-func (m *mockLLMClient) Complete(_ context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
+func (m *mockLLMClient) Complete(ctx context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
+	// Check if context is cancelled before proceeding
+	select {
+	case <-ctx.Done():
+		return agent.CompletionResponse{}, ctx.Err()
+	default:
+	}
+
 	if m.callCount >= len(m.responses) {
 		return agent.CompletionResponse{}, errors.New("no more mock responses")
 	}
