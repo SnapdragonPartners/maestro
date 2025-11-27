@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func (t *GetDiffTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract arguments
 	coderID, ok := args["coder_id"].(string)
 	if !ok || coderID == "" {
@@ -75,10 +76,15 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (any, error
 
 	// Validate coder_id format
 	if !strings.HasPrefix(coderID, "coder-") {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("invalid coder_id format: %s (expected 'coder-001' format)", coderID),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Construct workspace path in container
@@ -91,10 +97,15 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (any, error
 		// Clean path to prevent directory traversal
 		cleanPath := filepath.Clean(path)
 		if strings.HasPrefix(cleanPath, "..") {
-			return map[string]any{
+			response := map[string]any{
 				"success": false,
 				"error":   "path cannot contain directory traversal (..) attempts",
-			}, nil
+			}
+			content, marshalErr := json.Marshal(response)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+			}
+			return &ExecResult{Content: string(content)}, nil
 		}
 		diffCmd = fmt.Sprintf(
 			"cd %s && git diff --no-color --no-ext-diff origin/main -- %s 2>&1 | head -n %d",
@@ -113,17 +124,24 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (any, error
 	// Note: git diff returns 0 even if there are differences
 	// Only fail if the command itself failed (e.g., not a git repo)
 	if err != nil && result.ExitCode != 0 {
+		var response map[string]any
 		// Check if error is because workspace doesn't exist or isn't a git repo
 		if strings.Contains(result.Stdout, "not a git repository") {
-			return map[string]any{
+			response = map[string]any{
 				"success": false,
 				"error":   fmt.Sprintf("workspace %s is not a git repository", coderID),
-			}, nil
+			}
+		} else {
+			response = map[string]any{
+				"success": false,
+				"error":   fmt.Sprintf("git diff failed: %s", result.Stdout),
+			}
 		}
-		return map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("git diff failed: %s", result.Stdout),
-		}, nil
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Count lines to detect truncation
@@ -133,12 +151,19 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (any, error
 	}
 	truncated := diffLines >= t.maxDiffLines
 
-	return map[string]any{
+	resultMap := map[string]any{
 		"success":   true,
 		"diff":      result.Stdout,
 		"coder_id":  coderID,
 		"path":      path,
 		"truncated": truncated,
 		"lines":     diffLines,
-	}, nil
+	}
+
+	content, err := json.Marshal(resultMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

@@ -22,7 +22,5 @@ Please verify completion by reviewing their workspace and checking that ALL acce
 
 The story acceptance criteria are the authoritative definition of "done". Each criterion must be satisfied for approval.
 
-Provide your decision using submit_reply.
-
-Your response must start with: APPROVED, NEEDS_CHANGES, or REJECTED`, approvalPayload.Content)
+When you have completed your review, call the review_complete tool with your decision (status: APPROVED/NEEDS_CHANGES/REJECTED) and detailed feedback explaining your reasoning.`, approvalPayload.Content)
 }

@@ -1,7 +1,9 @@
+//nolint:govet // Shadow variables in tests are acceptable
 package tools
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"orchestrator/pkg/exec"
@@ -69,9 +71,13 @@ func TestShellTool_Exec(t *testing.T) {
 	}
 
 	// Check result structure.
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected result to be map[string]any, got %T", result)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	var resultMap map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
 	}
 
 	if stdout, okStdout := resultMap["stdout"]; !okStdout {
@@ -88,10 +94,20 @@ func TestShellTool_Exec(t *testing.T) {
 
 	if exitCode, okExitCode := resultMap["exit_code"]; !okExitCode {
 		t.Error("Expected exit_code in result")
-	} else if code, okExitCode := exitCode.(int); !okExitCode {
-		t.Error("Expected exit_code to be int")
-	} else if code != 0 {
-		t.Errorf("Expected exit_code 0, got %d", code)
+	} else {
+		// JSON unmarshals numbers as float64
+		var code int
+		switch v := exitCode.(type) {
+		case float64:
+			code = int(v)
+		case int:
+			code = v
+		default:
+			t.Errorf("Expected exit_code to be number, got %T", exitCode)
+		}
+		if code != 0 {
+			t.Errorf("Expected exit_code 0, got %d", code)
+		}
 	}
 
 	// Test with cwd argument.
@@ -104,9 +120,12 @@ func TestShellTool_Exec(t *testing.T) {
 		t.Errorf("Expected no error with cwd arg, got %v", err)
 	}
 
-	resultMap, ok = result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected result to be map[string]any, got %T", result)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
 	}
 
 	if cwd, ok := resultMap["cwd"]; !ok {

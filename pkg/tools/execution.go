@@ -41,7 +41,7 @@ func NewHostRunner() *HostRunner {
 }
 
 // RunContainerTest executes container_test tool on the host with full Docker access.
-func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) (any, error) {
+func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	r.logger.Info("🖥️  Executing container_test on host (Strategy A)")
 
 	// Extract container name
@@ -94,7 +94,7 @@ func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) 
 }
 
 // executeCommand runs a command in a container and returns results.
-func (r *HostRunner) executeCommand(ctx context.Context, containerName, command, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (any, error) {
+func (r *HostRunner) executeCommand(ctx context.Context, containerName, command, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (*ExecResult, error) {
 	r.logger.Info("🧪 container_test command: container='%s', command='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds",
 		containerName, command, workingDir, hostWorkspace, mountPermissions, timeoutSec)
 	timeout := time.Duration(timeoutSec) * time.Second
@@ -126,7 +126,7 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 		if errors.As(err, &exitError) {
 			exitCode = exitError.ExitCode()
 		} else {
-			return map[string]any{
+			response := map[string]any{
 				"success":        false,
 				"container_name": containerName,
 				"command":        command,
@@ -135,11 +135,16 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 				"permissions":    mountPermissions,
 				"timeout":        timeoutSec,
 				"error":          fmt.Sprintf("Command execution failed: %v", err),
-			}, nil
+			}
+			content, marshalErr := json.Marshal(response)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+			}
+			return &ExecResult{Content: string(content)}, nil
 		}
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":        exitCode == 0,
 		"container_name": containerName,
 		"command":        command,
@@ -151,11 +156,18 @@ func (r *HostRunner) executeCommand(ctx context.Context, containerName, command,
 		"stdout":         stdout.String(),
 		"stderr":         stderr.String(),
 		"host_executed":  true,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // startPersistentContainer starts a long-running container and returns network information.
-func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName, workingDir, hostWorkspace, mountPermissions string, ttlSeconds int) (any, error) {
+func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName, workingDir, hostWorkspace, mountPermissions string, ttlSeconds int) (*ExecResult, error) {
 	// Generate unique container name to avoid collisions
 	uniqueName := r.generateUniqueContainerName(containerName)
 
@@ -179,12 +191,17 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 
 	err := cmd.Run()
 	if err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to start container: %v", err),
 			"stdout":  stdout.String(),
 			"stderr":  stderr.String(),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Get container ID from output
@@ -204,7 +221,7 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 		networkInfo = map[string]any{"error": err.Error()}
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":        true,
 		"container_name": containerName,
 		"container_id":   containerID,
@@ -212,11 +229,18 @@ func (r *HostRunner) startPersistentContainer(ctx context.Context, containerName
 		"mode":           "persistent",
 		"host_executed":  true,
 		"network_info":   networkInfo,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // performBootTest tests that a container starts successfully and has required capabilities.
-func (r *HostRunner) performBootTest(ctx context.Context, containerName, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (any, error) {
+func (r *HostRunner) performBootTest(ctx context.Context, containerName, workingDir, hostWorkspace, mountPermissions string, timeoutSec int) (*ExecResult, error) {
 	r.logger.Info("🧪 container_test boot test: container='%s', workDir='%s', hostWorkspace='%s', permissions='%s', timeout=%ds",
 		containerName, workingDir, hostWorkspace, mountPermissions, timeoutSec)
 	// First validate container capabilities before doing boot test
@@ -230,7 +254,7 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 		for tool, details := range validationResult.ErrorDetails {
 			r.logger.Error("   - %s: %s", tool, details)
 		}
-		return map[string]any{
+		response := map[string]any{
 			"success":        false,
 			"container_name": containerName,
 			"working_dir":    workingDir,
@@ -241,7 +265,12 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 			"validation":     validationResult,
 			"host_executed":  true,
 			"message":        fmt.Sprintf("Container '%s' failed capability validation: %s", containerName, validationResult.Message),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 	r.logger.Info("✅ Container '%s' validation passed: git available, GitHub CLI available, GitHub API accessible", containerName)
 	timeout := time.Duration(timeoutSec) * time.Second
@@ -271,7 +300,7 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 	if err != nil {
 		if execCtx.Err() == context.DeadlineExceeded {
 			// Container ran successfully until timeout - this is success for boot test
-			return map[string]any{
+			result := map[string]any{
 				"success":        true,
 				"container_name": containerName,
 				"working_dir":    workingDir,
@@ -282,7 +311,12 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 				"host_executed":  true,
 				"validation":     validationResult,
 				"message":        fmt.Sprintf("Container '%s' booted successfully and passed validation", containerName),
-			}, nil
+			}
+			content, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("failed to marshal result: %w", marshalErr)
+			}
+			return &ExecResult{Content: string(content)}, nil
 		}
 	}
 
@@ -293,7 +327,7 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 		exitCode = exitError.ExitCode()
 	}
 
-	return map[string]any{
+	response := map[string]any{
 		"success":        false,
 		"container_name": containerName,
 		"working_dir":    workingDir,
@@ -306,7 +340,14 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 		"stderr":         stderr.String(),
 		"host_executed":  true,
 		"message":        fmt.Sprintf("Container '%s' failed boot test", containerName),
-	}, nil
+	}
+
+	content, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal error response: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // getContainerNetworkInfo inspects a running container and returns network details.

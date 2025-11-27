@@ -98,7 +98,7 @@ func (c *ContainerTestTool) PromptDocumentation() string {
 }
 
 // Exec executes the unified container test tool using host execution strategy.
-func (c *ContainerTestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (c *ContainerTestTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract container name
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
 	if containerName == "" {

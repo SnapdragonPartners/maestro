@@ -22,7 +22,5 @@ Please review the code changes against the story acceptance criteria (shown in t
 
 The story acceptance criteria are the authoritative requirements. Do not introduce new requirements or reference external specifications not mentioned in the story.
 
-Provide your decision using submit_reply.
-
-Your response must start with: APPROVED, NEEDS_CHANGES, or REJECTED`, approvalPayload.Content)
+When you have completed your review, call the review_complete tool with your decision (status: APPROVED/NEEDS_CHANGES/REJECTED) and detailed feedback explaining your reasoning.`, approvalPayload.Content)
 }

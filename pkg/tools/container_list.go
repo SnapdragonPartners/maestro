@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -52,7 +53,7 @@ func (c *ContainerListTool) Definition() ToolDefinition {
 }
 
 // Exec executes the container_list tool.
-func (c *ContainerListTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (c *ContainerListTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	showAll := false
 	if showAllRaw, exists := args["show_all"]; exists {
 		if showAllBool, ok := showAllRaw.(bool); ok {
@@ -77,10 +78,15 @@ func (c *ContainerListTool) Exec(ctx context.Context, args map[string]any) (any,
 	// Execute docker ps
 	result, err := c.executor.Run(ctx, dockerArgs, &exec.Opts{Timeout: 30 * time.Second})
 	if err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to list containers: %v", err),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	response := map[string]any{
@@ -94,5 +100,10 @@ func (c *ContainerListTool) Exec(ctx context.Context, args map[string]any) (any,
 		response["registry_count"] = len(registryContainers)
 	}
 
-	return response, nil
+	content, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

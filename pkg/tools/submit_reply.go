@@ -46,18 +46,22 @@ func (t *SubmitReplyTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *SubmitReplyTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *SubmitReplyTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract response argument
 	response, ok := args["response"].(string)
 	if !ok || response == "" {
 		return nil, fmt.Errorf("response is required and must be a non-empty string")
 	}
 
-	// Return special signal that iteration loop should terminate
-	// The state handler will check for action="submit" to know to exit
-	return map[string]any{
-		"success":  true,
-		"action":   "submit",
-		"response": response,
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: "Reply submitted successfully",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalReplySubmitted,
+			Data: map[string]any{
+				"response": response,
+			},
+		},
 	}, nil
 }

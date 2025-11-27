@@ -9,7 +9,25 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"orchestrator/pkg/config"
 )
+
+// setupTestDir creates a temp directory and initializes config for testing.
+func setupTestDir(t *testing.T) string {
+	tempDir, err := os.MkdirTemp("", "bootstrap-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempDir) })
+
+	// Initialize config in temp directory (required for git identity configuration)
+	if err := config.LoadConfig(tempDir); err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	return tempDir
+}
 
 // initTestGitRepo initializes a git repository in the given directory.
 func initTestGitRepo(dir string) error {
@@ -45,12 +63,8 @@ func initTestGitRepo(dir string) error {
 }
 
 func TestPhaseExecution(t *testing.T) {
-	// Create temporary directory for test.
-	tempDir, err := os.MkdirTemp("", "bootstrap-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	// Setup test directory with config initialized
+	tempDir := setupTestDir(t)
 
 	// Create minimal Go project.
 	goMod := `module test-project
@@ -66,10 +80,10 @@ go 1.21
 	}
 
 	// Create bootstrap phase.
-	config := DefaultConfig()
-	config.AutoMerge = false // Disable auto-merge for testing
-	config.RepoURL = tempDir // Use local directory as repo URL
-	phase := NewPhase(tempDir, config)
+	bootstrapConfig := DefaultConfig()
+	bootstrapConfig.AutoMerge = false // Disable auto-merge for testing
+	bootstrapConfig.RepoURL = tempDir // Use local directory as repo URL
+	phase := NewPhase(tempDir, bootstrapConfig)
 
 	// Execute bootstrap phase.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -150,11 +164,8 @@ func TestPhaseWithDisabledConfig(t *testing.T) {
 }
 
 func TestPhaseWithForcedBackend(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bootstrap-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	// Setup test directory with config initialized
+	tempDir := setupTestDir(t)
 
 	// Create Node.js project.
 	packageJSON := `{
@@ -224,11 +235,8 @@ func TestPhaseWithInvalidForcedBackend(t *testing.T) {
 }
 
 func TestPhaseWithSkipMakefile(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bootstrap-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	// Setup test directory with config initialized
+	tempDir := setupTestDir(t)
 
 	// Create minimal project.
 	os.WriteFile(filepath.Join(tempDir, "main.py"), []byte("print('hello')"), 0644)
@@ -269,11 +277,8 @@ func TestPhaseWithSkipMakefile(t *testing.T) {
 }
 
 func TestPhaseWithAdditionalArtifacts(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bootstrap-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	// Setup test directory with config initialized
+	tempDir := setupTestDir(t)
 
 	// Create minimal Go project.
 	goMod := `module test-project

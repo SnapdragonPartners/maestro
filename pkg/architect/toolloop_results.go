@@ -27,68 +27,6 @@ func ExtractSubmitReply(calls []agent.ToolCall, _ []any) (SubmitReplyResult, err
 	return SubmitReplyResult{}, toolloop.ErrNoTerminalTool
 }
 
-// SpecReviewResult contains the outcome of a spec review (feedback or approval).
-//
-//nolint:govet // Bool field logically precedes string for semantic grouping
-type SpecReviewResult struct {
-	Approved bool
-	Feedback string
-}
-
-// ExtractSpecReview extracts the result from spec review tools (spec_feedback or submit_stories).
-// Returns ErrNoTerminalTool if neither tool was called successfully.
-// Returns ErrInvalidResult if tool payload is malformed.
-func ExtractSpecReview(calls []agent.ToolCall, results []any) (SpecReviewResult, error) {
-	for i := range calls {
-		toolCall := &calls[i]
-
-		// Check for spec_feedback (rejection/changes requested)
-		if toolCall.Name == tools.ToolSpecFeedback {
-			// Check if tool executed successfully from results
-			resultMap, ok := results[i].(map[string]any)
-			if !ok {
-				continue
-			}
-
-			success, _ := resultMap["success"].(bool)
-			if !success {
-				continue
-			}
-
-			feedback, ok := resultMap["feedback"].(string)
-			if !ok || feedback == "" {
-				return SpecReviewResult{}, toolloop.ErrInvalidResult
-			}
-
-			return SpecReviewResult{
-				Approved: false,
-				Feedback: feedback,
-			}, nil
-		}
-
-		// Check for submit_stories (approval)
-		if toolCall.Name == tools.ToolSubmitStories {
-			// Check if tool executed successfully from results
-			resultMap, ok := results[i].(map[string]any)
-			if !ok {
-				continue
-			}
-
-			success, _ := resultMap["success"].(bool)
-			if !success {
-				continue
-			}
-
-			return SpecReviewResult{
-				Approved: true,
-				Feedback: "Spec approved and stories submitted",
-			}, nil
-		}
-	}
-
-	return SpecReviewResult{}, toolloop.ErrNoTerminalTool
-}
-
 // ReviewCompleteResult contains the outcome of a review_complete tool call.
 type ReviewCompleteResult struct {
 	Status   string
@@ -124,4 +62,34 @@ func ExtractReviewComplete(calls []agent.ToolCall, results []any) (ReviewComplet
 	}
 
 	return ReviewCompleteResult{}, toolloop.ErrNoTerminalTool
+}
+
+// SubmitStoriesResult contains the outcome of a submit_stories tool call.
+type SubmitStoriesResult struct {
+	Success bool
+}
+
+// ExtractSubmitStories extracts the result from a submit_stories tool call.
+// Returns ErrNoTerminalTool if submit_stories was not called successfully.
+func ExtractSubmitStories(calls []agent.ToolCall, results []any) (SubmitStoriesResult, error) {
+	for i := range calls {
+		if calls[i].Name != tools.ToolSubmitStories {
+			continue
+		}
+
+		// Check if tool executed successfully from results
+		resultMap, ok := results[i].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		success, _ := resultMap["success"].(bool)
+		if !success {
+			continue
+		}
+
+		return SubmitStoriesResult{Success: true}, nil
+	}
+
+	return SubmitStoriesResult{}, toolloop.ErrNoTerminalTool
 }

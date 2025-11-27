@@ -60,28 +60,51 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected map result, got: %T", result)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
 	}
 
-	success, ok := resultMap["success"].(bool)
-	if !ok || !success {
-		t.Errorf("Expected success=true, got: %v", resultMap)
+	// Check that ProcessEffect is present with correct signal
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be present")
 	}
 
-	// Verify metadata is present.
-	metadata, ok := resultMap["metadata"].(map[string]any)
+	if result.ProcessEffect.Signal != SignalSpecPreview {
+		t.Errorf("Expected signal %s, got: %s", SignalSpecPreview, result.ProcessEffect.Signal)
+	}
+
+	// Check ProcessEffect.Data contains expected fields
+	data, ok := result.ProcessEffect.Data.(map[string]any)
 	if !ok {
-		t.Fatalf("Expected metadata map, got: %T", resultMap["metadata"])
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
+	}
+
+	// Verify user_spec is present
+	userSpec, ok := data["user_spec"].(string)
+	if !ok || userSpec == "" {
+		t.Errorf("Expected user_spec in ProcessEffect.Data, got: %v", data)
+	}
+
+	// Verify infrastructure_spec is present (can be empty)
+	_, ok = data["infrastructure_spec"].(string)
+	if !ok {
+		t.Errorf("Expected infrastructure_spec in ProcessEffect.Data, got: %v", data)
+	}
+
+	// Verify metadata is present
+	metadata, ok := data["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected metadata map, got: %T", data["metadata"])
 	}
 
 	if metadata["title"] != "Test Feature" {
 		t.Errorf("Expected title 'Test Feature', got: %v", metadata["title"])
 	}
 
-	if metadata["requirements_count"] != 1 {
-		t.Errorf("Expected 1 requirement, got: %v", metadata["requirements_count"])
+	// Verify requirements count
+	reqCount := metadata["requirements_count"]
+	if reqCount != 1 {
+		t.Errorf("Expected 1 requirement, got: %v (type: %T)", reqCount, reqCount)
 	}
 }
 
@@ -99,22 +122,41 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected map result, got: %T", result)
+	if result == nil {
+		t.Fatal("Expected non-nil result")
 	}
 
-	// After removing strict validation, even "invalid" specs are accepted.
-	// The architect will provide feedback via the review process.
-	success, ok := resultMap["success"].(bool)
-	if !ok || !success {
-		t.Errorf("Expected success=true (no strict validation), got: %v", resultMap)
+	// Check that ProcessEffect is present with correct signal
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be present")
+	}
+
+	if result.ProcessEffect.Signal != SignalSpecPreview {
+		t.Errorf("Expected signal %s, got: %s", SignalSpecPreview, result.ProcessEffect.Signal)
+	}
+
+	// Check ProcessEffect.Data contains expected fields
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected ProcessEffect.Data to be map[string]any, got: %T", result.ProcessEffect.Data)
+	}
+
+	// Verify user_spec is present
+	userSpec, ok := data["user_spec"].(string)
+	if !ok || userSpec == "" {
+		t.Errorf("Expected user_spec in ProcessEffect.Data, got: %v", data)
+	}
+
+	// Verify infrastructure_spec is present (can be empty)
+	_, ok = data["infrastructure_spec"].(string)
+	if !ok {
+		t.Errorf("Expected infrastructure_spec in ProcessEffect.Data, got: %v", data)
 	}
 
 	// Verify metadata is present (even if incomplete).
-	metadata, ok := resultMap["metadata"].(map[string]any)
+	metadata, ok := data["metadata"].(map[string]any)
 	if !ok {
-		t.Fatalf("Expected metadata map, got: %T", resultMap["metadata"])
+		t.Fatalf("Expected metadata map, got: %T", data["metadata"])
 	}
 
 	// Title should be parsed even from incomplete spec

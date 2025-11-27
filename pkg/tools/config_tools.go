@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,7 +60,7 @@ func (c *CreateMakefileTool) PromptDocumentation() string {
 }
 
 // Exec executes the create makefile operation.
-func (c *CreateMakefileTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (c *CreateMakefileTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract working directory
 	cwd := ""
 	if cwdVal, hasCwd := args["cwd"]; hasCwd {
@@ -100,10 +101,15 @@ func (c *CreateMakefileTool) Exec(_ context.Context, args map[string]any) (any, 
 	// Check if Makefile already exists
 	makefilePath := filepath.Join(cwd, "Makefile")
 	if !force && fileExists(makefilePath) {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   "Makefile already exists. Use force=true to overwrite.",
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Generate Makefile content based on platform
@@ -114,12 +120,19 @@ func (c *CreateMakefileTool) Exec(_ context.Context, args map[string]any) (any, 
 		return nil, fmt.Errorf("failed to write Makefile: %w", err)
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":  true,
 		"message":  fmt.Sprintf("Created Makefile for %s platform", platform),
 		"path":     makefilePath,
 		"platform": platform,
-	}, nil
+	}
+
+	resultContent, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(resultContent)}, nil
 }
 
 // detectPlatformFromDirectory detects platform based on files in directory.

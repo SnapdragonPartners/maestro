@@ -303,18 +303,23 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 	// Use toolloop for todo collection (single-pass with retry)
 	loop := toolloop.New(c.LLMClient, c.logger)
 
+	// Get todos_add tool and wrap it as terminal tool
+	todosAddTool, err := todoToolProvider.Get(tools.ToolTodosAdd)
+	if err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to get todos_add tool")
+	}
+	terminalTool := todosAddTool
+
+	// No general tools in this phase - just the terminal tool
 	cfg := &toolloop.Config[TodoCollectionResult]{
 		ContextManager: c.contextManager,
-		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		ToolProvider:   todoToolProvider,
+		InitialPrompt:  "",             // Prompt already in context via ResetForNewTemplate
+		GeneralTools:   []tools.Tool{}, // No general tools
+		TerminalTool:   terminalTool,
 		MaxIterations:  2,    // One call + one retry if needed
 		MaxTokens:      4096, // Sufficient for todo list
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   true, // Enable verbose logging for debugging
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			return c.checkTodoCollectionTerminal(ctx, sm, calls, results)
-		},
-		ExtractResult: ExtractTodoCollectionResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			HardLimit: 2,
@@ -330,28 +335,36 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 
 	// Switch on outcome kind first
 	switch out.Kind {
-	case toolloop.OutcomeSuccess:
-		// Process extracted todos
-		if len(out.Value.Todos) > 0 {
-			c.logger.Info("📋 [TODO] Extracted %d todos from LLM", len(out.Value.Todos))
-			// Convert string todos to TodoList
-			if err := c.processTodoCollectionResult(sm, &out.Value); err != nil {
-				return proto.StateError, false, logx.Wrap(err, "failed to process todos")
-			}
+	case toolloop.OutcomeProcessEffect:
+		// todos_add returned ProcessEffect with todo data
+		c.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
+
+		// Verify signal
+		if out.Signal != tools.SignalCoding {
+			return proto.StateError, false, logx.Errorf("expected CODING signal from todos_add, got: %s", out.Signal)
 		}
 
-		// Handle terminal signals from successful completion
-		switch out.Signal {
-		case string(StateCoding):
-			// Todos collected successfully
-			return StateCoding, false, nil
-		case "":
-			// No signal - should not happen with MaxIterations=2
-			return proto.StateError, false, logx.Errorf("todo collection completed without signal")
-		default:
-			c.logger.Warn("Unknown signal from todo collection: %s", out.Signal)
-			return proto.StateError, false, logx.Errorf("unexpected signal from todo collection: %s", out.Signal)
+		// Extract todos from ProcessEffect.Data
+		effectData, ok := out.EffectData.(map[string]any)
+		if !ok {
+			return proto.StateError, false, logx.Errorf("CODING effect data is not map[string]any: %T", out.EffectData)
 		}
+
+		// Extract todos array (should be []string from tool)
+		todos, err := utils.GetMapField[[]string](effectData, "todos")
+		if err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to extract todos from ProcessEffect")
+		}
+
+		c.logger.Info("📋 [TODO] Extracted %d todos from ProcessEffect", len(todos))
+
+		// Process todos into TodoList
+		if err := c.processTodosFromEffect(sm, todos); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to process todos")
+		}
+
+		// Todos collected successfully - transition to CODING
+		return StateCoding, false, nil
 
 	case toolloop.OutcomeIterationLimit:
 		// For todo collection, hitting limit is a failure (not budget review)
@@ -382,34 +395,9 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, todoTools)
 }
 
-// checkTodoCollectionTerminal checks if todos_add was called (signal only - no data extraction).
-func (c *Coder) checkTodoCollectionTerminal(_ context.Context, _ *agent.BaseStateMachine, calls []agent.ToolCall, results []any) string {
-	// Check if todos_add was called
-	for i := range calls {
-		if calls[i].Name == tools.ToolTodosAdd {
-			// Check if result is successful
-			if i < len(results) {
-				if resultMap, ok := results[i].(map[string]any); ok {
-					if success, ok := resultMap["success"].(bool); ok && success {
-						c.logger.Info("📋 [TODO] todos_add succeeded, signaling CODING transition")
-						return "CODING"
-					}
-				}
-			}
-			// If we got here, the tool was called but failed or had invalid result
-			c.logger.Warn("📋 [TODO] todos_add called but result was unsuccessful")
-			return "" // Continue loop for retry
-		}
-	}
-
-	// No todos_add found - continue loop (will be retried or hit iteration limit)
-	c.logger.Warn("📋 [TODO] LLM did not call todos_add, continuing loop for retry")
-	return ""
-}
-
 // processTodoCollectionResult processes the extracted todos from todo collection phase.
 //
-//nolint:unparam // error return reserved for future validation logic
+//nolint:unparam,unused // error return reserved for future validation logic; Legacy - will be removed
 func (c *Coder) processTodoCollectionResult(sm *agent.BaseStateMachine, result *TodoCollectionResult) error {
 	if len(result.Todos) == 0 {
 		return nil
@@ -433,5 +421,39 @@ func (c *Coder) processTodoCollectionResult(sm *agent.BaseStateMachine, result *
 	sm.SetStateData("todo_list", todoList)
 
 	c.logger.Info("📋 [TODO] Created todo list with %d items", len(result.Todos))
+	return nil
+}
+
+// TODO: LEGACY - Remove processTodoCollectionResult once all code paths use processTodosFromEffect.
+// This function is kept temporarily for any code that might still reference it during migration.
+//
+//nolint:unused // Legacy function - will be removed after migration verification.
+
+// processTodosFromEffect processes todos extracted from ProcessEffect.Data.
+//
+//nolint:unparam // error return reserved for future validation logic
+func (c *Coder) processTodosFromEffect(sm *agent.BaseStateMachine, todos []string) error {
+	if len(todos) == 0 {
+		return nil
+	}
+
+	// Create todo list from extracted todos
+	items := make([]TodoItem, len(todos))
+	for i, todoDesc := range todos {
+		items[i] = TodoItem{
+			Description: todoDesc,
+			Completed:   false,
+		}
+	}
+
+	todoList := &TodoList{
+		Items:   items,
+		Current: 0,
+	}
+
+	c.todoList = todoList
+	sm.SetStateData("todo_list", todoList)
+
+	c.logger.Info("📋 [TODO] Created todo list with %d items from ProcessEffect", len(todos))
 	return nil
 }

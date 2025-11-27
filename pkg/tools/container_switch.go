@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"orchestrator/pkg/config"
@@ -55,7 +56,7 @@ func (c *ContainerSwitchTool) PromptDocumentation() string {
 }
 
 // Exec executes the container switch operation.
-func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract container name
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
 	if containerName == "" {
@@ -70,23 +71,35 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (an
 	}
 
 	// Update the agent's container configuration to use the new container
-	if err := c.updateAgentContainer(containerName); err != nil {
-		return map[string]any{
+	if updateErr := c.updateAgentContainer(containerName); updateErr != nil {
+		response := map[string]any{
 			"success":             false,
 			"requested_container": containerName,
 			"current_container":   c.getCurrentContainer(),
-			"error":               fmt.Sprintf("Failed to update agent configuration: %v", err),
+			"error":               fmt.Sprintf("Failed to update agent configuration: %v", updateErr),
 			"fallback_available":  true,
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":            true,
 		"previous_container": c.getCurrentContainer(),
 		"current_container":  containerName,
 		"test_result":        testResult,
 		"message":            fmt.Sprintf("Successfully switched to container '%s'", containerName),
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // testContainerAvailability tests that the target container has all required capabilities.
@@ -109,40 +122,57 @@ func (c *ContainerSwitchTool) testContainerAvailability(ctx context.Context, con
 }
 
 // fallbackToBootstrap falls back to the bootstrap container when target container fails.
-func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requestedContainer, errorMsg string) (any, error) {
+func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requestedContainer, errorMsg string) (*ExecResult, error) {
 	bootstrapContainer := "maestro-bootstrap"
 
 	// Test bootstrap container availability
 	_, testErr := c.testContainerAvailability(ctx, bootstrapContainer)
 	if testErr != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success":             false,
 			"requested_container": requestedContainer,
 			"current_container":   c.getCurrentContainer(),
 			"error":               fmt.Sprintf("Target container failed: %s. Bootstrap container also failed: %v", errorMsg, testErr),
 			"fallback_available":  false,
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Update to bootstrap container
 	if err := c.updateAgentContainer(bootstrapContainer); err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success":             false,
 			"requested_container": requestedContainer,
 			"current_container":   c.getCurrentContainer(),
 			"error":               fmt.Sprintf("Target container failed: %s. Failed to switch to bootstrap: %v", errorMsg, err),
 			"fallback_available":  false,
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":             false,
 		"requested_container": requestedContainer,
 		"current_container":   bootstrapContainer,
 		"fallback_used":       true,
 		"original_error":      errorMsg,
 		"message":             fmt.Sprintf("Container '%s' failed, fell back to '%s'", requestedContainer, bootstrapContainer),
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // updateAgentContainer updates the agent's container configuration.

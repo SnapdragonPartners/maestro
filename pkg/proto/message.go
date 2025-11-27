@@ -627,6 +627,8 @@ const (
 	StateError State = "ERROR"
 	// StateWaiting indicates a waiting state.
 	StateWaiting State = "WAITING"
+	// StateQuestion indicates a coder is waiting for architect's answer.
+	StateQuestion State = "QUESTION"
 )
 
 // String returns the string representation of State.

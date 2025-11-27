@@ -142,6 +142,7 @@ func (cm *ContextManager) SetChatService(chatService ChatService, agentID string
 
 // AddMessage stores a provenance/content pair in the user buffer.
 // This replaces the old role-based API - all content goes to user buffer for later flushing.
+// NOTE: User messages use context-aware truncation (no hard limit) to preserve important content.
 func (cm *ContextManager) AddMessage(provenance, content string) {
 	// Basic validation - skip empty content to prevent context pollution
 	if strings.TrimSpace(content) == "" {
@@ -154,7 +155,7 @@ func (cm *ContextManager) AddMessage(provenance, content string) {
 		provenance = "unknown" // Default provenance for empty provenance
 	}
 
-	// Universal tool output truncation to prevent context overload
+	// Apply context-aware truncation for user messages
 	content = cm.truncateOutputIfNeeded(strings.TrimSpace(content))
 
 	// Add to user buffer with provenance tracking
@@ -450,6 +451,7 @@ func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {
 func (cm *ContextManager) Clear() {
 	cm.messages = cm.messages[:0]
 	cm.userBuffer = cm.userBuffer[:0]
+	cm.pendingToolResults = nil // Also clear pending tool results
 }
 
 // GetMessageCount returns the number of messages in the context.
@@ -555,8 +557,24 @@ func (cm *ContextManager) ResetForNewTemplate(templateName, systemPrompt string)
 	cm.currentTemplate = templateName
 }
 
-// truncateOutputIfNeeded truncates verbose tool output to prevent context overload.
-// Implements centralized tool output truncation as recommended by expert guidance.
+// MaxToolOutputChars is the hard limit for tool output before context-aware truncation.
+const MaxToolOutputChars = 2000
+
+// truncateToolOutput applies both hard limit and context-aware truncation to tool output.
+// Tool output gets aggressive truncation to prevent verbose logs from consuming context.
+func (cm *ContextManager) truncateToolOutput(content string) string {
+	// First apply hard limit for tool output
+	if len(content) > MaxToolOutputChars {
+		content = content[:MaxToolOutputChars] + fmt.Sprintf("\n\n[... tool output truncated: %d chars exceeded hard limit of %d chars ...]",
+			len(content), MaxToolOutputChars)
+	}
+
+	// Then apply context-aware truncation
+	return cm.truncateOutputIfNeeded(content)
+}
+
+// truncateOutputIfNeeded truncates content based on available context space.
+// Used for both user messages and tool output (after hard limit check for tools).
 func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
 	// Get context limits for this model
 	maxContext, _ := cm.getContextLimits()
@@ -810,10 +828,14 @@ func (cm *ContextManager) AddAssistantMessageWithTools(content string, toolCalls
 
 // AddToolResult adds a tool execution result to the pending batch.
 // Tool results are accumulated and combined with human input in FlushUserBuffer.
+// Tool output is truncated with both hard limit (2000 chars) and context-aware checks.
 func (cm *ContextManager) AddToolResult(toolCallID, content string, isError bool) {
+	// Apply aggressive truncation to tool output (hard limit + context-aware)
+	truncatedContent := cm.truncateToolOutput(content)
+
 	cm.pendingToolResults = append(cm.pendingToolResults, ToolResult{
 		ToolCallID: toolCallID,
-		Content:    content,
+		Content:    truncatedContent,
 		IsError:    isError,
 	})
 }

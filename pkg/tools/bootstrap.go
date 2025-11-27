@@ -78,7 +78,7 @@ func (b *BootstrapTool) PromptDocumentation() string {
 // Exec executes the bootstrap configuration.
 //
 //nolint:cyclop // Bootstrap involves validation, config updates, mirror creation, and workspace refresh
-func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, error) {
+func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecResult, error) {
 	// Extract and validate project_name
 	projectName, ok := params["project_name"].(string)
 	if !ok || projectName == "" {
@@ -117,8 +117,8 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		Name:            projectName,
 		PrimaryPlatform: platform,
 	}
-	if err := config.UpdateProject(projectInfo); err != nil {
-		return nil, fmt.Errorf("failed to update project info: %w", err)
+	if updateErr := config.UpdateProject(projectInfo); updateErr != nil {
+		return nil, fmt.Errorf("failed to update project info: %w", updateErr)
 	}
 
 	// Update git config (saves to disk automatically)
@@ -130,8 +130,8 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		GitUserName:   "Maestro {AGENT_ID}",
 		GitUserEmail:  "maestro-{AGENT_ID}@localhost",
 	}
-	if err := config.UpdateGit(gitCfg); err != nil {
-		return nil, fmt.Errorf("failed to update git config: %w", err)
+	if updateErr := config.UpdateGit(gitCfg); updateErr != nil {
+		return nil, fmt.Errorf("failed to update git config: %w", updateErr)
 	}
 
 	// Create or update git mirror (validates URL is accessible)
@@ -165,15 +165,20 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (any, e
 		}
 	}
 
-	// Return success with bootstrap params and rendered markdown
-	return map[string]any{
-		"success":              true,
-		"message":              "Bootstrap configuration saved successfully",
-		"bootstrap_configured": true,
-		"project_name":         projectName,
-		"git_url":              gitURL,
-		"platform":             platform,
-		"bootstrap_markdown":   bootstrapMarkdown, // Rendered markdown for PM to store
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: "Bootstrap configuration saved successfully",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalBootstrapComplete,
+			Data: map[string]any{
+				"project_name":       projectName,
+				"git_url":            gitURL,
+				"platform":           platform,
+				"bootstrap_markdown": bootstrapMarkdown, // Rendered markdown for PM to store
+				"reset_context":      true,              // Signal PM to reset context after this tool
+			},
+		},
 	}, nil
 }
 

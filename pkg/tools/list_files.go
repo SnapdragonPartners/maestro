@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -61,7 +62,7 @@ func (t *ListFilesTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
-func (t *ListFilesTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *ListFilesTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract pattern (optional)
 	pattern := "*"
 	if p, ok := args["pattern"].(string); ok && p != "" {
@@ -77,16 +78,26 @@ func (t *ListFilesTool) Exec(ctx context.Context, args map[string]any) (any, err
 
 	result, err := t.executor.Run(ctx, cmd, nil)
 	if err != nil {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("failed to list files: %v", err),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 	if result.ExitCode != 0 {
-		return map[string]any{
+		response := map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("failed to list files: %s", result.Stderr),
-		}, nil
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	// Parse output into file list
@@ -108,11 +119,18 @@ func (t *ListFilesTool) Exec(ctx context.Context, args map[string]any) (any, err
 
 	truncated := len(files) >= t.maxResults
 
-	return map[string]any{
+	resultMap := map[string]any{
 		"success":   true,
 		"files":     files,
 		"count":     len(files),
 		"pattern":   pattern,
 		"truncated": truncated,
-	}, nil
+	}
+
+	content, err := json.Marshal(resultMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }

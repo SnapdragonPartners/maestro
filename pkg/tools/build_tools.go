@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,7 +114,7 @@ func validateMakefileTargets(makefilePath, storyType string) error {
 }
 
 // executeBuildOperation executes a build operation with common error handling.
-func executeBuildOperation(ctx context.Context, buildService *build.Service, operation, absPath string, timeout int, errorMsg string) (any, error) {
+func executeBuildOperation(ctx context.Context, buildService *build.Service, operation, absPath string, timeout int, errorMsg string) (*ExecResult, error) {
 	req := &build.Request{
 		ProjectRoot: absPath,
 		Operation:   operation,
@@ -123,19 +124,26 @@ func executeBuildOperation(ctx context.Context, buildService *build.Service, ope
 
 	response, err := buildService.ExecuteBuild(ctx, req)
 	if err != nil {
-		return map[string]any{
+		result := map[string]any{
 			"success": false,
 			"error":   err.Error(),
-		}, logx.Wrap(err, errorMsg)
+		}
+		content, _ := json.Marshal(result)
+		return &ExecResult{Content: string(content)}, logx.Wrap(err, errorMsg)
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":     response.Success,
 		"backend":     response.Backend,
 		"output":      response.Output,
 		"duration_ms": response.Duration.Milliseconds(),
 		"error":       response.Error,
-	}, nil
+	}
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal build result: %w", err)
+	}
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // BuildTool provides MCP interface for build operations.
@@ -191,7 +199,7 @@ func (b *BuildTool) PromptDocumentation() string {
 }
 
 // Exec executes the build operation.
-func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
 		return nil, err
@@ -207,13 +215,15 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (any, error) 
 
 	// Validate build requirements based on story type
 	if err := validateBuildRequirements(cwd, storyType); err != nil {
-		return map[string]any{
+		result := map[string]any{
 			"success":  false,
 			"backend":  "none",
 			"output":   "",
 			"duration": "0s",
 			"error":    fmt.Sprintf("build validation failed: %v", err),
-		}, nil
+		}
+		content, _ := json.Marshal(result)
+		return &ExecResult{Content: string(content)}, nil
 	}
 
 	return executeBuildOperation(ctx, b.buildService, "build", cwd, timeout, "build execution failed")
@@ -267,7 +277,7 @@ func (t *TestTool) PromptDocumentation() string {
 }
 
 // Exec executes the test operation.
-func (t *TestTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (t *TestTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
 		return nil, err
@@ -324,7 +334,7 @@ func (l *LintTool) PromptDocumentation() string {
 }
 
 // Exec executes the lint operation.
-func (l *LintTool) Exec(ctx context.Context, args map[string]any) (any, error) {
+func (l *LintTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	cwd, timeout, err := extractExecArgs(args)
 	if err != nil {
 		return nil, err
@@ -374,18 +384,24 @@ func (d *DoneTool) PromptDocumentation() string {
 }
 
 // Exec executes the done operation.
-func (d *DoneTool) Exec(_ context.Context, args map[string]any) (any, error) {
-	result := map[string]any{
-		"success": true,
-		"message": "Task marked as complete, advancing to TESTING state",
-	}
-
+func (d *DoneTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract summary
-	if summary, ok := args["summary"].(string); ok && summary != "" {
-		result["summary"] = summary
+	summary, ok := args["summary"].(string)
+	if !ok || summary == "" {
+		return nil, fmt.Errorf("summary is required and must be a non-empty string")
 	}
 
-	return result, nil
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: "Task marked as complete, advancing to TESTING state",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalTesting,
+			Data: map[string]any{
+				"summary": summary,
+			},
+		},
+	}, nil
 }
 
 // BackendInfoTool provides MCP interface for backend information.
@@ -432,7 +448,7 @@ func (b *BackendInfoTool) PromptDocumentation() string {
 }
 
 // Exec executes the backend info operation.
-func (b *BackendInfoTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (b *BackendInfoTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	cwd, _, err := extractExecArgs(args)
 	if err != nil {
 		return nil, err
@@ -441,17 +457,24 @@ func (b *BackendInfoTool) Exec(_ context.Context, args map[string]any) (any, err
 	// Get backend info.
 	info, err := b.buildService.GetBackendInfo(cwd)
 	if err != nil {
-		return map[string]any{
+		result := map[string]any{
 			"success": false,
 			"error":   err.Error(),
-		}, logx.Wrap(err, "failed to get backend info")
+		}
+		content, _ := json.Marshal(result)
+		return &ExecResult{Content: string(content)}, logx.Wrap(err, "failed to get backend info")
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":      true,
 		"backend":      info.Name,
 		"project_root": info.ProjectRoot,
 		"operations":   info.Operations,
 		"detected_at":  info.DetectedAt.Format(time.RFC3339),
-	}, nil
+	}
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal backend info: %w", err)
+	}
+	return &ExecResult{Content: string(content)}, nil
 }

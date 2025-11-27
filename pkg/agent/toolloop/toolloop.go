@@ -19,9 +19,21 @@ type ToolProvider interface {
 	List() []tools.ToolMeta
 }
 
-// ExtractFunc extracts typed result from tool calls and results.
-// Returns the extracted result or an error if extraction fails.
-type ExtractFunc[T any] func(calls []agent.ToolCall, results []any) (T, error)
+// TerminalTool represents a tool that signals loop completion.
+// Every toolloop must have exactly one terminal tool that defines the exit condition.
+// This enforces the "one goal, one exit" principle at compile time.
+//
+// Terminal tools SHOULD return ProcessEffect with Signal and Data in their Exec() method.
+// If a terminal tool is called without returning ProcessEffect, toolloop will auto-wrap it
+// with a generic "TERMINAL_COMPLETE" signal to avoid runtime errors (since we can't enforce
+// ProcessEffect at compile time).
+//
+// The generic type TResult is no longer used for extraction - kept for backwards compatibility.
+// TODO: Remove TResult generic parameter once all code migrated to ProcessEffect pattern.
+type TerminalTool[TResult any] interface {
+	tools.Tool
+	// Terminal tools implement Exec() to return ProcessEffect with signal and structured data
+}
 
 // EscalationHandler is called when the hard iteration limit is reached.
 // It should handle escalation (e.g., notify humans, post to chat) and return an error.
@@ -84,6 +96,9 @@ func New(llmClient agent.LLMClient, logger *logx.Logger) *ToolLoop {
 // Config defines how the tool loop behaves.
 // Generic over result type T for type-safe result extraction.
 //
+// The new architecture enforces "one goal, one exit" by requiring exactly one TerminalTool.
+// GeneralTools can be called multiple times, but only the TerminalTool signals completion.
+//
 //nolint:govet // fieldalignment: struct fields ordered for clarity over memory alignment
 type Config[T any] struct {
 	// Context management (passed in, not owned by ToolLoop)
@@ -91,18 +106,8 @@ type Config[T any] struct {
 	ContextManager *contextmgr.ContextManager
 
 	// Tool configuration
-	ToolProvider ToolProvider // Provider for tool execution
-
-	// Callbacks
-	// CheckTerminal is called after ALL tools in current turn execute
-	// Agent checks results and returns signal if state transition needed
-	// Returns empty string to continue loop, non-empty signal to exit
-	CheckTerminal func(calls []agent.ToolCall, results []any) string
-
-	// ExtractResult extracts typed result from tool calls and results.
-	// Called when CheckTerminal returns a signal (terminal condition reached).
-	// Returns the extracted result or error if extraction fails.
-	ExtractResult ExtractFunc[T]
+	GeneralTools []tools.Tool    // Non-terminal tools (can be called multiple times)
+	TerminalTool TerminalTool[T] // Exactly one terminal tool (signals completion and extracts result)
 
 	// Escalation configuration for iteration limit handling (optional but recommended)
 	// When provided, enables soft/hard limit tracking with callbacks
@@ -118,7 +123,7 @@ type Config[T any] struct {
 	DebugLogging bool // Enable detailed debug logging for message formatting
 
 	// Single-turn mode: Expect terminal tool call in first iteration (allows retry/nudge but no multi-turn iteration)
-	// When true, CheckTerminal MUST return a non-empty signal after first successful tool execution
+	// When true, terminal tool MUST be called after first LLM response
 	// Used for reviews and approvals that should complete in one interaction
 	SingleTurn bool
 
@@ -131,23 +136,23 @@ type Config[T any] struct {
 	AgentID string
 }
 
-// Run executes the tool loop with type-safe result extraction, returning an Outcome[T].
+// Run executes the tool loop with ProcessEffect-based terminal signaling, returning an Outcome[T].
 //
 // The Outcome contains:
-// - Kind: What happened (Success, IterationLimit, LLMError, etc.)
-// - Signal: State transition signal (e.g., "PLAN_REVIEW", "TESTING") when Kind == OutcomeSuccess
-// - Value: Extracted result from ExtractResult when Kind == OutcomeSuccess
-// - Err: Underlying error for non-Success outcomes
+// - Kind: What happened (ProcessEffect, IterationLimit, LLMError, etc.)
+// - Signal: State transition signal (e.g., "PLAN_REVIEW", "TESTING") when Kind == OutcomeProcessEffect
+// - EffectData: Structured data from ProcessEffect.Data when Kind == OutcomeProcessEffect
+// - Err: Underlying error for error outcomes (nil for OutcomeProcessEffect)
 // - Iteration: 1-indexed iteration count when outcome occurred
 //
-// Callers should switch on out.Kind first, then examine Signal/Value inside OutcomeSuccess branch.
+// Callers should switch on out.Kind first, then examine Signal/EffectData inside OutcomeProcessEffect branch.
 //
 // Usage:
 //
 //	out := toolloop.Run[CodingResult](tl, ctx, cfg)
 //	switch out.Kind {
-//	case toolloop.OutcomeSuccess:
-//	    // Handle out.Signal and out.Value
+//	case toolloop.OutcomeProcessEffect:
+//	    // Handle out.Signal and extract data from out.EffectData
 //	case toolloop.OutcomeIterationLimit:
 //	    // Handle budget review escalation
 //	// ...
@@ -159,15 +164,19 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 	if cfg.ContextManager == nil {
 		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ContextManager is required")}
 	}
-	if cfg.ToolProvider == nil {
-		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ToolProvider is required")}
+	if cfg.TerminalTool == nil {
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("TerminalTool is required - every toolloop must have exactly one terminal tool")}
 	}
-	if cfg.CheckTerminal == nil {
-		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("CheckTerminal is required - every toolloop must have a way to exit")}
-	}
-	if cfg.ExtractResult == nil {
-		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ExtractResult is required for type-safe result extraction")}
-	}
+
+	// Build internal tool provider from GeneralTools + TerminalTool
+	terminalToolName := cfg.TerminalTool.Name()
+	allTools := make([]tools.Tool, 0, len(cfg.GeneralTools)+1)
+	allTools = append(allTools, cfg.GeneralTools...)
+	allTools = append(allTools, cfg.TerminalTool)
+	toolProvider := newSimpleProvider(allTools)
+
+	tl.logger.Info("Toolloop configured with %d general tools + 1 terminal tool (%s)", len(cfg.GeneralTools), terminalToolName)
+
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = 10 // Default
 	}
@@ -181,9 +190,9 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 	}
 
 	// Get tool definitions
-	toolsList := cfg.ToolProvider.List()
+	toolsList := toolProvider.List()
 	if len(toolsList) == 0 {
-		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("ToolProvider must provide at least one tool - toolloop requires tools to function")}
+		return Outcome[T]{Kind: OutcomeLLMError, Err: fmt.Errorf("toolloop requires at least one tool to function")}
 	}
 	toolDefs := make([]tools.ToolDefinition, len(toolsList))
 	for i := range toolsList {
@@ -294,19 +303,16 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 
 		// Execute ALL tools (API requirement: every tool_use must have tool_result)
 		tl.logger.Info("Processing %d tool calls", len(resp.ToolCalls))
-		results := make([]any, len(resp.ToolCalls))
+		var pendingEffect *tools.ProcessEffect
+
 		for i := range resp.ToolCalls {
 			toolCall := &resp.ToolCalls[i]
 			tl.logger.Info("Executing tool: %s", toolCall.Name)
 
 			// Get tool from provider
-			tool, err := cfg.ToolProvider.Get(toolCall.Name)
+			tool, err := toolProvider.Get(toolCall.Name)
 			if err != nil {
 				tl.logger.Error("Failed to get tool %s: %v", toolCall.Name, err)
-				results[i] = map[string]any{
-					"success": false,
-					"error":   err.Error(),
-				}
 				// Add error result to context
 				cfg.ContextManager.AddToolResult(toolCall.ID, err.Error(), true)
 				continue
@@ -319,62 +325,77 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 
 			start := time.Now()
-			result, err := tool.Exec(toolCtx, toolCall.Parameters)
+			execResult, err := tool.Exec(toolCtx, toolCall.Parameters)
 			duration := time.Since(start)
 
+			// Generate tool result content for LLM context
+			var content string
+			var isError bool
 			if err != nil {
 				tl.logger.Error("Tool %s failed after %.3fs: %v", toolCall.Name, duration.Seconds(), err)
-				results[i] = map[string]any{
-					"success": false,
-					"error":   err.Error(),
-				}
+				content = fmt.Sprintf("Tool failed: %v", err)
+				isError = true
 			} else {
 				tl.logger.Info("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
-				results[i] = result
+
+				// Use provided content or generate simple acknowledgment
+				if execResult.Content != "" {
+					content = execResult.Content
+				} else {
+					content = "Tool executed successfully"
+				}
+				isError = false
+
+				// Check if this tool wants to exit the loop for async effect processing
+				if execResult.ProcessEffect != nil && execResult.ProcessEffect.Signal != "" {
+					tl.logger.Info("🔔 Tool %s returned ProcessEffect with signal: %s", toolCall.Name, execResult.ProcessEffect.Signal)
+					pendingEffect = execResult.ProcessEffect
+				}
 			}
 
 			// Add tool result to context
-			resultStr, isError := formatToolResult(result, err)
-			cfg.ContextManager.AddToolResult(toolCall.ID, resultStr, isError)
+			cfg.ContextManager.AddToolResult(toolCall.ID, content, isError)
 		}
 
-		// Check if any tool signals state transition
-		var signal string
-		if cfg.CheckTerminal != nil {
-			signal = cfg.CheckTerminal(resp.ToolCalls, results)
+		// Check if any tool requested loop exit for effect processing
+		if pendingEffect != nil {
+			tl.logger.Info("🛑 Exiting toolloop early - ProcessEffect signal: %s", pendingEffect.Signal)
+			var zero T
+			return Outcome[T]{
+				Kind:       OutcomeProcessEffect,
+				Signal:     pendingEffect.Signal,
+				EffectData: pendingEffect.Data,
+				Value:      zero,
+				Iteration:  currentIteration,
+			}
 		}
 
-		// If signal returned, extract result and exit loop
-		if signal != "" {
-			tl.logger.Info("✅ Tool execution signaled state transition: %s", signal)
-
-			// Extract typed result
-			extractedResult, err := cfg.ExtractResult(resp.ToolCalls, results)
-			if err != nil {
-				tl.logger.Error("❌ Failed to extract result: %v", err)
+		// Check if terminal tool was called
+		// Terminal tools should use ProcessEffect pattern - they would have exited above
+		// If terminal tool was called but didn't return ProcessEffect, auto-wrap with generic signal
+		for i := range resp.ToolCalls {
+			if resp.ToolCalls[i].Name == terminalToolName {
+				// Terminal tool was called but didn't return ProcessEffect
+				// Auto-wrap to avoid runtime errors (we can't enforce ProcessEffect at compile time)
+				tl.logger.Warn("⚠️  Terminal tool '%s' was called but did not return ProcessEffect - auto-wrapping with TERMINAL_COMPLETE signal", terminalToolName)
+				var zero T
 				return Outcome[T]{
-					Kind:      OutcomeExtractionError,
-					Signal:    signal, // Preserve signal even though extraction failed
-					Err:       fmt.Errorf("result extraction failed: %w", err),
-					Iteration: currentIteration,
+					Kind:       OutcomeProcessEffect,
+					Signal:     "TERMINAL_COMPLETE",
+					EffectData: map[string]any{"tool": terminalToolName},
+					Value:      zero,
+					Iteration:  currentIteration,
 				}
 			}
-
-			return Outcome[T]{
-				Kind:      OutcomeSuccess,
-				Signal:    signal,
-				Value:     extractedResult,
-				Iteration: currentIteration,
-			}
 		}
 
-		// SingleTurn mode: terminal tool must return signal
+		// SingleTurn mode: terminal tool must have been called
 		if cfg.SingleTurn {
-			tl.logger.Error("❌ SingleTurn mode: CheckTerminal did not return a signal after tool execution")
+			tl.logger.Error("❌ SingleTurn mode: Terminal tool was not called after first tool execution")
 			return Outcome[T]{
 				Kind:      OutcomeExtractionError,
 				Signal:    "ERROR",
-				Err:       fmt.Errorf("single-turn review did not complete - terminal tool must signal completion"),
+				Err:       fmt.Errorf("single-turn mode requires terminal tool to be called in first iteration"),
 				Iteration: currentIteration,
 			}
 		}
@@ -474,44 +495,6 @@ func buildMessages(cm *contextmgr.ContextManager) []agent.CompletionMessage {
 	return messages
 }
 
-// formatToolResult converts tool execution result to string format for context.
-func formatToolResult(result any, err error) (string, bool) {
-	const maxToolOutputLength = 2000 // Maximum length for tool outputs
-
-	if err != nil {
-		errStr := fmt.Sprintf("Tool failed: %v", err)
-		if len(errStr) > maxToolOutputLength {
-			errStr = errStr[:maxToolOutputLength] + "\n\n[... error message truncated after 2000 characters ...]"
-		}
-		return errStr, true
-	}
-
-	// Check if result is a map with success field
-	if resultMap, ok := result.(map[string]any); ok {
-		if success, ok := resultMap["success"].(bool); ok && !success {
-			// Error result
-			if errMsg, ok := resultMap["error"].(string); ok {
-				if len(errMsg) > maxToolOutputLength {
-					errMsg = errMsg[:maxToolOutputLength] + "\n\n[... error message truncated after 2000 characters ...]"
-				}
-				return errMsg, true
-			}
-			errStr := fmt.Sprintf("Tool failed: %v", result)
-			if len(errStr) > maxToolOutputLength {
-				errStr = errStr[:maxToolOutputLength] + "\n\n[... error output truncated after 2000 characters ...]"
-			}
-			return errStr, true
-		}
-	}
-
-	// Success - convert to string and truncate if needed
-	resultStr := fmt.Sprintf("%v", result)
-	if len(resultStr) > maxToolOutputLength {
-		resultStr = resultStr[:maxToolOutputLength] + "\n\n[... tool output truncated after 2000 characters for context management ...]"
-	}
-	return resultStr, false
-}
-
 // logMessages logs detailed message information for debugging.
 func (tl *ToolLoop) logMessages(messages []agent.CompletionMessage) {
 	tl.logger.Info("📝 DEBUG - Messages sent to LLM:")
@@ -553,4 +536,47 @@ func (tl *ToolLoop) logMessages(messages []agent.CompletionMessage) {
 			}
 		}
 	}
+}
+
+// simpleProvider is a simple in-memory tool provider built from a list of tools.
+// Used by the new architecture to combine GeneralTools + TerminalTool into a single provider.
+type simpleProvider struct {
+	tools map[string]tools.Tool
+	list  []tools.ToolMeta
+}
+
+// newSimpleProvider creates a provider from a list of tools.
+func newSimpleProvider(toolList []tools.Tool) *simpleProvider {
+	toolMap := make(map[string]tools.Tool, len(toolList))
+	metaList := make([]tools.ToolMeta, len(toolList))
+
+	for i, tool := range toolList {
+		name := tool.Name()
+		toolMap[name] = tool
+		def := tool.Definition()
+		metaList[i] = tools.ToolMeta{
+			Name:        name,
+			Description: def.Description,
+			InputSchema: def.InputSchema,
+		}
+	}
+
+	return &simpleProvider{
+		tools: toolMap,
+		list:  metaList,
+	}
+}
+
+// Get retrieves a tool by name.
+func (sp *simpleProvider) Get(name string) (tools.Tool, error) {
+	tool, ok := sp.tools[name]
+	if !ok {
+		return nil, fmt.Errorf("tool not found: %s", name)
+	}
+	return tool, nil
+}
+
+// List returns metadata for all available tools.
+func (sp *simpleProvider) List() []tools.ToolMeta {
+	return sp.list
 }

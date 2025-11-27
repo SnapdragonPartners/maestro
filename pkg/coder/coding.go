@@ -120,6 +120,28 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	// Log the rendered prompt for debugging
 	c.logger.Info("🧑‍💻 Starting coding phase for story_type '%s'", storyType)
 
+	// Get done tool and wrap it as terminal tool
+	doneTool, err := c.codingToolProvider.Get(tools.ToolDone)
+	if err != nil {
+		return proto.StateError, false, logx.Wrap(err, "failed to get done tool")
+	}
+	terminalTool := doneTool
+
+	// Get all general tools (everything except done)
+	// ask_question is now a general tool that returns ProcessEffect
+	allTools := c.codingToolProvider.List()
+	generalTools := make([]tools.Tool, 0, len(allTools)-1)
+	//nolint:gocritic // ToolMeta is 80 bytes but value semantics preferred here
+	for _, meta := range allTools {
+		if meta.Name != tools.ToolDone {
+			tool, err := c.codingToolProvider.Get(meta.Name)
+			if err != nil {
+				return proto.StateError, false, logx.Wrap(err, fmt.Sprintf("failed to get tool %s", meta.Name))
+			}
+			generalTools = append(generalTools, tool)
+		}
+	}
+
 	// Use toolloop for LLM iteration with coding tools
 	loop := toolloop.New(c.LLMClient, c.logger)
 
@@ -127,15 +149,12 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	cfg := &toolloop.Config[CodingResult]{
 		ContextManager: c.contextManager,
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		ToolProvider:   c.codingToolProvider,
+		GeneralTools:   generalTools,
+		TerminalTool:   terminalTool,
 		MaxIterations:  maxCodingIterations,
 		MaxTokens:      8192, // Increased for comprehensive code generation
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   false,
-		CheckTerminal: func(calls []agent.ToolCall, results []any) string {
-			return c.checkCodingTerminal(ctx, sm, calls, results)
-		},
-		ExtractResult: ExtractCodingResult,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxCodingIterations - 2, // Warn 2 iterations before limit
@@ -170,27 +189,31 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Switch on outcome kind first
 	switch out.Kind {
-	case toolloop.OutcomeSuccess:
-		// Log extracted result for visibility
-		if len(out.Value.TodosCompleted) > 0 {
-			c.logger.Info("✅ Coding iteration completed %d todos", len(out.Value.TodosCompleted))
-		}
+	case toolloop.OutcomeProcessEffect:
+		// Tool returned ProcessEffect to pause the loop for async effect processing
+		c.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
 
-		// Handle terminal signals from successful completion
+		// Route based on signal (state constant)
 		switch out.Signal {
-		case string(StateBudgetReview):
-			return StateBudgetReview, false, nil
-		case string(StateQuestion):
+		case string(proto.StateQuestion):
+			// ask_question was called - extract question data from ProcessEffect
+			if err := c.storePendingQuestionFromProcessEffect(sm, out); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to store pending question")
+			}
+			c.logger.Info("🧑‍💻 Question submitted, transitioning to QUESTION state")
 			return StateQuestion, false, nil
-		case string(StateTesting):
+		case tools.SignalTesting:
+			// done tool was called - extract summary from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return proto.StateError, false, logx.Errorf("TESTING effect data is not map[string]any: %T", out.EffectData)
+			}
+			summary, _ := effectData["summary"].(string)
+			c.logger.Info("🧑‍💻 Done tool detected: %s", summary)
+			c.logger.Info("🧑‍💻 Advancing to TESTING state")
 			return StateTesting, false, nil
-		case "":
-			// No signal, continue coding
-			c.logger.Info("🧑‍💻 Coding iteration completed, continuing in CODING")
-			return StateCoding, false, nil
 		default:
-			c.logger.Warn("Unknown signal from coding toolloop: %s", out.Signal)
-			return StateCoding, false, nil
+			return proto.StateError, false, logx.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 		}
 
 	case toolloop.OutcomeIterationLimit:
@@ -215,116 +238,31 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	}
 }
 
-// checkCodingTerminal examines tool calls and results for terminal signals during coding.
-func (c *Coder) checkCodingTerminal(_ context.Context, sm *agent.BaseStateMachine, calls []agent.ToolCall, _ []any) string {
-	for i := range calls {
-		toolCall := &calls[i]
-
-		// Handle todo_complete tool - mark todo as complete
-		if toolCall.Name == tools.ToolTodoComplete {
-			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
-
-			if err := c.handleTodoComplete(sm, index); err != nil {
-				c.logger.Error("📋 [TODO] Failed to complete todo: %v", err)
-				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error completing todo: %v", err))
-				continue
-			}
-
-			if index == -1 {
-				c.contextManager.AddMessage("tool", "Current todo marked complete, advanced to next todo")
-			} else {
-				c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d marked complete", index))
-			}
-			continue
-		}
-
-		// Handle todo_update tool - update or remove todo by index
-		if toolCall.Name == tools.ToolTodoUpdate {
-			index := utils.GetMapFieldOr[int](toolCall.Parameters, "index", -1)
-			description := utils.GetMapFieldOr[string](toolCall.Parameters, "description", "")
-
-			if index < 0 {
-				c.logger.Error("📋 [TODO] todo_update called with invalid index")
-				c.contextManager.AddMessage("tool-error", "Error: valid index required for todo_update")
-				continue
-			}
-
-			if err := c.handleTodoUpdate(sm, index, description); err != nil {
-				c.logger.Error("📋 [TODO] Failed to update todo: %v", err)
-				c.contextManager.AddMessage("tool-error", fmt.Sprintf("Error updating todo: %v", err))
-				continue
-			}
-
-			action := "updated"
-			if description == "" {
-				action = "removed"
-			}
-			c.contextManager.AddMessage("tool", fmt.Sprintf("Todo at index %d %s", index, action))
-			c.logger.Info("✏️  Todo at index %d %s", index, action)
-			continue
-		}
-
-		// Check for ask_question tool - transition to QUESTION state
-		if toolCall.Name == tools.ToolAskQuestion {
-			// Extract question details from tool call parameters
-			question := utils.GetMapFieldOr[string](toolCall.Parameters, "question", "")
-			contextStr := utils.GetMapFieldOr[string](toolCall.Parameters, "context", "")
-			urgency := utils.GetMapFieldOr[string](toolCall.Parameters, "urgency", "medium")
-
-			if question == "" {
-				c.logger.Error("Ask question tool called without question parameter")
-				continue
-			}
-
-			// Store question data in state for QUESTION state to use
-			sm.SetStateData(KeyPendingQuestion, map[string]any{
-				"question": question,
-				"context":  contextStr,
-				"urgency":  urgency,
-				"origin":   string(StateCoding),
-			})
-
-			c.logger.Info("🧑‍💻 Coding detected ask_question, transitioning to QUESTION state")
-			return string(StateQuestion) // Signal state transition
-		}
-
-		// Check for done tool - validate todos and transition to TESTING
-		if toolCall.Name == tools.ToolDone {
-			c.logger.Info("🧑‍💻 Done tool detected - validating todos before transition")
-
-			// Check if all todos are complete before allowing story completion
-			if c.todoList != nil {
-				incompleteTodos := []TodoItem{}
-				for _, todo := range c.todoList.Items {
-					if !todo.Completed {
-						incompleteTodos = append(incompleteTodos, todo)
-					}
-				}
-
-				if len(incompleteTodos) > 0 {
-					// Block completion - tell agent to complete todos first
-					c.logger.Info("🧑‍💻 Done tool blocked: %d todos not marked complete", len(incompleteTodos))
-					errorMsg := fmt.Sprintf("Cannot mark story as done: %d todos are not marked complete. If this work is already completed, use the todo_complete tool to mark them complete before marking the story as done.\n\nIncomplete todos:", len(incompleteTodos))
-					for idx, todo := range incompleteTodos {
-						errorMsg += fmt.Sprintf("\n  %d. %s", idx+1, todo.Description)
-					}
-					c.contextManager.AddMessage("tool-error", errorMsg)
-					c.logger.Info("📋 [TODO] Blocking done: %s", errorMsg)
-					continue // Don't signal transition, continue loop
-				}
-			}
-
-			// All todos complete - store summary and signal transition
-			summary := utils.GetMapFieldOr[string](toolCall.Parameters, "summary", "")
-			sm.SetStateData(KeyCompletionDetails, summary)
-			c.logger.Info("🧑‍💻 Done tool validated - transitioning to TESTING with summary: %q", summary)
-
-			return "TESTING" // Signal transition to TESTING
-		}
+// storePendingQuestionFromProcessEffect stores question details from ProcessEffect.Data in state for QUESTION state.
+func (c *Coder) storePendingQuestionFromProcessEffect(sm *agent.BaseStateMachine, out toolloop.Outcome[CodingResult]) error {
+	// Extract question data from ProcessEffect.Data
+	effectData, ok := out.EffectData.(map[string]string)
+	if !ok {
+		return logx.Errorf("ProcessEffect.Data is not map[string]string: %T", out.EffectData)
 	}
 
-	// No terminal signal, continue loop
-	return ""
+	question, ok := effectData["question"]
+	if !ok || question == "" {
+		return logx.Errorf("ProcessEffect.Data missing 'question' field")
+	}
+
+	context := effectData["context"] // Optional, may be empty
+
+	// Store in state for QUESTION state to use
+	questionData := map[string]any{
+		"question": question,
+		"context":  context,
+		"origin":   string(StateCoding),
+	}
+
+	sm.SetStateData(KeyPendingQuestion, questionData)
+	c.logger.Info("🧑‍💻 Stored pending question: %s", question)
+	return nil
 }
 
 // isEmptyResponseError checks if an error is an empty response error that should trigger budget review.

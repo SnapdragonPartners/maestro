@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -53,7 +54,7 @@ func (t *TodosAddTool) PromptDocumentation() string {
 }
 
 // Exec executes the add todos operation.
-func (t *TodosAddTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *TodosAddTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	todos, ok := args["todos"]
 	if !ok {
 		return nil, fmt.Errorf("todos parameter is required")
@@ -81,10 +82,16 @@ func (t *TodosAddTool) Exec(_ context.Context, args map[string]any) (any, error)
 		validatedTodos[i] = todoStr
 	}
 
-	return map[string]any{
-		"success": true,
-		"message": "Todos added successfully",
-		"todos":   validatedTodos,
+	// Return human-readable message for LLM context
+	// Return structured data via ProcessEffect.Data for state machine
+	return &ExecResult{
+		Content: fmt.Sprintf("Added %d todos successfully", len(validatedTodos)),
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalCoding, // Signal to continue/start coding with todos
+			Data: map[string]any{
+				"todos": validatedTodos,
+			},
+		},
 	}, nil
 }
 
@@ -129,7 +136,7 @@ func (t *TodoCompleteTool) PromptDocumentation() string {
 }
 
 // Exec executes the todo complete operation.
-func (t *TodoCompleteTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *TodoCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract optional index
 	index := -1 // -1 means "current"
 	if indexVal, hasIndex := args["index"]; hasIndex {
@@ -143,11 +150,18 @@ func (t *TodoCompleteTool) Exec(_ context.Context, args map[string]any) (any, er
 		}
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success": true,
 		"message": "Todo marked complete",
 		"index":   index,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
 
 // TodoUpdateTool modifies or removes an existing todo.
@@ -194,7 +208,7 @@ func (t *TodoUpdateTool) PromptDocumentation() string {
 }
 
 // Exec executes the todo update operation.
-func (t *TodoUpdateTool) Exec(_ context.Context, args map[string]any) (any, error) {
+func (t *TodoUpdateTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	indexVal, ok := args["index"]
 	if !ok {
 		return nil, fmt.Errorf("index parameter is required")
@@ -225,10 +239,17 @@ func (t *TodoUpdateTool) Exec(_ context.Context, args map[string]any) (any, erro
 		action = "removed"
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"success":     true,
 		"message":     fmt.Sprintf("Todo %s successfully", action),
 		"index":       index,
 		"description": descStr,
-	}, nil
+	}
+
+	content, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return &ExecResult{Content: string(content)}, nil
 }
