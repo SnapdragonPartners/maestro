@@ -243,14 +243,23 @@ make run      # Run the orchestrator with banner output
 
 **Important**: All build commands (`make build`, `make agentctl`, `make replayer`) now include linting as a prerequisite. This ensures code quality is maintained at all times.
 
-### Pre-commit Hooks
+### Git Hooks
 
+**Pre-commit Hooks:**
 The repository includes pre-commit hooks that enforce:
 - Build must pass
 - All linting issues must be resolved
 - Core tests should complete (with timeout)
 
 The pre-commit hooks are automatically installed and will prevent commits with linting issues.
+
+**Pre-push Hooks:**
+The repository includes pre-push hooks that run integration tests:
+- Checks for API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENAI_API_KEY)
+- Skips if no API keys are set (with warning)
+- Runs `make test-integration` if API keys are available
+- Prevents push if integration tests fail
+- Can be bypassed with `git push --no-verify` if needed
 
 ## Git Workflow and Branch Protection
 
@@ -266,7 +275,7 @@ The `main` branch is protected with the following rules:
 When making changes:
 1. Create a feature branch: `git checkout -b feature-name`
 2. Make your changes and commit (pre-commit hooks will run)
-3. Push the branch: `git push -u origin feature-name`
+3. Push the branch: `git push -u origin feature-name` (pre-push hooks will run integration tests if API keys are set)
 4. Create a pull request to `main`
 5. Wait for CI checks to pass
 6. Merge via GitHub UI after approval

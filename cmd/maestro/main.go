@@ -20,11 +20,10 @@ import (
 func main() {
 	// Parse command line flags
 	var (
-		gitRepo    = flag.String("git-repo", "", "Git repository URL for bootstrap mode")
+		gitRepo    = flag.String("git-repo", "", "Git repository URL (optional)")
 		specFile   = flag.String("spec-file", "", "Path to specification file")
 		noWebUI    = flag.Bool("nowebui", false, "Disable web UI")
-		bootstrap  = flag.Bool("bootstrap", false, "Run in bootstrap mode")
-		pmMode     = flag.Bool("pm", false, "Start PM agent directly (skip bootstrap)")
+		bootstrap  = flag.Bool("bootstrap", false, "[DEPRECATED] Bootstrap mode is deprecated - PM mode is now default")
 		projectDir = flag.String("projectdir", ".", "Project directory")
 		tee        = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
 	)
@@ -32,6 +31,12 @@ func main() {
 
 	// User-friendly startup message
 	fmt.Println("⏳ Starting up...")
+
+	// Warn if deprecated bootstrap flag is used
+	if *bootstrap {
+		fmt.Println("⚠️  WARNING: The -bootstrap flag is deprecated and will be removed in a future version.")
+		fmt.Println("   PM mode is now the default behavior. This flag is ignored.")
+	}
 
 	// Initialize log file rotation BEFORE any logging occurs
 	// This ensures all subsequent logs (including config loading) are captured
@@ -42,7 +47,8 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	exitCode := run(*projectDir, *gitRepo, *specFile, *bootstrap, *pmMode, *noWebUI)
+	// PM mode is now always enabled (bootstrap flag ignored)
+	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -54,14 +60,14 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, bootstrap, pmMode, noWebUI bool) int {
+func run(projectDir, gitRepo, specFile string, noWebUI bool) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
 	}
 
 	// Universal setup (Steps 1-3): Always run these regardless of mode
-	configWasCreated, err := setupProjectInfrastructure(projectDir, gitRepo, specFile)
+	_, err := setupProjectInfrastructure(projectDir, gitRepo, specFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Project setup failed: %v\n", err)
 		return 1
@@ -73,32 +79,14 @@ func run(projectDir, gitRepo, specFile string, bootstrap, pmMode, noWebUI bool) 
 		return 1
 	}
 
-	// Determine mode - auto-offer bootstrap if config was created from defaults (unless PM mode)
-	shouldBootstrap := (bootstrap || configWasCreated) && !pmMode
-	if shouldBootstrap && !bootstrap {
-		fmt.Printf("New configuration created - entering bootstrap mode to set up repository\n")
-	}
-
-	// Display mode and working directory
-	mode := "main"
-	if pmMode {
-		mode = "PM"
-	} else if shouldBootstrap {
-		mode = "bootstrap"
-	}
-	config.LogInfo("🚀 Starting Maestro in %s mode", mode)
+	// PM mode is now the default (and only) mode
+	config.LogInfo("🚀 Starting Maestro (PM mode enabled by default)")
 	config.LogInfo("📁 Working directory: %s", projectDir)
 
-	if shouldBootstrap {
-		if err := runBootstrapMode(projectDir, gitRepo, specFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
-			return 1
-		}
-	} else {
-		if err := runMainMode(projectDir, specFile, noWebUI); err != nil {
-			fmt.Fprintf(os.Stderr, "Main mode failed: %v\n", err)
-			return 1
-		}
+	// Always run main mode (which includes PM)
+	if err := runMainMode(projectDir, specFile, noWebUI); err != nil {
+		fmt.Fprintf(os.Stderr, "Maestro failed: %v\n", err)
+		return 1
 	}
 
 	return 0
@@ -268,26 +256,6 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 
 	config.LogInfo("✅ Project infrastructure verification completed for %s", projectDir)
 	return nil
-}
-
-func runBootstrapMode(projectDir, gitRepo, specFile string) error {
-	logger := logx.NewLogger("maestro-bootstrap")
-	logger.Info("Starting Maestro in bootstrap mode")
-
-	// Initialize common kernel infrastructure
-	k, ctx, err := initializeKernel(projectDir)
-	if err != nil {
-		return fmt.Errorf("failed to initialize kernel: %w", err)
-	}
-	defer func() {
-		if stopErr := k.Stop(); stopErr != nil {
-			logger.Error("Error stopping kernel: %v", stopErr)
-		}
-	}()
-
-	// Create and run bootstrap flow
-	flow := NewBootstrapFlow(gitRepo, specFile)
-	return flow.Run(ctx, k)
 }
 
 func runMainMode(projectDir, specFile string, noWebUI bool) error {
