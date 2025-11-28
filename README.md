@@ -85,10 +85,11 @@ See the canonical state diagrams for details:
   - Aggressive lint/test defaults (“turn checks up to 11”)  
 
 - **LLMs:**
-  - Supports OpenAI & Anthropic models via official Go SDKs
+  - Supports OpenAI, Anthropic, and Google Gemini models via official Go SDKs
   - PM defaults: gpt-4o (fast conversational performance)
   - Architect defaults: o3 (strong reasoning at reasonable price - upgrade to Claude Opus if budget allows)
   - Coders default: Claude Sonnet 4.5 (coding-oriented)
+  - Gemini 3 Pro: 1M token context window, excellent for large codebases
   - Rate limiting handled internally via token buckets
   - Local model support is on the roadmap  
 
@@ -117,10 +118,11 @@ maestro
 ## Quickstart with preconfiguration
 
 > **Step 1:** Download binary (or build from source).  
-> **Step 2:** Export your API keys as environment variables.  
+> **Step 2:** Export your API keys as environment variables.
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
+export GOOGLE_GENAI_API_KEY=AIza...  # Optional, for Gemini models
 export GITHUB_TOKEN=ghp-...
 ```
 

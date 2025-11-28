@@ -182,6 +182,29 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 128000,
 		MaxOutputTokens:  4096,
 	},
+
+	// Google Gemini models
+	"gemini-2.0-flash": {
+		Provider:         ProviderGoogle,
+		InputCPM:         0.10,
+		OutputCPM:        0.40,
+		MaxContextTokens: 1048576,
+		MaxOutputTokens:  8192,
+	},
+	"gemini-2.5-flash": {
+		Provider:         ProviderGoogle,
+		InputCPM:         0.30,
+		OutputCPM:        2.50,
+		MaxContextTokens: 1048576,
+		MaxOutputTokens:  65536,
+	},
+	"gemini-3-pro-preview": {
+		Provider:         ProviderGoogle,
+		InputCPM:         2.0,
+		OutputCPM:        12.0,
+		MaxContextTokens: 1048576,
+		MaxOutputTokens:  65536,
+	},
 }
 
 // ProviderPattern represents a pattern for inferring provider from model name.
@@ -200,6 +223,7 @@ var ProviderPatterns = []ProviderPattern{
 	{"o1", ProviderOpenAI},
 	{"o3", ProviderOpenAI},
 	{"o4", ProviderOpenAI},
+	{"gemini", ProviderGoogle},
 }
 
 // GetModelProvider returns the API provider for a given model.
@@ -277,6 +301,7 @@ type ProviderLimits struct {
 type RateLimitConfig struct {
 	Anthropic ProviderLimits `json:"anthropic"` // Rate limits for Anthropic models
 	OpenAI    ProviderLimits `json:"openai"`    // Rate limits for OpenAI models
+	Google    ProviderLimits `json:"google"`    // Rate limits for Google models
 }
 
 // ProviderDefaults defines default rate limits for each provider.
@@ -290,6 +315,10 @@ var ProviderDefaults = map[string]ProviderLimits{
 	},
 	ProviderOpenAI: {
 		TokensPerMinute: 150000,
+		MaxConcurrency:  5,
+	},
+	ProviderGoogle: {
+		TokensPerMinute: 60000, // Conservative default - adjust based on actual API limits
 		MaxConcurrency:  5,
 	},
 }
@@ -400,10 +429,12 @@ const (
 	// Provider constants for middleware rate limiting.
 	ProviderAnthropic = "anthropic"
 	ProviderOpenAI    = "openai"
+	ProviderGoogle    = "google"
 
 	// API key environment variable names.
 	EnvAnthropicAPIKey = "ANTHROPIC_API_KEY"
 	EnvOpenAIAPIKey    = "OPENAI_API_KEY"
+	EnvGoogleAPIKey    = "GOOGLE_GENAI_API_KEY"
 )
 
 // GitConfig contains git repository settings for the project.
@@ -1542,7 +1573,9 @@ func GetAPIKey(provider string) (string, error) {
 	case ProviderAnthropic:
 		envVar = EnvAnthropicAPIKey
 	case ProviderOpenAI:
-		envVar = EnvOpenAIAPIKey // Both use the same API key
+		envVar = EnvOpenAIAPIKey
+	case ProviderGoogle:
+		envVar = EnvGoogleAPIKey
 	default:
 		return "", fmt.Errorf("unknown provider: %s", provider)
 	}
