@@ -8,6 +8,12 @@ In some ways, it's an agent orchestration tool. But unlike most others, Maestro 
 
 ---
 
+## Project Status
+
+Maestro is still pre-release and under active development although it is now functional for basic projects. For the time being it is still recommended for technical users and potential project contributors until we get to v1.0.0.
+
+---
+
 ## Why Maestro?
 
 **Much simpler setup than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.
@@ -91,10 +97,10 @@ See the canonical state diagrams for details:
 
 - **LLMs:**
   - Supports OpenAI, Anthropic, and Google Gemini models via official Go SDKs
-  - PM defaults: gpt-4o (fast conversational performance)
-  - Architect defaults: o3 (strong reasoning at reasonable price - upgrade to Claude Opus if budget allows)
-  - Coders default: Claude Sonnet 4.5 (coding-oriented)
-  - Gemini 3 Pro: 1M token context window, excellent for large codebases
+  - PM defaults: Claude Opus 4.5 (latest Anthropic flagship for nuanced requirements gathering)
+  - Architect defaults: Gemini 3 Pro (1M token context window for large codebase analysis)
+  - Coders default: Claude Sonnet 4.5 (latest coding-oriented model)
+  - All models configurable per-project in config.json
   - Rate limiting handled internally via token buckets
   - Local model support is on the roadmap
 
@@ -113,7 +119,8 @@ This distinction is transparent to the user—architect generates stories automa
 
 ## Quickstart
 
-> **Step 1:** Download binary (or build from source). Install it somewhere in your path.
+> **Step 1:** Download binary from [releases](https://github.com/SnapdragonPartners/maestro/releases) (or build from source). Install it somewhere in your path.
+>
 > **Step 2:** Export your API keys as environment variables for the models you want to use and Github.
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -164,6 +171,22 @@ Maestro tracks and displays:
 - Dollar cost
 - Wall-clock time
 - Test results and code quality metrics
+
+---
+
+## Knowledge Graph
+
+Maestro includes a knowledge graph system that captures architectural patterns, design decisions, and coding conventions. This graph serves as "institutional memory" that helps agents maintain consistency across stories.
+
+The knowledge graph is stored in `.maestro/knowledge.dot` in your repository and automatically provides relevant context to coders during planning. When a coder starts a story, Maestro extracts key terms and builds a focused "knowledge pack" with 20-30 related patterns. The architect reviews whether implementations follow these patterns and validates any updates to the graph.
+
+Benefits:
+- **Consistency**: Agents follow established patterns automatically
+- **Efficiency**: Fewer review cycles explaining the same concepts
+- **Evolution**: Graph grows organically as the project matures
+- **Documentation**: Living documentation that stays in sync with code
+
+See [docs/wiki/DOCS_WIKI.md](docs/wiki/DOCS_WIKI.md) for user-friendly overview or [docs/DOC_GRAPH.md](docs/DOC_GRAPH.md) for technical specification.
 
 ---
 

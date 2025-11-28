@@ -139,6 +139,20 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  16384,
 	},
+	"claude-opus-4-5": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
+	"claude-opus-4-5-20250514": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
 
 	// OpenAI GPT models
 	"gpt-4o": {
@@ -407,7 +421,10 @@ const (
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
 	ModelClaudeSonnetLatest = ModelClaudeSonnet4
 	ModelClaudeOpus41       = "claude-opus-4-1"
+	ModelClaudeOpus45       = "claude-opus-4-5"
+	ModelClaudeOpusLatest   = ModelClaudeOpus45
 	ModelOpenAIO3           = "o3"
+	ModelGemini3Pro         = "gemini-3-pro-preview"
 
 	// Container image constants.
 	BootstrapContainerTag = "maestro-bootstrap:latest"
@@ -417,8 +434,8 @@ const (
 	ModelGPT4o            = "gpt-4o"
 	ModelGPT5             = "gpt-5"
 	DefaultCoderModel     = ModelClaudeSonnet4
-	DefaultArchitectModel = ModelOpenAIO3
-	DefaultPMModel        = "claude-opus-4-1-20250805"
+	DefaultArchitectModel = ModelGemini3Pro
+	DefaultPMModel        = ModelClaudeOpus45
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -935,6 +952,10 @@ func createDefaultConfig() *Config {
 						TokensPerMinute: 150000,
 						MaxConcurrency:  5,
 					},
+					Google: ProviderLimits{
+						TokensPerMinute: 60000,
+						MaxConcurrency:  5,
+					},
 				},
 				Timeout: 3 * time.Minute, // Increased for GPT-5 reasoning time
 			},
@@ -1169,6 +1190,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute == 0 {
 		config.Agents.Resilience.RateLimit.OpenAI = ProviderDefaults[ProviderOpenAI]
+	}
+	if config.Agents.Resilience.RateLimit.Google.TokensPerMinute == 0 {
+		config.Agents.Resilience.RateLimit.Google = ProviderDefaults[ProviderGoogle]
 	}
 
 	if config.Agents.Resilience.Timeout == 0 {
