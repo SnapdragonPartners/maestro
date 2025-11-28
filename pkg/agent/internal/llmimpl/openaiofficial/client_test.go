@@ -121,4 +121,3 @@ func TestConvertPropertyToSchema(t *testing.T) {
 		})
 	}
 }
-

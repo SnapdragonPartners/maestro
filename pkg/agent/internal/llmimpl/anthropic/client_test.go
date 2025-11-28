@@ -9,18 +9,18 @@ import (
 // TestEnsureAlternation tests the message alternation logic.
 func TestEnsureAlternation(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         []llm.CompletionMessage
-		expectSystem  string
-		expectMsgLen  int
-		expectErr     bool
-		errContains   string
+		name         string
+		input        []llm.CompletionMessage
+		expectSystem string
+		expectMsgLen int
+		expectErr    bool
+		errContains  string
 	}{
 		{
-			name:         "empty messages",
-			input:        []llm.CompletionMessage{},
-			expectErr:    true,
-			errContains:  "message list cannot be empty",
+			name:        "empty messages",
+			input:       []llm.CompletionMessage{},
+			expectErr:   true,
+			errContains: "message list cannot be empty",
 		},
 		{
 			name: "system message extracted",
@@ -187,7 +187,6 @@ func TestValidatePreSend(t *testing.T) {
 	}
 }
 
-
 // TestGetModelName tests model name retrieval.
 func TestGetModelName(t *testing.T) {
 	client := NewClaudeClientWithModel("test-key", "claude-3-opus-20240229")
@@ -198,7 +197,6 @@ func TestGetModelName(t *testing.T) {
 		t.Errorf("expected model %q, got %q", "claude-3-opus-20240229", modelName)
 	}
 }
-
 
 // TestNewClaudeClient tests client creation.
 func TestNewClaudeClient(t *testing.T) {

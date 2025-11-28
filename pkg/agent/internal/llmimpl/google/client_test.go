@@ -44,10 +44,10 @@ func TestConvertMessagesToGemini(t *testing.T) {
 		errContains      string
 	}{
 		{
-			name:         "empty messages",
-			messages:     []llm.CompletionMessage{},
-			expectErr:    true,
-			errContains:  "message list cannot be empty",
+			name:        "empty messages",
+			messages:    []llm.CompletionMessage{},
+			expectErr:   true,
+			errContains: "message list cannot be empty",
 		},
 		{
 			name: "system message extracted",
