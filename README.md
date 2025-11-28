@@ -2,7 +2,7 @@
 
 # Maestro
 
-Maestro is a tool that uses AI to write full applications in a disciplined way that reflects good software engineering principles.  
+Maestro is a tool that uses AI to write full applications in a disciplined way that reflects good software engineering principles.
 
 In some ways, it's an agent orchestration tool. But unlike most others, Maestro bakes in structure, workflow, and opinions drawn from real-world experience managing large software projects. The goal is **production-ready apps, not just code snippets.**
 
@@ -10,14 +10,19 @@ In some ways, it's an agent orchestration tool. But unlike most others, Maestro 
 
 ## Why Maestro?
 
-**Much simpler setup than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.  
+**Much simpler setup than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.
 
-Most frameworks require wrestling with Python versions, dependency hell, or complex setup. With Maestro:  
+Most frameworks require wrestling with Python versions, dependency hell, or complex setup. With Maestro:
 
-- Download the binary (or build from source)  
-- Provide your API keys as environment variables  
-- Run the bootstrap workflow  
-- Start building  
+- Download the binary (or build from source)
+- Provide your API keys as environment variables
+- Run Maestro and start building via the web UI
+
+---
+
+## What Model Does Maestro Use?
+
+Maestro provides out-of-box support for Anthropic, Google, and OpenAI models through their official SDKs (so it should support the latest models as soon as they become available.) You can mix-and-match models by agent type - in fact, that's the recommended configuration since heterogeneous models can catch errors that models from the same provider may not.
 
 ---
 
@@ -69,20 +74,20 @@ See the canonical state diagrams for details:
 
 ## Tools & Environment
 
-- **GitHub (mandatory for now):**  
-  - Local mirrors for speed  
-  - Tokens for push/PR/merge  
-  - One working clone per coder, deleted when the coder terminates  
+- **GitHub (mandatory for now):**
+  - Local mirrors for speed
+  - Tokens for push/PR/merge
+  - One working clone per coder, deleted when the coder terminates
 
-- **Docker:**  
-  - Coders run in read-only containers for planning, read-write for coding  
-  - Currently run as root for simplicity (rootless support under consideration)  
-  - Provides security isolation and portability  
+- **Docker:**
+  - Coders run in read-only containers for planning, read-write for coding
+  - Currently run as root for simplicity (rootless support under consideration)
+  - Provides security isolation and portability
 
-- **Makefiles:**  
-  - Used for build, test, lint, run  
-  - Either wrap your existing build tool or override targets in config  
-  - Aggressive lint/test defaults (“turn checks up to 11”)  
+- **Makefiles:**
+  - Used for build, test, lint, run
+  - Either wrap your existing build tool or override targets in config
+  - Aggressive lint/test defaults (“turn checks up to 11”)
 
 - **LLMs:**
   - Supports OpenAI, Anthropic, and Google Gemini models via official Go SDKs
@@ -91,34 +96,25 @@ See the canonical state diagrams for details:
   - Coders default: Claude Sonnet 4.5 (coding-oriented)
   - Gemini 3 Pro: 1M token context window, excellent for large codebases
   - Rate limiting handled internally via token buckets
-  - Local model support is on the roadmap  
+  - Local model support is on the roadmap
 
 ---
 
 ## DevOps vs. App Stories
 
-Maestro distinguishes two story types:  
-- **DevOps stories**: adjust Dockerfiles, build envs, CI/CD, etc.  
-- **App stories**: generate or modify application code  
+Maestro distinguishes three story types:
+- **Bootstrap stories**: these perform the minimum configuration needed for Maestro to run
+- **DevOps stories**: adjust Dockerfiles, build envs, CI/CD, etc.
+- **App stories**: generate or modify application code
 
 This distinction is transparent to the user—architect generates stories automatically.
 
 ---
 
-## Quickstart from scratch
+## Quickstart
 
-> **Step 1:** Download binary and place it on your path
-> **Step 2:** Create a working directory and run Maestro:
-```bash
-mkdir myproject
-cd myproject 
-maestro
-```
-
-## Quickstart with preconfiguration
-
-> **Step 1:** Download binary (or build from source).  
-> **Step 2:** Export your API keys as environment variables.
+> **Step 1:** Download binary (or build from source). Install it somewhere in your path.
+> **Step 2:** Export your API keys as environment variables for the models you want to use and Github.
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -126,21 +122,22 @@ export GOOGLE_GENAI_API_KEY=AIza...  # Optional, for Gemini models
 export GITHUB_TOKEN=ghp-...
 ```
 
-> **Step 3:** Run Maestro in bootstrap mode.  
+> **Step 3:** Create a project directory  (projectdir) and switch to it.
 ```bash
-mkdir myapp
-maestro -projectdir myapp -bootstrap -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
+mkdir myproject && cd myproject
 ```
 
-> **Step 4:** Run Maestro in development mode.  
+
+> **Step 4:** Run Maestro
 ```bash
-maestro -projectdir myapp -git-repo https://github.com/SnapdragonPartners/maestro-demo.git
+maestro
 ```
 
-> **Step 5 (optional):** Open the web UI at [http://localhost:8080](http://localhost:8080).
-> - Start a PM interview to generate a specification
+> **Step 5:** Open the web UI at [http://localhost:8080](http://localhost:8080) (you can change this in the config file.)
+> - Work with the PM to bootstrap your project by uploading a pre-existing spec or starting a PM interview to generate a specification
 > - View stories, logs, and system metrics
 > - Monitor agent activity in real-time
+> - Optionally chat with agents as you watch their progress
 
 Config settings are in <projectdir>/.maestro/config.json.
 
@@ -148,11 +145,11 @@ Config settings are in <projectdir>/.maestro/config.json.
 
 ## System Requirements
 
-- **Binary**: ~14 MB fat binary (Linux & macOS tested; Windows soon)  
-- **Go**: Only needed if compiling from source (Go 1.24+)  
-- **Docker**: CLI + daemon required  
-- **GitHub**: Token with push/PR/merge perms  
-- **Resources**: Runs comfortably on a personal workstation  
+- **Binary**: ~14 MB fat binary (Linux & macOS tested; Windows soon)
+- **Go**: Only needed if compiling from source (Go 1.24+)
+- **Docker**: CLI + daemon required
+- **GitHub**: Token with push/PR/merge perms
+- **Resources**: Runs comfortably on a personal workstation
 
 ---
 
@@ -166,7 +163,7 @@ Maestro tracks and displays:
 - Token use
 - Dollar cost
 - Wall-clock time
-- Test results and code quality metrics  
+- Test results and code quality metrics
 
 ---
 
@@ -191,10 +188,10 @@ By design. The architect enforces engineering discipline, ensures coders don't r
 Maestro is intended as a single-user tool running locally. It is at least as secure as other common LLM-based coding agents (probably more so due to Docker isolation), but since code is already exchanged with third-party LLMs, the trade-off of running root containers is considered acceptable.
 
 **Q: What happens if Maestro crashes?**
-All stories, states, tool use, messages, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.  
+All stories, states, tool use, messages, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.
 
 ---
 
 ## License
 
-MIT  
+MIT
