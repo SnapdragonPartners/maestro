@@ -123,7 +123,7 @@ func TestGeminiToolCalling(t *testing.T) {
 	}
 }
 
-// TestGeminiSystemMessage tests that system messages are properly handled.
+// TestGeminiSystemMessage tests that system messages are properly handled with tool calling.
 func TestGeminiSystemMessage(t *testing.T) {
 	apiKey := os.Getenv("GOOGLE_GENAI_API_KEY")
 	if apiKey == "" {
@@ -134,17 +134,34 @@ func TestGeminiSystemMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Define a simple answer tool
+	answerTool := tools.ToolDefinition{
+		Name:        "answer",
+		Description: "Provide the answer to the user's question",
+		InputSchema: tools.InputSchema{
+			Type: "object",
+			Properties: map[string]tools.Property{
+				"answer": {
+					Type:        "string",
+					Description: "The answer to provide",
+				},
+			},
+			Required: []string{"answer"},
+		},
+	}
+
 	req := llm.CompletionRequest{
 		Messages: []llm.CompletionMessage{
 			{
 				Role:    llm.RoleSystem,
-				Content: "You are a helpful assistant that always responds in exactly 5 words.",
+				Content: "You are a helpful assistant. Use the answer tool to provide responses.",
 			},
 			{
 				Role:    llm.RoleUser,
 				Content: "What is the capital of France?",
 			},
 		},
+		Tools:       []tools.ToolDefinition{answerTool},
 		MaxTokens:   100,
 		Temperature: 0.0,
 	}
@@ -154,9 +171,21 @@ func TestGeminiSystemMessage(t *testing.T) {
 		t.Fatalf("Completion failed: %v", err)
 	}
 
-	if resp.Content == "" {
-		t.Error("Expected non-empty response content")
+	// Should return a tool call
+	if len(resp.ToolCalls) == 0 {
+		t.Error("Expected at least one tool call")
 	}
 
-	t.Logf("Response: %s", resp.Content)
+	// Verify we got the answer tool call
+	foundAnswer := false
+	for _, call := range resp.ToolCalls {
+		if call.Name == "answer" {
+			foundAnswer = true
+			t.Logf("Answer tool called with params: %v", call.Parameters)
+		}
+	}
+
+	if !foundAnswer {
+		t.Error("Expected answer tool call, but didn't find one")
+	}
 }
