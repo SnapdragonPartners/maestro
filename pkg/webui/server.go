@@ -44,6 +44,7 @@ type Server struct {
 	dispatcher  *dispatch.Dispatcher
 	chatService *chat.Service
 	llmFactory  *agent.LLMClientFactory
+	demoService DemoService
 	logger      *logx.Logger
 	templates   *template.Template
 	workDir     string
@@ -74,6 +75,11 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 		chatService: chatService,
 		llmFactory:  llmFactory,
 	}
+}
+
+// SetDemoService sets the demo service for demo mode operations.
+func (s *Server) SetDemoService(demoService DemoService) {
+	s.demoService = demoService
 }
 
 // requireAuth wraps an HTTP handler with Basic Authentication.
@@ -149,6 +155,30 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pm/preview/spec", s.requireAuth(s.handlePMPreviewGet))
 	mux.HandleFunc("/api/pm/upload", s.requireAuth(s.handlePMUpload))
 	mux.HandleFunc("/api/pm/status", s.requireAuth(s.handlePMStatus))
+
+	// Demo endpoints - application demo mode
+	mux.HandleFunc("/api/demo/status", s.requireAuth(s.handleDemoStatus))
+	mux.HandleFunc("/api/demo/start", s.requireAuth(s.handleDemoStart))
+	mux.HandleFunc("/api/demo/stop", s.requireAuth(s.handleDemoStop))
+	mux.HandleFunc("/api/demo/restart", s.requireAuth(s.handleDemoRestart))
+	mux.HandleFunc("/api/demo/rebuild", s.requireAuth(s.handleDemoRebuild))
+	mux.HandleFunc("/api/demo/logs", s.requireAuth(s.handleDemoLogs))
+
+	// Secrets endpoints - encrypted secrets management
+	mux.HandleFunc("/api/secrets", s.requireAuth(s.handleSecretsRouter))
+	mux.HandleFunc("/api/secrets/", s.requireAuth(s.handleSecretsDelete))
+}
+
+// handleSecretsRouter routes GET/POST to appropriate handlers.
+func (s *Server) handleSecretsRouter(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleSecretsList(w, r)
+	case http.MethodPost:
+		s.handleSecretsSet(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleServicesStatus implements GET /api/services/status.
@@ -207,6 +237,19 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Get demo status
+	demoStatus := map[string]interface{}{
+		"available": s.demoService != nil,
+		"running":   false,
+	}
+	if s.demoService != nil {
+		status := s.demoService.Status(r.Context())
+		demoStatus["running"] = status.Running
+		demoStatus["port"] = status.Port
+		demoStatus["url"] = status.URL
+		demoStatus["outdated"] = status.Outdated
+	}
+
 	// Build response
 	response := map[string]interface{}{
 		"chat": map[string]interface{}{
@@ -217,6 +260,7 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 			"coder_count":     coderCount,
 			"architect_ready": architectReady,
 		},
+		"demo":        demoStatus,
 		"rate_limits": rateLimitStats,
 	}
 

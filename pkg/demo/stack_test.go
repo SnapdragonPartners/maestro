@@ -1,0 +1,384 @@
+package demo
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestStack_Up_EmptyProjectName(t *testing.T) {
+	s := &Stack{}
+
+	err := s.Up(context.Background())
+	if err == nil {
+		t.Error("expected error for empty project name")
+	}
+}
+
+func TestStack_Down_EmptyProjectName(t *testing.T) {
+	s := &Stack{}
+
+	err := s.Down(context.Background())
+	if err == nil {
+		t.Error("expected error for empty project name")
+	}
+}
+
+func TestStack_Restart_EmptyProjectName(t *testing.T) {
+	s := &Stack{}
+
+	err := s.Restart(context.Background(), "")
+	if err == nil {
+		t.Error("expected error for empty project name")
+	}
+}
+
+func TestStack_Logs_EmptyProjectName(t *testing.T) {
+	s := &Stack{}
+
+	_, err := s.Logs(context.Background(), "")
+	if err == nil {
+		t.Error("expected error for empty project name")
+	}
+}
+
+func TestStack_PS_EmptyProjectName(t *testing.T) {
+	s := &Stack{}
+
+	_, err := s.PS(context.Background())
+	if err == nil {
+		t.Error("expected error for empty project name")
+	}
+}
+
+func TestStack_Up_Success(t *testing.T) {
+	var capturedArgs []string
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: "/path/to/compose.yml",
+		CommandRunner: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		},
+	}
+
+	err := s.Up(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Verify args include project name and compose file
+	argsStr := strings.Join(capturedArgs, " ")
+	if !strings.Contains(argsStr, "-p test-project") {
+		t.Errorf("expected -p test-project in args: %v", capturedArgs)
+	}
+	if !strings.Contains(argsStr, "-f /path/to/compose.yml") {
+		t.Errorf("expected -f /path/to/compose.yml in args: %v", capturedArgs)
+	}
+	if !strings.Contains(argsStr, "up -d --wait") {
+		t.Errorf("expected 'up -d --wait' in args: %v", capturedArgs)
+	}
+}
+
+func TestStack_Down_Success(t *testing.T) {
+	var capturedArgs []string
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		},
+	}
+
+	err := s.Down(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	argsStr := strings.Join(capturedArgs, " ")
+	if !strings.Contains(argsStr, "down -v") {
+		t.Errorf("expected 'down -v' in args: %v", capturedArgs)
+	}
+}
+
+func TestStack_Down_NoConfigFile(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "echo 'no configuration file' >&2; exit 1")
+		},
+	}
+
+	// Should not return error for non-existent config
+	err := s.Down(context.Background())
+	if err != nil {
+		t.Errorf("expected no error for missing config, got: %v", err)
+	}
+}
+
+func TestStack_Restart_AllServices(t *testing.T) {
+	var capturedArgs []string
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		},
+	}
+
+	err := s.Restart(context.Background(), "")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	argsStr := strings.Join(capturedArgs, " ")
+	if !strings.Contains(argsStr, "restart") {
+		t.Errorf("expected 'restart' in args: %v", capturedArgs)
+	}
+}
+
+func TestStack_Restart_SpecificService(t *testing.T) {
+	var capturedArgs []string
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		},
+	}
+
+	err := s.Restart(context.Background(), "postgres")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	argsStr := strings.Join(capturedArgs, " ")
+	if !strings.Contains(argsStr, "restart postgres") {
+		t.Errorf("expected 'restart postgres' in args: %v", capturedArgs)
+	}
+}
+
+func TestStack_Logs_Success(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "echo 'log line 1\nlog line 2'")
+		},
+	}
+
+	reader, err := s.Logs(context.Background(), "")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	buf := make([]byte, 1024)
+	n, _ := reader.Read(buf)
+	output := string(buf[:n])
+	if !strings.Contains(output, "log line 1") {
+		t.Errorf("expected log output, got: %s", output)
+	}
+}
+
+func TestStack_IsRunning_True(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `echo '{"Service":"app","State":"running","Health":"healthy","Publishers":[]}'`)
+		},
+	}
+
+	running, err := s.IsRunning(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !running {
+		t.Error("expected stack to be running")
+	}
+}
+
+func TestStack_IsRunning_False(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `echo '{"Service":"app","State":"exited","Health":"","Publishers":[]}'`)
+		},
+	}
+
+	running, err := s.IsRunning(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if running {
+		t.Error("expected stack to not be running")
+	}
+}
+
+func TestStack_Exists_True(t *testing.T) {
+	// Create a temp file
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+	if err := os.WriteFile(composePath, []byte("services: {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: composePath,
+	}
+
+	if !s.Exists() {
+		t.Error("expected Exists() to return true")
+	}
+}
+
+func TestStack_Exists_False(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: "/nonexistent/compose.yml",
+	}
+
+	if s.Exists() {
+		t.Error("expected Exists() to return false")
+	}
+}
+
+func TestStack_Exists_EmptyPath(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+	}
+
+	if s.Exists() {
+		t.Error("expected Exists() to return false for empty path")
+	}
+}
+
+func TestStack_ListServices(t *testing.T) {
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	composeContent := `services:
+  app:
+    image: myapp
+  postgres:
+    image: postgres:15
+  redis:
+    image: redis:7
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: composePath,
+	}
+
+	services, err := s.ListServices()
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if len(services) != 3 {
+		t.Errorf("expected 3 services, got %d", len(services))
+	}
+
+	// Check all services are present
+	serviceMap := make(map[string]bool)
+	for _, svc := range services {
+		serviceMap[svc] = true
+	}
+	for _, expected := range []string{"app", "postgres", "redis"} {
+		if !serviceMap[expected] {
+			t.Errorf("missing service: %s", expected)
+		}
+	}
+}
+
+func TestStack_ListServices_EmptyPath(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+	}
+
+	_, err := s.ListServices()
+	if err == nil {
+		t.Error("expected error for empty compose file path")
+	}
+}
+
+func TestStack_CountServices(t *testing.T) {
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	composeContent := `services:
+  app:
+    image: myapp
+  postgres:
+    image: postgres:15
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: composePath,
+	}
+
+	count, err := s.CountServices()
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if count != 2 {
+		t.Errorf("expected 2 services, got %d", count)
+	}
+}
+
+func TestComposeFileExists_True(t *testing.T) {
+	tmpDir := t.TempDir()
+	maestroDir := filepath.Join(tmpDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	composePath := filepath.Join(maestroDir, "compose.yml")
+	if err := os.WriteFile(composePath, []byte("services: {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !ComposeFileExists(tmpDir) {
+		t.Error("expected ComposeFileExists to return true")
+	}
+}
+
+func TestComposeFileExists_False(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if ComposeFileExists(tmpDir) {
+		t.Error("expected ComposeFileExists to return false")
+	}
+}
+
+func TestComposeFilePath(t *testing.T) {
+	path := ComposeFilePath("/workspace/coder-001")
+	expected := "/workspace/coder-001/.maestro/compose.yml"
+	if path != expected {
+		t.Errorf("ComposeFilePath = %q, want %q", path, expected)
+	}
+}
+
+func TestNewStack(t *testing.T) {
+	s := NewStack("my-project", "/path/compose.yml", "my-network")
+
+	if s.ProjectName != "my-project" {
+		t.Errorf("ProjectName = %q, want %q", s.ProjectName, "my-project")
+	}
+	if s.ComposeFile != "/path/compose.yml" {
+		t.Errorf("ComposeFile = %q, want %q", s.ComposeFile, "/path/compose.yml")
+	}
+	if s.Network != "my-network" {
+		t.Errorf("Network = %q, want %q", s.Network, "my-network")
+	}
+}
