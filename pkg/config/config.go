@@ -506,6 +506,15 @@ type PMConfig struct {
 	DefaultExpertise  string `json:"default_expertise"`   // Default user expertise level: NON_TECHNICAL, BASIC, EXPERT (default: BASIC)
 }
 
+// DemoConfig defines demo mode configuration for running applications.
+type DemoConfig struct {
+	Enabled                   bool   `json:"enabled"`                     // Whether demo functionality is enabled (default: true)
+	Port                      int    `json:"port"`                        // Host port for demo app (default: 8081)
+	RunCmdOverride            string `json:"run_cmd_override"`            // Override Build.RunCmd for demo (optional)
+	HealthcheckPath           string `json:"healthcheck_path"`            // HTTP path to check for readiness (default: /health)
+	HealthcheckTimeoutSeconds int    `json:"healthcheck_timeout_seconds"` // Max wait time for app to become healthy (default: 60)
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -526,6 +535,7 @@ type Config struct {
 	PM        *PMConfig        `json:"pm"`        // PM agent settings
 	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
 	Debug     *DebugConfig     `json:"debug"`     // Debug settings
+	Demo      *DemoConfig      `json:"demo"`      // Demo mode settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -1077,6 +1087,9 @@ func applyDefaults(config *Config) {
 	if config.Logs == nil {
 		config.Logs = &LogsConfig{}
 	}
+	if config.Demo == nil {
+		config.Demo = &DemoConfig{}
+	}
 
 	// Apply container defaults
 	if config.Container.Name == "" {
@@ -1241,6 +1254,19 @@ func applyDefaults(config *Config) {
 	// Apply Logs defaults
 	if config.Logs.RotationCount == 0 {
 		config.Logs.RotationCount = 4
+	}
+
+	// Apply Demo defaults
+	// Note: Demo.Enabled defaults to false (zero value)
+	// If user wants demo mode, they must explicitly enable it
+	if config.Demo.Port == 0 {
+		config.Demo.Port = 8081
+	}
+	if config.Demo.HealthcheckPath == "" {
+		config.Demo.HealthcheckPath = "/health"
+	}
+	if config.Demo.HealthcheckTimeoutSeconds == 0 {
+		config.Demo.HealthcheckTimeoutSeconds = 60
 	}
 }
 

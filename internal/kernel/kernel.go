@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver
 
+	"orchestrator/internal/state"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
@@ -42,6 +44,7 @@ type Kernel struct {
 	ChatService        *chat.Service
 	WebServer          *webui.Server
 	LLMFactory         *agent.LLMClientFactory // Shared LLM client factory for all agents
+	ComposeRegistry    *state.ComposeRegistry  // Registry for active Docker Compose stacks
 
 	// Runtime state
 	projectDir string
@@ -90,6 +93,9 @@ func (k *Kernel) initializeServices() error {
 
 	// Create build service
 	k.BuildService = build.NewBuildService()
+
+	// Create compose registry for tracking active Docker Compose stacks
+	k.ComposeRegistry = state.NewComposeRegistry()
 
 	// Create chat service
 	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
@@ -181,6 +187,18 @@ func (k *Kernel) Stop() error {
 	}
 
 	k.Logger.Info("Stopping kernel services...")
+
+	// Cleanup compose stacks before cancelling context
+	// Use a timeout context for cleanup since main context will be cancelled
+	if k.ComposeRegistry != nil && k.ComposeRegistry.Count() > 0 {
+		k.Logger.Info("🐳 Cleaning up %d Docker Compose stacks...", k.ComposeRegistry.Count())
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := k.ComposeRegistry.Cleanup(cleanupCtx); err != nil {
+			k.Logger.Warn("⚠️ Error during compose cleanup: %v", err)
+		}
+		k.Logger.Info("✅ Compose cleanup complete")
+	}
 
 	// Cancel context to signal shutdown
 	k.cancel()
