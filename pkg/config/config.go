@@ -930,7 +930,7 @@ func createDefaultConfig() *Config {
 			Run:   "make run",
 		},
 		Agents: &AgentConfig{
-			MaxCoders:      2,
+			MaxCoders:      3,
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
 			PMModel:        DefaultPMModel,
@@ -1153,7 +1153,7 @@ func applyDefaults(config *Config) {
 
 	// Apply agent defaults
 	if config.Agents.MaxCoders == 0 {
-		config.Agents.MaxCoders = 2
+		config.Agents.MaxCoders = 3
 	}
 	if config.Agents.CoderModel == "" {
 		config.Agents.CoderModel = DefaultCoderModel

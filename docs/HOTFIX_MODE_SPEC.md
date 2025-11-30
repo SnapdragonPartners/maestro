@@ -347,3 +347,550 @@ Production testing of this feature is expensive, so we prioritize comprehensive 
 - Demo shows hotfix changes immediately
 - User receives notification when hotfix completes
 - Full cycle: Spec → Approval → Hotfix → Both complete
+
+---
+
+## Detailed Implementation Plan
+
+This section provides file-by-file implementation guidance.
+
+### Phase 1: PM Stays Engaged After Approval
+
+**Goal**: After spec approval, PM transitions to AWAIT_USER instead of WAITING, keeping context.
+
+#### File: `pkg/pm/await_architect.go`
+
+**Current behavior** (lines 48-59):
+```go
+if approvalResult.Status == proto.ApprovalStatusApproved {
+    d.logger.Info("✅ Spec APPROVED by architect")
+    // Clear draft spec and bootstrap requirements from state data
+    d.SetStateData("draft_spec_markdown", nil)
+    // ... more clearing ...
+    return StateWaiting, nil  // <-- Returns to WAITING
+}
+```
+
+**Change to**:
+```go
+if approvalResult.Status == proto.ApprovalStatusApproved {
+    d.logger.Info("✅ Spec APPROVED by architect")
+
+    // DON'T clear context - we're staying engaged for tweaks
+    // Only clear spec-specific data, keep conversation context
+    d.SetStateData("draft_spec_markdown", nil)
+    d.SetStateData("spec_metadata", nil)
+    // Keep StateKeyBootstrapRequirements - project is bootstrapped
+
+    // Inject user message to inform PM of approval
+    d.contextManager.AddMessage("user",
+        "The specification has been approved by the architect and submitted for development. "+
+        "Please inform the user and let them know you'll notify them when there's a demo ready "+
+        "or when development completes. Also let them know they can request tweaks or changes in the meantime.")
+
+    // Stay engaged - transition to WORKING so PM generates response
+    return StateWorking, nil
+}
+```
+
+#### File: `pkg/pm/states.go`
+
+**Add transition** (around line 57):
+```go
+StateAwaitArchitect: {
+    StateAwaitArchitect,
+    StateWorking,    // Architect provides feedback OR approval (NEW: approval goes to WORKING)
+    // Remove: StateWaiting - no longer transition directly to waiting on approval
+    proto.StateError,
+    proto.StateDone,
+},
+```
+
+#### Tests: `pkg/pm/await_architect_test.go` (new file)
+
+```go
+func TestHandleAwaitArchitect_Approval_TransitionsToWorking(t *testing.T)
+func TestHandleAwaitArchitect_Approval_InjectsUserMessage(t *testing.T)
+func TestHandleAwaitArchitect_NeedsChanges_TransitionsToWorking(t *testing.T)
+```
+
+---
+
+### Phase 2: PM Hotfix Triage
+
+**Goal**: PM classifies user messages as hotfix vs feature requests.
+
+#### File: `pkg/pm/working.go`
+
+**Add hotfix detection** in the main toolloop prompt or as a tool:
+
+Option A: **Add `classify_request` tool** that PM calls to classify user input
+- Returns: `{"type": "hotfix" | "feature", "confidence": 0.0-1.0}`
+- PM then routes accordingly
+
+Option B: **Modify `spec_submit` tool** to accept a `type` parameter
+- `type: "spec"` → Normal spec submission
+- `type: "hotfix"` → Hotfix submission
+
+**Recommended**: Option B is simpler - extend existing `spec_submit` tool.
+
+#### File: `pkg/tools/spec_submit.go`
+
+**Add hotfix mode**:
+```go
+type SpecSubmitInput struct {
+    Markdown    string `json:"markdown"`
+    Type        string `json:"type"`        // NEW: "spec" | "hotfix"
+    Description string `json:"description"` // NEW: For hotfix, brief description
+}
+
+func (t *SpecSubmitTool) Execute(ctx context.Context, input map[string]any) (any, error) {
+    submitType := safeAssert[string](input["type"], "spec")
+
+    if submitType == "hotfix" {
+        // Send HOTFIX request to architect
+        return t.submitHotfix(ctx, input)
+    }
+
+    // Existing spec submission logic
+    return t.submitSpec(ctx, input)
+}
+```
+
+#### File: `pkg/templates/pm/` (prompt templates)
+
+**Update PM system prompt** to explain hotfix option:
+```markdown
+## After Spec Approval
+
+Once a spec is approved and development begins, you can help the user with:
+1. **Tweaks/Hotfixes**: Small, urgent changes (use spec_submit with type="hotfix")
+2. **New Features**: Start a new interview for substantial new functionality
+```
+
+#### Tests: `pkg/pm/working_test.go`
+
+```go
+func TestPM_ClassifiesHotfixRequest(t *testing.T)
+func TestPM_ClassifiesFeatureRequest(t *testing.T)
+func TestPM_SubmitsHotfixToArchitect(t *testing.T)
+```
+
+---
+
+### Phase 3: HOTFIX Request Type
+
+**Goal**: Add protocol support for HOTFIX requests.
+
+#### File: `pkg/proto/payload.go`
+
+**Add payload kind** (around line 38):
+```go
+// Request types
+PayloadKindHotfixRequest PayloadKind = "hotfix_request"
+```
+
+**Add request kind** (around line 46 in request_kinds.go or similar):
+```go
+RequestKindHotfix RequestKind = "hotfix"
+```
+
+#### File: `pkg/proto/hotfix.go` (new file)
+
+```go
+package proto
+
+// HotfixRequestPayload contains data for a hotfix request from PM to architect.
+type HotfixRequestPayload struct {
+    Description string            `json:"description"` // Brief description of the hotfix
+    Context     string            `json:"context"`     // Any relevant context
+    Metadata    map[string]string `json:"metadata"`    // Additional metadata
+}
+
+// NewHotfixRequestPayload creates a new hotfix request payload.
+func NewHotfixRequestPayload(description, context string) *TypedPayload {
+    return &TypedPayload{
+        Kind: PayloadKindHotfixRequest,
+        Data: map[string]any{
+            "description": description,
+            "context":     context,
+        },
+    }
+}
+
+// ExtractHotfixRequest extracts hotfix request data from a typed payload.
+func (p *TypedPayload) ExtractHotfixRequest() (*HotfixRequestPayload, error) {
+    if p.Kind != PayloadKindHotfixRequest {
+        return nil, fmt.Errorf("expected hotfix_request payload, got %s", p.Kind)
+    }
+
+    return &HotfixRequestPayload{
+        Description: safeAssert[string](p.Data["description"], ""),
+        Context:     safeAssert[string](p.Data["context"], ""),
+    }, nil
+}
+```
+
+#### File: `pkg/architect/request.go`
+
+**Add hotfix handling** (around line 61 in the switch statement):
+```go
+switch requestKind {
+case proto.RequestKindQuestion:
+    response, err = d.handleIterativeQuestion(ctx, requestMsg)
+case proto.RequestKindApproval:
+    response, err = d.handleApprovalRequest(ctx, requestMsg)
+case proto.RequestKindHotfix:  // NEW
+    response, err = d.handleHotfixRequest(ctx, requestMsg)
+// ... existing cases
+}
+```
+
+#### File: `pkg/architect/request_hotfix.go` (new file)
+
+```go
+package architect
+
+// handleHotfixRequest processes a HOTFIX request from PM.
+// Uses single-turn toolloop to assess complexity and generate story.
+func (d *Driver) handleHotfixRequest(ctx context.Context, requestMsg *proto.AgentMsg) (*proto.AgentMsg, error) {
+    // Extract hotfix description
+    typedPayload := requestMsg.GetTypedPayload()
+    hotfixPayload, err := typedPayload.ExtractHotfixRequest()
+    if err != nil {
+        return nil, err
+    }
+
+    d.logger.Info("🔧 Processing hotfix request: %s", hotfixPayload.Description)
+
+    // Create context manager for hotfix (fresh context)
+    cm := contextmgr.NewContextManager()
+
+    // Build hotfix assessment prompt
+    prompt := d.generateHotfixPrompt(hotfixPayload)
+    cm.AddMessage("user", prompt)
+
+    // Create tool provider with submit_stories
+    toolProvider := d.createHotfixToolProvider()
+
+    // Run single-turn toolloop
+    out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[HotfixResult]{
+        ContextManager: cm,
+        GeneralTools:   []tools.Tool{},  // No exploration tools for hotfix
+        TerminalTool:   submitStoriesTool,
+        MaxIterations:  3,
+        SingleTurn:     true,
+        AgentID:        d.GetAgentID(),
+    })
+
+    // Handle outcome - either success or needs_changes
+    if out.Kind != toolloop.OutcomeProcessEffect {
+        // Return needs_changes to PM
+        return d.buildHotfixNeedsChangesResponse(requestMsg, out.Err)
+    }
+
+    // Hotfix story was submitted successfully
+    d.logger.Info("✅ Hotfix story created and dispatched")
+
+    // Return approval to PM
+    return d.buildHotfixApprovalResponse(requestMsg)
+}
+
+func (d *Driver) generateHotfixPrompt(payload *proto.HotfixRequestPayload) string {
+    return fmt.Sprintf(`# Hotfix Request
+
+## Description
+%s
+
+## Context
+%s
+
+## Instructions
+
+Create a SINGLE story for this hotfix. Keep it as simple as possible:
+- Minimize dependencies (prefer none)
+- Minimize scope (single file if possible)
+- Avoid over-engineering
+
+Assess if this is EXPRESS (skip planning) based on:
+- Single file or 2-3 closely related files → express=true
+- Well-defined change, not exploratory → express=true
+- No architectural decisions needed → express=true
+- Estimated < 50 lines → express=true
+
+Call submit_stories with your assessment.`, payload.Description, payload.Context)
+}
+```
+
+#### Tests: `pkg/architect/request_hotfix_test.go`
+
+```go
+func TestHandleHotfixRequest_SimpleHotfix_Express(t *testing.T)
+func TestHandleHotfixRequest_ComplexHotfix_NotExpress(t *testing.T)
+func TestHandleHotfixRequest_InvalidDependency_NeedsChanges(t *testing.T)
+```
+
+---
+
+### Phase 4: Express Assessment for All Stories
+
+**Goal**: Add express flag to story generation for both specs and hotfixes.
+
+#### File: `pkg/tools/submit_stories.go`
+
+**Already exists** - need to add `express` field to story input schema:
+
+```go
+// Update the JSON schema for the tool
+"express": {
+    "type": "boolean",
+    "description": "If true, story skips planning and goes directly to coding. Use for simple, well-defined changes."
+}
+```
+
+**Update Execute** to extract and pass express flag:
+```go
+express := safeAssert[bool](storyData["express"], false)
+// Pass to queue.AddStory or dispatcher
+```
+
+#### File: `pkg/architect/queue.go`
+
+**Update AddStory** to accept express parameter:
+```go
+func (q *StoryQueue) AddStory(story *QueuedStory) error {
+    // story.Express is already set from input
+    // ... existing logic
+}
+```
+
+**Update QueuedStory struct**:
+```go
+type QueuedStory struct {
+    // ... existing fields
+    Express bool `json:"express"` // If true, skip planning
+}
+```
+
+#### File: `pkg/architect/dispatching.go`
+
+**Update sendStoryToDispatcher** (around line 115-131):
+```go
+// Add express flag to payload
+payloadData[proto.KeyExpress] = story.Express
+```
+
+**Note**: `proto.KeyExpress` may need to be added to `pkg/proto/message.go`.
+
+#### File: `pkg/proto/message.go`
+
+**Add key constant**:
+```go
+KeyExpress = "express"
+```
+
+#### File: `pkg/templates/architect/` (prompt templates)
+
+**Update story generation prompts** to include express assessment criteria.
+
+---
+
+### Phase 5: Hotfix Coder Setup
+
+**Goal**: Create dedicated hotfix-001 coder at startup.
+
+#### File: `pkg/config/config.go`
+
+**Update validation** (already changed MaxCoders default to 3):
+```go
+if agents.MaxCoders < 2 {
+    return fmt.Errorf("max_coders must be >= 2 (required for hotfix mode)")
+}
+```
+
+#### File: `internal/factory/agent_factory.go`
+
+**Add hotfix coder creation**:
+```go
+func (f *AgentFactory) CreateCoders(ctx context.Context, count int) ([]*coder.Driver, error) {
+    coders := make([]*coder.Driver, 0, count+1) // +1 for hotfix coder
+
+    // Create normal coders
+    for i := 1; i <= count; i++ {
+        coderID := fmt.Sprintf("coder-%03d", i)
+        c, err := f.createCoder(ctx, coderID, false /* isHotfix */)
+        if err != nil {
+            return nil, err
+        }
+        coders = append(coders, c)
+    }
+
+    // Create hotfix coder
+    hotfixCoder, err := f.createCoder(ctx, "hotfix-001", true /* isHotfix */)
+    if err != nil {
+        return nil, err
+    }
+    coders = append(coders, hotfixCoder)
+
+    return coders, nil
+}
+```
+
+#### File: `pkg/dispatch/dispatcher.go`
+
+**Add hotfix routing**:
+```go
+// Add hotfix channel
+hotfixStoryCh chan *proto.AgentMsg
+
+// In Route():
+if msg.IsHotfix() {
+    return d.hotfixStoryCh
+}
+```
+
+#### File: `pkg/coder/driver.go`
+
+**Add hotfix flag** (optional, for logging):
+```go
+type Driver struct {
+    // ... existing fields
+    isHotfix bool // True if this is the dedicated hotfix coder
+}
+```
+
+---
+
+### Phase 6: submit_stories Enhancement
+
+**Goal**: Validate hotfix dependencies and dispatch directly.
+
+#### File: `pkg/tools/submit_stories.go`
+
+**Add hotfix mode**:
+```go
+func (t *SubmitStoriesTool) Execute(ctx context.Context, input map[string]any) (any, error) {
+    isHotfix := t.isHotfixContext(ctx) // Check if this is a hotfix request
+
+    stories := extractStories(input)
+
+    for _, story := range stories {
+        if isHotfix {
+            // Validate dependencies are complete
+            if err := t.validateHotfixDependencies(story); err != nil {
+                return nil, err // This bubbles back as needs_changes
+            }
+
+            // Dispatch directly to hotfix coder (bypass queue)
+            if err := t.dispatchToHotfixCoder(ctx, story); err != nil {
+                return nil, err
+            }
+        } else {
+            // Normal: add to queue
+            if err := t.queue.AddStory(story); err != nil {
+                return nil, err
+            }
+        }
+    }
+
+    return map[string]any{"success": true}, nil
+}
+
+func (t *SubmitStoriesTool) validateHotfixDependencies(story *StoryInput) error {
+    for _, depID := range story.DependsOn {
+        depStory, exists := t.queue.GetStory(depID)
+        if !exists {
+            return fmt.Errorf("hotfix depends on unknown story: %s", depID)
+        }
+        if depStory.GetStatus() != StatusDone {
+            return fmt.Errorf("hotfix depends on incomplete story %s (status: %s) - "+
+                "please wait for it to complete or revise the hotfix to remove this dependency",
+                depID, depStory.GetStatus())
+        }
+    }
+    return nil
+}
+```
+
+---
+
+### Phase 7: Notifications (Stretch)
+
+**Goal**: Notify PM when stories complete.
+
+#### File: `pkg/architect/request.go`
+
+**In handleWorkAccepted** (around line 517):
+```go
+func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType string, ...) {
+    // ... existing logic ...
+
+    // NEW: Notify PM of completion
+    if d.pmNotificationCh != nil {
+        notification := &PMNotification{
+            Type:    "story_complete",
+            StoryID: storyID,
+            Message: fmt.Sprintf("Story %s has been completed", storyID),
+        }
+        select {
+        case d.pmNotificationCh <- notification:
+        default:
+            d.logger.Warn("PM notification channel full, dropping notification")
+        }
+    }
+}
+```
+
+---
+
+### Implementation Order Summary
+
+1. **Phase 1** (PM stays engaged) - ~2 hours
+   - `pkg/pm/await_architect.go` - Change approval transition
+   - `pkg/pm/states.go` - Update valid transitions
+   - Tests
+
+2. **Phase 2** (PM hotfix triage) - ~3 hours
+   - `pkg/tools/spec_submit.go` - Add hotfix mode
+   - PM prompt templates
+   - Tests
+
+3. **Phase 3** (HOTFIX request type) - ~4 hours
+   - `pkg/proto/payload.go` - Add payload kind
+   - `pkg/proto/hotfix.go` - New file
+   - `pkg/architect/request.go` - Add routing
+   - `pkg/architect/request_hotfix.go` - New file
+   - Tests
+
+4. **Phase 4** (Express assessment) - ~2 hours
+   - `pkg/tools/submit_stories.go` - Add express field
+   - `pkg/architect/queue.go` - Store express flag
+   - `pkg/architect/dispatching.go` - Pass express to coder
+   - `pkg/proto/message.go` - Add KeyExpress
+   - Tests
+
+5. **Phase 5** (Hotfix coder) - ~3 hours
+   - `pkg/config/config.go` - Validate MaxCoders >= 2
+   - `internal/factory/agent_factory.go` - Create hotfix coder
+   - `pkg/dispatch/dispatcher.go` - Add hotfix routing
+   - Tests
+
+6. **Phase 6** (submit_stories enhancement) - ~2 hours
+   - `pkg/tools/submit_stories.go` - Hotfix validation and dispatch
+   - Tests
+
+7. **Phase 7** (Notifications) - ~2 hours (stretch)
+   - `pkg/architect/request.go` - Add PM notifications
+   - `pkg/pm/driver.go` - Handle notifications
+   - Tests
+
+**Total estimated effort**: ~18 hours
+
+### Key Discovery: Express Already Implemented in Coder
+
+The coder already fully supports express stories:
+- `pkg/coder/coder_fsm.go:46` - `KeyExpress` constant defined
+- `pkg/coder/waiting.go:101-117` - Extracts `express` flag from story payload
+- `pkg/coder/setup.go:86-120` - If express, transitions SETUP→CODING (skips PLANNING)
+
+We just need to ensure the flag flows through from architect to coder via the dispatcher.
