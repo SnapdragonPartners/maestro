@@ -46,17 +46,30 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 
 		// Check approval status
 		if approvalResult.Status == proto.ApprovalStatusApproved {
-			// Spec approved - transition to WAITING for next interview
-			d.logger.Info("✅ Spec APPROVED by architect")
+			// Spec approved - stay engaged for tweaks/hotfixes
+			d.logger.Info("✅ Spec APPROVED by architect - staying engaged for tweaks")
 			if approvalResult.Feedback != "" {
 				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
 			}
-			// Clear draft spec and bootstrap requirements from state data
+
+			// Clear spec-specific data but keep conversation context
 			d.SetStateData("draft_spec_markdown", nil)
 			d.SetStateData("spec_metadata", nil)
-			d.SetStateData(StateKeyBootstrapRequirements, nil)
+			// Keep bootstrap requirements - project is bootstrapped and ready for hotfixes
+			// d.SetStateData(StateKeyBootstrapRequirements, nil)
 			d.SetStateData("bootstrap_params", nil)
-			return StateWaiting, nil
+
+			// Mark that we're in post-approval mode (development in progress)
+			d.SetStateData(StateKeyDevelopmentInProgress, true)
+
+			// Inject user message to inform PM of approval and prompt for response
+			d.contextManager.AddMessage("user",
+				"The specification has been approved by the architect and submitted for development. "+
+					"Please inform the user and let them know you'll notify them when there's a demo ready "+
+					"or when development completes. Also let them know they can request tweaks or changes in the meantime.")
+
+			// Transition to WORKING so PM generates response to user
+			return StateWorking, nil
 		}
 
 		// Architect provided feedback - inject as system message and transition to WORKING

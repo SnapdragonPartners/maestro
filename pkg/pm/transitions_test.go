@@ -57,8 +57,7 @@ func TestAllValidTransitions(t *testing.T) {
 		},
 		StateAwaitArchitect: {
 			StateAwaitArchitect,
-			StateWorking,
-			StateWaiting,
+			StateWorking, // Architect provides feedback OR approval (stay engaged for tweaks)
 			proto.StateError,
 			proto.StateDone,
 		},

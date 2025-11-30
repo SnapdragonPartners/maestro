@@ -56,8 +56,7 @@ var validTransitions = map[proto.State][]proto.State{
 	},
 	StateAwaitArchitect: {
 		StateAwaitArchitect, // Stay in await state while blocking on response channel
-		StateWorking,        // Architect provides feedback
-		StateWaiting,        // Architect approves spec
+		StateWorking,        // Architect provides feedback OR approval (stay engaged for tweaks)
 		proto.StateError,
 		proto.StateDone,
 	},
