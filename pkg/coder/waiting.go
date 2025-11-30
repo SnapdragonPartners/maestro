@@ -109,12 +109,24 @@ func (c *Coder) handleWaiting(ctx context.Context, sm *agent.BaseStateMachine) (
 			}
 		}
 
-		// Store the task content, story ID, story type, and express flag for use in later states.
+		// Extract hotfix flag from the payload
+		isHotfix := false
+		if hotfixPayload, exists := payloadData["is_hotfix"]; exists {
+			if hotfix, ok := hotfixPayload.(bool); ok {
+				isHotfix = hotfix
+				if isHotfix {
+					c.logger.Info("🔧 Hotfix story detected")
+				}
+			}
+		}
+
+		// Store the task content, story ID, story type, express, and hotfix flags for use in later states.
 		sm.SetStateData(string(stateDataKeyTaskContent), contentStr)
 		sm.SetStateData(KeyStoryMessageID, storyMsg.ID)
 		sm.SetStateData(KeyStoryID, storyIDStr)        // For workspace manager - use actual story ID
 		sm.SetStateData(proto.KeyStoryType, storyType) // Store story type for testing decisions
 		sm.SetStateData(KeyExpress, isExpress)         // Store express flag for planning bypass
+		sm.SetStateData(KeyIsHotfix, isHotfix)         // Store hotfix flag for routing/identification
 		sm.SetStateData(string(stateDataKeyStartedAt), time.Now().UTC())
 
 		logx.DebugState(ctx, "coder", "transition", "WAITING -> SETUP", "received story message")

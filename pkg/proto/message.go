@@ -101,6 +101,8 @@ const (
 	KeyRequirements    = "requirements"
 	KeyDependsOn       = "depends_on"
 	KeyEstimatedPoints = "estimated_points"
+	KeyExpress         = "express"   // Skip planning phase (knowledge updates, hotfixes)
+	KeyIsHotfix        = "is_hotfix" // Route to dedicated hotfix coder
 	KeyFilePath        = "file_path"
 	KeyBackend         = "backend"
 

@@ -43,7 +43,8 @@ const (
 	KeyErrorMessage            = "error_message"
 	KeyStoryMessageID          = "story_message_id"
 	KeyStoryID                 = "story_id"
-	KeyExpress                 = "express" // Express story flag (skip planning)
+	KeyExpress                 = "express"   // Express story flag (skip planning)
+	KeyIsHotfix                = "is_hotfix" // Hotfix flag (for routing/identification)
 	KeyQuestionSubmitted       = "question_submitted"
 	KeyPlanSubmitted           = "plan_submitted"
 	KeyStoryCompletedAt        = "story_completed_at"

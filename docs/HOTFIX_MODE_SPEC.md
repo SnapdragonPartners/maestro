@@ -781,17 +781,17 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 |-------|--------|-------------|
 | **1. PM Stays Engaged** | ✅ DONE | `await_architect.go` → WORKING on approval |
 | **2. PM Hotfix Triage** | ✅ DONE | `submit_stories(hotfix=true)` consolidated tool |
-| **3. HOTFIX Request Type** | 🔶 PARTIAL | Protocol done, architect handler TODO |
-| **4. Express Assessment** | ⏳ TODO | Already in coder, needs architect wiring |
-| **5. Hotfix Coder Setup** | ⏳ TODO | Factory changes, hotfix queue |
-| **6. submit_stories Enhancement** | ⏳ TODO | Dependency validation, direct dispatch |
+| **3. HOTFIX Request Type** | ✅ DONE | Protocol + architect handler complete |
+| **4. Express Assessment** | ✅ DONE | Keys in proto, wired through dispatcher to coder |
+| **5. Hotfix Coder Setup** | ⏳ TODO | Factory changes, hotfix routing |
+| **6. submit_stories Enhancement** | ⏳ TODO | Dependency validation in architect |
 | **7. Notifications** | ⏳ TODO | Stretch goal |
 
-### Key Discovery: Express Already Implemented in Coder
+### Phase 4 Completion Notes
 
-The coder already fully supports express stories:
-- `pkg/coder/coder_fsm.go:46` - `KeyExpress` constant defined
-- `pkg/coder/waiting.go:101-117` - Extracts `express` flag from story payload
+Express flag is now fully wired:
+- `pkg/proto/message.go:104-105` - Added `KeyExpress` and `KeyIsHotfix` constants
+- `pkg/architect/dispatching.go:119-120` - Passes `express` and `is_hotfix` in story payload
+- `pkg/coder/coder_fsm.go:46-47` - Constants for extracting express and hotfix flags
+- `pkg/coder/waiting.go:101-129` - Extracts both flags from payload, stores in state
 - `pkg/coder/setup.go:86-120` - If express, transitions SETUP→CODING (skips PLANNING)
-
-We just need to ensure the flag flows through from architect to coder via the dispatcher.
