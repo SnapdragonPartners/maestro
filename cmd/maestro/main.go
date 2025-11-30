@@ -17,17 +17,33 @@ import (
 	"orchestrator/pkg/tools"
 )
 
+// Version information - set by goreleaser via ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	// Parse command line flags
 	var (
-		gitRepo    = flag.String("git-repo", "", "Git repository URL (optional)")
-		specFile   = flag.String("spec-file", "", "Path to specification file")
-		noWebUI    = flag.Bool("nowebui", false, "Disable web UI")
-		bootstrap  = flag.Bool("bootstrap", false, "[DEPRECATED] Bootstrap mode is deprecated - PM mode is now default")
-		projectDir = flag.String("projectdir", ".", "Project directory")
-		tee        = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
+		gitRepo     = flag.String("git-repo", "", "Git repository URL (optional)")
+		specFile    = flag.String("spec-file", "", "Path to specification file")
+		noWebUI     = flag.Bool("nowebui", false, "Disable web UI")
+		bootstrap   = flag.Bool("bootstrap", false, "[DEPRECATED] Bootstrap mode is deprecated - PM mode is now default")
+		projectDir  = flag.String("projectdir", ".", "Project directory")
+		tee         = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
+		showVersion = flag.Bool("version", false, "Show version information")
 	)
 	flag.Parse()
+
+	// Handle version flag
+	if *showVersion {
+		fmt.Printf("maestro %s\n", version)
+		fmt.Printf("  commit: %s\n", commit)
+		fmt.Printf("  built:  %s\n", date)
+		os.Exit(0)
+	}
 
 	// User-friendly startup message
 	fmt.Println("⏳ Starting up...")
