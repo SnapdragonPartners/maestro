@@ -69,6 +69,8 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		case proto.RequestKindRequeue:
 			err = d.handleRequeueRequest(ctx, requestMsg)
 			response = nil // No response needed for requeue messages
+		case proto.RequestKindHotfix:
+			response, err = d.handleHotfixRequest(ctx, requestMsg)
 		default:
 			return StateError, fmt.Errorf("unknown request kind: %s", requestKind)
 		}

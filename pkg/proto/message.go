@@ -151,6 +151,9 @@ const (
 
 	// ApprovalTypeSpec indicates a specification approval request.
 	ApprovalTypeSpec ApprovalType = "spec"
+
+	// ApprovalTypeHotfix indicates a hotfix approval request from PM.
+	ApprovalTypeHotfix ApprovalType = "hotfix"
 )
 
 // ApprovalRequest represents a request for approval (plan or code).

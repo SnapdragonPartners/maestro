@@ -26,6 +26,9 @@ const (
 
 	// RequestKindRequeue represents a story requeue request.
 	RequestKindRequeue RequestKind = "REQUEUE"
+
+	// RequestKindHotfix represents a hotfix request from PM.
+	RequestKindHotfix RequestKind = "HOTFIX"
 )
 
 // ResponseKind represents the type of response being sent in the unified protocol.
@@ -164,11 +167,11 @@ type RequeueResponsePayload struct {
 // Hotfixes are small, urgent changes that bypass the normal spec workflow.
 // Uses the same requirements format as submit_stories for consistency.
 type HotfixRequestPayload struct {
-	Analysis     string            `json:"analysis"`              // Brief summary of what the hotfix addresses
-	Platform     string            `json:"platform"`              // Platform (e.g., "go", "python", "nodejs")
-	Requirements []any             `json:"requirements"`          // Array of requirement objects (same format as submit_stories)
-	Urgency      string            `json:"urgency,omitempty"`     // "normal" or "urgent"
-	Metadata     map[string]string `json:"metadata,omitempty"`    // Hotfix-specific metadata
+	Analysis     string            `json:"analysis"`           // Brief summary of what the hotfix addresses
+	Platform     string            `json:"platform"`           // Platform (e.g., "go", "python", "nodejs")
+	Requirements []any             `json:"requirements"`       // Array of requirement objects (same format as submit_stories)
+	Urgency      string            `json:"urgency,omitempty"`  // "normal" or "urgent"
+	Metadata     map[string]string `json:"metadata,omitempty"` // Hotfix-specific metadata
 }
 
 // Unified protocol validation functions use the constants defined in message.go
@@ -208,6 +211,8 @@ func GetRequestKind(msg *AgentMsg) (RequestKind, bool) {
 		return RequestKindMerge, true
 	case PayloadKindRequeueRequest:
 		return RequestKindRequeue, true
+	case PayloadKindHotfixRequest:
+		return RequestKindHotfix, true
 	default:
 		return "", false
 	}
