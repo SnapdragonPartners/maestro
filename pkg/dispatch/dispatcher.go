@@ -114,6 +114,7 @@ type Dispatcher struct {
 
 	// Phase 1: Channel-based queues.
 	storyCh           chan *proto.AgentMsg            // Ready stories for any coder (replaces sharedWorkQueue)
+	hotfixStoryCh     chan *proto.AgentMsg            // Ready hotfix stories for dedicated hotfix coder
 	questionsCh       chan *proto.AgentMsg            // Questions/requests for architect (replaces architectRequestQueue)
 	pmRequestsCh      chan *proto.AgentMsg            // Interview requests for PM agent
 	statusUpdatesCh   chan *proto.StoryStatusUpdate   // Story status updates for architect (non-blocking)
@@ -162,6 +163,7 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		shutdown:          make(chan struct{}),
 		running:           false,
 		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
+		hotfixStoryCh:     make(chan *proto.AgentMsg, 10),                                             // Hotfix stories channel (dedicated coder)
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
 		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                             // Buffered channel for PM interview requests
 		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                   // Buffered channel for status updates
@@ -212,9 +214,14 @@ func (d *Dispatcher) Attach(ag Agent) {
 				// TODO: Add status updates channel to architect interface
 				return
 			case agent.TypeCoder:
-				d.logger.Info("Attached coder agent: %s with direct channel setup", agentID)
-				// Coders receive story messages via storyCh.
-				channelReceiver.SetChannels(d.storyCh, nil, replyCh)
+				// Hotfix coders get their own dedicated channel, normal coders share storyCh
+				if strings.HasPrefix(agentID, "hotfix-") {
+					d.logger.Info("Attached hotfix coder agent: %s with dedicated hotfix channel", agentID)
+					channelReceiver.SetChannels(d.hotfixStoryCh, nil, replyCh)
+				} else {
+					d.logger.Info("Attached coder agent: %s with shared story channel", agentID)
+					channelReceiver.SetChannels(d.storyCh, nil, replyCh)
+				}
 				channelReceiver.SetDispatcher(d)
 				return
 			case agent.TypePM:
@@ -386,12 +393,32 @@ func (d *Dispatcher) DispatchMessage(msg *proto.AgentMsg) error {
 	// Note: Event logging will happen after name resolution in processMessage.
 	// to ensure the logged message reflects the actual target agent.
 
-	// For STORY messages, check if story channel has capacity first
+	// For STORY messages, check if appropriate channel has capacity first
 	if msg.Type == proto.MsgTypeSTORY {
-		// Check if story channel is full (non-blocking check)
-		if len(d.storyCh) >= cap(d.storyCh) {
-			d.logger.Warn("⚠️  Story channel full (%d/%d), could not deliver story %s", len(d.storyCh), cap(d.storyCh), msg.ID)
-			return fmt.Errorf("story channel full, could not deliver story %s", msg.ID)
+		// Check if this is a hotfix story by examining the payload
+		isHotfix := false
+		if payload := msg.GetTypedPayload(); payload != nil {
+			if payloadData, err := payload.ExtractGeneric(); err == nil {
+				if hotfixVal, exists := payloadData[proto.KeyIsHotfix]; exists {
+					if hotfix, ok := hotfixVal.(bool); ok {
+						isHotfix = hotfix
+					}
+				}
+			}
+		}
+
+		if isHotfix {
+			// Check hotfix channel capacity
+			if len(d.hotfixStoryCh) >= cap(d.hotfixStoryCh) {
+				d.logger.Warn("⚠️  Hotfix story channel full (%d/%d), could not deliver story %s", len(d.hotfixStoryCh), cap(d.hotfixStoryCh), msg.ID)
+				return fmt.Errorf("hotfix story channel full, could not deliver story %s", msg.ID)
+			}
+		} else {
+			// Check normal story channel capacity
+			if len(d.storyCh) >= cap(d.storyCh) {
+				d.logger.Warn("⚠️  Story channel full (%d/%d), could not deliver story %s", len(d.storyCh), cap(d.storyCh), msg.ID)
+				return fmt.Errorf("story channel full, could not deliver story %s", msg.ID)
+			}
 		}
 	}
 
@@ -610,18 +637,41 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	// Route messages to appropriate queues based on type.
 	switch msg.Type {
 	case proto.MsgTypeSTORY:
-		// STORY messages go to storyCh for coders to receive.
-		d.logger.Info("🔄 Sending STORY %s to storyCh", msg.ID)
+		// STORY messages go to storyCh (normal) or hotfixStoryCh (hotfix) based on payload.
+		// Check if this is a hotfix story by examining the payload
+		isHotfix := false
+		if payload := msg.GetTypedPayload(); payload != nil {
+			if payloadData, err := payload.ExtractGeneric(); err == nil {
+				if hotfixVal, exists := payloadData[proto.KeyIsHotfix]; exists {
+					if hotfix, ok := hotfixVal.(bool); ok {
+						isHotfix = hotfix
+					}
+				}
+			}
+		}
 
-		// Send to storyCh with shutdown check to prevent panic on closed channel
-		select {
-		case d.storyCh <- msg:
-			d.logger.Info("✅ STORY %s delivered to storyCh", msg.ID)
-		case <-d.shutdown:
-			d.logger.Warn("❌ Shutdown in progress, dropping STORY %s", msg.ID)
-			return
-		default:
-			d.logger.Warn("❌ Story channel full, dropping STORY %s", msg.ID)
+		if isHotfix {
+			d.logger.Info("🔧 Sending HOTFIX STORY %s to hotfixStoryCh", msg.ID)
+			select {
+			case d.hotfixStoryCh <- msg:
+				d.logger.Info("✅ HOTFIX STORY %s delivered to hotfixStoryCh", msg.ID)
+			case <-d.shutdown:
+				d.logger.Warn("❌ Shutdown in progress, dropping HOTFIX STORY %s", msg.ID)
+				return
+			default:
+				d.logger.Warn("❌ Hotfix story channel full, dropping HOTFIX STORY %s", msg.ID)
+			}
+		} else {
+			d.logger.Info("🔄 Sending STORY %s to storyCh", msg.ID)
+			select {
+			case d.storyCh <- msg:
+				d.logger.Info("✅ STORY %s delivered to storyCh", msg.ID)
+			case <-d.shutdown:
+				d.logger.Warn("❌ Shutdown in progress, dropping STORY %s", msg.ID)
+				return
+			default:
+				d.logger.Warn("❌ Story channel full, dropping STORY %s", msg.ID)
+			}
 		}
 
 	case proto.MsgTypeREQUEST:
@@ -881,6 +931,12 @@ func (d *Dispatcher) closeAllChannels() {
 	if d.storyCh != nil {
 		close(d.storyCh)
 		d.logger.Info("Closed story channel")
+	}
+
+	// Close hotfixStoryCh.
+	if d.hotfixStoryCh != nil {
+		close(d.hotfixStoryCh)
+		d.logger.Info("Closed hotfix story channel")
 	}
 
 	// Close questionsCh.

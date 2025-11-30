@@ -783,7 +783,7 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 | **2. PM Hotfix Triage** | ✅ DONE | `submit_stories(hotfix=true)` consolidated tool |
 | **3. HOTFIX Request Type** | ✅ DONE | Protocol + architect handler complete |
 | **4. Express Assessment** | ✅ DONE | Keys in proto, wired through dispatcher to coder |
-| **5. Hotfix Coder Setup** | ⏳ TODO | Factory changes, hotfix routing |
+| **5. Hotfix Coder Setup** | ✅ DONE | Dedicated hotfix-001 coder with separate channel |
 | **6. submit_stories Enhancement** | ⏳ TODO | Dependency validation in architect |
 | **7. Notifications** | ⏳ TODO | Stretch goal |
 
@@ -795,3 +795,12 @@ Express flag is now fully wired:
 - `pkg/coder/coder_fsm.go:46-47` - Constants for extracting express and hotfix flags
 - `pkg/coder/waiting.go:101-129` - Extracts both flags from payload, stores in state
 - `pkg/coder/setup.go:86-120` - If express, transitions SETUP→CODING (skips PLANNING)
+
+### Phase 5 Completion Notes
+
+Dedicated hotfix coder with separate channel routing:
+- `pkg/dispatch/dispatcher.go` - Added `hotfixStoryCh` for dedicated hotfix routing
+- Dispatcher `Attach()` routes `hotfix-*` coders to `hotfixStoryCh`
+- Dispatcher `processMessage()` routes stories with `is_hotfix=true` to `hotfixStoryCh`
+- `cmd/maestro/flows.go` - Both `BootstrapFlow` and `OrchestratorFlow` create `hotfix-001`
+- Hotfix coder receives stories on dedicated channel, runs same state machine as normal coders
