@@ -91,6 +91,58 @@ func GetSecret(name string) (string, error) {
 	return "", fmt.Errorf("secret %s not found in secrets file or environment", name)
 }
 
+// GetDecryptedSecretNames returns a list of secret names (not values).
+func GetDecryptedSecretNames() []string {
+	decryptedSecretsMux.RLock()
+	defer decryptedSecretsMux.RUnlock()
+
+	if decryptedSecrets == nil {
+		return []string{}
+	}
+
+	names := make([]string, 0, len(decryptedSecrets))
+	for name := range decryptedSecrets {
+		names = append(names, name)
+	}
+	return names
+}
+
+// SetSecret sets a secret value in memory.
+func SetSecret(name, value string) error {
+	decryptedSecretsMux.Lock()
+	defer decryptedSecretsMux.Unlock()
+
+	if decryptedSecrets == nil {
+		decryptedSecrets = make(map[string]string)
+	}
+	decryptedSecrets[name] = value
+	return nil
+}
+
+// DeleteSecret removes a secret from memory.
+func DeleteSecret(name string) error {
+	decryptedSecretsMux.Lock()
+	defer decryptedSecretsMux.Unlock()
+
+	if decryptedSecrets == nil {
+		return nil
+	}
+	delete(decryptedSecrets, name)
+	return nil
+}
+
+// SaveSecretsToFile saves the current in-memory secrets to the encrypted file.
+func SaveSecretsToFile(projectDir, password string) error {
+	decryptedSecretsMux.RLock()
+	secretsCopy := make(map[string]string, len(decryptedSecrets))
+	for k, v := range decryptedSecrets {
+		secretsCopy[k] = v
+	}
+	decryptedSecretsMux.RUnlock()
+
+	return EncryptSecretsFile(projectDir, password, secretsCopy)
+}
+
 // SecretsFileExists checks if secrets.json.enc exists in project directory.
 func SecretsFileExists(projectDir string) bool {
 	path := filepath.Join(projectDir, ".maestro", secretsFileName)

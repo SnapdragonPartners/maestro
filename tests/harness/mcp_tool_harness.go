@@ -24,6 +24,22 @@ func (m *mockTestAgent) GetHostWorkspacePath() string {
 	return "/tmp/test-workspace"
 }
 
+func (m *mockTestAgent) CompleteTodo(_ int) bool {
+	return true // Mock always succeeds
+}
+
+func (m *mockTestAgent) UpdateTodo(_ int, _ string) bool {
+	return true // Mock always succeeds
+}
+
+func (m *mockTestAgent) UpdateTodoInState() {
+	// No-op for mock
+}
+
+func (m *mockTestAgent) GetIncompleteTodoCount() int {
+	return 0 // No incomplete todos in mock
+}
+
 // HarnessResult wraps the tool result with additional metadata for testing.
 //
 //nolint:govet // fieldalignment: prefer logical grouping over memory optimization
@@ -54,7 +70,8 @@ func createToolByName(toolName string) (tools.Tool, error) {
 	case tools.ToolSubmitPlan:
 		return tools.NewSubmitPlanTool(), nil
 	case tools.ToolDone:
-		return tools.NewDoneTool(), nil
+		mockAgent := &mockTestAgent{}
+		return tools.NewDoneTool(mockAgent), nil
 	// Add more tools as needed - CreateMakefile doesn't have a constant yet
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)

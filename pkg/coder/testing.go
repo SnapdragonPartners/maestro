@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/demo"
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
@@ -31,6 +32,13 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 	workspacePathStr, ok := utils.SafeAssert[string](workspacePath)
 	if !ok {
 		return proto.StateError, false, logx.Errorf("workspace_path is not a string: %v", workspacePath)
+	}
+
+	// Ensure compose stack is running if compose.yml exists in workspace
+	// This runs `docker compose up -d` which is idempotent - compose handles diffing
+	if err := c.ensureComposeStackRunning(ctx, workspacePathStr); err != nil {
+		// Log warning but don't fail testing - compose services are optional
+		c.logger.Warn("⚠️ Compose stack startup warning: %v", err)
 	}
 
 	// Get story type for testing strategy decision
@@ -489,4 +497,32 @@ func (c *Coder) proceedToCodeReview() (proto.State, bool, error) {
 	// Approval request will be sent when entering CODE_REVIEW state
 	c.logger.Info("🧑‍💻 Tests completed successfully, transitioning to CODE_REVIEW")
 	return StateCodeReview, false, nil
+}
+
+// ensureComposeStackRunning starts the compose stack if a compose.yml exists in the workspace.
+// This is called at the start of TESTING state to ensure services (databases, caches, etc.) are running.
+// The operation is idempotent - Docker Compose handles diffing and only recreates changed services.
+func (c *Coder) ensureComposeStackRunning(ctx context.Context, workspacePath string) error {
+	// Check if compose file exists in the workspace
+	if !demo.ComposeFileExists(workspacePath) {
+		c.logger.Debug("No compose file found at %s, skipping stack startup", demo.ComposeFilePath(workspacePath))
+		return nil
+	}
+
+	c.logger.Info("🐳 Starting compose stack for coder %s", c.GetAgentID())
+
+	// Create stack with coder-specific project name for isolation
+	// Project name uses agent ID to keep stacks separate between coders
+	composePath := demo.ComposeFilePath(workspacePath)
+	projectName := c.GetAgentID() // e.g., "coder-001"
+	stack := demo.NewStack(projectName, composePath, "")
+
+	// Run docker compose up -d --wait
+	// This is idempotent - compose handles the diffing internally
+	if err := stack.Up(ctx); err != nil {
+		return fmt.Errorf("failed to start compose stack: %w", err)
+	}
+
+	c.logger.Info("✅ Compose stack %s started successfully", projectName)
+	return nil
 }

@@ -1,5 +1,5 @@
 // Maestro Web UI JavaScript
-const MAESTRO_UI_VERSION = 'v0.1.7-multi-channel';
+const MAESTRO_UI_VERSION = 'v0.1.8-demo';
 
 class MaestroUI {
     constructor() {

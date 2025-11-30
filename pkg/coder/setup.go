@@ -20,15 +20,20 @@ import (
 //
 //nolint:unparam // bool return required by state machine interface, always false for non-terminal states
 func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Clean and recreate work directory for fresh workspace
-	c.logger.Info("🧹 Cleaning work directory for fresh workspace: %s", c.workDir)
-	if err := os.RemoveAll(c.workDir); err != nil {
-		c.logger.Warn("Failed to remove existing work directory: %v", err)
+	// Clean work directory contents while preserving the directory itself.
+	// IMPORTANT: We must NOT delete and recreate the directory because Docker bind mounts
+	// on macOS track the inode. If we delete/recreate the directory, the architect container's
+	// mount to /mnt/coders/{agent-id} becomes stale (points to deleted inode).
+	// Instead, we empty the contents which preserves the inode and keeps bind mounts working.
+	c.logger.Info("🧹 Cleaning work directory contents for fresh workspace: %s", c.workDir)
+	if err := cleanDirectoryContents(c.workDir); err != nil {
+		c.logger.Warn("Failed to clean work directory contents: %v", err)
 	}
+	// Ensure directory exists (creates if it doesn't, no-op if it does)
 	if err := os.MkdirAll(c.workDir, 0755); err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to create fresh work directory")
+		return proto.StateError, false, logx.Wrap(err, "failed to ensure work directory exists")
 	}
-	c.logger.Info("✅ Created fresh work directory: %s", c.workDir)
+	c.logger.Info("✅ Work directory ready: %s", c.workDir)
 
 	if c.cloneManager == nil {
 		c.logger.Warn("No clone manager configured, skipping Git clone setup")
@@ -478,4 +483,28 @@ func extractRepoPath(repoURL string) string {
 	}
 
 	return ""
+}
+
+// cleanDirectoryContents removes all contents of a directory without removing the directory itself.
+// This preserves the directory inode, which is critical for Docker bind mounts on macOS.
+// When a directory is deleted and recreated, Docker bind mounts become stale because they
+// track the original inode.
+func cleanDirectoryContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Directory doesn't exist yet, nothing to clean
+			return nil
+		}
+		return fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		entryPath := dir + "/" + entry.Name()
+		if err := os.RemoveAll(entryPath); err != nil {
+			return fmt.Errorf("failed to remove %s: %w", entryPath, err)
+		}
+	}
+
+	return nil
 }

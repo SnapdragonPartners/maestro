@@ -96,11 +96,15 @@ func (t *TodosAddTool) Exec(_ context.Context, args map[string]any) (*ExecResult
 }
 
 // TodoCompleteTool marks a todo as complete (current by default, or specified by index).
-type TodoCompleteTool struct{}
+type TodoCompleteTool struct {
+	agent Agent // Reference to agent for state updates
+}
 
 // NewTodoCompleteTool creates a new todo complete tool instance.
-func NewTodoCompleteTool() *TodoCompleteTool {
-	return &TodoCompleteTool{}
+func NewTodoCompleteTool(agent Agent) *TodoCompleteTool {
+	return &TodoCompleteTool{
+		agent: agent,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -150,10 +154,24 @@ func (t *TodoCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecRe
 		}
 	}
 
+	// Actually complete the todo via the agent interface
+	success := false
+	if t.agent != nil {
+		success = t.agent.CompleteTodo(index)
+		if success {
+			// Update state machine state data so WebUI can see the change
+			t.agent.UpdateTodoInState()
+		}
+	}
+
 	result := map[string]any{
-		"success": true,
+		"success": success,
 		"message": "Todo marked complete",
 		"index":   index,
+	}
+
+	if !success {
+		result["message"] = "Failed to mark todo complete (no todo at index or agent not available)"
 	}
 
 	content, err := json.Marshal(result)
@@ -165,11 +183,15 @@ func (t *TodoCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecRe
 }
 
 // TodoUpdateTool modifies or removes an existing todo.
-type TodoUpdateTool struct{}
+type TodoUpdateTool struct {
+	agent Agent // Reference to agent for state updates
+}
 
 // NewTodoUpdateTool creates a new todo update tool instance.
-func NewTodoUpdateTool() *TodoUpdateTool {
-	return &TodoUpdateTool{}
+func NewTodoUpdateTool(agent Agent) *TodoUpdateTool {
+	return &TodoUpdateTool{
+		agent: agent,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -234,16 +256,30 @@ func (t *TodoUpdateTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 		return nil, fmt.Errorf("description must be a string")
 	}
 
+	// Actually update the todo via the agent interface
+	success := false
+	if t.agent != nil {
+		success = t.agent.UpdateTodo(index, descStr)
+		if success {
+			// Update state machine state data so WebUI can see the change
+			t.agent.UpdateTodoInState()
+		}
+	}
+
 	action := "updated"
 	if descStr == "" {
 		action = "removed"
 	}
 
 	result := map[string]any{
-		"success":     true,
+		"success":     success,
 		"message":     fmt.Sprintf("Todo %s successfully", action),
 		"index":       index,
 		"description": descStr,
+	}
+
+	if !success {
+		result["message"] = "Failed to update todo (invalid index or agent not available)"
 	}
 
 	content, err := json.Marshal(result)
