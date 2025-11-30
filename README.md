@@ -119,7 +119,16 @@ This distinction is transparent to the user—architect generates stories automa
 
 ## Quickstart
 
-> **Step 1:** Download binary from [releases](https://github.com/SnapdragonPartners/maestro/releases) (or build from source). Install it somewhere in your path.
+> **Step 1:** Install Maestro via Homebrew (macOS/Linux) or download from [releases](https://github.com/SnapdragonPartners/maestro/releases).
+>
+> **Option A: Homebrew (recommended)**
+> ```bash
+> brew tap SnapdragonPartners/tap
+> brew install --cask maestro
+> ```
+>
+> **Option B: Direct download**
+> Download the binary for your platform from [releases](https://github.com/SnapdragonPartners/maestro/releases) and install it somewhere in your path.
 >
 > **Step 2:** Export your API keys as environment variables for the models you want to use and Github.
 ```bash

@@ -60,3 +60,18 @@ release:
 
 changelog:
   use: git
+
+homebrew_casks:
+  - name: maestro
+    directory: Casks
+    repository:
+      owner: SnapdragonPartners
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    commit_author:
+      name: Maestro CI
+      email: maestro@snapdragonpartners.com
+    homepage: "https://github.com/SnapdragonPartners/maestro"
+    description: "Multi-agent AI coding system orchestrator"
+    binaries:
+      - maestro
