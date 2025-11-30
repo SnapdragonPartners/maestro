@@ -254,9 +254,9 @@ func Execute(ctx, input) {
 - Add direct dispatch to hotfix coder path
 - Error handling bubbles to PM
 
-### Phase 7: Notifications (Stretch)
-- Architect notifies PM on story completion
-- PM surfaces completion to user
+### Phase 7: PM Story Completion Notifications
+- Architect notifies PM on story completion via RESPONSE message
+- PM surfaces completion to user (hotfix or regular story)
 
 ## Post-MVP Enhancements
 
@@ -785,7 +785,7 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 | **4. Express Assessment** | ✅ DONE | Keys in proto, wired through dispatcher to coder |
 | **5. Hotfix Coder Setup** | ✅ DONE | Dedicated hotfix-001 coder with separate channel |
 | **6. submit_stories Enhancement** | ✅ DONE | Dependency validation in request_hotfix.go (Phase 3) |
-| **7. Notifications** | ⏳ TODO | Stretch goal |
+| **7. Notifications** | ✅ DONE | PM notified on story completion |
 
 ### Phase 4 Completion Notes
 
@@ -811,3 +811,13 @@ Dependency validation was implemented as part of Phase 3 in `request_hotfix.go:6
 - Validates each dependency exists using `FindStoryByTitle()`
 - Returns `needs_changes` if dependency unknown or incomplete
 - Error messages guide PM to either wait or remove dependency
+
+### Phase 7 Completion Notes
+
+PM story completion notifications:
+- `pkg/proto/payload.go:44,289-318` - Added `PayloadKindStoryComplete` and `StoryCompletePayload` struct
+- `pkg/architect/request.go` - Added `notifyPMOfCompletion()` method
+- Called from `handleWorkAccepted()` when coder work is approved
+- Notification includes: story_id, title, is_hotfix flag, summary, pr_id, timestamp
+- Uses existing effect pattern (`SendMessageEffect`) to send RESPONSE to PM
+- PM can surface completion info to user via chat

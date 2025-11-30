@@ -591,10 +591,56 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 		}
 	}
 
-	// 3. Set state data to signal that work was accepted (for DISPATCHING transition)
+	// 3. Notify PM of story completion (if PM is enabled)
+	d.notifyPMOfCompletion(ctx, storyID, completionSummary)
+
+	// 4. Set state data to signal that work was accepted (for DISPATCHING transition)
 	d.SetStateData(StateKeyWorkAccepted, true)
 	d.SetStateData(StateKeyAcceptedStoryID, storyID)
 	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
+}
+
+// notifyPMOfCompletion sends a story completion notification to PM.
+func (d *Driver) notifyPMOfCompletion(ctx context.Context, storyID string, completionSummary *string) {
+	// Get story details from queue
+	if d.queue == nil {
+		d.logger.Debug("Skipping PM notification: queue is nil")
+		return
+	}
+
+	story, exists := d.queue.GetStory(storyID)
+	if !exists {
+		d.logger.Debug("Skipping PM notification: story %s not found in queue", storyID)
+		return
+	}
+
+	// Build notification payload
+	summary := ""
+	if completionSummary != nil {
+		summary = *completionSummary
+	}
+
+	notificationPayload := &proto.StoryCompletePayload{
+		StoryID:   storyID,
+		Title:     story.Title,
+		IsHotfix:  story.IsHotfix,
+		Summary:   summary,
+		PRID:      story.PRID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Create notification message to PM
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewStoryCompletePayload(notificationPayload))
+	notifyMsg.SetMetadata(proto.KeyStoryID, storyID)
+
+	// Send via effect
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		d.logger.Warn("⚠️ Failed to notify PM of story %s completion: %v", storyID, err)
+	} else {
+		d.logger.Info("📬 Notified PM of story %s completion (hotfix=%v)", storyID, story.IsHotfix)
+	}
 }
 
 // Response formatting methods using templates
