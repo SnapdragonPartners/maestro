@@ -26,6 +26,7 @@ const (
 	PayloadKindApprovalRequest PayloadKind = "approval_request"
 	PayloadKindMergeRequest    PayloadKind = "merge_request"
 	PayloadKindRequeueRequest  PayloadKind = "requeue_request"
+	PayloadKindHotfixRequest   PayloadKind = "hotfix_request"
 
 	// Response payloads.
 	PayloadKindQuestionResponse PayloadKind = "question_response"
@@ -227,6 +228,29 @@ func (p *MessagePayload) ExtractRequeueResponse() (*RequeueResponsePayload, erro
 	var result RequeueResponsePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal requeue response: %w", err)
+	}
+	return &result, nil
+}
+
+// Hotfix request payloads
+
+// NewHotfixRequestPayload creates a payload for hotfix requests.
+func NewHotfixRequestPayload(data *HotfixRequestPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindHotfixRequest,
+		Data: raw,
+	}
+}
+
+// ExtractHotfixRequest extracts and validates a hotfix request payload.
+func (p *MessagePayload) ExtractHotfixRequest() (*HotfixRequestPayload, error) {
+	if p.Kind != PayloadKindHotfixRequest {
+		return nil, fmt.Errorf("expected hotfix_request payload, got %s", p.Kind)
+	}
+	var result HotfixRequestPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal hotfix request: %w", err)
 	}
 	return &result, nil
 }

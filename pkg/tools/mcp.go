@@ -79,6 +79,7 @@ const (
 	SignalSpecPreview       = "SPEC_PREVIEW"       // spec_submit tool ready for user review
 	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE" // bootstrap tool completed configuration
 	SignalAwaitUser         = "AWAIT_USER"         // chat_ask_user tool waiting for human response
+	SignalHotfixSubmit      = "HOTFIX_SUBMIT"      // hotfix_submit tool sending hotfix to architect
 
 	// Architect signals.
 	SignalReplySubmitted   = "REPLY_SUBMITTED"   // submit_reply tool answered question
