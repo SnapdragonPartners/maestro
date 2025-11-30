@@ -230,6 +230,29 @@ The system uses a **three-container model** for safe development and deployment:
 
 **Architect Execution**: The architect agent runs in a containerized environment (safe container) to execute read tools safely. Coder workspaces are mounted as read-only volumes when the architect uses read tools to inspect code.
 
+### Bind Mount Inode Preservation (CRITICAL)
+
+**Problem**: On macOS with Docker Desktop, bind mounts track directory **inodes**, not paths. If you delete and recreate a directory (`os.RemoveAll` + `os.MkdirAll`), the new directory has a different inode, and existing bind mounts become stale (showing empty contents).
+
+**Impact**: The architect container mounts coder workspaces at startup. If a coder's workspace directory is deleted and recreated (e.g., during story cleanup in SETUP state), the architect's mount becomes stale and `list_files`/`read_file` operations fail.
+
+**Solution**: When cleaning workspace directories that may be bind-mounted, use `cleanDirectoryContents()` instead of delete+recreate:
+```go
+// WRONG - breaks bind mounts:
+os.RemoveAll(dir)
+os.MkdirAll(dir, 0755)
+
+// CORRECT - preserves inode:
+cleanDirectoryContents(dir)  // Removes contents, keeps directory
+```
+
+**Implementation**: See `pkg/coder/setup.go:cleanDirectoryContents()` for the canonical implementation.
+
+**When to use delete+recreate**: Only for directories that are NOT bind-mounted to other containers:
+- Temporary directories created and cleaned within a single operation
+- State directories that aren't shared across containers
+- Mirror/clone directories (subdirectories of the project, not the mount point itself)
+
 ## Development Commands
 
 Based on the project specification, the following commands should be available via Makefile:

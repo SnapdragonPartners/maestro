@@ -141,3 +141,19 @@ func (m *mockAgent) GetCurrentState() proto.State {
 func (m *mockAgent) GetHostWorkspacePath() string {
 	return "/tmp/test-workspace"
 }
+
+func (m *mockAgent) CompleteTodo(_ int) bool {
+	return true
+}
+
+func (m *mockAgent) UpdateTodo(_ int, _ string) bool {
+	return true
+}
+
+func (m *mockAgent) UpdateTodoInState() {
+	// No-op for mock
+}
+
+func (m *mockAgent) GetIncompleteTodoCount() int {
+	return 0 // No incomplete todos in mock
+}

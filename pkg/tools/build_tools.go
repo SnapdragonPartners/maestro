@@ -344,11 +344,15 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 }
 
 // DoneTool provides MCP interface for signaling task completion.
-type DoneTool struct{}
+type DoneTool struct {
+	agent Agent // Optional agent reference for todo checking
+}
 
 // NewDoneTool creates a new done tool instance.
-func NewDoneTool() *DoneTool {
-	return &DoneTool{}
+func NewDoneTool(agent Agent) *DoneTool {
+	return &DoneTool{
+		agent: agent,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -391,10 +395,20 @@ func (d *DoneTool) Exec(_ context.Context, args map[string]any) (*ExecResult, er
 		return nil, fmt.Errorf("summary is required and must be a non-empty string")
 	}
 
+	// Check for incomplete todos and include warning in response
+	content := "Task marked as complete, advancing to TESTING state"
+	if d.agent != nil {
+		incompleteCount := d.agent.GetIncompleteTodoCount()
+		if incompleteCount > 0 {
+			// Log warning - this will be visible in the tool response to the LLM
+			content = fmt.Sprintf("⚠️ WARNING: %d todo(s) still incomplete! Task marked as complete, advancing to TESTING state. Consider completing all todos before calling done.", incompleteCount)
+		}
+	}
+
 	// Return human-readable message for LLM context
 	// Return structured data via ProcessEffect.Data for state machine
 	return &ExecResult{
-		Content: "Task marked as complete, advancing to TESTING state",
+		Content: content,
 		ProcessEffect: &ProcessEffect{
 			Signal: SignalTesting,
 			Data: map[string]any{

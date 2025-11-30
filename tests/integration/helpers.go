@@ -37,6 +37,22 @@ func (m *mockTestAgent) GetHostWorkspacePath() string {
 	return "/tmp/test-workspace" // Fallback for backwards compatibility
 }
 
+func (m *mockTestAgent) CompleteTodo(_ int) bool {
+	return true // Mock always succeeds
+}
+
+func (m *mockTestAgent) UpdateTodo(_ int, _ string) bool {
+	return true // Mock always succeeds
+}
+
+func (m *mockTestAgent) UpdateTodoInState() {
+	// No-op for mock
+}
+
+func (m *mockTestAgent) GetIncompleteTodoCount() int {
+	return 0 // No incomplete todos in mock
+}
+
 var _ tools.Agent = (*mockTestAgent)(nil)
 
 // isDockerAvailable checks if Docker is available by running docker version.

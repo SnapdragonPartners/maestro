@@ -1375,6 +1375,99 @@ func (c *Coder) GetHostWorkspacePath() string {
 	return c.originalWorkDir
 }
 
+// CompleteTodo marks a todo as complete at the given index (-1 for current).
+// Implements the tools.Agent interface for todo_complete tool.
+func (c *Coder) CompleteTodo(index int) bool {
+	if c.todoList == nil {
+		c.logger.Warn("📋 CompleteTodo called but todoList is nil")
+		return false
+	}
+
+	if index == -1 {
+		// Complete current todo
+		success := c.todoList.CompleteCurrent()
+		if success {
+			c.logger.Info("📋 ✅ Completed current todo, now %d/%d done",
+				c.todoList.GetCompletedCount(), c.todoList.GetTotalCount())
+		}
+		return success
+	}
+
+	// Complete specific index
+	if index < 0 || index >= len(c.todoList.Items) {
+		c.logger.Warn("📋 CompleteTodo: index %d out of bounds (0-%d)", index, len(c.todoList.Items)-1)
+		return false
+	}
+
+	if c.todoList.Items[index].Completed {
+		c.logger.Debug("📋 Todo at index %d already completed", index)
+		return true // Already done is success
+	}
+
+	c.todoList.Items[index].Completed = true
+	c.logger.Info("📋 ✅ Completed todo at index %d, now %d/%d done",
+		index, c.todoList.GetCompletedCount(), c.todoList.GetTotalCount())
+	return true
+}
+
+// UpdateTodo updates or removes a todo at the given index.
+// If description is empty, the todo is removed.
+// Implements the tools.Agent interface for todo_update tool.
+func (c *Coder) UpdateTodo(index int, description string) bool {
+	if c.todoList == nil {
+		c.logger.Warn("📋 UpdateTodo called but todoList is nil")
+		return false
+	}
+
+	if index < 0 || index >= len(c.todoList.Items) {
+		c.logger.Warn("📋 UpdateTodo: index %d out of bounds (0-%d)", index, len(c.todoList.Items)-1)
+		return false
+	}
+
+	oldDesc := c.todoList.Items[index].Description
+
+	if description == "" {
+		// Remove the todo
+		c.todoList.Items = append(c.todoList.Items[:index], c.todoList.Items[index+1:]...)
+		// Adjust current index if needed
+		if c.todoList.Current > index {
+			c.todoList.Current--
+		} else if c.todoList.Current >= len(c.todoList.Items) {
+			c.todoList.Current = len(c.todoList.Items) - 1
+			if c.todoList.Current < 0 {
+				c.todoList.Current = 0
+			}
+		}
+		c.logger.Info("📋 ❌ Removed todo at index %d: %s", index, oldDesc)
+	} else {
+		// Update the description
+		c.todoList.Items[index].Description = description
+		c.logger.Info("📋 ✏️  Updated todo at index %d: %s → %s", index, oldDesc, description)
+	}
+
+	return true
+}
+
+// UpdateTodoInState updates the todo_list in state machine state data.
+// Implements the tools.Agent interface for todo_complete tool.
+func (c *Coder) UpdateTodoInState() {
+	if c.todoList == nil {
+		return
+	}
+	c.BaseStateMachine.SetStateData("todo_list", c.todoList)
+	c.logger.Debug("📋 Updated todo_list in state data")
+}
+
+// GetIncompleteTodoCount returns the count of incomplete todos.
+// Returns 0 if no todo list exists.
+// Implements the tools.Agent interface for done tool warning.
+func (c *Coder) GetIncompleteTodoCount() int {
+	if c.todoList == nil {
+		return 0
+	}
+	return c.todoList.GetTotalCount() - c.todoList.GetCompletedCount()
+}
+
 // logToolExecution logs a tool execution to the database for debugging and analysis.
 // This is a fire-and-forget operation - failures are logged but don't affect tool execution.
 func (c *Coder) logToolExecution(toolCall *agent.ToolCall, result any, execErr error, duration time.Duration) {

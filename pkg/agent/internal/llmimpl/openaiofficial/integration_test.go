@@ -14,6 +14,10 @@ import (
 	"orchestrator/pkg/tools"
 )
 
+// testModel is the OpenAI model used for integration tests.
+// Change this constant to test with different models.
+const testModel = "gpt-4o"
+
 // TestOpenAIOfficial_BasicResponse tests basic text completion.
 func TestOpenAIOfficial_BasicResponse(t *testing.T) {
 	// Skip if no API key available
@@ -21,14 +25,14 @@ func TestOpenAIOfficial_BasicResponse(t *testing.T) {
 		t.Skip("Skipping integration test: OPENAI_API_KEY not set")
 	}
 
-	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "gpt-5")
+	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), testModel)
 
 	req := llm.CompletionRequest{
 		Messages: []llm.CompletionMessage{
 			{Role: "system", Content: "You are a helpful assistant. Always provide a clear, direct response to user questions."},
 			{Role: "user", Content: "Say 'Hello from OpenAI Official client!' and tell me your favorite color."},
 		},
-		MaxTokens: 1000, // Much higher limit for GPT-5 reasoning + output
+		MaxTokens: 1000,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -58,21 +62,21 @@ func TestOpenAIOfficial_JSONResponse(t *testing.T) {
 		t.Skip("Skipping integration test: OPENAI_API_KEY not set")
 	}
 
-	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "gpt-5")
+	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), testModel)
 
 	req := llm.CompletionRequest{
 		Messages: []llm.CompletionMessage{
 			{Role: "system", Content: "You are a helpful assistant that responds only in valid JSON format."},
 			{Role: "user", Content: `Create a JSON object with these fields:
-- "status": "success"  
+- "status": "success"
 - "provider": "openai_official"
-- "model": "gpt-5"
+- "model": the model you are running as
 - "timestamp": current timestamp as string
 - "message": "Integration test completed successfully"
 
 Return ONLY the JSON, no other text.`},
 		},
-		MaxTokens: 1000, // Higher limit for GPT-5 reasoning + output
+		MaxTokens: 1000,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -132,8 +136,7 @@ func TestOpenAIOfficial_MCPToolInvocation(t *testing.T) {
 		t.Skip("Skipping integration test: OPENAI_API_KEY not set")
 	}
 
-	// Use o4-mini for testing - supports Responses API with tool calling
-	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "o4-mini")
+	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), testModel)
 
 	// Define a simple MCP tool for testing
 	toolDef := tools.ToolDefinition{
@@ -161,7 +164,7 @@ func TestOpenAIOfficial_MCPToolInvocation(t *testing.T) {
 			{Role: "user", Content: "Please calculate the sum of 15 and 27 using the available tool."},
 		},
 		Tools:     []tools.ToolDefinition{toolDef},
-		MaxTokens: 1000, // Higher limit for GPT-5 reasoning + output
+		MaxTokens: 1000,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -230,7 +233,7 @@ func TestOpenAIOfficial_MCPToolInvocation(t *testing.T) {
 // TestOpenAIOfficial_ErrorHandling tests error scenarios.
 func TestOpenAIOfficial_ErrorHandling(t *testing.T) {
 	// Test with invalid API key
-	client := NewOfficialClientWithModel("invalid-key", "gpt-5")
+	client := NewOfficialClientWithModel("invalid-key", testModel)
 
 	req := llm.CompletionRequest{
 		Messages: []llm.CompletionMessage{
@@ -265,7 +268,7 @@ func TestOpenAIOfficial_ArchitectReadTools(t *testing.T) {
 		t.Skip("Skipping integration test: OPENAI_API_KEY not set")
 	}
 
-	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), "gpt-5")
+	client := NewOfficialClientWithModel(os.Getenv("OPENAI_API_KEY"), testModel)
 
 	// Define the actual MCP read tools used by architect
 	// These match the tool definitions in pkg/tools/

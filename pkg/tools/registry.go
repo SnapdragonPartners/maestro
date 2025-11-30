@@ -30,6 +30,11 @@ type AgentContext struct {
 type Agent interface {
 	GetCurrentState() proto.State
 	GetHostWorkspacePath() string // Returns the host workspace path for container mounting
+	// Todo management methods
+	CompleteTodo(index int) bool            // Mark todo at index as complete (-1 for current)
+	UpdateTodo(index int, desc string) bool // Update todo description at index (empty string removes)
+	UpdateTodoInState()                     // Update todo_list in state machine state data
+	GetIncompleteTodoCount() int            // Returns count of incomplete todos (0 if no todo list)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -262,8 +267,8 @@ func createLintTool(_ *AgentContext) (Tool, error) {
 }
 
 // createDoneTool creates a done tool instance.
-func createDoneTool(_ *AgentContext) (Tool, error) {
-	return NewDoneTool(), nil
+func createDoneTool(ctx *AgentContext) (Tool, error) {
+	return NewDoneTool(ctx.Agent), nil
 }
 
 // createBackendInfoTool creates a backend info tool instance.
@@ -367,7 +372,7 @@ func getLintSchema() InputSchema {
 }
 
 func getDoneSchema() InputSchema {
-	return NewDoneTool().Definition().InputSchema
+	return NewDoneTool(nil).Definition().InputSchema
 }
 
 func getBackendInfoSchema() InputSchema {
@@ -411,13 +416,13 @@ func createTodosAddTool(_ *AgentContext) (Tool, error) {
 }
 
 // createTodoCompleteTool creates a todo complete tool instance.
-func createTodoCompleteTool(_ *AgentContext) (Tool, error) {
-	return NewTodoCompleteTool(), nil
+func createTodoCompleteTool(ctx *AgentContext) (Tool, error) {
+	return NewTodoCompleteTool(ctx.Agent), nil
 }
 
 // createTodoUpdateTool creates a todo update tool instance.
-func createTodoUpdateTool(_ *AgentContext) (Tool, error) {
-	return NewTodoUpdateTool(), nil
+func createTodoUpdateTool(ctx *AgentContext) (Tool, error) {
+	return NewTodoUpdateTool(ctx.Agent), nil
 }
 
 func getTodosAddSchema() InputSchema {
@@ -425,11 +430,11 @@ func getTodosAddSchema() InputSchema {
 }
 
 func getTodoCompleteSchema() InputSchema {
-	return NewTodoCompleteTool().Definition().InputSchema
+	return NewTodoCompleteTool(nil).Definition().InputSchema
 }
 
 func getTodoUpdateSchema() InputSchema {
-	return NewTodoUpdateTool().Definition().InputSchema
+	return NewTodoUpdateTool(nil).Definition().InputSchema
 }
 
 // createReadFileTool creates a read_file tool instance.
