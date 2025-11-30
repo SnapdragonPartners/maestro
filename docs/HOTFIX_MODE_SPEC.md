@@ -784,7 +784,7 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 | **3. HOTFIX Request Type** | ✅ DONE | Protocol + architect handler complete |
 | **4. Express Assessment** | ✅ DONE | Keys in proto, wired through dispatcher to coder |
 | **5. Hotfix Coder Setup** | ✅ DONE | Dedicated hotfix-001 coder with separate channel |
-| **6. submit_stories Enhancement** | ⏳ TODO | Dependency validation in architect |
+| **6. submit_stories Enhancement** | ✅ DONE | Dependency validation in request_hotfix.go (Phase 3) |
 | **7. Notifications** | ⏳ TODO | Stretch goal |
 
 ### Phase 4 Completion Notes
@@ -804,3 +804,10 @@ Dedicated hotfix coder with separate channel routing:
 - Dispatcher `processMessage()` routes stories with `is_hotfix=true` to `hotfixStoryCh`
 - `cmd/maestro/flows.go` - Both `BootstrapFlow` and `OrchestratorFlow` create `hotfix-001`
 - Hotfix coder receives stories on dedicated channel, runs same state machine as normal coders
+
+### Phase 6 Note
+
+Dependency validation was implemented as part of Phase 3 in `request_hotfix.go:60-82`:
+- Validates each dependency exists using `FindStoryByTitle()`
+- Returns `needs_changes` if dependency unknown or incomplete
+- Error messages guide PM to either wait or remove dependency
