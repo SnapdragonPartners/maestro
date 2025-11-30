@@ -31,10 +31,15 @@ builds:
           output: true
 
 archives:
-  - formats: ['tar.gz']
+  # Use zip for macOS (required for notarization), tar.gz for Linux
+  - formats: ['zip']
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md
+    format_overrides:
+      - goos: linux
+        formats: ['tar.gz']
 
 release:
   github:

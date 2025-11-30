@@ -60,7 +60,7 @@ jobs:
           AC_USERNAME: ${{ secrets.AC_USERNAME }}
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
         run: |
-          for f in $(find dist -type f -name "*.tar.gz" | grep darwin); do
+          for f in $(find dist -type f -name "*.zip" | grep darwin); do
             echo "Notarizing $f"
             xcrun notarytool submit "$f" \
               --apple-id "$AC_USERNAME" \
