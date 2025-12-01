@@ -93,20 +93,28 @@ func CreateSession(db *sql.DB, sessionID, configJSON string) error {
 
 // UpdateSessionStatus updates the status and ended_at timestamp of a session.
 func UpdateSessionStatus(db *sql.DB, sessionID, status string) error {
+	var result sql.Result
 	var err error
 	if status == SessionStatusShutdown || status == SessionStatusCompleted || status == SessionStatusCrashed {
-		_, err = db.Exec(`
+		result, err = db.Exec(`
 			UPDATE sessions
 			SET status = ?, ended_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 			WHERE session_id = ?
 		`, status, sessionID)
 	} else {
-		_, err = db.Exec(`
+		result, err = db.Exec(`
 			UPDATE sessions SET status = ? WHERE session_id = ?
 		`, status, sessionID)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to update session status: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrSessionNotFound
 	}
 	return nil
 }
