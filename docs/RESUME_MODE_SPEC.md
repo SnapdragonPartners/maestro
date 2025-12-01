@@ -531,7 +531,7 @@ func markStaleSessions(db *sql.DB) error {
 | 2. Session Management | ✅ Complete | CRUD ops + ErrSessionNotFound + RowsAffected check |
 | 3. Context Manager Serialization | ✅ Complete | Serialize/Deserialize with full message support |
 | 4. Persistence Queue Drain | ✅ Complete | DrainPersistenceQueue() in kernel |
-| 5. Agent State Serialization | ⏳ Pending | |
+| 5. Agent State Serialization | ✅ Complete | SerializeState/RestoreState for all agents |
 | 6. Toolloop Shutdown Integration | ⏳ Pending | |
 | 7. Graceful Shutdown Flow | ⏳ Pending | |
 | 8. Agent State Restoration | ⏳ Pending | |
