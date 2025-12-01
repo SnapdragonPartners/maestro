@@ -21,8 +21,11 @@ func (d *Driver) SerializeState(_ context.Context, db *sql.DB, sessionID string)
 	currentState := d.GetCurrentState()
 
 	// Serialize spec content from state data.
+	// Priority: draft_spec_markdown (in-progress) > draft_spec (submitted) > spec_markdown (approved)
 	var specContent *string
-	if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "draft_spec", ""); spec != "" {
+	if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "draft_spec_markdown", ""); spec != "" {
+		specContent = &spec
+	} else if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "draft_spec", ""); spec != "" {
 		specContent = &spec
 	} else if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "spec_markdown", ""); spec != "" {
 		specContent = &spec
@@ -107,8 +110,10 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	// Restore state machine state using ForceState (bypasses transition validation).
 	d.ForceState(proto.State(state.State))
 
-	// Restore spec content.
+	// Restore spec content to draft_spec_markdown (used by WebUI for preview).
+	// The PM will handle the appropriate state transitions based on current state.
 	if state.SpecContent != nil {
+		d.SetStateData("draft_spec_markdown", *state.SpecContent)
 		d.SetStateData("draft_spec", *state.SpecContent)
 	}
 
