@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 12
+const CurrentSchemaVersion = 13
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -108,6 +108,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion11(db)
 	case 12:
 		return migrateToVersion12(db)
+	case 13:
+		return migrateToVersion13(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -457,7 +459,91 @@ func migrateToVersion12(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion13 adds resume mode support tables for session state persistence.
+func migrateToVersion13(db *sql.DB) error {
+	tables := []string{
+		// Sessions table for tracking session lifecycle
+		`CREATE TABLE IF NOT EXISTS sessions (
+			session_id TEXT PRIMARY KEY,
+			started_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			ended_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'shutdown', 'completed', 'crashed')),
+			config_json TEXT NOT NULL
+		)`,
+
+		// Agent contexts table for persisting LLM conversation history (all agents)
+		`CREATE TABLE IF NOT EXISTS agent_contexts (
+			session_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			context_type TEXT NOT NULL DEFAULT 'main',
+			messages_json TEXT NOT NULL,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY (session_id, agent_id, context_type)
+		)`,
+
+		// Coder state table for persisting coder state machine position
+		`CREATE TABLE IF NOT EXISTS coder_state (
+			session_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			story_id TEXT,
+			state TEXT NOT NULL,
+			plan_json TEXT,
+			todo_list_json TEXT,
+			current_todo_index INTEGER DEFAULT 0,
+			knowledge_pack_json TEXT,
+			pending_request_type TEXT CHECK (pending_request_type IS NULL OR pending_request_type IN ('QUESTION', 'REQUEST')),
+			pending_request_json TEXT,
+			container_image TEXT,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY (session_id, agent_id)
+		)`,
+
+		// Architect state table for persisting architect state
+		`CREATE TABLE IF NOT EXISTS architect_state (
+			session_id TEXT NOT NULL PRIMARY KEY,
+			state TEXT NOT NULL,
+			escalation_counts_json TEXT,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`,
+
+		// PM state table for persisting PM state machine position
+		`CREATE TABLE IF NOT EXISTS pm_state (
+			session_id TEXT NOT NULL PRIMARY KEY,
+			state TEXT NOT NULL,
+			spec_content TEXT,
+			bootstrap_params_json TEXT,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`,
+	}
+
+	// Create tables
+	for _, ddl := range tables {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("failed to create resume table: %w", err)
+		}
+	}
+
+	// Create indices
+	indices := []string{
+		"CREATE INDEX IF NOT EXISTS idx_sessions_status_ended ON sessions(status, ended_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_contexts_session ON agent_contexts(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_contexts_agent ON agent_contexts(agent_id)",
+		"CREATE INDEX IF NOT EXISTS idx_coder_state_session ON coder_state(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_coder_state_agent ON coder_state(agent_id)",
+	}
+
+	for _, idx := range indices {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create resume index: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
+//
+//nolint:maintidx // Schema definition is inherently large; keeping it together aids comprehension.
 func createSchema(db *sql.DB) error {
 	// Enable WAL mode and foreign keys
 	pragmas := []string{
@@ -689,6 +775,61 @@ func createSchema(db *sql.DB) error {
 			id, tag, description, path, example,
 			content=nodes
 		)`,
+
+		// Resume mode tables (session management and state persistence)
+
+		// Sessions table for tracking session lifecycle
+		`CREATE TABLE IF NOT EXISTS sessions (
+			session_id TEXT PRIMARY KEY,
+			started_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			ended_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'shutdown', 'completed', 'crashed')),
+			config_json TEXT NOT NULL
+		)`,
+
+		// Agent contexts table for persisting LLM conversation history (all agents)
+		`CREATE TABLE IF NOT EXISTS agent_contexts (
+			session_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			context_type TEXT NOT NULL DEFAULT 'main',
+			messages_json TEXT NOT NULL,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY (session_id, agent_id, context_type)
+		)`,
+
+		// Coder state table for persisting coder state machine position
+		`CREATE TABLE IF NOT EXISTS coder_state (
+			session_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			story_id TEXT,
+			state TEXT NOT NULL,
+			plan_json TEXT,
+			todo_list_json TEXT,
+			current_todo_index INTEGER DEFAULT 0,
+			knowledge_pack_json TEXT,
+			pending_request_type TEXT CHECK (pending_request_type IS NULL OR pending_request_type IN ('QUESTION', 'REQUEST')),
+			pending_request_json TEXT,
+			container_image TEXT,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			PRIMARY KEY (session_id, agent_id)
+		)`,
+
+		// Architect state table for persisting architect state
+		`CREATE TABLE IF NOT EXISTS architect_state (
+			session_id TEXT NOT NULL PRIMARY KEY,
+			state TEXT NOT NULL,
+			escalation_counts_json TEXT,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`,
+
+		// PM state table for persisting PM state machine position
+		`CREATE TABLE IF NOT EXISTS pm_state (
+			session_id TEXT NOT NULL PRIMARY KEY,
+			state TEXT NOT NULL,
+			spec_content TEXT,
+			bootstrap_params_json TEXT,
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		)`,
 	}
 
 	// Create indices
@@ -747,6 +888,13 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id)",
 		"CREATE INDEX IF NOT EXISTS idx_packs_session ON knowledge_packs(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_packs_last_used ON knowledge_packs(last_used)",
+
+		// Resume mode indices
+		"CREATE INDEX IF NOT EXISTS idx_sessions_status_ended ON sessions(status, ended_at DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_contexts_session ON agent_contexts(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_contexts_agent ON agent_contexts(agent_id)",
+		"CREATE INDEX IF NOT EXISTS idx_coder_state_session ON coder_state(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_coder_state_agent ON coder_state(agent_id)",
 	}
 
 	// Execute table creation
