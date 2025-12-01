@@ -533,9 +533,9 @@ func markStaleSessions(db *sql.DB) error {
 | 4. Persistence Queue Drain | ✅ Complete | DrainPersistenceQueue() in kernel |
 | 5. Agent State Serialization | ✅ Complete | SerializeState/RestoreState for all agents |
 | 6. Toolloop Shutdown Integration | ✅ Complete | ErrGracefulShutdown, OutcomeGracefulShutdown, OnShutdown callback |
-| 7. Graceful Shutdown Flow | ⏳ Pending | |
-| 8. Agent State Restoration | ⏳ Pending | |
-| 9. Resume Flow Integration | ⏳ Pending | |
+| 7. Graceful Shutdown Flow | ✅ Complete | WaitForAgentsShutdown(), performGracefulShutdown(), session status update |
+| 8. Agent State Restoration | ✅ Complete | RestoreState() for coder, architect, PM with context manager restore |
+| 9. Resume Flow Integration | ✅ Complete | -continue flag, ResumeFlow, GetMostRecentResumableSession(), SetSessionID() |
 | 10. Integration Testing | ⏳ Pending | |
 
 ---

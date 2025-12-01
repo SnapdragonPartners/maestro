@@ -162,6 +162,21 @@ func GetResumableSession(db *sql.DB) (*Session, error) {
 	return session, nil
 }
 
+// GetMostRecentResumableSession returns the most recent session that can be resumed.
+// Returns nil, nil if no resumable session exists (this is not an error condition).
+//
+//nolint:nilnil // Returning nil,nil is intentional - no resumable session is a valid (non-error) outcome
+func GetMostRecentResumableSession(db *sql.DB) (*Session, error) {
+	session, err := GetResumableSession(db)
+	if err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return session, nil
+}
+
 // GetSession returns a session by ID.
 // Returns ErrSessionNotFound if the session does not exist.
 func GetSession(db *sql.DB, sessionID string) (*Session, error) {

@@ -1752,3 +1752,18 @@ func GenerateSessionID() error {
 	getLogger().Info("Generated session ID: %s", sessionID)
 	return nil
 }
+
+// SetSessionID sets a specific session ID (used for resume mode).
+// This allows resuming a previous session by reusing its session ID.
+func SetSessionID(sessionID string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	config.SessionID = sessionID
+	getLogger().Info("Restored session ID: %s", sessionID)
+	return nil
+}

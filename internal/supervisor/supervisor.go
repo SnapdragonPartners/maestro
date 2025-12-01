@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
+	"time"
 
 	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
@@ -131,6 +133,9 @@ type Supervisor struct {
 	Agents        map[string]dispatch.Agent
 	AgentTypes    map[string]string
 	AgentContexts map[string]context.CancelFunc // Context management for graceful shutdown
+
+	// Graceful shutdown tracking
+	agentWg sync.WaitGroup // Tracks running agent goroutines for graceful shutdown
 
 	// Runtime state
 	running bool
@@ -349,11 +354,16 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 		agentCtx, cancel := context.WithCancel(ctx)
 		s.AgentContexts[agentID] = cancel
 
+		// Track this agent goroutine for graceful shutdown
+		s.agentWg.Add(1)
+
 		go func() {
+			defer s.agentWg.Done()
 			s.Logger.Info("Starting agent %s state machine", agentID)
 			if err := runnable.Run(agentCtx); err != nil {
 				s.Logger.Error("Agent %s state machine failed: %v", agentID, err)
 			}
+			s.Logger.Info("Agent %s state machine exited", agentID)
 		}()
 	} else {
 		s.Logger.Debug("Agent %s does not implement Run method", agentID)
@@ -386,4 +396,29 @@ func (s *Supervisor) GetFactory() *factory.AgentFactory {
 func (s *Supervisor) SetShutdownHandler(handler ShutdownHandler) {
 	s.ShutdownHandler = handler
 	s.Logger.Info("Custom shutdown handler installed")
+}
+
+// WaitForAgentsShutdown waits for all agent goroutines to exit after context cancellation.
+// This should be called after cancelling the context to ensure agents have finished
+// their current work and serialized their state before proceeding with shutdown.
+// Returns nil on success, or an error if the timeout is exceeded.
+func (s *Supervisor) WaitForAgentsShutdown(timeout time.Duration) error {
+	s.Logger.Info("⏳ Waiting for agents to complete shutdown (timeout: %v)...", timeout)
+
+	// Create a channel to signal completion
+	done := make(chan struct{})
+	go func() {
+		s.agentWg.Wait()
+		close(done)
+	}()
+
+	// Wait with timeout
+	select {
+	case <-done:
+		s.Logger.Info("✅ All agents have completed shutdown")
+		return nil
+	case <-time.After(timeout):
+		s.Logger.Warn("⚠️ Timeout waiting for agents to shutdown")
+		return fmt.Errorf("timeout waiting for agents to shutdown after %v", timeout)
+	}
 }

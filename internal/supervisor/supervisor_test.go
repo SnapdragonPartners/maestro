@@ -308,3 +308,140 @@ func TestRestartActions(t *testing.T) {
 		t.Error("FatalShutdown action mapping failed")
 	}
 }
+
+// TestWaitForAgentsShutdownNoAgents tests shutdown wait with no registered agents.
+func TestWaitForAgentsShutdownNoAgents(t *testing.T) {
+	// Create temporary directory for test
+	tempDir, err := os.MkdirTemp("", "supervisor-shutdown-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create minimal config and kernel
+	cfg := createTestConfig()
+
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	// With no agents registered, WaitForAgentsShutdown should return immediately
+	err = supervisor.WaitForAgentsShutdown(1 * time.Second)
+	if err != nil {
+		t.Errorf("WaitForAgentsShutdown should succeed with no agents, got: %v", err)
+	}
+}
+
+// RunnableMockAgent implements dispatch.Agent with Run method for testing.
+type RunnableMockAgent struct {
+	MockAgent
+	runCalled chan struct{}
+	runDelay  time.Duration
+}
+
+func (m *RunnableMockAgent) Run(ctx context.Context) error {
+	if m.runCalled != nil {
+		close(m.runCalled)
+	}
+	// Wait for context cancellation or delay
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(m.runDelay):
+		return nil
+	}
+}
+
+// TestWaitForAgentsShutdownWithAgents tests shutdown wait with running agents.
+func TestWaitForAgentsShutdownWithAgents(t *testing.T) {
+	// Create temporary directory for test
+	tempDir, err := os.MkdirTemp("", "supervisor-shutdown-agents-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create minimal config and kernel
+	cfg := createTestConfig()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	// Create runnable mock agent that waits for context cancellation
+	runCalled := make(chan struct{})
+	mockAgent := &RunnableMockAgent{
+		MockAgent: MockAgent{
+			id:    "test-agent-001",
+			state: proto.StateWaiting,
+		},
+		runCalled: runCalled,
+		runDelay:  10 * time.Second, // Long delay so it waits for context
+	}
+
+	// Register agent (this starts the Run goroutine)
+	supervisor.RegisterAgent(ctx, "test-agent-001", string(agent.TypeCoder), mockAgent)
+
+	// Wait for Run to be called
+	select {
+	case <-runCalled:
+		// Good, agent started
+	case <-time.After(1 * time.Second):
+		t.Fatal("Agent Run was not called within timeout")
+	}
+
+	// Cancel the context to trigger shutdown
+	cancel()
+
+	// Wait for agents - should complete quickly since context is cancelled
+	err = supervisor.WaitForAgentsShutdown(5 * time.Second)
+	if err != nil {
+		t.Errorf("WaitForAgentsShutdown should succeed after context cancel, got: %v", err)
+	}
+}
+
+// TestWaitForAgentsShutdownTimeout tests shutdown wait timeout.
+func TestWaitForAgentsShutdownTimeout(t *testing.T) {
+	// Create temporary directory for test
+	tempDir, err := os.MkdirTemp("", "supervisor-shutdown-timeout-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create minimal config and kernel
+	cfg := createTestConfig()
+
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	// Manually increment waitgroup to simulate a stuck agent
+	supervisor.agentWg.Add(1)
+
+	// Wait for agents with short timeout - should timeout
+	err = supervisor.WaitForAgentsShutdown(100 * time.Millisecond)
+	if err == nil {
+		t.Error("WaitForAgentsShutdown should return error on timeout")
+	}
+
+	// Clean up: decrement the waitgroup
+	supervisor.agentWg.Done()
+}
