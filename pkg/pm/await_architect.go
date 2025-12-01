@@ -63,10 +63,12 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			d.SetStateData(StateKeyDevelopmentInProgress, true)
 
 			// Inject user message to inform PM of approval and prompt for response
+			// Use chat_ask_user to post the message AND wait for user input (for tweaks/hotfixes)
 			d.contextManager.AddMessage("user",
 				"The specification has been approved by the architect and submitted for development. "+
-					"Please inform the user and let them know you'll notify them when there's a demo ready "+
-					"or when development completes. Also let them know they can request tweaks or changes in the meantime.")
+					"Use the chat_ask_user tool to inform the user of this good news. Let them know you'll notify them "+
+					"when there's a demo ready or when development completes. Also let them know they can request "+
+					"tweaks or quick changes in the meantime. IMPORTANT: You MUST call chat_ask_user to post this message.")
 
 			// Transition to WORKING so PM generates response to user
 			return StateWorking, nil
