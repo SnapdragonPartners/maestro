@@ -380,7 +380,6 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 	// Inject submitted spec and architect feedback into LLM context
 	// Both are added as user messages so they persist across LLM calls
 	if submittedSpec, ok := stateData["spec_markdown"].(string); ok {
-		d.SetStateData("draft_spec", submittedSpec)
 		d.logger.Info("📋 Injecting submitted spec (%d bytes) and architect feedback into PM context", len(submittedSpec))
 
 		// Add submitted spec to context

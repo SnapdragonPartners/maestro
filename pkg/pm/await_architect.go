@@ -69,7 +69,6 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			// submitted and we don't want stale data prepended to future hotfixes.
 			// The conversation context still has the spec history for PM reference.
 			d.SetStateData("draft_spec_markdown", nil)
-			d.SetStateData("draft_spec", nil)
 			d.SetStateData("spec_markdown", nil)
 			d.SetStateData("spec_metadata", nil)
 			d.SetStateData("spec_uploaded", nil)
