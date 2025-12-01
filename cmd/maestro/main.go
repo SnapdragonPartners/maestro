@@ -400,6 +400,9 @@ func runResumeFlow(projectDir string, noWebUI bool, sessionID string) error {
 		}
 	}()
 
+	// Mark kernel as resuming to skip session creation (session already exists)
+	k.SetResuming(true)
+
 	// Start kernel services
 	if err := k.Start(); err != nil {
 		return fmt.Errorf("failed to start kernel: %w", err)

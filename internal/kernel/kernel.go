@@ -50,6 +50,7 @@ type Kernel struct {
 	// Runtime state
 	projectDir string
 	running    bool
+	isResuming bool // True if kernel is resuming from a previous session
 }
 
 // NewKernel creates a new kernel with shared infrastructure components.
@@ -75,6 +76,13 @@ func NewKernel(parent context.Context, cfg *config.Config, projectDir string) (*
 	}
 
 	return k, nil
+}
+
+// SetResuming marks the kernel as resuming from a previous session.
+// When true, Start() will skip creating a new session record since
+// the session already exists in the database.
+func (k *Kernel) SetResuming(resuming bool) {
+	k.isResuming = resuming
 }
 
 // initializeServices sets up all the core infrastructure services.
@@ -284,6 +292,7 @@ func (k *Kernel) DrainPersistenceQueue(ctx context.Context) error {
 // createSessionRecord creates a session record in the database for the current run.
 // This is required for resume mode to work - without a session record, shutdown status
 // updates will fail and resume will never find any sessions.
+// When resuming, we skip creating a new session since the session already exists.
 func (k *Kernel) createSessionRecord() error {
 	// First, mark any stale sessions (active sessions from previous crashed runs) as crashed
 	staleCount, err := persistence.MarkStaleSessions(k.Database)
@@ -292,6 +301,14 @@ func (k *Kernel) createSessionRecord() error {
 		// Continue anyway - this is not fatal
 	} else if staleCount > 0 {
 		k.Logger.Info("Marked %d stale session(s) as crashed", staleCount)
+	}
+
+	// When resuming, the session already exists and was updated to 'active' status
+	// by runResumeMode before creating the kernel. Skip the INSERT to avoid
+	// UNIQUE constraint violation on session_id.
+	if k.isResuming {
+		k.Logger.Info("Resuming session (skipping session creation): %s", k.Config.SessionID)
+		return nil
 	}
 
 	// Create config snapshot for the session record
