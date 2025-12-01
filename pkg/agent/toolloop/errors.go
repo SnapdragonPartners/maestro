@@ -18,4 +18,9 @@ var (
 	// ErrInvalidResult indicates a terminal tool was called but the payload is malformed.
 	// Example: "done" tool called but "summary" field is missing or empty.
 	ErrInvalidResult = errors.New("invalid tool result payload")
+
+	// ErrGracefulShutdown indicates the toolloop was interrupted by context cancellation.
+	// This is a normal termination condition for graceful shutdown, not an error.
+	// Callers should serialize their state and exit cleanly when receiving this.
+	ErrGracefulShutdown = errors.New("graceful shutdown requested")
 )

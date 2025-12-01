@@ -134,6 +134,12 @@ type Config[T any] struct {
 	// Agent identification (optional - required for tools that need agent context)
 	// If set, will be added to context as tools.AgentIDContextKey when executing tools
 	AgentID string
+
+	// OnShutdown is called when context is cancelled for graceful shutdown.
+	// This callback allows the agent to serialize its state before the loop exits.
+	// The callback receives the current iteration count for logging/debugging.
+	// If nil, shutdown proceeds without callback.
+	OnShutdown func(iteration int)
 }
 
 // Run executes the tool loop with ProcessEffect-based terminal signaling, returning an Outcome[T].
@@ -209,6 +215,26 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 	// Main iteration loop
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
 		currentIteration := iteration + 1 // 1-indexed for user-facing logs
+
+		// Check for graceful shutdown at the start of each iteration.
+		// This is the cleanest point to exit - after completing the previous iteration's work.
+		select {
+		case <-ctx.Done():
+			tl.logger.Info("🛑 Graceful shutdown requested at iteration %d", currentIteration)
+
+			// Invoke shutdown callback if provided
+			if cfg.OnShutdown != nil {
+				cfg.OnShutdown(currentIteration)
+			}
+
+			return Outcome[T]{
+				Kind:      OutcomeGracefulShutdown,
+				Err:       ErrGracefulShutdown,
+				Iteration: currentIteration,
+			}
+		default:
+			// Context not cancelled, continue with iteration
+		}
 
 		// Flush user buffer before LLM request
 		if err := cfg.ContextManager.FlushUserBuffer(ctx); err != nil {
