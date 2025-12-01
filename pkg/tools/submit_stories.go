@@ -26,7 +26,8 @@ func (t *SubmitStoriesTool) PromptDocumentation() string {
   - Parameters:
     - analysis (string, REQUIRED) - Brief summary of spec analysis and identified platform
     - platform (string, REQUIRED) - Identified platform (e.g., "go", "python", "nodejs")
-    - requirements (array, REQUIRED) - Array of requirement objects with title, description, acceptance_criteria, estimated_points, dependencies, and story_type
+    - requirements (array, REQUIRED) - Array of requirement objects with title, description, acceptance_criteria, dependencies, and story_type
+    - hotfix (boolean, OPTIONAL) - If true, routes stories to the hotfix queue (generally 1 story for hotfixes)
   - Call this when you have completed spec analysis and extracted all requirements`
 }
 
@@ -34,7 +35,7 @@ func (t *SubmitStoriesTool) PromptDocumentation() string {
 func (t *SubmitStoriesTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        ToolSubmitStories,
-		Description: "Submit the analyzed requirements as structured stories. Call this when you have completed spec analysis and extracted all implementable requirements.",
+		Description: "Submit the analyzed requirements as structured stories. Call this when you have completed spec analysis and extracted all implementable requirements. Use hotfix=true to route stories to the dedicated hotfix queue.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -67,10 +68,6 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 									Type: "string",
 								},
 							},
-							"estimated_points": {
-								Type:        "number",
-								Description: "Complexity estimate (1-5 points)",
-							},
 							"dependencies": {
 								Type:        "array",
 								Description: "Array of requirement titles this depends on",
@@ -85,6 +82,10 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 							},
 						},
 					},
+				},
+				"hotfix": {
+					Type:        "boolean",
+					Description: "If true, routes stories to the dedicated hotfix queue (generally 1 story for hotfixes)",
 				},
 			},
 			Required: []string{"analysis", "platform", "requirements"},
@@ -136,16 +137,31 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 		}
 	}
 
+	// Check for hotfix flag (optional, defaults to false)
+	isHotfix := false
+	if hotfix, ok := args["hotfix"].(bool); ok {
+		isHotfix = hotfix
+	}
+
+	// Determine signal based on hotfix flag
+	signal := SignalStoriesSubmitted
+	queueType := "main"
+	if isHotfix {
+		signal = SignalHotfixSubmit
+		queueType = "hotfix"
+	}
+
 	// Return human-readable message for LLM context
 	// Return structured data via ProcessEffect.Data for state machine
 	return &ExecResult{
-		Content: fmt.Sprintf("Stories submitted successfully (%d requirements identified for platform: %s)", len(requirements), platform),
+		Content: fmt.Sprintf("Stories submitted to %s queue (%d requirements identified for platform: %s)", queueType, len(requirements), platform),
 		ProcessEffect: &ProcessEffect{
-			Signal: SignalStoriesSubmitted,
+			Signal: signal,
 			Data: map[string]any{
 				"analysis":     analysis,
 				"platform":     platform,
 				"requirements": requirements,
+				"hotfix":       isHotfix,
 			},
 		},
 	}, nil

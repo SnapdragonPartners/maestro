@@ -125,7 +125,7 @@ var (
 
 	// PM tools - unified tool set for WORKING state.
 	// PM has access to read-only codebase tools, chat, spec submission, bootstrap config, and flow control.
-	// PM decides when to submit via spec_submit tool, transitioning back to WAITING.
+	// PM submits specs via spec_submit, and hotfixes via submit_stories with hotfix=true.
 	PMTools = []string{
 		ToolReadFile,
 		ToolListFiles,
@@ -133,6 +133,7 @@ var (
 		ToolChatAskUser,
 		ToolBootstrap,
 		ToolSpecSubmit,
+		ToolSubmitStories,
 		// TODO: Add ToolWebBrowser when implemented
 	}
 )

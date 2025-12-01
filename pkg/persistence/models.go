@@ -56,6 +56,7 @@ type Story struct {
 	EstimatedPoints int      `json:"estimated_points" db:"-"` // Estimation points
 	KnowledgePack   string   `json:"knowledge_pack" db:"-"`   // Relevant knowledge subgraph (DOT format)
 	Express         bool     `json:"express" db:"-"`          // Skip planning, fast-path to coding (knowledge updates, hotfixes)
+	IsHotfix        bool     `json:"is_hotfix" db:"-"`        // If true, routes to dedicated hotfix coder
 }
 
 // StoryDependency represents a dependency relationship between stories.

@@ -45,6 +45,9 @@ const (
 	StateKeyBootstrapRequirements = "bootstrap_requirements"
 	// StateKeyDetectedPlatform stores the detected platform.
 	StateKeyDetectedPlatform = "detected_platform"
+	// StateKeyDevelopmentInProgress indicates spec was approved and development has started.
+	// When true, PM is in "tweak mode" and can accept hotfix requests.
+	StateKeyDevelopmentInProgress = "development_in_progress"
 )
 
 // Driver implements the PM (Product Manager) agent.

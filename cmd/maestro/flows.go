@@ -91,7 +91,14 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coderAgent)
 	}
 
-	k.Logger.Info("✅ Created and registered architect and %d coders", numCoders)
+	// Create and register dedicated hotfix coder
+	hotfixCoder, hotfixErr := supervisor.GetFactory().NewAgent(ctx, "hotfix-001", string(agent.TypeCoder))
+	if hotfixErr != nil {
+		return fmt.Errorf("failed to create hotfix coder: %w", hotfixErr)
+	}
+	supervisor.RegisterAgent(ctx, "hotfix-001", string(agent.TypeCoder), hotfixCoder)
+
+	k.Logger.Info("✅ Created and registered architect, %d coders, and hotfix-001", numCoders)
 
 	// Inject spec into architect
 	if specErr := InjectSpec(k.Dispatcher, "bootstrap", specContent); specErr != nil {
@@ -234,7 +241,14 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coderAgent)
 	}
 
-	k.Logger.Info("✅ Created and registered architect and %d coders", numCoders)
+	// Create and register dedicated hotfix coder
+	hotfixCoder, hotfixErr := supervisor.GetFactory().NewAgent(ctx, "hotfix-001", string(agent.TypeCoder))
+	if hotfixErr != nil {
+		return fmt.Errorf("failed to create hotfix coder: %w", hotfixErr)
+	}
+	supervisor.RegisterAgent(ctx, "hotfix-001", string(agent.TypeCoder), hotfixCoder)
+
+	k.Logger.Info("✅ Created and registered architect, %d coders, and hotfix-001", numCoders)
 
 	// Run startup orchestration (Story 3: rebuild + reconcile/rollback)
 	if err := f.runStartupOrchestration(ctx, k); err != nil {

@@ -23,6 +23,10 @@ const (
 	StateKeyEscalationRequestID = "escalation_request_id" // string - request ID that triggered escalation
 	StateKeyEscalationStoryID   = "escalation_story_id"   // string - story ID that triggered escalation
 	StateKeyEscalationAgentID   = "escalation_agent_id"   // string - agent ID that triggered escalation
+
+	// Hotfix tracking.
+	StateKeyHotfixQueued = "hotfix_queued" // bool - hotfix stories were queued
+	StateKeyHotfixCount  = "hotfix_count"  // int - number of hotfix stories queued
 )
 
 // Dynamic state key patterns (use with fmt.Sprintf).

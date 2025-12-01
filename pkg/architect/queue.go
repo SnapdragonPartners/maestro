@@ -537,3 +537,86 @@ func (q *Queue) ClearAll() {
 
 	q.stories = make(map[string]*QueuedStory)
 }
+
+// FindStoryByTitle finds a story by its title.
+// Returns nil if no story with that title exists.
+func (q *Queue) FindStoryByTitle(title string) *QueuedStory {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, story := range q.stories {
+		if story.Title == title {
+			return story
+		}
+	}
+	return nil
+}
+
+// AddHotfixStory adds a hotfix story to the queue.
+// Hotfix stories are marked with IsHotfix=true for routing to the dedicated hotfix coder.
+func (q *Queue) AddHotfixStory(story *QueuedStory) error {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	if story.ID == "" {
+		return fmt.Errorf("story ID is required")
+	}
+
+	// Ensure hotfix flags are set
+	story.IsHotfix = true
+
+	// Set status to pending (ready for dispatch)
+	story.SetStatus(StatusPending)
+
+	// Set timestamps
+	now := time.Now()
+	story.CreatedAt = now
+	story.LastUpdated = now
+
+	q.stories[story.ID] = story
+
+	// Notify that a story is ready (hotfix stories are always ready since deps are pre-validated)
+	q.checkAndNotifyReadyLocked()
+
+	return nil
+}
+
+// checkAndNotifyReadyLocked checks for ready stories and notifies the channel.
+// Must be called with mutex held.
+func (q *Queue) checkAndNotifyReadyLocked() {
+	if q.readyStoryCh == nil {
+		return
+	}
+
+	for storyID, story := range q.stories {
+		if story.GetStatus() == StatusPending && q.areDependenciesSatisfiedLocked(storyID) {
+			// Non-blocking send
+			select {
+			case q.readyStoryCh <- storyID:
+			default:
+				// Channel full or closed, story will be picked up later
+			}
+		}
+	}
+}
+
+// areDependenciesSatisfiedLocked checks if all dependencies of a story are satisfied.
+// Must be called with mutex held.
+func (q *Queue) areDependenciesSatisfiedLocked(storyID string) bool {
+	story, exists := q.stories[storyID]
+	if !exists {
+		return false
+	}
+
+	for _, depID := range story.DependsOn {
+		depStory, exists := q.stories[depID]
+		if !exists {
+			// Dependency not in queue - assume satisfied (external dependency)
+			continue
+		}
+		if depStory.GetStatus() != StatusDone {
+			return false
+		}
+	}
+	return true
+}

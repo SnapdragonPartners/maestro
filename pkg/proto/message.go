@@ -101,6 +101,8 @@ const (
 	KeyRequirements    = "requirements"
 	KeyDependsOn       = "depends_on"
 	KeyEstimatedPoints = "estimated_points"
+	KeyExpress         = "express"   // Skip planning phase (knowledge updates, hotfixes)
+	KeyIsHotfix        = "is_hotfix" // Route to dedicated hotfix coder
 	KeyFilePath        = "file_path"
 	KeyBackend         = "backend"
 
@@ -151,6 +153,9 @@ const (
 
 	// ApprovalTypeSpec indicates a specification approval request.
 	ApprovalTypeSpec ApprovalType = "spec"
+
+	// ApprovalTypeHotfix indicates a hotfix approval request from PM.
+	ApprovalTypeHotfix ApprovalType = "hotfix"
 )
 
 // ApprovalRequest represents a request for approval (plan or code).

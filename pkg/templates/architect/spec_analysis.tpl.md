@@ -66,7 +66,6 @@ When you have completed your analysis, you MUST call the `submit_stories` tool w
   - **title**: Concise, clear requirement title
   - **description**: Detailed description of what needs to be implemented using platform-appropriate tools and examples
   - **acceptance_criteria**: Array of 3-5 specific, testable criteria (platform-consistent)
-  - **estimated_points**: Complexity estimate (1-5)
   - **dependencies**: Array of requirement titles this depends on
   - **story_type**: Either "app" (application code) or "devops" (infrastructure)
 

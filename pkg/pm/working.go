@@ -84,6 +84,17 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		return StateAwaitUser, nil
 	}
 
+	// Handle HOTFIX_SUBMIT signal - transition directly to AWAIT_ARCHITECT (bypass PREVIEW)
+	if signal == SignalHotfixSubmit {
+		d.logger.Info("🔧 PM transitioning to AWAIT_ARCHITECT for hotfix request")
+		// Send the hotfix request to architect
+		if err := d.sendHotfixRequest(ctx); err != nil {
+			d.logger.Error("❌ Failed to send hotfix request: %v", err)
+			return proto.StateError, fmt.Errorf("failed to send hotfix request: %w", err)
+		}
+		return StateAwaitArchitect, nil
+	}
+
 	// Stay in WORKING - PM continues interviewing/drafting
 	return StateWorking, nil
 }
@@ -356,6 +367,27 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
 			return SignalAwaitUser, nil
 
+		case tools.SignalHotfixSubmit:
+			// submit_stories with hotfix=true was called - extract data from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("HOTFIX_SUBMIT effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			// Extract hotfix stories data from ProcessEffect.Data (same format as regular stories)
+			analysis, _ := effectData["analysis"].(string)
+			platform, _ := effectData["platform"].(string)
+			requirements, _ := effectData["requirements"].([]any)
+
+			// Store hotfix data in state for AWAIT_ARCHITECT state
+			d.SetStateData("hotfix_analysis", analysis)
+			d.SetStateData("hotfix_platform", platform)
+			d.SetStateData("hotfix_requirements", requirements)
+
+			d.logger.Info("🔧 Hotfix stories submitted: %d requirements for platform %s", len(requirements), platform)
+
+			return SignalHotfixSubmit, nil
+
 		default:
 			return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 		}
@@ -475,6 +507,51 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	d.SetStateData("pending_request_id", requestMsg.ID)
 	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, infrastructure: %d bytes, id: %s)",
 		len(userSpec), len(infrastructureSpec), requestMsg.ID)
+
+	return nil
+}
+
+// sendHotfixRequest sends a HOTFIX REQUEST message to the architect.
+// Hotfixes bypass user preview and go directly to architect for processing.
+// The payload contains requirements in the same format as submit_stories.
+func (d *Driver) sendHotfixRequest(_ context.Context) error {
+	// Get hotfix data from state
+	stateData := d.GetStateData()
+
+	analysis, _ := stateData["hotfix_analysis"].(string)
+	platform, _ := stateData["hotfix_platform"].(string)
+	requirements, ok := stateData["hotfix_requirements"].([]any)
+	if !ok || len(requirements) == 0 {
+		return fmt.Errorf("no hotfix_requirements found in state")
+	}
+
+	// Create hotfix request payload with full requirements data
+	hotfixPayload := &proto.HotfixRequestPayload{
+		Analysis:     analysis,
+		Platform:     platform,
+		Requirements: requirements,
+		Urgency:      "normal", // Could be enhanced to extract from requirements metadata
+	}
+
+	// Create REQUEST message
+	requestMsg := &proto.AgentMsg{
+		ID:        fmt.Sprintf("pm-hotfix-req-%d", time.Now().UnixNano()),
+		Type:      proto.MsgTypeREQUEST,
+		FromAgent: d.GetAgentID(),
+		ToAgent:   "architect-001", // TODO: Get architect ID from config or dispatcher
+		Payload:   proto.NewHotfixRequestPayload(hotfixPayload),
+	}
+
+	// Send via dispatcher
+	if err := d.dispatcher.DispatchMessage(requestMsg); err != nil {
+		return fmt.Errorf("failed to dispatch HOTFIX REQUEST: %w", err)
+	}
+
+	// Store pending request ID for tracking
+	d.SetStateData("pending_request_id", requestMsg.ID)
+	d.SetStateData("pending_request_type", "hotfix")
+	d.logger.Info("🔧 Sent hotfix REQUEST to architect (%d requirements for platform %s, id: %s)",
+		len(requirements), platform, requestMsg.ID)
 
 	return nil
 }

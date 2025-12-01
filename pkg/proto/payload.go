@@ -26,6 +26,7 @@ const (
 	PayloadKindApprovalRequest PayloadKind = "approval_request"
 	PayloadKindMergeRequest    PayloadKind = "merge_request"
 	PayloadKindRequeueRequest  PayloadKind = "requeue_request"
+	PayloadKindHotfixRequest   PayloadKind = "hotfix_request"
 
 	// Response payloads.
 	PayloadKindQuestionResponse PayloadKind = "question_response"
@@ -38,6 +39,9 @@ const (
 	PayloadKindSpec     PayloadKind = "spec"
 	PayloadKindError    PayloadKind = "error"
 	PayloadKindShutdown PayloadKind = "shutdown"
+
+	// Notification payloads.
+	PayloadKindStoryComplete PayloadKind = "story_complete" // Story completion notification
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -231,6 +235,29 @@ func (p *MessagePayload) ExtractRequeueResponse() (*RequeueResponsePayload, erro
 	return &result, nil
 }
 
+// Hotfix request payloads
+
+// NewHotfixRequestPayload creates a payload for hotfix requests.
+func NewHotfixRequestPayload(data *HotfixRequestPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindHotfixRequest,
+		Data: raw,
+	}
+}
+
+// ExtractHotfixRequest extracts and validates a hotfix request payload.
+func (p *MessagePayload) ExtractHotfixRequest() (*HotfixRequestPayload, error) {
+	if p.Kind != PayloadKindHotfixRequest {
+		return nil, fmt.Errorf("expected hotfix_request payload, got %s", p.Kind)
+	}
+	var result HotfixRequestPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal hotfix request: %w", err)
+	}
+	return &result, nil
+}
+
 // Generic and legacy payloads
 
 // NewGenericPayload creates a generic key-value payload for simple messages (story, spec, error, etc).
@@ -257,4 +284,35 @@ func NewShutdownPayload() *MessagePayload {
 		Kind: PayloadKindShutdown,
 		Data: json.RawMessage("{}"),
 	}
+}
+
+// StoryCompletePayload contains data for a story completion notification.
+type StoryCompletePayload struct {
+	StoryID   string `json:"story_id"`
+	Title     string `json:"title"`
+	IsHotfix  bool   `json:"is_hotfix"`
+	Summary   string `json:"summary,omitempty"`
+	PRID      string `json:"pr_id,omitempty"`
+	Timestamp string `json:"timestamp"`
+}
+
+// NewStoryCompletePayload creates a payload for story completion notifications.
+func NewStoryCompletePayload(data *StoryCompletePayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindStoryComplete,
+		Data: raw,
+	}
+}
+
+// ExtractStoryComplete extracts and validates a story completion payload.
+func (p *MessagePayload) ExtractStoryComplete() (*StoryCompletePayload, error) {
+	if p.Kind != PayloadKindStoryComplete {
+		return nil, fmt.Errorf("expected story_complete payload, got %s", p.Kind)
+	}
+	var result StoryCompletePayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal story complete payload: %w", err)
+	}
+	return &result, nil
 }

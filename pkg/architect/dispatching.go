@@ -116,6 +116,8 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		payloadData[proto.KeyEstimatedPoints] = story.EstimatedPoints
 		payloadData[proto.KeyDependsOn] = story.DependsOn
 		payloadData[proto.KeyStoryType] = story.StoryType
+		payloadData[proto.KeyExpress] = story.Express   // Skip planning phase
+		payloadData[proto.KeyIsHotfix] = story.IsHotfix // Route to hotfix coder
 
 		// Use story content from the queue (set during SCOPING)
 		content := story.Content

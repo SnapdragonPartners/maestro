@@ -31,11 +31,24 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			return proto.StateError, fmt.Errorf("expected RESPONSE message, got %s", msg.Type)
 		}
 
-		// Parse ApprovalResponsePayload from the message
+		// Parse the typed payload - could be approval response or story completion
 		typedPayload := msg.GetTypedPayload()
 		if typedPayload == nil {
 			d.logger.Error("❌ No typed payload in RESPONSE message")
 			return proto.StateError, fmt.Errorf("no typed payload in RESPONSE message")
+		}
+
+		// Check payload kind to determine how to handle
+		switch typedPayload.Kind {
+		case proto.PayloadKindStoryComplete:
+			// Story completion notification - handle and stay in current state
+			return d.handleStoryCompleteNotification(typedPayload)
+
+		case proto.PayloadKindApprovalResponse:
+			// Continue with approval handling below
+		default:
+			d.logger.Warn("⚠️ Unexpected payload kind in AWAIT_ARCHITECT: %s", typedPayload.Kind)
+			return proto.StateError, fmt.Errorf("unexpected payload kind: %s", typedPayload.Kind)
 		}
 
 		approvalResult, err := typedPayload.ExtractApprovalResponse()
@@ -46,17 +59,39 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 
 		// Check approval status
 		if approvalResult.Status == proto.ApprovalStatusApproved {
-			// Spec approved - transition to WAITING for next interview
-			d.logger.Info("✅ Spec APPROVED by architect")
+			// Spec approved - stay engaged for tweaks/hotfixes
+			d.logger.Info("✅ Spec APPROVED by architect - staying engaged for tweaks")
 			if approvalResult.Feedback != "" {
 				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
 			}
-			// Clear draft spec and bootstrap requirements from state data
+
+			// Clear all spec and bootstrap data from state - the spec has been
+			// submitted and we don't want stale data prepended to future hotfixes.
+			// The conversation context still has the spec history for PM reference.
 			d.SetStateData("draft_spec_markdown", nil)
+			d.SetStateData("draft_spec", nil)
+			d.SetStateData("spec_markdown", nil)
 			d.SetStateData("spec_metadata", nil)
+			d.SetStateData("spec_uploaded", nil)
+			d.SetStateData("infrastructure_spec", nil)
+			d.SetStateData("user_spec", nil)
 			d.SetStateData(StateKeyBootstrapRequirements, nil)
+			d.SetStateData(StateKeyDetectedPlatform, nil)
 			d.SetStateData("bootstrap_params", nil)
-			return StateWaiting, nil
+
+			// Mark that we're in post-approval mode (development in progress)
+			d.SetStateData(StateKeyDevelopmentInProgress, true)
+
+			// Inject user message to inform PM of approval and prompt for response
+			// Use chat_ask_user to post the message AND wait for user input (for tweaks/hotfixes)
+			d.contextManager.AddMessage("user",
+				"The specification has been approved by the architect and submitted for development. "+
+					"Use the chat_ask_user tool to inform the user of this good news. Let them know you'll notify them "+
+					"when there's a demo ready or when development completes. Also let them know they can request "+
+					"tweaks or quick changes in the meantime. IMPORTANT: You MUST call chat_ask_user to post this message.")
+
+			// Transition to WORKING so PM generates response to user
+			return StateWorking, nil
 		}
 
 		// Architect provided feedback - inject as system message and transition to WORKING
@@ -79,4 +114,38 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 		// Keep spec in state data for potential resubmission
 		return StateWorking, nil
 	}
+}
+
+// handleStoryCompleteNotification processes a story completion notification from architect.
+// This injects a message into the PM's context so it can inform the user.
+func (d *Driver) handleStoryCompleteNotification(payload *proto.MessagePayload) (proto.State, error) {
+	storyComplete, err := payload.ExtractStoryComplete()
+	if err != nil {
+		d.logger.Error("❌ Failed to parse story_complete payload: %v", err)
+		return proto.StateError, fmt.Errorf("failed to parse story_complete payload: %w", err)
+	}
+
+	// Log the completion
+	if storyComplete.IsHotfix {
+		d.logger.Info("🔧 Hotfix story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
+	} else {
+		d.logger.Info("✅ Story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
+	}
+
+	// Inject a user message so PM can inform the user about the completion
+	completionMsg := fmt.Sprintf(
+		"A story has been completed by the development team. Story: %q (ID: %s). ",
+		storyComplete.Title, storyComplete.StoryID)
+	if storyComplete.IsHotfix {
+		completionMsg += "This was a hotfix request. "
+	}
+	if storyComplete.Summary != "" {
+		completionMsg += fmt.Sprintf("Summary: %s ", storyComplete.Summary)
+	}
+	completionMsg += "Use chat_ask_user to inform the user about this progress and ask if they need anything else."
+
+	d.contextManager.AddMessage("user", completionMsg)
+
+	// Transition to WORKING so PM can generate a response to inform the user
+	return StateWorking, nil
 }
