@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/git"
@@ -34,8 +35,8 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	// Use reliable git-based work detection instead of unreliable filesCreated
 	baseBranch, err := c.getTargetBranch()
 	if err != nil {
-		c.logger.Warn("Failed to get target branch, using 'main': %v", err)
-		baseBranch = "main"
+		c.logger.Warn("Failed to get target branch, using '%s': %v", config.DefaultTargetBranch, err)
+		baseBranch = config.DefaultTargetBranch
 	}
 
 	workResult := git.CheckWorkDone(ctx, baseBranch, c.workDir, c.longRunningExecutor)

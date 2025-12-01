@@ -305,6 +305,13 @@ When making changes:
 
 **Important**: Always work on feature branches. Never attempt to push directly to `main` as it will be rejected by branch protection rules.
 
+### Pull Request Guidelines
+
+When creating PRs for features with specification documents:
+- **Reference the spec file** in the PR description (e.g., "See `docs/HOTFIX_MODE_SPEC.md` for detailed design")
+- This helps code reviewers understand the design intent and implementation plan
+- Spec files in `docs/` document architecture decisions, implementation phases, and acceptance criteria
+
 ## Project Structure
 
 The codebase follows this clean architecture:

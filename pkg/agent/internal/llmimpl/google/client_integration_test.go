@@ -5,12 +5,47 @@ package google
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/tools"
 )
+
+// retryableCompletion wraps client.Complete with retry logic for transient errors.
+func retryableCompletion(t *testing.T, client llm.LLMClient, req llm.CompletionRequest, maxRetries int) (llm.CompletionResponse, error) {
+	t.Helper()
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		resp, err := client.Complete(ctx, req)
+		cancel()
+
+		if err == nil {
+			return resp, nil
+		}
+
+		// Check for transient errors that should be retried.
+		errStr := err.Error()
+		isTransient := strings.Contains(errStr, "504") ||
+			strings.Contains(errStr, "503") ||
+			strings.Contains(errStr, "429") ||
+			strings.Contains(errStr, "DEADLINE_EXCEEDED") ||
+			strings.Contains(errStr, "RESOURCE_EXHAUSTED")
+
+		if !isTransient {
+			return llm.CompletionResponse{}, err
+		}
+
+		lastErr = err
+		if attempt < maxRetries {
+			t.Logf("Attempt %d/%d failed with transient error: %v. Retrying...", attempt, maxRetries, err)
+			time.Sleep(time.Duration(attempt) * 2 * time.Second) // Exponential backoff.
+		}
+	}
+	return llm.CompletionResponse{}, lastErr
+}
 
 // TestGeminiBasicCompletion tests basic text completion with Gemini 3 Pro.
 func TestGeminiBasicCompletion(t *testing.T) {
@@ -20,8 +55,6 @@ func TestGeminiBasicCompletion(t *testing.T) {
 	}
 
 	client := NewGeminiClientWithModel(apiKey, "gemini-3-pro-preview")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	req := llm.CompletionRequest{
 		Messages: []llm.CompletionMessage{
@@ -34,7 +67,7 @@ func TestGeminiBasicCompletion(t *testing.T) {
 		Temperature: 0.0,
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := retryableCompletion(t, client, req, 3)
 	if err != nil {
 		t.Fatalf("Completion failed: %v", err)
 	}
@@ -55,10 +88,8 @@ func TestGeminiToolCalling(t *testing.T) {
 	}
 
 	client := NewGeminiClientWithModel(apiKey, "gemini-3-pro-preview")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
-	// Define a simple calculator tool
+	// Define a simple calculator tool.
 	calcTool := tools.ToolDefinition{
 		Name:        "calculate",
 		Description: "Perform basic arithmetic calculations",
@@ -91,12 +122,12 @@ func TestGeminiToolCalling(t *testing.T) {
 			},
 		},
 		Tools:       []tools.ToolDefinition{calcTool},
-		ToolChoice:  "required", // Force tool use
+		ToolChoice:  "required", // Force tool use.
 		MaxTokens:   500,
 		Temperature: 0.0,
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := retryableCompletion(t, client, req, 3)
 	if err != nil {
 		t.Fatalf("Completion failed: %v", err)
 	}
@@ -131,10 +162,8 @@ func TestGeminiSystemMessage(t *testing.T) {
 	}
 
 	client := NewGeminiClientWithModel(apiKey, "gemini-3-pro-preview")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
-	// Define a simple answer tool
+	// Define a simple answer tool.
 	answerTool := tools.ToolDefinition{
 		Name:        "answer",
 		Description: "Provide the answer to the user's question",
@@ -166,7 +195,7 @@ func TestGeminiSystemMessage(t *testing.T) {
 		Temperature: 0.0,
 	}
 
-	resp, err := client.Complete(ctx, req)
+	resp, err := retryableCompletion(t, client, req, 3)
 	if err != nil {
 		t.Fatalf("Completion failed: %v", err)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -17,7 +18,14 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
+)
+
+// URL protocol constants.
+const (
+	protocolHTTP  = "http"
+	protocolHTTPS = "https"
 )
 
 // FlowRunner interface defines the common behavior for orchestrator flows.
@@ -109,6 +117,15 @@ func (f *BootstrapFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Wait for architect completion - use interface
 	finalState, err := f.waitForArchitectCompletion(ctx, architect)
+
+	// Check if this was a graceful shutdown (context cancelled)
+	// We intentionally return nil because graceful shutdown is a successful exit, not an error.
+	if err != nil && ctx.Err() != nil {
+		k.Logger.Info("📴 Bootstrap shutting down due to context cancellation")
+		performGracefulShutdown(k, supervisor)
+		return nil //nolint:nilerr // Graceful shutdown is a successful exit
+	}
+
 	if err != nil {
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
@@ -200,9 +217,9 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		k.Logger.Info("🌐 Web UI started successfully")
 
 		// Display WebUI URL for user access
-		protocol := "http"
+		protocol := protocolHTTP
 		if k.Config.WebUI.SSL {
-			protocol = "https"
+			protocol = protocolHTTPS
 		}
 		fmt.Printf("🌐 WebUI: %s://%s:%d\n", protocol, k.Config.WebUI.Host, k.Config.WebUI.Port)
 	}
@@ -276,7 +293,184 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	<-ctx.Done()
 	k.Logger.Info("📴 Main flow shutting down due to context cancellation")
 
+	// === GRACEFUL SHUTDOWN FLOW ===
+	performGracefulShutdown(k, supervisor)
+
 	return nil
+}
+
+// ResumeFlow handles resuming from a previous shutdown session.
+// It restores agent state from the database and continues execution.
+type ResumeFlow struct {
+	sessionID string
+	webUI     bool
+}
+
+// NewResumeFlow creates a new resume flow.
+func NewResumeFlow(sessionID string, webUI bool) *ResumeFlow {
+	return &ResumeFlow{
+		sessionID: sessionID,
+		webUI:     webUI,
+	}
+}
+
+// Run executes the resume flow.
+//
+//nolint:cyclop // This function orchestrates agent creation/restoration - complexity is acceptable for a flow function
+func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
+	k.Logger.Info("Starting resume flow for session %s", f.sessionID)
+
+	// Start web UI if requested
+	if f.webUI {
+		// Generate password if not set (before starting WebUI)
+		ensureWebUIPassword()
+
+		if err := k.StartWebUI(); err != nil {
+			return fmt.Errorf("failed to start web UI: %w", err)
+		}
+		k.Logger.Info("🌐 Web UI started successfully")
+
+		// Display WebUI URL for user access
+		protocol := protocolHTTP
+		if k.Config.WebUI.SSL {
+			protocol = protocolHTTPS
+		}
+		fmt.Printf("🌐 WebUI: %s://%s:%d\n", protocol, k.Config.WebUI.Host, k.Config.WebUI.Port)
+	}
+
+	// Create supervisor for agent lifecycle management (creates its own factory)
+	supervisor := supervisor.NewSupervisor(k)
+
+	// Start supervisor's state change processor
+	supervisor.Start(ctx)
+
+	// Create and register architect agent, then restore state
+	architect, err := supervisor.GetFactory().NewAgent(ctx, "architect-001", string(agent.TypeArchitect))
+	if err != nil {
+		return fmt.Errorf("failed to create architect: %w", err)
+	}
+	// Restore architect state BEFORE registering (which starts the Run loop)
+	if restorer, ok := architect.(StateRestorer); ok {
+		if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
+			k.Logger.Warn("⚠️ Failed to restore architect state: %v", restoreErr)
+		} else {
+			k.Logger.Info("✅ Restored architect state from session")
+		}
+	}
+	supervisor.RegisterAgent(ctx, "architect-001", string(agent.TypeArchitect), architect)
+
+	// Create and register PM agent (if enabled), then restore state
+	if k.Config.PM != nil && k.Config.PM.Enabled {
+		pmAgent, pmErr := supervisor.GetFactory().NewAgent(ctx, "pm-001", string(agent.TypePM))
+		if pmErr != nil {
+			return fmt.Errorf("failed to create PM: %w", pmErr)
+		}
+		// Restore PM state
+		if restorer, ok := pmAgent.(StateRestorer); ok {
+			if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
+				k.Logger.Warn("⚠️ Failed to restore PM state: %v", restoreErr)
+			} else {
+				k.Logger.Info("✅ Restored PM state from session")
+			}
+		}
+		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
+		k.Logger.Info("✅ Created and registered PM agent with restored state")
+	}
+
+	// Create and register coder agents based on config, then restore state
+	numCoders := k.Config.Agents.MaxCoders
+	for i := 0; i < numCoders; i++ {
+		coderID := fmt.Sprintf("coder-%03d", i+1)
+		coderAgent, coderErr := supervisor.GetFactory().NewAgent(ctx, coderID, string(agent.TypeCoder))
+		if coderErr != nil {
+			return fmt.Errorf("failed to create coder %s: %w", coderID, coderErr)
+		}
+		// Restore coder state
+		if restorer, ok := coderAgent.(StateRestorer); ok {
+			if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
+				k.Logger.Warn("⚠️ Failed to restore state for %s: %v", coderID, restoreErr)
+			} else {
+				k.Logger.Info("✅ Restored state for %s from session", coderID)
+			}
+		}
+		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coderAgent)
+	}
+
+	// Create and register dedicated hotfix coder, then restore state
+	hotfixCoder, hotfixErr := supervisor.GetFactory().NewAgent(ctx, "hotfix-001", string(agent.TypeCoder))
+	if hotfixErr != nil {
+		return fmt.Errorf("failed to create hotfix coder: %w", hotfixErr)
+	}
+	// Restore hotfix coder state
+	if restorer, ok := hotfixCoder.(StateRestorer); ok {
+		if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
+			k.Logger.Warn("⚠️ Failed to restore state for hotfix-001: %v", restoreErr)
+		} else {
+			k.Logger.Info("✅ Restored state for hotfix-001 from session")
+		}
+	}
+	supervisor.RegisterAgent(ctx, "hotfix-001", string(agent.TypeCoder), hotfixCoder)
+
+	k.Logger.Info("✅ Created and registered architect, %d coders, and hotfix-001 with restored state", numCoders)
+
+	// Enter main event loop
+	k.Logger.Info("🚀 Resumed orchestrator running - agents continuing from saved state")
+
+	// Wait for context cancellation (Ctrl+C, etc.)
+	<-ctx.Done()
+	k.Logger.Info("📴 Resume flow shutting down due to context cancellation")
+
+	// === GRACEFUL SHUTDOWN FLOW ===
+	performGracefulShutdown(k, supervisor)
+
+	return nil
+}
+
+// StateRestorer interface for agents that can restore their state from a previous session.
+type StateRestorer interface {
+	RestoreState(ctx context.Context, db *sql.DB, sessionID string) error
+}
+
+// performGracefulShutdown executes the graceful shutdown sequence for resumable sessions.
+// This is called when the context is cancelled (Ctrl+C) to save agent state for later resumption.
+//
+//nolint:contextcheck // We intentionally use context.Background() here because the main context is already cancelled
+func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
+	shutdownTimeout := 30 * time.Second
+
+	// 1. Wait for all agents to complete their current work and serialize state
+	if err := sup.WaitForAgentsShutdown(shutdownTimeout); err != nil {
+		k.Logger.Warn("⚠️ Some agents did not complete gracefully: %v", err)
+	}
+
+	// 2. Drain the persistence queue to ensure all state is written to database
+	// We use a fresh context since the main context is cancelled
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	if err := k.DrainPersistenceQueue(drainCtx); err != nil {
+		k.Logger.Warn("⚠️ Persistence queue drain incomplete: %v", err)
+	}
+	drainCancel()
+
+	// 3. Update session status to 'shutdown' (makes it resumable)
+	if err := persistence.UpdateSessionStatus(k.Database, k.Config.SessionID, persistence.SessionStatusShutdown); err != nil {
+		k.Logger.Error("❌ Failed to update session status: %v", err)
+	} else {
+		k.Logger.Info("✅ Session marked as 'shutdown' - resumable")
+	}
+
+	// 4. Log resume instructions for the user
+	fmt.Println()
+	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                    📴 Graceful Shutdown Complete                   ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  Session ID: %-54s ║\n", k.Config.SessionID)
+	fmt.Println("║                                                                    ║")
+	fmt.Println("║  To resume this session, run:                                      ║")
+	fmt.Println("║    maestro -continue                                               ║")
+	fmt.Println("║                                                                    ║")
+	fmt.Println("║  Agent states have been saved and can be restored.                 ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
 }
 
 // TODO: Temporarily disabled startup orchestration to debug crash
@@ -524,9 +718,9 @@ func deleteSecretsFile(projectDir string) error {
 func displayWebUIInfo() {
 	cfg, err := config.GetConfig()
 	if err == nil && cfg.WebUI != nil && cfg.WebUI.Enabled {
-		protocol := "http"
+		protocol := protocolHTTP
 		if cfg.WebUI.SSL {
-			protocol = "https"
+			protocol = protocolHTTPS
 		}
 		fmt.Printf("🌐 WebUI: %s://%s:%d (username: maestro, use same password)\n",
 			protocol, cfg.WebUI.Host, cfg.WebUI.Port)

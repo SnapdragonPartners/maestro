@@ -34,6 +34,12 @@ const (
 	// This happens when terminal tools were called but results couldn't be parsed.
 	// Use errors.Is(out.Err, ErrNoTerminalTool) for fine-grained handling of extraction failures.
 	OutcomeExtractionError
+
+	// OutcomeGracefulShutdown indicates the loop was interrupted by context cancellation.
+	// This is a normal termination condition for graceful shutdown, not an error.
+	// The OnShutdown callback is invoked before returning this outcome.
+	// Callers should serialize their state and exit cleanly when receiving this.
+	OutcomeGracefulShutdown
 )
 
 // String returns human-readable name for OutcomeKind.
@@ -51,6 +57,8 @@ func (k OutcomeKind) String() string {
 		return "LLMError"
 	case OutcomeExtractionError:
 		return "ExtractionError"
+	case OutcomeGracefulShutdown:
+		return "GracefulShutdown"
 	default:
 		return fmt.Sprintf("OutcomeKind(%d)", k)
 	}

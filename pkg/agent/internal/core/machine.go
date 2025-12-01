@@ -178,6 +178,14 @@ func GetTyped[T any](sm *BaseStateMachine, key string) (T, bool) {
 	return typedValue, true
 }
 
+// ForceState directly sets the current state without validation or transition recording.
+// This is used during resume to restore a saved state. Use TransitionTo for normal state changes.
+func (sm *BaseStateMachine) ForceState(state proto.State) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.currentState = state
+}
+
 // TransitionTo moves to a new state and records the transition.
 func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.State, metadata map[string]any) error {
 	select {

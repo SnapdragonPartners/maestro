@@ -37,18 +37,20 @@ type Kernel struct {
 	Logger *logx.Logger
 
 	// Core infrastructure services (concrete types, no over-abstraction)
-	Dispatcher         *dispatch.Dispatcher
-	Database           *sql.DB
-	PersistenceChannel chan *persistence.Request
-	BuildService       *build.Service
-	ChatService        *chat.Service
-	WebServer          *webui.Server
-	LLMFactory         *agent.LLMClientFactory // Shared LLM client factory for all agents
-	ComposeRegistry    *state.ComposeRegistry  // Registry for active Docker Compose stacks
+	Dispatcher            *dispatch.Dispatcher
+	Database              *sql.DB
+	PersistenceChannel    chan *persistence.Request
+	persistenceWorkerDone chan struct{} // Signals when persistence worker has finished draining
+	BuildService          *build.Service
+	ChatService           *chat.Service
+	WebServer             *webui.Server
+	LLMFactory            *agent.LLMClientFactory // Shared LLM client factory for all agents
+	ComposeRegistry       *state.ComposeRegistry  // Registry for active Docker Compose stacks
 
 	// Runtime state
 	projectDir string
 	running    bool
+	isResuming bool // True if kernel is resuming from a previous session
 }
 
 // NewKernel creates a new kernel with shared infrastructure components.
@@ -74,6 +76,13 @@ func NewKernel(parent context.Context, cfg *config.Config, projectDir string) (*
 	}
 
 	return k, nil
+}
+
+// SetResuming marks the kernel as resuming from a previous session.
+// When true, Start() will skip creating a new session record since
+// the session already exists in the database.
+func (k *Kernel) SetResuming(resuming bool) {
+	k.isResuming = resuming
 }
 
 // initializeServices sets up all the core infrastructure services.
@@ -157,6 +166,12 @@ func (k *Kernel) Start() error {
 	// Start persistence worker (after dispatcher)
 	k.startPersistenceWorker()
 
+	// Create session record in database (required for resume mode)
+	// This must happen after database is initialized but before agents start
+	if err := k.createSessionRecord(); err != nil {
+		return fmt.Errorf("failed to create session record: %w", err)
+	}
+
 	k.running = true
 	k.Logger.Info("Kernel services started successfully")
 	return nil
@@ -188,8 +203,8 @@ func (k *Kernel) Stop() error {
 
 	k.Logger.Info("Stopping kernel services...")
 
-	// Cleanup compose stacks before cancelling context
-	// Use a timeout context for cleanup since main context will be cancelled
+	// Cleanup compose stacks before cancelling context.
+	// Use a timeout context for cleanup since main context will be cancelled.
 	if k.ComposeRegistry != nil && k.ComposeRegistry.Count() > 0 {
 		k.Logger.Info("🐳 Cleaning up %d Docker Compose stacks...", k.ComposeRegistry.Count())
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -200,38 +215,43 @@ func (k *Kernel) Stop() error {
 		k.Logger.Info("✅ Compose cleanup complete")
 	}
 
-	// Cancel context to signal shutdown
+	// Cancel context FIRST to stop all producers from sending to persistence channel.
+	// This prevents "send on closed channel" panics when we drain the queue.
 	k.cancel()
 
-	// Stop dispatcher
+	// Stop dispatcher (it will notice context cancellation).
 	if k.Dispatcher != nil {
-		if err := k.Dispatcher.Stop(k.ctx); err != nil {
+		// Use a fresh context since k.ctx is now cancelled.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := k.Dispatcher.Stop(stopCtx); err != nil {
 			k.Logger.Error("Error stopping dispatcher: %v", err)
 		}
+		stopCancel()
 	}
 
-	// Close database
+	// Stop web server (it notices context cancellation).
+	if k.WebServer != nil {
+		k.Logger.Info("Web server stopping via context cancellation")
+	}
+
+	// Stop LLM factory (stops rate limiter refill timers).
+	if k.LLMFactory != nil {
+		k.LLMFactory.Stop()
+		k.Logger.Info("LLM factory stopped (rate limiter refill timers terminated)")
+	}
+
+	// Now that producers are stopped, drain persistence queue BEFORE closing database.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := k.DrainPersistenceQueue(drainCtx); err != nil {
+		k.Logger.Warn("Persistence queue drain issue: %v", err)
+	}
+	drainCancel()
+
+	// Close database AFTER persistence queue is drained.
 	if k.Database != nil {
 		if err := k.Database.Close(); err != nil {
 			k.Logger.Error("Error closing database: %v", err)
 		}
-	}
-
-	// Close persistence channel
-	if k.PersistenceChannel != nil {
-		close(k.PersistenceChannel)
-	}
-
-	// Stop web server if running
-	if k.WebServer != nil {
-		// Web server stops via context cancellation
-		k.Logger.Info("Web server will stop via context cancellation")
-	}
-
-	// Stop LLM factory (stops rate limiter refill timers)
-	if k.LLMFactory != nil {
-		k.LLMFactory.Stop()
-		k.Logger.Info("LLM factory stopped (rate limiter refill timers terminated)")
 	}
 
 	k.running = false
@@ -244,33 +264,89 @@ func (k *Kernel) ProjectDir() string {
 	return k.projectDir
 }
 
+// DrainPersistenceQueue closes the persistence channel and waits for pending writes to complete.
+// This should be called during graceful shutdown to ensure all state is persisted.
+// Returns an error if the drain times out.
+func (k *Kernel) DrainPersistenceQueue(ctx context.Context) error {
+	if k.PersistenceChannel == nil {
+		return nil
+	}
+
+	k.Logger.Info("Draining persistence queue...")
+	close(k.PersistenceChannel)
+	k.PersistenceChannel = nil // Prevent double-close in Stop()
+
+	if k.persistenceWorkerDone == nil {
+		return nil
+	}
+
+	select {
+	case <-k.persistenceWorkerDone:
+		k.Logger.Info("Persistence queue drained successfully")
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("timeout waiting for persistence queue to drain: %w", ctx.Err())
+	}
+}
+
+// createSessionRecord creates a session record in the database for the current run.
+// This is required for resume mode to work - without a session record, shutdown status
+// updates will fail and resume will never find any sessions.
+// When resuming, we skip creating a new session since the session already exists.
+func (k *Kernel) createSessionRecord() error {
+	// First, mark any stale sessions (active sessions from previous crashed runs) as crashed
+	staleCount, err := persistence.MarkStaleSessions(k.Database)
+	if err != nil {
+		k.Logger.Warn("Failed to mark stale sessions: %v", err)
+		// Continue anyway - this is not fatal
+	} else if staleCount > 0 {
+		k.Logger.Info("Marked %d stale session(s) as crashed", staleCount)
+	}
+
+	// When resuming, the session already exists and was updated to 'active' status
+	// by runResumeMode before creating the kernel. Skip the INSERT to avoid
+	// UNIQUE constraint violation on session_id.
+	if k.isResuming {
+		k.Logger.Info("Resuming session (skipping session creation): %s", k.Config.SessionID)
+		return nil
+	}
+
+	// Create config snapshot for the session record
+	configJSON, err := persistence.ConfigSnapshotToJSON(k.Config)
+	if err != nil {
+		return fmt.Errorf("failed to serialize config: %w", err)
+	}
+
+	// Create the session record
+	if err := persistence.CreateSession(k.Database, k.Config.SessionID, configJSON); err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+
+	k.Logger.Info("Created session record: %s", k.Config.SessionID)
+	return nil
+}
+
 // startPersistenceWorker begins the database persistence worker goroutine.
 // This consolidates the persistence logic that was duplicated between bootstrap and main.
+// The worker drains all pending requests before signaling completion via persistenceWorkerDone.
 func (k *Kernel) startPersistenceWorker() {
+	k.persistenceWorkerDone = make(chan struct{})
+
 	go func() {
+		defer close(k.persistenceWorkerDone)
 		k.Logger.Debug("Starting persistence worker")
 
-		// Create database operations handler with session isolation
-		// The session ID is passed to ensure all database operations are scoped to the current orchestrator run
+		// Create database operations handler with session isolation.
+		// The session ID is passed to ensure all database operations are scoped to the current orchestrator run.
 		ops := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
 
-		for {
-			select {
-			case <-k.ctx.Done():
-				k.Logger.Info("Persistence worker stopping due to context cancellation")
-				return
-
-			case req, ok := <-k.PersistenceChannel:
-				if !ok {
-					k.Logger.Info("Persistence channel closed, stopping worker")
-					return
-				}
-
-				if req != nil {
-					k.processPersistenceRequest(req, ops)
-				}
+		for req := range k.PersistenceChannel {
+			if req != nil {
+				k.processPersistenceRequest(req, ops)
 			}
 		}
+
+		k.Logger.Info("Persistence worker finished draining queue")
 	}()
 }
 

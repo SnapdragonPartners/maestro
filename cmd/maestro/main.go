@@ -27,13 +27,14 @@ var (
 func main() {
 	// Parse command line flags
 	var (
-		gitRepo     = flag.String("git-repo", "", "Git repository URL (optional)")
-		specFile    = flag.String("spec-file", "", "Path to specification file")
-		noWebUI     = flag.Bool("nowebui", false, "Disable web UI")
-		bootstrap   = flag.Bool("bootstrap", false, "[DEPRECATED] Bootstrap mode is deprecated - PM mode is now default")
-		projectDir  = flag.String("projectdir", ".", "Project directory")
-		tee         = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
-		showVersion = flag.Bool("version", false, "Show version information")
+		gitRepo      = flag.String("git-repo", "", "Git repository URL (optional)")
+		specFile     = flag.String("spec-file", "", "Path to specification file")
+		noWebUI      = flag.Bool("nowebui", false, "Disable web UI")
+		bootstrap    = flag.Bool("bootstrap", false, "[DEPRECATED] Bootstrap mode is deprecated - PM mode is now default")
+		projectDir   = flag.String("projectdir", ".", "Project directory")
+		tee          = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
+		showVersion  = flag.Bool("version", false, "Show version information")
+		continueMode = flag.Bool("continue", false, "Resume from the most recent shutdown session")
 	)
 	flag.Parse()
 
@@ -64,7 +65,7 @@ func main() {
 
 	// Run main logic and get exit code
 	// PM mode is now always enabled (bootstrap flag ignored)
-	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI)
+	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -76,7 +77,7 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, noWebUI bool) int {
+func run(projectDir, gitRepo, specFile string, noWebUI, continueMode bool) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
@@ -93,6 +94,16 @@ func run(projectDir, gitRepo, specFile string, noWebUI bool) int {
 	if err := handleSecretsDecryption(projectDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to handle secrets: %v\n", err)
 		return 1
+	}
+
+	// Check for resume mode
+	if continueMode {
+		config.LogInfo("🔄 Resume mode enabled - looking for resumable session...")
+		if err := runResumeMode(projectDir, noWebUI); err != nil {
+			fmt.Fprintf(os.Stderr, "Resume failed: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
 	// PM mode is now the default (and only) mode
@@ -302,6 +313,109 @@ func runMainMode(projectDir, specFile string, noWebUI bool) error {
 
 	// Create and run main flow
 	flow := NewMainFlow(specFile, webUIEnabled)
+	return flow.Run(ctx, k)
+}
+
+// runResumeMode handles resuming from a previous shutdown session.
+// It finds the most recent resumable session and restores agent state.
+func runResumeMode(projectDir string, noWebUI bool) error {
+	logger := logx.NewLogger("maestro-resume")
+	logger.Info("Starting Maestro in resume mode")
+
+	// Open database to query for resumable sessions
+	dbPath := filepath.Join(projectDir, config.ProjectConfigDir, "maestro.db")
+	db, err := persistence.InitializeDatabase(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Find the most recent resumable session
+	session, err := persistence.GetMostRecentResumableSession(db)
+	if err != nil {
+		return fmt.Errorf("failed to find resumable session: %w", err)
+	}
+
+	if session == nil {
+		fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+		fmt.Println("║                    ❌ No Resumable Session Found                   ║")
+		fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+		fmt.Println("║  There are no sessions with 'shutdown' status to resume.           ║")
+		fmt.Println("║                                                                    ║")
+		fmt.Println("║  Start a new session with: maestro                                 ║")
+		fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+		return nil
+	}
+
+	// Display resume information
+	fmt.Println()
+	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                    🔄 Resuming Previous Session                    ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  Session ID: %-54s ║\n", session.SessionID)
+	fmt.Printf("║  Started:    %-54s ║\n", session.StartedAt)
+	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+
+	// Restore session ID in config (this is the key - we reuse the session ID)
+	if err := config.SetSessionID(session.SessionID); err != nil {
+		return fmt.Errorf("failed to restore session ID: %w", err)
+	}
+
+	// Update session status to 'active' to indicate we're running
+	if err := persistence.UpdateSessionStatus(db, session.SessionID, persistence.SessionStatusActive); err != nil {
+		return fmt.Errorf("failed to update session status: %w", err)
+	}
+
+	logger.Info("Resuming session %s", session.SessionID)
+
+	// Now run the resume flow which will create agents and restore their state
+	return runResumeFlow(projectDir, noWebUI, session.SessionID)
+}
+
+// runResumeFlow creates the kernel, agents, restores state, and runs the main loop.
+func runResumeFlow(projectDir string, noWebUI bool, sessionID string) error {
+	logger := logx.NewLogger("maestro-resume")
+
+	// Get configuration (session ID is already set)
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	config.LogInfo("🔄 Resuming session: %s", sessionID)
+
+	// Create context with signal handling
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	_ = cancel
+
+	// Initialize kernel with shared infrastructure
+	k, err := kernel.NewKernel(ctx, &cfg, projectDir)
+	if err != nil {
+		return fmt.Errorf("failed to create kernel: %w", err)
+	}
+	defer func() {
+		if stopErr := k.Stop(); stopErr != nil {
+			logger.Error("Error stopping kernel: %v", stopErr)
+		}
+	}()
+
+	// Mark kernel as resuming to skip session creation (session already exists)
+	k.SetResuming(true)
+
+	// Start kernel services
+	if err := k.Start(); err != nil {
+		return fmt.Errorf("failed to start kernel: %w", err)
+	}
+
+	// Determine WebUI status
+	webUIEnabled := false
+	if cfg.WebUI != nil && cfg.WebUI.Enabled && !noWebUI {
+		webUIEnabled = true
+	}
+
+	// Create and run resume flow
+	flow := NewResumeFlow(sessionID, webUIEnabled)
 	return flow.Run(ctx, k)
 }
 
