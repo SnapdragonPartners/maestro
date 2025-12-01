@@ -158,6 +158,12 @@ func (k *Kernel) Start() error {
 	// Start persistence worker (after dispatcher)
 	k.startPersistenceWorker()
 
+	// Create session record in database (required for resume mode)
+	// This must happen after database is initialized but before agents start
+	if err := k.createSessionRecord(); err != nil {
+		return fmt.Errorf("failed to create session record: %w", err)
+	}
+
 	k.running = true
 	k.Logger.Info("Kernel services started successfully")
 	return nil
@@ -273,6 +279,34 @@ func (k *Kernel) DrainPersistenceQueue(ctx context.Context) error {
 	case <-ctx.Done():
 		return fmt.Errorf("timeout waiting for persistence queue to drain: %w", ctx.Err())
 	}
+}
+
+// createSessionRecord creates a session record in the database for the current run.
+// This is required for resume mode to work - without a session record, shutdown status
+// updates will fail and resume will never find any sessions.
+func (k *Kernel) createSessionRecord() error {
+	// First, mark any stale sessions (active sessions from previous crashed runs) as crashed
+	staleCount, err := persistence.MarkStaleSessions(k.Database)
+	if err != nil {
+		k.Logger.Warn("Failed to mark stale sessions: %v", err)
+		// Continue anyway - this is not fatal
+	} else if staleCount > 0 {
+		k.Logger.Info("Marked %d stale session(s) as crashed", staleCount)
+	}
+
+	// Create config snapshot for the session record
+	configJSON, err := persistence.ConfigSnapshotToJSON(k.Config)
+	if err != nil {
+		return fmt.Errorf("failed to serialize config: %w", err)
+	}
+
+	// Create the session record
+	if err := persistence.CreateSession(k.Database, k.Config.SessionID, configJSON); err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+
+	k.Logger.Info("Created session record: %s", k.Config.SessionID)
+	return nil
 }
 
 // startPersistenceWorker begins the database persistence worker goroutine.
