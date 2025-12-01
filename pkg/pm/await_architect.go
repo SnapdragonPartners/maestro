@@ -52,11 +52,18 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
 			}
 
-			// Clear spec-specific data but keep conversation context
+			// Clear all spec and bootstrap data from state - the spec has been
+			// submitted and we don't want stale data prepended to future hotfixes.
+			// The conversation context still has the spec history for PM reference.
 			d.SetStateData("draft_spec_markdown", nil)
+			d.SetStateData("draft_spec", nil)
+			d.SetStateData("spec_markdown", nil)
 			d.SetStateData("spec_metadata", nil)
-			// Keep bootstrap requirements - project is bootstrapped and ready for hotfixes
-			// d.SetStateData(StateKeyBootstrapRequirements, nil)
+			d.SetStateData("spec_uploaded", nil)
+			d.SetStateData("infrastructure_spec", nil)
+			d.SetStateData("user_spec", nil)
+			d.SetStateData(StateKeyBootstrapRequirements, nil)
+			d.SetStateData(StateKeyDetectedPlatform, nil)
 			d.SetStateData("bootstrap_params", nil)
 
 			// Mark that we're in post-approval mode (development in progress)
