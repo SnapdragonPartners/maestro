@@ -201,14 +201,32 @@ func (k *Kernel) Stop() error {
 		k.Logger.Info("✅ Compose cleanup complete")
 	}
 
-	// Stop dispatcher first (no new messages).
+	// Cancel context FIRST to stop all producers from sending to persistence channel.
+	// This prevents "send on closed channel" panics when we drain the queue.
+	k.cancel()
+
+	// Stop dispatcher (it will notice context cancellation).
 	if k.Dispatcher != nil {
-		if err := k.Dispatcher.Stop(k.ctx); err != nil {
+		// Use a fresh context since k.ctx is now cancelled.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := k.Dispatcher.Stop(stopCtx); err != nil {
 			k.Logger.Error("Error stopping dispatcher: %v", err)
 		}
+		stopCancel()
 	}
 
-	// Drain persistence queue BEFORE closing database.
+	// Stop web server (it notices context cancellation).
+	if k.WebServer != nil {
+		k.Logger.Info("Web server stopping via context cancellation")
+	}
+
+	// Stop LLM factory (stops rate limiter refill timers).
+	if k.LLMFactory != nil {
+		k.LLMFactory.Stop()
+		k.Logger.Info("LLM factory stopped (rate limiter refill timers terminated)")
+	}
+
+	// Now that producers are stopped, drain persistence queue BEFORE closing database.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := k.DrainPersistenceQueue(drainCtx); err != nil {
 		k.Logger.Warn("Persistence queue drain issue: %v", err)
@@ -220,21 +238,6 @@ func (k *Kernel) Stop() error {
 		if err := k.Database.Close(); err != nil {
 			k.Logger.Error("Error closing database: %v", err)
 		}
-	}
-
-	// Cancel context to signal shutdown to other services.
-	k.cancel()
-
-	// Stop web server if running.
-	if k.WebServer != nil {
-		// Web server stops via context cancellation.
-		k.Logger.Info("Web server will stop via context cancellation")
-	}
-
-	// Stop LLM factory (stops rate limiter refill timers).
-	if k.LLMFactory != nil {
-		k.LLMFactory.Stop()
-		k.Logger.Info("LLM factory stopped (rate limiter refill timers terminated)")
 	}
 
 	k.running = false
