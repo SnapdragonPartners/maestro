@@ -31,11 +31,24 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			return proto.StateError, fmt.Errorf("expected RESPONSE message, got %s", msg.Type)
 		}
 
-		// Parse ApprovalResponsePayload from the message
+		// Parse the typed payload - could be approval response or story completion
 		typedPayload := msg.GetTypedPayload()
 		if typedPayload == nil {
 			d.logger.Error("❌ No typed payload in RESPONSE message")
 			return proto.StateError, fmt.Errorf("no typed payload in RESPONSE message")
+		}
+
+		// Check payload kind to determine how to handle
+		switch typedPayload.Kind {
+		case proto.PayloadKindStoryComplete:
+			// Story completion notification - handle and stay in current state
+			return d.handleStoryCompleteNotification(typedPayload)
+
+		case proto.PayloadKindApprovalResponse:
+			// Continue with approval handling below
+		default:
+			d.logger.Warn("⚠️ Unexpected payload kind in AWAIT_ARCHITECT: %s", typedPayload.Kind)
+			return proto.StateError, fmt.Errorf("unexpected payload kind: %s", typedPayload.Kind)
 		}
 
 		approvalResult, err := typedPayload.ExtractApprovalResponse()
@@ -101,4 +114,38 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 		// Keep spec in state data for potential resubmission
 		return StateWorking, nil
 	}
+}
+
+// handleStoryCompleteNotification processes a story completion notification from architect.
+// This injects a message into the PM's context so it can inform the user.
+func (d *Driver) handleStoryCompleteNotification(payload *proto.MessagePayload) (proto.State, error) {
+	storyComplete, err := payload.ExtractStoryComplete()
+	if err != nil {
+		d.logger.Error("❌ Failed to parse story_complete payload: %v", err)
+		return proto.StateError, fmt.Errorf("failed to parse story_complete payload: %w", err)
+	}
+
+	// Log the completion
+	if storyComplete.IsHotfix {
+		d.logger.Info("🔧 Hotfix story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
+	} else {
+		d.logger.Info("✅ Story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
+	}
+
+	// Inject a user message so PM can inform the user about the completion
+	completionMsg := fmt.Sprintf(
+		"A story has been completed by the development team. Story: %q (ID: %s). ",
+		storyComplete.Title, storyComplete.StoryID)
+	if storyComplete.IsHotfix {
+		completionMsg += "This was a hotfix request. "
+	}
+	if storyComplete.Summary != "" {
+		completionMsg += fmt.Sprintf("Summary: %s ", storyComplete.Summary)
+	}
+	completionMsg += "Use chat_ask_user to inform the user about this progress and ask if they need anything else."
+
+	d.contextManager.AddMessage("user", completionMsg)
+
+	// Transition to WORKING so PM can generate a response to inform the user
+	return StateWorking, nil
 }
