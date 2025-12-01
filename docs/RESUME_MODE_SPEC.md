@@ -536,7 +536,7 @@ func markStaleSessions(db *sql.DB) error {
 | 7. Graceful Shutdown Flow | ✅ Complete | WaitForAgentsShutdown(), performGracefulShutdown(), session status update |
 | 8. Agent State Restoration | ✅ Complete | RestoreState() for coder, architect, PM with context manager restore |
 | 9. Resume Flow Integration | ✅ Complete | -continue flag, ResumeFlow, GetMostRecentResumableSession(), SetSessionID() |
-| 10. Integration Testing | ⏳ Pending | |
+| 10. Integration Testing | ✅ Complete | 11 tests: session lifecycle, state persistence (coder/architect/PM), context serialization, cleanup |
 
 ---
 
