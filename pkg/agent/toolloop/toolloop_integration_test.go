@@ -863,3 +863,78 @@ func TestGracefulShutdownPreservesContext(t *testing.T) {
 		t.Errorf("Deserialized context has %d messages, expected %d", len(messages2), len(messages))
 	}
 }
+
+// TestGracefulShutdownDuringLLMCall tests that context cancellation during LLM call
+// is treated as graceful shutdown, not as an LLM error.
+func TestGracefulShutdownDuringLLMCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// LLM client that cancels context during the call
+	llmClient := &cancelingLLMClient{
+		cancel: cancel,
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+	}
+
+	var callbackInvoked bool
+	var callbackIteration int
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+		OnShutdown: func(iteration int) {
+			callbackInvoked = true
+			callbackIteration = iteration
+		},
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should get graceful shutdown, NOT LLM error
+	if out.Kind != toolloop.OutcomeGracefulShutdown {
+		t.Fatalf("Expected OutcomeGracefulShutdown when context cancelled during LLM call, got %v with error: %v", out.Kind, out.Err)
+	}
+
+	// Verify callback was invoked
+	if !callbackInvoked {
+		t.Error("OnShutdown callback was not invoked when context cancelled during LLM call")
+	}
+
+	// Should be iteration 1 since cancellation happened during first LLM call
+	if callbackIteration != 1 {
+		t.Errorf("Expected callback iteration 1, got %d", callbackIteration)
+	}
+
+	// Verify it's ErrGracefulShutdown, not a wrapped LLM error
+	if !errors.Is(out.Err, toolloop.ErrGracefulShutdown) {
+		t.Errorf("Expected ErrGracefulShutdown, got: %v", out.Err)
+	}
+}
+
+// cancelingLLMClient is a mock LLM client that cancels the context during Complete().
+type cancelingLLMClient struct {
+	cancel context.CancelFunc
+}
+
+func (c *cancelingLLMClient) Complete(ctx context.Context, _ agent.CompletionRequest) (agent.CompletionResponse, error) {
+	// Cancel the context to simulate shutdown during LLM call
+	c.cancel()
+	// Return context.Canceled as real LLM clients would when cancelled
+	return agent.CompletionResponse{}, context.Canceled
+}
+
+func (c *cancelingLLMClient) Stream(_ context.Context, _ agent.CompletionRequest) (<-chan agent.StreamChunk, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (c *cancelingLLMClient) GetModelName() string {
+	return "canceling-mock"
+}

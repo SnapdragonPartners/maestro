@@ -4,6 +4,7 @@ package toolloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -270,6 +271,18 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		duration := time.Since(start)
 
 		if err != nil {
+			// Check if this is a context cancellation (graceful shutdown during LLM call)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				tl.logger.Info("🛑 Graceful shutdown requested during LLM call at iteration %d", currentIteration)
+				if cfg.OnShutdown != nil {
+					cfg.OnShutdown(currentIteration)
+				}
+				return Outcome[T]{
+					Kind:      OutcomeGracefulShutdown,
+					Err:       ErrGracefulShutdown,
+					Iteration: currentIteration,
+				}
+			}
 			tl.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
 			return Outcome[T]{
 				Kind:      OutcomeLLMError,
