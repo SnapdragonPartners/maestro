@@ -3,7 +3,6 @@ package architect
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/git"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/proto"
 )
 
@@ -218,99 +218,79 @@ The knowledge graph is critical for architectural consistency. Take time to merg
 	return fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit:\n\n%s", conflictInfo)
 }
 
-// attemptPRMerge attempts to merge a PR using GitHub CLI.
+// attemptPRMerge attempts to merge a PR using the centralized GitHub client.
 func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID string) (*MergeAttemptResult, error) {
-	// Use gh CLI to merge PR with squash strategy and branch deletion.
-	mergeCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	d.logger.Debug("🔀 Checking GitHub CLI availability")
-	// Check if gh is available.
-	if _, err := exec.LookPath("gh"); err != nil {
-		d.logger.Error("🔀 GitHub CLI not found in PATH: %v", err)
-		return nil, fmt.Errorf("gh (GitHub CLI) is not available in PATH: %w", err)
+	// Get GitHub client from config (pure API calls, no workdir needed)
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		return nil, fmt.Errorf("git repo_url not configured")
 	}
 
-	// If no PR URL provided, use branch name to find or create the PR.
-	var cmd *exec.Cmd
-	var output []byte
-	var err error
+	ghClient, err := github.NewClientFromRemote(cfg.Git.RepoURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GitHub client: %w", err)
+	}
+	ghClient = ghClient.WithTimeout(2 * time.Minute)
 
-	if prURL == "" || prURL == " " {
-		if branchName == "" {
-			d.logger.Error("🔀 No PR URL or branch name provided for merge")
-			return nil, fmt.Errorf("no PR URL or branch name provided for merge")
-		}
-
+	// Determine the PR reference (URL or branch)
+	var prRef string
+	if prURL != "" && prURL != " " {
+		prRef = prURL
+		d.logger.Info("🔀 Attempting to merge PR: %s", prURL)
+	} else if branchName != "" {
+		// Check if PR exists for branch, create if needed
 		d.logger.Info("🔀 Looking for existing PR for branch: %s", branchName)
-		// First, try to find an existing PR for this branch.
-		listCmd := exec.CommandContext(mergeCtx, "gh", "pr", "list", "--head", branchName, "--json", "number,url")
-		d.logger.Debug("🔀 Executing: %s", listCmd.String())
-		listOutput, listErr := listCmd.CombinedOutput()
-		d.logger.Debug("🔀 PR list output: %s", string(listOutput))
-
-		if listErr == nil && len(listOutput) > 0 && string(listOutput) != "[]" {
-			// Found existing PR, try to merge it.
-			d.logger.Info("🔀 Found existing PR, attempting merge for branch: %s", branchName)
-			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
-			d.logger.Debug("🔀 Executing merge: %s", cmd.String())
-			output, err = cmd.CombinedOutput()
-		} else {
-			// No PR found, create one first then merge.
+		prs, listErr := ghClient.ListPRsForBranch(ctx, branchName)
+		if listErr != nil || len(prs) == 0 {
+			// No PR found, create one
 			d.logger.Info("🔀 No existing PR found, creating new PR for branch: %s", branchName)
-
-			// Create PR.
-			createCmd := exec.CommandContext(mergeCtx, "gh", "pr", "create",
-				"--title", fmt.Sprintf("Story merge: %s", storyID),
-				"--body", fmt.Sprintf("Automated merge for story %s", storyID),
-				"--base", "main",
-				"--head", branchName)
-			d.logger.Debug("🔀 Executing PR create: %s", createCmd.String())
-			createOutput, createErr := createCmd.CombinedOutput()
-			d.logger.Debug("🔀 PR create output: %s", string(createOutput))
-
-			if createErr != nil {
-				d.logger.Error("🔀 Failed to create PR for branch %s: %v\nOutput: %s", branchName, createErr, string(createOutput))
-				return nil, fmt.Errorf("failed to create PR for branch %s: %w\nOutput: %s", branchName, createErr, string(createOutput))
+			targetBranch := cfg.Git.TargetBranch
+			if targetBranch == "" {
+				targetBranch = github.DefaultBranch
 			}
-
-			d.logger.Info("🔀 PR created successfully, now attempting merge")
-			// Now try to merge the newly created PR.
-			cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", branchName, "--squash", "--delete-branch")
-			d.logger.Debug("🔀 Executing merge: %s", cmd.String())
-			output, err = cmd.CombinedOutput()
+			pr, createErr := ghClient.CreatePR(ctx, github.PRCreateOptions{
+				Title: fmt.Sprintf("Story merge: %s", storyID),
+				Body:  fmt.Sprintf("Automated merge for story %s", storyID),
+				Head:  branchName,
+				Base:  targetBranch,
+			})
+			if createErr != nil {
+				return nil, fmt.Errorf("failed to create PR for branch %s: %w", branchName, createErr)
+			}
+			prRef = fmt.Sprintf("%d", pr.Number)
+			d.logger.Info("🔀 PR #%d created successfully", pr.Number)
+		} else {
+			prRef = fmt.Sprintf("%d", prs[0].Number)
+			d.logger.Info("🔀 Found existing PR #%d for branch: %s", prs[0].Number, branchName)
 		}
 	} else {
-		d.logger.Info("🔀 Attempting to merge PR URL: %s", prURL)
-		cmd = exec.CommandContext(mergeCtx, "gh", "pr", "merge", prURL, "--squash", "--delete-branch")
-		d.logger.Debug("🔀 Executing merge: %s", cmd.String())
-		output, err = cmd.CombinedOutput()
+		return nil, fmt.Errorf("no PR URL or branch name provided for merge")
 	}
 
-	d.logger.Debug("🔀 Merge command output: %s", string(output))
-	result := &MergeAttemptResult{}
-
+	// Attempt merge with squash and delete branch
+	mergeResult, err := ghClient.MergePRWithResult(ctx, prRef, github.PRMergeOptions{
+		Method:       "squash",
+		DeleteBranch: true,
+	})
 	if err != nil {
-		d.logger.Error("🔀 Merge command failed: %v\nOutput: %s", err, string(output))
-
-		// Check if error is due to merge conflicts.
-		outputStr := strings.ToLower(string(output))
-		if strings.Contains(outputStr, "conflict") || strings.Contains(outputStr, "merge conflict") {
-			d.logger.Warn("🔀 Merge conflicts detected: %s", string(output))
-			result.HasConflicts = true
-			result.ConflictInfo = string(output)
-			return result, nil // Not an error, just conflicts
-		}
-
-		// Other error (permissions, network, etc.).
-		return nil, fmt.Errorf("gh pr merge failed: %w\nOutput: %s", err, string(output))
+		return nil, fmt.Errorf("merge failed: %w", err)
 	}
 
-	d.logger.Info("🔀 Merge command completed successfully")
-	// Success - merge completed successfully
+	// Convert to local result type
+	result := &MergeAttemptResult{
+		HasConflicts: mergeResult.HasConflicts,
+		ConflictInfo: mergeResult.ConflictInfo,
+		CommitSHA:    mergeResult.SHA,
+	}
 
-	// TODO: Parse commit SHA from gh output if needed
-	result.CommitSHA = "merged" // Placeholder until we parse actual SHA
+	if result.HasConflicts {
+		d.logger.Warn("🔀 Merge conflicts detected")
+	} else {
+		d.logger.Info("🔀 Merge completed successfully")
+	}
 
 	return result, nil
 }
