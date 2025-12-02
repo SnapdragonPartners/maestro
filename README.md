@@ -10,7 +10,7 @@ In some ways, it's an agent orchestration tool. But unlike most others, Maestro 
 
 ## Project Status
 
-Maestro is still pre-release and under active development although it is now functional for basic projects. For the time being it is still recommended for technical users and potential project contributors until we get to v1.0.0.
+Maestro is feature complete for its initial release but not yet production ready. The project is actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
 
 ---
 
@@ -269,7 +269,7 @@ Maestro supports an alternative coder implementation that uses [Claude Code](htt
 ```json
 {
   "agents": {
-    "coder_mode": "claudecode"
+    "coder_mode": "claude-code"
   }
 }
 ```

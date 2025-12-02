@@ -181,6 +181,12 @@ func (r *Runner) parseOutput(stdout, stderr string) Result {
 
 // RunWithInactivityTimeout executes Claude Code with inactivity detection.
 // This wraps Run() with additional monitoring for stalled sessions.
+//
+// Note: Since Run() is a blocking call that doesn't provide streaming output,
+// inactivity detection is limited. The timeout manager's inactivity channel is
+// used to detect if the process appears stalled (no completion within inactivity
+// timeout). If the run completes with output, it's considered active regardless
+// of how long it took.
 func (r *Runner) RunWithInactivityTimeout(ctx context.Context, opts *RunOptions) (Result, error) {
 	// Create a timeout manager
 	tm := NewTimeoutManager(opts.TotalTimeout, opts.InactivityTimeout)
@@ -196,8 +202,14 @@ func (r *Runner) RunWithInactivityTimeout(ctx context.Context, opts *RunOptions)
 	// Run Claude Code
 	result, err := r.Run(ctx, opts)
 
-	// Check if we hit inactivity timeout
-	if tm.IsInactivityExpired() {
+	// If the run produced output (responses > 0), record activity to prevent
+	// false inactivity detection. The session wasn't stalled - it was working.
+	if result.ResponseCount > 0 {
+		tm.RecordActivity()
+	}
+
+	// Check if we hit inactivity timeout (only relevant if no output was produced)
+	if tm.IsInactivityExpired() && result.ResponseCount == 0 {
 		result.Signal = SignalInactivity
 		if result.Error == nil {
 			result.Error = &streamError{message: "Claude Code session stalled - no output for " + opts.InactivityTimeout.String()}
