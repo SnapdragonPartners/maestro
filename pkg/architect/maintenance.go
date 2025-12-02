@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/templates/maintenance"
 )
 
@@ -124,8 +125,6 @@ func (d *Driver) dispatchMaintenanceSpec(spec *maintenance.Spec) {
 
 // runProgrammaticMaintenance executes non-LLM maintenance tasks.
 // Context is used for cancellation of long-running GitHub API calls.
-//
-//nolint:revive,unparam // ctx reserved for future GitHub API cancellation support
 func (d *Driver) runProgrammaticMaintenance(ctx context.Context, cfg *config.MaintenanceConfig) (*ProgrammaticReport, error) {
 	report := &ProgrammaticReport{}
 
@@ -146,9 +145,30 @@ func (d *Driver) runProgrammaticMaintenance(ctx context.Context, cfg *config.Mai
 		return report, nil
 	}
 
-	// Import github package and call CleanupMergedBranches
-	// This is deferred to the maintenance package for cleaner separation
-	d.logger.Info("🔧 Branch cleanup would run here (implementation in pkg/maintenance/)")
+	// Create GitHub client from repo URL
+	ghClient, err := github.NewClientFromRemote(globalCfg.Git.RepoURL)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("failed to create GitHub client: %v", err))
+		return report, nil // Return partial report, don't fail whole maintenance
+	}
+
+	// Determine target branch (default to main)
+	targetBranch := "main"
+	if globalCfg.Git.TargetBranch != "" {
+		targetBranch = globalCfg.Git.TargetBranch
+	}
+
+	// Get protected patterns from config
+	protectedPatterns := cfg.BranchCleanup.ProtectedPatterns
+
+	// Run branch cleanup
+	d.logger.Info("🔧 Running branch cleanup (target: %s, protected: %v)", targetBranch, protectedPatterns)
+	deleted, cleanupErr := ghClient.CleanupMergedBranches(ctx, targetBranch, protectedPatterns)
+	if cleanupErr != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("branch cleanup failed: %v", cleanupErr))
+	} else {
+		report.BranchesDeleted = deleted
+	}
 
 	return report, nil
 }

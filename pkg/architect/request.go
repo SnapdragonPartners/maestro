@@ -202,6 +202,12 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	approvalType := approvalPayload.ApprovalType
 	approvalIDString := proto.GetApprovalID(requestMsg)
 
+	// Check if this is a maintenance story - use lighter review
+	storyID := proto.GetStoryID(requestMsg)
+	if story, exists := d.queue.GetStory(storyID); exists && story.IsMaintenance {
+		return d.handleMaintenanceApproval(ctx, requestMsg, approvalPayload)
+	}
+
 	// Check if this approval type should use iteration pattern
 	useIteration := approvalType == proto.ApprovalTypeCode || approvalType == proto.ApprovalTypeCompletion
 
@@ -1127,5 +1133,45 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	}
 
 	d.logger.Info("✅ Built question response via iterative exploration")
+	return response, nil
+}
+
+// handleMaintenanceApproval provides a lighter review process for maintenance stories.
+// Maintenance stories are auto-approved since they only make low-risk changes
+// (documentation, tests, knowledge sync) and have already passed CI.
+func (d *Driver) handleMaintenanceApproval(_ context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	approvalIDString := proto.GetApprovalID(requestMsg)
+	storyID := proto.GetStoryID(requestMsg)
+
+	d.logger.Info("🔧 Processing maintenance approval for story %s (type: %s)", storyID, approvalType)
+
+	// Create approval result - auto-approve maintenance stories
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  approvalIDString,
+		Type:       approvalType,
+		Status:     proto.ApprovalStatusApproved,
+		Feedback:   "✅ Maintenance story auto-approved. Low-risk changes (documentation, tests, or knowledge sync) do not require detailed review.",
+		ReviewedBy: d.GetAgentID(),
+		ReviewedAt: time.Now().UTC(),
+	}
+
+	// Create RESPONSE using unified protocol with typed approval response payload
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+
+	// Set typed approval response payload
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+
+	// Copy story_id from request metadata for dispatcher validation
+	if storyIDVal, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
+		proto.SetStoryID(response, storyIDVal)
+	}
+
+	// Copy approval_id to metadata
+	proto.SetApprovalID(response, approvalResult.ID)
+
+	d.logger.Info("🔧 ✅ Maintenance story %s auto-approved", storyID)
 	return response, nil
 }

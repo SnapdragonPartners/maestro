@@ -28,6 +28,7 @@ func (t *SubmitStoriesTool) PromptDocumentation() string {
     - platform (string, REQUIRED) - Identified platform (e.g., "go", "python", "nodejs")
     - requirements (array, REQUIRED) - Array of requirement objects with title, description, acceptance_criteria, dependencies, and story_type
     - hotfix (boolean, OPTIONAL) - If true, routes stories to the hotfix queue (generally 1 story for hotfixes)
+    - maintenance (boolean, OPTIONAL) - If true, routes stories to the maintenance queue with auto-merge enabled
   - Call this when you have completed spec analysis and extracted all requirements`
 }
 
@@ -87,6 +88,10 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 					Type:        "boolean",
 					Description: "If true, routes stories to the dedicated hotfix queue (generally 1 story for hotfixes)",
 				},
+				"maintenance": {
+					Type:        "boolean",
+					Description: "If true, routes stories to the maintenance queue with auto-merge enabled",
+				},
 			},
 			Required: []string{"analysis", "platform", "requirements"},
 		},
@@ -94,6 +99,8 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 }
 
 // Exec executes the tool with the given arguments.
+//
+//nolint:cyclop // Complexity from validation and flag handling is acceptable
 func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Validate required fields
 	analysis, ok := args["analysis"].(string)
@@ -143,10 +150,20 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 		isHotfix = hotfix
 	}
 
-	// Determine signal based on hotfix flag
+	// Check for maintenance flag (optional, defaults to false)
+	isMaintenance := false
+	if maint, ok := args["maintenance"].(bool); ok {
+		isMaintenance = maint
+	}
+
+	// Determine signal and queue type based on flags
+	// Priority: maintenance > hotfix > normal
 	signal := SignalStoriesSubmitted
 	queueType := "main"
-	if isHotfix {
+	if isMaintenance {
+		signal = SignalMaintenanceSubmitted
+		queueType = "maintenance"
+	} else if isHotfix {
 		signal = SignalHotfixSubmit
 		queueType = "hotfix"
 	}
@@ -162,6 +179,7 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 				"platform":     platform,
 				"requirements": requirements,
 				"hotfix":       isHotfix,
+				"maintenance":  isMaintenance,
 			},
 		},
 	}, nil
