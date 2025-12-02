@@ -252,12 +252,13 @@ func TestClaudeCodeStreamParsingIntegration(t *testing.T) {
 	// Run Claude Code directly and capture stream-json output
 	t.Run("capture_stream_json", func(t *testing.T) {
 		// Build command manually to test stream parsing
+		// Note: prompt is positional argument, not a flag
 		cmd := []string{
 			"claude",
 			"--print",
 			"--output-format", "stream-json",
 			"--verbose",
-			"--prompt", "Say hello and nothing else. Just say 'Hello!' and stop.",
+			"Say hello and nothing else. Just say 'Hello!' and stop.",
 		}
 
 		result, err := executor.Run(ctx, cmd, &dockerexec.Opts{

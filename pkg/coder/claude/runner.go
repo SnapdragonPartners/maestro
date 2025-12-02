@@ -103,8 +103,8 @@ func (r *Runner) buildCommand(opts *RunOptions) []string {
 		cmd = append(cmd, "--append-system-prompt", opts.SystemPrompt)
 	}
 
-	// Add the prompt/input
-	cmd = append(cmd, "--prompt", opts.InitialInput)
+	// Add the prompt/input as positional argument (not a flag)
+	cmd = append(cmd, opts.InitialInput)
 
 	return cmd
 }
