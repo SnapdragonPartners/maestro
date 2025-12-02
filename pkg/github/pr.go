@@ -9,24 +9,26 @@ import (
 )
 
 // PullRequest represents a GitHub pull request.
+// Field names match gh CLI --json output (GraphQL field names).
 //
 //nolint:govet // Logical grouping preferred over memory optimization
 type PullRequest struct {
-	Number    int    `json:"number"`
-	URL       string `json:"url"`
-	HTMLURL   string `json:"html_url"`
-	Title     string `json:"title"`
-	State     string `json:"state"`
-	Head      Branch `json:"head"`
-	Base      Branch `json:"base"`
-	Merged    bool   `json:"merged"`
-	Mergeable *bool  `json:"mergeable,omitempty"`
+	Number      int    `json:"number"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	State       string `json:"state"`       // OPEN, CLOSED, MERGED
+	HeadRefName string `json:"headRefName"` // Branch name (gh CLI)
+	HeadRefOid  string `json:"headRefOid"`  // Commit SHA (gh CLI)
+	BaseRefName string `json:"baseRefName"` // Target branch name (gh CLI)
+	BaseRefOid  string `json:"baseRefOid"`  // Target commit SHA (gh CLI)
+	Closed      bool   `json:"closed"`      // Whether PR is closed
+	MergedAt    string `json:"mergedAt"`    // Non-empty if merged
+	Mergeable   string `json:"mergeable"`   // MERGEABLE, CONFLICTING, or UNKNOWN
 }
 
-// Branch represents a git branch reference.
-type Branch struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+// IsMerged returns true if the PR has been merged.
+func (pr *PullRequest) IsMerged() bool {
+	return pr.MergedAt != ""
 }
 
 // PRCreateOptions contains options for creating a pull request.
@@ -49,7 +51,7 @@ func (c *Client) ListPRs(ctx context.Context, state string) ([]PullRequest, erro
 	args := []string{
 		"pr", "list",
 		"--repo", c.RepoPath(),
-		"--json", "number,url,title,state,head,base,merged",
+		"--json", "number,url,title,state,headRefName,headRefOid,baseRefName,baseRefOid,closed,mergedAt",
 	}
 
 	if state != "" {
@@ -70,7 +72,7 @@ func (c *Client) ListPRsForBranch(ctx context.Context, branch string) ([]PullReq
 		"pr", "list",
 		"--repo", c.RepoPath(),
 		"--head", branch,
-		"--json", "number,url,title,state,head,base,merged",
+		"--json", "number,url,title,state,headRefName,headRefOid,baseRefName,baseRefOid,closed,mergedAt",
 	}
 
 	var prs []PullRequest
@@ -86,7 +88,7 @@ func (c *Client) GetPR(ctx context.Context, ref string) (*PullRequest, error) {
 	args := []string{
 		"pr", "view", ref,
 		"--repo", c.RepoPath(),
-		"--json", "number,url,title,state,head,base,merged,mergeable",
+		"--json", "number,url,title,state,headRefName,headRefOid,baseRefName,baseRefOid,closed,mergedAt,mergeable",
 	}
 
 	var pr PullRequest
@@ -265,20 +267,48 @@ func (c *Client) EnablePRAutoMerge(ctx context.Context, prNumber int, method str
 		method = "SQUASH"
 	}
 
+	// First, get the PR's GraphQL node ID (required for the mutation)
+	nodeID, err := c.getPRNodeID(ctx, prNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR node ID: %w", err)
+	}
+
 	// Use GraphQL mutation for auto-merge
 	query := fmt.Sprintf(`mutation {
-		enablePullRequestAutoMerge(input: {pullRequestId: "%d", mergeMethod: %s}) {
+		enablePullRequestAutoMerge(input: {pullRequestId: "%s", mergeMethod: %s}) {
 			clientMutationId
 		}
-	}`, prNumber, method)
+	}`, nodeID, method)
 
 	args := []string{"api", "graphql", "-f", fmt.Sprintf("query=%s", query)}
-	_, err := c.run(ctx, args...)
+	_, err = c.run(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("failed to enable auto-merge: %w", err)
 	}
 
 	return nil
+}
+
+// getPRNodeID retrieves the GraphQL node ID for a pull request.
+func (c *Client) getPRNodeID(ctx context.Context, prNumber int) (string, error) {
+	args := []string{
+		"pr", "view", fmt.Sprintf("%d", prNumber),
+		"--repo", c.RepoPath(),
+		"--json", "id",
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := c.runJSON(ctx, &result, args...); err != nil {
+		return "", fmt.Errorf("failed to get PR #%d: %w", prNumber, err)
+	}
+
+	if result.ID == "" {
+		return "", fmt.Errorf("PR #%d has no node ID", prNumber)
+	}
+
+	return result.ID, nil
 }
 
 // PRComment represents a comment on a pull request.

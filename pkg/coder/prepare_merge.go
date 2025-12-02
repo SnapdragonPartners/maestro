@@ -254,13 +254,12 @@ func (c *Coder) getOrCreatePullRequest(ctx context.Context, storyID, headBranch,
 		return "", fmt.Errorf("PR creation failed: %w", err)
 	}
 
-	if pr.URL != "" {
-		c.logger.Info("🔀 PR ready: %s", pr.URL)
-		return pr.URL, nil
+	if pr.URL == "" {
+		return "", fmt.Errorf("PR created but no URL returned")
 	}
 
-	// Fallback to HTML URL if URL is empty
-	return pr.HTMLURL, nil
+	c.logger.Info("🔀 PR ready: %s", pr.URL)
+	return pr.URL, nil
 }
 
 // isRecoverableGitError determines if a git error is recoverable (should return to CODING) or unrecoverable (ERROR).
