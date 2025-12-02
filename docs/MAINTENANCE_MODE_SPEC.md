@@ -490,276 +490,78 @@ The implementation follows existing patterns:
 
 | Component | File | Integration |
 |-----------|------|-------------|
-| PM State Machine | `pkg/pm/driver.go` | Add maintenance trigger after UAT |
-| PM States | `pkg/pm/states.go` | Track specs_completed counter |
-| Bootstrap | `pkg/bootstrap/artifacts.go` | Add GitHub workflow generation |
-| Config | `pkg/config/config.go` | Add maintenance config section |
-| Submit Stories | `pkg/tools/submit_stories.go` | Add `is_maintenance` flag |
-| Architect Queue | `pkg/architect/queue.go` | Handle maintenance specs |
+| Architect State Machine | `pkg/architect/driver.go` | Add maintenance trigger after spec completion |
+| Architect Queue | `pkg/architect/queue.go` | Track specs completed, detect all stories done |
+| GitHub Client | `pkg/github/` | Centralized GitHub API operations (created in Phase 1) |
+| Bootstrap | `pkg/bootstrap/workflows.go` | GitHub workflow generation (created in Phase 1) |
+| Config | `pkg/config/config.go` | Maintenance config section (created in Phase 1) |
 | Story Templates | `pkg/maintenance/stories.go` | Fixed maintenance story definitions |
 
 ---
 
-### Phase 1: Configuration & Bootstrap (Stories 1-3)
+### Phase 1: Configuration & Bootstrap (Stories 1-3) ✅ COMPLETE
 
-#### Story 1: Maintenance Configuration Schema
+#### Story 1: Maintenance Configuration Schema ✅
+
+**Implementation Notes:**
+- Added `MaintenanceConfig` struct to `pkg/config/config.go` with all fields
+- Added defaults in `createDefaultConfig()` and `applyDefaults()`
+- Added `TestMaintenanceConfigDefaults` test
+- All task toggles default to `true` for opinionated defaults
+
+---
+
+#### Story 2: GitHub API Integration for Bootstrap ✅
+
+**Implementation Notes:**
+- Created centralized `pkg/github/` package with unified GitHub client wrapping `gh` CLI
+- `pkg/github/client.go` - Core Client struct, URL parsing, API helpers
+- `pkg/github/pr.go` - PR listing, creation, merging, auto-merge, comments
+- `pkg/github/repo.go` - Repository settings, security features
+- `pkg/github/branch.go` - Branch listing, deletion, merged branch cleanup
+- Refactored `pkg/bootstrap/github.go` to use centralized package
+- Added comprehensive integration tests in `pkg/github/integration_test.go`
+- Fixed `EnablePRAutoMerge` to use GraphQL node ID (not PR number)
+
+---
+
+#### Story 3: Workflow File Generation ✅
+
+**Implementation Notes:**
+- Created `pkg/bootstrap/workflows.go` with `WorkflowGenerator`
+- Generates `dependabot.yml` with platform-to-ecosystem mapping
+- Generates `ci.yml` with platform-specific setup steps (Go, Node, Python, Rust, Java)
+- Generates `dependabot-auto-merge.yml` for patch auto-merge
+- Added comprehensive tests in `pkg/bootstrap/workflows_test.go`
+
+---
+
+### Phase 2: Architect Maintenance Tracking (Stories 4-5) ✅ COMPLETE
+
+#### Story 4: Maintenance State in Architect
+
+**Rationale:**
+The architect is the correct location for maintenance tracking because:
+1. Architect receives merge results from coders via `handleWorkAccepted()`
+2. Architect tracks stories by spec via `Queue.stories[].SpecID`
+3. Architect knows when all stories for a spec are done
+4. PM only submits specs and doesn't track story completion
 
 **Files to modify:**
-- `pkg/config/config.go` - Add MaintenanceConfig struct
-- `pkg/config/defaults.go` - Add default values
+- `pkg/architect/driver.go` - Add maintenance state tracking
+- `pkg/architect/queue.go` - Add spec completion detection
 
 **Implementation:**
 
 ```go
-// pkg/config/config.go
-
-// MaintenanceConfig holds maintenance mode settings
-type MaintenanceConfig struct {
-    Enabled    bool                    `json:"enabled"`
-    AfterSpecs int                     `json:"after_specs"`
-    Tasks      MaintenanceTasksConfig  `json:"tasks"`
-    BranchCleanup BranchCleanupConfig  `json:"branch_cleanup"`
-    TodoScan   TodoScanConfig          `json:"todo_scan"`
-}
-
-type MaintenanceTasksConfig struct {
-    BranchCleanup     bool `json:"branch_cleanup"`
-    KnowledgeSync     bool `json:"knowledge_sync"`
-    DocsVerification  bool `json:"docs_verification"`
-    TodoScan          bool `json:"todo_scan"`
-    DeferredReview    bool `json:"deferred_review"`
-    TestCoverage      bool `json:"test_coverage"`
-}
-
-type BranchCleanupConfig struct {
-    ProtectedPatterns []string `json:"protected_patterns"`
-}
-
-type TodoScanConfig struct {
-    Markers []string `json:"markers"`
-}
-
-// Add to Config struct:
-type Config struct {
-    // ... existing fields ...
-    Maintenance MaintenanceConfig `json:"maintenance"`
-}
-```
-
-**Acceptance Criteria:**
-- [ ] MaintenanceConfig struct defined with all fields
-- [ ] Default values set (enabled=true, after_specs=1)
-- [ ] Config validation for after_specs > 0
-- [ ] Schema version incremented
-- [ ] Unit tests for config parsing
-
----
-
-#### Story 2: GitHub API Integration for Bootstrap
-
-**Files to create:**
-- `pkg/bootstrap/github.go` - GitHub API integration functions
-
-**Files to modify:**
-- `pkg/bootstrap/phase.go` - Add GitHub setup phase
-- `pkg/bootstrap/artifacts.go` - Add workflow templates
-
-**Implementation:**
-
-```go
-// pkg/bootstrap/github.go
-
-package bootstrap
-
-import (
-    "context"
-    "fmt"
-    "os/exec"
-)
-
-// GitHubSetup configures GitHub repository settings via API
-type GitHubSetup struct {
-    Owner string
-    Repo  string
-}
-
-// EnableSecurityFeatures enables dependabot and vulnerability alerts
-func (g *GitHubSetup) EnableSecurityFeatures(ctx context.Context) error {
-    // Enable dependabot security updates
-    if err := g.runGH(ctx, "api", "-X", "PUT",
-        fmt.Sprintf("/repos/%s/%s/automated-security-fixes", g.Owner, g.Repo)); err != nil {
-        // Log warning but don't fail - might not have permissions
-        log.Printf("Warning: could not enable dependabot: %v", err)
-    }
-
-    // Enable vulnerability alerts
-    if err := g.runGH(ctx, "api", "-X", "PUT",
-        fmt.Sprintf("/repos/%s/%s/vulnerability-alerts", g.Owner, g.Repo)); err != nil {
-        log.Printf("Warning: could not enable vulnerability alerts: %v", err)
-    }
-
-    // Enable auto-merge setting
-    if err := g.runGH(ctx, "api", "-X", "PATCH",
-        fmt.Sprintf("/repos/%s/%s", g.Owner, g.Repo),
-        "-f", "allow_auto_merge=true"); err != nil {
-        log.Printf("Warning: could not enable auto-merge: %v", err)
-    }
-
-    return nil
-}
-
-func (g *GitHubSetup) runGH(ctx context.Context, args ...string) error {
-    cmd := exec.CommandContext(ctx, "gh", args...)
-    return cmd.Run()
-}
-```
-
-**Acceptance Criteria:**
-- [ ] GitHubSetup struct with Owner/Repo fields
-- [ ] EnableSecurityFeatures() calls all 3 API endpoints
-- [ ] Errors logged as warnings, not failures (graceful degradation)
-- [ ] Called during bootstrap phase after git init
-- [ ] Unit tests with mocked gh command
-
----
-
-#### Story 3: Workflow File Generation
-
-**Files to modify:**
-- `pkg/bootstrap/artifacts.go` - Add workflow file templates
-
-**Templates to create:**
-
-```go
-// pkg/bootstrap/artifacts.go
-
-// Add to existing artifact generation
-
-var dependabotYAMLTemplate = `version: 2
-updates:
-  - package-ecosystem: "{{.Ecosystem}}"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-`
-
-var ciWorkflowTemplate = `name: CI
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run tests
-        run: {{.TestTarget}}
-`
-
-var dependabotAutoMergeTemplate = `name: Dependabot Auto-merge
-on: pull_request
-
-permissions:
-  contents: write
-  pull-requests: write
-
-jobs:
-  dependabot:
-    runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
-    steps:
-      - name: Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@v2
-        with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-      - name: Enable auto-merge for patch updates
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        run: gh pr merge --auto --merge "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-`
-
-// PlatformToEcosystem maps detected platform to dependabot ecosystem
-var PlatformToEcosystem = map[string]string{
-    "go":     "gomod",
-    "node":   "npm",
-    "python": "pip",
-    "rust":   "cargo",
-    "java":   "maven",
-    "react":  "npm",
-}
-
-func (g *ArtifactGenerator) GenerateGitHubWorkflows(platform, testTarget string) error {
-    // Skip if .github/workflows already exists with user files
-    if g.hasUserWorkflows() {
-        return nil
-    }
-
-    ecosystem := PlatformToEcosystem[platform]
-    if ecosystem == "" {
-        ecosystem = "gomod" // fallback
-    }
-
-    // Generate dependabot.yml
-    g.writeTemplate(".github/dependabot.yml", dependabotYAMLTemplate,
-        map[string]string{"Ecosystem": ecosystem})
-
-    // Generate CI workflow
-    g.writeTemplate(".github/workflows/ci.yml", ciWorkflowTemplate,
-        map[string]string{"TestTarget": testTarget})
-
-    // Generate dependabot auto-merge workflow
-    g.writeTemplate(".github/workflows/dependabot-auto-merge.yml",
-        dependabotAutoMergeTemplate, nil)
-
-    return nil
-}
-```
-
-**Acceptance Criteria:**
-- [ ] Platform-to-ecosystem mapping for all supported platforms
-- [ ] dependabot.yml template with ecosystem substitution
-- [ ] ci.yml template with test target substitution
-- [ ] dependabot-auto-merge.yml template (static)
-- [ ] Skip generation if user workflows already exist
-- [ ] Unit tests for template rendering
-
----
-
-### Phase 2: PM Maintenance Tracking (Stories 4-5)
-
-#### Story 4: Maintenance State in PM
-
-**Files to modify:**
-- `pkg/pm/driver.go` - Add maintenance state tracking
-- `pkg/pm/states.go` - Add maintenance-related state data keys
-
-**Implementation:**
-
-```go
-// pkg/pm/states.go
-
-// Add state data keys
-const (
-    StateKeySpecsCompleted        = "specs_completed"
-    StateKeyLastMaintenanceTime   = "last_maintenance_time"
-    StateKeyMaintenanceInProgress = "maintenance_in_progress"
-)
-
-// pkg/pm/driver.go
+// pkg/architect/driver.go
 
 // MaintenanceTracker tracks maintenance cycle state
 type MaintenanceTracker struct {
     SpecsCompleted    int
     LastMaintenance   time.Time
     InProgress        bool
+    mutex             sync.Mutex
 }
 
 // Add to Driver struct
@@ -768,12 +570,17 @@ type Driver struct {
     maintenance MaintenanceTracker
 }
 
-// OnSpecUATComplete called when a spec passes UAT
-func (d *Driver) OnSpecUATComplete(specID string) {
-    d.maintenance.SpecsCompleted++
+// onSpecComplete is called when all stories for a spec are done
+// Called from handleWorkAccepted when a story completes and queue detects spec completion
+func (d *Driver) onSpecComplete(specID string) {
+    d.maintenance.mutex.Lock()
+    defer d.maintenance.mutex.Unlock()
 
-    cfg := config.GetConfig()
-    if !cfg.Maintenance.Enabled {
+    d.maintenance.SpecsCompleted++
+    d.logger.Info("📊 Spec %s completed. Total specs completed: %d", specID, d.maintenance.SpecsCompleted)
+
+    cfg, err := config.GetConfig()
+    if err != nil || !cfg.Maintenance.Enabled {
         return
     }
 
@@ -785,30 +592,80 @@ func (d *Driver) OnSpecUATComplete(specID string) {
 // triggerMaintenanceCycle initiates maintenance mode
 func (d *Driver) triggerMaintenanceCycle() {
     if d.maintenance.InProgress {
-        d.logger.Info("Maintenance already in progress, skipping")
+        d.logger.Info("🔧 Maintenance already in progress, skipping")
         return
     }
 
     d.maintenance.InProgress = true
     d.maintenance.SpecsCompleted = 0
+    d.logger.Info("🔧 Triggering maintenance cycle")
 
-    // Generate and submit maintenance spec
-    spec := d.generateMaintenanceSpec()
-    d.submitMaintenanceSpec(spec)
+    // Generate maintenance spec and add to queue
+    spec := maintenance.GenerateSpec()
+    d.dispatchMaintenanceStories(spec)
+}
+
+// pkg/architect/queue.go
+
+// CheckSpecComplete returns true if all stories for a spec are done
+func (q *Queue) CheckSpecComplete(specID string) bool {
+    q.mutex.RLock()
+    defer q.mutex.RUnlock()
+
+    for _, story := range q.stories {
+        if story.SpecID == specID && story.GetStatus() != StatusDone {
+            return false
+        }
+    }
+    return true
+}
+
+// GetSpecStoryCount returns total and completed story counts for a spec
+func (q *Queue) GetSpecStoryCount(specID string) (total, completed int) {
+    q.mutex.RLock()
+    defer q.mutex.RUnlock()
+
+    for _, story := range q.stories {
+        if story.SpecID == specID {
+            total++
+            if story.GetStatus() == StatusDone {
+                completed++
+            }
+        }
+    }
+    return
 }
 ```
 
 **Acceptance Criteria:**
-- [ ] MaintenanceTracker struct with counter and timestamp
-- [ ] OnSpecUATComplete() increments counter
-- [ ] Trigger fires when threshold reached
-- [ ] Guard against multiple concurrent maintenance cycles
-- [ ] Counter resets after trigger
-- [ ] Unit tests for trigger conditions
+- [x] MaintenanceTracker struct with counter and mutex
+- [x] onSpecComplete() called when all stories for a spec are done
+- [x] CheckSpecComplete() correctly detects spec completion
+- [x] Trigger fires when threshold reached
+- [x] Guard against multiple concurrent maintenance cycles
+- [x] Counter resets after trigger
+- [x] Unit tests for trigger conditions
+
+**Implementation Notes:**
+- Added `MaintenanceTracker` struct to `pkg/architect/driver.go`
+- Created `pkg/architect/maintenance.go` with tracking functions:
+  - `onSpecComplete()` - Called when all stories for a spec are done
+  - `triggerMaintenanceCycle()` - Initiates maintenance cycle
+  - `runMaintenanceTasks()` - Executes programmatic and LLM maintenance
+  - `dispatchMaintenanceSpec()` - Converts maintenance stories to queue
+  - `completeMaintenanceCycle()` - Marks cycle as complete
+  - `GetMaintenanceStatus()` - Returns current cycle status
+- Added spec completion detection to `pkg/architect/queue.go`:
+  - `CheckSpecComplete()` - Returns true if all stories for spec are done
+  - `GetSpecStoryCount()` - Returns total and completed story counts
+  - `GetUniqueSpecIDs()` - Returns all unique spec IDs in queue
+  - `AddMaintenanceStory()` - Adds maintenance story to queue
+- Added `checkSpecCompletion()` hook in `handleWorkAccepted`
+- Added `IsMaintenance` field to `persistence.Story` struct
 
 ---
 
-#### Story 5: Maintenance Spec Generation
+#### Story 5: Maintenance Spec Generation ✅
 
 **Files to create:**
 - `pkg/maintenance/spec.go` - Maintenance spec generation
@@ -1009,12 +866,32 @@ If tests reveal a code bug:
 ```
 
 **Acceptance Criteria:**
-- [ ] GenerateSpec() creates valid maintenance spec
-- [ ] All 5 story templates defined with acceptance criteria
-- [ ] Stories conditionally included based on config.Tasks
-- [ ] AutoMerge and SkipUAT flags set correctly
-- [ ] IsMaintenance flag propagates to story routing
-- [ ] Unit tests for spec generation
+- [x] GenerateSpec() creates valid maintenance spec
+- [x] All 5 story templates defined with acceptance criteria
+- [x] Stories conditionally included based on config.Tasks
+- [x] AutoMerge and SkipUAT flags set correctly
+- [x] IsMaintenance flag propagates to story routing
+- [x] Unit tests for spec generation
+
+**Implementation Notes:**
+- Created `pkg/maintenance/spec.go` with:
+  - `Spec` struct for maintenance specifications
+  - `Story` struct for maintenance stories
+  - `GenerateSpec()` - Creates spec with stories based on config
+  - `GenerateSpecWithID()` - Creates spec with custom ID
+- Created `pkg/maintenance/stories.go` with story templates:
+  - `KnowledgeSyncStory()` - Knowledge graph synchronization
+  - `DocsVerificationStory()` - Documentation accuracy verification
+  - `TodoScanStory()` - TODO/deprecated code scanning
+  - `DeferredReviewStory()` - Deferred knowledge node review
+  - `TestCoverageStory()` - Test coverage improvement
+- Created `pkg/maintenance/spec_test.go` with comprehensive tests:
+  - `TestGenerateSpec` - Full spec generation
+  - `TestGenerateSpecWithDisabledTasks` - Conditional story inclusion
+  - `TestGenerateSpecWithCustomID` - Custom ID support
+  - `TestTodoScanStoryMarkers` - Marker configuration
+  - `TestStoryTemplates` - All template validation
+  - `TestDefaultMarkersUsed` - Default marker fallback
 
 ---
 
@@ -1022,8 +899,10 @@ If tests reveal a code bug:
 
 #### Story 6: Programmatic Branch Cleanup
 
+**Note:** Uses existing `pkg/github` package with `CleanupMergedBranches` function.
+
 **Files to create:**
-- `pkg/maintenance/cleanup.go` - Programmatic maintenance tasks
+- `pkg/maintenance/cleanup.go` - Programmatic maintenance tasks (thin wrapper)
 
 **Implementation:**
 
@@ -1035,9 +914,10 @@ package maintenance
 import (
     "context"
     "fmt"
-    "os/exec"
     "path/filepath"
-    "strings"
+
+    "orchestrator/pkg/config"
+    "orchestrator/pkg/github"
 )
 
 // ProgrammaticReport holds results of programmatic maintenance tasks
@@ -1047,14 +927,27 @@ type ProgrammaticReport struct {
 }
 
 // RunProgrammaticTasks executes non-LLM maintenance tasks
-func RunProgrammaticTasks(ctx context.Context, cfg *config.MaintenanceConfig,
-    owner, repo string) (*ProgrammaticReport, error) {
-
+func RunProgrammaticTasks(ctx context.Context, cfg *config.MaintenanceConfig) (*ProgrammaticReport, error) {
     report := &ProgrammaticReport{}
 
+    // Get GitHub client from config
+    globalCfg, err := config.GetConfig()
+    if err != nil {
+        return nil, fmt.Errorf("failed to get config: %w", err)
+    }
+    if globalCfg.Git == nil || globalCfg.Git.RepoURL == "" {
+        return nil, fmt.Errorf("git repo_url not configured")
+    }
+
+    ghClient, err := github.NewClientFromRemote(globalCfg.Git.RepoURL)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create GitHub client: %w", err)
+    }
+
+    // Use centralized GitHub client for branch cleanup
     if cfg.Tasks.BranchCleanup {
-        deleted, err := cleanupStaleBranches(ctx, owner, repo,
-            cfg.BranchCleanup.ProtectedPatterns)
+        deleted, err := cleanupStaleBranches(ctx, ghClient,
+            cfg.BranchCleanup.ProtectedPatterns, globalCfg.Git.TargetBranch)
         if err != nil {
             report.Errors = append(report.Errors,
                 fmt.Sprintf("branch cleanup: %v", err))
@@ -1065,79 +958,44 @@ func RunProgrammaticTasks(ctx context.Context, cfg *config.MaintenanceConfig,
     return report, nil
 }
 
-func cleanupStaleBranches(ctx context.Context, owner, repo string,
-    protected []string) ([]string, error) {
+func cleanupStaleBranches(ctx context.Context, ghClient *github.Client,
+    protected []string, targetBranch string) ([]string, error) {
 
-    // Get list of branches
-    cmd := exec.CommandContext(ctx, "gh", "api",
-        fmt.Sprintf("repos/%s/%s/branches", owner, repo),
-        "--paginate", "-q", ".[].name")
-    output, err := cmd.Output()
-    if err != nil {
-        return nil, fmt.Errorf("failed to list branches: %w", err)
+    if targetBranch == "" {
+        targetBranch = "main"
     }
 
-    branches := strings.Split(strings.TrimSpace(string(output)), "\n")
-    var deleted []string
-
-    for _, branch := range branches {
-        if branch == "" {
-            continue
-        }
-
-        // Skip protected branches
-        if isProtected(branch, protected) {
-            continue
-        }
-
-        // Check if merged to main
-        if !isMergedToMain(ctx, branch) {
-            continue
-        }
-
-        // Delete the branch
-        delCmd := exec.CommandContext(ctx, "gh", "api", "-X", "DELETE",
-            fmt.Sprintf("repos/%s/%s/git/refs/heads/%s", owner, repo, branch))
-        if err := delCmd.Run(); err != nil {
-            continue // Skip branches that fail to delete
-        }
-
-        deleted = append(deleted, branch)
+    // Use existing CleanupMergedBranches from pkg/github/branch.go
+    // This already handles listing branches, checking merge status, and deletion
+    deleted, err := ghClient.CleanupMergedBranches(ctx, targetBranch, protected)
+    if err != nil {
+        return nil, fmt.Errorf("failed to cleanup branches: %w", err)
     }
 
     return deleted, nil
 }
 
-func isProtected(branch string, patterns []string) bool {
+// isProtectedBranch checks if a branch name matches protected patterns
+// (Utility function if needed for custom filtering beyond ghClient.CleanupMergedBranches)
+func isProtectedBranch(branch string, patterns []string) bool {
     for _, pattern := range patterns {
         if matched, _ := filepath.Match(pattern, branch); matched {
             return true
         }
-        // Exact match
         if branch == pattern {
             return true
         }
     }
     return false
 }
-
-func isMergedToMain(ctx context.Context, branch string) bool {
-    cmd := exec.CommandContext(ctx, "git", "branch", "--merged", "main")
-    output, err := cmd.Output()
-    if err != nil {
-        return false
-    }
-    return strings.Contains(string(output), branch)
-}
 ```
 
 **Acceptance Criteria:**
-- [ ] cleanupStaleBranches() lists and filters branches
-- [ ] isProtected() matches glob patterns and exact names
-- [ ] isMergedToMain() checks merge status correctly
+- [ ] Uses centralized `pkg/github.Client` for all GitHub operations
+- [ ] Leverages existing `CleanupMergedBranches` from `pkg/github/branch.go`
 - [ ] ProgrammaticReport captures results and errors
 - [ ] Graceful handling of API failures
-- [ ] Unit tests with mocked gh/git commands
+- [ ] Unit tests with mocked GitHub client
 
 ---
 
