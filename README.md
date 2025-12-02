@@ -199,6 +199,62 @@ See [docs/wiki/DOCS_WIKI.md](docs/wiki/DOCS_WIKI.md) for user-friendly overview 
 
 ---
 
+## Hotfix Mode
+
+Hotfix mode provides a fast path for urgent, small changes that bypass the normal spec-driven development queue. This mimics the "live team / dev team" pattern common in engineering organizations, where a dedicated rotation handles production issues while the main team continues feature development.
+
+When you need a quick fix without waiting for in-progress feature work to complete:
+
+- **Dedicated coder**: Hotfixes route to a dedicated `hotfix-001` coder, separate from the normal queue
+- **Express execution**: Simple hotfixes skip the planning phase entirely
+- **PM triage**: The PM automatically detects urgent requests and routes them appropriately
+
+Examples of hotfix requests:
+- "URGENT: Fix the login button - it's broken in production"
+- "Quick fix: Update the API endpoint URL"
+- "Hotfix: Typo in the error message"
+
+The architect validates hotfix requests to ensure they don't have dependencies on in-progress work, then dispatches them immediately.
+
+See [docs/HOTFIX_MODE_SPEC.md](docs/HOTFIX_MODE_SPEC.md) for detailed specification.
+
+---
+
+## Maintenance Mode
+
+Maestro includes an automated maintenance system that manages technical debt between specs. After a configurable number of specs complete, maintenance mode triggers automatically and performs:
+
+**Programmatic Tasks** (no LLM required):
+- Deletes merged branches via GitHub API
+- Cleans up stale artifacts
+
+**LLM-Driven Stories** (run as express stories):
+- Knowledge graph synchronization
+- Documentation link verification
+- TODO/FIXME/deprecated code scanning
+- Test coverage improvement suggestions
+
+Maintenance runs autonomously and produces a summary report posted to chat. All maintenance PRs auto-merge after CI passes.
+
+Configuration in `.maestro/config.json`:
+```json
+{
+  "maintenance": {
+    "enabled": true,
+    "after_specs": 1,
+    "stories": {
+      "knowledge_sync": true,
+      "doc_verify": true,
+      "todo_scan": true
+    }
+  }
+}
+```
+
+See [docs/MAINTENANCE_MODE_SPEC.md](docs/MAINTENANCE_MODE_SPEC.md) for detailed specification.
+
+---
+
 ## FAQ
 
 **Q: How do I start a new project?**
