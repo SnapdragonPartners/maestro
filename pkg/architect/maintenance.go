@@ -3,6 +3,7 @@ package architect
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"orchestrator/pkg/config"
@@ -54,8 +55,12 @@ func (d *Driver) triggerMaintenanceCycle(ctx context.Context, cfg *config.Mainte
 
 	d.maintenance.InProgress = true
 	d.maintenance.CurrentCycleID = cycleID
+	d.maintenance.CycleStartedAt = time.Now()
 	d.maintenance.SpecsCompleted = 0
 	d.maintenance.CompletedSpecIDs = nil
+	d.maintenance.StoryResults = make(map[string]*MaintenanceStoryResult)
+	d.maintenance.ProgrammaticReport = nil
+	d.maintenance.Metrics = MaintenanceMetrics{}
 
 	d.logger.Info("🔧 Triggering maintenance cycle: %s", cycleID)
 
@@ -87,6 +92,12 @@ func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *c
 				d.logger.Warn("🔧   Warning: %s", errStr)
 			}
 		}
+
+		// Store programmatic results for report generation
+		d.maintenance.mutex.Lock()
+		d.maintenance.ProgrammaticReport = report
+		d.maintenance.Metrics.BranchesDeleted = len(report.BranchesDeleted)
+		d.maintenance.mutex.Unlock()
 	}
 
 	// Generate maintenance spec with stories based on config
@@ -107,7 +118,10 @@ func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *c
 
 // dispatchMaintenanceSpec converts maintenance stories to queued stories and dispatches them.
 func (d *Driver) dispatchMaintenanceSpec(spec *maintenance.Spec) {
-	// Add maintenance stories to the queue
+	d.maintenance.mutex.Lock()
+	defer d.maintenance.mutex.Unlock()
+
+	// Add maintenance stories to the queue and track them
 	for i := range spec.Stories {
 		mStory := &spec.Stories[i]
 		storyID := fmt.Sprintf("%s-%s", spec.ID, mStory.ID)
@@ -119,6 +133,15 @@ func (d *Driver) dispatchMaintenanceSpec(spec *maintenance.Spec) {
 			mStory.Express,
 			true, // IsMaintenance
 		)
+
+		// Initialize story tracking
+		d.maintenance.StoryResults[storyID] = &MaintenanceStoryResult{
+			StoryID: storyID,
+			Title:   mStory.Title,
+			Status:  "pending",
+		}
+		d.maintenance.Metrics.StoriesTotal++
+
 		d.logger.Info("🔧 Queued maintenance story: %s", mStory.Title)
 	}
 }
@@ -174,15 +197,110 @@ func (d *Driver) runProgrammaticMaintenance(ctx context.Context, cfg *config.Mai
 }
 
 // completeMaintenanceCycle marks a maintenance cycle as complete.
+// It generates a report, saves it to file, and posts it to chat.
+//
+//nolint:contextcheck // Called from background goroutine - uses its own context for chat post
 func (d *Driver) completeMaintenanceCycle(cycleID string) {
 	d.maintenance.mutex.Lock()
-	defer d.maintenance.mutex.Unlock()
 
+	// Generate cycle report from tracking data
+	report := d.generateCycleReportUnsafe()
+
+	// Mark cycle as complete
 	d.maintenance.InProgress = false
 	d.maintenance.LastMaintenance = time.Now()
 	d.maintenance.CurrentCycleID = ""
 
+	d.maintenance.mutex.Unlock()
+
 	d.logger.Info("🔧 Maintenance cycle %s complete", cycleID)
+
+	// Save report to file
+	reportsDir := filepath.Join(d.workDir, ".maestro", "maintenance-reports")
+	savedPath, err := report.SaveToFile(reportsDir)
+	if err != nil {
+		d.logger.Error("🔧 Failed to save maintenance report: %v", err)
+	} else {
+		d.logger.Info("🔧 Maintenance report saved to: %s", savedPath)
+	}
+
+	// Post report summary to chat
+	d.postMaintenanceReport(report)
+}
+
+// generateCycleReportUnsafe creates a CycleReport from current tracking data.
+// Must be called with mutex held.
+func (d *Driver) generateCycleReportUnsafe() *maintenance.CycleReport {
+	// Convert story results to report format
+	stories := make([]*maintenance.StoryResult, 0, len(d.maintenance.StoryResults))
+	for _, result := range d.maintenance.StoryResults {
+		stories = append(stories, &maintenance.StoryResult{
+			StoryID:     result.StoryID,
+			Title:       result.Title,
+			Status:      result.Status,
+			PRNumber:    result.PRNumber,
+			PRMerged:    result.PRMerged,
+			CompletedAt: result.CompletedAt,
+			Summary:     result.Summary,
+		})
+	}
+
+	// Get branch cleanup data
+	var branchesDeleted []string
+	var cleanupErrors []string
+	if d.maintenance.ProgrammaticReport != nil {
+		branchesDeleted = d.maintenance.ProgrammaticReport.BranchesDeleted
+		cleanupErrors = d.maintenance.ProgrammaticReport.Errors
+	}
+
+	// Convert metrics
+	metrics := maintenance.CycleMetrics{
+		StoriesTotal:     d.maintenance.Metrics.StoriesTotal,
+		StoriesCompleted: d.maintenance.Metrics.StoriesCompleted,
+		StoriesFailed:    d.maintenance.Metrics.StoriesFailed,
+		PRsMerged:        d.maintenance.Metrics.PRsMerged,
+		BranchesDeleted:  d.maintenance.Metrics.BranchesDeleted,
+	}
+
+	return maintenance.NewCycleReport(
+		d.maintenance.CurrentCycleID,
+		d.maintenance.CycleStartedAt,
+		branchesDeleted,
+		cleanupErrors,
+		stories,
+		metrics,
+	)
+}
+
+// postMaintenanceReport posts the maintenance report summary to chat.
+func (d *Driver) postMaintenanceReport(report *maintenance.CycleReport) {
+	if d.chatService == nil {
+		d.logger.Debug("🔧 Chat service not available, skipping report post")
+		return
+	}
+
+	// Generate markdown report
+	markdown, err := report.ToMarkdown()
+	if err != nil {
+		d.logger.Error("🔧 Failed to generate markdown report: %v", err)
+		return
+	}
+
+	// Post to chat
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = d.chatService.Post(ctx, &ChatPostRequest{
+		Author:   d.GetAgentID(),
+		Text:     markdown,
+		Channel:  "maintenance",
+		PostType: "maintenance_report",
+	})
+	if err != nil {
+		d.logger.Error("🔧 Failed to post maintenance report to chat: %v", err)
+	} else {
+		d.logger.Info("🔧 Maintenance report posted to chat")
+	}
 }
 
 // ProgrammaticReport holds results of programmatic maintenance tasks.
@@ -201,6 +319,8 @@ func (d *Driver) GetMaintenanceStatus() MaintenanceStatus {
 		CurrentCycleID:  d.maintenance.CurrentCycleID,
 		SpecsCompleted:  d.maintenance.SpecsCompleted,
 		LastMaintenance: d.maintenance.LastMaintenance,
+		CycleStartedAt:  d.maintenance.CycleStartedAt,
+		Metrics:         d.maintenance.Metrics,
 	}
 }
 
@@ -212,4 +332,62 @@ type MaintenanceStatus struct {
 	CurrentCycleID  string
 	SpecsCompleted  int
 	LastMaintenance time.Time
+	CycleStartedAt  time.Time
+	Metrics         MaintenanceMetrics
+}
+
+// OnMaintenanceStoryComplete updates tracking when a maintenance story finishes.
+// Returns true if this completion triggered cycle completion (all stories done).
+func (d *Driver) OnMaintenanceStoryComplete(storyID string, success bool, prNumber int, prMerged bool, summary string) bool {
+	d.maintenance.mutex.Lock()
+	defer d.maintenance.mutex.Unlock()
+
+	// Update story result
+	if result, exists := d.maintenance.StoryResults[storyID]; exists {
+		if success {
+			result.Status = "completed"
+			d.maintenance.Metrics.StoriesCompleted++
+		} else {
+			result.Status = "failed"
+			d.maintenance.Metrics.StoriesFailed++
+		}
+		result.PRNumber = prNumber
+		result.PRMerged = prMerged
+		result.CompletedAt = time.Now()
+		result.Summary = summary
+
+		if prMerged {
+			d.maintenance.Metrics.PRsMerged++
+		}
+
+		d.logger.Info("🔧 Maintenance story %s: %s (PR: %d, merged: %v)",
+			storyID, result.Status, prNumber, prMerged)
+	} else {
+		d.logger.Warn("🔧 Unknown maintenance story completed: %s", storyID)
+	}
+
+	// Check if all stories are complete
+	return d.isMaintenanceCycleCompleteUnsafe()
+}
+
+// isMaintenanceCycleCompleteUnsafe checks if all maintenance stories are done.
+// Must be called with mutex held.
+func (d *Driver) isMaintenanceCycleCompleteUnsafe() bool {
+	for _, result := range d.maintenance.StoryResults {
+		if result.Status == "pending" || result.Status == "in_progress" {
+			return false
+		}
+	}
+	return len(d.maintenance.StoryResults) > 0
+}
+
+// OnMaintenanceStoryStarted updates tracking when a maintenance story begins execution.
+func (d *Driver) OnMaintenanceStoryStarted(storyID string) {
+	d.maintenance.mutex.Lock()
+	defer d.maintenance.mutex.Unlock()
+
+	if result, exists := d.maintenance.StoryResults[storyID]; exists {
+		result.Status = "in_progress"
+		d.logger.Debug("🔧 Maintenance story started: %s", storyID)
+	}
 }
