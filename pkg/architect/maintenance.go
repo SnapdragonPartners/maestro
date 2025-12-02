@@ -337,10 +337,9 @@ type MaintenanceStatus struct {
 }
 
 // OnMaintenanceStoryComplete updates tracking when a maintenance story finishes.
-// Returns true if this completion triggered cycle completion (all stories done).
-func (d *Driver) OnMaintenanceStoryComplete(storyID string, success bool, prNumber int, prMerged bool, summary string) bool {
+// If all stories are complete, this triggers cycle completion (report generation and posting).
+func (d *Driver) OnMaintenanceStoryComplete(storyID string, success bool, prNumber int, prMerged bool, summary string) {
 	d.maintenance.mutex.Lock()
-	defer d.maintenance.mutex.Unlock()
 
 	// Update story result
 	if result, exists := d.maintenance.StoryResults[storyID]; exists {
@@ -367,7 +366,16 @@ func (d *Driver) OnMaintenanceStoryComplete(storyID string, success bool, prNumb
 	}
 
 	// Check if all stories are complete
-	return d.isMaintenanceCycleCompleteUnsafe()
+	cycleComplete := d.isMaintenanceCycleCompleteUnsafe()
+	cycleID := d.maintenance.CurrentCycleID
+
+	// Release mutex before calling completeMaintenanceCycle (which also locks)
+	d.maintenance.mutex.Unlock()
+
+	// Complete the cycle if all stories are done
+	if cycleComplete && cycleID != "" {
+		d.completeMaintenanceCycle(cycleID)
+	}
 }
 
 // isMaintenanceCycleCompleteUnsafe checks if all maintenance stories are done.
