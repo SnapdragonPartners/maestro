@@ -4,83 +4,6 @@ import (
 	"testing"
 )
 
-func TestParseGitHubURL(t *testing.T) {
-	tests := []struct {
-		name      string
-		url       string
-		wantOwner string
-		wantRepo  string
-		wantErr   bool
-	}{
-		{
-			name:      "SSH format",
-			url:       "git@github.com:owner/repo.git",
-			wantOwner: "owner",
-			wantRepo:  "repo",
-			wantErr:   false,
-		},
-		{
-			name:      "SSH format without .git",
-			url:       "git@github.com:owner/repo",
-			wantOwner: "owner",
-			wantRepo:  "repo",
-			wantErr:   false,
-		},
-		{
-			name:      "HTTPS format",
-			url:       "https://github.com/owner/repo.git",
-			wantOwner: "owner",
-			wantRepo:  "repo",
-			wantErr:   false,
-		},
-		{
-			name:      "HTTPS format without .git",
-			url:       "https://github.com/owner/repo",
-			wantOwner: "owner",
-			wantRepo:  "repo",
-			wantErr:   false,
-		},
-		{
-			name:    "Invalid SSH format - missing parts",
-			url:     "git@github.com:owner",
-			wantErr: true,
-		},
-		{
-			name:    "Invalid HTTPS format - missing parts",
-			url:     "https://github.com/owner",
-			wantErr: true,
-		},
-		{
-			name:    "Unsupported format - GitLab",
-			url:     "https://gitlab.com/owner/repo.git",
-			wantErr: true,
-		},
-		{
-			name:    "Unsupported format - random URL",
-			url:     "https://example.com/owner/repo",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			owner, repo, err := parseGitHubURL(tt.url)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseGitHubURL() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if owner != tt.wantOwner {
-					t.Errorf("parseGitHubURL() owner = %v, want %v", owner, tt.wantOwner)
-				}
-				if repo != tt.wantRepo {
-					t.Errorf("parseGitHubURL() repo = %v, want %v", repo, tt.wantRepo)
-				}
-			}
-		})
-	}
-}
-
 func TestNewGitHubManager(t *testing.T) {
 	mgr := NewGitHubManager("test-owner", "test-repo")
 
@@ -98,5 +21,30 @@ func TestNewGitHubManager(t *testing.T) {
 
 	if mgr.logger == nil {
 		t.Error("logger is nil")
+	}
+
+	if mgr.client == nil {
+		t.Error("client is nil")
+	}
+
+	// Verify underlying client has correct owner/repo
+	if mgr.Client().Owner() != "test-owner" {
+		t.Errorf("Client().Owner() = %v, want %v", mgr.Client().Owner(), "test-owner")
+	}
+
+	if mgr.Client().Repo() != "test-repo" {
+		t.Errorf("Client().Repo() = %v, want %v", mgr.Client().Repo(), "test-repo")
+	}
+}
+
+func TestGitHubManagerAccessors(t *testing.T) {
+	mgr := NewGitHubManager("test-owner", "test-repo")
+
+	if mgr.Owner() != "test-owner" {
+		t.Errorf("Owner() = %v, want %v", mgr.Owner(), "test-owner")
+	}
+
+	if mgr.Repo() != "test-repo" {
+		t.Errorf("Repo() = %v, want %v", mgr.Repo(), "test-repo")
 	}
 }
