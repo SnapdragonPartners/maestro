@@ -14,9 +14,12 @@ import (
 )
 
 // retryableCompletion wraps client.Complete with retry logic for transient errors.
+// If all retries fail with transient errors (504, 503, etc.), the test is skipped
+// rather than failed, since sustained API unavailability is an external issue.
 func retryableCompletion(t *testing.T, client llm.LLMClient, req llm.CompletionRequest, maxRetries int) (llm.CompletionResponse, error) {
 	t.Helper()
 	var lastErr error
+	transientFailures := 0
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		resp, err := client.Complete(ctx, req)
@@ -38,12 +41,20 @@ func retryableCompletion(t *testing.T, client llm.LLMClient, req llm.CompletionR
 			return llm.CompletionResponse{}, err
 		}
 
+		transientFailures++
 		lastErr = err
 		if attempt < maxRetries {
 			t.Logf("Attempt %d/%d failed with transient error: %v. Retrying...", attempt, maxRetries, err)
 			time.Sleep(time.Duration(attempt) * 2 * time.Second) // Exponential backoff.
 		}
 	}
+
+	// If all failures were transient (API unavailability), skip rather than fail.
+	// This prevents CI failures due to external service issues.
+	if transientFailures == maxRetries {
+		t.Skipf("Skipping test: Gemini API unavailable after %d attempts (last error: %v)", maxRetries, lastErr)
+	}
+
 	return llm.CompletionResponse{}, lastErr
 }
 

@@ -202,6 +202,12 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 	approvalType := approvalPayload.ApprovalType
 	approvalIDString := proto.GetApprovalID(requestMsg)
 
+	// Check if this is a maintenance story - use lighter review
+	storyID := proto.GetStoryID(requestMsg)
+	if story, exists := d.queue.GetStory(storyID); exists && story.IsMaintenance {
+		return d.handleMaintenanceApproval(ctx, requestMsg, approvalPayload)
+	}
+
 	// Check if this approval type should use iteration pattern
 	useIteration := approvalType == proto.ApprovalTypeCode || approvalType == proto.ApprovalTypeCompletion
 
@@ -594,10 +600,44 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	// 3. Notify PM of story completion (if PM is enabled)
 	d.notifyPMOfCompletion(ctx, storyID, completionSummary)
 
-	// 4. Set state data to signal that work was accepted (for DISPATCHING transition)
+	// 4. Check if spec is complete (for maintenance tracking)
+	d.checkSpecCompletion(ctx, storyID)
+
+	// 5. Set state data to signal that work was accepted (for DISPATCHING transition)
 	d.SetStateData(StateKeyWorkAccepted, true)
 	d.SetStateData(StateKeyAcceptedStoryID, storyID)
 	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
+}
+
+// checkSpecCompletion checks if a story's spec is complete and triggers maintenance if needed.
+func (d *Driver) checkSpecCompletion(ctx context.Context, storyID string) {
+	if d.queue == nil {
+		return
+	}
+
+	// Get the story to find its spec ID
+	story, exists := d.queue.GetStory(storyID)
+	if !exists || story.SpecID == "" {
+		return
+	}
+
+	// Skip maintenance stories (they don't count toward spec completion)
+	if story.IsMaintenance {
+		d.logger.Debug("📊 Story %s is maintenance, skipping spec completion check", storyID)
+		return
+	}
+
+	specID := story.SpecID
+
+	// Check if all stories for this spec are done
+	if d.queue.CheckSpecComplete(specID) {
+		total, completed := d.queue.GetSpecStoryCount(specID)
+		d.logger.Info("📊 Spec %s complete: %d/%d stories done", specID, completed, total)
+		d.onSpecComplete(ctx, specID)
+	} else {
+		total, completed := d.queue.GetSpecStoryCount(specID)
+		d.logger.Debug("📊 Spec %s progress: %d/%d stories done", specID, completed, total)
+	}
 }
 
 // notifyPMOfCompletion sends a story completion notification to PM.
@@ -1093,5 +1133,45 @@ func (d *Driver) buildQuestionResponseFromSubmit(requestMsg *proto.AgentMsg, sub
 	}
 
 	d.logger.Info("✅ Built question response via iterative exploration")
+	return response, nil
+}
+
+// handleMaintenanceApproval provides a lighter review process for maintenance stories.
+// Maintenance stories are auto-approved since they only make low-risk changes
+// (documentation, tests, knowledge sync) and have already passed CI.
+func (d *Driver) handleMaintenanceApproval(_ context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
+	approvalType := approvalPayload.ApprovalType
+	approvalIDString := proto.GetApprovalID(requestMsg)
+	storyID := proto.GetStoryID(requestMsg)
+
+	d.logger.Info("🔧 Processing maintenance approval for story %s (type: %s)", storyID, approvalType)
+
+	// Create approval result - auto-approve maintenance stories
+	approvalResult := &proto.ApprovalResult{
+		ID:         proto.GenerateApprovalID(),
+		RequestID:  approvalIDString,
+		Type:       approvalType,
+		Status:     proto.ApprovalStatusApproved,
+		Feedback:   "✅ Maintenance story auto-approved. Low-risk changes (documentation, tests, or knowledge sync) do not require detailed review.",
+		ReviewedBy: d.GetAgentID(),
+		ReviewedAt: time.Now().UTC(),
+	}
+
+	// Create RESPONSE using unified protocol with typed approval response payload
+	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
+	response.ParentMsgID = requestMsg.ID
+
+	// Set typed approval response payload
+	response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+
+	// Copy story_id from request metadata for dispatcher validation
+	if storyIDVal, exists := requestMsg.Metadata[proto.KeyStoryID]; exists {
+		proto.SetStoryID(response, storyIDVal)
+	}
+
+	// Copy approval_id to metadata
+	proto.SetApprovalID(response, approvalResult.ID)
+
+	d.logger.Info("🔧 ✅ Maintenance story %s auto-approved", storyID)
 	return response, nil
 }

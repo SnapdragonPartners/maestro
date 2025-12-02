@@ -40,6 +40,46 @@ type KnowledgeEntry struct {
 	Timestamp time.Time // When this was recorded
 }
 
+// MaintenanceTracker tracks maintenance cycle state.
+//
+//nolint:govet // Simple tracking struct
+type MaintenanceTracker struct {
+	mutex            sync.Mutex
+	SpecsCompleted   int       // Number of specs completed since last maintenance
+	LastMaintenance  time.Time // When last maintenance cycle ran
+	InProgress       bool      // Whether a maintenance cycle is currently running
+	CurrentCycleID   string    // ID of current maintenance cycle (if in progress)
+	CompletedSpecIDs []string  // IDs of specs that triggered the counter
+	CycleStartedAt   time.Time // When current cycle started
+
+	// Per-story tracking within current maintenance cycle
+	StoryResults       map[string]*MaintenanceStoryResult // Story ID -> result
+	ProgrammaticReport *ProgrammaticReport                // Results from programmatic tasks (branch cleanup)
+	Metrics            MaintenanceMetrics                 // Aggregated metrics for the cycle
+}
+
+// MaintenanceStoryResult tracks the result of a single maintenance story.
+//
+//nolint:govet // Field order for readability
+type MaintenanceStoryResult struct {
+	StoryID     string
+	Title       string
+	Status      string    // pending, in_progress, completed, failed
+	PRNumber    int       // PR number if created
+	PRMerged    bool      // Whether PR was merged
+	CompletedAt time.Time // When story completed
+	Summary     string    // Brief summary of what was done
+}
+
+// MaintenanceMetrics aggregates metrics across a maintenance cycle.
+type MaintenanceMetrics struct {
+	StoriesTotal     int
+	StoriesCompleted int
+	StoriesFailed    int
+	PRsMerged        int
+	BranchesDeleted  int
+}
+
 // Driver manages the state machine for an architect workflow.
 //
 //nolint:govet // fieldalignment: logical grouping preferred over memory optimization
@@ -49,6 +89,7 @@ type Driver struct {
 	contextMutex            sync.RWMutex                          // Protect agentContexts map
 	knowledgeBuffer         []KnowledgeEntry                      // Accumulated knowledge entries for persistence
 	knowledgeMutex          sync.Mutex                            //nolint:unused // Protect knowledgeBuffer (remove nolint when knowledge recording is implemented)
+	maintenance             MaintenanceTracker                    // Maintenance cycle state
 	toolLoop                *toolloop.ToolLoop                    // Tool loop for LLM interactions
 	renderer                *templates.Renderer                   // Template renderer for prompts
 	queue                   *Queue                                // Story queue manager

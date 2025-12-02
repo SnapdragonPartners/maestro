@@ -82,9 +82,10 @@ const (
 	SignalHotfixSubmit      = "HOTFIX_SUBMIT"      // hotfix_submit tool sending hotfix to architect
 
 	// Architect signals.
-	SignalReplySubmitted   = "REPLY_SUBMITTED"   // submit_reply tool answered question
-	SignalReviewComplete   = "REVIEW_COMPLETE"   // review_complete tool finished code review
-	SignalStoriesSubmitted = "STORIES_SUBMITTED" // submit_stories tool submitted story list
+	SignalReplySubmitted       = "REPLY_SUBMITTED"       // submit_reply tool answered question
+	SignalReviewComplete       = "REVIEW_COMPLETE"       // review_complete tool finished code review
+	SignalStoriesSubmitted     = "STORIES_SUBMITTED"     // submit_stories tool submitted story list
+	SignalMaintenanceSubmitted = "MAINTENANCE_SUBMITTED" // submit_stories tool submitted maintenance stories
 
 	// Coder signals.
 	SignalPlanReview   = "PLAN_REVIEW"   // submit_plan tool ready for architect review

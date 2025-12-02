@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 13
+const CurrentSchemaVersion = 14
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -82,6 +82,8 @@ func runMigrations(db *sql.DB, fromVersion, toVersion int) error {
 }
 
 // runMigration applies a specific version migration.
+//
+//nolint:cyclop // Switch over schema versions is inherently linear; extracting sub-functions would obscure flow.
 func runMigration(db *sql.DB, version int) error {
 	switch version {
 	case 1:
@@ -110,6 +112,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion12(db)
 	case 13:
 		return migrateToVersion13(db)
+	case 14:
+		return migrateToVersion14(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -541,6 +545,63 @@ func migrateToVersion13(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion14 adds maintenance cycle tracking tables.
+func migrateToVersion14(db *sql.DB) error {
+	tables := []string{
+		// Maintenance cycle tracking
+		`CREATE TABLE IF NOT EXISTS maintenance_cycles (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			started_at DATETIME NOT NULL,
+			completed_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'failed')),
+			branches_deleted INTEGER DEFAULT 0,
+			stories_total INTEGER DEFAULT 0,
+			stories_completed INTEGER DEFAULT 0,
+			stories_failed INTEGER DEFAULT 0,
+			prs_merged INTEGER DEFAULT 0,
+			report_path TEXT
+		)`,
+
+		// Maintenance story results
+		`CREATE TABLE IF NOT EXISTS maintenance_story_results (
+			id TEXT PRIMARY KEY,
+			cycle_id TEXT NOT NULL REFERENCES maintenance_cycles(id),
+			story_id TEXT NOT NULL,
+			title TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
+			pr_number INTEGER,
+			pr_merged INTEGER DEFAULT 0,
+			completed_at DATETIME,
+			summary TEXT,
+			error_message TEXT
+		)`,
+	}
+
+	// Create tables
+	for _, ddl := range tables {
+		if _, err := db.Exec(ddl); err != nil {
+			return fmt.Errorf("failed to create maintenance table: %w", err)
+		}
+	}
+
+	// Create indices
+	indices := []string{
+		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_session ON maintenance_cycles(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_status ON maintenance_cycles(status)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_stories_cycle ON maintenance_story_results(cycle_id)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_stories_status ON maintenance_story_results(status)",
+	}
+
+	for _, idx := range indices {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create maintenance index: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 //
 //nolint:maintidx // Schema definition is inherently large; keeping it together aids comprehension.
@@ -830,6 +891,35 @@ func createSchema(db *sql.DB) error {
 			bootstrap_params_json TEXT,
 			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
+
+		// Maintenance cycle tracking
+		`CREATE TABLE IF NOT EXISTS maintenance_cycles (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			started_at DATETIME NOT NULL,
+			completed_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'failed')),
+			branches_deleted INTEGER DEFAULT 0,
+			stories_total INTEGER DEFAULT 0,
+			stories_completed INTEGER DEFAULT 0,
+			stories_failed INTEGER DEFAULT 0,
+			prs_merged INTEGER DEFAULT 0,
+			report_path TEXT
+		)`,
+
+		// Maintenance story results
+		`CREATE TABLE IF NOT EXISTS maintenance_story_results (
+			id TEXT PRIMARY KEY,
+			cycle_id TEXT NOT NULL REFERENCES maintenance_cycles(id),
+			story_id TEXT NOT NULL,
+			title TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
+			pr_number INTEGER,
+			pr_merged INTEGER DEFAULT 0,
+			completed_at DATETIME,
+			summary TEXT,
+			error_message TEXT
+		)`,
 	}
 
 	// Create indices
@@ -895,6 +985,12 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_agent_contexts_agent ON agent_contexts(agent_id)",
 		"CREATE INDEX IF NOT EXISTS idx_coder_state_session ON coder_state(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_coder_state_agent ON coder_state(agent_id)",
+
+		// Maintenance mode indices
+		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_session ON maintenance_cycles(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_status ON maintenance_cycles(status)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_stories_cycle ON maintenance_story_results(cycle_id)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_stories_status ON maintenance_story_results(status)",
 	}
 
 	// Execute table creation
