@@ -1568,12 +1568,12 @@ func migrateToVersionN() error {
 ```
 
 **Acceptance Criteria:**
-- [ ] maintenance_cycles table tracks cycle metadata
-- [ ] maintenance_story_results table tracks per-story outcomes
-- [ ] maintenance_todo_findings table stores scan results
-- [ ] Proper foreign keys and indexes
-- [ ] Migration function added to schema.go
-- [ ] Unit tests for schema creation
+- [x] maintenance_cycles table tracks cycle metadata
+- [x] maintenance_story_results table tracks per-story outcomes
+- [ ] maintenance_todo_findings table stores scan results (deferred)
+- [x] Proper foreign keys and indexes
+- [x] Migration function added to schema.go
+- [x] Unit tests for schema creation
 
 ---
 
@@ -1636,12 +1636,30 @@ func TestHotfixSuggestionFlow(t *testing.T) {
 ```
 
 **Acceptance Criteria:**
-- [ ] Unit tests for all maintenance package functions
-- [ ] Integration tests for trigger and dispatch flow
-- [ ] Integration tests for auto-merge behavior
-- [ ] Integration tests for report generation
-- [ ] Tests use mocked external services (gh, git)
+- [x] Unit tests for all maintenance package functions
+- [x] Integration tests for trigger and dispatch flow
+- [x] Integration tests for auto-merge behavior
+- [x] Integration tests for report generation
+- [x] Tests use mocked external services (gh, git)
 - [ ] >80% code coverage for maintenance package
+
+**Implementation Notes (Phase 5 Complete):**
+
+Story 12 - Database Schema:
+- Schema version bumped to 14 with migration support
+- Added `maintenance_cycles` table: id, session_id, timestamps, status, metrics columns
+- Added `maintenance_story_results` table: story tracking with PR info and summaries
+- Added indices for session, status, and cycle_id queries
+- Deferred: `maintenance_todo_findings` table (not needed for MVP, can add with hotfix integration)
+- Added `nolint:cyclop` for runMigration switch (16 cases now)
+
+Story 13 - Integration Tests:
+- Tests added to `pkg/architect/maintenance_test.go`
+- Covered: story tracking initialization, status transitions, metrics aggregation
+- Covered: cycle completion detection (all done, pending, in_progress, empty)
+- Full workflow test: simulates complete maintenance cycle from start to completion
+- MaintenanceStatus copy verification for thread-safe access
+- Template tests already covered in `pkg/templates/maintenance/` (report.go, spec.go)
 
 ---
 
