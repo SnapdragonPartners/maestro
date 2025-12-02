@@ -1,28 +1,28 @@
 # Claude Code Integration Specification
 
 ## Document Status
-- **Status**: Draft
+- **Status**: Draft (Revised)
 - **Created**: 2025-01-07
-- **Last Updated**: 2025-01-07
-- **Version**: 1.0
+- **Last Updated**: 2025-12-02
+- **Version**: 2.0
 
 ## Overview
 
-This specification describes the integration of Claude Code as an alternative coder agent implementation within the Maestro orchestration system. The integration will allow users to select between the traditional LLM+MCP tools approach ("classic mode") and a Claude Code-based approach ("Claude Code mode") via configuration.
+This specification describes the integration of Claude Code as an alternative coder implementation within the Maestro orchestration system. When enabled, Claude Code runs as a subprocess during PLANNING and CODING states, leveraging Anthropic's highly optimized toolsets and prompts while Maestro handles orchestration, architect coordination, testing, and merging.
 
 ### Goals
 
-1. **Leverage Claude Code Optimizations**: Utilize Claude Code's highly optimized planning and coding workflows while maintaining Maestro's orchestration capabilities
-2. **Minimal Divergence**: Share ~80% of coder agent code between classic and Claude Code modes
-3. **Configuration-Based Selection**: Allow users to choose implementation mode per project
-4. **Maintain Orchestration**: Preserve Maestro's multi-agent architecture, review cycles, and architect-coder interactions
-5. **Production Ready**: Robust error handling, comprehensive testing, and observability
+1. **Leverage Claude Code Optimizations**: Use Claude Code's optimized tools (Bash, Read, Write, Edit, Glob, Grep) and prompts for planning and coding phases
+2. **Preserve Orchestration Value**: Maintain Maestro's multi-agent architecture, parallel coders, architect review cycles, and workflow management
+3. **Configuration-Based Selection**: Allow users to choose between standard LLM mode and Claude Code mode via configuration
+4. **Keep Existing Coder as Default**: Standard coder implementation remains unchanged and is the default
+5. **DRY Implementation**: Reuse existing coder infrastructure (communication channels, testing, merging, state persistence)
 
 ### Non-Goals
 
-1. Replacing Maestro's orchestrator with Claude Code as primary entry point
+1. Replacing the entire coder agent with Claude Code (only PLANNING and CODING states)
 2. Replacing architect agent with Claude Code
-3. Supporting mixed mode (classic + Claude Code in same story)
+3. Removing or deprecating the standard coder implementation
 4. Human-in-the-loop interactive mode with Claude Code
 
 ## Architecture
@@ -30,20 +30,29 @@ This specification describes the integration of Claude Code as an alternative co
 ### High-Level Design
 
 ```
-Orchestrator
-    ↓
-CoderBase (shared state machine)
-    ↓
-    ├─→ ClassicCoder (current implementation)
-    │       ↓
-    │   LLM Client + MCP Tools
-    │
-    └─→ ClaudeCodeCoder (new implementation)
-            ↓
-        Claude Code Process
-            ↓
-        Built-in Tools + MCP Bridge Server
+Story Assignment
+       ↓
+┌──────────────────────────────────────────────────────────┐
+│                    Existing Coder Agent                   │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ SETUP → PLANNING → PLAN_REVIEW → CODING → TESTING   │ │
+│  │         ↑                        ↑                   │ │
+│  │    [Claude Code]            [Claude Code]            │ │
+│  │    subprocess               subprocess               │ │
+│  └─────────────────────────────────────────────────────┘ │
+│  CODE_REVIEW → PREPARE_MERGE → AWAIT_MERGE → DONE        │
+│  (existing infrastructure, unchanged)                     │
+└──────────────────────────────────────────────────────────┘
 ```
+
+### Mode Selection
+
+The coder operates in one of two modes based on configuration:
+
+| Mode | PLANNING | CODING | Other States |
+|------|----------|--------|--------------|
+| `standard` (default) | LLM + MCP tools | LLM + MCP tools | Existing impl |
+| `claude-code` | Claude Code subprocess | Claude Code subprocess | Existing impl |
 
 ### Component Architecture
 
@@ -51,174 +60,194 @@ CoderBase (shared state machine)
 maestro/
 ├── pkg/
 │   ├── coder/
-│   │   ├── base.go              # CoderBase - shared state machine (80% reuse)
-│   │   ├── classic.go           # ClassicCoder - LLM+tools implementation
-│   │   ├── claudecode.go        # ClaudeCodeCoder - Claude Code implementation
-│   │   ├── factory.go           # Factory for creating appropriate coder
-│   │   ├── planning.go          # Shared planning helpers
-│   │   ├── coding.go            # Shared coding helpers
-│   │   └── [other shared files] # Testing, effects, context management
-│   │
-│   ├── claudecode/
-│   │   ├── manager.go           # Claude Code process lifecycle management
-│   │   ├── handler.go           # Response parsing and signal detection
-│   │   ├── protocol.go          # Stream-JSON protocol implementation
-│   │   └── bridge/
-│   │       ├── server.go        # MCP bridge server
-│   │       ├── tools.go         # Bridge tool implementations
-│   │       ├── client.go        # Bridge client (for Claude Code)
-│   │       └── protocol.go      # MCP protocol handling
+│   │   ├── driver.go              # Existing coder - add mode branching
+│   │   ├── planning.go            # Standard planning (unchanged)
+│   │   ├── coding.go              # Standard coding (unchanged)
+│   │   ├── claudecode_planning.go # NEW: Claude Code planning handler
+│   │   ├── claudecode_coding.go   # NEW: Claude Code coding handler
+│   │   ├── claude/                # NEW: Claude Code integration sub-package
+│   │   │   ├── runner.go          # Execute Claude Code via container executor
+│   │   │   ├── installer.go       # Auto-install Node.js/npm/Claude Code
+│   │   │   ├── parser.go          # Stream-JSON output parsing
+│   │   │   └── signals.go         # Signal detection from tool calls
+│   │   └── [other files]          # Unchanged (testing, merge, etc.)
 │   │
 │   ├── templates/
-│   │   ├── claudecode_planning.go   # Planning phase prompt template
-│   │   └── claudecode_coding.go     # Coding phase prompt template
+│   │   └── claude/                # NEW: Claude Code prompt templates
+│   │       ├── planning.go        # Planning phase template
+│   │       └── coding.go          # Coding phase template
 │   │
 │   └── config/
-│       └── config.go            # Extended with Claude Code configuration
-│
-└── cmd/
-    └── maestro-bridge-client/
-        └── main.go              # Bridge client binary (for Claude Code MCP)
+│       └── config.go              # Add CoderMode to AgentConfig
 ```
+
+### Process Architecture
+
+Each coder agent manages its own independent Claude Code process:
+
+```
+Orchestrator Process
+    │
+    ├── Coder-001 (agent in orchestrator)
+    │       │
+    │       └── executor.Run("claude --print ...")
+    │               ↓
+    │           Container-001 (ANTHROPIC_API_KEY injected)
+    │           └── Claude Code subprocess
+    │               └── Reads/writes /workspace
+    │
+    ├── Coder-002 (agent in orchestrator)
+    │       │
+    │       └── executor.Run("claude --print ...")
+    │               ↓
+    │           Container-002 (ANTHROPIC_API_KEY injected)
+    │           └── Claude Code subprocess
+    │               └── Reads/writes /workspace
+    │
+    └── ... (up to max_coders concurrent agents)
+```
+
+**Key characteristics:**
+- Claude Code runs **inside the container** via the existing executor infrastructure
+- Each coder has an independent Claude Code process (supports parallelism)
+- Coder agent parses stdout (stream-json format) for completion signals
+- ANTHROPIC_API_KEY is injected as environment variable into the container
+- No additional binaries or socket communication needed
+
+### Container Prerequisites
+
+Claude Code requires Node.js/npm. The runner auto-installs both if missing:
+
+```
+Container startup flow:
+1. Check if `claude` binary exists (which claude)
+2. If missing:
+   a. Check if npm is available (which npm)
+   b. If npm missing, install Node.js/npm:
+      - Try: apt-get update && apt-get install -y nodejs npm
+      - If apt fails, try: apk add --no-cache nodejs npm
+      - If apk fails, try: yum install -y nodejs npm || dnf install -y nodejs npm
+   c. Install Claude Code: npm install -g @anthropic-ai/claude-code
+   d. Verify: claude --version
+3. If all installation attempts fail → Fatal error
+4. Proceed with Claude Code execution
+```
+
+**Container requirements:**
+- Root or sudo access for package installation (typical in containers)
+- Network access for initial installation
+- Write access to npm global directory
+
+**Recommended**: Pre-install in the base container image to avoid installation delay:
+```dockerfile
+# In project Dockerfile
+RUN apt-get update && apt-get install -y nodejs npm \
+    && npm install -g @anthropic-ai/claude-code
+```
+
+**Note**: First-run installation adds ~30-60 seconds. Subsequent runs use cached installation.
 
 ## Design Principles
 
-### 1. Shared State Machine
+### 1. Minimal Coder Modification
 
-Both classic and Claude Code coders share the same state machine structure:
-
-```
-PLANNING → PLAN_REVIEW → CODING → TESTING → CODE_REVIEW →
-AWAIT_APPROVAL → PREPARE_MERGE → DONE
-```
-
-**Shared States** (in `CoderBase`):
-- PLAN_REVIEW: Architect reviews plan (identical for both modes)
-- CODE_REVIEW: Architect reviews code (identical for both modes)
-- TESTING: Run automated tests (identical for both modes)
-- AWAIT_APPROVAL: Wait for architect approval (identical for both modes)
-- PREPARE_MERGE: Prepare merge request (identical for both modes)
-- QUESTION: Handle architect questions (identical for both modes)
-- BUDGET_REVIEW: Budget exceeded handling (identical for both modes)
-- ERROR: Error state (identical for both modes)
-- DONE: Completion (identical for both modes)
-
-**Divergent States** (implemented differently):
-- PLANNING: How plan is generated (LLM+tools vs Claude Code)
-- CODING: How code is generated (LLM+tools vs Claude Code)
-
-### 2. Strategy Pattern for Divergence
+The existing `Coder` struct in `driver.go` gains mode awareness with minimal changes:
 
 ```go
-// pkg/coder/base.go
-type CoderBase struct {
-    // Shared fields
-    agentID           string
-    workDir           string
-    dispatcher        *dispatch.Dispatcher
-    llmClient         agent.LLMClient  // Only used by classic
-    contextManager    *contextmgr.Manager
-    renderer          *templates.Renderer
-    persistenceChannel chan<- *persistence.Request
-    chatService       *chat.Service
+// In driver.go - add to Coder struct
+type Coder struct {
+    // ... existing fields ...
 
-    // Strategy interfaces for divergent behavior
-    planningHandler   PlanningHandler
-    codingHandler     CodingHandler
-
-    // Shared state
-    sm                *agent.BaseStateMachine
-    todoList          *TodoList
-    logger            *logx.Logger
+    // Claude Code mode (nil when mode is "standard")
+    claudeCodeManager *claudecode.Manager
 }
 
-// Strategy interfaces
-type PlanningHandler interface {
-    ExecutePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error)
-}
-
-type CodingHandler interface {
-    ExecuteCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error)
-}
-
-// State machine dispatcher delegates to appropriate handler
-func (c *CoderBase) Run(ctx context.Context) {
-    switch currentState {
-    case StatePlanning:
-        return c.planningHandler.ExecutePlanning(ctx, c.sm)
-    case StateCoding:
-        return c.codingHandler.ExecuteCoding(ctx, c.sm)
-    case StatePlanReview:
-        return c.handlePlanReview(ctx, c.sm)  // Shared implementation
-    case StateCodeReview:
-        return c.handleCodeReview(ctx, c.sm)  // Shared implementation
-    // ... other shared state handlers
+// Mode branching in state handlers
+func (c *Coder) handlePlanning(ctx context.Context) (proto.State, bool, error) {
+    if c.claudeCodeManager != nil {
+        return c.handleClaudeCodePlanning(ctx)  // New file: claudecode_planning.go
     }
+    return c.handleStandardPlanning(ctx)  // Existing: planning.go
+}
+
+func (c *Coder) handleCoding(ctx context.Context) (proto.State, bool, error) {
+    if c.claudeCodeManager != nil {
+        return c.handleClaudeCodeCoding(ctx)  // New file: claudecode_coding.go
+    }
+    return c.handleStandardCoding(ctx)  // Existing: coding.go
 }
 ```
 
-### 3. Container Lifecycle Alignment
+### 2. Claude Code Execution via Executor
 
-Claude Code process lifecycle aligns with container lifecycle:
+Claude Code runs inside the coder's container using the existing executor infrastructure:
 
-**PLANNING Phase Container** (read-only mount):
-```
-1. Start container with ro mount
-2. Launch Claude Code process
-3. Execute PLANNING state (Claude Code running)
-4. Handle PLAN_REVIEW, QUESTION states (Claude Code still running)
-5. Terminate Claude Code process
-6. Stop container
-```
-
-**CODING Phase Container** (read-write mount):
-```
-1. Start container with rw mount
-2. Launch Claude Code process with approved plan context
-3. Execute CODING state (Claude Code running)
-4. Handle TESTING, CODE_REVIEW, QUESTION, BUDGET_REVIEW states (Claude Code still running)
-5. Terminate Claude Code process on DONE or ERROR
-6. Stop container
+**Launch Command:**
+```bash
+claude \
+  --print \
+  --output-format stream-json \
+  --input-format stream-json \
+  --dangerously-skip-permissions \
+  --append-system-prompt "$(cat /tmp/maestro-prompt.md)" \
+  --model "$CODER_MODEL"
 ```
 
-**Key Points**:
-- Claude Code process runs for entire container lifecycle (PLANNING or CODING phase)
-- State transitions within a phase are transparent to Claude Code (just user messages)
-- Only PLANNING→CODING transition requires container/process restart
+**Key flags:**
+- `--print` - Non-interactive mode, output to stdout
+- `--output-format stream-json` - Streaming JSONL for real-time parsing
+- `--input-format stream-json` - JSONL input for multi-turn conversations
+- `--dangerously-skip-permissions` - Bypass permission prompts (container is sandboxed)
+- `--append-system-prompt` - **Preserves Claude Code's optimized defaults** while adding Maestro context
+- `--model` - Uses `coder_model` from config (must be Anthropic model)
+
+**Container Lifecycle Alignment:**
+- PLANNING: Container with read-only workspace mount → Claude Code explores codebase
+- CODING: Container with read-write workspace mount → Claude Code implements changes
+
+### 3. Signal Detection via Tool Call Parsing
+
+Claude Code signals completion by calling "virtual" maestro tools defined in the appended system prompt. The coder agent parses stream-json output to detect these tool calls:
+
+| Tool Call | Purpose | Detected Signal |
+|-----------|---------|-----------------|
+| `maestro_submit_plan` | Submit plan for architect review | `PLAN_COMPLETE` |
+| `maestro_done` | Signal implementation complete | `DONE` |
+| `maestro_ask_question` | Ask architect for guidance | `QUESTION` |
+| `maestro_mark_complete` | Story already implemented | `STORY_COMPLETE` |
+
+**How it works:**
+1. System prompt defines maestro_* tools with specific schemas
+2. Claude Code calls these tools like any other tool
+3. Coder agent parses stdout for tool_use blocks matching `maestro_*`
+4. Signal is extracted and state transition occurs
+5. Tool result is injected back via stdin if conversation continues
 
 ## Component Specifications
 
-### 1. Claude Code Process Manager
+### 1. Claude Code Runner
 
-**File**: `pkg/claudecode/manager.go`
+**File**: `pkg/coder/claude/runner.go`
 
-**Responsibilities**:
-- Start Claude Code process within coder container via `docker exec`
-- Manage stdin/stdout/stderr pipes with stream-json protocol
-- Parse responses and detect completion signals
-- Handle graceful restart (one attempt on failure)
-- Clean shutdown and resource cleanup
-
-**Key Types**:
+Executes Claude Code via the existing container executor infrastructure:
 
 ```go
-package claudecode
+package claude
 
-type Manager struct {
-    containerName string
-    executor      exec.Executor
-    cmd           *exec.Cmd
-    stdin         io.WriteCloser
-    stdout        *bufio.Reader
-    stderr        *bufio.Reader
-    sessionID     string
-    workDir       string
-    mode          Mode  // PLANNING or CODING
-    logger        *logx.Logger
+type Runner struct {
+    executor exec.Executor
+    logger   *logx.Logger
+}
 
-    // State
-    running       bool
-    mu            sync.Mutex
+type RunOptions struct {
+    Mode             Mode              // PLANNING or CODING
+    WorkDir          string            // Container workspace path
+    Model            string            // Anthropic model (from coder_model config)
+    SystemPrompt     string            // Appended system prompt with maestro tools
+    InitialInput     string            // Story content or approved plan
+    EnvVars          map[string]string // ANTHROPIC_API_KEY, etc.
+    TotalTimeout     time.Duration     // Max time for entire run (default: 5m)
+    InactivityTimeout time.Duration    // Max time without output (default: 1m)
 }
 
 type Mode string
@@ -228,29 +257,30 @@ const (
     ModeCoding   Mode = "CODING"
 )
 
-type StartOptions struct {
-    Mode              Mode
-    SessionID         string
-    WorkDir           string
-    StoryContent      string     // For PLANNING
-    ApprovedPlan      string     // For CODING
-    SystemPrompt      string
-    BridgeConfigPath  string
-    AgentID           string
+// EnsureInstalled checks if Claude Code is installed and installs it if needed
+func (r *Runner) EnsureInstalled(ctx context.Context) error {
+    // 1. Check if claude binary exists: which claude
+    // 2. If not found, install via npm: npm install -g @anthropic-ai/claude-code
+    // 3. Verify installation: claude --version
+    // 4. Return error if installation fails
 }
 
-type Message struct {
-    Role    string `json:"role"`    // "user" or "assistant"
-    Content string `json:"content"`
+// Run executes Claude Code and returns when a terminal signal is detected
+func (r *Runner) Run(ctx context.Context, opts RunOptions) (*Result, error) {
+    // 0. Ensure Claude Code is installed
+    // 1. Build command with flags
+    // 2. Execute via container executor
+    // 3. Parse stream-json output for signals
+    // 4. Handle maestro_ask_question by pausing and resuming
+    // 5. Return result with signal and extracted data
 }
 
-type Response struct {
-    Type         string      `json:"type"`         // "assistant", "tool_result", "error"
-    Content      string      `json:"content"`
-    ToolCalls    []ToolCall  `json:"tool_calls,omitempty"`
-    ToolResults  []ToolResult `json:"tool_results,omitempty"`
-    Completion   bool        `json:"completion,omitempty"`
-    Error        string      `json:"error,omitempty"`
+type Result struct {
+    Signal Signal
+    Plan   string // For PLAN_COMPLETE
+    Summary string // For DONE
+    Reason string // For STORY_COMPLETE
+    Question *Question // For QUESTION (needs answer injection)
 }
 
 type Signal string
@@ -258,554 +288,85 @@ type Signal string
 const (
     SignalPlanComplete  Signal = "PLAN_COMPLETE"
     SignalDone          Signal = "DONE"
+    SignalQuestion      Signal = "QUESTION"
     SignalStoryComplete Signal = "STORY_COMPLETE"
     SignalError         Signal = "ERROR"
 )
 ```
 
-**Key Methods**:
+### 2. Stream-JSON Parser
+
+**File**: `pkg/coder/claude/parser.go`
+
+Parses Claude Code's stream-json output to detect maestro tool calls:
 
 ```go
-// Start launches Claude Code process in container
-func (m *Manager) Start(ctx context.Context, opts StartOptions) error
+package claude
 
-// SendMessage sends user message to Claude Code via stdin
-func (m *Manager) SendMessage(ctx context.Context, msg Message) error
-
-// ReadResponse reads next response from Claude Code (blocking)
-func (m *Manager) ReadResponse(ctx context.Context) (*Response, error)
-
-// Stop gracefully terminates Claude Code process
-func (m *Manager) Stop(ctx context.Context) error
-
-// Restart attempts one graceful restart on failure
-func (m *Manager) Restart(ctx context.Context) error
-```
-
-**Claude Code Launch Command**:
-
-```bash
-claude --print \
-  --output-format stream-json \
-  --input-format stream-json \
-  --session-id <uuid> \
-  --tools default \
-  --mcp-config /workspace/.maestro/bridge-config.json \
-  --append-system-prompt "<maestro-system-prompt>"
-```
-
-### 2. MCP Bridge Server
-
-**File**: `pkg/claudecode/bridge/server.go`
-
-**Purpose**: Enable Claude Code to invoke Maestro-specific operations (ask architect, signal completion, etc.)
-
-**Architecture**:
-
-```
-Claude Code Process
-    ↓ (MCP protocol via bridge client)
-Bridge Client Binary (maestro-bridge-client)
-    ↓ (Unix socket)
-Bridge Server (in orchestrator process)
-    ↓ (Go function calls)
-Dispatcher / Effects System
-```
-
-**Bridge Server Implementation**:
-
-```go
-package bridge
-
-type Server struct {
-    socketPath  string
-    listener    net.Listener
-    dispatcher  *dispatch.Dispatcher
-    logger      *logx.Logger
-
-    // Active agent tracking
-    agents      map[string]*AgentContext  // agentID -> context
-    mu          sync.RWMutex
-}
-
-type AgentContext struct {
-    AgentID    string
-    StoryID    string
-    StateMachine *agent.BaseStateMachine
-}
-
-// Start begins listening for bridge client connections
-func (s *Server) Start(ctx context.Context) error
-
-// Stop gracefully shuts down bridge server
-func (s *Server) Stop(ctx context.Context) error
-
-// RegisterAgent registers an active agent for tool calls
-func (s *Server) RegisterAgent(agentID string, ctx *AgentContext)
-
-// UnregisterAgent removes agent on completion/error
-func (s *Server) UnregisterAgent(agentID string)
-
-// HandleConnection processes MCP requests from a bridge client
-func (s *Server) HandleConnection(conn net.Conn)
-```
-
-**Bridge Client Binary**:
-
-**File**: `cmd/maestro-bridge-client/main.go`
-
-Thin wrapper that:
-1. Reads MCP requests from stdin (from Claude Code)
-2. Connects to bridge server via Unix socket
-3. Adds agent_id metadata from environment
-4. Forwards requests to bridge server
-5. Returns responses to stdout (back to Claude Code)
-
-**Launch Configuration** (generated per agent):
-
-```json
-// /workspace/.maestro/bridge-config.json
-{
-  "mcpServers": {
-    "maestro": {
-      "command": "/usr/local/bin/maestro-bridge-client",
-      "args": ["--socket", "/tmp/maestro-bridge.sock"],
-      "env": {
-        "CODER_AGENT_ID": "coder-001",
-        "CODER_STORY_ID": "story-042"
-      }
-    }
-  }
-}
-```
-
-### 3. Bridge Tools
-
-**File**: `pkg/claudecode/bridge/tools.go`
-
-**Tool Definitions**:
-
-#### maestro_submit_plan
-
-Signals that planning is complete and submits plan for review.
-
-```go
-type SubmitPlanTool struct {
-    server *Server
-}
-
-// Input schema
-{
-  "name": "maestro_submit_plan",
-  "description": "Submit your implementation plan to the architect for review. Call this when you have completed your planning and are ready to proceed to implementation.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "plan": {
-        "type": "string",
-        "description": "Your detailed implementation plan, including approach, files to modify, testing strategy, and any risks or dependencies"
-      }
-    },
-    "required": ["plan"]
-  }
-}
-
-func (t *SubmitPlanTool) Execute(ctx context.Context, args map[string]any) (any, error) {
-    agentID := getAgentIDFromContext(ctx)
-    plan := args["plan"].(string)
-
-    // Store plan in agent's state data
-    agentCtx := t.server.GetAgent(agentID)
-    agentCtx.StateMachine.SetStateData("plan", plan)
-
-    return map[string]any{
-        "status": "success",
-        "message": "Plan submitted for architect review",
-        "signal": "PLAN_COMPLETE",
-    }, nil
-}
-```
-
-#### maestro_ask_question
-
-Sends question to architect and blocks until answer is received.
-
-```go
-type AskQuestionTool struct {
-    server *Server
-}
-
-// Input schema
-{
-  "name": "maestro_ask_question",
-  "description": "Ask the architect for clarification or guidance. This will pause your work until the architect responds. Use when you encounter ambiguity or need technical direction.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "question": {
-        "type": "string",
-        "description": "Your question for the architect"
-      },
-      "context": {
-        "type": "string",
-        "description": "Context about why you're asking (what you're working on, what you've tried)"
-      },
-      "urgency": {
-        "type": "string",
-        "enum": ["low", "medium", "high"],
-        "description": "How critical is this question to proceeding?"
-      }
-    },
-    "required": ["question", "context"]
-  }
-}
-
-const QuestionTimeout = 10 * time.Minute
-
-func (t *AskQuestionTool) Execute(ctx context.Context, args map[string]any) (any, error) {
-    agentID := getAgentIDFromContext(ctx)
-    question := args["question"].(string)
-    context := args["context"].(string)
-    urgency := args["urgency"].(string)
-    if urgency == "" {
-        urgency = "medium"
-    }
-
-    // Create question effect
-    agentCtx := t.server.GetAgent(agentID)
-    effect := effect.NewQuestionEffect(question, context, urgency, "PLANNING_OR_CODING")
-    effect.StoryID = agentCtx.StoryID
-
-    // Execute with timeout (blocks until answer received)
-    execCtx, cancel := context.WithTimeout(ctx, QuestionTimeout)
-    defer cancel()
-
-    result, err := t.server.dispatcher.ExecuteEffect(execCtx, effect)
-    if err == context.DeadlineExceeded {
-        return map[string]any{
-            "status": "timeout",
-            "message": "Architect did not respond within timeout. Continue with your best judgment and document your decision.",
-        }, nil
-    }
-    if err != nil {
-        return nil, fmt.Errorf("failed to get answer: %w", err)
-    }
-
-    questionResult := result.(*effect.QuestionResult)
-    return map[string]any{
-        "status": "answered",
-        "answer": questionResult.Answer,
-    }, nil
-}
-```
-
-#### maestro_done
-
-Signals that implementation is complete and ready for testing/review.
-
-```go
-type DoneTool struct {
-    server *Server
-}
-
-// Input schema
-{
-  "name": "maestro_done",
-  "description": "Signal that you have completed the implementation and it is ready for automated testing and architect review. Include a summary of what was implemented.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "summary": {
-        "type": "string",
-        "description": "Brief summary of what was implemented, key decisions made, and any notes for the reviewer"
-      }
-    },
-    "required": ["summary"]
-  }
-}
-
-func (t *DoneTool) Execute(ctx context.Context, args map[string]any) (any, error) {
-    agentID := getAgentIDFromContext(ctx)
-    summary := args["summary"].(string)
-
-    // Store completion details for code review
-    agentCtx := t.server.GetAgent(agentID)
-    agentCtx.StateMachine.SetStateData("completion_summary", summary)
-
-    return map[string]any{
-        "status": "success",
-        "message": "Implementation marked complete. Proceeding to testing and review.",
-        "signal": "DONE",
-    }, nil
-}
-```
-
-#### maestro_mark_story_complete
-
-Signals that story requirements are already implemented (no work needed).
-
-```go
-type MarkStoryCompleteTool struct {
-    server *Server
-}
-
-// Input schema
-{
-  "name": "maestro_mark_story_complete",
-  "description": "Signal that the story requirements are already fully implemented in the codebase. Use this when analysis shows no work is needed.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "reason": {
-        "type": "string",
-        "description": "Explanation of why the story is already complete, with references to existing code"
-      }
-    },
-    "required": ["reason"]
-  }
-}
-
-func (t *MarkStoryCompleteTool) Execute(ctx context.Context, args map[string]any) (any, error) {
-    agentID := getAgentIDFromContext(ctx)
-    reason := args["reason"].(string)
-
-    agentCtx := t.server.GetAgent(agentID)
-    agentCtx.StateMachine.SetStateData("completion_reason", reason)
-
-    return map[string]any{
-        "status": "success",
-        "message": "Story marked as already complete",
-        "signal": "STORY_COMPLETE",
-    }, nil
-}
-```
-
-### 4. Response Handler
-
-**File**: `pkg/claudecode/handler.go`
-
-**Responsibilities**:
-- Parse Claude Code stream-json responses
-- Detect completion signals in tool results
-- Extract file changes for tracking
-- Handle errors and malformed responses
-
-**Key Types**:
-
-```go
-package claudecode
-
-type Handler struct {
+type Parser struct {
     logger *logx.Logger
 }
 
-type ParsedResponse struct {
-    Content       string
-    ToolCalls     []ToolCall
-    ToolResults   []ToolResult
-    Signal        Signal        // Extracted from maestro_* tool results
-    SignalData    map[string]any // Data associated with signal
-    FileChanges   []FileChange  // Detected file modifications
-    Error         error
+// StreamEvent represents a single line of stream-json output
+type StreamEvent struct {
+    Type      string          `json:"type"`      // "assistant", "tool_use", "tool_result", etc.
+    Content   json.RawMessage `json:"content"`
+    ToolName  string          `json:"name"`      // For tool_use events
+    ToolInput json.RawMessage `json:"input"`     // For tool_use events
 }
 
-type FileChange struct {
-    Path      string
-    Operation string  // "created", "modified", "deleted"
-    Language  string  // Detected language
-}
+// ParseLine parses a single JSONL line
+func (p *Parser) ParseLine(line []byte) (*StreamEvent, error)
 
-// Parse processes a raw response from Claude Code
-func (h *Handler) Parse(response *Response) (*ParsedResponse, error)
+// IsMaestroToolCall checks if event is a maestro_* tool call
+func (p *Parser) IsMaestroToolCall(event *StreamEvent) bool
 
-// DetectSignal extracts Maestro signals from tool results
-func (h *Handler) DetectSignal(toolResults []ToolResult) (Signal, map[string]any)
-
-// ExtractFileChanges infers file changes from Bash/Write/Edit tool calls
-func (h *Handler) ExtractFileChanges(toolCalls []ToolCall) []FileChange
+// ExtractSignal extracts signal and data from maestro tool call
+func (p *Parser) ExtractSignal(event *StreamEvent) (Signal, map[string]any, error)
 ```
 
-### 5. Claude Code Coder Agent
+### 3. Maestro Tool Definitions (in System Prompt)
 
-**File**: `pkg/coder/claudecode.go`
+The maestro tools are defined in the appended system prompt, not as actual MCP tools:
 
-**Implementation**:
+```markdown
+## Maestro Integration Tools
 
-```go
-package coder
+You have access to the following tools to communicate with the Maestro orchestration system:
 
-type ClaudeCodeCoder struct {
-    *CoderBase  // Embed shared functionality
+### maestro_submit_plan
+Submit your implementation plan for architect review.
+**Parameters:**
+- `plan` (required): Your detailed implementation plan
+- `confidence`: low | medium | high
 
-    manager *claudecode.Manager
-    handler *claudecode.Handler
-    bridge  *bridge.Server
-}
+### maestro_done
+Signal that implementation is complete and ready for testing.
+**Parameters:**
+- `summary` (required): Brief summary of what was implemented
 
-// NewClaudeCodeCoder creates a Claude Code-based coder agent
-func NewClaudeCodeCoder(
-    agentID string,
-    workDir string,
-    dispatcher *dispatch.Dispatcher,
-    // ... other dependencies
-) (*ClaudeCodeCoder, error) {
-    base := &CoderBase{
-        agentID:    agentID,
-        workDir:    workDir,
-        dispatcher: dispatcher,
-        // ... initialize shared fields
-    }
+### maestro_ask_question
+Ask the architect for clarification. Your work will pause until answered.
+**Parameters:**
+- `question` (required): Your question
+- `context` (required): Context about why you're asking
 
-    coder := &ClaudeCodeCoder{
-        CoderBase: base,
-        manager:   claudecode.NewManager(...),
-        handler:   claudecode.NewHandler(...),
-    }
-
-    // Set strategy handlers
-    base.planningHandler = coder
-    base.codingHandler = coder
-
-    return coder, nil
-}
-
-// ExecutePlanning implements PlanningHandler
-func (c *ClaudeCodeCoder) ExecutePlanning(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-    // 1. Start Claude Code process (if not running)
-    if !c.manager.IsRunning() {
-        opts := claudecode.StartOptions{
-            Mode:         claudecode.ModePlanning,
-            SessionID:    c.generateSessionID(),
-            WorkDir:      "/workspace",
-            SystemPrompt: c.buildPlanningPrompt(sm),
-            AgentID:      c.agentID,
-        }
-        if err := c.manager.Start(ctx, opts); err != nil {
-            return proto.StateError, false, err
-        }
-    }
-
-    // 2. Send story content as initial message
-    storyContent := utils.GetStateValueOr[string](sm, "task_content", "")
-    if err := c.manager.SendMessage(ctx, claudecode.Message{
-        Role:    "user",
-        Content: c.formatStoryForPlanning(storyContent, sm),
-    }); err != nil {
-        return proto.StateError, false, err
-    }
-
-    // 3. Read responses until plan submitted
-    for {
-        response, err := c.manager.ReadResponse(ctx)
-        if err != nil {
-            return c.handleClaudeCodeError(err, sm)
-        }
-
-        parsed := c.handler.Parse(response)
-
-        // Check for completion signal
-        if parsed.Signal == claudecode.SignalPlanComplete {
-            plan := parsed.SignalData["plan"].(string)
-            sm.SetStateData("plan", plan)
-            c.logger.Info("Plan submitted, transitioning to PLAN_REVIEW")
-            return StatePlanReview, false, nil
-        }
-
-        if parsed.Signal == claudecode.SignalStoryComplete {
-            reason := parsed.SignalData["reason"].(string)
-            sm.SetStateData("completion_reason", reason)
-            c.logger.Info("Story marked complete: %s", reason)
-            return StateDone, false, nil
-        }
-
-        // Continue conversation (Claude Code is still working)
-        c.logger.Debug("Planning in progress, received: %s", parsed.Content)
-    }
-}
-
-// ExecuteCoding implements CodingHandler
-func (c *ClaudeCodeCoder) ExecuteCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-    // 1. Start Claude Code process (if not running)
-    if !c.manager.IsRunning() {
-        plan := utils.GetStateValueOr[string](sm, "plan", "")
-        opts := claudecode.StartOptions{
-            Mode:          claudecode.ModeCoding,
-            SessionID:     c.generateSessionID(),
-            WorkDir:       "/workspace",
-            ApprovedPlan:  plan,
-            SystemPrompt:  c.buildCodingPrompt(sm),
-            AgentID:       c.agentID,
-        }
-        if err := c.manager.Start(ctx, opts); err != nil {
-            return proto.StateError, false, err
-        }
-    }
-
-    // 2. Send coding start message
-    if err := c.manager.SendMessage(ctx, claudecode.Message{
-        Role:    "user",
-        Content: c.formatCodingStart(sm),
-    }); err != nil {
-        return proto.StateError, false, err
-    }
-
-    // 3. Read responses until implementation complete
-    for {
-        response, err := c.manager.ReadResponse(ctx)
-        if err != nil {
-            return c.handleClaudeCodeError(err, sm)
-        }
-
-        parsed := c.handler.Parse(response)
-
-        // Track file changes
-        if len(parsed.FileChanges) > 0 {
-            c.trackFileChanges(sm, parsed.FileChanges)
-        }
-
-        // Check for completion signal
-        if parsed.Signal == claudecode.SignalDone {
-            summary := parsed.SignalData["summary"].(string)
-            sm.SetStateData("completion_summary", summary)
-            c.logger.Info("Implementation complete, transitioning to TESTING")
-            return StateTesting, false, nil
-        }
-
-        // Continue conversation
-        c.logger.Debug("Coding in progress, received: %s", parsed.Content)
-    }
-}
-
-// handleClaudeCodeError handles process failures with one restart attempt
-func (c *ClaudeCodeCoder) handleClaudeCodeError(err error, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-    if utils.GetStateValueOr[bool](sm, "claude_code_restart_attempted", false) {
-        c.logger.Error("Claude Code failed after restart attempt: %v", err)
-        return proto.StateError, false, err
-    }
-
-    c.logger.Warn("Claude Code error, attempting restart: %v", err)
-    sm.SetStateData("claude_code_restart_attempted", true)
-
-    if restartErr := c.manager.Restart(context.Background()); restartErr != nil {
-        return proto.StateError, false, fmt.Errorf("restart failed: %w", restartErr)
-    }
-
-    c.logger.Info("Claude Code restarted successfully, continuing")
-    // Return current state to retry
-    return sm.GetCurrentState(), false, nil
-}
+### maestro_mark_complete
+Signal that story requirements are already implemented (no work needed).
+**Parameters:**
+- `reason` (required): Why no work is needed, with code references
 ```
 
-### 6. System Prompt Templates
+### 4. Prompt Templates
 
-**File**: `pkg/templates/claudecode_planning.go`
+**File**: `pkg/templates/claude/planning.go`
 
 ```go
-package templates
+package claude
 
-const ClaudeCodePlanningTemplate = `# PLANNING MODE
+const PlanningTemplate = `# PLANNING MODE
 
-You are a coder agent in the Maestro multi-agent development system. Your task is to analyze the following story and create a detailed implementation plan.
+You are implementing a development story within the Maestro multi-agent system. Your task is to analyze the story and create a detailed implementation plan.
 
 ## Story
 
@@ -813,65 +374,53 @@ You are a coder agent in the Maestro multi-agent development system. Your task i
 
 ## Context
 
-**Workspace**: {{.WorkDir}}
-**Container**: {{.ContainerName}}
-**Mode**: Read-only filesystem (exploration only, no modifications)
+- **Workspace**: {{.WorkDir}}
+- **Mode**: Read-only filesystem (exploration only)
+- **Branch**: {{.BranchName}}
 
-{{if .KnowledgePacks}}
-## Available Documentation
+## Maestro Integration Tools
 
-{{range .KnowledgePacks}}
-- {{.Name}}: {{.Description}}
-{{end}}
+You have access to the following tools to communicate with the Maestro orchestration system:
 
-Use your Read and Grep tools to explore these knowledge packs for relevant information.
-{{end}}
+### maestro_submit_plan
+Submit your implementation plan for architect review.
+- plan (required): Your detailed implementation plan
+- confidence: low | medium | high
 
-## Your Task
+### maestro_ask_question
+Ask the architect for clarification. Your work will pause until answered.
+- question (required): Your question
+- context (required): Context about why you're asking
 
-1. **Explore the Codebase**: Use your standard tools (Bash, Read, Glob, Grep) to understand the current implementation
-2. **Analyze Requirements**: Break down the story into specific technical requirements
-3. **Design Approach**: Determine the implementation approach, files to modify, and testing strategy
-4. **Create Plan**: Write a detailed implementation plan
+### maestro_mark_complete
+Signal that story requirements are already implemented (no work needed).
+- reason (required): Why no work is needed, with code references
 
-## Available Maestro Tools
+## Git Guidelines
 
-You have access to special Maestro integration tools:
-
-- **maestro_submit_plan**: Submit your implementation plan when ready
-  - Required parameter: `plan` (string) - Your detailed plan
-  - This will send your plan to the architect for review
-
-- **maestro_ask_question**: Ask the architect for clarification
-  - Parameters: `question`, `context`, `urgency`
-  - Use when you encounter ambiguity or need technical guidance
-  - Your work will pause until the architect responds (up to 10 minutes)
-
-- **maestro_mark_story_complete**: Signal that requirements are already implemented
-  - Required parameter: `reason` (string) - Why no work is needed
-  - Use only if analysis shows story is already complete
-
-## Git Usage Guidelines
-
-- You are working in a feature branch
-- Commits are **allowed** for incremental progress
-- **DO NOT**: switch branches, merge, rebase, reset, or modify git configuration
-- Keep commits atomic with clear messages
+- You are on a feature branch
+- DO NOT: switch branches, merge, rebase, reset
+- Commits are allowed for exploration notes
 
 ## Instructions
 
-1. Start by exploring the codebase to understand the current state
-2. Review any relevant documentation in knowledge packs
-3. If requirements are unclear, use maestro_ask_question
-4. Once you have a clear plan, call maestro_submit_plan with your detailed approach
-5. If analysis shows the story is already complete, call maestro_mark_story_complete
+1. Explore the codebase thoroughly using your standard tools
+2. Ask questions if requirements are unclear
+3. When ready, call maestro_submit_plan with your detailed plan
+4. If story is already complete, call maestro_mark_complete
 
-**Remember**: You are in read-only mode. Do not attempt to modify files. Focus on analysis and planning.
+**Remember**: Read-only mode - focus on analysis and planning.
 `
+```
 
-const ClaudeCodeCodingTemplate = `# CODING MODE
+**File**: `pkg/templates/claude/coding.go`
 
-You are a coder agent in the Maestro multi-agent development system. Your task is to implement the following approved plan.
+```go
+package claude
+
+const CodingTemplate = `# CODING MODE
+
+You are implementing an approved plan within the Maestro multi-agent system.
 
 ## Approved Plan
 
@@ -879,1084 +428,350 @@ You are a coder agent in the Maestro multi-agent development system. Your task i
 
 ## Context
 
-**Workspace**: {{.WorkDir}}
-**Container**: {{.ContainerName}}
-**Mode**: Read-write filesystem (full implementation access)
+- **Workspace**: {{.WorkDir}}
+- **Mode**: Read-write filesystem (full implementation access)
+- **Branch**: {{.BranchName}}
 
-{{if .ContainerDockerfile}}
-**Container Image**: {{.ContainerName}} (built from {{.ContainerDockerfile}})
-{{end}}
+## Maestro Integration Tools
 
-{{if .KnowledgePacks}}
-## Available Documentation
+### maestro_done
+Signal that implementation is complete and ready for testing.
+- summary (required): Brief summary of what was implemented
 
-{{range .KnowledgePacks}}
-- {{.Name}}: {{.Description}}
-{{end}}
-{{end}}
+### maestro_ask_question
+Ask the architect for clarification. Your work will pause until answered.
+- question (required): Your question
+- context (required): Context about why you're asking
 
-## Your Task
+## Git Guidelines
 
-Implement the approved plan above. You have full access to the workspace and all standard development tools.
-
-## Available Maestro Tools
-
-- **maestro_done**: Mark implementation complete when finished
-  - Required parameter: `summary` (string) - Brief summary of implementation
-  - Call this when implementation and testing are complete
-  - The system will then run automated tests and send to architect for review
-
-- **maestro_ask_question**: Ask the architect for guidance
-  - Parameters: `question`, `context`, `urgency`
-  - Use if you encounter issues or need clarification during implementation
-  - Your work will pause until the architect responds (up to 10 minutes)
-
-## Git Usage Guidelines
-
-- You are working in a feature branch
-- Commits are **encouraged** for incremental progress
-- **DO NOT**: switch branches, merge, rebase, reset, or modify git configuration
-- Commit frequently with clear, descriptive messages
+- Commit frequently with clear messages
+- DO NOT: switch branches, merge, rebase, reset
 
 ## Testing
 
-- Run tests as you implement (use your Bash tool to run test commands)
-- Ensure all tests pass before calling maestro_done
-- Fix any linting or build errors
-- The system will run comprehensive automated tests after you signal completion
+- Run tests as you implement
+- Ensure tests pass before calling maestro_done
+- Fix linting and build errors
 
 ## Instructions
 
-1. Implement your approved plan step by step
+1. Implement your plan step by step
 2. Test your changes as you go
-3. Commit your work incrementally with good messages
-4. If you encounter blockers or ambiguities, use maestro_ask_question
-5. When implementation is complete and tested, call maestro_done with a summary
+3. Commit work incrementally
+4. When complete and tested, call maestro_done
 
-**Remember**: You have full read-write access. Implement thoroughly and test carefully.
+**Remember**: Full read-write access - implement thoroughly and test carefully.
 `
 ```
 
-### 7. Configuration
+### 5. Configuration
 
-**File**: `pkg/config/config.go`
+**Update to `pkg/config/config.go`:**
 
 ```go
-// CoderConfig contains configuration for coder agents
-type CoderConfig struct {
-    // Mode selects the coder implementation
-    // Options: "classic" (default) or "claude-code"
-    Mode string `json:"mode"`
-
-    // MaxCoders is the maximum number of concurrent coder agents
-    MaxCoders int `json:"max_coders"`
-
-    // Claude Code specific configuration
-    ClaudeCode *ClaudeCodeConfig `json:"claude_code,omitempty"`
+// AgentConfig defines which models to use and concurrency limits.
+type AgentConfig struct {
+    MaxCoders      int              `json:"max_coders"`
+    CoderModel     string           `json:"coder_model"`     // Model for coder (used by both modes)
+    CoderMode      string           `json:"coder_mode"`      // NEW: "standard" (default) or "claude-code"
+    ArchitectModel string           `json:"architect_model"`
+    PMModel        string           `json:"pm_model"`
+    Metrics        MetricsConfig    `json:"metrics"`
+    Resilience     ResilienceConfig `json:"resilience"`
+    StateTimeout   time.Duration    `json:"state_timeout"`
 }
 
-// ClaudeCodeConfig contains Claude Code-specific settings
-type ClaudeCodeConfig struct {
-    // Enabled explicitly enables Claude Code mode (in addition to mode selection)
-    Enabled bool `json:"enabled"`
+// GetCoderMode returns the coder mode with default
+func (c *AgentConfig) GetCoderMode() string {
+    if c.CoderMode == "" {
+        return "standard"
+    }
+    return c.CoderMode
+}
 
-    // BinaryPath is the path to the claude binary
-    // Default: "claude" (assumes in PATH)
-    BinaryPath string `json:"binary_path"`
+// ValidateCoderMode validates that coder_mode and coder_model are compatible
+func (c *AgentConfig) ValidateCoderMode() error {
+    if c.GetCoderMode() == "claude-code" {
+        model := c.CoderModel
+        if !isAnthropicModel(model) {
+            return fmt.Errorf("coder_mode 'claude-code' requires an Anthropic model, got: %s", model)
+        }
+    }
+    return nil
+}
 
-    // SessionTimeout is the maximum duration for a Claude Code session
-    // Default: 30 minutes
-    SessionTimeout Duration `json:"session_timeout"`
-
-    // BridgeSocketPath is the Unix socket path for the MCP bridge server
-    // Default: "/tmp/maestro-bridge.sock"
-    BridgeSocketPath string `json:"bridge_socket_path"`
-
-    // AutoInstall automatically installs Claude Code in bootstrap container if missing
-    // Default: true
-    AutoInstall bool `json:"auto_install"`
-
-    // DebugMode enables verbose logging of Claude Code interactions
-    // Default: false
-    DebugMode bool `json:"debug_mode"`
+func isAnthropicModel(model string) bool {
+    // Check if model is an Anthropic model (claude-*, sonnet, opus, haiku)
+    return strings.HasPrefix(model, "claude-") ||
+           model == "sonnet" || model == "opus" || model == "haiku"
 }
 ```
 
-**Example Configuration**:
+**Example Configuration:**
 
 ```json
 {
-  "coder": {
-    "mode": "claude-code",
-    "max_coders": 5,
-    "claude_code": {
-      "enabled": true,
-      "binary_path": "claude",
-      "session_timeout": "30m",
-      "bridge_socket_path": "/tmp/maestro-bridge.sock",
-      "auto_install": true,
-      "debug_mode": false
-    }
+  "agents": {
+    "max_coders": 3,
+    "coder_model": "claude-sonnet-4-20250514",
+    "coder_mode": "claude-code",
+    "architect_model": "o3"
   }
 }
 ```
 
-## Workflow Examples
+**Note:** When `coder_mode` is `"claude-code"`, the `coder_model` is passed to Claude Code's `--model` flag. The model must be an Anthropic model (claude-*, sonnet, opus, haiku). If using standard mode, any supported model works.
 
-### Example 1: PLANNING State Flow
+## Workflow
 
-```
-1. Orchestrator: Assign story to ClaudeCodeCoder agent
-
-2. ClaudeCodeCoder.ExecutePlanning():
-   - Start container (ro mount)
-   - Launch Claude Code process:
-     $ claude --print --output-format stream-json --input-format stream-json \
-         --tools default \
-         --mcp-config /workspace/.maestro/bridge-config.json \
-         --append-system-prompt "<planning template>"
-
-3. Send initial message:
-   {
-     "role": "user",
-     "content": "Story: Add user authentication...\n\n[story details]"
-   }
-
-4. Claude Code explores codebase:
-   → Read tool: /workspace/pkg/auth/handlers.go
-   → Grep tool: search for "authentication" patterns
-   → Bash tool: find . -name "*auth*"
-
-5. Claude Code calls maestro_ask_question:
-   {
-     "tool": "maestro_ask_question",
-     "input": {
-       "question": "Should we use JWT or session-based auth?",
-       "context": "Existing code uses sessions, but JWT might scale better",
-       "urgency": "high"
-     }
-   }
-
-6. Bridge server:
-   - Receives MCP request from bridge client
-   - Creates QuestionEffect
-   - Sends QUESTION message to architect
-   - Blocks waiting for answer (up to 10 minutes)
-
-7. Architect responds:
-   - ANSWER message: "Use JWT - we're moving to stateless architecture"
-
-8. Bridge server returns answer to Claude Code:
-   {
-     "status": "answered",
-     "answer": "Use JWT - we're moving to stateless architecture"
-   }
-
-9. Claude Code continues planning with answer
-
-10. Claude Code completes plan:
-    {
-      "tool": "maestro_submit_plan",
-      "input": {
-        "plan": "## Implementation Plan\n\n1. Create JWT utilities...\n2. Update auth middleware...\n..."
-      }
-    }
-
-11. Bridge server:
-    - Receives submit_plan request
-    - Stores plan in agent's state data
-    - Returns success with PLAN_COMPLETE signal
-
-12. ClaudeCodeCoder detects signal:
-    - Extracts plan from signal data
-    - Returns StatePlanReview
-
-13. Orchestrator:
-    - Transitions agent to PLAN_REVIEW
-    - Sends plan to architect for review
-
-14. (Later) Architect approves plan
-
-15. Orchestrator:
-    - Terminates Claude Code process
-    - Stops container
-```
-
-### Example 2: CODING State Flow
+### PLANNING State with Claude Code
 
 ```
-1. Orchestrator: Transition to CODING state after plan approval
+1. Coder receives story, transitions to PLANNING
+2. Container started with read-only workspace mount + ANTHROPIC_API_KEY
 
-2. ClaudeCodeCoder.ExecuteCoding():
-   - Start container (rw mount)
-   - Launch Claude Code process with approved plan:
-     $ claude --print --output-format stream-json --input-format stream-json \
-         --tools default \
-         --mcp-config /workspace/.maestro/bridge-config.json \
-         --append-system-prompt "<coding template with plan>"
+3. Coder executes Claude Code via executor:
+   - Renders planning template with story content
+   - Runs: claude --print --output-format stream-json --append-system-prompt "..."
+   - Parses stream-json stdout for tool calls
 
-3. Send initial message:
-   {
-     "role": "user",
-     "content": "Your plan has been approved. Begin implementation:\n\n[approved plan]"
-   }
+4. Claude Code explores codebase using its optimized tools
+   - Uses Glob, Grep, Read to understand code
+   - Uses Bash for build commands, tree, etc.
 
-4. Claude Code implements plan:
-   → Write tool: Create /workspace/pkg/auth/jwt.go
-   → Edit tool: Modify /workspace/pkg/auth/middleware.go
-   → Bash tool: go build ./...
-   → Bash tool: go test ./pkg/auth/...
+5. If clarification needed:
+   - Claude Code calls maestro_ask_question (parsed from stdout)
+   - Coder transitions to QUESTION state
+   - Architect provides answer
+   - Coder injects answer via stdin and resumes Claude Code
+   - Claude Code continues planning
 
-5. Handler tracks file changes:
-   - Detects Write/Edit tool calls
-   - Extracts file paths and operations
-   - Updates state data with file change list
+6. When ready:
+   - Claude Code calls maestro_submit_plan with detailed plan
+   - Coder parses PLAN_COMPLETE signal from stdout
+   - Coder captures plan, transitions to PLAN_REVIEW
 
-6. Claude Code encounters issue, asks question:
-   {
-     "tool": "maestro_ask_question",
-     "input": {
-       "question": "Tests are failing - should we update the test fixtures or the implementation?",
-       "context": "JWT token generation tests expect old format",
-       "urgency": "medium"
-     }
-   }
-
-7. Architect responds with guidance
-
-8. Claude Code continues, fixes tests
-
-9. Claude Code completes implementation:
-   {
-     "tool": "maestro_done",
-     "input": {
-       "summary": "Implemented JWT authentication with refresh tokens. All tests passing. Updated middleware and added comprehensive error handling."
-     }
-   }
-
-10. Bridge server:
-    - Receives done request
-    - Stores completion summary in state data
-    - Returns success with DONE signal
-
-11. ClaudeCodeCoder detects signal:
-    - Extracts summary
-    - Returns StateTesting
-
-12. Orchestrator:
-    - Transitions to TESTING state
-    - CoderBase.handleTesting() runs automated tests (shared logic)
-    - Transitions to CODE_REVIEW
-    - Sends code to architect for review
-
-13. (Later) Review cycle completes, story marked done
-
-14. Orchestrator:
-    - Terminates Claude Code process
-    - Stops container
+7. Claude Code process exits, container stopped
 ```
 
-### Example 3: Error Recovery
+### CODING State with Claude Code
 
 ```
-1. Claude Code is running during CODING state
+1. Plan approved by architect, coder transitions to CODING
+2. Container started with read-write workspace mount + ANTHROPIC_API_KEY
 
-2. Claude Code process crashes (exit code 1)
+3. Coder executes Claude Code via executor:
+   - Renders coding template with approved plan
+   - Runs: claude --print --output-format stream-json --append-system-prompt "..."
+   - Parses stream-json stdout for tool calls
 
-3. Manager.ReadResponse() detects EOF on stdout
+4. Claude Code implements plan using its optimized tools
+   - Uses Write, Edit for file changes
+   - Uses Bash for tests, builds, git commits
 
-4. ClaudeCodeCoder.handleClaudeCodeError():
-   - Check restart_attempted flag (false)
-   - Set restart_attempted = true
-   - Call manager.Restart()
+5. If issues encountered:
+   - Claude Code calls maestro_ask_question
+   - Same flow as planning (QUESTION state)
 
-5. Manager.Restart():
-   - Stop old process (if still running)
-   - Launch new Claude Code process with same session ID
-   - Restore conversation history from state data
-   - Send "Continue from where you left off" message
+6. When complete:
+   - Claude Code calls maestro_done with summary
+   - Coder parses DONE signal from stdout
+   - Coder captures summary, transitions to TESTING
 
-6. Claude Code resumes work
+7. Claude Code process exits, container stopped
+8. Existing TESTING state runs (unchanged)
+```
 
-7. If Claude Code crashes again:
-   - restart_attempted = true
-   - Transition to ERROR state
-   - Agent garbage collected
-   - Orchestrator creates new agent, story requeued
+### Known Limitations
+
+When using Claude Code mode:
+- **BUDGET_REVIEW state is not used** - Claude Code manages its own token usage internally
+- **Less granular iteration control** - Uses timeout-based limits instead of iteration counts
+- Standard mode retains full budget control if needed
+
+### Stall Detection
+
+If Claude Code runs without calling maestro tools (stall), we detect and handle it:
+
+```
+Stall detection mechanisms:
+1. Total timeout (default: 5 minutes per state)
+   - Configurable via config
+   - Kills process and transitions to ERROR if exceeded
+
+2. Inactivity timeout (default: 1 minute)
+   - If no stdout output for 1 minute, assume stalled
+   - Kills process and attempts restart
+
+3. Response counting (soft limit)
+   - Track number of assistant responses
+   - Log warning at 20 responses without maestro tool call
+   - This is informational only (no hard limit)
+```
+
+**Stall handling:**
+- First stall → Kill process, attempt restart with reminder in prompt
+- Second stall → Transition to ERROR state, story requeued
+
+**Restart prompt injection:**
+```
+IMPORTANT: You must call one of the maestro tools to complete this phase:
+- maestro_submit_plan (for planning)
+- maestro_done (for coding)
+- maestro_ask_question (if you need clarification)
+Your previous session was terminated due to inactivity. Please proceed to completion.
 ```
 
 ## Error Handling
 
 ### Error Categories
 
-**1. Fatal Errors** (transition to ERROR state immediately):
-- Claude Code binary not found and auto-install fails
-- Cannot start container
-- Bridge server unavailable
+**Fatal Errors** (transition to ERROR state):
+- All installation attempts fail (no apt/apk/yum available or all fail)
+- Claude Code installation fails after Node.js/npm installed
+- Container start failure
+- ANTHROPIC_API_KEY not available
 - Second failure after restart attempt
-- Unrecoverable parse error
 
-**2. Recoverable Errors** (attempt one restart):
-- Claude Code process crash (unexpected exit)
-- Broken pipe / stream error
-- Process timeout (no response for extended period)
-- Malformed JSON response
+**Recoverable Errors** (attempt one restart):
+- Claude Code process crash (non-zero exit)
+- Stream parsing errors
+- Inactivity timeout (no output for 5 minutes)
+- Stall detection (no maestro tool call after extended activity)
 
-**3. Normal Errors** (handle gracefully, continue):
-- Tool execution failure (pass error to Claude Code)
-- LLM refusal (Claude Code handles)
-- Architect timeout (return timeout message to Claude Code)
-- Plan/code rejection in review (orchestrator handles)
+**Normal Conditions** (handle gracefully):
+- Tool execution failures (Claude Code handles internally)
+- Architect timeout on question (return timeout message, continue)
+- Plan/code rejection (handled by existing state machine)
 
-### Error Handling Implementation
+### Restart Logic
 
 ```go
-// pkg/coder/claudecode.go
+func (c *Coder) handleClaudeCodeError(err error) (proto.State, bool, error) {
+    restartAttempted := c.GetStateValue(KeyClaudeCodeRestartAttempted, false)
 
-func (c *ClaudeCodeCoder) handleClaudeCodeError(err error, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-    // Classify error
-    if isFatalError(err) {
-        c.logger.Error("Fatal Claude Code error: %v", err)
+    if restartAttempted {
+        c.logger.Error("Claude Code failed after restart: %v", err)
         return proto.StateError, false, err
     }
 
-    // Check if restart already attempted
-    if utils.GetStateValueOr[bool](sm, "claude_code_restart_attempted", false) {
-        c.logger.Error("Claude Code failed after restart: %v", err)
-        return proto.StateError, false, fmt.Errorf("claude code failed after restart: %w", err)
-    }
-
-    // Attempt graceful restart
     c.logger.Warn("Claude Code error, attempting restart: %v", err)
-    sm.SetStateData("claude_code_restart_attempted", true)
+    c.SetStateData(KeyClaudeCodeRestartAttempted, true)
 
-    restartCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-
-    if restartErr := c.manager.Restart(restartCtx); restartErr != nil {
-        c.logger.Error("Restart failed: %v", restartErr)
-        return proto.StateError, false, fmt.Errorf("restart failed: %w", restartErr)
-    }
-
-    c.logger.Info("Claude Code restarted successfully")
-
-    // Clear restart flag after successful restart
-    sm.SetStateData("claude_code_restart_attempted", false)
-
-    // Return current state to continue
-    return sm.GetCurrentState(), false, nil
-}
-
-func isFatalError(err error) bool {
-    // Check error type/message for fatal conditions
-    if strings.Contains(err.Error(), "binary not found") {
-        return true
-    }
-    if strings.Contains(err.Error(), "bridge unavailable") {
-        return true
-    }
-    if strings.Contains(err.Error(), "unrecoverable parse error") {
-        return true
-    }
-    return false
+    // Retry current state - runner will re-execute Claude Code
+    return c.GetCurrentState(), false, nil
 }
 ```
-
-## Bootstrap Container Integration
-
-Claude Code must be available in the bootstrap container to handle bootstrap stories (container/infrastructure setup).
-
-### Installation Strategy
-
-**Dockerfile Addition** (`docker/bootstrap/Dockerfile`):
-
-```dockerfile
-# Install Claude Code CLI
-RUN npm install -g @anthropic/claude-code@latest
-
-# Verify installation
-RUN claude --version
-```
-
-### Auto-Install for User Containers
-
-If user container doesn't have Claude Code installed and `auto_install: true`:
-
-```go
-// pkg/claudecode/manager.go
-
-func (m *Manager) ensureClaudeCodeInstalled(ctx context.Context) error {
-    // Check if claude binary exists
-    checkCmd := []string{"which", "claude"}
-    result, err := m.executor.Run(ctx, checkCmd, &exec.Opts{Timeout: 5 * time.Second})
-
-    if err == nil && result.ExitCode == 0 {
-        // Already installed
-        m.logger.Info("Claude Code found at: %s", strings.TrimSpace(result.Stdout))
-        return nil
-    }
-
-    // Check if auto-install enabled
-    cfg, _ := config.GetConfig()
-    if cfg.Coder.ClaudeCode == nil || !cfg.Coder.ClaudeCode.AutoInstall {
-        return fmt.Errorf("claude binary not found and auto_install is disabled")
-    }
-
-    // Attempt installation
-    m.logger.Warn("Claude Code not found, attempting automatic installation...")
-
-    installCmd := []string{"npm", "install", "-g", "@anthropic/claude-code@latest"}
-    result, err = m.executor.Run(ctx, installCmd, &exec.Opts{Timeout: 60 * time.Second})
-
-    if err != nil || result.ExitCode != 0 {
-        return fmt.Errorf("auto-install failed: %w\nOutput: %s", err, result.Stderr)
-    }
-
-    m.logger.Info("Claude Code installed successfully")
-    return nil
-}
-```
-
-## Metrics & Observability
-
-### Metrics to Track
-
-**Performance Metrics**:
-- `claude_code_session_duration_seconds` - Time from start to completion
-- `claude_code_response_latency_seconds` - Time from message to response
-- `claude_code_token_count` - Tokens used (if available from API)
-- `claude_code_api_cost_dollars` - Estimated cost based on pricing
-
-**Reliability Metrics**:
-- `claude_code_process_starts_total` - Process launch count
-- `claude_code_process_crashes_total` - Unexpected terminations
-- `claude_code_restarts_total` - Graceful restart attempts
-- `claude_code_errors_total` - Errors by type
-
-**Functional Metrics**:
-- `claude_code_plans_submitted_total` - Planning completions
-- `claude_code_implementations_completed_total` - Coding completions
-- `claude_code_questions_asked_total` - Architect questions
-- `claude_code_stories_skipped_total` - Already-complete stories
-
-**Comparison Metrics** (classic vs Claude Code):
-- `coder_story_completion_time_seconds{mode="classic|claude-code"}`
-- `coder_token_usage_total{mode="classic|claude-code"}`
-- `coder_api_cost_dollars{mode="classic|claude-code"}`
-- `coder_iterations_to_approval{mode="classic|claude-code"}`
-
-### Logging
-
-**Standard Log Events**:
-```
-INFO  [coder-001] Claude Code process started (session: abc123, mode: PLANNING)
-DEBUG [coder-001] Sent message to Claude Code: "Story: Add authentication..."
-DEBUG [coder-001] Received response from Claude Code: [125 chars]
-INFO  [coder-001] Claude Code called maestro_ask_question
-INFO  [coder-001] Plan submitted, transitioning to PLAN_REVIEW
-WARN  [coder-001] Claude Code process crashed, attempting restart
-INFO  [coder-001] Claude Code restarted successfully
-ERROR [coder-001] Claude Code failed after restart: broken pipe
-INFO  [coder-001] Claude Code process terminated (session: abc123, duration: 5m23s)
-```
-
-**Debug Mode** (`debug_mode: true`):
-```
-DEBUG [coder-001] [STDIN] {"role": "user", "content": "Story: Add authentication..."}
-DEBUG [coder-001] [STDOUT] {"type": "assistant", "content": "Let me explore the codebase..."}
-DEBUG [coder-001] [STDOUT] {"type": "tool_call", "name": "Read", "input": {...}}
-DEBUG [coder-001] [STDOUT] {"type": "tool_result", "content": "..."}
-```
-
-### Debugging Tools
-
-**Debug Log File** (when `debug_mode: true`):
-
-Save full stdin/stdout transcript to:
-```
-logs/claude-code/coder-001-session-abc123.log
-```
-
-**Debug Commands**:
-```bash
-# Tail Claude Code session logs
-tail -f logs/claude-code/coder-001-session-*.log
-
-# Replay session (for debugging)
-cat logs/claude-code/coder-001-session-abc123.log | jq .
-
-# Check bridge server traffic
-journalctl -f | grep maestro-bridge
-
-# Inspect agent state
-sqlite3 maestro.db "SELECT * FROM agent_state WHERE agent_id='coder-001'"
-```
-
-## Testing Strategy
-
-### Unit Tests
-
-**1. Process Manager Tests** (`pkg/claudecode/manager_test.go`):
-- Start/stop lifecycle
-- Message send/receive
-- Parse response formats
-- Restart logic
-- Error handling
-
-**2. Bridge Server Tests** (`pkg/claudecode/bridge/server_test.go`):
-- Tool registration
-- Connection handling
-- Request routing
-- Response formatting
-- Agent context tracking
-
-**3. Handler Tests** (`pkg/claudecode/handler_test.go`):
-- JSON parsing (various response types)
-- Signal detection
-- File change extraction
-- Error cases (malformed JSON)
-
-### Integration Tests
-
-**4. End-to-End Bridge Tests** (`pkg/claudecode/bridge/integration_test.go`):
-- Launch bridge server
-- Connect bridge client
-- Send maestro_ask_question
-- Verify dispatcher receives QuestionEffect
-- Return answer, verify client receives it
-
-**5. Claude Code Process Tests** (`pkg/claudecode/integration_test.go`):
-- Launch Claude Code in test container
-- Send messages, receive responses
-- Verify tool calls work
-- Test restart logic
-- Test timeout handling
-
-### System Tests
-
-**6. Full Story Tests** (`test/e2e/claude_code_test.go`):
-- Complete AppDev story (PLANNING → DONE)
-- Complete DevOps story (container modifications)
-- Plan review cycle
-- Code review cycle
-- Question/answer interaction
-- Error recovery (simulated crash)
-
-**7. Comparison Tests** (`test/e2e/comparison_test.go`):
-- Same story via classic vs Claude Code mode
-- Compare: duration, tokens, cost, iterations
-- Verify both produce working code
-- Document performance differences
-
-### Performance Tests
-
-**8. Load Tests** (`test/performance/claude_code_load_test.go`):
-- Multiple concurrent Claude Code coders
-- Resource usage (memory, CPU, file descriptors)
-- Bridge server capacity
-- Process cleanup verification
-
-**9. Stress Tests** (`test/performance/claude_code_stress_test.go`):
-- Long-running sessions
-- Large codebases
-- Many file modifications
-- Complex question/answer chains
 
 ## Implementation Plan
 
-### Phase 1: Foundation (3-4 days)
+### Phase 1: Foundation (2-3 days)
 
-**Goal**: Establish shared coder abstraction and basic Claude Code process management
-
-**Tasks**:
-1. **Refactor Coder Base** (1 day)
-   - [ ] Extract `CoderBase` from current `Coder`
-   - [ ] Define `PlanningHandler` and `CodingHandler` interfaces
-   - [ ] Refactor current coder to `ClassicCoder` using interfaces
-   - [ ] Verify all tests pass (no regressions)
-
-2. **Claude Code Process Manager** (1.5 days)
-   - [ ] Implement `pkg/claudecode/manager.go`
-   - [ ] Start/stop lifecycle
-   - [ ] Stdin/stdout stream-json communication
-   - [ ] Basic response parsing
-   - [ ] Unit tests for manager
-
-3. **Basic Integration Test** (0.5 days)
-   - [ ] Launch Claude Code in test container
-   - [ ] Send message, receive response
-   - [ ] Verify JSON parsing
-   - [ ] Document any quirks/issues
-
-**Deliverables**:
-- ✅ `CoderBase` abstraction with strategy pattern
-- ✅ `ClassicCoder` using new abstraction (no behavior changes)
-- ✅ `Manager` can start/stop Claude Code and exchange messages
-- ✅ All existing tests pass
-
-**Success Criteria**:
-- No regressions in classic coder
-- Can launch Claude Code and exchange JSON messages
-- Clear separation of concerns (shared vs divergent logic)
-
-### Phase 2: MCP Bridge Server (3-4 days)
-
-**Goal**: Enable Claude Code to invoke Maestro-specific operations
+**Goal**: Claude Code execution via executor and stream-json parsing
 
 **Tasks**:
-1. **Bridge Server Implementation** (2 days)
-   - [ ] Implement `pkg/claudecode/bridge/server.go`
-   - [ ] MCP protocol handler
-   - [ ] Unix socket listener
-   - [ ] Agent context tracking
-   - [ ] Tool routing
-   - [ ] Unit tests for server
+1. Create `pkg/coder/claude/` sub-package
+   - `runner.go` - Execute Claude Code via container executor
+   - `installer.go` - Auto-install Node.js/npm/Claude Code if missing
+   - `parser.go` - Stream-JSON output parsing
+   - `signals.go` - Signal detection from tool calls
+   - `timeout.go` - Stall detection (inactivity + total timeout)
 
-2. **Bridge Tools** (1 day)
-   - [ ] Implement `maestro_submit_plan`
-   - [ ] Implement `maestro_ask_question` (with timeout)
-   - [ ] Implement `maestro_done`
-   - [ ] Implement `maestro_mark_story_complete`
-   - [ ] Unit tests for each tool
-
-3. **Bridge Client Binary** (0.5 days)
-   - [ ] Implement `cmd/maestro-bridge-client/main.go`
-   - [ ] Stdin/stdout MCP proxy
-   - [ ] Socket communication
-   - [ ] Agent ID injection
-   - [ ] Build and install script
-
-4. **Integration Tests** (0.5 days)
-   - [ ] End-to-end bridge test (client → server → dispatcher)
-   - [ ] Question/answer roundtrip
-   - [ ] Timeout handling
-   - [ ] Error cases
+2. Basic integration test
+   - Execute Claude Code in test container
+   - Test auto-installation flow
+   - Parse stream-json output
+   - Verify signal detection works
+   - Test timeout/stall handling
 
 **Deliverables**:
-- ✅ Bridge server running alongside orchestrator
-- ✅ Bridge client binary installed in containers
-- ✅ All maestro_* tools functional
-- ✅ Questions reach architect and answers return
+- Runner can execute Claude Code via executor
+- Auto-installation works when Node.js/npm/Claude Code is missing
+- Parser extracts tool calls from stream-json
+- Signal detection identifies maestro_* calls
+- Stall detection triggers restart on inactivity
 
-**Success Criteria**:
-- Bridge server starts and accepts connections
-- Claude Code can discover maestro_* tools via MCP
-- Tool calls propagate correctly through dispatcher
-- Timeout mechanism works (10 minute question timeout)
+### Phase 2: Coder Integration (3-4 days)
 
-### Phase 3: Claude Code Coder Agent (4-5 days)
-
-**Goal**: Complete Claude Code coder implementation with full state machine
+**Goal**: Wire Claude Code into coder state machine
 
 **Tasks**:
-1. **ClaudeCodeCoder Implementation** (2 days)
-   - [ ] Implement `pkg/coder/claudecode.go`
-   - [ ] `ExecutePlanning()` handler
-   - [ ] `ExecuteCoding()` handler
-   - [ ] Error handling with restart logic
-   - [ ] Context management between phases
-   - [ ] Unit tests
+1. Add mode support to config
+   - `coder_mode` field in AgentConfig
+   - `ValidateCoderMode()` for Anthropic model check
+   - Defaults to "standard"
 
-2. **System Prompt Templates** (1 day)
-   - [ ] Create `pkg/templates/claudecode_planning.go`
-   - [ ] Create `pkg/templates/claudecode_coding.go`
-   - [ ] Adapt from classic templates
-   - [ ] Include Maestro tool descriptions
-   - [ ] Add git usage guidelines
-   - [ ] Template rendering tests
+2. Create coder handlers
+   - `claudecode_planning.go` - PLANNING state with Claude Code
+   - `claudecode_coding.go` - CODING state with Claude Code
+   - Mode branching in `driver.go`
 
-3. **Response Handler** (1 day)
-   - [ ] Implement `pkg/claudecode/handler.go`
-   - [ ] Parse stream-json responses
-   - [ ] Detect completion signals
-   - [ ] Extract file changes from tool calls
-   - [ ] Error handling
-   - [ ] Unit tests
+3. Create prompt templates
+   - `pkg/templates/claude/planning.go`
+   - `pkg/templates/claude/coding.go`
 
-4. **Configuration Integration** (0.5 days)
-   - [ ] Update `pkg/config/config.go`
-   - [ ] Add `coder.mode` setting
-   - [ ] Add `coder.claude_code.*` settings
-   - [ ] Config validation
-   - [ ] Factory selection based on mode
-
-5. **Coder Factory** (0.5 days)
-   - [ ] Update `pkg/coder/factory.go`
-   - [ ] Select implementation based on config
-   - [ ] Shared dependency injection
-   - [ ] Error handling for missing Claude Code binary
+4. Handle QUESTION flow
+   - Detect maestro_ask_question calls
+   - Transition to QUESTION state
+   - Inject answer and resume Claude Code
 
 **Deliverables**:
-- ✅ Complete `ClaudeCodeCoder` implementation
-- ✅ System prompt templates adapted from classic
-- ✅ Response handler with signal detection
-- ✅ Configuration-based mode selection
+- Can complete PLANNING with Claude Code
+- Can complete CODING with Claude Code
+- QUESTION flow works correctly
+- Existing states (TESTING, CODE_REVIEW, etc.) work unchanged
 
-**Success Criteria**:
-- Can complete PLANNING state end-to-end
-- Plan submission works, transitions to PLAN_REVIEW
-- Can complete CODING state end-to-end
-- Implementation completion works, transitions to TESTING
-- Questions to architect work during both phases
+### Phase 3: Testing & Polish (2-3 days)
 
-### Phase 4: Integration & Testing (3-4 days)
-
-**Goal**: Comprehensive testing and metrics collection
+**Goal**: Comprehensive testing and documentation
 
 **Tasks**:
-1. **End-to-End Tests** (1.5 days)
-   - [ ] Full AppDev story lifecycle test
-   - [ ] Plan review cycle test
-   - [ ] Code review cycle test
-   - [ ] Question/answer interaction test
-   - [ ] Budget review handling test
-   - [ ] Error recovery test (simulated crash)
+1. End-to-end tests
+   - Full story lifecycle in Claude Code mode
+   - Question/answer flow
+   - Error recovery and restart
 
-2. **Metrics Implementation** (1 day)
-   - [ ] Add performance metrics
-   - [ ] Add reliability metrics
-   - [ ] Add cost tracking
-   - [ ] Comparison metrics (classic vs Claude Code)
-   - [ ] Metric collection points in code
-
-3. **Debug Logging** (0.5 days)
-   - [ ] Implement debug mode logging
-   - [ ] Session transcript files
-   - [ ] Bridge traffic logging
-   - [ ] Log rotation
-
-4. **Error Scenario Tests** (1 day)
-   - [ ] Process crash recovery
-   - [ ] Bridge disconnection
-   - [ ] Timeout handling
-   - [ ] Malformed responses
-   - [ ] Second failure (ERROR state)
+2. Documentation
+   - Configuration guide in CLAUDE.md
+   - Troubleshooting section
 
 **Deliverables**:
-- ✅ Complete test coverage for all scenarios
-- ✅ Metrics collection and reporting
-- ✅ Debug mode for troubleshooting
-- ✅ All error cases handled gracefully
-
-**Success Criteria**:
-- All end-to-end tests pass
-- Can complete real stories successfully
-- Metrics collected and comparable to classic mode
-- No resource leaks or orphaned processes
-- Clear error messages for debugging
-
-### Phase 5: DevOps Support & Polish (2-3 days)
-
-**Goal**: Support DevOps stories and production readiness
-
-**Tasks**:
-1. **DevOps Story Support** (1 day)
-   - [ ] Adapt DevOps prompts for Claude Code
-   - [ ] Test container operations
-   - [ ] Test Dockerfile modifications
-   - [ ] Integration test for DevOps story
-
-2. **Bootstrap Container Integration** (0.5 days)
-   - [ ] Add Claude Code to bootstrap Dockerfile
-   - [ ] Verify installation in CI
-   - [ ] Test bootstrap story handling
-   - [ ] Auto-install for user containers
-
-3. **Documentation** (1 day)
-   - [ ] Configuration guide
-   - [ ] Troubleshooting guide
-   - [ ] Performance comparison guide
-   - [ ] Migration guide (classic → Claude Code)
-   - [ ] Update CLAUDE.md with Claude Code info
-
-4. **Optimization** (0.5 days)
-   - [ ] Prompt tuning based on test results
-   - [ ] Process startup optimization
-   - [ ] Memory usage profiling
-   - [ ] Token usage analysis
-
-**Deliverables**:
-- ✅ DevOps stories work correctly
-- ✅ Bootstrap container includes Claude Code
-- ✅ Complete documentation
-- ✅ Performance optimization
-
-**Success Criteria**:
-- DevOps stories complete successfully
-- Bootstrap stories use Claude Code (when configured)
-- Documentation covers all use cases
-- Performance acceptable compared to classic mode
-- Ready for production use
+- All tests passing
+- Documentation complete
+- Ready for use
 
 ## Timeline Summary
 
 | Phase | Duration | Deliverables |
 |-------|----------|--------------|
-| Phase 1: Foundation | 3-4 days | Coder abstraction, process manager, basic communication |
-| Phase 2: Bridge Server | 3-4 days | MCP bridge, tools, client binary |
-| Phase 3: Agent Implementation | 4-5 days | ClaudeCodeCoder, templates, handlers |
-| Phase 4: Testing | 3-4 days | E2E tests, metrics, error handling |
-| Phase 5: Polish | 2-3 days | DevOps support, docs, optimization |
-| **Total** | **15-20 days** | **Production-ready Claude Code integration** |
-
-## Risk Assessment
-
-### Technical Risks
-
-**Risk 1: Claude Code Process Stability**
-- **Impact**: High - Core dependency
-- **Probability**: Low - Claude Code is mature
-- **Mitigation**:
-  - Comprehensive error handling with restart
-  - Fallback to ERROR state after one retry
-  - Extensive logging for debugging
-  - Process health monitoring
-
-**Risk 2: Bridge Server Complexity**
-- **Impact**: Medium - Debugging challenges
-- **Probability**: Medium - New protocol integration
-- **Mitigation**:
-  - Extensive logging at all bridge interactions
-  - Debug mode dumps full MCP traffic
-  - Unit tests for all bridge tools
-  - Integration tests for end-to-end flow
-
-**Risk 3: Context Synchronization**
-- **Impact**: Medium - Plan not properly passed to coding
-- **Probability**: Low - Straightforward state management
-- **Mitigation**:
-  - Explicit state data tests
-  - Validation of plan/context at phase boundaries
-  - Debug logging of context injection
-
-**Risk 4: Process Lifecycle Issues**
-- **Impact**: High - Orphaned processes, resource leaks
-- **Probability**: Medium - Docker + process management is complex
-- **Mitigation**:
-  - Defer blocks for cleanup
-  - Process registry with health checks
-  - Integration tests for crash scenarios
-  - Orchestrator-level monitoring
-
-**Risk 5: Cost Overruns**
-- **Impact**: Medium - Claude Code may use more tokens
-- **Probability**: Low - Expected to be more efficient
-- **Mitigation**:
-  - Track token usage and cost metrics
-  - Compare to classic mode baseline
-  - Set budget alerts
-  - Monitor and optimize prompts
-
-### Operational Risks
-
-**Risk 6: Installation Issues**
-- **Impact**: Medium - Users can't use Claude Code mode
-- **Probability**: Low - NPM install is standard
-- **Mitigation**:
-  - Auto-install with clear error messages
-  - Bundled in bootstrap container
-  - Version compatibility checks
-  - Fallback to classic mode
-
-**Risk 7: Performance Degradation**
-- **Impact**: Medium - Slower than expected
-- **Probability**: Low - Should be faster
-- **Mitigation**:
-  - Performance benchmarks vs classic
-  - Profiling and optimization
-  - Adjustable timeouts
-  - Clear metrics for comparison
+| Phase 1: Foundation | 2-3 days | Runner, parser, signal detection |
+| Phase 2: Integration | 3-4 days | Coder handlers, config, prompts, QUESTION flow |
+| Phase 3: Polish | 2-3 days | Tests, documentation |
+| **Total** | **7-10 days** | **Production-ready Claude Code mode** |
 
 ## Success Criteria
 
-**Functional Requirements**:
-- ✅ Can complete AppDev stories end-to-end in Claude Code mode
-- ✅ Can complete DevOps stories end-to-end in Claude Code mode
-- ✅ All orchestration features work (plan review, code review, questions)
-- ✅ Configuration-based mode selection (classic vs Claude Code)
-- ✅ Bootstrap container includes Claude Code
+**Functional**:
+- Can complete stories end-to-end in Claude Code mode
+- Architect review cycles work correctly
+- Questions to architect work during planning/coding
+- Standard coder mode unchanged and remains default
 
-**Quality Requirements**:
-- ✅ No regressions in classic mode
-- ✅ Test coverage >80% for new code
-- ✅ All error scenarios handled gracefully
-- ✅ No resource leaks or orphaned processes
-- ✅ Clear error messages for debugging
+**Quality**:
+- No regressions in standard mode
+- Error handling covers all failure scenarios
+- Clean process cleanup (no orphans)
 
-**Performance Requirements**:
-- ✅ Token usage tracked and compared to classic mode
-- ✅ Latency tracked and compared to classic mode
-- ✅ Dollar cost calculated and compared to classic mode
-- ✅ Performance within acceptable range (no hard limits)
-
-**Operational Requirements**:
-- ✅ Simple configuration to enable Claude Code mode
-- ✅ Comprehensive documentation (config, troubleshooting, migration)
-- ✅ Debug mode for troubleshooting
-- ✅ Metrics for monitoring and comparison
+**Operational**:
+- Simple configuration to enable
+- Clear error messages for debugging
+- Documentation covers common scenarios
 
 ## Future Enhancements
 
-**Post-MVP Improvements**:
-
-1. **Session Persistence**: Save Claude Code session data to disk for recovery after orchestrator restart
-2. **Advanced Context Management**: Smarter context preservation across container restarts
+1. **Resume Support**: Save Claude Code session for resume mode
+2. **Parallel Phases**: Use Claude Code for planning while another story is coding
 3. **Tool Filtering**: Granular control over which Claude Code tools are allowed
-4. **Cost Optimization**: Prompt tuning, caching strategies, token reduction
-5. **Multi-Model Support**: Support other AI coding assistants (Cursor, Copilot, etc.)
-6. **Interactive Mode**: Human-in-the-loop mode for debugging stories
-7. **Parallel Planning**: Use Claude Code for exploration while architect plans architecture
-8. **Custom Tool Injection**: Allow users to define custom MCP tools for domain-specific operations
-
-**Research Areas**:
-
-1. **Hybrid Approach**: Use Claude Code for coding, classic mode for planning (or vice versa)
-2. **Multi-Agent Claude Code**: Multiple Claude Code instances collaborating on same story
-3. **Streaming Optimizations**: Reduce latency by processing partial responses
-4. **Smart Restart**: Checkpoint state for faster restart without losing context
-5. **Rate Limiting**: Coordinate rate limiting across multiple Claude Code instances
-
-## Appendix A: Constants and Configuration
-
-```go
-// pkg/claudecode/constants.go
-
-const (
-    // QuestionTimeout is the maximum time to wait for architect answer
-    QuestionTimeout = 10 * time.Minute
-
-    // ProcessStartTimeout is the maximum time to start Claude Code process
-    ProcessStartTimeout = 30 * time.Second
-
-    // ResponseTimeout is the maximum time to wait for a response
-    ResponseTimeout = 5 * time.Minute
-
-    // RestartTimeout is the maximum time for graceful restart
-    RestartTimeout = 30 * time.Second
-
-    // ShutdownTimeout is the maximum time for graceful shutdown
-    ShutdownTimeout = 10 * time.Second
-
-    // DefaultSessionTimeout is the default maximum duration for a session
-    DefaultSessionTimeout = 30 * time.Minute
-
-    // BridgeSocketPath is the default Unix socket path
-    DefaultBridgeSocketPath = "/tmp/maestro-bridge.sock"
-
-    // ClaudeBinaryPath is the default path to claude binary
-    DefaultClaudeBinaryPath = "claude"
-)
-```
-
-## Appendix B: MCP Protocol Reference
-
-**Tool Discovery Request**:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/list"
-}
-```
-
-**Tool Discovery Response**:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "tools": [
-      {
-        "name": "maestro_submit_plan",
-        "description": "Submit implementation plan",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "plan": {"type": "string"}
-          },
-          "required": ["plan"]
-        }
-      }
-    ]
-  }
-}
-```
-
-**Tool Call Request**:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "maestro_ask_question",
-    "arguments": {
-      "question": "Should I use async?",
-      "context": "Working on API client",
-      "urgency": "high"
-    }
-  }
-}
-```
-
-**Tool Call Response**:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "Yes, use async for better performance..."
-      }
-    ]
-  }
-}
-```
-
-## Appendix C: Debugging Checklist
-
-When troubleshooting Claude Code issues:
-
-1. **Check Configuration**
-   - [ ] `coder.mode` set to "claude-code"
-   - [ ] `coder.claude_code.enabled` is true
-   - [ ] Claude binary path correct
-
-2. **Verify Installation**
-   - [ ] `claude --version` works in container
-   - [ ] Bridge client binary installed
-   - [ ] Bridge server running
-
-3. **Check Process State**
-   - [ ] Claude Code process running (`ps aux | grep claude`)
-   - [ ] No orphaned processes
-   - [ ] Container still running
-
-4. **Review Logs**
-   - [ ] Check orchestrator logs for errors
-   - [ ] Check Claude Code session logs (if debug mode)
-   - [ ] Check bridge server logs
-   - [ ] Check agent state in database
-
-5. **Test Bridge**
-   - [ ] Bridge server reachable (`nc -U /tmp/maestro-bridge.sock`)
-   - [ ] Tools discoverable (check MCP response)
-   - [ ] Tool calls reach dispatcher
-
-6. **Validate Context**
-   - [ ] Plan stored in state data
-   - [ ] Story content passed correctly
-   - [ ] System prompt rendered properly
-
-7. **Performance Check**
-   - [ ] Token usage reasonable
-   - [ ] Response times acceptable
-   - [ ] No memory leaks
-   - [ ] File descriptors not leaking
-
----
-
-**Document Maintenance**:
-This specification should be updated as implementation progresses. Mark tasks complete with dates, document deviations from plan, and record lessons learned for future enhancements.
+4. **Metrics Comparison**: Track and compare token usage/cost between modes
+5. **Model Selection**: Support different Claude models for Claude Code mode

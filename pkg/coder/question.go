@@ -68,6 +68,13 @@ func (c *Coder) handleQuestion(ctx context.Context, sm *agent.BaseStateMachine) 
 		qaContent := fmt.Sprintf("Question: %s\nAnswer: %s", question, questionResult.Answer)
 		c.contextManager.AddMessage("architect-answer", qaContent)
 
+		// Store Q&A in state for Claude Code mode to access when resuming
+		qaData := map[string]string{
+			"question": question,
+			"answer":   questionResult.Answer,
+		}
+		sm.SetStateData(KeyLastQA, qaData)
+
 		// Mark question as answered
 		sm.SetStateData(KeyQuestionAnswered, true)
 	} else {

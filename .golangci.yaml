@@ -344,7 +344,7 @@ issues:
     - linters:
         - govet
       text: "fieldalignment:"
-      path: "pkg/(config|proto)/.*\\.go"
+      path: "pkg/(config|proto|coder/claude|templates/claude)/.*\\.go"
 
     # Disable fieldalignment for test files
     - linters:

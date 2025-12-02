@@ -10,7 +10,7 @@ In some ways, it's an agent orchestration tool. But unlike most others, Maestro 
 
 ## Project Status
 
-Maestro is still pre-release and under active development although it is now functional for basic projects. For the time being it is still recommended for technical users and potential project contributors until we get to v1.0.0.
+Maestro is feature complete for its initial release but not yet production ready. The project is actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
 
 ---
 
@@ -252,6 +252,34 @@ Configuration in `.maestro/config.json`:
 ```
 
 See [docs/MAINTENANCE_MODE_SPEC.md](docs/MAINTENANCE_MODE_SPEC.md) for detailed specification.
+
+---
+
+## Claude Code Mode (Experimental)
+
+Maestro supports an alternative coder implementation that uses [Claude Code](https://claude.ai/code) as a subprocess instead of direct LLM API calls. This mode leverages Claude Code's built-in tooling (file operations, bash execution, etc.) while Maestro handles orchestration and signal detection.
+
+**How it works:**
+- Coders run Claude Code inside Docker containers with stream-json output
+- Maestro injects custom MCP tools for signaling (plan submission, task completion, questions)
+- The stream parser detects tool calls in real-time and extracts results
+- Q&A flow allows Claude Code to ask the architect questions and resume with answers
+
+**Configuration:**
+```json
+{
+  "agents": {
+    "coder_mode": "claude-code"
+  }
+}
+```
+
+**Benefits:**
+- Uses Claude Code's optimized tooling and context management
+- Automatic tool approval in non-interactive mode
+- Same orchestration benefits (architect review, PR workflow, persistence)
+
+This feature is experimental and requires Claude Code to be installed in the container (auto-installed on first run).
 
 ---
 
