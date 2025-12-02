@@ -758,11 +758,21 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	case StateSetup:
 		nextState, done, err = c.handleSetup(ctx, sm)
 	case StatePlanning:
-		nextState, done, err = c.handlePlanning(ctx, sm)
+		// Branch based on coder mode
+		if c.isClaudeCodeMode() {
+			nextState, done, err = c.handleClaudeCodePlanning(ctx, sm)
+		} else {
+			nextState, done, err = c.handlePlanning(ctx, sm)
+		}
 	case StatePlanReview:
 		nextState, done, err = c.handlePlanReview(ctx, sm)
 	case StateCoding:
-		nextState, done, err = c.handleCoding(ctx, sm)
+		// Branch based on coder mode
+		if c.isClaudeCodeMode() {
+			nextState, done, err = c.handleClaudeCodeCoding(ctx, sm)
+		} else {
+			nextState, done, err = c.handleCoding(ctx, sm)
+		}
 	case StateTesting:
 		nextState, done, err = c.handleTesting(ctx, sm)
 	case StateCodeReview:

@@ -362,6 +362,7 @@ type DebugConfig struct {
 type AgentConfig struct {
 	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
 	CoderModel     string           `json:"coder_model"`     // Model name for coder agents (mapped to provider via KnownModels)
+	CoderMode      string           `json:"coder_mode"`      // Coder execution mode: "standard" (default) or "claude-code"
 	ArchitectModel string           `json:"architect_model"` // Model name for architect agent (mapped to provider via KnownModels)
 	PMModel        string           `json:"pm_model"`        // Model name for PM agent (mapped to provider via KnownModels)
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
@@ -436,6 +437,10 @@ const (
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelGemini3Pro
 	DefaultPMModel        = ModelClaudeOpus45
+
+	// Coder execution mode constants.
+	CoderModeStandard   = "standard"    // Default: use standard LLM-based coder agent
+	CoderModeClaudeCode = "claude-code" // Use Claude Code subprocess for planning/coding
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -1104,6 +1109,20 @@ func validateAgentConfigInternal(agents *AgentConfig, _ *Config) error {
 		return fmt.Errorf("architect_model '%s': %w", agents.ArchitectModel, err)
 	}
 
+	// Validate coder_mode is a valid value
+	if agents.CoderMode != "" && agents.CoderMode != CoderModeStandard && agents.CoderMode != CoderModeClaudeCode {
+		return fmt.Errorf("coder_mode must be '%s' or '%s', got '%s'", CoderModeStandard, CoderModeClaudeCode, agents.CoderMode)
+	}
+
+	// If using claude-code mode, validate the coder_model is an Anthropic model
+	if agents.CoderMode == CoderModeClaudeCode {
+		provider, _ := GetModelProvider(agents.CoderModel)
+		if provider != ProviderAnthropic {
+			return fmt.Errorf("coder_mode '%s' requires an Anthropic model for coder_model, got '%s' (provider: %s)",
+				CoderModeClaudeCode, agents.CoderModel, provider)
+		}
+	}
+
 	// No need to validate MaxConnections or TPM - those are removed from config
 	// Rate limits are now per-provider, not per-model
 	return nil
@@ -1212,6 +1231,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Agents.PMModel == "" {
 		config.Agents.PMModel = DefaultPMModel
+	}
+	if config.Agents.CoderMode == "" {
+		config.Agents.CoderMode = CoderModeStandard
 	}
 
 	// Apply metrics defaults
