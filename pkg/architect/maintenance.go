@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/maintenance"
+	"orchestrator/pkg/templates/maintenance"
 )
 
 // onSpecComplete is called when all stories for a spec are done.
