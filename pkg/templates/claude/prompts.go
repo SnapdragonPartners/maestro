@@ -11,6 +11,12 @@ import (
 //go:embed *.tpl.md
 var claudeTemplateFS embed.FS
 
+// QAPair represents a question-answer pair from architect clarification.
+type QAPair struct {
+	Question string
+	Answer   string
+}
+
 // TemplateData contains data for Claude Code prompt templates.
 type TemplateData struct {
 	// Mode is the execution mode (PLANNING or CODING)
@@ -36,6 +42,9 @@ type TemplateData struct {
 
 	// KnowledgePack contains relevant project knowledge
 	KnowledgePack string
+
+	// LastQA contains the last Q&A pair when resuming from QUESTION state
+	LastQA *QAPair
 }
 
 // Renderer handles rendering of Claude Code prompt templates.
@@ -93,6 +102,8 @@ func (r *Renderer) RenderCodingPrompt(data *TemplateData) (string, error) {
 
 // RenderPlanningInput generates the initial input for planning mode.
 func (r *Renderer) RenderPlanningInput(data *TemplateData) string {
+	qaSection := renderQASection(data.LastQA)
+
 	return fmt.Sprintf(`# Story to Implement
 
 **Story ID:** %s
@@ -105,15 +116,17 @@ func (r *Renderer) RenderPlanningInput(data *TemplateData) string {
 ## Project Knowledge
 
 %s
-
+%s
 ---
 
 Analyze this story and create a detailed implementation plan. When ready, call maestro_submit_plan with your plan.`,
-		data.StoryID, data.StoryTitle, data.StoryContent, data.KnowledgePack)
+		data.StoryID, data.StoryTitle, data.StoryContent, data.KnowledgePack, qaSection)
 }
 
 // RenderCodingInput generates the initial input for coding mode.
 func (r *Renderer) RenderCodingInput(data *TemplateData) string {
+	qaSection := renderQASection(data.LastQA)
+
 	return fmt.Sprintf(`# Approved Implementation Plan
 
 ## Story
@@ -123,9 +136,28 @@ func (r *Renderer) RenderCodingInput(data *TemplateData) string {
 ## Plan
 
 %s
-
+%s
 ---
 
 Implement the code according to this approved plan. When complete, call maestro_done with a summary.`,
-		data.StoryID, data.StoryTitle, data.Plan)
+		data.StoryID, data.StoryTitle, data.Plan, qaSection)
+}
+
+// renderQASection formats the Q&A section for inclusion in prompts.
+func renderQASection(qa *QAPair) string {
+	if qa == nil || qa.Question == "" || qa.Answer == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+## Architect Clarification
+
+You previously asked the architect a question and received an answer:
+
+**Question:** %s
+
+**Answer:** %s
+
+Continue your work with this information.
+
+`, qa.Question, qa.Answer)
 }

@@ -43,6 +43,18 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 		KnowledgePack: knowledgePack,
 	}
 
+	// Check if we're resuming from a question (inject Q&A context)
+	if qaData, exists := sm.GetStateValue(KeyLastQA); exists && qaData != nil {
+		if qaMap, ok := qaData.(map[string]string); ok {
+			templateData.LastQA = &claudetemplates.QAPair{
+				Question: qaMap["question"],
+				Answer:   qaMap["answer"],
+			}
+			// Clear the Q&A after using it
+			sm.SetStateData(KeyLastQA, nil)
+		}
+	}
+
 	// Render system prompt
 	systemPrompt, err := renderer.RenderPlanningPrompt(&templateData)
 	if err != nil {
@@ -117,7 +129,13 @@ func (c *Coder) processClaudeCodePlanningResult(sm *agent.BaseStateMachine, resu
 			return proto.StateError, false, logx.Errorf("Claude Code signaled question but provided no question")
 		}
 
-		sm.SetStateData(KeyPendingQuestion, result.Question.Question)
+		// Store question data in the format expected by handleQuestion
+		questionData := map[string]any{
+			"question": result.Question.Question,
+			"context":  result.Question.Context,
+			"origin":   string(StatePlanning),
+		}
+		sm.SetStateData(KeyPendingQuestion, questionData)
 		c.logger.Info("❓ Claude Code needs clarification: %s", result.Question.Question)
 		return StateQuestion, false, nil
 
