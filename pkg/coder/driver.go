@@ -42,28 +42,30 @@ const (
 //
 //nolint:govet // fieldalignment: keeping current field order for code clarity
 type Coder struct {
-	*agent.BaseStateMachine // Directly embed state machine (provides llmClient field and GetAgentID())
-	contextManager          *contextmgr.ContextManager
-	renderer                *templates.Renderer
-	logger                  *logx.Logger
-	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
-	cloneManager            *CloneManager                  // Git clone management
-	buildRegistry           *build.Registry                // Build backend registry
-	buildService            *build.Service                 // Build service for MCP tools
-	chatService             *chat.Service                  // Chat service for agent collaboration
-	persistenceChannel      chan<- *persistence.Request    // Channel for database operations
-	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
-	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
-	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
-	pendingApprovalRequest  *ApprovalRequest               // REQUEST→RESULT flow state
-	pendingQuestion         *Question
-	storyCh                 <-chan *proto.AgentMsg // Channel to receive story messages
-	replyCh                 <-chan *proto.AgentMsg // Channel to receive replies (for future use)
-	workDir                 string                 // Current working directory (may be story-specific)
-	originalWorkDir         string                 // Original agent work directory (for cleanup)
-	containerName           string                 // Current story container name
-	codingBudget            int                    // Iteration budgets
-	todoList                *TodoList              // Implementation todo list
+	*agent.BaseStateMachine       // Directly embed state machine (provides llmClient field and GetAgentID())
+	contextManager                *contextmgr.ContextManager
+	renderer                      *templates.Renderer
+	logger                        *logx.Logger
+	dispatcher                    *dispatch.Dispatcher           // Dispatcher for sending messages
+	cloneManager                  *CloneManager                  // Git clone management
+	buildRegistry                 *build.Registry                // Build backend registry
+	buildService                  *build.Service                 // Build service for MCP tools
+	chatService                   *chat.Service                  // Chat service for agent collaboration
+	persistenceChannel            chan<- *persistence.Request    // Channel for database operations
+	longRunningExecutor           *execpkg.LongRunningDockerExec // Docker executor for container per story
+	planningToolProvider          *tools.ToolProvider            // Tools available during planning state
+	codingToolProvider            *tools.ToolProvider            // Tools available during coding state
+	pendingApprovalRequest        *ApprovalRequest               // REQUEST→RESULT flow state
+	pendingQuestion               *Question
+	storyCh                       <-chan *proto.AgentMsg // Channel to receive story messages
+	replyCh                       <-chan *proto.AgentMsg // Channel to receive replies (for future use)
+	workDir                       string                 // Current working directory (may be story-specific)
+	originalWorkDir               string                 // Original agent work directory (for cleanup)
+	containerName                 string                 // Current story container name
+	codingBudget                  int                    // Iteration budgets
+	todoList                      *TodoList              // Implementation todo list
+	claudeCodeAvailabilityChecked bool                   // Whether Claude Code availability has been checked for this story
+	claudeCodeAvailable           bool                   // Whether Claude Code is available in the current container
 }
 
 // Runtime extends BaseRuntime with coder-specific capabilities.
@@ -759,7 +761,7 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 		nextState, done, err = c.handleSetup(ctx, sm)
 	case StatePlanning:
 		// Branch based on coder mode
-		if c.isClaudeCodeMode() {
+		if c.isClaudeCodeMode(ctx) {
 			nextState, done, err = c.handleClaudeCodePlanning(ctx, sm)
 		} else {
 			nextState, done, err = c.handlePlanning(ctx, sm)
@@ -768,7 +770,7 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 		nextState, done, err = c.handlePlanReview(ctx, sm)
 	case StateCoding:
 		// Branch based on coder mode
-		if c.isClaudeCodeMode() {
+		if c.isClaudeCodeMode(ctx) {
 			nextState, done, err = c.handleClaudeCodeCoding(ctx, sm)
 		} else {
 			nextState, done, err = c.handleCoding(ctx, sm)

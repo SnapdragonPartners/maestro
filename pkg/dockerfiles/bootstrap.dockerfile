@@ -27,7 +27,13 @@ RUN apk add --no-cache \
     tree \
     # Additional utilities
     coreutils \
-    util-linux
+    util-linux \
+    # Node.js and npm for Claude Code
+    nodejs \
+    npm
+
+# Install Claude Code globally for Claude Code mode support
+RUN npm install -g @anthropic-ai/claude-code
 
 # Set bash as default shell
 SHELL ["/bin/bash", "-c"]

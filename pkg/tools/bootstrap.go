@@ -223,6 +223,7 @@ func (b *BootstrapTool) renderBootstrapMarkdown(reqs *BootstrapRequirements) (st
 			"NeedsDockerfile":     reqs.NeedsDockerfile,
 			"NeedsMakefile":       reqs.NeedsMakefile,
 			"NeedsKnowledgeGraph": reqs.NeedsKnowledgeGraph,
+			"NeedsClaudeCode":     reqs.NeedsClaudeCode,
 		},
 	}
 

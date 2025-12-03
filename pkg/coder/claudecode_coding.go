@@ -8,6 +8,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/coder/claude"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	claudetemplates "orchestrator/pkg/templates/claude"
@@ -154,11 +155,57 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 	}
 }
 
-// isClaudeCodeMode returns true if the coder is configured to use Claude Code mode.
-func (c *Coder) isClaudeCodeMode() bool {
+// isClaudeCodeMode returns true if the coder is configured to use Claude Code mode
+// AND Claude Code is actually available in the current container.
+// If Claude Code is configured but not available, logs a warning and falls back to standard mode.
+func (c *Coder) isClaudeCodeMode(ctx context.Context) bool {
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return false
 	}
-	return cfg.Agents.CoderMode == config.CoderModeClaudeCode
+
+	// Not configured for Claude Code mode
+	if cfg.Agents.CoderMode != config.CoderModeClaudeCode {
+		return false
+	}
+
+	// Check if Claude Code is available (cache this check per-story)
+	if !c.claudeCodeAvailabilityChecked {
+		c.claudeCodeAvailable = c.checkClaudeCodeAvailable(ctx)
+		c.claudeCodeAvailabilityChecked = true
+
+		if !c.claudeCodeAvailable {
+			c.logger.Warn("⚠️ Claude Code not found in container %s. Will run in standard mode to install it and continue using Claude Code after installation is complete.",
+				c.containerName)
+		}
+	}
+
+	return c.claudeCodeAvailable
+}
+
+// checkClaudeCodeAvailable probes the container to see if Claude Code is installed.
+func (c *Coder) checkClaudeCodeAvailable(ctx context.Context) bool {
+	if c.longRunningExecutor == nil || c.containerName == "" {
+		c.logger.Debug("No container available for Claude Code check")
+		return false
+	}
+
+	// Use a timeout context for the check
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Run "claude --version" in the container
+	result, err := c.longRunningExecutor.Run(checkCtx, []string{"claude", "--version"}, &exec.Opts{})
+	if err != nil {
+		c.logger.Debug("Claude Code availability check failed: %v", err)
+		return false
+	}
+
+	if result.ExitCode != 0 {
+		c.logger.Debug("Claude Code not available (exit code %d): %s", result.ExitCode, result.Stderr)
+		return false
+	}
+
+	c.logger.Info("✅ Claude Code available: %s", result.Stdout)
+	return true
 }

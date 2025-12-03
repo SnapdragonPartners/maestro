@@ -30,8 +30,27 @@ Coders have access to container management tools:
 
 
 {{end}}
+{{if .Extra.NeedsClaudeCode}}
+### MANDATORY PREREQUISITE R-{{if .Extra.NeedsDockerfile}}002{{else}}001{{end}}: Install Claude Code in Development Container
+**Type:** infrastructure
+**Priority:** must
+
+**Description:**
+Install Claude Code CLI in the development container to enable Claude Code mode for coders. Claude Code provides optimized tooling for code generation and file operations.
+
+The Dockerfile must be updated to include Claude Code installation. This is a DevOps story that modifies container configuration.
+
+**Acceptance Criteria:**
+- [ ] Dockerfile updated to install Node.js and npm (if not already present)
+- [ ] Dockerfile updated to run `npm install -g @anthropic-ai/claude-code`
+- [ ] Container rebuilt and validated using `container_build` and `container_test`
+- [ ] Container configured as target image using `container_update` tool
+- [ ] `claude --version` runs successfully in the container
+
+
+{{end}}
 {{if .Extra.NeedsKnowledgeGraph}}
-### MANDATORY PREREQUISITE R-{{if .Extra.NeedsDockerfile}}002{{else}}001{{end}}: Initialize Knowledge Graph
+### MANDATORY PREREQUISITE R-{{if .Extra.NeedsDockerfile}}{{if .Extra.NeedsClaudeCode}}003{{else}}002{{end}}{{else}}{{if .Extra.NeedsClaudeCode}}002{{else}}001{{end}}{{end}}: Initialize Knowledge Graph
 **Type:** infrastructure
 **Priority:** must
 
@@ -59,7 +78,7 @@ The architect will select appropriate initial patterns and rules based on the pr
 
 {{end}}
 {{if .Extra.NeedsMakefile}}
-### MANDATORY PREREQUISITE R-{{if .Extra.NeedsDockerfile}}{{if .Extra.NeedsKnowledgeGraph}}003{{else}}002{{end}}{{else}}{{if .Extra.NeedsKnowledgeGraph}}002{{else}}001{{end}}{{end}}: Create Build System (Makefile)
+### MANDATORY PREREQUISITE R-{{if .Extra.NeedsDockerfile}}{{if .Extra.NeedsClaudeCode}}{{if .Extra.NeedsKnowledgeGraph}}004{{else}}003{{end}}{{else}}{{if .Extra.NeedsKnowledgeGraph}}003{{else}}002{{end}}{{end}}{{else}}{{if .Extra.NeedsClaudeCode}}{{if .Extra.NeedsKnowledgeGraph}}003{{else}}002{{end}}{{else}}{{if .Extra.NeedsKnowledgeGraph}}002{{else}}001{{end}}{{end}}{{end}}: Create Build System (Makefile)
 **Type:** infrastructure
 **Priority:** must
 

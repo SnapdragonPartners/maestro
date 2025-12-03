@@ -328,6 +328,10 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
+	if opts == nil {
+		return Result{}, fmt.Errorf("opts cannot be nil")
+	}
+
 	// We need a story ID to identify the container.
 	// Try to get it from context first, then from active containers.
 	storyID := d.getStoryIDFromContext(ctx)

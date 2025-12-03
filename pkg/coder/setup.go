@@ -20,6 +20,10 @@ import (
 //
 //nolint:unparam // bool return required by state machine interface, always false for non-terminal states
 func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+	// Reset Claude Code availability check for new story (will be re-checked after container starts)
+	c.claudeCodeAvailabilityChecked = false
+	c.claudeCodeAvailable = false
+
 	// Clean work directory contents while preserving the directory itself.
 	// IMPORTANT: We must NOT delete and recreate the directory because Docker bind mounts
 	// on macOS track the inode. If we delete/recreate the directory, the architect container's
