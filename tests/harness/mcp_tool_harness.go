@@ -40,6 +40,14 @@ func (m *mockTestAgent) GetIncompleteTodoCount() int {
 	return 0 // No incomplete todos in mock
 }
 
+func (m *mockTestAgent) SetPendingContainerConfig(_, _, _ string) {
+	// No-op for mock
+}
+
+func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, bool) {
+	return "", "", "", false // No pending config in mock
+}
+
 // HarnessResult wraps the tool result with additional metadata for testing.
 //
 //nolint:govet // fieldalignment: prefer logical grouping over memory optimization
@@ -58,7 +66,7 @@ func createToolByName(toolName string) (tools.Tool, error) {
 	case tools.ToolContainerBuild:
 		return tools.NewContainerBuildTool(nil), nil
 	case tools.ToolContainerUpdate:
-		return tools.NewContainerUpdateTool(nil), nil
+		return tools.NewContainerUpdateTool(nil, nil), nil
 	case tools.ToolContainerTest:
 		// Create mock agent for testing
 		mockAgent := &mockTestAgent{}

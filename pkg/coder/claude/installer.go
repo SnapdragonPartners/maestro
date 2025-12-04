@@ -4,9 +4,12 @@ package claude
 import (
 	"context"
 	"fmt"
+	"os"
+	goexec "os/exec"
 	"strings"
 	"time"
 
+	"orchestrator/pkg/coder/claude/embedded"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 )
@@ -205,4 +208,98 @@ func (i *Installer) GetClaudeCodeVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("claude Code is not installed")
 	}
 	return version, nil
+}
+
+// EnsureMCPProxy ensures the maestro-mcp-proxy binary is installed in the container.
+// It checks if the proxy exists, detects the container architecture, and copies
+// the appropriate embedded binary if needed.
+func (i *Installer) EnsureMCPProxy(ctx context.Context) error {
+	// Check if proxy is already installed
+	if i.isMCPProxyInstalled(ctx) {
+		i.logger.Debug("MCP proxy already installed")
+		return nil
+	}
+
+	// Verify we have embedded binaries
+	if !embedded.HasEmbeddedBinaries() {
+		return fmt.Errorf("MCP proxy binaries not embedded (run 'make build-mcp-proxy' before building maestro)")
+	}
+
+	// Detect container architecture
+	arch, err := i.getContainerArch(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to detect container architecture: %w", err)
+	}
+	i.logger.Debug("Container architecture: %s", arch)
+
+	// Get the appropriate binary for this architecture
+	binary, err := embedded.GetProxyBinary(arch)
+	if err != nil {
+		return fmt.Errorf("failed to get proxy binary: %w", err)
+	}
+	i.logger.Info("Installing MCP proxy for %s (%d bytes)", arch, len(binary))
+
+	// Write binary to temp file on host
+	tmpFile, err := os.CreateTemp("", "maestro-mcp-proxy-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, writeErr := tmpFile.Write(binary); writeErr != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write temp file: %w", writeErr)
+	}
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		return fmt.Errorf("failed to close temp file: %w", closeErr)
+	}
+
+	// Make temp file executable (for docker cp to preserve permissions)
+	// G302: We intentionally use 0755 because this is an executable binary
+	if chmodErr := os.Chmod(tmpPath, 0755); chmodErr != nil { //nolint:gosec // Executable binary needs 0755
+		return fmt.Errorf("failed to chmod temp file: %w", chmodErr)
+	}
+
+	// Copy to container using docker cp (runs on host, not in container)
+	dstPath := MCPProxyPath
+	cmd := goexec.CommandContext(ctx, "docker", "cp", tmpPath, i.containerName+":"+dstPath)
+	if output, cpErr := cmd.CombinedOutput(); cpErr != nil {
+		return fmt.Errorf("docker cp failed: %w (output: %s)", cpErr, string(output))
+	}
+
+	// Try to set executable permissions inside container.
+	// This may fail if container user isn't root, but docker cp often preserves
+	// the executable bit from the source file, so we verify instead of failing.
+	_, _ = i.runCommand(ctx, []string{"chmod", "+x", dstPath}, 10*time.Second)
+
+	// Verify installation - this checks if the file exists AND is executable
+	if !i.isMCPProxyInstalled(ctx) {
+		return fmt.Errorf("MCP proxy installation verification failed (file may not be executable)")
+	}
+
+	i.logger.Info("MCP proxy installed successfully at %s", dstPath)
+	return nil
+}
+
+// isMCPProxyInstalled checks if the MCP proxy is available at the expected path.
+func (i *Installer) isMCPProxyInstalled(ctx context.Context) bool {
+	result, err := i.runCommand(ctx, []string{"test", "-x", MCPProxyPath}, 10*time.Second)
+	return err == nil && result.ExitCode == 0
+}
+
+// getContainerArch returns the architecture of the container (e.g., "aarch64" or "x86_64").
+func (i *Installer) getContainerArch(ctx context.Context) (string, error) {
+	result, err := i.runCommand(ctx, []string{"uname", "-m"}, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("uname -m failed: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("uname -m failed: exit code %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+	arch := strings.TrimSpace(result.Stdout)
+	if arch == "" {
+		return "", fmt.Errorf("uname -m returned empty string")
+	}
+	return arch, nil
 }

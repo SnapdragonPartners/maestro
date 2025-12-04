@@ -69,8 +69,15 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 		return proto.StateError, false, logx.Wrap(err, "failed to get config")
 	}
 
-	// Create runner
-	runner := claude.NewRunner(c.longRunningExecutor, c.containerName, c.logger)
+	// Ensure coding tool provider is initialized
+	if c.codingToolProvider == nil {
+		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
+		c.codingToolProvider = c.createCodingToolProvider(storyType)
+		c.logger.Debug("Created coding ToolProvider for story type: %s", storyType)
+	}
+
+	// Create runner with tool provider for MCP integration
+	runner := claude.NewRunner(c.longRunningExecutor, c.containerName, c.codingToolProvider, c.logger)
 
 	// Build run options
 	opts := claude.DefaultRunOptions()

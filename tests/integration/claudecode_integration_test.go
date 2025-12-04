@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/config"
 	dockerexec "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/tools"
 )
 
 // TestClaudeCodeInstallationIntegration tests that Claude Code can be installed in a container.
@@ -144,9 +145,14 @@ func TestClaudeCodeBasicExecutionIntegration(t *testing.T) {
 	t.Logf("Started container: %s", containerName)
 	time.Sleep(2 * time.Second)
 
-	// Create runner
+	// Create runner with tool provider
 	logger := logx.NewLogger("test")
-	runner := claude.NewRunner(executor, containerName, logger)
+	agentCtx := &tools.AgentContext{
+		Executor: dockerexec.NewLocalExec(),
+		WorkDir:  workspaceDir,
+	}
+	provider := tools.NewProvider(agentCtx, []string{"shell"})
+	runner := claude.NewRunner(executor, containerName, provider, logger)
 
 	// Test basic execution that should call maestro_done
 	t.Run("simple_task_completion", func(t *testing.T) {
@@ -356,9 +362,14 @@ func TestClaudeCodeTimeoutHandlingIntegration(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	// Create runner
+	// Create runner with tool provider
 	logger := logx.NewLogger("test")
-	runner := claude.NewRunner(executor, containerName, logger)
+	agentCtx := &tools.AgentContext{
+		Executor: dockerexec.NewLocalExec(),
+		WorkDir:  workspaceDir,
+	}
+	provider := tools.NewProvider(agentCtx, []string{"shell"})
+	runner := claude.NewRunner(executor, containerName, provider, logger)
 
 	t.Run("total_timeout", func(t *testing.T) {
 		runOpts := claude.DefaultRunOptions()

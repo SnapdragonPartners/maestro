@@ -214,6 +214,8 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
 	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
 
+	// Note: MCP communication uses TCP via host.docker.internal - no socket mount needed.
+
 	// Environment variables.
 	for _, env := range opts.Env {
 		args = append(args, "--env", env)

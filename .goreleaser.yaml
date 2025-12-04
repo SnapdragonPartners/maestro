@@ -4,6 +4,10 @@ project_name: maestro
 before:
   hooks:
     - go mod tidy
+    # Build MCP proxy binaries for embedding (must run before main build)
+    - mkdir -p pkg/coder/claude/embedded
+    - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o pkg/coder/claude/embedded/proxy-linux-arm64 ./cmd/maestro-mcp-proxy
+    - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o pkg/coder/claude/embedded/proxy-linux-amd64 ./cmd/maestro-mcp-proxy
 
 builds:
   - id: maestro

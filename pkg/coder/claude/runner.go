@@ -2,31 +2,52 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"orchestrator/pkg/coder/claude/mcpserver"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/tools"
 )
 
+// MCPProxyPath is the path to the MCP proxy binary inside containers.
+const MCPProxyPath = "/usr/local/bin/maestro-mcp-proxy"
+
+// MCPConfigPath is the path where the MCP config file is written inside containers.
+const MCPConfigPath = "/tmp/maestro-mcp-config.json"
+
+// DockerHostFromContainer is the hostname used by containers to reach the host.
+// On Docker Desktop (macOS/Windows), this is "host.docker.internal".
+// On Linux with --add-host=host.docker.internal:host-gateway, this also works.
+const DockerHostFromContainer = "host.docker.internal"
+
 // Runner executes Claude Code and manages the lifecycle of a session.
+// It starts an MCP server on the host and configures Claude Code to use it
+// via a stdio proxy inside the container.
 type Runner struct {
 	executor      exec.Executor
 	containerName string
 	installer     *Installer
 	logger        *logx.Logger
+	toolProvider  *tools.ToolProvider
+	mcpServer     *mcpserver.Server
 }
 
 // NewRunner creates a new Runner for executing Claude Code.
-func NewRunner(executor exec.Executor, containerName string, logger *logx.Logger) *Runner {
+func NewRunner(executor exec.Executor, containerName string, toolProvider *tools.ToolProvider, logger *logx.Logger) *Runner {
 	if logger == nil {
 		logger = logx.NewLogger("claude-runner")
 	}
+
 	return &Runner{
 		executor:      executor,
 		containerName: containerName,
 		installer:     NewInstaller(executor, containerName, logger),
+		toolProvider:  toolProvider,
 		logger:        logger,
 	}
 }
@@ -45,14 +66,42 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 		}, err
 	}
 
+	// Ensure MCP proxy is installed (copies embedded binary to container if needed)
+	if err := r.installer.EnsureMCPProxy(ctx); err != nil {
+		return Result{
+			Signal:   SignalError,
+			Error:    fmt.Errorf("failed to install MCP proxy: %w", err),
+			Duration: time.Since(startTime),
+		}, err
+	}
+
+	// Start the MCP server on the host
+	if err := r.startMCPServer(ctx); err != nil {
+		return Result{
+			Signal:   SignalError,
+			Error:    fmt.Errorf("failed to start MCP server: %w", err),
+			Duration: time.Since(startTime),
+		}, err
+	}
+	defer r.stopMCPServer()
+
+	// Write MCP config to file in container (Claude Code expects file path, not inline JSON)
+	if err := r.writeMCPConfig(ctx); err != nil {
+		return Result{
+			Signal:   SignalError,
+			Error:    fmt.Errorf("failed to write MCP config: %w", err),
+			Duration: time.Since(startTime),
+		}, err
+	}
+
 	// Build the command
 	cmd := r.buildCommand(opts)
 
-	// Build execution options
+	// Build execution options (includes socket mount)
 	execOpts := r.buildExecOpts(opts)
 
-	r.logger.Info("Starting Claude Code: mode=%s model=%s timeout=%s inactivity=%s",
-		opts.Mode, opts.Model, opts.TotalTimeout, opts.InactivityTimeout)
+	r.logger.Info("Starting Claude Code: mode=%s model=%s timeout=%s port=%d",
+		opts.Mode, opts.Model, opts.TotalTimeout, r.mcpServer.Port())
 
 	// Execute Claude Code
 	execResult, err := r.executor.Run(ctx, cmd, execOpts)
@@ -74,7 +123,7 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 		}, fmt.Errorf("claude code execution failed: %w", err)
 	}
 
-	// Parse the output
+	// Parse the output from stdout
 	result := r.parseOutput(execResult.Stdout, execResult.Stderr)
 	result.Duration = duration
 
@@ -82,6 +131,59 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 		result.Signal, result.ResponseCount, duration)
 
 	return result, nil
+}
+
+// startMCPServer starts the MCP server on the host listening on a TCP port.
+func (r *Runner) startMCPServer(ctx context.Context) error {
+	if r.toolProvider == nil {
+		return fmt.Errorf("tool provider is required for MCP server")
+	}
+
+	// Create and start the MCP server (binds to dynamic port)
+	r.mcpServer = mcpserver.NewServer(r.toolProvider, r.logger)
+
+	// Start server in background goroutine
+	go func() {
+		if err := r.mcpServer.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			r.logger.Error("MCP server error: %v", err)
+		}
+	}()
+
+	// Give the server a moment to start and bind to port
+	time.Sleep(100 * time.Millisecond)
+
+	r.logger.Debug("MCP server started on port %d", r.mcpServer.Port())
+	return nil
+}
+
+// stopMCPServer stops the MCP server.
+func (r *Runner) stopMCPServer() {
+	if r.mcpServer != nil {
+		if err := r.mcpServer.Stop(); err != nil {
+			r.logger.Error("Failed to stop MCP server: %v", err)
+		}
+		r.mcpServer = nil
+	}
+}
+
+// writeMCPConfig writes the MCP configuration to a file inside the container.
+// Claude Code's --mcp-config flag expects a file path, not inline JSON.
+func (r *Runner) writeMCPConfig(ctx context.Context) error {
+	configJSON := BuildMCPConfigJSON(r.mcpServer.Port())
+
+	// Write the config file using a heredoc to handle JSON escaping
+	cmd := []string{"sh", "-c", fmt.Sprintf("cat > %s << 'MCPEOF'\n%s\nMCPEOF", MCPConfigPath, configJSON)}
+
+	result, err := r.executor.Run(ctx, cmd, &exec.Opts{})
+	if err != nil {
+		return fmt.Errorf("failed to write MCP config: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("failed to write MCP config: exit code %d, stderr: %s", result.ExitCode, result.Stderr)
+	}
+
+	r.logger.Debug("Wrote MCP config to %s", MCPConfigPath)
+	return nil
 }
 
 // buildCommand constructs the Claude Code command line.
@@ -98,15 +200,38 @@ func (r *Runner) buildCommand(opts *RunOptions) []string {
 		cmd = append(cmd, "--model", opts.Model)
 	}
 
+	// Add MCP config file path (config written by writeMCPConfig)
+	cmd = append(cmd, "--mcp-config", MCPConfigPath)
+
 	// Add system prompt if specified
 	if opts.SystemPrompt != "" {
 		cmd = append(cmd, "--append-system-prompt", opts.SystemPrompt)
 	}
 
-	// Add the prompt/input as positional argument (not a flag)
-	cmd = append(cmd, opts.InitialInput)
+	// Add -- separator before positional argument to avoid parsing issues
+	// with prompts that might start with - or contain special characters,
+	// followed by the prompt/input as positional argument
+	cmd = append(cmd, "--", opts.InitialInput)
 
 	return cmd
+}
+
+// BuildMCPConfigJSON creates the MCP config JSON string for a given port.
+// This is useful for testing and custom integrations.
+func BuildMCPConfigJSON(port int) string {
+	// TCP address from container perspective using host.docker.internal
+	tcpAddr := fmt.Sprintf("%s:%d", DockerHostFromContainer, port)
+
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"maestro": map[string]interface{}{
+				"command": MCPProxyPath,
+				"args":    []string{tcpAddr},
+			},
+		},
+	}
+	data, _ := json.Marshal(config)
+	return string(data)
 }
 
 // buildExecOpts creates execution options for the executor.
@@ -124,11 +249,20 @@ func (r *Runner) buildExecOpts(opts *RunOptions) *exec.Opts {
 	}
 
 	// Build environment variables
-	env := make([]string, 0, len(opts.EnvVars))
+	env := make([]string, 0, len(opts.EnvVars)+1)
 	for k, v := range opts.EnvVars {
 		env = append(env, k+"="+v)
 	}
+
+	// Add MCP auth token for the proxy to authenticate with the host server
+	if r.mcpServer != nil {
+		env = append(env, "MCP_AUTH_TOKEN="+r.mcpServer.Token())
+	}
 	execOpts.Env = env
+
+	// Note: No extra mounts needed - TCP communication uses host.docker.internal
+	// which is available by default in Docker Desktop and can be added to Linux
+	// containers with --add-host=host.docker.internal:host-gateway
 
 	return &execOpts
 }
@@ -181,12 +315,6 @@ func (r *Runner) parseOutput(stdout, stderr string) Result {
 
 // RunWithInactivityTimeout executes Claude Code with inactivity detection.
 // This wraps Run() with additional monitoring for stalled sessions.
-//
-// Note: Since Run() is a blocking call that doesn't provide streaming output,
-// inactivity detection is limited. The timeout manager's inactivity channel is
-// used to detect if the process appears stalled (no completion within inactivity
-// timeout). If the run completes with output, it's considered active regardless
-// of how long it took.
 func (r *Runner) RunWithInactivityTimeout(ctx context.Context, opts *RunOptions) (Result, error) {
 	// Create a timeout manager
 	tm := NewTimeoutManager(opts.TotalTimeout, opts.InactivityTimeout)
@@ -222,4 +350,13 @@ func (r *Runner) RunWithInactivityTimeout(ctx context.Context, opts *RunOptions)
 // GetInstaller returns the installer for manual installation operations.
 func (r *Runner) GetInstaller() *Installer {
 	return r.installer
+}
+
+// GetPort returns the TCP port the MCP server is listening on.
+// Returns 0 if the server is not running.
+func (r *Runner) GetPort() int {
+	if r.mcpServer == nil {
+		return 0
+	}
+	return r.mcpServer.Port()
 }

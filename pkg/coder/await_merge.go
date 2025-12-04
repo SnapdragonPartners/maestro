@@ -43,6 +43,10 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 	case string(proto.ApprovalStatusApproved):
 		c.logger.Info("🧑‍💻 PR merged successfully, story complete")
 
+		// Apply any pending container config updates from this story
+		// This is deferred from container_update tool until after merge succeeds
+		c.applyPendingContainerConfig()
+
 		// Check if knowledge.dot was modified and trigger reindexing
 		c.checkAndReindexKnowledge()
 
@@ -137,4 +141,42 @@ func (c *Coder) checkAndReindexKnowledge() {
 	case <-time.After(2 * time.Second):
 		c.logger.Warn("Knowledge modification check timed out")
 	}
+}
+
+// applyPendingContainerConfig applies any pending container configuration after successful merge.
+func (c *Coder) applyPendingContainerConfig() {
+	name, dockerfile, imageID, exists := c.GetPendingContainerConfig()
+	if !exists {
+		return
+	}
+
+	c.logger.Info("🐳 Applying pending container config: name=%s, dockerfile=%s, imageID=%s",
+		name, dockerfile, imageID)
+
+	// Get current config to preserve existing settings
+	cfg, err := config.GetConfig()
+	if err != nil {
+		c.logger.Warn("Failed to get config for container update: %v", err)
+		return
+	}
+
+	// Update container fields from pending config
+	containerCfg := cfg.Container
+	if containerCfg == nil {
+		containerCfg = &config.ContainerConfig{}
+	}
+	containerCfg.Name = name
+	containerCfg.Dockerfile = dockerfile
+	containerCfg.PinnedImageID = imageID
+
+	// Apply to global config
+	if updateErr := config.UpdateContainer(containerCfg); updateErr != nil {
+		c.logger.Warn("Failed to update container config: %v", updateErr)
+		return
+	}
+
+	c.logger.Info("🐳 Successfully applied pending container config")
+
+	// Clear pending config
+	c.hasPendingContainerConfig = false
 }

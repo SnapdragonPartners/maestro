@@ -35,6 +35,9 @@ type Agent interface {
 	UpdateTodo(index int, desc string) bool // Update todo description at index (empty string removes)
 	UpdateTodoInState()                     // Update todo_list in state machine state data
 	GetIncompleteTodoCount() int            // Returns count of incomplete todos (0 if no todo list)
+	// Container config methods (deferred until merge)
+	SetPendingContainerConfig(name, dockerfile, imageID string) // Store pending container config
+	GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -292,7 +295,8 @@ func createContainerUpdateTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("container update tool requires an executor")
 	}
-	return NewContainerUpdateTool(ctx.Executor), nil
+	// Agent is optional - if not provided, pending config won't be stored
+	return NewContainerUpdateTool(ctx.Executor, ctx.Agent), nil
 }
 
 // createContainerTestTool creates a unified container test tool instance.
@@ -385,7 +389,7 @@ func getContainerBuildSchema() InputSchema {
 }
 
 func getContainerUpdateSchema() InputSchema {
-	return NewContainerUpdateTool(nil).Definition().InputSchema
+	return NewContainerUpdateTool(nil, nil).Definition().InputSchema
 }
 
 func getContainerTestSchema() InputSchema {

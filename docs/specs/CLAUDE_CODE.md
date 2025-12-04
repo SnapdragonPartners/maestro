@@ -3,8 +3,8 @@
 ## Document Status
 - **Status**: Draft (Revised)
 - **Created**: 2025-01-07
-- **Last Updated**: 2025-12-02
-- **Version**: 2.0
+- **Last Updated**: 2025-12-04
+- **Version**: 2.1
 
 ## Overview
 
@@ -58,27 +58,41 @@ The coder operates in one of two modes based on configuration:
 
 ```
 maestro/
+├── cmd/
+│   └── maestro-mcp-proxy/         # MCP stdio-to-TCP proxy (runs in container)
+│       └── main.go                # ~50 lines, forwards stdio ↔ TCP
+│
 ├── pkg/
 │   ├── coder/
 │   │   ├── driver.go              # Existing coder - add mode branching
 │   │   ├── planning.go            # Standard planning (unchanged)
 │   │   ├── coding.go              # Standard coding (unchanged)
-│   │   ├── claudecode_planning.go # NEW: Claude Code planning handler
-│   │   ├── claudecode_coding.go   # NEW: Claude Code coding handler
-│   │   ├── claude/                # NEW: Claude Code integration sub-package
-│   │   │   ├── runner.go          # Execute Claude Code via container executor
+│   │   ├── claudecode_planning.go # Claude Code planning handler
+│   │   ├── claudecode_coding.go   # Claude Code coding handler
+│   │   ├── claude/                # Claude Code integration sub-package
+│   │   │   ├── runner.go          # Execute Claude Code, start/stop MCP server
 │   │   │   ├── installer.go       # Auto-install Node.js/npm/Claude Code
 │   │   │   ├── parser.go          # Stream-JSON output parsing
-│   │   │   └── signals.go         # Signal detection from tool calls
+│   │   │   ├── signals.go         # Signal detection from tool calls
+│   │   │   ├── timeout.go         # Inactivity and total timeout management
+│   │   │   └── mcpserver/         # MCP server sub-package
+│   │   │       ├── server.go      # TCP JSON-RPC 2.0 server
+│   │   │       └── server_test.go # Unit tests for MCP server
 │   │   └── [other files]          # Unchanged (testing, merge, etc.)
 │   │
+│   ├── exec/
+│   │   └── docker_long_running.go # Container execution (no MCP mount needed)
+│   │
 │   ├── templates/
-│   │   └── claude/                # NEW: Claude Code prompt templates
+│   │   └── claude/                # Claude Code prompt templates
 │   │       ├── planning.go        # Planning phase template
 │   │       └── coding.go          # Coding phase template
 │   │
 │   └── config/
 │       └── config.go              # Add CoderMode to AgentConfig
+│
+├── pkg/dockerfiles/
+│   └── bootstrap.dockerfile       # Includes maestro-mcp-proxy binary
 ```
 
 ### Process Architecture
@@ -112,7 +126,72 @@ Orchestrator Process
 - Each coder has an independent Claude Code process (supports parallelism)
 - Coder agent parses stdout (stream-json format) for completion signals
 - ANTHROPIC_API_KEY is injected as environment variable into the container
-- No additional binaries or socket communication needed
+- Maestro tools exposed via MCP (Model Context Protocol) over TCP
+
+### MCP Tool Integration Architecture
+
+Claude Code needs to call Maestro tools (like `maestro_submit_plan`, `shell`, `container_build`) that execute on the host. This is implemented using TCP and a stdio proxy:
+
+**Why TCP instead of Unix sockets?**
+Unix sockets don't work through Docker Desktop's file sharing on macOS (gRPC-FUSE limitation returns "Not supported"). TCP via `host.docker.internal` works on both macOS and Linux, making it the cross-platform solution.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ HOST                                                                         │
+│                                                                              │
+│  ┌──────────────────┐         ┌──────────────────────────────────────────┐  │
+│  │ Maestro Coder    │         │ MCP Server (per agent)                   │  │
+│  │                  │         │                                          │  │
+│  │  - Starts MCP    │────────▶│  Listens: 127.0.0.1:<dynamic-port>       │  │
+│  │    server        │         │                                          │  │
+│  │  - Runs Claude   │         │  Tools: shell, container_build,          │  │
+│  │    Code via exec │         │         maestro_submit_plan, etc.        │  │
+│  └──────────────────┘         └──────────────────────────────────────────┘  │
+│                                              ▲                               │
+│                                              │ TCP                           │
+│                                              │                               │
+│              host.docker.internal ───────────┘                               │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                               │
+┌──────────────────────────────────────────────│───────────────────────────────┐
+│ CONTAINER                                    ▼                               │
+│                                                                              │
+│  ┌──────────────────┐         ┌──────────────────────────────────────────┐  │
+│  │ Claude Code      │◀───────▶│ maestro-mcp-proxy (stdio binary)         │  │
+│  │                  │  stdio  │                                          │  │
+│  │  --mcp-config    │         │  Connects: host.docker.internal:<port>   │  │
+│  │  {maestro:...}   │         │  Forwards stdio ↔ TCP                    │  │
+│  └──────────────────┘         └──────────────────────────────────────────┘  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Components:**
+
+1. **MCP Server** (`pkg/coder/claude/mcpserver/server.go`)
+   - Runs on the HOST, listens on TCP at `127.0.0.1:<dynamic-port>`
+   - Port is dynamically assigned by the OS (`:0`)
+   - Implements JSON-RPC 2.0 protocol (MCP standard)
+   - Delegates tool calls to Maestro's existing `ToolProvider`
+   - One server per agent (supports concurrent agents on different ports)
+
+2. **MCP Proxy** (`cmd/maestro-mcp-proxy/main.go`)
+   - Tiny binary (~50 lines) that runs INSIDE the container
+   - Forwards stdio from Claude Code to the TCP connection
+   - Pre-installed in bootstrap container at `/usr/local/bin/maestro-mcp-proxy`
+   - Uses `host.docker.internal` to reach host from container
+
+3. **Docker Host DNS**
+   - `host.docker.internal` resolves to host from within containers
+   - Available by default on Docker Desktop (macOS/Windows)
+   - On Linux, add `--add-host=host.docker.internal:host-gateway` to container
+
+**Flow:**
+1. Coder starts MCP server on host before running Claude Code (binds to dynamic port)
+2. Claude Code launched with `--mcp-config` pointing to proxy with host:port
+3. Claude Code makes tool call → proxy forwards via TCP → server executes tool → result returns
+4. MCP server stopped when Claude Code exits
 
 ### Container Prerequisites
 
@@ -146,6 +225,129 @@ RUN apt-get update && apt-get install -y nodejs npm \
 ```
 
 **Note**: First-run installation adds ~30-60 seconds. Subsequent runs use cached installation.
+
+### MCP Proxy Distribution
+
+The `maestro-mcp-proxy` binary must be present in every container that runs Claude Code. This section describes how the proxy is distributed.
+
+#### Problem
+
+- The proxy is a Go binary that runs inside containers
+- Custom user containers won't have it pre-installed
+- We want a single `maestro` binary distribution (no separate files to manage)
+- Need to support both linux/arm64 (Apple Silicon Docker) and linux/amd64
+
+#### Solution: Embedded Binary Distribution
+
+The proxy binaries are cross-compiled at build time and embedded in the maestro binary using Go's `//go:embed` directive:
+
+```
+maestro (main binary)
+├── embedded/proxy-linux-arm64  (~2.5MB)
+└── embedded/proxy-linux-amd64  (~2.5MB)
+```
+
+**Build Process:**
+```makefile
+# Cross-compile MCP proxy for both architectures
+build-mcp-proxy:
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o pkg/coder/claude/embedded/proxy-linux-arm64 ./cmd/maestro-mcp-proxy
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o pkg/coder/claude/embedded/proxy-linux-amd64 ./cmd/maestro-mcp-proxy
+```
+
+**Embed Package** (`pkg/coder/claude/embedded/proxy.go`):
+```go
+package embedded
+
+import (
+    _ "embed"
+    "fmt"
+)
+
+//go:embed proxy-linux-arm64
+var proxyLinuxArm64 []byte
+
+//go:embed proxy-linux-amd64
+var proxyLinuxAmd64 []byte
+
+// GetProxyBinary returns the proxy binary for the given architecture.
+// arch should be the output of `uname -m`: "aarch64" or "x86_64"
+func GetProxyBinary(arch string) ([]byte, error) {
+    switch arch {
+    case "aarch64", "arm64":
+        return proxyLinuxArm64, nil
+    case "x86_64", "amd64":
+        return proxyLinuxAmd64, nil
+    default:
+        return nil, fmt.Errorf("unsupported architecture: %s", arch)
+    }
+}
+```
+
+#### Runtime Flow
+
+The `Installer.EnsureMCPProxy()` method handles proxy installation:
+
+```
+1. Check if /usr/local/bin/maestro-mcp-proxy exists in container
+   → If yes: Done (already installed)
+
+2. Detect container architecture:
+   → Run: uname -m
+   → Returns: "aarch64" (ARM) or "x86_64" (AMD)
+
+3. Get embedded binary for architecture:
+   → embedded.GetProxyBinary(arch)
+
+4. Write binary to temp file on host:
+   → /tmp/maestro-mcp-proxy-<random>
+
+5. Copy into container:
+   → docker cp /tmp/maestro-mcp-proxy-<random> <container>:/usr/local/bin/maestro-mcp-proxy
+
+6. Make executable:
+   → docker exec <container> chmod +x /usr/local/bin/maestro-mcp-proxy
+
+7. Clean up temp file on host
+```
+
+**Benefits:**
+- Single `maestro` binary - no separate files to distribute
+- Works with any Linux container (ARM64 or AMD64)
+- Automatic architecture detection
+- Binary only copied once per container (cached check)
+
+**Trade-offs:**
+- Adds ~5MB to maestro binary size (2.5MB × 2 architectures)
+- Requires rebuild of maestro when proxy changes
+
+#### Future: OCI Side-car Distribution
+
+For users who want to pre-install the proxy in their Dockerfiles (avoiding runtime copy), we can publish an OCI image:
+
+```dockerfile
+# Future: Users can add this to their Dockerfile
+COPY --from=ghcr.io/anthropics/maestro-mcp-proxy:v1 /proxy /usr/local/bin/maestro-mcp-proxy
+```
+
+**Implementation** (via goreleaser):
+```yaml
+# .goreleaser.yaml (future addition)
+dockers:
+  - image_templates:
+      - "ghcr.io/anthropics/maestro-mcp-proxy:{{ .Version }}"
+    dockerfile: Dockerfile.proxy
+    build_flag_templates:
+      - "--platform=linux/arm64,linux/amd64"
+```
+
+This approach:
+- Versioned independently from maestro
+- Multi-arch manifest for automatic platform selection
+- Users can pin to specific versions
+- Eliminates runtime copy overhead for prepared containers
+
+**Note**: The OCI distribution is planned for future releases. Currently, the embedded approach is the primary distribution method.
 
 ## Design Principles
 
@@ -325,37 +527,35 @@ func (p *Parser) IsMaestroToolCall(event *StreamEvent) bool
 func (p *Parser) ExtractSignal(event *StreamEvent) (Signal, map[string]any, error)
 ```
 
-### 3. Maestro Tool Definitions (in System Prompt)
+### 3. Maestro MCP Tools
 
-The maestro tools are defined in the appended system prompt, not as actual MCP tools:
+The maestro tools are exposed as real MCP tools via the socket-based MCP server. Claude Code discovers and calls them like any other MCP tool.
 
-```markdown
-## Maestro Integration Tools
+**Signal Tools** (detected by signal detector to trigger state transitions):
 
-You have access to the following tools to communicate with the Maestro orchestration system:
+| Tool | Purpose | Signal |
+|------|---------|--------|
+| `maestro_submit_plan` | Submit plan for architect review | `PLAN_COMPLETE` |
+| `maestro_done` | Signal implementation complete | `DONE` |
+| `maestro_ask_question` | Ask architect for guidance | `QUESTION` |
+| `maestro_mark_complete` | Story already implemented | `STORY_COMPLETE` |
 
-### maestro_submit_plan
-Submit your implementation plan for architect review.
-**Parameters:**
-- `plan` (required): Your detailed implementation plan
-- `confidence`: low | medium | high
+**Execution Tools** (delegated to existing ToolProvider):
 
-### maestro_done
-Signal that implementation is complete and ready for testing.
-**Parameters:**
-- `summary` (required): Brief summary of what was implemented
+| Tool | Purpose |
+|------|---------|
+| `shell` | Execute shell commands |
+| `container_build` | Build Docker images |
+| `container_test` | Test in temporary container |
+| `read_file` | Read file contents |
+| `write_file` | Write file contents |
+| ... | All tools from `pkg/tools/` |
 
-### maestro_ask_question
-Ask the architect for clarification. Your work will pause until answered.
-**Parameters:**
-- `question` (required): Your question
-- `context` (required): Context about why you're asking
-
-### maestro_mark_complete
-Signal that story requirements are already implemented (no work needed).
-**Parameters:**
-- `reason` (required): Why no work is needed, with code references
-```
+**Implementation:**
+- Tools are registered in `pkg/tools/` using the standard `ToolProvider` pattern
+- MCP server (`pkg/coder/claude/mcpserver/server.go`) exposes them via JSON-RPC 2.0
+- Signal detector (`pkg/coder/claude/signals.go`) parses stdout for `maestro_*` tool calls
+- Tool results are synchronous - Claude Code waits for execution to complete
 
 ### 4. Prompt Templates
 
