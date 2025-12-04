@@ -271,9 +271,20 @@ func (r *Runner) buildExecOpts(opts *RunOptions) *exec.Opts {
 func (r *Runner) parseOutput(stdout, stderr string) Result {
 	var events []StreamEvent
 
-	// Create parser that collects events
+	// Create parser that collects events and logs tool calls
 	parser := NewStreamParser(func(event StreamEvent) {
 		events = append(events, event)
+		// Log tool calls at debug level for visibility into Claude Code activity
+		if event.Type == eventTypeToolUse && event.ToolUse != nil {
+			r.logger.Debug("Claude Code tool call: %s", event.ToolUse.Name)
+		}
+		if event.Type == "tool_result" && event.ToolResult != nil {
+			status := "success"
+			if event.ToolResult.IsError {
+				status = "error"
+			}
+			r.logger.Debug("Claude Code tool result: %s", status)
+		}
 	}, func(err error) {
 		r.logger.Debug("Stream parse error: %v", err)
 	})
@@ -281,6 +292,12 @@ func (r *Runner) parseOutput(stdout, stderr string) Result {
 	// Parse stdout line by line
 	for _, line := range strings.Split(stdout, "\n") {
 		parser.ParseLine(line)
+	}
+
+	// Log summary of tool activity at Info level
+	toolNames := r.getToolCallNames(events)
+	if len(toolNames) > 0 {
+		r.logger.Info("Claude Code tools called: %v", toolNames)
 	}
 
 	// Use signal detector to find maestro tool calls
@@ -359,4 +376,15 @@ func (r *Runner) GetPort() int {
 		return 0
 	}
 	return r.mcpServer.Port()
+}
+
+// getToolCallNames returns the list of tool names called in order.
+func (r *Runner) getToolCallNames(events []StreamEvent) []string {
+	var names []string
+	for i := range events {
+		if events[i].Type == eventTypeToolUse && events[i].ToolUse != nil {
+			names = append(names, events[i].ToolUse.Name)
+		}
+	}
+	return names
 }

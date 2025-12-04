@@ -403,7 +403,7 @@ func (c *Coder) checkPlanningTerminal(ctx context.Context, sm *agent.BaseStateMa
     for i := range calls {
         toolCall := &calls[i]
 
-        // Phase 1: Only check submit_plan and mark_story_complete
+        // Phase 1: Only check submit_plan and story_complete
         // These already work correctly via handleToolStateTransition
 
         resultMap, ok := results[i].(map[string]any)

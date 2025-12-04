@@ -4,8 +4,9 @@ package tools
 // and enable compile-time checking.
 const (
 	// Planning tools.
-	ToolSubmitPlan  = "submit_plan"
-	ToolAskQuestion = "ask_question"
+	ToolSubmitPlan    = "submit_plan"
+	ToolAskQuestion   = "ask_question"
+	ToolStoryComplete = "story_complete"
 
 	// Development tools.
 	ToolShell       = "shell"
@@ -55,6 +56,7 @@ var (
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
+		ToolStoryComplete,
 		ToolChatPost,
 		ToolChatRead,
 	}
@@ -65,6 +67,7 @@ var (
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
+		ToolStoryComplete,
 		ToolContainerTest,
 		ToolContainerList,
 		ToolChatPost,

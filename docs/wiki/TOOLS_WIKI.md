@@ -1024,7 +1024,7 @@ return "", fmt.Errorf("maximum tool iterations (%d) exceeded", maxIterations)
 - `submit_stories` - Signals spec analysis complete
 - `submit_reply` - Signals architect response complete
 - `done` - Signals coding task complete
-- `mark_story_complete` - Signals story already implemented
+- `story_complete` - Signals story already implemented
 
 These tools enable flexible workflows where the LLM can explore as needed before signaling completion.
 

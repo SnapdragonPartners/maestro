@@ -147,10 +147,20 @@ func (c *Coder) processClaudeCodePlanningResult(sm *agent.BaseStateMachine, resu
 		return StateQuestion, false, nil
 
 	case claude.SignalStoryComplete:
-		// Story is already complete
-		c.logger.Info("✅ Claude Code determined story is already complete: %s", result.Reason)
-		sm.SetStateData(KeyCompletionDetails, result.Reason)
-		return proto.StateDone, true, nil
+		// Story is already complete - needs architect verification
+		c.logger.Info("✅ Claude Code determined story is already complete: %s", result.Evidence)
+		sm.SetStateData(KeyCompletionDetails, result.Evidence)
+		if result.ExplorationSummary != "" {
+			sm.SetStateData(string(stateDataKeyExplorationSummary), result.ExplorationSummary)
+		}
+		// Set up approval request for architect verification
+		c.pendingApprovalRequest = &ApprovalRequest{
+			ID:      proto.GenerateApprovalID(),
+			Content: result.Evidence,
+			Reason:  "Story completion claim requires verification",
+			Type:    proto.ApprovalTypeCompletion,
+		}
+		return StatePlanReview, false, nil
 
 	case claude.SignalTimeout:
 		c.logger.Warn("⏰ Claude Code planning timed out after %s", result.Duration)

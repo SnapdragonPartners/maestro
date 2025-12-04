@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// Event type constants for stream-json output.
+const (
+	eventTypeToolUse = "tool_use"
+)
+
 // StreamEvent represents a parsed event from Claude Code's stream-json output.
 type StreamEvent struct {
 	// Type is the event type (e.g., "assistant", "result", "tool_use", "tool_result").
@@ -164,7 +169,7 @@ func ExtractToolCalls(events []StreamEvent) []ToolUse {
 		// Also check content blocks for tool_use
 		if events[i].Message != nil {
 			for j := range events[i].Message.Content {
-				if events[i].Message.Content[j].Type == "tool_use" {
+				if events[i].Message.Content[j].Type == eventTypeToolUse {
 					calls = append(calls, ToolUse{
 						ID:    events[i].Message.Content[j].ID,
 						Name:  events[i].Message.Content[j].Name,

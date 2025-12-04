@@ -227,6 +227,22 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 			}
 
 			return StatePlanReview, false, nil
+
+		case tools.SignalStoryComplete:
+			// story_complete was called - extract data from ProcessEffect.Data
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return proto.StateError, false, logx.Errorf("STORY_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			// Extract and store completion data
+			if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to process story complete data")
+			}
+
+			// Goes to PLAN_REVIEW with ApprovalTypeCompletion for architect verification
+			return StatePlanReview, false, nil
+
 		default:
 			c.logger.Warn("Unknown signal from planning toolloop: %s", out.Signal)
 			return StatePlanning, false, nil
@@ -315,14 +331,13 @@ func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData
 	confidence, _ := effectData["confidence"].(string)
 	explorationSummary, _ := effectData["exploration_summary"].(string)
 	knowledgePack, _ := effectData["knowledge_pack"].(string)
-	isComplete, _ := effectData["is_complete"].(bool)
 
 	if plan == "" {
 		return fmt.Errorf("plan is required in ProcessEffect.Data")
 	}
 
-	c.logger.Info("✅ Planning data extracted from ProcessEffect: plan (%d chars), confidence: %s, is_complete: %v",
-		len(plan), confidence, isComplete)
+	c.logger.Info("✅ Planning data extracted from ProcessEffect: plan (%d chars), confidence: %s",
+		len(plan), confidence)
 
 	// Get knowledge pack from effect or fall back to state data
 	if knowledgePack == "" {
@@ -347,11 +362,47 @@ func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData
 	c.pendingApprovalRequest = &ApprovalRequest{
 		ID:      proto.GenerateApprovalID(),
 		Content: plan,
-		Reason:  fmt.Sprintf("Plan requires approval (confidence: %s, is_complete: %v)", confidence, isComplete),
+		Reason:  fmt.Sprintf("Plan requires approval (confidence: %s)", confidence),
 		Type:    proto.ApprovalTypePlan,
 	}
 
 	c.logger.Info("🧑‍💻 Plan data stored, ready for PLAN_REVIEW transition")
+	return nil
+}
+
+// processStoryCompleteDataFromEffect extracts and stores story complete data from ProcessEffect.Data.
+// Called when story_complete tool returns ProcessEffect with SignalStoryComplete.
+// Sets up ApprovalTypeCompletion request for architect verification.
+//
+//nolint:unparam // error return reserved for future validation logic
+func (c *Coder) processStoryCompleteDataFromEffect(sm *agent.BaseStateMachine, effectData map[string]any) error {
+	// Extract story complete data from effect
+	evidence, _ := effectData["evidence"].(string)
+	confidence, _ := effectData["confidence"].(string)
+	explorationSummary, _ := effectData["exploration_summary"].(string)
+
+	if evidence == "" {
+		return fmt.Errorf("evidence is required in ProcessEffect.Data")
+	}
+
+	c.logger.Info("✅ Story complete data extracted from ProcessEffect: evidence (%d chars), confidence: %s",
+		len(evidence), confidence)
+
+	// Store completion data in state
+	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
+	sm.SetStateData(KeyCompletionDetails, evidence)
+	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
+
+	// Store completion approval request for PLAN_REVIEW state to handle
+	// Uses ApprovalTypeCompletion to indicate this is a completion claim, not a plan
+	c.pendingApprovalRequest = &ApprovalRequest{
+		ID:      proto.GenerateApprovalID(),
+		Content: evidence,
+		Reason:  fmt.Sprintf("Story completion claim requires verification (confidence: %s)", confidence),
+		Type:    proto.ApprovalTypeCompletion,
+	}
+
+	c.logger.Info("🧑‍💻 Story complete data stored, ready for PLAN_REVIEW transition with ApprovalTypeCompletion")
 	return nil
 }
 

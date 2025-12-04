@@ -149,7 +149,7 @@ Plan reviews (including completion claims) support three-way decisions:
 | **NEEDS_CHANGES**    | `ApprovalStatusNeedsChanges` | Return to `PLANNING` with feedback for refinement |
 | **REJECTED**         | `ApprovalStatusRejected` | Move to `ERROR` (abandon story as impossible) |
 
-**Completion Claims**: When coder uses `mark_story_complete` tool, architect can:
+**Completion Claims**: When coder uses `story_complete` tool, architect can:
 - **APPROVED**: Story is truly complete → `DONE`
 - **NEEDS_CHANGES**: Missing work identified (tests, docs, etc.) → back to `PLANNING`  
 - **REJECTED**: Story approach fundamentally flawed → `ERROR`
@@ -177,7 +177,7 @@ This FSM includes **Git workspace support** and **merge workflow**:
 - **BUDGET_REVIEW**: Architect reviews budget exceeded request when iteration budget is exceeded
 
 ### Special Transitions:
-- **PLAN_REVIEW → DONE**: Direct completion when architect approves completion request (via `mark_story_complete` tool)
+- **PLAN_REVIEW → DONE**: Direct completion when architect approves completion request (via `story_complete` tool)
 - **PLAN_REVIEW → PLANNING**: Return to planning when architect identifies missing work in completion request
 - **AWAIT_MERGE**: Wait for architect merge result after PR creation
 - **DONE**: Terminal state - orchestrator will shut down and restart agent with clean state

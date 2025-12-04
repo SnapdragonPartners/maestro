@@ -39,9 +39,9 @@ I am in **PLANNING** state with **read-only** container access. I have been expl
    - Check: Recent Context shows varied exploration leading to understanding
    - Guidance: "You have gathered enough information. Please submit your plan using the `submit_plan` tool."
 
-2. ✅ **Work already complete** - No code changes needed (static parity only), should use `mark_story_complete` tool
+2. ✅ **Work already complete** - No code changes needed (static parity only), should use `story_complete` tool
    - Check: Exploration confirms feature already implemented
-   - Guidance: "The requirements are already satisfied. Use the `mark_story_complete` tool to finish the story."
+   - Guidance: "The requirements are already satisfied. Use the `story_complete` tool to finish the story."
 
 3. ⚠️ **Need more exploration** - Plan needs additional investigation before submission
    - Check: Agent has clear direction for further exploration

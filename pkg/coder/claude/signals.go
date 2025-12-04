@@ -3,32 +3,56 @@ package claude
 import (
 	"encoding/json"
 	"strings"
+
+	"orchestrator/pkg/tools"
 )
 
-// Maestro tool names that Claude Code can call to signal state transitions.
-const (
-	ToolMaestroSubmitPlan    = "maestro_submit_plan"
-	ToolMaestroDone          = "maestro_done"
-	ToolMaestroQuestion      = "maestro_question"
-	ToolMaestroStoryComplete = "maestro_story_complete"
-)
+// MCPServerName is the name of our MCP server as configured in mcpserver.
+// Tool calls from Claude Code will be prefixed with "mcp__<servername>__".
+const MCPServerName = "maestro"
 
-// MaestroToolInput represents input to a maestro tool call.
-type MaestroToolInput struct {
-	// For maestro_submit_plan
+// mcpToolPrefix is the prefix Claude Code uses when calling our MCP tools.
+//
+//nolint:gochecknoglobals // This is a constant-like value computed from MCPServerName
+var mcpToolPrefix = "mcp__" + MCPServerName + "__"
+
+// normalizeToolName strips the MCP prefix if present to get the base tool name.
+// For example: "mcp__maestro__submit_plan" -> "submit_plan".
+func normalizeToolName(name string) string {
+	if strings.HasPrefix(name, mcpToolPrefix) {
+		return strings.TrimPrefix(name, mcpToolPrefix)
+	}
+	return name
+}
+
+// signalToolNames maps tool names to their signals for detection.
+// These match the actual tool names exposed via MCP from pkg/tools/constants.go.
+//
+//nolint:gochecknoglobals // This is a lookup table that needs to be globally accessible
+var signalToolNames = map[string]Signal{
+	tools.ToolSubmitPlan:    SignalPlanComplete,
+	tools.ToolDone:          SignalDone,
+	tools.ToolAskQuestion:   SignalQuestion,
+	tools.ToolStoryComplete: SignalStoryComplete,
+}
+
+// SignalToolInput represents input to a signal tool call.
+type SignalToolInput struct {
+	// For submit_plan
 	Plan       string `json:"plan,omitempty"`
 	Confidence string `json:"confidence,omitempty"`
 	Risks      string `json:"risks,omitempty"`
 
-	// For maestro_done
+	// For done
 	Summary string `json:"summary,omitempty"`
 
-	// For maestro_question
+	// For ask_question
 	Question string `json:"question,omitempty"`
 	Context  string `json:"context,omitempty"`
 
-	// For maestro_story_complete
-	Reason string `json:"reason,omitempty"`
+	// For story_complete
+	Evidence           string `json:"evidence,omitempty"`
+	ExplorationSummary string `json:"exploration_summary,omitempty"`
 }
 
 // SignalDetector detects maestro tool calls and extracts signal information.
@@ -53,55 +77,35 @@ func (d *SignalDetector) AddEvents(events []StreamEvent) {
 	d.events = append(d.events, events...)
 }
 
-// DetectSignal scans events for maestro tool calls and returns the detected signal.
-// Returns SignalError if no valid signal is found.
-func (d *SignalDetector) DetectSignal() (Signal, *MaestroToolInput) {
+// DetectSignal scans events for signal tool calls and returns the detected signal.
+// Returns empty signal if no valid signal is found.
+// Handles both direct tool names (e.g., "submit_plan") and MCP-prefixed names
+// (e.g., "mcp__maestro__submit_plan").
+func (d *SignalDetector) DetectSignal() (Signal, *SignalToolInput) {
 	toolCalls := ExtractToolCalls(d.events)
 
 	for i := range toolCalls {
-		if strings.HasPrefix(toolCalls[i].Name, "maestro_") {
-			signal, input := d.parseToolCall(&toolCalls[i])
-			if signal != "" {
-				return signal, input
-			}
+		// Normalize tool name to handle MCP prefix
+		normalizedName := normalizeToolName(toolCalls[i].Name)
+		if signal, ok := signalToolNames[normalizedName]; ok {
+			input := parseSignalInput(toolCalls[i].Input)
+			return signal, input
 		}
 	}
 
 	return "", nil
 }
 
-// parseToolCall parses a maestro tool call and returns the corresponding signal.
-func (d *SignalDetector) parseToolCall(call *ToolUse) (Signal, *MaestroToolInput) {
-	input := parseMaestroInput(call.Input)
-
-	switch call.Name {
-	case ToolMaestroSubmitPlan:
-		return SignalPlanComplete, input
-
-	case ToolMaestroDone:
-		return SignalDone, input
-
-	case ToolMaestroQuestion:
-		return SignalQuestion, input
-
-	case ToolMaestroStoryComplete:
-		return SignalStoryComplete, input
-
-	default:
-		return "", nil
-	}
-}
-
-// parseMaestroInput converts the tool input to a MaestroToolInput struct.
-func parseMaestroInput(input any) *MaestroToolInput {
+// parseSignalInput converts the tool input to a SignalToolInput struct.
+func parseSignalInput(input any) *SignalToolInput {
 	if input == nil {
-		return &MaestroToolInput{}
+		return &SignalToolInput{}
 	}
 
 	// If it's already a map, convert to JSON and back
 	switch v := input.(type) {
 	case map[string]any:
-		result := &MaestroToolInput{}
+		result := &SignalToolInput{}
 		if plan, ok := v["plan"].(string); ok {
 			result.Plan = plan
 		}
@@ -120,45 +124,50 @@ func parseMaestroInput(input any) *MaestroToolInput {
 		if context, ok := v["context"].(string); ok {
 			result.Context = context
 		}
-		if reason, ok := v["reason"].(string); ok {
-			result.Reason = reason
+		if evidence, ok := v["evidence"].(string); ok {
+			result.Evidence = evidence
+		}
+		if explorationSummary, ok := v["exploration_summary"].(string); ok {
+			result.ExplorationSummary = explorationSummary
 		}
 		return result
 
 	case string:
 		// Try to parse as JSON
-		result := &MaestroToolInput{}
+		result := &SignalToolInput{}
 		if err := json.Unmarshal([]byte(v), result); err == nil {
 			return result
 		}
-		return &MaestroToolInput{}
+		return &SignalToolInput{}
 
 	default:
 		// Try JSON marshaling/unmarshaling
 		data, err := json.Marshal(v)
 		if err != nil {
-			return &MaestroToolInput{}
+			return &SignalToolInput{}
 		}
-		result := &MaestroToolInput{}
+		result := &SignalToolInput{}
 		if err := json.Unmarshal(data, result); err != nil {
-			return &MaestroToolInput{}
+			return &SignalToolInput{}
 		}
 		return result
 	}
 }
 
-// GetAllMaestroTools returns all tool calls that are maestro tools.
-func (d *SignalDetector) GetAllMaestroTools() []ToolUse {
-	var maestroTools []ToolUse
+// GetAllSignalTools returns all tool calls that are signal tools.
+// Handles both direct tool names and MCP-prefixed names.
+func (d *SignalDetector) GetAllSignalTools() []ToolUse {
+	var signalTools []ToolUse
 	toolCalls := ExtractToolCalls(d.events)
 
 	for i := range toolCalls {
-		if strings.HasPrefix(toolCalls[i].Name, "maestro_") {
-			maestroTools = append(maestroTools, toolCalls[i])
+		normalizedName := normalizeToolName(toolCalls[i].Name)
+		if _, ok := signalToolNames[normalizedName]; ok {
+			signalTools = append(signalTools, toolCalls[i])
 		}
 	}
 
-	return maestroTools
+	return signalTools
 }
 
 // EventCount returns the number of events processed.
@@ -172,7 +181,7 @@ func (d *SignalDetector) Reset() {
 }
 
 // BuildResult creates a Result from the detected signal and input.
-func BuildResult(signal Signal, input *MaestroToolInput, events []StreamEvent) Result {
+func BuildResult(signal Signal, input *SignalToolInput, events []StreamEvent) Result {
 	result := Result{
 		Signal:        signal,
 		ResponseCount: CountResponses(events),
@@ -193,7 +202,8 @@ func BuildResult(signal Signal, input *MaestroToolInput, events []StreamEvent) R
 			}
 
 		case SignalStoryComplete:
-			result.Reason = input.Reason
+			result.Evidence = input.Evidence
+			result.ExplorationSummary = input.ExplorationSummary
 		}
 	}
 
@@ -215,17 +225,20 @@ func (e *streamError) Error() string {
 	return e.message
 }
 
-// IsMaestroTool checks if a tool name is a maestro tool.
-func IsMaestroTool(name string) bool {
-	return strings.HasPrefix(name, "maestro_")
+// IsSignalTool checks if a tool name is a signal tool.
+// Handles both direct tool names (e.g., "submit_plan") and MCP-prefixed names
+// (e.g., "mcp__maestro__submit_plan").
+func IsSignalTool(name string) bool {
+	normalizedName := normalizeToolName(name)
+	_, ok := signalToolNames[normalizedName]
+	return ok
 }
 
-// MaestroToolNames returns all recognized maestro tool names.
-func MaestroToolNames() []string {
-	return []string{
-		ToolMaestroSubmitPlan,
-		ToolMaestroDone,
-		ToolMaestroQuestion,
-		ToolMaestroStoryComplete,
+// SignalToolNamesList returns all recognized signal tool names.
+func SignalToolNamesList() []string {
+	names := make([]string, 0, len(signalToolNames))
+	for name := range signalToolNames {
+		names = append(names, name)
 	}
+	return names
 }

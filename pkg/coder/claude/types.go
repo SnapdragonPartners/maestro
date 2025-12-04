@@ -86,8 +86,11 @@ type Result struct {
 	// Summary is the completion summary (for SignalDone).
 	Summary string
 
-	// Reason is the completion reason (for SignalStoryComplete).
-	Reason string
+	// Evidence is the completion evidence (for SignalStoryComplete).
+	Evidence string
+
+	// ExplorationSummary is the exploration summary (for SignalStoryComplete).
+	ExplorationSummary string
 
 	// Question contains question details (for SignalQuestion).
 	Question *Question

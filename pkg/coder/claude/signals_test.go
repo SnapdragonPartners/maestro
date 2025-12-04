@@ -2,6 +2,8 @@ package claude
 
 import (
 	"testing"
+
+	"orchestrator/pkg/tools"
 )
 
 func TestSignalDetector_SubmitPlan(t *testing.T) {
@@ -10,7 +12,7 @@ func TestSignalDetector_SubmitPlan(t *testing.T) {
 		Type: "tool_use",
 		ToolUse: &ToolUse{
 			ID:   "tool_1",
-			Name: ToolMaestroSubmitPlan,
+			Name: tools.ToolSubmitPlan,
 			Input: map[string]any{
 				"plan":       "1. Do thing A\n2. Do thing B",
 				"confidence": "high",
@@ -44,7 +46,7 @@ func TestSignalDetector_Done(t *testing.T) {
 		Type: "tool_use",
 		ToolUse: &ToolUse{
 			ID:   "tool_1",
-			Name: ToolMaestroDone,
+			Name: tools.ToolDone,
 			Input: map[string]any{
 				"summary": "Implemented feature X with tests",
 			},
@@ -70,7 +72,7 @@ func TestSignalDetector_Question(t *testing.T) {
 		Type: "tool_use",
 		ToolUse: &ToolUse{
 			ID:   "tool_1",
-			Name: ToolMaestroQuestion,
+			Name: tools.ToolAskQuestion,
 			Input: map[string]any{
 				"question": "Should I use interface A or B?",
 				"context":  "Both seem applicable but have tradeoffs",
@@ -100,9 +102,9 @@ func TestSignalDetector_StoryComplete(t *testing.T) {
 		Type: "tool_use",
 		ToolUse: &ToolUse{
 			ID:   "tool_1",
-			Name: ToolMaestroStoryComplete,
+			Name: tools.ToolStoryComplete,
 			Input: map[string]any{
-				"reason": "Feature already exists in the codebase",
+				"evidence": "Feature already exists in the codebase",
 			},
 		},
 	})
@@ -115,8 +117,8 @@ func TestSignalDetector_StoryComplete(t *testing.T) {
 	if input == nil {
 		t.Fatal("expected non-nil input")
 	}
-	if input.Reason != "Feature already exists in the codebase" {
-		t.Errorf("unexpected reason: %q", input.Reason)
+	if input.Evidence != "Feature already exists in the codebase" {
+		t.Errorf("unexpected evidence: %q", input.Evidence)
 	}
 }
 
@@ -152,7 +154,7 @@ func TestSignalDetector_FromContentBlock(t *testing.T) {
 				{
 					Type:  "tool_use",
 					ID:    "tool_1",
-					Name:  ToolMaestroSubmitPlan,
+					Name:  tools.ToolSubmitPlan,
 					Input: map[string]any{"plan": "My plan", "confidence": "medium"},
 				},
 			},
@@ -172,12 +174,12 @@ func TestSignalDetector_FromContentBlock(t *testing.T) {
 func TestSignalDetector_MultipleEvents(t *testing.T) {
 	detector := NewSignalDetector()
 
-	// Add multiple events, only one with maestro signal
+	// Add multiple events, only one with signal tool
 	detector.AddEvents([]StreamEvent{
 		{Type: "assistant", Message: &AssistantMessage{Content: []ContentBlock{{Type: "text", Text: "Working..."}}}},
 		{Type: "tool_use", ToolUse: &ToolUse{ID: "t1", Name: "read_file", Input: map[string]any{}}},
 		{Type: "tool_result", ToolResult: &ToolResult{ToolUseID: "t1", Content: "file content"}},
-		{Type: "tool_use", ToolUse: &ToolUse{ID: "t2", Name: ToolMaestroDone, Input: map[string]any{"summary": "All done"}}},
+		{Type: "tool_use", ToolUse: &ToolUse{ID: "t2", Name: tools.ToolDone, Input: map[string]any{"summary": "All done"}}},
 	})
 
 	signal, input := detector.DetectSignal()
@@ -194,7 +196,7 @@ func TestSignalDetector_Reset(t *testing.T) {
 	detector := NewSignalDetector()
 	detector.AddEvent(StreamEvent{
 		Type:    "tool_use",
-		ToolUse: &ToolUse{ID: "t1", Name: ToolMaestroDone, Input: map[string]any{}},
+		ToolUse: &ToolUse{ID: "t1", Name: tools.ToolDone, Input: map[string]any{}},
 	})
 
 	if detector.EventCount() != 1 {
@@ -213,25 +215,25 @@ func TestSignalDetector_Reset(t *testing.T) {
 	}
 }
 
-func TestGetAllMaestroTools(t *testing.T) {
+func TestGetAllSignalTools(t *testing.T) {
 	detector := NewSignalDetector()
 	detector.AddEvents([]StreamEvent{
 		{Type: "tool_use", ToolUse: &ToolUse{ID: "t1", Name: "read_file"}},
-		{Type: "tool_use", ToolUse: &ToolUse{ID: "t2", Name: ToolMaestroQuestion, Input: map[string]any{"question": "Q1"}}},
+		{Type: "tool_use", ToolUse: &ToolUse{ID: "t2", Name: tools.ToolAskQuestion, Input: map[string]any{"question": "Q1"}}},
 		{Type: "tool_use", ToolUse: &ToolUse{ID: "t3", Name: "write_file"}},
-		{Type: "tool_use", ToolUse: &ToolUse{ID: "t4", Name: ToolMaestroDone, Input: map[string]any{"summary": "Done"}}},
+		{Type: "tool_use", ToolUse: &ToolUse{ID: "t4", Name: tools.ToolDone, Input: map[string]any{"summary": "Done"}}},
 	})
 
-	maestroTools := detector.GetAllMaestroTools()
+	signalTools := detector.GetAllSignalTools()
 
-	if len(maestroTools) != 2 {
-		t.Fatalf("expected 2 maestro tools, got %d", len(maestroTools))
+	if len(signalTools) != 2 {
+		t.Fatalf("expected 2 signal tools, got %d", len(signalTools))
 	}
-	if maestroTools[0].Name != ToolMaestroQuestion {
-		t.Errorf("expected first tool to be %s, got %s", ToolMaestroQuestion, maestroTools[0].Name)
+	if signalTools[0].Name != tools.ToolAskQuestion {
+		t.Errorf("expected first tool to be %s, got %s", tools.ToolAskQuestion, signalTools[0].Name)
 	}
-	if maestroTools[1].Name != ToolMaestroDone {
-		t.Errorf("expected second tool to be %s, got %s", ToolMaestroDone, maestroTools[1].Name)
+	if signalTools[1].Name != tools.ToolDone {
+		t.Errorf("expected second tool to be %s, got %s", tools.ToolDone, signalTools[1].Name)
 	}
 }
 
@@ -239,14 +241,14 @@ func TestBuildResult(t *testing.T) {
 	tests := []struct {
 		name    string
 		signal  Signal
-		input   *MaestroToolInput
+		input   *SignalToolInput
 		events  []StreamEvent
 		checkFn func(t *testing.T, r Result)
 	}{
 		{
 			name:   "plan complete",
 			signal: SignalPlanComplete,
-			input:  &MaestroToolInput{Plan: "My plan here"},
+			input:  &SignalToolInput{Plan: "My plan here"},
 			events: []StreamEvent{
 				{Type: "assistant", Message: &AssistantMessage{}},
 			},
@@ -265,7 +267,7 @@ func TestBuildResult(t *testing.T) {
 		{
 			name:   "done with summary",
 			signal: SignalDone,
-			input:  &MaestroToolInput{Summary: "Completed implementation"},
+			input:  &SignalToolInput{Summary: "Completed implementation"},
 			events: []StreamEvent{},
 			checkFn: func(t *testing.T, r Result) {
 				if r.Signal != SignalDone {
@@ -279,7 +281,7 @@ func TestBuildResult(t *testing.T) {
 		{
 			name:   "question",
 			signal: SignalQuestion,
-			input:  &MaestroToolInput{Question: "Which API?", Context: "There are two options"},
+			input:  &SignalToolInput{Question: "Which API?", Context: "There are two options"},
 			events: []StreamEvent{},
 			checkFn: func(t *testing.T, r Result) {
 				if r.Signal != SignalQuestion {
@@ -299,21 +301,21 @@ func TestBuildResult(t *testing.T) {
 		{
 			name:   "story complete",
 			signal: SignalStoryComplete,
-			input:  &MaestroToolInput{Reason: "Already done"},
+			input:  &SignalToolInput{Evidence: "Already done"},
 			events: []StreamEvent{},
 			checkFn: func(t *testing.T, r Result) {
 				if r.Signal != SignalStoryComplete {
 					t.Errorf("expected SignalStoryComplete, got %q", r.Signal)
 				}
-				if r.Reason != "Already done" {
-					t.Errorf("unexpected reason: %q", r.Reason)
+				if r.Evidence != "Already done" {
+					t.Errorf("unexpected evidence: %q", r.Evidence)
 				}
 			},
 		},
 		{
 			name:   "with error in events",
 			signal: SignalDone,
-			input:  &MaestroToolInput{Summary: "Done"},
+			input:  &SignalToolInput{Summary: "Done"},
 			events: []StreamEvent{
 				{Type: "error", Error: &ErrorInfo{Message: "Rate limited"}},
 			},
@@ -340,44 +342,44 @@ func TestBuildResult(t *testing.T) {
 	}
 }
 
-func TestIsMaestroTool(t *testing.T) {
+func TestIsSignalTool(t *testing.T) {
 	tests := []struct {
 		name     string
 		toolName string
 		expected bool
 	}{
-		{"submit_plan", ToolMaestroSubmitPlan, true},
-		{"done", ToolMaestroDone, true},
-		{"question", ToolMaestroQuestion, true},
-		{"story_complete", ToolMaestroStoryComplete, true},
+		{"submit_plan", tools.ToolSubmitPlan, true},
+		{"done", tools.ToolDone, true},
+		{"ask_question", tools.ToolAskQuestion, true},
+		{"story_complete", tools.ToolStoryComplete, true},
 		{"read_file", "read_file", false},
 		{"write_file", "write_file", false},
 		{"bash", "bash", false},
-		{"maestro_unknown", "maestro_unknown", true}, // Prefix match
+		{"unknown_tool", "unknown_tool", false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := IsMaestroTool(tc.toolName)
+			result := IsSignalTool(tc.toolName)
 			if result != tc.expected {
-				t.Errorf("IsMaestroTool(%q) = %v, expected %v", tc.toolName, result, tc.expected)
+				t.Errorf("IsSignalTool(%q) = %v, expected %v", tc.toolName, result, tc.expected)
 			}
 		})
 	}
 }
 
-func TestMaestroToolNames(t *testing.T) {
-	names := MaestroToolNames()
+func TestSignalToolNamesList(t *testing.T) {
+	names := SignalToolNamesList()
 
 	if len(names) != 4 {
 		t.Errorf("expected 4 tool names, got %d", len(names))
 	}
 
 	expected := map[string]bool{
-		ToolMaestroSubmitPlan:    true,
-		ToolMaestroDone:          true,
-		ToolMaestroQuestion:      true,
-		ToolMaestroStoryComplete: true,
+		tools.ToolSubmitPlan:    true,
+		tools.ToolDone:          true,
+		tools.ToolAskQuestion:   true,
+		tools.ToolStoryComplete: true,
 	}
 
 	for _, name := range names {
@@ -387,16 +389,92 @@ func TestMaestroToolNames(t *testing.T) {
 	}
 }
 
-func TestParseMaestroInput_NilInput(t *testing.T) {
-	result := parseMaestroInput(nil)
+// TestSignalDetector_MCPPrefix tests that signal detection works with MCP-prefixed tool names.
+// When Claude Code uses MCP tools, it prefixes them with "mcp__<servername>__<toolname>".
+// For our MCP server named "maestro", tools are called as "mcp__maestro__submit_plan" etc.
+func TestSignalDetector_MCPPrefix(t *testing.T) {
+	testCases := []struct {
+		name           string
+		mcpToolName    string
+		expectedSignal Signal
+	}{
+		{
+			name:           "submit_plan with MCP prefix",
+			mcpToolName:    "mcp__maestro__submit_plan",
+			expectedSignal: SignalPlanComplete,
+		},
+		{
+			name:           "done with MCP prefix",
+			mcpToolName:    "mcp__maestro__done",
+			expectedSignal: SignalDone,
+		},
+		{
+			name:           "ask_question with MCP prefix",
+			mcpToolName:    "mcp__maestro__ask_question",
+			expectedSignal: SignalQuestion,
+		},
+		{
+			name:           "story_complete with MCP prefix",
+			mcpToolName:    "mcp__maestro__story_complete",
+			expectedSignal: SignalStoryComplete,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			detector := NewSignalDetector()
+			detector.AddEvent(StreamEvent{
+				Type: "tool_use",
+				ToolUse: &ToolUse{
+					ID:    "tool_1",
+					Name:  tc.mcpToolName,
+					Input: map[string]any{"plan": "test", "confidence": "HIGH"},
+				},
+			})
+
+			signal, _ := detector.DetectSignal()
+			if signal != tc.expectedSignal {
+				t.Errorf("expected signal %q for tool %q, got %q", tc.expectedSignal, tc.mcpToolName, signal)
+			}
+		})
+	}
+}
+
+// TestIsSignalTool_MCPPrefix tests IsSignalTool with MCP-prefixed names.
+func TestIsSignalTool_MCPPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		expected bool
+	}{
+		{"MCP submit_plan", "mcp__maestro__submit_plan", true},
+		{"MCP done", "mcp__maestro__done", true},
+		{"MCP ask_question", "mcp__maestro__ask_question", true},
+		{"MCP story_complete", "mcp__maestro__story_complete", true},
+		{"MCP non-signal tool", "mcp__maestro__read_file", false},
+		{"different server prefix", "mcp__other__submit_plan", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := IsSignalTool(tc.toolName)
+			if result != tc.expected {
+				t.Errorf("IsSignalTool(%q) = %v, expected %v", tc.toolName, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParseSignalInput_NilInput(t *testing.T) {
+	result := parseSignalInput(nil)
 	if result == nil {
 		t.Fatal("expected non-nil result even for nil input")
 	}
 }
 
-func TestParseMaestroInput_JSONString(t *testing.T) {
+func TestParseSignalInput_JSONString(t *testing.T) {
 	jsonStr := `{"plan":"test plan","confidence":"high"}`
-	result := parseMaestroInput(jsonStr)
+	result := parseSignalInput(jsonStr)
 
 	if result.Plan != "test plan" {
 		t.Errorf("expected plan 'test plan', got %q", result.Plan)

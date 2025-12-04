@@ -13,16 +13,17 @@ As a coder agent, you should:
 
 ## Available Signals
 
-You have access to special maestro tools for signaling:
+You have access to special signal tools for state transitions:
 
-- **maestro_submit_plan**: Call when your plan is ready for review
-  - Parameters: plan (string), confidence (string: high/medium/low), risks (string, optional)
+- **submit_plan**: Call when your implementation plan is ready for architect review
+  - Parameters: plan (string), confidence (string: HIGH/MEDIUM/LOW), exploration_summary (string, optional)
 
-- **maestro_question**: Call if you need clarification from the architect
+- **ask_question**: Call if you need clarification from the architect
   - Parameters: question (string), context (string, optional)
 
-- **maestro_story_complete**: Call if the story is already implemented or nothing needs to be done
-  - Parameters: reason (string)
+- **story_complete**: Call if the story is already implemented or nothing needs to be done
+  - Parameters: evidence (string), confidence (string: HIGH/MEDIUM/LOW), exploration_summary (string, optional)
+  - The architect will verify your claim before marking the story complete
 
 ## Guidelines
 
@@ -38,9 +39,9 @@ Working directory: {{.WorkspacePath}}
 
 ## Output
 
-When your analysis is complete, call `maestro_submit_plan` with:
+When your analysis is complete, call `submit_plan` with:
 - A detailed plan organized by phase/step
 - Your confidence level (high/medium/low)
 - Any identified risks or concerns
 
-If you discover the story is already implemented or requires no changes, call `maestro_story_complete` with the reason.
+If you discover the story is already implemented or requires no changes, call `story_complete` with the reason.

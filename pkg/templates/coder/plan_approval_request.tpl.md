@@ -33,6 +33,6 @@ The following architectural patterns and rules are relevant to this story:
    - If yes: Use **NEEDS_CHANGES** and specify what needs clarification or additional detail
 
 3. ❌ **Work is already complete** - No code changes are needed (static parity only)
-   - If yes: Use **REJECTED** and suggest I use the `mark_story_complete` tool instead
+   - If yes: Use **REJECTED** and suggest I use the `story_complete` tool instead
 
 **Note**: I am currently in PLANNING state with read-only access. I cannot start implementation until the plan is approved.
