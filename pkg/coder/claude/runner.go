@@ -200,6 +200,13 @@ func (r *Runner) buildCommand(opts *RunOptions) []string {
 		cmd = append(cmd, "--model", opts.Model)
 	}
 
+	// In CODING mode, bypass permission checks since we're in a sandboxed container.
+	// This prevents Claude Code from asking for interactive permission approval for writes.
+	// In PLANNING mode, we use default permissions (read-only exploration).
+	if opts.Mode == ModeCoding {
+		cmd = append(cmd, "--dangerously-skip-permissions")
+	}
+
 	// Add MCP config file path (config written by writeMCPConfig)
 	cmd = append(cmd, "--mcp-config", MCPConfigPath)
 
