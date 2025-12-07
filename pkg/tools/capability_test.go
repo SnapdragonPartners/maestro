@@ -34,6 +34,7 @@ func TestToolProviderDevOpsPlanningTools(t *testing.T) {
 		ToolShell:         false,
 		ToolSubmitPlan:    false,
 		ToolAskQuestion:   false,
+		ToolStoryComplete: false,
 		ToolContainerTest: false,
 		ToolContainerList: false,
 		ToolChatPost:      false,
@@ -79,11 +80,12 @@ func TestToolProviderAppPlanningTools(t *testing.T) {
 
 	// Verify all expected tools are present
 	expectedTools := map[string]bool{
-		ToolShell:       false,
-		ToolSubmitPlan:  false,
-		ToolAskQuestion: false,
-		ToolChatPost:    false,
-		ToolChatRead:    false,
+		ToolShell:         false,
+		ToolSubmitPlan:    false,
+		ToolAskQuestion:   false,
+		ToolStoryComplete: false,
+		ToolChatPost:      false,
+		ToolChatRead:      false,
 	}
 
 	for _, meta := range toolMetas {

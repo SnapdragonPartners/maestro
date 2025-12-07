@@ -212,7 +212,10 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	}
 
 	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
-	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/home:exec,nodev,nosuid,size=100m", "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m")
+	// Set HOME=/tmp so Claude Code uses /tmp/.claude (already writable via tmpfs).
+	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m", "--env", "HOME=/tmp")
+
+	// Note: MCP communication uses TCP via host.docker.internal - no socket mount needed.
 
 	// Environment variables.
 	for _, env := range opts.Env {
@@ -328,6 +331,10 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
+	if opts == nil {
+		return Result{}, fmt.Errorf("opts cannot be nil")
+	}
+
 	// We need a story ID to identify the container.
 	// Try to get it from context first, then from active containers.
 	storyID := d.getStoryIDFromContext(ctx)
@@ -373,6 +380,11 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 
 	// Build docker exec command.
 	execArgs := []string{"exec", "-i"}
+
+	// Set user if specified (for rootless execution).
+	if opts.User != "" {
+		execArgs = append(execArgs, "--user", opts.User)
+	}
 
 	// Set working directory if specified.
 	if opts.WorkDir != "" {

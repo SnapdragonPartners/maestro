@@ -490,14 +490,16 @@ func (s *Server) handleStories(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDashboard serves the main dashboard page.
+// This also acts as a catch-all for client-side routes (SPA routing).
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Only serve dashboard for root path.
-	if r.URL.Path != "/" {
+	// Let API and static routes be handled by their specific handlers.
+	// For any other path, serve the dashboard (SPA catch-all for client-side routing).
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/static/") {
 		http.NotFound(w, r)
 		return
 	}

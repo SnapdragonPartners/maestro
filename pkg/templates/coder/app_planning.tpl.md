@@ -158,7 +158,7 @@ When submitting your plan with `submit_plan`, you MUST provide:
 
 ## IMPORTANT: When to Mark Story Complete
 
-You may use the `mark_story_complete` tool **only if both conditions hold**:
+You may use the `story_complete` tool **only if both conditions hold**:
 
 1. **All required files/code already exist** (static parity), **and**
 2. **The story's acceptance criteria do NOT include any executable commands** (build, test, run, CLI invocation, etc.)
@@ -177,7 +177,7 @@ You may use the `mark_story_complete` tool **only if both conditions hold**:
 
 **WORKFLOW PRIORITY:**
 1. **First**: Explore the codebase systematically
-2. **If both static parity AND no executable criteria**: Use `mark_story_complete`
+2. **If both static parity AND no executable criteria**: Use `story_complete`
 3. **If missing code OR executable criteria exist**: Create implementation plan with `submit_plan`
 
 **Start by exploring the codebase systematically. Do not create a plan until you understand the existing implementation.**

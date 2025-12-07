@@ -181,6 +181,7 @@ func (d *Driver) setupInterviewContext() error {
 			templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
 			templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
 			templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
+			templateData.Extra["NeedsClaudeCode"] = bootstrapReqs.NeedsClaudeCode
 
 			d.logger.Info("📋 Using full interview template with bootstrap context: %d missing components, platform: %s",
 				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)

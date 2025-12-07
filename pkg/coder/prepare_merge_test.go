@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
-	"orchestrator/pkg/dockerfiles"
 	execpkg "orchestrator/pkg/exec"
 )
 
@@ -211,22 +210,18 @@ func ensureBootstrapImageExists(t *testing.T, ctx context.Context) error {
 
 	t.Logf("Bootstrap image %s not found, building it now...", config.BootstrapContainerTag)
 
-	// Create temporary directory for Dockerfile
-	tmpDir, err := os.MkdirTemp("", "maestro-bootstrap-build-*")
+	// Find repo root by looking for go.mod
+	repoRoot, err := findRepoRoot()
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Write the embedded Dockerfile to temp location
-	dockerfilePath := filepath.Join(tmpDir, "Dockerfile")
-	dockerfileContent := dockerfiles.GetBootstrapDockerfile()
-	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); err != nil {
-		return fmt.Errorf("failed to write Dockerfile: %w", err)
+		return fmt.Errorf("failed to find repo root: %w", err)
 	}
 
-	// Build the image
-	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", config.BootstrapContainerTag, "-f", dockerfilePath, tmpDir)
+	// Build using the Dockerfile from pkg/dockerfiles with repo root as context
+	// This is needed because the Dockerfile builds the MCP proxy from source
+	dockerfilePath := filepath.Join(repoRoot, "pkg", "dockerfiles", "bootstrap.dockerfile")
+
+	// Build the image with repo root as context (needed for go.mod, go.sum, and source files)
+	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", config.BootstrapContainerTag, "-f", dockerfilePath, repoRoot)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 
@@ -237,4 +232,24 @@ func ensureBootstrapImageExists(t *testing.T, ctx context.Context) error {
 
 	t.Logf("✅ Successfully built bootstrap image %s", config.BootstrapContainerTag)
 	return nil
+}
+
+// findRepoRoot walks up the directory tree to find the repo root (directory containing go.mod).
+func findRepoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("could not find go.mod in any parent directory")
+		}
+		dir = parent
+	}
 }

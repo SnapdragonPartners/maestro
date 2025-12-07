@@ -82,6 +82,7 @@ const (
 	KeyPlanApprovalResult      = "plan_approval_result"
 	KeyCodeApprovalResult      = "code_approval_result"
 	KeyQuestionAnswered        = "question_answered"
+	KeyLastQA                  = "last_qa" // Stores last Q&A pair for Claude Code mode
 	KeyPlanConfidence          = "plan_confidence"
 	KeyExplorationSummary      = "exploration_summary"
 	KeyPlanRisks               = "plan_risks"

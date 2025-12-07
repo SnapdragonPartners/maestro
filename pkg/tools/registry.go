@@ -35,6 +35,9 @@ type Agent interface {
 	UpdateTodo(index int, desc string) bool // Update todo description at index (empty string removes)
 	UpdateTodoInState()                     // Update todo_list in state machine state data
 	GetIncompleteTodoCount() int            // Returns count of incomplete todos (0 if no todo list)
+	// Container config methods (deferred until merge)
+	SetPendingContainerConfig(name, dockerfile, imageID string) // Store pending container config
+	GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -242,6 +245,11 @@ func createAskQuestionTool(_ *AgentContext) (Tool, error) {
 	return NewAskQuestionTool(), nil
 }
 
+// createStoryCompleteTool creates a story complete tool instance.
+func createStoryCompleteTool(_ *AgentContext) (Tool, error) {
+	return NewStoryCompleteTool(), nil
+}
+
 // createBuildTool creates a build tool instance.
 func createBuildTool(_ *AgentContext) (Tool, error) {
 	// TODO: Properly inject build.Service via AgentContext
@@ -280,19 +288,16 @@ func createBackendInfoTool(_ *AgentContext) (Tool, error) {
 }
 
 // createContainerBuildTool creates a container build tool instance.
-func createContainerBuildTool(ctx *AgentContext) (Tool, error) {
-	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container build tool requires an executor")
-	}
-	return NewContainerBuildTool(ctx.Executor), nil
+// Uses local executor internally - no executor needed from context.
+func createContainerBuildTool(_ *AgentContext) (Tool, error) {
+	return NewContainerBuildTool(), nil
 }
 
 // createContainerUpdateTool creates a container update tool instance.
+// Uses local executor internally - agent is optional for storing pending config.
 func createContainerUpdateTool(ctx *AgentContext) (Tool, error) {
-	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container update tool requires an executor")
-	}
-	return NewContainerUpdateTool(ctx.Executor), nil
+	// Agent is optional - if not provided, pending config won't be stored
+	return NewContainerUpdateTool(ctx.Agent), nil
 }
 
 // createContainerTestTool creates a unified container test tool instance.
@@ -314,16 +319,15 @@ func createContainerTestTool(ctx *AgentContext) (Tool, error) {
 }
 
 // createContainerListTool creates a container list tool instance.
-func createContainerListTool(ctx *AgentContext) (Tool, error) {
-	return NewContainerListTool(ctx.Executor), nil
+// Uses local executor internally - no executor needed from context.
+func createContainerListTool(_ *AgentContext) (Tool, error) {
+	return NewContainerListTool(), nil
 }
 
 // createContainerSwitchTool creates a container switch tool instance.
-func createContainerSwitchTool(ctx *AgentContext) (Tool, error) {
-	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container switch tool requires an executor")
-	}
-	return NewContainerSwitchTool(ctx.Executor), nil
+// Uses local executor internally - no executor needed from context.
+func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
+	return NewContainerSwitchTool(), nil
 }
 
 // createChatPostTool creates a chat post tool instance.
@@ -356,6 +360,10 @@ func getAskQuestionSchema() InputSchema {
 	return NewAskQuestionTool().Definition().InputSchema
 }
 
+func getStoryCompleteSchema() InputSchema {
+	return NewStoryCompleteTool().Definition().InputSchema
+}
+
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
 	return NewBuildTool(buildSvc).Definition().InputSchema
@@ -381,7 +389,7 @@ func getBackendInfoSchema() InputSchema {
 }
 
 func getContainerBuildSchema() InputSchema {
-	return NewContainerBuildTool(nil).Definition().InputSchema
+	return NewContainerBuildTool().Definition().InputSchema
 }
 
 func getContainerUpdateSchema() InputSchema {
@@ -395,11 +403,11 @@ func getContainerTestSchema() InputSchema {
 }
 
 func getContainerListSchema() InputSchema {
-	return NewContainerListTool(nil).Definition().InputSchema
+	return NewContainerListTool().Definition().InputSchema
 }
 
 func getContainerSwitchSchema() InputSchema {
-	return NewContainerSwitchTool(nil).Definition().InputSchema
+	return NewContainerSwitchTool().Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {
@@ -512,11 +520,12 @@ func getSpecSubmitSchema() InputSchema {
 }
 
 func createBootstrapTool(ctx *AgentContext) (Tool, error) {
-	return NewBootstrapTool(ctx.ProjectDir), nil
+	// Pass both projectDir (for config) and workDir (for knowledge.dot detection)
+	return NewBootstrapTool(ctx.ProjectDir, ctx.WorkDir), nil
 }
 
 func getBootstrapSchema() InputSchema {
-	return NewBootstrapTool("").Definition().InputSchema
+	return NewBootstrapTool("", "").Definition().InputSchema
 }
 
 func createChatAskUserTool(ctx *AgentContext) (Tool, error) {
@@ -560,6 +569,12 @@ func init() {
 		Name:        ToolAskQuestion,
 		Description: "Ask the architect for clarification or guidance during planning",
 		InputSchema: getAskQuestionSchema(),
+	})
+
+	Register(ToolStoryComplete, createStoryCompleteTool, &ToolMeta{
+		Name:        ToolStoryComplete,
+		Description: "Signal that the story is already implemented - no work needed",
+		InputSchema: getStoryCompleteSchema(),
 	})
 
 	// Register development tools

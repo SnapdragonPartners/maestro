@@ -1,12 +1,24 @@
-.PHONY: build test test-integration test-all test-coverage check-coverage lint run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports
+.PHONY: build test test-integration test-all test-coverage check-coverage lint run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
 
-# Build all binaries
-build: lint
+# Directory for embedded proxy binaries (must be in package dir for go:embed)
+EMBEDDED_DIR := pkg/coder/claude/embedded
+
+# Build all binaries (includes MCP proxy for embedding)
+# Note: build-mcp-proxy must run before lint because go:embed requires files to exist
+build: build-mcp-proxy lint
 	go generate ./...
 	go build -o bin/maestro ./cmd/maestro
 
+# Cross-compile MCP proxy for Linux containers (ARM64 and AMD64)
+build-mcp-proxy:
+	@echo "🔨 Cross-compiling MCP proxy for Linux..."
+	@mkdir -p $(EMBEDDED_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $(EMBEDDED_DIR)/proxy-linux-arm64 ./cmd/maestro-mcp-proxy
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o $(EMBEDDED_DIR)/proxy-linux-amd64 ./cmd/maestro-mcp-proxy
+	@echo "✅ MCP proxy binaries built: $(EMBEDDED_DIR)/proxy-linux-{arm64,amd64}"
+
 # Build the maestro CLI tool
-maestro: lint
+maestro: build-mcp-proxy lint
 	go build -o bin/maestro ./cmd/maestro
 
 # Run all tests with coverage
@@ -121,3 +133,4 @@ ui-dev: build build-css
 clean:
 	rm -rf bin/
 	rm -f web/static/css/tailwind.css
+	rm -f $(EMBEDDED_DIR)/proxy-linux-*

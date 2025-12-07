@@ -1,5 +1,18 @@
 # Maestro Bootstrap Container
 # Lightweight Alpine-based container with tools needed for dockerfile building and troubleshooting
+
+# Stage 1: Build the MCP proxy binary
+# The proxy runs inside the container and forwards MCP calls to the host via TCP
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /maestro-mcp-proxy ./cmd/maestro-mcp-proxy
+
+# Stage 2: Final image
 FROM alpine:3.19
 
 # Install essential tools for bootstrap operations
@@ -27,13 +40,30 @@ RUN apk add --no-cache \
     tree \
     # Additional utilities
     coreutils \
-    util-linux
+    util-linux \
+    # Node.js and npm for Claude Code
+    nodejs \
+    npm
+
+# Copy MCP proxy binary from builder stage
+# The proxy forwards stdio from Claude Code to the TCP server on the host (via host.docker.internal)
+COPY --from=builder /maestro-mcp-proxy /usr/local/bin/maestro-mcp-proxy
+
+# Install Claude Code globally for Claude Code mode support
+RUN npm install -g @anthropic-ai/claude-code
 
 # Set bash as default shell
 SHELL ["/bin/bash", "-c"]
 
-# Create workspace directory
+# Create workspace directory first, then create non-root user with proper ownership
 WORKDIR /workspace
+
+# Create coder user (UID 1000) for non-root execution
+# Claude Code refuses --dangerously-skip-permissions when running as root
+# All coders run as this user for security isolation
+RUN adduser -D -u 1000 -h /home/coder coder && \
+    chown -R coder:coder /workspace && \
+    chown -R coder:coder /home/coder
 
 # Default command
 CMD ["sleep", "infinity"]

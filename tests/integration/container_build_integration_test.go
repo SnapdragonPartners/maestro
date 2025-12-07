@@ -14,13 +14,15 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// TestContainerBuildIntegration tests the container_build tool using the container test framework.
+// TestContainerBuildIntegration tests the container_build tool.
+// The tool uses local executor to run docker build on the host.
 func TestContainerBuildIntegration(t *testing.T) {
+	// Setup test config for container validation
+	SetupTestConfig(t)
+
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
 		t.Skip("Docker not available, skipping container build integration test")
-		// Setup test config for container validation (uses public repo)
-		SetupTestConfig(t)
 	}
 
 	// Setup test environment
@@ -30,7 +32,8 @@ func TestContainerBuildIntegration(t *testing.T) {
 	// Create temporary workspace
 	tempDir := t.TempDir()
 
-	// Test building a container from Dockerfile based on maestro-bootstrap
+	// Test building a container from Dockerfile using a public base image
+	// The Dockerfile must include git and gh for maestro validation to pass
 	testCases := []struct {
 		name              string
 		dockerfileContent string
@@ -39,7 +42,8 @@ func TestContainerBuildIntegration(t *testing.T) {
 	}{
 		{
 			name: "dockerfile_in_workspace_root",
-			dockerfileContent: `FROM maestro-bootstrap:latest
+			dockerfileContent: `FROM alpine:latest
+RUN apk add --no-cache git github-cli
 RUN echo "test" > /test.txt
 CMD ["sleep", "infinity"]`,
 			containerName:  "maestro-test-root",
@@ -47,7 +51,8 @@ CMD ["sleep", "infinity"]`,
 		},
 		{
 			name: "dockerfile_in_subdirectory",
-			dockerfileContent: `FROM maestro-bootstrap:latest
+			dockerfileContent: `FROM alpine:latest
+RUN apk add --no-cache git github-cli
 RUN echo "subdir test" > /subdir.txt
 CMD ["sleep", "infinity"]`,
 			containerName:  "maestro-test-subdir",
@@ -71,26 +76,15 @@ CMD ["sleep", "infinity"]`,
 				t.Fatalf("Failed to create Dockerfile: %v", err)
 			}
 
-			// Create container test framework
-			framework, err := NewContainerTestFramework(t, workspaceDir)
-			if err != nil {
-				t.Fatalf("Failed to create test framework: %v", err)
-			}
-			defer framework.Cleanup(ctx)
-
-			if err := framework.StartContainer(ctx); err != nil {
-				t.Fatalf("Failed to start container: %v", err)
-			}
-
-			// Ensure target container is cleaned up
+			// Ensure target container image is cleaned up
 			defer cleanupBuiltContainer(tc.containerName)
 
-			// Build the container
-			buildTool := tools.NewContainerBuildTool(framework.GetExecutor())
+			// Build the container (uses local executor internally, so we pass host path)
+			buildTool := tools.NewContainerBuildTool()
 			args := map[string]any{
 				"container_name":  tc.containerName,
 				"dockerfile_path": tc.dockerfilePath,
-				"cwd":             "/workspace",
+				"cwd":             workspaceDir, // Host path - container_build runs on host
 			}
 
 			result, err := buildTool.Exec(ctx, args)

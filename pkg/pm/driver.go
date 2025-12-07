@@ -3,6 +3,7 @@ package pm
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -594,8 +595,10 @@ func (d *Driver) StartInterview(expertise string) error {
 	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
 
 	// Detect bootstrap requirements
-	d.logger.Info("🔍 Detecting bootstrap requirements (expertise: %s)", expertise)
-	detector := tools.NewBootstrapDetector(d.workDir)
+	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
+	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
+	d.logger.Info("🔍 Detecting bootstrap requirements in %s (expertise: %s)", agentWorkspace, expertise)
+	detector := tools.NewBootstrapDetector(agentWorkspace)
 	reqs, err := detector.Detect(context.Background())
 	needsBootstrap := false
 	if err != nil {
@@ -619,8 +622,8 @@ func (d *Driver) StartInterview(expertise string) error {
 			// PM should be in WORKING mode to handle setup
 			needsBootstrap = true
 
-			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v",
-				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph)
+			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
+				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
 		}
 	}
 
@@ -674,8 +677,10 @@ func (d *Driver) UploadSpec(markdown string) error {
 	d.SetStateData("spec_uploaded", true) // Flag to indicate spec was uploaded vs generated
 
 	// Detect bootstrap requirements (same as StartInterview)
-	d.logger.Info("🔍 Detecting bootstrap requirements for uploaded spec")
-	detector := tools.NewBootstrapDetector(d.workDir)
+	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
+	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
+	d.logger.Info("🔍 Detecting bootstrap requirements in %s for uploaded spec", agentWorkspace)
+	detector := tools.NewBootstrapDetector(agentWorkspace)
 	reqs, err := detector.Detect(context.Background())
 	needsBootstrap := false
 	if err != nil {
@@ -717,8 +722,8 @@ The user has uploaded a specification file (%d bytes). **Parse this spec to extr
 			d.contextManager.AddMessage("system", specMessage)
 			needsBootstrap = true
 
-			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v",
-				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph)
+			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
+				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
 		}
 	}
 

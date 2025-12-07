@@ -8,19 +8,21 @@ import (
 	"strings"
 	"time"
 
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/utils"
 )
 
 // ContainerUpdateTool provides MCP interface for updating container configuration.
+// Uses local executor to run docker commands directly on the host.
 type ContainerUpdateTool struct {
 	executor exec.Executor
+	agent    Agent // Agent reference for storing pending config in state
 }
 
 // NewContainerUpdateTool creates a new container update tool instance.
-func NewContainerUpdateTool(executor exec.Executor) *ContainerUpdateTool {
-	return &ContainerUpdateTool{executor: executor}
+// Uses local executor since docker commands run on the host, not inside containers.
+func NewContainerUpdateTool(agent Agent) *ContainerUpdateTool {
+	return &ContainerUpdateTool{executor: exec.NewLocalExec(), agent: agent}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -52,14 +54,14 @@ func (c *ContainerUpdateTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ContainerUpdateTool) PromptDocumentation() string {
-	return `- **container_update** - Update container configuration atomically  
+	return `- **container_update** - Register container for use after merge
   - Parameters:
     - container_name (required): name of container to register
     - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
-  - Validates container capabilities before updating configuration
+  - Validates container capabilities before registering
   - Automatically gets and pins the current image ID from Docker
-  - Updates container name, dockerfile path, AND pinned image ID atomically
-  - Does NOT change active container; use container_switch to activate`
+  - Configuration is applied AFTER merge is successful (not immediately)
+  - Does NOT change active container; use container_switch to activate during story`
 }
 
 // Exec executes the container configuration update operation.
@@ -76,13 +78,13 @@ func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*E
 	return c.updateContainerConfiguration(ctx, containerName, dockerfilePath)
 }
 
-// updateContainerConfiguration updates the complete container configuration atomically.
+// updateContainerConfiguration validates container and stores pending config for post-merge application.
 func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, containerName, dockerfilePath string) (*ExecResult, error) {
 	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s", containerName, dockerfilePath)
 
-	// Validate container capabilities before updating configuration
-	hostExecutor := exec.NewLocalExec()
-	validationResult := ValidateContainerCapabilities(ctx, hostExecutor, containerName)
+	// Validate container capabilities before registering
+	// Uses the tool's local executor for docker commands
+	validationResult := ValidateContainerCapabilities(ctx, c.executor, containerName)
 
 	if !validationResult.Success {
 		response := map[string]any{
@@ -90,7 +92,7 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 			"container_name": containerName,
 			"dockerfile":     dockerfilePath,
 			"validation":     validationResult,
-			"error": fmt.Sprintf("Container validation failed: %s. Cannot update configuration to use container that lacks required tools: %v",
+			"error": fmt.Sprintf("Container validation failed: %s. Cannot register container that lacks required tools: %v",
 				validationResult.Message, validationResult.MissingTools),
 		}
 		content, marshalErr := json.Marshal(response)
@@ -100,7 +102,7 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 		return &ExecResult{Content: string(content)}, nil
 	}
 
-	// Get the current image ID for the container to pin it automatically
+	// Get the current image ID for the container to pin it
 	imageID, err := c.getContainerImageID(ctx, containerName)
 	if err != nil {
 		response := map[string]any{
@@ -116,34 +118,23 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 		return &ExecResult{Content: string(content)}, nil
 	}
 
-	// Update project configuration with container name and dockerfile path
-	if updateErr := c.updateProjectConfig(containerName, dockerfilePath); updateErr != nil {
-		return nil, fmt.Errorf("failed to update project config: %w", updateErr)
+	// Store pending configuration in agent state (will be applied after successful merge)
+	if c.agent != nil {
+		c.agent.SetPendingContainerConfig(containerName, dockerfilePath, imageID)
+		log.Printf("INFO container_update: Stored pending container config in agent state: %s, dockerfile: %s, pinned image: %s (will apply after merge)",
+			containerName, dockerfilePath, imageID)
+	} else {
+		log.Printf("WARN container_update: No agent reference - pending config will not be stored")
 	}
-
-	// Pin the image ID for consistency
-	if updateErr := config.SetPinnedImageID(imageID); updateErr != nil {
-		response := map[string]any{
-			"success":        false,
-			"container_name": containerName,
-			"dockerfile":     dockerfilePath,
-			"error":          fmt.Sprintf("Failed to pin image ID %s: %v", imageID, updateErr),
-		}
-		content, marshalErr := json.Marshal(response)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
-		}
-		return &ExecResult{Content: string(content)}, nil
-	}
-
-	log.Printf("INFO container_update: Updated container config: %s, dockerfile: %s, pinned image: %s", containerName, dockerfilePath, imageID)
 
 	result := map[string]any{
 		"success":         true,
 		"container_name":  containerName,
 		"dockerfile":      dockerfilePath,
 		"pinned_image_id": imageID,
-		"message":         fmt.Sprintf("Successfully updated container '%s' with dockerfile '%s' and pinned image ID '%s'", containerName, dockerfilePath, imageID),
+		"pending":         true,
+		"message": fmt.Sprintf("Container '%s' registered with dockerfile '%s' and image ID '%s'. "+
+			"Configuration will be applied after PR is merged.", containerName, dockerfilePath, imageID),
 	}
 
 	content, err := json.Marshal(result)
@@ -152,38 +143,6 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 	}
 
 	return &ExecResult{Content: string(content)}, nil
-}
-
-// updateProjectConfig updates the project configuration with the new container name and dockerfile path.
-func (c *ContainerUpdateTool) updateProjectConfig(containerName, dockerfilePath string) error {
-	// Get current config
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get config: %w", err)
-	}
-
-	// Update container configuration
-	if cfg.Container == nil {
-		cfg.Container = &config.ContainerConfig{}
-	}
-
-	updatedContainer := &config.ContainerConfig{
-		Name:          containerName,
-		Dockerfile:    dockerfilePath,              // Use repo-relative dockerfile path
-		WorkspacePath: cfg.Container.WorkspacePath, // Preserve existing workspace path
-		// Runtime settings preserved from existing config
-		Network:   cfg.Container.Network,
-		TmpfsSize: cfg.Container.TmpfsSize,
-		CPUs:      cfg.Container.CPUs,
-		Memory:    cfg.Container.Memory,
-		PIDs:      cfg.Container.PIDs,
-	}
-
-	// Use atomic update function (no path parameter needed now)
-	if err := config.UpdateContainer(updatedContainer); err != nil {
-		return fmt.Errorf("failed to update container config: %w", err)
-	}
-	return nil
 }
 
 // getContainerImageID gets the image ID for a given container/image name.

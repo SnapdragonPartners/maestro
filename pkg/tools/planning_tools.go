@@ -89,6 +89,114 @@ func (a *AskQuestionTool) Exec(_ context.Context, args map[string]any) (*ExecRes
 	}, nil
 }
 
+// StoryCompleteTool signals that the story is already implemented - no work needed.
+// Goes to PLAN_REVIEW for architect verification before advancing to DONE.
+type StoryCompleteTool struct{}
+
+// NewStoryCompleteTool creates a new story complete tool instance.
+func NewStoryCompleteTool() *StoryCompleteTool {
+	return &StoryCompleteTool{}
+}
+
+// Definition returns the tool's definition in Claude API format.
+func (s *StoryCompleteTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "story_complete",
+		Description: "Signal that the story is already implemented or requires no changes. Architect will verify before marking complete.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"evidence": {
+					Type:        "string",
+					Description: "Evidence that the story is already complete (file paths, existing functionality, test results)",
+				},
+				"confidence": {
+					Type:        "string",
+					Description: "Your confidence level based on codebase exploration",
+					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
+				},
+				"exploration_summary": {
+					Type:        "string",
+					Description: "Summary of files explored and key findings (optional)",
+				},
+			},
+			Required: []string{"evidence", "confidence"},
+		},
+	}
+}
+
+// Name returns the tool identifier.
+func (s *StoryCompleteTool) Name() string {
+	return "story_complete"
+}
+
+// PromptDocumentation returns markdown documentation for LLM prompts.
+func (s *StoryCompleteTool) PromptDocumentation() string {
+	return `- **story_complete** - Signal that the story is already implemented
+  - Parameters: evidence, confidence (required), exploration_summary (optional)
+  - Advances to PLAN_REVIEW for architect verification
+  - Use when codebase exploration shows the story requirements are already met
+  - Provide specific evidence (file paths, existing functionality, test results)`
+}
+
+// Exec executes the story complete operation.
+// Returns ProcessEffect to transition to PLAN_REVIEW with ApprovalTypeCompletion.
+func (s *StoryCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
+	// Validate evidence (required)
+	evidence, ok := args["evidence"]
+	if !ok {
+		return nil, fmt.Errorf("evidence parameter is required")
+	}
+
+	evidenceStr, ok := evidence.(string)
+	if !ok {
+		return nil, fmt.Errorf("evidence must be a string")
+	}
+
+	if evidenceStr == "" {
+		return nil, fmt.Errorf("evidence cannot be empty")
+	}
+
+	// Validate confidence (required)
+	confidence, ok := args["confidence"]
+	if !ok {
+		return nil, fmt.Errorf("confidence parameter is required")
+	}
+
+	confidenceStr, ok := confidence.(string)
+	if !ok {
+		return nil, fmt.Errorf("confidence must be a string")
+	}
+
+	// Validate confidence level.
+	switch proto.Confidence(confidenceStr) {
+	case proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow:
+		// Valid confidence level.
+	default:
+		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
+	}
+
+	// Extract optional exploration summary.
+	explorationSummary := ""
+	if expVal, hasExp := args["exploration_summary"]; hasExp {
+		if expStr, ok := expVal.(string); ok {
+			explorationSummary = expStr
+		}
+	}
+
+	return &ExecResult{
+		Content: "Story completion claim submitted, requesting architect verification",
+		ProcessEffect: &ProcessEffect{
+			Signal: SignalStoryComplete,
+			Data: map[string]any{
+				"evidence":            evidenceStr,
+				"confidence":          confidenceStr,
+				"exploration_summary": explorationSummary,
+			},
+		},
+	}, nil
+}
+
 // SubmitPlanTool finalizes planning and triggers review.
 type SubmitPlanTool struct{}
 
@@ -101,17 +209,13 @@ func NewSubmitPlanTool() *SubmitPlanTool {
 func (s *SubmitPlanTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "submit_plan",
-		Description: "Submit your plan or mark the story as already complete",
+		Description: "Submit your implementation plan for architect approval",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
-				"is_complete": {
-					Type:        "boolean",
-					Description: "True if story is already fully implemented (no coding needed), false if submitting an implementation plan for approval",
-				},
 				"plan": {
 					Type:        "string",
-					Description: "If is_complete=false: your implementation plan ready for architect approval (will be broken into todos in next phase). If is_complete=true: evidence showing the story is already implemented",
+					Description: "Your implementation plan ready for architect approval (will be broken into todos in next phase)",
 				},
 				"confidence": {
 					Type:        "string",
@@ -127,7 +231,7 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 					Description: "Relevant knowledge graph subgraph in DOT format (auto-populated, optional)",
 				},
 			},
-			Required: []string{"is_complete", "plan", "confidence"},
+			Required: []string{"plan", "confidence"},
 		},
 	}
 }
@@ -139,28 +243,15 @@ func (s *SubmitPlanTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (s *SubmitPlanTool) PromptDocumentation() string {
-	return `- **submit_plan** - Submit implementation plan OR mark story as already complete
-  - Parameters: is_complete (boolean), plan, confidence (all required), exploration_summary (optional)
-  - If is_complete=false: provide implementation plan ready for architect approval (will be broken into todos in next phase, advances to PLAN_REVIEW)
-  - If is_complete=true: provide evidence that story is already done (advances to STORY_COMPLETE for architect verification)`
+	return `- **submit_plan** - Submit implementation plan for architect approval
+  - Parameters: plan, confidence (required), exploration_summary (optional)
+  - Advances to PLAN_REVIEW for architect approval
+  - Use story_complete instead if the story is already implemented`
 }
 
 // Exec executes the submit plan operation.
-//
-//nolint:cyclop // Complex plan validation logic, acceptable for this use case
 func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
-	// Check is_complete flag (required)
-	isComplete, ok := args["is_complete"]
-	if !ok {
-		return nil, fmt.Errorf("is_complete parameter is required")
-	}
-
-	isCompleteBool, ok := isComplete.(bool)
-	if !ok {
-		return nil, fmt.Errorf("is_complete must be a boolean")
-	}
-
-	// Validate plan (required for both modes)
+	// Validate plan (required)
 	plan, ok := args["plan"]
 	if !ok {
 		return nil, fmt.Errorf("plan parameter is required")
@@ -175,7 +266,7 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 		return nil, fmt.Errorf("plan cannot be empty")
 	}
 
-	// Validate confidence (required for both modes)
+	// Validate confidence (required)
 	confidence, ok := args["confidence"]
 	if !ok {
 		return nil, fmt.Errorf("confidence parameter is required")
@@ -212,30 +303,11 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 
 	// Return human-readable message for LLM context
 	// Return structured data via ProcessEffect.Data for state machine
-	if isCompleteBool {
-		// Mode 1: Story already complete - no coding needed
-		return &ExecResult{
-			Content: "Story marked as complete, requesting architect verification",
-			ProcessEffect: &ProcessEffect{
-				Signal: SignalPlanReview, // Uses same signal, state machine checks is_complete flag
-				Data: map[string]any{
-					"is_complete":         true,
-					"plan":                planStr, // Contains evidence
-					"confidence":          confidenceStr,
-					"exploration_summary": explorationSummary,
-					"knowledge_pack":      knowledgePack,
-				},
-			},
-		}, nil
-	}
-
-	// Mode 2: Implementation plan - will be broken into todos in next phase
 	return &ExecResult{
 		Content: "Plan submitted successfully, advancing to PLAN_REVIEW for architect approval",
 		ProcessEffect: &ProcessEffect{
 			Signal: SignalPlanReview,
 			Data: map[string]any{
-				"is_complete":         false,
 				"plan":                planStr,
 				"confidence":          confidenceStr,
 				"exploration_summary": explorationSummary,

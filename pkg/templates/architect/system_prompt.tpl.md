@@ -40,3 +40,9 @@ You must use the appropriate tool to submit your responses:
 - **review_complete**: For plan/code reviews (requires decision: APPROVED, NEEDS_CHANGES, or REJECTED)
 
 Never respond with text only - always use the designated tool to ensure proper message routing.
+{{if .Extra.ClaudeCodeMode}}
+
+## Note on Tool Names
+
+Tool names in coder plans and output may be namespaced with an `mcp__maestro__` prefix (e.g., `mcp__maestro__container_test`). This is equivalent to the base tool name (`container_test`). Both forms are interchangeable for purposes of requirements and feedback.
+{{end}}
