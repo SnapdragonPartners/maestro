@@ -483,3 +483,64 @@ func TestParseSignalInput_JSONString(t *testing.T) {
 		t.Errorf("expected confidence 'high', got %q", result.Confidence)
 	}
 }
+
+// TestNormalizeMCPToolNames tests that MCP prefixes are stripped from text content.
+func TestNormalizeMCPToolNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "no MCP prefix",
+			input:    "Use container_test to verify the build",
+			expected: "Use container_test to verify the build",
+		},
+		{
+			name:     "single MCP prefix",
+			input:    "Use mcp__maestro__container_test to verify the build",
+			expected: "Use container_test to verify the build",
+		},
+		{
+			name:     "multiple MCP prefixes",
+			input:    "1. Use mcp__maestro__container_build to build\n2. Use mcp__maestro__container_test to test",
+			expected: "1. Use container_build to build\n2. Use container_test to test",
+		},
+		{
+			name:     "mixed content",
+			input:    "Call mcp__maestro__shell to run commands, then container_build to build the image",
+			expected: "Call shell to run commands, then container_build to build the image",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := NormalizeMCPToolNames(tc.input)
+			if result != tc.expected {
+				t.Errorf("NormalizeMCPToolNames(%q) = %q, expected %q", tc.input, result, tc.expected)
+			}
+		})
+	}
+}
+
+// TestBuildResult_PreservesPlan tests that BuildResult preserves plan text as-is.
+// MCP prefix handling is done at the prompt level, not by modifying content.
+func TestBuildResult_PreservesPlan(t *testing.T) {
+	input := &SignalToolInput{
+		Plan:       "1. Use mcp__maestro__container_build to build\n2. Use mcp__maestro__container_test to verify",
+		Confidence: "HIGH",
+	}
+
+	result := BuildResult(SignalPlanComplete, input, []StreamEvent{})
+
+	// Plan should be preserved as-is (MCP prefixes not stripped)
+	expected := "1. Use mcp__maestro__container_build to build\n2. Use mcp__maestro__container_test to verify"
+	if result.Plan != expected {
+		t.Errorf("expected preserved plan %q, got %q", expected, result.Plan)
+	}
+}

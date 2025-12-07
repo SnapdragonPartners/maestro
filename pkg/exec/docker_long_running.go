@@ -380,6 +380,11 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 	// Build docker exec command.
 	execArgs := []string{"exec", "-i"}
 
+	// Set user if specified (for rootless execution).
+	if opts.User != "" {
+		execArgs = append(execArgs, "--user", opts.User)
+	}
+
 	// Set working directory if specified.
 	if opts.WorkDir != "" {
 		execArgs = append(execArgs, "--workdir", "/workspace")

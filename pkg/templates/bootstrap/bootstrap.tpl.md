@@ -63,7 +63,8 @@ This story addresses infrastructure issues discovered during project initializat
   {{- end}}
 {{- end}}
 - [ ] Validate container can run build and test commands
-- [ ] Ensure rootless execution works with `--user=nobody --read-only --network=none`
+- [ ] Ensure rootless execution works with `--user=1000:1000 --read-only --network=none`
+- [ ] Verify coder user (UID 1000) exists in container (required for Claude Code mode)
 {{- end}}
 
 {{- if .HasFailuresOfType "binary_size"}}
@@ -225,8 +226,17 @@ This story addresses infrastructure issues discovered during project initializat
 {{- else}}
 - **Network Access**: Disabled (`--network=none`)
 {{- end}}
-- **User**: Non-root (`--user=nobody`)
+- **User**: Non-root (`--user=1000:1000` - coder user required for Claude Code mode)
 - **Filesystem**: Read-only with writable `/tmp`
+
+### Required Container User (Claude Code Mode)
+When using Claude Code mode, containers must have a non-root user with UID 1000:
+```dockerfile
+# Add to your Dockerfile - required for Claude Code mode
+RUN adduser -D -u 1000 coder && \
+    chown -R coder:coder /workspace
+```
+Claude Code refuses `--dangerously-skip-permissions` when running as root for security reasons. Maestro will attempt to create this user at runtime if missing, but pre-creating it in the Dockerfile is recommended.
 
 ### File System Constraints
 - **Large File Limit**: 100MB (GitHub push limit)

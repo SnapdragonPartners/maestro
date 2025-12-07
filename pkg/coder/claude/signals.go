@@ -25,6 +25,14 @@ func normalizeToolName(name string) string {
 	return name
 }
 
+// NormalizeMCPToolNames strips all MCP prefixes from tool names in text content.
+// This normalizes plan text so the architect sees base tool names (e.g., "container_test")
+// instead of MCP-prefixed names (e.g., "mcp__maestro__container_test").
+func NormalizeMCPToolNames(text string) string {
+	// Replace all occurrences of the MCP prefix
+	return strings.ReplaceAll(text, mcpToolPrefix, "")
+}
+
 // signalToolNames maps tool names to their signals for detection.
 // These match the actual tool names exposed via MCP from pkg/tools/constants.go.
 //

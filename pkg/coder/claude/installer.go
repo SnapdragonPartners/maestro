@@ -210,6 +210,62 @@ func (i *Installer) GetClaudeCodeVersion(ctx context.Context) (string, error) {
 	return version, nil
 }
 
+// CoderUserID is the UID for the coder user that Claude Code runs as.
+// Claude Code refuses --dangerously-skip-permissions when running as root.
+const CoderUserID = "1000"
+
+// EnsureCoderUser ensures that a user with UID 1000 exists in the container.
+// Claude Code requires running as a non-root user for --dangerously-skip-permissions.
+// This method checks if the user exists and creates it if needed (requires root privileges).
+func (i *Installer) EnsureCoderUser(ctx context.Context) error {
+	// Check if user with UID 1000 already exists
+	if i.coderUserExists(ctx) {
+		i.logger.Debug("Coder user (UID %s) already exists", CoderUserID)
+		return nil
+	}
+
+	i.logger.Info("Creating coder user (UID %s) for Claude Code...", CoderUserID)
+
+	// Try to create the user - approach varies by distro
+	// First try adduser (Alpine/Debian style)
+	if i.hasCommand(ctx, "adduser") {
+		// Alpine style: adduser -D -u 1000 coder
+		result, err := i.runCommand(ctx, []string{"adduser", "-D", "-u", CoderUserID, "coder"}, 30*time.Second)
+		if err == nil && result.ExitCode == 0 {
+			i.logger.Info("Created coder user successfully (Alpine adduser)")
+			return nil
+		}
+		// Try Debian/Ubuntu style: adduser --disabled-password --uid 1000 --gecos "" coder
+		result, err = i.runCommand(ctx, []string{"adduser", "--disabled-password", "--uid", CoderUserID, "--gecos", "", "coder"}, 30*time.Second)
+		if err == nil && result.ExitCode == 0 {
+			i.logger.Info("Created coder user successfully (Debian adduser)")
+			return nil
+		}
+	}
+
+	// Try useradd (RHEL/CentOS style)
+	if i.hasCommand(ctx, "useradd") {
+		result, err := i.runCommand(ctx, []string{"useradd", "-u", CoderUserID, "-m", "coder"}, 30*time.Second)
+		if err == nil && result.ExitCode == 0 {
+			i.logger.Info("Created coder user successfully (useradd)")
+			return nil
+		}
+	}
+
+	// If we get here, user creation failed
+	return fmt.Errorf("failed to create coder user (UID %s): no supported user creation method succeeded", CoderUserID)
+}
+
+// coderUserExists checks if a user with UID 1000 exists in the container.
+func (i *Installer) coderUserExists(ctx context.Context) bool {
+	// Check if UID 1000 exists by looking it up with id command
+	result, err := i.runCommand(ctx, []string{"id", "-u", CoderUserID}, 10*time.Second)
+	if err != nil {
+		return false // Command failed, user doesn't exist
+	}
+	return result.ExitCode == 0
+}
+
 // EnsureMCPProxy ensures the maestro-mcp-proxy binary is installed in the container.
 // It checks if the proxy exists, detects the container architecture, and copies
 // the appropriate embedded binary if needed.

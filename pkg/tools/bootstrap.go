@@ -21,13 +21,21 @@ import (
 type BootstrapTool struct {
 	logger     *logx.Logger
 	projectDir string
+	repoDir    string // Agent workspace with repo clone (for knowledge.dot detection)
 }
 
 // NewBootstrapTool creates a new bootstrap tool instance.
-func NewBootstrapTool(projectDir string) *BootstrapTool {
+// projectDir is the project root (where config.json lives).
+// repoDir is the agent workspace with the repo clone (where knowledge.dot lives).
+// If repoDir is empty, it defaults to projectDir for backwards compatibility.
+func NewBootstrapTool(projectDir, repoDir string) *BootstrapTool {
+	if repoDir == "" {
+		repoDir = projectDir
+	}
 	return &BootstrapTool{
 		logger:     logx.NewLogger("bootstrap-tool"),
 		projectDir: projectDir,
+		repoDir:    repoDir,
 	}
 }
 
@@ -186,8 +194,9 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 // This ensures the bootstrap process completed successfully and all required components are configured.
 // Returns the bootstrap requirements for rendering.
 func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) *BootstrapRequirements {
-	b.logger.Info("Validating bootstrap configuration...")
-	detector := NewBootstrapDetector(b.projectDir)
+	b.logger.Info("Validating bootstrap configuration in repo: %s", b.repoDir)
+	// Use repoDir for detection - this is where knowledge.dot and repo files live
+	detector := NewBootstrapDetector(b.repoDir)
 	reqs, validateErr := detector.Detect(ctx)
 	if validateErr != nil {
 		b.logger.Warn("Post-bootstrap validation failed: %v", validateErr)

@@ -288,20 +288,16 @@ func createBackendInfoTool(_ *AgentContext) (Tool, error) {
 }
 
 // createContainerBuildTool creates a container build tool instance.
-func createContainerBuildTool(ctx *AgentContext) (Tool, error) {
-	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container build tool requires an executor")
-	}
-	return NewContainerBuildTool(ctx.Executor), nil
+// Uses local executor internally - no executor needed from context.
+func createContainerBuildTool(_ *AgentContext) (Tool, error) {
+	return NewContainerBuildTool(), nil
 }
 
 // createContainerUpdateTool creates a container update tool instance.
+// Uses local executor internally - agent is optional for storing pending config.
 func createContainerUpdateTool(ctx *AgentContext) (Tool, error) {
-	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container update tool requires an executor")
-	}
 	// Agent is optional - if not provided, pending config won't be stored
-	return NewContainerUpdateTool(ctx.Executor, ctx.Agent), nil
+	return NewContainerUpdateTool(ctx.Agent), nil
 }
 
 // createContainerTestTool creates a unified container test tool instance.
@@ -323,16 +319,15 @@ func createContainerTestTool(ctx *AgentContext) (Tool, error) {
 }
 
 // createContainerListTool creates a container list tool instance.
-func createContainerListTool(ctx *AgentContext) (Tool, error) {
-	return NewContainerListTool(ctx.Executor), nil
+// Uses local executor internally - no executor needed from context.
+func createContainerListTool(_ *AgentContext) (Tool, error) {
+	return NewContainerListTool(), nil
 }
 
 // createContainerSwitchTool creates a container switch tool instance.
-func createContainerSwitchTool(ctx *AgentContext) (Tool, error) {
-	if ctx.Executor == nil {
-		return nil, fmt.Errorf("container switch tool requires an executor")
-	}
-	return NewContainerSwitchTool(ctx.Executor), nil
+// Uses local executor internally - no executor needed from context.
+func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
+	return NewContainerSwitchTool(), nil
 }
 
 // createChatPostTool creates a chat post tool instance.
@@ -394,11 +389,11 @@ func getBackendInfoSchema() InputSchema {
 }
 
 func getContainerBuildSchema() InputSchema {
-	return NewContainerBuildTool(nil).Definition().InputSchema
+	return NewContainerBuildTool().Definition().InputSchema
 }
 
 func getContainerUpdateSchema() InputSchema {
-	return NewContainerUpdateTool(nil, nil).Definition().InputSchema
+	return NewContainerUpdateTool(nil).Definition().InputSchema
 }
 
 func getContainerTestSchema() InputSchema {
@@ -408,11 +403,11 @@ func getContainerTestSchema() InputSchema {
 }
 
 func getContainerListSchema() InputSchema {
-	return NewContainerListTool(nil).Definition().InputSchema
+	return NewContainerListTool().Definition().InputSchema
 }
 
 func getContainerSwitchSchema() InputSchema {
-	return NewContainerSwitchTool(nil).Definition().InputSchema
+	return NewContainerSwitchTool().Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {
@@ -525,11 +520,12 @@ func getSpecSubmitSchema() InputSchema {
 }
 
 func createBootstrapTool(ctx *AgentContext) (Tool, error) {
-	return NewBootstrapTool(ctx.ProjectDir), nil
+	// Pass both projectDir (for config) and workDir (for knowledge.dot detection)
+	return NewBootstrapTool(ctx.ProjectDir, ctx.WorkDir), nil
 }
 
 func getBootstrapSchema() InputSchema {
-	return NewBootstrapTool("").Definition().InputSchema
+	return NewBootstrapTool("", "").Definition().InputSchema
 }
 
 func createChatAskUserTool(ctx *AgentContext) (Tool, error) {

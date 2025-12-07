@@ -55,8 +55,15 @@ RUN npm install -g @anthropic-ai/claude-code
 # Set bash as default shell
 SHELL ["/bin/bash", "-c"]
 
-# Create workspace directory
+# Create workspace directory first, then create non-root user with proper ownership
 WORKDIR /workspace
+
+# Create coder user (UID 1000) for non-root execution
+# Claude Code refuses --dangerously-skip-permissions when running as root
+# All coders run as this user for security isolation
+RUN adduser -D -u 1000 -h /home/coder coder && \
+    chown -R coder:coder /workspace && \
+    chown -R coder:coder /home/coder
 
 # Default command
 CMD ["sleep", "infinity"]

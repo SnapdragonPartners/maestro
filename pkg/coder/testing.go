@@ -278,8 +278,8 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr string, containerConfig *config.ContainerConfig) (bool, string) {
 	c.logger.Info("Running container build test for container: %s", containerConfig.Name)
 
-	// Create container build tool instance using the coder's executor
-	buildTool := tools.NewContainerBuildTool(c.longRunningExecutor)
+	// Create container build tool instance (uses local executor for host docker commands)
+	buildTool := tools.NewContainerBuildTool()
 
 	// Prepare arguments for container_build tool
 	args := map[string]any{

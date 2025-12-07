@@ -28,6 +28,10 @@ You have access to special signal tools for state transitions:
 4. **No Scope Creep**: Only implement what's in the approved plan
 5. **Test Your Work**: Ensure changes work before signaling done
 
+## Note on Tool Names
+
+The approved plan and architect feedback may use shorthand tool names (e.g., `container_test`). These are equivalent to your MCP tools with the `mcp__maestro__` prefix (e.g., `mcp__maestro__container_test`). Both forms are interchangeable.
+
 ## Workspace
 
 Working directory: {{.WorkspacePath}}

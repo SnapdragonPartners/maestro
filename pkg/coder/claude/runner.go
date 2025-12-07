@@ -66,6 +66,16 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 		}, err
 	}
 
+	// Ensure coder user (UID 1000) exists for non-root execution
+	// Claude Code refuses --dangerously-skip-permissions when running as root
+	if err := r.installer.EnsureCoderUser(ctx); err != nil {
+		return Result{
+			Signal:   SignalError,
+			Error:    fmt.Errorf("failed to ensure coder user: %w", err),
+			Duration: time.Since(startTime),
+		}, err
+	}
+
 	// Ensure MCP proxy is installed (copies embedded binary to container if needed)
 	if err := r.installer.EnsureMCPProxy(ctx); err != nil {
 		return Result{
@@ -200,15 +210,11 @@ func (r *Runner) buildCommand(opts *RunOptions) []string {
 		cmd = append(cmd, "--model", opts.Model)
 	}
 
-	// In CODING mode, bypass permission checks since we're in a sandboxed container.
-	// This prevents Claude Code from asking for interactive permission approval for writes.
-	// In PLANNING mode, we use default permissions (read-only exploration).
-	if opts.Mode == ModeCoding {
-		cmd = append(cmd, "--dangerously-skip-permissions")
-	}
-
-	// Add MCP config file path (config written by writeMCPConfig)
-	cmd = append(cmd, "--mcp-config", MCPConfigPath)
+	// Bypass permission checks since we're in a sandboxed container.
+	// This prevents Claude Code from asking for interactive permission approval.
+	// Security is enforced by the container sandbox (non-root user, read-only filesystem).
+	// Also add MCP config file path (config written by writeMCPConfig).
+	cmd = append(cmd, "--dangerously-skip-permissions", "--mcp-config", MCPConfigPath)
 
 	// Add system prompt if specified
 	if opts.SystemPrompt != "" {
@@ -241,6 +247,12 @@ func BuildMCPConfigJSON(port int) string {
 	return string(data)
 }
 
+// ClaudeCodeUser is the user to run Claude Code as.
+// Claude Code refuses --dangerously-skip-permissions when running as root for security.
+// We use UID 1000 which is the typical first non-root user on Linux systems.
+// The container's Dockerfile should create this user with appropriate permissions.
+const ClaudeCodeUser = "1000:1000"
+
 // buildExecOpts creates execution options for the executor.
 func (r *Runner) buildExecOpts(opts *RunOptions) *exec.Opts {
 	execOpts := exec.DefaultExecOpts()
@@ -254,6 +266,10 @@ func (r *Runner) buildExecOpts(opts *RunOptions) *exec.Opts {
 	if opts.WorkDir != "" {
 		execOpts.WorkDir = opts.WorkDir
 	}
+
+	// Run as non-root user for Claude Code
+	// Claude Code refuses --dangerously-skip-permissions when running as root
+	execOpts.User = ClaudeCodeUser
 
 	// Build environment variables
 	env := make([]string, 0, len(opts.EnvVars)+1)

@@ -344,15 +344,22 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 		return "", fmt.Errorf("story %s not found in queue", storyID)
 	}
 
+	// Check if Claude Code mode is enabled
+	claudeCodeMode := false
+	if cfg, err := config.GetConfig(); err == nil {
+		claudeCodeMode = cfg.Agents.CoderMode == config.CoderModeClaudeCode
+	}
+
 	// Build template data with story information
 	data := &templates.TemplateData{
 		Extra: map[string]any{
-			"AgentID":       agentID,
-			"StoryID":       storyID,
-			"StoryTitle":    story.Title,
-			"StoryContent":  story.Content,
-			"KnowledgePack": story.KnowledgePack,
-			"SpecID":        story.SpecID,
+			"AgentID":        agentID,
+			"StoryID":        storyID,
+			"StoryTitle":     story.Title,
+			"StoryContent":   story.Content,
+			"KnowledgePack":  story.KnowledgePack,
+			"SpecID":         story.SpecID,
+			"ClaudeCodeMode": claudeCodeMode,
 		},
 	}
 

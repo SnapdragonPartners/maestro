@@ -222,21 +222,38 @@ func SetupTestConfig(t *testing.T) {
 
 	// Create minimal config for container validation tests
 	// Using anthropic-sdk-python as a public repo that anyone can access (read-only API calls)
+	// Include all required config sections to avoid nil pointer panics in applyDefaults
 	testConfig := `{
 		"git": {
 			"repo_url": "https://github.com/anthropics/anthropic-sdk-python.git"
+		},
+		"pm": {
+			"enabled": false
+		},
+		"chat": {
+			"enabled": false
+		},
+		"demo": {
+			"enabled": false
 		}
 	}`
 
-	configPath := filepath.Join(t.TempDir(), "test-config.json")
+	// LoadConfig expects a project directory and looks for .maestro/config.json inside it
+	projectDir := t.TempDir()
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatalf("Failed to create .maestro directory: %v", err)
+	}
+
+	configPath := filepath.Join(maestroDir, "config.json")
 	if err := os.WriteFile(configPath, []byte(testConfig), 0644); err != nil {
 		t.Fatalf("Failed to write test config: %v", err)
 	}
 
 	// Set CONFIG_PATH env var so config can be loaded by any code path
-	_ = os.Setenv("CONFIG_PATH", configPath)
+	_ = os.Setenv("CONFIG_PATH", projectDir)
 
-	if err := config.LoadConfig(configPath); err != nil {
+	if err := config.LoadConfig(projectDir); err != nil {
 		t.Fatalf("Failed to load test config: %v", err)
 	}
 }

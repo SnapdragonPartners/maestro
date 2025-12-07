@@ -141,17 +141,18 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		c.cleanupContainer(ctx, fmt.Sprintf("reconfigure for %s", purpose))
 	}
 
-	// Determine user based on story type
+	// All story types run as non-root user for security
+	// Container tools (container_build, container_switch, etc.) use local executor to run
+	// docker commands directly on the host, so containers don't need docker.sock access
 	storyType := utils.GetStateValueOr[string](c.BaseStateMachine, proto.KeyStoryType, string(proto.StoryTypeApp))
-	containerUser := "1000:1000" // Default: non-root user for app stories
+	containerUser := "1000:1000" // Non-root user for all story types
 
 	// Determine container image based on story type and configuration
 	var containerImage string
 	if storyType == string(proto.StoryTypeDevOps) {
-		// DevOps stories always use the safe bootstrap container
+		// DevOps stories use the safe bootstrap container (non-root, no docker.sock needed)
 		containerImage = config.BootstrapContainerTag
-		containerUser = "0:0" // Run as root for DevOps stories to access Docker socket
-		c.logger.Info("DevOps story detected - using safe container %s as root", containerImage)
+		c.logger.Info("DevOps story detected - using safe container %s as non-root", containerImage)
 	} else {
 		// App stories try configured container first, fall back to bootstrap if it fails
 		containerImage = getDockerImageForAgent(c.workDir)

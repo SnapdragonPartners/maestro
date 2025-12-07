@@ -33,6 +33,10 @@ You have access to special signal tools for state transitions:
 4. **Test Strategy**: Include how changes will be tested
 5. **No Code Yet**: Do NOT write code in planning mode - only create the plan
 
+## Note on Tool Names
+
+Specs and architect feedback may use shorthand tool names (e.g., `container_test`). These are equivalent to your MCP tools with the `mcp__maestro__` prefix (e.g., `mcp__maestro__container_test`). Both forms are interchangeable.
+
 ## Workspace
 
 Working directory: {{.WorkspacePath}}

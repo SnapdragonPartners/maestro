@@ -13,14 +13,16 @@ import (
 )
 
 // ContainerUpdateTool provides MCP interface for updating container configuration.
+// Uses local executor to run docker commands directly on the host.
 type ContainerUpdateTool struct {
 	executor exec.Executor
 	agent    Agent // Agent reference for storing pending config in state
 }
 
 // NewContainerUpdateTool creates a new container update tool instance.
-func NewContainerUpdateTool(executor exec.Executor, agent Agent) *ContainerUpdateTool {
-	return &ContainerUpdateTool{executor: executor, agent: agent}
+// Uses local executor since docker commands run on the host, not inside containers.
+func NewContainerUpdateTool(agent Agent) *ContainerUpdateTool {
+	return &ContainerUpdateTool{executor: exec.NewLocalExec(), agent: agent}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -81,8 +83,8 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 	log.Printf("DEBUG container_update: containerName=%s, dockerfilePath=%s", containerName, dockerfilePath)
 
 	// Validate container capabilities before registering
-	hostExecutor := exec.NewLocalExec()
-	validationResult := ValidateContainerCapabilities(ctx, hostExecutor, containerName)
+	// Uses the tool's local executor for docker commands
+	validationResult := ValidateContainerCapabilities(ctx, c.executor, containerName)
 
 	if !validationResult.Success {
 		response := map[string]any{
