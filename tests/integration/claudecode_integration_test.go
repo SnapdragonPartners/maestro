@@ -146,15 +146,16 @@ func TestClaudeCodeBasicExecutionIntegration(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Create runner with tool provider
+	// Include "done" tool so Claude can signal completion via MCP
 	logger := logx.NewLogger("test")
 	agentCtx := &tools.AgentContext{
 		Executor: dockerexec.NewLocalExec(),
 		WorkDir:  workspaceDir,
 	}
-	provider := tools.NewProvider(agentCtx, []string{"shell"})
+	provider := tools.NewProvider(agentCtx, []string{"shell", "done"})
 	runner := claude.NewRunner(executor, containerName, provider, logger)
 
-	// Test basic execution that should call maestro_done
+	// Test basic execution that should call done tool
 	t.Run("simple_task_completion", func(t *testing.T) {
 		runOpts := claude.DefaultRunOptions()
 		runOpts.Mode = claude.ModeCoding
@@ -164,17 +165,17 @@ func TestClaudeCodeBasicExecutionIntegration(t *testing.T) {
 
 ## Maestro Integration Tools
 
-You MUST call one of these tools to complete your work:
+You MUST call the done tool (via MCP as mcp__maestro__done) to complete your work:
 
-### maestro_done
+### done
 Signal that your work is complete.
 Parameters:
 - summary (required): Brief summary of what was done
 
 ## Instructions
-Read the hello.txt file in the workspace and call maestro_done with a summary.
-Do NOT do anything else - just read the file and call maestro_done immediately.`
-		runOpts.InitialInput = "Read hello.txt and call maestro_done with a summary of what you found."
+Read the hello.txt file in the workspace and call the done tool with a summary.
+Do NOT do anything else - just read the file and call done immediately.`
+		runOpts.InitialInput = "Read hello.txt and call the done tool with a summary of what you found."
 		runOpts.EnvVars = map[string]string{
 			"ANTHROPIC_API_KEY": apiKey,
 		}
