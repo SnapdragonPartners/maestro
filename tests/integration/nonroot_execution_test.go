@@ -125,6 +125,13 @@ func TestCanWriteToWorkspace(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
+	// Make workspace writable by non-root user (UID 1000) in container.
+	// The host temp directory is created by the test runner (different UID),
+	// so we need to open permissions for the container's non-root user.
+	if err := os.Chmod(workDir, 0777); err != nil {
+		t.Fatalf("Failed to chmod workspace: %v", err)
+	}
+
 	// Start container with non-root user (1000:1000)
 	opts := &exec.Opts{
 		WorkDir: workDir,
