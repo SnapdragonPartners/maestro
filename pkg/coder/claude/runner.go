@@ -162,6 +162,11 @@ func (r *Runner) startMCPServer(ctx context.Context) error {
 	// Give the server a moment to start and bind to port
 	time.Sleep(100 * time.Millisecond)
 
+	// Verify the server actually bound to a port (catches rare bind failures)
+	if r.mcpServer.Port() == 0 {
+		return fmt.Errorf("MCP server failed to bind to port")
+	}
+
 	r.logger.Debug("MCP server started on port %d", r.mcpServer.Port())
 	return nil
 }
