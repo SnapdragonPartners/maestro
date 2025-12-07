@@ -144,6 +144,10 @@ func TestCanWriteToWorkspace(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 	defer func() {
+		// Clean up files created by UID 1000 before stopping container.
+		// The CI user can't delete files owned by UID 1000, so we clean up
+		// from within the container using the same user that created them.
+		_, _ = dockerExec.Run(ctx, []string{"rm", "-rf", "/workspace/test.txt", "/workspace/subdir"}, opts)
 		_ = dockerExec.StopContainer(ctx, containerName)
 	}()
 
