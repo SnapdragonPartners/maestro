@@ -80,7 +80,7 @@ CMD ["sleep", "infinity"]`,
 			defer cleanupBuiltContainer(tc.containerName)
 
 			// Build the container (uses local executor internally, so we pass host path)
-			buildTool := tools.NewContainerBuildTool()
+			buildTool := tools.NewContainerBuildTool(workspaceDir)
 			args := map[string]any{
 				"container_name":  tc.containerName,
 				"dockerfile_path": tc.dockerfilePath,

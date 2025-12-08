@@ -268,7 +268,7 @@ func TestContainerToolsWithLocalExecutor(t *testing.T) {
 
 	// Test 2: container_build tool can be instantiated (actual build would need a Dockerfile)
 	t.Run("ContainerBuildToolInstantiation", func(t *testing.T) {
-		buildTool := tools.NewContainerBuildTool()
+		buildTool := tools.NewContainerBuildTool("") // Empty host path for instantiation test
 
 		def := buildTool.Definition()
 		if def.Name != "container_build" {

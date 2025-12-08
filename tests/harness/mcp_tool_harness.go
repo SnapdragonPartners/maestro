@@ -67,7 +67,7 @@ func createToolByName(toolName string) (tools.Tool, error) {
 
 	switch toolName {
 	case tools.ToolContainerBuild:
-		return tools.NewContainerBuildTool(), nil
+		return tools.NewContainerBuildTool(""), nil // Empty host path for tests
 	case tools.ToolContainerUpdate:
 		return tools.NewContainerUpdateTool(mockAgent), nil
 	case tools.ToolContainerTest:

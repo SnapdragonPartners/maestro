@@ -378,11 +378,12 @@ func (s *Server) handleToolsCall(ctx context.Context, conn net.Conn, req *JSONRP
 		return
 	}
 
-	s.logger.Debug("Tool call: %s", params.Name)
+	s.logger.Info("🔧 MCP tool call: %s", params.Name)
 
 	// Get tool from provider
 	tool, err := s.toolProvider.Get(params.Name)
 	if err != nil {
+		s.logger.Warn("Tool not found: %s - %v", params.Name, err)
 		s.sendError(conn, req.ID, -32602, "Tool not found", err.Error())
 		return
 	}
@@ -390,6 +391,7 @@ func (s *Server) handleToolsCall(ctx context.Context, conn net.Conn, req *JSONRP
 	// Execute tool
 	result, err := tool.Exec(ctx, params.Arguments)
 	if err != nil {
+		s.logger.Warn("🔧 MCP tool %s failed: %v", params.Name, err)
 		// Return error as tool result (not JSON-RPC error) so Claude sees it
 		s.sendResult(conn, req.ID, map[string]interface{}{
 			"content": []map[string]interface{}{
@@ -402,6 +404,13 @@ func (s *Server) handleToolsCall(ctx context.Context, conn net.Conn, req *JSONRP
 		})
 		return
 	}
+
+	// Log successful execution with content preview
+	contentPreview := result.Content
+	if len(contentPreview) > 200 {
+		contentPreview = contentPreview[:200] + "..."
+	}
+	s.logger.Info("🔧 MCP tool %s succeeded: %s", params.Name, contentPreview)
 
 	// Format response
 	content := result.Content

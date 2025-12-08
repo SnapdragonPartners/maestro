@@ -15,13 +15,19 @@ import (
 // ContainerBuildTool provides MCP interface for building Docker containers from Dockerfile.
 // Uses local executor to run docker commands directly on the host.
 type ContainerBuildTool struct {
-	executor exec.Executor
+	executor          exec.Executor
+	hostWorkspacePath string // Host path that maps to /workspace inside containers
 }
 
 // NewContainerBuildTool creates a new container build tool instance.
 // Uses local executor since docker commands run on the host, not inside containers.
-func NewContainerBuildTool() *ContainerBuildTool {
-	return &ContainerBuildTool{executor: exec.NewLocalExec()}
+// hostWorkspacePath is the host filesystem path that corresponds to /workspace inside containers.
+// If empty, path translation is disabled (for backwards compatibility in tests).
+func NewContainerBuildTool(hostWorkspacePath string) *ContainerBuildTool {
+	return &ContainerBuildTool{
+		executor:          exec.NewLocalExec(),
+		hostWorkspacePath: hostWorkspacePath,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -72,12 +78,43 @@ func (c *ContainerBuildTool) PromptDocumentation() string {
   - Avoids legacy docker build deprecation warnings`
 }
 
+// translateToHostPath converts a container path (like /workspace) to the actual host path.
+// This is necessary because MCP tools run on the host, not inside the container.
+// Paths provided by agents running inside containers need to be translated.
+func (c *ContainerBuildTool) translateToHostPath(containerPath string) string {
+	// If no host workspace path configured, return path unchanged
+	if c.hostWorkspacePath == "" {
+		return containerPath
+	}
+
+	// Check if path starts with /workspace (the container's workspace mount point)
+	if containerPath == DefaultWorkspaceDir {
+		// Exact match: /workspace -> host path
+		return c.hostWorkspacePath
+	}
+
+	// Check for paths under /workspace/...
+	prefix := DefaultWorkspaceDir + "/"
+	if len(containerPath) > len(prefix) && containerPath[:len(prefix)] == prefix {
+		// Path like /workspace/Dockerfile -> hostPath/Dockerfile
+		relativePath := containerPath[len(prefix):]
+		return filepath.Join(c.hostWorkspacePath, relativePath)
+	}
+
+	// Not a container workspace path, return unchanged
+	return containerPath
+}
+
 // Exec executes the container build operation.
 //
 //nolint:cyclop // Temporary debugging code increases complexity
 func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	// Extract working directory
+	// Extract working directory (may be container path like /workspace)
 	cwd := extractWorkingDirectory(args)
+
+	// Translate container path to host path if we have the mapping
+	// When tools run on host via MCP server, /workspace doesn't exist - we need the host path
+	cwd = c.translateToHostPath(cwd)
 
 	// Extract container name
 	containerName, ok := args["container_name"].(string)
@@ -91,13 +128,16 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (*Ex
 		dockerfilePath = path
 	}
 
+	// Translate dockerfile path if it's an absolute container path
+	dockerfilePath = c.translateToHostPath(dockerfilePath)
+
 	// Extract platform
 	platform := ""
 	if p, ok := args["platform"].(string); ok && p != "" {
 		platform = p
 	}
 
-	log.Printf("DEBUG container_build: cwd=%s, dockerfilePath=%s, containerName=%s", cwd, dockerfilePath, containerName)
+	log.Printf("DEBUG container_build: cwd=%s, dockerfilePath=%s, containerName=%s, hostWorkspacePath=%s", cwd, dockerfilePath, containerName, c.hostWorkspacePath)
 
 	// Skip dockerfile existence check - docker build will validate and provide clear error messages
 	log.Printf("DEBUG container_build: skipping existence check, docker will validate dockerfile: %s", dockerfilePath)

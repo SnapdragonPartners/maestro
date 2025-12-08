@@ -288,9 +288,15 @@ func createBackendInfoTool(_ *AgentContext) (Tool, error) {
 }
 
 // createContainerBuildTool creates a container build tool instance.
-// Uses local executor internally - no executor needed from context.
-func createContainerBuildTool(_ *AgentContext) (Tool, error) {
-	return NewContainerBuildTool(), nil
+// Uses local executor internally - agent context provides host workspace path for path translation.
+func createContainerBuildTool(ctx *AgentContext) (Tool, error) {
+	// Get host workspace path from agent if available
+	// This is needed to translate container paths (/workspace) to host paths
+	var hostWorkspacePath string
+	if ctx != nil && ctx.Agent != nil {
+		hostWorkspacePath = ctx.Agent.GetHostWorkspacePath()
+	}
+	return NewContainerBuildTool(hostWorkspacePath), nil
 }
 
 // createContainerUpdateTool creates a container update tool instance.
@@ -389,7 +395,7 @@ func getBackendInfoSchema() InputSchema {
 }
 
 func getContainerBuildSchema() InputSchema {
-	return NewContainerBuildTool().Definition().InputSchema
+	return NewContainerBuildTool("").Definition().InputSchema
 }
 
 func getContainerUpdateSchema() InputSchema {

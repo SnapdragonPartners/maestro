@@ -282,7 +282,8 @@ func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr s
 	c.logger.Info("Running container build test for container: %s", containerConfig.Name)
 
 	// Create container build tool instance (uses local executor for host docker commands)
-	buildTool := tools.NewContainerBuildTool()
+	// Pass workspacePathStr as host path since this is called from the orchestrator (host context)
+	buildTool := tools.NewContainerBuildTool(workspacePathStr)
 
 	// Prepare arguments for container_build tool
 	args := map[string]any{
