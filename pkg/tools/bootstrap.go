@@ -21,21 +21,15 @@ import (
 type BootstrapTool struct {
 	logger     *logx.Logger
 	projectDir string
-	repoDir    string // Agent workspace with repo clone (for knowledge.dot detection)
 }
 
 // NewBootstrapTool creates a new bootstrap tool instance.
 // projectDir is the project root (where config.json lives).
-// repoDir is the agent workspace with the repo clone (where knowledge.dot lives).
-// If repoDir is empty, it defaults to projectDir for backwards compatibility.
-func NewBootstrapTool(projectDir, repoDir string) *BootstrapTool {
-	if repoDir == "" {
-		repoDir = projectDir
-	}
+// The second parameter is ignored (kept for backwards compatibility with registry).
+func NewBootstrapTool(projectDir, _ string) *BootstrapTool {
 	return &BootstrapTool{
 		logger:     logx.NewLogger("bootstrap-tool"),
 		projectDir: projectDir,
-		repoDir:    repoDir,
 	}
 }
 
@@ -203,9 +197,11 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 // This ensures the bootstrap process completed successfully and all required components are configured.
 // Returns the bootstrap requirements for rendering.
 func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) *BootstrapRequirements {
-	b.logger.Info("Validating bootstrap configuration in repo: %s", b.repoDir)
-	// Use repoDir for detection - this is where knowledge.dot and repo files live
-	detector := NewBootstrapDetector(b.repoDir)
+	// Use PM workspace host path for detection, not repoDir (which may be container path /workspace)
+	// The PM workspace is at projectDir/pm-001 and contains knowledge.dot and other repo files
+	pmWorkspace := filepath.Join(b.projectDir, "pm-001")
+	b.logger.Info("Validating bootstrap configuration in repo: %s", pmWorkspace)
+	detector := NewBootstrapDetector(pmWorkspace)
 	reqs, validateErr := detector.Detect(ctx)
 	if validateErr != nil {
 		b.logger.Warn("Post-bootstrap validation failed: %v", validateErr)
