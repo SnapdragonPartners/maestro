@@ -59,6 +59,10 @@ func (b *BootstrapTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Primary development platform (e.g., 'go', 'python', 'node', 'rust')",
 				},
+				"project_description": {
+					Type:        "string",
+					Description: "A brief 1-2 sentence description of the project's purpose (optional, used in MAESTRO.md)",
+				},
 			},
 			Required: []string{"project_name", "git_url", "platform"},
 		},
@@ -78,6 +82,7 @@ func (b *BootstrapTool) PromptDocumentation() string {
     - project_name (string, required): Project name (ask the user)
     - git_url (string, required): GitHub repository URL (ask the user for https://github.com/user/repo format)
     - platform (string, required): Primary platform like go, python, node, rust (ask the user or infer from their description)
+    - project_description (string, optional): A brief 1-2 sentence description of the project's purpose (ask the user if they want to provide one)
   - Only call after gathering all required information from the user
   - Must be called before spec_submit if project is not yet configured
   - Updates config.json with project metadata`
@@ -120,10 +125,14 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 	// Normalize platform to lowercase
 	platform = strings.ToLower(platform)
 
+	// Extract optional project_description
+	projectDescription, _ := params["project_description"].(string)
+
 	// Update project info (saves to disk automatically)
 	projectInfo := &config.ProjectInfo{
 		Name:            projectName,
 		PrimaryPlatform: platform,
+		Description:     projectDescription,
 	}
 	if updateErr := config.UpdateProject(projectInfo); updateErr != nil {
 		return nil, fmt.Errorf("failed to update project info: %w", updateErr)
@@ -233,6 +242,7 @@ func (b *BootstrapTool) renderBootstrapMarkdown(reqs *BootstrapRequirements) (st
 			"NeedsMakefile":       reqs.NeedsMakefile,
 			"NeedsKnowledgeGraph": reqs.NeedsKnowledgeGraph,
 			"NeedsClaudeCode":     reqs.NeedsClaudeCode,
+			"NeedsGitignore":      reqs.NeedsGitignore,
 		},
 	}
 

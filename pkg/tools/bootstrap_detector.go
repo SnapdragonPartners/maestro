@@ -44,6 +44,7 @@ type BootstrapRequirements struct {
 	NeedsMakefile       bool     // True if no Makefile exists or missing required targets
 	NeedsKnowledgeGraph bool     // True if .maestro/knowledge.dot doesn't exist
 	NeedsClaudeCode     bool     // True if coder_mode is "claude-code" but Claude Code not in container
+	NeedsGitignore      bool     // True if no .gitignore exists
 }
 
 // NeedsBootstrapGate returns true if project metadata (name/platform/git) is missing.
@@ -120,6 +121,12 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 	reqs.NeedsClaudeCode = bd.detectMissingClaudeCode()
 	if reqs.NeedsClaudeCode {
 		reqs.MissingComponents = append(reqs.MissingComponents, "Claude Code in development container")
+	}
+
+	// Check for .gitignore
+	reqs.NeedsGitignore = bd.detectMissingGitignore()
+	if reqs.NeedsGitignore {
+		reqs.MissingComponents = append(reqs.MissingComponents, ".gitignore file")
 	}
 
 	// Detect platform
@@ -361,6 +368,18 @@ func (bd *BootstrapDetector) detectMissingKnowledgeGraph() bool {
 	}
 
 	bd.logger.Debug("Knowledge graph found at: %s", knowledgePath)
+	return false
+}
+
+// detectMissingGitignore checks if .gitignore file exists in the project root.
+func (bd *BootstrapDetector) detectMissingGitignore() bool {
+	gitignorePath := filepath.Join(bd.projectDir, ".gitignore")
+	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
+		bd.logger.Debug(".gitignore not found at: %s", gitignorePath)
+		return true
+	}
+
+	bd.logger.Debug(".gitignore found at: %s", gitignorePath)
 	return false
 }
 

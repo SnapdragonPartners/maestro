@@ -27,42 +27,11 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 		return proto.StateError, false, logx.Errorf("no task content available for planning")
 	}
 
-	// Create template renderer
-	renderer, err := claudetemplates.NewRenderer()
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to create claude template renderer")
-	}
-
-	// Build template data
-	knowledgePack := utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
-	templateData := claudetemplates.TemplateData{
-		StoryID:       storyID,
-		StoryTitle:    storyTitle,
-		StoryContent:  taskContent,
-		WorkspacePath: c.workDir,
-		KnowledgePack: knowledgePack,
-	}
-
-	// Check if we're resuming from a question (inject Q&A context)
-	if qaData, exists := sm.GetStateValue(KeyLastQA); exists && qaData != nil {
-		if qaMap, ok := qaData.(map[string]string); ok {
-			templateData.LastQA = &claudetemplates.QAPair{
-				Question: qaMap["question"],
-				Answer:   qaMap["answer"],
-			}
-			// Clear the Q&A after using it
-			sm.SetStateData(KeyLastQA, nil)
-		}
-	}
-
-	// Render system prompt
-	systemPrompt, err := renderer.RenderPlanningPrompt(&templateData)
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to render planning system prompt")
-	}
-
-	// Render initial input
-	initialInput := renderer.RenderPlanningInput(&templateData)
+	// Check for existing session ID (for resume) and resume input (feedback from plan review)
+	// Note: We reuse KeyCodingSessionID and KeyResumeInput since planning and coding never run simultaneously
+	existingSessionID := utils.GetStateValueOr[string](sm, KeyCodingSessionID, "")
+	resumeInput := utils.GetStateValueOr[string](sm, KeyResumeInput, "")
+	shouldResume := existingSessionID != "" && resumeInput != ""
 
 	// Get config for API key and model
 	cfg, err := config.GetConfig()
@@ -71,10 +40,11 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	}
 
 	// Ensure planning tool provider is initialized
+	// Use Claude Code-specific provider that excludes container_switch to prevent session destruction
 	if c.planningToolProvider == nil {
 		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
-		c.planningToolProvider = c.createPlanningToolProvider(storyType)
-		c.logger.Debug("Created planning ToolProvider for story type: %s", storyType)
+		c.planningToolProvider = c.createClaudeCodePlanningToolProvider(storyType)
+		c.logger.Debug("Created Claude Code planning ToolProvider for story type: %s (container_switch excluded)", storyType)
 	}
 
 	// Create runner with tool provider for MCP integration
@@ -85,19 +55,76 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	opts.Mode = claude.ModePlanning
 	opts.WorkDir = "/workspace"
 	opts.Model = cfg.Agents.CoderModel
-	opts.SystemPrompt = systemPrompt
-	opts.InitialInput = initialInput
 	opts.EnvVars = map[string]string{
 		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
 	}
 
-	c.logger.Info("🧑‍💻 Starting Claude Code planning for story %s", storyID)
+	if shouldResume {
+		// Resume existing session with feedback from plan review
+		opts.SessionID = existingSessionID
+		opts.Resume = true
+		opts.ResumeInput = resumeInput
+
+		// Clear the resume input after using it
+		sm.SetStateData(KeyResumeInput, nil)
+
+		c.logger.Info("🔄 Resuming Claude Code planning session %s for story %s", existingSessionID, storyID)
+	} else {
+		// New session - render full prompts
+		var renderer *claudetemplates.Renderer
+		renderer, err = claudetemplates.NewRenderer()
+		if err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to create claude template renderer")
+		}
+
+		// Build template data
+		knowledgePack := utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
+		templateData := claudetemplates.TemplateData{
+			StoryID:       storyID,
+			StoryTitle:    storyTitle,
+			StoryContent:  taskContent,
+			WorkspacePath: c.workDir,
+			KnowledgePack: knowledgePack,
+		}
+
+		// Check if we're resuming from a question (inject Q&A context - legacy path)
+		if qaData, exists := sm.GetStateValue(KeyLastQA); exists && qaData != nil {
+			if qaMap, ok := qaData.(map[string]string); ok {
+				templateData.LastQA = &claudetemplates.QAPair{
+					Question: qaMap["question"],
+					Answer:   qaMap["answer"],
+				}
+				// Clear the Q&A after using it
+				sm.SetStateData(KeyLastQA, nil)
+			}
+		}
+
+		// Render system prompt
+		var systemPrompt string
+		systemPrompt, err = renderer.RenderPlanningPrompt(&templateData)
+		if err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to render planning system prompt")
+		}
+
+		// Render initial input
+		initialInput := renderer.RenderPlanningInput(&templateData)
+
+		opts.SystemPrompt = systemPrompt
+		opts.InitialInput = initialInput
+
+		c.logger.Info("🧑‍💻 Starting Claude Code planning for story %s", storyID)
+	}
 
 	// Run Claude Code
 	result, err := runner.RunWithInactivityTimeout(ctx, &opts)
 	if err != nil {
 		c.logger.Error("Claude Code planning failed: %v", err)
 		return proto.StateError, false, logx.Wrap(err, "Claude Code execution failed")
+	}
+
+	// Store session ID for potential resume (always store, even on error, for debugging)
+	if result.SessionID != "" {
+		sm.SetStateData(KeyCodingSessionID, result.SessionID)
 	}
 
 	// Process result based on signal
