@@ -28,6 +28,18 @@ type Executor interface {
 	Available() bool
 }
 
+// Mount represents a volume mount for container execution.
+type Mount struct {
+	// Source is the host path to mount.
+	Source string
+
+	// Destination is the path inside the container.
+	Destination string
+
+	// ReadOnly indicates if the mount should be read-only.
+	ReadOnly bool
+}
+
 // Opts contains options for command execution.
 //
 //nolint:govet // Configuration struct, logical grouping preferred
@@ -52,6 +64,10 @@ type Opts struct {
 
 	// NetworkDisabled indicates if network access should be disabled.
 	NetworkDisabled bool
+
+	// ExtraMounts contains additional volume mounts for the container.
+	// These are added to any default mounts configured by the executor.
+	ExtraMounts []Mount
 }
 
 // ResourceLimits defines resource constraints for command execution.

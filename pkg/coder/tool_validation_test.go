@@ -149,7 +149,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 
 	// Test required parameters.
-	expectedRequired := []string{"is_complete", "plan", "confidence"}
+	expectedRequired := []string{"plan", "confidence"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
 	}
@@ -170,7 +170,6 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	// Test valid execution (implementation plan mode).
 	ctx := context.Background()
 	validArgs := map[string]any{
-		"is_complete":         false, // Submitting a plan for approval
 		"plan":                "Detailed implementation plan...",
 		"confidence":          string(proto.ConfidenceHigh),
 		"exploration_summary": "Explored 15 files, found 3 patterns",
@@ -208,10 +207,6 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	if confidence, exists := data["confidence"]; !exists || confidence != string(proto.ConfidenceHigh) {
 		t.Error("Expected confidence to be preserved in ProcessEffect.Data")
 	}
-
-	if isComplete, exists := data["is_complete"]; !exists || isComplete != false {
-		t.Error("Expected is_complete=false in ProcessEffect.Data")
-	}
 }
 
 // TestSubmitPlanToolErrorHandling tests error scenarios for submit_plan tool.
@@ -227,53 +222,40 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name:        "Missing is_complete parameter",
-			args:        map[string]any{"plan": "Some plan", "confidence": string(proto.ConfidenceHigh)},
-			expectError: true,
-			errorMsg:    "is_complete parameter is required",
-		},
-		{
 			name:        "Missing plan parameter",
-			args:        map[string]any{"is_complete": false, "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan parameter is required",
 		},
 		{
 			name:        "Missing confidence parameter",
-			args:        map[string]any{"is_complete": false, "plan": "Some plan"},
+			args:        map[string]any{"plan": "Some plan"},
 			expectError: true,
 			errorMsg:    "confidence parameter is required",
 		},
 		{
-			name:        "Invalid is_complete type",
-			args:        map[string]any{"is_complete": "invalid", "plan": "Some plan", "confidence": string(proto.ConfidenceHigh)},
-			expectError: true,
-			errorMsg:    "is_complete must be a boolean",
-		},
-		{
 			name:        "Empty plan",
-			args:        map[string]any{"is_complete": false, "plan": "", "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"plan": "", "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan cannot be empty",
 		},
 		{
 			name:        "Invalid plan type",
-			args:        map[string]any{"is_complete": false, "plan": 123, "confidence": string(proto.ConfidenceHigh)},
+			args:        map[string]any{"plan": 123, "confidence": string(proto.ConfidenceHigh)},
 			expectError: true,
 			errorMsg:    "plan must be a string",
 		},
 		{
 			name:        "Invalid confidence type",
-			args:        map[string]any{"is_complete": false, "plan": "Valid plan", "confidence": 123},
+			args:        map[string]any{"plan": "Valid plan", "confidence": 123},
 			expectError: true,
 			errorMsg:    "confidence must be a string",
 		},
 		{
 			name: "Invalid confidence level",
 			args: map[string]any{
-				"is_complete": false,
-				"plan":        "Valid plan",
-				"confidence":  "INVALID",
+				"plan":       "Valid plan",
+				"confidence": "INVALID",
 			},
 			expectError: true,
 			errorMsg:    fmt.Sprintf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow),
@@ -281,9 +263,8 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 		{
 			name: "Valid with minimal parameters",
 			args: map[string]any{
-				"is_complete": false,
-				"plan":        "Minimal valid plan",
-				"confidence":  "MEDIUM",
+				"plan":       "Minimal valid plan",
+				"confidence": "MEDIUM",
 			},
 			expectError: false,
 		},

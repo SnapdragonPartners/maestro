@@ -362,6 +362,7 @@ type DebugConfig struct {
 type AgentConfig struct {
 	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
 	CoderModel     string           `json:"coder_model"`     // Model name for coder agents (mapped to provider via KnownModels)
+	CoderMode      string           `json:"coder_mode"`      // Coder execution mode: "standard" (default) or "claude-code"
 	ArchitectModel string           `json:"architect_model"` // Model name for architect agent (mapped to provider via KnownModels)
 	PMModel        string           `json:"pm_model"`        // Model name for PM agent (mapped to provider via KnownModels)
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
@@ -436,6 +437,10 @@ const (
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelGemini3Pro
 	DefaultPMModel        = ModelClaudeOpus45
+
+	// Coder execution mode constants.
+	CoderModeStandard   = "standard"    // Default: use standard LLM-based coder agent
+	CoderModeClaudeCode = "claude-code" // Use Claude Code subprocess for planning/coding
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -515,6 +520,36 @@ type DemoConfig struct {
 	HealthcheckTimeoutSeconds int    `json:"healthcheck_timeout_seconds"` // Max wait time for app to become healthy (default: 60)
 }
 
+// MaintenanceConfig defines automated maintenance mode settings.
+// Maintenance mode runs periodic housekeeping tasks between specs to manage technical debt.
+type MaintenanceConfig struct {
+	Enabled       bool                   `json:"enabled"`        // Whether maintenance mode is enabled (default: true)
+	AfterSpecs    int                    `json:"after_specs"`    // Number of specs before triggering maintenance (default: 1)
+	Tasks         MaintenanceTasksConfig `json:"tasks"`          // Which maintenance tasks to run
+	BranchCleanup BranchCleanupConfig    `json:"branch_cleanup"` // Branch cleanup configuration
+	TodoScan      TodoScanConfig         `json:"todo_scan"`      // TODO/deprecated scan configuration
+}
+
+// MaintenanceTasksConfig defines which maintenance tasks are enabled.
+type MaintenanceTasksConfig struct {
+	BranchCleanup    bool `json:"branch_cleanup"`    // Clean up stale merged branches (default: true)
+	KnowledgeSync    bool `json:"knowledge_sync"`    // Sync knowledge graph with codebase (default: true)
+	DocsVerification bool `json:"docs_verification"` // Verify documentation accuracy (default: true)
+	TodoScan         bool `json:"todo_scan"`         // Scan for TODOs and deprecated code (default: true)
+	DeferredReview   bool `json:"deferred_review"`   // Review deferred knowledge nodes (default: true)
+	TestCoverage     bool `json:"test_coverage"`     // Improve test coverage (default: true)
+}
+
+// BranchCleanupConfig defines branch cleanup settings.
+type BranchCleanupConfig struct {
+	ProtectedPatterns []string `json:"protected_patterns"` // Branch patterns to never delete (default: main, master, develop, release/*, hotfix/*)
+}
+
+// TodoScanConfig defines TODO/deprecated scanning settings.
+type TodoScanConfig struct {
+	Markers []string `json:"markers"` // Comment markers to scan for (default: TODO, FIXME, HACK, XXX, deprecated, DEPRECATED, @deprecated)
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -525,17 +560,18 @@ type Config struct {
 	SchemaVersion string `json:"schema_version"` // MUST increment for breaking changes
 
 	// === PROJECT-SPECIFIC SETTINGS (per .maestro/config.json) ===
-	Project   *ProjectInfo     `json:"project"`   // Basic project metadata (name, platform)
-	Container *ContainerConfig `json:"container"` // Container settings (NO build state/metadata)
-	Build     *BuildConfig     `json:"build"`     // Build commands and targets
-	Agents    *AgentConfig     `json:"agents"`    // Which models to use and rate limits for this project
-	Git       *GitConfig       `json:"git"`       // Git repository and branching settings
-	WebUI     *WebUIConfig     `json:"webui"`     // Web UI server settings
-	Chat      *ChatConfig      `json:"chat"`      // Agent chat system settings
-	PM        *PMConfig        `json:"pm"`        // PM agent settings
-	Logs      *LogsConfig      `json:"logs"`      // Log file management settings
-	Debug     *DebugConfig     `json:"debug"`     // Debug settings
-	Demo      *DemoConfig      `json:"demo"`      // Demo mode settings
+	Project     *ProjectInfo       `json:"project"`     // Basic project metadata (name, platform)
+	Container   *ContainerConfig   `json:"container"`   // Container settings (NO build state/metadata)
+	Build       *BuildConfig       `json:"build"`       // Build commands and targets
+	Agents      *AgentConfig       `json:"agents"`      // Which models to use and rate limits for this project
+	Git         *GitConfig         `json:"git"`         // Git repository and branching settings
+	WebUI       *WebUIConfig       `json:"webui"`       // Web UI server settings
+	Chat        *ChatConfig        `json:"chat"`        // Agent chat system settings
+	PM          *PMConfig          `json:"pm"`          // PM agent settings
+	Logs        *LogsConfig        `json:"logs"`        // Log file management settings
+	Debug       *DebugConfig       `json:"debug"`       // Debug settings
+	Demo        *DemoConfig        `json:"demo"`        // Demo mode settings
+	Maintenance *MaintenanceConfig `json:"maintenance"` // Automated maintenance mode settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -1008,6 +1044,24 @@ func createDefaultConfig() *Config {
 		Debug: &DebugConfig{
 			LLMMessages: false, // Disabled by default
 		},
+		Maintenance: &MaintenanceConfig{
+			Enabled:    true, // Enabled by default
+			AfterSpecs: 1,    // Trigger after every spec
+			Tasks: MaintenanceTasksConfig{
+				BranchCleanup:    true,
+				KnowledgeSync:    true,
+				DocsVerification: true,
+				TodoScan:         true,
+				DeferredReview:   true,
+				TestCoverage:     true,
+			},
+			BranchCleanup: BranchCleanupConfig{
+				ProtectedPatterns: []string{"main", "master", "develop", "release/*", "hotfix/*"},
+			},
+			TodoScan: TodoScanConfig{
+				Markers: []string{"TODO", "FIXME", "HACK", "XXX", "deprecated", "DEPRECATED", "@deprecated"},
+			},
+		},
 	}
 }
 
@@ -1053,6 +1107,20 @@ func validateAgentConfigInternal(agents *AgentConfig, _ *Config) error {
 	// Validate architect model can be mapped to a provider
 	if _, err := GetModelProvider(agents.ArchitectModel); err != nil {
 		return fmt.Errorf("architect_model '%s': %w", agents.ArchitectModel, err)
+	}
+
+	// Validate coder_mode is a valid value
+	if agents.CoderMode != "" && agents.CoderMode != CoderModeStandard && agents.CoderMode != CoderModeClaudeCode {
+		return fmt.Errorf("coder_mode must be '%s' or '%s', got '%s'", CoderModeStandard, CoderModeClaudeCode, agents.CoderMode)
+	}
+
+	// If using claude-code mode, validate the coder_model is an Anthropic model
+	if agents.CoderMode == CoderModeClaudeCode {
+		provider, _ := GetModelProvider(agents.CoderModel)
+		if provider != ProviderAnthropic {
+			return fmt.Errorf("coder_mode '%s' requires an Anthropic model for coder_model, got '%s' (provider: %s)",
+				CoderModeClaudeCode, agents.CoderModel, provider)
+		}
 	}
 
 	// No need to validate MaxConnections or TPM - those are removed from config
@@ -1164,6 +1232,9 @@ func applyDefaults(config *Config) {
 	if config.Agents.PMModel == "" {
 		config.Agents.PMModel = DefaultPMModel
 	}
+	if config.Agents.CoderMode == "" {
+		config.Agents.CoderMode = CoderModeStandard
+	}
 
 	// Apply metrics defaults
 	if config.Agents.Metrics.Exporter == "" {
@@ -1267,6 +1338,26 @@ func applyDefaults(config *Config) {
 	}
 	if config.Demo.HealthcheckTimeoutSeconds == 0 {
 		config.Demo.HealthcheckTimeoutSeconds = 60
+	}
+
+	// Apply Maintenance defaults
+	if config.Maintenance == nil {
+		config.Maintenance = &MaintenanceConfig{}
+	}
+	// Note: Maintenance.Enabled defaults to false (zero value), but we want true by default
+	// This is handled in createDefaultConfig for new configs
+	if config.Maintenance.AfterSpecs == 0 {
+		config.Maintenance.AfterSpecs = 1
+	}
+	// Apply task defaults - all enabled by default for new sections without explicit false
+	// Note: For existing configs with tasks section, we don't override explicit false values
+	// Apply branch cleanup defaults
+	if len(config.Maintenance.BranchCleanup.ProtectedPatterns) == 0 {
+		config.Maintenance.BranchCleanup.ProtectedPatterns = []string{"main", "master", "develop", "release/*", "hotfix/*"}
+	}
+	// Apply TODO scan defaults
+	if len(config.Maintenance.TodoScan.Markers) == 0 {
+		config.Maintenance.TodoScan.Markers = []string{"TODO", "FIXME", "HACK", "XXX", "deprecated", "DEPRECATED", "@deprecated"}
 	}
 }
 

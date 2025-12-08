@@ -148,7 +148,19 @@ func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStat
 func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateMachine, workspacePathStr, _ string) (proto.State, bool, error) {
 	c.logger.Info("DevOps story: performing container infrastructure testing")
 
-	// Get global config to check container configuration
+	// First check for pending container config (set by container_update, applied after merge)
+	pendingName, pendingDockerfile, _, hasPending := c.GetPendingContainerConfig()
+	if hasPending && pendingName != "" && pendingDockerfile != "" {
+		c.logger.Info("Using pending container config for testing: name=%s, dockerfile=%s", pendingName, pendingDockerfile)
+		// Create a temporary config for testing
+		containerConfig := &config.ContainerConfig{
+			Name:       pendingName,
+			Dockerfile: pendingDockerfile,
+		}
+		return c.runContainerInfrastructureTests(ctx, sm, workspacePathStr, containerConfig)
+	}
+
+	// Fall back to global config (for existing containers or non-deferred updates)
 	globalConfig, err := config.GetConfig()
 	if err != nil {
 		c.logger.Error("Failed to get global config: %v", err)
@@ -189,6 +201,12 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	}
 
 	c.logger.Info("Container config found: name=%s, dockerfile=%s", containerConfig.Name, containerConfig.Dockerfile)
+	return c.runContainerInfrastructureTests(ctx, sm, workspacePathStr, containerConfig)
+}
+
+// runContainerInfrastructureTests runs container build and boot tests with the given config.
+func (c *Coder) runContainerInfrastructureTests(ctx context.Context, sm *agent.BaseStateMachine, workspacePathStr string, containerConfig *config.ContainerConfig) (proto.State, bool, error) {
+	c.logger.Info("Running container infrastructure tests: name=%s, dockerfile=%s", containerConfig.Name, containerConfig.Dockerfile)
 
 	// Run container_build tool directly
 	buildSuccess, buildError := c.runContainerBuildTesting(ctx, workspacePathStr, containerConfig)
@@ -250,6 +268,9 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 		}
 		c.contextManager.AddMessage("test-failure", testFailureMessage)
 
+		// Set resume input for Claude Code mode (will be used if session exists)
+		sm.SetStateData(KeyResumeInput, testFailureMessage)
+
 		return StateCoding, false, nil
 	}
 
@@ -260,8 +281,8 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr string, containerConfig *config.ContainerConfig) (bool, string) {
 	c.logger.Info("Running container build test for container: %s", containerConfig.Name)
 
-	// Create container build tool instance using the coder's executor
-	buildTool := tools.NewContainerBuildTool(c.longRunningExecutor)
+	// Create container build tool instance (uses local executor for host docker commands)
+	buildTool := tools.NewContainerBuildTool()
 
 	// Prepare arguments for container_build tool
 	args := map[string]any{

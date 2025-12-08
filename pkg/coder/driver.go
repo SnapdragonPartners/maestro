@@ -42,28 +42,35 @@ const (
 //
 //nolint:govet // fieldalignment: keeping current field order for code clarity
 type Coder struct {
-	*agent.BaseStateMachine // Directly embed state machine (provides llmClient field and GetAgentID())
-	contextManager          *contextmgr.ContextManager
-	renderer                *templates.Renderer
-	logger                  *logx.Logger
-	dispatcher              *dispatch.Dispatcher           // Dispatcher for sending messages
-	cloneManager            *CloneManager                  // Git clone management
-	buildRegistry           *build.Registry                // Build backend registry
-	buildService            *build.Service                 // Build service for MCP tools
-	chatService             *chat.Service                  // Chat service for agent collaboration
-	persistenceChannel      chan<- *persistence.Request    // Channel for database operations
-	longRunningExecutor     *execpkg.LongRunningDockerExec // Docker executor for container per story
-	planningToolProvider    *tools.ToolProvider            // Tools available during planning state
-	codingToolProvider      *tools.ToolProvider            // Tools available during coding state
-	pendingApprovalRequest  *ApprovalRequest               // REQUEST→RESULT flow state
-	pendingQuestion         *Question
-	storyCh                 <-chan *proto.AgentMsg // Channel to receive story messages
-	replyCh                 <-chan *proto.AgentMsg // Channel to receive replies (for future use)
-	workDir                 string                 // Current working directory (may be story-specific)
-	originalWorkDir         string                 // Original agent work directory (for cleanup)
-	containerName           string                 // Current story container name
-	codingBudget            int                    // Iteration budgets
-	todoList                *TodoList              // Implementation todo list
+	*agent.BaseStateMachine       // Directly embed state machine (provides llmClient field and GetAgentID())
+	contextManager                *contextmgr.ContextManager
+	renderer                      *templates.Renderer
+	logger                        *logx.Logger
+	dispatcher                    *dispatch.Dispatcher           // Dispatcher for sending messages
+	cloneManager                  *CloneManager                  // Git clone management
+	buildRegistry                 *build.Registry                // Build backend registry
+	buildService                  *build.Service                 // Build service for MCP tools
+	chatService                   *chat.Service                  // Chat service for agent collaboration
+	persistenceChannel            chan<- *persistence.Request    // Channel for database operations
+	longRunningExecutor           *execpkg.LongRunningDockerExec // Docker executor for container per story
+	planningToolProvider          *tools.ToolProvider            // Tools available during planning state
+	codingToolProvider            *tools.ToolProvider            // Tools available during coding state
+	pendingApprovalRequest        *ApprovalRequest               // REQUEST→RESULT flow state
+	pendingQuestion               *Question
+	storyCh                       <-chan *proto.AgentMsg // Channel to receive story messages
+	replyCh                       <-chan *proto.AgentMsg // Channel to receive replies (for future use)
+	workDir                       string                 // Current working directory (may be story-specific)
+	originalWorkDir               string                 // Original agent work directory (for cleanup)
+	containerName                 string                 // Current story container name
+	codingBudget                  int                    // Iteration budgets
+	todoList                      *TodoList              // Implementation todo list
+	claudeCodeAvailabilityChecked bool                   // Whether Claude Code availability has been checked for this story
+	claudeCodeAvailable           bool                   // Whether Claude Code is available in the current container
+	// Pending container config (deferred until merge)
+	pendingContainerName       string
+	pendingContainerDockerfile string
+	pendingContainerImageID    string
+	hasPendingContainerConfig  bool
 }
 
 // Runtime extends BaseRuntime with coder-specific capabilities.
@@ -758,11 +765,21 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 	case StateSetup:
 		nextState, done, err = c.handleSetup(ctx, sm)
 	case StatePlanning:
-		nextState, done, err = c.handlePlanning(ctx, sm)
+		// Branch based on coder mode
+		if c.isClaudeCodeMode(ctx) {
+			nextState, done, err = c.handleClaudeCodePlanning(ctx, sm)
+		} else {
+			nextState, done, err = c.handlePlanning(ctx, sm)
+		}
 	case StatePlanReview:
 		nextState, done, err = c.handlePlanReview(ctx, sm)
 	case StateCoding:
-		nextState, done, err = c.handleCoding(ctx, sm)
+		// Branch based on coder mode
+		if c.isClaudeCodeMode(ctx) {
+			nextState, done, err = c.handleClaudeCodeCoding(ctx, sm)
+		} else {
+			nextState, done, err = c.handleCoding(ctx, sm)
+		}
 	case StateTesting:
 		nextState, done, err = c.handleTesting(ctx, sm)
 	case StateCodeReview:
@@ -1466,6 +1483,24 @@ func (c *Coder) GetIncompleteTodoCount() int {
 		return 0
 	}
 	return c.todoList.GetTotalCount() - c.todoList.GetCompletedCount()
+}
+
+// SetPendingContainerConfig stores pending container configuration for post-merge application.
+// Implements the tools.Agent interface for container_update tool.
+func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID string) {
+	c.pendingContainerName = name
+	c.pendingContainerDockerfile = dockerfile
+	c.pendingContainerImageID = imageID
+	c.hasPendingContainerConfig = true
+	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s",
+		name, dockerfile, imageID)
+}
+
+// GetPendingContainerConfig retrieves pending container configuration.
+// Returns empty values and false if no pending config exists.
+// Implements the tools.Agent interface for await_merge state.
+func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool) {
+	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.hasPendingContainerConfig
 }
 
 // logToolExecution logs a tool execution to the database for debugging and analysis.

@@ -82,15 +82,17 @@ const (
 	SignalHotfixSubmit      = "HOTFIX_SUBMIT"      // hotfix_submit tool sending hotfix to architect
 
 	// Architect signals.
-	SignalReplySubmitted   = "REPLY_SUBMITTED"   // submit_reply tool answered question
-	SignalReviewComplete   = "REVIEW_COMPLETE"   // review_complete tool finished code review
-	SignalStoriesSubmitted = "STORIES_SUBMITTED" // submit_stories tool submitted story list
+	SignalReplySubmitted       = "REPLY_SUBMITTED"       // submit_reply tool answered question
+	SignalReviewComplete       = "REVIEW_COMPLETE"       // review_complete tool finished code review
+	SignalStoriesSubmitted     = "STORIES_SUBMITTED"     // submit_stories tool submitted story list
+	SignalMaintenanceSubmitted = "MAINTENANCE_SUBMITTED" // submit_stories tool submitted maintenance stories
 
 	// Coder signals.
-	SignalPlanReview   = "PLAN_REVIEW"   // submit_plan tool ready for architect review
-	SignalCoding       = "CODING"        // todos_add tool ready to start coding
-	SignalTesting      = "TESTING"       // done tool ready for testing phase
-	SignalTodoComplete = "TODO_COMPLETE" // todo_complete tool marked a todo as done
+	SignalPlanReview    = "PLAN_REVIEW"    // submit_plan tool ready for architect review
+	SignalStoryComplete = "STORY_COMPLETE" // story_complete tool - story already implemented, no work needed
+	SignalCoding        = "CODING"         // todos_add tool ready to start coding
+	SignalTesting       = "TESTING"        // done tool ready for testing phase
+	SignalTodoComplete  = "TODO_COMPLETE"  // todo_complete tool marked a todo as done
 )
 
 // ExecResult is the result of executing a tool.

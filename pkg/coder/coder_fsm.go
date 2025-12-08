@@ -82,6 +82,9 @@ const (
 	KeyPlanApprovalResult      = "plan_approval_result"
 	KeyCodeApprovalResult      = "code_approval_result"
 	KeyQuestionAnswered        = "question_answered"
+	KeyLastQA                  = "last_qa"           // Stores last Q&A pair for Claude Code mode
+	KeyCodingSessionID         = "coding_session_id" // Claude Code session ID for resume support
+	KeyResumeInput             = "resume_input"      // Feedback to pass when resuming Claude Code session
 	KeyPlanConfidence          = "plan_confidence"
 	KeyExplorationSummary      = "exploration_summary"
 	KeyPlanRisks               = "plan_risks"

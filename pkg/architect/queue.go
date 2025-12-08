@@ -228,6 +228,62 @@ func (q *Queue) AllStoriesCompleted() bool {
 	return true
 }
 
+// CheckSpecComplete returns true if all stories for a spec are done.
+// Used by maintenance tracking to detect when a spec's work is complete.
+func (q *Queue) CheckSpecComplete(specID string) bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	foundStories := false
+	for _, story := range q.stories {
+		if story.SpecID == specID {
+			foundStories = true
+			if story.GetStatus() != StatusDone {
+				return false
+			}
+		}
+	}
+
+	// If no stories found for this spec, it's not "complete" (it never started)
+	return foundStories
+}
+
+// GetSpecStoryCount returns total and completed story counts for a spec.
+// Useful for progress tracking and maintenance trigger decisions.
+func (q *Queue) GetSpecStoryCount(specID string) (total, completed int) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, story := range q.stories {
+		if story.SpecID == specID {
+			total++
+			if story.GetStatus() == StatusDone {
+				completed++
+			}
+		}
+	}
+	return
+}
+
+// GetUniqueSpecIDs returns all unique spec IDs that have stories in the queue.
+func (q *Queue) GetUniqueSpecIDs() []string {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	specIDs := make(map[string]bool)
+	for _, story := range q.stories {
+		if story.SpecID != "" {
+			specIDs[story.SpecID] = true
+		}
+	}
+
+	result := make([]string, 0, len(specIDs))
+	for specID := range specIDs {
+		result = append(result, specID)
+	}
+	return result
+}
+
 // areDependenciesMet checks if all dependencies for a story are completed.
 func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
 	for _, depID := range story.DependsOn {
@@ -260,6 +316,38 @@ func (q *Queue) checkAndNotifyReady() {
 			}
 		}
 	}
+}
+
+// AddMaintenanceStory adds a maintenance story to the queue.
+// Maintenance stories have no dependencies and are automatically set to pending status.
+func (q *Queue) AddMaintenanceStory(storyID, specID, title, content string, express, isMaintenance bool) {
+	now := time.Now()
+	queuedStory := &QueuedStory{
+		Story: persistence.Story{
+			ID:            storyID,
+			SpecID:        specID,
+			Title:         title,
+			Content:       content,
+			Priority:      1, // Low priority - maintenance runs in background
+			DependsOn:     nil,
+			Express:       express,
+			IsMaintenance: isMaintenance,
+			AssignedAgent: "",
+			StartedAt:     nil,
+			CompletedAt:   nil,
+			LastUpdated:   now,
+			CreatedAt:     now,
+			StoryType:     "maintenance",
+		},
+	}
+	queuedStory.SetStatus(StatusPending)
+
+	q.mutex.Lock()
+	q.stories[storyID] = queuedStory
+	q.mutex.Unlock()
+
+	// Check if this story is ready (no dependencies, so it should be)
+	q.checkAndNotifyReady()
 }
 
 // RequeueStory resets a story to pending status and clears the approved plan for fresh start.

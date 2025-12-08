@@ -11,13 +11,15 @@ import (
 )
 
 // ContainerSwitchTool switches the coder agent execution environment to a different container.
+// Uses local executor to run docker commands directly on the host.
 type ContainerSwitchTool struct {
 	executor exec.Executor
 }
 
 // NewContainerSwitchTool creates a new container switch tool instance.
-func NewContainerSwitchTool(executor exec.Executor) *ContainerSwitchTool {
-	return &ContainerSwitchTool{executor: executor}
+// Uses local executor since docker commands run on the host, not inside containers.
+func NewContainerSwitchTool() *ContainerSwitchTool {
+	return &ContainerSwitchTool{executor: exec.NewLocalExec()}
 }
 
 // Definition returns the tool's definition in Claude API format.

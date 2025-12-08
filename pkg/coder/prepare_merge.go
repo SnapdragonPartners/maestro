@@ -10,6 +10,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -55,13 +56,16 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 	if commitErr := c.commitChanges(ctx, storyID); commitErr != nil {
 		if c.isRecoverableGitError(commitErr) {
 			c.logger.Info("🔀 Git commit failed (recoverable), returning to CODING: %v", commitErr)
+			commitFailureMsg := fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error())
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitCommitFailureTemplate, commitErr.Error()); renderErr != nil {
 				c.logger.Error("Failed to render git commit failure message: %v", renderErr)
-				// Fallback to simple message
-				c.contextManager.AddMessage("system", fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error()))
+				c.contextManager.AddMessage("system", commitFailureMsg)
 			} else {
 				c.contextManager.AddMessage("system", renderedMessage)
+				commitFailureMsg = renderedMessage
 			}
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, commitFailureMsg)
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 Git commit failed (unrecoverable): %v", commitErr)
@@ -70,19 +74,63 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 
 	// Step 2: Push branch to remote
 	if pushErr := c.pushBranch(ctx, localBranch, remoteBranch); pushErr != nil {
-		if c.isRecoverableGitError(pushErr) {
+		// Check specifically for non-fast-forward - try auto-rebase before returning to CODING
+		if c.isNonFastForwardError(pushErr) {
+			c.logger.Info("🔀 Push rejected (non-fast-forward) - attempting auto-rebase onto %s", targetBranch)
+			if rebaseErr := c.attemptRebaseAndRetryPush(ctx, localBranch, remoteBranch, targetBranch); rebaseErr != nil {
+				// Rebase failed (conflicts or other issue) - return to CODING with details
+				c.logger.Info("🔀 Auto-rebase failed, returning to CODING: %v", rebaseErr)
+				rebaseFailureMsg := fmt.Sprintf("Auto-rebase failed. Please resolve manually: %s", rebaseErr.Error())
+				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, rebaseErr.Error()); renderErr != nil {
+					c.logger.Error("Failed to render rebase failure message: %v", renderErr)
+					c.contextManager.AddMessage("system", rebaseFailureMsg)
+				} else {
+					c.contextManager.AddMessage("system", renderedMessage)
+					rebaseFailureMsg = renderedMessage
+				}
+				// Set resume input for Claude Code mode
+				sm.SetStateData(KeyResumeInput, rebaseFailureMsg)
+				return StateCoding, false, nil
+			}
+			// Rebase and push succeeded - run tests to verify rebased code still works
+			c.logger.Info("🔀 Auto-rebase succeeded, running post-rebase tests")
+
+			// Run tests to verify rebased code
+			if c.buildService != nil {
+				passed, output, testErr := c.runTestWithBuildService(ctx, c.workDir)
+				if testErr != nil {
+					c.logger.Warn("🔀 Post-rebase tests failed with error: %v", testErr)
+					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", testErr.Error())
+					sm.SetStateData(KeyResumeInput, testFailureMsg)
+					return StateCoding, false, nil
+				}
+				if !passed {
+					c.logger.Warn("🔀 Post-rebase tests failed")
+					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", truncateOutput(output))
+					sm.SetStateData(KeyResumeInput, testFailureMsg)
+					return StateCoding, false, nil
+				}
+				c.logger.Info("🔀 Post-rebase tests passed, continuing to PR creation")
+			} else {
+				c.logger.Warn("🔀 No build service available, skipping post-rebase tests")
+			}
+		} else if c.isRecoverableGitError(pushErr) {
 			c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
+			pushFailureMsg := fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error())
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, pushErr.Error()); renderErr != nil {
 				c.logger.Error("Failed to render git push failure message: %v", renderErr)
-				// Fallback to simple message
-				c.contextManager.AddMessage("system", fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error()))
+				c.contextManager.AddMessage("system", pushFailureMsg)
 			} else {
 				c.contextManager.AddMessage("system", renderedMessage)
+				pushFailureMsg = renderedMessage
 			}
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, pushFailureMsg)
 			return StateCoding, false, nil
+		} else {
+			c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
+			return proto.StateError, false, logx.Wrap(pushErr, "git push failed")
 		}
-		c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
-		return proto.StateError, false, logx.Wrap(pushErr, "git push failed")
 	}
 
 	// Step 3: Get existing PR or create new one using GitHub CLI
@@ -91,23 +139,28 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		// Special handling for "No commits between" error - indicates work detection mismatch
 		if strings.Contains(err.Error(), "No commits between") {
 			c.logger.Info("🔀 No commits detected by GitHub - advising coder to verify work")
-			c.contextManager.AddMessage("system",
-				"GitHub reports 'No commits between branches' but work was detected earlier. "+
-					"If this is incorrect and no work was actually needed, use the 'done' tool to "+
-					"signal completion. Otherwise, make a small change (like adding a comment) to "+
-					"ensure commits are present.")
+			noCommitsMsg := "GitHub reports 'No commits between branches' but work was detected earlier. " +
+				"If this is incorrect and no work was actually needed, use the 'done' tool to " +
+				"signal completion. Otherwise, make a small change (like adding a comment) to " +
+				"ensure commits are present."
+			c.contextManager.AddMessage("system", noCommitsMsg)
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, noCommitsMsg)
 			return StateCoding, false, nil
 		}
 
 		if c.isRecoverableGitError(err) {
 			c.logger.Info("🔀 PR creation failed (recoverable), returning to CODING: %v", err)
+			prFailureMsg := fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error())
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.PRCreationFailureTemplate, err.Error()); renderErr != nil {
 				c.logger.Error("Failed to render PR creation failure message: %v", renderErr)
-				// Fallback to simple message
-				c.contextManager.AddMessage("system", fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error()))
+				c.contextManager.AddMessage("system", prFailureMsg)
 			} else {
 				c.contextManager.AddMessage("system", renderedMessage)
+				prFailureMsg = renderedMessage
 			}
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, prFailureMsg)
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 PR creation failed (unrecoverable): %v", err)
@@ -222,65 +275,43 @@ func (c *Coder) pushBranch(ctx context.Context, localBranch, remoteBranch string
 func (c *Coder) getOrCreatePullRequest(ctx context.Context, storyID, headBranch, baseBranch string) (string, error) {
 	c.logger.Debug("🔀 Checking for existing PR: %s -> %s", headBranch, baseBranch)
 
-	opts := &execpkg.Opts{
-		WorkDir: c.workDir,
-		Timeout: 30 * time.Second,
+	// Create GitHub client from config (pure API calls, no workdir needed)
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config: %w", err)
+	}
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		return "", fmt.Errorf("git repo_url not configured")
 	}
 
-	// First check if PR already exists for this branch
-	// gh pr view returns the PR details if it exists, errors if it doesn't
-	result, err := c.longRunningExecutor.Run(ctx, []string{
-		"gh", "pr", "view", headBranch,
-		"--json", "url",
-		"--jq", ".url",
-	}, opts)
-
-	if err == nil && strings.TrimSpace(result.Stdout) != "" {
-		// PR exists, return the URL
-		prURL := strings.TrimSpace(result.Stdout)
-		c.logger.Info("🔀 PR already exists: %s", prURL)
-		return prURL, nil
+	ghClient, err := github.NewClientFromRemote(cfg.Git.RepoURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GitHub client: %w", err)
 	}
 
-	// PR doesn't exist (or command failed), create it
-	c.logger.Debug("🔀 No existing PR found, creating new one")
-	return c.createPullRequest(ctx, storyID, headBranch, baseBranch)
-}
-
-// createPullRequest creates a PR using GitHub CLI and returns the PR URL.
-func (c *Coder) createPullRequest(ctx context.Context, storyID, headBranch, baseBranch string) (string, error) {
-	c.logger.Debug("🔀 Creating PR: %s -> %s for story %s", headBranch, baseBranch, storyID)
-
-	opts := &execpkg.Opts{
-		WorkDir: c.workDir,
-		Timeout: 2 * time.Minute,
-	}
+	// Use longer timeout for PR operations
+	ghClient = ghClient.WithTimeout(2 * time.Minute)
 
 	// Create PR with meaningful title and body
 	title := fmt.Sprintf("Story %s: Implementation", storyID)
 	body := fmt.Sprintf("Automated pull request for story %s implementation.\n\nGenerated by maestro coder agent.", storyID)
 
-	// gh pr create --title "..." --body "..." --head headBranch --base baseBranch
-	result, err := c.longRunningExecutor.Run(ctx, []string{
-		"gh", "pr", "create",
-		"--title", title,
-		"--body", body,
-		"--head", headBranch,
-		"--base", baseBranch,
-	}, opts)
-
+	pr, err := ghClient.GetOrCreatePR(ctx, github.PRCreateOptions{
+		Title: title,
+		Body:  body,
+		Head:  headBranch,
+		Base:  baseBranch,
+	})
 	if err != nil {
-		c.logger.Error("🔀 gh pr create failed: %v, output: %s", err, result.Stderr)
 		return "", fmt.Errorf("PR creation failed: %w", err)
 	}
 
-	// Extract PR URL from output - gh pr create returns the PR URL
-	prURL := strings.TrimSpace(result.Stdout)
-	if prURL == "" {
-		return "", fmt.Errorf("PR created but no URL returned from gh command")
+	if pr.URL == "" {
+		return "", fmt.Errorf("PR created but no URL returned")
 	}
 
-	return prURL, nil
+	c.logger.Info("🔀 PR ready: %s", pr.URL)
+	return pr.URL, nil
 }
 
 // isRecoverableGitError determines if a git error is recoverable (should return to CODING) or unrecoverable (ERROR).
@@ -335,4 +366,75 @@ func (c *Coder) isRecoverableGitError(err error) bool {
 
 	// Default to recoverable for unknown errors - safer to allow retry
 	return true
+}
+
+// isNonFastForwardError checks if the error is specifically a non-fast-forward rejection.
+// This happens when the remote branch has commits that the local branch doesn't have,
+// typically due to parallel story development where another story was merged first.
+func (c *Coder) isNonFastForwardError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorStr := strings.ToLower(err.Error())
+	return strings.Contains(errorStr, "non-fast-forward") ||
+		strings.Contains(errorStr, "rejected") && strings.Contains(errorStr, "fetch first") ||
+		strings.Contains(errorStr, "failed to push") && strings.Contains(errorStr, "updates were rejected")
+}
+
+// attemptRebaseAndRetryPush attempts to rebase the current branch onto the target branch
+// and retry the push with --force-with-lease. This handles the common case in parallel
+// story development where another story was merged to main while this story was being developed.
+//
+// Returns nil on success (rebase + push succeeded).
+// Returns error if rebase has conflicts or push still fails.
+func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remoteBranch, targetBranch string) error {
+	opts := &execpkg.Opts{
+		WorkDir: c.workDir,
+		Timeout: 2 * time.Minute,
+		Env:     []string{},
+	}
+
+	// Add GITHUB_TOKEN for fetch operations
+	if config.HasGitHubToken() {
+		opts.Env = append(opts.Env, "GITHUB_TOKEN")
+	}
+
+	// Step 1: Fetch latest from origin
+	c.logger.Debug("🔀 Fetching latest from origin/%s", targetBranch)
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts)
+	if err != nil {
+		return fmt.Errorf("git fetch failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	// Step 2: Attempt rebase onto origin/targetBranch
+	c.logger.Debug("🔀 Rebasing onto origin/%s", targetBranch)
+	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", fmt.Sprintf("origin/%s", targetBranch)}, opts)
+	if err != nil {
+		// Check if this is a conflict
+		if strings.Contains(strings.ToLower(result.Stderr), "conflict") ||
+			strings.Contains(strings.ToLower(result.Stdout), "conflict") {
+			// Abort the rebase to leave workspace in clean state
+			c.logger.Debug("🔀 Rebase has conflicts, aborting")
+			_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--abort"}, opts)
+			return fmt.Errorf("rebase has conflicts that require manual resolution: %s", result.Stderr)
+		}
+		// Other rebase failure - also abort
+		c.logger.Debug("🔀 Rebase failed, aborting")
+		_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--abort"}, opts)
+		return fmt.Errorf("git rebase failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	c.logger.Info("🔀 Rebase successful, pushing with --force-with-lease")
+
+	// Step 3: Push with --force-with-lease (safer than --force, prevents overwriting others' work)
+	result, err = c.longRunningExecutor.Run(ctx, []string{
+		"git", "push", "--force-with-lease", "-u", "origin",
+		fmt.Sprintf("%s:%s", localBranch, remoteBranch),
+	}, opts)
+	if err != nil {
+		return fmt.Errorf("git push --force-with-lease failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	c.logger.Info("🔀 Push with --force-with-lease succeeded")
+	return nil
 }

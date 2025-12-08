@@ -43,6 +43,7 @@ type BootstrapRequirements struct {
 	NeedsDockerfile     bool     // True if no Dockerfile exists
 	NeedsMakefile       bool     // True if no Makefile exists or missing required targets
 	NeedsKnowledgeGraph bool     // True if .maestro/knowledge.dot doesn't exist
+	NeedsClaudeCode     bool     // True if coder_mode is "claude-code" but Claude Code not in container
 }
 
 // NeedsBootstrapGate returns true if project metadata (name/platform/git) is missing.
@@ -113,6 +114,12 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 	reqs.NeedsKnowledgeGraph = bd.detectMissingKnowledgeGraph()
 	if reqs.NeedsKnowledgeGraph {
 		reqs.MissingComponents = append(reqs.MissingComponents, "knowledge graph documentation")
+	}
+
+	// Check for Claude Code if coder_mode is "claude-code"
+	reqs.NeedsClaudeCode = bd.detectMissingClaudeCode()
+	if reqs.NeedsClaudeCode {
+		reqs.MissingComponents = append(reqs.MissingComponents, "Claude Code in development container")
 	}
 
 	// Detect platform
@@ -254,19 +261,12 @@ func (bd *BootstrapDetector) validateGitHubAccess(repoPath string) bool {
 }
 
 // detectMissingDockerfile checks if development container is properly configured.
-// This includes:
-// - Dockerfile exists in project root.
-// - Container is configured in config (name is not bootstrap container).
-// - Container has pinned image ID (has been built and configured).
+// Returns false (no Dockerfile needed) if container is configured with a pinned
+// image ID that exists in Docker. Returns true (Dockerfile needed) if no container
+// is configured, using bootstrap fallback, or pinned image doesn't exist.
 func (bd *BootstrapDetector) detectMissingDockerfile() bool {
-	// Check if Dockerfile exists
-	dockerfilePath := filepath.Join(bd.projectDir, "Dockerfile")
-	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
-		bd.logger.Debug("Dockerfile not found at: %s", dockerfilePath)
-		return true
-	}
-
-	// Check if container is configured (not using bootstrap fallback)
+	// First check if there's already a working container configured
+	// If yes, we don't need a Dockerfile (container is ready to use)
 	cfg, err := config.GetConfig()
 	if err != nil {
 		bd.logger.Debug("Failed to get config: %v", err)
@@ -297,6 +297,7 @@ func (bd *BootstrapDetector) detectMissingDockerfile() bool {
 		return true
 	}
 
+	// Container is configured and available - no Dockerfile story needed
 	bd.logger.Debug("Development container configured and available: %s (image: %s)", cfg.Container.Name, cfg.Container.PinnedImageID)
 	return false
 }
@@ -361,6 +362,58 @@ func (bd *BootstrapDetector) detectMissingKnowledgeGraph() bool {
 
 	bd.logger.Debug("Knowledge graph found at: %s", knowledgePath)
 	return false
+}
+
+// detectMissingClaudeCode checks if Claude Code is needed but not available in the container.
+// This only applies when coder_mode is set to "claude-code".
+func (bd *BootstrapDetector) detectMissingClaudeCode() bool {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		bd.logger.Debug("Failed to get config for Claude Code detection: %v", err)
+		return false
+	}
+
+	// Only check if coder_mode is "claude-code"
+	if cfg.Agents == nil || cfg.Agents.CoderMode != config.CoderModeClaudeCode {
+		bd.logger.Debug("Coder mode is not claude-code, skipping Claude Code detection")
+		return false
+	}
+
+	// Get the container image to check
+	containerImage := ""
+	if cfg.Container != nil && cfg.Container.Name != "" && cfg.Container.Name != "detect" {
+		containerImage = cfg.Container.Name
+	}
+
+	// If no container configured yet, check will happen after bootstrap
+	if containerImage == "" {
+		bd.logger.Debug("No container configured yet, deferring Claude Code check")
+		return false
+	}
+
+	// Check if Claude Code is available in the container
+	if bd.checkClaudeCodeInContainer(containerImage) {
+		bd.logger.Debug("Claude Code available in container: %s", containerImage)
+		return false
+	}
+
+	bd.logger.Info("Claude Code not found in container %s - will need bootstrap story to install", containerImage)
+	return true
+}
+
+// checkClaudeCodeInContainer runs "claude --version" in a container to check if Claude Code is available.
+func (bd *BootstrapDetector) checkClaudeCodeInContainer(imageName string) bool {
+	// Run claude --version in the container
+	cmd := exec.Command("docker", "run", "--rm", "--platform", "linux/amd64", imageName, "claude", "--version")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		bd.logger.Debug("Claude Code check failed in %s: %v (output: %s)", imageName, err, string(output))
+		return false
+	}
+
+	bd.logger.Debug("Claude Code version in %s: %s", imageName, strings.TrimSpace(string(output)))
+	return true
 }
 
 // detectPlatform attempts to detect the project platform from files.

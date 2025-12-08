@@ -145,6 +145,10 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 		// Add feedback to context for visibility
 		feedbackMessage := fmt.Sprintf("Code review feedback - changes requested:\n\n%s\n\nPlease address these issues and continue implementation.", result.Feedback)
 		c.contextManager.AddMessage("architect-feedback", feedbackMessage)
+
+		// Set resume input for Claude Code mode (will be used if session exists)
+		sm.SetStateData(KeyResumeInput, feedbackMessage)
+
 		return StateCoding, false, nil
 
 	case proto.ApprovalStatusRejected:
@@ -154,6 +158,10 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 			// Return to CODING to do the work that was deemed missing
 			rejectionMessage := fmt.Sprintf("Code completion rejected by architect:\n\n%s\n\nPlease continue implementation to address these concerns.", result.Feedback)
 			c.contextManager.AddMessage("architect-rejection", rejectionMessage)
+
+			// Set resume input for Claude Code mode (will be used if session exists)
+			sm.SetStateData(KeyResumeInput, rejectionMessage)
+
 			return StateCoding, false, nil
 		} else {
 			c.logger.Error("🧑‍💻 Code rejected by architect: %s", result.Feedback)

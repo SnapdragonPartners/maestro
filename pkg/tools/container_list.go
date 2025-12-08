@@ -10,13 +10,15 @@ import (
 )
 
 // ContainerListTool lists available containers and their registry status.
+// Uses local executor to run docker commands directly on the host.
 type ContainerListTool struct {
 	executor exec.Executor
 }
 
 // NewContainerListTool creates a new container list tool instance.
-func NewContainerListTool(executor exec.Executor) *ContainerListTool {
-	return &ContainerListTool{executor: executor}
+// Uses local executor since docker commands run on the host, not inside containers.
+func NewContainerListTool() *ContainerListTool {
+	return &ContainerListTool{executor: exec.NewLocalExec()}
 }
 
 // Name returns the tool identifier.

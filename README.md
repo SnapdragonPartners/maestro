@@ -10,7 +10,7 @@ In some ways, it's an agent orchestration tool. But unlike most others, Maestro 
 
 ## Project Status
 
-Maestro is still pre-release and under active development although it is now functional for basic projects. For the time being it is still recommended for technical users and potential project contributors until we get to v1.0.0.
+Maestro is feature complete for its initial release but not yet production ready. The project is actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
 
 ---
 
@@ -196,6 +196,90 @@ Benefits:
 - **Documentation**: Living documentation that stays in sync with code
 
 See [docs/wiki/DOCS_WIKI.md](docs/wiki/DOCS_WIKI.md) for user-friendly overview or [docs/DOC_GRAPH.md](docs/DOC_GRAPH.md) for technical specification.
+
+---
+
+## Hotfix Mode
+
+Hotfix mode provides a fast path for urgent, small changes that bypass the normal spec-driven development queue. This mimics the "live team / dev team" pattern common in engineering organizations, where a dedicated rotation handles production issues while the main team continues feature development.
+
+When you need a quick fix without waiting for in-progress feature work to complete:
+
+- **Dedicated coder**: Hotfixes route to a dedicated `hotfix-001` coder, separate from the normal queue
+- **Express execution**: Simple hotfixes skip the planning phase entirely
+- **PM triage**: The PM automatically detects urgent requests and routes them appropriately
+
+Examples of hotfix requests:
+- "URGENT: Fix the login button - it's broken in production"
+- "Quick fix: Update the API endpoint URL"
+- "Hotfix: Typo in the error message"
+
+The architect validates hotfix requests to ensure they don't have dependencies on in-progress work, then dispatches them immediately.
+
+See [docs/HOTFIX_MODE_SPEC.md](docs/HOTFIX_MODE_SPEC.md) for detailed specification.
+
+---
+
+## Maintenance Mode
+
+Maestro includes an automated maintenance system that manages technical debt between specs. After a configurable number of specs complete, maintenance mode triggers automatically and performs:
+
+**Programmatic Tasks** (no LLM required):
+- Deletes merged branches via GitHub API
+- Cleans up stale artifacts
+
+**LLM-Driven Stories** (run as express stories):
+- Knowledge graph synchronization
+- Documentation link verification
+- TODO/FIXME/deprecated code scanning
+- Test coverage improvement suggestions
+
+Maintenance runs autonomously and produces a summary report posted to chat. All maintenance PRs auto-merge after CI passes.
+
+Configuration in `.maestro/config.json`:
+```json
+{
+  "maintenance": {
+    "enabled": true,
+    "after_specs": 1,
+    "stories": {
+      "knowledge_sync": true,
+      "doc_verify": true,
+      "todo_scan": true
+    }
+  }
+}
+```
+
+See [docs/MAINTENANCE_MODE_SPEC.md](docs/MAINTENANCE_MODE_SPEC.md) for detailed specification.
+
+---
+
+## Claude Code Mode (Experimental)
+
+Maestro supports an alternative coder implementation that uses [Claude Code](https://claude.ai/code) as a subprocess instead of direct LLM API calls. This mode leverages Claude Code's built-in tooling (file operations, bash execution, etc.) while Maestro handles orchestration and signal detection.
+
+**How it works:**
+- Coders run Claude Code inside Docker containers with stream-json output
+- Maestro injects custom MCP tools for signaling (plan submission, task completion, questions)
+- The stream parser detects tool calls in real-time and extracts results
+- Q&A flow allows Claude Code to ask the architect questions and resume with answers
+
+**Configuration:**
+```json
+{
+  "agents": {
+    "coder_mode": "claude-code"
+  }
+}
+```
+
+**Benefits:**
+- Uses Claude Code's optimized tooling and context management
+- Automatic tool approval in non-interactive mode
+- Same orchestration benefits (architect review, PR workflow, persistence)
+
+This feature is experimental and requires Claude Code to be installed in the container (auto-installed on first run).
 
 ---
 

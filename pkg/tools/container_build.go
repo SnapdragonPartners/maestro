@@ -13,13 +13,15 @@ import (
 )
 
 // ContainerBuildTool provides MCP interface for building Docker containers from Dockerfile.
+// Uses local executor to run docker commands directly on the host.
 type ContainerBuildTool struct {
 	executor exec.Executor
 }
 
 // NewContainerBuildTool creates a new container build tool instance.
-func NewContainerBuildTool(executor exec.Executor) *ContainerBuildTool {
-	return &ContainerBuildTool{executor: executor}
+// Uses local executor since docker commands run on the host, not inside containers.
+func NewContainerBuildTool() *ContainerBuildTool {
+	return &ContainerBuildTool{executor: exec.NewLocalExec()}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -202,7 +204,7 @@ func (c *ContainerBuildTool) buildWithBuildx(ctx context.Context, cwd, container
 	opts := &exec.Opts{
 		WorkDir: cwd,
 		Timeout: 5 * time.Minute,
-		Env:     []string{"DOCKER_CONFIG=/tmp/docker"}, // Use writable location
+		// Note: Don't override DOCKER_CONFIG - it breaks buildx plugin discovery
 	}
 
 	result, err := c.executor.Run(ctx, args, opts)
@@ -224,7 +226,8 @@ func (c *ContainerBuildTool) buildWithDockerBuild(ctx context.Context, cwd, cont
 	opts := &exec.Opts{
 		WorkDir: cwd,
 		Timeout: 5 * time.Minute,
-		Env:     []string{"DOCKER_BUILDKIT=1"}, // Enable BuildKit for legacy build
+		// Enable BuildKit for legacy build (inherits current env, just adds DOCKER_BUILDKIT)
+		Env: []string{"DOCKER_BUILDKIT=1"},
 	}
 
 	result, err := c.executor.Run(ctx, args, opts)

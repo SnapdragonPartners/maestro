@@ -104,16 +104,19 @@ func (c *CloneManager) SetupWorkspace(ctx context.Context, agentID, storyID, age
 	}, nil
 }
 
-// CleanupWorkspace removes the agent clone directory completely after a story.
+// CleanupWorkspace cleans the agent workspace contents after a story.
+// IMPORTANT: This preserves the directory inode to maintain Docker bind mounts.
+// On macOS with Docker Desktop, bind mounts track inodes, not paths. If we delete
+// and recreate the directory, existing bind mounts become stale.
 func (c *CloneManager) CleanupWorkspace(_ context.Context, agentID, storyID, agentWorkDir string) error {
 	agentWorkDirPath := c.BuildAgentWorkDir(agentID, agentWorkDir)
-	c.logger.Debug("Cleaning up workspace for story %s by removing directory: %s", storyID, agentWorkDirPath)
+	c.logger.Debug("Cleaning up workspace for story %s by clearing contents: %s", storyID, agentWorkDirPath)
 
-	// Remove the entire agent work directory.
+	// Clean directory contents but preserve the directory itself (preserves inode).
 	if _, err := os.Stat(agentWorkDirPath); err == nil {
-		c.logger.Debug("Removing agent work directory: %s", agentWorkDirPath)
-		if err := os.RemoveAll(agentWorkDirPath); err != nil {
-			return logx.Wrap(err, "failed to remove agent work directory")
+		c.logger.Debug("Clearing agent work directory contents: %s", agentWorkDirPath)
+		if err := cleanDirectoryContents(agentWorkDirPath); err != nil {
+			return logx.Wrap(err, "failed to clean agent work directory contents")
 		}
 	} else {
 		c.logger.Debug("Agent work directory does not exist, nothing to clean up: %s", agentWorkDirPath)
@@ -225,37 +228,68 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 
 // createFreshClone creates a self-contained git repository for agent isolation.
 // Uses local mirror as source for network efficiency while ensuring complete container compatibility.
+//
+// IMPORTANT: This preserves the directory inode to maintain Docker bind mounts.
+// On macOS with Docker Desktop, bind mounts track inodes, not paths. If we delete
+// and recreate the directory, existing bind mounts become stale. We use git init
+// instead of git clone to allow cleaning contents while preserving the directory.
 func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWorkDir string) error {
 	c.logger.Debug("Creating fresh self-contained clone at: %s", agentWorkDir)
 
-	// Remove existing directory completely if it exists.
+	// Handle existing directory - clean contents but preserve inode for bind mounts.
 	if _, err := os.Stat(agentWorkDir); err == nil {
-		c.logger.Debug("Removing existing agent work directory: %s", agentWorkDir)
-		if err := os.RemoveAll(agentWorkDir); err != nil {
-			return logx.Wrap(err, "failed to remove existing directory")
+		c.logger.Debug("Cleaning existing agent work directory contents (preserving inode): %s", agentWorkDir)
+		if err := cleanDirectoryContents(agentWorkDir); err != nil {
+			return logx.Wrap(err, "failed to clean existing directory contents")
+		}
+	} else {
+		// Directory doesn't exist - create it.
+		c.logger.Debug("Creating agent work directory: %s", agentWorkDir)
+		if err := os.MkdirAll(agentWorkDir, 0755); err != nil {
+			return logx.Wrap(err, "failed to create agent work directory")
 		}
 	}
 
-	// Create parent directory if needed.
-	if err := os.MkdirAll(filepath.Dir(agentWorkDir), 0755); err != nil {
-		return logx.Wrap(err, "failed to create parent directory")
+	// Initialize git repository in the (now empty) directory.
+	// We use git init + fetch instead of git clone to work with existing directories.
+	c.logger.Debug("Initializing git repository: %s", agentWorkDir)
+	_, err := c.gitRunner.Run(ctx, agentWorkDir, "init")
+	if err != nil {
+		return logx.Wrap(err, "git init failed")
 	}
 
-	// Clone from local mirror to agent workspace.
-	// This creates a complete, independent copy with all objects included.
-	// Benefits: fast (local copy), self-contained (works in containers), isolated (safe for concurrent agents).
-	c.logger.Debug("Creating self-contained clone from local mirror: %s", mirrorPath)
-	_, err := c.gitRunner.Run(ctx, "", "clone", mirrorPath, agentWorkDir)
+	// Add the mirror as a remote named "mirror" for fetching.
+	c.logger.Debug("Adding mirror remote: %s", mirrorPath)
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "mirror", mirrorPath)
 	if err != nil {
-		return logx.Wrap(err, fmt.Sprintf("git clone %s %s failed", mirrorPath, agentWorkDir))
+		return logx.Wrap(err, "failed to add mirror remote")
+	}
+
+	// Fetch all branches and tags from the mirror.
+	c.logger.Debug("Fetching from mirror")
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "fetch", "mirror", "--tags")
+	if err != nil {
+		return logx.Wrap(err, "git fetch from mirror failed")
+	}
+
+	// Checkout the base branch from the mirror.
+	c.logger.Debug("Checking out base branch: %s", c.baseBranch)
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "checkout", "-b", c.baseBranch, "mirror/"+c.baseBranch)
+	if err != nil {
+		return logx.Wrap(err, fmt.Sprintf("git checkout %s failed", c.baseBranch))
 	}
 
 	// Configure remote origin for pushing branches to actual repository.
-	// URL conversion from SSH to HTTPS is handled in config loading.
-	c.logger.Debug("Configuring origin remote for clone: %s", c.repoURL)
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "set-url", "origin", c.repoURL)
+	// Remove the mirror remote and set origin to the real repo URL.
+	c.logger.Debug("Configuring origin remote for push: %s", c.repoURL)
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "remove", "mirror")
 	if err != nil {
-		return logx.Wrap(err, "failed to configure origin remote for clone - agent will not be able to push branches")
+		c.logger.Warn("Failed to remove mirror remote (non-fatal): %v", err)
+	}
+
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "origin", c.repoURL)
+	if err != nil {
+		return logx.Wrap(err, "failed to add origin remote - agent will not be able to push branches")
 	}
 
 	c.logger.Debug("Successfully created self-contained clone at: %s", agentWorkDir)
