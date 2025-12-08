@@ -1235,6 +1235,66 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, codingTools)
 }
 
+// filterOutContainerSwitch removes container_switch from a tool list.
+// This is used for Claude Code mode where container_switch would destroy the session.
+func filterOutContainerSwitch(toolList []string) []string {
+	filtered := make([]string, 0, len(toolList))
+	for _, tool := range toolList {
+		if tool != tools.ToolContainerSwitch {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+// createClaudeCodeCodingToolProvider creates a ToolProvider for Claude Code mode coding.
+// This excludes container_switch which would destroy the Claude Code session.
+func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.ToolProvider {
+	// Determine coding tools based on story type and filter out container_switch
+	var codingTools []string
+	if storyType == string(proto.StoryTypeDevOps) {
+		codingTools = filterOutContainerSwitch(tools.DevOpsCodingTools)
+	} else {
+		codingTools = filterOutContainerSwitch(tools.AppCodingTools)
+	}
+
+	// Create agent context for coding (read-write access)
+	agentCtx := tools.AgentContext{
+		Executor:        c.longRunningExecutor, // Use container executor
+		Agent:           c,                     // Pass agent reference for workDir access
+		ChatService:     c.chatService,         // Chat service for agent collaboration
+		ReadOnly:        false,                 // Coding requires write access
+		NetworkDisabled: false,                 // May need network for builds/tests
+		WorkDir:         c.workDir,
+	}
+
+	return tools.NewProvider(&agentCtx, codingTools)
+}
+
+// createClaudeCodePlanningToolProvider creates a ToolProvider for Claude Code mode planning.
+// This excludes container_switch which would destroy the Claude Code session.
+func (c *Coder) createClaudeCodePlanningToolProvider(storyType string) *tools.ToolProvider {
+	// Determine planning tools based on story type and filter out container_switch
+	var planningTools []string
+	if storyType == string(proto.StoryTypeDevOps) {
+		planningTools = filterOutContainerSwitch(tools.DevOpsPlanningTools)
+	} else {
+		planningTools = filterOutContainerSwitch(tools.AppPlanningTools)
+	}
+
+	// Create agent context for planning (read-only access)
+	agentCtx := tools.AgentContext{
+		Executor:        c.longRunningExecutor, // Use container executor
+		Agent:           c,                     // Pass agent reference for workDir access
+		ChatService:     c.chatService,         // Chat service for agent collaboration
+		ReadOnly:        true,                  // Planning is read-only
+		NetworkDisabled: false,                 // Network enabled for builds/tests
+		WorkDir:         c.workDir,
+	}
+
+	return tools.NewProvider(&agentCtx, planningTools)
+}
+
 // getBudgetReviewContent creates comprehensive budget review content using templates.
 func (c *Coder) getBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.State, iterationCount, budget int) string {
 	// Get story and plan context

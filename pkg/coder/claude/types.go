@@ -68,7 +68,7 @@ type RunOptions struct {
 	// EnvVars contains environment variables (ANTHROPIC_API_KEY, etc.).
 	EnvVars map[string]string
 
-	// TotalTimeout is the maximum time for the entire run (default: 5m).
+	// TotalTimeout is the maximum time for the entire run (default: 10m).
 	TotalTimeout time.Duration
 
 	// InactivityTimeout is the maximum time without output (default: 1m).
@@ -81,7 +81,7 @@ type RunOptions struct {
 // DefaultRunOptions returns RunOptions with default timeout values.
 func DefaultRunOptions() RunOptions {
 	return RunOptions{
-		TotalTimeout:      5 * time.Minute,
+		TotalTimeout:      10 * time.Minute,
 		InactivityTimeout: 1 * time.Minute,
 	}
 }

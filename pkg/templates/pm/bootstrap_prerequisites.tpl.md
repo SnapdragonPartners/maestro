@@ -95,6 +95,32 @@ Provides consistent interface for development operations. Makefile is REQUIRED f
 
 
 {{end}}
+{{if .Extra.NeedsGitignore}}
+### MANDATORY PREREQUISITE: Create .gitignore File
+**Type:** infrastructure
+**Priority:** must
+
+**Description:**
+Create a `.gitignore` file appropriate for the {{.Extra.DetectedPlatform}} platform. This file prevents committing build artifacts, dependencies, IDE files, and other generated content to version control.
+
+The .gitignore should exclude:
+- Compiled binaries and build output (*.exe, *.dll, *.so, *.dylib, bin/, dist/, build/)
+- Package manager dependencies (node_modules/, vendor/, .venv/, __pycache__/)
+- IDE and editor files (.idea/, .vscode/, *.swp, .DS_Store)
+- Environment and secret files (.env, .env.local, *.pem, credentials.json)
+- Log files and temporary data (*.log, tmp/, .cache/)
+- Platform-specific patterns for {{.Extra.DetectedPlatform}}
+
+**Acceptance Criteria:**
+- [ ] `.gitignore` file created in repository root
+- [ ] Contains patterns for compiled binaries and build output
+- [ ] Contains patterns for package manager dependencies appropriate to {{.Extra.DetectedPlatform}}
+- [ ] Contains patterns for common IDE/editor files
+- [ ] Contains patterns for environment and secret files
+- [ ] Does not ignore essential project files
+
+
+{{end}}
 
 ## Application Features
 

@@ -347,3 +347,58 @@ func TestBootstrapDetector_GetRequiredQuestions_Expert(t *testing.T) {
 		t.Error("Expected initial patterns question for EXPERT")
 	}
 }
+
+func TestBootstrapDetector_DetectGitignore_Missing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	detector := NewBootstrapDetector(tmpDir)
+	needsGitignore := detector.detectMissingGitignore()
+
+	if !needsGitignore {
+		t.Error("Expected NeedsGitignore = true when .gitignore doesn't exist")
+	}
+}
+
+func TestBootstrapDetector_DetectGitignore_Present(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .gitignore file
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("*.log\n"), 0644); err != nil {
+		t.Fatalf("Failed to create .gitignore: %v", err)
+	}
+
+	detector := NewBootstrapDetector(tmpDir)
+	needsGitignore := detector.detectMissingGitignore()
+
+	if needsGitignore {
+		t.Error("Expected NeedsGitignore = false when .gitignore exists")
+	}
+}
+
+func TestBootstrapDetector_DetectGitignore_InMissingComponents(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	detector := NewBootstrapDetector(tmpDir)
+	reqs, err := detector.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+
+	if !reqs.NeedsGitignore {
+		t.Error("Expected NeedsGitignore = true for empty directory")
+	}
+
+	// Verify .gitignore appears in MissingComponents
+	found := false
+	for _, component := range reqs.MissingComponents {
+		if component == ".gitignore file" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("Expected '.gitignore file' in MissingComponents, got: %v", reqs.MissingComponents)
+	}
+}

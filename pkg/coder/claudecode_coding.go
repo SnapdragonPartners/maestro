@@ -40,10 +40,11 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	}
 
 	// Ensure coding tool provider is initialized
+	// Use Claude Code-specific provider that excludes container_switch to prevent session destruction
 	if c.codingToolProvider == nil {
 		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
-		c.codingToolProvider = c.createCodingToolProvider(storyType)
-		c.logger.Debug("Created coding ToolProvider for story type: %s", storyType)
+		c.codingToolProvider = c.createClaudeCodeCodingToolProvider(storyType)
+		c.logger.Debug("Created Claude Code coding ToolProvider for story type: %s (container_switch excluded)", storyType)
 	}
 
 	// Create runner with tool provider for MCP integration
