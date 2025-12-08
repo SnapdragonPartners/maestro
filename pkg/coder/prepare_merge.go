@@ -92,8 +92,28 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 				sm.SetStateData(KeyResumeInput, rebaseFailureMsg)
 				return StateCoding, false, nil
 			}
-			// Rebase and push succeeded - continue to PR creation
-			c.logger.Info("🔀 Auto-rebase succeeded, branch pushed with force-with-lease")
+			// Rebase and push succeeded - run tests to verify rebased code still works
+			c.logger.Info("🔀 Auto-rebase succeeded, running post-rebase tests")
+
+			// Run tests to verify rebased code
+			if c.buildService != nil {
+				passed, output, testErr := c.runTestWithBuildService(ctx, c.workDir)
+				if testErr != nil {
+					c.logger.Warn("🔀 Post-rebase tests failed with error: %v", testErr)
+					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", testErr.Error())
+					sm.SetStateData(KeyResumeInput, testFailureMsg)
+					return StateCoding, false, nil
+				}
+				if !passed {
+					c.logger.Warn("🔀 Post-rebase tests failed")
+					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", truncateOutput(output))
+					sm.SetStateData(KeyResumeInput, testFailureMsg)
+					return StateCoding, false, nil
+				}
+				c.logger.Info("🔀 Post-rebase tests passed, continuing to PR creation")
+			} else {
+				c.logger.Warn("🔀 No build service available, skipping post-rebase tests")
+			}
 		} else if c.isRecoverableGitError(pushErr) {
 			c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
 			pushFailureMsg := fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error())

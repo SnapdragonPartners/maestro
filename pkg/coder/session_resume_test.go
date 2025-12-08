@@ -88,34 +88,34 @@ func TestResumeInputClearing(t *testing.T) {
 // TestSessionResumeCondition tests the condition for resuming a session.
 func TestSessionResumeCondition(t *testing.T) {
 	tests := []struct {
-		name          string
-		sessionID     string
-		resumeInput   string
-		shouldResume  bool
+		name         string
+		sessionID    string
+		resumeInput  string
+		shouldResume bool
 	}{
 		{
-			name:          "both present - should resume",
-			sessionID:     "test-session-123",
-			resumeInput:   "Tests failed, please fix",
-			shouldResume:  true,
+			name:         "both present - should resume",
+			sessionID:    "test-session-123",
+			resumeInput:  "Tests failed, please fix",
+			shouldResume: true,
 		},
 		{
-			name:          "only session ID - should not resume",
-			sessionID:     "test-session-123",
-			resumeInput:   "",
-			shouldResume:  false,
+			name:         "only session ID - should not resume",
+			sessionID:    "test-session-123",
+			resumeInput:  "",
+			shouldResume: false,
 		},
 		{
-			name:          "only resume input - should not resume",
-			sessionID:     "",
-			resumeInput:   "Tests failed, please fix",
-			shouldResume:  false,
+			name:         "only resume input - should not resume",
+			sessionID:    "",
+			resumeInput:  "Tests failed, please fix",
+			shouldResume: false,
 		},
 		{
-			name:          "neither present - should not resume",
-			sessionID:     "",
-			resumeInput:   "",
-			shouldResume:  false,
+			name:         "neither present - should not resume",
+			sessionID:    "",
+			resumeInput:  "",
+			shouldResume: false,
 		},
 	}
 

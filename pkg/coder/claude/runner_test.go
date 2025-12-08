@@ -104,8 +104,8 @@ func TestBuildCommand_ResumeWithoutInput(t *testing.T) {
 func TestBuildCommand_ResumeRequiresSessionID(t *testing.T) {
 	r := &Runner{}
 	opts := &RunOptions{
-		Resume:       true,          // Resume flag set...
-		SessionID:    "",            // ...but no session ID
+		Resume:       true, // Resume flag set...
+		SessionID:    "",   // ...but no session ID
 		ResumeInput:  "some input",
 		InitialInput: "fallback input",
 	}
