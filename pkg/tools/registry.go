@@ -554,6 +554,22 @@ func getReviewCompleteSchema() InputSchema {
 	return NewReviewCompleteTool().Definition().InputSchema
 }
 
+func createWebSearchTool(_ *AgentContext) (Tool, error) {
+	return NewWebSearchTool(), nil
+}
+
+func getWebSearchSchema() InputSchema {
+	return NewWebSearchTool().Definition().InputSchema
+}
+
+func createWebFetchTool(_ *AgentContext) (Tool, error) {
+	return NewWebFetchTool(), nil
+}
+
+func getWebFetchSchema() InputSchema {
+	return NewWebFetchTool().Definition().InputSchema
+}
+
 // init registers all tools in the global registry using the factory pattern.
 //
 //nolint:gochecknoinits // Factory pattern requires init() for tool registration
@@ -732,5 +748,18 @@ func init() {
 		Name:        ToolReviewComplete,
 		Description: "Complete a review with decision (APPROVED, NEEDS_CHANGES, or REJECTED) and feedback",
 		InputSchema: getReviewCompleteSchema(),
+	})
+
+	// Register research tools
+	Register(ToolWebSearch, createWebSearchTool, &ToolMeta{
+		Name:        ToolWebSearch,
+		Description: "Search the web for current technical information (API docs, library versions, release notes)",
+		InputSchema: getWebSearchSchema(),
+	})
+
+	Register(ToolWebFetch, createWebFetchTool, &ToolMeta{
+		Name:        ToolWebFetch,
+		Description: "Fetch and read the content of a web page from a URL",
+		InputSchema: getWebFetchSchema(),
 	})
 }

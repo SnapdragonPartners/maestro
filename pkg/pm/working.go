@@ -254,9 +254,9 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		GeneralTools:   generalTools,
 		TerminalTool:   terminalTool,
 		MaxIterations:  10,
-		MaxTokens:      agent.ArchitectMaxTokens, // TODO: Add PMMaxTokens constant to config
-		AgentID:        d.GetAgentID(),           // Agent ID for tool context
-		DebugLogging:   true,                     // Enable for debugging: shows messages sent to LLM
+		MaxTokens:      agent.ArchitectMaxTokens,     // TODO: Add PMMaxTokens constant to config
+		AgentID:        d.GetAgentID(),               // Agent ID for tool context
+		DebugLogging:   config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("pm_working_%s", d.GetAgentID()),
 			SoftLimit: 8,  // Warn at 8 iterations

@@ -6,6 +6,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -93,7 +94,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		MaxIterations:  20, // Allow exploration of project files
 		MaxTokens:      agent.ArchitectMaxTokens,
 		AgentID:        d.GetAgentID(),
-		DebugLogging:   true,
+		DebugLogging:   config.GetDebugLLMMessages(),
 	})
 
 	// Handle review outcome
@@ -198,7 +199,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		SingleTurn:     true, // Enforce single-turn completion
 		MaxTokens:      agent.ArchitectMaxTokens,
 		AgentID:        d.GetAgentID(),
-		DebugLogging:   true,
+		DebugLogging:   config.GetDebugLLMMessages(),
 	})
 
 	// Handle story generation outcome

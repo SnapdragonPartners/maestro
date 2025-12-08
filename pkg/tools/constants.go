@@ -44,6 +44,9 @@ const (
 	ToolSpecSubmit  = "spec_submit"
 	ToolChatAskUser = "chat_ask_user"
 	ToolBootstrap   = "bootstrap"
+
+	// Research tools.
+	// Note: ToolWebSearch is defined in web_search.go to keep tool name with its implementation.
 )
 
 // State-specific tool availability - defines which tools are available in each state.
@@ -124,6 +127,8 @@ var (
 		ToolListFiles,
 		ToolGetDiff,
 		ToolSubmitReply,
+		ToolWebSearch,
+		ToolWebFetch,
 	}
 
 	// PM tools - unified tool set for WORKING state.
@@ -137,6 +142,7 @@ var (
 		ToolBootstrap,
 		ToolSpecSubmit,
 		ToolSubmitStories,
-		// TODO: Add ToolWebBrowser when implemented
+		ToolWebSearch,
+		ToolWebFetch,
 	}
 )

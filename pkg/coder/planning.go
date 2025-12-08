@@ -169,7 +169,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		MaxIterations:  maxPlanningIterations,
 		MaxTokens:      8192, // Increased for exploration
 		AgentID:        c.GetAgentID(),
-		DebugLogging:   false,
+		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("planning_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxPlanningIterations - 2, // Warn 2 iterations before limit
