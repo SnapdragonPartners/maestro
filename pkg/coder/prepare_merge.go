@@ -56,13 +56,16 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 	if commitErr := c.commitChanges(ctx, storyID); commitErr != nil {
 		if c.isRecoverableGitError(commitErr) {
 			c.logger.Info("🔀 Git commit failed (recoverable), returning to CODING: %v", commitErr)
+			commitFailureMsg := fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error())
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitCommitFailureTemplate, commitErr.Error()); renderErr != nil {
 				c.logger.Error("Failed to render git commit failure message: %v", renderErr)
-				// Fallback to simple message
-				c.contextManager.AddMessage("system", fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error()))
+				c.contextManager.AddMessage("system", commitFailureMsg)
 			} else {
 				c.contextManager.AddMessage("system", renderedMessage)
+				commitFailureMsg = renderedMessage
 			}
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, commitFailureMsg)
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 Git commit failed (unrecoverable): %v", commitErr)
@@ -77,25 +80,32 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 			if rebaseErr := c.attemptRebaseAndRetryPush(ctx, localBranch, remoteBranch, targetBranch); rebaseErr != nil {
 				// Rebase failed (conflicts or other issue) - return to CODING with details
 				c.logger.Info("🔀 Auto-rebase failed, returning to CODING: %v", rebaseErr)
+				rebaseFailureMsg := fmt.Sprintf("Auto-rebase failed. Please resolve manually: %s", rebaseErr.Error())
 				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, rebaseErr.Error()); renderErr != nil {
 					c.logger.Error("Failed to render rebase failure message: %v", renderErr)
-					c.contextManager.AddMessage("system", fmt.Sprintf("Auto-rebase failed. Please resolve manually: %s", rebaseErr.Error()))
+					c.contextManager.AddMessage("system", rebaseFailureMsg)
 				} else {
 					c.contextManager.AddMessage("system", renderedMessage)
+					rebaseFailureMsg = renderedMessage
 				}
+				// Set resume input for Claude Code mode
+				sm.SetStateData(KeyResumeInput, rebaseFailureMsg)
 				return StateCoding, false, nil
 			}
 			// Rebase and push succeeded - continue to PR creation
 			c.logger.Info("🔀 Auto-rebase succeeded, branch pushed with force-with-lease")
 		} else if c.isRecoverableGitError(pushErr) {
 			c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
+			pushFailureMsg := fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error())
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, pushErr.Error()); renderErr != nil {
 				c.logger.Error("Failed to render git push failure message: %v", renderErr)
-				// Fallback to simple message
-				c.contextManager.AddMessage("system", fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error()))
+				c.contextManager.AddMessage("system", pushFailureMsg)
 			} else {
 				c.contextManager.AddMessage("system", renderedMessage)
+				pushFailureMsg = renderedMessage
 			}
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, pushFailureMsg)
 			return StateCoding, false, nil
 		} else {
 			c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
@@ -109,23 +119,28 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		// Special handling for "No commits between" error - indicates work detection mismatch
 		if strings.Contains(err.Error(), "No commits between") {
 			c.logger.Info("🔀 No commits detected by GitHub - advising coder to verify work")
-			c.contextManager.AddMessage("system",
-				"GitHub reports 'No commits between branches' but work was detected earlier. "+
-					"If this is incorrect and no work was actually needed, use the 'done' tool to "+
-					"signal completion. Otherwise, make a small change (like adding a comment) to "+
-					"ensure commits are present.")
+			noCommitsMsg := "GitHub reports 'No commits between branches' but work was detected earlier. " +
+				"If this is incorrect and no work was actually needed, use the 'done' tool to " +
+				"signal completion. Otherwise, make a small change (like adding a comment) to " +
+				"ensure commits are present."
+			c.contextManager.AddMessage("system", noCommitsMsg)
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, noCommitsMsg)
 			return StateCoding, false, nil
 		}
 
 		if c.isRecoverableGitError(err) {
 			c.logger.Info("🔀 PR creation failed (recoverable), returning to CODING: %v", err)
+			prFailureMsg := fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error())
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.PRCreationFailureTemplate, err.Error()); renderErr != nil {
 				c.logger.Error("Failed to render PR creation failure message: %v", renderErr)
-				// Fallback to simple message
-				c.contextManager.AddMessage("system", fmt.Sprintf("Pull request creation failed. Fix the following issues and try again: %s", err.Error()))
+				c.contextManager.AddMessage("system", prFailureMsg)
 			} else {
 				c.contextManager.AddMessage("system", renderedMessage)
+				prFailureMsg = renderedMessage
 			}
+			// Set resume input for Claude Code mode
+			sm.SetStateData(KeyResumeInput, prFailureMsg)
 			return StateCoding, false, nil
 		}
 		c.logger.Error("🔀 PR creation failed (unrecoverable): %v", err)

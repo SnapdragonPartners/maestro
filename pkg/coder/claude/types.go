@@ -54,6 +54,17 @@ type RunOptions struct {
 	// InitialInput is the story content (planning) or approved plan (coding).
 	InitialInput string
 
+	// ResumeInput is the input to use when resuming a session (used with SessionID).
+	// This is typically feedback from testing, code review, or merge failures.
+	ResumeInput string
+
+	// SessionID is an existing session ID to resume (optional).
+	// When set along with Resume=true, Claude Code will continue the previous conversation.
+	SessionID string
+
+	// Resume indicates whether to resume from an existing session (requires SessionID).
+	Resume bool
+
 	// EnvVars contains environment variables (ANTHROPIC_API_KEY, etc.).
 	EnvVars map[string]string
 
@@ -103,6 +114,10 @@ type Result struct {
 
 	// Duration is how long the execution took.
 	Duration time.Duration
+
+	// SessionID is the Claude Code session ID for potential resume.
+	// This can be used to continue the conversation if needed.
+	SessionID string
 }
 
 // Question represents a question to be asked to the architect.

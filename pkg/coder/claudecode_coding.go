@@ -28,40 +28,10 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 		return proto.StateError, false, logx.Errorf("no approved plan available for coding")
 	}
 
-	// Create template renderer
-	renderer, err := claudetemplates.NewRenderer()
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to create claude template renderer")
-	}
-
-	// Build template data
-	templateData := claudetemplates.TemplateData{
-		StoryID:       storyID,
-		StoryTitle:    storyTitle,
-		Plan:          plan,
-		WorkspacePath: c.workDir,
-	}
-
-	// Check if we're resuming from a question (inject Q&A context)
-	if qaData, exists := sm.GetStateValue(KeyLastQA); exists && qaData != nil {
-		if qaMap, ok := qaData.(map[string]string); ok {
-			templateData.LastQA = &claudetemplates.QAPair{
-				Question: qaMap["question"],
-				Answer:   qaMap["answer"],
-			}
-			// Clear the Q&A after using it
-			sm.SetStateData(KeyLastQA, nil)
-		}
-	}
-
-	// Render system prompt
-	systemPrompt, err := renderer.RenderCodingPrompt(&templateData)
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to render coding system prompt")
-	}
-
-	// Render initial input
-	initialInput := renderer.RenderCodingInput(&templateData)
+	// Check for existing session ID (for resume) and resume input (feedback)
+	existingSessionID := utils.GetStateValueOr[string](sm, KeyCodingSessionID, "")
+	resumeInput := utils.GetStateValueOr[string](sm, KeyResumeInput, "")
+	shouldResume := existingSessionID != "" && resumeInput != ""
 
 	// Get config for API key and model
 	cfg, err := config.GetConfig()
@@ -84,19 +54,75 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	opts.Mode = claude.ModeCoding
 	opts.WorkDir = "/workspace"
 	opts.Model = cfg.Agents.CoderModel
-	opts.SystemPrompt = systemPrompt
-	opts.InitialInput = initialInput
 	opts.EnvVars = map[string]string{
 		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
 	}
 
-	c.logger.Info("🧑‍💻 Starting Claude Code coding for story %s", storyID)
+	var renderer *claudetemplates.Renderer
+
+	if shouldResume {
+		// Resume existing session with feedback
+		opts.SessionID = existingSessionID
+		opts.Resume = true
+		opts.ResumeInput = resumeInput
+
+		// Clear the resume input after using it
+		sm.SetStateData(KeyResumeInput, nil)
+
+		c.logger.Info("🔄 Resuming Claude Code session %s for story %s", existingSessionID, storyID)
+	} else {
+		// New session - render full prompts
+		renderer, err = claudetemplates.NewRenderer()
+		if err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to create claude template renderer")
+		}
+
+		// Build template data
+		templateData := claudetemplates.TemplateData{
+			StoryID:       storyID,
+			StoryTitle:    storyTitle,
+			Plan:          plan,
+			WorkspacePath: c.workDir,
+		}
+
+		// Check if we're resuming from a question (inject Q&A context - legacy path)
+		if qaData, exists := sm.GetStateValue(KeyLastQA); exists && qaData != nil {
+			if qaMap, ok := qaData.(map[string]string); ok {
+				templateData.LastQA = &claudetemplates.QAPair{
+					Question: qaMap["question"],
+					Answer:   qaMap["answer"],
+				}
+				// Clear the Q&A after using it
+				sm.SetStateData(KeyLastQA, nil)
+			}
+		}
+
+		// Render system prompt
+		var systemPrompt string
+		systemPrompt, err = renderer.RenderCodingPrompt(&templateData)
+		if err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to render coding system prompt")
+		}
+
+		// Render initial input
+		initialInput := renderer.RenderCodingInput(&templateData)
+
+		opts.SystemPrompt = systemPrompt
+		opts.InitialInput = initialInput
+
+		c.logger.Info("🧑‍💻 Starting Claude Code coding for story %s", storyID)
+	}
 
 	// Run Claude Code
 	result, err := runner.RunWithInactivityTimeout(ctx, &opts)
 	if err != nil {
 		c.logger.Error("Claude Code coding failed: %v", err)
 		return proto.StateError, false, logx.Wrap(err, "Claude Code execution failed")
+	}
+
+	// Store session ID for potential resume (always store, even on error, for debugging)
+	if result.SessionID != "" {
+		sm.SetStateData(KeyCodingSessionID, result.SessionID)
 	}
 
 	// Process result based on signal
