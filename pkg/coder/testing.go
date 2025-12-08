@@ -268,6 +268,9 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 		}
 		c.contextManager.AddMessage("test-failure", testFailureMessage)
 
+		// Set resume input for Claude Code mode (will be used if session exists)
+		sm.SetStateData(KeyResumeInput, testFailureMessage)
+
 		return StateCoding, false, nil
 	}
 

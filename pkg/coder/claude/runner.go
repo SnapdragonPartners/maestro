@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"orchestrator/pkg/coder/claude/mcpserver"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
@@ -57,12 +59,21 @@ func NewRunner(executor exec.Executor, containerName string, toolProvider *tools
 func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 	startTime := time.Now()
 
+	// Determine session ID: use provided one for resume, or generate new one
+	sessionID := opts.SessionID
+	if !opts.Resume && sessionID == "" {
+		// Generate a new session ID for fresh sessions
+		sessionID = uuid.New().String()
+		opts.SessionID = sessionID
+	}
+
 	// Ensure Claude Code is installed
 	if err := r.installer.EnsureClaudeCode(ctx); err != nil {
 		return Result{
-			Signal:   SignalError,
-			Error:    err,
-			Duration: time.Since(startTime),
+			Signal:    SignalError,
+			Error:     err,
+			Duration:  time.Since(startTime),
+			SessionID: sessionID,
 		}, err
 	}
 
@@ -70,27 +81,30 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 	// Claude Code refuses --dangerously-skip-permissions when running as root
 	if err := r.installer.EnsureCoderUser(ctx); err != nil {
 		return Result{
-			Signal:   SignalError,
-			Error:    fmt.Errorf("failed to ensure coder user: %w", err),
-			Duration: time.Since(startTime),
+			Signal:    SignalError,
+			Error:     fmt.Errorf("failed to ensure coder user: %w", err),
+			Duration:  time.Since(startTime),
+			SessionID: sessionID,
 		}, err
 	}
 
 	// Ensure MCP proxy is installed (copies embedded binary to container if needed)
 	if err := r.installer.EnsureMCPProxy(ctx); err != nil {
 		return Result{
-			Signal:   SignalError,
-			Error:    fmt.Errorf("failed to install MCP proxy: %w", err),
-			Duration: time.Since(startTime),
+			Signal:    SignalError,
+			Error:     fmt.Errorf("failed to install MCP proxy: %w", err),
+			Duration:  time.Since(startTime),
+			SessionID: sessionID,
 		}, err
 	}
 
 	// Start the MCP server on the host
 	if err := r.startMCPServer(ctx); err != nil {
 		return Result{
-			Signal:   SignalError,
-			Error:    fmt.Errorf("failed to start MCP server: %w", err),
-			Duration: time.Since(startTime),
+			Signal:    SignalError,
+			Error:     fmt.Errorf("failed to start MCP server: %w", err),
+			Duration:  time.Since(startTime),
+			SessionID: sessionID,
 		}, err
 	}
 	defer r.stopMCPServer()
@@ -98,9 +112,10 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 	// Write MCP config to file in container (Claude Code expects file path, not inline JSON)
 	if err := r.writeMCPConfig(ctx); err != nil {
 		return Result{
-			Signal:   SignalError,
-			Error:    fmt.Errorf("failed to write MCP config: %w", err),
-			Duration: time.Since(startTime),
+			Signal:    SignalError,
+			Error:     fmt.Errorf("failed to write MCP config: %w", err),
+			Duration:  time.Since(startTime),
+			SessionID: sessionID,
 		}, err
 	}
 
@@ -110,8 +125,13 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 	// Build execution options (includes socket mount)
 	execOpts := r.buildExecOpts(opts)
 
-	r.logger.Info("Starting Claude Code: mode=%s model=%s timeout=%s port=%d",
-		opts.Mode, opts.Model, opts.TotalTimeout, r.mcpServer.Port())
+	if opts.Resume {
+		r.logger.Info("Resuming Claude Code session: session=%s mode=%s model=%s timeout=%s port=%d",
+			sessionID, opts.Mode, opts.Model, opts.TotalTimeout, r.mcpServer.Port())
+	} else {
+		r.logger.Info("Starting Claude Code: session=%s mode=%s model=%s timeout=%s port=%d",
+			sessionID, opts.Mode, opts.Model, opts.TotalTimeout, r.mcpServer.Port())
+	}
 
 	// Execute Claude Code
 	execResult, err := r.executor.Run(ctx, cmd, execOpts)
@@ -121,24 +141,27 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 		// Check if it was a timeout
 		if ctx.Err() == context.DeadlineExceeded {
 			return Result{
-				Signal:   SignalTimeout,
-				Error:    err,
-				Duration: duration,
+				Signal:    SignalTimeout,
+				Error:     err,
+				Duration:  duration,
+				SessionID: sessionID,
 			}, nil
 		}
 		return Result{
-			Signal:   SignalError,
-			Error:    fmt.Errorf("claude code execution failed: %w", err),
-			Duration: duration,
+			Signal:    SignalError,
+			Error:     fmt.Errorf("claude code execution failed: %w", err),
+			Duration:  duration,
+			SessionID: sessionID,
 		}, fmt.Errorf("claude code execution failed: %w", err)
 	}
 
 	// Parse the output from stdout
 	result := r.parseOutput(execResult.Stdout, execResult.Stderr)
 	result.Duration = duration
+	result.SessionID = sessionID
 
-	r.logger.Info("Claude Code completed: signal=%s responses=%d duration=%s",
-		result.Signal, result.ResponseCount, duration)
+	r.logger.Info("Claude Code completed: session=%s signal=%s responses=%d duration=%s",
+		sessionID, result.Signal, result.ResponseCount, duration)
 
 	return result, nil
 }
@@ -221,15 +244,30 @@ func (r *Runner) buildCommand(opts *RunOptions) []string {
 	// Also add MCP config file path (config written by writeMCPConfig).
 	cmd = append(cmd, "--dangerously-skip-permissions", "--mcp-config", MCPConfigPath)
 
-	// Add system prompt if specified
-	if opts.SystemPrompt != "" {
+	// Add system prompt if specified (only for new sessions, not for resume)
+	if opts.SystemPrompt != "" && !opts.Resume {
 		cmd = append(cmd, "--append-system-prompt", opts.SystemPrompt)
 	}
 
-	// Add -- separator before positional argument to avoid parsing issues
-	// with prompts that might start with - or contain special characters,
-	// followed by the prompt/input as positional argument
-	cmd = append(cmd, "--", opts.InitialInput)
+	// Add session ID if provided (always include for both new and resume sessions)
+	if opts.SessionID != "" {
+		cmd = append(cmd, "--session-id", opts.SessionID)
+	}
+
+	// Handle session resume vs new session
+	if opts.Resume && opts.SessionID != "" {
+		// Resume an existing session with feedback
+		cmd = append(cmd, "--resume")
+		// Use ResumeInput as the prompt (contains feedback from testing/review/merge)
+		if opts.ResumeInput != "" {
+			cmd = append(cmd, "--", opts.ResumeInput)
+		}
+	} else {
+		// New session - use InitialInput
+		// Add -- separator before positional argument to avoid parsing issues
+		// with prompts that might start with - or contain special characters
+		cmd = append(cmd, "--", opts.InitialInput)
+	}
 
 	return cmd
 }
