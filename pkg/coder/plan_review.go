@@ -89,7 +89,16 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		// Return to appropriate state based on approval type
 		if approvalType == proto.ApprovalTypeCompletion {
+			// Set resume input for coding session resume (if using Claude Code mode)
+			if approvalResult.Feedback != "" {
+				sm.SetStateData(KeyResumeInput, fmt.Sprintf("Code review feedback - changes requested:\n\n%s\n\nPlease address these issues and continue implementation.", approvalResult.Feedback))
+			}
 			return StateCoding, false, nil // Completion needs changes, go back to coding
+		}
+		// Plan needs changes - set resume input for planning session resume (if using Claude Code mode)
+		// Note: We reuse KeyResumeInput since planning and coding never run simultaneously
+		if approvalResult.Feedback != "" {
+			sm.SetStateData(KeyResumeInput, fmt.Sprintf("Plan review feedback - changes requested:\n\n%s\n\nPlease revise your plan and resubmit.", approvalResult.Feedback))
 		}
 		return StatePlanning, false, nil // Plan needs changes, go back to planning
 
@@ -114,18 +123,28 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStateMachine, approvalType proto.ApprovalType) (proto.State, bool, error) {
 	switch approvalType {
 	case proto.ApprovalTypePlan:
-		// Regular plan approved - collect todos FIRST (fail-fast principle)
-		c.logger.Info("🧑‍💻 Development plan approved, collecting implementation todos")
+		// Regular plan approved
+		c.logger.Info("🧑‍💻 Development plan approved")
 
-		// Request todo list from LLM BEFORE container reconfiguration (fail-fast)
-		c.logger.Info("📋 [TODO] Requesting todo list from LLM after plan approval")
-		nextState, completed, err := c.requestTodoList(ctx, sm)
-		if err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
+		// Skip todo collection in Claude Code mode - it manages its own todos
+		var nextState proto.State
+		var completed bool
+		if c.isClaudeCodeMode(ctx) {
+			c.logger.Info("📋 Skipping todo collection in Claude Code mode (Claude Code manages its own todos)")
+			nextState = StateCoding
+			completed = false
+		} else {
+			// Standard mode - collect todos FIRST (fail-fast principle)
+			c.logger.Info("📋 [TODO] Requesting todo list from LLM after plan approval")
+			var err error
+			nextState, completed, err = c.requestTodoList(ctx, sm)
+			if err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to collect todo list")
+			}
 		}
 
-		// Todo collection succeeded - NOW reconfigure container for coding
-		c.logger.Info("🧑‍💻 Todos collected successfully, reconfiguring container for coding")
+		// NOW reconfigure container for coding
+		c.logger.Info("🧑‍💻 Reconfiguring container for coding")
 
 		// Reconfigure container with read-write workspace for coding phase
 		// Note: configureWorkspaceMount(readonly=false) creates a new coding container with GitHub auth
