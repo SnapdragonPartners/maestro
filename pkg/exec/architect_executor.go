@@ -108,8 +108,8 @@ func (a *ArchitectExecutor) Start(ctx context.Context) error {
 		"--cpus", "2",
 		"--memory", "2g",
 		"--pids-limit", "256",
-		// Run as root (architect only reads, no security concerns)
-		"--user", "0:0",
+		// Run as non-privileged user (same as coders for consistency)
+		"--user", "1000:1000",
 	}
 
 	// Network enabled (architect needs to communicate with LLM APIs)

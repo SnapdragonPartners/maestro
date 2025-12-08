@@ -9,6 +9,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -876,7 +877,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		MaxIterations: 20, // Allow multiple inspection iterations
 		MaxTokens:     agent.ArchitectMaxTokens,
 		AgentID:       d.GetAgentID(),
-		DebugLogging:  true, // Enable toolloop debug logging
+		DebugLogging:  config.GetDebugLLMMessages(),
 	})
 
 	// Handle outcome
@@ -976,7 +977,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		MaxTokens:      agent.ArchitectMaxTokens,
 		SingleTurn:     true, // Enforce single-turn completion
 		AgentID:        d.GetAgentID(),
-		DebugLogging:   true, // Enable toolloop debug logging
+		DebugLogging:   config.GetDebugLLMMessages(),
 	})
 
 	// Handle outcome
@@ -1064,7 +1065,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		MaxIterations:  20, // Allow exploration of workspace
 		MaxTokens:      agent.ArchitectMaxTokens,
 		AgentID:        d.GetAgentID(),
-		DebugLogging:   true,
+		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("question-%s", requestMsg.ID),
 			SoftLimit: 8,

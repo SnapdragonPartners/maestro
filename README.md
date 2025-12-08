@@ -86,8 +86,9 @@ See the canonical state diagrams for details:
   - One working clone per coder, deleted when the coder terminates
 
 - **Docker:**
-  - Coders run in read-only containers for planning, read-write for coding
-  - Currently run as root for simplicity (rootless support under consideration)
+  - All agents run in Docker containers with security hardening
+  - Containers run as non-privileged user (1000:1000) for security
+  - Coders run read-only for planning, read-write for coding
   - Provides security isolation and portability
 
 - **Makefiles:**
@@ -301,7 +302,7 @@ No. Coders always run in Docker containers for isolation and reproducibility.
 By design. The architect enforces engineering discipline, ensures coders don't review their own work, and keeps technical debt low.
 
 **Q: Is this secure?**
-Maestro is intended as a single-user tool running locally. It is at least as secure as other common LLM-based coding agents (probably more so due to Docker isolation), but since code is already exchanged with third-party LLMs, the trade-off of running root containers is considered acceptable.
+Maestro is intended as a single-user tool running locally. All agents run in Docker containers as a non-privileged user (1000:1000) with security hardening including read-only root filesystem, no-new-privileges, and resource limits. Combined with Docker isolation, this provides reasonable security for local development.
 
 **Q: What happens if Maestro crashes?**
 All stories, states, tool use, messages, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.

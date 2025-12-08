@@ -99,7 +99,8 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 		"--cpus", "2",
 		"--memory", "2g",
 		"--pids-limit", "256",
-		"--user", "0:0",
+		// Run as non-privileged user (same as coders for consistency)
+		"--user", "1000:1000",
 		// Mount PM workspace at /workspace (read-only, same as coders)
 		"--volume", fmt.Sprintf("%s:/workspace:ro", p.pmWorkspace),
 		// Tmpfs mounts for temporary files

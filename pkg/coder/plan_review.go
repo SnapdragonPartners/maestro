@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -338,7 +339,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		MaxIterations:  2,    // One call + one retry if needed
 		MaxTokens:      4096, // Sufficient for todo list
 		AgentID:        c.GetAgentID(),
-		DebugLogging:   true, // Enable verbose logging for debugging
+		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			HardLimit: 2,
