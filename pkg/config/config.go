@@ -581,8 +581,9 @@ type Config struct {
 // ProjectInfo contains basic project metadata.
 // Only contains actual project configuration, not transient state or redundant data.
 type ProjectInfo struct {
-	Name            string `json:"name"`             // Project name
-	PrimaryPlatform string `json:"primary_platform"` // Primary platform (go, node, python, etc.)
+	Name            string `json:"name"`                       // Project name
+	PrimaryPlatform string `json:"primary_platform"`           // Primary platform (go, node, python, etc.)
+	Description     string `json:"description,omitempty"`      // Brief project description (for MAESTRO.md)
 }
 
 // ContainerConfig defines container settings for the project.

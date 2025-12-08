@@ -211,8 +211,10 @@ func (m *Manager) isEmptyMirror(mirrorPath string) (bool, error) {
 // initializeEmptyRepository creates an initial commit in an empty repository.
 // This creates a temporary workspace, initializes git, commits MAESTRO.md,
 // pushes to GitHub, and updates the mirror.
+//
+//nolint:cyclop // Sequential git operations for repository initialization
 func (m *Manager) initializeEmptyRepository(ctx context.Context, mirrorPath string) error {
-	// Get configuration for repository URL and default branch
+	// Get configuration for repository URL, default branch, and project info
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get config: %w", err)
@@ -222,6 +224,16 @@ func (m *Manager) initializeEmptyRepository(ctx context.Context, mirrorPath stri
 	defaultBranch := cfg.Git.TargetBranch
 	if defaultBranch == "" {
 		defaultBranch = "main" // Default to main if not set
+	}
+
+	// Get project name and description for MAESTRO.md
+	projectName := "Project"
+	projectDescription := ""
+	if cfg.Project != nil {
+		if cfg.Project.Name != "" {
+			projectName = cfg.Project.Name
+		}
+		projectDescription = cfg.Project.Description
 	}
 
 	// Create temporary directory in <projectDir>/.tmp/
@@ -254,25 +266,38 @@ func (m *Manager) initializeEmptyRepository(ctx context.Context, mirrorPath stri
 		return fmt.Errorf("git checkout -b %s failed: %w\nOutput: %s", defaultBranch, err, string(output))
 	}
 
-	// Create MAESTRO.md
-	maestroContent := `# Maestro AI Development Project
+	// Create .maestro directory and MAESTRO.md
+	maestroDir := filepath.Join(tempDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .maestro directory: %w", err)
+	}
 
-This project is managed by Maestro, an AI-powered development orchestrator.
+	// Build MAESTRO.md content with project info
+	var descriptionSection string
+	if projectDescription != "" {
+		descriptionSection = "\n" + projectDescription + "\n"
+	} else {
+		descriptionSection = "\nThis project is managed by Maestro, an AI-powered development orchestrator.\n"
+	}
+
+	maestroContent := fmt.Sprintf(`# %s
+%s
+## Development
 
 - Architecture: Managed by architect agent
 - Implementation: Executed by coder agents
 - Quality: Enforced through automated review and testing
 
-For more information, visit: https://github.com/anthropics/maestro
-`
-	maestroPath := filepath.Join(tempDir, "MAESTRO.md")
+For more information about Maestro, visit: https://github.com/anthropics/maestro
+`, projectName, descriptionSection)
+	maestroPath := filepath.Join(maestroDir, "MAESTRO.md")
 	if err := os.WriteFile(maestroPath, []byte(maestroContent), 0644); err != nil {
 		return fmt.Errorf("failed to create MAESTRO.md: %w", err)
 	}
 
 	// Stage and commit the file
-	m.logger.Debug("Committing MAESTRO.md")
-	addCmd := exec.CommandContext(ctx, "git", "add", "MAESTRO.md")
+	m.logger.Debug("Committing .maestro/MAESTRO.md")
+	addCmd := exec.CommandContext(ctx, "git", "add", ".maestro/MAESTRO.md")
 	addCmd.Dir = tempDir
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %w\nOutput: %s", err, string(output))
