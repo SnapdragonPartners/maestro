@@ -154,7 +154,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		MaxIterations:  maxCodingIterations,
 		MaxTokens:      8192, // Increased for comprehensive code generation
 		AgentID:        c.GetAgentID(),
-		DebugLogging:   false,
+		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxCodingIterations - 2, // Warn 2 iterations before limit

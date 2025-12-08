@@ -677,6 +677,23 @@ func GetContainerTmpfsSize() string {
 	return DefaultTmpfsSize
 }
 
+// GetDebugLLMMessages returns whether debug logging for LLM message formatting is enabled.
+// Returns false by default if config is not loaded or debug is not configured.
+// Must call LoadConfig first to initialize config.
+func GetDebugLLMMessages() bool {
+	cfg, err := GetConfig()
+	if err != nil {
+		return false // Fallback to disabled if config not loaded
+	}
+
+	// Use configured debug setting or default to false
+	if cfg.Debug != nil {
+		return cfg.Debug.LLMMessages
+	}
+
+	return false
+}
+
 // GetConfig returns the current global config BY VALUE (copy, not reference).
 // This prevents external mutation - all updates must go through Update* functions.
 // Must call LoadConfig first to initialize the global config.
