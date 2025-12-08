@@ -71,7 +71,23 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 
 	// Step 2: Push branch to remote
 	if pushErr := c.pushBranch(ctx, localBranch, remoteBranch); pushErr != nil {
-		if c.isRecoverableGitError(pushErr) {
+		// Check specifically for non-fast-forward - try auto-rebase before returning to CODING
+		if c.isNonFastForwardError(pushErr) {
+			c.logger.Info("🔀 Push rejected (non-fast-forward) - attempting auto-rebase onto %s", targetBranch)
+			if rebaseErr := c.attemptRebaseAndRetryPush(ctx, localBranch, remoteBranch, targetBranch); rebaseErr != nil {
+				// Rebase failed (conflicts or other issue) - return to CODING with details
+				c.logger.Info("🔀 Auto-rebase failed, returning to CODING: %v", rebaseErr)
+				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, rebaseErr.Error()); renderErr != nil {
+					c.logger.Error("Failed to render rebase failure message: %v", renderErr)
+					c.contextManager.AddMessage("system", fmt.Sprintf("Auto-rebase failed. Please resolve manually: %s", rebaseErr.Error()))
+				} else {
+					c.contextManager.AddMessage("system", renderedMessage)
+				}
+				return StateCoding, false, nil
+			}
+			// Rebase and push succeeded - continue to PR creation
+			c.logger.Info("🔀 Auto-rebase succeeded, branch pushed with force-with-lease")
+		} else if c.isRecoverableGitError(pushErr) {
 			c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
 			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, pushErr.Error()); renderErr != nil {
 				c.logger.Error("Failed to render git push failure message: %v", renderErr)
@@ -81,9 +97,10 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 				c.contextManager.AddMessage("system", renderedMessage)
 			}
 			return StateCoding, false, nil
+		} else {
+			c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
+			return proto.StateError, false, logx.Wrap(pushErr, "git push failed")
 		}
-		c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
-		return proto.StateError, false, logx.Wrap(pushErr, "git push failed")
 	}
 
 	// Step 3: Get existing PR or create new one using GitHub CLI
@@ -314,4 +331,75 @@ func (c *Coder) isRecoverableGitError(err error) bool {
 
 	// Default to recoverable for unknown errors - safer to allow retry
 	return true
+}
+
+// isNonFastForwardError checks if the error is specifically a non-fast-forward rejection.
+// This happens when the remote branch has commits that the local branch doesn't have,
+// typically due to parallel story development where another story was merged first.
+func (c *Coder) isNonFastForwardError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorStr := strings.ToLower(err.Error())
+	return strings.Contains(errorStr, "non-fast-forward") ||
+		strings.Contains(errorStr, "rejected") && strings.Contains(errorStr, "fetch first") ||
+		strings.Contains(errorStr, "failed to push") && strings.Contains(errorStr, "updates were rejected")
+}
+
+// attemptRebaseAndRetryPush attempts to rebase the current branch onto the target branch
+// and retry the push with --force-with-lease. This handles the common case in parallel
+// story development where another story was merged to main while this story was being developed.
+//
+// Returns nil on success (rebase + push succeeded).
+// Returns error if rebase has conflicts or push still fails.
+func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remoteBranch, targetBranch string) error {
+	opts := &execpkg.Opts{
+		WorkDir: c.workDir,
+		Timeout: 2 * time.Minute,
+		Env:     []string{},
+	}
+
+	// Add GITHUB_TOKEN for fetch operations
+	if config.HasGitHubToken() {
+		opts.Env = append(opts.Env, "GITHUB_TOKEN")
+	}
+
+	// Step 1: Fetch latest from origin
+	c.logger.Debug("🔀 Fetching latest from origin/%s", targetBranch)
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts)
+	if err != nil {
+		return fmt.Errorf("git fetch failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	// Step 2: Attempt rebase onto origin/targetBranch
+	c.logger.Debug("🔀 Rebasing onto origin/%s", targetBranch)
+	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", fmt.Sprintf("origin/%s", targetBranch)}, opts)
+	if err != nil {
+		// Check if this is a conflict
+		if strings.Contains(strings.ToLower(result.Stderr), "conflict") ||
+			strings.Contains(strings.ToLower(result.Stdout), "conflict") {
+			// Abort the rebase to leave workspace in clean state
+			c.logger.Debug("🔀 Rebase has conflicts, aborting")
+			_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--abort"}, opts)
+			return fmt.Errorf("rebase has conflicts that require manual resolution: %s", result.Stderr)
+		}
+		// Other rebase failure - also abort
+		c.logger.Debug("🔀 Rebase failed, aborting")
+		_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--abort"}, opts)
+		return fmt.Errorf("git rebase failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	c.logger.Info("🔀 Rebase successful, pushing with --force-with-lease")
+
+	// Step 3: Push with --force-with-lease (safer than --force, prevents overwriting others' work)
+	result, err = c.longRunningExecutor.Run(ctx, []string{
+		"git", "push", "--force-with-lease", "-u", "origin",
+		fmt.Sprintf("%s:%s", localBranch, remoteBranch),
+	}, opts)
+	if err != nil {
+		return fmt.Errorf("git push --force-with-lease failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	c.logger.Info("🔀 Push with --force-with-lease succeeded")
+	return nil
 }
