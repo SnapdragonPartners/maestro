@@ -223,14 +223,15 @@ func TestSessionResumeIntegration_ResumeSession(t *testing.T) {
 
 	cmdStr := strings.Join(claudeCmd, " ")
 
-	// Verify --session-id flag is present with correct value
-	if !strings.Contains(cmdStr, "--session-id "+existingSessionID) {
-		t.Errorf("expected --session-id %s in command, got: %s", existingSessionID, cmdStr)
+	// Verify --session-id flag is NOT present (session ID is passed as arg to --resume)
+	if strings.Contains(cmdStr, "--session-id") {
+		t.Errorf("expected no --session-id flag (session ID goes to --resume), got: %s", cmdStr)
 	}
 
-	// Verify --resume flag IS present
-	if !strings.Contains(cmdStr, "--resume") {
-		t.Errorf("expected --resume flag for resume session, got: %s", cmdStr)
+	// Verify --resume flag IS present with session ID as its argument
+	// In print mode, syntax is: --resume <session-id>
+	if !strings.Contains(cmdStr, "--resume "+existingSessionID) {
+		t.Errorf("expected --resume with session ID as argument, got: %s", cmdStr)
 	}
 
 	// Verify system prompt is NOT present (resume session)

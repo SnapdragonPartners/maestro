@@ -249,21 +249,27 @@ func (r *Runner) buildCommand(opts *RunOptions) []string {
 		cmd = append(cmd, "--append-system-prompt", opts.SystemPrompt)
 	}
 
-	// Add session ID if provided (always include for both new and resume sessions)
-	if opts.SessionID != "" {
-		cmd = append(cmd, "--session-id", opts.SessionID)
-	}
-
 	// Handle session resume vs new session
-	if opts.Resume && opts.SessionID != "" {
-		// Resume an existing session with feedback
-		cmd = append(cmd, "--resume")
+	// Note: In print mode (--print), --resume REQUIRES a session ID as its argument.
+	// Syntax: --resume <session-id> (NOT --session-id <id> --resume, which is invalid)
+	// In interactive mode, --resume without a session ID opens a picker, but that doesn't work with --print.
+	if opts.Resume {
+		// Resume an existing session - session ID is REQUIRED in print mode
+		if opts.SessionID != "" {
+			cmd = append(cmd, "--resume", opts.SessionID)
+		} else {
+			// Fallback: if no session ID provided, try without (will fail in print mode)
+			cmd = append(cmd, "--resume")
+		}
 		// Use ResumeInput as the prompt (contains feedback from testing/review/merge)
 		if opts.ResumeInput != "" {
 			cmd = append(cmd, "--", opts.ResumeInput)
 		}
 	} else {
-		// New session - use InitialInput
+		// New session - optionally use explicit session ID
+		if opts.SessionID != "" {
+			cmd = append(cmd, "--session-id", opts.SessionID)
+		}
 		// Add -- separator before positional argument to avoid parsing issues
 		// with prompts that might start with - or contain special characters
 		cmd = append(cmd, "--", opts.InitialInput)

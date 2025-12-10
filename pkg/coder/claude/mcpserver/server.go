@@ -388,6 +388,12 @@ func (s *Server) handleToolsCall(ctx context.Context, conn net.Conn, req *JSONRP
 		return
 	}
 
+	// Inject agent ID into context for tools that need it (e.g., chat_read, chat_post)
+	// The AgentIDContextKey is defined in pkg/tools/chat_tools.go
+	if agentID := s.toolProvider.AgentID(); agentID != "" {
+		ctx = context.WithValue(ctx, tools.AgentIDContextKey, agentID)
+	}
+
 	// Execute tool
 	result, err := tool.Exec(ctx, params.Arguments)
 	if err != nil {

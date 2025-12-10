@@ -1,5 +1,7 @@
 package tools
 
+import "orchestrator/pkg/config"
+
 // Tool name constants - use these instead of magic strings to prevent typos.
 // and enable compile-time checking.
 const (
@@ -62,6 +64,8 @@ var (
 		ToolStoryComplete,
 		ToolChatPost,
 		ToolChatRead,
+		ToolWebSearch,
+		ToolWebFetch,
 	}
 
 	// DevOps planning tools - exploration and plan submission for infrastructure stories.
@@ -75,6 +79,8 @@ var (
 		ToolContainerList,
 		ToolChatPost,
 		ToolChatRead,
+		ToolWebSearch,
+		ToolWebFetch,
 	}
 
 	// DevOps coding tools - infrastructure focus, container operations.
@@ -93,6 +99,8 @@ var (
 		ToolTodosAdd,
 		ToolTodoComplete,
 		ToolTodoUpdate,
+		ToolWebSearch,
+		ToolWebFetch,
 	}
 
 	// App coding tools - full development environment.
@@ -109,6 +117,8 @@ var (
 		ToolTodosAdd,
 		ToolTodoComplete,
 		ToolTodoUpdate,
+		ToolWebSearch,
+		ToolWebFetch,
 	}
 
 	// Testing tools - validation and verification.
@@ -145,4 +155,27 @@ var (
 		ToolWebSearch,
 		ToolWebFetch,
 	}
+
+	// searchTools contains all search-related tools that should be filtered when search is disabled.
+	searchTools = map[string]struct{}{
+		ToolWebSearch: {},
+		ToolWebFetch:  {},
+	}
 )
+
+// FilterSearchTools removes web search tools from the list if search is disabled in config.
+// Pass nil for cfg to auto-detect search availability from environment.
+func FilterSearchTools(tools []string, cfg *config.Config) []string {
+	if config.IsSearchEnabled(cfg) {
+		return tools
+	}
+
+	// Filter out search tools
+	result := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if _, isSearchTool := searchTools[tool]; !isSearchTool {
+			result = append(result, tool)
+		}
+	}
+	return result
+}

@@ -41,10 +41,12 @@ func TestBuildCommand_NewSession(t *testing.T) {
 }
 
 // TestBuildCommand_Resume tests buildCommand for resuming an existing session.
+// Note: In print mode, --resume takes the session ID as its argument: --resume <session-id>
+// The --session-id flag cannot be used with --resume (mutually exclusive).
 func TestBuildCommand_Resume(t *testing.T) {
 	r := &Runner{}
 	opts := &RunOptions{
-		SessionID:    "existing-session-456",
+		SessionID:    "existing-session-456", // Used as argument to --resume
 		Resume:       true,
 		ResumeInput:  "Tests failed. Please fix the compilation errors.",
 		SystemPrompt: "Should be ignored for resume",
@@ -54,14 +56,14 @@ func TestBuildCommand_Resume(t *testing.T) {
 	cmd := r.buildCommand(opts)
 	cmdStr := strings.Join(cmd, " ")
 
-	// Should include session-id flag
-	if !strings.Contains(cmdStr, "--session-id existing-session-456") {
-		t.Errorf("expected --session-id flag, got: %s", cmdStr)
+	// Should NOT include --session-id flag (session ID is passed as arg to --resume)
+	if strings.Contains(cmdStr, "--session-id") {
+		t.Errorf("expected no --session-id flag (session ID goes to --resume), got: %s", cmdStr)
 	}
 
-	// Should include --resume flag
-	if !strings.Contains(cmdStr, "--resume") {
-		t.Errorf("expected --resume flag, got: %s", cmdStr)
+	// Should include --resume with session ID as its argument
+	if !strings.Contains(cmdStr, "--resume existing-session-456") {
+		t.Errorf("expected --resume with session ID as argument, got: %s", cmdStr)
 	}
 
 	// Should NOT include system prompt when resuming
@@ -87,25 +89,26 @@ func TestBuildCommand_ResumeWithoutInput(t *testing.T) {
 	cmd := r.buildCommand(opts)
 	cmdStr := strings.Join(cmd, " ")
 
-	// Should include --resume flag
-	if !strings.Contains(cmdStr, "--resume") {
-		t.Errorf("expected --resume flag, got: %s", cmdStr)
+	// Should include --resume with session ID as argument
+	if !strings.Contains(cmdStr, "--resume existing-session-789") {
+		t.Errorf("expected --resume with session ID, got: %s", cmdStr)
 	}
 
 	// When ResumeInput is empty, should not have trailing positional arg
-	// The command should end with --resume (no -- <input>)
+	// The command should end with the session ID (no -- <input>)
 	if strings.HasSuffix(cmdStr, "-- ") {
 		t.Errorf("expected no trailing empty positional arg, got: %s", cmdStr)
 	}
 }
 
-// TestBuildCommand_ResumeRequiresSessionID tests that resume without session ID
-// falls back to new session behavior.
-func TestBuildCommand_ResumeRequiresSessionID(t *testing.T) {
+// TestBuildCommand_ResumeWithoutSessionID tests resume without explicit session ID.
+// In print mode, --resume requires a session ID. Without one, we just add --resume
+// and let Claude Code return an error (this is a fallback/edge case).
+func TestBuildCommand_ResumeWithoutSessionID(t *testing.T) {
 	r := &Runner{}
 	opts := &RunOptions{
-		Resume:       true, // Resume flag set...
-		SessionID:    "",   // ...but no session ID
+		Resume:       true, // Resume flag set
+		SessionID:    "",   // No session ID - will fail in print mode
 		ResumeInput:  "some input",
 		InitialInput: "fallback input",
 	}
@@ -113,14 +116,20 @@ func TestBuildCommand_ResumeRequiresSessionID(t *testing.T) {
 	cmd := r.buildCommand(opts)
 	cmdStr := strings.Join(cmd, " ")
 
-	// Without SessionID, --resume should not be added
-	if strings.Contains(cmdStr, "--resume") {
-		t.Errorf("expected no --resume without session ID, got: %s", cmdStr)
+	// With Resume=true but no SessionID, --resume should be added without argument
+	// (will fail at runtime in print mode, but buildCommand should still produce valid syntax)
+	if !strings.Contains(cmdStr, "--resume") {
+		t.Errorf("expected --resume flag for resume mode, got: %s", cmdStr)
 	}
 
-	// Should fall back to InitialInput
-	if !strings.HasSuffix(cmdStr, "-- fallback input") {
-		t.Errorf("expected fallback to InitialInput, got: %s", cmdStr)
+	// Should NOT have --session-id flag
+	if strings.Contains(cmdStr, "--session-id") {
+		t.Errorf("expected no --session-id flag, got: %s", cmdStr)
+	}
+
+	// Should use ResumeInput as the prompt
+	if !strings.HasSuffix(cmdStr, "-- some input") {
+		t.Errorf("expected ResumeInput as prompt, got: %s", cmdStr)
 	}
 }
 

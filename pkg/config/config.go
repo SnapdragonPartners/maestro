@@ -499,6 +499,12 @@ type ChatConfig struct {
 	Scanner        ChatScannerConfig `json:"scanner"`          // Secret scanning configuration
 }
 
+// SearchConfig defines web search tool configuration.
+// Search is auto-enabled when API keys are detected, but can be explicitly disabled.
+type SearchConfig struct {
+	Enabled *bool `json:"enabled,omitempty"` // Whether web search is enabled (nil = auto-detect from API keys)
+}
+
 // LogsConfig contains log file management configuration.
 type LogsConfig struct {
 	RotationCount int `json:"rotation_count"` // Number of old log files to keep (default: 4)
@@ -567,6 +573,7 @@ type Config struct {
 	Git         *GitConfig         `json:"git"`         // Git repository and branching settings
 	WebUI       *WebUIConfig       `json:"webui"`       // Web UI server settings
 	Chat        *ChatConfig        `json:"chat"`        // Agent chat system settings
+	Search      *SearchConfig      `json:"search"`      // Web search settings
 	PM          *PMConfig          `json:"pm"`          // PM agent settings
 	Logs        *LogsConfig        `json:"logs"`        // Log file management settings
 	Debug       *DebugConfig       `json:"debug"`       // Debug settings
@@ -1169,6 +1176,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Chat == nil {
 		config.Chat = &ChatConfig{}
+	}
+	if config.Search == nil {
+		config.Search = &SearchConfig{}
 	}
 	if config.Logs == nil {
 		config.Logs = &LogsConfig{}

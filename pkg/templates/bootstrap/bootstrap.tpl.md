@@ -238,6 +238,22 @@ RUN adduser -D -u 1000 coder && \
 ```
 Claude Code refuses `--dangerously-skip-permissions` when running as root for security reasons. Maestro will attempt to create this user at runtime if missing, but pre-creating it in the Dockerfile is recommended.
 
+### Required Tools in Container
+The container must include these tools for Maestro operations:
+- **git** - Version control operations (clone, commit, push, rebase)
+- **gh** (GitHub CLI) - PR creation, merge operations, and GitHub API access
+- **curl** - Network operations and health checks
+
+Install in Dockerfile:
+```dockerfile
+# Alpine-based images
+RUN apk add --no-cache git curl github-cli
+
+# Debian/Ubuntu-based images
+RUN apt-get update && apt-get install -y git curl gh && rm -rf /var/lib/apt/lists/*
+```
+The `gh` CLI must be authenticated via `GITHUB_TOKEN` environment variable (passed by Maestro automatically).
+
 ### File System Constraints
 - **Large File Limit**: 100MB (GitHub push limit)
 - **Warning Threshold**: 50MB (recommend Git LFS)

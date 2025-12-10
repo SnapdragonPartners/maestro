@@ -181,6 +181,15 @@ func (p *ToolProvider) Must(name string) Tool {
 	return tool
 }
 
+// AgentID returns the agent ID from the provider's context.
+// Returns empty string if no agent ID is configured.
+func (p *ToolProvider) AgentID() string {
+	if p.ctx == nil {
+		return ""
+	}
+	return p.ctx.AgentID
+}
+
 // List returns metadata for all allowed tools.
 func (p *ToolProvider) List() []ToolMeta {
 	globalRegistry.mu.RLock()
