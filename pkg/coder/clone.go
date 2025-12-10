@@ -292,6 +292,25 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 		return logx.Wrap(err, "failed to add origin remote - agent will not be able to push branches")
 	}
 
+	// CRITICAL: Fetch latest from origin to ensure we have the most up-to-date refs.
+	// The mirror may be stale if origin was updated between mirror update and clone creation.
+	// This prevents conflicts when pushing later (agent would be based on old refs).
+	c.logger.Debug("Fetching latest from origin to ensure fresh refs")
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "fetch", "origin")
+	if err != nil {
+		c.logger.Warn("Failed to fetch from origin (non-fatal, may cause push conflicts): %v", err)
+		// Continue anyway - the mirror data may still be sufficient
+	}
+
+	// Reset the base branch to origin's version to ensure we're starting fresh.
+	// This handles the case where the mirror was stale.
+	c.logger.Debug("Resetting %s to origin/%s to ensure fresh starting point", c.baseBranch, c.baseBranch)
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "reset", "--hard", "origin/"+c.baseBranch)
+	if err != nil {
+		c.logger.Warn("Failed to reset to origin/%s (non-fatal): %v", c.baseBranch, err)
+		// Continue anyway - we'll work with what we have
+	}
+
 	c.logger.Debug("Successfully created self-contained clone at: %s", agentWorkDir)
 	return nil
 }
