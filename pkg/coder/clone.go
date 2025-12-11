@@ -364,29 +364,55 @@ func (c *CloneManager) createBranch(ctx context.Context, agentWorkDir, branchNam
 }
 
 // getExistingBranches gets a list of all branches (local and remote) in the repository.
+// It queries the remote directly via ls-remote to ensure we see all remote branches,
+// even if we haven't fetched them yet.
 func (c *CloneManager) getExistingBranches(ctx context.Context, agentWorkDir string) ([]string, error) {
-	// Get all branches (local and remote).
-	output, err := c.gitRunner.Run(ctx, agentWorkDir, "branch", "-a")
+	branches := make([]string, 0)
+
+	// Get local branches first.
+	localOutput, err := c.gitRunner.Run(ctx, agentWorkDir, "branch")
 	if err != nil {
-		return nil, logx.Wrap(err, "failed to list branches")
+		return nil, logx.Wrap(err, "failed to list local branches")
 	}
 
-	// Parse branch names from output.
-	lines := strings.Split(string(output), "\n")
-	branches := make([]string, 0, len(lines))
-	for _, line := range lines {
+	// Parse local branch names.
+	for _, line := range strings.Split(string(localOutput), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		// Remove markers like "* " for current branch and "remotes/" prefix.
+		// Remove "* " marker for current branch.
 		line = strings.TrimPrefix(line, "* ")
-		line = strings.TrimPrefix(line, "remotes/origin/")
-		// Skip HEAD references.
-		if strings.Contains(line, "HEAD ->") {
+		branches = append(branches, strings.TrimSpace(line))
+	}
+
+	// Query remote branches directly via ls-remote (doesn't require fetch).
+	// This ensures we see branches that exist on the remote even if not fetched.
+	remoteOutput, err := c.gitRunner.Run(ctx, agentWorkDir, "ls-remote", "--heads", "origin")
+	if err != nil {
+		// Log warning but don't fail - we can still check local branches.
+		c.logger.Warn("Failed to query remote branches via ls-remote: %v", err)
+		return branches, nil
+	}
+
+	// Parse remote branch names from ls-remote output.
+	// Format: "<sha>\trefs/heads/<branch-name>"
+	for _, line := range strings.Split(string(remoteOutput), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		branches = append(branches, strings.TrimSpace(line))
+		// Split on tab to get the ref part.
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ref := parts[1]
+		// Extract branch name from refs/heads/<name>.
+		if strings.HasPrefix(ref, "refs/heads/") {
+			branchName := strings.TrimPrefix(ref, "refs/heads/")
+			branches = append(branches, branchName)
+		}
 	}
 
 	return branches, nil

@@ -98,10 +98,18 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 	// Extract repository info from config
 	repoURL := ""
 	targetBranch := "main"
+	mirrorDir := ".mirrors"
+	branchPattern := "story-{STORY_ID}" // Default pattern uses story ID for uniqueness
 	if cfg.Git != nil {
 		repoURL = cfg.Git.RepoURL
 		if cfg.Git.TargetBranch != "" {
 			targetBranch = cfg.Git.TargetBranch
+		}
+		if cfg.Git.MirrorDir != "" {
+			mirrorDir = cfg.Git.MirrorDir
+		}
+		if cfg.Git.BranchPattern != "" {
+			branchPattern = cfg.Git.BranchPattern
 		}
 	}
 
@@ -112,8 +120,8 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		baseWorkDir, // Clone manager uses base work dir for mirrors
 		repoURL,
 		targetBranch,
-		".mirrors",
-		fmt.Sprintf("maestro-story-%s", agentID),
+		mirrorDir,
+		branchPattern,
 	)
 
 	// Create build service as needed
