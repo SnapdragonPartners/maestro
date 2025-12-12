@@ -34,6 +34,11 @@ func TestValidateContainerCapabilities_SafeContainer(t *testing.T) {
 		t.Error("Safe container should have user with UID 1000")
 	}
 
+	// Verify /tmp is writable
+	if !result.TmpWritable {
+		t.Error("Safe container should have writable /tmp")
+	}
+
 	// Verify no missing tools
 	if len(result.MissingTools) > 0 {
 		t.Errorf("Safe container should have no missing tools, got: %v", result.MissingTools)
@@ -68,6 +73,11 @@ func TestValidateContainerCapabilities_NonExistentContainer(t *testing.T) {
 	// UID 1000 should not exist
 	if result.UserUID1000 {
 		t.Error("UID 1000 should not exist in non-existent container")
+	}
+
+	// /tmp should not be writable (container doesn't exist)
+	if result.TmpWritable {
+		t.Error("/tmp should not be writable in non-existent container")
 	}
 
 	t.Logf("Validation failed as expected: %s", result.Message)

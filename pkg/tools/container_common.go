@@ -61,10 +61,12 @@ type ContainerValidationResult struct {
 	Success       bool              `json:"success"`        // Overall validation result
 	GitAvailable  bool              `json:"git_available"`  // Whether git CLI is available
 	UserUID1000   bool              `json:"user_uid_1000"`  // Whether user with UID 1000 exists
+	TmpWritable   bool              `json:"tmp_writable"`   // Whether /tmp is writable
 }
 
 // ValidateContainerCapabilities validates that a container has all required capabilities for Maestro operations.
-// Required: git (for version control), user with UID 1000 (for rootless execution with read-only filesystem).
+// Required: git (for version control), user with UID 1000 (for rootless execution with read-only filesystem),
+// writable /tmp (for MCP proxy installation and temp files).
 // Informational: gh CLI availability (not required - PR operations run on host).
 // Returns detailed validation results with verbose error messages for LLM understanding.
 func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, containerName string) *ContainerValidationResult {
@@ -105,16 +107,32 @@ func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, 
 		result.UserUID1000 = true
 	}
 
+	// Test 3: Check if /tmp is writable (required for MCP proxy installation and temp files)
+	// Even with --read-only, /tmp should be writable (Docker mounts it as tmpfs by default)
+	tmpResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", "--user", "1000:1000", containerName,
+		"sh", "-c", "touch /tmp/.maestro-test && rm /tmp/.maestro-test"}, opts)
+	if err != nil || tmpResult.ExitCode != 0 {
+		result.TmpWritable = false
+		missingTools = append(missingTools, "tmp-writable")
+		result.ErrorDetails["tmp_writable"] = fmt.Sprintf(
+			"Container '%s' /tmp directory is not writable by UID 1000. Error: %v. Stdout: %s, Stderr: %s. "+
+				"Maestro requires a writable /tmp for MCP proxy installation and temporary files. "+
+				"Ensure /tmp is mounted as a writable volume or tmpfs in the container.",
+			containerName, err, tmpResult.Stdout, tmpResult.Stderr)
+	} else {
+		result.TmpWritable = true
+	}
+
 	// Note: gh CLI validation not performed - PR operations run on host, not in container
 
 	result.MissingTools = missingTools
-	// Container is valid if it has required tools: git + user UID 1000
+	// Container is valid if it has required capabilities: git + user UID 1000 + writable /tmp
 	// Note: gh CLI is NOT required in containers - PR operations run on host
 	result.Success = len(missingTools) == 0
 
 	// Generate verbose message for LLM
 	if result.Success {
-		result.Message = fmt.Sprintf("Container '%s' validation passed: git available, user UID 1000 exists", containerName)
+		result.Message = fmt.Sprintf("Container '%s' validation passed: git available, user UID 1000 exists, /tmp writable", containerName)
 	} else {
 		var issues []string
 		if !result.GitAvailable {
@@ -122,6 +140,9 @@ func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, 
 		}
 		if !result.UserUID1000 {
 			issues = append(issues, "user with UID 1000 not found - required for rootless container execution (add 'RUN adduser -D -u 1000 coder' to Dockerfile)")
+		}
+		if !result.TmpWritable {
+			issues = append(issues, "/tmp not writable by UID 1000 - required for MCP proxy and temp files")
 		}
 
 		result.Message = fmt.Sprintf("Container '%s' validation failed: %s. This container cannot be used for Maestro operations until these issues are fixed.",
