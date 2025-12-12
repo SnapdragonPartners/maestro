@@ -17,7 +17,8 @@ import (
 )
 
 // MCPProxyPath is the path to the MCP proxy binary inside containers.
-const MCPProxyPath = "/usr/local/bin/maestro-mcp-proxy"
+// We use /tmp because container filesystems may be read-only, but /tmp is always writable.
+const MCPProxyPath = "/tmp/maestro-mcp-proxy"
 
 // MCPConfigPath is the path where the MCP config file is written inside containers.
 const MCPConfigPath = "/tmp/maestro-mcp-config.json"
