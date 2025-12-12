@@ -182,7 +182,7 @@ Future Enhancement:
    - System failures (timeout, network) → count toward SUSPEND, not retry limit
    - Story failures (test failures, build errors) → count toward retry limit
 
-**Status**: READY FOR IMPLEMENTATION (simple version: retry limit → architect ERROR)
+**Status**: COMPLETED - MaxStoryAttempts=3 in queue.go, retry limit check in processRequeueRequests()
 
 ---
 
@@ -204,6 +204,6 @@ Mirror may be using SSH even when HTTPS is configured. Need to verify mirror rem
 | Item | Priority | Status | Notes |
 |------|----------|--------|-------|
 | Fix 1: Container requirements | HIGH | COMPLETED | Commits `611b75d`, `6254666` |
-| Improvement 2: SUSPEND state | HIGH | READY | Preserves in-flight work during outages |
-| Improvement 3: Story retry limit | MEDIUM | READY | Simple version: retry limit → ERROR |
+| Improvement 2: SUSPEND state | HIGH | COMPLETED | Commit `326b9f5` - Preserves in-flight work during outages |
+| Improvement 3: Story retry limit | MEDIUM | COMPLETED | MaxStoryAttempts=3, architect→ERROR on limit |
 | Schema migration | LOW | TODO | Minor issue |

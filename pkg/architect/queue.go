@@ -27,7 +27,14 @@ const (
 	StatusCoding StoryStatus = "coding"
 	// StatusDone indicates work is completed and merged.
 	StatusDone StoryStatus = "done"
+	// StatusFailed indicates the story failed after exhausting retry limit.
+	StatusFailed StoryStatus = "failed"
 )
+
+// MaxStoryAttempts is the maximum number of times a story can be dispatched before
+// tripping the retry circuit breaker. After this many failures, the architect
+// transitions to ERROR state to prevent infinite requeue loops.
+const MaxStoryAttempts = 3
 
 // QueuedStory embeds the unified Story type with architect-specific methods.
 type QueuedStory struct {
