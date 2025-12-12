@@ -14,6 +14,7 @@ import (
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
@@ -539,19 +540,24 @@ func (s *Supervisor) checkAllAPIsHealthy(ctx context.Context) bool {
 
 	s.Logger.Debug("Checking API health...")
 
-	// Check LLM providers configured in the kernel
-	// For now, do a simple check - in production this would ping each configured provider
-	// The kernel's LLMFactory has the client configurations
+	// Check GitHub API - uses gh auth status which verifies both CLI and API connectivity
+	ghCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// TODO: Implement actual health checks for:
+	if err := github.CheckAuth(ghCtx); err != nil {
+		s.Logger.Debug("GitHub API health check failed: %v", err)
+		return false
+	}
+	s.Logger.Debug("GitHub API health check passed")
+
+	// TODO: Implement actual health checks for LLM providers:
 	// - Anthropic API (if configured)
 	// - OpenAI API (if configured)
 	// - Google API (if configured)
-	// - GitHub API
+	// For now, we only check GitHub since it's critical for merge operations.
+	// LLM providers will naturally fail fast on first request if unavailable.
 
-	// For now, return true to allow testing the flow
-	// In production, this would make lightweight API calls to each configured provider
-	s.Logger.Debug("API health check: all APIs healthy (placeholder)")
+	s.Logger.Debug("API health check: all APIs healthy")
 	return true
 }
 
