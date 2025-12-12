@@ -44,6 +44,7 @@ func TestContainerBuildIntegration(t *testing.T) {
 			name: "dockerfile_in_workspace_root",
 			dockerfileContent: `FROM alpine:latest
 RUN apk add --no-cache git github-cli
+RUN adduser -D -u 1000 coder
 RUN echo "test" > /test.txt
 CMD ["sleep", "infinity"]`,
 			containerName:  "maestro-test-root",
@@ -53,6 +54,7 @@ CMD ["sleep", "infinity"]`,
 			name: "dockerfile_in_subdirectory",
 			dockerfileContent: `FROM alpine:latest
 RUN apk add --no-cache git github-cli
+RUN adduser -D -u 1000 coder
 RUN echo "subdir test" > /subdir.txt
 CMD ["sleep", "infinity"]`,
 			containerName:  "maestro-test-subdir",

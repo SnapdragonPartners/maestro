@@ -93,7 +93,8 @@ func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, 
 
 	// Test 2: Check if user with UID 1000 exists (required for --user 1000:1000 with read-only filesystem)
 	// Maestro runs containers with --user 1000:1000 --read-only, so the user must be pre-created in the Dockerfile
-	uidResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "id", "-u", "1000"}, opts)
+	// Use getent passwd 1000 which works on both Alpine (BusyBox) and Debian/Ubuntu
+	uidResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "getent", "passwd", "1000"}, opts)
 	if err != nil || uidResult.ExitCode != 0 {
 		result.UserUID1000 = false
 		missingTools = append(missingTools, "user-uid-1000")
