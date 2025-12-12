@@ -164,7 +164,37 @@ Plan reviews (including completion claims) support three-way decisions:
   2. An **auto-approve** request is rejected with ABANDON.
   3. Any unrecoverable runtime error occurs (panic, out-of-retries, etc.).
   4. Multiple consecutive nil messages are received in **WAITING** state (shutdown scenario).
+  5. **SUSPEND** state times out waiting for service recovery.
 * **ERROR** is terminal - the orchestrator handles story requeue and agent restart via lease system.
+
+---
+
+## SUSPEND state (service unavailability)
+
+The **SUSPEND** state handles external service unavailability (LLM API timeouts, network failures). This is a base-level state available to all agents.
+
+### Entry conditions
+* Agent enters **SUSPEND** when the retry middleware exhausts all retries on a retryable error (network timeout, API unavailable)
+* The `ErrorTypeServiceUnavailable` error signals the agent to call `EnterSuspend()`
+* SUSPEND can be entered from any non-terminal state (not from DONE, ERROR, or SUSPEND itself)
+
+### Behavior in SUSPEND
+* Agent preserves all state data (no data loss)
+* Agent stores originating state in `KeySuspendedFrom` state data
+* Agent blocks on restore channel waiting for orchestrator signal
+* Orchestrator polls all configured APIs (LLM providers, GitHub) every 30 seconds
+* When ALL APIs are healthy, orchestrator broadcasts restore signal
+
+### Exit conditions
+* **Restore signal**: Agent returns to originating state with all data preserved
+* **Timeout (15 min default)**: Agent transitions to **ERROR** for full recycle
+* **Context cancellation**: Agent transitions to **ERROR** (shutdown)
+
+### Key design points
+* SUSPEND preserves in-flight work - the story doesn't need to restart
+* Uses separate `KeySuspendedFrom` key (not `KeyOrigin`) to avoid clobbering budget review state
+* All APIs must pass health check for restore (no partial recovery)
+* ERROR is "the ultimate recycler" - provides clean restart if SUSPEND times out
 
 ---
 

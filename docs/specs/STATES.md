@@ -114,11 +114,34 @@ The agent enters **ERROR** when:
 
 1. Setup fails (workspace, permissions, dependencies)
 2. Architect responds with **ABANDON** from any review state
-3. Budget review is rejected with **ABANDON**  
+3. Budget review is rejected with **ABANDON**
 4. Unrecoverable runtime errors (panic, network failure, etc.)
 5. Merge process fails permanently
+6. **SUSPEND** state times out waiting for service recovery
 
 **ERROR** is terminal; orchestrator decides recovery steps.
+
+---
+
+## SUSPEND state (service unavailability)
+
+The **SUSPEND** state handles external service unavailability (LLM API timeouts, network failures). This is a base-level state available to all agents.
+
+### Entry conditions
+* Agent enters **SUSPEND** when the retry middleware exhausts all retries on a retryable error
+* SUSPEND can be entered from any non-terminal state (not from DONE, ERROR, or SUSPEND itself)
+
+### Behavior in SUSPEND
+* Agent preserves all state data (no data loss)
+* Agent stores originating state in `KeySuspendedFrom` state data
+* Agent blocks on restore channel waiting for orchestrator signal
+* Orchestrator polls all configured APIs every 30 seconds
+* When ALL APIs are healthy, orchestrator broadcasts restore signal
+
+### Exit conditions
+* **Restore signal**: Agent returns to originating state with all data preserved
+* **Timeout (15 min default)**: Agent transitions to **ERROR** for full recycle
+* **Context cancellation**: Agent transitions to **ERROR** (shutdown)
 
 ---
 

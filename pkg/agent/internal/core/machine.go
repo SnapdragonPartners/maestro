@@ -22,6 +22,13 @@ type StateTimeoutWrapper interface {
 const (
 	// DefaultMaxRetries is the default maximum number of retries for operations.
 	DefaultMaxRetries = 3
+
+	// KeySuspendedFrom stores the originating state when entering SUSPEND.
+	// This is separate from coder's KeyOrigin to avoid clobbering (e.g., if we suspend from BUDGET_REVIEW).
+	KeySuspendedFrom = "suspended_from"
+
+	// DefaultSuspendTimeout is how long to wait in SUSPEND before transitioning to ERROR.
+	DefaultSuspendTimeout = 15 * time.Minute
 )
 
 // StateTransition represents a transition between states.
@@ -92,6 +99,12 @@ type BaseStateMachine struct {
 	// LLMClient for agent interactions (set after construction to avoid chicken-and-egg with middleware).
 	// Exported so agents can access via embedding.
 	LLMClient llm.LLMClient
+
+	// SUSPEND state support - for network/service unavailability handling.
+	// When an agent detects repeated external API failures, it enters SUSPEND state,
+	// preserving all state data. The orchestrator broadcasts on restoreCh when services recover.
+	restoreCh      <-chan struct{} // Channel to receive restore signal from orchestrator
+	suspendTimeout time.Duration   // How long to wait in SUSPEND before ERROR (default: 15min)
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table.
@@ -112,7 +125,8 @@ func NewBaseStateMachine(agentID string, initialState proto.State, store StateSt
 		table:          table,
 		maxRetries:     DefaultMaxRetries,
 		logger:         logx.NewLogger(agentID),
-		timeoutWrapper: nil, // Will be set later
+		timeoutWrapper: nil,                   // Will be set later
+		suspendTimeout: DefaultSuspendTimeout, // Can be overridden via SetSuspendTimeout
 	}
 }
 
@@ -486,4 +500,101 @@ func (sm *BaseStateMachine) Initialize(_ context.Context) error {
 	}
 
 	return nil
+}
+
+// =============================================================================
+// SUSPEND State Support
+// =============================================================================
+
+// SetRestoreChannel sets the channel for receiving restore signals from the orchestrator.
+// This should be called during agent initialization with a shared channel from the orchestrator.
+func (sm *BaseStateMachine) SetRestoreChannel(ch <-chan struct{}) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.restoreCh = ch
+}
+
+// SetSuspendTimeout sets the timeout for SUSPEND state before transitioning to ERROR.
+func (sm *BaseStateMachine) SetSuspendTimeout(timeout time.Duration) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.suspendTimeout = timeout
+}
+
+// EnterSuspend transitions to SUSPEND state, preserving the originating state.
+// This should be called when repeated external API failures are detected.
+// Returns error if already in SUSPEND or transition fails.
+func (sm *BaseStateMachine) EnterSuspend(ctx context.Context) error {
+	sm.mu.Lock()
+	currentState := sm.currentState
+	sm.mu.Unlock()
+
+	// Don't suspend from terminal states or if already suspended
+	if currentState == proto.StateDone || currentState == proto.StateError || currentState == proto.StateSuspend {
+		return fmt.Errorf("cannot enter SUSPEND from state %s", currentState)
+	}
+
+	// Store the originating state before transitioning
+	sm.SetStateData(KeySuspendedFrom, currentState)
+
+	// Transition to SUSPEND
+	return sm.TransitionTo(ctx, proto.StateSuspend, map[string]any{
+		"suspend_reason": "external API failures detected",
+		"suspended_at":   time.Now().UTC(),
+	})
+}
+
+// HandleSuspend processes the SUSPEND state - waits for restore signal or times out.
+// This is called by the agent's state processing loop when in SUSPEND state.
+// Returns the originating state on restore, or ERROR on timeout.
+func (sm *BaseStateMachine) HandleSuspend(ctx context.Context) (proto.State, bool, error) {
+	sm.mu.Lock()
+	restoreCh := sm.restoreCh
+	timeout := sm.suspendTimeout
+	sm.mu.Unlock()
+
+	// Get the state we came from
+	suspendedFromAny, exists := sm.GetStateValue(KeySuspendedFrom)
+	if !exists {
+		sm.logger.Error("SUSPEND state missing KeySuspendedFrom - cannot restore")
+		return proto.StateError, false, fmt.Errorf("SUSPEND state missing originating state")
+	}
+
+	originState, ok := suspendedFromAny.(proto.State)
+	if !ok {
+		sm.logger.Error("KeySuspendedFrom has invalid type: %T", suspendedFromAny)
+		return proto.StateError, false, fmt.Errorf("invalid originating state type")
+	}
+
+	sm.logger.Info("⏸️  Agent suspended from state %s, waiting for restore signal (timeout: %v)", originState, timeout)
+
+	// If no restore channel configured, immediately timeout to ERROR
+	if restoreCh == nil {
+		sm.logger.Warn("No restore channel configured - transitioning to ERROR")
+		return proto.StateError, false, fmt.Errorf("SUSPEND without restore channel")
+	}
+
+	select {
+	case <-restoreCh:
+		// Restore signal received - return to originating state
+		sm.logger.Info("▶️  Restore signal received, resuming from state %s", originState)
+		return originState, false, nil
+
+	case <-time.After(timeout):
+		// Timeout exceeded - transition to ERROR for full recycle
+		sm.logger.Warn("⏰ SUSPEND timeout (%v) exceeded, transitioning to ERROR", timeout)
+		return proto.StateError, false, fmt.Errorf("suspend timeout exceeded after %v", timeout)
+
+	case <-ctx.Done():
+		// Context cancelled (shutdown)
+		sm.logger.Info("Context cancelled during SUSPEND")
+		return proto.StateError, false, fmt.Errorf("suspend interrupted: %w", ctx.Err())
+	}
+}
+
+// IsSuspended returns true if the agent is currently in SUSPEND state.
+func (sm *BaseStateMachine) IsSuspended() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.currentState == proto.StateSuspend
 }
