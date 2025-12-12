@@ -277,11 +277,13 @@ func migrateToVersion10(db *sql.DB) error {
 		)`,
 
 		// Knowledge graph metadata (file modification tracking)
+		// Supports multiple graph files via graph_path as part of composite key
 		`CREATE TABLE IF NOT EXISTS knowledge_metadata (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
 			session_id TEXT NOT NULL,
-			dot_file_mtime INTEGER NOT NULL,
-			last_indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			graph_path TEXT NOT NULL,
+			last_mtime INTEGER NOT NULL,
+			last_indexed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (session_id, graph_path)
 		)`,
 
 		// Full-text search index
@@ -824,11 +826,13 @@ func createSchema(db *sql.DB) error {
 		)`,
 
 		// Knowledge graph metadata (file modification tracking)
+		// Supports multiple graph files via graph_path as part of composite key
 		`CREATE TABLE IF NOT EXISTS knowledge_metadata (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
 			session_id TEXT NOT NULL,
-			dot_file_mtime INTEGER NOT NULL,
-			last_indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			graph_path TEXT NOT NULL,
+			last_mtime INTEGER NOT NULL,
+			last_indexed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (session_id, graph_path)
 		)`,
 
 		// Full-text search index for nodes
