@@ -2,9 +2,9 @@
 package claude
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"os"
 	goexec "os/exec"
 	"strings"
 	"time"
@@ -295,39 +295,20 @@ func (i *Installer) EnsureMCPProxy(ctx context.Context) error {
 	}
 	i.logger.Info("Installing MCP proxy for %s (%d bytes)", arch, len(binary))
 
-	// Write binary to temp file on host
-	tmpFile, err := os.CreateTemp("", "maestro-mcp-proxy-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if _, writeErr := tmpFile.Write(binary); writeErr != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("failed to write temp file: %w", writeErr)
-	}
-	if closeErr := tmpFile.Close(); closeErr != nil {
-		return fmt.Errorf("failed to close temp file: %w", closeErr)
-	}
-
-	// Make temp file executable (for docker cp to preserve permissions)
-	// G302: We intentionally use 0755 because this is an executable binary
-	if chmodErr := os.Chmod(tmpPath, 0755); chmodErr != nil { //nolint:gosec // Executable binary needs 0755
-		return fmt.Errorf("failed to chmod temp file: %w", chmodErr)
-	}
-
-	// Copy to container using docker cp (runs on host, not in container)
+	// Install binary using docker exec with stdin piping.
+	// We can't use docker cp because it writes to the container's rootfs layer,
+	// which fails when the container has a read-only filesystem.
+	// Instead, we pipe the binary through stdin and use cat/sh to write it.
 	dstPath := MCPProxyPath
-	cmd := goexec.CommandContext(ctx, "docker", "cp", tmpPath, i.containerName+":"+dstPath)
-	if output, cpErr := cmd.CombinedOutput(); cpErr != nil {
-		return fmt.Errorf("docker cp failed: %w (output: %s)", cpErr, string(output))
-	}
 
-	// Try to set executable permissions inside container.
-	// This may fail if container user isn't root, but docker cp often preserves
-	// the executable bit from the source file, so we verify instead of failing.
-	_, _ = i.runCommand(ctx, []string{"chmod", "+x", dstPath}, 10*time.Second)
+	// Use sh -c to write stdin to file and make it executable
+	// This writes to /tmp which is a mounted tmpfs, not the read-only rootfs
+	cmd := goexec.CommandContext(ctx, "docker", "exec", "-i", i.containerName,
+		"sh", "-c", fmt.Sprintf("cat > %s && chmod +x %s", dstPath, dstPath))
+	cmd.Stdin = bytes.NewReader(binary)
+	if output, execErr := cmd.CombinedOutput(); execErr != nil {
+		return fmt.Errorf("docker exec failed to install proxy: %w (output: %s)", execErr, string(output))
+	}
 
 	// Verify installation - this checks if the file exists AND is executable
 	if !i.isMCPProxyInstalled(ctx) {
