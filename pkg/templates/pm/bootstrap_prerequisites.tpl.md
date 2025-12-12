@@ -20,8 +20,16 @@ Coders have access to container management tools:
 - `container_test` - Test containers before making them active
 - `container_update` - Set the built container as the target image for all coders
 
+**CRITICAL CONTAINER REQUIREMENTS:**
+The container MUST include:
+1. **Unprivileged user with UID 1000** - Required for security. Container must run as non-root user with UID 1000 and GID 1000. Create user if base image doesn't have one.
+2. **Git CLI installed** - Required for workspace operations (clone, commit, push). Must be available in PATH.
+
 **Acceptance Criteria:**
 - [ ] Dockerfile created with {{.Extra.DetectedPlatform}} base image
+- [ ] Unprivileged user created with UID 1000 and GID 1000 (e.g., `RUN useradd -m -u 1000 -U developer`)
+- [ ] Container configured to run as UID 1000 user (e.g., `USER developer` or `USER 1000:1000`)
+- [ ] Git CLI installed and available in PATH
 - [ ] Development dependencies installed (compilers, build tools, linters)
 - [ ] Build tools configured and tested
 - [ ] Container builds successfully using `container_build`
