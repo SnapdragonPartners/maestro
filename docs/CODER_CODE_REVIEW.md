@@ -1,0 +1,290 @@
+# Coder Package Code Review
+
+**Date**: 2025-12-13
+**Reviewer**: Claude (Opus 4.5)
+**Package**: `pkg/coder`
+**Scope**: Periodic production-focused code review
+
+---
+
+## Executive Summary
+
+**Overall Health: Moderate** - The package is functional and well-architected but shows signs of accumulated technical debt and critically low test coverage.
+
+### Major Strengths
+- Clear state machine architecture with well-defined state transitions and separation of concerns
+- Robust error handling with consistent use of `logx.Wrap` for context propagation
+- Thoughtful git workspace management, including bind mount inode preservation for Docker compatibility
+- Comprehensive merge conflict handling with iteration limits and detailed coder guidance
+- Effects pattern cleanly separates external interactions (approvals, questions, merges)
+
+### Top Risks
+- **8.5% test coverage** in main package is critically low for production code
+- **Legacy code marked for removal** has persisted (at least 2 functions with "LEGACY - will be removed" comments)
+- **40+ nolint directives** indicate accumulated linter debt
+- **Dual execution modes** need clearer documentation for maintainability
+- **driver.go at 1,594 lines** is large and could benefit from further decomposition
+
+---
+
+## Architecture Overview: Dual Execution Modes
+
+The coder package supports **two distinct execution modes** that should be clearly understood:
+
+### Standard Mode
+- Uses the built-in **toolloop** system (`pkg/agent/toolloop/`)
+- LLM makes tool calls via **MCP tools** directly
+- State handlers in `planning.go` and `coding.go` orchestrate the LLM loop
+- Tools registered via `ToolProvider` with the toolloop
+- Iteration limits and escalation managed by toolloop's `EscalationConfig`
+
+### Claude Code Mode
+- Delegates planning/coding to **Claude Code subprocess** running inside the container
+- State handlers in `claudecode_planning.go` and `claudecode_coding.go` manage the subprocess
+- MCP server (`pkg/coder/claude/mcpserver/`) exposes maestro tools to Claude Code
+- Session management allows pause/resume across state transitions
+- Detected via `isClaudeCodeMode()` which checks config AND availability
+
+### Mode Selection
+```
+config.Agents.CoderMode == "claude_code" AND claude --version succeeds in container
+    → Claude Code Mode (claudecode_*.go handlers)
+
+Otherwise
+    → Standard Mode (planning.go, coding.go handlers)
+```
+
+**Current Gap**: This dual-mode architecture works correctly but lacks package-level documentation explaining when each mode is used and the implications for tool availability, session management, and debugging.
+
+---
+
+## Detailed Findings
+
+### 1. Architecture & Responsibilities
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Minor | `driver.go` | File is 1,594 lines with multiple responsibilities | Consider extracting container management helpers and GitHub auth setup into separate files |
+| Minor | `plan_review.go` | Todo collection logic mixed with plan review handling | Consider extracting `requestTodoList` and related functions to a dedicated file |
+| Moderate | `claudecode_*.go` | Dual execution paths lack package-level documentation | Add doc.go or section in CLAUDE.md explaining mode selection and implications |
+
+**Assessment**: Responsibilities are generally well-scoped. The state machine pattern provides clean boundaries between states.
+
+### 2. Correctness & Robustness
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Minor | `prepare_merge.go:76` | String slicing `[:8]` on SHA without length check | Add bounds check: `currentRemoteHEAD[:min(8, len(currentRemoteHEAD))]` |
+| Minor | `clone.go:33-36` | Silent fallback on `filepath.Abs` error | Log warning when falling back to original path |
+| Minor | `await_merge.go:29` | Type assertion without comprehensive type checking | Document expected types or use type switch |
+
+**Assessment**: Error handling is generally robust. Git operations are well-protected with timeouts and proper error categorization.
+
+### 3. Complexity & Readability
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Moderate | `prepare_merge.go` | 568 lines with complex multi-phase merge logic | Split into smaller functions; extract PR creation flow |
+| Minor | `setup.go:174-291` | Container fallback logic is deeply nested | Extract to separate function with early returns |
+
+**Assessment**: Most functions are reasonably sized. The complex merge handling is justified by the problem domain but could be more modular.
+
+### 4. API Design & Encapsulation
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Minor | `coder_fsm.go:118` | `CoderTransitions` exported as mutable global map | Consider making unexported or returning copy |
+| Minor | `coder_fsm.go:237` | `ParseAutoAction` exposed as global variable | Consider function wrapper |
+
+**Assessment**: The package exposes a reasonable API surface. Interfaces are well-designed for testability.
+
+### 5. Tests & Observability
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| **Critical** | `pkg/coder/*.go` | **8.5% test coverage** - critically low | Prioritize testing state handlers |
+| Moderate | `driver_simple_test.go:1` | Entire file marked with `//nolint:all` as "Legacy test file" | Migrate or remove legacy tests |
+| Minor | State access | Custom linter flags potential issues | Run `scripts/lint-state-access.sh` and address findings |
+
+**Assessment**: Test coverage is the most significant risk. Subpackages have better coverage (64-78%).
+
+### 6. Documentation & Comments
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Minor | Package level | No doc.go explaining dual execution modes | Add package documentation |
+| Minor | `clone.go:107-109` | Important bind mount behavior documented inline | Consider adding to package-level doc |
+| Minor | `todo_handlers.go:49-58` | Custom `joinStrings` function | Use `strings.Join` from stdlib |
+
+**Assessment**: Code is well-documented at function level. Package-level documentation for architecture is missing.
+
+### 7. Technical Debt & Lifecycle Health
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Moderate | `planning.go:319-322` | Legacy `processPlanningResult` marked for removal | Remove after confirming no callers |
+| Moderate | `plan_review.go:447-450` | Legacy `processTodoCollectionResult` marked for removal | Remove after confirming no callers |
+| Moderate | `driver.go:725-727` | TODOs for phase token/cost tracking unimplemented | Implement or remove if not needed |
+| Minor | `clone.go:131,186,433` | Three `nolint:dupl` markers indicate duplicate code | Extract shared retry/branch logic |
+| Minor | Various | 40+ nolint directives accumulated | Review each; remove where possible |
+
+**Assessment**: Technical debt is accumulating. Legacy functions should be removed.
+
+### 8. Security & Misuse Resistance
+
+| Severity | Location | Issue | Suggested Improvement |
+|----------|----------|-------|----------------------|
+| Minor | `prepare_merge.go:361-366` | GITHUB_TOKEN passed via environment | Correct practice; no issue |
+| Minor | `code_review.go:193-194` | Git diff truncated at 50KB | Good practice |
+
+**Assessment**: No significant security issues identified.
+
+---
+
+## Dead Code & TODO Inventory
+
+### Dead/Deprecated Code
+1. **`planning.go:276-320`** - `processPlanningResult` marked as legacy, waiting for removal
+2. **`plan_review.go:418-445`** - `processTodoCollectionResult` marked as legacy, waiting for removal
+3. **`driver_simple_test.go`** - Entire file marked legacy with `//nolint:all`
+
+### TODOs Requiring Action
+1. **`driver.go:725`** - `"phase_tokens": 0, // TODO: Track per-phase`
+2. **`driver.go:726`** - `"phase_cost_usd": 0.0, // TODO: Track per-phase`
+3. **`driver.go:727`** - `"total_llm_calls": 0, // TODO: Count calls`
+
+### Nolint Debt Summary
+- **`//nolint:dupl`**: 4 occurrences - duplicate code
+- **`//nolint:unparam`**: 9 occurrences - interface consistency
+- **`//nolint:govet`**: 8 occurrences - struct field alignment choices
+- **`//nolint:unused`**: 2 occurrences - legacy functions awaiting removal
+- **`//nolint:gochecknoglobals`**: 3 occurrences - intentional globals
+
+---
+
+## Action Items
+
+The following items are ordered by logical dependency and priority. Earlier items should generally be completed before later ones where dependencies exist.
+
+### Phase 1: Cleanup & Documentation (Low Risk)
+
+These items remove dead code and improve documentation without changing behavior.
+
+- [ ] **1.1** Remove legacy `processPlanningResult` function from `planning.go:276-320`
+  - Verify no callers exist first
+  - Remove associated nolint directives
+
+- [ ] **1.2** Remove legacy `processTodoCollectionResult` function from `plan_review.go:418-445`
+  - Verify no callers exist first
+  - Remove associated nolint directives
+
+- [ ] **1.3** Replace custom `joinStrings` with `strings.Join` in `todo_handlers.go:49-58`
+  - Simple stdlib replacement
+
+- [ ] **1.4** Add package-level documentation for dual execution modes
+  - Create `pkg/coder/doc.go` OR add section to existing docs
+  - Document: mode selection criteria, tool availability differences, session management, debugging tips
+  - Reference from CLAUDE.md if appropriate
+
+- [ ] **1.5** Run `scripts/lint-state-access.sh` and address findings
+  - Fix any state access pattern violations
+  - Non-blocking but improves consistency
+
+### Phase 2: Code Quality (Low-Medium Risk)
+
+These items improve code quality and reduce technical debt.
+
+- [ ] **2.1** Add bounds check for SHA slicing at `prepare_merge.go:76`
+  - Change `currentRemoteHEAD[:8]` to safe slice with length check
+
+- [ ] **2.2** Add warning log for `filepath.Abs` fallback in `clone.go:33-36`
+  - Silent failures make debugging harder
+
+- [ ] **2.3** Decide on phase token/cost tracking TODOs (`driver.go:725-727`)
+  - Either implement the tracking OR remove the placeholder TODOs
+  - Leaving unimplemented TODOs accumulates debt
+
+- [ ] **2.4** Review and address duplicate code in `clone.go`
+  - Extract shared retry pattern from `createBranch` and `createBranchWithRetry`
+  - May allow removal of `nolint:dupl` directives
+
+- [ ] **2.5** Migrate or remove `driver_simple_test.go`
+  - Currently entirely suppressed with `//nolint:all`
+  - Either update to current APIs or delete if superseded
+
+### Phase 3: Testing (Medium Effort, High Value)
+
+These items address the critical test coverage gap.
+
+- [ ] **3.1** Add tests for `handlePrepareMerge` merge flow
+  - Test: commit, push, PR creation paths
+  - Test: rebase conflict handling
+  - Test: iteration limit enforcement
+
+- [ ] **3.2** Add tests for `handleCodeReview` approval processing
+  - Test: approved, needs_changes, rejected paths
+  - Test: work detection (hasWork vs no work)
+
+- [ ] **3.3** Add tests for `handleSetup` container initialization
+  - Test: container fallback logic
+  - Test: workspace setup paths
+
+- [ ] **3.4** Add tests for merge conflict resolution paths
+  - Test: `detectGitWorkspaceState`
+  - Test: `buildConflictResolutionMessage`
+  - Test: mid-rebase re-entry handling
+
+- [ ] **3.5** Establish coverage target and CI gate
+  - Target: ≥50% for `pkg/coder`
+  - Add coverage reporting to CI if not present
+
+### Phase 4: Refactoring (Medium Risk)
+
+These items improve code organization. Do after tests are in place.
+
+- [ ] **4.1** Extract container management helpers from `driver.go`
+  - Move container-related methods to `driver_container.go` or similar
+  - Reduces `driver.go` size (~200 lines)
+
+- [ ] **4.2** Extract todo collection from `plan_review.go`
+  - `requestTodoList` and related functions could move to `todo_collection.go`
+  - Improves separation of concerns
+
+- [ ] **4.3** Simplify nested container fallback logic in `setup.go:174-291`
+  - Extract to function with early returns
+  - Improves readability
+
+### Phase 5: Nolint Audit (Low Priority)
+
+Review remaining nolint directives after other changes.
+
+- [ ] **5.1** Audit remaining `nolint:dupl` directives
+  - After Phase 2.4, check if duplicates are resolved
+
+- [ ] **5.2** Audit `nolint:unparam` directives
+  - Most are for interface consistency - acceptable
+  - Document reasoning if keeping
+
+- [ ] **5.3** Audit `nolint:govet` field alignment directives
+  - Acceptable for readability choices
+  - Consider if any structs are hot paths worth optimizing
+
+---
+
+## Test Coverage Summary
+
+| Package | Coverage | Status |
+|---------|----------|--------|
+| `pkg/coder` | 8.5% | **Critical** |
+| `pkg/coder/claude` | 64.7% | Acceptable |
+| `pkg/coder/claude/embedded` | 77.8% | Good |
+| `pkg/coder/claude/mcpserver` | 70.6% | Acceptable |
+
+---
+
+## Review Metadata
+
+- **Files Reviewed**: 43 Go files in `pkg/coder/` and subpackages
+- **Total Lines**: ~15,100 lines of Go code
+- **Test Files**: 16 test files
+- **Nolint Directives**: 40+ across package
