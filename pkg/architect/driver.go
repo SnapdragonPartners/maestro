@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -82,10 +83,19 @@ type Driver struct {
 	logger                  *logx.Logger                          // Logger with proper agent prefixing
 	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
 	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
+	gitHubClient            GitHubMergeClient                     // GitHub client for merge operations (nil = create from config)
 	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
 	workDir                 string                                // Workspace directory
+}
+
+// GitHubMergeClient defines the subset of GitHub operations needed for merge requests.
+// This interface allows for testing with mocks.
+type GitHubMergeClient interface {
+	ListPRsForBranch(ctx context.Context, branch string) ([]github.PullRequest, error)
+	CreatePR(ctx context.Context, opts github.PRCreateOptions) (*github.PullRequest, error)
+	MergePRWithResult(ctx context.Context, ref string, opts github.PRMergeOptions) (*github.MergeResult, error)
 }
 
 // ChatServiceInterface defines the interface for chat operations needed by architect.
