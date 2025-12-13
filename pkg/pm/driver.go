@@ -678,15 +678,18 @@ func (d *Driver) StartInterview(expertise string) error {
 
 // UploadSpec accepts an uploaded spec markdown file.
 // This is called by the WebUI when the user uploads a spec file.
-// Runs bootstrap detection and transitions to WORKING if bootstrap questions need answering,
-// or directly to PREVIEW if bootstrap is complete.
-// Idempotent: succeeds if already in PREVIEW with same spec (handles double-submissions).
+// Always transitions to WORKING so PM can validate the spec before preview.
+// Idempotent: succeeds if already processing same spec (handles double-submissions).
 func (d *Driver) UploadSpec(markdown string) error {
-	// Idempotency check: if already in PREVIEW with same spec, succeed silently
+	// Idempotency check: if already in WORKING or PREVIEW with same spec, succeed silently
 	currentState := d.GetCurrentState()
 	stateData := d.GetStateData()
-	if currentState == StatePreview {
-		if existingSpec, ok := stateData["draft_spec_markdown"].(string); ok && existingSpec == markdown {
+	if currentState == StatePreview || currentState == StateWorking {
+		existingSpec, ok := stateData["draft_spec_markdown"].(string)
+		if !ok {
+			existingSpec, _ = stateData[StateKeyUserSpecMd].(string)
+		}
+		if existingSpec == markdown {
 			d.logger.Info("📤 Spec already uploaded (%d bytes) - idempotent success", len(markdown))
 			return nil
 		}
@@ -755,10 +758,11 @@ The user has uploaded a specification file (%d bytes). **Parse this spec to extr
 		}
 	}
 
-	// Decide target state based on bootstrap needs
+	// Always transition to WORKING so PM can validate the uploaded spec
+	// PM will review the spec, check for issues, and call spec_submit when ready
 	ctx := context.Background()
 	if needsBootstrap {
-		// Transition to WORKING so PM can extract bootstrap info from spec and ask missing questions
+		// PM will extract bootstrap info from spec and ask missing questions
 		// PM will use chat_post tool to ask questions, then transition to AWAIT_USER via await_user tool
 		if err := d.TransitionTo(ctx, StateWorking, nil); err != nil {
 			d.logger.Error("❌ Failed to transition to WORKING: %v", err)
@@ -766,13 +770,29 @@ The user has uploaded a specification file (%d bytes). **Parse this spec to extr
 		}
 		d.logger.Info("📤 Spec uploaded (%d bytes) - bootstrap needed, transitioned to WORKING to extract info and fill gaps", len(markdown))
 	} else {
-		// Bootstrap complete - go directly to PREVIEW
-		d.contextManager.AddMessage("system", "User uploaded a specification file. Bootstrap requirements are satisfied. You can answer questions about it if the user clicks 'Continue Interview'.")
-		if err := d.TransitionTo(ctx, StatePreview, nil); err != nil {
-			d.logger.Error("❌ Failed to transition to PREVIEW: %v", err)
-			return fmt.Errorf("failed to transition to PREVIEW: %w", err)
+		// Bootstrap complete - still go to WORKING so PM can validate the spec
+		// PM will review it, check for completeness/clarity, and call spec_submit
+		specMessage := fmt.Sprintf(`# User Uploaded Specification File
+
+The user has uploaded a specification file (%d bytes). Bootstrap requirements are already satisfied.
+
+**Your task:**
+1. Review the uploaded specification for completeness and clarity
+2. Check that all requirements are well-defined and actionable
+3. Identify any ambiguities or missing information
+4. If the spec looks good, use spec_submit to submit it for preview
+5. If clarification is needed, use chat_ask_user to ask the user
+
+**The uploaded specification:**
+`+"```markdown\n%s\n```",
+			len(markdown), markdown)
+
+		d.contextManager.AddMessage("system", specMessage)
+		if err := d.TransitionTo(ctx, StateWorking, nil); err != nil {
+			d.logger.Error("❌ Failed to transition to WORKING: %v", err)
+			return fmt.Errorf("failed to transition to WORKING: %w", err)
 		}
-		d.logger.Info("📤 Spec uploaded (%d bytes) - bootstrap complete, transitioned to PREVIEW", len(markdown))
+		d.logger.Info("📤 Spec uploaded (%d bytes) - bootstrap complete, transitioned to WORKING for PM validation", len(markdown))
 	}
 
 	return nil
