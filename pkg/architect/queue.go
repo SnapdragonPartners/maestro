@@ -120,7 +120,9 @@ func (q *Queue) AddStory(storyID, specID, title, content, storyType string, depe
 	}
 	queuedStory.SetStatus(StatusPending)
 
+	q.mutex.Lock()
 	q.stories[storyID] = queuedStory
+	q.mutex.Unlock()
 
 	// Check if this story or others became ready
 	q.checkAndNotifyReady()
@@ -209,6 +211,9 @@ func (q *Queue) NextReadyStory() *QueuedStory {
 
 // GetReadyStories returns all stories that are ready to be worked on.
 func (q *Queue) GetReadyStories() []*QueuedStory {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
 	var ready []*QueuedStory
 
 	for _, story := range q.stories {
@@ -217,7 +222,7 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 		}
 
 		// Check if all dependencies are completed.
-		if q.areDependenciesMet(story) {
+		if q.areDependenciesMetLocked(story) {
 			ready = append(ready, story)
 		}
 	}
@@ -297,6 +302,21 @@ func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
 		dep, exists := q.stories[depID]
 		if !exists {
 			// Dependency doesn't exist - consider it as not met.
+			return false
+		}
+		if dep.GetStatus() != StatusDone {
+			return false
+		}
+	}
+	return true
+}
+
+// areDependenciesMetLocked is the lock-held version of areDependenciesMet.
+// Must be called with mutex held (read or write).
+func (q *Queue) areDependenciesMetLocked(story *QueuedStory) bool {
+	for _, depID := range story.DependsOn {
+		dep, exists := q.stories[depID]
+		if !exists {
 			return false
 		}
 		if dep.GetStatus() != StatusDone {
@@ -398,12 +418,18 @@ func (q *Queue) SetApprovedPlan(storyID, approvedPlan string) error {
 
 // GetStory returns a story by ID.
 func (q *Queue) GetStory(storyID string) (*QueuedStory, bool) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
 	story, exists := q.stories[storyID]
 	return story, exists
 }
 
 // GetAllStories returns all stories in the queue.
 func (q *Queue) GetAllStories() []*QueuedStory {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
 	stories := make([]*QueuedStory, 0, len(q.stories))
 	for _, story := range q.stories {
 		stories = append(stories, story)
@@ -419,6 +445,9 @@ func (q *Queue) GetAllStories() []*QueuedStory {
 
 // GetStoriesByStatus returns all stories with a specific status.
 func (q *Queue) GetStoriesByStatus(status StoryStatus) []*QueuedStory {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
 	var filtered []*QueuedStory
 	for _, story := range q.stories {
 		if story.GetStatus() == status {
