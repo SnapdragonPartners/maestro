@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -25,20 +26,6 @@ import (
 
 // Tool signal constants - all signals now use centralized constants from tools package.
 // See tools.Signal* constants for the complete list.
-
-// KnowledgeEntry represents a knowledge graph entry to be persisted.
-//
-//nolint:govet // fieldalignment: logical grouping preferred over memory optimization
-type KnowledgeEntry struct {
-	AgentID   string    // Agent that recorded this knowledge
-	StoryID   string    // Story context where this was recorded
-	Category  string    // Knowledge category (architecture, convention, etc.)
-	Title     string    // Brief title for the entry
-	Content   string    // The knowledge content
-	Rationale string    // Why this is important or why decision was made
-	Scope     string    // Applicability: story, spec, project
-	Timestamp time.Time // When this was recorded
-}
 
 // MaintenanceTracker tracks maintenance cycle state.
 //
@@ -87,8 +74,6 @@ type Driver struct {
 	*agent.BaseStateMachine                                       // Embed state machine (provides LLMClient field)
 	agentContexts           map[string]*contextmgr.ContextManager // Per-agent contexts (key: agent_id)
 	contextMutex            sync.RWMutex                          // Protect agentContexts map
-	knowledgeBuffer         []KnowledgeEntry                      // Accumulated knowledge entries for persistence
-	knowledgeMutex          sync.Mutex                            //nolint:unused // Protect knowledgeBuffer (remove nolint when knowledge recording is implemented)
 	maintenance             MaintenanceTracker                    // Maintenance cycle state
 	toolLoop                *toolloop.ToolLoop                    // Tool loop for LLM interactions
 	renderer                *templates.Renderer                   // Template renderer for prompts
@@ -98,10 +83,21 @@ type Driver struct {
 	logger                  *logx.Logger                          // Logger with proper agent prefixing
 	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
 	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
+	gitHubClient            GitHubMergeClient                     // GitHub client for merge operations (nil = create from config)
+	shutdownCtx             context.Context                       //nolint:containedctx // Driver-level context for graceful shutdown of background tasks
+	shutdownCancel          context.CancelFunc                    // Cancel function for shutdownCtx
 	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
 	workDir                 string                                // Workspace directory
+}
+
+// GitHubMergeClient defines the subset of GitHub operations needed for merge requests.
+// This interface allows for testing with mocks.
+type GitHubMergeClient interface {
+	ListPRsForBranch(ctx context.Context, branch string) ([]github.PullRequest, error)
+	CreatePR(ctx context.Context, opts github.PRCreateOptions) (*github.PullRequest, error)
+	MergePRWithResult(ctx context.Context, ref string, opts github.PRMergeOptions) (*github.MergeResult, error)
 }
 
 // ChatServiceInterface defines the interface for chat operations needed by architect.
@@ -166,10 +162,12 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 	// Create BaseStateMachine with architect transition table
 	sm := agent.NewBaseStateMachine(architectID, StateWaiting, nil, architectTransitions)
 
+	// Create driver-level context for graceful shutdown of background tasks
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+
 	return &Driver{
 		BaseStateMachine:   sm,
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
-		knowledgeBuffer:    make([]KnowledgeEntry, 0),                   // Initialize knowledge buffer
 		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
@@ -178,6 +176,8 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		dispatcher:         dispatcher,
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
+		shutdownCtx:        shutdownCtx,
+		shutdownCancel:     shutdownCancel,
 		// Channels will be set during Attach()
 		questionsCh: nil,
 		replyCh:     nil,
@@ -351,13 +351,13 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 	}
 
 	// Build template data with story information
+	// Note: Knowledge packs are delivered via request content, not via story records
 	data := &templates.TemplateData{
 		Extra: map[string]any{
 			"AgentID":        agentID,
 			"StoryID":        storyID,
 			"StoryTitle":     story.Title,
 			"StoryContent":   story.Content,
-			"KnowledgePack":  story.KnowledgePack,
 			"SpecID":         story.SpecID,
 			"ClaudeCodeMode": claudeCodeMode,
 		},
@@ -425,6 +425,12 @@ func (d *Driver) GetStoryID() string {
 
 // Shutdown implements Agent interface with context.
 func (d *Driver) Shutdown(ctx context.Context) error {
+	// Cancel driver-level context to stop background tasks (e.g., maintenance)
+	if d.shutdownCancel != nil {
+		d.logger.Info("Cancelling background tasks")
+		d.shutdownCancel()
+	}
+
 	// Stop architect container executor
 	if d.executor != nil {
 		d.logger.Info("Stopping architect container executor")
@@ -489,7 +495,7 @@ func (d *Driver) Run(ctx context.Context) error {
 	go d.processRequeueRequests(ctx)
 
 	// Initialize state data
-	d.SetStateData("started_at", time.Now().UTC())
+	d.SetStateData(StateKeyStartedAt, time.Now().UTC())
 
 	// Run the state machine loop.
 	for {
@@ -702,7 +708,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				requeueRequest.StoryID, requeueRequest.AgentID, requeueRequest.Reason)
 
 			// Get story and increment attempt count
-			story, exists := d.queue.stories[requeueRequest.StoryID]
+			story, exists := d.queue.GetStory(requeueRequest.StoryID)
 			if !exists {
 				d.logger.Error("❌ Story %s not found for requeue", requeueRequest.StoryID)
 				continue
@@ -721,7 +727,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					requeueRequest.StoryID, story.AttemptCount, requeueRequest.Reason)
 
 				// Mark story as failed
-				story.SetStatus(StatusFailed)
+				if err := story.SetStatus(StatusFailed); err != nil {
+					d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
+				}
 
 				// Transition architect to ERROR state
 				if transErr := d.TransitionTo(ctx, StateError, map[string]any{

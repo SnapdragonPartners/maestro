@@ -77,7 +77,9 @@ func TestStatusFailed(t *testing.T) {
 		},
 	}
 
-	story.SetStatus(StatusFailed)
+	if err := story.SetStatus(StatusFailed); err != nil {
+		t.Errorf("SetStatus should not fail for pending story: %v", err)
+	}
 	if story.GetStatus() != StatusFailed {
 		t.Errorf("Story status should be '%s' after SetStatus, got '%s'", StatusFailed, story.GetStatus())
 	}

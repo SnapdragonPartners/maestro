@@ -220,20 +220,28 @@ The knowledge graph is critical for architectural consistency. Take time to merg
 
 // attemptPRMerge attempts to merge a PR using the centralized GitHub client.
 func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID string) (*MergeAttemptResult, error) {
-	// Get GitHub client from config (pure API calls, no workdir needed)
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-	if cfg.Git == nil || cfg.Git.RepoURL == "" {
-		return nil, fmt.Errorf("git repo_url not configured")
-	}
+	// Get config for target branch lookup (needed for PR creation)
+	cfg, cfgErr := config.GetConfig()
 
-	ghClient, err := github.NewClientFromRemote(cfg.Git.RepoURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GitHub client: %w", err)
+	// Use injected client if available (for testing), otherwise create from config
+	var ghClient GitHubMergeClient
+	if d.gitHubClient != nil {
+		ghClient = d.gitHubClient
+	} else {
+		// Get GitHub client from config (pure API calls, no workdir needed)
+		if cfgErr != nil {
+			return nil, fmt.Errorf("failed to get config: %w", cfgErr)
+		}
+		if cfg.Git == nil || cfg.Git.RepoURL == "" {
+			return nil, fmt.Errorf("git repo_url not configured")
+		}
+
+		client, err := github.NewClientFromRemote(cfg.Git.RepoURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GitHub client: %w", err)
+		}
+		ghClient = client.WithTimeout(2 * time.Minute)
 	}
-	ghClient = ghClient.WithTimeout(2 * time.Minute)
 
 	// Determine the PR reference (URL or branch)
 	var prRef string
@@ -247,9 +255,9 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 		if listErr != nil || len(prs) == 0 {
 			// No PR found, create one
 			d.logger.Info("🔀 No existing PR found, creating new PR for branch: %s", branchName)
-			targetBranch := cfg.Git.TargetBranch
-			if targetBranch == "" {
-				targetBranch = github.DefaultBranch
+			targetBranch := github.DefaultBranch
+			if cfgErr == nil && cfg.Git != nil && cfg.Git.TargetBranch != "" {
+				targetBranch = cfg.Git.TargetBranch
 			}
 			pr, createErr := ghClient.CreatePR(ctx, github.PRCreateOptions{
 				Title: fmt.Sprintf("Story merge: %s", storyID),

@@ -38,7 +38,7 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 			return StateMonitoring, nil
 		}
 		// Store the question for processing in REQUEST state.
-		d.SetStateData("current_request", questionMsg)
+		d.SetStateData(StateKeyCurrentRequest, questionMsg)
 		return StateRequest, nil
 
 	case <-time.After(HeartbeatInterval):
@@ -46,6 +46,6 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 		return StateMonitoring, nil
 
 	case <-ctx.Done():
-		return StateError, fmt.Errorf("architect dispatching cancelled: %w", ctx.Err())
+		return StateError, fmt.Errorf("architect monitoring cancelled: %w", ctx.Err())
 	}
 }

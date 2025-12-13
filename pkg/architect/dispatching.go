@@ -17,7 +17,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	stateData := d.GetStateData()
 
 	// Initialize queue if not already done.
-	if _, exists := stateData["queue_initialized"]; !exists {
+	if _, exists := stateData[StateKeyQueueInitialized]; !exists {
 		d.logger.Info("🚀 DISPATCHING: Initializing queue (recovery scenario)")
 		// Queue should already be populated during SCOPING phase
 		// Only load from database if this is a recovery scenario
@@ -33,14 +33,14 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 			return StateError, fmt.Errorf("critical: failed to persist queue state: %w", err)
 		}
 
-		d.SetStateData("queue_initialized", true)
-		d.SetStateData("queue_management_completed_at", time.Now().UTC())
+		d.SetStateData(StateKeyQueueInitialized, true)
+		d.SetStateData(StateKeyQueueMgmtCompleted, time.Now().UTC())
 
 		// Get queue summary for logging.
 		summary := d.queue.GetQueueSummary()
 		d.logger.Info("🚀 DISPATCHING: queue initialized - %d stories (%d ready)",
 			summary["total_stories"], summary["ready_stories"])
-		d.SetStateData("queue_summary", summary)
+		d.SetStateData(StateKeyQueueSummary, summary)
 	}
 
 	// Log current queue state for debugging
@@ -95,7 +95,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 // dispatchReadyStory assigns a ready story to an available agent.
 func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 	// Get the story from queue.
-	story, exists := d.queue.stories[storyID]
+	story, exists := d.queue.GetStory(storyID)
 	if !exists {
 		return fmt.Errorf("story %s not found in queue", storyID)
 	}
@@ -118,7 +118,7 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 	payloadData := make(map[string]any)
 
 	// Get story details.
-	if story, exists := d.queue.stories[storyID]; exists {
+	if story, exists := d.queue.GetStory(storyID); exists {
 		payloadData[proto.KeyTitle] = story.Title
 		payloadData[proto.KeyEstimatedPoints] = story.EstimatedPoints
 		payloadData[proto.KeyDependsOn] = story.DependsOn
@@ -134,9 +134,8 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		}
 		payloadData[proto.KeyContent] = content
 
-		// Parse requirements from content if available
-		requirements := []string{} // TODO: Extract requirements from story content during SCOPING
-		payloadData[proto.KeyRequirements] = requirements
+		// Requirements are embedded in story content - no separate extraction needed
+		payloadData[proto.KeyRequirements] = []string{}
 	}
 
 	// Set typed story payload
@@ -321,7 +320,7 @@ func (d *Driver) persistQueueState() error {
 	}
 
 	// Store queue data in state data for persistence.
-	d.SetStateData("queue_json", string(queueData))
+	d.SetStateData(StateKeyQueueJSON, string(queueData))
 
 	return nil
 }

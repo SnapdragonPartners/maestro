@@ -31,6 +31,22 @@ const (
 	// Hotfix tracking.
 	StateKeyHotfixQueued = "hotfix_queued" // bool - hotfix stories were queued
 	StateKeyHotfixCount  = "hotfix_count"  // int - number of hotfix stories queued
+
+	// Queue tracking.
+	StateKeyQueueInitialized   = "queue_initialized"             // bool - queue has been initialized
+	StateKeyQueueMgmtCompleted = "queue_management_completed_at" // time.Time - when queue management completed
+	StateKeyQueueSummary       = "queue_summary"                 // string - queue summary text
+	StateKeyQueueJSON          = "queue_json"                    // string - JSON representation of queue
+
+	// Story generation tracking.
+	StateKeySpecID              = "spec_id"               // string - spec ID being processed
+	StateKeyStoryIDs            = "story_ids"             // []string - generated story IDs
+	StateKeyStoriesGenerated    = "stories_generated"     // bool - stories have been generated
+	StateKeyStoriesCount        = "stories_count"         // int - number of stories generated
+	StateKeyContainerRetryCount = "container_retry_count" // int - container dependency retry count
+
+	// Lifecycle tracking.
+	StateKeyStartedAt = "started_at" // time.Time - when architect started
 )
 
 // Dynamic state key patterns (use with fmt.Sprintf).

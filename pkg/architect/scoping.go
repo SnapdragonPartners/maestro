@@ -28,9 +28,6 @@ type Requirement struct {
 	StoryType          string            `json:"story_type"` // "devops" or "app"
 }
 
-// Note: handleScoping, parseSpecWithLLM, getSpecFileFromMessage, and loadArchitecturalKnowledge
-// have been removed - specs now come through REQUEST messages and are processed in handleSpecReview().
-
 // requirementToStoryContent converts a requirement to story title and rich markdown content.
 // This is the single source of truth for how LLM requirements become story content.
 func (d *Driver) requirementToStoryContent(req *Requirement) (string, string) {
@@ -219,10 +216,10 @@ func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdo
 	}
 
 	// 8. Store completion state
-	d.SetStateData("spec_id", specID)
-	d.SetStateData("story_ids", storyIDs)
-	d.SetStateData("stories_generated", true)
-	d.SetStateData("stories_count", len(storyIDs))
+	d.SetStateData(StateKeySpecID, specID)
+	d.SetStateData(StateKeyStoryIDs, storyIDs)
+	d.SetStateData(StateKeyStoriesGenerated, true)
+	d.SetStateData(StateKeyStoriesCount, len(storyIDs))
 
 	d.logger.Info("✅ Loaded %d stories from spec (spec_id: %s)", len(storyIDs), specID)
 	return specID, storyIDs, nil
@@ -305,7 +302,7 @@ func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
 
 	// Get retry counter from state data (0 if not set)
 	retryCount := 0
-	if retryData, exists := stateData["container_retry_count"]; exists {
+	if retryData, exists := stateData[StateKeyContainerRetryCount]; exists {
 		if count, ok := retryData.(int); ok {
 			retryCount = count
 		}
@@ -322,7 +319,7 @@ func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
 	d.logger.Warn("🔄 RETRY ATTEMPT %d: Re-running story generation with enhanced container guidance", retryCount+1)
 
 	// Increment retry counter for enhanced guidance in the next iteration
-	d.SetStateData("container_retry_count", retryCount+1)
+	d.SetStateData(StateKeyContainerRetryCount, retryCount+1)
 
 	// Return special error that triggers retry flow
 	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")
