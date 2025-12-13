@@ -65,18 +65,11 @@ const (
 	StateKeySpecUploaded = "spec_uploaded"
 	// StateKeyBootstrapParams stores bootstrap parameters from the bootstrap phase.
 	StateKeyBootstrapParams = "bootstrap_params"
-	// StateKeyPendingRequestID stores the ID of a pending request to architect.
-	StateKeyPendingRequestID = "pending_request_id"
 	// StateKeyTurnCount tracks the number of conversation turns.
 	StateKeyTurnCount = "turn_count"
-
-	// Hotfix-related state keys
-	// StateKeyHotfixAnalysis stores the analysis from a hotfix submission.
-	StateKeyHotfixAnalysis = "hotfix_analysis"
-	// StateKeyHotfixPlatform stores the platform for a hotfix.
-	StateKeyHotfixPlatform = "hotfix_platform"
-	// StateKeyHotfixRequirements stores the requirements for a hotfix.
-	StateKeyHotfixRequirements = "hotfix_requirements"
+	// StateKeyIsHotfix indicates the current spec submission is a hotfix.
+	// Set when spec_submit(hotfix=true) is called, cleared on approval.
+	StateKeyIsHotfix = "is_hotfix"
 )
 
 // Driver implements the PM (Product Manager) agent.
@@ -399,11 +392,6 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 	// Spec needs changes - architect sent feedback
 	d.logger.Info("📝 Spec requires changes (status=%v) - feedback from architect: %s",
 		approvalResult.Status, approvalResult.Feedback)
-
-	// Clear pending request from state
-	if _, hasPending := utils.GetStateValue[string](d.BaseStateMachine, StateKeyPendingRequestID); hasPending {
-		d.SetStateData(StateKeyPendingRequestID, nil)
-	}
 
 	// Inject submitted spec and architect feedback into LLM context
 	// Both are added as user messages so they persist across LLM calls
@@ -840,16 +828,31 @@ func (d *Driver) PreviewAction(ctx context.Context, action string) error {
 			return fmt.Errorf("no spec to submit - user_spec_md is empty")
 		}
 
-		// Send REQUEST to architect
-		err := d.sendSpecApprovalRequest(ctx)
-		if err != nil {
-			d.logger.Error("❌ Failed to send spec approval request: %v", err)
-			_ = d.TransitionTo(ctx, proto.StateError, nil)
-			return fmt.Errorf("failed to send approval request: %w", err)
+		// Check if this is a hotfix submission
+		isHotfix := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyIsHotfix, false)
+
+		var err error
+		if isHotfix {
+			// Hotfixes jump the line - send directly to architect's hotfix handler
+			err = d.sendHotfixRequest(ctx)
+			if err != nil {
+				d.logger.Error("❌ Failed to send hotfix request: %v", err)
+				_ = d.TransitionTo(ctx, proto.StateError, nil)
+				return fmt.Errorf("failed to send hotfix request: %w", err)
+			}
+			d.logger.Info("🔧 Hotfix submitted to architect - transitioned to AWAIT_ARCHITECT")
+		} else {
+			// Normal specs go through approval flow
+			err = d.sendSpecApprovalRequest(ctx)
+			if err != nil {
+				d.logger.Error("❌ Failed to send spec approval request: %v", err)
+				_ = d.TransitionTo(ctx, proto.StateError, nil)
+				return fmt.Errorf("failed to send approval request: %w", err)
+			}
+			d.logger.Info("✅ Spec submitted to architect - transitioned to AWAIT_ARCHITECT")
 		}
 
 		_ = d.TransitionTo(ctx, StateAwaitArchitect, nil)
-		d.logger.Info("✅ Spec submitted to architect - transitioned to AWAIT_ARCHITECT")
 		return nil
 
 	default:

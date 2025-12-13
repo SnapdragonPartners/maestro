@@ -10,7 +10,6 @@ const (
 	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE"
 	SignalSpecPreview       = "SPEC_PREVIEW"
 	SignalAwaitUser         = "AWAIT_USER"
-	SignalHotfixSubmit      = "HOTFIX_SUBMIT"
 )
 
 // WorkingResult contains the outcome of PM's working phase toolloop.

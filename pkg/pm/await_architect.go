@@ -75,6 +75,8 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			d.SetStateData(StateKeyBootstrapRequirements, nil)
 			d.SetStateData(StateKeyDetectedPlatform, nil)
 			d.SetStateData(StateKeyBootstrapParams, nil)
+			d.SetStateData(StateKeyIsHotfix, nil)
+			d.SetStateData(StateKeyTurnCount, nil)
 
 			// Mark that development is in flight - only hotfixes allowed now
 			d.SetStateData(StateKeyInFlight, true)
