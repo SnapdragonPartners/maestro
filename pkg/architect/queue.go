@@ -300,22 +300,7 @@ func (q *Queue) GetUniqueSpecIDs() []string {
 	return result
 }
 
-// areDependenciesMet checks if all dependencies for a story are completed.
-func (q *Queue) areDependenciesMet(story *QueuedStory) bool {
-	for _, depID := range story.DependsOn {
-		dep, exists := q.stories[depID]
-		if !exists {
-			// Dependency doesn't exist - consider it as not met.
-			return false
-		}
-		if dep.GetStatus() != StatusDone {
-			return false
-		}
-	}
-	return true
-}
-
-// areDependenciesMetLocked is the lock-held version of areDependenciesMet.
+// areDependenciesMetLocked checks if all dependencies for a story are completed.
 // Must be called with mutex held (read or write).
 func (q *Queue) areDependenciesMetLocked(story *QueuedStory) bool {
 	for _, depID := range story.DependsOn {
@@ -331,20 +316,29 @@ func (q *Queue) areDependenciesMetLocked(story *QueuedStory) bool {
 }
 
 // checkAndNotifyReady checks for stories that became ready and notifies via channel.
+// Must be called without holding the lock - it acquires its own read lock.
 func (q *Queue) checkAndNotifyReady() {
 	if q.readyStoryCh == nil {
 		return // Channel not set, skip notifications
 	}
 
+	// Collect ready story IDs while holding the read lock
+	q.mutex.RLock()
+	var readyIDs []string
 	for _, story := range q.stories {
-		if story.GetStatus() == StatusPending && q.areDependenciesMet(story) {
-			// Try to notify (non-blocking).
-			select {
-			case q.readyStoryCh <- story.ID:
-				logx.Infof("queue: notified that story %s is ready", story.ID)
-			default:
-				// Channel full, that's OK - the dispatcher will check again.
-			}
+		if story.GetStatus() == StatusPending && q.areDependenciesMetLocked(story) {
+			readyIDs = append(readyIDs, story.ID)
+		}
+	}
+	q.mutex.RUnlock()
+
+	// Notify outside the lock to avoid blocking other operations
+	for _, storyID := range readyIDs {
+		select {
+		case q.readyStoryCh <- storyID:
+			logx.Infof("queue: notified that story %s is ready", storyID)
+		default:
+			// Channel full, that's OK - the dispatcher will check again.
 		}
 	}
 }

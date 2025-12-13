@@ -67,8 +67,13 @@ func (d *Driver) triggerMaintenanceCycle(ctx context.Context, cfg *config.Mainte
 	// Run programmatic tasks in goroutine to not block the request handler.
 	// Use driver-level context so maintenance is cancelled on graceful shutdown,
 	// but continues after the triggering request completes.
+	// Fall back to Background() if shutdownCtx is nil (e.g., in tests with struct literal construction).
+	maintenanceCtx := d.shutdownCtx
+	if maintenanceCtx == nil {
+		maintenanceCtx = context.Background()
+	}
 	//nolint:contextcheck // Intentionally using driver context, not request context
-	go d.runMaintenanceTasks(d.shutdownCtx, cycleID, cfg)
+	go d.runMaintenanceTasks(maintenanceCtx, cycleID, cfg)
 
 	// Mark that we used the parent context (satisfies linter)
 	_ = ctx
