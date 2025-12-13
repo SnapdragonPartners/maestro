@@ -95,7 +95,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 // dispatchReadyStory assigns a ready story to an available agent.
 func (d *Driver) dispatchReadyStory(ctx context.Context, storyID string) error {
 	// Get the story from queue.
-	story, exists := d.queue.stories[storyID]
+	story, exists := d.queue.GetStory(storyID)
 	if !exists {
 		return fmt.Errorf("story %s not found in queue", storyID)
 	}
@@ -118,7 +118,7 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 	payloadData := make(map[string]any)
 
 	// Get story details.
-	if story, exists := d.queue.stories[storyID]; exists {
+	if story, exists := d.queue.GetStory(storyID); exists {
 		payloadData[proto.KeyTitle] = story.Title
 		payloadData[proto.KeyEstimatedPoints] = story.EstimatedPoints
 		payloadData[proto.KeyDependsOn] = story.DependsOn

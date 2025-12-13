@@ -28,9 +28,6 @@ type Requirement struct {
 	StoryType          string            `json:"story_type"` // "devops" or "app"
 }
 
-// Note: handleScoping, parseSpecWithLLM, getSpecFileFromMessage, and loadArchitecturalKnowledge
-// have been removed - specs now come through REQUEST messages and are processed in handleSpecReview().
-
 // requirementToStoryContent converts a requirement to story title and rich markdown content.
 // This is the single source of truth for how LLM requirements become story content.
 func (d *Driver) requirementToStoryContent(req *Requirement) (string, string) {

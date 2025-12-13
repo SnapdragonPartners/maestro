@@ -685,7 +685,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				requeueRequest.StoryID, requeueRequest.AgentID, requeueRequest.Reason)
 
 			// Get story and increment attempt count
-			story, exists := d.queue.stories[requeueRequest.StoryID]
+			story, exists := d.queue.GetStory(requeueRequest.StoryID)
 			if !exists {
 				d.logger.Error("❌ Story %s not found for requeue", requeueRequest.StoryID)
 				continue
