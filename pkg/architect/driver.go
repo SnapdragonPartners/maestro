@@ -26,20 +26,6 @@ import (
 // Tool signal constants - all signals now use centralized constants from tools package.
 // See tools.Signal* constants for the complete list.
 
-// KnowledgeEntry represents a knowledge graph entry to be persisted.
-//
-//nolint:govet // fieldalignment: logical grouping preferred over memory optimization
-type KnowledgeEntry struct {
-	AgentID   string    // Agent that recorded this knowledge
-	StoryID   string    // Story context where this was recorded
-	Category  string    // Knowledge category (architecture, convention, etc.)
-	Title     string    // Brief title for the entry
-	Content   string    // The knowledge content
-	Rationale string    // Why this is important or why decision was made
-	Scope     string    // Applicability: story, spec, project
-	Timestamp time.Time // When this was recorded
-}
-
 // MaintenanceTracker tracks maintenance cycle state.
 //
 //nolint:govet // Simple tracking struct
@@ -87,8 +73,6 @@ type Driver struct {
 	*agent.BaseStateMachine                                       // Embed state machine (provides LLMClient field)
 	agentContexts           map[string]*contextmgr.ContextManager // Per-agent contexts (key: agent_id)
 	contextMutex            sync.RWMutex                          // Protect agentContexts map
-	knowledgeBuffer         []KnowledgeEntry                      // Accumulated knowledge entries for persistence
-	knowledgeMutex          sync.Mutex                            //nolint:unused // Protect knowledgeBuffer (remove nolint when knowledge recording is implemented)
 	maintenance             MaintenanceTracker                    // Maintenance cycle state
 	toolLoop                *toolloop.ToolLoop                    // Tool loop for LLM interactions
 	renderer                *templates.Renderer                   // Template renderer for prompts
@@ -169,7 +153,6 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 	return &Driver{
 		BaseStateMachine:   sm,
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
-		knowledgeBuffer:    make([]KnowledgeEntry, 0),                   // Initialize knowledge buffer
 		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
@@ -351,13 +334,13 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 	}
 
 	// Build template data with story information
+	// Note: Knowledge packs are delivered via request content, not via story records
 	data := &templates.TemplateData{
 		Extra: map[string]any{
 			"AgentID":        agentID,
 			"StoryID":        storyID,
 			"StoryTitle":     story.Title,
 			"StoryContent":   story.Content,
-			"KnowledgePack":  story.KnowledgePack,
 			"SpecID":         story.SpecID,
 			"ClaudeCodeMode": claudeCodeMode,
 		},

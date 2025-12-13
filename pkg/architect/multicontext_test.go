@@ -84,14 +84,16 @@ func TestGetContextForAgent_Concurrent(t *testing.T) {
 // The functionality is tested through buildSystemPrompt which is the core logic.
 
 // TestBuildSystemPrompt verifies system prompt generation with story context.
+// Note: Knowledge packs are delivered via request content (templates), not via story records.
+// See docs/TESTING_STRATEGY.md and docs/DOC_GRAPH.md for knowledge pack flow details.
 func TestBuildSystemPrompt(t *testing.T) {
 	queue := NewQueue(nil)
 	testStory := &persistence.Story{
-		ID:            "story-xyz",
-		SpecID:        "spec-abc",
-		Title:         "Implement Authentication",
-		Content:       "Add JWT-based authentication to the API",
-		KnowledgePack: "Knowledge: Use bcrypt for password hashing",
+		ID:      "story-xyz",
+		SpecID:  "spec-abc",
+		Title:   "Implement Authentication",
+		Content: "Add JWT-based authentication to the API",
+		// Note: KnowledgePack field on story is not used - packs come via request content
 	}
 	queuedStory := NewQueuedStory(testStory)
 	queue.stories["story-xyz"] = queuedStory
@@ -114,7 +116,6 @@ func TestBuildSystemPrompt(t *testing.T) {
 	assert.Contains(t, prompt, "spec-abc", "should contain spec ID")
 	assert.Contains(t, prompt, "Implement Authentication", "should contain story title")
 	assert.Contains(t, prompt, "JWT-based authentication", "should contain story content")
-	assert.Contains(t, prompt, "bcrypt for password hashing", "should contain knowledge pack")
 	assert.Contains(t, prompt, "architect", "should mention architect role")
 	assert.Contains(t, prompt, "submit_reply", "should mention submit_reply tool")
 	assert.Contains(t, prompt, "review_complete", "should mention review_complete tool")
