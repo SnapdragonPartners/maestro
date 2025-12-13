@@ -71,6 +71,13 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	// If no stories are ready and all are completed, we're done.
 	if d.queue.AllStoriesCompleted() {
 		d.logger.Info("🚀 DISPATCHING → DONE: All stories completed successfully")
+
+		// Send AllStoriesComplete notification to PM
+		if err := d.notifyPMAllStoriesComplete(ctx); err != nil {
+			d.logger.Warn("⚠️ Failed to notify PM of all stories complete: %v", err)
+			// Continue anyway - this is not a fatal error
+		}
+
 		return StateDone, nil
 	}
 

@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-all test-coverage check-coverage lint run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
+.PHONY: build test test-integration test-all test-coverage check-coverage lint lint-state run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -112,6 +112,11 @@ lint-docs:
 		fi; \
 	done
 	@echo "Documentation lint completed"
+
+# Lint state access patterns (type assertions and magic strings)
+lint-state:
+	@echo "🔍 Linting state access patterns..."
+	@./scripts/lint-state-access.sh ./pkg
 
 # Run the orchestrator with banner
 run: build-css build

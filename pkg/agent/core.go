@@ -63,6 +63,7 @@ type (
 // Re-export essential constants.
 const (
 	ArchitectMaxTokens = llm.ArchitectMaxTokens
+	PMMaxTokens        = llm.PMMaxTokens
 	RoleUser           = llm.RoleUser
 	RoleAssistant      = llm.RoleAssistant
 	RoleSystem         = llm.RoleSystem

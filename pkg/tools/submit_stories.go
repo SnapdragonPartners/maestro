@@ -27,7 +27,6 @@ func (t *SubmitStoriesTool) PromptDocumentation() string {
     - analysis (string, REQUIRED) - Brief summary of spec analysis and identified platform
     - platform (string, REQUIRED) - Identified platform (e.g., "go", "python", "nodejs")
     - requirements (array, REQUIRED) - Array of requirement objects with title, description, acceptance_criteria, dependencies, and story_type
-    - hotfix (boolean, OPTIONAL) - If true, routes stories to the hotfix queue (generally 1 story for hotfixes)
     - maintenance (boolean, OPTIONAL) - If true, routes stories to the maintenance queue with auto-merge enabled
   - Call this when you have completed spec analysis and extracted all requirements`
 }
@@ -36,7 +35,7 @@ func (t *SubmitStoriesTool) PromptDocumentation() string {
 func (t *SubmitStoriesTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        ToolSubmitStories,
-		Description: "Submit the analyzed requirements as structured stories. Call this when you have completed spec analysis and extracted all implementable requirements. Use hotfix=true to route stories to the dedicated hotfix queue.",
+		Description: "Submit the analyzed requirements as structured stories. Call this when you have completed spec analysis and extracted all implementable requirements.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -83,10 +82,6 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 							},
 						},
 					},
-				},
-				"hotfix": {
-					Type:        "boolean",
-					Description: "If true, routes stories to the dedicated hotfix queue (generally 1 story for hotfixes)",
 				},
 				"maintenance": {
 					Type:        "boolean",
@@ -144,12 +139,6 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 		}
 	}
 
-	// Check for hotfix flag (optional, defaults to false)
-	isHotfix := false
-	if hotfix, ok := args["hotfix"].(bool); ok {
-		isHotfix = hotfix
-	}
-
 	// Check for maintenance flag (optional, defaults to false)
 	isMaintenance := false
 	if maint, ok := args["maintenance"].(bool); ok {
@@ -157,15 +146,11 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 	}
 
 	// Determine signal and queue type based on flags
-	// Priority: maintenance > hotfix > normal
 	signal := SignalStoriesSubmitted
 	queueType := "main"
 	if isMaintenance {
 		signal = SignalMaintenanceSubmitted
 		queueType = "maintenance"
-	} else if isHotfix {
-		signal = SignalHotfixSubmit
-		queueType = "hotfix"
 	}
 
 	// Return human-readable message for LLM context
@@ -178,7 +163,6 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 				"analysis":     analysis,
 				"platform":     platform,
 				"requirements": requirements,
-				"hotfix":       isHotfix,
 				"maintenance":  isMaintenance,
 			},
 		},

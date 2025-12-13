@@ -327,10 +327,10 @@ func (c *Coder) processPlanningResult(sm *agent.BaseStateMachine, result *Planni
 //nolint:unparam // error return reserved for future validation logic
 func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData map[string]any) error {
 	// Extract plan data from effect
-	plan, _ := effectData["plan"].(string)
-	confidence, _ := effectData["confidence"].(string)
-	explorationSummary, _ := effectData["exploration_summary"].(string)
-	knowledgePack, _ := effectData["knowledge_pack"].(string)
+	plan := utils.GetMapFieldOr[string](effectData, "plan", "")
+	confidence := utils.GetMapFieldOr[string](effectData, "confidence", "")
+	explorationSummary := utils.GetMapFieldOr[string](effectData, "exploration_summary", "")
+	knowledgePack := utils.GetMapFieldOr[string](effectData, "knowledge_pack", "")
 
 	if plan == "" {
 		return fmt.Errorf("plan is required in ProcessEffect.Data")
@@ -377,9 +377,9 @@ func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData
 //nolint:unparam // error return reserved for future validation logic
 func (c *Coder) processStoryCompleteDataFromEffect(sm *agent.BaseStateMachine, effectData map[string]any) error {
 	// Extract story complete data from effect
-	evidence, _ := effectData["evidence"].(string)
-	confidence, _ := effectData["confidence"].(string)
-	explorationSummary, _ := effectData["exploration_summary"].(string)
+	evidence := utils.GetMapFieldOr[string](effectData, "evidence", "")
+	confidence := utils.GetMapFieldOr[string](effectData, "confidence", "")
+	explorationSummary := utils.GetMapFieldOr[string](effectData, "exploration_summary", "")
 
 	if evidence == "" {
 		return fmt.Errorf("evidence is required in ProcessEffect.Data")

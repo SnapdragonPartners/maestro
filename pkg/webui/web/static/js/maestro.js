@@ -1,5 +1,5 @@
 // Maestro Web UI JavaScript
-const MAESTRO_UI_VERSION = 'v0.1.8-demo';
+// Version is fetched from /api/healthz endpoint (set by pkg/version at build time)
 
 class MaestroUI {
     constructor() {
@@ -35,10 +35,21 @@ class MaestroUI {
         };
     }
 
-    updateVersion() {
+    async updateVersion() {
         const versionElement = document.getElementById('ui-version');
-        if (versionElement) {
-            versionElement.textContent = MAESTRO_UI_VERSION;
+        if (!versionElement) return;
+
+        try {
+            const response = await fetch('/api/healthz');
+            if (response.ok) {
+                const data = await response.json();
+                versionElement.textContent = data.version || 'unknown';
+            } else {
+                versionElement.textContent = 'error';
+            }
+        } catch (error) {
+            console.error('Failed to fetch version:', error);
+            versionElement.textContent = 'offline';
         }
     }
 

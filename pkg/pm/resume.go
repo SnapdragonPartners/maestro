@@ -21,44 +21,13 @@ func (d *Driver) SerializeState(_ context.Context, db *sql.DB, sessionID string)
 	currentState := d.GetCurrentState()
 
 	// Serialize spec content from state data.
-	// Priority: draft_spec_markdown (in-progress) > spec_markdown (approved)
 	var specContent *string
-	if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "draft_spec_markdown", ""); spec != "" {
-		specContent = &spec
-	} else if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "spec_markdown", ""); spec != "" {
+	if spec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, ""); spec != "" {
 		specContent = &spec
 	}
 
 	// Serialize bootstrap params from state data.
-	var bootstrapParamsJSON *string
-	stateData := d.GetStateData()
-
-	// Collect bootstrap-related state data.
-	bootstrapParams := make(map[string]any)
-	if hasRepo, ok := stateData[StateKeyHasRepository].(bool); ok {
-		bootstrapParams[StateKeyHasRepository] = hasRepo
-	}
-	if expertise, ok := stateData[StateKeyUserExpertise].(string); ok {
-		bootstrapParams[StateKeyUserExpertise] = expertise
-	}
-	if requirements, ok := stateData[StateKeyBootstrapRequirements]; ok {
-		bootstrapParams[StateKeyBootstrapRequirements] = requirements
-	}
-	if platform, ok := stateData[StateKeyDetectedPlatform].(string); ok {
-		bootstrapParams[StateKeyDetectedPlatform] = platform
-	}
-	if devInProgress, ok := stateData[StateKeyDevelopmentInProgress].(bool); ok {
-		bootstrapParams[StateKeyDevelopmentInProgress] = devInProgress
-	}
-
-	if len(bootstrapParams) > 0 {
-		data, err := json.Marshal(bootstrapParams)
-		if err != nil {
-			return fmt.Errorf("failed to marshal bootstrap params: %w", err)
-		}
-		s := string(data)
-		bootstrapParamsJSON = &s
-	}
+	bootstrapParamsJSON := d.collectBootstrapParamsJSON()
 
 	// Save PM state.
 	state := &persistence.PMState{
@@ -108,10 +77,10 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	// Restore state machine state using ForceState (bypasses transition validation).
 	d.ForceState(proto.State(state.State))
 
-	// Restore spec content to draft_spec_markdown (used by WebUI for preview).
+	// Restore spec content (used by WebUI for preview via GetDraftSpec).
 	// The PM will handle the appropriate state transitions based on current state.
 	if state.SpecContent != nil {
-		d.SetStateData("draft_spec_markdown", *state.SpecContent)
+		d.SetStateData(StateKeyUserSpecMd, *state.SpecContent)
 	}
 
 	// Restore bootstrap params.
@@ -146,4 +115,45 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 
 	d.logger.Info("State restored successfully (state=%s)", state.State)
 	return nil
+}
+
+// collectBootstrapParamsJSON collects bootstrap-related state data and returns it as JSON.
+// Returns nil if no bootstrap params are present.
+func (d *Driver) collectBootstrapParamsJSON() *string {
+	bootstrapParams := make(map[string]any)
+
+	// Collect all bootstrap-related state keys using type-safe utilities
+	if hasRepo, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyHasRepository); ok {
+		bootstrapParams[StateKeyHasRepository] = hasRepo
+	}
+	if expertise, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyUserExpertise); ok {
+		bootstrapParams[StateKeyUserExpertise] = expertise
+	}
+	if requirements, ok := d.GetStateValue(StateKeyBootstrapRequirements); ok {
+		bootstrapParams[StateKeyBootstrapRequirements] = requirements
+	}
+	if platform, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyDetectedPlatform); ok {
+		bootstrapParams[StateKeyDetectedPlatform] = platform
+	}
+	if inFlight, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyInFlight); ok {
+		bootstrapParams[StateKeyInFlight] = inFlight
+	}
+	if bootstrapSpec, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapSpecMd); ok {
+		bootstrapParams[StateKeyBootstrapSpecMd] = bootstrapSpec
+	}
+	if isHotfix, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyIsHotfix); ok {
+		bootstrapParams[StateKeyIsHotfix] = isHotfix
+	}
+
+	if len(bootstrapParams) == 0 {
+		return nil
+	}
+
+	data, err := json.Marshal(bootstrapParams)
+	if err != nil {
+		d.logger.Warn("Failed to marshal bootstrap params: %v", err)
+		return nil
+	}
+	s := string(data)
+	return &s
 }

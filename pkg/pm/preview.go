@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // handlePreview handles the PREVIEW state where user reviews the spec.
@@ -15,10 +16,8 @@ func (d *Driver) handlePreview(ctx context.Context) (proto.State, error) {
 	d.logger.Debug("📋 PM in PREVIEW state - waiting for user action")
 
 	// Verify we have a draft spec in state data
-	stateData := d.GetStateData()
-	draftSpec, ok := stateData["draft_spec_markdown"].(string)
-
-	if !ok || draftSpec == "" {
+	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+	if userSpec == "" {
 		d.logger.Error("❌ No draft spec found in state data")
 		return proto.StateError, fmt.Errorf("no draft spec in state data")
 	}
@@ -32,7 +31,7 @@ func (d *Driver) handlePreview(ctx context.Context) (proto.State, error) {
 		// No state change yet - sleep briefly to avoid tight loop
 		// Note: PreviewAction method modifies state directly,
 		// and the Run loop will detect the change and route to the new handler
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(waitingPollInterval)
 		return StatePreview, nil
 	}
 }

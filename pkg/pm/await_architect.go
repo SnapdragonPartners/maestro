@@ -68,18 +68,18 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			// Clear all spec and bootstrap data from state - the spec has been
 			// submitted and we don't want stale data prepended to future hotfixes.
 			// The conversation context still has the spec history for PM reference.
-			d.SetStateData("draft_spec_markdown", nil)
-			d.SetStateData("spec_markdown", nil)
-			d.SetStateData("spec_metadata", nil)
-			d.SetStateData("spec_uploaded", nil)
-			d.SetStateData("infrastructure_spec", nil)
-			d.SetStateData("user_spec", nil)
+			d.SetStateData(StateKeyUserSpecMd, nil)
+			d.SetStateData(StateKeyBootstrapSpecMd, nil)
+			d.SetStateData(StateKeySpecMetadata, nil)
+			d.SetStateData(StateKeySpecUploaded, nil)
 			d.SetStateData(StateKeyBootstrapRequirements, nil)
 			d.SetStateData(StateKeyDetectedPlatform, nil)
-			d.SetStateData("bootstrap_params", nil)
+			d.SetStateData(StateKeyBootstrapParams, nil)
+			d.SetStateData(StateKeyIsHotfix, nil)
+			d.SetStateData(StateKeyTurnCount, nil)
 
-			// Mark that we're in post-approval mode (development in progress)
-			d.SetStateData(StateKeyDevelopmentInProgress, true)
+			// Mark that development is in flight - only hotfixes allowed now
+			d.SetStateData(StateKeyInFlight, true)
 
 			// Inject user message to inform PM of approval and prompt for response
 			// Use chat_ask_user to post the message AND wait for user input (for tweaks/hotfixes)

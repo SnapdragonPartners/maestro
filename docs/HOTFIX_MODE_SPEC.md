@@ -821,3 +821,251 @@ PM story completion notifications:
 - Notification includes: story_id, title, is_hotfix flag, summary, pr_id, timestamp
 - Uses existing effect pattern (`SendMessageEffect`) to send RESPONSE to PM
 - PM can surface completion info to user via chat
+
+---
+
+## Phase 8: Unified Hotfix Entry Point (Consolidation)
+
+**Date**: December 2024
+
+### Problem Statement
+
+The original implementation created two separate paths for hotfixes:
+
+1. **Path A**: `submit_stories(hotfix=true)` → `SignalHotfixSubmit` → PM stores in dedicated state vars → `sendHotfixRequest()` → architect
+2. **Path B**: `spec_submit(hotfix=true)` → `SignalSpecPreview` → PM stores in `user_spec_md` → PREVIEW → normal approval flow
+
+Path A bypassed user preview entirely and used dedicated state variables (`hotfix_analysis`, `hotfix_platform`, `hotfix_requirements`). Path B went through preview but then used the normal `ApprovalRequestPayload`, meaning hotfixes would wait in queue like regular specs instead of "jumping the line."
+
+### Solution: Unified Flow
+
+Consolidate to a single entry point (`spec_submit(hotfix=true)`) that:
+1. Goes through user preview (user can see what they're submitting)
+2. Routes to `sendHotfixRequest()` on submission (jumps the line to hotfix coder)
+3. Uses canonical state variable (`user_spec_md`) instead of dedicated hotfix vars
+
+### New Hotfix Flow
+
+```
+User requests hotfix
+        │
+        ▼
+PM calls spec_submit(hotfix=true)
+        │
+        ▼
+SignalSpecPreview with is_hotfix=true
+        │
+        ▼
+PM stores:
+  - user_spec_md = hotfix content
+  - is_hotfix = true (NEW state var)
+        │
+        ▼
+PM transitions to PREVIEW
+        │
+        ▼
+User reviews hotfix in WebUI
+        │
+        ▼
+User clicks "Submit for Development"
+        │
+        ▼
+PreviewAction checks is_hotfix flag
+        │
+        ├── is_hotfix=true ──► sendHotfixRequest() ──► HotfixRequestPayload to architect
+        │                                                      │
+        │                                                      ▼
+        │                                              Architect validates deps
+        │                                                      │
+        │                                                      ▼
+        │                                              Direct dispatch to hotfix-001
+        │
+        └── is_hotfix=false ─► sendSpecApprovalRequest() ──► Normal approval flow
+```
+
+### Implementation Changes
+
+#### 1. Add `StateKeyIsHotfix` State Variable
+
+**File**: `pkg/pm/driver.go`
+
+```go
+// StateKeyIsHotfix indicates the current spec submission is a hotfix.
+// Set when spec_submit(hotfix=true) is called, cleared on approval.
+StateKeyIsHotfix = "is_hotfix"
+```
+
+#### 2. Store `is_hotfix` Flag in WORKING State
+
+**File**: `pkg/pm/working.go` (SignalSpecPreview case)
+
+```go
+case tools.SignalSpecPreview:
+    // ... existing extraction ...
+    isHotfix := utils.GetMapFieldOr[bool](effectData, "is_hotfix", false)
+
+    // Store specs using canonical state keys
+    d.SetStateData(StateKeyUserSpecMd, userSpec)
+    d.SetStateData(StateKeySpecMetadata, metadata)
+    d.SetStateData(StateKeyIsHotfix, isHotfix)  // NEW: Store hotfix flag
+    // ...
+```
+
+#### 3. Route Based on `is_hotfix` in PreviewAction
+
+**File**: `pkg/pm/driver.go` (PreviewAction method)
+
+```go
+case PreviewActionSubmit:
+    userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+    if userSpec == "" {
+        return fmt.Errorf("no spec to submit - user_spec_md is empty")
+    }
+
+    // Check if this is a hotfix submission
+    isHotfix := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyIsHotfix, false)
+
+    var err error
+    if isHotfix {
+        // Hotfixes jump the line - send directly to architect's hotfix handler
+        err = d.sendHotfixRequest(ctx)
+    } else {
+        // Normal specs go through approval flow
+        err = d.sendSpecApprovalRequest(ctx)
+    }
+    // ...
+```
+
+#### 4. Modify `sendHotfixRequest()` to Use `user_spec_md`
+
+**File**: `pkg/pm/working.go`
+
+The function should read from `user_spec_md` instead of dedicated hotfix state vars:
+
+```go
+func (d *Driver) sendHotfixRequest(_ context.Context) error {
+    // Get hotfix content from canonical state var
+    userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+    if userSpec == "" {
+        return fmt.Errorf("no user_spec_md found in state for hotfix")
+    }
+
+    // Get platform from bootstrap params or detected platform
+    platform := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "unknown")
+
+    // Create hotfix request payload
+    // Note: Architect will parse the markdown into requirements
+    hotfixPayload := &proto.HotfixRequestPayload{
+        Analysis:     "Hotfix request from user",
+        Platform:     platform,
+        Requirements: []any{
+            map[string]any{
+                "title":       "Hotfix",
+                "description": userSpec,
+                "story_type":  "app",
+            },
+        },
+        Urgency: "normal",
+    }
+    // ... rest of function unchanged ...
+}
+```
+
+#### 5. Remove Dead Code
+
+**Remove from `pkg/pm/driver.go`**:
+```go
+// DELETE these state keys:
+StateKeyHotfixAnalysis     = "hotfix_analysis"
+StateKeyHotfixPlatform     = "hotfix_platform"
+StateKeyHotfixRequirements = "hotfix_requirements"
+StateKeyPendingRequestID   = "pending_request_id"  // Dead code - never used for correlation
+```
+
+**Remove from `pkg/pm/working.go`**:
+```go
+// DELETE the SignalHotfixSubmit case (lines ~375-394)
+case tools.SignalHotfixSubmit:
+    // ... all of this ...
+```
+
+**Remove from `pkg/tools/constants.go` and `pkg/tools/mcp.go`**:
+```go
+// DELETE:
+SignalHotfixSubmit = "HOTFIX_SUBMIT"
+```
+
+**Remove from `pkg/tools/submit_stories.go`**:
+- Remove `hotfix` parameter from tool schema
+- Remove hotfix signal logic
+
+**Remove `submit_stories` from PM tools**:
+- PM no longer uses this tool (only architect does for spec analysis)
+- Update PM prompts to not reference `submit_stories`
+
+### State Variable Cleanup on Approval
+
+When architect approves a spec or hotfix, the following state variables must be cleared in `handleAwaitArchitect()`:
+
+```go
+// Clear all submission-related state data
+d.SetStateData(StateKeyUserSpecMd, nil)
+d.SetStateData(StateKeyBootstrapSpecMd, nil)
+d.SetStateData(StateKeySpecMetadata, nil)
+d.SetStateData(StateKeySpecUploaded, nil)
+d.SetStateData(StateKeyBootstrapRequirements, nil)
+d.SetStateData(StateKeyDetectedPlatform, nil)
+d.SetStateData(StateKeyBootstrapParams, nil)
+d.SetStateData(StateKeyIsHotfix, nil)  // NEW: Clear hotfix flag
+d.SetStateData(StateKeyTurnCount, nil) // Reset turn count (no churning occurred)
+
+// Mark development as in flight
+d.SetStateData(StateKeyInFlight, true)
+```
+
+### PM State Variables Reference
+
+| State Key | Purpose | Lifecycle |
+|-----------|---------|-----------|
+| `StateKeyHasRepository` | Has git repo access | Session-persistent |
+| `StateKeyUserExpertise` | User expertise level | Session-persistent |
+| `StateKeyInFlight` | Dev in progress | Set true on approval, false on all-complete |
+| `StateKeyUserSpecMd` | User's spec/hotfix markdown | Cleared on approval |
+| `StateKeyBootstrapSpecMd` | Infrastructure spec | Cleared on approval |
+| `StateKeySpecMetadata` | Spec metadata | Cleared on approval |
+| `StateKeySpecUploaded` | Spec was uploaded | Cleared on approval |
+| `StateKeyBootstrapRequirements` | Bootstrap requirements | Cleared on approval |
+| `StateKeyDetectedPlatform` | Detected platform | Cleared on approval |
+| `StateKeyBootstrapParams` | Bootstrap params | Cleared on approval |
+| `StateKeyIsHotfix` | Current submission is hotfix | Cleared on approval |
+| `StateKeyTurnCount` | Conversation turns | Cleared on approval |
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `pkg/pm/driver.go` | Add `StateKeyIsHotfix`, remove hotfix state keys, modify `PreviewAction` |
+| `pkg/pm/working.go` | Store `is_hotfix` flag, remove `SignalHotfixSubmit` case, modify `sendHotfixRequest()` |
+| `pkg/pm/await_architect.go` | Clear additional state vars on approval |
+| `pkg/tools/constants.go` | Remove `SignalHotfixSubmit` |
+| `pkg/tools/mcp.go` | Remove `SignalHotfixSubmit` |
+| `pkg/tools/submit_stories.go` | Remove `hotfix` parameter |
+| PM prompt templates | Remove `submit_stories` references |
+
+### What Stays the Same
+
+- `pkg/architect/request_hotfix.go` - Architect's hotfix handler (validates deps, dispatches to hotfix coder)
+- `HotfixRequestPayload` protocol type
+- `spec_submit(hotfix=true)` tool behavior
+- Hotfix coder (`hotfix-001`) and dedicated channel routing
+- Express flag handling for hotfixes
+
+### Acceptance Criteria
+
+1. [x] `spec_submit(hotfix=true)` stores `is_hotfix=true` in PM state
+2. [x] User sees hotfix preview before submission
+3. [x] "Submit for Development" routes hotfixes to `sendHotfixRequest()`
+4. [x] Hotfixes jump the queue and go to `hotfix-001` coder
+5. [x] All spec-related state variables cleared on approval (including `is_hotfix`, `turn_count`)
+6. [x] `submit_stories` tool removed from PM (architect-only)
+7. [x] Dead code removed (`SignalHotfixSubmit`, dedicated hotfix state vars)

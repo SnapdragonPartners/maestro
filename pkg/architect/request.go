@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // handleRequest processes the request phase (handling coder requests).
@@ -684,6 +685,44 @@ func (d *Driver) notifyPMOfCompletion(ctx context.Context, storyID string, compl
 	}
 }
 
+// notifyPMAllStoriesComplete sends an all-stories-complete notification to PM.
+// This is called when all stories in the queue have been completed.
+func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
+	// Get spec ID and total stories from queue
+	specID := ""
+	totalStories := 0
+	if d.queue != nil {
+		allStories := d.queue.GetAllStories()
+		totalStories = len(allStories)
+		// Get spec ID from first story if available
+		if totalStories > 0 {
+			specID = allStories[0].SpecID
+		}
+	}
+
+	// Build notification payload
+	notificationPayload := &proto.AllStoriesCompletePayload{
+		SpecID:       specID,
+		TotalStories: totalStories,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+		Message:      "All development stories have been completed successfully.",
+		DemoReady:    true, // Assume demo is ready when all stories complete
+	}
+
+	// Create notification message to PM
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewAllStoriesCompletePayload(notificationPayload))
+
+	// Send via effect
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		return fmt.Errorf("failed to send all-stories-complete notification: %w", err)
+	}
+
+	d.logger.Info("🎉 Notified PM that all %d stories are complete (spec=%s)", totalStories, specID)
+	return nil
+}
+
 // Response formatting methods using templates
 
 // ResponseKind identifies the type of approval response for formatting.
@@ -895,18 +934,18 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	}
 
 	// Extract review data from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 	}
 
-	status, _ := effectData["status"].(string)
-	feedback, _ := effectData["feedback"].(string)
+	status := utils.GetMapFieldOr[string](effectData, "status", "")
+	feedback := utils.GetMapFieldOr[string](effectData, "feedback", "")
 
 	d.logger.Info("✅ Architect completed iterative review with status: %s", status)
 
 	// Clean up state data
-	d.SetStateData("current_story_id", nil)
+	d.SetStateData(StateKeyCurrentStoryID, nil)
 
 	// Build and return approval response
 	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
@@ -990,13 +1029,13 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	}
 
 	// Extract review data from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 	}
 
-	status, _ := effectData["status"].(string)
-	feedback, _ := effectData["feedback"].(string)
+	status := utils.GetMapFieldOr[string](effectData, "status", "")
+	feedback := utils.GetMapFieldOr[string](effectData, "feedback", "")
 
 	d.logger.Info("✅ Single-turn review completed with status: %s", status)
 
@@ -1099,12 +1138,12 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Extract response from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REPLY_SUBMITTED effect data is not map[string]any: %T", out.EffectData)
 	}
 
-	response, _ := effectData["response"].(string)
+	response := utils.GetMapFieldOr[string](effectData, "response", "")
 	d.logger.Info("✅ Architect answered question via submit_reply")
 
 	// Build response message with the answer

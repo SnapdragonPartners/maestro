@@ -14,6 +14,14 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 
 	// Check if all stories are completed.
 	if d.queue.AllStoriesCompleted() {
+		d.logger.Info("🚀 MONITORING → DONE: All stories completed successfully")
+
+		// Send AllStoriesComplete notification to PM so it clears in_flight flag
+		if err := d.notifyPMAllStoriesComplete(ctx); err != nil {
+			d.logger.Warn("⚠️ Failed to notify PM of all stories complete: %v", err)
+			// Continue anyway - this is not a fatal error
+		}
+
 		return StateDone, nil
 	}
 

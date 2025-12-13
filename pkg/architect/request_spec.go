@@ -10,6 +10,7 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // handleSpecReview processes a spec review approval request from PM.
@@ -107,13 +108,13 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	}
 
 	// Extract review data from ProcessEffect.Data
-	effectData, ok := reviewOut.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](reviewOut.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", reviewOut.EffectData)
 	}
 
-	status, _ := effectData["status"].(string)
-	feedback, _ := effectData["feedback"].(string)
+	status := utils.GetMapFieldOr[string](effectData, "status", "")
+	feedback := utils.GetMapFieldOr[string](effectData, "feedback", "")
 
 	d.logger.Info("✅ Spec review completed with status: %s", status)
 

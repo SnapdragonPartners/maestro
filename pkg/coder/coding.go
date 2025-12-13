@@ -204,11 +204,11 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			return StateQuestion, false, nil
 		case tools.SignalTesting:
 			// done tool was called - extract summary from ProcessEffect.Data
-			effectData, ok := out.EffectData.(map[string]any)
+			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 			if !ok {
 				return proto.StateError, false, logx.Errorf("TESTING effect data is not map[string]any: %T", out.EffectData)
 			}
-			summary, _ := effectData["summary"].(string)
+			summary := utils.GetMapFieldOr[string](effectData, "summary", "")
 			c.logger.Info("🧑‍💻 Done tool detected: %s", summary)
 			c.logger.Info("🧑‍💻 Advancing to TESTING state")
 			return StateTesting, false, nil
