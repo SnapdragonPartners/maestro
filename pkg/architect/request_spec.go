@@ -230,7 +230,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	d.logger.Info("📦 Loaded %d stories into queue", len(storyIDs))
 
 	// Mark that we now own this spec and should transition to DISPATCHING
-	d.SetStateData("spec_approved_and_loaded", true)
+	d.SetStateData(StateKeySpecApprovedLoad, true)
 
 	// Create RESPONSE message with approval result
 	response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)

@@ -164,12 +164,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	}
 
 	// Clear the processed request and acceptance signals
-	d.SetStateData("current_request", nil)
-	d.SetStateData("last_response", nil)
-	d.SetStateData("work_accepted", nil)
-	d.SetStateData("accepted_story_id", nil)
-	d.SetStateData("acceptance_type", nil)
-	d.SetStateData("spec_approved_and_loaded", nil)
+	d.SetStateData(StateKeyCurrentRequest, nil)
+	d.SetStateData(StateKeyLastResponse, nil)
+	d.SetStateData(StateKeyWorkAccepted, nil)
+	d.SetStateData(StateKeyAcceptedStoryID, nil)
+	d.SetStateData(StateKeyAcceptanceType, nil)
+	d.SetStateData(StateKeySpecApprovedLoad, nil)
 
 	// Determine next state:
 	// 1. Spec approval (PM flow) → DISPATCHING

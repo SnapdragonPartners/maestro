@@ -495,7 +495,7 @@ func (d *Driver) Run(ctx context.Context) error {
 	go d.processRequeueRequests(ctx)
 
 	// Initialize state data
-	d.SetStateData("started_at", time.Now().UTC())
+	d.SetStateData(StateKeyStartedAt, time.Now().UTC())
 
 	// Run the state machine loop.
 	for {

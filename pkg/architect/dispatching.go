@@ -17,7 +17,7 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 	stateData := d.GetStateData()
 
 	// Initialize queue if not already done.
-	if _, exists := stateData["queue_initialized"]; !exists {
+	if _, exists := stateData[StateKeyQueueInitialized]; !exists {
 		d.logger.Info("🚀 DISPATCHING: Initializing queue (recovery scenario)")
 		// Queue should already be populated during SCOPING phase
 		// Only load from database if this is a recovery scenario
@@ -33,14 +33,14 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 			return StateError, fmt.Errorf("critical: failed to persist queue state: %w", err)
 		}
 
-		d.SetStateData("queue_initialized", true)
-		d.SetStateData("queue_management_completed_at", time.Now().UTC())
+		d.SetStateData(StateKeyQueueInitialized, true)
+		d.SetStateData(StateKeyQueueMgmtCompleted, time.Now().UTC())
 
 		// Get queue summary for logging.
 		summary := d.queue.GetQueueSummary()
 		d.logger.Info("🚀 DISPATCHING: queue initialized - %d stories (%d ready)",
 			summary["total_stories"], summary["ready_stories"])
-		d.SetStateData("queue_summary", summary)
+		d.SetStateData(StateKeyQueueSummary, summary)
 	}
 
 	// Log current queue state for debugging
@@ -320,7 +320,7 @@ func (d *Driver) persistQueueState() error {
 	}
 
 	// Store queue data in state data for persistence.
-	d.SetStateData("queue_json", string(queueData))
+	d.SetStateData(StateKeyQueueJSON, string(queueData))
 
 	return nil
 }
