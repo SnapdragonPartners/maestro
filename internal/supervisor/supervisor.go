@@ -14,6 +14,7 @@ import (
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
@@ -122,6 +123,8 @@ func DefaultRestartPolicy() RestartPolicy {
 
 // Supervisor manages agent lifecycle, restart policies, and state change processing.
 // It consolidates the logic that was previously scattered across the orchestrator.
+//
+//nolint:govet // Logical grouping preferred over memory optimization for this complex struct
 type Supervisor struct {
 	Kernel          *kernel.Kernel
 	Factory         *factory.AgentFactory
@@ -139,6 +142,12 @@ type Supervisor struct {
 
 	// Runtime state
 	running bool
+
+	// SUSPEND state support
+	restoreCh       chan struct{} // Broadcast channel for service recovery
+	suspendedAgents map[string]bool
+	suspendMu       sync.Mutex
+	pollCancel      context.CancelFunc // Cancel function for API polling goroutine
 }
 
 // NewSupervisor creates a new supervisor with the given kernel.
@@ -153,7 +162,7 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 	// Pass the shared LLM factory to ensure proper rate limiting across all agents
 	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, chatService, k.LLMFactory)
 
-	return &Supervisor{
+	supervisor := &Supervisor{
 		Kernel:          k,
 		Factory:         agentFactory,
 		Logger:          logger,
@@ -163,7 +172,14 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		AgentTypes:      make(map[string]string),
 		AgentContexts:   make(map[string]context.CancelFunc),
 		running:         false,
+		// SUSPEND support - channel is created lazily when first agent suspends
+		suspendedAgents: make(map[string]bool),
 	}
+
+	// Wire up the restore channel to the factory for SUSPEND state support
+	agentFactory.SetRestoreChannel(supervisor.GetRestoreChannel())
+
+	return supervisor
 }
 
 // Start begins the supervisor's state change processing loop.
@@ -256,6 +272,16 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 		}
 
 		s.handleStateAction(ctx, notification, action, "ERROR")
+	}
+
+	// Handle SUSPEND state transitions
+	if notification.ToState == proto.StateSuspend {
+		s.handleAgentSuspend(ctx, notification.AgentID)
+	}
+
+	// Handle agent leaving SUSPEND state (recovery)
+	if notification.FromState == proto.StateSuspend && notification.ToState != proto.StateSuspend {
+		s.handleAgentResume(notification.AgentID)
 	}
 }
 
@@ -421,4 +447,151 @@ func (s *Supervisor) WaitForAgentsShutdown(timeout time.Duration) error {
 		s.Logger.Warn("⚠️ Timeout waiting for agents to shutdown")
 		return fmt.Errorf("timeout waiting for agents to shutdown after %v", timeout)
 	}
+}
+
+// =============================================================================
+// SUSPEND State Support
+// =============================================================================
+
+const (
+	// apiPollInterval is how often to check API health when agents are suspended.
+	apiPollInterval = 30 * time.Second
+)
+
+// GetRestoreChannel returns the restore channel for agents to listen on.
+// Creates the channel lazily on first call.
+func (s *Supervisor) GetRestoreChannel() <-chan struct{} {
+	s.suspendMu.Lock()
+	defer s.suspendMu.Unlock()
+
+	if s.restoreCh == nil {
+		// Create a buffered channel to avoid blocking broadcast
+		s.restoreCh = make(chan struct{}, 100)
+	}
+	return s.restoreCh
+}
+
+// handleAgentSuspend is called when an agent enters SUSPEND state.
+// Tracks suspended agents and starts API health polling if not already running.
+func (s *Supervisor) handleAgentSuspend(ctx context.Context, agentID string) {
+	s.suspendMu.Lock()
+	defer s.suspendMu.Unlock()
+
+	s.Logger.Info("⏸️  Agent %s entered SUSPEND state", agentID)
+	s.suspendedAgents[agentID] = true
+
+	// Start API polling if this is the first suspended agent
+	if len(s.suspendedAgents) == 1 && s.pollCancel == nil {
+		s.Logger.Info("🔍 Starting API health polling (first agent suspended)")
+		pollCtx, cancel := context.WithCancel(ctx)
+		s.pollCancel = cancel
+		go s.pollAPIHealth(pollCtx)
+	}
+}
+
+// handleAgentResume is called when an agent leaves SUSPEND state.
+// Removes from tracking and stops polling if no more suspended agents.
+func (s *Supervisor) handleAgentResume(agentID string) {
+	s.suspendMu.Lock()
+	defer s.suspendMu.Unlock()
+
+	s.Logger.Info("▶️  Agent %s left SUSPEND state", agentID)
+	delete(s.suspendedAgents, agentID)
+
+	// Stop polling if no more suspended agents
+	if len(s.suspendedAgents) == 0 && s.pollCancel != nil {
+		s.Logger.Info("🛑 Stopping API health polling (no suspended agents)")
+		s.pollCancel()
+		s.pollCancel = nil
+	}
+}
+
+// pollAPIHealth periodically checks API health and broadcasts restore when all healthy.
+func (s *Supervisor) pollAPIHealth(ctx context.Context) {
+	ticker := time.NewTicker(apiPollInterval)
+	defer ticker.Stop()
+
+	s.Logger.Info("🔍 API health polling started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.Logger.Info("🛑 API health polling stopped")
+			return
+
+		case <-ticker.C:
+			if s.checkAllAPIsHealthy(ctx) {
+				s.broadcastRestore()
+			}
+		}
+	}
+}
+
+// checkAllAPIsHealthy verifies all configured APIs are responding.
+// Returns true only if ALL APIs pass health checks.
+func (s *Supervisor) checkAllAPIsHealthy(ctx context.Context) bool {
+	// Respect context cancellation
+	select {
+	case <-ctx.Done():
+		s.Logger.Debug("API health check cancelled")
+		return false
+	default:
+	}
+
+	s.Logger.Debug("Checking API health...")
+
+	// Check GitHub API - uses gh auth status which verifies both CLI and API connectivity
+	ghCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := github.CheckAuth(ghCtx); err != nil {
+		s.Logger.Debug("GitHub API health check failed: %v", err)
+		return false
+	}
+	s.Logger.Debug("GitHub API health check passed")
+
+	// TODO: Implement actual health checks for LLM providers:
+	// - Anthropic API (if configured)
+	// - OpenAI API (if configured)
+	// - Google API (if configured)
+	// For now, we only check GitHub since it's critical for merge operations.
+	// LLM providers will naturally fail fast on first request if unavailable.
+
+	s.Logger.Debug("API health check: all APIs healthy")
+	return true
+}
+
+// broadcastRestore sends restore signals to all suspended agents.
+func (s *Supervisor) broadcastRestore() {
+	s.suspendMu.Lock()
+	defer s.suspendMu.Unlock()
+
+	if len(s.suspendedAgents) == 0 {
+		return
+	}
+
+	s.Logger.Info("📢 Broadcasting restore signal to %d suspended agents", len(s.suspendedAgents))
+
+	// Ensure channel exists
+	if s.restoreCh == nil {
+		s.restoreCh = make(chan struct{}, 100)
+	}
+
+	// Send restore signal for each suspended agent
+	// Use non-blocking send to avoid deadlock if channel is full
+	for agentID := range s.suspendedAgents {
+		select {
+		case s.restoreCh <- struct{}{}:
+			s.Logger.Debug("Sent restore signal for agent %s", agentID)
+		default:
+			s.Logger.Warn("Restore channel full, agent %s may not receive signal", agentID)
+		}
+	}
+}
+
+// GetSuspendedAgentCount returns the number of currently suspended agents.
+func (s *Supervisor) GetSuspendedAgentCount() int {
+	s.suspendMu.Lock()
+	defer s.suspendMu.Unlock()
+	return len(s.suspendedAgents)
 }

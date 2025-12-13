@@ -29,6 +29,13 @@ const (
 	ErrorTypeBadPrompt
 	// ErrorTypeUnknown represents default for unclassified errors.
 	ErrorTypeUnknown
+
+	// Special error types for system-level handling.
+
+	// ErrorTypeServiceUnavailable represents persistent service unavailability after retries exhausted.
+	// When an agent receives this error, it should transition to SUSPEND state.
+	// This is different from ErrorTypeTransient which is retried automatically.
+	ErrorTypeServiceUnavailable
 )
 
 // String returns the string representation of the error type.
@@ -46,6 +53,8 @@ func (et ErrorType) String() string {
 		return "bad_prompt"
 	case ErrorTypeUnknown:
 		return "unknown"
+	case ErrorTypeServiceUnavailable:
+		return "service_unavailable"
 	default:
 		return "invalid"
 	}
@@ -115,6 +124,13 @@ var DefaultRetryConfigs = map[ErrorType]RetryConfig{
 		MaxDelay:      5 * time.Second,
 		BackoffFactor: 2.0,
 		Jitter:        true,
+	},
+	ErrorTypeServiceUnavailable: {
+		MaxRetries:    0, // No retries - this error is emitted after retries exhausted
+		InitialDelay:  0,
+		MaxDelay:      0,
+		BackoffFactor: 1.0,
+		Jitter:        false,
 	},
 }
 
@@ -229,4 +245,20 @@ func SanitizePrompt(prompt string, maxChars int) string {
 
 	return fmt.Sprintf("%s...[%d chars, hash:%s]...%s",
 		first, len(prompt), hashStr, last)
+}
+
+// IsServiceUnavailable checks if the error indicates persistent service unavailability.
+// When this returns true, the agent should transition to SUSPEND state.
+func IsServiceUnavailable(err error) bool {
+	return Is(err, ErrorTypeServiceUnavailable)
+}
+
+// NewServiceUnavailableError creates a ServiceUnavailable error from a transient error
+// after retries have been exhausted. This signals the agent to enter SUSPEND state.
+func NewServiceUnavailableError(cause error, attempts int) *Error {
+	return &Error{
+		Type:    ErrorTypeServiceUnavailable,
+		Err:     cause,
+		Message: fmt.Sprintf("service unavailable after %d retry attempts", attempts),
+	}
 }

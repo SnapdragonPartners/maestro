@@ -39,6 +39,8 @@ func TestToolProviderDevOpsPlanningTools(t *testing.T) {
 		ToolContainerList: false,
 		ToolChatPost:      false,
 		ToolChatRead:      false,
+		ToolWebSearch:     false,
+		ToolWebFetch:      false,
 	}
 
 	for _, meta := range toolMetas {
@@ -86,6 +88,8 @@ func TestToolProviderAppPlanningTools(t *testing.T) {
 		ToolStoryComplete: false,
 		ToolChatPost:      false,
 		ToolChatRead:      false,
+		ToolWebSearch:     false,
+		ToolWebFetch:      false,
 	}
 
 	for _, meta := range toolMetas {
@@ -138,6 +142,8 @@ func TestToolProviderAppCodingTools(t *testing.T) {
 		ToolTodosAdd:     false,
 		ToolTodoComplete: false,
 		ToolTodoUpdate:   false,
+		ToolWebSearch:    false,
+		ToolWebFetch:     false,
 	}
 
 	for _, meta := range toolMetas {

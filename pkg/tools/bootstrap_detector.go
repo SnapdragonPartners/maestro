@@ -423,7 +423,8 @@ func (bd *BootstrapDetector) detectMissingClaudeCode() bool {
 // checkClaudeCodeInContainer runs "claude --version" in a container to check if Claude Code is available.
 func (bd *BootstrapDetector) checkClaudeCodeInContainer(imageName string) bool {
 	// Run claude --version in the container
-	cmd := exec.Command("docker", "run", "--rm", "--platform", "linux/amd64", imageName, "claude", "--version")
+	// Don't specify --platform to use the native architecture of the image
+	cmd := exec.Command("docker", "run", "--rm", imageName, "claude", "--version")
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {

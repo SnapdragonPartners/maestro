@@ -216,12 +216,24 @@ func TestIntegration_BranchLifecycle(t *testing.T) {
 	t.Logf("✅ Branch deleted")
 
 	// Step 8: Verify branch no longer exists
-	exists, err = client.BranchExists(ctx, testBranch)
-	if err != nil {
-		t.Fatalf("BranchExists after delete failed: %v", err)
+	// GitHub's API has eventual consistency, so we retry a few times with delays
+	var branchGone bool
+	for i := 0; i < 5; i++ {
+		if i > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		exists, err = client.BranchExists(ctx, testBranch)
+		if err != nil {
+			t.Fatalf("BranchExists after delete failed: %v", err)
+		}
+		if !exists {
+			branchGone = true
+			break
+		}
+		t.Logf("Branch still visible after deletion (attempt %d/5), retrying...", i+1)
 	}
-	if exists {
-		t.Fatal("Branch should not exist after deletion")
+	if !branchGone {
+		t.Fatal("Branch should not exist after deletion (still visible after 5 retries)")
 	}
 	t.Logf("✅ Branch deletion confirmed")
 }

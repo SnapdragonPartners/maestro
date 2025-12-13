@@ -272,7 +272,7 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 		}
 		return &ExecResult{Content: string(content)}, nil
 	}
-	r.logger.Info("✅ Container '%s' validation passed: git available, GitHub CLI available, GitHub API accessible", containerName)
+	r.logger.Info("✅ Container '%s' validation passed: git available, user UID 1000 exists", containerName)
 	timeout := time.Duration(timeoutSec) * time.Second
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

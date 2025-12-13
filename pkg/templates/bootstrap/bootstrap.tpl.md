@@ -64,7 +64,22 @@ This story addresses infrastructure issues discovered during project initializat
 {{- end}}
 - [ ] Validate container can run build and test commands
 - [ ] Ensure rootless execution works with `--user=1000:1000 --read-only --network=none`
-- [ ] Verify coder user (UID 1000) exists in container (required for Claude Code mode)
+
+#### MANDATORY Container Requirements (will cause runtime failures if missing):
+- [ ] **User UID 1000**: Container MUST have a user with UID 1000 pre-created in the Dockerfile
+  ```dockerfile
+  # REQUIRED: Create coder user - Maestro runs containers with --user 1000:1000
+  RUN adduser -D -u 1000 coder || useradd -u 1000 -m coder
+  ```
+  - Maestro runs containers with `--user 1000:1000 --read-only`
+  - User cannot be created at runtime (read-only filesystem)
+  - Claude Code refuses to run as root for security reasons
+- [ ] **Git CLI**: Container MUST have `git` installed for version control operations
+  ```dockerfile
+  # REQUIRED: Git is needed for clone, commit, push, rebase operations
+  RUN apk add --no-cache git || apt-get update && apt-get install -y git
+  ```
+  - Note: GitHub CLI (gh) is NOT required in container - PR operations run on the host
 {{- end}}
 
 {{- if .HasFailuresOfType "binary_size"}}
@@ -237,6 +252,22 @@ RUN adduser -D -u 1000 coder && \
     chown -R coder:coder /workspace
 ```
 Claude Code refuses `--dangerously-skip-permissions` when running as root for security reasons. Maestro will attempt to create this user at runtime if missing, but pre-creating it in the Dockerfile is recommended.
+
+### Required Tools in Container
+The container must include these tools for Maestro operations:
+- **git** - Version control operations (clone, commit, push, rebase)
+- **curl** - Network operations and health checks (optional but recommended)
+
+Install in Dockerfile:
+```dockerfile
+# Alpine-based images
+RUN apk add --no-cache git curl
+
+# Debian/Ubuntu-based images
+RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+```
+
+**Note**: GitHub CLI (`gh`) is NOT required in the container. All PR creation, merge operations, and GitHub API access run on the host orchestrator, not inside containers.
 
 ### File System Constraints
 - **Large File Limit**: 100MB (GitHub push limit)

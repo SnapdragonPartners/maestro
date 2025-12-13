@@ -137,6 +137,10 @@ export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export GOOGLE_GENAI_API_KEY=AIza...  # Optional, for Gemini models
 export GITHUB_TOKEN=ghp-...
+
+# Optional: Enable web search for agents (Google Custom Search)
+export GOOGLE_SEARCH_API_KEY=AIza...
+export GOOGLE_SEARCH_CX=...  # Your Custom Search Engine ID
 ```
 
 > **Step 3:** Create a project directory  (projectdir) and switch to it.
@@ -197,6 +201,33 @@ Benefits:
 - **Documentation**: Living documentation that stays in sync with code
 
 See [docs/wiki/DOCS_WIKI.md](docs/wiki/DOCS_WIKI.md) for user-friendly overview or [docs/DOC_GRAPH.md](docs/DOC_GRAPH.md) for technical specification.
+
+---
+
+## Web Search
+
+Agents can optionally search the web to find current documentation, API references, and library versions. This is useful when agents need information beyond their training data cutoff.
+
+**To enable web search:**
+
+1. Create a [Google Custom Search Engine](https://programmablesearchengine.google.com/)
+2. Get an API key from [Google Cloud Console](https://console.cloud.google.com/)
+3. Set the environment variables:
+   ```bash
+   export GOOGLE_SEARCH_API_KEY=AIza...
+   export GOOGLE_SEARCH_CX=...  # Your Custom Search Engine ID
+   ```
+
+When both variables are set, web search is automatically enabled for all agents. If unset, agents will log a warning and continue without search capability.
+
+You can also control search explicitly in `.maestro/config.json`:
+```json
+{
+  "search": {
+    "enabled": true  // or false to disable even if keys are present
+  }
+}
+```
 
 ---
 

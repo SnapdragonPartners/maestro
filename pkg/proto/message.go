@@ -634,6 +634,9 @@ const (
 	StateWaiting State = "WAITING"
 	// StateQuestion indicates a coder is waiting for architect's answer.
 	StateQuestion State = "QUESTION"
+	// StateSuspend indicates an agent is suspended due to external service unavailability.
+	// The agent preserves all state data and resumes from its originating state when restored.
+	StateSuspend State = "SUSPEND"
 )
 
 // String returns the string representation of State.

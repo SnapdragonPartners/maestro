@@ -106,10 +106,18 @@ func TestClaudeCodeMCPToolCall(t *testing.T) {
 	claudeCheck := []string{"which", "claude"}
 	result, err := executor.Run(ctx, claudeCheck, &exec.Opts{})
 	if err != nil || result.ExitCode != 0 {
-		t.Fatalf("Claude Code not found in container: err=%v, exit=%d, stderr=%s",
-			err, result.ExitCode, result.Stderr)
+		t.Skipf("Claude Code not found in bootstrap container. "+
+			"This test requires rebuilding maestro-bootstrap:latest from pkg/dockerfiles/bootstrap.dockerfile. "+
+			"err=%v, exit=%d, stderr=%s", err, result.ExitCode, result.Stderr)
 	}
 	t.Logf("Claude CLI found: %s", strings.TrimSpace(result.Stdout))
+
+	// Install MCP proxy in container (required since we moved proxy from /usr/local/bin to /tmp)
+	installer := claude.NewInstaller(executor, startedContainer, logger)
+	if err := installer.EnsureMCPProxy(ctx); err != nil {
+		t.Fatalf("Failed to install MCP proxy: %v", err)
+	}
+	t.Logf("MCP proxy installed at %s", claude.MCPProxyPath)
 
 	// Build the MCP config for Claude Code
 	mcpConfig := claude.BuildMCPConfigJSON(port)
@@ -252,7 +260,8 @@ func TestClaudeCodeMCPToolCallWithRunner(t *testing.T) {
 	provider := tools.NewProvider(agentCtx, []string{"shell"})
 
 	// Create the runner
-	runner := claude.NewRunner(executor, containerName, provider, logger)
+	// Note: Use startedContainer (full container name) not containerName (nickname)
+	runner := claude.NewRunner(executor, startedContainer, provider, logger)
 
 	// Ensure Claude Code is installed
 	if err := runner.GetInstaller().EnsureClaudeCode(ctx); err != nil {

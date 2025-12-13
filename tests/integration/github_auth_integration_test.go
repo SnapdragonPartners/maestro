@@ -60,8 +60,8 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 		if !validation.Success {
 			t.Fatalf("Bootstrap container validation failed: %s. Missing: %v", validation.Message, validation.MissingTools)
 		}
-		t.Logf("✅ Container validation passed: git=%v, gh=%v, api=%v",
-			validation.GitAvailable, validation.GHAvailable, validation.GitHubAPIValid)
+		t.Logf("✅ Container validation passed: git=%v, user_uid_1000=%v",
+			validation.GitAvailable, validation.UserUID1000)
 	})
 
 	// Test 2: Test gh auth setup-git command

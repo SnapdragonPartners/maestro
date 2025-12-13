@@ -675,6 +675,8 @@ func (d *Driver) processStatusUpdates(ctx context.Context) {
 
 // processRequeueRequests runs as a goroutine to process story requeue requests from coders.
 // This provides a clean channel-based approach to requeuing stories, replacing the legacy ExternalAPIProvider pattern.
+// It also implements a retry circuit breaker: after MaxStoryAttempts failures, the architect
+// transitions to ERROR state to prevent infinite requeue loops.
 func (d *Driver) processRequeueRequests(ctx context.Context) {
 	if d.dispatcher == nil {
 		d.logger.Warn("No dispatcher available for requeue requests processing")
@@ -699,14 +701,48 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			d.logger.Info("🔄 Processing requeue request: story %s from agent %s - %s",
 				requeueRequest.StoryID, requeueRequest.AgentID, requeueRequest.Reason)
 
+			// Get story and increment attempt count
+			story, exists := d.queue.stories[requeueRequest.StoryID]
+			if !exists {
+				d.logger.Error("❌ Story %s not found for requeue", requeueRequest.StoryID)
+				continue
+			}
+
+			// Increment attempt count and store failure reason
+			story.AttemptCount++
+			story.LastFailReason = requeueRequest.Reason
+
+			d.logger.Info("🔄 Story %s attempt count: %d/%d (reason: %s)",
+				requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts, requeueRequest.Reason)
+
+			// Check retry limit - circuit breaker
+			if story.AttemptCount >= MaxStoryAttempts {
+				d.logger.Error("🚨 Story %s exceeded retry limit (%d attempts). Last failure: %s. Transitioning architect to ERROR.",
+					requeueRequest.StoryID, story.AttemptCount, requeueRequest.Reason)
+
+				// Mark story as failed
+				story.SetStatus(StatusFailed)
+
+				// Transition architect to ERROR state
+				if transErr := d.TransitionTo(ctx, StateError, map[string]any{
+					"error":            fmt.Sprintf("story %s exceeded retry limit after %d attempts", requeueRequest.StoryID, story.AttemptCount),
+					"failed_story_id":  requeueRequest.StoryID,
+					"attempt_count":    story.AttemptCount,
+					"last_fail_reason": requeueRequest.Reason,
+				}); transErr != nil {
+					d.logger.Error("❌ Failed to transition to ERROR state: %v", transErr)
+				}
+				continue
+			}
+
 			// Change story status back to PENDING so it can be picked up again
 			if err := d.queue.UpdateStoryStatus(requeueRequest.StoryID, StatusPending); err != nil {
 				d.logger.Error("❌ Failed to requeue story %s: %v", requeueRequest.StoryID, err)
 				continue
 			}
 
-			// Also dispatch the story back to the work queue (like DISPATCHING state does)
-			if story, exists := d.queue.stories[requeueRequest.StoryID]; exists && story.GetStatus() == StatusPending {
+			// Dispatch the story back to the work queue (like DISPATCHING state does)
+			if story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
@@ -737,10 +773,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				if err := d.ExecuteEffect(ctx, dispatchEffect); err != nil {
 					d.logger.Error("❌ Failed to dispatch requeued story %s to work queue: %v", requeueRequest.StoryID, err)
 				} else {
-					d.logger.Info("✅ Successfully requeued and dispatched story %s to work queue", requeueRequest.StoryID)
+					d.logger.Info("✅ Successfully requeued and dispatched story %s to work queue (attempt %d/%d)",
+						requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts)
 				}
 			} else {
-				d.logger.Error("❌ Story %s not found or not in PENDING status after requeue", requeueRequest.StoryID)
+				d.logger.Error("❌ Story %s not in PENDING status after requeue", requeueRequest.StoryID)
 			}
 		}
 	}

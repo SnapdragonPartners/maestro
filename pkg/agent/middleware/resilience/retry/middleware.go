@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent/llm"
+	"orchestrator/pkg/agent/llmerrors"
 )
 
 // Middleware returns a middleware function that wraps an LLM client with retry logic.
@@ -51,8 +52,12 @@ func Middleware(policy *Policy) llm.Middleware {
 					}
 				}
 
-				return llm.CompletionResponse{}, fmt.Errorf("failed after %d attempts: %w",
-					policy.Config.MaxAttempts, lastErr)
+				// If we exhausted retries on a retryable error, emit ServiceUnavailable
+				// to signal the agent should enter SUSPEND state
+				if policy.ShouldRetry(lastErr) {
+					return llm.CompletionResponse{}, llmerrors.NewServiceUnavailableError(lastErr, policy.Config.MaxAttempts)
+				}
+				return llm.CompletionResponse{}, lastErr
 			},
 			// Stream implementation with retry
 			func(ctx context.Context, req llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
@@ -91,8 +96,12 @@ func Middleware(policy *Policy) llm.Middleware {
 					}
 				}
 
-				return nil, fmt.Errorf("failed to establish stream after %d attempts: %w",
-					policy.Config.MaxAttempts, lastErr)
+				// If we exhausted retries on a retryable error, emit ServiceUnavailable
+				// to signal the agent should enter SUSPEND state
+				if policy.ShouldRetry(lastErr) {
+					return nil, llmerrors.NewServiceUnavailableError(lastErr, policy.Config.MaxAttempts)
+				}
+				return nil, lastErr
 			},
 			// Delegate GetDefaultConfig to the next client
 			func() string {

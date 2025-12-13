@@ -23,9 +23,9 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
+      - -X orchestrator/pkg/version.Version={{.Version}}
+      - -X orchestrator/pkg/version.Commit={{.Commit}}
+      - -X orchestrator/pkg/version.Date={{.Date}}
     hooks:
       post:
         # Sign macOS binaries immediately after build (before archiving)

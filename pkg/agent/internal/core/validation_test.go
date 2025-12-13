@@ -209,3 +209,86 @@ func TestTransitionToWithValidation(t *testing.T) {
 		t.Errorf("expected current state to be ERROR, got %s", sm.GetCurrentState())
 	}
 }
+
+// TestSuspendStateTransitions tests SUSPEND state transition validation.
+func TestSuspendStateTransitions(t *testing.T) {
+	testTable := TransitionTable{
+		proto.StateWaiting:     {proto.StateDone, proto.State("WORKING")},
+		proto.StateDone:        {proto.StateWaiting},
+		proto.State("WORKING"): {proto.StateDone},
+		proto.StateSuspend:     {}, // Empty - SUSPEND can only return to originating state
+	}
+
+	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, nil, testTable)
+
+	tests := []struct {
+		name   string
+		from   proto.State
+		to     proto.State
+		expect bool
+	}{
+		{
+			name:   "WAITING to SUSPEND allowed",
+			from:   proto.StateWaiting,
+			to:     proto.StateSuspend,
+			expect: true,
+		},
+		{
+			name:   "DONE to SUSPEND allowed by IsValidTransition",
+			from:   proto.StateDone,
+			to:     proto.StateSuspend,
+			expect: true, // IsValidTransition allows it; EnterSuspend() will reject terminal states
+		},
+		{
+			name:   "WORKING to SUSPEND allowed",
+			from:   proto.State("WORKING"),
+			to:     proto.StateSuspend,
+			expect: true,
+		},
+		{
+			name:   "ERROR to SUSPEND allowed by IsValidTransition",
+			from:   proto.StateError,
+			to:     proto.StateSuspend,
+			expect: true, // IsValidTransition allows it; EnterSuspend() will reject terminal states
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sm.IsValidTransition(tt.from, tt.to)
+			if result != tt.expect {
+				t.Errorf("expected %v for %s->%s, got %v", tt.expect, tt.from, tt.to, result)
+			}
+		})
+	}
+}
+
+// TestSuspendReturnToOriginatingState tests SUSPEND -> originating state transition.
+func TestSuspendReturnToOriginatingState(t *testing.T) {
+	testTable := TransitionTable{
+		proto.StateWaiting:     {proto.State("WORKING")},
+		proto.State("WORKING"): {proto.StateDone},
+		proto.StateSuspend:     {}, // Will use special validation
+	}
+
+	sm := NewBaseStateMachine("test-agent", proto.State("WORKING"), nil, testTable)
+
+	// Set the originating state as if we entered SUSPEND from WORKING
+	sm.SetStateData(KeySuspendedFrom, proto.State("WORKING"))
+	sm.currentState = proto.StateSuspend
+
+	// Should be able to return to WORKING (the originating state)
+	if !sm.IsValidTransition(proto.StateSuspend, proto.State("WORKING")) {
+		t.Error("expected SUSPEND -> WORKING (originating state) to be valid")
+	}
+
+	// Should NOT be able to go to a random other state
+	if sm.IsValidTransition(proto.StateSuspend, proto.StateWaiting) {
+		t.Error("expected SUSPEND -> WAITING (not originating state) to be invalid")
+	}
+
+	// Should still be able to go to ERROR (always allowed)
+	if !sm.IsValidTransition(proto.StateSuspend, proto.StateError) {
+		t.Error("expected SUSPEND -> ERROR to be valid")
+	}
+}

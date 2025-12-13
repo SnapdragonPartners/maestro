@@ -12,6 +12,7 @@ import (
 var ValidTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	proto.StateDone:    {proto.StateWaiting}, // Can start over from done
 	proto.StateError:   {proto.StateWaiting}, // Can retry from error
+	proto.StateSuspend: {},                   // SUSPEND returns to originating state (validated specially)
 	proto.StateWaiting: {},                   // Empty - derived agents should define valid transitions from WAITING
 }
 
@@ -33,6 +34,20 @@ func (sm *BaseStateMachine) IsValidTransition(from, to proto.State) bool {
 	// Allow any transition to error state.
 	if to == proto.StateError {
 		return true
+	}
+
+	// Allow any transition to suspend state (like ERROR, accessible from anywhere).
+	if to == proto.StateSuspend {
+		return true
+	}
+
+	// Allow SUSPEND to return to its originating state (stored in stateData).
+	if from == proto.StateSuspend {
+		if suspendedFrom, ok := sm.stateData[KeySuspendedFrom]; ok {
+			if originState, ok := suspendedFrom.(proto.State); ok && to == originState {
+				return true
+			}
+		}
 	}
 
 	// Use instance-local transition table (no global mutex needed).

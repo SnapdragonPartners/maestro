@@ -54,18 +54,20 @@ func extractWorkingDirectory(args map[string]any) string {
 //
 //nolint:govet // Field alignment is not critical for this validation struct
 type ContainerValidationResult struct {
-	ErrorDetails   map[string]string `json:"error_details"`    // 8 bytes (pointer to map)
-	MissingTools   []string          `json:"missing_tools"`    // 8 bytes (pointer to slice)
-	ContainerName  string            `json:"container_name"`   // 16 bytes (string header)
-	Message        string            `json:"message"`          // 16 bytes (string header)
-	Success        bool              `json:"success"`          // 1 byte
-	GitAvailable   bool              `json:"git_available"`    // 1 byte
-	GHAvailable    bool              `json:"gh_available"`     // 1 byte
-	GitHubAPIValid bool              `json:"github_api_valid"` // 1 byte + 4 bytes padding
+	ErrorDetails  map[string]string `json:"error_details"`  // Detailed error messages for each failed check
+	MissingTools  []string          `json:"missing_tools"`  // List of missing required capabilities
+	ContainerName string            `json:"container_name"` // Name of the validated container
+	Message       string            `json:"message"`        // Human-readable summary message
+	Success       bool              `json:"success"`        // Overall validation result
+	GitAvailable  bool              `json:"git_available"`  // Whether git CLI is available
+	UserUID1000   bool              `json:"user_uid_1000"`  // Whether user with UID 1000 exists
+	TmpWritable   bool              `json:"tmp_writable"`   // Whether /tmp is writable
 }
 
-// ValidateContainerCapabilities validates that a container has all required tools for Maestro operations.
-// This includes git, GitHub CLI, and validates GitHub API connectivity.
+// ValidateContainerCapabilities validates that a container has all required capabilities for Maestro operations.
+// Required: git (for version control), user with UID 1000 (for rootless execution with read-only filesystem),
+// writable /tmp (for MCP proxy installation and temp files).
+// Informational: gh CLI availability (not required - PR operations run on host).
 // Returns detailed validation results with verbose error messages for LLM understanding.
 func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, containerName string) *ContainerValidationResult {
 	result := &ContainerValidationResult{
@@ -89,120 +91,69 @@ func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, 
 		result.GitAvailable = true
 	}
 
-	// Test 2: Check if GitHub CLI is available
-	ghResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "gh", "--version"}, opts)
-	if err != nil || ghResult.ExitCode != 0 {
-		result.GHAvailable = false
-		missingTools = append(missingTools, "gh")
-		result.ErrorDetails["gh"] = fmt.Sprintf("GitHub CLI (gh) is not available in container '%s'. Error: %v. Stdout: %s, Stderr: %s. This is required for GitHub authentication and pull request operations. Please ensure 'gh' is installed in your container.",
-			containerName, err, ghResult.Stdout, ghResult.Stderr)
+	// Test 2: Check if user with UID 1000 exists (required for --user 1000:1000 with read-only filesystem)
+	// Maestro runs containers with --user 1000:1000 --read-only, so the user must be pre-created in the Dockerfile
+	// Use getent passwd 1000 which works on both Alpine (BusyBox) and Debian/Ubuntu
+	uidResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "getent", "passwd", "1000"}, opts)
+	if err != nil || uidResult.ExitCode != 0 {
+		result.UserUID1000 = false
+		missingTools = append(missingTools, "user-uid-1000")
+		result.ErrorDetails["user_uid_1000"] = fmt.Sprintf(
+			"Container '%s' does not have a user with UID 1000. Error: %v. Stdout: %s, Stderr: %s. "+
+				"Maestro runs containers with '--user 1000:1000 --read-only', so the user MUST be pre-created in the Dockerfile. "+
+				"Add this to your Dockerfile: 'RUN adduser -D -u 1000 coder || useradd -u 1000 -m coder'. "+
+				"The user cannot be created at runtime because the container filesystem is read-only.",
+			containerName, err, uidResult.Stdout, uidResult.Stderr)
 	} else {
-		result.GHAvailable = true
+		result.UserUID1000 = true
 	}
 
-	// Test 3: Validate GitHub API connectivity (only if gh CLI is available)
-	if result.GHAvailable {
-		apiValid, apiError := validateGitHubAPIAccess(ctx, executor, containerName)
-		result.GitHubAPIValid = apiValid
-		if !apiValid {
-			result.ErrorDetails["github_api"] = apiError
-		}
+	// Test 3: Check if /tmp is writable (required for MCP proxy installation and temp files)
+	// Even with --read-only, /tmp should be writable (Docker mounts it as tmpfs by default)
+	tmpResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", "--user", "1000:1000", containerName,
+		"sh", "-c", "touch /tmp/.maestro-test && rm /tmp/.maestro-test"}, opts)
+	if err != nil || tmpResult.ExitCode != 0 {
+		result.TmpWritable = false
+		missingTools = append(missingTools, "tmp-writable")
+		result.ErrorDetails["tmp_writable"] = fmt.Sprintf(
+			"Container '%s' /tmp directory is not writable by UID 1000. Error: %v. Stdout: %s, Stderr: %s. "+
+				"Maestro requires a writable /tmp for MCP proxy installation and temporary files. "+
+				"Ensure /tmp is mounted as a writable volume or tmpfs in the container.",
+			containerName, err, tmpResult.Stdout, tmpResult.Stderr)
 	} else {
-		result.GitHubAPIValid = false
-		result.ErrorDetails["github_api"] = "Cannot test GitHub API access because GitHub CLI is not available"
+		result.TmpWritable = true
 	}
+
+	// Note: gh CLI validation not performed - PR operations run on host, not in container
 
 	result.MissingTools = missingTools
-	// Container is valid if it has required tools (git + gh CLI)
-	// GitHub API validation is optional - it may fail in test environments without config
+	// Container is valid if it has required capabilities: git + user UID 1000 + writable /tmp
+	// Note: gh CLI is NOT required in containers - PR operations run on host
 	result.Success = len(missingTools) == 0
 
 	// Generate verbose message for LLM
 	if result.Success {
-		if result.GitHubAPIValid {
-			result.Message = fmt.Sprintf("Container '%s' validation passed: git available, GitHub CLI available, GitHub API access validated", containerName)
-		} else {
-			result.Message = fmt.Sprintf("Container '%s' validation passed: git available, GitHub CLI available (GitHub API validation skipped: %s)",
-				containerName, result.ErrorDetails["github_api"])
-		}
+		result.Message = fmt.Sprintf("Container '%s' validation passed: git available, user UID 1000 exists, /tmp writable", containerName)
 	} else {
 		var issues []string
 		if !result.GitAvailable {
 			issues = append(issues, "git command not found - required for version control operations")
 		}
-		if !result.GHAvailable {
-			issues = append(issues, "GitHub CLI (gh) not found - required for authentication and PR operations")
+		if !result.UserUID1000 {
+			issues = append(issues, "user with UID 1000 not found - required for rootless container execution (add 'RUN adduser -D -u 1000 coder' to Dockerfile)")
+		}
+		if !result.TmpWritable {
+			issues = append(issues, "/tmp not writable by UID 1000 - required for MCP proxy and temp files")
 		}
 
-		result.Message = fmt.Sprintf("Container '%s' validation failed: %s. This container cannot be used for Maestro operations until these tools are installed.",
-			containerName, strings.Join(issues, ", "))
+		result.Message = fmt.Sprintf("Container '%s' validation failed: %s. This container cannot be used for Maestro operations until these issues are fixed.",
+			containerName, strings.Join(issues, "; "))
 	}
 
 	return result
 }
 
-// validateGitHubAPIAccess performs lightweight GitHub API validation using gh CLI.
-// This replaces the problematic 'gh auth status' with scope-free API calls.
-func validateGitHubAPIAccess(ctx context.Context, executor exec.Executor, containerName string) (bool, string) {
-	// Get repository info from config for API validation
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return false, fmt.Sprintf("Failed to get config for GitHub API validation: %v", err)
-	}
-
-	if cfg.Git == nil || cfg.Git.RepoURL == "" {
-		return false, "No repository URL configured - cannot validate GitHub API access"
-	}
-
-	// Extract owner/repo from URL for API validation
-	repoPath := extractRepoPath(cfg.Git.RepoURL)
-	if repoPath == "" {
-		return false, fmt.Sprintf("Cannot extract repository path from URL: %s", cfg.Git.RepoURL)
-	}
-
-	opts := &exec.Opts{
-		Timeout: 30 * time.Second,
-		Env:     []string{"GITHUB_TOKEN"}, // Pass through GITHUB_TOKEN
-	}
-
-	// Test 1: Validate token with /user endpoint
-	userResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", "-e", "GITHUB_TOKEN", containerName, "gh", "api", "/user"}, opts)
-	if err != nil || userResult.ExitCode != 0 {
-		return false, fmt.Sprintf("GitHub API /user validation failed. Error: %v. Stdout: %s, Stderr: %s. This indicates the GITHUB_TOKEN is invalid or GitHub API is unreachable.",
-			err, userResult.Stdout, userResult.Stderr)
-	}
-
-	// Test 2: Validate repository access
-	repoResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", "-e", "GITHUB_TOKEN", containerName, "gh", "api", fmt.Sprintf("/repos/%s", repoPath)}, opts)
-	if err != nil || repoResult.ExitCode != 0 {
-		return false, fmt.Sprintf("GitHub API repository access validation failed for %s. Error: %v. Stdout: %s, Stderr: %s. This indicates the token lacks repository access permissions.",
-			repoPath, err, repoResult.Stdout, repoResult.Stderr)
-	}
-
-	return true, ""
-}
-
-// extractRepoPath extracts owner/repo from a GitHub URL.
-// Supports both HTTPS and SSH formats.
-func extractRepoPath(repoURL string) string {
-	// Remove .git suffix if present
-	url := strings.TrimSuffix(repoURL, ".git")
-
-	// Handle HTTPS URLs: https://github.com/owner/repo
-	if strings.HasPrefix(url, "https://github.com/") {
-		path := strings.TrimPrefix(url, "https://github.com/")
-		if strings.Count(path, "/") >= 1 {
-			return path
-		}
-	}
-
-	// Handle SSH URLs: git@github.com:owner/repo
-	if strings.HasPrefix(url, "git@github.com:") {
-		path := strings.TrimPrefix(url, "git@github.com:")
-		if strings.Count(path, "/") >= 1 {
-			return path
-		}
-	}
-
-	return ""
-}
+// Note: validateGitHubAPIAccess and extractRepoPath functions removed.
+// GitHub API validation was running 'gh' inside the container, but PR operations
+// actually run on the host via exec.CommandContext in pkg/github/client.go.
+// Container validation now only checks for git and user UID 1000.

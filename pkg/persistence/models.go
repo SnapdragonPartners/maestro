@@ -58,6 +58,8 @@ type Story struct {
 	Express         bool     `json:"express" db:"-"`          // Skip planning, fast-path to coding (knowledge updates, hotfixes)
 	IsHotfix        bool     `json:"is_hotfix" db:"-"`        // If true, routes to dedicated hotfix coder
 	IsMaintenance   bool     `json:"is_maintenance" db:"-"`   // If true, story is part of maintenance cycle
+	AttemptCount    int      `json:"attempt_count" db:"-"`    // Number of dispatch attempts (for retry limit)
+	LastFailReason  string   `json:"last_fail_reason" db:"-"` // Reason for last failure (for diagnostics)
 }
 
 // StoryDependency represents a dependency relationship between stories.

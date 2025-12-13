@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/workspace"
 )
 
@@ -37,6 +38,17 @@ func NewRegistry(projectDir string) *Registry {
 // Returns error if any workspace update fails.
 func (r *Registry) UpdateDependentClones(ctx context.Context, repoURL, branch, mergeSHA string) error {
 	r.logger.Info("📦 Updating dependent clones after merge %s", mergeSHA)
+
+	// Update the mirror first so future coder clones are fresh.
+	// This is an optimization - coders also fetch from origin directly,
+	// but keeping the mirror fresh avoids unnecessary network traffic.
+	mirrorMgr := mirror.NewManager(r.projectDir)
+	if _, err := mirrorMgr.EnsureMirror(ctx); err != nil {
+		// Log warning but don't fail - mirror is an optimization, not critical.
+		r.logger.Warn("⚠️  Failed to update mirror after merge: %v", err)
+	} else {
+		r.logger.Info("✅ Updated mirror")
+	}
 
 	// Update architect workspace
 	if err := workspace.UpdateArchitectWorkspace(ctx, r.projectDir); err != nil {

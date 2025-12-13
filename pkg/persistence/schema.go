@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 14
+const CurrentSchemaVersion = 15
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -114,6 +114,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion13(db)
 	case 14:
 		return migrateToVersion14(db)
+	case 15:
+		return migrateToVersion15(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -277,11 +279,13 @@ func migrateToVersion10(db *sql.DB) error {
 		)`,
 
 		// Knowledge graph metadata (file modification tracking)
+		// Supports multiple graph files via graph_path as part of composite key
 		`CREATE TABLE IF NOT EXISTS knowledge_metadata (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
 			session_id TEXT NOT NULL,
-			dot_file_mtime INTEGER NOT NULL,
-			last_indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			graph_path TEXT NOT NULL,
+			last_mtime INTEGER NOT NULL,
+			last_indexed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (session_id, graph_path)
 		)`,
 
 		// Full-text search index
@@ -602,6 +606,31 @@ func migrateToVersion14(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion15 updates the knowledge_metadata table schema to support multiple graph files.
+// The old schema had: id, dot_file_mtime, last_indexed_at (single row).
+// The new schema has: session_id, graph_path, last_mtime, last_indexed with composite primary key.
+func migrateToVersion15(db *sql.DB) error {
+	// Drop the old table (data loss is acceptable - it's just a cache for mtime tracking)
+	if _, err := db.Exec("DROP TABLE IF EXISTS knowledge_metadata"); err != nil {
+		return fmt.Errorf("failed to drop old knowledge_metadata table: %w", err)
+	}
+
+	// Create new table with correct schema
+	newTable := `CREATE TABLE IF NOT EXISTS knowledge_metadata (
+		session_id TEXT NOT NULL,
+		graph_path TEXT NOT NULL,
+		last_mtime INTEGER NOT NULL,
+		last_indexed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (session_id, graph_path)
+	)`
+
+	if _, err := db.Exec(newTable); err != nil {
+		return fmt.Errorf("failed to create new knowledge_metadata table: %w", err)
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 //
 //nolint:maintidx // Schema definition is inherently large; keeping it together aids comprehension.
@@ -824,11 +853,13 @@ func createSchema(db *sql.DB) error {
 		)`,
 
 		// Knowledge graph metadata (file modification tracking)
+		// Supports multiple graph files via graph_path as part of composite key
 		`CREATE TABLE IF NOT EXISTS knowledge_metadata (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
 			session_id TEXT NOT NULL,
-			dot_file_mtime INTEGER NOT NULL,
-			last_indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			graph_path TEXT NOT NULL,
+			last_mtime INTEGER NOT NULL,
+			last_indexed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (session_id, graph_path)
 		)`,
 
 		// Full-text search index for nodes

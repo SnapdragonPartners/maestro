@@ -1247,15 +1247,33 @@ func filterOutContainerSwitch(toolList []string) []string {
 	return filtered
 }
 
+// filterOutTodoTools removes todo tools from a tool list.
+// This is used for Claude Code mode which has its own built-in todo management.
+func filterOutTodoTools(toolList []string) []string {
+	todoTools := map[string]bool{
+		tools.ToolTodosAdd:     true,
+		tools.ToolTodoComplete: true,
+		tools.ToolTodoUpdate:   true,
+	}
+	filtered := make([]string, 0, len(toolList))
+	for _, tool := range toolList {
+		if !todoTools[tool] {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
 // createClaudeCodeCodingToolProvider creates a ToolProvider for Claude Code mode coding.
-// This excludes container_switch which would destroy the Claude Code session.
+// This excludes container_switch (would destroy session) and todo tools (Claude Code has built-in).
 func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.ToolProvider {
-	// Determine coding tools based on story type and filter out container_switch
+	// Determine coding tools based on story type
+	// Filter out: container_switch (destroys session), todo tools (Claude Code has built-in)
 	var codingTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
-		codingTools = filterOutContainerSwitch(tools.DevOpsCodingTools)
+		codingTools = filterOutTodoTools(filterOutContainerSwitch(tools.DevOpsCodingTools))
 	} else {
-		codingTools = filterOutContainerSwitch(tools.AppCodingTools)
+		codingTools = filterOutTodoTools(filterOutContainerSwitch(tools.AppCodingTools))
 	}
 
 	// Create agent context for coding (read-write access)
@@ -1266,6 +1284,7 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.Tool
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
+		AgentID:         c.GetAgentID(), // Required for chat tools (chat_read needs agent_id)
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
@@ -1290,6 +1309,7 @@ func (c *Coder) createClaudeCodePlanningToolProvider(storyType string) *tools.To
 		ReadOnly:        true,                  // Planning is read-only
 		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
+		AgentID:         c.GetAgentID(), // Required for chat tools (chat_read needs agent_id)
 	}
 
 	return tools.NewProvider(&agentCtx, planningTools)

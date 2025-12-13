@@ -115,11 +115,10 @@ func (c *ContainerSwitchTool) testContainerAvailability(ctx context.Context, con
 	}
 
 	return map[string]any{
-		"test_passed":      true,
-		"validation":       validationResult,
-		"git_available":    validationResult.GitAvailable,
-		"gh_available":     validationResult.GHAvailable,
-		"github_api_valid": validationResult.GitHubAPIValid,
+		"test_passed":   true,
+		"validation":    validationResult,
+		"git_available": validationResult.GitAvailable,
+		"user_uid_1000": validationResult.UserUID1000,
 	}, nil
 }
 

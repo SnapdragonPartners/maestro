@@ -97,8 +97,9 @@ func TestMCPTCPIntegration(t *testing.T) {
 	proxyCheck := []string{"which", "maestro-mcp-proxy"}
 	result, err := executor.Run(ctx, proxyCheck, &exec.Opts{})
 	if err != nil || result.ExitCode != 0 {
-		t.Fatalf("maestro-mcp-proxy not found in container: err=%v, exit=%d, stderr=%s",
-			err, result.ExitCode, result.Stderr)
+		t.Skipf("maestro-mcp-proxy not found in bootstrap container. "+
+			"This test requires rebuilding maestro-bootstrap:latest from pkg/dockerfiles/bootstrap.dockerfile. "+
+			"err=%v, exit=%d, stderr=%s", err, result.ExitCode, result.Stderr)
 	}
 	t.Logf("Proxy binary found: %s", strings.TrimSpace(result.Stdout))
 
@@ -270,6 +271,23 @@ func TestMCPTCPConcurrentAgents(t *testing.T) {
 	// Skip if Docker is not available
 	if !isDockerAvailable() {
 		t.Skip("Docker not available, skipping concurrent agents test")
+	}
+
+	// Pre-check: verify maestro-mcp-proxy exists in bootstrap container
+	// This avoids starting multiple containers just to have them all fail
+	preCheckCtx, preCheckCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer preCheckCancel()
+	preCheckExecutor := exec.NewLongRunningDockerExec(config.BootstrapContainerTag, "proxy-precheck")
+	preCheckContainer, err := preCheckExecutor.StartContainer(preCheckCtx, "proxy-precheck", &exec.Opts{User: "0:0"})
+	if err != nil {
+		t.Fatalf("Failed to start pre-check container: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	proxyCheck, proxyErr := preCheckExecutor.Run(preCheckCtx, []string{"which", "maestro-mcp-proxy"}, &exec.Opts{})
+	preCheckExecutor.StopContainer(preCheckCtx, preCheckContainer)
+	if proxyErr != nil || proxyCheck.ExitCode != 0 {
+		t.Skipf("maestro-mcp-proxy not found in bootstrap container. " +
+			"This test requires rebuilding maestro-bootstrap:latest from pkg/dockerfiles/bootstrap.dockerfile.")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

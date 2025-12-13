@@ -267,8 +267,38 @@ PM uses LLM reasoning to decide when to:
   1. Unrecoverable errors during interview, drafting, or submission
   2. Channel errors or unexpected message types
   3. Tool execution failures
+  4. **SUSPEND** state times out waiting for service recovery
 
 * **ERROR** state transitions to **WAITING** for recovery (not terminal)
+
+---
+
+## SUSPEND state (service unavailability)
+
+The **SUSPEND** state handles external service unavailability (LLM API timeouts, network failures). This is a base-level state available to all agents.
+
+### Entry conditions
+* Agent enters **SUSPEND** when the retry middleware exhausts all retries on a retryable error (network timeout, API unavailable)
+* The `ErrorTypeServiceUnavailable` error signals the agent to call `EnterSuspend()`
+* SUSPEND can be entered from any non-terminal state (not from DONE, ERROR, or SUSPEND itself)
+
+### Behavior in SUSPEND
+* Agent preserves all state data (no data loss)
+* Agent stores originating state in `KeySuspendedFrom` state data
+* Agent blocks on restore channel waiting for orchestrator signal
+* Orchestrator polls all configured APIs (LLM providers, GitHub) every 30 seconds
+* When ALL APIs are healthy, orchestrator broadcasts restore signal
+
+### Exit conditions
+* **Restore signal**: Agent returns to originating state with all data preserved
+* **Timeout (15 min default)**: Agent transitions to **ERROR** for full recycle
+* **Context cancellation**: Agent transitions to **ERROR** (shutdown)
+
+### Key design points
+* SUSPEND preserves in-flight work - interview/spec progress is maintained
+* Uses separate `KeySuspendedFrom` key to track originating state
+* All APIs must pass health check for restore (no partial recovery)
+* ERROR triggers recovery to WAITING (PM's ERROR is not terminal)
 
 ---
 

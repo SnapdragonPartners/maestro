@@ -24,6 +24,7 @@ type AgentFactory struct {
 	persistenceChannel chan<- *persistence.Request
 	chatService        *chat.Service
 	llmFactory         *agent.LLMClientFactory // Shared LLM factory for rate limiting
+	restoreCh          <-chan struct{}         // Channel for SUSPEND state recovery signals
 }
 
 // NewAgentFactory creates a new lightweight agent factory.
@@ -34,6 +35,18 @@ func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- 
 		chatService:        chatService,
 		llmFactory:         llmFactory,
 	}
+}
+
+// SetRestoreChannel sets the channel for SUSPEND state recovery signals.
+// This should be called by the supervisor after creating the factory.
+func (f *AgentFactory) SetRestoreChannel(ch <-chan struct{}) {
+	f.restoreCh = ch
+}
+
+// SuspendableAgent is an interface for agents that support SUSPEND state.
+// Agents embedding BaseStateMachine automatically satisfy this interface.
+type SuspendableAgent interface {
+	SetRestoreChannel(ch <-chan struct{})
 }
 
 // NewAgent creates a new agent of the specified type.
@@ -63,7 +76,7 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 	workDir := getWorkDirFromConfig(&cfg)
 
 	// Create architect with shared LLM factory
-	architect, err := architect.NewArchitect(
+	architectAgent, err := architect.NewArchitect(
 		ctx,
 		agentID,
 		f.dispatcher,
@@ -75,12 +88,21 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 		return nil, fmt.Errorf("failed to create architect: %w", err)
 	}
 
+	// Configure SUSPEND state support if restore channel is available
+	if f.restoreCh != nil {
+		// Use interface conversion to check if agent supports SUSPEND
+		var agent interface{} = architectAgent
+		if suspendable, ok := agent.(SuspendableAgent); ok {
+			suspendable.SetRestoreChannel(f.restoreCh)
+		}
+	}
+
 	// Register architect for chat channels
 	f.chatService.RegisterAgent(agentID, []string{"development"})
 
 	// Attach to dispatcher
-	f.dispatcher.Attach(architect)
-	return architect, nil
+	f.dispatcher.Attach(architectAgent)
+	return architectAgent, nil
 }
 
 // createCoder creates a new coder agent.
@@ -98,10 +120,18 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 	// Extract repository info from config
 	repoURL := ""
 	targetBranch := "main"
+	mirrorDir := ".mirrors"
+	branchPattern := "story-{STORY_ID}" // Default pattern uses story ID for uniqueness
 	if cfg.Git != nil {
 		repoURL = cfg.Git.RepoURL
 		if cfg.Git.TargetBranch != "" {
 			targetBranch = cfg.Git.TargetBranch
+		}
+		if cfg.Git.MirrorDir != "" {
+			mirrorDir = cfg.Git.MirrorDir
+		}
+		if cfg.Git.BranchPattern != "" {
+			branchPattern = cfg.Git.BranchPattern
 		}
 	}
 
@@ -112,8 +142,8 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		baseWorkDir, // Clone manager uses base work dir for mirrors
 		repoURL,
 		targetBranch,
-		".mirrors",
-		fmt.Sprintf("maestro-story-%s", agentID),
+		mirrorDir,
+		branchPattern,
 	)
 
 	// Create build service as needed
@@ -132,6 +162,15 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)
+	}
+
+	// Configure SUSPEND state support if restore channel is available
+	if f.restoreCh != nil {
+		// Use interface conversion to check if agent supports SUSPEND
+		var agent interface{} = coderAgent
+		if suspendable, ok := agent.(SuspendableAgent); ok {
+			suspendable.SetRestoreChannel(f.restoreCh)
+		}
 	}
 
 	// Register coder for chat channels
@@ -175,6 +214,15 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PM: %w", err)
+	}
+
+	// Configure SUSPEND state support if restore channel is available
+	if f.restoreCh != nil {
+		// Use interface conversion to check if agent supports SUSPEND
+		var agent interface{} = pmAgent
+		if suspendable, ok := agent.(SuspendableAgent); ok {
+			suspendable.SetRestoreChannel(f.restoreCh)
+		}
 	}
 
 	// Attach to dispatcher

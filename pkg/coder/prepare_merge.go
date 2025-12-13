@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -45,6 +46,96 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		targetBranch = "main"
 	}
 
+	// === Phase 3 & 4: Merge attempt tracking and dirty state detection ===
+
+	// Get current merge attempt counters from state
+	attemptCount := utils.GetStateValueOr[int](sm, KeyMergeAttemptCount, 0)
+	stuckAttempts := utils.GetStateValueOr[int](sm, KeyMergeStuckAttempts, 0)
+	lastRemoteHEAD := utils.GetStateValueOr[string](sm, KeyLastRemoteHEAD, "")
+
+	// Increment attempt counter
+	attemptCount++
+	sm.SetStateData(KeyMergeAttemptCount, attemptCount)
+
+	// Get current remote HEAD to detect if world changed
+	currentRemoteHEAD, headErr := c.getRemoteHEAD(ctx, targetBranch)
+	if headErr != nil {
+		c.logger.Warn("🔀 Failed to get remote HEAD: %v", headErr)
+		// Continue with empty HEAD - we'll use absolute limit only
+	}
+
+	// Update stuck counter based on HEAD comparison
+	if currentRemoteHEAD != "" && lastRemoteHEAD != "" {
+		if currentRemoteHEAD == lastRemoteHEAD {
+			// World hasn't changed - coder stuck on same problem
+			stuckAttempts++
+			c.logger.Info("🔀 Same remote HEAD - stuck attempt %d/%d", stuckAttempts, MaxStuckAttempts)
+		} else {
+			// World changed - reset stuck counter, give fresh chance
+			stuckAttempts = 0
+			c.logger.Info("🔀 Remote HEAD changed (%s -> %s) - resetting stuck counter", lastRemoteHEAD[:8], currentRemoteHEAD[:8])
+		}
+	}
+
+	// Store updated counters
+	sm.SetStateData(KeyMergeStuckAttempts, stuckAttempts)
+	sm.SetStateData(KeyLastRemoteHEAD, currentRemoteHEAD)
+
+	// Check iteration limits
+	if stuckAttempts >= MaxStuckAttempts {
+		c.logger.Error("🔀 Merge failed: stuck on same conflict for %d attempts", stuckAttempts)
+		return proto.StateError, false, logx.Errorf("merge failed: coder stuck on same conflict for %d attempts without resolution", stuckAttempts)
+	}
+	if attemptCount >= MaxTotalAttempts {
+		c.logger.Error("🔀 Merge failed: exceeded maximum %d total attempts", MaxTotalAttempts)
+		return proto.StateError, false, logx.Errorf("merge failed: exceeded maximum %d total attempts", MaxTotalAttempts)
+	}
+
+	// === Phase 4: Detect workspace state on re-entry ===
+
+	wsState, wsErr := c.detectGitWorkspaceState(ctx)
+	if wsErr != nil {
+		c.logger.Warn("🔀 Failed to detect git workspace state: %v", wsErr)
+		// Continue anyway - we'll detect issues during operations
+	}
+
+	// Handle mid-operation states
+	if wsState != nil {
+		// Clear stale index lock if present
+		if wsState.IndexLocked {
+			c.clearStaleIndexLock()
+		}
+
+		// If in mid-rebase state, the coder resolved conflicts - try to continue
+		if wsState.MidRebase && !wsState.HasConflicts {
+			c.logger.Info("🔀 Detected mid-rebase state with no conflicts - attempting to continue")
+			if continueErr := c.continueRebase(ctx); continueErr != nil {
+				c.logger.Warn("🔀 Continue rebase failed: %v", continueErr)
+				// Fall through to normal flow - it will detect the state
+			} else {
+				c.logger.Info("🔀 Rebase continued successfully")
+				// Fall through to push
+			}
+		}
+
+		// If there are conflicts, send coder back to resolve them
+		if wsState.HasConflicts {
+			c.logger.Info("🔀 Workspace has unresolved conflicts - returning to CODING")
+			conflictInfo := &MergeConflictInfo{
+				Kind:             FailureRebaseConflict,
+				ConflictingFiles: wsState.ConflictingFiles,
+				GitStatus:        wsState.GitStatusOutput,
+				MidRebase:        wsState.MidRebase,
+				AttemptNumber:    attemptCount,
+				MaxAttempts:      MaxTotalAttempts,
+			}
+			msg := c.buildConflictResolutionMessage(conflictInfo)
+			c.contextManager.AddMessage("system", msg)
+			sm.SetStateData(KeyResumeInput, msg)
+			return StateCoding, false, nil
+		}
+	}
+
 	// Verify GitHub authentication is still working (should have been set up in SETUP phase)
 	if authErr := c.verifyGitHubAuthSetup(ctx); authErr != nil {
 		c.logger.Error("🔀 GitHub authentication verification failed: %v", authErr)
@@ -74,24 +165,11 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 
 	// Step 2: Push branch to remote
 	if pushErr := c.pushBranch(ctx, localBranch, remoteBranch); pushErr != nil {
-		// Check specifically for non-fast-forward - try auto-rebase before returning to CODING
-		if c.isNonFastForwardError(pushErr) {
-			c.logger.Info("🔀 Push rejected (non-fast-forward) - attempting auto-rebase onto %s", targetBranch)
-			if rebaseErr := c.attemptRebaseAndRetryPush(ctx, localBranch, remoteBranch, targetBranch); rebaseErr != nil {
-				// Rebase failed (conflicts or other issue) - return to CODING with details
-				c.logger.Info("🔀 Auto-rebase failed, returning to CODING: %v", rebaseErr)
-				rebaseFailureMsg := fmt.Sprintf("Auto-rebase failed. Please resolve manually: %s", rebaseErr.Error())
-				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, rebaseErr.Error()); renderErr != nil {
-					c.logger.Error("Failed to render rebase failure message: %v", renderErr)
-					c.contextManager.AddMessage("system", rebaseFailureMsg)
-				} else {
-					c.contextManager.AddMessage("system", renderedMessage)
-					rebaseFailureMsg = renderedMessage
-				}
-				// Set resume input for Claude Code mode
-				sm.SetStateData(KeyResumeInput, rebaseFailureMsg)
-				return StateCoding, false, nil
-			}
+		// Always attempt auto-rebase first on any push failure.
+		// This handles non-fast-forward errors robustly without brittle string matching.
+		// Worst case: rebase fails and we fall through to normal error handling.
+		c.logger.Info("🔀 Push failed - attempting auto-rebase onto %s", targetBranch)
+		if rebaseErr := c.attemptRebaseAndRetryPush(ctx, localBranch, remoteBranch, targetBranch); rebaseErr == nil {
 			// Rebase and push succeeded - run tests to verify rebased code still works
 			c.logger.Info("🔀 Auto-rebase succeeded, running post-rebase tests")
 
@@ -114,20 +192,47 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 			} else {
 				c.logger.Warn("🔀 No build service available, skipping post-rebase tests")
 			}
-		} else if c.isRecoverableGitError(pushErr) {
-			c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
-			pushFailureMsg := fmt.Sprintf("Git push failed. Fix the following issues and try again: %s", pushErr.Error())
-			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, pushErr.Error()); renderErr != nil {
-				c.logger.Error("Failed to render git push failure message: %v", renderErr)
-				c.contextManager.AddMessage("system", pushFailureMsg)
-			} else {
-				c.contextManager.AddMessage("system", renderedMessage)
-				pushFailureMsg = renderedMessage
-			}
-			// Set resume input for Claude Code mode
-			sm.SetStateData(KeyResumeInput, pushFailureMsg)
-			return StateCoding, false, nil
+			// Rebase succeeded, continue to PR creation below
 		} else {
+			// Rebase didn't help - check if it's a conflict error with special handling
+			c.logger.Info("🔀 Auto-rebase failed: %v", rebaseErr)
+
+			// Check for RebaseConflictError - workspace left in mid-rebase state
+			var conflictErr *RebaseConflictError
+			if errors.As(rebaseErr, &conflictErr) {
+				c.logger.Info("🔀 Rebase conflict - building resolution guidance for coder")
+
+				conflictInfo := &MergeConflictInfo{
+					Kind:             FailureRebaseConflict,
+					ErrorOutput:      conflictErr.ErrorOutput,
+					ConflictingFiles: conflictErr.ConflictingFiles,
+					GitStatus:        conflictErr.GitStatus,
+					MidRebase:        true,
+					AttemptNumber:    attemptCount,
+					MaxAttempts:      MaxTotalAttempts,
+				}
+
+				msg := c.buildConflictResolutionMessage(conflictInfo)
+				c.contextManager.AddMessage("system", msg)
+				sm.SetStateData(KeyResumeInput, msg)
+				return StateCoding, false, nil
+			}
+
+			// Not a conflict - fall back to recoverable/unrecoverable error handling
+			if c.isRecoverableGitError(pushErr) {
+				c.logger.Info("🔀 Git push failed (recoverable), returning to CODING: %v", pushErr)
+				pushFailureMsg := fmt.Sprintf("Git push failed. Fix the following issues and try again: %s\n\nAuto-rebase also failed: %s", pushErr.Error(), rebaseErr.Error())
+				if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitPushFailureTemplate, pushErr.Error()); renderErr != nil {
+					c.logger.Error("Failed to render git push failure message: %v", renderErr)
+					c.contextManager.AddMessage("system", pushFailureMsg)
+				} else {
+					c.contextManager.AddMessage("system", renderedMessage)
+					pushFailureMsg = renderedMessage
+				}
+				// Set resume input for Claude Code mode
+				sm.SetStateData(KeyResumeInput, pushFailureMsg)
+				return StateCoding, false, nil
+			}
 			c.logger.Error("🔀 Git push failed (unrecoverable): %v", pushErr)
 			return proto.StateError, false, logx.Wrap(pushErr, "git push failed")
 		}
@@ -368,17 +473,18 @@ func (c *Coder) isRecoverableGitError(err error) bool {
 	return true
 }
 
-// isNonFastForwardError checks if the error is specifically a non-fast-forward rejection.
-// This happens when the remote branch has commits that the local branch doesn't have,
-// typically due to parallel story development where another story was merged first.
-func (c *Coder) isNonFastForwardError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errorStr := strings.ToLower(err.Error())
-	return strings.Contains(errorStr, "non-fast-forward") ||
-		strings.Contains(errorStr, "rejected") && strings.Contains(errorStr, "fetch first") ||
-		strings.Contains(errorStr, "failed to push") && strings.Contains(errorStr, "updates were rejected")
+// RebaseConflictError represents a rebase that stopped due to conflicts.
+// The workspace is left in mid-rebase state for the coder to resolve.
+//
+//nolint:govet // field order optimized for readability over minimal padding
+type RebaseConflictError struct {
+	ErrorOutput      string
+	ConflictingFiles []string
+	GitStatus        string
+}
+
+func (e *RebaseConflictError) Error() string {
+	return fmt.Sprintf("rebase has conflicts that require manual resolution: %s", e.ErrorOutput)
 }
 
 // attemptRebaseAndRetryPush attempts to rebase the current branch onto the target branch
@@ -386,7 +492,13 @@ func (c *Coder) isNonFastForwardError(err error) bool {
 // story development where another story was merged to main while this story was being developed.
 //
 // Returns nil on success (rebase + push succeeded).
-// Returns error if rebase has conflicts or push still fails.
+// Returns *RebaseConflictError if rebase has conflicts (workspace left in mid-rebase state).
+// Returns other error if rebase/push fails for non-conflict reasons.
+//
+// IMPORTANT: On conflict, this function does NOT abort the rebase. The workspace is left
+// in mid-rebase state so the coder can resolve conflicts using git commands, then use
+// 'git rebase --continue' to finish. The caller should return to CODING state with
+// detailed resolution instructions.
 func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remoteBranch, targetBranch string) error {
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
@@ -399,11 +511,19 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 		opts.Env = append(opts.Env, "GITHUB_TOKEN")
 	}
 
-	// Step 1: Fetch latest from origin
-	c.logger.Debug("🔀 Fetching latest from origin/%s", targetBranch)
-	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts)
+	// Step 1: Fetch latest from origin (both target branch and our remote branch)
+	// We need to fetch the remote branch too so --force-with-lease has an up-to-date reference.
+	// Without this, --force-with-lease fails with "stale info" because the local tracking ref
+	// doesn't match what's actually on the remote.
+	c.logger.Debug("🔀 Fetching latest from origin/%s and origin/%s", targetBranch, remoteBranch)
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch, remoteBranch}, opts)
 	if err != nil {
-		return fmt.Errorf("git fetch failed: %w (stderr: %s)", err, result.Stderr)
+		// If the remote branch doesn't exist yet, that's OK - just fetch target branch
+		c.logger.Debug("🔀 Fetch of both branches failed, trying just target branch: %v", err)
+		result, err = c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts)
+		if err != nil {
+			return fmt.Errorf("git fetch failed: %w (stderr: %s)", err, result.Stderr)
+		}
 	}
 
 	// Step 2: Attempt rebase onto origin/targetBranch
@@ -413,13 +533,21 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 		// Check if this is a conflict
 		if strings.Contains(strings.ToLower(result.Stderr), "conflict") ||
 			strings.Contains(strings.ToLower(result.Stdout), "conflict") {
-			// Abort the rebase to leave workspace in clean state
-			c.logger.Debug("🔀 Rebase has conflicts, aborting")
-			_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--abort"}, opts)
-			return fmt.Errorf("rebase has conflicts that require manual resolution: %s", result.Stderr)
+			// DO NOT abort - leave workspace in mid-rebase state for coder to resolve
+			c.logger.Info("🔀 Rebase has conflicts - leaving workspace in mid-rebase state for resolution")
+
+			// Get current conflict state for error message
+			conflictFiles := c.getConflictingFiles(ctx)
+			gitStatus := c.getGitStatusForError(ctx)
+
+			return &RebaseConflictError{
+				ErrorOutput:      result.Stderr,
+				ConflictingFiles: conflictFiles,
+				GitStatus:        gitStatus,
+			}
 		}
-		// Other rebase failure - also abort
-		c.logger.Debug("🔀 Rebase failed, aborting")
+		// Other rebase failure (not conflict) - abort to leave clean state
+		c.logger.Debug("🔀 Rebase failed (non-conflict), aborting")
 		_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--abort"}, opts)
 		return fmt.Errorf("git rebase failed: %w (stderr: %s)", err, result.Stderr)
 	}
