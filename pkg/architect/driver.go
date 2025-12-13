@@ -84,6 +84,8 @@ type Driver struct {
 	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
 	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
 	gitHubClient            GitHubMergeClient                     // GitHub client for merge operations (nil = create from config)
+	shutdownCtx             context.Context                       //nolint:containedctx // Driver-level context for graceful shutdown of background tasks
+	shutdownCancel          context.CancelFunc                    // Cancel function for shutdownCtx
 	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
@@ -160,6 +162,9 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 	// Create BaseStateMachine with architect transition table
 	sm := agent.NewBaseStateMachine(architectID, StateWaiting, nil, architectTransitions)
 
+	// Create driver-level context for graceful shutdown of background tasks
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+
 	return &Driver{
 		BaseStateMachine:   sm,
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
@@ -171,6 +176,8 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		dispatcher:         dispatcher,
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
+		shutdownCtx:        shutdownCtx,
+		shutdownCancel:     shutdownCancel,
 		// Channels will be set during Attach()
 		questionsCh: nil,
 		replyCh:     nil,
@@ -418,6 +425,12 @@ func (d *Driver) GetStoryID() string {
 
 // Shutdown implements Agent interface with context.
 func (d *Driver) Shutdown(ctx context.Context) error {
+	// Cancel driver-level context to stop background tasks (e.g., maintenance)
+	if d.shutdownCancel != nil {
+		d.logger.Info("Cancelling background tasks")
+		d.shutdownCancel()
+	}
+
 	// Stop architect container executor
 	if d.executor != nil {
 		d.logger.Info("Stopping architect container executor")

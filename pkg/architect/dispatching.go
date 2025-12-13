@@ -134,9 +134,8 @@ func (d *Driver) sendStoryToDispatcher(ctx context.Context, storyID string) erro
 		}
 		payloadData[proto.KeyContent] = content
 
-		// Parse requirements from content if available
-		requirements := []string{} // TODO: Extract requirements from story content during SCOPING
-		payloadData[proto.KeyRequirements] = requirements
+		// Requirements are embedded in story content - no separate extraction needed
+		payloadData[proto.KeyRequirements] = []string{}
 	}
 
 	// Set typed story payload

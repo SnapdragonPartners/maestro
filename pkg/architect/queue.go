@@ -402,8 +402,6 @@ func (q *Queue) RequeueStory(storyID string) error {
 	story.StartedAt = nil
 	story.LastUpdated = time.Now().UTC()
 
-	// TODO: Persist the requeue event to database for tracking
-
 	return nil
 }
 
