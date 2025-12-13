@@ -41,18 +41,146 @@ internal/mocks/
 
 ```go
 import (
+    "context"
     "testing"
     "orchestrator/internal/mocks"
+    "orchestrator/pkg/agent/llm"
 )
 
 func TestSomething(t *testing.T) {
     mockLLM := mocks.NewMockLLMClient()
-    mockLLM.OnComplete(func(msgs []agent.Message) agent.Response {
+    mockLLM.OnComplete(func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
         // Return controlled response
-        return agent.Response{Content: "test response"}
+        return llm.CompletionResponse{
+            Content:    "test response",
+            StopReason: "end_turn",
+        }, nil
     })
 
     // Use mockLLM in test...
+}
+```
+
+### Concrete Mock Examples
+
+#### MockLLMClient - Testing Tool Calls
+
+```go
+func TestToolCallParsing(t *testing.T) {
+    mockLLM := mocks.NewMockLLMClient()
+
+    // Configure mock to return a tool call
+    mockLLM.RespondWithToolCall("submit_plan", map[string]any{
+        "plan": "Implementation plan details...",
+        "confidence": 0.85,
+    })
+
+    // Run your test
+    // ...
+
+    // Verify the LLM was called correctly
+    assert.Equal(t, 1, mockLLM.GetCompleteCallCount())
+    assert.True(t, mockLLM.AssertCompleteCalledWith("expected prompt content"))
+}
+```
+
+#### MockLLMClient - Testing Response Sequences
+
+```go
+func TestIterativeConversation(t *testing.T) {
+    mockLLM := mocks.NewMockLLMClient()
+
+    // Configure mock to return different responses for each call
+    mockLLM.RespondWithSequence([]llm.CompletionResponse{
+        {Content: "First response", StopReason: "end_turn"},
+        {Content: "Second response", StopReason: "end_turn"},
+        {ToolCalls: []llm.ToolCall{{Name: "done"}}, StopReason: "tool_use"},
+    })
+
+    // Test iterative conversation flow
+    // First call returns "First response"
+    // Second call returns "Second response"
+    // Third call returns tool call to signal completion
+}
+```
+
+#### MockChatService - Testing Escalation
+
+```go
+func TestEscalationFlow(t *testing.T) {
+    mockChat := mocks.NewMockChatService()
+
+    // Configure mock to return a human reply after a delay
+    mockChat.ReplyWith("Here's guidance for the escalation...")
+
+    // Run escalation handler
+    // ...
+
+    // Verify escalation message was posted
+    assert.Equal(t, 1, mockChat.GetPostCallCount())
+    lastPost := mockChat.LastPostCall()
+    assert.Equal(t, "escalate", lastPost.PostType)
+    assert.Contains(t, lastPost.Text, "iteration limit")
+}
+```
+
+#### MockChatService - Testing Timeout
+
+```go
+func TestEscalationTimeout(t *testing.T) {
+    mockChat := mocks.NewMockChatService()
+
+    // Configure mock to never reply (simulates human not responding)
+    mockChat.NeverReply()
+
+    // Create context with short timeout
+    ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+    defer cancel()
+
+    // Run escalation handler - should timeout
+    err := handleEscalation(ctx, mockChat, ...)
+
+    assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+```
+
+#### MockGitHubClient - Testing Merge Conflicts
+
+```go
+func TestMergeWithConflicts(t *testing.T) {
+    mockGH := mocks.NewMockGitHubClient()
+
+    // Configure mock to return merge conflict
+    mockGH.ReturnMergeConflict("CONFLICT in src/main.go: content differs")
+
+    // Run merge handler
+    result, err := handleMergeRequest(ctx, mockGH, prURL, branchName, storyID)
+
+    // Verify conflict handling
+    assert.NoError(t, err)
+    assert.Equal(t, "NEEDS_CHANGES", result.Status)
+    assert.Contains(t, result.Feedback, "conflict")
+}
+```
+
+#### MockGitHubClient - Testing PR Creation Flow
+
+```go
+func TestMergeWithNoPR(t *testing.T) {
+    mockGH := mocks.NewMockGitHubClient()
+
+    // Configure mock: no existing PR, then successful merge
+    mockGH.OnListPRsForBranch(func(ctx context.Context, branch string) ([]github.PullRequest, error) {
+        return []github.PullRequest{}, nil // No existing PR
+    })
+    mockGH.ReturnMergeSuccess("abc123def")
+
+    // Run merge handler with branch name only
+    result, err := handleMergeRequest(ctx, mockGH, "", "feature-branch", storyID)
+
+    // Verify PR was created
+    assert.True(t, mockGH.WasCreatePRCalled())
+    assert.True(t, mockGH.WasMergeCalled())
 }
 ```
 

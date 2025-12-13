@@ -16,7 +16,24 @@ import (
 // DefaultBranch is the default target branch for operations.
 const DefaultBranch = "main"
 
+// GitHubClient defines the interface for GitHub operations.
+// This interface enables testing with mock implementations.
+type GitHubClient interface {
+	// PR operations
+	ListPRsForBranch(ctx context.Context, branch string) ([]PullRequest, error)
+	CreatePR(ctx context.Context, opts PRCreateOptions) (*PullRequest, error)
+	MergePRWithResult(ctx context.Context, ref string, opts PRMergeOptions) (*MergeResult, error)
+
+	// Branch operations
+	CleanupMergedBranches(ctx context.Context, target string, protectedPatterns []string) ([]string, error)
+
+	// Configuration
+	WithTimeout(timeout time.Duration) *Client
+	RepoPath() string
+}
+
 // Client provides GitHub API operations via the gh CLI.
+// Client implements GitHubClient interface.
 //
 //nolint:govet // Logical grouping preferred over memory optimization
 type Client struct {
