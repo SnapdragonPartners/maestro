@@ -120,7 +120,11 @@ func (d *Driver) setupInterviewContext() error {
 
 	// Check if spec was uploaded (vs being generated through interview)
 	specUploaded, _ := stateData["spec_uploaded"].(bool)
-	uploadedSpec, _ := stateData["draft_spec_markdown"].(string)
+	// Try new key first, fall back to legacy
+	uploadedSpec, _ := stateData[StateKeyUserSpecMd].(string)
+	if uploadedSpec == "" {
+		uploadedSpec, _ = stateData["draft_spec_markdown"].(string)
+	}
 
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
@@ -221,11 +225,18 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		return "", logx.Wrap(err, "failed to get spec_submit tool")
 	}
 
-	// Inject bootstrap markdown into spec_submit tool if it exists in state
-	if bootstrapMarkdown, ok := d.GetStateData()[StateKeyBootstrapRequirements].(string); ok && bootstrapMarkdown != "" {
-		if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
+	// Inject state into spec_submit tool
+	if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
+		// Inject bootstrap markdown if it exists in state
+		if bootstrapMarkdown, bsOk := d.GetStateData()[StateKeyBootstrapRequirements].(string); bsOk && bootstrapMarkdown != "" {
 			submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
 			d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
+		}
+
+		// Inject in_flight flag to enforce hotfix-only mode during development
+		if inFlight, ifOk := d.GetStateData()[StateKeyInFlight].(bool); ifOk {
+			submitTool.SetInFlight(inFlight)
+			d.logger.Info("📝 Injected in_flight=%v into spec_submit tool", inFlight)
 		}
 	}
 
@@ -322,7 +333,12 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 				// If spec was uploaded, re-inject it after context reset
 				if specUploaded, _ := d.GetStateData()["spec_uploaded"].(bool); specUploaded {
-					if uploadedSpec, ok := d.GetStateData()["draft_spec_markdown"].(string); ok && uploadedSpec != "" {
+					// Try new key first, fall back to legacy
+					uploadedSpec, ok := d.GetStateData()[StateKeyUserSpecMd].(string)
+					if !ok || uploadedSpec == "" {
+						uploadedSpec, ok = d.GetStateData()["draft_spec_markdown"].(string)
+					}
+					if ok && uploadedSpec != "" {
 						specMsg := fmt.Sprintf("The user has provided the following specification document. Please extract the **user feature requirements** from it (ignore any infrastructure/bootstrap requirements as those have been handled):\n\n```markdown\n%s\n```", uploadedSpec)
 						d.contextManager.AddMessage("user", specMsg)
 						d.logger.Info("📄 Re-injected uploaded spec (%d bytes) after context reset", len(uploadedSpec))
@@ -344,22 +360,35 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			userSpec, _ := effectData["user_spec"].(string)
 			summary, _ := effectData["summary"].(string)
 			metadata, _ := effectData["metadata"].(map[string]any)
+			isHotfix, _ := effectData["is_hotfix"].(bool)
 
-			// Store both specs separately in state for PREVIEW state and later submission to architect
-			d.SetStateData("infrastructure_spec", infrastructureSpec)
-			d.SetStateData("user_spec", userSpec)
+			// Store specs using new state keys
+			d.SetStateData(StateKeyUserSpecMd, userSpec)
 			d.SetStateData("spec_metadata", metadata)
 
-			// For backward compatibility with WebUI preview, concatenate for display
-			// (WebUI expects draft_spec_markdown for preview display)
-			draftSpecMarkdown := userSpec
-			if infrastructureSpec != "" {
-				draftSpecMarkdown = infrastructureSpec + "\n\n" + userSpec
+			// Only store bootstrap spec if not a hotfix (hotfixes don't include bootstrap)
+			if !isHotfix && infrastructureSpec != "" {
+				d.SetStateData(StateKeyBootstrapSpecMd, infrastructureSpec)
 			}
-			d.SetStateData("draft_spec_markdown", draftSpecMarkdown)
 
-			d.logger.Info("📋 Stored spec for preview (infrastructure: %d bytes, user: %d bytes, summary: %s)",
-				len(infrastructureSpec), len(userSpec), summary)
+			// Legacy keys for backward compatibility
+			d.SetStateData("infrastructure_spec", infrastructureSpec)
+			d.SetStateData("user_spec", userSpec)
+			// For WebUI preview display - concatenate only if not hotfix
+			if isHotfix {
+				// Hotfix preview shows only the hotfix content
+				d.SetStateData("draft_spec_markdown", userSpec)
+			} else {
+				// Full spec preview shows bootstrap + user spec
+				draftSpecMarkdown := userSpec
+				if infrastructureSpec != "" {
+					draftSpecMarkdown = infrastructureSpec + "\n\n" + userSpec
+				}
+				d.SetStateData("draft_spec_markdown", draftSpecMarkdown)
+			}
+
+			d.logger.Info("📋 Stored spec for preview (infrastructure: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
+				len(infrastructureSpec), len(userSpec), isHotfix, summary)
 
 			return SignalSpecPreview, nil
 

@@ -16,7 +16,12 @@ func (d *Driver) handlePreview(ctx context.Context) (proto.State, error) {
 
 	// Verify we have a draft spec in state data
 	stateData := d.GetStateData()
-	draftSpec, ok := stateData["draft_spec_markdown"].(string)
+	// Try new key first, fall back to legacy
+	draftSpec, ok := stateData[StateKeyUserSpecMd].(string)
+	if !ok || draftSpec == "" {
+		// Legacy fallback
+		draftSpec, ok = stateData["draft_spec_markdown"].(string)
+	}
 
 	if !ok || draftSpec == "" {
 		d.logger.Error("❌ No draft spec found in state data")

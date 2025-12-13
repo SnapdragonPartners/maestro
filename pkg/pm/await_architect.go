@@ -68,9 +68,12 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			// Clear all spec and bootstrap data from state - the spec has been
 			// submitted and we don't want stale data prepended to future hotfixes.
 			// The conversation context still has the spec history for PM reference.
+			d.SetStateData(StateKeyUserSpecMd, nil)
+			d.SetStateData(StateKeyBootstrapSpecMd, nil)
+			d.SetStateData("spec_metadata", nil)
+			// Legacy keys - clear for backward compatibility
 			d.SetStateData("draft_spec_markdown", nil)
 			d.SetStateData("spec_markdown", nil)
-			d.SetStateData("spec_metadata", nil)
 			d.SetStateData("spec_uploaded", nil)
 			d.SetStateData("infrastructure_spec", nil)
 			d.SetStateData("user_spec", nil)
@@ -78,7 +81,9 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			d.SetStateData(StateKeyDetectedPlatform, nil)
 			d.SetStateData("bootstrap_params", nil)
 
-			// Mark that we're in post-approval mode (development in progress)
+			// Mark that development is in flight - only hotfixes allowed now
+			d.SetStateData(StateKeyInFlight, true)
+			// Also set legacy key for backward compatibility
 			d.SetStateData(StateKeyDevelopmentInProgress, true)
 
 			// Inject user message to inform PM of approval and prompt for response

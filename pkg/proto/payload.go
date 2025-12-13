@@ -41,7 +41,8 @@ const (
 	PayloadKindShutdown PayloadKind = "shutdown"
 
 	// Notification payloads.
-	PayloadKindStoryComplete PayloadKind = "story_complete" // Story completion notification
+	PayloadKindStoryComplete      PayloadKind = "story_complete"       // Story completion notification
+	PayloadKindAllStoriesComplete PayloadKind = "all_stories_complete" // All stories completed notification
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -313,6 +314,37 @@ func (p *MessagePayload) ExtractStoryComplete() (*StoryCompletePayload, error) {
 	var result StoryCompletePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal story complete payload: %w", err)
+	}
+	return &result, nil
+}
+
+// AllStoriesCompletePayload contains data for an all-stories-complete notification.
+// Sent by architect to PM when all stories in a spec have been completed.
+type AllStoriesCompletePayload struct {
+	SpecID       string `json:"spec_id"`
+	TotalStories int    `json:"total_stories"`
+	Timestamp    string `json:"timestamp"`
+	Message      string `json:"message,omitempty"` // Optional summary message
+	DemoReady    bool   `json:"demo_ready"`        // Indicates if demo can be started
+}
+
+// NewAllStoriesCompletePayload creates a payload for all-stories-complete notifications.
+func NewAllStoriesCompletePayload(data *AllStoriesCompletePayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindAllStoriesComplete,
+		Data: raw,
+	}
+}
+
+// ExtractAllStoriesComplete extracts and validates an all-stories-complete payload.
+func (p *MessagePayload) ExtractAllStoriesComplete() (*AllStoriesCompletePayload, error) {
+	if p.Kind != PayloadKindAllStoriesComplete {
+		return nil, fmt.Errorf("expected all_stories_complete payload, got %s", p.Kind)
+	}
+	var result AllStoriesCompletePayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal all stories complete payload: %w", err)
 	}
 	return &result, nil
 }

@@ -684,6 +684,44 @@ func (d *Driver) notifyPMOfCompletion(ctx context.Context, storyID string, compl
 	}
 }
 
+// notifyPMAllStoriesComplete sends an all-stories-complete notification to PM.
+// This is called when all stories in the queue have been completed.
+func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
+	// Get spec ID and total stories from queue
+	specID := ""
+	totalStories := 0
+	if d.queue != nil {
+		allStories := d.queue.GetAllStories()
+		totalStories = len(allStories)
+		// Get spec ID from first story if available
+		if totalStories > 0 {
+			specID = allStories[0].SpecID
+		}
+	}
+
+	// Build notification payload
+	notificationPayload := &proto.AllStoriesCompletePayload{
+		SpecID:       specID,
+		TotalStories: totalStories,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+		Message:      "All development stories have been completed successfully.",
+		DemoReady:    true, // Assume demo is ready when all stories complete
+	}
+
+	// Create notification message to PM
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewAllStoriesCompletePayload(notificationPayload))
+
+	// Send via effect
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		return fmt.Errorf("failed to send all-stories-complete notification: %w", err)
+	}
+
+	d.logger.Info("🎉 Notified PM that all %d stories are complete (spec=%s)", totalStories, specID)
+	return nil
+}
+
 // Response formatting methods using templates
 
 // ResponseKind identifies the type of approval response for formatting.

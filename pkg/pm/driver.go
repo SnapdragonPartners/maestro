@@ -46,6 +46,19 @@ const (
 	StateKeyBootstrapRequirements = "bootstrap_requirements"
 	// StateKeyDetectedPlatform stores the detected platform.
 	StateKeyDetectedPlatform = "detected_platform"
+
+	// StateKeyUserSpecMd stores the user's feature requirements markdown (working copy during interview).
+	// Cleared after architect accepts the spec.
+	StateKeyUserSpecMd = "user_spec_md"
+	// StateKeyBootstrapSpecMd stores infrastructure requirements from bootstrap phase.
+	// Cleared after architect accepts the spec.
+	StateKeyBootstrapSpecMd = "bootstrap_spec_md"
+	// StateKeyInFlight indicates development is in progress (spec submitted and accepted).
+	// When true, only hotfixes are allowed (spec_submit with hotfix=true).
+	// Set to true when architect approves spec, set to false when all stories complete.
+	StateKeyInFlight = "in_flight"
+
+	// Deprecated: Use StateKeyInFlight instead.
 	// StateKeyDevelopmentInProgress indicates spec was approved and development has started.
 	// When true, PM is in "tweak mode" and can accept hotfix requests.
 	StateKeyDevelopmentInProgress = "development_in_progress"
@@ -555,10 +568,25 @@ func (d *Driver) GetDetectedPlatform() string {
 // Returns empty string if no draft spec is available.
 func (d *Driver) GetDraftSpec() string {
 	stateData := d.GetStateData()
+	// Try new key first, fall back to legacy for backward compatibility
+	if draftSpec, ok := stateData[StateKeyUserSpecMd].(string); ok && draftSpec != "" {
+		return draftSpec
+	}
+	// Legacy fallback
 	if draftSpec, ok := stateData["draft_spec_markdown"].(string); ok {
 		return draftSpec
 	}
 	return ""
+}
+
+// IsInFlight returns true if development is in progress (spec submitted and accepted).
+// When in_flight, only hotfixes are allowed.
+func (d *Driver) IsInFlight() bool {
+	stateData := d.GetStateData()
+	if inFlight, ok := stateData[StateKeyInFlight].(bool); ok {
+		return inFlight
+	}
+	return false
 }
 
 // GetDraftSpecMetadata returns the draft specification metadata if available.

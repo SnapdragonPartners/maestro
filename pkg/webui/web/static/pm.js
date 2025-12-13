@@ -104,6 +104,11 @@ class PMController {
 
         // Update badge color based on state
         badge.className = 'px-3 py-1 rounded-full text-sm font-medium';
+
+        // Skip auto-tab-switching if user is intentionally viewing the demo tab
+        // This allows users to check demo status while PM is working
+        const skipAutoSwitch = (this.currentTab === 'demo');
+
         switch (status.state) {
             case 'WAITING':
                 badge.classList.add('bg-green-100', 'text-green-800');
@@ -111,7 +116,8 @@ class PMController {
             case 'WORKING':
                 badge.classList.add('bg-blue-100', 'text-blue-800');
                 // Auto-switch to interview tab when PM transitions from upload to WORKING for bootstrap questions
-                if (this.currentTab === 'upload' && status.has_session) {
+                // But respect user's demo tab selection
+                if (!skipAutoSwitch && this.currentTab === 'upload' && status.has_session) {
                     this.switchTab('interview');
                     // Show chat interface (session is already started by upload)
                     document.getElementById('interview-start-section').classList.add('hidden');
@@ -126,9 +132,10 @@ class PMController {
                 break;
             case 'AWAIT_USER':
                 badge.classList.add('bg-blue-100', 'text-blue-800');
-                // Always switch to interview tab when PM is awaiting user response
+                // Auto-switch to interview tab when PM is awaiting user response
                 // This handles both initial interviews and architect feedback cycles
-                if (this.currentTab !== 'interview') {
+                // But respect user's demo tab selection
+                if (!skipAutoSwitch && this.currentTab !== 'interview') {
                     this.switchTab('interview');
                     // Ensure chat interface is visible if session exists
                     if (status.has_session) {
@@ -140,7 +147,8 @@ class PMController {
             case 'PREVIEW':
                 badge.classList.add('bg-yellow-100', 'text-yellow-800');
                 // Auto-switch to preview tab and load spec (only once)
-                if (this.currentTab !== 'preview') {
+                // But respect user's demo tab selection
+                if (!skipAutoSwitch && this.currentTab !== 'preview') {
                     this.switchTab('preview');
                 }
                 // Load the spec only once when entering PREVIEW state
