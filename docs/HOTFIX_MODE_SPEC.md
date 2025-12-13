@@ -1062,10 +1062,10 @@ d.SetStateData(StateKeyInFlight, true)
 
 ### Acceptance Criteria
 
-1. [ ] `spec_submit(hotfix=true)` stores `is_hotfix=true` in PM state
-2. [ ] User sees hotfix preview before submission
-3. [ ] "Submit for Development" routes hotfixes to `sendHotfixRequest()`
-4. [ ] Hotfixes jump the queue and go to `hotfix-001` coder
-5. [ ] All spec-related state variables cleared on approval (including `is_hotfix`, `turn_count`)
-6. [ ] `submit_stories` tool removed from PM (architect-only)
-7. [ ] Dead code removed (`SignalHotfixSubmit`, dedicated hotfix state vars)
+1. [x] `spec_submit(hotfix=true)` stores `is_hotfix=true` in PM state
+2. [x] User sees hotfix preview before submission
+3. [x] "Submit for Development" routes hotfixes to `sendHotfixRequest()`
+4. [x] Hotfixes jump the queue and go to `hotfix-001` coder
+5. [x] All spec-related state variables cleared on approval (including `is_hotfix`, `turn_count`)
+6. [x] `submit_stories` tool removed from PM (architect-only)
+7. [x] Dead code removed (`SignalHotfixSubmit`, dedicated hotfix state vars)

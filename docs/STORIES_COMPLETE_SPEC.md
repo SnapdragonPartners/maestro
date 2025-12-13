@@ -194,10 +194,10 @@ When `spec_submit(hotfix=true)` is called:
 
 ## Acceptance Criteria
 
-1. [ ] PM receives story completion notifications even when in AWAIT_USER state
-2. [ ] PM receives all-stories-complete notification and sets `in_flight = false`
-3. [ ] `spec_submit(hotfix=false)` returns helpful error when `in_flight = true`
-4. [ ] Hotfix preview shows only hotfix content, not original spec
-5. [ ] Demo tab is accessible at all times (no auto-redirect away)
-6. [ ] State variables are consistent: `user_spec_md`, `bootstrap_spec_md`, `in_flight`
-7. [ ] Original spec context preserved in LLM conversation for hotfix reference
+1. [x] PM receives story completion notifications even when in AWAIT_USER state
+2. [x] PM receives all-stories-complete notification and sets `in_flight = false`
+3. [x] `spec_submit(hotfix=false)` returns helpful error when `in_flight = true`
+4. [x] Hotfix preview shows only hotfix content, not original spec
+5. [x] Demo tab is accessible at all times (no auto-redirect away)
+6. [x] State variables are consistent: `user_spec_md`, `bootstrap_spec_md`, `in_flight`
+7. [x] Original spec context preserved in LLM conversation for hotfix reference
