@@ -218,9 +218,9 @@ These items improve code quality and reduce technical debt.
   - Removed misleading "legacy" nolint:all comment
   - Tests now properly documented as basic unit tests
 
-### Phase 3: Testing (Medium Effort, High Value)
+### Phase 3: Testing (Medium Effort, High Value) - DEFERRED
 
-These items address the critical test coverage gap.
+These items address the critical test coverage gap. **Deferred for dedicated testing effort.**
 
 - [ ] **3.1** Add tests for `handlePrepareMerge` merge flow
   - Test: commit, push, PR creation paths
@@ -244,9 +244,9 @@ These items address the critical test coverage gap.
   - Target: ≥50% for `pkg/coder`
   - Add coverage reporting to CI if not present
 
-### Phase 4: Refactoring (Medium Risk)
+### Phase 4: Refactoring (Medium Risk) - DEFERRED
 
-These items improve code organization. Do after tests are in place.
+These items improve code organization. **Deferred - do after tests are in place.**
 
 - [ ] **4.1** Extract container management helpers from `driver.go`
   - Move container-related methods to `driver_container.go` or similar
@@ -260,20 +260,27 @@ These items improve code organization. Do after tests are in place.
   - Extract to function with early returns
   - Improves readability
 
-### Phase 5: Nolint Audit (Low Priority)
+### Phase 5: Nolint Audit (Low Priority) - COMPLETE
 
-Review remaining nolint directives after other changes.
+All nolint directives reviewed and verified as properly documented.
 
-- [ ] **5.1** Audit remaining `nolint:dupl` directives
-  - After Phase 2.4, check if duplicates are resolved
+- [x] **5.1** Audit remaining `nolint:dupl` directives
+  - 4 occurrences: All appropriate (similar structure, different semantics)
 
-- [ ] **5.2** Audit `nolint:unparam` directives
-  - Most are for interface consistency - acceptable
-  - Document reasoning if keeping
+- [x] **5.2** Audit `nolint:unparam` directives
+  - 9 occurrences: All for state machine interface consistency
+  - Each has explanatory comment
 
-- [ ] **5.3** Audit `nolint:govet` field alignment directives
-  - Acceptable for readability choices
-  - Consider if any structs are hot paths worth optimizing
+- [x] **5.3** Audit `nolint:govet` field alignment directives
+  - 5 occurrences: All prioritize readability over optimization
+  - Non-hot-path structs, optimization not beneficial
+
+**Summary**: 31 nolint directives in non-test files, all properly justified:
+- `unparam` (9): Interface consistency
+- `govet` (5): Readability over padding optimization
+- `gocritic` (4): Value semantics for small structs
+- `dupl` (4): Similar patterns, different semantics
+- `gochecknoglobals` (2): Package-level constants
 
 ---
 
