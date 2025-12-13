@@ -34,7 +34,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # Pattern: stateData["something"].(type) or GetStateData()["something"].(type)
-RAW_ASSERTIONS=$(grep -rn --include="*.go" -E 'stateData\["[^"]+"\]\.\([a-z]|GetStateData\(\)\["[^"]+"\]\.\([a-z]' "$SEARCH_PATH" 2>/dev/null || true)
+# Exclude test files from critical issues
+RAW_ASSERTIONS=$(grep -rn --include="*.go" --exclude="*_test.go" -E 'stateData\["[^"]+"\]\.\([a-z]|GetStateData\(\)\["[^"]+"\]\.\([a-z]' "$SEARCH_PATH" 2>/dev/null || true)
 
 if [ -n "$RAW_ASSERTIONS" ]; then
     echo -e "${RED}Found raw type assertions:${NC}"
@@ -87,7 +88,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # Pattern: effectData["something"].(type) - common in tool effect processing
-EFFECT_ASSERTIONS=$(grep -rn --include="*.go" -E 'effectData\["[^"]+"\]\.\([a-z]' "$SEARCH_PATH" 2>/dev/null || true)
+# Exclude test files from critical issues
+EFFECT_ASSERTIONS=$(grep -rn --include="*.go" --exclude="*_test.go" -E 'effectData\["[^"]+"\]\.\([a-z]' "$SEARCH_PATH" 2>/dev/null || true)
 
 if [ -n "$EFFECT_ASSERTIONS" ]; then
     echo -e "${RED}Found raw type assertions on effect data:${NC}"

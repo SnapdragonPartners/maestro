@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // handleEscalated processes the escalated phase using chat-based escalation.
@@ -14,23 +15,16 @@ import (
 func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	d.logger.Info("🚨 Entered ESCALATED state - waiting for human guidance")
 
-	// Get state data
-	stateData := d.GetStateData()
-
-	// Get escalation context from state data
-	originState, ok := stateData["escalation_origin_state"].(string)
-	if !ok || originState == "" {
+	// Get escalation context from state data using type-safe utilities
+	originState := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyEscalationOriginState, "")
+	if originState == "" {
 		return StateError, fmt.Errorf("escalation_origin_state not found in state data")
 	}
 
-	iterationCount, ok := stateData["escalation_iteration_count"].(int)
-	if !ok {
-		iterationCount = 0 // Default if not found
-	}
-
-	requestID, _ := stateData["escalation_request_id"].(string)
-	storyID, _ := stateData["escalation_story_id"].(string)
-	agentID, _ := stateData["escalation_agent_id"].(string)
+	iterationCount := utils.GetStateValueOr[int](d.BaseStateMachine, StateKeyEscalationIterationCount, 0)
+	requestID := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyEscalationRequestID, "")
+	storyID := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyEscalationStoryID, "")
+	agentID := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyEscalationAgentID, "")
 
 	// Check if chat service is available
 	if d.chatService == nil {
@@ -39,7 +33,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	}
 
 	// Check if we've already posted an escalation message
-	escalationMsgID, hasPosted := stateData["escalation_message_id"].(int64)
+	escalationMsgID, hasPosted := utils.GetStateValue[int64](d.BaseStateMachine, StateKeyEscalationMessageID)
 
 	if !hasPosted {
 		// First time in ESCALATED state - post escalation message
@@ -58,14 +52,14 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 		}
 
 		escalationMsgID = resp.ID
-		d.SetStateData("escalation_message_id", escalationMsgID)
-		d.SetStateData("escalated_at", time.Now())
+		d.SetStateData(StateKeyEscalationMessageID, escalationMsgID)
+		d.SetStateData(StateKeyEscalatedAt, time.Now())
 
 		d.logger.Info("📢 Posted escalation message (id=%d) - waiting for human reply", escalationMsgID)
 	}
 
 	// Check escalation timeout (2 hours)
-	escalatedAt, _ := stateData["escalated_at"].(time.Time)
+	escalatedAt := utils.GetStateValueOr[time.Time](d.BaseStateMachine, StateKeyEscalatedAt, time.Time{})
 	if !escalatedAt.IsZero() {
 		timeSinceEscalation := time.Since(escalatedAt)
 		if timeSinceEscalation > EscalationTimeout {
@@ -117,13 +111,13 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 	d.SetStateData(originStateIterationKey, 0)
 
 	// Clear escalation state data (set to nil to clear)
-	d.SetStateData("escalation_message_id", nil)
-	d.SetStateData("escalation_origin_state", nil)
-	d.SetStateData("escalation_iteration_count", nil)
-	d.SetStateData("escalation_request_id", nil)
-	d.SetStateData("escalation_story_id", nil)
-	d.SetStateData("escalation_agent_id", nil)
-	d.SetStateData("escalated_at", nil)
+	d.SetStateData(StateKeyEscalationMessageID, nil)
+	d.SetStateData(StateKeyEscalationOriginState, nil)
+	d.SetStateData(StateKeyEscalationIterationCount, nil)
+	d.SetStateData(StateKeyEscalationRequestID, nil)
+	d.SetStateData(StateKeyEscalationStoryID, nil)
+	d.SetStateData(StateKeyEscalationAgentID, nil)
+	d.SetStateData(StateKeyEscalatedAt, nil)
 
 	// Return to REQUEST state (where escalations originate from)
 	d.logger.Info("↩️  Returning to REQUEST state with human guidance")

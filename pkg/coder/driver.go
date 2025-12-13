@@ -1587,8 +1587,7 @@ func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID string, e
 // This is a fire-and-forget operation - failures are logged but don't affect tool execution.
 func (c *Coder) logToolExecution(toolCall *agent.ToolCall, result any, execErr error, duration time.Duration) {
 	// Get story ID from state machine if available
-	stateData := c.GetStateData()
-	storyIDStr, _ := stateData["story_id"].(string)
+	storyIDStr := utils.GetStateValueOr[string](c.BaseStateMachine, KeyStoryID, "")
 
 	// Delegate to shared implementation in pkg/agent
 	agent.LogToolExecution(toolCall, result, execErr, duration, c.GetAgentID(), storyIDStr, c.persistenceChannel)

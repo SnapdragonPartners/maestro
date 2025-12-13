@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // handleRequest processes the request phase (handling coder requests).
@@ -933,18 +934,18 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 	}
 
 	// Extract review data from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 	}
 
-	status, _ := effectData["status"].(string)
-	feedback, _ := effectData["feedback"].(string)
+	status := utils.GetMapFieldOr[string](effectData, "status", "")
+	feedback := utils.GetMapFieldOr[string](effectData, "feedback", "")
 
 	d.logger.Info("✅ Architect completed iterative review with status: %s", status)
 
 	// Clean up state data
-	d.SetStateData("current_story_id", nil)
+	d.SetStateData(StateKeyCurrentStoryID, nil)
 
 	// Build and return approval response
 	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
@@ -1028,13 +1029,13 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	}
 
 	// Extract review data from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REVIEW_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 	}
 
-	status, _ := effectData["status"].(string)
-	feedback, _ := effectData["feedback"].(string)
+	status := utils.GetMapFieldOr[string](effectData, "status", "")
+	feedback := utils.GetMapFieldOr[string](effectData, "feedback", "")
 
 	d.logger.Info("✅ Single-turn review completed with status: %s", status)
 
@@ -1137,12 +1138,12 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	}
 
 	// Extract response from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		return nil, fmt.Errorf("REPLY_SUBMITTED effect data is not map[string]any: %T", out.EffectData)
 	}
 
-	response, _ := effectData["response"].(string)
+	response := utils.GetMapFieldOr[string](effectData, "response", "")
 	d.logger.Info("✅ Architect answered question via submit_reply")
 
 	// Build response message with the answer

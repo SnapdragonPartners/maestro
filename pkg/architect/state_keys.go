@@ -20,9 +20,13 @@ const (
 	StateKeyReviewComplete = "review_complete_result" // map[string]any - result from review_complete tool
 
 	// Escalation tracking.
-	StateKeyEscalationRequestID = "escalation_request_id" // string - request ID that triggered escalation
-	StateKeyEscalationStoryID   = "escalation_story_id"   // string - story ID that triggered escalation
-	StateKeyEscalationAgentID   = "escalation_agent_id"   // string - agent ID that triggered escalation
+	StateKeyEscalationRequestID      = "escalation_request_id"      // string - request ID that triggered escalation
+	StateKeyEscalationStoryID        = "escalation_story_id"        // string - story ID that triggered escalation
+	StateKeyEscalationAgentID        = "escalation_agent_id"        // string - agent ID that triggered escalation
+	StateKeyEscalationOriginState    = "escalation_origin_state"    // string - state that triggered escalation
+	StateKeyEscalationIterationCount = "escalation_iteration_count" // int - iteration count when escalated
+	StateKeyEscalationMessageID      = "escalation_message_id"      // int64 - chat message ID for escalation
+	StateKeyEscalatedAt              = "escalated_at"               // time.Time - when escalation was posted
 
 	// Hotfix tracking.
 	StateKeyHotfixQueued = "hotfix_queued" // bool - hotfix stories were queued
