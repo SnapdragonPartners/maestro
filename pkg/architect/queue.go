@@ -31,6 +31,26 @@ const (
 	StatusFailed StoryStatus = "failed"
 )
 
+// ToDatabaseStatus converts StoryStatus to persistence package status string.
+// This is the single source of truth for status mapping between queue and database.
+func (s StoryStatus) ToDatabaseStatus() string {
+	switch s {
+	case StatusNew, StatusPending:
+		return persistence.StatusNew
+	case StatusDispatched:
+		return persistence.StatusDispatched
+	case StatusPlanning:
+		return persistence.StatusPlanning
+	case StatusCoding:
+		return persistence.StatusCoding
+	case StatusDone, StatusFailed:
+		// Both done and failed are terminal states - map to done for database
+		return persistence.StatusDone
+	default:
+		return persistence.StatusNew
+	}
+}
+
 // MaxStoryAttempts is the maximum number of times a story can be dispatched before
 // tripping the retry circuit breaker. After this many failures, the architect
 // transitions to ERROR state to prevent infinite requeue loops.
@@ -47,14 +67,15 @@ func (s *QueuedStory) GetStatus() StoryStatus {
 }
 
 // SetStatus sets the story status from StoryStatus enum.
-func (s *QueuedStory) SetStatus(status StoryStatus) {
+// Returns an error if attempting to modify a completed story's status.
+func (s *QueuedStory) SetStatus(status StoryStatus) error {
 	// Protect completed stories from status changes
 	// Once done, work is merged and dependencies released - story is immutable
 	if s.GetStatus() == StatusDone {
-		_ = logx.Errorf("INVALID: Attempted to change status of completed story %s from done to %s. Completed stories are immutable.", s.ID, status)
-		return
+		return fmt.Errorf("cannot change status of completed story %s from done to %s: completed stories are immutable", s.ID, status)
 	}
 	s.Status = string(status)
+	return nil
 }
 
 // NewQueuedStory creates a new QueuedStory from a persistence.Story.
@@ -118,7 +139,7 @@ func (q *Queue) AddStory(storyID, specID, title, content, storyType string, depe
 			StoryType:       storyType,
 		},
 	}
-	queuedStory.SetStatus(StatusPending)
+	_ = queuedStory.SetStatus(StatusPending) // New story, cannot fail
 
 	q.mutex.Lock()
 	q.stories[storyID] = queuedStory
@@ -137,23 +158,6 @@ func (q *Queue) FlushToDatabase() {
 
 	// Phase 1: Persist all stories first (to satisfy foreign key constraints)
 	for _, queuedStory := range q.stories {
-		// Convert queue status to database status
-		var dbStatus string
-		switch queuedStory.GetStatus() {
-		case StatusNew, StatusPending:
-			dbStatus = persistence.StatusNew
-		case StatusDispatched:
-			dbStatus = persistence.StatusDispatched
-		case StatusPlanning:
-			dbStatus = persistence.StatusPlanning
-		case StatusCoding:
-			dbStatus = persistence.StatusCoding
-		case StatusDone:
-			dbStatus = persistence.StatusDone
-		default:
-			dbStatus = persistence.StatusNew
-		}
-
 		// Convert QueuedStory to persistence.Story with complete data
 		dbStory := &persistence.Story{
 			ID:            queuedStory.ID,
@@ -161,7 +165,7 @@ func (q *Queue) FlushToDatabase() {
 			Title:         queuedStory.Title,
 			Content:       queuedStory.Content,      // Now includes story content
 			ApprovedPlan:  queuedStory.ApprovedPlan, // Now includes approved plan
-			Status:        dbStatus,
+			Status:        queuedStory.GetStatus().ToDatabaseStatus(),
 			Priority:      queuedStory.Priority,
 			CreatedAt:     queuedStory.LastUpdated,
 			StartedAt:     queuedStory.StartedAt,
@@ -367,7 +371,7 @@ func (q *Queue) AddMaintenanceStory(storyID, specID, title, content string, expr
 			StoryType:     "maintenance",
 		},
 	}
-	queuedStory.SetStatus(StatusPending)
+	_ = queuedStory.SetStatus(StatusPending) // New story, cannot fail
 
 	q.mutex.Lock()
 	q.stories[storyID] = queuedStory
@@ -392,7 +396,7 @@ func (q *Queue) RequeueStory(storyID string) error {
 	}
 
 	// Clear assignment, approved plan, and reset to pending
-	story.SetStatus(StatusPending)
+	_ = story.SetStatus(StatusPending) // Already checked for Done above
 	story.AssignedAgent = ""
 	story.ApprovedPlan = "" // Clear approved plan for fresh start
 	story.StartedAt = nil
@@ -586,7 +590,7 @@ func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
 		return fmt.Errorf("cannot update status of completed story %s: work is already merged and dependencies have been released. Any additional work should be handled through a new story", storyID)
 	}
 
-	story.SetStatus(status)
+	_ = story.SetStatus(status) // Already checked for Done above
 	story.LastUpdated = time.Now().UTC()
 	q.mutex.Unlock() // Release before persistence
 
@@ -690,7 +694,9 @@ func (q *Queue) AddHotfixStory(story *QueuedStory) error {
 	story.IsHotfix = true
 
 	// Set status to pending (ready for dispatch)
-	story.SetStatus(StatusPending)
+	if err := story.SetStatus(StatusPending); err != nil {
+		return fmt.Errorf("cannot add hotfix story: %w", err)
+	}
 
 	// Set timestamps
 	now := time.Now()

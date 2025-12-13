@@ -704,7 +704,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					requeueRequest.StoryID, story.AttemptCount, requeueRequest.Reason)
 
 				// Mark story as failed
-				story.SetStatus(StatusFailed)
+				if err := story.SetStatus(StatusFailed); err != nil {
+					d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
+				}
 
 				// Transition architect to ERROR state
 				if transErr := d.TransitionTo(ctx, StateError, map[string]any{

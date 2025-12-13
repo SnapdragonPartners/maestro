@@ -369,30 +369,13 @@ func (d *Driver) handleApprovalRequest(ctx context.Context, requestMsg *proto.Ag
 					d.logger.Info("✅ Set approved plan for story %s", storyIDStr)
 					// Persist just this story to database with the updated approved plan
 					if story, exists := d.queue.GetStory(storyIDStr); exists {
-						// Convert queue status to database status
-						var dbStatus string
-						switch story.GetStatus() {
-						case StatusNew, StatusPending:
-							dbStatus = persistence.StatusNew
-						case StatusDispatched:
-							dbStatus = persistence.StatusDispatched
-						case StatusPlanning:
-							dbStatus = persistence.StatusPlanning
-						case StatusCoding:
-							dbStatus = persistence.StatusCoding
-						case StatusDone:
-							dbStatus = persistence.StatusDone
-						default:
-							dbStatus = persistence.StatusNew
-						}
-
 						dbStory := &persistence.Story{
 							ID:            story.ID,
 							SpecID:        story.SpecID,
 							Title:         story.Title,
 							Content:       story.Content,
 							ApprovedPlan:  story.ApprovedPlan,
-							Status:        dbStatus,
+							Status:        story.GetStatus().ToDatabaseStatus(),
 							Priority:      story.Priority,
 							CreatedAt:     story.LastUpdated,
 							StartedAt:     story.StartedAt,
@@ -544,7 +527,10 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 
 			// Update status and timestamps in memory (don't persist yet)
 			now := time.Now().UTC()
-			story.SetStatus(persistence.StatusDone) // Use database-compatible status
+			if err := story.SetStatus(StatusDone); err != nil {
+				// Story is already done - this is a benign duplicate completion
+				d.logger.Debug("Story %s already completed: %v", storyID, err)
+			}
 			story.CompletedAt = &now
 			story.LastUpdated = now
 
