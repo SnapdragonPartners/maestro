@@ -144,14 +144,18 @@ Otherwise
 ## Dead Code & TODO Inventory
 
 ### Dead/Deprecated Code
-1. **`planning.go:276-320`** - `processPlanningResult` marked as legacy, waiting for removal
-2. **`plan_review.go:418-445`** - `processTodoCollectionResult` marked as legacy, waiting for removal
-3. **`driver_simple_test.go`** - Entire file marked legacy with `//nolint:all`
+~~1. **`planning.go:276-320`** - `processPlanningResult` marked as legacy, waiting for removal~~ (Removed in Phase 1)
+~~2. **`plan_review.go:418-445`** - `processTodoCollectionResult` marked as legacy, waiting for removal~~ (Removed in Phase 1)
+~~3. **`driver_simple_test.go`** - Entire file marked legacy with `//nolint:all`~~ (Fixed in Phase 2 - tests are valid)
+
+All dead/deprecated code has been addressed.
 
 ### TODOs Requiring Action
-1. **`driver.go:725`** - `"phase_tokens": 0, // TODO: Track per-phase`
-2. **`driver.go:726`** - `"phase_cost_usd": 0.0, // TODO: Track per-phase`
-3. **`driver.go:727`** - `"total_llm_calls": 0, // TODO: Count calls`
+~~1. **`driver.go:725`** - `"phase_tokens": 0, // TODO: Track per-phase`~~ (Removed - unused)
+~~2. **`driver.go:726`** - `"phase_cost_usd": 0.0, // TODO: Track per-phase`~~ (Removed - unused)
+~~3. **`driver.go:727`** - `"total_llm_calls": 0, // TODO: Count calls`~~ (Removed - unused)
+
+All code TODOs have been addressed.
 
 ### Nolint Debt Summary
 - **`//nolint:dupl`**: 4 occurrences - duplicate code
@@ -193,23 +197,26 @@ These items remove dead code and improve documentation without changing behavior
 
 These items improve code quality and reduce technical debt.
 
-- [ ] **2.1** Add bounds check for SHA slicing at `prepare_merge.go:76`
-  - Change `currentRemoteHEAD[:8]` to safe slice with length check
+- [x] **2.1** Add bounds check for SHA slicing at `prepare_merge.go:76`
+  - Added `truncateSHA` helper function with safe bounds check
+  - Also fixed similar issue in `planning.go:471`
 
-- [ ] **2.2** Add warning log for `filepath.Abs` fallback in `clone.go:33-36`
-  - Silent failures make debugging harder
+- [x] **2.2** Add warning log for `filepath.Abs` fallback in `clone.go:33-36`
+  - Added warning log when absolute path resolution fails
 
-- [ ] **2.3** Decide on phase token/cost tracking TODOs (`driver.go:725-727`)
-  - Either implement the tracking OR remove the placeholder TODOs
-  - Leaving unimplemented TODOs accumulates debt
+- [x] **2.3** Decide on phase token/cost tracking TODOs (`driver.go:725-727`)
+  - Removed unused placeholder fields (phase_tokens, phase_cost_usd, total_llm_calls)
+  - Fields weren't consumed downstream, added clutter
 
-- [ ] **2.4** Review and address duplicate code in `clone.go`
-  - Extract shared retry pattern from `createBranch` and `createBranchWithRetry`
-  - May allow removal of `nolint:dupl` directives
+- [x] **2.4** Review and address duplicate code in `clone.go`
+  - Reviewed: nolint:dupl markers are appropriate
+  - Functions are structurally similar but semantically different
+  - Extraction would reduce clarity, not improve it
 
-- [ ] **2.5** Migrate or remove `driver_simple_test.go`
-  - Currently entirely suppressed with `//nolint:all`
-  - Either update to current APIs or delete if superseded
+- [x] **2.5** Migrate or remove `driver_simple_test.go`
+  - Updated: tests are valid and useful
+  - Removed misleading "legacy" nolint:all comment
+  - Tests now properly documented as basic unit tests
 
 ### Phase 3: Testing (Medium Effort, High Value)
 

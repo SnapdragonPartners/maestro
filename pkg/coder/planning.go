@@ -468,7 +468,11 @@ func (c *Coder) storeKnowledgePack(storyID, knowledgePack string) {
 	searchTerms := ""
 	if lines := strings.Split(knowledgePack, "\n"); len(lines) > 1 {
 		// Use first node ID as representative search terms
-		searchTerms = "knowledge-pack-" + storyID[:8]
+		truncatedID := storyID
+		if len(storyID) > 8 {
+			truncatedID = storyID[:8]
+		}
+		searchTerms = "knowledge-pack-" + truncatedID
 	}
 
 	// Count nodes in the pack
