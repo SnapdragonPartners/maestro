@@ -1,10 +1,5 @@
 package pm
 
-import (
-	"orchestrator/pkg/agent"
-	"orchestrator/pkg/agent/toolloop"
-)
-
 // Signal constants for PM working phase.
 const (
 	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE"
@@ -27,15 +22,4 @@ type WorkingResult struct {
 	// Spec preview data (when preview_ready=true from spec_submit)
 	SpecMarkdown string
 	SpecMetadata map[string]any
-}
-
-// ExtractPMWorkingResult is LEGACY - all PM tools now use ProcessEffect.Data.
-// TODO: Remove this entire function once all PM tools use ProcessEffect pattern.
-// Currently unused - bootstrap and spec_submit now use ProcessEffect.Data.
-// Kept temporarily to avoid breaking existing tests but should be removed in cleanup phase.
-//
-//nolint:cyclop,unused,revive // Legacy code to be removed
-func ExtractPMWorkingResult(_ []agent.ToolCall, _ []any) (WorkingResult, error) {
-	// All PM tools now use ProcessEffect.Data - this function is obsolete
-	return WorkingResult{}, toolloop.ErrNoTerminalTool
 }

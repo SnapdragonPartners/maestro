@@ -27,6 +27,11 @@ const (
 	// Set to 5000 to avoid Anthropic's streaming requirement while allowing reasonable story output.
 	ArchitectMaxTokens = 5000
 
+	// PMMaxTokens defines the maximum tokens for PM LLM responses.
+	// Used for interview questions, spec generation, and user communication.
+	// Set to 4000 - PM responses are typically shorter than architect's.
+	PMMaxTokens = 4000
+
 	// TemperatureDefault is the default temperature for planning, reviews, and judgment tasks.
 	// Allows some exploration and creativity while staying focused.
 	TemperatureDefault = 0.3

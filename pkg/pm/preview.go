@@ -31,7 +31,7 @@ func (d *Driver) handlePreview(ctx context.Context) (proto.State, error) {
 		// No state change yet - sleep briefly to avoid tight loop
 		// Note: PreviewAction method modifies state directly,
 		// and the Run loop will detect the change and route to the new handler
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(waitingPollInterval)
 		return StatePreview, nil
 	}
 }

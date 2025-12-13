@@ -31,7 +31,7 @@ func (d *Driver) handleAwaitUser(ctx context.Context) (proto.State, error) {
 		}
 		return d.handleArchitectNotification(msg)
 
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(awaitUserPollTimeout):
 		// Timeout - check for user messages
 		if d.chatService.HaveNewMessages(d.GetAgentID()) {
 			d.logger.Info("📬 New user messages received, PM resuming work")

@@ -35,6 +35,10 @@ const (
 	PreviewActionContinue = "continue_interview"
 	// PreviewActionSubmit represents the "submit to architect" action in PREVIEW state.
 	PreviewActionSubmit = "submit_to_architect"
+
+	// Poll intervals for state handlers to avoid tight loops.
+	waitingPollInterval  = 100 * time.Millisecond // WAITING/PREVIEW state poll interval
+	awaitUserPollTimeout = 500 * time.Millisecond // AWAIT_USER timeout before checking chat
 )
 
 // State data keys for PM state management.
@@ -50,9 +54,11 @@ const (
 
 	// StateKeyUserSpecMd stores the user's feature requirements markdown (working copy during interview).
 	// Cleared after architect accepts the spec.
+	// Note: "Md" suffix indicates the value is markdown-formatted text.
 	StateKeyUserSpecMd = "user_spec_md"
 	// StateKeyBootstrapSpecMd stores infrastructure requirements from bootstrap phase.
 	// Cleared after architect accepts the spec.
+	// Note: "Md" suffix indicates the value is markdown-formatted text.
 	StateKeyBootstrapSpecMd = "bootstrap_spec_md"
 	// StateKeyInFlight indicates development is in progress (spec submitted and accepted).
 	// When true, only hotfixes are allowed (spec_submit with hotfix=true).
@@ -346,7 +352,7 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 		// No messages - sleep briefly to avoid tight loop
 		// Note: Direct method calls (StartInterview/UploadSpec) modify state directly,
 		// and the Run loop will detect the change and route to the new handler
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(waitingPollInterval)
 		return StateWaiting, nil
 	}
 }
@@ -542,6 +548,37 @@ func (d *Driver) HasRepository() bool {
 	return utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyHasRepository, false)
 }
 
+// detectAndStoreBootstrapRequirements runs bootstrap detection and stores results in state.
+// Returns the detected requirements (may be nil on error) and whether bootstrap is needed.
+func (d *Driver) detectAndStoreBootstrapRequirements() (*tools.BootstrapRequirements, bool) {
+	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
+	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
+	d.logger.Info("🔍 Detecting bootstrap requirements in %s", agentWorkspace)
+
+	detector := tools.NewBootstrapDetector(agentWorkspace)
+	reqs, err := detector.Detect(context.Background())
+	if err != nil {
+		d.logger.Warn("Bootstrap detection failed: %v", err)
+		return nil, false
+	}
+
+	// Store bootstrap requirements in state
+	d.SetStateData(StateKeyBootstrapRequirements, reqs)
+	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
+
+	d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
+		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+
+	// Check if any components are missing
+	needsBootstrap := reqs.HasAnyMissingComponents()
+	if needsBootstrap {
+		d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
+			reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
+	}
+
+	return reqs, needsBootstrap
+}
+
 // GetBootstrapRequirements returns the detected bootstrap requirements.
 // Returns nil if bootstrap detection hasn't run yet or failed.
 func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
@@ -614,37 +651,13 @@ func (d *Driver) StartInterview(expertise string) error {
 	d.SetStateData(StateKeyUserExpertise, expertise)
 	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
 
-	// Detect bootstrap requirements
-	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
-	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
-	d.logger.Info("🔍 Detecting bootstrap requirements in %s (expertise: %s)", agentWorkspace, expertise)
-	detector := tools.NewBootstrapDetector(agentWorkspace)
-	reqs, err := detector.Detect(context.Background())
-	needsBootstrap := false
-	if err != nil {
-		d.logger.Warn("Bootstrap detection failed: %v", err)
-		// Continue without bootstrap detection - non-fatal
-	} else {
-		// Store bootstrap requirements in state
-		d.SetStateData(StateKeyBootstrapRequirements, reqs)
-		d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
-
-		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
-			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
-
-		// Add detection summary to context if anything is missing
-		if reqs.HasAnyMissingComponents() {
-			d.contextManager.AddMessage("system",
-				fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
-					reqs.MissingComponents, reqs.DetectedPlatform))
-
-			// Any missing components means we need bootstrap
-			// PM should be in WORKING mode to handle setup
-			needsBootstrap = true
-
-			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
-				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
-		}
+	// Detect bootstrap requirements using shared helper
+	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements()
+	if needsBootstrap && reqs != nil {
+		// Add detection summary to context
+		d.contextManager.AddMessage("system",
+			fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
+				reqs.MissingComponents, reqs.DetectedPlatform))
 	}
 
 	// Decide initial state based on bootstrap needs
@@ -695,28 +708,11 @@ func (d *Driver) UploadSpec(markdown string) error {
 	d.SetStateData(StateKeyUserExpertise, "EXPERT")
 	d.SetStateData(StateKeySpecUploaded, true)
 
-	// Detect bootstrap requirements (same as StartInterview)
-	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
-	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
-	d.logger.Info("🔍 Detecting bootstrap requirements in %s for uploaded spec", agentWorkspace)
-	detector := tools.NewBootstrapDetector(agentWorkspace)
-	reqs, err := detector.Detect(context.Background())
-	needsBootstrap := false
-	if err != nil {
-		d.logger.Warn("Bootstrap detection failed: %v", err)
-		// Continue without bootstrap detection - non-fatal
-	} else {
-		// Store bootstrap requirements in state
-		d.SetStateData(StateKeyBootstrapRequirements, reqs)
-		d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
-
-		d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
-			len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
-
-		// Check if bootstrap questions need answering
-		if reqs.HasAnyMissingComponents() {
-			// Add uploaded spec content and bootstrap instructions to context
-			specMessage := fmt.Sprintf(`# User Uploaded Specification File
+	// Detect bootstrap requirements using shared helper
+	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements()
+	if needsBootstrap && reqs != nil {
+		// Add uploaded spec content and bootstrap instructions to context
+		specMessage := fmt.Sprintf(`# User Uploaded Specification File
 
 The user has uploaded a specification file (%d bytes). **Parse this spec to extract bootstrap information before asking the user any questions.**
 
@@ -736,14 +732,9 @@ The user has uploaded a specification file (%d bytes). **Parse this spec to extr
 
 **The uploaded specification:**
 `+"```markdown\n%s\n```",
-				len(markdown), reqs.MissingComponents, reqs.DetectedPlatform, reqs.PlatformConfidence*100, markdown)
+			len(markdown), reqs.MissingComponents, reqs.DetectedPlatform, reqs.PlatformConfidence*100, markdown)
 
-			d.contextManager.AddMessage("system", specMessage)
-			needsBootstrap = true
-
-			d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
-				reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
-		}
+		d.contextManager.AddMessage("system", specMessage)
 	}
 
 	// Always transition to WORKING so PM can validate the uploaded spec

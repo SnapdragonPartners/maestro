@@ -249,7 +249,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		GeneralTools:   generalTools,
 		TerminalTool:   terminalTool,
 		MaxIterations:  10,
-		MaxTokens:      agent.ArchitectMaxTokens,     // TODO: Add PMMaxTokens constant to config
+		MaxTokens:      agent.PMMaxTokens,
 		AgentID:        d.GetAgentID(),               // Agent ID for tool context
 		DebugLogging:   config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
 		Escalation: &toolloop.EscalationConfig{
@@ -381,62 +381,6 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	}
 }
 
-// processPMResult processes the extracted result from PM's toolloop.
-// Stores data in stateData and performs any necessary side effects (e.g., injecting messages).
-//
-//nolint:unused // Legacy - will be removed after verifying all PM flows use ProcessEffect pattern.
-func (d *Driver) processPMResult(result WorkingResult) error {
-	switch result.Signal {
-	case SignalBootstrapComplete:
-		// Store bootstrap params and rendered markdown
-		d.SetStateData(StateKeyBootstrapParams, result.BootstrapParams)
-		d.SetStateData(StateKeyBootstrapRequirements, result.BootstrapMarkdown)
-		d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
-			result.BootstrapParams["project_name"],
-			result.BootstrapParams["platform"],
-			result.BootstrapParams["git_url"])
-
-		// Inject system message to transition from bootstrap mode to full interview mode
-		transitionMsg := fmt.Sprintf(`# Bootstrap Complete
-
-Project configuration saved successfully:
-- Project: %s
-- Platform: %s
-- Repository: %s
-
-You can now proceed with full requirements gathering for this project. You have access to additional tools:
-- **read_file** - Read file contents from the codebase
-- **list_files** - List files in the codebase (path, pattern, recursive)
-
-Begin the feature requirements interview by asking the user about what they want to build.`,
-			result.BootstrapParams["project_name"],
-			result.BootstrapParams["platform"],
-			result.BootstrapParams["git_url"])
-
-		d.contextManager.AddMessage("system", transitionMsg)
-		d.logger.Info("📝 Injected transition message to switch from bootstrap mode to full interview")
-
-	case SignalSpecPreview:
-		// Store draft spec and metadata for PREVIEW state
-		d.SetStateData(StateKeyUserSpecMd, result.SpecMarkdown)
-		d.SetStateData(StateKeySpecMetadata, result.SpecMetadata)
-		d.logger.Info("📋 Stored spec for preview (%d bytes)", len(result.SpecMarkdown))
-
-	case SignalAwaitUser:
-		// No data to store for await_user, just log
-		d.logger.Info("⏸️  PM waiting for user response")
-
-	case "":
-		// No signal - this is fine, toolloop will continue
-		return nil
-
-	default:
-		return fmt.Errorf("unknown PM signal: %s", result.Signal)
-	}
-
-	return nil
-}
-
 // handleIterationLimit is called when max iterations is reached.
 // Asks LLM to provide update to user and returns AWAIT_USER signal.
 
@@ -466,7 +410,7 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 		ID:        fmt.Sprintf("pm-spec-req-%d", time.Now().UnixNano()),
 		Type:      proto.MsgTypeREQUEST,
 		FromAgent: d.GetAgentID(),
-		ToAgent:   "architect-001", // TODO: Get architect ID from config or dispatcher
+		ToAgent:   "architect", // Dispatcher resolves to "architect-001"
 		Payload:   proto.NewApprovalRequestPayload(approvalPayload),
 	}
 
@@ -514,7 +458,7 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 		ID:        fmt.Sprintf("pm-hotfix-req-%d", time.Now().UnixNano()),
 		Type:      proto.MsgTypeREQUEST,
 		FromAgent: d.GetAgentID(),
-		ToAgent:   "architect-001", // TODO: Get architect ID from config or dispatcher
+		ToAgent:   "architect", // Dispatcher resolves to "architect-001"
 		Payload:   proto.NewHotfixRequestPayload(hotfixPayload),
 	}
 

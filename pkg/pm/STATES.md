@@ -1,8 +1,21 @@
 # PM Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-01-12 (Refactored to direct method calls with mutex protection; removed channel-based state changes)*
+*Last updated: 2025-12-12 (Removed AWAIT_ARCHITECT→WAITING transition; PM stays engaged after approval for tweaks/hotfixes)*
 
-This document is the **single source of truth** for the PM (Product Manager) agent's workflow.
+## Overview
+
+The PM (Product Manager) agent is the user-facing interface for gathering requirements. It conducts interviews with users to understand what they want to build, generates specification documents, and coordinates with the architect for approval. After specs are approved and development begins, PM stays engaged to handle user questions and hotfix requests.
+
+**Key responsibilities:**
+- Interview users to gather feature requirements
+- Generate and refine specification documents
+- Submit specs to architect for review
+- Relay development progress to users
+- Accept hotfix requests during active development
+
+---
+
+This document is the **single source of truth** for the PM agent's state machine.
 Any code, tests, or diagrams must match this specification exactly.
 
 ---
@@ -38,8 +51,7 @@ stateDiagram-v2
     PREVIEW       --> DONE                : shutdown signal
 
     AWAIT_ARCHITECT --> AWAIT_ARCHITECT  : still waiting for architect response
-    AWAIT_ARCHITECT --> WORKING          : architect provides feedback
-    AWAIT_ARCHITECT --> WAITING          : architect approves spec
+    AWAIT_ARCHITECT --> WORKING          : architect provides feedback OR approval (stay engaged for tweaks)
     AWAIT_ARCHITECT --> ERROR            : error
     AWAIT_ARCHITECT --> DONE             : shutdown signal
 
@@ -134,7 +146,7 @@ PM uses LLM reasoning to decide when to:
 
 4. **PM Receives Result**:
    - AWAIT_ARCHITECT state blocks on `replyCh` for RESULT message
-   - **If APPROVED**: Clear state, transition to WAITING for next interview
+   - **If APPROVED**: Clear spec state, set in_flight flag, transition to WORKING (stay engaged for tweaks/hotfixes)
    - **If NEEDS_CHANGES**: Store feedback, transition to WORKING with feedback context
 
 ### Architect Feedback Loop
@@ -152,7 +164,7 @@ PM uses LLM reasoning to decide when to:
 
 3. **PM Receives Result**:
    - AWAIT_ARCHITECT state receives RESULT message
-   - **If APPROVED**: Clear state, transition to WAITING
+   - **If APPROVED**: Clear spec state, set in_flight flag, transition to WORKING (stay engaged for tweaks/hotfixes)
    - **If NEEDS_CHANGES**: Store feedback, transition to WORKING
    - Feedback is injected into context for next LLM call
 
@@ -242,8 +254,8 @@ PM uses LLM reasoning to decide when to:
 **Behavior:**
 - Polls message dispatcher for RESPONSE messages (1-second intervals)
 - Non-blocking with context cancellation check
-- Handles two outcomes:
-  - `ApprovalResult.Status == APPROVED` → Clear draft state, transition to WAITING
+- Handles two outcomes (both transition to WORKING to stay engaged for tweaks/hotfixes):
+  - `ApprovalResult.Status == APPROVED` → Clear draft state, set in_flight flag, transition to WORKING
   - `ApprovalResult.Status == NEEDS_CHANGES` → Store feedback, inject system message, transition to WORKING
 
 **Protocol Details:**
@@ -369,8 +381,7 @@ The **SUSPEND** state handles external service unavailability (LLM API timeouts,
 | PREVIEW             | ERROR               | Error                                            |
 | PREVIEW             | DONE                | Shutdown signal                                  |
 | AWAIT_ARCHITECT     | AWAIT_ARCHITECT     | Still waiting for architect response             |
-| AWAIT_ARCHITECT     | WORKING             | Architect provides feedback (needs changes)      |
-| AWAIT_ARCHITECT     | WAITING             | Architect approves spec                          |
+| AWAIT_ARCHITECT     | WORKING             | Architect feedback OR approval (stay engaged)    |
 | AWAIT_ARCHITECT     | ERROR               | Error                                            |
 | AWAIT_ARCHITECT     | DONE                | Shutdown signal                                  |
 | ERROR               | WAITING             | Reset after error                                |
