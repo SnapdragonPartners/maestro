@@ -26,6 +26,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/version"
 )
 
 //go:embed web/templates/*.html
@@ -410,7 +411,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	response := map[string]string{
 		"status":  "ok",
-		"version": "v1.0",
+		"version": version.Version,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

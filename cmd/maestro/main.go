@@ -15,13 +15,7 @@ import (
 	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/tools"
-)
-
-// Version information - set by goreleaser via ldflags.
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
+	"orchestrator/pkg/version"
 )
 
 func main() {
@@ -40,9 +34,9 @@ func main() {
 
 	// Handle version flag
 	if *showVersion {
-		fmt.Printf("maestro %s\n", version)
-		fmt.Printf("  commit: %s\n", commit)
-		fmt.Printf("  built:  %s\n", date)
+		fmt.Printf("maestro %s\n", version.Version)
+		fmt.Printf("  commit: %s\n", version.Commit)
+		fmt.Printf("  built:  %s\n", version.Date)
 		os.Exit(0)
 	}
 
