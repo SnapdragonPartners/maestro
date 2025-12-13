@@ -96,7 +96,6 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 
 		// Clear in_flight flag - PM can now accept full specs again
 		d.SetStateData(StateKeyInFlight, false)
-		d.SetStateData(StateKeyDevelopmentInProgress, false) // Legacy key
 
 		// Inject message so PM can inform user
 		completionMsg := fmt.Sprintf(

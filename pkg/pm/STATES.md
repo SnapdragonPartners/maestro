@@ -111,7 +111,7 @@ PM uses LLM reasoning to decide when to:
 1. **PM Generates Spec**:
    - PM in WORKING state calls `spec_submit` tool
    - Tool validates spec (YAML frontmatter, required sections, dependencies)
-   - Tool stores spec in PM state (draft_spec_markdown, spec_metadata)
+   - Tool stores spec in PM state (user_spec_md, bootstrap_spec_md, spec_metadata)
    - Tool returns `preview_ready` signal
    - PM transitions to PREVIEW state
    - WebUI automatically switches to preview tab
@@ -320,9 +320,9 @@ The **SUSPEND** state handles external service unavailability (LLM API timeouts,
 - Type: `MsgTypeREQUEST`
 - Payload: `ApprovalRequestPayload`
   - `ApprovalType`: `ApprovalTypeSpec`
-  - `Content`: Brief spec summary
+  - `Content`: User requirements spec (user_spec_md)
+  - `InfrastructureSpec`: Bootstrap/infrastructure spec if any (bootstrap_spec_md)
   - `Reason`: "PM has completed spec interview and generated specification for review"
-  - `Metadata["spec_markdown"]`: Full spec content
 - Sent from AWAIT_ARCHITECT state when user clicks "Submit for Development"
 
 ### Incoming Messages (Architect → PM)

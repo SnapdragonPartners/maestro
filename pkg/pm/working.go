@@ -12,6 +12,7 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // handleWorking manages PM's active work: interviewing, drafting, and submitting.
@@ -22,26 +23,30 @@ import (
 func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	d.logger.Info("🎯 PM working (interviewing/drafting/submitting)")
 
-	// Check for non-blocking architect feedback
+	// Check for non-blocking architect notifications (story completions, all-stories-complete, etc.)
 	select {
-	case resultMsg := <-d.replyCh:
-		// Architect provided feedback asynchronously
-		if resultMsg != nil {
-			d.logger.Info("📨 Received async feedback from architect")
-			// Store feedback in context for next LLM call
-			d.SetStateData("architect_feedback", resultMsg)
+	case msg := <-d.replyCh:
+		if msg != nil {
+			// Process the notification using the same handler as AWAIT_USER
+			// This handles all_stories_complete (clears in_flight), story_complete, etc.
+			nextState, err := d.handleArchitectNotification(msg)
+			if err != nil {
+				d.logger.Warn("⚠️ Error handling architect notification in WORKING: %v", err)
+				// Continue working - don't fail on notification errors
+			} else if nextState != StateAwaitUser {
+				// If the notification triggers a state change (other than back to working via AWAIT_USER),
+				// return that state. Currently handleArchitectNotification returns StateWorking after
+				// injecting context, so we continue working.
+				d.logger.Info("📨 Processed architect notification in WORKING state")
+			}
 		}
 	default:
-		// No feedback yet, continue working
+		// No notifications, continue working
 	}
 
 	// Get conversation state
-	stateData := d.GetStateData()
-	turnCount, _ := stateData["turn_count"].(int)
-	expertise, _ := stateData[StateKeyUserExpertise].(string)
-	if expertise == "" {
-		expertise = DefaultExpertise
-	}
+	turnCount := utils.GetStateValueOr[int](d.BaseStateMachine, StateKeyTurnCount, 0)
+	expertise := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserExpertise, DefaultExpertise)
 
 	// Get max turns from config
 	cfg, err := config.GetConfig()
@@ -69,7 +74,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	}
 
 	// Increment turn count
-	d.SetStateData("turn_count", turnCount+1)
+	d.SetStateData(StateKeyTurnCount, turnCount+1)
 
 	// Handle terminal signals from tool processing
 	if signal == "SPEC_PREVIEW" {
@@ -107,30 +112,21 @@ func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
 
 	// Get state data
-	stateData := d.GetStateData()
-
 	// Get expertise level
-	expertise, _ := stateData[StateKeyUserExpertise].(string)
-	if expertise == "" {
-		expertise = DefaultExpertise
-	}
+	expertise := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserExpertise, DefaultExpertise)
 
 	// Get conversation history if any
-	conversationHistory, _ := stateData["conversation"].([]map[string]string)
+	conversationHistory, _ := utils.GetStateValue[[]map[string]string](d.BaseStateMachine, "conversation")
 
 	// Check if spec was uploaded (vs being generated through interview)
-	specUploaded, _ := stateData["spec_uploaded"].(bool)
-	// Try new key first, fall back to legacy
-	uploadedSpec, _ := stateData[StateKeyUserSpecMd].(string)
-	if uploadedSpec == "" {
-		uploadedSpec, _ = stateData["draft_spec_markdown"].(string)
-	}
+	specUploaded := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeySpecUploaded, false)
+	uploadedSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
 
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
 	// Check if bootstrap markdown already exists in state (indicates bootstrap config is complete)
-	bootstrapMarkdown, hasBootstrapMarkdown := stateData[StateKeyBootstrapRequirements].(string)
+	bootstrapMarkdown, hasBootstrapMarkdown := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapRequirements)
 
 	// Get current config to check for existing values
 	cfg, cfgErr := config.GetConfig()
@@ -228,16 +224,15 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	// Inject state into spec_submit tool
 	if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
 		// Inject bootstrap markdown if it exists in state
-		if bootstrapMarkdown, bsOk := d.GetStateData()[StateKeyBootstrapRequirements].(string); bsOk && bootstrapMarkdown != "" {
+		if bootstrapMarkdown := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapRequirements, ""); bootstrapMarkdown != "" {
 			submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
 			d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
 		}
 
 		// Inject in_flight flag to enforce hotfix-only mode during development
-		if inFlight, ifOk := d.GetStateData()[StateKeyInFlight].(bool); ifOk {
-			submitTool.SetInFlight(inFlight)
-			d.logger.Info("📝 Injected in_flight=%v into spec_submit tool", inFlight)
-		}
+		inFlight := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyInFlight, false)
+		submitTool.SetInFlight(inFlight)
+		d.logger.Info("📝 Injected in_flight=%v into spec_submit tool", inFlight)
 	}
 
 	terminalTool := specSubmitTool
@@ -297,17 +292,17 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		switch out.Signal {
 		case tools.SignalBootstrapComplete:
 			// bootstrap tool was called - extract data from ProcessEffect.Data
-			effectData, ok := out.EffectData.(map[string]any)
+			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 			if !ok {
 				return "", fmt.Errorf("BOOTSTRAP_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 			}
 
 			// Extract bootstrap data from ProcessEffect.Data
-			projectName, _ := effectData["project_name"].(string)
-			gitURL, _ := effectData["git_url"].(string)
-			platform, _ := effectData["platform"].(string)
-			bootstrapMarkdown, _ := effectData["bootstrap_markdown"].(string)
-			resetContext, _ := effectData["reset_context"].(bool)
+			projectName := utils.GetMapFieldOr[string](effectData, "project_name", "")
+			gitURL := utils.GetMapFieldOr[string](effectData, "git_url", "")
+			platform := utils.GetMapFieldOr[string](effectData, "platform", "")
+			bootstrapMarkdown := utils.GetMapFieldOr[string](effectData, "bootstrap_markdown", "")
+			resetContext := utils.GetMapFieldOr[bool](effectData, "reset_context", false)
 
 			// Store in state
 			bootstrapParams := map[string]string{
@@ -315,7 +310,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				"git_url":      gitURL,
 				"platform":     platform,
 			}
-			d.SetStateData("bootstrap_params", bootstrapParams)
+			d.SetStateData(StateKeyBootstrapParams, bootstrapParams)
 			d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
 			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
 
@@ -332,13 +327,9 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				}
 
 				// If spec was uploaded, re-inject it after context reset
-				if specUploaded, _ := d.GetStateData()["spec_uploaded"].(bool); specUploaded {
-					// Try new key first, fall back to legacy
-					uploadedSpec, ok := d.GetStateData()[StateKeyUserSpecMd].(string)
-					if !ok || uploadedSpec == "" {
-						uploadedSpec, ok = d.GetStateData()["draft_spec_markdown"].(string)
-					}
-					if ok && uploadedSpec != "" {
+				if utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeySpecUploaded, false) {
+					uploadedSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+					if uploadedSpec != "" {
 						specMsg := fmt.Sprintf("The user has provided the following specification document. Please extract the **user feature requirements** from it (ignore any infrastructure/bootstrap requirements as those have been handled):\n\n```markdown\n%s\n```", uploadedSpec)
 						d.contextManager.AddMessage("user", specMsg)
 						d.logger.Info("📄 Re-injected uploaded spec (%d bytes) after context reset", len(uploadedSpec))
@@ -350,44 +341,28 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 		case tools.SignalSpecPreview:
 			// spec_submit was called - extract data from ProcessEffect.Data
-			effectData, ok := out.EffectData.(map[string]any)
+			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 			if !ok {
 				return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
 			}
 
 			// Extract spec data from ProcessEffect.Data (infrastructure and user specs are separate)
-			infrastructureSpec, _ := effectData["infrastructure_spec"].(string)
-			userSpec, _ := effectData["user_spec"].(string)
-			summary, _ := effectData["summary"].(string)
-			metadata, _ := effectData["metadata"].(map[string]any)
-			isHotfix, _ := effectData["is_hotfix"].(bool)
+			infrastructureSpec := utils.GetMapFieldOr[string](effectData, "infrastructure_spec", "")
+			userSpec := utils.GetMapFieldOr[string](effectData, "user_spec", "")
+			summary := utils.GetMapFieldOr[string](effectData, "summary", "")
+			metadata, _ := utils.SafeAssert[map[string]any](effectData["metadata"])
+			isHotfix := utils.GetMapFieldOr[bool](effectData, "is_hotfix", false)
 
-			// Store specs using new state keys
+			// Store specs using canonical state keys
 			d.SetStateData(StateKeyUserSpecMd, userSpec)
-			d.SetStateData("spec_metadata", metadata)
+			d.SetStateData(StateKeySpecMetadata, metadata)
 
 			// Only store bootstrap spec if not a hotfix (hotfixes don't include bootstrap)
 			if !isHotfix && infrastructureSpec != "" {
 				d.SetStateData(StateKeyBootstrapSpecMd, infrastructureSpec)
 			}
 
-			// Legacy keys for backward compatibility
-			d.SetStateData("infrastructure_spec", infrastructureSpec)
-			d.SetStateData("user_spec", userSpec)
-			// For WebUI preview display - concatenate only if not hotfix
-			if isHotfix {
-				// Hotfix preview shows only the hotfix content
-				d.SetStateData("draft_spec_markdown", userSpec)
-			} else {
-				// Full spec preview shows bootstrap + user spec
-				draftSpecMarkdown := userSpec
-				if infrastructureSpec != "" {
-					draftSpecMarkdown = infrastructureSpec + "\n\n" + userSpec
-				}
-				d.SetStateData("draft_spec_markdown", draftSpecMarkdown)
-			}
-
-			d.logger.Info("📋 Stored spec for preview (infrastructure: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
+			d.logger.Info("📋 Stored spec for preview (bootstrap: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
 				len(infrastructureSpec), len(userSpec), isHotfix, summary)
 
 			return SignalSpecPreview, nil
@@ -399,20 +374,20 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 		case tools.SignalHotfixSubmit:
 			// submit_stories with hotfix=true was called - extract data from ProcessEffect.Data
-			effectData, ok := out.EffectData.(map[string]any)
+			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 			if !ok {
 				return "", fmt.Errorf("HOTFIX_SUBMIT effect data is not map[string]any: %T", out.EffectData)
 			}
 
 			// Extract hotfix stories data from ProcessEffect.Data (same format as regular stories)
-			analysis, _ := effectData["analysis"].(string)
-			platform, _ := effectData["platform"].(string)
-			requirements, _ := effectData["requirements"].([]any)
+			analysis := utils.GetMapFieldOr[string](effectData, "analysis", "")
+			platform := utils.GetMapFieldOr[string](effectData, "platform", "")
+			requirements, _ := utils.SafeAssert[[]any](effectData["requirements"])
 
 			// Store hotfix data in state for AWAIT_ARCHITECT state
-			d.SetStateData("hotfix_analysis", analysis)
-			d.SetStateData("hotfix_platform", platform)
-			d.SetStateData("hotfix_requirements", requirements)
+			d.SetStateData(StateKeyHotfixAnalysis, analysis)
+			d.SetStateData(StateKeyHotfixPlatform, platform)
+			d.SetStateData(StateKeyHotfixRequirements, requirements)
 
 			d.logger.Info("🔧 Hotfix stories submitted: %d requirements for platform %s", len(requirements), platform)
 
@@ -445,7 +420,7 @@ func (d *Driver) processPMResult(result WorkingResult) error {
 	switch result.Signal {
 	case SignalBootstrapComplete:
 		// Store bootstrap params and rendered markdown
-		d.SetStateData("bootstrap_params", result.BootstrapParams)
+		d.SetStateData(StateKeyBootstrapParams, result.BootstrapParams)
 		d.SetStateData(StateKeyBootstrapRequirements, result.BootstrapMarkdown)
 		d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s",
 			result.BootstrapParams["project_name"],
@@ -474,8 +449,8 @@ Begin the feature requirements interview by asking the user about what they want
 
 	case SignalSpecPreview:
 		// Store draft spec and metadata for PREVIEW state
-		d.SetStateData("draft_spec_markdown", result.SpecMarkdown)
-		d.SetStateData("spec_metadata", result.SpecMetadata)
+		d.SetStateData(StateKeyUserSpecMd, result.SpecMarkdown)
+		d.SetStateData(StateKeySpecMetadata, result.SpecMetadata)
 		d.logger.Info("📋 Stored spec for preview (%d bytes)", len(result.SpecMarkdown))
 
 	case SignalAwaitUser:
@@ -499,14 +474,12 @@ Begin the feature requirements interview by asking the user about what they want
 // sendSpecApprovalRequest sends an approval REQUEST message to the architect.
 func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	// Get state data
-	stateData := d.GetStateData()
-
-	// Get infrastructure and user specs from state
-	infrastructureSpec, _ := stateData["infrastructure_spec"].(string)
-	userSpec, ok := stateData["user_spec"].(string)
-	if !ok || userSpec == "" {
-		return fmt.Errorf("no user_spec found in state")
+	// Get infrastructure and user specs from state using canonical keys
+	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+	if userSpec == "" {
+		return fmt.Errorf("no user_spec_md found in state")
 	}
+	infrastructureSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapSpecMd, "")
 
 	// Create approval request payload with both specs
 	// Content field contains user requirements, InfrastructureSpec is separate
@@ -534,7 +507,7 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	}
 
 	// Store pending request ID for tracking
-	d.SetStateData("pending_request_id", requestMsg.ID)
+	d.SetStateData(StateKeyPendingRequestID, requestMsg.ID)
 	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, infrastructure: %d bytes, id: %s)",
 		len(userSpec), len(infrastructureSpec), requestMsg.ID)
 
@@ -546,11 +519,9 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 // The payload contains requirements in the same format as submit_stories.
 func (d *Driver) sendHotfixRequest(_ context.Context) error {
 	// Get hotfix data from state
-	stateData := d.GetStateData()
-
-	analysis, _ := stateData["hotfix_analysis"].(string)
-	platform, _ := stateData["hotfix_platform"].(string)
-	requirements, ok := stateData["hotfix_requirements"].([]any)
+	analysis := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyHotfixAnalysis, "")
+	platform := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyHotfixPlatform, "")
+	requirements, ok := utils.GetStateValue[[]any](d.BaseStateMachine, StateKeyHotfixRequirements)
 	if !ok || len(requirements) == 0 {
 		return fmt.Errorf("no hotfix_requirements found in state")
 	}
@@ -578,7 +549,7 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 	}
 
 	// Store pending request ID for tracking
-	d.SetStateData("pending_request_id", requestMsg.ID)
+	d.SetStateData(StateKeyPendingRequestID, requestMsg.ID)
 	d.SetStateData("pending_request_type", "hotfix")
 	d.logger.Info("🔧 Sent hotfix REQUEST to architect (%d requirements for platform %s, id: %s)",
 		len(requirements), platform, requestMsg.ID)

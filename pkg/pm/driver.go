@@ -17,6 +17,7 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 	"orchestrator/pkg/workspace"
 )
 
@@ -58,10 +59,24 @@ const (
 	// Set to true when architect approves spec, set to false when all stories complete.
 	StateKeyInFlight = "in_flight"
 
-	// Deprecated: Use StateKeyInFlight instead.
-	// StateKeyDevelopmentInProgress indicates spec was approved and development has started.
-	// When true, PM is in "tweak mode" and can accept hotfix requests.
-	StateKeyDevelopmentInProgress = "development_in_progress"
+	// StateKeySpecMetadata stores spec metadata (title, version, etc).
+	StateKeySpecMetadata = "spec_metadata"
+	// StateKeySpecUploaded indicates spec was uploaded vs generated through interview.
+	StateKeySpecUploaded = "spec_uploaded"
+	// StateKeyBootstrapParams stores bootstrap parameters from the bootstrap phase.
+	StateKeyBootstrapParams = "bootstrap_params"
+	// StateKeyPendingRequestID stores the ID of a pending request to architect.
+	StateKeyPendingRequestID = "pending_request_id"
+	// StateKeyTurnCount tracks the number of conversation turns.
+	StateKeyTurnCount = "turn_count"
+
+	// Hotfix-related state keys
+	// StateKeyHotfixAnalysis stores the analysis from a hotfix submission.
+	StateKeyHotfixAnalysis = "hotfix_analysis"
+	// StateKeyHotfixPlatform stores the platform for a hotfix.
+	StateKeyHotfixPlatform = "hotfix_platform"
+	// StateKeyHotfixRequirements stores the requirements for a hotfix.
+	StateKeyHotfixRequirements = "hotfix_requirements"
 )
 
 // Driver implements the PM (Product Manager) agent.
@@ -386,14 +401,14 @@ func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, 
 		approvalResult.Status, approvalResult.Feedback)
 
 	// Clear pending request from state
-	stateData := d.GetStateData()
-	if _, hasPending := stateData["pending_request_id"]; hasPending {
-		d.SetStateData("pending_request_id", nil)
+	if _, hasPending := utils.GetStateValue[string](d.BaseStateMachine, StateKeyPendingRequestID); hasPending {
+		d.SetStateData(StateKeyPendingRequestID, nil)
 	}
 
 	// Inject submitted spec and architect feedback into LLM context
 	// Both are added as user messages so they persist across LLM calls
-	if submittedSpec, ok := stateData["spec_markdown"].(string); ok {
+	// Use GetDraftSpec() which handles concatenation of bootstrap + user specs
+	if submittedSpec := d.GetDraftSpec(); submittedSpec != "" {
 		d.logger.Info("📋 Injecting submitted spec (%d bytes) and architect feedback into PM context", len(submittedSpec))
 
 		// Add submitted spec to context
@@ -536,67 +551,56 @@ func (d *Driver) SetStateNotificationChannel(stateNotifCh chan<- *proto.StateCha
 // HasRepository returns whether PM has git repository access.
 // Returns false if PM is running in no-repo/bootstrap mode.
 func (d *Driver) HasRepository() bool {
-	stateData := d.GetStateData()
-	if hasRepo, ok := stateData[StateKeyHasRepository].(bool); ok {
-		return hasRepo
-	}
-	return false
+	return utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyHasRepository, false)
 }
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.
 // Returns nil if bootstrap detection hasn't run yet or failed.
 func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
-	stateData := d.GetStateData()
-	if reqs, ok := stateData[StateKeyBootstrapRequirements].(*tools.BootstrapRequirements); ok {
-		return reqs
-	}
-	return nil
+	reqs, _ := utils.GetStateValue[*tools.BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
+	return reqs
 }
 
 // GetDetectedPlatform returns the detected platform.
 // Returns empty string if platform hasn't been detected.
 func (d *Driver) GetDetectedPlatform() string {
-	stateData := d.GetStateData()
-	if platform, ok := stateData[StateKeyDetectedPlatform].(string); ok {
-		return platform
-	}
-	return ""
+	return utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "")
 }
 
 // GetDraftSpec returns the draft specification markdown if available.
 // This is used by the WebUI to display the spec in PREVIEW state.
+// For full specs, returns bootstrap + user spec concatenated.
+// For hotfixes, returns just the user spec.
 // Returns empty string if no draft spec is available.
 func (d *Driver) GetDraftSpec() string {
-	stateData := d.GetStateData()
-	// Try new key first, fall back to legacy for backward compatibility
-	if draftSpec, ok := stateData[StateKeyUserSpecMd].(string); ok && draftSpec != "" {
-		return draftSpec
+	// Get user spec (required for any preview)
+	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+	if userSpec == "" {
+		return ""
 	}
-	// Legacy fallback
-	if draftSpec, ok := stateData["draft_spec_markdown"].(string); ok {
-		return draftSpec
+
+	// Get bootstrap spec (only present for full specs, not hotfixes)
+	bootstrapSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapSpecMd, "")
+
+	// Concatenate if bootstrap exists
+	if bootstrapSpec != "" {
+		return bootstrapSpec + "\n\n" + userSpec
 	}
-	return ""
+
+	return userSpec
 }
 
 // IsInFlight returns true if development is in progress (spec submitted and accepted).
 // When in_flight, only hotfixes are allowed.
 func (d *Driver) IsInFlight() bool {
-	stateData := d.GetStateData()
-	if inFlight, ok := stateData[StateKeyInFlight].(bool); ok {
-		return inFlight
-	}
-	return false
+	return utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyInFlight, false)
 }
 
 // GetDraftSpecMetadata returns the draft specification metadata if available.
 // Returns nil if no metadata is available.
 func (d *Driver) GetDraftSpecMetadata() map[string]any {
-	stateData := d.GetStateData()
-	if metadata, ok := stateData["spec_metadata"].(map[string]any); ok {
-		return metadata
-	}
-	return nil
+	metadata, _ := utils.GetStateValue[map[string]any](d.BaseStateMachine, StateKeySpecMetadata)
+	return metadata
 }
 
 // StartInterview initiates an interview session with the specified expertise level.
@@ -605,9 +609,9 @@ func (d *Driver) GetDraftSpecMetadata() map[string]any {
 func (d *Driver) StartInterview(expertise string) error {
 	// Idempotency check: if already in AWAIT_USER or WORKING with same expertise, succeed silently
 	currentState := d.GetCurrentState()
-	stateData := d.GetStateData()
 	if currentState == StateAwaitUser || currentState == StateWorking {
-		if existingExpertise, ok := stateData[StateKeyUserExpertise].(string); ok && existingExpertise == expertise {
+		existingExpertise := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserExpertise, "")
+		if existingExpertise == expertise {
 			d.logger.Info("📝 Interview already started with expertise: %s - idempotent success", expertise)
 			return nil
 		}
@@ -683,12 +687,8 @@ func (d *Driver) StartInterview(expertise string) error {
 func (d *Driver) UploadSpec(markdown string) error {
 	// Idempotency check: if already in WORKING or PREVIEW with same spec, succeed silently
 	currentState := d.GetCurrentState()
-	stateData := d.GetStateData()
 	if currentState == StatePreview || currentState == StateWorking {
-		existingSpec, ok := stateData["draft_spec_markdown"].(string)
-		if !ok {
-			existingSpec, _ = stateData[StateKeyUserSpecMd].(string)
-		}
+		existingSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
 		if existingSpec == markdown {
 			d.logger.Info("📤 Spec already uploaded (%d bytes) - idempotent success", len(markdown))
 			return nil
@@ -703,9 +703,9 @@ func (d *Driver) UploadSpec(markdown string) error {
 	}
 
 	// Store spec and infer expert level (user provided their own spec)
-	d.SetStateData("draft_spec_markdown", markdown)
-	d.SetStateData("user_expertise", "EXPERT")
-	d.SetStateData("spec_uploaded", true) // Flag to indicate spec was uploaded vs generated
+	d.SetStateData(StateKeyUserSpecMd, markdown)
+	d.SetStateData(StateKeyUserExpertise, "EXPERT")
+	d.SetStateData(StateKeySpecUploaded, true)
 
 	// Detect bootstrap requirements (same as StartInterview)
 	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
@@ -834,10 +834,10 @@ func (d *Driver) PreviewAction(ctx context.Context, action string) error {
 		return nil
 
 	case PreviewActionSubmit:
-		// Copy draft_spec_markdown to spec_markdown for sendSpecApprovalRequest
-		stateData := d.GetStateData()
-		if draftSpec, ok := stateData["draft_spec_markdown"].(string); ok {
-			d.SetStateData("spec_markdown", draftSpec)
+		// Verify user spec exists before submitting
+		userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+		if userSpec == "" {
+			return fmt.Errorf("no spec to submit - user_spec_md is empty")
 		}
 
 		// Send REQUEST to architect

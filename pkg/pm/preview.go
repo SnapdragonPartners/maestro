@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // handlePreview handles the PREVIEW state where user reviews the spec.
@@ -15,15 +16,8 @@ func (d *Driver) handlePreview(ctx context.Context) (proto.State, error) {
 	d.logger.Debug("📋 PM in PREVIEW state - waiting for user action")
 
 	// Verify we have a draft spec in state data
-	stateData := d.GetStateData()
-	// Try new key first, fall back to legacy
-	draftSpec, ok := stateData[StateKeyUserSpecMd].(string)
-	if !ok || draftSpec == "" {
-		// Legacy fallback
-		draftSpec, ok = stateData["draft_spec_markdown"].(string)
-	}
-
-	if !ok || draftSpec == "" {
+	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+	if userSpec == "" {
 		d.logger.Error("❌ No draft spec found in state data")
 		return proto.StateError, fmt.Errorf("no draft spec in state data")
 	}

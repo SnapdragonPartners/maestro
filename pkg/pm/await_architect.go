@@ -70,21 +70,14 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			// The conversation context still has the spec history for PM reference.
 			d.SetStateData(StateKeyUserSpecMd, nil)
 			d.SetStateData(StateKeyBootstrapSpecMd, nil)
-			d.SetStateData("spec_metadata", nil)
-			// Legacy keys - clear for backward compatibility
-			d.SetStateData("draft_spec_markdown", nil)
-			d.SetStateData("spec_markdown", nil)
-			d.SetStateData("spec_uploaded", nil)
-			d.SetStateData("infrastructure_spec", nil)
-			d.SetStateData("user_spec", nil)
+			d.SetStateData(StateKeySpecMetadata, nil)
+			d.SetStateData(StateKeySpecUploaded, nil)
 			d.SetStateData(StateKeyBootstrapRequirements, nil)
 			d.SetStateData(StateKeyDetectedPlatform, nil)
-			d.SetStateData("bootstrap_params", nil)
+			d.SetStateData(StateKeyBootstrapParams, nil)
 
 			// Mark that development is in flight - only hotfixes allowed now
 			d.SetStateData(StateKeyInFlight, true)
-			// Also set legacy key for backward compatibility
-			d.SetStateData(StateKeyDevelopmentInProgress, true)
 
 			// Inject user message to inform PM of approval and prompt for response
 			// Use chat_ask_user to post the message AND wait for user input (for tweaks/hotfixes)

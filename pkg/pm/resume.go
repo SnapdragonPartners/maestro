@@ -21,11 +21,8 @@ func (d *Driver) SerializeState(_ context.Context, db *sql.DB, sessionID string)
 	currentState := d.GetCurrentState()
 
 	// Serialize spec content from state data.
-	// Priority: user_spec_md (new) > draft_spec_markdown (legacy)
 	var specContent *string
 	if spec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, ""); spec != "" {
-		specContent = &spec
-	} else if spec := utils.GetStateValueOr[string](d.BaseStateMachine, "draft_spec_markdown", ""); spec != "" {
 		specContent = &spec
 	}
 
@@ -80,11 +77,10 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	// Restore state machine state using ForceState (bypasses transition validation).
 	d.ForceState(proto.State(state.State))
 
-	// Restore spec content to both new and legacy keys (used by WebUI for preview).
+	// Restore spec content (used by WebUI for preview via GetDraftSpec).
 	// The PM will handle the appropriate state transitions based on current state.
 	if state.SpecContent != nil {
 		d.SetStateData(StateKeyUserSpecMd, *state.SpecContent)
-		d.SetStateData("draft_spec_markdown", *state.SpecContent) // Legacy compatibility
 	}
 
 	// Restore bootstrap params.
@@ -124,29 +120,25 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 // collectBootstrapParamsJSON collects bootstrap-related state data and returns it as JSON.
 // Returns nil if no bootstrap params are present.
 func (d *Driver) collectBootstrapParamsJSON() *string {
-	stateData := d.GetStateData()
 	bootstrapParams := make(map[string]any)
 
-	// Collect all bootstrap-related state keys
-	if hasRepo, ok := stateData[StateKeyHasRepository].(bool); ok {
+	// Collect all bootstrap-related state keys using type-safe utilities
+	if hasRepo, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyHasRepository); ok {
 		bootstrapParams[StateKeyHasRepository] = hasRepo
 	}
-	if expertise, ok := stateData[StateKeyUserExpertise].(string); ok {
+	if expertise, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyUserExpertise); ok {
 		bootstrapParams[StateKeyUserExpertise] = expertise
 	}
-	if requirements, ok := stateData[StateKeyBootstrapRequirements]; ok {
+	if requirements, ok := d.GetStateValue(StateKeyBootstrapRequirements); ok {
 		bootstrapParams[StateKeyBootstrapRequirements] = requirements
 	}
-	if platform, ok := stateData[StateKeyDetectedPlatform].(string); ok {
+	if platform, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyDetectedPlatform); ok {
 		bootstrapParams[StateKeyDetectedPlatform] = platform
 	}
-	if devInProgress, ok := stateData[StateKeyDevelopmentInProgress].(bool); ok {
-		bootstrapParams[StateKeyDevelopmentInProgress] = devInProgress
-	}
-	if inFlight, ok := stateData[StateKeyInFlight].(bool); ok {
+	if inFlight, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyInFlight); ok {
 		bootstrapParams[StateKeyInFlight] = inFlight
 	}
-	if bootstrapSpec, ok := stateData[StateKeyBootstrapSpecMd].(string); ok {
+	if bootstrapSpec, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapSpecMd); ok {
 		bootstrapParams[StateKeyBootstrapSpecMd] = bootstrapSpec
 	}
 
