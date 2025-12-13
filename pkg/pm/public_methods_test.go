@@ -364,6 +364,24 @@ func TestCollectBootstrapParamsJSON_WithParams(t *testing.T) {
 	}
 }
 
+func TestCollectBootstrapParamsJSON_IncludesHotfixFlag(t *testing.T) {
+	driver := createTestDriver(StatePreview)
+
+	// Set hotfix flag (critical for hotfix routing after restart)
+	driver.SetStateData(StateKeyIsHotfix, true)
+	driver.SetStateData(StateKeyUserSpecMd, "# Hotfix Spec")
+
+	result := driver.collectBootstrapParamsJSON()
+	if result == nil {
+		t.Fatal("Expected non-nil result")
+	}
+
+	json := *result
+	if !contains(json, `"is_hotfix":true`) {
+		t.Errorf("Expected JSON to contain is_hotfix:true for hotfix persistence, got: %s", json)
+	}
+}
+
 // contains checks if string s contains substring substr.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))

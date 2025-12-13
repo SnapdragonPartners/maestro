@@ -141,6 +141,9 @@ func (d *Driver) collectBootstrapParamsJSON() *string {
 	if bootstrapSpec, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapSpecMd); ok {
 		bootstrapParams[StateKeyBootstrapSpecMd] = bootstrapSpec
 	}
+	if isHotfix, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyIsHotfix); ok {
+		bootstrapParams[StateKeyIsHotfix] = isHotfix
+	}
 
 	if len(bootstrapParams) == 0 {
 		return nil
