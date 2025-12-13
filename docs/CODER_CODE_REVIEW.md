@@ -170,25 +170,24 @@ The following items are ordered by logical dependency and priority. Earlier item
 
 These items remove dead code and improve documentation without changing behavior.
 
-- [ ] **1.1** Remove legacy `processPlanningResult` function from `planning.go:276-320`
-  - Verify no callers exist first
-  - Remove associated nolint directives
+- [x] **1.1** Remove legacy `processPlanningResult` function from `planning.go:276-320`
+  - Verified no callers exist
+  - Removed function and associated nolint directives
 
-- [ ] **1.2** Remove legacy `processTodoCollectionResult` function from `plan_review.go:418-445`
-  - Verify no callers exist first
-  - Remove associated nolint directives
+- [x] **1.2** Remove legacy `processTodoCollectionResult` function from `plan_review.go:418-445`
+  - Verified no callers exist
+  - Removed function and associated nolint directives
 
-- [ ] **1.3** Replace custom `joinStrings` with `strings.Join` in `todo_handlers.go:49-58`
-  - Simple stdlib replacement
+- [x] **1.3** Replace custom `joinStrings` with `strings.Join` in `todo_handlers.go:49-58`
+  - Replaced with stdlib and removed custom function
 
-- [ ] **1.4** Add package-level documentation for dual execution modes
-  - Create `pkg/coder/doc.go` OR add section to existing docs
-  - Document: mode selection criteria, tool availability differences, session management, debugging tips
-  - Reference from CLAUDE.md if appropriate
+- [x] **1.4** Add package-level documentation for dual execution modes
+  - Created `pkg/coder/doc.go` with architecture overview
+  - Documents mode selection criteria, tool availability, session management
 
-- [ ] **1.5** Run `scripts/lint-state-access.sh` and address findings
-  - Fix any state access pattern violations
-  - Non-blocking but improves consistency
+- [x] **1.5** Run `scripts/lint-state-access.sh` and address findings
+  - Added `KeyTodoList` and `KeyBudgetReviewEffect` constants
+  - Updated all magic string usages to use constants
 
 ### Phase 2: Code Quality (Low-Medium Risk)
 

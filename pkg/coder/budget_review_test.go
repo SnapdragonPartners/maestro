@@ -87,7 +87,7 @@ func TestBudgetReviewOriginStatePersistence(t *testing.T) {
 			}
 
 			// Store the effect in state data (simulating what handleInitialCoding/handleInitialPlanning does)
-			sm.SetStateData("budget_review_effect", budgetEff)
+			sm.SetStateData(KeyBudgetReviewEffect, budgetEff)
 
 			// Note: In production, the state machine would transition to BUDGET_REVIEW state
 			// For testing purposes, we're directly testing processBudgetReviewResult

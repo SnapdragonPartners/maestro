@@ -29,7 +29,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyPlanningIterations), maxPlanningIterations, StatePlanning); budgetExceeded {
 		c.logger.Info("Planning budget exceeded, triggering BUDGET_REVIEW")
 		// Store effect for BUDGET_REVIEW state to execute
-		sm.SetStateData("budget_review_effect", budgetReviewEff)
+		sm.SetStateData(KeyBudgetReviewEffect, budgetReviewEff)
 		return StateBudgetReview, false, nil
 	}
 
@@ -190,7 +190,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 				)
 				// Set story ID for dispatcher validation
 				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
-				sm.SetStateData("budget_review_effect", budgetEff)
+				sm.SetStateData(KeyBudgetReviewEffect, budgetEff)
 				// Store origin state so budget review knows where to return
 				sm.SetStateData(KeyOrigin, string(StatePlanning))
 				c.logger.Info("🔍 Toolloop iteration limit: stored origin=%q in state data", string(StatePlanning))
@@ -269,57 +269,6 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
 }
-
-// processPlanningResult processes the extracted result from planning toolloop.
-// Stores data in stateData and performs any necessary side effects.
-//
-//nolint:unparam,unused // error return reserved for future validation logic; Legacy - will be removed
-func (c *Coder) processPlanningResult(sm *agent.BaseStateMachine, result *PlanningResult) error {
-	// Only process if we have plan data (i.e., submit_plan was called)
-	if result.Signal == SignalPlanReview && result.Plan != "" {
-		c.logger.Info("✅ Planning result extracted: plan (%d chars), confidence: %s",
-			len(result.Plan), result.Confidence)
-
-		// Get knowledge pack from result or fall back to state data
-		knowledgePack := result.KnowledgePack
-		if knowledgePack == "" {
-			knowledgePack = utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
-		}
-
-		// Store plan data using typed constants
-		sm.SetStateData(string(stateDataKeyPlan), result.Plan)
-		sm.SetStateData(string(stateDataKeyPlanConfidence), result.Confidence)
-		sm.SetStateData(string(stateDataKeyExplorationSummary), result.ExplorationSummary)
-		sm.SetStateData(string(stateDataKeyPlanRisks), result.Risks)
-		sm.SetStateData(string(stateDataKeyPlanTodos), result.Todos)
-		sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
-
-		// Store knowledge pack via persistence if available
-		if knowledgePack != "" {
-			storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
-			if storyID != "" {
-				c.storeKnowledgePack(storyID, knowledgePack)
-			}
-		}
-
-		// Store plan approval request for PLAN_REVIEW state to handle
-		c.pendingApprovalRequest = &ApprovalRequest{
-			ID:      proto.GenerateApprovalID(),
-			Content: result.Plan,
-			Reason:  fmt.Sprintf("Enhanced plan requires approval (confidence: %s)", result.Confidence),
-			Type:    proto.ApprovalTypePlan,
-		}
-
-		c.logger.Info("🧑‍💻 Plan data stored, ready for PLAN_REVIEW transition")
-	}
-
-	return nil
-}
-
-// TODO: LEGACY - Remove processPlanningResult once all code paths use processPlanDataFromEffect.
-// This function is kept temporarily for any code that might still reference it during migration.
-//
-//nolint:unused // Legacy function - will be removed after migration verification.
 
 // processPlanDataFromEffect extracts and stores plan data from ProcessEffect.Data.
 // Called when submit_plan tool returns ProcessEffect with SignalPlanReview.

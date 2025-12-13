@@ -29,7 +29,7 @@ func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMach
 	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), maxCodingIterations, StateCoding); budgetExceeded {
 		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
 		// Store effect for BUDGET_REVIEW state to execute
-		sm.SetStateData("budget_review_effect", budgetReviewEff)
+		sm.SetStateData(KeyBudgetReviewEffect, budgetReviewEff)
 		return StateBudgetReview, false, nil
 	}
 
@@ -175,7 +175,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 				)
 				// Set story ID for dispatcher validation
 				budgetEff.StoryID = utils.GetStateValueOr[string](sm, KeyStoryID, "")
-				sm.SetStateData("budget_review_effect", budgetEff)
+				sm.SetStateData(KeyBudgetReviewEffect, budgetEff)
 				// Store origin state so budget review knows where to return
 				sm.SetStateData(KeyOrigin, string(StateCoding))
 				c.logger.Info("🔍 Toolloop iteration limit: stored origin=%q in state data", string(StateCoding))
@@ -296,7 +296,7 @@ func (c *Coder) handleEmptyResponseError(sm *agent.BaseStateMachine, prompt stri
 	// Store origin state and effect for BUDGET_REVIEW state to execute
 	sm.SetStateData(KeyOrigin, string(originState))
 	c.logger.Info("🔍 Empty response: stored origin=%q in state data", string(originState))
-	sm.SetStateData("budget_review_effect", budgetReviewEff)
+	sm.SetStateData(KeyBudgetReviewEffect, budgetReviewEff)
 
 	// Note: Don't add fabricated assistant messages - only LLM responses should be assistant messages
 	// The context will naturally have proper alternation from the previous LLM call

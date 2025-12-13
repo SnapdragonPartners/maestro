@@ -68,7 +68,7 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 				feedbackTodo := fmt.Sprintf("Address merge issue: %s", feedback)
 				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
 				c.logger.Info("📋 Added merge feedback as new todo")
-				sm.SetStateData("todo_list", c.todoList)
+				sm.SetStateData(KeyTodoList, c.todoList)
 			}
 		}
 

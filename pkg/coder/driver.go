@@ -1551,7 +1551,7 @@ func (c *Coder) UpdateTodoInState() {
 	if c.todoList == nil {
 		return
 	}
-	c.BaseStateMachine.SetStateData("todo_list", c.todoList)
+	c.BaseStateMachine.SetStateData(KeyTodoList, c.todoList)
 	c.logger.Debug("📋 Updated todo_list in state data")
 }
 

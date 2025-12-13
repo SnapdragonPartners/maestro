@@ -79,7 +79,7 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 				feedbackTodo := fmt.Sprintf("Address architect feedback: %s", approvalResult.Feedback)
 				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
 				c.logger.Info("📋 Added architect feedback as new todo")
-				sm.SetStateData("todo_list", c.todoList)
+				sm.SetStateData(KeyTodoList, c.todoList)
 			}
 		}
 
@@ -415,40 +415,6 @@ func (c *Coder) createTodoCollectionToolProvider() *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, todoTools)
 }
 
-// processTodoCollectionResult processes the extracted todos from todo collection phase.
-//
-//nolint:unparam,unused // error return reserved for future validation logic; Legacy - will be removed
-func (c *Coder) processTodoCollectionResult(sm *agent.BaseStateMachine, result *TodoCollectionResult) error {
-	if len(result.Todos) == 0 {
-		return nil
-	}
-
-	// Create todo list from extracted todos
-	items := make([]TodoItem, len(result.Todos))
-	for i, todoDesc := range result.Todos {
-		items[i] = TodoItem{
-			Description: todoDesc,
-			Completed:   false,
-		}
-	}
-
-	todoList := &TodoList{
-		Items:   items,
-		Current: 0,
-	}
-
-	c.todoList = todoList
-	sm.SetStateData("todo_list", todoList)
-
-	c.logger.Info("📋 [TODO] Created todo list with %d items", len(result.Todos))
-	return nil
-}
-
-// TODO: LEGACY - Remove processTodoCollectionResult once all code paths use processTodosFromEffect.
-// This function is kept temporarily for any code that might still reference it during migration.
-//
-//nolint:unused // Legacy function - will be removed after migration verification.
-
 // processTodosFromEffect processes todos extracted from ProcessEffect.Data.
 //
 //nolint:unparam // error return reserved for future validation logic
@@ -472,7 +438,7 @@ func (c *Coder) processTodosFromEffect(sm *agent.BaseStateMachine, todos []strin
 	}
 
 	c.todoList = todoList
-	sm.SetStateData("todo_list", todoList)
+	sm.SetStateData(KeyTodoList, todoList)
 
 	c.logger.Info("📋 [TODO] Created todo list with %d items from ProcessEffect", len(todos))
 	return nil
