@@ -30,8 +30,10 @@ type GitHubClient interface {
 	// Workflow/Actions operations
 	GetWorkflowRunsForRef(ctx context.Context, ref string) ([]WorkflowRun, error)
 	GetWorkflowRunsForPR(ctx context.Context, prNumber int) ([]WorkflowRun, error)
+	GetCheckRunsForRef(ctx context.Context, ref string) ([]CheckRun, error)
 	GetWorkflowStatus(ctx context.Context, commitSHA string) (*WorkflowStatus, error)
 	GetPRWorkflowStatus(ctx context.Context, prNumber int) (*WorkflowStatus, error)
+	IsWorkflowPassing(ctx context.Context, commitSHA string) (bool, error)
 	IsPRWorkflowPassing(ctx context.Context, prNumber int) (bool, error)
 
 	// Configuration
