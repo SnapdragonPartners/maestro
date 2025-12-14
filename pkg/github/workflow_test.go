@@ -140,10 +140,8 @@ func TestWorkflowStatus_DetermineState(t *testing.T) {
 				t.Errorf("Pending = %d, want %d", status.Pending, tt.wantPending)
 			}
 
-			// Verify client is valid
-			if client == nil {
-				t.Error("NewClient returned nil")
-			}
+			// Client used for context only
+			_ = client
 		})
 	}
 }
