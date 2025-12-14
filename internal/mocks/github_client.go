@@ -17,12 +17,22 @@ type MockGitHubClient struct {
 	CreatePRFunc              func(ctx context.Context, opts github.PRCreateOptions) (*github.PullRequest, error)
 	MergePRWithResultFunc     func(ctx context.Context, ref string, opts github.PRMergeOptions) (*github.MergeResult, error)
 	CleanupMergedBranchesFunc func(ctx context.Context, target string, protectedPatterns []string) ([]string, error)
+	GetWorkflowRunsForRefFunc func(ctx context.Context, ref string) ([]github.WorkflowRun, error)
+	GetWorkflowRunsForPRFunc  func(ctx context.Context, prNumber int) ([]github.WorkflowRun, error)
+	GetWorkflowStatusFunc     func(ctx context.Context, commitSHA string) (*github.WorkflowStatus, error)
+	GetPRWorkflowStatusFunc   func(ctx context.Context, prNumber int) (*github.WorkflowStatus, error)
+	IsPRWorkflowPassingFunc   func(ctx context.Context, prNumber int) (bool, error)
 
 	// Call tracking
 	ListPRsForBranchCalls      []ListPRsForBranchCall
 	CreatePRCalls              []github.PRCreateOptions
 	MergePRWithResultCalls     []MergePRWithResultCall
 	CleanupMergedBranchesCalls []CleanupMergedBranchesCall
+	GetWorkflowRunsForRefCalls []string
+	GetWorkflowRunsForPRCalls  []int
+	GetWorkflowStatusCalls     []string
+	GetPRWorkflowStatusCalls   []int
+	IsPRWorkflowPassingCalls   []int
 
 	// Configuration
 	repoPath string
@@ -84,6 +94,59 @@ func NewMockGitHubClient() *MockGitHubClient {
 		return []string{}, nil
 	}
 
+	// Default GetWorkflowRunsForRef: return successful workflow runs
+	m.GetWorkflowRunsForRefFunc = func(_ context.Context, _ string) ([]github.WorkflowRun, error) {
+		return []github.WorkflowRun{
+			{
+				ID:         123,
+				Name:       "CI",
+				Status:     "completed",
+				Conclusion: "success",
+			},
+		}, nil
+	}
+
+	// Default GetWorkflowRunsForPR: return successful workflow runs
+	m.GetWorkflowRunsForPRFunc = func(_ context.Context, _ int) ([]github.WorkflowRun, error) {
+		return []github.WorkflowRun{
+			{
+				ID:         123,
+				Name:       "CI",
+				Status:     "completed",
+				Conclusion: "success",
+			},
+		}, nil
+	}
+
+	// Default GetWorkflowStatus: return success status
+	m.GetWorkflowStatusFunc = func(_ context.Context, _ string) (*github.WorkflowStatus, error) {
+		return &github.WorkflowStatus{
+			State:      github.WorkflowStateSuccess,
+			TotalRuns:  1,
+			Successful: 1,
+			Failed:     0,
+			Pending:    0,
+			FailedRuns: []string{},
+		}, nil
+	}
+
+	// Default GetPRWorkflowStatus: return success status
+	m.GetPRWorkflowStatusFunc = func(_ context.Context, _ int) (*github.WorkflowStatus, error) {
+		return &github.WorkflowStatus{
+			State:      github.WorkflowStateSuccess,
+			TotalRuns:  1,
+			Successful: 1,
+			Failed:     0,
+			Pending:    0,
+			FailedRuns: []string{},
+		}, nil
+	}
+
+	// Default IsPRWorkflowPassing: return true
+	m.IsPRWorkflowPassingFunc = func(_ context.Context, _ int) (bool, error) {
+		return true, nil
+	}
+
 	return m
 }
 
@@ -126,6 +189,36 @@ func (m *MockGitHubClient) WithTimeout(_ time.Duration) *github.Client {
 // RepoPath implements github.GitHubClient.
 func (m *MockGitHubClient) RepoPath() string {
 	return m.repoPath
+}
+
+// GetWorkflowRunsForRef implements github.GitHubClient.
+func (m *MockGitHubClient) GetWorkflowRunsForRef(ctx context.Context, ref string) ([]github.WorkflowRun, error) {
+	m.GetWorkflowRunsForRefCalls = append(m.GetWorkflowRunsForRefCalls, ref)
+	return m.GetWorkflowRunsForRefFunc(ctx, ref)
+}
+
+// GetWorkflowRunsForPR implements github.GitHubClient.
+func (m *MockGitHubClient) GetWorkflowRunsForPR(ctx context.Context, prNumber int) ([]github.WorkflowRun, error) {
+	m.GetWorkflowRunsForPRCalls = append(m.GetWorkflowRunsForPRCalls, prNumber)
+	return m.GetWorkflowRunsForPRFunc(ctx, prNumber)
+}
+
+// GetWorkflowStatus implements github.GitHubClient.
+func (m *MockGitHubClient) GetWorkflowStatus(ctx context.Context, commitSHA string) (*github.WorkflowStatus, error) {
+	m.GetWorkflowStatusCalls = append(m.GetWorkflowStatusCalls, commitSHA)
+	return m.GetWorkflowStatusFunc(ctx, commitSHA)
+}
+
+// GetPRWorkflowStatus implements github.GitHubClient.
+func (m *MockGitHubClient) GetPRWorkflowStatus(ctx context.Context, prNumber int) (*github.WorkflowStatus, error) {
+	m.GetPRWorkflowStatusCalls = append(m.GetPRWorkflowStatusCalls, prNumber)
+	return m.GetPRWorkflowStatusFunc(ctx, prNumber)
+}
+
+// IsPRWorkflowPassing implements github.GitHubClient.
+func (m *MockGitHubClient) IsPRWorkflowPassing(ctx context.Context, prNumber int) (bool, error) {
+	m.IsPRWorkflowPassingCalls = append(m.IsPRWorkflowPassingCalls, prNumber)
+	return m.IsPRWorkflowPassingFunc(ctx, prNumber)
 }
 
 // --- Helper methods for test configuration ---
@@ -249,4 +342,89 @@ func (m *MockGitHubClient) LastMergeCall() *MergePRWithResultCall {
 		return nil
 	}
 	return &m.MergePRWithResultCalls[len(m.MergePRWithResultCalls)-1]
+}
+
+// --- Workflow-related helpers ---
+
+// OnGetWorkflowRunsForRef sets a custom handler for GetWorkflowRunsForRef calls.
+func (m *MockGitHubClient) OnGetWorkflowRunsForRef(fn func(ctx context.Context, ref string) ([]github.WorkflowRun, error)) {
+	m.GetWorkflowRunsForRefFunc = fn
+}
+
+// OnGetWorkflowRunsForPR sets a custom handler for GetWorkflowRunsForPR calls.
+func (m *MockGitHubClient) OnGetWorkflowRunsForPR(fn func(ctx context.Context, prNumber int) ([]github.WorkflowRun, error)) {
+	m.GetWorkflowRunsForPRFunc = fn
+}
+
+// OnGetWorkflowStatus sets a custom handler for GetWorkflowStatus calls.
+func (m *MockGitHubClient) OnGetWorkflowStatus(fn func(ctx context.Context, commitSHA string) (*github.WorkflowStatus, error)) {
+	m.GetWorkflowStatusFunc = fn
+}
+
+// OnGetPRWorkflowStatus sets a custom handler for GetPRWorkflowStatus calls.
+func (m *MockGitHubClient) OnGetPRWorkflowStatus(fn func(ctx context.Context, prNumber int) (*github.WorkflowStatus, error)) {
+	m.GetPRWorkflowStatusFunc = fn
+}
+
+// OnIsPRWorkflowPassing sets a custom handler for IsPRWorkflowPassing calls.
+func (m *MockGitHubClient) OnIsPRWorkflowPassing(fn func(ctx context.Context, prNumber int) (bool, error)) {
+	m.IsPRWorkflowPassingFunc = fn
+}
+
+// ReturnWorkflowsPassing configures mock to return passing workflows.
+func (m *MockGitHubClient) ReturnWorkflowsPassing() {
+	m.GetWorkflowStatusFunc = func(_ context.Context, _ string) (*github.WorkflowStatus, error) {
+		return &github.WorkflowStatus{
+			State:      github.WorkflowStateSuccess,
+			TotalRuns:  1,
+			Successful: 1,
+			Failed:     0,
+			Pending:    0,
+			FailedRuns: []string{},
+		}, nil
+	}
+	m.IsPRWorkflowPassingFunc = func(_ context.Context, _ int) (bool, error) {
+		return true, nil
+	}
+}
+
+// ReturnWorkflowsFailing configures mock to return failing workflows.
+func (m *MockGitHubClient) ReturnWorkflowsFailing(failedNames ...string) {
+	m.GetWorkflowStatusFunc = func(_ context.Context, _ string) (*github.WorkflowStatus, error) {
+		return &github.WorkflowStatus{
+			State:      github.WorkflowStateFailure,
+			TotalRuns:  len(failedNames),
+			Successful: 0,
+			Failed:     len(failedNames),
+			Pending:    0,
+			FailedRuns: failedNames,
+		}, nil
+	}
+	m.IsPRWorkflowPassingFunc = func(_ context.Context, _ int) (bool, error) {
+		return false, nil
+	}
+}
+
+// ReturnWorkflowsPending configures mock to return pending workflows.
+func (m *MockGitHubClient) ReturnWorkflowsPending() {
+	m.GetWorkflowStatusFunc = func(_ context.Context, _ string) (*github.WorkflowStatus, error) {
+		return &github.WorkflowStatus{
+			State:      github.WorkflowStatePending,
+			TotalRuns:  1,
+			Successful: 0,
+			Failed:     0,
+			Pending:    1,
+			FailedRuns: []string{},
+		}, nil
+	}
+	m.IsPRWorkflowPassingFunc = func(_ context.Context, _ int) (bool, error) {
+		return false, nil
+	}
+}
+
+// FailGetWorkflowStatusWith configures GetWorkflowStatus to return the specified error.
+func (m *MockGitHubClient) FailGetWorkflowStatusWith(err error) {
+	m.GetWorkflowStatusFunc = func(_ context.Context, _ string) (*github.WorkflowStatus, error) {
+		return nil, err
+	}
 }

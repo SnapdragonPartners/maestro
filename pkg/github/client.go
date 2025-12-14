@@ -27,6 +27,13 @@ type GitHubClient interface {
 	// Branch operations
 	CleanupMergedBranches(ctx context.Context, target string, protectedPatterns []string) ([]string, error)
 
+	// Workflow/Actions operations
+	GetWorkflowRunsForRef(ctx context.Context, ref string) ([]WorkflowRun, error)
+	GetWorkflowRunsForPR(ctx context.Context, prNumber int) ([]WorkflowRun, error)
+	GetWorkflowStatus(ctx context.Context, commitSHA string) (*WorkflowStatus, error)
+	GetPRWorkflowStatus(ctx context.Context, prNumber int) (*WorkflowStatus, error)
+	IsPRWorkflowPassing(ctx context.Context, prNumber int) (bool, error)
+
 	// Configuration
 	WithTimeout(timeout time.Duration) *Client
 	RepoPath() string
