@@ -73,7 +73,7 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		} else {
 			// World changed - reset stuck counter, give fresh chance
 			stuckAttempts = 0
-			c.logger.Info("🔀 Remote HEAD changed (%s -> %s) - resetting stuck counter", lastRemoteHEAD[:8], currentRemoteHEAD[:8])
+			c.logger.Info("🔀 Remote HEAD changed (%s -> %s) - resetting stuck counter", truncateSHA(lastRemoteHEAD), truncateSHA(currentRemoteHEAD))
 		}
 	}
 
@@ -565,4 +565,13 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 
 	c.logger.Info("🔀 Push with --force-with-lease succeeded")
 	return nil
+}
+
+// truncateSHA safely truncates a git SHA to 8 characters for display.
+// Returns the full string if shorter than 8 characters.
+func truncateSHA(sha string) string {
+	if len(sha) <= 8 {
+		return sha
+	}
+	return sha[:8]
 }

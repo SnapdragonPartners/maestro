@@ -7,6 +7,7 @@ import (
 
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
 	"orchestrator/pkg/agent/internal/llmimpl/google"
+	"orchestrator/pkg/agent/internal/llmimpl/ollama"
 	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/middleware/logging"
@@ -51,6 +52,7 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		string(config.ProviderAnthropic),
 		string(config.ProviderOpenAI),
 		string(config.ProviderGoogle),
+		string(config.ProviderOllama),
 	} {
 		circuitBreakers[provider] = circuit.New(circuit.Config{
 			FailureThreshold: cfg.Agents.Resilience.CircuitBreaker.FailureThreshold,
@@ -72,6 +74,10 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		string(config.ProviderGoogle): {
 			TokensPerMinute: cfg.Agents.Resilience.RateLimit.Google.TokensPerMinute,
 			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.Google.MaxConcurrency,
+		},
+		string(config.ProviderOllama): {
+			TokensPerMinute: cfg.Agents.Resilience.RateLimit.Ollama.TokensPerMinute,
+			MaxConcurrency:  cfg.Agents.Resilience.RateLimit.Ollama.MaxConcurrency,
 		},
 	}
 
@@ -167,6 +173,9 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		rawClient = openaiofficial.NewOfficialClientWithModel(apiKey, modelName)
 	case config.ProviderGoogle:
 		rawClient = google.NewGeminiClientWithModel(apiKey, modelName)
+	case config.ProviderOllama:
+		// For Ollama, apiKey contains the host URL (e.g., "http://localhost:11434")
+		rawClient = ollama.NewOllamaClientWithModel(apiKey, modelName)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}

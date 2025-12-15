@@ -1,4 +1,5 @@
-//nolint:all // Legacy test file - needs migration to new APIs
+// Basic unit tests for coder standalone methods and constants.
+// These tests don't require full state machine setup.
 package coder
 
 import (

@@ -97,13 +97,13 @@ See the canonical state diagrams for details:
   - Aggressive lint/test defaults (“turn checks up to 11”)
 
 - **LLMs:**
-  - Supports OpenAI, Anthropic, and Google Gemini models via official Go SDKs
+  - Supports OpenAI, Anthropic, Google Gemini, and Ollama (local models) via official SDKs
   - PM defaults: Claude Opus 4.5 (latest Anthropic flagship for nuanced requirements gathering)
   - Architect defaults: Gemini 3 Pro (1M token context window for large codebase analysis)
   - Coders default: Claude Sonnet 4.5 (latest coding-oriented model)
   - All models configurable per-project in config.json
   - Rate limiting handled internally via token buckets
-  - Local model support is on the roadmap
+  - **Ollama support**: Run local models like Llama 3.2, Qwen, Mistral for cost-free development (see [docs/OLLAMA.md](docs/OLLAMA.md))
 
 ---
 
@@ -137,6 +137,9 @@ export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
 export GOOGLE_GENAI_API_KEY=AIza...  # Optional, for Gemini models
 export GITHUB_TOKEN=ghp-...
+
+# Optional: Ollama for local models (default: http://localhost:11434)
+export OLLAMA_HOST=http://localhost:11434
 
 # Optional: Enable web search for agents (Google Custom Search)
 export GOOGLE_SEARCH_API_KEY=AIza...

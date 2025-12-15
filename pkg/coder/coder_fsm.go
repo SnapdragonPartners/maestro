@@ -91,6 +91,8 @@ const (
 	KeyCompletionSignaled      = "completion_signaled"
 	KeyCompletionDetails       = "completion_details"
 	KeyEmptyResponse           = "empty_response_handled"
+	KeyTodoList                = "todo_list"
+	KeyBudgetReviewEffect      = "budget_review_effect"
 )
 
 // ValidateState checks if a state is valid for coder agents.

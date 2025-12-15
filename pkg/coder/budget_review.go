@@ -17,7 +17,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 	logx.DebugState(ctx, "coder", "enter", string(StateBudgetReview))
 
 	// Check for stored budget review effect to execute
-	if effectData, exists := sm.GetStateValue("budget_review_effect"); exists {
+	if effectData, exists := sm.GetStateValue(KeyBudgetReviewEffect); exists {
 		if budgetReviewEff, ok := effectData.(*effect.BudgetReviewEffect); ok {
 			c.logger.Info("🧑‍💻 Executing stored BudgetReviewEffect")
 
@@ -28,7 +28,7 @@ func (c *Coder) handleBudgetReview(ctx context.Context, sm *agent.BaseStateMachi
 			}
 
 			// Clear the stored effect
-			sm.SetStateData("budget_review_effect", nil)
+			sm.SetStateData(KeyBudgetReviewEffect, nil)
 
 			// Process the result
 			if budgetReviewResult, ok := result.(*effect.BudgetReviewResult); ok {

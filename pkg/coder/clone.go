@@ -32,6 +32,8 @@ func NewCloneManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranch, m
 	absProjectWorkDir, err := filepath.Abs(projectWorkDir)
 	if err != nil {
 		// If we can't get absolute path, use the original (fallback).
+		// This is unusual and may indicate a filesystem or path issue.
+		logx.NewLogger("clone-manager").Warn("Failed to get absolute path for %q, using original: %v", projectWorkDir, err)
 		absProjectWorkDir = projectWorkDir
 	}
 

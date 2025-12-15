@@ -238,6 +238,14 @@ var ProviderPatterns = []ProviderPattern{
 	{"o3", ProviderOpenAI},
 	{"o4", ProviderOpenAI},
 	{"gemini", ProviderGoogle},
+	// Ollama models - common open-source model prefixes
+	{"phi", ProviderOllama},
+	{"llama", ProviderOllama},
+	{"qwen", ProviderOllama},
+	{"mistral", ProviderOllama},
+	{"codellama", ProviderOllama},
+	{"deepseek", ProviderOllama},
+	{"ollama:", ProviderOllama}, // Explicit prefix like "ollama:phi4"
 }
 
 // GetModelProvider returns the API provider for a given model.
@@ -316,6 +324,7 @@ type RateLimitConfig struct {
 	Anthropic ProviderLimits `json:"anthropic"` // Rate limits for Anthropic models
 	OpenAI    ProviderLimits `json:"openai"`    // Rate limits for OpenAI models
 	Google    ProviderLimits `json:"google"`    // Rate limits for Google models
+	Ollama    ProviderLimits `json:"ollama"`    // Rate limits for Ollama models (local inference)
 }
 
 // ProviderDefaults defines default rate limits for each provider.
@@ -334,6 +343,10 @@ var ProviderDefaults = map[string]ProviderLimits{
 	ProviderGoogle: {
 		TokensPerMinute: 60000, // Conservative default - adjust based on actual API limits
 		MaxConcurrency:  5,
+	},
+	ProviderOllama: {
+		TokensPerMinute: 1000000, // Effectively unlimited for local inference
+		MaxConcurrency:  2,       // Limited by GPU memory - users can increase if they have more VRAM
 	},
 }
 
@@ -452,11 +465,13 @@ const (
 	ProviderAnthropic = "anthropic"
 	ProviderOpenAI    = "openai"
 	ProviderGoogle    = "google"
+	ProviderOllama    = "ollama"
 
 	// API key environment variable names.
 	EnvAnthropicAPIKey = "ANTHROPIC_API_KEY"
 	EnvOpenAIAPIKey    = "OPENAI_API_KEY"
 	EnvGoogleAPIKey    = "GOOGLE_GENAI_API_KEY"
+	EnvOllamaHost      = "OLLAMA_HOST"
 )
 
 // GitConfig contains git repository settings for the project.
@@ -1027,6 +1042,10 @@ func createDefaultConfig() *Config {
 						TokensPerMinute: 60000,
 						MaxConcurrency:  5,
 					},
+					Ollama: ProviderLimits{
+						TokensPerMinute: 1000000,
+						MaxConcurrency:  2,
+					},
 				},
 				Timeout: 3 * time.Minute, // Increased for GPT-5 reasoning time
 			},
@@ -1305,6 +1324,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Agents.Resilience.RateLimit.Google.TokensPerMinute == 0 {
 		config.Agents.Resilience.RateLimit.Google = ProviderDefaults[ProviderGoogle]
+	}
+	if config.Agents.Resilience.RateLimit.Ollama.TokensPerMinute == 0 {
+		config.Agents.Resilience.RateLimit.Ollama = ProviderDefaults[ProviderOllama]
 	}
 
 	if config.Agents.Resilience.Timeout == 0 {
@@ -1736,6 +1758,7 @@ func CalculateCost(modelName string, promptTokens, completionTokens int) (float6
 
 // GetAPIKey returns the API key for a given provider.
 // Checks secrets file first, then falls back to environment variables.
+// For Ollama, returns the host URL instead of an API key.
 func GetAPIKey(provider string) (string, error) {
 	var envVar string
 	switch provider {
@@ -1745,6 +1768,14 @@ func GetAPIKey(provider string) (string, error) {
 		envVar = EnvOpenAIAPIKey
 	case ProviderGoogle:
 		envVar = EnvGoogleAPIKey
+	case ProviderOllama:
+		// Ollama doesn't use API keys - return host URL instead
+		// Check environment variable first, then default to localhost
+		host := os.Getenv(EnvOllamaHost)
+		if host == "" {
+			host = "http://localhost:11434"
+		}
+		return host, nil
 	default:
 		return "", fmt.Errorf("unknown provider: %s", provider)
 	}
