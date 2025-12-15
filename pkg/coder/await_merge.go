@@ -96,6 +96,12 @@ func (c *Coder) processMergeResult(_ context.Context, sm *agent.BaseStateMachine
 
 // checkAndReindexKnowledge checks if knowledge.dot was modified and triggers reindexing.
 func (c *Coder) checkAndReindexKnowledge() {
+	// Skip if persistence channel is not configured (e.g., in tests)
+	if c.persistenceChannel == nil {
+		c.logger.Debug("Skipping knowledge reindex check - persistence channel not configured")
+		return
+	}
+
 	// Get workspace path
 	knowledgePath := filepath.Join(c.workDir, ".maestro", "knowledge.dot")
 
