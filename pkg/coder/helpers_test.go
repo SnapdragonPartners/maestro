@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"orchestrator/pkg/logx"
 )
 
 func TestTruncateSHA(t *testing.T) {
@@ -136,6 +138,88 @@ func TestFileExists(t *testing.T) {
 				t.Errorf("fileExists(%q) = %v, want %v", tt.path, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestValidateMakefileTargets(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name            string
+		makefileContent string
+		expectError     bool
+		errorContains   string
+	}{
+		{
+			name:            "valid makefile with targets",
+			makefileContent: "build:\n\tgo build ./...\n\ntest:\n\tgo test ./...\n",
+			expectError:     false,
+		},
+		{
+			name:            "minimal makefile",
+			makefileContent: "all: build",
+			expectError:     false,
+		},
+		{
+			name:            "empty makefile",
+			makefileContent: "",
+			expectError:     true,
+			errorContains:   "empty",
+		},
+		{
+			name:            "whitespace only makefile",
+			makefileContent: "   \n\t\n   ",
+			expectError:     true,
+			errorContains:   "empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create test workspace with Makefile
+			testWorkspace := filepath.Join(tmpDir, strings.ReplaceAll(tt.name, " ", "_"))
+			if err := os.MkdirAll(testWorkspace, 0755); err != nil {
+				t.Fatalf("Failed to create test workspace: %v", err)
+			}
+			makefilePath := filepath.Join(testWorkspace, "Makefile")
+			if err := os.WriteFile(makefilePath, []byte(tt.makefileContent), 0644); err != nil {
+				t.Fatalf("Failed to create Makefile: %v", err)
+			}
+
+			// Create a minimal coder for testing
+			c := &Coder{
+				logger: logx.NewLogger("test"),
+			}
+
+			err := c.validateMakefileTargets(testWorkspace)
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error but got nil")
+				} else if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("expected error containing %q, got %q", tt.errorContains, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateMakefileTargets_NoMakefile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	c := &Coder{
+		logger: logx.NewLogger("test"),
+	}
+
+	err := c.validateMakefileTargets(tmpDir)
+	if err == nil {
+		t.Error("expected error for missing Makefile")
+	}
+	if !strings.Contains(err.Error(), "failed to read Makefile") {
+		t.Errorf("expected error about failing to read Makefile, got: %v", err)
 	}
 }
 
