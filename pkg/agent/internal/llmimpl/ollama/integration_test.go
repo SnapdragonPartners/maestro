@@ -54,8 +54,8 @@ func TestIntegration_ToolCalling(t *testing.T) {
 		host = "http://localhost:11434"
 	}
 
-	// Use llama3.2 which has native tool support in Ollama
-	// Note: phi4:latest needs a modified template for tools (see zac/phi4-tools)
+	// Use llama3.2 which has native structured tool call support in Ollama
+	// See docs/PHI4.md for issues with Phi4 tool calling
 	client := NewOllamaClientWithModel(host, "llama3.2:latest")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
