@@ -1,12 +1,84 @@
-# Phi4 Tool Calling Issues in Ollama
+# Phi4 Tool Calling in Ollama
 
-This document describes the challenges encountered when attempting to use Microsoft's Phi4 model for tool calling with Ollama.
+This document describes attempts to set up Microsoft's Phi4 model for tool calling with Ollama, including the challenges encountered and why it doesn't work.
 
 ## Summary
 
-Phi4 (14B) was **not trained for tool/function calling**. While the model can understand and generate JSON, it does not produce the structured `message.tool_calls` response that Ollama's API provides for models with native tool support.
+Phi4 (14B) was **not natively trained for tool/function calling**. Despite extensive template engineering with strict instructions, Phi4 consistently outputs JSON wrapped in markdown code blocks rather than raw JSON that Ollama can parse into structured `tool_calls`. **There is no known working solution for Phi4 tool calling with Ollama.**
 
-## The Problem
+For tool calling with local models, use models trained for it: **llama3.2**, llama3.1, qwen2.5, or mistral.
+
+## Attempted Solution: phi4:14b-q5-toolcalls
+
+We attempted to create a custom Phi4 model with strict tool-calling instructions. Despite extensive template engineering, **this approach does not work reliably**.
+
+### The Template
+
+```modelfile
+FROM phi4:latest  # or Q5_K_M GGUF
+
+TEMPLATE """
+{{- if or .System .Tools -}}
+<|im_start|>system<|im_sep|>
+{{- if .System }}{{ .System }}{{ end }}
+{{- if .Tools }}
+
+You have access to tools.
+
+## Tool calling rules (STRICT)
+- If you decide a tool must be called, respond with ONLY valid JSON (no markdown, no code fences, no backticks).
+- The JSON MUST match exactly this schema:
+  {"tool_calls":[{"name":"<tool_name>","arguments":{...}}]}
+- NEVER use ```json or ``` or any markdown formatting around the JSON.
+...
+{{- end }}
+<|im_end|>
+{{- end }}
+...
+"""
+```
+
+### Test Results
+
+Despite explicit instructions to never use markdown formatting, Phi4 consistently wraps JSON in code blocks:
+
+**Actual response:**
+```json
+{
+  "message": {
+    "role": "assistant",
+    "content": "```json\n{\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Chicago\"}}]}\n```"
+  }
+}
+```
+
+**Expected (but not achieved):**
+```json
+{
+  "message": {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "function": {
+          "name": "get_weather",
+          "arguments": {"city": "Chicago"}
+        }
+      }
+    ]
+  }
+}
+```
+
+The JSON appears in the `content` field wrapped in markdown, not in the structured `tool_calls` array. Ollama can only parse raw JSON (no markdown) into `tool_calls`.
+
+### Why Templates Can't Fix This
+
+Template instructions can guide model behavior but cannot override learned patterns. When Phi4 sees a request to output JSON, its training says "wrap it in markdown code blocks for readability." No amount of "NEVER use markdown" instructions consistently overrides this behavior.
+
+---
+
+## Historical Context: The Original Problem
 
 ### Expected Behavior (llama3.2)
 
@@ -74,8 +146,10 @@ All attempts resulted in Phi4 outputting JSON as text content rather than struct
 
 | Model | Tool Calls Structured? | Notes |
 |-------|----------------------|-------|
-| `llama3.2:latest` | Yes | Native support, works perfectly |
+| `mistral-nemo:latest` | **Yes** | Native support, tested and working ✅ |
+| `llama3.2:latest` | **Yes** | Native support, works perfectly ✅ |
 | `phi4:latest` | No | Returns "does not support tools" error |
+| `phi4:14b-q5-toolcalls` | No | JSON wrapped in markdown in content field |
 | `zac/phi4-tools` | No | JSON in content, not tool_calls |
 | `jacob-ebey/phi4-tools` | No | JSON in content, not tool_calls |
 | `phi4-reasoning:plus` | No | Returns "does not support tools" error |
@@ -85,22 +159,40 @@ All attempts resulted in Phi4 outputting JSON as text content rather than struct
 
 For maestro's agent system, use models with native Ollama tool support:
 
-- `llama3.2:latest` (3B) - Tested and working
+- **`mistral-nemo:latest` (12B)** - Native support, tested and working ✅
+- **`llama3.2:latest` (3B)** - Native support, tested and working ✅
 - `llama3.1:8b` / `llama3.1:70b` - Should work
 - `qwen2.5:7b` and larger - Ollama docs use qwen as examples
 - `mistral:7b` - Reported to have tool support
 
-## Potential Future Solutions
+**Note**: Phi4 does NOT work for tool calling regardless of template configuration.
 
-1. **Microsoft releases tool-trained Phi4** - A future Phi4 version trained for function calling would work natively.
+## Why Template Solutions Don't Work
 
-2. **Text-based tool parsing** - Add parsing logic to extract tool calls from text content. This would require:
-   - Detecting JSON patterns in response content
-   - Extracting and parsing the JSON
-   - Converting to `llm.ToolCall` structs
-   - Handling various formatting (code blocks, explanations)
+Ollama's tool call parser can detect raw JSON output matching the expected schema. The theory was that a strict template could force clean JSON output:
 
-3. **Fine-tuning** - Fine-tune Phi4 specifically for tool calling output format.
+1. **Explicitly forbid markdown formatting** - No code fences, backticks, or ```json blocks
+2. **Require jq-parseable output** - Force the model to output clean JSON
+3. **Use proper stop tokens** - Prevent extra content after the JSON
+
+**In practice, this doesn't work.** Even with explicit "NEVER use markdown" instructions, Phi4 consistently wraps JSON in code blocks. The model's training to "format code/JSON nicely" overrides prompt instructions.
+
+### Why All Attempts Failed
+
+Both community templates (like `zac/phi4-tools`) and our custom strict templates produce the same result: JSON wrapped in markdown code blocks. Adding instructions like:
+
+```
+- NEVER use ```json or ``` or any markdown formatting around the JSON.
+- The response must be valid JSON parseable by jq with no trailing characters.
+```
+
+...does not change Phi4's behavior. The model simply ignores these instructions.
+
+## Other Potential Improvements
+
+1. **Microsoft releases tool-trained Phi4** - A future Phi4 version trained for function calling would work natively without custom templates.
+
+2. **Fine-tuning** - Fine-tune Phi4 specifically for tool calling output format for more reliable results.
 
 ## References
 

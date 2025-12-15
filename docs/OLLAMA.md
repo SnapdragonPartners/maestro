@@ -40,7 +40,7 @@ Ollama supports tool calling via the `/api/chat` endpoint with the following for
 **Request**:
 ```json
 {
-  "model": "phi4:latest",
+  "model": "mistral-nemo:latest",
   "messages": [
     {"role": "user", "content": "What's the weather?"}
   ],
@@ -78,11 +78,14 @@ Ollama supports tool calling via the `/api/chat` endpoint with the following for
 }
 ```
 
-**Note**: Not all models support tool calling. Recommended models:
-- Phi4 (good for coder tasks)
+**Note**: Not all models support structured tool calling. Recommended models:
+- **Mistral-Nemo (12B)** - Tested and working ✅
+- **Llama 3.2 (3B)** - Tested and working ✅
 - Llama 3.1 (8B, 70B variants)
-- Qwen3
+- Qwen 2.5 (7B and larger)
 - Mistral 7B
+
+**Important**: Phi4 does NOT work for tool calling - see [PHI4.md](PHI4.md) for details.
 
 ## Implementation Plan
 
@@ -168,7 +171,7 @@ Update `GetAPIKey()` to handle Ollama specially:
 ```json
 {
   "agents": {
-    "coder_model": "phi4:latest",
+    "coder_model": "mistral-nemo:latest",
     "architect_model": "llama3.1:70b",
     "resilience": {
       "rate_limit": {
@@ -185,11 +188,11 @@ Update `GetAPIKey()` to handle Ollama specially:
 ### Known Models (Optional Registry)
 
 ```go
-"phi4:latest": {
+"mistral-nemo:latest": {
     Provider:         ProviderOllama,
     InputCPM:         0.0,  // Local = free
     OutputCPM:        0.0,
-    MaxContextTokens: 16384,
+    MaxContextTokens: 128000,
     MaxOutputTokens:  4096,
 },
 ```
@@ -207,7 +210,7 @@ Update `GetAPIKey()` to handle Ollama specially:
 ## Prerequisites
 
 1. Ollama installed and running on the host
-2. A tool-calling capable model pulled (e.g., `ollama pull phi4`)
+2. A tool-calling capable model pulled (e.g., `ollama pull mistral-nemo`)
 3. `OLLAMA_HOST` set if not using default localhost
 
 ## References
