@@ -284,6 +284,28 @@ The repository includes pre-push hooks that run integration tests:
 - Prevents push if integration tests fail
 - Can be bypassed with `git push --no-verify` if needed
 
+### Testing Strategy
+
+See `docs/TESTING_STRATEGY.md` for the comprehensive testing approach. Key points:
+
+**Shared Mocks** (`internal/mocks/`):
+- `MockLLMClient` - For testing agent flows with deterministic LLM responses
+- `MockGitHubClient` - For PR/merge tests without hitting GitHub API
+- `MockChatService` - For escalation and chat testing
+- `MockGitRunner` - For git operations (clone, branch, merge)
+- `MockContainerManager` - For Docker container lifecycle tests
+
+**When to use real services vs mocks:**
+- **LLMClient**: Always mock (non-deterministic, costly)
+- **Dispatcher**: Always use real (in-memory, fast, deterministic)
+- **GitRunner/ContainerManager**: Mock for unit tests, real for integration tests
+
+**Running tests:**
+```bash
+make test              # Unit tests with mocks
+make test-integration  # Integration tests with real services (requires API keys)
+```
+
 ## Git Workflow and Branch Protection
 
 ### Branch Protection Rules
