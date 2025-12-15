@@ -2,6 +2,7 @@ package coder
 
 import (
 	"fmt"
+	"strings"
 )
 
 // getTodoListStatus returns a formatted string showing current todo status.
@@ -29,7 +30,7 @@ func (c *Coder) getTodoListStatus() string {
 		}
 	}
 	if len(completed) > 0 {
-		status += "**Completed**:\n" + joinStrings(completed, "\n") + "\n\n"
+		status += "**Completed**:\n" + strings.Join(completed, "\n") + "\n\n"
 	}
 
 	// Show remaining todos
@@ -40,20 +41,8 @@ func (c *Coder) getTodoListStatus() string {
 		}
 	}
 	if len(remaining) > 0 {
-		status += "**Remaining**:\n" + joinStrings(remaining, "\n") + "\n"
+		status += "**Remaining**:\n" + strings.Join(remaining, "\n") + "\n"
 	}
 
 	return status
-}
-
-// joinStrings joins strings (helper for getTodoListStatus).
-func joinStrings(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for i := 1; i < len(strs); i++ {
-		result += sep + strs[i]
-	}
-	return result
 }

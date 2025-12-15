@@ -722,9 +722,6 @@ func (c *Coder) checkLoopBudget(sm *agent.BaseStateMachine, key string, budget i
 			"context_size":    c.contextManager.CountTokens(),
 			"recent_activity": c.getRecentToolActivity(5),
 			"issue_pattern":   c.detectIssuePattern(),
-			"phase_tokens":    0,   // TODO: Track per-phase
-			"phase_cost_usd":  0.0, // TODO: Track per-phase
-			"total_llm_calls": 0,   // TODO: Count calls
 		}
 
 		// Add story context
@@ -1551,7 +1548,7 @@ func (c *Coder) UpdateTodoInState() {
 	if c.todoList == nil {
 		return
 	}
-	c.BaseStateMachine.SetStateData("todo_list", c.todoList)
+	c.BaseStateMachine.SetStateData(KeyTodoList, c.todoList)
 	c.logger.Debug("📋 Updated todo_list in state data")
 }
 

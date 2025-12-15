@@ -31,11 +31,41 @@ Shared mocks live in `internal/mocks/` and can be imported by any package's test
 
 ```
 internal/mocks/
-├── llm_client.go      # Mock LLMClient for testing agent flows
-├── github_client.go   # Mock GitHub client for PR/merge tests
-├── chat_service.go    # Mock chat service for escalation tests
-└── dispatcher.go      # Mock dispatcher for message routing tests
+├── llm_client.go         # Mock LLMClient for testing agent flows
+├── github_client.go      # Mock GitHub client for PR/merge tests
+├── chat_service.go       # Mock chat service for escalation tests
+├── git_runner.go         # Mock GitRunner for git operation tests
+└── container_manager.go  # Mock ContainerManager for Docker tests
 ```
+
+### Mocks vs Real Services
+
+Not every dependency needs a mock. Consider these factors:
+
+| Factor | Prefer Mock | Prefer Real Service |
+|--------|-------------|---------------------|
+| Speed | Slow operations (network, disk) | Fast in-memory operations |
+| Determinism | Non-deterministic (LLM responses) | Deterministic behavior |
+| Availability | Not always available (external APIs) | Always available (local code) |
+| Complexity | Simple behavior to emulate | Complex behavior hard to mock accurately |
+| Side effects | Creates real resources | No persistent side effects |
+
+**Services we mock:**
+- **LLMClient** - Non-deterministic, costly, slow
+- **GitHubClient** - External API, rate limits, requires auth
+- **ChatService** - Timing-dependent, external service
+- **GitRunner** - Filesystem/network operations, slow for clone/fetch
+- **ContainerManager** - Requires Docker daemon, slow
+
+**Services we use real:**
+- **Dispatcher** - In-memory channels/maps, fast, deterministic
+
+**When real services are advisable:**
+For GitRunner and ContainerManager, real services may be preferable when:
+- Testing complex multi-step workflows where mock fidelity is a concern
+- Integration tests that validate real system behavior
+- The test environment reliably has Docker and git available
+- Mocking would require implementing significant git/Docker semantics
 
 ### Usage Pattern
 
@@ -242,13 +272,42 @@ type GitHubClientInterface interface {
 
 | Scenario | Approach |
 |----------|----------|
-| Message routing | Unit test with mock |
-| Channel operations | Unit test with mock |
-| Rate limiting | Unit test with mock |
+| Message routing | Unit test with **real dispatcher** |
+| Channel operations | Unit test with **real dispatcher** |
+| Status updates | Unit test with **real dispatcher** |
 
-**Mock location:** `internal/mocks/dispatcher.go`
+**Mock:** None - use real dispatcher. It's in-memory (channels/maps), fast, and deterministic.
 
-**Interface to define:** Extract interface from `pkg/dispatch/dispatcher.go`
+**Rationale:** The dispatcher is lightweight Go code with no external dependencies. Using the real implementation provides better integration coverage without sacrificing speed.
+
+### GitRunner (`pkg/coder.GitRunner`)
+
+| Scenario | Approach |
+|----------|----------|
+| Clone operations | Unit test with mock (fast) or integration test with real repo |
+| Branch operations | Unit test with mock - simulate branch list output |
+| Merge conflicts | Unit test with mock - simulate conflict errors |
+| Full clone workflow | Integration test with real test repository |
+
+**Mock location:** `internal/mocks/git_runner.go`
+
+**Interface:** Defined in `pkg/coder/interfaces.go`
+
+**When to use real:** For integration tests where you need to validate actual git behavior, or when mock fidelity is a concern (complex multi-step git workflows).
+
+### ContainerManager (`pkg/coder.ContainerManager`)
+
+| Scenario | Approach |
+|----------|----------|
+| Container stop | Unit test with mock |
+| Shutdown cleanup | Unit test with mock |
+| Full container lifecycle | Integration test with real Docker |
+
+**Mock location:** `internal/mocks/container_manager.go`
+
+**Interface:** Defined in `pkg/coder/interfaces.go`
+
+**When to use real:** For integration tests that need to validate actual Docker behavior, or when testing container-specific edge cases that are difficult to mock accurately.
 
 ## Integration Test Configuration
 
@@ -291,7 +350,8 @@ internal/mocks/
 ├── llm_client.go
 ├── github_client.go
 ├── chat_service.go
-└── dispatcher.go
+├── git_runner.go
+└── container_manager.go
 ```
 
 ### Build Tags for Integration Tests
@@ -360,3 +420,6 @@ func (m *MockExampleClient) FailWith(err error) {
 | 2024-12-13 | Adopt hybrid mock/integration strategy | Balance speed with real-world validation |
 | 2024-12-13 | Place shared mocks in `internal/mocks/` | Enable reuse across packages |
 | 2024-12-13 | Use build tags for integration tests | Allow CI to run without credentials |
+| 2024-12-14 | Use real Dispatcher instead of mock | In-memory, fast, deterministic - no benefit to mocking |
+| 2024-12-14 | Add MockGitRunner with real service option | Mocks for unit tests; real git for integration tests |
+| 2024-12-14 | Add MockContainerManager with real service option | Mocks for unit tests; real Docker for integration tests |

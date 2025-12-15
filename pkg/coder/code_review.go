@@ -138,7 +138,7 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 				feedbackTodo := fmt.Sprintf("Address architect feedback: %s", result.Feedback)
 				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
 				c.logger.Info("📋 Added architect feedback as new todo")
-				sm.SetStateData("todo_list", c.todoList)
+				sm.SetStateData(KeyTodoList, c.todoList)
 			}
 		}
 
