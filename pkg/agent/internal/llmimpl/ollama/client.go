@@ -66,6 +66,9 @@ func (o *Client) Complete(ctx context.Context, in llm.CompletionRequest) (llm.Co
 	}
 
 	// Convert tools if provided
+	// Note: Ollama's API doesn't support ToolChoice (forcing/disabling tool calls).
+	// Tools are provided and the model decides whether to use them.
+	// This differs from OpenAI/Anthropic which support "required"/"none" modes.
 	if len(in.Tools) > 0 {
 		req.Tools = convertToolsToOllama(in.Tools)
 	}
