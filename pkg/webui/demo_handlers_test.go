@@ -23,7 +23,7 @@ type mockDemoService struct {
 	workspacePath string
 }
 
-func (m *mockDemoService) Start(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Start(_ context.Context) error {
 	if m.startErr != nil {
 		return m.startErr
 	}
@@ -31,7 +31,7 @@ func (m *mockDemoService) Start(_ interface{ Done() <-chan struct{} }) error {
 	return nil
 }
 
-func (m *mockDemoService) Stop(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Stop(_ context.Context) error {
 	if m.stopErr != nil {
 		return m.stopErr
 	}
@@ -39,15 +39,15 @@ func (m *mockDemoService) Stop(_ interface{ Done() <-chan struct{} }) error {
 	return nil
 }
 
-func (m *mockDemoService) Restart(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Restart(_ context.Context) error {
 	return m.restartErr
 }
 
-func (m *mockDemoService) Rebuild(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Rebuild(_ context.Context) error {
 	return m.rebuildErr
 }
 
-func (m *mockDemoService) Status(_ interface{ Done() <-chan struct{} }) *demo.Status {
+func (m *mockDemoService) Status(_ context.Context) *demo.Status {
 	if m.status != nil {
 		return m.status
 	}
@@ -57,7 +57,7 @@ func (m *mockDemoService) Status(_ interface{ Done() <-chan struct{} }) *demo.St
 	}
 }
 
-func (m *mockDemoService) GetLogs(_ interface{ Done() <-chan struct{} }) (string, error) {
+func (m *mockDemoService) GetLogs(_ context.Context) (string, error) {
 	if m.logsErr != nil {
 		return "", m.logsErr
 	}

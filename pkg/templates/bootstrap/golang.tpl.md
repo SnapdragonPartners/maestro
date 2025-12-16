@@ -48,6 +48,9 @@ This story addresses Go-specific infrastructure issues discovered during project
 - [ ] Validate container includes Go {{.GoVersion}}: `docker run --rm maestro-{{.ProjectName}}-dev go version`
 - [ ] Test container can compile Go code: `docker run --rm -v $(pwd):/workspace -w /workspace maestro-{{.ProjectName}}-dev go build ./...`
 - [ ] If necessary, extend `.maestro/Dockerfile` to include required tools: `go`, `make`, `golangci-lint`
+- [ ] **EXPOSE Directive**: Ensure Dockerfile includes `EXPOSE` for the application port (e.g., `EXPOSE 8080`)
+  - Required for demo mode to work correctly
+  - Use the same port your application listens on
 - [ ] Use `update_container` tool to set final tag name after container build is complete
 - [ ] Verify container is available to host Docker daemon (not just within bootstrap)
 
@@ -342,6 +345,7 @@ echo "✅ All pre-commit checks passed!"
 {{- end}}
 - **Security**: Rootless execution (`--user=nobody`), read-only filesystem with writable `/tmp`
 - **Network**: {{if .RequiresNetworkAccess}}Required during setup, disabled after (`--network=none`){{else}}Disabled (`--network=none`){{end}}
+- **EXPOSE**: Dockerfile must include `EXPOSE` directive for application port (required for demo mode)
 
 ### Build System Integration
 - **Module Management**: `{{index $goCommands "mod_tidy"}}` integrated into build target

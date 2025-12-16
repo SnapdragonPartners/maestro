@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -9,12 +10,12 @@ import (
 
 // DemoService is the interface for demo operations needed by the web UI.
 type DemoService interface {
-	Start(ctx interface{ Done() <-chan struct{} }) error
-	Stop(ctx interface{ Done() <-chan struct{} }) error
-	Restart(ctx interface{ Done() <-chan struct{} }) error
-	Rebuild(ctx interface{ Done() <-chan struct{} }) error
-	Status(ctx interface{ Done() <-chan struct{} }) *demo.Status
-	GetLogs(ctx interface{ Done() <-chan struct{} }) (string, error)
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	Restart(ctx context.Context) error
+	Rebuild(ctx context.Context) error
+	Status(ctx context.Context) *demo.Status
+	GetLogs(ctx context.Context) (string, error)
 	IsRunning() bool
 	SetWorkspacePath(path string)
 }
