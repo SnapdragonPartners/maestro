@@ -75,11 +75,18 @@ class DemoController {
         const rebuildBtn = document.getElementById('demo-rebuild-btn');
 
         if (!this.isAvailable) {
-            // Demo service not available
+            // Demo service not available - show the actual reason from API
             badge.textContent = 'Unavailable';
             badge.className = 'px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600';
             details.classList.add('hidden');
             notAvailable.classList.remove('hidden');
+
+            // Update the reason text dynamically
+            const reasonText = document.getElementById('demo-not-available-reason');
+            if (reasonText && status.reason) {
+                reasonText.textContent = status.reason;
+            }
+
             startBtn.disabled = true;
             stopBtn.disabled = true;
             restartBtn.disabled = true;

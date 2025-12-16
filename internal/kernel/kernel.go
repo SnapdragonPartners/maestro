@@ -129,14 +129,9 @@ func (k *Kernel) initializeServices() error {
 	// Create web server (will be started conditionally)
 	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService, k.LLMFactory)
 
-	// Wire demo service to webui if demo is enabled in config
-	// Demo availability check (bootstrap status) is now handled by PM
-	if k.Config.Demo == nil || k.Config.Demo.Enabled {
-		k.WebServer.SetDemoService(k.DemoService)
-		k.Logger.Info("Demo service wired to WebUI (PM will determine availability)")
-	} else {
-		k.Logger.Info("Demo service disabled in config")
-	}
+	// Always wire demo service to webui - PM controls availability via IsDemoAvailable()
+	k.WebServer.SetDemoService(k.DemoService)
+	k.Logger.Info("Demo service wired to WebUI (PM controls availability)")
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
