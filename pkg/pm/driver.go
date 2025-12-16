@@ -550,12 +550,13 @@ func (d *Driver) HasRepository() bool {
 
 // detectAndStoreBootstrapRequirements runs bootstrap detection and stores results in state.
 // Returns the detected requirements (may be nil on error) and whether bootstrap is needed.
-func (d *Driver) detectAndStoreBootstrapRequirements() (*tools.BootstrapRequirements, bool) {
+// PM is the sole authority on bootstrap status - detection runs against PM workspace.
+func (d *Driver) detectAndStoreBootstrapRequirements() (*BootstrapRequirements, bool) {
 	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
 	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
 	d.logger.Info("🔍 Detecting bootstrap requirements in %s", agentWorkspace)
 
-	detector := tools.NewBootstrapDetector(agentWorkspace)
+	detector := NewBootstrapDetector(agentWorkspace)
 	reqs, err := detector.Detect(context.Background())
 	if err != nil {
 		d.logger.Warn("Bootstrap detection failed: %v", err)
@@ -581,8 +582,8 @@ func (d *Driver) detectAndStoreBootstrapRequirements() (*tools.BootstrapRequirem
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.
 // Returns nil if bootstrap detection hasn't run yet or failed.
-func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
-	reqs, _ := utils.GetStateValue[*tools.BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
+func (d *Driver) GetBootstrapRequirements() *BootstrapRequirements {
+	reqs, _ := utils.GetStateValue[*BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
 	return reqs
 }
 
