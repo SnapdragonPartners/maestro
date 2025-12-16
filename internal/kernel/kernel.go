@@ -22,7 +22,6 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
-	"orchestrator/pkg/tools"
 	"orchestrator/pkg/webui"
 )
 
@@ -130,42 +129,17 @@ func (k *Kernel) initializeServices() error {
 	// Create web server (will be started conditionally)
 	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService, k.LLMFactory)
 
-	// Wire demo service to webui if demo is enabled and bootstrap complete
-	// Demo availability is now based on bootstrap completion (safe image exists)
-	if k.isDemoAvailable() {
+	// Wire demo service to webui if demo is enabled in config
+	// Demo availability check (bootstrap status) is now handled by PM
+	if k.Config.Demo == nil || k.Config.Demo.Enabled {
 		k.WebServer.SetDemoService(k.DemoService)
-		k.Logger.Info("Demo service enabled and wired to WebUI")
+		k.Logger.Info("Demo service wired to WebUI (PM will determine availability)")
+	} else {
+		k.Logger.Info("Demo service disabled in config")
 	}
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
-}
-
-// isDemoAvailable returns true if demo mode should be available.
-// Demo is available when demo is enabled in config (default: true)
-// and bootstrap has completed (no missing components).
-func (k *Kernel) isDemoAvailable() bool {
-	// Check if demo is disabled in config
-	if k.Config.Demo != nil && !k.Config.Demo.Enabled {
-		k.Logger.Debug("Demo disabled in config")
-		return false
-	}
-
-	// Use bootstrap detector to check if project is ready
-	detector := tools.NewBootstrapDetector(k.projectDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		k.Logger.Warn("Demo availability check failed: %v", err)
-		return false
-	}
-
-	if reqs.HasAnyMissingComponents() {
-		k.Logger.Debug("Demo not available: bootstrap incomplete - missing: %v", reqs.MissingComponents)
-		return false
-	}
-
-	k.Logger.Debug("Demo available: bootstrap complete")
-	return true
 }
 
 // initializeDatabase sets up the database connection and persistence channel.
