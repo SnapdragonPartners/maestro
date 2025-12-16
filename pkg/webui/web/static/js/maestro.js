@@ -88,24 +88,7 @@ class MaestroUI {
             chatSend.addEventListener('click', this.sendChatMessage.bind(this));
         }
 
-        // PM interview chat
-        const interviewInput = document.getElementById('interview-input');
-        const interviewSend = document.getElementById('interview-send-btn');
-        const startInterviewBtn = document.getElementById('start-interview-btn');
-
-        if (interviewInput && interviewSend) {
-            interviewInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    this.sendPMChatMessage();
-                }
-            });
-            interviewSend.addEventListener('click', this.sendPMChatMessage.bind(this));
-        }
-
-        if (startInterviewBtn) {
-            startInterviewBtn.addEventListener('click', this.startPMInterview.bind(this));
-        }
+        // PM interview chat is handled by pm.js to avoid duplicate event handlers
     }
 
     async startPolling() {
@@ -1611,99 +1594,7 @@ class MaestroUI {
         }
     }
 
-    async startPMInterview() {
-        const expertiseSelect = document.getElementById('expertise-level');
-        const startButton = document.getElementById('start-interview-btn');
-        const startSection = document.getElementById('interview-start-section');
-        const chatSection = document.getElementById('interview-chat-section');
-
-        const expertise = expertiseSelect.value;
-
-        // Disable button
-        const originalText = startButton.textContent;
-        startButton.disabled = true;
-        startButton.textContent = 'Starting...';
-
-        try {
-            const response = await fetch('/api/pm/start', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ expertise })
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to start interview');
-            }
-
-            const result = await response.json();
-            this.pmSessionId = result.session_id;
-
-            // Show chat section, hide start section
-            startSection.classList.add('hidden');
-            chatSection.classList.remove('hidden');
-
-            this.showToast('Interview started', 'success');
-
-        } catch (error) {
-            console.error('Error starting PM interview:', error);
-            this.showToast('Failed to start interview', 'error');
-            startButton.disabled = false;
-            startButton.textContent = originalText;
-        }
-    }
-
-    async sendPMChatMessage() {
-        const input = document.getElementById('interview-input');
-        const button = document.getElementById('interview-send-btn');
-
-        const text = input.value.trim();
-        if (!text) return;
-
-        if (!this.pmSessionId) {
-            this.showToast('No active PM session', 'error');
-            return;
-        }
-
-        // Disable input while sending
-        const originalButtonText = button.textContent;
-        input.disabled = true;
-        button.disabled = true;
-        button.textContent = 'Sending...';
-
-        try {
-            const response = await fetch('/api/pm/chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    session_id: this.pmSessionId,
-                    message: text
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to send message');
-            }
-
-            // Clear input on success
-            input.value = '';
-
-            // Message will appear via polling
-            this.showToast('Message sent', 'success');
-
-        } catch (error) {
-            console.error('Error sending PM chat message:', error);
-            this.showToast('Failed to send message', 'error');
-        } finally {
-            // Re-enable input
-            input.disabled = false;
-            button.disabled = false;
-            button.textContent = originalButtonText;
-        }
-    }
+    // PM interview methods (startPMInterview, sendPMChatMessage) removed - handled by pm.js
 }
 
 // Global functions for onclick handlers
