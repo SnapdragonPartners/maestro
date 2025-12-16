@@ -12,9 +12,7 @@ import (
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
-	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
-	"orchestrator/pkg/tools"
 	"orchestrator/pkg/version"
 )
 
@@ -24,7 +22,6 @@ func main() {
 		gitRepo      = flag.String("git-repo", "", "Git repository URL (optional)")
 		specFile     = flag.String("spec-file", "", "Path to specification file")
 		noWebUI      = flag.Bool("nowebui", false, "Disable web UI")
-		bootstrap    = flag.Bool("bootstrap", false, "[DEPRECATED] Bootstrap mode is deprecated - PM mode is now default")
 		projectDir   = flag.String("projectdir", ".", "Project directory")
 		tee          = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
 		showVersion  = flag.Bool("version", false, "Show version information")
@@ -43,12 +40,6 @@ func main() {
 	// User-friendly startup message
 	fmt.Println("⏳ Starting up...")
 
-	// Warn if deprecated bootstrap flag is used
-	if *bootstrap {
-		fmt.Println("⚠️  WARNING: The -bootstrap flag is deprecated and will be removed in a future version.")
-		fmt.Println("   PM mode is now the default behavior. This flag is ignored.")
-	}
-
 	// Initialize log file rotation BEFORE any logging occurs
 	// This ensures all subsequent logs (including config loading) are captured
 	logsDir := filepath.Join(*projectDir, ".maestro", "logs")
@@ -58,7 +49,6 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	// PM mode is now always enabled (bootstrap flag ignored)
 	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode)
 
 	// Close log file before exiting
@@ -234,27 +224,8 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		}
 	}
 
-	// 4. Create or update git mirror if git config exists and is valid
-	// Use bootstrap detector to validate the git URL first
-	// If invalid, skip mirror creation and let PM bootstrap handle it
-	if cfg.Git != nil && cfg.Git.RepoURL != "" {
-		detector := tools.NewBootstrapDetector(projectDir)
-		reqs, detectErr := detector.Detect(context.Background())
-
-		if detectErr == nil && !reqs.NeedsGitRepo {
-			// Git repo is configured and valid - create/update mirror
-			mirrorMgr := mirror.NewManager(projectDir)
-			if _, err := mirrorMgr.EnsureMirror(context.Background()); err != nil {
-				return fmt.Errorf("failed to setup git mirror: %w", err)
-			}
-		} else {
-			// Git repo is invalid or missing - skip mirror creation
-			// PM bootstrap will handle this
-			config.LogInfo("⚠️  Git repository not configured or invalid - skipping mirror creation (PM will bootstrap)")
-		}
-	}
-
-	// 5. Pre-create all agent workspace directories for container mounting
+	// 4. Pre-create all agent workspace directories for container mounting
+	// Note: Git mirror creation is handled by PM via bootstrap_config tool
 	// Pre-create architect and PM directories first
 	config.LogInfo("📁 Pre-creating agent workspace directories...")
 	agentDirs := []string{"architect-001", "pm-001"}
