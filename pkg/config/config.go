@@ -533,8 +533,8 @@ type PMConfig struct {
 }
 
 // DemoConfig defines demo mode configuration for running applications.
+// Demo availability is controlled by PM (based on bootstrap status), not config.
 type DemoConfig struct {
-	Enabled                   bool   `json:"enabled"`                     // Whether demo functionality is enabled (default: true)
 	Port                      int    `json:"port"`                        // Host port for demo app (default: 8081)
 	RunCmdOverride            string `json:"run_cmd_override"`            // Override Build.RunCmd for demo (optional)
 	HealthcheckPath           string `json:"healthcheck_path"`            // HTTP path to check for readiness (default: /health)
@@ -1377,9 +1377,7 @@ func applyDefaults(config *Config) {
 		config.Logs.RotationCount = 4
 	}
 
-	// Apply Demo defaults
-	// Note: Demo.Enabled defaults to false (zero value)
-	// If user wants demo mode, they must explicitly enable it
+	// Apply Demo defaults (availability controlled by PM, not config)
 	if config.Demo.Port == 0 {
 		config.Demo.Port = 8081
 	}
