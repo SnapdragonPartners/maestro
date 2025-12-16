@@ -114,8 +114,22 @@ func TestHandleDemoStatus_NoService(t *testing.T) {
 
 	server.handleDemoStatus(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected status 503, got %d", w.Code)
+	// Changed: Now returns 200 with JSON showing unavailable status
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if available, ok := response["available"].(bool); !ok || available {
+		t.Error("expected available = false when no service")
+	}
+
+	if running, ok := response["running"].(bool); !ok || running {
+		t.Error("expected running = false when no service")
 	}
 }
 

@@ -49,6 +49,8 @@ func NewMainFlow(specFile string, webUI bool) *OrchestratorFlow {
 }
 
 // Run executes the main flow.
+//
+//nolint:cyclop // Flow orchestrates agent creation and registration - complexity is acceptable for a flow function
 func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("Starting main flow")
 
@@ -91,6 +93,13 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		}
 		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
 		k.Logger.Info("✅ Created and registered PM agent")
+
+		// Wire PM as the demo availability checker for WebUI
+		// PM is the sole authority on demo availability (based on bootstrap status)
+		if checker, ok := pmAgent.(interface{ IsDemoAvailable() bool }); ok {
+			k.WebServer.SetDemoAvailabilityChecker(checker)
+			k.Logger.Info("✅ PM wired as demo availability checker")
+		}
 	}
 
 	// Create and register coder agents based on config
@@ -220,6 +229,13 @@ func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 			}
 		}
 		supervisor.RegisterAgent(ctx, "pm-001", string(agent.TypePM), pmAgent)
+
+		// Wire PM as the demo availability checker for WebUI
+		// PM is the sole authority on demo availability (based on bootstrap status)
+		if checker, ok := pmAgent.(interface{ IsDemoAvailable() bool }); ok {
+			k.WebServer.SetDemoAvailabilityChecker(checker)
+			k.Logger.Info("✅ PM wired as demo availability checker")
+		}
 		k.Logger.Info("✅ Created and registered PM agent with restored state")
 	}
 

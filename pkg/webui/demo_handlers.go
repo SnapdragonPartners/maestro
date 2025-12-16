@@ -20,6 +20,21 @@ type DemoService interface {
 	SetWorkspacePath(path string)
 }
 
+// isDemoAvailable checks if demo mode is available.
+// Returns true only if: demo service is wired AND PM says bootstrap is complete.
+// If no availability checker is set, falls back to just checking if service exists.
+func (s *Server) isDemoAvailable() bool {
+	if s.demoService == nil {
+		return false
+	}
+	// If PM availability checker is wired, use it
+	if s.demoAvailabilityChecker != nil {
+		return s.demoAvailabilityChecker.IsDemoAvailable()
+	}
+	// Fallback: if no checker is set, demo is available if service exists
+	return true
+}
+
 // handleDemoStatus implements GET /api/demo/status.
 func (s *Server) handleDemoStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -27,21 +42,44 @@ func (s *Server) handleDemoStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if demo service exists (but allow status check even if unavailable)
 	if s.demoService == nil {
-		http.Error(w, "Demo service not available", http.StatusServiceUnavailable)
+		// Return unavailable status instead of error
+		response := map[string]interface{}{
+			"available": false,
+			"running":   false,
+			"reason":    "Demo service not configured",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
 		return
 	}
 
+	// Get status from demo service
 	status := s.demoService.Status(r.Context())
 
+	// Create response that includes availability from PM
+	response := map[string]interface{}{
+		"available": s.isDemoAvailable(),
+		"running":   status.Running,
+		"port":      status.Port,
+		"url":       status.URL,
+		"error":     status.Error,
+	}
+
+	// If not available, add reason
+	if !s.isDemoAvailable() {
+		response["reason"] = "Bootstrap incomplete - some components are missing"
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(status); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.logger.Error("Failed to encode demo status response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
 
-	s.logger.Debug("Served demo status: running=%v", status.Running)
+	s.logger.Debug("Served demo status: available=%v, running=%v", s.isDemoAvailable(), status.Running)
 }
 
 // handleDemoStart implements POST /api/demo/start.
@@ -51,8 +89,8 @@ func (s *Server) handleDemoStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.demoService == nil {
-		http.Error(w, "Demo service not available", http.StatusServiceUnavailable)
+	if !s.isDemoAvailable() {
+		http.Error(w, "Demo not available - bootstrap incomplete", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -84,8 +122,9 @@ func (s *Server) handleDemoStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Stop should work even if bootstrap becomes incomplete (allow stopping running demo)
 	if s.demoService == nil {
-		http.Error(w, "Demo service not available", http.StatusServiceUnavailable)
+		http.Error(w, "Demo service not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -120,8 +159,9 @@ func (s *Server) handleDemoRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Restart should work even if bootstrap becomes incomplete (allow restarting running demo)
 	if s.demoService == nil {
-		http.Error(w, "Demo service not available", http.StatusServiceUnavailable)
+		http.Error(w, "Demo service not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -153,8 +193,9 @@ func (s *Server) handleDemoRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.demoService == nil {
-		http.Error(w, "Demo service not available", http.StatusServiceUnavailable)
+	// Rebuild requires availability (need Dockerfile etc to rebuild)
+	if !s.isDemoAvailable() {
+		http.Error(w, "Demo not available - bootstrap incomplete", http.StatusServiceUnavailable)
 		return
 	}
 
