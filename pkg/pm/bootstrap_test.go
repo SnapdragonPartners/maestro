@@ -329,3 +329,68 @@ func TestBootstrapRequirements_HasAnyMissingComponents(t *testing.T) {
 		})
 	}
 }
+
+func TestDriver_IsDemoAvailable(t *testing.T) {
+	tests := []struct {
+		name            string
+		reqs            *BootstrapRequirements
+		expectedDemo    bool
+		expectedMissing bool
+	}{
+		{
+			name: "demo available when no missing components",
+			reqs: &BootstrapRequirements{
+				MissingComponents: []string{},
+			},
+			expectedDemo:    true,
+			expectedMissing: false,
+		},
+		{
+			name: "demo unavailable when components missing",
+			reqs: &BootstrapRequirements{
+				MissingComponents: []string{"Dockerfile", "Makefile"},
+			},
+			expectedDemo:    false,
+			expectedMissing: true,
+		},
+		{
+			name: "demo unavailable with nil components",
+			reqs: &BootstrapRequirements{
+				MissingComponents: nil,
+			},
+			expectedDemo:    true, // nil slice means no missing components
+			expectedMissing: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a minimal driver for testing
+			d := &Driver{}
+
+			// Verify HasAnyMissingComponents matches expected
+			if got := tt.reqs.HasAnyMissingComponents(); got != tt.expectedMissing {
+				t.Errorf("HasAnyMissingComponents() = %v, want %v", got, tt.expectedMissing)
+			}
+
+			// Update demo availability
+			d.updateDemoAvailable(tt.reqs)
+
+			// Check demo availability
+			if got := d.IsDemoAvailable(); got != tt.expectedDemo {
+				t.Errorf("IsDemoAvailable() = %v, want %v", got, tt.expectedDemo)
+			}
+		})
+	}
+}
+
+func TestDriver_UpdateDemoAvailable_NilRequirements(t *testing.T) {
+	d := &Driver{demoAvailable: true}
+
+	// Should not panic and should not change state when reqs is nil
+	d.updateDemoAvailable(nil)
+
+	if !d.IsDemoAvailable() {
+		t.Error("Expected demoAvailable to remain unchanged when reqs is nil")
+	}
+}
