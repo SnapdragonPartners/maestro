@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -87,10 +88,19 @@ func NewService(
 
 // SetWorkspacePath sets the workspace path for the demo.
 // This should be called before starting the demo.
+// The path is converted to absolute to ensure Docker volume mounts work correctly.
 func (s *Service) SetWorkspacePath(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.workspacePath = path
+
+	// Convert to absolute path - Docker requires absolute paths for volume mounts
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		s.logger.Warn("Failed to get absolute path for %q, using as-is: %v", path, err)
+		s.workspacePath = path
+		return
+	}
+	s.workspacePath = absPath
 }
 
 // Start starts the demo.

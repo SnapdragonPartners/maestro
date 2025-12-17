@@ -1,6 +1,6 @@
 ![Maestro](pkg/webui/web/static/img/logos/maestro_logo_small.png)
 
-# Maestro
+# The Maestro App Factory
 
 Maestro is a tool that uses AI to write full applications in a disciplined way that reflects good software engineering principles.
 
