@@ -463,26 +463,110 @@ Consider reducing to 2 coders for better performance.
 
 ## Port Detection and Management
 
+### Problem Statement
+
+Running user applications in Docker containers requires mapping container ports to host ports. This presents several challenges:
+
+1. **Unknown container ports**: Dev containers may or may not have `EXPOSE` directives, and even when present, they may not reflect what the app actually listens on
+2. **Framework diversity**: Apps use many different default ports (3000, 5000, 8000, 8080, etc.)
+3. **Host port conflicts**: Fixed host ports can conflict with other services (including Maestro's WebUI on 8080)
+4. **Common Docker gotcha**: Apps binding to `127.0.0.1` inside the container are unreachable via port publishing
+
 ### Dynamic Port Detection
 
-When running without Docker Compose, Maestro uses **discovery mode** to automatically detect which port the application is listening on. This eliminates the need for manual port configuration and handles framework diversity (3000, 5000, 8000, 8080, etc.).
+When running without Docker Compose, Maestro uses **discovery mode** to automatically detect which port the application is listening on:
 
-**Discovery Flow:**
-1. Start container without `-p` flag (discovery mode)
-2. Poll `/proc/net/tcp` and `/proc/net/tcp6` inside the container
-3. Detect listening sockets (state `0A` = LISTEN)
-4. Check bind address (loopback vs reachable)
-5. Select main port using priority order
-6. Restart container with `-p 127.0.0.1::${containerPort}` (Docker-assigned host port)
-7. TCP probe to verify connectivity
-8. Save detected port to config for subsequent runs
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         FIRST RUN                                │
+├─────────────────────────────────────────────────────────────────┤
+│  1. Start container (no -p)                                      │
+│  2. Run make build && make run                                   │
+│  3. Poll /proc/net/tcp* for listeners                           │
+│  4. Select "main" port (preference order + EXPOSE intersection) │
+│  5. Save detected ports to config                                │
+│  6. Restart with -p 127.0.0.1::${containerPort}                 │
+│  7. TCP probe to verify                                          │
+│  8. Report success or diagnostic                                 │
+└─────────────────────────────────────────────────────────────────┘
 
-**Port Selection Priority:**
+┌─────────────────────────────────────────────────────────────────┐
+│                      SUBSEQUENT RUNS                             │
+├─────────────────────────────────────────────────────────────────┤
+│  1. Read cached port from config                                 │
+│  2. Start with -p 127.0.0.1::${containerPort}                   │
+│  3. Run make build && make run                                   │
+│  4. TCP probe to verify                                          │
+│  5. If probe fails → fall back to discovery mode                │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                          REBUILD                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  Default: Re-run discovery (code may have changed ports)        │
+│  Option: "Skip port detection" checkbox uses cached config      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Port Detection Algorithm
+
+**Step 1: Start in Discovery Mode**
+
+Start the container without `-p` flag initially:
+
+```bash
+docker run -d --name maestro-demo \
+  --network demo-network \
+  --workdir /workspace \
+  --volume /path/to/workspace:/workspace \
+  ${IMAGE} \
+  sh -c "make build && make run"
+```
+
+**Step 2: Detect Listeners via procfs**
+
+Poll for TCP listeners by reading Linux procfs directly (works regardless of what tools are installed in the container):
+
+```bash
+docker exec maestro-demo cat /proc/net/tcp /proc/net/tcp6 2>/dev/null
+```
+
+Parse the output to find LISTEN sockets (state `0A`):
+
+```
+  sl  local_address rem_address   st tx_queue rx_queue ...
+   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 ...
+      ^^^^^^^^ ^^^^              ^^
+      bind_addr port            state (0A = LISTEN)
+```
+
+Fields to extract:
+- **Local address**: Hex IP (e.g., `00000000` = 0.0.0.0, `0100007F` = 127.0.0.1)
+- **Port**: Hex port number (e.g., `1F90` = 8080)
+- **State**: `0A` indicates LISTEN
+
+**Step 3: Port Selection Priority**
+
 1. User selection (`SelectedContainerPort`) - from UI port picker
 2. Config override (`ContainerPortOverride`) - manual override in config.json
 3. EXPOSE + LISTEN intersection - ports both exposed and listening
 4. Preference order intersection - first match from `[80, 443, 8080, 8000, 3000, 5000, 5173, 4000]`
 5. Lowest numbered listening port - fallback
+
+**Step 4: Publish with Docker-Assigned Host Port**
+
+Restart container with explicit port mapping, letting Docker choose the host port:
+
+```bash
+docker run -d --name maestro-demo \
+  -p 127.0.0.1::${CONTAINER_PORT} \
+  ...
+```
+
+The `127.0.0.1::${PORT}` syntax means:
+- Bind to localhost only on host (security)
+- Let Docker assign a free host port (no conflicts)
+- Map to the specified container port
 
 ### Bind Address Detection
 
@@ -490,8 +574,35 @@ Maestro detects when applications bind to loopback (127.0.0.1) inside the contai
 
 **Reachability Rule:** Only loopback addresses (`127.0.0.1`, `::1`) are unreachable via Docker port publishing. All other addresses (`0.0.0.0`, `::`, container IPs like `172.x.x.x`) are reachable.
 
-**Diagnostic Message:** When loopback binding is detected:
-> "App is listening on 127.0.0.1:8080 inside the container, so it can't be reached via published ports. It must bind to 0.0.0.0 (or ::)."
+### Port Detection Diagnostics
+
+**Container Exited / Crashed:**
+```
+Container exited before opening any listening sockets.
+Exit code: 1
+Last 10 log lines:
+  ...
+```
+
+**No Listening Ports Found:**
+```
+Container is running, but no TCP ports are listening.
+Waited 30 seconds for a listener to appear.
+Check that your app starts a server.
+```
+
+**Localhost Binding (Most Common Issue):**
+```
+App is listening on 127.0.0.1:8080 inside the container, so it can't
+be reached via published ports. It must bind to 0.0.0.0 (or ::).
+```
+
+**Multiple Ports Detected:**
+```
+Multiple TCP ports detected. Using port 8080 (highest priority).
+Detected ports: 8080, 9090, 3000
+You can select a different port in the demo settings.
+```
 
 ### Port Caching
 
@@ -508,6 +619,8 @@ By default, rebuild re-runs port discovery (code changes may affect ports). To s
 POST /api/demo/rebuild
 {"skip_detection": true}
 ```
+
+The WebUI rebuild dialog includes a "Skip port detection" checkbox that shows the cached port number.
 
 ### Port Reference
 
@@ -594,6 +707,28 @@ Update story generation prompts to recognize service requirements and generate a
 | `TestFullDemoFlow` | User starts demo, accesses in browser, PM probes |
 | `TestDemoAfterMerge` | Code change → outdated indicator → rebuild |
 | `TestServiceDiscovery` | App can connect to services via env vars |
+
+## Demo Without Compose
+
+Simple apps can run demos directly without requiring a docker-compose file. The demo runs in the PM's development container using build + run commands, with compose reserved for when additional services (databases, caches, etc.) are needed.
+
+### Behavior
+
+When no compose file exists:
+1. Execute `Build.Build` command inside PM's dev container (build the app)
+2. Execute `Build.Run` command inside PM's dev container (start the app)
+3. Use port detection to find listening ports (see Port Detection section)
+
+### Acceptance Criteria
+
+- [x] Demo starts successfully without compose file
+- [x] Build command runs before run command
+- [x] Demo available immediately after bootstrap (no spec required)
+- [x] Bootstrap prompt requires `EXPOSE` in Dockerfile
+- [x] Existing compose-based demos continue to work unchanged
+- [x] WebUI shows demo controls after bootstrap completes
+- [x] WebUI handles no-compose demo gracefully (no missing service info errors)
+- [x] Port detection works without EXPOSE directive (procfs fallback)
 
 ## Implementation Order
 
