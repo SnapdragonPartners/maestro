@@ -114,6 +114,7 @@ func (k *Kernel) initializeServices() error {
 	// Set workspace path to PM workspace (pm-001/) which contains the actual code
 	pmWorkspace := filepath.Join(k.projectDir, "pm-001")
 	k.DemoService.SetWorkspacePath(pmWorkspace)
+	k.DemoService.SetProjectDir(k.projectDir)
 
 	// Create chat service
 	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
