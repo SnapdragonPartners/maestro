@@ -56,6 +56,11 @@ class DemoController {
 
             const status = await response.json();
             this.updateUI({ available: true, ...status });
+
+            // Also fetch logs when demo is running
+            if (status.running) {
+                this.fetchLogs();
+            }
         } catch (error) {
             console.error('Error fetching demo status:', error);
             this.updateUI({ available: false, running: false });

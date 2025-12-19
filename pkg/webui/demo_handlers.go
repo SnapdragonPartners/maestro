@@ -64,10 +64,20 @@ func (s *Server) handleDemoStatus(w http.ResponseWriter, r *http.Request) {
 	// Get status from demo service
 	status := s.demoService.Status(r.Context())
 
+	// Determine overall health from services (healthy if any service is running)
+	healthy := false
+	for i := range status.Services {
+		if status.Services[i].Healthy {
+			healthy = true
+			break
+		}
+	}
+
 	// Create response that includes availability from PM
 	response := map[string]interface{}{
 		"available": s.isDemoAvailable(),
 		"running":   status.Running,
+		"healthy":   healthy,
 		"port":      status.Port,
 		"url":       status.URL,
 		"error":     status.Error,
