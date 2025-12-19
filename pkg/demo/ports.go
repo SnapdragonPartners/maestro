@@ -49,14 +49,25 @@ func (pd *PortDetector) DetectListeners(ctx context.Context) ([]config.PortInfo,
 	return pd.parseProcNetTCP(output), nil
 }
 
-// WaitForListeners polls for TCP listeners until at least one is found or timeout.
+// WaitForListeners polls for TCP listeners until at least one reachable port is found or timeout.
+// Returns all detected ports once at least one is reachable (bound to 0.0.0.0 or ::, not loopback).
 func (pd *PortDetector) WaitForListeners(ctx context.Context, timeout, pollInterval time.Duration) ([]config.PortInfo, error) {
 	deadline := time.Now().Add(timeout)
+	var lastPorts []config.PortInfo
 
 	for time.Now().Before(deadline) {
 		ports, err := pd.DetectListeners(ctx)
 		if err == nil && len(ports) > 0 {
-			return ports, nil
+			lastPorts = ports
+			// Check if we have at least one reachable port (not bound to loopback).
+			// Docker containers often have internal services on loopback (e.g., DNS on 127.0.0.11).
+			// We need to wait for the actual app to start on 0.0.0.0 or ::.
+			for i := range ports {
+				if ports[i].Reachable {
+					return ports, nil
+				}
+			}
+			// Found ports but all are loopback - keep polling in case app starts
 		}
 
 		select {
@@ -67,6 +78,11 @@ func (pd *PortDetector) WaitForListeners(ctx context.Context, timeout, pollInter
 		}
 	}
 
+	// On timeout, return whatever we found (even if loopback-only).
+	// This allows BuildDiagnostic to provide appropriate error message.
+	if len(lastPorts) > 0 {
+		return lastPorts, nil
+	}
 	return nil, fmt.Errorf("no TCP listeners detected after %v", timeout)
 }
 
