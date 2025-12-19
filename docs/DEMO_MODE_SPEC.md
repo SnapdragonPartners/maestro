@@ -195,11 +195,11 @@ New endpoints and UI components for demo control.
 
 **API Endpoints**:
 ```
-GET  /api/demo/status     - Get demo status
-POST /api/demo/start      - Start demo
+GET  /api/demo/status     - Get demo status (includes detected_ports, container_port, diagnostics)
+POST /api/demo/start      - Start demo (runs port discovery on first start)
 POST /api/demo/stop       - Stop demo
 POST /api/demo/restart    - Restart demo container
-POST /api/demo/rebuild    - Full rebuild
+POST /api/demo/rebuild    - Full rebuild (accepts {"skip_detection": true} to use cached port)
 GET  /api/demo/logs       - Get demo logs (polling, consistent with existing pattern)
 ```
 
@@ -273,8 +273,13 @@ DELETE /api/secrets/:name - Remove a secret
 ```json
 {
   "demo": {
-    "enabled": true,
-    "port": 8081,
+    "container_port_override": 0,
+    "selected_container_port": 8080,
+    "detected_ports": [
+      {"port": 8080, "bind_address": "0.0.0.0", "protocol": "tcp", "reachable": true},
+      {"port": 5432, "bind_address": "127.0.0.1", "protocol": "tcp", "reachable": false}
+    ],
+    "last_assigned_host_port": 32847,
     "run_cmd_override": "",
     "healthcheck_path": "/health",
     "healthcheck_timeout_seconds": 60
@@ -284,11 +289,22 @@ DELETE /api/secrets/:name - Remove a secret
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | true | Enable demo functionality |
-| `port` | int | 8081 | Host port for demo app |
+| `container_port_override` | int | 0 | Manual override for container port (skips detection) |
+| `selected_container_port` | int | 0 | Auto-detected or user-selected container port |
+| `detected_ports` | []PortInfo | [] | All detected listening ports from discovery |
+| `last_assigned_host_port` | int | 0 | Last Docker-assigned host port (informational) |
 | `run_cmd_override` | string | "" | Override `config.Build.RunCmd` for demo |
 | `healthcheck_path` | string | "/health" | HTTP path to check for readiness |
 | `healthcheck_timeout_seconds` | int | 60 | Max wait time for app to become healthy |
+
+**PortInfo structure:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | int | Container port number |
+| `bind_address` | string | IP address bound to ("0.0.0.0", "127.0.0.1", etc.) |
+| `protocol` | string | Protocol ("tcp", "udp") |
+| `exposed` | bool | Was in Dockerfile EXPOSE |
+| `reachable` | bool | Can be published (not loopback-bound) |
 
 ### Directory Structure
 
@@ -445,13 +461,60 @@ WebUI shows warning at startup and when coder count changes:
 Consider reducing to 2 coders for better performance.
 ```
 
-## Port Management
+## Port Detection and Management
+
+### Dynamic Port Detection
+
+When running without Docker Compose, Maestro uses **discovery mode** to automatically detect which port the application is listening on. This eliminates the need for manual port configuration and handles framework diversity (3000, 5000, 8000, 8080, etc.).
+
+**Discovery Flow:**
+1. Start container without `-p` flag (discovery mode)
+2. Poll `/proc/net/tcp` and `/proc/net/tcp6` inside the container
+3. Detect listening sockets (state `0A` = LISTEN)
+4. Check bind address (loopback vs reachable)
+5. Select main port using priority order
+6. Restart container with `-p 127.0.0.1::${containerPort}` (Docker-assigned host port)
+7. TCP probe to verify connectivity
+8. Save detected port to config for subsequent runs
+
+**Port Selection Priority:**
+1. User selection (`SelectedContainerPort`) - from UI port picker
+2. Config override (`ContainerPortOverride`) - manual override in config.json
+3. EXPOSE + LISTEN intersection - ports both exposed and listening
+4. Preference order intersection - first match from `[80, 443, 8080, 8000, 3000, 5000, 5173, 4000]`
+5. Lowest numbered listening port - fallback
+
+### Bind Address Detection
+
+Maestro detects when applications bind to loopback (127.0.0.1) inside the container - a common misconfiguration that prevents Docker port publishing from working.
+
+**Reachability Rule:** Only loopback addresses (`127.0.0.1`, `::1`) are unreachable via Docker port publishing. All other addresses (`0.0.0.0`, `::`, container IPs like `172.x.x.x`) are reachable.
+
+**Diagnostic Message:** When loopback binding is detected:
+> "App is listening on 127.0.0.1:8080 inside the container, so it can't be reached via published ports. It must bind to 0.0.0.0 (or ::)."
+
+### Port Caching
+
+After successful detection, ports are cached in config for fast subsequent starts:
+- First run: Full discovery (30 seconds max)
+- Subsequent runs: Use cached port, verify with TCP probe
+- If cached port fails: Fall back to discovery
+
+### Rebuild Options
+
+By default, rebuild re-runs port discovery (code changes may affect ports). To skip detection and use cached port:
+
+```
+POST /api/demo/rebuild
+{"skip_detection": true}
+```
+
+### Port Reference
 
 | Port | Service | Notes |
 |------|---------|-------|
 | 8080 | WebUI | Reserved, never used by demo |
-| 8081 | Demo app (default) | Configurable in config |
-| 8082-8099 | Future multi-demo support | Reserved range |
+| Dynamic | Demo app | Docker-assigned from detected container port |
 
 Internal service ports (postgres 5432, redis 6379, etc.) are never exposed to host - only accessible within compose network.
 

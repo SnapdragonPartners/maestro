@@ -23,6 +23,8 @@ const (
 	DemoContainerName = "maestro-demo"
 	// DefaultDemoPort is the default port for the demo app.
 	DefaultDemoPort = 8081
+	// containerStatusRunning is the Docker status for running containers.
+	containerStatusRunning = "running"
 )
 
 // Status represents the current state of the demo.
@@ -38,6 +40,13 @@ type Status struct {
 	Services     []ServiceStatus `json:"services,omitempty"`
 	StartedAt    *time.Time      `json:"started_at,omitempty"`
 	Error        string          `json:"error,omitempty"`
+
+	// Port detection info
+	ContainerPort    int               `json:"container_port,omitempty"`    // Container port being mapped
+	DetectedPorts    []config.PortInfo `json:"detected_ports,omitempty"`    // All detected listening ports
+	UnreachablePorts []config.PortInfo `json:"unreachable_ports,omitempty"` // Ports bound to loopback
+	DiagnosticError  string            `json:"diagnostic_error,omitempty"`  // Port detection error message
+	DiagnosticType   string            `json:"diagnostic_type,omitempty"`   // Error type for UI rendering
 }
 
 // ServiceStatus represents the status of a compose service.
@@ -59,13 +68,15 @@ type Service struct {
 	composeRegistry *state.ComposeRegistry
 
 	// State
-	running       bool
-	port          int
-	builtFromSHA  string
-	startedAt     time.Time
-	workspacePath string // Path to the workspace with compose file
-	useCompose    bool   // Whether demo is using compose or container-only mode
-	containerID   string // Container ID when running without compose
+	running        bool
+	port           int
+	builtFromSHA   string
+	startedAt      time.Time
+	workspacePath  string            // Path to the workspace with compose file
+	projectDir     string            // Project directory for config saving
+	useCompose     bool              // Whether demo is using compose or container-only mode
+	containerID    string            // Container ID when running without compose
+	lastDiagnostic *DiagnosticResult // Last port detection diagnostic
 
 	// For testing
 	commandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
@@ -101,6 +112,33 @@ func (s *Service) SetWorkspacePath(path string) {
 		return
 	}
 	s.workspacePath = absPath
+}
+
+// SetProjectDir sets the project directory for config persistence.
+func (s *Service) SetProjectDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectDir = dir
+}
+
+// saveDetectedPorts saves the detected port information to config.
+func (s *Service) saveDetectedPorts(ports []config.PortInfo, selectedPort, hostPort int) {
+	if s.config.Demo == nil {
+		s.config.Demo = &config.DemoConfig{}
+	}
+
+	s.config.Demo.DetectedPorts = ports
+	s.config.Demo.SelectedContainerPort = selectedPort
+	s.config.Demo.LastAssignedHostPort = hostPort
+
+	// Save to disk if project dir is set
+	if s.projectDir != "" {
+		if err := config.SaveConfig(s.config, s.projectDir); err != nil {
+			s.logger.Warn("⚠️ Failed to save detected ports to config: %v", err)
+		} else {
+			s.logger.Info("   Saved detected port %d to config", selectedPort)
+		}
+	}
 }
 
 // Start starts the demo.
@@ -176,6 +214,7 @@ func (s *Service) startWithCompose(ctx context.Context, composePath string) erro
 
 // startContainerOnly starts a single container without compose.
 // This runs the app directly in the dev container using build + run commands.
+// Uses discovery mode to detect listening ports and restart with proper port mapping.
 func (s *Service) startContainerOnly(ctx context.Context) error {
 	// Get the image to use (pinned or safe fallback)
 	imageID := s.getImageID()
@@ -205,11 +244,56 @@ func (s *Service) startContainerOnly(ctx context.Context) error {
 	s.logger.Info("   Build: %s", buildCmd)
 	s.logger.Info("   Run: %s", runCmd)
 
+	// Check if we have a cached port from previous detection
+	cachedPort := 0
+	if s.config.Demo != nil && s.config.Demo.SelectedContainerPort > 0 {
+		cachedPort = s.config.Demo.SelectedContainerPort
+		s.logger.Info("   Using cached port: %d", cachedPort)
+	}
+
+	// Start the container
+	if err := s.runContainer(ctx, imageID, buildCmd, runCmd, cachedPort); err != nil {
+		return err
+	}
+
+	// If we used cached port, verify it's working with TCP probe
+	if cachedPort > 0 {
+		if err := s.verifyPortWithProbe(ctx); err != nil {
+			s.logger.Info("   Cached port failed verification, running discovery...")
+			// Fall back to discovery mode
+			s.removeExistingContainer(ctx)
+			if err := s.runContainer(ctx, imageID, buildCmd, runCmd, 0); err != nil {
+				return err
+			}
+		} else {
+			return nil // Cached port works
+		}
+	}
+
+	// Discovery mode: wait for listeners
+	s.logger.Info("   Running port discovery...")
+	diagnostic := s.runPortDiscovery(ctx, imageID, buildCmd, runCmd)
+
+	// Store diagnostic for status reporting
+	s.lastDiagnostic = diagnostic
+
+	if !diagnostic.Success {
+		return fmt.Errorf("demo port detection: %s", diagnostic.Error)
+	}
+
+	s.port = diagnostic.HostPort
+	s.logger.Info("   ✅ Port detected: container:%d → host:%d", diagnostic.ContainerPort, diagnostic.HostPort)
+
+	return nil
+}
+
+// runContainer starts the demo container with optional port mapping.
+// If containerPort is 0, starts without port mapping (discovery mode).
+func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd string, containerPort int) error {
 	// Remove any existing demo container
 	s.removeExistingContainer(ctx)
 
-	// Start the container with build + run
-	// The command runs build first, then if successful, runs the app
+	// Build the command
 	combinedCmd := fmt.Sprintf("%s && %s", buildCmd, runCmd)
 
 	args := []string{
@@ -217,16 +301,18 @@ func (s *Service) startContainerOnly(ctx context.Context) error {
 		"--name", DemoContainerName,
 		"--network", DemoNetworkName,
 		"--workdir", "/workspace",
-		// Mount workspace
 		"--volume", fmt.Sprintf("%s:/workspace", s.workspacePath),
-		// Publish all exposed ports
-		"-P",
-		// Resource limits (reasonable defaults for demo)
 		"--cpus", "2",
 		"--memory", "2g",
-		imageID,
-		"sh", "-c", combinedCmd,
 	}
+
+	// Add port mapping if specified
+	if containerPort > 0 {
+		// Map to localhost with Docker-assigned host port
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d", containerPort))
+	}
+
+	args = append(args, imageID, "sh", "-c", combinedCmd)
 
 	var cmd *exec.Cmd
 	if s.commandRunner != nil {
@@ -244,14 +330,111 @@ func (s *Service) startContainerOnly(ctx context.Context) error {
 	s.containerID = strings.TrimSpace(string(output))
 	s.useCompose = false
 
-	s.logger.Info("   Container ID: %s", s.containerID[:12])
+	if len(s.containerID) >= 12 {
+		s.logger.Info("   Container ID: %s", s.containerID[:12])
+	}
 
-	// Get the actual published port
-	if err := s.updatePublishedPort(ctx); err != nil {
-		s.logger.Warn("⚠️ Could not determine published port: %v", err)
+	// If we mapped a port, get the assigned host port
+	if containerPort > 0 {
+		if err := s.updatePublishedPort(ctx); err != nil {
+			s.logger.Warn("⚠️ Could not determine published port: %v", err)
+		}
 	}
 
 	return nil
+}
+
+// runPortDiscovery detects listening ports and restarts with proper mapping.
+func (s *Service) runPortDiscovery(ctx context.Context, imageID, buildCmd, runCmd string) *DiagnosticResult {
+	// Create port detector for the container
+	portDetector := NewPortDetector(DemoContainerName)
+	if s.commandRunner != nil {
+		portDetector.SetCommandRunner(s.commandRunner)
+	}
+
+	// Wait for listeners (30 second timeout, poll every second)
+	ports, err := portDetector.WaitForListeners(ctx, 30*time.Second, 1*time.Second)
+	if err != nil {
+		// Check if container crashed
+		containerStatus := s.getContainerStatus(ctx)
+		if containerStatus.Status != containerStatusRunning {
+			logs, _ := s.GetLogs(ctx)
+			return &DiagnosticResult{
+				ErrorType: DiagnosticContainerExited,
+				Error:     fmt.Sprintf("Container exited (%s). Last logs:\n%s", containerStatus.Status, truncateLogs(logs, 10)),
+			}
+		}
+		return &DiagnosticResult{
+			ErrorType: DiagnosticNoListeners,
+			Error:     "No TCP listeners detected after 30 seconds",
+		}
+	}
+
+	// Get exposed ports from image (for priority selection)
+	exposedPorts, _ := GetExposedPorts(ctx, imageID)
+
+	// Select the main port
+	selectedPort := SelectMainPort(s.config.Demo, ports, exposedPorts)
+
+	// Build initial diagnostic
+	diagnostic := BuildDiagnostic(ports, selectedPort, 0, nil)
+
+	if selectedPort == 0 {
+		return &diagnostic
+	}
+
+	// Stop current container and restart with port mapping
+	s.logger.Info("   Detected port %d, restarting with port mapping...", selectedPort)
+	s.removeExistingContainer(ctx)
+
+	if err := s.runContainer(ctx, imageID, buildCmd, runCmd, selectedPort); err != nil {
+		diagnostic.ErrorType = DiagnosticProbeFailure
+		diagnostic.Error = fmt.Sprintf("Failed to restart with port mapping: %v", err)
+		return &diagnostic
+	}
+
+	// Wait for container to start and app to come up
+	time.Sleep(2 * time.Second)
+
+	// Get the host port
+	hostPort := s.port // Updated by runContainer -> updatePublishedPort
+
+	// TCP probe to verify
+	addr := fmt.Sprintf("127.0.0.1:%d", hostPort)
+	probeErr := TCPProbe(ctx, addr, 5*time.Second)
+
+	diagnostic = BuildDiagnostic(ports, selectedPort, hostPort, probeErr)
+
+	// Save detected ports if successful
+	if diagnostic.Success {
+		s.saveDetectedPorts(ports, selectedPort, hostPort)
+	}
+
+	return &diagnostic
+}
+
+// verifyPortWithProbe checks if the current port is working.
+func (s *Service) verifyPortWithProbe(ctx context.Context) error {
+	// Wait a bit for the app to start
+	time.Sleep(2 * time.Second)
+
+	// Get the actual host port
+	if err := s.updatePublishedPort(ctx); err != nil {
+		return err
+	}
+
+	// TCP probe
+	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
+	return TCPProbe(ctx, addr, 5*time.Second)
+}
+
+// truncateLogs returns the last n lines of logs.
+func truncateLogs(logs string, n int) string {
+	lines := strings.Split(logs, "\n")
+	if len(lines) <= n {
+		return logs
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 // getImageID returns the container image to use for demo.
@@ -423,12 +606,37 @@ func (s *Service) Restart(ctx context.Context) error {
 	return nil
 }
 
+// RebuildOptions configures rebuild behavior.
+type RebuildOptions struct {
+	// SkipDetection uses cached port instead of re-running discovery.
+	// Default (false) re-runs discovery since code changes may affect ports.
+	SkipDetection bool
+}
+
 // Rebuild rebuilds and restarts the entire demo stack.
+// By default, re-runs port discovery. Use RebuildOptions.SkipDetection
+// to use the cached port from previous detection.
 func (s *Service) Rebuild(ctx context.Context) error {
+	return s.RebuildWithOptions(ctx, RebuildOptions{})
+}
+
+// RebuildWithOptions rebuilds with configurable options.
+func (s *Service) RebuildWithOptions(ctx context.Context, opts RebuildOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.logger.Info("🔨 Rebuilding demo...")
+
+	// If not skipping detection, clear cached port to force re-discovery
+	if !opts.SkipDetection {
+		if s.config.Demo != nil {
+			s.config.Demo.SelectedContainerPort = 0
+			s.config.Demo.DetectedPorts = nil
+			s.logger.Info("   Clearing cached port for re-discovery")
+		}
+	} else {
+		s.logger.Info("   Skipping port detection (using cached port)")
+	}
 
 	// Stop if running
 	if s.running {
@@ -462,6 +670,19 @@ func (s *Service) Status(ctx context.Context) *Status {
 		Running:      s.running,
 		Port:         s.port,
 		BuiltFromSHA: s.builtFromSHA,
+	}
+
+	// Include port detection info from config
+	if s.config.Demo != nil {
+		status.ContainerPort = s.config.Demo.SelectedContainerPort
+		status.DetectedPorts = s.config.Demo.DetectedPorts
+	}
+
+	// Include last diagnostic
+	if s.lastDiagnostic != nil {
+		status.DiagnosticError = s.lastDiagnostic.Error
+		status.DiagnosticType = string(s.lastDiagnostic.ErrorType)
+		status.UnreachablePorts = s.lastDiagnostic.UnreachablePorts
 	}
 
 	if s.running {
@@ -522,7 +743,7 @@ func (s *Service) getContainerStatus(ctx context.Context) ServiceStatus {
 	output, err := cmd.Output()
 	if err == nil {
 		status.Status = strings.TrimSpace(string(output))
-		status.Healthy = status.Status == "running"
+		status.Healthy = status.Status == containerStatusRunning
 	}
 
 	return status

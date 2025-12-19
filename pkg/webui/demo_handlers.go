@@ -14,6 +14,7 @@ type DemoService interface {
 	Stop(ctx context.Context) error
 	Restart(ctx context.Context) error
 	Rebuild(ctx context.Context) error
+	RebuildWithOptions(ctx context.Context, opts demo.RebuildOptions) error
 	Status(ctx context.Context) *demo.Status
 	GetLogs(ctx context.Context) (string, error)
 	IsRunning() bool
@@ -65,6 +66,21 @@ func (s *Server) handleDemoStatus(w http.ResponseWriter, r *http.Request) {
 		"port":      status.Port,
 		"url":       status.URL,
 		"error":     status.Error,
+	}
+
+	// Include port detection info if available
+	if status.ContainerPort > 0 {
+		response["container_port"] = status.ContainerPort
+	}
+	if len(status.DetectedPorts) > 0 {
+		response["detected_ports"] = status.DetectedPorts
+	}
+	if len(status.UnreachablePorts) > 0 {
+		response["unreachable_ports"] = status.UnreachablePorts
+	}
+	if status.DiagnosticError != "" {
+		response["diagnostic_error"] = status.DiagnosticError
+		response["diagnostic_type"] = status.DiagnosticType
 	}
 
 	// If not available, add reason
@@ -187,6 +203,7 @@ func (s *Server) handleDemoRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDemoRebuild implements POST /api/demo/rebuild.
+// Accepts optional JSON body: {"skip_detection": true} to use cached port.
 func (s *Server) handleDemoRebuild(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -199,7 +216,18 @@ func (s *Server) handleDemoRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.demoService.Rebuild(r.Context()); err != nil {
+	// Parse optional request body for options
+	var opts demo.RebuildOptions
+	if r.Body != nil && r.ContentLength > 0 {
+		var req struct {
+			SkipDetection bool `json:"skip_detection"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			opts.SkipDetection = req.SkipDetection
+		}
+	}
+
+	if err := s.demoService.RebuildWithOptions(r.Context(), opts); err != nil {
 		s.logger.Error("Failed to rebuild demo: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -212,7 +240,7 @@ func (s *Server) handleDemoRebuild(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("Failed to encode demo rebuild response: %v", err)
 	}
 
-	s.logger.Info("Demo rebuilt via API")
+	s.logger.Info("Demo rebuilt via API (skip_detection=%v)", opts.SkipDetection)
 }
 
 // handleDemoLogs implements GET /api/demo/logs.

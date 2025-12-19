@@ -105,7 +105,13 @@ class DemoController {
             const url = status.url || `http://localhost:${status.port || 8081}`;
             document.getElementById('demo-url').href = url;
             document.getElementById('demo-url').textContent = url;
-            document.getElementById('demo-port').textContent = status.port || '-';
+
+            // Show port mapping info if available
+            const portInfo = status.container_port
+                ? `${status.port} → container:${status.container_port}`
+                : String(status.port || '-');
+            document.getElementById('demo-port').textContent = portInfo;
+
             document.getElementById('demo-health').textContent = status.healthy ? 'Healthy' : 'Unhealthy';
             document.getElementById('demo-health').className = status.healthy
                 ? 'text-green-600 font-medium'
@@ -118,6 +124,9 @@ class DemoController {
             } else {
                 document.getElementById('demo-uptime').textContent = '-';
             }
+
+            // Show port diagnostics if present
+            this.updatePortDiagnostics(status);
 
             // Button states
             startBtn.disabled = true;
@@ -151,6 +160,44 @@ class DemoController {
             const hours = Math.floor(diff / 3600);
             const mins = Math.floor((diff % 3600) / 60);
             return `${hours}h ${mins}m`;
+        }
+    }
+
+    updatePortDiagnostics(status) {
+        const diagContainer = document.getElementById('demo-port-diagnostics');
+        if (!diagContainer) return;
+
+        // Clear previous content
+        diagContainer.innerHTML = '';
+
+        // Show detected ports if multiple
+        if (status.detected_ports && status.detected_ports.length > 1) {
+            const portsDiv = document.createElement('div');
+            portsDiv.className = 'text-sm text-gray-600 mt-2';
+            portsDiv.innerHTML = '<span class="font-medium">Detected ports:</span> ' +
+                status.detected_ports.map(p => {
+                    const icon = p.reachable ? '●' : '⚠';
+                    const cls = p.reachable ? 'text-green-600' : 'text-yellow-600';
+                    return `<span class="${cls}">${icon}</span> ${p.port}`;
+                }).join(', ');
+            diagContainer.appendChild(portsDiv);
+        }
+
+        // Show unreachable ports warning
+        if (status.unreachable_ports && status.unreachable_ports.length > 0) {
+            const warnDiv = document.createElement('div');
+            warnDiv.className = 'text-sm text-yellow-700 bg-yellow-50 p-2 rounded mt-2';
+            const ports = status.unreachable_ports.map(p => `${p.bind_address}:${p.port}`).join(', ');
+            warnDiv.innerHTML = `<span class="font-medium">⚠ Unreachable (loopback):</span> ${ports}`;
+            diagContainer.appendChild(warnDiv);
+        }
+
+        // Show diagnostic error if present
+        if (status.diagnostic_error) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'text-sm text-red-700 bg-red-50 p-2 rounded mt-2';
+            errorDiv.innerHTML = `<span class="font-medium">Diagnostic:</span> ${status.diagnostic_error}`;
+            diagContainer.appendChild(errorDiv);
         }
     }
 

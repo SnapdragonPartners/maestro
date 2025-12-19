@@ -47,6 +47,10 @@ func (m *mockDemoService) Rebuild(_ context.Context) error {
 	return m.rebuildErr
 }
 
+func (m *mockDemoService) RebuildWithOptions(_ context.Context, _ demo.RebuildOptions) error {
+	return m.rebuildErr
+}
+
 func (m *mockDemoService) Status(_ context.Context) *demo.Status {
 	if m.status != nil {
 		return m.status
