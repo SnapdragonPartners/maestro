@@ -118,6 +118,24 @@ This distinction is transparent to the user—architect generates stories automa
 
 ---
 
+## Operating Modes
+
+Maestro operates in several distinct modes depending on project state and user intent:
+
+| Mode | When It Runs | What It Does |
+|------|--------------|--------------|
+| Bootstrap | Automatically on new projects | Sets up basic project infrastructure |
+| Development | Default operating mode | Main workflow for building features |
+| Claude Code | Optional coder variant | Uses Claude Code for implementation |
+| Demo | User-triggered via WebUI | Runs the application for testing |
+| Hotfix | User requests urgent fix | Fast path for production issues |
+| Maintenance | After N specs complete | Cleans up technical debt |
+| Discovery | Future | Onboards existing codebases |
+
+See [docs/MODES.md](docs/MODES.md) for detailed documentation on each mode.
+
+---
+
 ## Quickstart
 
 > **Step 1:** Install Maestro via Homebrew (macOS/Linux) or download from [releases](https://github.com/SnapdragonPartners/maestro/releases).
