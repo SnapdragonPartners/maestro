@@ -96,7 +96,10 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 		// Wire PM as the demo availability checker for WebUI
 		// PM is the sole authority on demo availability (based on bootstrap status)
-		if checker, ok := pmAgent.(interface{ IsDemoAvailable() bool }); ok {
+		if checker, ok := pmAgent.(interface {
+			IsDemoAvailable() bool
+			EnsureBootstrapChecked(ctx context.Context) error
+		}); ok {
 			k.WebServer.SetDemoAvailabilityChecker(checker)
 			k.Logger.Info("✅ PM wired as demo availability checker")
 		}
@@ -232,7 +235,10 @@ func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 		// Wire PM as the demo availability checker for WebUI
 		// PM is the sole authority on demo availability (based on bootstrap status)
-		if checker, ok := pmAgent.(interface{ IsDemoAvailable() bool }); ok {
+		if checker, ok := pmAgent.(interface {
+			IsDemoAvailable() bool
+			EnsureBootstrapChecked(ctx context.Context) error
+		}); ok {
 			k.WebServer.SetDemoAvailabilityChecker(checker)
 			k.Logger.Info("✅ PM wired as demo availability checker")
 		}

@@ -604,6 +604,22 @@ func (d *Driver) IsDemoAvailable() bool {
 	return d.demoAvailable
 }
 
+// EnsureBootstrapChecked runs bootstrap detection if it hasn't been run yet.
+// This allows the demo status endpoint to trigger the check on first access,
+// rather than requiring the user to start an interview first.
+// Safe to call multiple times - only runs detection once per spec cycle.
+func (d *Driver) EnsureBootstrapChecked(ctx context.Context) error {
+	// If bootstrap requirements are already stored, detection has been run
+	if d.GetBootstrapRequirements() != nil {
+		return nil
+	}
+
+	// Run detection
+	d.logger.Info("🔍 Running bootstrap detection on demand (demo status check)")
+	_, _ = d.detectAndStoreBootstrapRequirements(ctx)
+	return nil
+}
+
 // updateDemoAvailable updates the demo availability flag based on bootstrap requirements.
 // Called after bootstrap detection to update the flag.
 func (d *Driver) updateDemoAvailable(reqs *BootstrapRequirements) {

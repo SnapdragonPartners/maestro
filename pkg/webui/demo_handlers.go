@@ -56,6 +56,11 @@ func (s *Server) handleDemoStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Trigger bootstrap check if PM is wired and hasn't checked yet
+	if s.demoAvailabilityChecker != nil {
+		_ = s.demoAvailabilityChecker.EnsureBootstrapChecked(r.Context())
+	}
+
 	// Get status from demo service
 	status := s.demoService.Status(r.Context())
 
@@ -85,7 +90,7 @@ func (s *Server) handleDemoStatus(w http.ResponseWriter, r *http.Request) {
 
 	// If not available, add reason
 	if !s.isDemoAvailable() {
-		response["reason"] = "Bootstrap incomplete - some components are missing"
+		response["reason"] = "Bootstrap incomplete - Dockerfile and/or Makefile are missing. Start an interview or upload a spec to bootstrap your project."
 	}
 
 	w.Header().Set("Content-Type", "application/json")

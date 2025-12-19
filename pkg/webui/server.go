@@ -44,6 +44,9 @@ type StoryProvider interface {
 // PM implements this to indicate when bootstrap is complete.
 type DemoAvailabilityChecker interface {
 	IsDemoAvailable() bool
+	// EnsureBootstrapChecked runs bootstrap detection if it hasn't been run yet.
+	// This allows demo status endpoint to trigger the check on first access.
+	EnsureBootstrapChecked(ctx context.Context) error
 }
 
 // Server represents the web UI HTTP server.
