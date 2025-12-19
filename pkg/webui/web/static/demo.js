@@ -65,6 +65,7 @@ class DemoController {
     updateUI(status) {
         this.isAvailable = status.available !== false;
         this.isRunning = status.running || false;
+        this.lastStatus = status; // Store for rebuild dialog
 
         const badge = document.getElementById('demo-status-badge');
         const details = document.getElementById('demo-details');
@@ -279,8 +280,10 @@ class DemoController {
     }
 
     async rebuildDemo() {
-        if (!confirm('Rebuild will stop the demo, rebuild all containers from scratch, and restart. This may take a few minutes. Continue?')) {
-            return;
+        // Show rebuild dialog with options
+        const result = await this.showRebuildDialog();
+        if (!result) {
+            return; // User cancelled
         }
 
         const btn = document.getElementById('demo-rebuild-btn');
@@ -288,7 +291,11 @@ class DemoController {
         btn.innerHTML = '<span class="animate-spin inline-block w-4 h-4 mr-2 border-2 border-gray-600 border-t-transparent rounded-full"></span>Rebuilding...';
 
         try {
-            const response = await fetch('/api/demo/rebuild', { method: 'POST' });
+            const response = await fetch('/api/demo/rebuild', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ skip_detection: result.skipDetection })
+            });
 
             if (!response.ok) {
                 const error = await response.text();
@@ -305,6 +312,82 @@ class DemoController {
             </svg>Rebuild`;
             this.fetchStatus();
         }
+    }
+
+    showRebuildDialog() {
+        return new Promise((resolve) => {
+            // Create modal backdrop
+            const backdrop = document.createElement('div');
+            backdrop.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+            backdrop.id = 'rebuild-modal-backdrop';
+
+            // Get cached port info for display
+            const cachedPort = this.lastStatus?.container_port || 0;
+            const cachedPortText = cachedPort > 0 ? ` (cached: ${cachedPort})` : '';
+
+            // Create modal content
+            backdrop.innerHTML = `
+                <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Rebuild Demo</h3>
+                    <p class="text-gray-600 mb-4">
+                        This will stop the demo, rebuild containers from scratch, and restart.
+                        This may take a few minutes.
+                    </p>
+                    <div class="mb-6">
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="skip-detection-checkbox" class="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500">
+                            <span class="text-sm text-gray-700">Skip port detection${cachedPortText}</span>
+                        </label>
+                        <p class="text-xs text-gray-500 mt-1 ml-7">
+                            Use previously detected port instead of re-scanning. Faster, but may fail if your app changed ports.
+                        </p>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button id="rebuild-cancel-btn" class="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                            Cancel
+                        </button>
+                        <button id="rebuild-confirm-btn" class="px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
+                            Rebuild
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(backdrop);
+
+            // Handle cancel
+            const cancelBtn = document.getElementById('rebuild-cancel-btn');
+            cancelBtn.addEventListener('click', () => {
+                backdrop.remove();
+                resolve(null);
+            });
+
+            // Handle backdrop click
+            backdrop.addEventListener('click', (e) => {
+                if (e.target === backdrop) {
+                    backdrop.remove();
+                    resolve(null);
+                }
+            });
+
+            // Handle confirm
+            const confirmBtn = document.getElementById('rebuild-confirm-btn');
+            confirmBtn.addEventListener('click', () => {
+                const skipDetection = document.getElementById('skip-detection-checkbox').checked;
+                backdrop.remove();
+                resolve({ skipDetection });
+            });
+
+            // Handle escape key
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    backdrop.remove();
+                    document.removeEventListener('keydown', handleEscape);
+                    resolve(null);
+                }
+            };
+            document.addEventListener('keydown', handleEscape);
+        });
     }
 
     async fetchLogs() {
