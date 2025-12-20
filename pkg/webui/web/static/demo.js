@@ -56,6 +56,11 @@ class DemoController {
 
             const status = await response.json();
             this.updateUI({ available: true, ...status });
+
+            // Also fetch logs when demo is running
+            if (status.running) {
+                this.fetchLogs();
+            }
         } catch (error) {
             console.error('Error fetching demo status:', error);
             this.updateUI({ available: false, running: false });
@@ -65,6 +70,7 @@ class DemoController {
     updateUI(status) {
         this.isAvailable = status.available !== false;
         this.isRunning = status.running || false;
+        this.lastStatus = status; // Store for rebuild dialog
 
         const badge = document.getElementById('demo-status-badge');
         const details = document.getElementById('demo-details');
@@ -75,11 +81,18 @@ class DemoController {
         const rebuildBtn = document.getElementById('demo-rebuild-btn');
 
         if (!this.isAvailable) {
-            // Demo service not available
+            // Demo service not available - show the actual reason from API
             badge.textContent = 'Unavailable';
             badge.className = 'px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600';
             details.classList.add('hidden');
             notAvailable.classList.remove('hidden');
+
+            // Update the reason text dynamically
+            const reasonText = document.getElementById('demo-not-available-reason');
+            if (reasonText && status.reason) {
+                reasonText.textContent = status.reason;
+            }
+
             startBtn.disabled = true;
             stopBtn.disabled = true;
             restartBtn.disabled = true;
@@ -98,7 +111,13 @@ class DemoController {
             const url = status.url || `http://localhost:${status.port || 8081}`;
             document.getElementById('demo-url').href = url;
             document.getElementById('demo-url').textContent = url;
-            document.getElementById('demo-port').textContent = status.port || '-';
+
+            // Show port mapping info if available
+            const portInfo = status.container_port
+                ? `${status.port} → container:${status.container_port}`
+                : String(status.port || '-');
+            document.getElementById('demo-port').textContent = portInfo;
+
             document.getElementById('demo-health').textContent = status.healthy ? 'Healthy' : 'Unhealthy';
             document.getElementById('demo-health').className = status.healthy
                 ? 'text-green-600 font-medium'
@@ -111,6 +130,9 @@ class DemoController {
             } else {
                 document.getElementById('demo-uptime').textContent = '-';
             }
+
+            // Show port diagnostics if present
+            this.updatePortDiagnostics(status);
 
             // Button states
             startBtn.disabled = true;
@@ -144,6 +166,44 @@ class DemoController {
             const hours = Math.floor(diff / 3600);
             const mins = Math.floor((diff % 3600) / 60);
             return `${hours}h ${mins}m`;
+        }
+    }
+
+    updatePortDiagnostics(status) {
+        const diagContainer = document.getElementById('demo-port-diagnostics');
+        if (!diagContainer) return;
+
+        // Clear previous content
+        diagContainer.innerHTML = '';
+
+        // Show detected ports if multiple
+        if (status.detected_ports && status.detected_ports.length > 1) {
+            const portsDiv = document.createElement('div');
+            portsDiv.className = 'text-sm text-gray-600 mt-2';
+            portsDiv.innerHTML = '<span class="font-medium">Detected ports:</span> ' +
+                status.detected_ports.map(p => {
+                    const icon = p.reachable ? '●' : '⚠';
+                    const cls = p.reachable ? 'text-green-600' : 'text-yellow-600';
+                    return `<span class="${cls}">${icon}</span> ${p.port}`;
+                }).join(', ');
+            diagContainer.appendChild(portsDiv);
+        }
+
+        // Show unreachable ports warning
+        if (status.unreachable_ports && status.unreachable_ports.length > 0) {
+            const warnDiv = document.createElement('div');
+            warnDiv.className = 'text-sm text-yellow-700 bg-yellow-50 p-2 rounded mt-2';
+            const ports = status.unreachable_ports.map(p => `${p.bind_address}:${p.port}`).join(', ');
+            warnDiv.innerHTML = `<span class="font-medium">⚠ Unreachable (loopback):</span> ${ports}`;
+            diagContainer.appendChild(warnDiv);
+        }
+
+        // Show diagnostic error if present
+        if (status.diagnostic_error) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'text-sm text-red-700 bg-red-50 p-2 rounded mt-2';
+            errorDiv.innerHTML = `<span class="font-medium">Diagnostic:</span> ${status.diagnostic_error}`;
+            diagContainer.appendChild(errorDiv);
         }
     }
 
@@ -225,8 +285,10 @@ class DemoController {
     }
 
     async rebuildDemo() {
-        if (!confirm('Rebuild will stop the demo, rebuild all containers from scratch, and restart. This may take a few minutes. Continue?')) {
-            return;
+        // Show rebuild dialog with options
+        const result = await this.showRebuildDialog();
+        if (!result) {
+            return; // User cancelled
         }
 
         const btn = document.getElementById('demo-rebuild-btn');
@@ -234,7 +296,11 @@ class DemoController {
         btn.innerHTML = '<span class="animate-spin inline-block w-4 h-4 mr-2 border-2 border-gray-600 border-t-transparent rounded-full"></span>Rebuilding...';
 
         try {
-            const response = await fetch('/api/demo/rebuild', { method: 'POST' });
+            const response = await fetch('/api/demo/rebuild', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ skip_detection: result.skipDetection })
+            });
 
             if (!response.ok) {
                 const error = await response.text();
@@ -251,6 +317,82 @@ class DemoController {
             </svg>Rebuild`;
             this.fetchStatus();
         }
+    }
+
+    showRebuildDialog() {
+        return new Promise((resolve) => {
+            // Create modal backdrop
+            const backdrop = document.createElement('div');
+            backdrop.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+            backdrop.id = 'rebuild-modal-backdrop';
+
+            // Get cached port info for display
+            const cachedPort = this.lastStatus?.container_port || 0;
+            const cachedPortText = cachedPort > 0 ? ` (cached: ${cachedPort})` : '';
+
+            // Create modal content
+            backdrop.innerHTML = `
+                <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Rebuild Demo</h3>
+                    <p class="text-gray-600 mb-4">
+                        This will stop the demo, rebuild containers from scratch, and restart.
+                        This may take a few minutes.
+                    </p>
+                    <div class="mb-6">
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" id="skip-detection-checkbox" class="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500">
+                            <span class="text-sm text-gray-700">Skip port detection${cachedPortText}</span>
+                        </label>
+                        <p class="text-xs text-gray-500 mt-1 ml-7">
+                            Use previously detected port instead of re-scanning. Faster, but may fail if your app changed ports.
+                        </p>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button id="rebuild-cancel-btn" class="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                            Cancel
+                        </button>
+                        <button id="rebuild-confirm-btn" class="px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
+                            Rebuild
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(backdrop);
+
+            // Handle cancel
+            const cancelBtn = document.getElementById('rebuild-cancel-btn');
+            cancelBtn.addEventListener('click', () => {
+                backdrop.remove();
+                resolve(null);
+            });
+
+            // Handle backdrop click
+            backdrop.addEventListener('click', (e) => {
+                if (e.target === backdrop) {
+                    backdrop.remove();
+                    resolve(null);
+                }
+            });
+
+            // Handle confirm
+            const confirmBtn = document.getElementById('rebuild-confirm-btn');
+            confirmBtn.addEventListener('click', () => {
+                const skipDetection = document.getElementById('skip-detection-checkbox').checked;
+                backdrop.remove();
+                resolve({ skipDetection });
+            });
+
+            // Handle escape key
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    backdrop.remove();
+                    document.removeEventListener('keydown', handleEscape);
+                    resolve(null);
+                }
+            };
+            document.addEventListener('keydown', handleEscape);
+        });
     }
 
     async fetchLogs() {

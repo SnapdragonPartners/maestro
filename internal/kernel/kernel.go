@@ -18,6 +18,7 @@ import (
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/demo"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
@@ -43,6 +44,7 @@ type Kernel struct {
 	persistenceWorkerDone chan struct{} // Signals when persistence worker has finished draining
 	BuildService          *build.Service
 	ChatService           *chat.Service
+	DemoService           *demo.Service // Demo mode service for running applications
 	WebServer             *webui.Server
 	LLMFactory            *agent.LLMClientFactory // Shared LLM client factory for all agents
 	ComposeRegistry       *state.ComposeRegistry  // Registry for active Docker Compose stacks
@@ -106,6 +108,14 @@ func (k *Kernel) initializeServices() error {
 	// Create compose registry for tracking active Docker Compose stacks
 	k.ComposeRegistry = state.NewComposeRegistry()
 
+	// Create demo service
+	// Demo is available once bootstrap completes
+	k.DemoService = demo.NewService(k.Config, logx.NewLogger("demo"), k.ComposeRegistry)
+	// Set workspace path to PM workspace (pm-001/) which contains the actual code
+	pmWorkspace := filepath.Join(k.projectDir, "pm-001")
+	k.DemoService.SetWorkspacePath(pmWorkspace)
+	k.DemoService.SetProjectDir(k.projectDir)
+
 	// Create chat service
 	dbOps := persistence.NewDatabaseOperations(k.Database, k.Config.SessionID)
 	k.ChatService = chat.NewService(dbOps, k.Config.Chat)
@@ -119,6 +129,10 @@ func (k *Kernel) initializeServices() error {
 
 	// Create web server (will be started conditionally)
 	k.WebServer = webui.NewServer(k.Dispatcher, k.projectDir, k.ChatService, k.LLMFactory)
+
+	// Always wire demo service to webui - PM controls availability via IsDemoAvailable()
+	k.WebServer.SetDemoService(k.DemoService)
+	k.Logger.Info("Demo service wired to WebUI (PM controls availability)")
 
 	k.Logger.Info("Kernel services initialized successfully")
 	return nil
@@ -202,6 +216,16 @@ func (k *Kernel) Stop() error {
 	}
 
 	k.Logger.Info("Stopping kernel services...")
+
+	// Stop demo service first (it may have started containers or compose stacks)
+	if k.DemoService != nil && k.DemoService.IsRunning() {
+		k.Logger.Info("🛑 Stopping demo service...")
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := k.DemoService.Cleanup(cleanupCtx); err != nil {
+			k.Logger.Warn("⚠️ Error stopping demo service: %v", err)
+		}
+		cleanupCancel()
+	}
 
 	// Cleanup compose stacks before cancelling context.
 	// Use a timeout context for cleanup since main context will be cancelled.

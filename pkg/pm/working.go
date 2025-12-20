@@ -29,6 +29,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		if msg != nil {
 			// Process the notification using the same handler as AWAIT_USER
 			// This handles all_stories_complete (clears in_flight), story_complete, etc.
+			//nolint:contextcheck // Handler uses context.Background() for quick local bootstrap detection
 			nextState, err := d.handleArchitectNotification(msg)
 			if err != nil {
 				d.logger.Warn("⚠️ Error handling architect notification in WORKING: %v", err)

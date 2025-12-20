@@ -94,6 +94,7 @@ type Driver struct {
 	workDir                 string
 	replyCh                 <-chan *proto.AgentMsg // Receives RESULT messages from architect
 	toolProvider            ToolProvider           // Tool provider for spec_submit tool
+	demoAvailable           bool                   // True when bootstrap is complete (no missing components)
 }
 
 // NewPM creates a new PM agent with all dependencies initialized.
@@ -550,13 +551,14 @@ func (d *Driver) HasRepository() bool {
 
 // detectAndStoreBootstrapRequirements runs bootstrap detection and stores results in state.
 // Returns the detected requirements (may be nil on error) and whether bootstrap is needed.
-func (d *Driver) detectAndStoreBootstrapRequirements() (*tools.BootstrapRequirements, bool) {
+// PM is the sole authority on bootstrap status - detection runs against PM workspace.
+func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*BootstrapRequirements, bool) {
 	// Use agent workspace (projectDir/agentID) for detection since that's where files are committed
 	agentWorkspace := filepath.Join(d.workDir, d.GetAgentID())
 	d.logger.Info("🔍 Detecting bootstrap requirements in %s", agentWorkspace)
 
-	detector := tools.NewBootstrapDetector(agentWorkspace)
-	reqs, err := detector.Detect(context.Background())
+	detector := NewBootstrapDetector(agentWorkspace)
+	reqs, err := detector.Detect(ctx)
 	if err != nil {
 		d.logger.Warn("Bootstrap detection failed: %v", err)
 		return nil, false
@@ -565,6 +567,9 @@ func (d *Driver) detectAndStoreBootstrapRequirements() (*tools.BootstrapRequirem
 	// Store bootstrap requirements in state
 	d.SetStateData(StateKeyBootstrapRequirements, reqs)
 	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
+
+	// Update demo availability based on bootstrap status
+	d.updateDemoAvailable(reqs)
 
 	d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
 		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
@@ -581,8 +586,8 @@ func (d *Driver) detectAndStoreBootstrapRequirements() (*tools.BootstrapRequirem
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.
 // Returns nil if bootstrap detection hasn't run yet or failed.
-func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
-	reqs, _ := utils.GetStateValue[*tools.BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
+func (d *Driver) GetBootstrapRequirements() *BootstrapRequirements {
+	reqs, _ := utils.GetStateValue[*BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
 	return reqs
 }
 
@@ -590,6 +595,48 @@ func (d *Driver) GetBootstrapRequirements() *tools.BootstrapRequirements {
 // Returns empty string if platform hasn't been detected.
 func (d *Driver) GetDetectedPlatform() string {
 	return utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "")
+}
+
+// IsDemoAvailable returns true if demo mode should be available.
+// Demo is available when bootstrap has completed (no missing components).
+// PM is the sole authority on demo availability.
+func (d *Driver) IsDemoAvailable() bool {
+	return d.demoAvailable
+}
+
+// EnsureBootstrapChecked runs bootstrap detection if it hasn't been run yet.
+// This allows the demo status endpoint to trigger the check on first access,
+// rather than requiring the user to start an interview first.
+// Safe to call multiple times - only runs detection once per spec cycle.
+func (d *Driver) EnsureBootstrapChecked(ctx context.Context) error {
+	// If bootstrap requirements are already stored, detection has been run
+	if d.GetBootstrapRequirements() != nil {
+		return nil
+	}
+
+	// Run detection
+	d.logger.Info("🔍 Running bootstrap detection on demand (demo status check)")
+	_, _ = d.detectAndStoreBootstrapRequirements(ctx)
+	return nil
+}
+
+// updateDemoAvailable updates the demo availability flag based on bootstrap requirements.
+// Called after bootstrap detection to update the flag.
+func (d *Driver) updateDemoAvailable(reqs *BootstrapRequirements) {
+	if reqs == nil {
+		return
+	}
+	wasAvailable := d.demoAvailable
+	d.demoAvailable = !reqs.HasAnyMissingComponents()
+
+	// Log state change (if logger is available)
+	if d.logger != nil {
+		if d.demoAvailable && !wasAvailable {
+			d.logger.Info("🎮 Demo mode is now available (bootstrap complete)")
+		} else if !d.demoAvailable && wasAvailable {
+			d.logger.Info("🎮 Demo mode is no longer available (bootstrap incomplete)")
+		}
+	}
 }
 
 // GetDraftSpec returns the draft specification markdown if available.
@@ -652,7 +699,8 @@ func (d *Driver) StartInterview(expertise string) error {
 	d.contextManager.AddMessage("system", fmt.Sprintf("User has expertise level: %s", expertise))
 
 	// Detect bootstrap requirements using shared helper
-	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements()
+	ctx := context.Background()
+	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(ctx)
 	if needsBootstrap && reqs != nil {
 		// Add detection summary to context
 		d.contextManager.AddMessage("system",
@@ -661,7 +709,6 @@ func (d *Driver) StartInterview(expertise string) error {
 	}
 
 	// Decide initial state based on bootstrap needs
-	ctx := context.Background()
 	if needsBootstrap {
 		// Start in WORKING so PM can proactively ask bootstrap questions
 		if err := d.TransitionTo(ctx, StateWorking, nil); err != nil {
@@ -709,7 +756,7 @@ func (d *Driver) UploadSpec(markdown string) error {
 	d.SetStateData(StateKeySpecUploaded, true)
 
 	// Detect bootstrap requirements using shared helper
-	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements()
+	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
 	if needsBootstrap && reqs != nil {
 		// Add uploaded spec content and bootstrap instructions to context
 		specMessage := fmt.Sprintf(`# User Uploaded Specification File

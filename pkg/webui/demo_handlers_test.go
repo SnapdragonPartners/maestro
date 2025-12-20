@@ -23,7 +23,7 @@ type mockDemoService struct {
 	workspacePath string
 }
 
-func (m *mockDemoService) Start(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Start(_ context.Context) error {
 	if m.startErr != nil {
 		return m.startErr
 	}
@@ -31,7 +31,7 @@ func (m *mockDemoService) Start(_ interface{ Done() <-chan struct{} }) error {
 	return nil
 }
 
-func (m *mockDemoService) Stop(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Stop(_ context.Context) error {
 	if m.stopErr != nil {
 		return m.stopErr
 	}
@@ -39,15 +39,19 @@ func (m *mockDemoService) Stop(_ interface{ Done() <-chan struct{} }) error {
 	return nil
 }
 
-func (m *mockDemoService) Restart(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Restart(_ context.Context) error {
 	return m.restartErr
 }
 
-func (m *mockDemoService) Rebuild(_ interface{ Done() <-chan struct{} }) error {
+func (m *mockDemoService) Rebuild(_ context.Context) error {
 	return m.rebuildErr
 }
 
-func (m *mockDemoService) Status(_ interface{ Done() <-chan struct{} }) *demo.Status {
+func (m *mockDemoService) RebuildWithOptions(_ context.Context, _ demo.RebuildOptions) error {
+	return m.rebuildErr
+}
+
+func (m *mockDemoService) Status(_ context.Context) *demo.Status {
 	if m.status != nil {
 		return m.status
 	}
@@ -57,7 +61,7 @@ func (m *mockDemoService) Status(_ interface{ Done() <-chan struct{} }) *demo.St
 	}
 }
 
-func (m *mockDemoService) GetLogs(_ interface{ Done() <-chan struct{} }) (string, error) {
+func (m *mockDemoService) GetLogs(_ context.Context) (string, error) {
 	if m.logsErr != nil {
 		return "", m.logsErr
 	}
@@ -114,8 +118,22 @@ func TestHandleDemoStatus_NoService(t *testing.T) {
 
 	server.handleDemoStatus(w, req)
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected status 503, got %d", w.Code)
+	// Changed: Now returns 200 with JSON showing unavailable status
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if available, ok := response["available"].(bool); !ok || available {
+		t.Error("expected available = false when no service")
+	}
+
+	if running, ok := response["running"].(bool); !ok || running {
+		t.Error("expected running = false when no service")
 	}
 }
 
