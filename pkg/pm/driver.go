@@ -212,13 +212,8 @@ func NewPM(
 	// Set the LLM client via SetLLMClient (sets BaseStateMachine.LLMClient)
 	sm.SetLLMClient(llmClient)
 
-	// Run bootstrap detection at construction time - blocks until complete.
-	// This ensures PM has accurate bootstrap state before any LLM interaction.
-	// PM is responsible for setting up bootstrap for all agents, so we must
-	// ensure setup runs once and only once.
-	logger.Info("🔧 Running bootstrap detection at construction time")
-	pmDriver.detectAndStoreBootstrapRequirements(ctx)
-	logger.Info("✅ Bootstrap detection complete, PM ready")
+	// Bootstrap detection now runs in SETUP state (entered from WAITING).
+	// This keeps the constructor lightweight and allows PM to register quickly.
 
 	return pmDriver, nil
 }
@@ -327,6 +322,8 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 	switch currentState {
 	case StateWaiting:
 		return d.handleWaiting(ctx)
+	case StateSetup:
+		return d.handleSetup(ctx)
 	case StateWorking:
 		return d.handleWorking(ctx)
 	case StateAwaitUser:
@@ -345,6 +342,13 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	d.logger.Debug("🎯 PM in WAITING state - checking for state changes or architect feedback")
 
+	// Check if bootstrap detection has run - if not, transition to SETUP first.
+	// This ensures PM has accurate bootstrap state before any user interaction.
+	if d.GetBootstrapRequirements() == nil {
+		d.logger.Info("🔧 Bootstrap detection needed - transitioning to SETUP")
+		return StateSetup, nil
+	}
+
 	// Check for architect RESULT messages (non-blocking)
 	select {
 	case <-ctx.Done():
@@ -362,6 +366,18 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 		time.Sleep(waitingPollInterval)
 		return StateWaiting, nil
 	}
+}
+
+// handleSetup runs bootstrap detection and creates git mirror if needed.
+// Always returns to WAITING when complete.
+func (d *Driver) handleSetup(ctx context.Context) (proto.State, error) {
+	d.logger.Info("🔧 PM SETUP: Running bootstrap detection")
+
+	// Run bootstrap detection - this creates the mirror if git is configured
+	d.detectAndStoreBootstrapRequirements(ctx)
+
+	d.logger.Info("✅ PM SETUP complete - returning to WAITING")
+	return StateWaiting, nil
 }
 
 // handleArchitectResult processes a RESULT message from architect.
