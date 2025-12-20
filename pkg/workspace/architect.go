@@ -65,6 +65,21 @@ func EnsureArchitectWorkspace(ctx context.Context, projectDir string) (string, e
 
 	// Find the git mirror
 	mirrorDir := filepath.Join(projectDir, ".mirrors")
+
+	// Check if mirrors directory exists - if not, bootstrap hasn't run yet.
+	// Create placeholder workspace for now; SETUP state will retry after bootstrap creates the mirror.
+	if _, statErr := os.Stat(mirrorDir); os.IsNotExist(statErr) {
+		logger.Info("Git configured but mirror not yet created - creating placeholder architect workspace")
+
+		// Create workspace directory if it doesn't exist
+		if mkdirErr := os.MkdirAll(architectWorkspace, 0755); mkdirErr != nil {
+			return "", fmt.Errorf("failed to create architect workspace directory: %w", mkdirErr)
+		}
+
+		logger.Info("✅ Created placeholder architect workspace (pre-bootstrap mode) at %s", architectWorkspace)
+		return architectWorkspace, nil
+	}
+
 	entries, err := os.ReadDir(mirrorDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to read mirrors directory: %w", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +91,12 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 		p.logger.Debug("Failed to remove existing container (this is normal if it doesn't exist): %v", err)
 	}
 
+	// Convert workspace path to absolute (required for Docker volume mounts)
+	absWorkspace, err := filepath.Abs(p.pmWorkspace)
+	if err != nil {
+		return fmt.Errorf("failed to resolve PM workspace path: %w", err)
+	}
+
 	// Build docker run command with PM workspace mounted at /workspace
 	args := []string{
 		"run", "-d",
@@ -102,7 +109,7 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 		// Run as non-privileged user (same as coders for consistency)
 		"--user", "1000:1000",
 		// Mount PM workspace at /workspace (read-only, same as coders)
-		"--volume", fmt.Sprintf("%s:/workspace:ro", p.pmWorkspace),
+		"--volume", fmt.Sprintf("%s:/workspace:ro", absWorkspace),
 		// Tmpfs mounts for temporary files
 		"--tmpfs", "/tmp:exec,nodev,nosuid,size=1g",
 		"--tmpfs", "/home:exec,nodev,nosuid,size=100m",

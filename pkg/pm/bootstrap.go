@@ -11,6 +11,8 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
+	"orchestrator/pkg/workspace"
 )
 
 const (
@@ -482,5 +484,74 @@ func (bd *BootstrapDetector) checkPlatformFile(filename, platform string, weight
 	if _, err := os.Stat(filePath); err == nil {
 		scores[platform] += weight
 		bd.logger.Debug("Found %s indicator: %s (weight: %.1f)", platform, filename, weight)
+	}
+}
+
+// RefreshMirrorAndWorkspaces ensures the git mirror exists and refreshes workspaces.
+// This should be called during bootstrap detection to:
+// 1. Create the mirror if git is configured but mirror doesn't exist yet (Case 2: repo via CLI)
+// 2. Refresh existing mirrors to get latest changes
+// Non-fatal - logs warnings but does not return errors.
+func (bd *BootstrapDetector) RefreshMirrorAndWorkspaces(ctx context.Context) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		bd.logger.Debug("Cannot refresh mirrors - failed to get config: %v", err)
+		return
+	}
+
+	// Only proceed if git is configured
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		bd.logger.Debug("Skipping mirror setup - no git repository configured")
+		return
+	}
+
+	// Use parent directory of projectDir (which is the agent workspace)
+	// The mirror is at projectDir/../.mirrors/
+	parentDir := filepath.Dir(bd.projectDir)
+	mirrorDir := filepath.Join(parentDir, ".mirrors")
+
+	// Check if mirror directory exists
+	mirrorExists := true
+	if _, err := os.Stat(mirrorDir); os.IsNotExist(err) {
+		mirrorExists = false
+		bd.logger.Info("🔧 Git configured but mirror doesn't exist - creating mirror")
+	} else {
+		bd.logger.Info("🔄 Refreshing git mirror and workspaces")
+	}
+
+	// Use the mirror manager to create or update the mirror
+	mirrorMgr := mirror.NewManager(parentDir)
+	if _, mirrorErr := mirrorMgr.EnsureMirror(ctx); mirrorErr != nil {
+		bd.logger.Warn("Failed to ensure mirror: %v", mirrorErr)
+		// Continue to try workspace refresh anyway if mirror already existed
+		if !mirrorExists {
+			return // Can't refresh workspaces without a mirror
+		}
+	} else {
+		if mirrorExists {
+			bd.logger.Info("✅ Git mirror refreshed")
+		} else {
+			bd.logger.Info("✅ Git mirror created")
+		}
+	}
+
+	// Refresh architect workspace if it exists
+	architectDir := filepath.Join(parentDir, "architect-001")
+	if _, statErr := os.Stat(architectDir); statErr == nil {
+		if _, updateErr := workspace.EnsureArchitectWorkspace(ctx, parentDir); updateErr != nil {
+			bd.logger.Warn("Failed to refresh architect workspace: %v", updateErr)
+		} else {
+			bd.logger.Info("✅ Architect workspace refreshed")
+		}
+	}
+
+	// Refresh PM workspace if it exists
+	pmDir := filepath.Join(parentDir, "pm-001")
+	if _, statErr := os.Stat(pmDir); statErr == nil {
+		if _, updateErr := workspace.EnsurePMWorkspace(ctx, parentDir); updateErr != nil {
+			bd.logger.Warn("Failed to refresh PM workspace: %v", updateErr)
+		} else {
+			bd.logger.Info("✅ PM workspace refreshed")
+		}
 	}
 }

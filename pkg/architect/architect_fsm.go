@@ -18,6 +18,9 @@ const (
 	// Entry state.
 	StateWaiting proto.State = "WAITING"
 
+	// Setup state - ensures workspace is ready before processing requests.
+	StateSetup proto.State = "SETUP"
+
 	// Story dispatch states.
 	StateDispatching proto.State = "DISPATCHING"
 
@@ -47,7 +50,7 @@ func ValidateState(state proto.State) error {
 // GetValidStates returns all valid states for architect agents.
 func GetValidStates() []proto.State {
 	return []proto.State{
-		StateWaiting, StateDispatching, StateMonitoring,
+		StateWaiting, StateSetup, StateDispatching, StateMonitoring,
 		StateRequest, StateEscalated, StateDone, StateError,
 	}
 }
@@ -56,8 +59,12 @@ func GetValidStates() []proto.State {
 // This is the single source of truth, derived directly from STATES.md.
 // Any code, tests, or diagrams must match this specification exactly.
 var architectTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
-	// WAITING can transition to REQUEST when any request received (spec, question, approval), or ERROR during abnormal shutdown.
-	StateWaiting: {StateRequest, StateError},
+	// WAITING can transition to SETUP when any request received (spec, question, approval), or ERROR during abnormal shutdown.
+	StateWaiting: {StateSetup, StateError},
+
+	// SETUP ensures workspace is ready, then transitions to REQUEST to process the pending request.
+	// SETUP is idempotent - it will clone if needed, or update if clone exists.
+	StateSetup: {StateRequest, StateError},
 
 	// DISPATCHING can transition to MONITORING when stories placed on work-queue, or DONE when no stories left.
 	StateDispatching: {StateMonitoring, StateDone},
@@ -110,6 +117,7 @@ const DispatcherSendTimeout = 500 * time.Millisecond
 func GetAllArchitectStates() []proto.State {
 	return []proto.State{
 		StateWaiting,
+		StateSetup,
 		StateDispatching,
 		StateMonitoring,
 		StateRequest,

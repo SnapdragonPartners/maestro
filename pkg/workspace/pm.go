@@ -117,6 +117,22 @@ func EnsurePMWorkspace(ctx context.Context, projectDir string) (string, error) {
 
 	// Find the git mirror
 	mirrorDir := filepath.Join(projectDir, ".mirrors")
+
+	// Check if mirrors directory exists - if not, bootstrap hasn't run yet.
+	// Create minimal workspace for now; PM can conduct interviews without a clone.
+	// RefreshMirrorAndWorkspaces will populate the workspace after bootstrap creates the mirror.
+	if _, statErr := os.Stat(mirrorDir); os.IsNotExist(statErr) {
+		logger.Info("Git configured but mirror not yet created - creating minimal PM workspace")
+
+		// Create workspace directory if it doesn't exist
+		if mkdirErr := os.MkdirAll(pmWorkspace, 0755); mkdirErr != nil {
+			return "", fmt.Errorf("failed to create PM workspace directory: %w", mkdirErr)
+		}
+
+		logger.Info("✅ Created minimal PM workspace (pre-bootstrap mode) at %s", pmWorkspace)
+		return pmWorkspace, nil
+	}
+
 	entries, err := os.ReadDir(mirrorDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to read mirrors directory: %w", err)

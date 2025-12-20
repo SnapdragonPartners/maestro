@@ -18,7 +18,6 @@ import (
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
-	"orchestrator/pkg/workspace"
 )
 
 // ToolProvider is an interface for tool access (allows testing with mocks).
@@ -134,12 +133,11 @@ func NewPM(
 	// Create context manager with PM model
 	contextManager := contextmgr.NewContextManagerWithModel(modelName)
 
-	// Ensure PM workspace exists (pm-001/ read-only clone or minimal workspace)
-	pmWorkspace, workspaceErr := workspace.EnsurePMWorkspace(ctx, workDir)
-	if workspaceErr != nil {
-		return nil, fmt.Errorf("failed to ensure PM workspace: %w", workspaceErr)
-	}
-	logger.Info("PM workspace ready at: %s", pmWorkspace)
+	// PM workspace is pre-created at startup (placeholder directory).
+	// Bootstrap detection handles cloning/updating when mirror exists.
+	// The executor handles converting to absolute path internally.
+	pmWorkspace := filepath.Join(workDir, pmID)
+	logger.Info("Using PM workspace at: %s", pmWorkspace)
 
 	// Determine if PM has repository access
 	hasRepository := cfg.Git != nil && cfg.Git.RepoURL != ""
@@ -213,6 +211,14 @@ func NewPM(
 
 	// Set the LLM client via SetLLMClient (sets BaseStateMachine.LLMClient)
 	sm.SetLLMClient(llmClient)
+
+	// Run bootstrap detection at construction time - blocks until complete.
+	// This ensures PM has accurate bootstrap state before any LLM interaction.
+	// PM is responsible for setting up bootstrap for all agents, so we must
+	// ensure setup runs once and only once.
+	logger.Info("🔧 Running bootstrap detection at construction time")
+	pmDriver.detectAndStoreBootstrapRequirements(ctx)
+	logger.Info("✅ Bootstrap detection complete, PM ready")
 
 	return pmDriver, nil
 }
@@ -564,12 +570,18 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 		return nil, false
 	}
 
-	// Store bootstrap requirements in state
+	// Store bootstrap requirements in state BEFORE mirror refresh.
+	// This ensures state is available immediately, even if refresh is slow.
 	d.SetStateData(StateKeyBootstrapRequirements, reqs)
 	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
 
 	// Update demo availability based on bootstrap status
 	d.updateDemoAvailable(reqs)
+
+	// Ensure git mirror exists and workspaces are up-to-date.
+	// This creates the mirror if git is configured but mirror doesn't exist,
+	// or refreshes existing mirrors to get latest changes.
+	detector.RefreshMirrorAndWorkspaces(ctx)
 
 	d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
 		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
@@ -604,19 +616,16 @@ func (d *Driver) IsDemoAvailable() bool {
 	return d.demoAvailable
 }
 
-// EnsureBootstrapChecked runs bootstrap detection if it hasn't been run yet.
-// This allows the demo status endpoint to trigger the check on first access,
-// rather than requiring the user to start an interview first.
-// Safe to call multiple times - only runs detection once per spec cycle.
-func (d *Driver) EnsureBootstrapChecked(ctx context.Context) error {
-	// If bootstrap requirements are already stored, detection has been run
-	if d.GetBootstrapRequirements() != nil {
-		return nil
+// EnsureBootstrapChecked verifies that bootstrap detection has been run.
+// Bootstrap detection now runs at PM construction time, so this method
+// just verifies state exists. It does NOT re-run detection.
+// Detection is only re-run after spec completion to verify bootstrap requirements.
+func (d *Driver) EnsureBootstrapChecked(_ context.Context) error {
+	// Bootstrap detection runs at construction time, so state should always exist.
+	// If it doesn't, something went wrong during PM initialization.
+	if d.GetBootstrapRequirements() == nil {
+		d.logger.Warn("Bootstrap requirements not found - detection should have run at construction time")
 	}
-
-	// Run detection
-	d.logger.Info("🔍 Running bootstrap detection on demand (demo status check)")
-	_, _ = d.detectAndStoreBootstrapRequirements(ctx)
 	return nil
 }
 
