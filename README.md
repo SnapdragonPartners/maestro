@@ -28,7 +28,7 @@ Most frameworks require wrestling with Python versions, dependency hell, or comp
 
 ## What Model Does Maestro Use?
 
-Maestro provides out-of-box support for Anthropic, Google, and OpenAI models through their official SDKs (so it should support the latest models as soon as they become available.) You can mix-and-match models by agent type - in fact, that's the recommended configuration since heterogeneous models can catch errors that models from the same provider may not.
+Maestro provides out-of-box support for Anthropic, Google, and OpenAI models through their official SDKs (so it should support the latest models as soon as they become available.) You can mix-and-match models by agent type - in fact, that's the recommended configuration since heterogeneous models can catch errors that models from the same provider may not. Maestro also supports open source and open weight models runnning locally through Ollama. 
 
 ---
 
