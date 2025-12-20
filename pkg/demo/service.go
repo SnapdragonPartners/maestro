@@ -439,14 +439,25 @@ func truncateLogs(logs string, n int) string {
 
 // getImageID returns the container image to use for demo.
 // Prefers pinned image, falls back to safe image.
+// Uses live config (not snapshot) to get current pinned image after rebuilds.
 func (s *Service) getImageID() string {
-	if s.config.Container == nil {
-		return ""
+	// Use live config to get current pinned image ID
+	// The pinned image can change at runtime when coder finishes a build
+	cfg, err := config.GetConfig()
+	if err != nil || cfg.Container == nil {
+		// Fall back to snapshot if live config unavailable
+		if s.config.Container == nil {
+			return ""
+		}
+		if s.config.Container.PinnedImageID != "" {
+			return s.config.Container.PinnedImageID
+		}
+		return s.config.Container.SafeImageID
 	}
-	if s.config.Container.PinnedImageID != "" {
-		return s.config.Container.PinnedImageID
+	if cfg.Container.PinnedImageID != "" {
+		return cfg.Container.PinnedImageID
 	}
-	return s.config.Container.SafeImageID
+	return cfg.Container.SafeImageID
 }
 
 // removeExistingContainer removes any existing demo container.
