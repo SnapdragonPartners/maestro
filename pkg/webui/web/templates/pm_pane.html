@@ -179,12 +179,14 @@
                         <span class="text-gray-500 w-20">Uptime:</span>
                         <span id="demo-uptime" class="text-gray-900">-</span>
                     </div>
+                    <!-- Port diagnostics (populated by JS) -->
+                    <div id="demo-port-diagnostics"></div>
                 </div>
 
                 <!-- Demo Not Available Message -->
                 <div id="demo-not-available" class="hidden mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <p class="text-sm text-yellow-800">
-                        Demo service is not available. Ensure a compose.yml file exists in the workspace.
+                        <strong>Demo not available:</strong> <span id="demo-not-available-reason">Checking status...</span>
                     </p>
                 </div>
 
@@ -227,8 +229,8 @@
                         Refresh
                     </button>
                 </div>
-                <div id="demo-logs" class="p-4 font-mono text-xs bg-gray-900 text-gray-100 rounded-b-lg overflow-x-auto overflow-y-auto" style="max-height: 300px; min-height: 150px;">
-                    <pre id="demo-logs-content" class="whitespace-pre-wrap">No logs available. Start the demo to see logs.</pre>
+                <div id="demo-logs" class="p-4 font-mono text-xs bg-gray-900 rounded-b-lg overflow-x-auto overflow-y-auto" style="max-height: 300px; min-height: 150px;">
+                    <pre id="demo-logs-content" class="whitespace-pre-wrap" style="color: #22c55e;">No logs available. Start the demo to see logs.</pre>
                 </div>
             </div>
         </div>

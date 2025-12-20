@@ -380,13 +380,20 @@ func TestService_DisconnectPM(t *testing.T) {
 	}
 }
 
-func TestService_GetLogs_NoComposeFile(t *testing.T) {
+func TestService_GetLogs_NoContainer(t *testing.T) {
 	svc, tmpDir := newTestService(t)
 	svc.SetWorkspacePath(tmpDir)
 
+	// Mock docker logs to simulate no container running
+	svc.commandRunner = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "echo 'Error: No such container' >&2; exit 1")
+	}
+
+	// Without compose file, GetLogs falls back to docker logs.
+	// With no running container, docker logs will fail.
 	_, err := svc.GetLogs(context.Background())
 	if err == nil {
-		t.Error("expected error for missing compose file")
+		t.Error("expected error when no container is running")
 	}
 }
 

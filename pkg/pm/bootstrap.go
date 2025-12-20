@@ -1,8 +1,9 @@
-package tools
+// Package pm provides the PM agent implementation.
+// This file contains bootstrap detection logic - PM is the sole authority on bootstrap status.
+package pm
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,16 +20,10 @@ const (
 	platformPython  = "python"
 	platformNode    = "node"
 	platformRust    = "rust"
-
-	// Expertise levels.
-	expertiseLevelExpert = "EXPERT"
 )
 
 // BootstrapDetector detects missing bootstrap components in a project.
-//
-// Deprecated: Use pm.BootstrapDetector instead. PM is now the sole authority
-// on bootstrap status. This type is retained temporarily for kernel.isDemoAvailable()
-// compatibility and will be removed in a future refactor.
+// PM is the sole authority on bootstrap status - this detector runs against the PM workspace.
 type BootstrapDetector struct {
 	logger     *logx.Logger
 	projectDir string
@@ -63,26 +58,12 @@ func (r *BootstrapRequirements) HasAnyMissingComponents() bool {
 	return len(r.MissingComponents) > 0
 }
 
-// BootstrapContext provides context for determining required questions.
-type BootstrapContext struct {
-	Expertise         string // NON_TECHNICAL, BASIC, EXPERT
-	Platform          string
-	ProjectDir        string
-	HasRepo           bool
-	HasDockerfile     bool
-	HasMakefile       bool
-	HasKnowledgeGraph bool
-}
-
 // NewBootstrapDetector creates a new bootstrap detector.
-//
-// Deprecated: Use pm.NewBootstrapDetector instead. PM is now the sole authority
-// on bootstrap status. This function is retained temporarily for kernel.isDemoAvailable()
-// compatibility and will be removed in a future refactor.
+// projectDir should be the PM workspace path (e.g., projectDir/pm-001).
 func NewBootstrapDetector(projectDir string) *BootstrapDetector {
 	return &BootstrapDetector{
 		projectDir: projectDir,
-		logger:     logx.NewLogger("bootstrap-detector"),
+		logger:     logx.NewLogger("pm-bootstrap"),
 	}
 }
 
@@ -448,7 +429,7 @@ func (bd *BootstrapDetector) checkClaudeCodeInContainer(imageName string) bool {
 func (bd *BootstrapDetector) detectPlatform() (string, float64) {
 	// If platform is already set in config, use it with 100% confidence
 	cfg, err := config.GetConfig()
-	if err == nil && cfg.Project.PrimaryPlatform != "" {
+	if err == nil && cfg.Project != nil && cfg.Project.PrimaryPlatform != "" {
 		platform := cfg.Project.PrimaryPlatform
 		bd.logger.Debug("Using platform from config: %s (100%% confidence)", platform)
 		return platform, 1.0
@@ -502,54 +483,4 @@ func (bd *BootstrapDetector) checkPlatformFile(filename, platform string, weight
 		scores[platform] += weight
 		bd.logger.Debug("Found %s indicator: %s (weight: %.1f)", platform, filename, weight)
 	}
-}
-
-// GetRequiredQuestions returns questions needed based on bootstrap context and expertise.
-func (bd *BootstrapDetector) GetRequiredQuestions(ctx *BootstrapContext) []Question {
-	questions := []Question{}
-
-	// Git repository question (always needed if missing)
-	if !ctx.HasRepo {
-		questions = append(questions, Question{
-			ID:       "git_repo",
-			Text:     "What's the GitHub repository URL for this project? (I can help you create it if needed)",
-			Required: true,
-		})
-	}
-
-	// Platform confirmation (only for BASIC and EXPERT)
-	if ctx.Expertise != "NON_TECHNICAL" && ctx.Platform != "" && ctx.Platform != platformGeneric {
-		questions = append(questions, Question{
-			ID:       "confirm_platform",
-			Text:     fmt.Sprintf("This looks like a %s project. Is that correct?", ctx.Platform),
-			Required: false,
-		})
-	}
-
-	// Custom Dockerfile question (only for EXPERT)
-	if ctx.Expertise == expertiseLevelExpert && !ctx.HasDockerfile {
-		questions = append(questions, Question{
-			ID:       "custom_dockerfile",
-			Text:     "Would you like me to include a custom Dockerfile in the setup, or use the default development container?",
-			Required: false,
-		})
-	}
-
-	// Knowledge graph question (only for EXPERT)
-	if ctx.Expertise == expertiseLevelExpert && !ctx.HasKnowledgeGraph {
-		questions = append(questions, Question{
-			ID:       "initial_patterns",
-			Text:     "Are there any initial architectural patterns or rules you'd like documented in the knowledge graph?",
-			Required: false,
-		})
-	}
-
-	return questions
-}
-
-// Question represents an interview question.
-type Question struct {
-	ID       string
-	Text     string
-	Required bool
 }

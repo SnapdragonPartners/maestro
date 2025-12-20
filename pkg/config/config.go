@@ -533,12 +533,27 @@ type PMConfig struct {
 }
 
 // DemoConfig defines demo mode configuration for running applications.
+// Demo availability is controlled by PM (based on bootstrap status), not config.
 type DemoConfig struct {
-	Enabled                   bool   `json:"enabled"`                     // Whether demo functionality is enabled (default: true)
-	Port                      int    `json:"port"`                        // Host port for demo app (default: 8081)
+	// Container port settings (see docs/DEMO_CONTAINER_PORTS.md)
+	ContainerPortOverride int        `json:"container_port_override,omitempty"` // Manual override for container port
+	SelectedContainerPort int        `json:"selected_container_port,omitempty"` // User-selected or auto-detected main port
+	DetectedPorts         []PortInfo `json:"detected_ports,omitempty"`          // All detected listeners from discovery
+	LastAssignedHostPort  int        `json:"last_assigned_host_port,omitempty"` // Last Docker-assigned host port (informational)
+
+	// Existing fields
 	RunCmdOverride            string `json:"run_cmd_override"`            // Override Build.RunCmd for demo (optional)
 	HealthcheckPath           string `json:"healthcheck_path"`            // HTTP path to check for readiness (default: /health)
 	HealthcheckTimeoutSeconds int    `json:"healthcheck_timeout_seconds"` // Max wait time for app to become healthy (default: 60)
+}
+
+// PortInfo describes a detected listening port in a container.
+type PortInfo struct {
+	Port        int    `json:"port"`         // Container port number
+	BindAddress string `json:"bind_address"` // "0.0.0.0", "127.0.0.1", etc.
+	Protocol    string `json:"protocol"`     // "tcp", "udp"
+	Exposed     bool   `json:"exposed"`      // Was in Dockerfile EXPOSE
+	Reachable   bool   `json:"reachable"`    // Can be published (not loopback-bound)
 }
 
 // MaintenanceConfig defines automated maintenance mode settings.
@@ -1377,12 +1392,7 @@ func applyDefaults(config *Config) {
 		config.Logs.RotationCount = 4
 	}
 
-	// Apply Demo defaults
-	// Note: Demo.Enabled defaults to false (zero value)
-	// If user wants demo mode, they must explicitly enable it
-	if config.Demo.Port == 0 {
-		config.Demo.Port = 8081
-	}
+	// Apply Demo defaults (host port is dynamically assigned by Docker)
 	if config.Demo.HealthcheckPath == "" {
 		config.Demo.HealthcheckPath = "/health"
 	}

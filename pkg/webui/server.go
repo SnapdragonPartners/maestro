@@ -40,15 +40,25 @@ type StoryProvider interface {
 	GetStoryList() []*architect.QueuedStory
 }
 
+// DemoAvailabilityChecker interface for checking demo availability.
+// PM implements this to indicate when bootstrap is complete.
+type DemoAvailabilityChecker interface {
+	IsDemoAvailable() bool
+	// EnsureBootstrapChecked runs bootstrap detection if it hasn't been run yet.
+	// This allows demo status endpoint to trigger the check on first access.
+	EnsureBootstrapChecked(ctx context.Context) error
+}
+
 // Server represents the web UI HTTP server.
 type Server struct {
-	dispatcher  *dispatch.Dispatcher
-	chatService *chat.Service
-	llmFactory  *agent.LLMClientFactory
-	demoService DemoService
-	logger      *logx.Logger
-	templates   *template.Template
-	workDir     string
+	dispatcher              *dispatch.Dispatcher
+	chatService             *chat.Service
+	llmFactory              *agent.LLMClientFactory
+	demoService             DemoService
+	demoAvailabilityChecker DemoAvailabilityChecker // PM provides this
+	logger                  *logx.Logger
+	templates               *template.Template
+	workDir                 string
 }
 
 // AgentListItem represents an agent in the list response.
@@ -81,6 +91,12 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 // SetDemoService sets the demo service for demo mode operations.
 func (s *Server) SetDemoService(demoService DemoService) {
 	s.demoService = demoService
+}
+
+// SetDemoAvailabilityChecker sets the demo availability checker.
+// PM implements this to indicate when bootstrap is complete and demo is available.
+func (s *Server) SetDemoAvailabilityChecker(checker DemoAvailabilityChecker) {
+	s.demoAvailabilityChecker = checker
 }
 
 // requireAuth wraps an HTTP handler with Basic Authentication.

@@ -42,6 +42,7 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 		switch typedPayload.Kind {
 		case proto.PayloadKindStoryComplete:
 			// Story completion notification - handle and stay in current state
+			//nolint:contextcheck // Handler uses context.Background() for quick local bootstrap detection
 			return d.handleStoryCompleteNotification(typedPayload)
 
 		case proto.PayloadKindApprovalResponse:
@@ -129,6 +130,14 @@ func (d *Driver) handleStoryCompleteNotification(payload *proto.MessagePayload) 
 		d.logger.Info("🔧 Hotfix story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
 	} else {
 		d.logger.Info("✅ Story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
+	}
+
+	// Check if demo should become available after this story
+	// Stories may create bootstrap components (Dockerfile, Makefile, etc.)
+	if !d.demoAvailable {
+		d.logger.Debug("Story completed, checking if bootstrap is now complete...")
+		//nolint:contextcheck // Bootstrap detection is a quick local operation, context.Background() is appropriate
+		d.detectAndStoreBootstrapRequirements(context.Background())
 	}
 
 	// Inject a user message so PM can inform the user about the completion

@@ -11,7 +11,6 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/mirror"
-	"orchestrator/pkg/templates"
 	"orchestrator/pkg/workspace"
 )
 
@@ -161,92 +160,20 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 		b.logger.Warn("Failed to refresh workspaces: %v", refreshErr)
 	}
 
-	// Re-validate bootstrap requirements to confirm everything is now configured
-	bootstrapReqs := b.validateBootstrapComplete(ctx)
-
-	// Render bootstrap markdown if requirements exist
-	var bootstrapMarkdown string
-	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
-		rendered, renderErr := b.renderBootstrapMarkdown(bootstrapReqs)
-		if renderErr != nil {
-			b.logger.Warn("Failed to render bootstrap markdown: %v", renderErr)
-			// Non-fatal - continue without rendered markdown
-		} else {
-			bootstrapMarkdown = rendered
-		}
-	}
-
-	// Return human-readable message for LLM context
-	// Return structured data via ProcessEffect.Data for state machine
+	// Return success - PM will run detection again to check what's still missing
+	// PM is the sole authority on bootstrap status
 	return &ExecResult{
-		Content: "Bootstrap configuration saved successfully",
+		Content: "Bootstrap configuration saved successfully. Project configured with git mirror ready.",
 		ProcessEffect: &ProcessEffect{
 			Signal: SignalBootstrapComplete,
 			Data: map[string]any{
-				"project_name":       projectName,
-				"git_url":            gitURL,
-				"platform":           platform,
-				"bootstrap_markdown": bootstrapMarkdown, // Rendered markdown for PM to store
-				"reset_context":      true,              // Signal PM to reset context after this tool
+				"project_name":  projectName,
+				"git_url":       gitURL,
+				"platform":      platform,
+				"reset_context": true, // Signal PM to reset context after this tool
 			},
 		},
 	}, nil
-}
-
-// validateBootstrapComplete re-validates bootstrap requirements after configuration.
-// This ensures the bootstrap process completed successfully and all required components are configured.
-// Returns the bootstrap requirements for rendering.
-func (b *BootstrapTool) validateBootstrapComplete(ctx context.Context) *BootstrapRequirements {
-	// Use PM workspace host path for detection, not repoDir (which may be container path /workspace)
-	// The PM workspace is at projectDir/pm-001 and contains knowledge.dot and other repo files
-	pmWorkspace := filepath.Join(b.projectDir, "pm-001")
-	b.logger.Info("Validating bootstrap configuration in repo: %s", pmWorkspace)
-	detector := NewBootstrapDetector(pmWorkspace)
-	reqs, validateErr := detector.Detect(ctx)
-	if validateErr != nil {
-		b.logger.Warn("Post-bootstrap validation failed: %v", validateErr)
-		// Non-fatal - configuration was saved successfully
-		return nil
-	}
-
-	if reqs.NeedsProjectConfig || reqs.NeedsGitRepo {
-		// Project metadata should now be complete after bootstrap
-		b.logger.Warn("⚠️  Bootstrap validation: project metadata still incomplete (project_config=%v, git_repo=%v)",
-			reqs.NeedsProjectConfig, reqs.NeedsGitRepo)
-	} else {
-		b.logger.Info("✅ Bootstrap validation passed: project metadata is complete")
-	}
-
-	return reqs
-}
-
-// renderBootstrapMarkdown renders the bootstrap prerequisites template.
-func (b *BootstrapTool) renderBootstrapMarkdown(reqs *BootstrapRequirements) (string, error) {
-	renderer, err := templates.NewRenderer()
-	if err != nil {
-		return "", fmt.Errorf("failed to create template renderer: %w", err)
-	}
-
-	templateData := &templates.TemplateData{
-		Extra: map[string]any{
-			"BootstrapRequired":   true,
-			"MissingComponents":   reqs.MissingComponents,
-			"DetectedPlatform":    reqs.DetectedPlatform,
-			"PlatformConfidence":  reqs.PlatformConfidence,
-			"HasRepository":       !reqs.NeedsGitRepo,
-			"NeedsDockerfile":     reqs.NeedsDockerfile,
-			"NeedsMakefile":       reqs.NeedsMakefile,
-			"NeedsKnowledgeGraph": reqs.NeedsKnowledgeGraph,
-			"NeedsClaudeCode":     reqs.NeedsClaudeCode,
-			"NeedsGitignore":      reqs.NeedsGitignore,
-		},
-	}
-
-	markdown, err := renderer.Render(templates.PMBootstrapPrerequisitesTemplate, templateData)
-	if err != nil {
-		return "", fmt.Errorf("failed to render bootstrap prerequisites template: %w", err)
-	}
-	return markdown, nil
 }
 
 // refreshWorkspacesIfExist updates PM and architect workspaces if they already exist.

@@ -80,6 +80,13 @@ This story addresses infrastructure issues discovered during project initializat
   RUN apk add --no-cache git || apt-get update && apt-get install -y git
   ```
   - Note: GitHub CLI (gh) is NOT required in container - PR operations run on the host
+- [ ] **EXPOSE Directive**: Container MUST expose the application port for demo mode
+  ```dockerfile
+  # REQUIRED: Expose the port your application listens on (e.g., 8080)
+  EXPOSE 8080
+  ```
+  - Demo mode publishes all exposed ports using Docker's `-P` flag
+  - Without EXPOSE, demo will start but won't be accessible from host
 {{- end}}
 
 {{- if .HasFailuresOfType "binary_size"}}
@@ -268,6 +275,16 @@ RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 ```
 
 **Note**: GitHub CLI (`gh`) is NOT required in the container. All PR creation, merge operations, and GitHub API access run on the host orchestrator, not inside containers.
+
+### Required EXPOSE Directive for Demo Mode
+The Dockerfile MUST include an `EXPOSE` directive for the port the application listens on:
+```dockerfile
+# REQUIRED for demo mode - expose the application port
+EXPOSE 8080
+```
+- Demo mode uses Docker's `-P` flag to publish all exposed ports
+- Without EXPOSE, the demo will start but won't be accessible
+- Use the same port your application is configured to listen on
 
 ### File System Constraints
 - **Large File Limit**: 100MB (GitHub push limit)

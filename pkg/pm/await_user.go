@@ -29,6 +29,7 @@ func (d *Driver) handleAwaitUser(ctx context.Context) (proto.State, error) {
 			d.logger.Warn("⚠️ Received nil message from architect reply channel")
 			return StateAwaitUser, nil
 		}
+		//nolint:contextcheck // Handler uses context.Background() for quick local bootstrap detection
 		return d.handleArchitectNotification(msg)
 
 	case <-time.After(awaitUserPollTimeout):
@@ -67,6 +68,14 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 			d.logger.Info("🔧 Hotfix completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
 		} else {
 			d.logger.Info("✅ Story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
+		}
+
+		// Check if demo should become available after this story
+		// Stories may create bootstrap components (Dockerfile, Makefile, etc.)
+		if !d.demoAvailable {
+			d.logger.Debug("Story completed, checking if bootstrap is now complete...")
+			//nolint:contextcheck // Bootstrap detection is a quick local operation, context.Background() is appropriate
+			d.detectAndStoreBootstrapRequirements(context.Background())
 		}
 
 		// Inject message so PM can inform user
