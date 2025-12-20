@@ -10,6 +10,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/utils"
 )
 
 // UpdatePMWorkspace updates the PM workspace after a merge.
@@ -177,10 +178,11 @@ func EnsurePMWorkspace(ctx context.Context, projectDir string) (string, error) {
 			return pmWorkspace, nil
 		}
 
-		// Directory exists but not a valid git clone - remove and recreate
+		// Directory exists but not a valid git clone - clean contents and recreate
+		// Use CleanDirectoryContents to preserve inode for Docker bind mounts
 		logger.Warn("PM workspace exists but is not a valid git clone, recreating")
-		if removeErr := os.RemoveAll(pmWorkspace); removeErr != nil {
-			return "", fmt.Errorf("failed to remove invalid workspace: %w", removeErr)
+		if cleanErr := utils.CleanDirectoryContents(pmWorkspace); cleanErr != nil {
+			return "", fmt.Errorf("failed to clean invalid workspace: %w", cleanErr)
 		}
 	}
 

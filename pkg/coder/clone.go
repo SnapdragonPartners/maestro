@@ -10,6 +10,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/utils"
 )
 
 // CloneManager handles Git clone operations for coder agents.
@@ -117,7 +118,7 @@ func (c *CloneManager) CleanupWorkspace(_ context.Context, agentID, storyID, age
 	// Clean directory contents but preserve the directory itself (preserves inode).
 	if _, err := os.Stat(agentWorkDirPath); err == nil {
 		c.logger.Debug("Clearing agent work directory contents: %s", agentWorkDirPath)
-		if err := cleanDirectoryContents(agentWorkDirPath); err != nil {
+		if err := utils.CleanDirectoryContents(agentWorkDirPath); err != nil {
 			return logx.Wrap(err, "failed to clean agent work directory contents")
 		}
 	} else {
@@ -241,7 +242,7 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 	// Handle existing directory - clean contents but preserve inode for bind mounts.
 	if _, err := os.Stat(agentWorkDir); err == nil {
 		c.logger.Debug("Cleaning existing agent work directory contents (preserving inode): %s", agentWorkDir)
-		if err := cleanDirectoryContents(agentWorkDir); err != nil {
+		if err := utils.CleanDirectoryContents(agentWorkDir); err != nil {
 			return logx.Wrap(err, "failed to clean existing directory contents")
 		}
 	} else {

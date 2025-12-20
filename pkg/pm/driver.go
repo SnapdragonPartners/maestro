@@ -633,15 +633,12 @@ func (d *Driver) IsDemoAvailable() bool {
 }
 
 // EnsureBootstrapChecked verifies that bootstrap detection has been run.
-// Bootstrap detection now runs at PM construction time, so this method
-// just verifies state exists. It does NOT re-run detection.
+// Bootstrap detection runs in SETUP state (deferred from constructor for non-blocking startup).
+// This method just checks if state exists - it does NOT re-run detection.
 // Detection is only re-run after spec completion to verify bootstrap requirements.
 func (d *Driver) EnsureBootstrapChecked(_ context.Context) error {
-	// Bootstrap detection runs at construction time, so state should always exist.
-	// If it doesn't, something went wrong during PM initialization.
-	if d.GetBootstrapRequirements() == nil {
-		d.logger.Warn("Bootstrap requirements not found - detection should have run at construction time")
-	}
+	// Bootstrap detection runs in SETUP state, so it may not exist yet
+	// if PM is still initializing. This is expected - not an error.
 	return nil
 }
 

@@ -30,7 +30,7 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	// mount to /mnt/coders/{agent-id} becomes stale (points to deleted inode).
 	// Instead, we empty the contents which preserves the inode and keeps bind mounts working.
 	c.logger.Info("🧹 Cleaning work directory contents for fresh workspace: %s", c.workDir)
-	if err := cleanDirectoryContents(c.workDir); err != nil {
+	if err := utils.CleanDirectoryContents(c.workDir); err != nil {
 		c.logger.Warn("Failed to clean work directory contents: %v", err)
 	}
 	// Ensure directory exists (creates if it doesn't, no-op if it does)
@@ -488,28 +488,4 @@ func extractRepoPath(repoURL string) string {
 	}
 
 	return ""
-}
-
-// cleanDirectoryContents removes all contents of a directory without removing the directory itself.
-// This preserves the directory inode, which is critical for Docker bind mounts on macOS.
-// When a directory is deleted and recreated, Docker bind mounts become stale because they
-// track the original inode.
-func cleanDirectoryContents(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Directory doesn't exist yet, nothing to clean
-			return nil
-		}
-		return fmt.Errorf("failed to read directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		entryPath := dir + "/" + entry.Name()
-		if err := os.RemoveAll(entryPath); err != nil {
-			return fmt.Errorf("failed to remove %s: %w", entryPath, err)
-		}
-	}
-
-	return nil
 }

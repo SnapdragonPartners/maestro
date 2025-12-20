@@ -11,6 +11,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/utils"
 )
 
 const defaultTargetBranch = "main"
@@ -124,10 +125,11 @@ func EnsureArchitectWorkspace(ctx context.Context, projectDir string) (string, e
 			return architectWorkspace, nil
 		}
 
-		// Directory exists but not a valid git clone - remove and recreate
+		// Directory exists but not a valid git clone - clean contents and recreate
+		// Use CleanDirectoryContents to preserve inode for Docker bind mounts
 		logger.Warn("Architect workspace exists but is not a valid git clone, recreating")
-		if removeErr := os.RemoveAll(architectWorkspace); removeErr != nil {
-			return "", fmt.Errorf("failed to remove invalid workspace: %w", removeErr)
+		if cleanErr := utils.CleanDirectoryContents(architectWorkspace); cleanErr != nil {
+			return "", fmt.Errorf("failed to clean invalid workspace: %w", cleanErr)
 		}
 	}
 
