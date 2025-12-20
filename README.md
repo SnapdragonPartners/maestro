@@ -6,6 +6,8 @@ Maestro is a tool that uses AI to write full applications in a disciplined way t
 
 In some ways, it's an agent orchestration tool. But unlike most others, Maestro bakes in structure, workflow, and opinions drawn from real-world experience managing large software projects. The goal is **production-ready apps, not just code snippets.**
 
+The big idea behind Maestro is that since LLMs are trained on and exhibit human behaviors it makes sense to organize them to operate like the most high performing human teams rather than relying on a single model or agent no matter how good. 
+
 ---
 
 ## Project Status
@@ -28,7 +30,9 @@ Most frameworks require wrestling with Python versions, dependency hell, or comp
 
 ## What Model Does Maestro Use?
 
-Maestro provides out-of-box support for Anthropic, Google, and OpenAI models through their official SDKs (so it should support the latest models as soon as they become available.) You can mix-and-match models by agent type - in fact, that's the recommended configuration since heterogeneous models can catch errors that models from the same provider may not. Maestro also supports open source and open weight models runnning locally through Ollama. 
+Maestro provides out-of-box support for Anthropic, Google, and OpenAI models through their official SDKs (so it should support the latest models as soon as they become available.) Maestro also supports open source and open weight models runnning locally through Ollama. 
+
+You can mix-and-match models by agent type - in fact, that's the recommended configuration since **heterogeneous models often catch errors that models from the same provider may not.**
 
 ---
 
@@ -339,7 +343,7 @@ This feature is experimental and requires Claude Code to be installed in the con
 ## FAQ
 
 **Q: How do I start a new project?**
-Open the web UI at http://localhost:8080 and start a PM interview. The PM will ask questions about your requirements, read your existing codebase if applicable, and generate a specification. The architect will then review it and create stories for coders to implement.
+Open the web UI at http://localhost:8080 and start a PM interview (you can override this port in the config file.) The PM will ask questions about your requirements, read your existing codebase if applicable, and generate a specification. The architect will then review it and create stories for coders to implement.
 
 **Q: Can I provide my own specification instead of using the PM?**
 Yes. You can place a markdown specification file in your project directory and the architect will parse it directly, skipping the PM interview.
@@ -354,7 +358,7 @@ No. Coders always run in Docker containers for isolation and reproducibility.
 By design. The architect enforces engineering discipline, ensures coders don't review their own work, and keeps technical debt low.
 
 **Q: Is this secure?**
-Maestro is intended as a single-user tool running locally. All agents run in Docker containers as a non-privileged user (1000:1000) with security hardening including read-only root filesystem, no-new-privileges, and resource limits. Combined with Docker isolation, this provides reasonable security for local development.
+Maestro is intended as a single-user tool running locally. All agents run in Docker containers as a non-privileged user (1000:1000) with security hardening including read-only root filesystem, no-new-privileges, and resource limits. Combined with Docker isolation, this provides reasonable security for local development, certainly as good or significantly better than other agent-based development systems.
 
 **Q: What happens if Maestro crashes?**
 All stories, states, tool use, messages, and progress are persisted in SQLite. On restart, coders and architect resume where they left off.
