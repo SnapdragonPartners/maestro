@@ -24,6 +24,10 @@ func TestAllValidTransitions(t *testing.T) {
 	// Define all valid transitions as documented in STATES.md
 	documentedTransitions := map[proto.State][]proto.State{
 		StateWaiting: {
+			StateSetup,
+			StateError,
+		},
+		StateSetup: {
 			StateRequest,
 			StateError,
 		},
@@ -89,8 +93,11 @@ func TestInvalidTransitions(t *testing.T) {
 		to   proto.State
 		name string
 	}{
-		{StateWaiting, StateDispatching, "WAITING->DISPATCHING (must go through REQUEST)"},
-		{StateWaiting, StateMonitoring, "WAITING->MONITORING (must go through REQUEST)"},
+		{StateWaiting, StateRequest, "WAITING->REQUEST (must go through SETUP)"},
+		{StateWaiting, StateDispatching, "WAITING->DISPATCHING (must go through SETUP)"},
+		{StateWaiting, StateMonitoring, "WAITING->MONITORING (must go through SETUP)"},
+		{StateSetup, StateWaiting, "SETUP->WAITING (invalid)"},
+		{StateSetup, StateDispatching, "SETUP->DISPATCHING (invalid)"},
 		{StateDispatching, StateRequest, "DISPATCHING->REQUEST (invalid)"},
 		{StateDispatching, StateEscalated, "DISPATCHING->ESCALATED (invalid)"},
 		{StateMonitoring, StateDispatching, "MONITORING->DISPATCHING (must go through REQUEST)"},
@@ -233,10 +240,16 @@ func TestCriticalTransitions(t *testing.T) {
 		rationale string
 	}{
 		{
-			name:      "WAITING_to_REQUEST",
+			name:      "WAITING_to_SETUP",
 			from:      StateWaiting,
+			to:        StateSetup,
+			rationale: "Architect must transition to SETUP to prepare workspace before processing requests",
+		},
+		{
+			name:      "SETUP_to_REQUEST",
+			from:      StateSetup,
 			to:        StateRequest,
-			rationale: "Architect must handle incoming requests from coders and PM",
+			rationale: "After workspace setup, architect processes the pending request",
 		},
 		{
 			name:      "REQUEST_to_DISPATCHING",

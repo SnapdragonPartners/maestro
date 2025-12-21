@@ -9,6 +9,7 @@ import (
 
 // handleWaiting blocks until a REQUEST message is received.
 // All work (specs, questions, approvals) comes through REQUEST messages now.
+// When a request is received, transitions to SETUP to ensure workspace is ready.
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 	select {
 	case <-ctx.Done():
@@ -24,11 +25,12 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 			return StateWaiting, nil
 		}
 
-		// Store the request for processing in REQUEST state
+		// Store the request for processing after SETUP completes
 		// This handles all types: spec reviews, questions, code approvals, etc.
 		d.SetStateData(StateKeyCurrentRequest, requestMsg)
 
-		return StateRequest, nil
+		// Transition to SETUP to ensure workspace is ready before processing
+		return StateSetup, nil
 	}
 }
 

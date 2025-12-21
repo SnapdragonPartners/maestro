@@ -1,6 +1,6 @@
 # Architect Agent Finite-State Machine (Canonical)
 
-*Last updated: 2025-01-12 (rev H - SCOPING state removed, unified REQUEST flow)*
+*Last updated: 2025-12-20 (rev I - SETUP state added for deferred workspace cloning)*
 
 This document is the **single source of truth** for the architect agent's workflow.
 Any code, tests, or diagrams must match this specification exactly.
@@ -15,8 +15,12 @@ stateDiagram-v2
     [*] --> WAITING
 
     %% ---------- REQUEST INTAKE ----------
-    WAITING       --> REQUEST            : any request received\n(coder/PM questions • spec review • approvals)
+    WAITING       --> SETUP              : any request received\n(coder/PM questions • spec review • approvals)
     WAITING       --> ERROR              : channel closed/abnormal shutdown
+
+    %% ---------- WORKSPACE SETUP ----------
+    SETUP         --> REQUEST            : workspace ready
+    SETUP         --> ERROR              : workspace setup failed
 
     %% ---------- STORY DISPATCH ----------
     DISPATCHING   --> MONITORING         : ready stories placed on work-queue
@@ -45,6 +49,7 @@ stateDiagram-v2
     %% Self-loops (state → same state) are always valid and are used for states that wait for external events.
     %% REQUEST state handles ALL requests: coder requests (questions, reviews, merges) AND PM spec reviews (ApprovalTypeSpec).
     %% All specs come through REQUEST messages - there is no separate spec intake channel.
+    %% SETUP state ensures workspace is cloned from mirror before processing requests (idempotent).
 ```
 
 ---
@@ -54,6 +59,7 @@ stateDiagram-v2
 | State            | Purpose                                                                        |
 | ---------------- | ------------------------------------------------------------------------------ |
 | **WAITING**      | Agent is idle, waiting for requests (spec reviews, questions, approvals).     |
+| **SETUP**        | Ensure workspace is cloned/updated from git mirror before processing work.    |
 | **DISPATCHING**  | Load stories, check dependencies, and assign ready stories to coder agents.   |
 | **MONITORING**   | Monitor coder progress and wait for requests (questions, reviews, merges).    |
 | **REQUEST**      | Process ALL requests: spec reviews, coder questions/reviews/merges.           |

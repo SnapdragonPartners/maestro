@@ -13,6 +13,7 @@ func TestArchitectStateString(t *testing.T) {
 		expected string
 	}{
 		{StateWaiting, "WAITING"},
+		{StateSetup, "SETUP"},
 		{StateDispatching, "DISPATCHING"},
 		{StateMonitoring, "MONITORING"},
 		{StateRequest, "REQUEST"},
@@ -40,8 +41,12 @@ func TestIsValidArchitectTransition(t *testing.T) {
 		name string
 	}{
 		// WAITING transitions.
-		{StateWaiting, StateRequest, "WAITING -> REQUEST (any request received)"},
+		{StateWaiting, StateSetup, "WAITING -> SETUP (any request received)"},
 		{StateWaiting, StateError, "WAITING -> ERROR (channel closed/abnormal shutdown)"},
+
+		// SETUP transitions.
+		{StateSetup, StateRequest, "SETUP -> REQUEST (workspace ready)"},
+		{StateSetup, StateError, "SETUP -> ERROR (workspace setup failed)"},
 
 		// DISPATCHING transitions.
 		{StateDispatching, StateMonitoring, "DISPATCHING -> MONITORING (stories on work-queue)"},
@@ -61,8 +66,6 @@ func TestIsValidArchitectTransition(t *testing.T) {
 		// ESCALATED transitions.
 		{StateEscalated, StateRequest, "ESCALATED -> REQUEST (human answer supplied)"},
 		{StateEscalated, StateError, "ESCALATED -> ERROR (timeout/no answer)"},
-
-		// MERGING transitions.
 
 		// DONE transitions.
 		{StateDone, StateWaiting, "DONE -> WAITING (new spec arrives)"},
@@ -87,34 +90,47 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		to   proto.State
 		name string
 	}{
-		// Invalid WAITING transitions.
+		// Invalid WAITING transitions (must go through SETUP now).
+		{StateWaiting, StateRequest, "WAITING -> REQUEST (invalid, must go through SETUP)"},
 		{StateWaiting, StateDispatching, "WAITING -> DISPATCHING (invalid)"},
 		{StateWaiting, StateMonitoring, "WAITING -> MONITORING (invalid)"},
 		{StateWaiting, StateEscalated, "WAITING -> ESCALATED (invalid)"},
 		{StateWaiting, StateDone, "WAITING -> DONE (invalid)"},
 
+		// Invalid SETUP transitions (can only go to REQUEST or ERROR).
+		{StateSetup, StateWaiting, "SETUP -> WAITING (invalid)"},
+		{StateSetup, StateDispatching, "SETUP -> DISPATCHING (invalid)"},
+		{StateSetup, StateMonitoring, "SETUP -> MONITORING (invalid)"},
+		{StateSetup, StateEscalated, "SETUP -> ESCALATED (invalid)"},
+		{StateSetup, StateDone, "SETUP -> DONE (invalid)"},
+
 		// Invalid DISPATCHING transitions.
 		{StateDispatching, StateWaiting, "DISPATCHING -> WAITING (invalid)"},
+		{StateDispatching, StateSetup, "DISPATCHING -> SETUP (invalid)"},
 		{StateDispatching, StateRequest, "DISPATCHING -> REQUEST (invalid)"},
 		{StateDispatching, StateEscalated, "DISPATCHING -> ESCALATED (invalid)"},
 		{StateDispatching, StateError, "DISPATCHING -> ERROR (invalid)"},
 
 		// Invalid MONITORING transitions.
 		{StateMonitoring, StateWaiting, "MONITORING -> WAITING (invalid)"},
+		{StateMonitoring, StateSetup, "MONITORING -> SETUP (invalid)"},
 		{StateMonitoring, StateDispatching, "MONITORING -> DISPATCHING (invalid)"},
 		{StateMonitoring, StateEscalated, "MONITORING -> ESCALATED (invalid)"},
 		{StateMonitoring, StateDone, "MONITORING -> DONE (invalid)"},
 
-		// Invalid REQUEST transitions (REQUEST -> WAITING is now valid)
+		// Invalid REQUEST transitions (REQUEST -> WAITING is valid, REQUEST -> SETUP is invalid)
+		{StateRequest, StateSetup, "REQUEST -> SETUP (invalid)"},
 		{StateRequest, StateDone, "REQUEST -> DONE (invalid)"},
 
 		// Invalid ESCALATED transitions.
 		{StateEscalated, StateWaiting, "ESCALATED -> WAITING (invalid)"},
+		{StateEscalated, StateSetup, "ESCALATED -> SETUP (invalid)"},
 		{StateEscalated, StateDispatching, "ESCALATED -> DISPATCHING (invalid)"},
 		{StateEscalated, StateMonitoring, "ESCALATED -> MONITORING (invalid)"},
 		{StateEscalated, StateDone, "ESCALATED -> DONE (invalid)"},
 
 		// Invalid DONE transitions (can only go to WAITING)
+		{StateDone, StateSetup, "DONE -> SETUP (invalid)"},
 		{StateDone, StateDispatching, "DONE -> DISPATCHING (invalid)"},
 		{StateDone, StateMonitoring, "DONE -> MONITORING (invalid)"},
 		{StateDone, StateRequest, "DONE -> REQUEST (invalid)"},
@@ -122,6 +138,7 @@ func TestInvalidArchitectTransitions(t *testing.T) {
 		{StateDone, StateError, "DONE -> ERROR (invalid)"},
 
 		// Invalid ERROR transitions (can only go to WAITING)
+		{StateError, StateSetup, "ERROR -> SETUP (invalid)"},
 		{StateError, StateDispatching, "ERROR -> DISPATCHING (invalid)"},
 		{StateError, StateMonitoring, "ERROR -> MONITORING (invalid)"},
 		{StateError, StateRequest, "ERROR -> REQUEST (invalid)"},
@@ -149,6 +166,7 @@ func TestGetAllArchitectStates(t *testing.T) {
 	states := GetAllArchitectStates()
 	expected := []proto.State{
 		StateWaiting,
+		StateSetup,
 		StateDispatching,
 		StateMonitoring,
 		StateRequest,
@@ -174,6 +192,7 @@ func TestIsTerminalState(t *testing.T) {
 		expected bool
 	}{
 		{StateWaiting, false},
+		{StateSetup, false},
 		{StateDispatching, false},
 		{StateMonitoring, false},
 		{StateRequest, false},
@@ -196,6 +215,7 @@ func TestIsValidArchitectState(t *testing.T) {
 	// Test all valid states.
 	validStates := []proto.State{
 		StateWaiting,
+		StateSetup,
 		StateDispatching,
 		StateMonitoring,
 		StateRequest,
@@ -248,7 +268,8 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateRequest, StateError}},
+		{StateWaiting, []proto.State{StateSetup, StateError}},
+		{StateSetup, []proto.State{StateRequest, StateError}},
 		{StateDispatching, []proto.State{StateMonitoring, StateDone}},
 		{StateMonitoring, []proto.State{StateRequest, StateError}},
 		{StateRequest, []proto.State{StateWaiting, StateMonitoring, StateDispatching, StateEscalated, StateError}},
@@ -300,7 +321,7 @@ func TestTransitionMapIntegrity(t *testing.T) {
 // Benchmarks for performance validation.
 func BenchmarkIsValidArchitectTransition(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		IsValidArchitectTransition(StateWaiting, StateRequest)
+		IsValidArchitectTransition(StateWaiting, StateSetup)
 	}
 }
 

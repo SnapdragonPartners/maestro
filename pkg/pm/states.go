@@ -8,7 +8,11 @@ import (
 // PM-specific states.
 const (
 	// StateWaiting - PM is idle, waiting for interview request from WebUI.
+	// If bootstrap detection hasn't run, transitions to SETUP first.
 	StateWaiting proto.State = "WAITING"
+	// StateSetup - PM is running bootstrap detection and creating git mirror.
+	// Always transitions back to WAITING when complete.
+	StateSetup proto.State = "SETUP"
 	// StateWorking - PM is actively working (conducting interview, making LLM calls with tools).
 	// PM has access to all tools: chat_post, read_file, list_files, await_user, spec_submit.
 	StateWorking proto.State = "WORKING"
@@ -29,10 +33,15 @@ const (
 var validTransitions = map[proto.State][]proto.State{
 	StateWaiting: {
 		StateWaiting,   // Stay in waiting while polling for state changes
+		StateSetup,     // Bootstrap detection needed - run setup first
 		StateWorking,   // User starts interview - PM begins working
 		StateAwaitUser, // User starts interview - wait for first message
 		StatePreview,   // User uploads spec file - go directly to preview
 		proto.StateDone,
+	},
+	StateSetup: {
+		StateWaiting,     // Setup complete - return to waiting
+		proto.StateError, // Setup failed
 	},
 	StateWorking: {
 		StateWorking,   // Stay in working while iterating through tool calls
@@ -90,6 +99,7 @@ func IsValidPMTransition(from, to proto.State) bool {
 func GetAllPMStates() []proto.State {
 	return []proto.State{
 		StateWaiting,
+		StateSetup,
 		StateWorking,
 		StateAwaitUser,
 		StatePreview,

@@ -10,6 +10,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/utils"
 )
 
 // UpdatePMWorkspace updates the PM workspace after a merge.
@@ -117,6 +118,22 @@ func EnsurePMWorkspace(ctx context.Context, projectDir string) (string, error) {
 
 	// Find the git mirror
 	mirrorDir := filepath.Join(projectDir, ".mirrors")
+
+	// Check if mirrors directory exists - if not, bootstrap hasn't run yet.
+	// Create minimal workspace for now; PM can conduct interviews without a clone.
+	// RefreshMirrorAndWorkspaces will populate the workspace after bootstrap creates the mirror.
+	if _, statErr := os.Stat(mirrorDir); os.IsNotExist(statErr) {
+		logger.Info("Git configured but mirror not yet created - creating minimal PM workspace")
+
+		// Create workspace directory if it doesn't exist
+		if mkdirErr := os.MkdirAll(pmWorkspace, 0755); mkdirErr != nil {
+			return "", fmt.Errorf("failed to create PM workspace directory: %w", mkdirErr)
+		}
+
+		logger.Info("✅ Created minimal PM workspace (pre-bootstrap mode) at %s", pmWorkspace)
+		return pmWorkspace, nil
+	}
+
 	entries, err := os.ReadDir(mirrorDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to read mirrors directory: %w", err)
@@ -161,10 +178,11 @@ func EnsurePMWorkspace(ctx context.Context, projectDir string) (string, error) {
 			return pmWorkspace, nil
 		}
 
-		// Directory exists but not a valid git clone - remove and recreate
+		// Directory exists but not a valid git clone - clean contents and recreate
+		// Use CleanDirectoryContents to preserve inode for Docker bind mounts
 		logger.Warn("PM workspace exists but is not a valid git clone, recreating")
-		if removeErr := os.RemoveAll(pmWorkspace); removeErr != nil {
-			return "", fmt.Errorf("failed to remove invalid workspace: %w", removeErr)
+		if cleanErr := utils.CleanDirectoryContents(pmWorkspace); cleanErr != nil {
+			return "", fmt.Errorf("failed to clean invalid workspace: %w", cleanErr)
 		}
 	}
 

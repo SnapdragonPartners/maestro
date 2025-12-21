@@ -176,8 +176,11 @@ class PMController {
         }
 
         // Update interview session info
+        // Only update session ID from status if it's present (avoid overwriting valid ID with empty)
         if (status.has_session) {
-            this.sessionID = status.session_id;
+            if (status.session_id) {
+                this.sessionID = status.session_id;
+            }
             this.messageCount = status.message_count;
         }
     }
@@ -280,7 +283,11 @@ class PMController {
         const input = document.getElementById('interview-input');
         const message = input.value.trim();
 
-        if (!message || !this.sessionID) return;
+        if (!message || !this.sessionID) {
+            console.log('[PM] sendInterviewMessage blocked:', { message: !!message, sessionID: this.sessionID });
+            return;
+        }
+        console.log('[PM] sendInterviewMessage sending:', { sessionID: this.sessionID, message: message.substring(0, 50) });
 
         try {
             // Clear input immediately

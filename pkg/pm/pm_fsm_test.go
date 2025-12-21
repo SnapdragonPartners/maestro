@@ -118,6 +118,7 @@ func TestGetAllPMStates(t *testing.T) {
 	states := GetAllPMStates()
 	expected := []proto.State{
 		StateWaiting,
+		StateSetup,
 		StateWorking,
 		StateAwaitUser,
 		StatePreview,
@@ -143,6 +144,7 @@ func TestIsTerminalState(t *testing.T) {
 		expected bool
 	}{
 		{StateWaiting, false},
+		{StateSetup, false},
 		{StateWorking, false},
 		{StateAwaitUser, false},
 		{proto.StateDone, true},
@@ -216,7 +218,8 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateWaiting, StateWorking, StateAwaitUser, StatePreview, proto.StateDone}},
+		{StateWaiting, []proto.State{StateWaiting, StateSetup, StateWorking, StateAwaitUser, StatePreview, proto.StateDone}},
+		{StateSetup, []proto.State{StateWaiting, proto.StateError}},
 		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, proto.StateError, proto.StateDone}},
 		{StateAwaitUser, []proto.State{StateAwaitUser, StateWorking, proto.StateError, proto.StateDone}},
 		{StatePreview, []proto.State{StatePreview, StateAwaitUser, StateAwaitArchitect, proto.StateError, proto.StateDone}},

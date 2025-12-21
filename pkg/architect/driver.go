@@ -21,7 +21,6 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
-	"orchestrator/pkg/workspace"
 )
 
 // Tool signal constants - all signals now use centralized constants from tools package.
@@ -206,12 +205,10 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 	// Create architect without LLM client first (chicken-and-egg: client needs architect as StateProvider)
 	architect := NewDriver(architectID, modelName, dispatcher, workDir, persistenceChannel)
 
-	// Ensure architect workspace exists before starting container
-	architectWorkspace, wsErr := workspace.EnsureArchitectWorkspace(ctx, workDir)
-	if wsErr != nil {
-		return nil, fmt.Errorf("failed to ensure architect workspace: %w", wsErr)
-	}
-	architect.logger.Info("Architect workspace ready at: %s", architectWorkspace)
+	// NOTE: Workspace cloning is deferred to SETUP state.
+	// The architect boots in WAITING state with just a mountable directory (already created at startup).
+	// When the architect receives work and transitions to SETUP, it will clone from the mirror.
+	// This allows PM bootstrap to create the mirror before the architect needs it.
 
 	// Create and start architect container executor
 	// The architect container has read-only mounts to all coder workspaces and architect workspace
@@ -547,6 +544,9 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	case StateWaiting:
 		// WAITING state - block until request received.
 		return d.handleWaiting(ctx)
+	case StateSetup:
+		// SETUP state - ensure workspace is ready before processing requests.
+		return d.handleSetup(ctx)
 	case StateDispatching:
 		return d.handleDispatching(ctx)
 	case StateMonitoring:
