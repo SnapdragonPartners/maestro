@@ -341,13 +341,22 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 	fmt.Println()
 }
 
-// TODO: Temporarily disabled startup orchestration to debug crash
 // runStartupOrchestration executes the startup rebuild + reconcile/rollback from Story 3.
+// In airplane mode, it also prepares local services (Gitea, Ollama).
 func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("🔧 Starting startup orchestration")
 
 	// Get project directory from kernel
 	projectDir := k.ProjectDir()
+
+	// If airplane mode, prepare local services first
+	if config.IsAirplaneMode() {
+		k.Logger.Info("✈️  Airplane mode detected - preparing local services")
+		airplaneOrch := orch.NewAirplaneOrchestrator(projectDir)
+		if err := airplaneOrch.PrepareAirplaneMode(ctx); err != nil {
+			return fmt.Errorf("airplane mode preparation failed: %w", err)
+		}
+	}
 
 	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
 	startupOrch, err := orch.NewStartupOrchestrator(projectDir, false)

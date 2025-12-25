@@ -10,7 +10,7 @@ func FormatCheckError(check CheckResult) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("  %s: %s\n", check.Provider, check.Message))
-	sb.WriteString(fmt.Sprintf("    %s\n", getGuidance(check.Provider)))
+	sb.WriteString(fmt.Sprintf("    %s\n", GetGuidance(check.Provider)))
 
 	return sb.String()
 }
@@ -45,8 +45,8 @@ func FormatResults(results *Results) string {
 	return sb.String()
 }
 
-// getGuidance returns actionable guidance for fixing a failed check.
-func getGuidance(provider Provider) string {
+// GetGuidance returns actionable guidance for fixing a failed check.
+func GetGuidance(provider Provider) string {
 	switch provider {
 	case ProviderDocker:
 		return "Install Docker Desktop or ensure Docker daemon is running: https://docs.docker.com/get-docker/"
