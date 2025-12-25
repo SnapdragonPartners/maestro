@@ -198,7 +198,7 @@ This makes mode switching atomic and debuggable.
 │                    │  Workspaces  │                              │
 │                    └──────┬───────┘                              │
 │                           │                                      │
-│                           │ git push, tea pr create/merge        │
+│                           │ git push, Gitea API (PR ops)         │
 │                           ▼                                      │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │                    LOCAL GITEA                             │  │
@@ -243,9 +243,9 @@ This makes mode switching atomic and debuggable.
 | Mirror source | GitHub | Gitea |
 | Clone source | `.mirrors/` | `.mirrors/` (unchanged) |
 | Push target | GitHub | Gitea |
-| PR creation | `gh pr create` | Gitea API / `tea pr create` |
-| PR merge | `gh pr merge` | Gitea API / `tea pr merge` |
-| PR listing | `gh pr list` | Gitea API / `tea pr list` |
+| PR creation | `gh pr create` | Gitea API (`POST /repos/{owner}/{repo}/pulls`) |
+| PR merge | `gh pr merge` | Gitea API (`POST /repos/{owner}/{repo}/pulls/{index}/merge`) |
+| PR listing | `gh pr list` | Gitea API (`GET /repos/{owner}/{repo}/pulls`) |
 
 ## Workflow
 
@@ -311,11 +311,11 @@ The workflow is identical to online mode, with different targets:
    - git add -A (unchanged)
    - git commit (unchanged)
    - git push origin → GITEA (changed target)
-   - tea pr create → GITEA (changed from gh)
+   - GiteaClient.CreatePR() → GITEA API (changed from gh CLI)
 
 4. AWAIT_MERGE
    - Architect reviews via read tools (unchanged)
-   - tea pr merge → GITEA (changed from gh)
+   - GiteaClient.MergePR() → GITEA API (changed from gh CLI)
    - Coder workspace deleted (unchanged)
    - Mirror updated from GITEA (changed source)
 
@@ -365,8 +365,15 @@ Sync process:
 
 ### Minimal Config Approach
 
-Configuration follows the principle of minimal duplication. Airplane mode settings are overrides, not a parallel config tree.
+Configuration follows the principle of minimal duplication. **Config only controls agent model overrides** — forge connection details (Gitea URL, token, etc.) are stored in **project runtime state**, not config.
 
+**Why this split:**
+- Config is checked into version control, shouldn't contain generated tokens
+- Gitea settings are auto-generated during `--airplane` startup
+- Keeps config minimal and declarative (what models to use)
+- Runtime state handles operational details (how to connect to forge)
+
+**Config file** (`config.json` or user config):
 ```json
 {
   "default_mode": "standard",
@@ -389,6 +396,19 @@ Configuration follows the principle of minimal duplication. Airplane mode settin
   }
 }
 ```
+
+**Runtime state** (`<projectDir>/.maestro/forge_state.json`, permissions `0600`):
+```json
+{
+  "url": "http://localhost:3000",
+  "token": "abc123...",
+  "owner": "maestro",
+  "repo_name": "myproject",
+  "container_name": "maestro-gitea-myproject",
+  "port": 3000
+}
+```
+Token is local-only (localhost Gitea), auto-generated, and ephemeral — file storage with restrictive permissions is acceptable.
 
 ### Config Fields
 
@@ -434,18 +454,35 @@ var PreferredArchitectModels = []string{
 }
 ```
 
-### Mode-Aware Validation
+### Provider-Aware Validation
 
-| Check | Standard Mode | Airplane Mode |
-|-------|---------------|---------------|
+Validation is based on **which providers the resolved models actually require**, not purely on mode. This allows future flexibility (e.g., using Ollama models in standard mode, or using a local forge while online).
+
+| Check | When Required |
+|-------|---------------|
+| `GITHUB_TOKEN` | Any agent uses GitHub as git forge |
+| `OPENAI_API_KEY` | Any agent model starts with `o3`, `gpt-`, etc. |
+| `ANTHROPIC_API_KEY` | Any agent model starts with `claude-` |
+| `GOOGLE_GENAI_API_KEY` | Any agent model starts with `gemini-` |
+| `gh` CLI | Git forge is GitHub |
+| Docker | Always (containers required) |
+| Ollama reachable | Any agent model starts with `ollama:` |
+| Gitea healthy | Git forge is Gitea (airplane mode) |
+| Local model available | Each `ollama:*` model resolved for an agent |
+
+**Practical effect by mode:**
+
+| Check | Standard Mode (typical) | Airplane Mode (typical) |
+|-------|-------------------------|-------------------------|
 | `GITHUB_TOKEN` | Required | Skipped |
-| `OPENAI_API_KEY` | Required (if using o3) | Skipped |
-| `ANTHROPIC_API_KEY` | Required (if using Claude) | Skipped |
+| `OPENAI_API_KEY` | Required (o3 architect) | Skipped |
+| `ANTHROPIC_API_KEY` | Required (Claude coders) | Skipped |
 | `gh` CLI | Required | Skipped |
-| Docker | Required | Required |
 | Ollama reachable | Skipped | Required |
 | Gitea healthy | Skipped | Required |
-| Local models available | Skipped | Required |
+| Local models | Skipped | Required |
+
+The validation engine resolves all agent models first, then validates only the providers those models require.
 
 ## Implementation
 
@@ -478,25 +515,44 @@ Add Gitea to the maestro infrastructure:
 
 ```yaml
 # docker-compose.yml (or equivalent)
+# NOTE: Container name and ports are per-project to avoid collisions
 services:
   gitea:
-    image: gitea/gitea:latest
-    container_name: maestro-gitea
+    # Pin to specific version for offline reproducibility
+    # Using 1.21.11 (LTS) - update periodically while online
+    image: gitea/gitea:1.21.11
+    # Per-project naming: maestro-gitea-{project-name}
+    # Derived from project directory name at runtime
+    container_name: maestro-gitea-${PROJECT_NAME}
     environment:
       - USER_UID=1000
       - USER_GID=1000
-      - GITEA__server__ROOT_URL=http://localhost:3000
-      - GITEA__server__HTTP_PORT=3000
+      # Port is allocated dynamically per-project (see below)
+      - GITEA__server__ROOT_URL=http://localhost:${GITEA_PORT}
+      - GITEA__server__HTTP_PORT=${GITEA_PORT}
     volumes:
-      - gitea-data:/data
+      # Per-project volume naming
+      - maestro-gitea-${PROJECT_NAME}-data:/data
     ports:
-      - "3000:3000"
-      - "2222:22"
+      # MVP: Static port allocation (collision possible)
+      # v2: Dynamic port allocation with discovery
+      - "${GITEA_PORT}:${GITEA_PORT}"
+      - "${GITEA_SSH_PORT}:22"
     restart: unless-stopped
 
+# Per-project volumes prevent data mixing
 volumes:
-  gitea-data:
+  maestro-gitea-${PROJECT_NAME}-data:
 ```
+
+**Per-project container management:**
+
+MVP uses explicit per-project naming to avoid data mixing:
+- Container: `maestro-gitea-{project-name}` (e.g., `maestro-gitea-myapp`)
+- Volume: `maestro-gitea-{project-name}-data`
+- Default ports: 3000 (HTTP), 2222 (SSH)
+
+Port collision is a **documented MVP limitation** — running multiple projects concurrently requires manual port configuration or waiting for v2 dynamic allocation.
 
 #### 1.2 Repository Migration
 
@@ -602,19 +658,47 @@ func (g *GiteaClient) MergePRWithResult(ctx context.Context, ref string, opts PR
 #### 2.3 Client Factory
 
 ```go
-// pkg/git/factory.go
+// pkg/forge/factory.go
 
-func NewGitClient(cfg *config.Config) (GitClient, error) {
-    if cfg.Git.OfflineMode {
-        return NewGiteaClient(
-            cfg.Git.GiteaURL,
-            cfg.Git.GiteaToken,
-            cfg.Git.GiteaOwner,
-            cfg.Git.GiteaRepo,
+// NewForgeClient creates the appropriate forge client based on operating mode.
+// Gitea connection details are read from project runtime state (forge_state.json),
+// NOT from config. Config only controls agent model overrides.
+func NewForgeClient(projectDir string, mode string) (ForgeClient, error) {
+    if mode == "airplane" {
+        // Load Gitea connection from runtime state
+        state, err := LoadForgeState(projectDir)
+        if err != nil {
+            return nil, fmt.Errorf("load forge state: %w", err)
+        }
+        return gitea.NewClient(
+            state.URL,      // e.g., "http://localhost:3000"
+            state.Token,    // Auto-generated on first setup
+            state.Owner,    // e.g., "maestro"
+            state.RepoName, // e.g., "myproject"
         ), nil
     }
 
-    return NewGitHubClient(), nil
+    return github.NewClient(), nil
+}
+```
+
+```go
+// pkg/forge/state.go
+
+// ForgeState is persisted in <projectDir>/.maestro/forge_state.json
+// Auto-populated by ensureLocalForge() during --airplane startup
+// File permissions: 0600 (owner read/write only)
+//
+// Token storage rationale: Gitea token is local-only (localhost access),
+// auto-generated, and ephemeral. File storage with restrictive permissions
+// is acceptable for this use case.
+type ForgeState struct {
+    URL           string // Gitea base URL
+    Token         string // Auto-generated API token
+    Owner         string // Organization/user in Gitea
+    RepoName      string // Repository name
+    Port          int    // HTTP port (for container management)
+    ContainerName string // Per-project container name
 }
 ```
 
@@ -625,15 +709,23 @@ func NewGitClient(cfg *config.Config) (GitClient, error) {
 ```go
 // pkg/mirror/manager.go
 
+// GetFetchURL returns the upstream URL based on operating mode.
+// In airplane mode, reads from runtime state (not config).
 func (m *Manager) GetFetchURL() string {
-    if m.config.Git.OfflineMode && m.config.Git.Gitea != nil {
+    if m.mode == "airplane" {
+        // Forge state is loaded from <projectDir>/.maestro/forge_state.json
+        state, err := forge.LoadForgeState(m.projectDir)
+        if err != nil {
+            // Fallback to GitHub URL if state unavailable
+            return m.githubURL
+        }
         return fmt.Sprintf("%s/%s/%s.git",
-            m.config.Git.Gitea.URL,
-            m.config.Git.Gitea.Owner,
-            m.config.Git.Gitea.Repo,
+            state.URL,
+            state.Owner,
+            state.RepoName,
         )
     }
-    return m.config.Git.RepoURL
+    return m.githubURL // From config.git.repo_url
 }
 
 func (m *Manager) UpdateMirror(ctx context.Context) error {
@@ -961,10 +1053,14 @@ Based on feedback, these questions have been resolved:
 
 These limitations are documented for MVP and may be addressed in future versions:
 
-1. **Port collisions**: Multiple concurrent Maestro instances may collide on:
+1. **Port collisions**: Multiple concurrent Maestro projects may collide on default ports:
    - WebUI port (default: 8080)
-   - Gitea port (default: 3000)
-   - Workaround: Run one project at a time, or manually configure different ports
+   - Gitea HTTP port (default: 3000)
+   - Gitea SSH port (default: 2222)
+   - **Container/volume names are per-project** (`maestro-gitea-{project}`) so data won't mix
+   - **Ports are the collision risk** — two projects using port 3000 will conflict
+   - Workaround: Run one project at a time, or manually configure different ports per project
+   - v2: Dynamic port allocation with automatic discovery
 
 2. **Model download requires connectivity**: Ollama models must be pre-downloaded
    - Cannot pull models while truly offline
@@ -974,9 +1070,11 @@ These limitations are documented for MVP and may be addressed in future versions
    - Tests run in container, but no workflow simulation
    - Workaround: Test thoroughly before syncing to GitHub
 
-4. **Single project per Gitea**: MVP uses a single Gitea instance per project
-   - No multi-project support in shared Gitea
-   - Workaround: Each project gets its own Gitea container
+4. **One Gitea container per project**: Each project gets its own Gitea instance
+   - Container: `maestro-gitea-{project-name}`
+   - Volume: `maestro-gitea-{project-name}-data`
+   - No shared multi-project Gitea (keeps isolation simple)
+   - Each project's Gitea is independent
 
 5. **No partial offline**: Cannot mix online/offline stories in same session
    - Mode is all-or-nothing per session
@@ -1042,27 +1140,40 @@ Forgejo is a Gitea fork with community governance.
 4. **Workflow parity**: Developer experience matches online mode
 5. **Minimal overhead**: Gitea adds <200MB disk, <100MB RAM
 
-## Appendix: Gitea CLI (tea)
+## Appendix: Gitea CLI (tea) - Optional Tooling
+
+**Note**: The `tea` CLI is **NOT a runtime dependency**. Maestro uses the Gitea HTTP API directly via `GiteaClient`. The `tea` CLI is provided here as optional tooling for manual debugging and troubleshooting.
 
 ```bash
-# Installation
+# Installation (optional - for manual debugging only)
 go install code.gitea.io/tea@latest
 
 # Configuration
 tea login add --name local --url http://localhost:3000 --token $GITEA_TOKEN
 
-# Common commands (mirror gh CLI)
+# Manual debugging commands (not used by Maestro at runtime)
 tea pr create --title "Story 001" --head feature --base main
 tea pr list
 tea pr view 1
 tea pr merge 1 --style squash --delete
 tea pr close 1
 
-# API fallback (when tea isn't available)
-curl -X POST "http://localhost:3000/api/v1/repos/org/repo/pulls" \
+# Direct API examples (what GiteaClient uses internally)
+# Create PR
+curl -X POST "http://localhost:3000/api/v1/repos/maestro/myproject/pulls" \
   -H "Authorization: token $GITEA_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"title":"Story 001","head":"feature","base":"main"}'
+
+# List PRs
+curl "http://localhost:3000/api/v1/repos/maestro/myproject/pulls" \
+  -H "Authorization: token $GITEA_TOKEN"
+
+# Merge PR
+curl -X POST "http://localhost:3000/api/v1/repos/maestro/myproject/pulls/1/merge" \
+  -H "Authorization: token $GITEA_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"do":"squash","delete_branch_after_merge":true}'
 ```
 
 ## References
@@ -1072,3 +1183,375 @@ curl -X POST "http://localhost:3000/api/v1/repos/org/repo/pulls" \
 - [Tea CLI Documentation](https://gitea.com/gitea/tea)
 - [Ollama Integration](./OLLAMA.md) - Local LLM support
 - [Git Workflow](./GIT.md) - Current git architecture
+
+---
+
+## Phase 1 Implementation Plan
+
+**Status**: Ready for implementation
+**Estimated Tasks**: 45 items across 10 work packages
+
+### Work Package 1: Configuration Foundation
+
+#### 1.1 Add Operating Mode to Config
+- [ ] Add `DefaultMode` field to `Config` struct in `pkg/config/config.go`
+- [ ] Add `AirplaneAgents` struct for model overrides (`CoderModel`, `ArchitectModel`, `PMModel`)
+- [ ] Add `AirplaneAgents` field to `AgentConfig` struct
+- [ ] Update `applyDefaults()` to set `DefaultMode = "standard"`
+- [ ] Update `createDefaultConfig()` with airplane agent defaults
+
+**Tests:**
+- [ ] `TestConfig_DefaultMode_Standard` - Verify default mode is "standard"
+- [ ] `TestConfig_AirplaneAgents_Override` - Verify airplane overrides are applied in airplane mode
+- [ ] `TestConfig_LoadWithAirplaneSection` - Verify config with airplane section loads correctly
+
+#### 1.2 ForgeState Persistence
+- [ ] Create `pkg/forge/state.go` with `ForgeState` struct
+- [ ] Implement `SaveForgeState(projectDir, state)` with 0600 permissions
+- [ ] Implement `LoadForgeState(projectDir)`
+- [ ] Implement `ForgeStateExists(projectDir)` check
+
+**Tests:**
+- [ ] `TestForgeState_SaveLoad_RoundTrip` - Save and load state correctly
+- [ ] `TestForgeState_Permissions` - Verify file has 0600 permissions
+- [ ] `TestForgeState_MissingFile` - Returns appropriate error when file doesn't exist
+
+### Work Package 2: CLI Flag and Mode Resolution
+
+#### 2.1 Add --airplane Flag
+- [ ] Add `airplane` flag in `cmd/maestro/main.go`
+- [ ] Pass mode to `run()` function
+- [ ] Pass mode through to kernel initialization
+
+#### 2.2 Mode Resolution Logic
+- [ ] Add `ResolveOperatingMode(cliFlag string, configDefault string)` to `pkg/config/config.go`
+- [ ] Implement precedence: CLI flag > config default_mode > "standard"
+- [ ] Store resolved mode in runtime config (not persisted)
+
+**Tests:**
+- [ ] `TestConfig_ResolveOperatingMode_CLIOverrides` - --airplane overrides config
+- [ ] `TestConfig_ResolveOperatingMode_ConfigDefault` - Uses config when no CLI flag
+- [ ] `TestConfig_ResolveOperatingMode_FallbackStandard` - Falls back to standard when nothing set
+
+### Work Package 3: Preflight Checks
+
+#### 3.1 Preflight Check Engine
+- [ ] Create `pkg/preflight/checks.go` with provider requirement detection
+- [ ] Implement `RequiredProviders(cfg *config.Config, mode string)` - returns set of providers needed
+- [ ] Implement `RunPreflightChecks(ctx, cfg, mode)` - validates all required providers
+
+#### 3.2 Provider-Specific Validators
+- [ ] `pkg/preflight/validators.go` with individual check functions:
+- [ ] `CheckGitHub()` - GITHUB_TOKEN, gh CLI
+- [ ] `CheckAnthropic()` - ANTHROPIC_API_KEY
+- [ ] `CheckOpenAI()` - OPENAI_API_KEY
+- [ ] `CheckGoogle()` - GOOGLE_GENAI_API_KEY
+- [ ] `CheckOllama()` - Ollama reachability, model availability
+- [ ] `CheckGitea()` - Gitea container health, API reachability
+
+#### 3.3 Graceful Failure with Guidance
+- [ ] Create `pkg/preflight/guidance.go` with user-friendly error messages
+- [ ] Implement `FormatPreflightError(err)` with actionable guidance
+- [ ] Add model availability listing when Ollama model missing
+
+**Tests:**
+- [ ] `TestPreflight_StandardMode_RequiresGitHub` - Standard mode needs GitHub
+- [ ] `TestPreflight_AirplaneMode_RequiresOllama` - Airplane mode needs Ollama
+- [ ] `TestPreflight_MixedProviders` - Ollama model in standard mode validates Ollama
+- [ ] `TestPreflight_GracefulFailure_ModelMissing` - Shows helpful message when model missing
+- [ ] `TestPreflight_SkipsIrrelevantProviders` - Doesn't validate unused providers
+
+### Work Package 4: Gitea Container Management
+
+#### 4.1 Container Lifecycle
+- [ ] Create `pkg/forge/gitea/container.go` with Gitea container management
+- [ ] Implement `EnsureContainer(ctx, projectDir, projectName)` - idempotent start
+- [ ] Implement `StopContainer(ctx, containerName)` - graceful shutdown
+- [ ] Implement `IsHealthy(ctx, url)` - health check via API
+- [ ] Implement `WaitForReady(ctx, url, timeout)` - wait with backoff
+
+#### 4.2 Container Configuration
+- [ ] Per-project container naming: `maestro-gitea-{project-name}`
+- [ ] Per-project volume naming: `maestro-gitea-{project-name}-data`
+- [ ] Default port allocation (3000 HTTP, 2222 SSH)
+- [ ] Pin Gitea image to `gitea/gitea:1.21.11`
+
+#### 4.3 Initial Setup
+- [ ] Implement `SetupRepository(ctx, state, mirrorPath)` - create org/repo from mirror
+- [ ] Implement `GenerateToken(ctx, url)` - auto-generate API token
+- [ ] Push mirror to Gitea on first setup
+
+**Tests:**
+- [ ] `TestGiteaContainer_Ensure_StartsWhenMissing` - Starts container if not running
+- [ ] `TestGiteaContainer_Ensure_IdempotentWhenRunning` - No-op when already running
+- [ ] `TestGiteaContainer_HealthCheck_Healthy` - Returns true for healthy Gitea
+- [ ] `TestGiteaContainer_HealthCheck_Unhealthy` - Returns false/error for unreachable
+- [ ] `TestGiteaContainer_Naming_PerProject` - Uses project-specific names
+- [ ] `TestGiteaContainer_SetupRepository_PushesFromMirror` - Initial push works
+
+### Work Package 5: ForgeClient Implementation
+
+#### 5.1 ForgeClient Interface
+- [ ] Create `pkg/forge/client.go` with `ForgeClient` interface
+- [ ] Define PR operations: `CreatePR`, `GetPR`, `MergePR`, `ListPRs`, `ClosePR`
+- [ ] Define branch operations: `CleanupMergedBranches`
+- [ ] Add `Type()` method for runtime type checking ("github" | "gitea")
+
+#### 5.2 GiteaClient Implementation
+- [ ] Create `pkg/forge/gitea/client.go`
+- [ ] Implement `NewClient(url, token, owner, repo)`
+- [ ] Implement `CreatePR()` via `POST /repos/{owner}/{repo}/pulls`
+- [ ] Implement `GetPR()` via `GET /repos/{owner}/{repo}/pulls/{index}`
+- [ ] Implement `MergePR()` via `POST /repos/{owner}/{repo}/pulls/{index}/merge`
+- [ ] Implement `ListPRsForBranch()` via `GET /repos/{owner}/{repo}/pulls?head={branch}`
+- [ ] Implement `ClosePR()` via `PATCH /repos/{owner}/{repo}/pulls/{index}`
+- [ ] Implement `GetOrCreatePR()` - idempotent PR creation
+
+#### 5.3 GitHubClient Extraction
+- [ ] Create `pkg/forge/github/client.go` - extract from existing GitHub code
+- [ ] Ensure it implements `ForgeClient` interface
+- [ ] Wrap existing `gh` CLI calls or migrate to API
+
+#### 5.4 Client Factory
+- [ ] Create `pkg/forge/factory.go` with `NewForgeClient(projectDir, mode)`
+- [ ] Load ForgeState for airplane mode
+- [ ] Return GiteaClient or GitHubClient based on mode
+
+**Tests:**
+- [ ] `TestGiteaClient_CreatePR_Success` - Creates PR via API
+- [ ] `TestGiteaClient_CreatePR_Conflict` - Handles existing PR gracefully
+- [ ] `TestGiteaClient_MergePR_Success` - Merges PR via API
+- [ ] `TestGiteaClient_MergePR_Conflict` - Returns conflict info
+- [ ] `TestGiteaClient_GetOrCreatePR_Idempotent` - Returns existing PR if present
+- [ ] `TestForgeFactory_StandardMode` - Returns GitHubClient
+- [ ] `TestForgeFactory_AirplaneMode` - Returns GiteaClient
+
+### Work Package 6: Mirror Upstream Switching
+
+#### 6.1 Mirror Manager Updates
+- [ ] Add `mode` field to mirror Manager struct
+- [ ] Update `GetFetchURL()` to check mode and load ForgeState for Gitea URL
+- [ ] Implement `SwitchUpstream(ctx, newMode)` for mode transitions
+- [ ] Persist mirror state (`upstream`, `upstream_url`, `base_commit`)
+
+#### 6.2 Mirror Coherence
+- [ ] Add `RefreshFromForge(ctx)` - fetch after PR merges
+- [ ] Call refresh after merge in architect flow (uses ForgeClient)
+- [ ] Verify clone source is always mirror (not direct from forge)
+
+**Tests:**
+- [ ] `TestMirror_GetFetchURL_StandardMode` - Returns GitHub URL
+- [ ] `TestMirror_GetFetchURL_AirplaneMode` - Returns Gitea URL from ForgeState
+- [ ] `TestMirror_SwitchUpstream_UpdatesRemote` - git remote set-url called
+- [ ] `TestMirror_RefreshAfterMerge` - Mirror updated after PR merge
+
+### Work Package 7: Model Resolution
+
+#### 7.1 Airplane Model Resolution
+- [ ] Create `pkg/models/resolver.go`
+- [ ] Implement `ResolveCoderModel(cfg, mode)` - returns effective model
+- [ ] Implement `ResolveArchitectModel(cfg, mode)` - returns effective model
+- [ ] Implement `ResolvePMModel(cfg, mode)` - returns effective model
+
+#### 7.2 Preferred Model Fallback
+- [ ] Define `PreferredCoderModels` list (qwen2.5-coder variants, deepseek, codellama)
+- [ ] Define `PreferredArchitectModels` list (llama3.1, qwen2.5 variants)
+- [ ] Implement `FindAvailableModel(ctx, preferredList)` - queries Ollama
+- [ ] Graceful failure when no suitable model found
+
+**Tests:**
+- [ ] `TestModelResolver_ExplicitConfig` - Uses config when set
+- [ ] `TestModelResolver_PreferredFallback` - Falls back to preferred list
+- [ ] `TestModelResolver_NoModelAvailable` - Returns helpful error
+
+### Work Package 8: Airplane Startup Flow
+
+#### 8.1 Startup Orchestration
+- [ ] Create `internal/orch/airplane.go` with `AirplaneOrchestrator`
+- [ ] Implement `PrepareAirplaneMode(ctx, projectDir)` - orchestrates all checks
+- [ ] Sequence: Docker → Gitea → Ollama → Models → Mirror → Boot
+- [ ] Integrate with `cmd/maestro/flows.go` (call from OrchestratorFlow or new AirplaneFlow)
+
+#### 8.2 Idempotent Ensures
+- [ ] `ensureDocker()` - verify Docker daemon running
+- [ ] `ensureGitea()` - use `pkg/forge/gitea` to start container, wait healthy, setup repo
+- [ ] `ensureOllama()` - verify Ollama reachable
+- [ ] `ensureModels()` - use `pkg/models` to verify all required models available
+- [ ] `ensureMirror()` - switch upstream if needed, fetch from Gitea
+
+**Tests:**
+- [ ] `TestAirplaneOrch_AllComponentsReady` - Boots successfully
+- [ ] `TestAirplaneOrch_GiteaMissing` - Starts Gitea automatically
+- [ ] `TestAirplaneOrch_OllamaUnreachable` - Fails with guidance
+- [ ] `TestAirplaneOrch_ModelMissing` - Fails with available models list
+- [ ] `TestAirplaneOrch_Idempotent` - Second run is fast no-op
+
+### Work Package 9: Agent Integration
+
+#### 9.1 Coder Integration
+- [ ] Update coder PREPARE_MERGE to use `ForgeClient` interface
+- [ ] Update push target based on mode (Gitea vs GitHub)
+- [ ] PR creation via `ForgeClient.CreatePR()` in airplane mode
+
+#### 9.2 Architect Integration
+- [ ] Update architect merge flow to use `ForgeClient` interface
+- [ ] PR merge via `ForgeClient.MergePR()` in airplane mode
+- [ ] Mirror refresh after merge
+
+**Tests:**
+- [ ] `TestCoder_PrepareMerge_AirplaneMode` - Pushes to Gitea, creates PR via ForgeClient
+- [ ] `TestArchitect_Merge_AirplaneMode` - Merges via ForgeClient, refreshes mirror
+
+### Work Package 10: Sync Command (MVP)
+
+#### 10.1 Basic Sync Implementation
+- [ ] Create `cmd/agentctl/sync.go` with `sync` subcommand
+- [ ] Implement `--to-github` flag for Gitea→GitHub sync
+- [ ] Push all branches from Gitea to GitHub
+- [ ] Push main branch
+- [ ] Update mirror from GitHub after sync
+
+**Tests:**
+- [ ] `TestSync_PushesToGitHub` - Pushes Gitea changes to GitHub
+- [ ] `TestSync_UpdatesMirror` - Mirror refreshed from GitHub after sync
+- [ ] `TestSync_NotInAirplaneMode` - Fails gracefully in standard mode
+
+### Work Package 11: Documentation Updates
+
+#### 11.1 README.md Updates
+- [ ] Update "Operating Modes" section to include Airplane Mode
+- [ ] Update requirements section (GitHub no longer hard requirement in airplane mode)
+- [ ] Add airplane mode to the modes table
+- [ ] Document `--airplane` CLI flag
+- [ ] Add link to `docs/AIRPLANE_MODE.md` for details
+
+#### 11.2 Mode Documentation
+- [ ] Update `docs/MODES.md` if it exists, or create reference in README
+- [ ] Clarify terminology: Operating modes vs Coder mode vs Airplane mode
+
+---
+
+### Testing Notes
+
+**Local Ollama Model Available:**
+- `mistral-nemo:latest` (7.1 GB) - Use for integration tests
+- Tests should use this model or mock Ollama responses for unit tests
+
+---
+
+### Integration Tests
+
+#### End-to-End Airplane Mode Test
+- [ ] `TestE2E_AirplaneMode_FullStoryCycle`
+  1. Start with `--airplane` flag
+  2. Verify Gitea container started
+  3. Coder completes story (push to Gitea, create PR)
+  4. Architect reviews and merges (via Gitea)
+  5. Mirror updated from Gitea
+  6. Second story clones from updated mirror
+  7. Verify no network calls to GitHub
+
+#### Mode Switching Test
+- [ ] `TestE2E_ModeSwitching_StandardToAirplane`
+  1. Start in standard mode, process story
+  2. Stop orchestrator
+  3. Restart with `--airplane`
+  4. Verify mirror switches upstream to Gitea
+  5. Continue processing
+
+---
+
+### Task Tracking
+
+| Package | Tasks | Tests | Status |
+|---------|-------|-------|--------|
+| WP1: Config Foundation | 5 | 3 | Not Started |
+| WP2: CLI Flag & Mode | 3 | 3 | Not Started |
+| WP3: Preflight Checks | 8 | 5 | Not Started |
+| WP4: Gitea Container (`pkg/forge/gitea`) | 8 | 6 | Not Started |
+| WP5: ForgeClient (`pkg/forge`) | 12 | 7 | Not Started |
+| WP6: Mirror Switching | 4 | 4 | Not Started |
+| WP7: Model Resolution | 5 | 3 | Not Started |
+| WP8: Airplane Orchestrator (`internal/orch`) | 6 | 5 | Not Started |
+| WP9: Agent Integration | 4 | 2 | Not Started |
+| WP10: Sync Command | 4 | 3 | Not Started |
+| WP11: Documentation Updates | 7 | - | Not Started |
+| **Integration Tests** | - | 2 | Not Started |
+| **Total** | **66** | **43** | - |
+
+### Implementation Order
+
+Recommended implementation sequence:
+
+1. **WP1 + WP2** - Config and CLI (foundation)
+2. **WP3** - Preflight checks (`pkg/preflight`)
+3. **WP4** - Gitea container (`pkg/forge/gitea`)
+4. **WP5** - ForgeClient (`pkg/forge` + subpackages)
+5. **WP6** - Mirror switching (integrate with ForgeClient)
+6. **WP7** - Model resolution (`pkg/models`)
+7. **WP8** - Airplane orchestrator (`internal/orch/airplane.go`)
+8. **WP9** - Agent integration (coder/architect use ForgeClient)
+9. **WP10** - Sync command (day-2 operation)
+10. **Integration tests** (validation)
+11. **WP11** - Documentation updates (README.md, modes clarification)
+
+### Files to Create
+
+```
+pkg/forge/
+├── state.go              # ForgeState persistence (0600 permissions)
+├── state_test.go
+├── client.go             # ForgeClient interface (PR operations)
+├── factory.go            # Client factory (returns GitHub or Gitea client)
+├── factory_test.go
+├── gitea/
+│   ├── client.go         # GiteaClient implementation
+│   ├── client_test.go
+│   ├── container.go      # Gitea container lifecycle management
+│   └── container_test.go
+└── github/
+    ├── client.go         # GitHubClient implementation (extract from existing)
+    └── client_test.go
+
+pkg/preflight/
+├── checks.go             # Provider requirement detection
+├── validators.go         # Per-provider validators (GitHub, Anthropic, Ollama, Gitea, etc.)
+├── guidance.go           # User-friendly error messages with actionable guidance
+└── preflight_test.go
+
+pkg/models/
+├── resolver.go           # Airplane model resolution + preferred fallback
+└── resolver_test.go
+
+internal/orch/
+└── airplane.go           # AirplaneOrchestrator (parallel to StartupOrchestrator)
+
+cmd/maestro/
+└── flows.go              # Add AirplaneFlow if needed
+
+cmd/agentctl/
+└── sync.go               # Sync command
+
+tests/integration/
+└── airplane_mode_test.go # E2E integration tests
+```
+
+**Package naming rationale:**
+- `pkg/forge/` - "Forge" is the generic term for git hosting (GitHub, Gitea, GitLab, etc.)
+- `pkg/forge/gitea/` and `pkg/forge/github/` - Subpackages for each forge implementation
+- `pkg/preflight/` - "Preflight checks" is clearer than generic "validation"
+- **No `pkg/mode/`** - Mode resolution is simple (CLI > config > default), lives in config
+- **No `pkg/airplane/`** - Orchestration logic goes in `internal/orch/airplane.go`
+
+### Files to Modify
+
+```
+pkg/config/config.go           # Add DefaultMode, AirplaneAgents, mode resolution
+cmd/maestro/main.go            # Add --airplane flag, pass to flows
+cmd/maestro/flows.go           # Call AirplaneOrchestrator, possibly add AirplaneFlow
+pkg/mirror/manager.go          # Add mode-aware GetFetchURL, use ForgeClient
+pkg/coder/prepare_merge.go     # Use ForgeClient interface
+pkg/architect/merge.go         # Use ForgeClient interface
+README.md                      # Update modes table, requirements, add airplane mode
+docs/MODES.md                  # Update if exists (clarify mode terminology)
+```

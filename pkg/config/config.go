@@ -49,11 +49,9 @@
 package config
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -371,6 +369,15 @@ type DebugConfig struct {
 	LLMMessages bool `json:"llm_messages"` // Enable debug logging for LLM message formatting (default: false)
 }
 
+// AirplaneAgentConfig defines model overrides for airplane (offline) mode.
+// When operating in airplane mode, these models are used instead of the standard cloud models.
+// All models should be Ollama-compatible (e.g., "qwen2.5-coder:32b" or "mistral-nemo:latest").
+type AirplaneAgentConfig struct {
+	CoderModel     string `json:"coder_model,omitempty"`     // Ollama model for coder agents
+	ArchitectModel string `json:"architect_model,omitempty"` // Ollama model for architect agent
+	PMModel        string `json:"pm_model,omitempty"`        // Ollama model for PM agent
+}
+
 // AgentConfig defines which models to use and concurrency limits.
 type AgentConfig struct {
 	MaxCoders      int              `json:"max_coders"`      // Maximum concurrent coder agents
@@ -381,11 +388,17 @@ type AgentConfig struct {
 	Metrics        MetricsConfig    `json:"metrics"`         // Metrics collection configuration
 	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
 	StateTimeout   time.Duration    `json:"state_timeout"`   // Global timeout for any state processing
+
+	// Airplane mode model overrides
+	Airplane *AirplaneAgentConfig `json:"airplane,omitempty"` // Model overrides for airplane (offline) mode
 }
 
 // All constants bundled together for easy maintenance.
 const (
 	// System behavior constants - these control orchestrator behavior and should not be user-configurable.
+
+	// Default model for airplane mode - a capable local model available via Ollama.
+	DefaultAirplaneModel = "mistral-nemo:latest"
 
 	// Shutdown and retry behavior.
 	GracefulShutdownTimeoutSec = 30  // How long to wait for graceful shutdown before force-kill
@@ -454,6 +467,12 @@ const (
 	// Coder execution mode constants.
 	CoderModeStandard   = "standard"    // Default: use standard LLM-based coder agent
 	CoderModeClaudeCode = "claude-code" // Use Claude Code subprocess for planning/coding
+
+	// Operating mode constants (connectivity/deployment mode).
+	// Note: This is distinct from "Operating Modes" (Bootstrap, Development, etc.) and "Coder Mode" (standard, claude-code).
+	// This controls whether Maestro uses cloud APIs or local-only resources.
+	OperatingModeStandard = "standard" // Default: use cloud APIs (GitHub, Anthropic, OpenAI, etc.)
+	OperatingModeAirplane = "airplane" // Offline mode: use local Gitea + Ollama only
 
 	// Project config constants.
 	ProjectConfigFilename = "config.json"
@@ -595,6 +614,12 @@ type TodoScanConfig struct {
 type Config struct {
 	SchemaVersion string `json:"schema_version"` // MUST increment for breaking changes
 
+	// === OPERATING MODE ===
+	// DefaultMode controls connectivity/deployment: "standard" (cloud APIs) or "airplane" (local only).
+	// Can be overridden at runtime with --airplane CLI flag.
+	// Note: This is distinct from "Operating Modes" (Bootstrap, Development) and "Coder Mode" (standard, claude-code).
+	DefaultMode string `json:"default_mode,omitempty"` // Default operating mode: "standard" or "airplane"
+
 	// === PROJECT-SPECIFIC SETTINGS (per .maestro/config.json) ===
 	Project     *ProjectInfo       `json:"project"`     // Basic project metadata (name, platform)
 	Container   *ContainerConfig   `json:"container"`   // Container settings (NO build state/metadata)
@@ -612,6 +637,7 @@ type Config struct {
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
+	OperatingMode    string `json:"-"` // Resolved operating mode for this session (from CLI or DefaultMode)
 	validTargetImage bool   `json:"-"` // Whether the configured target container is valid and runnable
 }
 
@@ -671,13 +697,21 @@ func GetProjectMaestroDir() (string, error) {
 
 // GetProjectDir returns the current project directory.
 // Must call LoadConfig first to initialize projectDir.
-func GetProjectDir() (string, error) {
+func GetProjectDir() string {
+	mu.RLock()
+	defer mu.RUnlock()
+	return projectDir
+}
+
+// MustGetProjectDir returns the current project directory or panics if not initialized.
+// Use this only in code paths where LoadConfig is guaranteed to have been called.
+func MustGetProjectDir() string {
 	mu.RLock()
 	defer mu.RUnlock()
 	if projectDir == "" {
-		return "", fmt.Errorf("config not initialized - call LoadConfig first")
+		panic("config not initialized - call LoadConfig first")
 	}
-	return projectDir, nil
+	return projectDir
 }
 
 // GetContainerWorkspacePath returns the workspace path used inside containers.
@@ -742,6 +776,17 @@ func GetConfig() (Config, error) {
 	}
 	// Return by value (copy) to prevent external mutation
 	return *config, nil
+}
+
+// SetConfigForTesting sets the global config for testing purposes.
+// Pass nil to reset. This bypasses normal initialization and should only be used in tests.
+func SetConfigForTesting(cfg *Config) {
+	mu.Lock()
+	defer mu.Unlock()
+	config = cfg
+	if cfg == nil {
+		projectDir = ""
+	}
 }
 
 // LoadConfig loads the entire configuration from <projectDir>/.maestro/config.json into
@@ -1025,6 +1070,13 @@ func createDefaultConfig() *Config {
 			CoderModel:     DefaultCoderModel,
 			ArchitectModel: DefaultArchitectModel,
 			PMModel:        DefaultPMModel,
+			// Airplane mode defaults - use local Ollama models
+			// Users should customize these based on their available models
+			Airplane: &AirplaneAgentConfig{
+				CoderModel:     DefaultAirplaneModel, // Good for coding tasks
+				ArchitectModel: DefaultAirplaneModel, // Good for planning/architecture
+				PMModel:        DefaultAirplaneModel, // Good for requirements gathering
+			},
 			Metrics: MetricsConfig{
 				Enabled:       true,       // Enable metrics by default for development visibility
 				Exporter:      "internal", // Use internal aggregation by default
@@ -1297,6 +1349,25 @@ func applyDefaults(config *Config) {
 	if config.Agents.CoderMode == "" {
 		config.Agents.CoderMode = CoderModeStandard
 	}
+	// Apply airplane agent defaults if section exists but models not set
+	if config.Agents.Airplane == nil {
+		config.Agents.Airplane = &AirplaneAgentConfig{
+			CoderModel:     DefaultAirplaneModel,
+			ArchitectModel: DefaultAirplaneModel,
+			PMModel:        DefaultAirplaneModel,
+		}
+	} else {
+		// Fill in missing airplane models with defaults
+		if config.Agents.Airplane.CoderModel == "" {
+			config.Agents.Airplane.CoderModel = DefaultAirplaneModel
+		}
+		if config.Agents.Airplane.ArchitectModel == "" {
+			config.Agents.Airplane.ArchitectModel = DefaultAirplaneModel
+		}
+		if config.Agents.Airplane.PMModel == "" {
+			config.Agents.Airplane.PMModel = DefaultAirplaneModel
+		}
+	}
 
 	// Apply metrics defaults
 	if config.Agents.Metrics.Exporter == "" {
@@ -1422,42 +1493,18 @@ func applyDefaults(config *Config) {
 }
 
 func validateConfig(config *Config) error {
-	// Debug logging
-	getLogger().Info("🔑 Validating environment variables")
+	// Structural validation only - provider/credential checks are handled by pkg/preflight
+	// after operating mode is resolved. This allows airplane mode to skip cloud provider checks.
+	getLogger().Info("📋 Validating config structure")
 
-	// Validate GITHUB_TOKEN environment variable (required for all git operations)
-	githubToken := GetGitHubToken()
-	if githubToken == "" {
-		return fmt.Errorf("GITHUB_TOKEN not found in environment variables - required for git operations")
-	}
-
-	// Validate GITHUB_TOKEN format
-	if !strings.HasPrefix(githubToken, "ghp_") && !strings.HasPrefix(githubToken, "github_pat_") && !strings.HasPrefix(githubToken, "ghs_") {
-		return fmt.Errorf("GITHUB_TOKEN format appears invalid (should start with 'ghp_', 'github_pat_', or 'ghs_')")
-	}
-	if len(githubToken) < 20 {
-		return fmt.Errorf("GITHUB_TOKEN appears too short to be valid (got %d chars, need at least 20)", len(githubToken))
-	}
-	getLogger().Info("🔑 ✅ GITHUB_TOKEN validated successfully (%d chars)", len(githubToken))
-
-	// Validate LLM API keys for configured models
-	if err := validateRequiredAPIKeys(config); err != nil {
-		return fmt.Errorf("LLM API key validation failed: %w", err)
-	}
-
-	// Validate external tool dependencies and detect capabilities
-	if err := validateExternalTools(config); err != nil {
-		return fmt.Errorf("external tool validation failed: %w", err)
-	}
-
-	// Validate agent config
+	// Validate agent config structure (model name format, coder_mode values)
 	if config.Agents != nil {
 		if err := validateAgentConfigInternal(config.Agents, config); err != nil {
 			return fmt.Errorf("agent config validation failed: %w", err)
 		}
 	}
 
-	// Validate Git settings (RepoURL is optional - may not be using Git worktrees yet)
+	// Validate Git settings format (RepoURL is optional - may not be using Git worktrees yet)
 	if config.Git != nil && config.Git.RepoURL != "" {
 		if !strings.HasPrefix(config.Git.RepoURL, "git@") && !strings.HasPrefix(config.Git.RepoURL, "https://") {
 			return fmt.Errorf("git repo_url must start with 'git@' or 'https://'")
@@ -1499,6 +1546,7 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	getLogger().Info("✅ Config structure validated")
 	return nil
 }
 
@@ -1531,185 +1579,6 @@ func resolveWebUIFilePath(filePath string) (string, error) {
 		return "", fmt.Errorf("config not initialized - call LoadConfig first")
 	}
 	return filepath.Join(projectDir, ProjectConfigDir, filePath), nil
-}
-
-// validateRequiredAPIKeys checks that all required API keys are present for the configured models.
-func validateRequiredAPIKeys(cfg *Config) error {
-	if cfg.Agents == nil {
-		return nil // No agents configured, no API keys needed
-	}
-
-	// Debug logging
-	getLogger().Info("🔑 Validating API keys for configured models")
-
-	// Collect all required providers based on configured models
-	requiredProviders := make(map[string]bool)
-
-	// Check coder model
-	if cfg.Agents.CoderModel != "" {
-		coderProvider, err := GetModelProvider(cfg.Agents.CoderModel)
-		if err != nil {
-			return fmt.Errorf("coder model %s: %w", cfg.Agents.CoderModel, err)
-		}
-		requiredProviders[coderProvider] = true
-		getLogger().Info("🔑 Coder model %s requires provider %s", cfg.Agents.CoderModel, coderProvider)
-	}
-
-	// Check architect model
-	if cfg.Agents.ArchitectModel != "" {
-		architectProvider, err := GetModelProvider(cfg.Agents.ArchitectModel)
-		if err != nil {
-			return fmt.Errorf("architect model %s: %w", cfg.Agents.ArchitectModel, err)
-		}
-		requiredProviders[architectProvider] = true
-		getLogger().Info("🔑 Architect model %s requires provider %s", cfg.Agents.ArchitectModel, architectProvider)
-	}
-
-	// Validate API keys for each required provider
-	for provider := range requiredProviders {
-		apiKey, err := GetAPIKey(provider)
-		if err != nil {
-			return fmt.Errorf("failed to get API key for provider %s: %w", provider, err)
-		}
-		if apiKey == "" {
-			var envVar string
-			switch provider {
-			case ProviderAnthropic:
-				envVar = EnvAnthropicAPIKey
-			case ProviderOpenAI:
-				envVar = EnvOpenAIAPIKey
-			default:
-				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
-			}
-			return fmt.Errorf("%s not found in environment variables - required for %s models", envVar, provider)
-		}
-
-		// Basic validation: API keys should be reasonably long
-		if len(apiKey) < 10 {
-			var envVar string
-			switch provider {
-			case ProviderAnthropic:
-				envVar = EnvAnthropicAPIKey
-			case ProviderOpenAI:
-				envVar = EnvOpenAIAPIKey
-			default:
-				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
-			}
-			return fmt.Errorf("%s appears too short to be valid (got %d chars, need at least 10)", envVar, len(apiKey))
-		} else {
-			// Log successful validation
-			var envVar string
-			switch provider {
-			case ProviderAnthropic:
-				envVar = EnvAnthropicAPIKey
-			case ProviderOpenAI:
-				envVar = EnvOpenAIAPIKey
-			default:
-				envVar = "API_KEY_FOR_" + strings.ToUpper(provider)
-			}
-			getLogger().Info("🔑 ✅ %s validated successfully (%d chars)", envVar, len(apiKey))
-		}
-	}
-
-	getLogger().Info("🔑 ✅ All required API keys validated successfully")
-	return nil
-}
-
-// validateExternalTools checks that all required external tools are available and detects Docker capabilities.
-func validateExternalTools(config *Config) error {
-	getLogger().Info("🔧 Validating external tool dependencies")
-
-	requiredTools := map[string]string{
-		"git":    "Git is required for repository operations",
-		"gh":     "GitHub CLI is required for pull request operations",
-		"docker": "Docker is required for containerized builds",
-	}
-
-	var errors []string
-
-	for tool, description := range requiredTools {
-		if err := CheckToolAvailable(tool); err != nil {
-			errors = append(errors, fmt.Sprintf("%s not found on PATH: %s", tool, description))
-		} else {
-			getLogger().Info("🔧 ✅ %s: available", tool)
-		}
-	}
-
-	// Check if Docker daemon is running (docker-specific validation)
-	if CheckToolAvailable("docker") == nil {
-		if err := CheckDockerDaemonRunning(); err != nil {
-			errors = append(errors, fmt.Sprintf("Docker daemon is not running: %s", err.Error()))
-		} else {
-			getLogger().Info("🔧 ✅ Docker daemon: running")
-
-			// Check buildx availability and store result in config
-			if config.Container == nil {
-				config.Container = &ContainerConfig{}
-			}
-			if err := CheckBuildxAvailable(); err != nil {
-				config.Container.BuildxAvailable = false
-				getLogger().Warn("🔧 ⚠️ Docker buildx: not available (will use docker build)")
-			} else {
-				config.Container.BuildxAvailable = true
-				getLogger().Info("🔧 ✅ Docker buildx: available")
-			}
-		}
-	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("missing required tools:\n  - %s", strings.Join(errors, "\n  - "))
-	}
-
-	getLogger().Info("🔧 ✅ All external tools validated successfully")
-	return nil
-}
-
-// CheckToolAvailable checks if a command is available on the system PATH.
-// This is an exported helper that other packages can use for specific tool checks.
-func CheckToolAvailable(toolName string) error {
-	_, err := exec.LookPath(toolName)
-	if err != nil {
-		return fmt.Errorf("command %s not found: %w", toolName, err)
-	}
-	return nil
-}
-
-// CheckDockerDaemonRunning checks if the Docker daemon is running.
-// This is an exported helper that other packages can use for Docker-specific checks.
-//
-//nolint:contextcheck // Function creates its own context internally
-func CheckDockerDaemonRunning() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "docker", "ps", "-q")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker ps failed: %w", err)
-	}
-	return nil
-}
-
-// CheckBuildxAvailable checks if Docker buildx is available and usable.
-// This is an exported helper that other packages can use for buildx-specific checks.
-//
-//nolint:contextcheck // Function creates its own context internally
-func CheckBuildxAvailable() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Check 1: buildx CLI command exists
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "version")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker buildx version failed: %w", err)
-	}
-
-	// Check 2: default builder is available and working
-	cmd = exec.CommandContext(ctx, "docker", "buildx", "inspect", "--builder", "default")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker buildx inspect failed: %w", err)
-	}
-
-	return nil
 }
 
 // validateTargetContainer checks if the configured target container is valid and runnable.
@@ -1797,40 +1666,6 @@ func GetAPIKey(provider string) (string, error) {
 	}
 
 	return "", fmt.Errorf("API key not found: %s not found in secrets file or environment variables", envVar)
-}
-
-// ValidateAPIKeysForConfig validates that all required API keys are available for the configured models.
-func ValidateAPIKeysForConfig() error {
-	cfg, err := GetConfig()
-	if err != nil {
-		return fmt.Errorf("configuration not loaded: %w", err)
-	}
-
-	// Collect all providers used by configured models
-	requiredProviders := make(map[string]bool)
-
-	// Check coder model provider
-	coderProvider, err := GetModelProvider(cfg.Agents.CoderModel)
-	if err != nil {
-		return fmt.Errorf("failed to get provider for coder model: %w", err)
-	}
-	requiredProviders[coderProvider] = true
-
-	// Check architect model provider
-	architectProvider, err := GetModelProvider(cfg.Agents.ArchitectModel)
-	if err != nil {
-		return fmt.Errorf("failed to get provider for architect model: %w", err)
-	}
-	requiredProviders[architectProvider] = true
-
-	// Validate API keys for all required providers
-	for provider := range requiredProviders {
-		if _, err := GetAPIKey(provider); err != nil {
-			return fmt.Errorf("missing API key for provider %s: %w", provider, err)
-		}
-	}
-
-	return nil
 }
 
 // GetGitHubToken returns the GitHub token.
@@ -1926,4 +1761,102 @@ func SetSessionID(sessionID string) error {
 	config.SessionID = sessionID
 	getLogger().Info("Restored session ID: %s", sessionID)
 	return nil
+}
+
+// ResolveOperatingMode determines the operating mode based on CLI flag and config default.
+// Precedence: CLI flag > config default_mode > "standard"
+// This sets the runtime OperatingMode field (not persisted).
+func ResolveOperatingMode(cliAirplaneFlag bool) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	var mode string
+	if cliAirplaneFlag {
+		mode = OperatingModeAirplane
+		getLogger().Info("Operating mode: airplane (from --airplane flag)")
+	} else if config.DefaultMode != "" {
+		mode = config.DefaultMode
+		getLogger().Info("Operating mode: %s (from config default_mode)", mode)
+	} else {
+		mode = OperatingModeStandard
+		getLogger().Info("Operating mode: standard (default)")
+	}
+
+	// Validate mode value
+	if mode != OperatingModeStandard && mode != OperatingModeAirplane {
+		return fmt.Errorf("invalid operating mode '%s': must be '%s' or '%s'",
+			mode, OperatingModeStandard, OperatingModeAirplane)
+	}
+
+	config.OperatingMode = mode
+	return nil
+}
+
+// GetOperatingMode returns the current operating mode.
+// Returns "standard" if not explicitly set.
+func GetOperatingMode() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.OperatingMode == "" {
+		return OperatingModeStandard
+	}
+	return config.OperatingMode
+}
+
+// IsAirplaneMode returns true if currently operating in airplane (offline) mode.
+func IsAirplaneMode() bool {
+	return GetOperatingMode() == OperatingModeAirplane
+}
+
+// GetEffectiveCoderModel returns the coder model to use based on current operating mode.
+// In airplane mode, returns the airplane override if configured, otherwise the standard model.
+func GetEffectiveCoderModel() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Agents == nil {
+		return DefaultCoderModel
+	}
+
+	if config.OperatingMode == OperatingModeAirplane && config.Agents.Airplane != nil && config.Agents.Airplane.CoderModel != "" {
+		return config.Agents.Airplane.CoderModel
+	}
+	return config.Agents.CoderModel
+}
+
+// GetEffectiveArchitectModel returns the architect model to use based on current operating mode.
+// In airplane mode, returns the airplane override if configured, otherwise the standard model.
+func GetEffectiveArchitectModel() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Agents == nil {
+		return DefaultArchitectModel
+	}
+
+	if config.OperatingMode == OperatingModeAirplane && config.Agents.Airplane != nil && config.Agents.Airplane.ArchitectModel != "" {
+		return config.Agents.Airplane.ArchitectModel
+	}
+	return config.Agents.ArchitectModel
+}
+
+// GetEffectivePMModel returns the PM model to use based on current operating mode.
+// In airplane mode, returns the airplane override if configured, otherwise the standard model.
+func GetEffectivePMModel() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Agents == nil {
+		return DefaultPMModel
+	}
+
+	if config.OperatingMode == OperatingModeAirplane && config.Agents.Airplane != nil && config.Agents.Airplane.PMModel != "" {
+		return config.Agents.Airplane.PMModel
+	}
+	return config.Agents.PMModel
 }

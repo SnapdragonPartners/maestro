@@ -26,6 +26,7 @@ func main() {
 		tee          = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
 		showVersion  = flag.Bool("version", false, "Show version information")
 		continueMode = flag.Bool("continue", false, "Resume from the most recent shutdown session")
+		airplaneMode = flag.Bool("airplane", false, "Run in airplane mode (offline with local Gitea + Ollama)")
 	)
 	flag.Parse()
 
@@ -49,7 +50,7 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode)
+	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode, *airplaneMode)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -61,7 +62,7 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, noWebUI, continueMode bool) int {
+func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMode bool) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
@@ -71,6 +72,12 @@ func run(projectDir, gitRepo, specFile string, noWebUI, continueMode bool) int {
 	_, err := setupProjectInfrastructure(projectDir, gitRepo, specFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Project setup failed: %v\n", err)
+		return 1
+	}
+
+	// Resolve operating mode: CLI flag takes precedence over config default
+	if err := config.ResolveOperatingMode(airplaneMode); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to resolve operating mode: %v\n", err)
 		return 1
 	}
 
