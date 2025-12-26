@@ -11,8 +11,10 @@ import (
 
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/forge"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/sync"
 	"orchestrator/pkg/version"
 )
 
@@ -27,6 +29,8 @@ func main() {
 		showVersion  = flag.Bool("version", false, "Show version information")
 		continueMode = flag.Bool("continue", false, "Resume from the most recent shutdown session")
 		airplaneMode = flag.Bool("airplane", false, "Run in airplane mode (offline with local Gitea + Ollama)")
+		syncMode     = flag.Bool("sync", false, "Sync offline changes from Gitea to GitHub and exit")
+		syncDryRun   = flag.Bool("sync-dry-run", false, "Preview sync without making changes (use with --sync)")
 	)
 	flag.Parse()
 
@@ -47,6 +51,12 @@ func main() {
 	if err := logx.InitializeLogFile(logsDir, 4, *tee); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize log file: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Handle sync mode (runs and exits before full orchestrator startup)
+	if *syncMode {
+		exitCode := runSyncMode(*projectDir, *syncDryRun)
+		os.Exit(exitCode)
 	}
 
 	// Run main logic and get exit code
@@ -426,3 +436,116 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 
 // extractRepoName extracts the repository name from a Git URL.
 // Mirror management functions have been moved to pkg/mirror package
+
+// runSyncMode handles the --sync flag to sync offline changes to GitHub.
+// This runs independently and exits without starting the full orchestrator.
+func runSyncMode(projectDir string, dryRun bool) int {
+	fmt.Println("🔄 Maestro Sync")
+	fmt.Println()
+
+	// Load configuration
+	if err := config.LoadConfig(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		return 1
+	}
+
+	// Check if forge state exists (indicates airplane mode was used)
+	if !forge.StateExists(projectDir) {
+		fmt.Println("❌ No forge state found.")
+		fmt.Println()
+		fmt.Println("Sync is only needed after running in airplane mode.")
+		fmt.Println("The forge state file (.maestro/forge_state.json) is created")
+		fmt.Println("when you run maestro --airplane.")
+		return 1
+	}
+
+	// Load forge state to verify it's Gitea
+	state, err := forge.LoadState(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load forge state: %v\n", err)
+		return 1
+	}
+
+	if state.Provider != "gitea" {
+		fmt.Printf("❌ Sync is only needed when forge provider is gitea (currently: %s)\n", state.Provider)
+		return 1
+	}
+
+	// Create context with signal handling
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Create syncer
+	syncer, err := sync.NewSyncer(projectDir, dryRun)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create syncer: %v\n", err)
+		return 1
+	}
+
+	// Run sync
+	result, err := syncer.SyncToGitHub(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Sync failed: %v\n", err)
+		return 1
+	}
+
+	// Print results
+	printSyncResult(result, dryRun)
+
+	if !result.Success {
+		return 1
+	}
+	return 0
+}
+
+// printSyncResult displays the sync results.
+func printSyncResult(result *sync.Result, dryRun bool) {
+	prefix := ""
+	if dryRun {
+		prefix = "[DRY-RUN] "
+	}
+
+	fmt.Println()
+	if dryRun {
+		fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+		fmt.Println("║                    📋 Sync Preview (Dry Run)                       ║")
+		fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	} else {
+		fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+		fmt.Println("║                    ✅ Sync Complete                                 ║")
+		fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	}
+	fmt.Println()
+
+	if len(result.BranchesPushed) > 0 {
+		fmt.Printf("%s📌 Branches pushed:\n", prefix)
+		for _, branch := range result.BranchesPushed {
+			fmt.Printf("   • %s\n", branch)
+		}
+		fmt.Println()
+	}
+
+	if result.MainPushed {
+		fmt.Printf("%s🎯 Main branch: pushed\n", prefix)
+	} else if result.MainUpToDate {
+		fmt.Printf("%s🎯 Main branch: already up-to-date\n", prefix)
+	}
+	fmt.Println()
+
+	if result.MirrorUpdated {
+		fmt.Printf("%s📥 Mirror: updated from GitHub\n", prefix)
+	}
+	fmt.Println()
+
+	if len(result.Warnings) > 0 {
+		fmt.Println("⚠️  Warnings:")
+		for _, warning := range result.Warnings {
+			fmt.Printf("   • %s\n", warning)
+		}
+		fmt.Println()
+	}
+
+	if !dryRun && result.Success {
+		fmt.Println("💡 Tip: You can now restart Maestro in standard mode (without --airplane)")
+	}
+}
