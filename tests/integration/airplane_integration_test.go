@@ -25,6 +25,7 @@ func TestGiteaContainerLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container lifecycle test in short mode")
 	}
+	requireDocker(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -89,6 +90,7 @@ func TestGiteaClientPROperations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping PR operations test in short mode")
 	}
+	requireDocker(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -104,6 +106,12 @@ func TestGiteaClientPROperations(t *testing.T) {
 
 	// Create container manager
 	containerMgr := gitea.NewContainerManager()
+	containerName := gitea.ContainerName(projectName)
+
+	// Defer cleanup using container name (in case EnsureContainer fails after starting)
+	defer func() {
+		_ = containerMgr.StopContainer(context.Background(), containerName)
+	}()
 
 	// Start Gitea container
 	t.Log("Starting Gitea container...")
@@ -113,9 +121,6 @@ func TestGiteaClientPROperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start Gitea: %v", err)
 	}
-	defer func() {
-		_ = containerMgr.StopContainer(context.Background(), container.Name)
-	}()
 
 	giteaURL := gitea.GetContainerURL(container.HTTPPort)
 	if err := gitea.WaitForReady(ctx, giteaURL, 60*time.Second); err != nil {
@@ -280,6 +285,7 @@ func TestSyncDryRun(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping sync dry-run test in short mode")
 	}
+	requireDocker(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -295,6 +301,12 @@ func TestSyncDryRun(t *testing.T) {
 
 	// Create container manager
 	containerMgr := gitea.NewContainerManager()
+	containerName := gitea.ContainerName(projectName)
+
+	// Defer cleanup using container name (in case EnsureContainer fails after starting)
+	defer func() {
+		_ = containerMgr.StopContainer(context.Background(), containerName)
+	}()
 
 	// Start Gitea container
 	t.Log("Starting Gitea container...")
@@ -304,9 +316,6 @@ func TestSyncDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start Gitea: %v", err)
 	}
-	defer func() {
-		_ = containerMgr.StopContainer(context.Background(), container.Name)
-	}()
 
 	giteaURL := gitea.GetContainerURL(container.HTTPPort)
 	if err := gitea.WaitForReady(ctx, giteaURL, 60*time.Second); err != nil {
@@ -390,12 +399,22 @@ func TestSyncDryRun(t *testing.T) {
 
 // Helper functions
 
+// requireDocker checks if Docker is available and skips the test if not.
+func requireDocker(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command("docker", "info")
+	if err := cmd.Run(); err != nil {
+		t.Skipf("Docker not available, skipping test: %v", err)
+	}
+}
+
 func setupTestConfig(projectDir, repoURL string) error {
 	maestroDir := filepath.Join(projectDir, ".maestro")
 	if err := os.MkdirAll(maestroDir, 0755); err != nil {
 		return err
 	}
 
+	// Create a more complete config to avoid nil pointer issues in applyDefaults
 	configContent := fmt.Sprintf(`{
   "default_mode": "airplane",
   "git": {
@@ -403,7 +422,13 @@ func setupTestConfig(projectDir, repoURL string) error {
     "target_branch": "main"
   },
   "project": {
-    "name": "test-project"
+    "name": "test-project",
+    "description": "Integration test project"
+  },
+  "agents": {
+    "pm_model": "claude-sonnet-4-5",
+    "architect_model": "claude-sonnet-4-5",
+    "coder_model": "claude-sonnet-4-5"
   }
 }`, repoURL)
 

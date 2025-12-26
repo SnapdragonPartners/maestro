@@ -16,8 +16,8 @@ import (
 // Container configuration constants.
 const (
 	// GiteaImage is the pinned Gitea Docker image version.
-	// Using LTS version 1.21.11 for stability in offline scenarios.
-	GiteaImage = "gitea/gitea:1.21.11"
+	// Using version 1.25 for faster startup (smaller image size).
+	GiteaImage = "gitea/gitea:1.25"
 
 	// DefaultHTTPPort is the default HTTP port for Gitea.
 	DefaultHTTPPort = 3000
@@ -335,6 +335,9 @@ func (m *ContainerManager) createContainer(ctx context.Context, containerName, v
 		"-e", "GITEA__server__DISABLE_SSH=false",
 		"-e", "GITEA__server__SSH_PORT=22",
 		"-e", fmt.Sprintf("GITEA__server__SSH_LISTEN_PORT=%d", sshPort),
+
+		// Skip install page - auto-configure Gitea.
+		"-e", "GITEA__security__INSTALL_LOCK=true",
 
 		// Disable features not needed for local development.
 		"-e", "GITEA__service__DISABLE_REGISTRATION=false",

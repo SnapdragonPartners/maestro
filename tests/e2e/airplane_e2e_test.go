@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ func TestE2E_AirplaneMode_FullStoryCycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+	RequireDocker(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -53,7 +55,7 @@ func TestE2E_AirplaneMode_FullStoryCycle(t *testing.T) {
 
 	// Step 3: Verify forge state
 	t.Log("Step 3: Verifying forge state")
-	h.AssertForgeStateProvider(forge.ProviderGitea)
+	h.AssertForgeStateProvider(string(forge.ProviderGitea))
 
 	// Step 4: Create a story branch
 	t.Log("Step 4: Creating story branch")
@@ -68,6 +70,9 @@ func TestE2E_AirplaneMode_FullStoryCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get Gitea client: %v", err)
 	}
+
+	t.Logf("Creating PR with client for repo: %s, ForgeState: URL=%s Owner=%s Repo=%s",
+		client.RepoPath(), h.ForgeState.URL, h.ForgeState.Owner, h.ForgeState.RepoName)
 
 	pr, err := client.CreatePR(ctx, forge.PRCreateOptions{
 		Title: "Story: Test Feature Implementation",
@@ -142,6 +147,7 @@ func TestE2E_StandardToAirplane(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+	RequireDocker(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
@@ -164,14 +170,16 @@ func TestE2E_StandardToAirplane(t *testing.T) {
 
 	t.Logf("Mirror created at: %s", mirrorPath)
 
-	// Verify mirror points to GitHub
+	// Verify mirror points to GitHub (accept both HTTPS and SSH URL formats)
 	remoteURL, err := getRemoteURL(ctx, mirrorPath)
 	if err != nil {
 		t.Fatalf("Failed to get remote URL: %v", err)
 	}
 
-	if remoteURL != gitHubURL {
-		t.Errorf("Expected GitHub URL %s, got %s", gitHubURL, remoteURL)
+	isGitHubURL := strings.Contains(remoteURL, "github.com") &&
+		strings.Contains(remoteURL, "SnapdragonPartners/maestro-test")
+	if !isGitHubURL {
+		t.Errorf("Expected mirror to point to GitHub repo, got %s", remoteURL)
 	}
 
 	// Step 2: Switch to airplane mode
@@ -182,36 +190,37 @@ func TestE2E_StandardToAirplane(t *testing.T) {
 		t.Fatalf("Failed to update config: %v", err)
 	}
 
+	// Create container manager
+	containerMgr := gitea.NewContainerManager()
+	containerName := gitea.ContainerName(projectName)
+
+	// Defer cleanup using container name (in case EnsureContainer fails after starting)
+	defer func() {
+		_ = containerMgr.StopContainer(context.Background(), containerName)
+	}()
+
 	// Start Gitea container
-	container, err := gitea.EnsureContainer(ctx, &gitea.SetupConfig{
-		ProjectDir:  tmpDir,
+	container, err := containerMgr.EnsureContainer(ctx, gitea.ContainerConfig{
 		ProjectName: projectName,
 	})
 	if err != nil {
 		t.Fatalf("Failed to start Gitea: %v", err)
 	}
-	defer func() {
-		_ = gitea.StopContainer(context.Background(), container.Name)
-	}()
 
-	giteaURL := gitea.GetContainerURL(container.Port)
+	giteaURL := gitea.GetContainerURL(container.HTTPPort)
 	if err := gitea.WaitForReady(ctx, giteaURL, 60*time.Second); err != nil {
 		t.Fatalf("Gitea not ready: %v", err)
 	}
 
-	// Initialize Gitea
-	if err := gitea.InitializeInstance(ctx, giteaURL); err != nil {
-		t.Fatalf("Failed to initialize Gitea: %v", err)
+	// Setup repository using SetupManager
+	setupMgr := gitea.NewSetupManager()
+	setupCfg := gitea.SetupConfig{
+		Container:  container,
+		RepoName:   projectName,
+		MirrorPath: mirrorPath,
 	}
 
-	// Setup repository from mirror
-	setupCfg := &gitea.SetupConfig{
-		ProjectDir:  tmpDir,
-		ProjectName: projectName,
-		Container:   container,
-	}
-
-	state, err := gitea.SetupRepository(ctx, setupCfg, giteaURL, mirrorPath)
+	result, err := setupMgr.Setup(ctx, setupCfg)
 	if err != nil {
 		t.Fatalf("Failed to setup repository: %v", err)
 	}
@@ -228,6 +237,12 @@ func TestE2E_StandardToAirplane(t *testing.T) {
 	// Save forge state
 	if err := forge.SaveState(tmpDir, state); err != nil {
 		t.Fatalf("Failed to save forge state: %v", err)
+	}
+
+	// Wait for branches to be indexed after setup
+	client := gitea.NewClient(giteaURL, state.Token, state.Owner, state.RepoName)
+	if err := client.WaitForBranches(ctx, 30*time.Second); err != nil {
+		t.Fatalf("Failed waiting for branches: %v", err)
 	}
 
 	t.Logf("Repository setup in Gitea: %s/%s", state.Owner, state.RepoName)
@@ -251,7 +266,6 @@ func TestE2E_StandardToAirplane(t *testing.T) {
 
 	// Step 4: Verify we can work in airplane mode
 	t.Log("Step 4: Verifying airplane mode operations")
-	client := gitea.NewClient(giteaURL, state.Token, state.Owner, state.RepoName)
 
 	// List existing PRs (should be empty or have some)
 	_, err = client.ListPRsForBranch(ctx, "main")
@@ -268,6 +282,7 @@ func TestE2E_AirplaneToStandard(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+	RequireDocker(t)
 
 	// Skip if GITHUB_TOKEN is not set (needed for actual push)
 	if os.Getenv("GITHUB_TOKEN") == "" {
@@ -294,41 +309,57 @@ func TestE2E_AirplaneToStandard(t *testing.T) {
 		t.Fatalf("Failed to create mirror: %v", err)
 	}
 
+	// Create container manager
+	containerMgr := gitea.NewContainerManager()
+	containerName := gitea.ContainerName(projectName)
+
+	// Defer cleanup using container name (in case EnsureContainer fails after starting)
+	defer func() {
+		_ = containerMgr.StopContainer(context.Background(), containerName)
+	}()
+
 	// Start Gitea
-	container, err := gitea.EnsureContainer(ctx, &gitea.SetupConfig{
-		ProjectDir:  tmpDir,
+	container, err := containerMgr.EnsureContainer(ctx, gitea.ContainerConfig{
 		ProjectName: projectName,
 	})
 	if err != nil {
 		t.Fatalf("Failed to start Gitea: %v", err)
 	}
-	defer func() {
-		_ = gitea.StopContainer(context.Background(), container.Name)
-	}()
 
-	giteaURL := gitea.GetContainerURL(container.Port)
+	giteaURL := gitea.GetContainerURL(container.HTTPPort)
 	if err := gitea.WaitForReady(ctx, giteaURL, 60*time.Second); err != nil {
 		t.Fatalf("Gitea not ready: %v", err)
 	}
 
-	if err := gitea.InitializeInstance(ctx, giteaURL); err != nil {
-		t.Fatalf("Failed to initialize Gitea: %v", err)
-	}
-
 	// Setup repository
-	setupCfg := &gitea.SetupConfig{
-		ProjectDir:  tmpDir,
-		ProjectName: projectName,
-		Container:   container,
+	setupMgr := gitea.NewSetupManager()
+	setupCfg := gitea.SetupConfig{
+		Container:  container,
+		RepoName:   projectName,
+		MirrorPath: mirrorPath,
 	}
 
-	state, err := gitea.SetupRepository(ctx, setupCfg, giteaURL, mirrorPath)
+	result, err := setupMgr.Setup(ctx, setupCfg)
 	if err != nil {
 		t.Fatalf("Failed to setup repository: %v", err)
 	}
 
+	state := &forge.State{
+		Provider: string(forge.ProviderGitea),
+		URL:      result.URL,
+		Token:    result.Token,
+		Owner:    result.Owner,
+		RepoName: result.RepoName,
+	}
+
 	if err := forge.SaveState(tmpDir, state); err != nil {
 		t.Fatalf("Failed to save forge state: %v", err)
+	}
+
+	// Wait for branches to be indexed after setup
+	client := gitea.NewClient(giteaURL, state.Token, state.Owner, state.RepoName)
+	if err := client.WaitForBranches(ctx, 30*time.Second); err != nil {
+		t.Fatalf("Failed waiting for branches: %v", err)
 	}
 
 	// Step 2: Create work in airplane mode
@@ -338,6 +369,11 @@ func TestE2E_AirplaneToStandard(t *testing.T) {
 	branchName := fmt.Sprintf("e2e-sync-test-%d", time.Now().UnixNano())
 	if err := createBranchInGitea(ctx, state, branchName, "E2E sync test commit"); err != nil {
 		t.Fatalf("Failed to create branch in Gitea: %v", err)
+	}
+
+	// Wait for the new branch to be indexed
+	if err := client.WaitForBranch(ctx, branchName, 10*time.Second); err != nil {
+		t.Fatalf("Failed waiting for branch %s to be indexed: %v", branchName, err)
 	}
 
 	t.Logf("Created branch: %s", branchName)
@@ -398,8 +434,11 @@ func TestE2E_AirplaneToStandard(t *testing.T) {
 		t.Fatalf("Failed to get remote URL: %v", err)
 	}
 
-	if finalRemoteURL != gitHubURL {
-		t.Errorf("Expected mirror to point to GitHub %s, got %s", gitHubURL, finalRemoteURL)
+	// Accept both HTTPS and SSH URL formats for GitHub
+	isGitHubURL := strings.Contains(finalRemoteURL, "github.com") &&
+		strings.Contains(finalRemoteURL, "SnapdragonPartners/maestro-test")
+	if !isGitHubURL {
+		t.Errorf("Expected mirror to point to GitHub repo, got %s", finalRemoteURL)
 	}
 
 	// Step 6: Cleanup - delete the test branch from GitHub
@@ -420,6 +459,7 @@ func setupProjectConfig(projectDir, repoURL, mode string) error {
 		return err
 	}
 
+	// Create a more complete config to avoid nil pointer issues
 	configContent := fmt.Sprintf(`{
   "default_mode": "%s",
   "git": {
@@ -427,7 +467,13 @@ func setupProjectConfig(projectDir, repoURL, mode string) error {
     "target_branch": "main"
   },
   "project": {
-    "name": "e2e-test"
+    "name": "e2e-test",
+    "description": "E2E test project"
+  },
+  "agents": {
+    "pm_model": "claude-sonnet-4-5",
+    "architect_model": "claude-sonnet-4-5",
+    "coder_model": "claude-sonnet-4-5"
   }
 }`, mode, repoURL)
 
@@ -469,7 +515,13 @@ func createBranchInGitea(ctx context.Context, state *forge.State, branchName, co
 	}
 	defer os.RemoveAll(cloneDir)
 
-	giteaCloneURL := fmt.Sprintf("%s/%s/%s.git", state.URL, state.Owner, state.RepoName)
+	// Use authenticated URL for clone and push
+	giteaCloneURL := strings.Replace(
+		fmt.Sprintf("%s/%s/%s.git", state.URL, state.Owner, state.RepoName),
+		"://",
+		fmt.Sprintf("://%s:%s@", gitea.DefaultAdminUser, state.Token),
+		1,
+	)
 
 	cmd := exec.CommandContext(ctx, "git", "clone", giteaCloneURL, cloneDir)
 	if output, err := cmd.CombinedOutput(); err != nil {

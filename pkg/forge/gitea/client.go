@@ -494,6 +494,83 @@ func (c *Client) deleteBranch(ctx context.Context, branch string) error {
 	return nil
 }
 
+// WaitForBranches waits for Gitea to index branches after a push.
+// Gitea can take a moment to index pushed content - this function
+// polls until at least one branch is available.
+func (c *Client) WaitForBranches(ctx context.Context, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for branches to be indexed: %w", ctx.Err())
+		case <-ticker.C:
+			path := fmt.Sprintf("/repos/%s/%s/branches", c.owner, c.repo)
+			resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+			if err != nil {
+				continue // Retry on error
+			}
+
+			var branches []struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+				_ = resp.Body.Close()
+				continue
+			}
+			_ = resp.Body.Close()
+
+			if len(branches) > 0 {
+				c.logger.Debug("Found %d branches after indexing", len(branches))
+				return nil
+			}
+		}
+	}
+}
+
+// WaitForBranch waits for a specific branch to be indexed in Gitea.
+// Use this after pushing a new branch to ensure it's available via API.
+func (c *Client) WaitForBranch(ctx context.Context, branchName string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for branch %q to be indexed: %w", branchName, ctx.Err())
+		case <-ticker.C:
+			path := fmt.Sprintf("/repos/%s/%s/branches", c.owner, c.repo)
+			resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+			if err != nil {
+				continue // Retry on error
+			}
+
+			var branches []struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+				_ = resp.Body.Close()
+				continue
+			}
+			_ = resp.Body.Close()
+
+			for _, b := range branches {
+				if b.Name == branchName {
+					c.logger.Debug("Branch %q is now indexed", branchName)
+					return nil
+				}
+			}
+		}
+	}
+}
+
 // BaseURL returns the base URL of the Gitea instance.
 func (c *Client) BaseURL() string {
 	return c.baseURL

@@ -171,8 +171,9 @@ func (m *SetupManager) Setup(ctx context.Context, cfg SetupConfig) (*SetupResult
 // createAdminUser creates an admin user via docker exec gitea admin.
 func (m *SetupManager) createAdminUser(ctx context.Context, containerName, password string) error {
 	// Use gitea admin user create command.
+	// Run as 'git' user since Gitea refuses to run admin commands as root.
 	args := []string{
-		"exec", containerName,
+		"exec", "--user", "git", containerName,
 		"gitea", "admin", "user", "create",
 		"--username", DefaultAdminUser,
 		"--password", password,
@@ -290,7 +291,9 @@ func (m *SetupManager) deleteToken(ctx context.Context, baseURL, username, passw
 func (m *SetupManager) createOrganization(ctx context.Context, baseURL, token string) error {
 	orgURL := fmt.Sprintf("%s/api/v1/orgs", baseURL)
 
+	// Gitea 1.25+ requires both "name" and "username" fields.
 	payload := map[string]interface{}{
+		"name":     DefaultOrganization,
 		"username": DefaultOrganization,
 	}
 
@@ -392,16 +395,27 @@ func (m *SetupManager) pushMirror(ctx context.Context, mirrorPath, cloneURL, tok
 		}
 	}
 
-	// Push all refs.
-	pushCmd := exec.CommandContext(ctx, "git", "-C", mirrorPath, "push", "--mirror", "gitea")
+	// Push branches (not PR refs which Gitea manages itself).
+	pushCmd := exec.CommandContext(ctx, "git", "-C", mirrorPath, "push", "--all", "gitea")
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		// Check if it's just "everything up-to-date".
 		if strings.Contains(string(output), "Everything up-to-date") ||
 			strings.Contains(string(output), "up to date") {
-			m.logger.Info("Mirror already up to date with Gitea")
-			return nil
+			m.logger.Info("Mirror branches already up to date with Gitea")
+		} else {
+			return fmt.Errorf("failed to push branches to gitea: %w (output: %s)", err, string(output))
 		}
-		return fmt.Errorf("failed to push to gitea: %w (output: %s)", err, string(output))
+	}
+
+	// Push tags separately (git doesn't allow --all and --tags together).
+	pushTagsCmd := exec.CommandContext(ctx, "git", "-C", mirrorPath, "push", "--tags", "gitea")
+	if output, err := pushTagsCmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(output), "Everything up-to-date") ||
+			strings.Contains(string(output), "up to date") {
+			m.logger.Info("Mirror tags already up to date with Gitea")
+		} else {
+			return fmt.Errorf("failed to push tags to gitea: %w (output: %s)", err, string(output))
+		}
 	}
 
 	m.logger.Info("Mirror pushed to Gitea successfully")

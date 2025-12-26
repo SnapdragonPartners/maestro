@@ -1272,6 +1272,12 @@ func applyDefaults(config *Config) {
 	if config.Demo == nil {
 		config.Demo = &DemoConfig{}
 	}
+	if config.PM == nil {
+		config.PM = &PMConfig{}
+	}
+	if config.Debug == nil {
+		config.Debug = &DebugConfig{}
+	}
 
 	// Apply container defaults
 	if config.Container.Name == "" {

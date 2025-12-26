@@ -89,7 +89,7 @@ func TestIsHealthy(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/api/v1/version" {
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"version": "1.21.11"}`))
+				_, _ = w.Write([]byte(`{"version": "1.25"}`))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -261,7 +261,7 @@ func TestContainerConfig_Defaults(t *testing.T) {
 // TestGiteaImage tests the pinned image version.
 func TestGiteaImage(t *testing.T) {
 	// Verify the image is pinned to a specific version (not latest).
-	expected := "gitea/gitea:1.21.11"
+	expected := "gitea/gitea:1.25"
 	if GiteaImage != expected {
 		t.Errorf("GiteaImage should be %q, got %q", expected, GiteaImage)
 	}

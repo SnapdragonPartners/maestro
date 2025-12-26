@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,8 +33,9 @@ type AirplaneTestHarness struct {
 	CleanupOnDone  bool   // Whether to cleanup resources on teardown.
 
 	// Internal state.
-	tempDirs         []string
-	containerManager *gitea.ContainerManager
+	tempDirs          []string
+	containerManager  *gitea.ContainerManager
+	containerNames    []string // Track container names for cleanup even if setup fails
 }
 
 // HarnessOption configures the test harness.
@@ -50,6 +52,17 @@ func WithGitHubRepo(url string) HarnessOption {
 func WithCleanup(cleanup bool) HarnessOption {
 	return func(h *AirplaneTestHarness) {
 		h.CleanupOnDone = cleanup
+	}
+}
+
+// RequireDocker checks if Docker is available and skips the test if not.
+// This should be called at the start of any test that requires Docker.
+func RequireDocker(t *testing.T) {
+	t.Helper()
+
+	cmd := exec.Command("docker", "info")
+	if err := cmd.Run(); err != nil {
+		t.Skipf("Docker not available, skipping test: %v", err)
 	}
 }
 
@@ -129,6 +142,14 @@ func (h *AirplaneTestHarness) SetupGitea(ctx context.Context) error {
 		ProjectName: "airplane-test",
 	}
 
+	// Track container name for cleanup even if EnsureContainer fails after starting the container.
+	containerName := gitea.ContainerName(containerCfg.ProjectName)
+	h.containerNames = append(h.containerNames, containerName)
+
+	// Clean up any existing container and volume to ensure fresh state.
+	// This is needed because reusing a container with stale credentials fails.
+	_ = h.containerManager.RemoveContainer(ctx, containerName, true)
+
 	container, err := h.containerManager.EnsureContainer(ctx, containerCfg)
 	if err != nil {
 		return fmt.Errorf("failed to ensure Gitea container: %w", err)
@@ -188,6 +209,13 @@ func (h *AirplaneTestHarness) SetupRepository(ctx context.Context) error {
 		return fmt.Errorf("failed to save forge state: %w", err)
 	}
 
+	// Wait for Gitea to index the branches after push.
+	// This can take a moment after mirroring content.
+	client := gitea.NewClient(result.URL, result.Token, result.Owner, result.RepoName)
+	if err := client.WaitForBranches(ctx, 30*time.Second); err != nil {
+		return fmt.Errorf("failed waiting for branches to be indexed: %w", err)
+	}
+
 	h.T.Logf("Repository setup complete: %s/%s", result.Owner, result.RepoName)
 	return nil
 }
@@ -240,7 +268,14 @@ func (h *AirplaneTestHarness) CreateTestBranch(ctx context.Context, branchName, 
 	}
 	h.tempDirs = append(h.tempDirs, cloneDir)
 
-	giteaCloneURL := fmt.Sprintf("%s/%s/%s.git", h.ForgeState.URL, h.ForgeState.Owner, h.ForgeState.RepoName)
+	// Use authenticated URL for clone and push (embed token in URL).
+	// Format: http://user:token@host/owner/repo.git
+	giteaCloneURL := strings.Replace(
+		fmt.Sprintf("%s/%s/%s.git", h.ForgeState.URL, h.ForgeState.Owner, h.ForgeState.RepoName),
+		"://",
+		fmt.Sprintf("://%s:%s@", gitea.DefaultAdminUser, h.ForgeState.Token),
+		1,
+	)
 
 	// Clone.
 	cmd := exec.CommandContext(ctx, "git", "clone", giteaCloneURL, cloneDir)
@@ -256,7 +291,9 @@ func (h *AirplaneTestHarness) CreateTestBranch(ctx context.Context, branchName, 
 	}
 
 	// Create a test file.
-	testFile := filepath.Join(cloneDir, "test-"+branchName+".txt")
+	// Replace slashes in branch name to avoid creating directories.
+	safeFileName := strings.ReplaceAll(branchName, "/", "-")
+	testFile := filepath.Join(cloneDir, "test-"+safeFileName+".txt")
 	if err := os.WriteFile(testFile, []byte("test content for "+branchName), 0644); err != nil {
 		return fmt.Errorf("failed to write test file: %w", err)
 	}
@@ -285,6 +322,15 @@ func (h *AirplaneTestHarness) CreateTestBranch(ctx context.Context, branchName, 
 	cmd.Dir = cloneDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push failed: %w\n%s", err, string(out))
+	}
+
+	// Wait for Gitea to index the new branch.
+	client, err := h.GetGiteaClient()
+	if err != nil {
+		return fmt.Errorf("failed to get client for branch wait: %w", err)
+	}
+	if err := client.WaitForBranch(ctx, branchName, 10*time.Second); err != nil {
+		return fmt.Errorf("branch not indexed: %w", err)
 	}
 
 	h.T.Logf("Created test branch: %s", branchName)
@@ -377,15 +423,17 @@ func (h *AirplaneTestHarness) Cleanup() {
 		return
 	}
 
-	// Stop Gitea container.
-	if h.GiteaContainer != nil && h.containerManager != nil {
+	// Stop Gitea containers - use containerNames list to catch containers that failed during setup.
+	if h.containerManager != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := h.containerManager.StopContainer(ctx, h.GiteaContainer.Name); err != nil {
-			h.T.Logf("Warning: failed to stop Gitea container: %v", err)
-		} else {
-			h.T.Logf("Stopped Gitea container: %s", h.GiteaContainer.Name)
+		for _, containerName := range h.containerNames {
+			if err := h.containerManager.StopContainer(ctx, containerName); err != nil {
+				h.T.Logf("Warning: failed to stop Gitea container %s: %v", containerName, err)
+			} else {
+				h.T.Logf("Stopped Gitea container: %s", containerName)
+			}
 		}
 	}
 
