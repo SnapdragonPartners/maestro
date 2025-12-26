@@ -744,95 +744,90 @@ func (m *Manager) UpdateMirror(ctx context.Context) error {
 
 ### Phase 4: Sync Command (MVP - Basic)
 
-#### 4.1 agentctl sync
+> **Architecture Decision**: Sync is implemented as `maestro --sync` flag rather than a separate
+> `agentctl` binary. This keeps Maestro as a single binary for simpler distribution via Homebrew
+> and other package managers. The sync logic lives in `pkg/sync/` and is designed to be invokable
+> from multiple contexts (CLI, WebUI, PM agent) for future flexibility.
+
+#### 4.1 CLI Integration (maestro --sync)
+
+```bash
+# Sync offline changes to GitHub
+maestro --sync
+
+# Preview what would be synced without making changes
+maestro --sync --sync-dry-run
+```
+
+The `--sync` flag is handled in `cmd/maestro/main.go` before the full orchestrator starts:
 
 ```go
-// cmd/agentctl/sync.go
+// cmd/maestro/main.go
 
-func runSync(cmd *cobra.Command, args []string) error {
-    cfg, err := config.Load()
-    if err != nil {
-        return err
-    }
-
-    if !cfg.Git.OfflineMode {
-        return fmt.Errorf("sync only needed in offline mode")
-    }
-
-    syncer := git.NewSyncer(cfg)
-
-    // Step 1: Push all refs from Gitea to GitHub
-    fmt.Println("Pushing branches to GitHub...")
-    if err := syncer.PushAllBranches(ctx); err != nil {
-        return fmt.Errorf("push branches: %w", err)
-    }
-
-    // Step 2: Push main branch
-    fmt.Println("Pushing main branch...")
-    if err := syncer.PushMain(ctx); err != nil {
-        return fmt.Errorf("push main: %w", err)
-    }
-
-    // Step 3: Update mirror from GitHub
-    fmt.Println("Updating mirror from GitHub...")
-    if err := syncer.UpdateMirrorFromGitHub(ctx); err != nil {
-        return fmt.Errorf("update mirror: %w", err)
-    }
-
-    // Step 4: Create retrospective PRs (optional)
-    if createPRs {
-        fmt.Println("Creating retrospective PRs...")
-        if err := syncer.CreateRetrospectivePRs(ctx); err != nil {
-            return fmt.Errorf("create PRs: %w", err)
-        }
-    }
-
-    fmt.Println("Sync complete!")
-    return nil
+// Handle sync mode (runs and exits before full orchestrator startup)
+if *syncMode {
+    exitCode := runSyncMode(*projectDir, *syncDryRun)
+    os.Exit(exitCode)
 }
 ```
 
-#### 4.2 Syncer Implementation
+#### 4.2 Reusable Sync Package
+
+The sync logic is in `pkg/sync/syncer.go`, designed for invocation from multiple contexts:
 
 ```go
-// pkg/git/syncer.go
+// pkg/sync/syncer.go
+//
+// This package is designed to be invoked from multiple contexts:
+// - CLI via `maestro --sync`
+// - WebUI via API endpoint (future)
+// - PM agent via tool call (future)
 
 type Syncer struct {
-    cfg         *config.Config
-    gitea       *GiteaClient
-    github      *GitHubClient
-    mirrorPath  string
+    logger     *logx.Logger
+    gitHub     *gitHubTarget
+    gitea      *giteaSource
+    projectDir string
+    dryRun     bool
 }
 
-func (s *Syncer) PushAllBranches(ctx context.Context) error {
-    // Clone Gitea repo to temp dir
-    tmpDir, err := os.MkdirTemp("", "maestro-sync-*")
-    if err != nil {
-        return err
-    }
-    defer os.RemoveAll(tmpDir)
-
-    // Clone from Gitea
-    giteaURL := s.gitea.GetRepoURL()
-    if err := git.Clone(ctx, giteaURL, tmpDir); err != nil {
-        return err
-    }
-
-    // Add GitHub as remote
-    githubURL := s.cfg.Git.RepoURL
-    if err := git.Run(ctx, tmpDir, "remote", "add", "github", githubURL); err != nil {
-        return err
-    }
-
-    // Push all branches
-    return git.Run(ctx, tmpDir, "push", "github", "--all")
+type Result struct {
+    BranchesPushed []string
+    Warnings       []string
+    Success        bool
+    MainPushed     bool
+    MainUpToDate   bool
+    MirrorUpdated  bool
 }
 
-func (s *Syncer) CreateRetrospectivePRs(ctx context.Context) error {
-    // List merged branches in Gitea that don't have corresponding PRs on GitHub
-    // Create PRs with body explaining they were merged offline
-    // This is optional - mainly for audit trail
+func NewSyncer(projectDir string, dryRun bool) (*Syncer, error) {
+    // Load config for GitHub URL
+    // Load forge state for Gitea details
+    // Return configured syncer
 }
+
+func (s *Syncer) SyncToGitHub(ctx context.Context) (*Result, error) {
+    // 1. Create temp directory
+    // 2. Clone from Gitea
+    // 3. Add GitHub as remote
+    // 4. Fetch from GitHub (detect divergence)
+    // 5. Push all branches to GitHub
+    // 6. Push main branch
+    // 7. Update mirror from GitHub
+}
+```
+
+#### 4.3 Future WebUI/PM Integration
+
+The sync package can be invoked programmatically:
+
+```go
+// From WebUI handler or PM agent tool
+syncer, err := sync.NewSyncer(projectDir, false)
+if err != nil {
+    return err
+}
+result, err := syncer.SyncToGitHub(ctx)
 ```
 
 ## Future Enhancements (v2/v3)
@@ -916,7 +911,7 @@ from scratch while completely offline, then sync to GitHub later.
 Enhanced sync that handles upstream changes:
 
 ```bash
-$ agentctl sync --to-github
+$ maestro --sync
 
 Checking upstream state...
   ⚠ GitHub main has advanced since airplane mode entry
@@ -997,14 +992,14 @@ func TestOfflineWorkflow(t *testing.T) {
 
 1. **`--airplane` CLI flag**: Single idempotent entrypoint
 2. **Gitea container management**: `ensureLocalForge()` function
-3. **GiteaClient**: Implements GitClient interface for PR operations
+3. **GiteaClient**: Implements ForgeClient interface for PR operations
 4. **Mode-aware validation**: Skip irrelevant checks based on mode
 5. **Mirror upstream switching**: `GetFetchURL()` returns Gitea in airplane mode
 6. **Model resolution**: Config overrides + preferred list fallback
 7. **Graceful failure**: Clear guidance when requirements aren't met
 8. **`default_mode` config**: Persistent mode preference
 9. **SQLite PR persistence**: Workflow identity survives restarts
-10. **Basic sync**: Simple `agentctl sync` that pushes to GitHub
+10. **`--sync` flag**: Single binary sync via `maestro --sync` (reusable `pkg/sync/` for WebUI/PM)
 
 ### v2 Enhancements
 
@@ -1404,12 +1399,19 @@ curl -X POST "http://localhost:3000/api/v1/repos/maestro/myproject/pulls/1/merge
 
 ### Work Package 10: Sync Command (MVP)
 
+> **Architecture Decision**: Sync is `maestro --sync` (not a separate `agentctl` binary).
+> Single binary distribution via Homebrew. Sync logic in `pkg/sync/` for reusability.
+
 #### 10.1 Basic Sync Implementation
-- [ ] Create `cmd/agentctl/sync.go` with `sync` subcommand
-- [ ] Implement `--to-github` flag for Gitea→GitHub sync
-- [ ] Push all branches from Gitea to GitHub
-- [ ] Push main branch
-- [ ] Update mirror from GitHub after sync
+- [x] Add `--sync` and `--sync-dry-run` flags to `cmd/maestro/main.go`
+- [x] Create `pkg/sync/syncer.go` with reusable `Syncer` type
+- [x] Implement `SyncToGitHub(ctx)` that:
+  - Clones from Gitea to temp directory
+  - Adds GitHub as remote
+  - Pushes all branches to GitHub
+  - Pushes main branch
+  - Updates mirror from GitHub after sync
+- [x] Design for future invocation from WebUI/PM agent
 
 **Tests:**
 - [ ] `TestSync_PushesToGitHub` - Pushes Gitea changes to GitHub
@@ -1508,10 +1510,13 @@ pkg/forge/
 │   ├── client.go         # GiteaClient implementation
 │   ├── client_test.go
 │   ├── container.go      # Gitea container lifecycle management
-│   └── container_test.go
+│   ├── container_test.go
+│   ├── setup.go          # Repository setup and initialization
+│   ├── setup_test.go
+│   └── init.go           # Auto-registration via init()
 └── github/
-    ├── client.go         # GitHubClient implementation (extract from existing)
-    └── client_test.go
+    ├── client.go         # GitHubClient adapter (wraps pkg/github)
+    └── init.go           # Auto-registration via init()
 
 pkg/preflight/
 ├── checks.go             # Provider requirement detection
@@ -1519,18 +1524,14 @@ pkg/preflight/
 ├── guidance.go           # User-friendly error messages with actionable guidance
 └── preflight_test.go
 
-pkg/models/
-├── resolver.go           # Airplane model resolution + preferred fallback
-└── resolver_test.go
+pkg/sync/
+└── syncer.go             # Reusable sync logic (CLI, WebUI, PM can all invoke)
 
 internal/orch/
 └── airplane.go           # AirplaneOrchestrator (parallel to StartupOrchestrator)
 
 cmd/maestro/
-└── flows.go              # Add AirplaneFlow if needed
-
-cmd/agentctl/
-└── sync.go               # Sync command
+└── main.go               # --sync and --sync-dry-run flags (no separate agentctl binary)
 
 tests/integration/
 └── airplane_mode_test.go # E2E integration tests
@@ -1540,6 +1541,8 @@ tests/integration/
 - `pkg/forge/` - "Forge" is the generic term for git hosting (GitHub, Gitea, GitLab, etc.)
 - `pkg/forge/gitea/` and `pkg/forge/github/` - Subpackages for each forge implementation
 - `pkg/preflight/` - "Preflight checks" is clearer than generic "validation"
+- `pkg/sync/` - Reusable sync logic, invokable from CLI (`--sync`), WebUI, or PM agent
+- **No `cmd/agentctl/`** - Single binary distribution; sync is `maestro --sync`
 - **No `pkg/mode/`** - Mode resolution is simple (CLI > config > default), lives in config
 - **No `pkg/airplane/`** - Orchestration logic goes in `internal/orch/airplane.go`
 
