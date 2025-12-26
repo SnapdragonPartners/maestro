@@ -234,9 +234,9 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 func getWorkDirFromConfig(_ *config.Config) string {
 	// Get the project directory from configuration
 	// This is where agent working directories should be created
-	projectDir, err := config.GetProjectDir()
-	if err != nil {
-		// Fallback to current directory if GetProjectDir fails
+	projectDir := config.GetProjectDir()
+	if projectDir == "" {
+		// Fallback to current directory if GetProjectDir not set
 		// This should never happen in normal operation
 		return "."
 	}

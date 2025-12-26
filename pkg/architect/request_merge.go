@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/forge"
+	_ "orchestrator/pkg/forge/gitea"  // Auto-register Gitea client.
+	_ "orchestrator/pkg/forge/github" // Auto-register GitHub client.
 	"orchestrator/pkg/git"
 	"orchestrator/pkg/github"
 	"orchestrator/pkg/proto"
@@ -218,29 +220,25 @@ The knowledge graph is critical for architectural consistency. Take time to merg
 	return fmt.Sprintf("Merge conflicts detected. Resolve conflicts in the following files and resubmit:\n\n%s", conflictInfo)
 }
 
-// attemptPRMerge attempts to merge a PR using the centralized GitHub client.
+// attemptPRMerge attempts to merge a PR using the forge client.
+// This function is mode-aware: in airplane mode it uses Gitea, otherwise GitHub.
 func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID string) (*MergeAttemptResult, error) {
 	// Get config for target branch lookup (needed for PR creation)
 	cfg, cfgErr := config.GetConfig()
 
-	// Use injected client if available (for testing), otherwise create from config
-	var ghClient GitHubMergeClient
+	// Use injected client if available (for testing), otherwise create from forge
+	var forgeClient forge.Client
 	if d.gitHubClient != nil {
-		ghClient = d.gitHubClient
+		// For testing - wrap the mock in a simple adapter
+		forgeClient = &mockForgeAdapter{mock: d.gitHubClient}
 	} else {
-		// Get GitHub client from config (pure API calls, no workdir needed)
-		if cfgErr != nil {
-			return nil, fmt.Errorf("failed to get config: %w", cfgErr)
-		}
-		if cfg.Git == nil || cfg.Git.RepoURL == "" {
-			return nil, fmt.Errorf("git repo_url not configured")
-		}
-
-		client, err := github.NewClientFromRemote(cfg.Git.RepoURL)
+		// Create forge client (mode-aware: GitHub or Gitea)
+		client, err := forge.NewClient(d.workDir)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create GitHub client: %w", err)
+			return nil, fmt.Errorf("failed to create forge client: %w", err)
 		}
-		ghClient = client.WithTimeout(2 * time.Minute)
+		forgeClient = client
+		d.logger.Debug("🔀 Using forge provider: %s", forgeClient.Provider())
 	}
 
 	// Determine the PR reference (URL or branch)
@@ -251,7 +249,7 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 	} else if branchName != "" {
 		// Check if PR exists for branch, create if needed
 		d.logger.Info("🔀 Looking for existing PR for branch: %s", branchName)
-		prs, listErr := ghClient.ListPRsForBranch(ctx, branchName)
+		prs, listErr := forgeClient.ListPRsForBranch(ctx, branchName)
 		if listErr != nil || len(prs) == 0 {
 			// No PR found, create one
 			d.logger.Info("🔀 No existing PR found, creating new PR for branch: %s", branchName)
@@ -259,7 +257,7 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 			if cfgErr == nil && cfg.Git != nil && cfg.Git.TargetBranch != "" {
 				targetBranch = cfg.Git.TargetBranch
 			}
-			pr, createErr := ghClient.CreatePR(ctx, github.PRCreateOptions{
+			pr, createErr := forgeClient.CreatePR(ctx, forge.PRCreateOptions{
 				Title: fmt.Sprintf("Story merge: %s", storyID),
 				Body:  fmt.Sprintf("Automated merge for story %s", storyID),
 				Head:  branchName,
@@ -279,7 +277,7 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 	}
 
 	// Attempt merge with squash and delete branch
-	mergeResult, err := ghClient.MergePRWithResult(ctx, prRef, github.PRMergeOptions{
+	mergeResult, err := forgeClient.MergePRWithResult(ctx, prRef, forge.PRMergeOptions{
 		Method:       "squash",
 		DeleteBranch: true,
 	})
@@ -301,6 +299,90 @@ func (d *Driver) attemptPRMerge(ctx context.Context, prURL, branchName, storyID 
 	}
 
 	return result, nil
+}
+
+// mockForgeAdapter adapts GitHubMergeClient (test mock) to forge.Client interface.
+// This is only used in tests when d.gitHubClient is injected.
+type mockForgeAdapter struct {
+	mock GitHubMergeClient
+}
+
+func (a *mockForgeAdapter) Provider() forge.Provider { return forge.ProviderGitHub }
+func (a *mockForgeAdapter) RepoPath() string         { return "test/repo" }
+func (a *mockForgeAdapter) GetPR(_ context.Context, _ string) (*forge.PullRequest, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+func (a *mockForgeAdapter) GetOrCreatePR(_ context.Context, _ forge.PRCreateOptions) (*forge.PullRequest, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+func (a *mockForgeAdapter) MergePR(_ context.Context, _ string, _ forge.PRMergeOptions) error {
+	return fmt.Errorf("not implemented in mock")
+}
+func (a *mockForgeAdapter) ClosePR(_ context.Context, _ string) error {
+	return fmt.Errorf("not implemented in mock")
+}
+func (a *mockForgeAdapter) CleanupMergedBranches(_ context.Context, _ string, _ []string) ([]string, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+func (a *mockForgeAdapter) ListPRsForBranch(ctx context.Context, branch string) ([]forge.PullRequest, error) {
+	prs, err := a.mock.ListPRsForBranch(ctx, branch)
+	if err != nil {
+		return nil, fmt.Errorf("list PRs for branch failed: %w", err)
+	}
+	result := make([]forge.PullRequest, len(prs))
+	for i := range prs {
+		result[i] = forge.PullRequest{
+			Number:     prs[i].Number,
+			URL:        prs[i].URL,
+			Title:      prs[i].Title,
+			State:      prs[i].State,
+			HeadBranch: prs[i].HeadRefName,
+			HeadSHA:    prs[i].HeadRefOid,
+			BaseBranch: prs[i].BaseRefName,
+			BaseSHA:    prs[i].BaseRefOid,
+		}
+	}
+	return result, nil
+}
+
+func (a *mockForgeAdapter) CreatePR(ctx context.Context, opts forge.PRCreateOptions) (*forge.PullRequest, error) {
+	pr, err := a.mock.CreatePR(ctx, github.PRCreateOptions{
+		Title: opts.Title,
+		Body:  opts.Body,
+		Head:  opts.Head,
+		Base:  opts.Base,
+		Draft: opts.Draft,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create PR failed: %w", err)
+	}
+	return &forge.PullRequest{
+		Number:     pr.Number,
+		URL:        pr.URL,
+		Title:      pr.Title,
+		State:      pr.State,
+		HeadBranch: pr.HeadRefName,
+		HeadSHA:    pr.HeadRefOid,
+		BaseBranch: pr.BaseRefName,
+		BaseSHA:    pr.BaseRefOid,
+	}, nil
+}
+
+func (a *mockForgeAdapter) MergePRWithResult(ctx context.Context, ref string, opts forge.PRMergeOptions) (*forge.MergeResult, error) {
+	result, err := a.mock.MergePRWithResult(ctx, ref, github.PRMergeOptions{
+		Method:       opts.Method,
+		DeleteBranch: opts.DeleteBranch,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("merge PR failed: %w", err)
+	}
+	return &forge.MergeResult{
+		Merged:       result.Merged,
+		SHA:          result.SHA,
+		HasConflicts: result.HasConflicts,
+		ConflictInfo: result.ConflictInfo,
+	}, nil
 }
 
 // categorizeMergeError categorizes a merge error into appropriate status and feedback.

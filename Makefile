@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-all test-coverage check-coverage lint lint-state run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
+.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -29,6 +29,12 @@ test:
 test-integration:
 	@echo "🧪 Running integration tests..."
 	go test -tags=integration -cover -timeout=10m ./...
+
+# Run E2E tests (full workflow tests requiring Docker, Gitea, real Git operations)
+test-e2e:
+	@echo "🚀 Running E2E tests..."
+	@echo "   Requires: Docker, network access to GitHub test repo"
+	go test -tags=e2e -cover -timeout=30m ./tests/...
 
 # Run all tests including integration tests (combines unit and integration)
 test-all:
