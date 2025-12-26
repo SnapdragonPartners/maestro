@@ -19,6 +19,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/proto"
 )
 
@@ -356,6 +357,31 @@ func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kerne
 		if err := airplaneOrch.PrepareAirplaneMode(ctx); err != nil {
 			return fmt.Errorf("airplane mode preparation failed: %w", err)
 		}
+	} else {
+		// Standard mode: run preflight checks to validate credentials/tools
+		k.Logger.Info("🔍 Running preflight checks for standard mode")
+		cfg, err := config.GetConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get config for preflight: %w", err)
+		}
+		results, err := preflight.Run(ctx, &cfg)
+		if err != nil {
+			return fmt.Errorf("preflight checks failed: %w", err)
+		}
+		if !results.Passed {
+			// Print guidance for failed checks
+			for i := range results.Checks {
+				check := &results.Checks[i]
+				if !check.Passed {
+					k.Logger.Error("❌ %s: %s", check.Provider, check.Message)
+					if guidance := preflight.GetGuidance(check.Provider); guidance != "" {
+						k.Logger.Info("   💡 %s", guidance)
+					}
+				}
+			}
+			return fmt.Errorf("preflight checks failed - see errors above")
+		}
+		k.Logger.Info("✅ Preflight checks passed")
 	}
 
 	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
