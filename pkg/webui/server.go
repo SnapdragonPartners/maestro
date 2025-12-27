@@ -4,7 +4,6 @@ package webui
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -16,8 +15,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
@@ -50,15 +47,19 @@ type DemoAvailabilityChecker interface {
 }
 
 // Server represents the web UI HTTP server.
+//
+//nolint:govet // fieldalignment: intentional grouping by field type for readability
 type Server struct {
-	dispatcher              *dispatch.Dispatcher
-	chatService             *chat.Service
-	llmFactory              *agent.LLMClientFactory
+	// 16-byte fields (interfaces and strings)
 	demoService             DemoService
 	demoAvailabilityChecker DemoAvailabilityChecker // PM provides this
-	logger                  *logx.Logger
-	templates               *template.Template
 	workDir                 string
+	// 8-byte fields (pointers)
+	dispatcher  *dispatch.Dispatcher
+	chatService *chat.Service
+	llmFactory  *agent.LLMClientFactory
+	logger      *logx.Logger
+	templates   *template.Template
 }
 
 // AgentListItem represents an agent in the list response.
@@ -947,31 +948,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("Served %d message entries", len(logs))
 }
 
-// readMessageLogs reads message events from the database.
+// readMessageLogs reads message events from the database using the singleton.
 func (s *Server) readMessageLogs() []MessageEntry {
-	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
-
-	// Open database using sql package
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		s.logger.Debug("Failed to open database for message reading: %v", err)
-		return []MessageEntry{}
-	}
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			s.logger.Warn("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Get current session ID from config for session-isolated queries
-	cfg, err := config.GetConfig()
-	if err != nil {
-		s.logger.Warn("Failed to get config for session ID: %v", err)
+	// Check if persistence is initialized
+	if !persistence.IsInitialized() {
+		s.logger.Debug("Database not initialized for message reading")
 		return []MessageEntry{}
 	}
 
-	// Use the persistence operations package with session isolation
-	ops := persistence.NewDatabaseOperations(db, cfg.SessionID)
+	// Use the persistence singleton
+	ops := persistence.Ops()
 	recentMessages, err := ops.GetRecentMessages(5)
 	if err != nil {
 		s.logger.Warn("Failed to query recent messages: %v", err)

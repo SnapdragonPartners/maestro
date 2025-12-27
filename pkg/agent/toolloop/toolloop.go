@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/tools"
 )
 
@@ -141,6 +142,13 @@ type Config[T any] struct {
 	// The callback receives the current iteration count for logging/debugging.
 	// If nil, shutdown proceeds without callback.
 	OnShutdown func(iteration int)
+
+	// PersistenceChannel for logging tool executions to the database.
+	// If nil, tool executions are not persisted (only logged to console).
+	PersistenceChannel chan<- *persistence.Request
+
+	// StoryID for associating tool executions with a story (optional).
+	StoryID string
 }
 
 // Run executes the tool loop with ProcessEffect-based terminal signaling, returning an Outcome[T].
@@ -394,6 +402,11 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 
 			// Add tool result to context
 			cfg.ContextManager.AddToolResult(toolCall.ID, content, isError)
+
+			// Log tool execution to database if persistence channel is configured
+			if cfg.PersistenceChannel != nil {
+				agent.LogToolExecution(toolCall, content, err, duration, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
+			}
 		}
 
 		// Check if any tool requested loop exit for effect processing

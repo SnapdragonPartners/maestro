@@ -114,12 +114,14 @@ func NewPM(
 	default:
 	}
 
-	// Get model name from config
+	// Get config for other settings
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
-	modelName := cfg.Agents.PMModel
+
+	// Get model name (respects airplane mode override)
+	modelName := config.GetEffectivePMModel()
 
 	// Create logger first
 	logger := logx.NewLogger("pm")

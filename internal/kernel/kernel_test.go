@@ -10,7 +10,17 @@ import (
 	_ "modernc.org/sqlite"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/persistence"
 )
+
+// resetPersistence resets the database singleton for testing.
+// Must be called before creating a kernel in tests.
+func resetPersistence(t *testing.T) {
+	t.Helper()
+	if err := persistence.Reset(); err != nil {
+		t.Fatalf("Failed to reset persistence: %v", err)
+	}
+}
 
 // createTestConfig creates a minimal valid config for testing.
 func createTestConfig() config.Config {
@@ -25,6 +35,8 @@ func createTestConfig() config.Config {
 
 // TestNewKernel tests kernel creation and initialization.
 func TestNewKernel(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "kernel-test-*")
 	if err != nil {
@@ -77,6 +89,8 @@ func TestNewKernel(t *testing.T) {
 
 // TestKernelLifecycle tests kernel start/stop lifecycle.
 func TestKernelLifecycle(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "kernel-lifecycle-test-*")
 	if err != nil {
@@ -127,6 +141,8 @@ func TestKernelLifecycle(t *testing.T) {
 
 // TestKernelDatabaseInitialization tests database setup.
 func TestKernelDatabaseInitialization(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "kernel-db-test-*")
 	if err != nil {
@@ -158,6 +174,8 @@ func TestKernelDatabaseInitialization(t *testing.T) {
 
 // TestKernelPersistenceWorker tests the persistence worker goroutine.
 func TestKernelPersistenceWorker(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "kernel-persistence-test-*")
 	if err != nil {
@@ -204,6 +222,8 @@ func TestKernelPersistenceWorker(t *testing.T) {
 
 // TestKernelContextCancellation tests proper cleanup on context cancellation.
 func TestKernelContextCancellation(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "kernel-cancel-test-*")
 	if err != nil {

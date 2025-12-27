@@ -98,6 +98,8 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 // If bootstrap requirements are detected, uses focused bootstrap gate template.
 // If spec was uploaded, adds it to context for parsing.
 // Otherwise uses full interview start template.
+//
+//nolint:cyclop // Complex setup logic with multiple conditional paths is inherent to this function
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
 
@@ -137,17 +139,15 @@ func (d *Driver) setupInterviewContext() error {
 
 	// Add existing config values if available (so PM doesn't ask for them again)
 	if cfgErr == nil {
-		if cfg.Project.Name != "" {
+		if cfg.Project != nil && cfg.Project.Name != "" {
 			templateData.Extra["ExistingProjectName"] = cfg.Project.Name
 		}
-		if cfg.Project.PrimaryPlatform != "" {
+		if cfg.Project != nil && cfg.Project.PrimaryPlatform != "" {
 			templateData.Extra["ExistingPlatform"] = cfg.Project.PrimaryPlatform
 		}
-		if cfg.Git.RepoURL != "" {
+		if cfg.Git != nil && cfg.Git.RepoURL != "" {
 			templateData.Extra["ExistingGitURL"] = cfg.Git.RepoURL
 		}
-	} else {
-		d.logger.Warn("Failed to get config: %v", cfgErr)
 	}
 
 	// Select template based on bootstrap requirements
@@ -245,14 +245,15 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	loop := toolloop.New(d.LLMClient, d.logger)
 
 	cfg := &toolloop.Config[WorkingResult]{
-		ContextManager: d.contextManager,
-		InitialPrompt:  prompt,
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  10,
-		MaxTokens:      agent.PMMaxTokens,
-		AgentID:        d.GetAgentID(),               // Agent ID for tool context
-		DebugLogging:   config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
+		ContextManager:     d.contextManager,
+		InitialPrompt:      prompt,
+		GeneralTools:       generalTools,
+		TerminalTool:       terminalTool,
+		MaxIterations:      10,
+		MaxTokens:          agent.PMMaxTokens,
+		AgentID:            d.GetAgentID(),               // Agent ID for tool context
+		DebugLogging:       config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
+		PersistenceChannel: d.persistenceChannel,         // For tool execution logging
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("pm_working_%s", d.GetAgentID()),
 			SoftLimit: 8,  // Warn at 8 iterations

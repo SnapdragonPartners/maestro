@@ -18,7 +18,11 @@ const CurrentSchemaVersion = 15
 // This function is idempotent and safe to call multiple times.
 func InitializeDatabase(dbPath string) (*sql.DB, error) {
 	// Open database connection
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_foreign_keys=ON&_journal_mode=WAL", dbPath))
+	// Connection settings:
+	// - _foreign_keys=ON: Enable foreign key constraints
+	// - _journal_mode=WAL: Write-Ahead Logging for better concurrent access
+	// - _busy_timeout=5000: Wait up to 5 seconds if database is locked (prevents SQLITE_BUSY)
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_foreign_keys=ON&_journal_mode=WAL&_busy_timeout=5000", dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

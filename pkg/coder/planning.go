@@ -198,6 +198,8 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 				return nil
 			},
 		},
+		PersistenceChannel: c.persistenceChannel,
+		StoryID:            utils.GetStateValueOr[string](sm, KeyStoryID, ""),
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
