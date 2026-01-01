@@ -736,3 +736,94 @@ func TestProcessEffect(t *testing.T) {
 		t.Errorf("expected 1 LLM call, got %d", llmClient.callCount)
 	}
 }
+
+// TestTerminalToolFailureContinuesLoop tests that when a terminal tool fails with an error,
+// the loop continues so the LLM can see the error and retry with correct parameters.
+func TestTerminalToolFailureContinuesLoop(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// First call: terminal tool fails (missing required param)
+	// Second call: terminal tool succeeds
+	llmClient := &mockLLMClient{
+		responses: []agent.CompletionResponse{
+			{
+				Content: "Calling submit without summary",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call1", Name: "submit", Parameters: map[string]any{"markdown": "# Spec"}},
+				},
+			},
+			{
+				Content: "Calling submit with all params",
+				ToolCalls: []agent.ToolCall{
+					{ID: "call2", Name: "submit", Parameters: map[string]any{"markdown": "# Spec", "summary": "A spec"}},
+				},
+			},
+		},
+	}
+
+	callCount := 0
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, params map[string]any) (*tools.ExecResult, error) {
+			callCount++
+			// First call fails (simulating missing required param)
+			if callCount == 1 {
+				if _, ok := params["summary"]; !ok {
+					return nil, fmt.Errorf("summary parameter is required")
+				}
+			}
+			// Second call succeeds
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "SPEC_PREVIEW",
+					Data: map[string]any{
+						"markdown": params["markdown"],
+						"summary":  params["summary"],
+					},
+				},
+			}, nil
+		},
+		extractFunc: func(calls []agent.ToolCall, _ []any) (string, error) {
+			for i := range calls {
+				if calls[i].Name == "submit" {
+					return "done", nil
+				}
+			}
+			return "", toolloop.ErrNoTerminalTool
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should eventually succeed after retry
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("expected OutcomeProcessEffect, got %v with error: %v", out.Kind, out.Err)
+	}
+
+	if out.Signal != "SPEC_PREVIEW" {
+		t.Errorf("expected signal 'SPEC_PREVIEW', got %q", out.Signal)
+	}
+
+	// LLM should have been called twice (first failure, then success)
+	if llmClient.callCount != 2 {
+		t.Errorf("expected 2 LLM calls (first fail, then retry), got %d", llmClient.callCount)
+	}
+
+	// Terminal tool should have been called twice
+	if callCount != 2 {
+		t.Errorf("expected terminal tool to be called 2 times, got %d", callCount)
+	}
+}

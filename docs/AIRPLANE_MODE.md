@@ -1,6 +1,6 @@
 # Airplane Mode Specification
 
-**Status**: Draft - Revised after feedback
+**Status**: MVP Complete
 **Author**: Claude Code
 **Date**: 2025-12-24
 
@@ -1444,7 +1444,7 @@ curl -X POST "http://localhost:3000/api/v1/repos/maestro/myproject/pulls/1/merge
 ### Integration Tests
 
 #### End-to-End Airplane Mode Test
-- [ ] `TestE2E_AirplaneMode_FullStoryCycle`
+- [x] `TestE2E_AirplaneMode_FullStoryCycle`
   1. Start with `--airplane` flag
   2. Verify Gitea container started
   3. Coder completes story (push to Gitea, create PR)
@@ -1454,12 +1454,14 @@ curl -X POST "http://localhost:3000/api/v1/repos/maestro/myproject/pulls/1/merge
   7. Verify no network calls to GitHub
 
 #### Mode Switching Test
-- [ ] `TestE2E_ModeSwitching_StandardToAirplane`
+- [x] `TestE2E_StandardToAirplane` (was `TestE2E_ModeSwitching_StandardToAirplane`)
   1. Start in standard mode, process story
   2. Stop orchestrator
   3. Restart with `--airplane`
   4. Verify mirror switches upstream to Gitea
   5. Continue processing
+
+- [x] `TestE2E_AirplaneToStandard` (bonus - sync back to GitHub)
 
 ---
 
@@ -1478,8 +1480,8 @@ curl -X POST "http://localhost:3000/api/v1/repos/maestro/myproject/pulls/1/merge
 | WP9: Agent Integration | 4 | 2 | ✅ Complete |
 | WP10: Sync Command | 4 | 3 | ✅ Complete |
 | WP11: Documentation Updates | 7 | - | ✅ Complete |
-| **Integration Tests** | - | 2 | Not Started |
-| **Total** | **66** | **43** | **MVP Complete** |
+| **Integration Tests** | - | 7 | ✅ Complete |
+| **Total** | **66** | **50** | **MVP Complete** |
 
 ### Implementation Order
 

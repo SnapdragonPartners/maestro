@@ -351,6 +351,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		// Execute ALL tools (API requirement: every tool_use must have tool_result)
 		tl.logger.Info("Processing %d tool calls", len(resp.ToolCalls))
 		var pendingEffect *tools.ProcessEffect
+		failedTools := make(map[string]bool) // Track which tools failed so we don't auto-wrap terminal failures
 
 		for i := range resp.ToolCalls {
 			toolCall := &resp.ToolCalls[i]
@@ -382,6 +383,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				tl.logger.Error("Tool %s failed after %.3fs: %v", toolCall.Name, duration.Seconds(), err)
 				content = fmt.Sprintf("Tool failed: %v", err)
 				isError = true
+				failedTools[toolCall.Name] = true
 			} else {
 				tl.logger.Info("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
 
@@ -422,12 +424,18 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 		}
 
-		// Check if terminal tool was called
+		// Check if terminal tool was called successfully
 		// Terminal tools should use ProcessEffect pattern - they would have exited above
 		// If terminal tool was called but didn't return ProcessEffect, auto-wrap with generic signal
+		// BUT: if the terminal tool FAILED, let the loop continue so LLM can see the error and retry
 		for i := range resp.ToolCalls {
 			if resp.ToolCalls[i].Name == terminalToolName {
-				// Terminal tool was called but didn't return ProcessEffect
+				// Check if the terminal tool failed - if so, let the loop continue for retry
+				if failedTools[terminalToolName] {
+					tl.logger.Info("⚠️  Terminal tool '%s' failed - continuing loop so LLM can retry", terminalToolName)
+					break // Continue to next iteration so LLM can see error and retry
+				}
+				// Terminal tool was called and succeeded but didn't return ProcessEffect
 				// Auto-wrap to avoid runtime errors (we can't enforce ProcessEffect at compile time)
 				tl.logger.Warn("⚠️  Terminal tool '%s' was called but did not return ProcessEffect - auto-wrapping with TERMINAL_COMPLETE signal", terminalToolName)
 				var zero T
