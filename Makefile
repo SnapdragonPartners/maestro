@@ -128,11 +128,15 @@ lint-state:
 run: build-css build
 	clear && rm -rf ~/Code/maestro-work/test && ./bin/maestro -workdir ~/Code/maestro-work/test -ui 2>&1 | tee logs/run.log
 
-# Build Tailwind CSS
+# Build Tailwind CSS (optional - skipped if tailwindcss not installed)
 build-css:
-	@echo "🎨 Building Tailwind CSS..."
-	@tailwindcss -i ./pkg/webui/web/static/css/input.css -o ./pkg/webui/web/static/css/tailwind.css --minify
-	@echo "✅ Tailwind CSS built successfully"
+	@if command -v tailwindcss >/dev/null 2>&1; then \
+		echo "🎨 Building Tailwind CSS..."; \
+		tailwindcss -i ./pkg/webui/web/static/css/input.css -o ./pkg/webui/web/static/css/tailwind.css --minify; \
+		echo "✅ Tailwind CSS built successfully"; \
+	else \
+		echo "⏭️  Skipping Tailwind CSS build (tailwindcss not installed, using committed CSS)"; \
+	fi
 
 # Start web UI in development mode
 ui-dev: build build-css
