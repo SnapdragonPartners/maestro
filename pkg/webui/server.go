@@ -1007,15 +1007,19 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 
 	// Parse JSON request body
 	var reqBody struct {
-		Text    string `json:"text"`
-		Channel string `json:"channel"` // Optional: defaults to 'development'
+		Text     string `json:"text"`
+		Channel  string `json:"channel"`   // Optional: defaults to 'development'
+		ReplyTo  *int64 `json:"reply_to"`  // Optional: ID of message being replied to
+		PostType string `json:"post_type"` // Optional: defaults to 'chat'
 	}
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if reqBody.Text == "" {
+	// Text is required except for confirmation responses (which are operational, not conversational)
+	isConfirmationResponse := reqBody.PostType == chat.PostTypeConfirmationContinue || reqBody.PostType == chat.PostTypeConfirmationCancel
+	if reqBody.Text == "" && !isConfirmationResponse {
 		http.Error(w, "Text is required", http.StatusBadRequest)
 		return
 	}
@@ -1026,11 +1030,23 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 		channel = "development"
 	}
 
+	// Default to 'reply' post type if replying to a message, otherwise 'chat'
+	postType := reqBody.PostType
+	if postType == "" {
+		if reqBody.ReplyTo != nil {
+			postType = "reply"
+		} else {
+			postType = "chat"
+		}
+	}
+
 	// Post message as "@human"
 	postReq := &chat.PostRequest{
-		Author:  "@human",
-		Text:    reqBody.Text,
-		Channel: channel,
+		Author:   "@human",
+		Text:     reqBody.Text,
+		Channel:  channel,
+		ReplyTo:  reqBody.ReplyTo,
+		PostType: postType,
 	}
 
 	resp, err := s.chatService.Post(r.Context(), postReq)
@@ -1067,10 +1083,16 @@ func (s *Server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 	allMessages := s.chatService.GetAllMessages()
 
 	// Build response, filtering by cursor if provided
+	// Also filter out confirmation responses (continue/cancel) - these are operational, not conversational
 	messages := []map[string]interface{}{}
 	for _, msg := range allMessages {
 		if cursorID > 0 && msg.ID <= cursorID {
 			continue // Skip messages we've already seen
+		}
+
+		// Skip confirmation responses (but keep confirmation_request which has the buttons)
+		if msg.PostType == chat.PostTypeConfirmationContinue || msg.PostType == chat.PostTypeConfirmationCancel {
+			continue
 		}
 
 		messages = append(messages, map[string]interface{}{

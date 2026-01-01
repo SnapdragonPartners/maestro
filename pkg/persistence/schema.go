@@ -12,7 +12,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 15
+const CurrentSchemaVersion = 17
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -120,6 +120,10 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion14(db)
 	case 15:
 		return migrateToVersion15(db)
+	case 16:
+		return migrateToVersion16(db)
+	case 17:
+		return migrateToVersion17(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -635,6 +639,80 @@ func migrateToVersion15(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion16 adds 'confirmation_request' to the post_type CHECK constraint.
+// SQLite doesn't support ALTER CONSTRAINT, so we recreate the table.
+func migrateToVersion16(db *sql.DB) error {
+	migrations := []string{
+		// Create new table with updated constraint
+		`CREATE TABLE IF NOT EXISTS chat_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			channel TEXT NOT NULL DEFAULT 'development',
+			ts TEXT NOT NULL,
+			author TEXT NOT NULL,
+			text TEXT NOT NULL,
+			reply_to INTEGER REFERENCES chat_new(id),
+			post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate', 'confirmation_request'))
+		)`,
+		// Copy data from old table
+		`INSERT INTO chat_new (id, session_id, channel, ts, author, text, reply_to, post_type)
+		 SELECT id, session_id, channel, ts, author, text, reply_to, post_type FROM chat`,
+		// Drop old table
+		`DROP TABLE chat`,
+		// Rename new table
+		`ALTER TABLE chat_new RENAME TO chat`,
+		// Recreate indices
+		`CREATE INDEX IF NOT EXISTS idx_chat_reply_to ON chat(reply_to)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_post_type ON chat(post_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_channel_session ON chat(channel, session_id, id)`,
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateToVersion17 adds 'confirmation_continue' and 'confirmation_cancel' to the post_type CHECK constraint.
+// These are used for iteration limit confirmations without injecting messages into LLM context.
+func migrateToVersion17(db *sql.DB) error {
+	migrations := []string{
+		// Create new table with updated constraint
+		`CREATE TABLE IF NOT EXISTS chat_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			channel TEXT NOT NULL DEFAULT 'development',
+			ts TEXT NOT NULL,
+			author TEXT NOT NULL,
+			text TEXT NOT NULL,
+			reply_to INTEGER REFERENCES chat_new(id),
+			post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate', 'confirmation_request', 'confirmation_continue', 'confirmation_cancel'))
+		)`,
+		// Copy data from old table
+		`INSERT INTO chat_new (id, session_id, channel, ts, author, text, reply_to, post_type)
+		 SELECT id, session_id, channel, ts, author, text, reply_to, post_type FROM chat`,
+		// Drop old table
+		`DROP TABLE chat`,
+		// Rename new table
+		`ALTER TABLE chat_new RENAME TO chat`,
+		// Recreate indices
+		`CREATE INDEX IF NOT EXISTS idx_chat_reply_to ON chat(reply_to)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_post_type ON chat(post_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_channel_session ON chat(channel, session_id, id)`,
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 //
 //nolint:maintidx // Schema definition is inherently large; keeping it together aids comprehension.
@@ -767,7 +845,7 @@ func createSchema(db *sql.DB) error {
 			author TEXT NOT NULL,
 			text TEXT NOT NULL,
 			reply_to INTEGER REFERENCES chat(id),
-			post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate'))
+			post_type TEXT NOT NULL DEFAULT 'chat' CHECK (post_type IN ('chat', 'reply', 'escalate', 'confirmation_request', 'confirmation_continue', 'confirmation_cancel'))
 		)`,
 
 		// Chat cursor table for tracking agent read positions (per-channel, per-session)

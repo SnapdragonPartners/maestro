@@ -5,7 +5,7 @@ EMBEDDED_DIR := pkg/coder/claude/embedded
 
 # Build all binaries (includes MCP proxy for embedding)
 # Note: build-mcp-proxy must run before lint because go:embed requires files to exist
-build: build-mcp-proxy lint
+build: build-css build-mcp-proxy lint
 	go generate ./...
 	go build -o bin/maestro ./cmd/maestro
 
@@ -131,7 +131,7 @@ run: build-css build
 # Build Tailwind CSS
 build-css:
 	@echo "🎨 Building Tailwind CSS..."
-	@tailwindcss -i ./web/static/css/input.css -o ./web/static/css/tailwind.css --minify
+	@tailwindcss -i ./pkg/webui/web/static/css/input.css -o ./pkg/webui/web/static/css/tailwind.css --minify
 	@echo "✅ Tailwind CSS built successfully"
 
 # Start web UI in development mode
@@ -143,5 +143,5 @@ ui-dev: build build-css
 # Clean build artifacts
 clean:
 	rm -rf bin/
-	rm -f web/static/css/tailwind.css
+	rm -f pkg/webui/web/static/css/tailwind.css
 	rm -f $(EMBEDDED_DIR)/proxy-linux-*
