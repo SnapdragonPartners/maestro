@@ -275,13 +275,20 @@ func (o *AirplaneOrchestrator) configureMirror(ctx context.Context, state *forge
 	// Create mirror manager
 	mirrorMgr := mirror.NewManager(o.projectDir)
 
-	// Check if mirror exists
+	// Get the mirror path (this just constructs the path, doesn't check existence)
 	mirrorPath, err := mirrorMgr.GetMirrorPath()
 	if err != nil {
+		// Config issue (e.g., no repo URL configured)
+		o.logger.Warn("⚠️  Could not determine mirror path: %v", err)
+		return nil //nolint:nilerr // Expected condition: no repo configured
+	}
+
+	// Check if mirror directory actually exists
+	if _, err := os.Stat(mirrorPath); os.IsNotExist(err) {
 		// Mirror doesn't exist yet - it will be created on first use.
-		// This is an expected condition, not an error.
+		// This is an expected condition for first-time airplane mode runs.
 		o.logger.Info("ℹ️  Mirror will be created on first use")
-		return nil //nolint:nilerr // Expected condition: mirror not yet created
+		return nil
 	}
 
 	// Mirror exists - switch upstream to Gitea
