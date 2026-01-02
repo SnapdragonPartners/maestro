@@ -465,12 +465,8 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		fmt.Printf("ERROR: Failed to initialize coder template renderer: %v\n", err)
 	}
 
-	// Get model name from config for context manager
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-	modelName := cfg.Agents.CoderModel
+	// Get model name (respects airplane mode override)
+	modelName := config.GetEffectiveCoderModel()
 
 	// Create state machine
 	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, nil, CoderTransitions)

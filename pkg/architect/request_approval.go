@@ -93,10 +93,12 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 				return nil
 			},
 		},
-		MaxIterations: 20, // Allow multiple inspection iterations
-		MaxTokens:     agent.ArchitectMaxTokens,
-		AgentID:       d.GetAgentID(),
-		DebugLogging:  config.GetDebugLLMMessages(),
+		MaxIterations:      20, // Allow multiple inspection iterations
+		MaxTokens:          agent.ArchitectMaxTokens,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+		StoryID:            storyID,
 	})
 
 	// Handle outcome

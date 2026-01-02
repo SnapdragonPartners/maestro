@@ -33,12 +33,6 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	resumeInput := utils.GetStateValueOr[string](sm, KeyResumeInput, "")
 	shouldResume := existingSessionID != "" && resumeInput != ""
 
-	// Get config for API key and model
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to get config")
-	}
-
 	// Ensure planning tool provider is initialized
 	// Use Claude Code-specific provider that excludes container_switch to prevent session destruction
 	if c.planningToolProvider == nil {
@@ -54,7 +48,7 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	opts := claude.DefaultRunOptions()
 	opts.Mode = claude.ModePlanning
 	opts.WorkDir = "/workspace"
-	opts.Model = cfg.Agents.CoderModel
+	opts.Model = config.GetEffectiveCoderModel()
 	opts.EnvVars = map[string]string{
 		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
 	}
@@ -71,8 +65,7 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 		c.logger.Info("🔄 Resuming Claude Code planning session %s for story %s", existingSessionID, storyID)
 	} else {
 		// New session - render full prompts
-		var renderer *claudetemplates.Renderer
-		renderer, err = claudetemplates.NewRenderer()
+		renderer, err := claudetemplates.NewRenderer()
 		if err != nil {
 			return proto.StateError, false, logx.Wrap(err, "failed to create claude template renderer")
 		}

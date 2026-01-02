@@ -84,10 +84,11 @@ See the canonical state diagrams for details:
 
 ## Tools & Environment
 
-- **GitHub (mandatory for now):**
+- **GitHub (standard mode) or Gitea (airplane mode):**
   - Local mirrors for speed
   - Tokens for push/PR/merge
   - One working clone per coder, deleted when the coder terminates
+  - In airplane mode, a local Gitea server provides the same PR/merge workflow offline
 
 - **Docker:**
   - All agents run in Docker containers with security hardening
@@ -130,6 +131,7 @@ Maestro operates in several distinct modes depending on project state and user i
 |------|--------------|--------------|
 | Bootstrap | Automatically on new projects | Sets up basic project infrastructure |
 | Development | Default operating mode | Main workflow for building features |
+| Airplane | `--airplane` flag | Fully offline with local Gitea + Ollama |
 | Claude Code | Optional coder variant | Uses Claude Code for implementation |
 | Demo | User-triggered via WebUI | Runs the application for testing |
 | Hotfix | User requests urgent fix | Fast path for production issues |
@@ -137,6 +139,43 @@ Maestro operates in several distinct modes depending on project state and user i
 | Discovery | Future | Onboards existing codebases |
 
 See [docs/MODES.md](docs/MODES.md) for detailed documentation on each mode.
+
+### Airplane Mode (Offline Development)
+
+Airplane mode enables fully offline multi-agent development without GitHub or external LLM APIs:
+
+```bash
+# Start in airplane mode
+maestro --airplane
+
+# After returning online, sync changes to GitHub
+maestro --sync
+```
+
+**Requirements:**
+- Docker (for local Gitea server)
+- Ollama with local models (e.g., `mistral-nemo`, `qwen2.5-coder`)
+
+**How it works:**
+- A local Gitea instance replaces GitHub for PR/merge operations
+- Ollama provides local LLMs for all agents
+- The mirror layer fetches from Gitea instead of GitHub
+- When back online, `--sync` pushes all changes to GitHub
+
+**Configuration:**
+```json
+{
+  "default_mode": "airplane",
+  "agents": {
+    "airplane": {
+      "coder_model": "ollama:qwen2.5-coder:14b",
+      "architect_model": "ollama:mistral-nemo:latest"
+    }
+  }
+}
+```
+
+See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
 
 ---
 
@@ -194,7 +233,8 @@ Config settings are in <projectdir>/.maestro/config.json.
 - **Binary**: ~14 MB fat binary (Linux & macOS tested; Windows soon)
 - **Go**: Only needed if compiling from source (Go 1.24+)
 - **Docker**: CLI + daemon required
-- **GitHub**: Token with push/PR/merge perms
+- **GitHub**: Token with push/PR/merge perms (standard mode only)
+- **Ollama**: Required for airplane mode (local LLMs)
 - **Resources**: Runs comfortably on a personal workstation
 
 ---
@@ -349,7 +389,7 @@ Open the web UI at http://localhost:8080 and start a PM interview (you can overr
 Yes. You can place a markdown specification file in your project directory and the architect will parse it directly, skipping the PM interview.
 
 **Q: Do I have to use GitHub?**
-Yes, for now. Maestro's workflow relies on PRs and merges.
+In standard mode, yes—Maestro's workflow relies on PRs and merges. However, **airplane mode** (`--airplane`) replaces GitHub with a local Gitea server for fully offline development. When you're back online, use `--sync` to push changes to GitHub.
 
 **Q: Can I skip Docker?**
 No. Coders always run in Docker containers for isolation and reproducibility.

@@ -7,6 +7,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
@@ -98,6 +99,8 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 // If bootstrap requirements are detected, uses focused bootstrap gate template.
 // If spec was uploaded, adds it to context for parsing.
 // Otherwise uses full interview start template.
+//
+//nolint:cyclop // Complex setup logic with multiple conditional paths is inherent to this function
 func (d *Driver) setupInterviewContext() error {
 	d.logger.Info("📝 Setting up interview context")
 
@@ -137,17 +140,15 @@ func (d *Driver) setupInterviewContext() error {
 
 	// Add existing config values if available (so PM doesn't ask for them again)
 	if cfgErr == nil {
-		if cfg.Project.Name != "" {
+		if cfg.Project != nil && cfg.Project.Name != "" {
 			templateData.Extra["ExistingProjectName"] = cfg.Project.Name
 		}
-		if cfg.Project.PrimaryPlatform != "" {
+		if cfg.Project != nil && cfg.Project.PrimaryPlatform != "" {
 			templateData.Extra["ExistingPlatform"] = cfg.Project.PrimaryPlatform
 		}
-		if cfg.Git.RepoURL != "" {
+		if cfg.Git != nil && cfg.Git.RepoURL != "" {
 			templateData.Extra["ExistingGitURL"] = cfg.Git.RepoURL
 		}
-	} else {
-		d.logger.Warn("Failed to get config: %v", cfgErr)
 	}
 
 	// Select template based on bootstrap requirements
@@ -245,20 +246,21 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 	loop := toolloop.New(d.LLMClient, d.logger)
 
 	cfg := &toolloop.Config[WorkingResult]{
-		ContextManager: d.contextManager,
-		InitialPrompt:  prompt,
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  10,
-		MaxTokens:      agent.PMMaxTokens,
-		AgentID:        d.GetAgentID(),               // Agent ID for tool context
-		DebugLogging:   config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
+		ContextManager:     d.contextManager,
+		InitialPrompt:      prompt,
+		GeneralTools:       generalTools,
+		TerminalTool:       terminalTool,
+		MaxIterations:      10,
+		MaxTokens:          agent.PMMaxTokens,
+		AgentID:            d.GetAgentID(),               // Agent ID for tool context
+		DebugLogging:       config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
+		PersistenceChannel: d.persistenceChannel,         // For tool execution logging
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("pm_working_%s", d.GetAgentID()),
-			SoftLimit: 8,  // Warn at 8 iterations
-			HardLimit: 10, // Require user status update at 10 iterations
-			OnSoftLimit: func(count int) {
-				d.logger.Warn("⚠️  PM iteration soft limit reached (%d iterations)", count)
+			SoftLimit: 0, // Disabled - soft limit nudging was counter-productive
+			HardLimit: 3, // Require user confirmation at 3 iterations (lowered for testing)
+			OnSoftLimit: func(_ int) {
+				// Disabled - was causing premature user prompts
 			},
 			OnHardLimit: func(_ context.Context, key string, count int) error {
 				d.logger.Error("❌ PM iteration hard limit reached (%d iterations) - must call await_user with status", count)
@@ -270,115 +272,148 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		},
 	}
 
-	out := toolloop.Run(loop, ctx, cfg)
+	// Run toolloop in a loop to handle user-confirmed continuation on iteration limit
+	for {
+		out := toolloop.Run(loop, ctx, cfg)
 
-	// Switch on outcome kind first
-	switch out.Kind {
-	case toolloop.OutcomeProcessEffect:
-		// Tool returned ProcessEffect to pause the loop
-		d.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
+		// Switch on outcome kind first
+		switch out.Kind {
+		case toolloop.OutcomeIterationLimit:
+			// PM hit iteration limit - ask user if they want to continue or provide guidance
+			d.logger.Info("⏸️  PM reached iteration limit (%d iterations), asking user for confirmation", out.Iteration)
 
-		// Route based on signal
-		switch out.Signal {
-		case tools.SignalBootstrapComplete:
-			// bootstrap tool was called - extract data from ProcessEffect.Data
-			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
-			if !ok {
-				return "", fmt.Errorf("BOOTSTRAP_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+			if d.chatService == nil {
+				d.logger.Error("❌ Chat service not available for user confirmation")
+				return "", fmt.Errorf("PM iteration limit reached and chat service unavailable: %w", out.Err)
 			}
 
-			// Extract bootstrap data from ProcessEffect.Data
-			projectName := utils.GetMapFieldOr[string](effectData, "project_name", "")
-			gitURL := utils.GetMapFieldOr[string](effectData, "git_url", "")
-			platform := utils.GetMapFieldOr[string](effectData, "platform", "")
-			bootstrapMarkdown := utils.GetMapFieldOr[string](effectData, "bootstrap_markdown", "")
-			resetContext := utils.GetMapFieldOr[bool](effectData, "reset_context", false)
-
-			// Store in state
-			bootstrapParams := map[string]string{
-				"project_name": projectName,
-				"git_url":      gitURL,
-				"platform":     platform,
+			// Ask user for confirmation to continue (PM uses "product" channel)
+			action, err := d.chatService.AskUserConfirmation(
+				ctx,
+				d.GetAgentID(),
+				fmt.Sprintf("PM has completed %d iterations gathering project information. Click Continue to allow more iterations, or Provide Guidance to give new instructions.", out.Iteration),
+				"product",     // PM chat channel
+				5*time.Second, // Poll every 5 seconds
+			)
+			if err != nil {
+				d.logger.Error("❌ Failed to get user confirmation: %v", err)
+				return "", fmt.Errorf("PM iteration limit reached and user confirmation failed: %w", err)
 			}
-			d.SetStateData(StateKeyBootstrapParams, bootstrapParams)
-			d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
-			d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
 
-			// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)
-			if resetContext {
-				d.logger.Info("🔄 Resetting context as requested by bootstrap tool")
-				d.contextManager.Clear()
+			switch action {
+			case chat.ConfirmationContinue:
+				d.logger.Info("✅ User confirmed continuation, restarting toolloop")
+				// Continue the for loop - toolloop will restart with fresh iteration count
+				// Context is preserved in contextManager
+				continue
 
-				// Rebuild context from interview template
-				if setupErr := d.setupInterviewContext(); setupErr != nil {
-					d.logger.Warn("Failed to rebuild interview context: %v", setupErr)
-				} else {
-					d.logger.Info("✅ PM context rebuilt for user requirements gathering")
+			case chat.ConfirmationCancel:
+				// User wants to provide guidance - return AWAIT_USER signal
+				// handleWorking will catch this and transition to AWAIT_USER state
+				d.logger.Info("📝 User chose to provide guidance, returning AWAIT_USER signal")
+				return string(StateAwaitUser), nil
+			}
+
+		case toolloop.OutcomeProcessEffect:
+			// Tool returned ProcessEffect to pause the loop
+			d.logger.Info("🔔 Tool returned ProcessEffect with signal: %s", out.Signal)
+
+			// Route based on signal
+			switch out.Signal {
+			case tools.SignalBootstrapComplete:
+				// bootstrap tool was called - extract data from ProcessEffect.Data
+				effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
+				if !ok {
+					return "", fmt.Errorf("BOOTSTRAP_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 				}
 
-				// If spec was uploaded, re-inject it after context reset
-				if utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeySpecUploaded, false) {
-					uploadedSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
-					if uploadedSpec != "" {
-						specMsg := fmt.Sprintf("The user has provided the following specification document. Please extract the **user feature requirements** from it (ignore any infrastructure/bootstrap requirements as those have been handled):\n\n```markdown\n%s\n```", uploadedSpec)
-						d.contextManager.AddMessage("user", specMsg)
-						d.logger.Info("📄 Re-injected uploaded spec (%d bytes) after context reset", len(uploadedSpec))
+				// Extract bootstrap data from ProcessEffect.Data
+				projectName := utils.GetMapFieldOr[string](effectData, "project_name", "")
+				gitURL := utils.GetMapFieldOr[string](effectData, "git_url", "")
+				platform := utils.GetMapFieldOr[string](effectData, "platform", "")
+				bootstrapMarkdown := utils.GetMapFieldOr[string](effectData, "bootstrap_markdown", "")
+				resetContext := utils.GetMapFieldOr[bool](effectData, "reset_context", false)
+
+				// Store in state
+				bootstrapParams := map[string]string{
+					"project_name": projectName,
+					"git_url":      gitURL,
+					"platform":     platform,
+				}
+				d.SetStateData(StateKeyBootstrapParams, bootstrapParams)
+				d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
+				d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
+
+				// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)
+				if resetContext {
+					d.logger.Info("🔄 Resetting context as requested by bootstrap tool")
+					d.contextManager.Clear()
+
+					// Rebuild context from interview template
+					if setupErr := d.setupInterviewContext(); setupErr != nil {
+						d.logger.Warn("Failed to rebuild interview context: %v", setupErr)
+					} else {
+						d.logger.Info("✅ PM context rebuilt for user requirements gathering")
+					}
+
+					// If spec was uploaded, re-inject it after context reset
+					if utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeySpecUploaded, false) {
+						uploadedSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
+						if uploadedSpec != "" {
+							specMsg := fmt.Sprintf("The user has provided the following specification document. Please extract the **user feature requirements** from it (ignore any infrastructure/bootstrap requirements as those have been handled):\n\n```markdown\n%s\n```", uploadedSpec)
+							d.contextManager.AddMessage("user", specMsg)
+							d.logger.Info("📄 Re-injected uploaded spec (%d bytes) after context reset", len(uploadedSpec))
+						}
 					}
 				}
+
+				return "", nil
+
+			case tools.SignalSpecPreview:
+				// spec_submit was called - extract data from ProcessEffect.Data
+				effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
+				if !ok {
+					return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
+				}
+
+				// Extract spec data from ProcessEffect.Data (infrastructure and user specs are separate)
+				infrastructureSpec := utils.GetMapFieldOr[string](effectData, "infrastructure_spec", "")
+				userSpec := utils.GetMapFieldOr[string](effectData, "user_spec", "")
+				summary := utils.GetMapFieldOr[string](effectData, "summary", "")
+				metadata, _ := utils.SafeAssert[map[string]any](effectData["metadata"])
+				isHotfix := utils.GetMapFieldOr[bool](effectData, "is_hotfix", false)
+
+				// Store specs using canonical state keys
+				d.SetStateData(StateKeyUserSpecMd, userSpec)
+				d.SetStateData(StateKeySpecMetadata, metadata)
+				d.SetStateData(StateKeyIsHotfix, isHotfix)
+
+				// Only store bootstrap spec if not a hotfix (hotfixes don't include bootstrap)
+				if !isHotfix && infrastructureSpec != "" {
+					d.SetStateData(StateKeyBootstrapSpecMd, infrastructureSpec)
+				}
+
+				d.logger.Info("📋 Stored spec for preview (bootstrap: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
+					len(infrastructureSpec), len(userSpec), isHotfix, summary)
+
+				return SignalSpecPreview, nil
+
+			case tools.SignalAwaitUser:
+				// chat_ask_user was called - transition to AWAIT_USER state
+				d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
+				return SignalAwaitUser, nil
+
+			default:
+				return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 			}
 
-			return "", nil
-
-		case tools.SignalSpecPreview:
-			// spec_submit was called - extract data from ProcessEffect.Data
-			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
-			if !ok {
-				return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
-			}
-
-			// Extract spec data from ProcessEffect.Data (infrastructure and user specs are separate)
-			infrastructureSpec := utils.GetMapFieldOr[string](effectData, "infrastructure_spec", "")
-			userSpec := utils.GetMapFieldOr[string](effectData, "user_spec", "")
-			summary := utils.GetMapFieldOr[string](effectData, "summary", "")
-			metadata, _ := utils.SafeAssert[map[string]any](effectData["metadata"])
-			isHotfix := utils.GetMapFieldOr[bool](effectData, "is_hotfix", false)
-
-			// Store specs using canonical state keys
-			d.SetStateData(StateKeyUserSpecMd, userSpec)
-			d.SetStateData(StateKeySpecMetadata, metadata)
-			d.SetStateData(StateKeyIsHotfix, isHotfix)
-
-			// Only store bootstrap spec if not a hotfix (hotfixes don't include bootstrap)
-			if !isHotfix && infrastructureSpec != "" {
-				d.SetStateData(StateKeyBootstrapSpecMd, infrastructureSpec)
-			}
-
-			d.logger.Info("📋 Stored spec for preview (bootstrap: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
-				len(infrastructureSpec), len(userSpec), isHotfix, summary)
-
-			return SignalSpecPreview, nil
-
-		case tools.SignalAwaitUser:
-			// chat_ask_user was called - transition to AWAIT_USER state
-			d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
-			return SignalAwaitUser, nil
+		case toolloop.OutcomeNoToolTwice, toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
+			// All other errors are treated as toolloop failures
+			return "", fmt.Errorf("toolloop execution failed: %w", out.Err)
 
 		default:
-			return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
+			return "", fmt.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 		}
-
-	case toolloop.OutcomeIterationLimit:
-		// PM hit iteration limit - this should not happen as PM should call chat_ask_user
-		// before reaching the limit to provide status updates
-		d.logger.Error("❌ PM reached iteration limit (%d iterations) without calling chat_ask_user", out.Iteration)
-		return "", fmt.Errorf("PM must call chat_ask_user with status update before iteration limit: %w", out.Err)
-
-	case toolloop.OutcomeNoToolTwice, toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
-		// All other errors are treated as toolloop failures
-		return "", fmt.Errorf("toolloop execution failed: %w", out.Err)
-
-	default:
-		return "", fmt.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
 }
 

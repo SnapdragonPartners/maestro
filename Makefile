@@ -1,11 +1,11 @@
-.PHONY: build test test-integration test-all test-coverage check-coverage lint lint-state run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
+.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
 
 # Build all binaries (includes MCP proxy for embedding)
 # Note: build-mcp-proxy must run before lint because go:embed requires files to exist
-build: build-mcp-proxy lint
+build: build-css build-mcp-proxy lint
 	go generate ./...
 	go build -o bin/maestro ./cmd/maestro
 
@@ -29,6 +29,12 @@ test:
 test-integration:
 	@echo "🧪 Running integration tests..."
 	go test -tags=integration -cover -timeout=10m ./...
+
+# Run E2E tests (full workflow tests requiring Docker, Gitea, real Git operations)
+test-e2e:
+	@echo "🚀 Running E2E tests..."
+	@echo "   Requires: Docker, network access to GitHub test repo"
+	go test -tags=e2e -cover -timeout=30m ./tests/...
 
 # Run all tests including integration tests (combines unit and integration)
 test-all:
@@ -122,11 +128,15 @@ lint-state:
 run: build-css build
 	clear && rm -rf ~/Code/maestro-work/test && ./bin/maestro -workdir ~/Code/maestro-work/test -ui 2>&1 | tee logs/run.log
 
-# Build Tailwind CSS
+# Build Tailwind CSS (optional - skipped if tailwindcss not installed)
 build-css:
-	@echo "🎨 Building Tailwind CSS..."
-	@tailwindcss -i ./web/static/css/input.css -o ./web/static/css/tailwind.css --minify
-	@echo "✅ Tailwind CSS built successfully"
+	@if command -v tailwindcss >/dev/null 2>&1; then \
+		echo "🎨 Building Tailwind CSS..."; \
+		tailwindcss -i ./pkg/webui/web/static/css/input.css -o ./pkg/webui/web/static/css/tailwind.css --minify; \
+		echo "✅ Tailwind CSS built successfully"; \
+	else \
+		echo "⏭️  Skipping Tailwind CSS build (tailwindcss not installed, using committed CSS)"; \
+	fi
 
 # Start web UI in development mode
 ui-dev: build build-css
@@ -137,5 +147,5 @@ ui-dev: build build-css
 # Clean build artifacts
 clean:
 	rm -rf bin/
-	rm -f web/static/css/tailwind.css
+	rm -f pkg/webui/web/static/css/tailwind.css
 	rm -f $(EMBEDDED_DIR)/proxy-linux-*

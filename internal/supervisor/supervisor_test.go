@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 )
 
@@ -20,6 +21,15 @@ func createTestConfig() config.Config {
 			CoderModel:     config.ModelClaudeSonnetLatest,
 			ArchitectModel: config.ModelOpenAIO3Mini,
 		},
+	}
+}
+
+// resetPersistence resets the database singleton for testing.
+// Must be called before creating a kernel in tests.
+func resetPersistence(t *testing.T) {
+	t.Helper()
+	if err := persistence.Reset(); err != nil {
+		t.Fatalf("Failed to reset persistence: %v", err)
 	}
 }
 
@@ -44,6 +54,8 @@ func (m *MockAgent) GetCurrentState() proto.State {
 
 // TestNewSupervisor tests supervisor creation.
 func TestNewSupervisor(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-test-*")
 	if err != nil {
@@ -124,6 +136,8 @@ func TestDefaultRestartPolicy(t *testing.T) {
 
 // TestSupervisorAgentRegistration tests agent registration functionality.
 func TestSupervisorAgentRegistration(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-registration-test-*")
 	if err != nil {
@@ -177,6 +191,8 @@ func TestSupervisorAgentRegistration(t *testing.T) {
 
 // TestSupervisorCleanup tests agent cleanup functionality.
 func TestSupervisorCleanup(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-cleanup-test-*")
 	if err != nil {
@@ -228,6 +244,8 @@ func TestSupervisorCleanup(t *testing.T) {
 
 // TestSupervisorStartStop tests supervisor lifecycle.
 func TestSupervisorStartStop(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-lifecycle-test-*")
 	if err != nil {
@@ -311,6 +329,8 @@ func TestRestartActions(t *testing.T) {
 
 // TestWaitForAgentsShutdownNoAgents tests shutdown wait with no registered agents.
 func TestWaitForAgentsShutdownNoAgents(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-shutdown-test-*")
 	if err != nil {
@@ -359,6 +379,8 @@ func (m *RunnableMockAgent) Run(ctx context.Context) error {
 
 // TestWaitForAgentsShutdownWithAgents tests shutdown wait with running agents.
 func TestWaitForAgentsShutdownWithAgents(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-shutdown-agents-test-*")
 	if err != nil {
@@ -414,6 +436,8 @@ func TestWaitForAgentsShutdownWithAgents(t *testing.T) {
 
 // TestWaitForAgentsShutdownTimeout tests shutdown wait timeout.
 func TestWaitForAgentsShutdownTimeout(t *testing.T) {
+	resetPersistence(t)
+
 	// Create temporary directory for test
 	tempDir, err := os.MkdirTemp("", "supervisor-shutdown-timeout-test-*")
 	if err != nil {
