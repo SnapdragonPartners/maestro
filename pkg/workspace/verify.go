@@ -235,7 +235,7 @@ func validateDatabaseSchema(dbPath string, fail func(string, ...interface{}), _ 
 	}
 
 	// Open database and check schema version (using same connection string as persistence layer)
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_foreign_keys=ON&_journal_mode=WAL", dbPath))
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_foreign_keys=ON&_journal_mode=WAL&_busy_timeout=5000", dbPath))
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}

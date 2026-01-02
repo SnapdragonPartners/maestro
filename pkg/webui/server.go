@@ -4,7 +4,6 @@ package webui
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -16,8 +15,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
@@ -50,15 +47,19 @@ type DemoAvailabilityChecker interface {
 }
 
 // Server represents the web UI HTTP server.
+//
+//nolint:govet // fieldalignment: intentional grouping by field type for readability
 type Server struct {
-	dispatcher              *dispatch.Dispatcher
-	chatService             *chat.Service
-	llmFactory              *agent.LLMClientFactory
+	// 16-byte fields (interfaces and strings)
 	demoService             DemoService
 	demoAvailabilityChecker DemoAvailabilityChecker // PM provides this
-	logger                  *logx.Logger
-	templates               *template.Template
 	workDir                 string
+	// 8-byte fields (pointers)
+	dispatcher  *dispatch.Dispatcher
+	chatService *chat.Service
+	llmFactory  *agent.LLMClientFactory
+	logger      *logx.Logger
+	templates   *template.Template
 }
 
 // AgentListItem represents an agent in the list response.
@@ -947,31 +948,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("Served %d message entries", len(logs))
 }
 
-// readMessageLogs reads message events from the database.
+// readMessageLogs reads message events from the database using the singleton.
 func (s *Server) readMessageLogs() []MessageEntry {
-	dbPath := filepath.Join(s.workDir, ".maestro", "maestro.db")
-
-	// Open database using sql package
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		s.logger.Debug("Failed to open database for message reading: %v", err)
-		return []MessageEntry{}
-	}
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			s.logger.Warn("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Get current session ID from config for session-isolated queries
-	cfg, err := config.GetConfig()
-	if err != nil {
-		s.logger.Warn("Failed to get config for session ID: %v", err)
+	// Check if persistence is initialized
+	if !persistence.IsInitialized() {
+		s.logger.Debug("Database not initialized for message reading")
 		return []MessageEntry{}
 	}
 
-	// Use the persistence operations package with session isolation
-	ops := persistence.NewDatabaseOperations(db, cfg.SessionID)
+	// Use the persistence singleton
+	ops := persistence.Ops()
 	recentMessages, err := ops.GetRecentMessages(5)
 	if err != nil {
 		s.logger.Warn("Failed to query recent messages: %v", err)
@@ -1021,15 +1007,19 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 
 	// Parse JSON request body
 	var reqBody struct {
-		Text    string `json:"text"`
-		Channel string `json:"channel"` // Optional: defaults to 'development'
+		Text     string `json:"text"`
+		Channel  string `json:"channel"`   // Optional: defaults to 'development'
+		ReplyTo  *int64 `json:"reply_to"`  // Optional: ID of message being replied to
+		PostType string `json:"post_type"` // Optional: defaults to 'chat'
 	}
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if reqBody.Text == "" {
+	// Text is required except for confirmation responses (which are operational, not conversational)
+	isConfirmationResponse := reqBody.PostType == chat.PostTypeConfirmationContinue || reqBody.PostType == chat.PostTypeConfirmationCancel
+	if reqBody.Text == "" && !isConfirmationResponse {
 		http.Error(w, "Text is required", http.StatusBadRequest)
 		return
 	}
@@ -1040,11 +1030,23 @@ func (s *Server) handleChatPost(w http.ResponseWriter, r *http.Request) {
 		channel = "development"
 	}
 
+	// Default to 'reply' post type if replying to a message, otherwise 'chat'
+	postType := reqBody.PostType
+	if postType == "" {
+		if reqBody.ReplyTo != nil {
+			postType = "reply"
+		} else {
+			postType = "chat"
+		}
+	}
+
 	// Post message as "@human"
 	postReq := &chat.PostRequest{
-		Author:  "@human",
-		Text:    reqBody.Text,
-		Channel: channel,
+		Author:   "@human",
+		Text:     reqBody.Text,
+		Channel:  channel,
+		ReplyTo:  reqBody.ReplyTo,
+		PostType: postType,
 	}
 
 	resp, err := s.chatService.Post(r.Context(), postReq)
@@ -1081,10 +1083,16 @@ func (s *Server) handleChatRead(w http.ResponseWriter, r *http.Request) {
 	allMessages := s.chatService.GetAllMessages()
 
 	// Build response, filtering by cursor if provided
+	// Also filter out confirmation responses (continue/cancel) - these are operational, not conversational
 	messages := []map[string]interface{}{}
 	for _, msg := range allMessages {
 		if cursorID > 0 && msg.ID <= cursorID {
 			continue // Skip messages we've already seen
+		}
+
+		// Skip confirmation responses (but keep confirmation_request which has the buttons)
+		if msg.PostType == chat.PostTypeConfirmationContinue || msg.PostType == chat.PostTypeConfirmationCancel {
+			continue
 		}
 
 		messages = append(messages, map[string]interface{}{

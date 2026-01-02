@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/forge"
 	"orchestrator/pkg/logx"
 )
 
@@ -28,8 +29,139 @@ func NewManager(projectDir string) *Manager {
 	}
 }
 
+// GetFetchURL returns the upstream URL based on operating mode.
+// In airplane mode, reads from runtime state (forge_state.json).
+// In standard mode, returns the configured GitHub URL.
+func (m *Manager) GetFetchURL() (string, error) {
+	if config.IsAirplaneMode() {
+		// Load forge state to get Gitea URL
+		state, err := forge.LoadState(m.projectDir)
+		if err != nil {
+			// Gitea not yet configured - fall back to GitHub URL
+			// This can happen during initial setup before Gitea is ready
+			m.logger.Debug("Forge state not found, using GitHub URL: %v", err)
+			return m.getGitHubURL()
+		}
+		// Return Gitea clone URL
+		return fmt.Sprintf("%s/%s/%s.git", state.URL, state.Owner, state.RepoName), nil
+	}
+	return m.getGitHubURL()
+}
+
+// getGitHubURL returns the GitHub repository URL from config.
+func (m *Manager) getGitHubURL() (string, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config: %w", err)
+	}
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		return "", fmt.Errorf("no git repository configured")
+	}
+	return cfg.Git.RepoURL, nil
+}
+
+// RefreshFromForge updates the mirror from the current forge (GitHub or Gitea).
+// This should be called after PR merges to ensure the mirror has the latest changes.
+func (m *Manager) RefreshFromForge(ctx context.Context) error {
+	mirrorPath, err := m.GetMirrorPath()
+	if err != nil {
+		return fmt.Errorf("failed to get mirror path: %w", err)
+	}
+
+	if !mirrorExists(mirrorPath) {
+		return fmt.Errorf("mirror does not exist at %s", mirrorPath)
+	}
+
+	// Get the current fetch URL
+	fetchURL, err := m.GetFetchURL()
+	if err != nil {
+		return fmt.Errorf("failed to get fetch URL: %w", err)
+	}
+
+	// Ensure the remote URL is correct
+	if err := m.ensureRemoteURL(ctx, mirrorPath, fetchURL); err != nil {
+		return fmt.Errorf("failed to update remote URL: %w", err)
+	}
+
+	// Fetch updates
+	m.logger.Info("📥 Refreshing mirror from %s...", fetchURL)
+	if err := updateGitMirror(ctx, mirrorPath); err != nil {
+		return fmt.Errorf("failed to update mirror: %w", err)
+	}
+
+	m.logger.Info("✅ Mirror refreshed successfully")
+	return nil
+}
+
+// SwitchUpstream changes the mirror's upstream to a new URL.
+// This is used when switching between standard and airplane modes.
+func (m *Manager) SwitchUpstream(ctx context.Context, newURL string) error {
+	mirrorPath, err := m.GetMirrorPath()
+	if err != nil {
+		return fmt.Errorf("failed to get mirror path: %w", err)
+	}
+
+	if !mirrorExists(mirrorPath) {
+		return fmt.Errorf("mirror does not exist at %s", mirrorPath)
+	}
+
+	m.logger.Info("🔄 Switching mirror upstream to %s", newURL)
+
+	// Update the remote URL
+	if err := m.ensureRemoteURL(ctx, mirrorPath, newURL); err != nil {
+		return fmt.Errorf("failed to update remote URL: %w", err)
+	}
+
+	// Fetch from new upstream
+	if err := updateGitMirror(ctx, mirrorPath); err != nil {
+		return fmt.Errorf("failed to fetch from new upstream: %w", err)
+	}
+
+	m.logger.Info("✅ Mirror upstream switched successfully")
+	return nil
+}
+
+// ensureRemoteURL ensures the mirror's origin remote points to the given URL.
+func (m *Manager) ensureRemoteURL(ctx context.Context, mirrorPath, targetURL string) error {
+	// Get current remote URL
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = mirrorPath
+	output, err := cmd.CombinedOutput()
+
+	currentURL := strings.TrimSpace(string(output))
+
+	if err != nil || currentURL != targetURL {
+		// Update remote URL
+		m.logger.Debug("Updating remote URL from %s to %s", currentURL, targetURL)
+		setCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", targetURL)
+		setCmd.Dir = mirrorPath
+		if setOutput, setErr := setCmd.CombinedOutput(); setErr != nil {
+			return fmt.Errorf("git remote set-url failed: %w\nOutput: %s", setErr, string(setOutput))
+		}
+	}
+
+	return nil
+}
+
+// GetMirrorPath returns the path to the mirror directory.
+// This extracts the repository name from the configured URL.
+func (m *Manager) GetMirrorPath() (string, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config: %w", err)
+	}
+
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		return "", fmt.Errorf("no git repository configured")
+	}
+
+	repoName := extractRepoName(cfg.Git.RepoURL)
+	return filepath.Join(m.projectDir, ".mirrors", repoName), nil
+}
+
 // EnsureMirror creates or updates a git mirror.
 // Reads repository URL from config.GetConfig().Git.RepoURL.
+// In airplane mode with existing mirror, updates from Gitea instead of GitHub.
 // Returns the path to the mirror directory.
 func (m *Manager) EnsureMirror(ctx context.Context) (string, error) {
 	// Get git configuration
@@ -57,8 +189,20 @@ func (m *Manager) EnsureMirror(ctx context.Context) (string, error) {
 
 	// Check if mirror already exists by looking for HEAD file (bare repos don't have .git subdir)
 	if mirrorExists(repoMirrorPath) {
-		// Mirror exists - update it
-		m.logger.Info("📂 Git mirror exists at %s, updating...", repoMirrorPath)
+		// Mirror exists - update it from current forge (mode-aware)
+		fetchURL, fetchErr := m.GetFetchURL()
+		if fetchErr != nil {
+			// Fall back to configured URL if we can't determine fetch URL
+			fetchURL = repoURL
+		}
+
+		m.logger.Info("📂 Git mirror exists at %s, updating from %s...", repoMirrorPath, fetchURL)
+
+		// Ensure remote URL is correct for current mode
+		if updateErr := m.ensureRemoteURL(ctx, repoMirrorPath, fetchURL); updateErr != nil {
+			return "", fmt.Errorf("failed to update remote URL: %w", updateErr)
+		}
+
 		err = updateGitMirror(ctx, repoMirrorPath)
 		if err != nil {
 			return "", fmt.Errorf("failed to update git mirror: %w", err)

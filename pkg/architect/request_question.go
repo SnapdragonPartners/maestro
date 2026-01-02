@@ -80,13 +80,15 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 	// Run toolloop with submit_reply as terminal tool
 	d.logger.Info("🔍 Starting iterative question loop")
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitReplyResult]{
-		ContextManager: cm,
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  20, // Allow exploration of workspace
-		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        d.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:     cm,
+		GeneralTools:       generalTools,
+		TerminalTool:       terminalTool,
+		MaxIterations:      20, // Allow exploration of workspace
+		MaxTokens:          agent.ArchitectMaxTokens,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+		StoryID:            storyID,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("question-%s", requestMsg.ID),
 			SoftLimit: 8,

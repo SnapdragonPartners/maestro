@@ -120,11 +120,11 @@ func (f *LLMClientFactory) CreateClient(agentType Type) (LLMClient, error) {
 	var modelName string
 	switch agentType {
 	case TypeCoder:
-		modelName = f.config.Agents.CoderModel
+		modelName = config.GetEffectiveCoderModel()
 	case TypeArchitect:
-		modelName = f.config.Agents.ArchitectModel
+		modelName = config.GetEffectiveArchitectModel()
 	case TypePM:
-		modelName = f.config.Agents.PMModel
+		modelName = config.GetEffectivePMModel()
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}
@@ -137,11 +137,11 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 	var modelName string
 	switch agentType {
 	case TypeCoder:
-		modelName = f.config.Agents.CoderModel
+		modelName = config.GetEffectiveCoderModel()
 	case TypeArchitect:
-		modelName = f.config.Agents.ArchitectModel
+		modelName = config.GetEffectiveArchitectModel()
 	case TypePM:
-		modelName = f.config.Agents.PMModel
+		modelName = config.GetEffectivePMModel()
 	default:
 		return nil, fmt.Errorf("unsupported agent type: %s", agentType)
 	}

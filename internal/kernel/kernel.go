@@ -149,12 +149,13 @@ func (k *Kernel) initializeDatabase() error {
 	// Database path
 	dbPath := filepath.Join(maestroDir, "maestro.db")
 
-	// Initialize database with schema using persistence package
-	var err error
-	k.Database, err = persistence.InitializeDatabase(dbPath)
-	if err != nil {
+	// Initialize singleton database with schema
+	if err := persistence.Initialize(dbPath, k.Config.SessionID); err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
+
+	// Keep reference for backwards compatibility (points to singleton)
+	k.Database = persistence.GetDB()
 
 	// Create persistence channel
 	k.PersistenceChannel = make(chan *persistence.Request, 100)
@@ -271,12 +272,11 @@ func (k *Kernel) Stop() error {
 	}
 	drainCancel()
 
-	// Close database AFTER persistence queue is drained.
-	if k.Database != nil {
-		if err := k.Database.Close(); err != nil {
-			k.Logger.Error("Error closing database: %v", err)
-		}
+	// Close database AFTER persistence queue is drained (using singleton).
+	if err := persistence.Close(); err != nil {
+		k.Logger.Error("Error closing database: %v", err)
 	}
+	k.Database = nil
 
 	k.running = false
 	k.Logger.Info("Kernel services stopped")

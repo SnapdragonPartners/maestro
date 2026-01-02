@@ -89,13 +89,14 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Run first toolloop: iterative review with review_complete
 	d.logger.Info("🔍 Starting iterative spec review loop")
 	reviewOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
-		ContextManager: cm,
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  20, // Allow exploration of project files
-		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        d.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:     cm,
+		GeneralTools:       generalTools,
+		TerminalTool:       terminalTool,
+		MaxIterations:      20, // Allow exploration of project files
+		MaxTokens:          agent.ArchitectMaxTokens,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
 	})
 
 	// Handle review outcome
@@ -193,14 +194,15 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 
 	// Run second toolloop: single-pass story generation
 	storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
-		ContextManager: cm,
-		GeneralTools:   nil, // No general tools - just generate and submit
-		TerminalTool:   storiesTerminal,
-		MaxIterations:  5,    // Should complete quickly
-		SingleTurn:     true, // Enforce single-turn completion
-		MaxTokens:      agent.ArchitectMaxTokens,
-		AgentID:        d.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:     cm,
+		GeneralTools:       nil, // No general tools - just generate and submit
+		TerminalTool:       storiesTerminal,
+		MaxIterations:      5,    // Should complete quickly
+		SingleTurn:         true, // Enforce single-turn completion
+		MaxTokens:          agent.ArchitectMaxTokens,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
 	})
 
 	// Handle story generation outcome

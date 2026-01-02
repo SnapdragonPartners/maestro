@@ -8,6 +8,7 @@ Maestro operates in several distinct modes depending on the project state and us
 |------|--------------|--------------|
 | Bootstrap | Automatically on new projects | Sets up basic project infrastructure |
 | Development | Default operating mode | Main workflow for building features |
+| Airplane | `--airplane` flag or config | Fully offline with local Gitea + Ollama |
 | Claude Code | Optional coder variant | Uses Claude Code for implementation |
 | Demo | User-triggered via WebUI | Runs the application for testing |
 | Hotfix | User requests urgent fix | Fast path for production issues |
@@ -95,6 +96,92 @@ Maestro can run multiple coders in parallel (default: 3). Each coder:
 - Has its own git clone of the repository
 - Works on a separate story
 - Terminates completely after finishing, freeing resources
+
+---
+
+## Airplane Mode (Offline Development)
+
+**When**: Started with `--airplane` flag or `"default_mode": "airplane"` in config.
+
+**Purpose**: Enables fully offline multi-agent development without GitHub or external LLM APIs. Perfect for working on planes, in areas with poor connectivity, or when you want complete local control.
+
+### Requirements
+
+- **Docker**: For running the local Gitea server
+- **Ollama**: For local LLM inference (must be running with models pulled)
+
+### How It Works
+
+Airplane mode replaces external dependencies with local alternatives:
+
+| Component | Standard Mode | Airplane Mode |
+|-----------|---------------|---------------|
+| Git hosting | GitHub | Local Gitea container |
+| PR/merge workflow | GitHub PRs | Gitea PRs |
+| LLM provider | Anthropic/OpenAI/Google | Ollama (local) |
+| Network required | Yes | No |
+
+### Starting Airplane Mode
+
+```bash
+# Start with CLI flag
+maestro --airplane
+
+# Or configure as default in .maestro/config.json
+{
+  "default_mode": "airplane"
+}
+```
+
+### What Happens at Startup
+
+1. **Docker check**: Verifies Docker daemon is running
+2. **Gitea startup**: Starts a local Gitea container (or reuses existing)
+3. **Ollama check**: Verifies Ollama is running and models are available
+4. **Mirror configuration**: Points the git mirror to Gitea instead of GitHub
+
+### Model Configuration
+
+Configure which Ollama models to use in airplane mode:
+
+```json
+{
+  "agents": {
+    "airplane": {
+      "coder_model": "ollama:qwen2.5-coder:14b",
+      "architect_model": "ollama:mistral-nemo:latest",
+      "pm_model": "ollama:mistral-nemo:latest"
+    }
+  }
+}
+```
+
+### Syncing Back to GitHub
+
+When you're back online, sync your offline work to GitHub:
+
+```bash
+maestro --sync
+```
+
+This pushes all branches created in Gitea to GitHub and switches the mirror back to GitHub as upstream.
+
+### Gitea Container
+
+Maestro manages the Gitea container automatically:
+
+- **Container name**: `maestro-gitea-{project-name}`
+- **Data persistence**: Volume `maestro-gitea-{project-name}-data`
+- **Ports**: 3000 (HTTP), 2222 (SSH) by default
+- **Admin user**: `maestro` (auto-configured)
+
+The container persists between runs. Stop it manually with:
+
+```bash
+docker stop maestro-gitea-{project-name}
+```
+
+See [AIRPLANE_MODE.md](AIRPLANE_MODE.md) for detailed specification.
 
 ---
 
@@ -293,8 +380,15 @@ Discovery mode is not yet implemented. For now, Maestro can work with existing c
 Modes are not mutually exclusive. Here's how they interact:
 
 ```
-New Project:
+New Project (Standard):
   Bootstrap → Development → [Maintenance cycles] → ...
+                    ↓
+               Demo (anytime)
+                    ↓
+               Hotfix (urgent)
+
+New Project (Airplane):
+  Bootstrap → Development (offline) → --sync → GitHub
                     ↓
                Demo (anytime)
                     ↓
@@ -303,6 +397,14 @@ New Project:
 Existing Project (future):
   Discovery → Development → [Maintenance cycles] → ...
 ```
+
+### Airplane + Standard
+
+You can switch between airplane and standard mode:
+
+- **Going offline**: Start with `--airplane` to use local Gitea + Ollama
+- **Coming online**: Run `--sync` to push changes to GitHub, then restart without `--airplane`
+- **Work continuity**: All commits, branches, and PRs created offline sync to GitHub
 
 ### Demo + Development
 

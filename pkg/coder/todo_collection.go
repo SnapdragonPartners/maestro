@@ -70,14 +70,16 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 
 	// No general tools in this phase - just the terminal tool
 	cfg := &toolloop.Config[TodoCollectionResult]{
-		ContextManager: c.contextManager,
-		InitialPrompt:  "",             // Prompt already in context via ResetForNewTemplate
-		GeneralTools:   []tools.Tool{}, // No general tools
-		TerminalTool:   terminalTool,
-		MaxIterations:  2,    // One call + one retry if needed
-		MaxTokens:      4096, // Sufficient for todo list
-		AgentID:        c.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:     c.contextManager,
+		InitialPrompt:      "",             // Prompt already in context via ResetForNewTemplate
+		GeneralTools:       []tools.Tool{}, // No general tools
+		TerminalTool:       terminalTool,
+		MaxIterations:      2,    // One call + one retry if needed
+		MaxTokens:          4096, // Sufficient for todo list
+		AgentID:            c.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: c.persistenceChannel,
+		StoryID:            utils.GetStateValueOr[string](sm, KeyStoryID, ""),
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("todo_collection_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			HardLimit: 2,
