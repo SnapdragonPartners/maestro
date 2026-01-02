@@ -19,6 +19,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/proto"
 )
 
@@ -341,13 +342,47 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 	fmt.Println()
 }
 
-// TODO: Temporarily disabled startup orchestration to debug crash
 // runStartupOrchestration executes the startup rebuild + reconcile/rollback from Story 3.
+// In airplane mode, it also prepares local services (Gitea, Ollama).
 func (f *OrchestratorFlow) runStartupOrchestration(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("🔧 Starting startup orchestration")
 
 	// Get project directory from kernel
 	projectDir := k.ProjectDir()
+
+	// If airplane mode, prepare local services first
+	if config.IsAirplaneMode() {
+		k.Logger.Info("✈️  Airplane mode detected - preparing local services")
+		airplaneOrch := orch.NewAirplaneOrchestrator(projectDir)
+		if err := airplaneOrch.PrepareAirplaneMode(ctx); err != nil {
+			return fmt.Errorf("airplane mode preparation failed: %w", err)
+		}
+	} else {
+		// Standard mode: run preflight checks to validate credentials/tools
+		k.Logger.Info("🔍 Running preflight checks for standard mode")
+		cfg, err := config.GetConfig()
+		if err != nil {
+			return fmt.Errorf("failed to get config for preflight: %w", err)
+		}
+		results, err := preflight.Run(ctx, &cfg)
+		if err != nil {
+			return fmt.Errorf("preflight checks failed: %w", err)
+		}
+		if !results.Passed {
+			// Print guidance for failed checks
+			for i := range results.Checks {
+				check := &results.Checks[i]
+				if !check.Passed {
+					k.Logger.Error("❌ %s: %s", check.Provider, check.Message)
+					if guidance := preflight.GetGuidance(check.Provider); guidance != "" {
+						k.Logger.Info("   💡 %s", guidance)
+					}
+				}
+			}
+			return fmt.Errorf("preflight checks failed - see errors above")
+		}
+		k.Logger.Info("✅ Preflight checks passed")
+	}
 
 	// Create startup orchestrator (false = not bootstrap mode, this only runs in main mode)
 	startupOrch, err := orch.NewStartupOrchestrator(projectDir, false)

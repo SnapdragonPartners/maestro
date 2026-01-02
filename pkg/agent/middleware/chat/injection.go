@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 )
 
 // Service interface defines what we need from the chat service.
@@ -88,12 +89,26 @@ func InjectionMiddleware(chatService Service, agentID string, logger *logx.Logge
 			newMessages = newMessages[len(newMessages)-maxMessages:]
 		}
 
+		// Filter out confirmation-related messages (these are operational, not conversational)
+		filteredMessages := make([]*persistence.ChatMessage, 0, len(newMessages))
+		for _, msg := range newMessages {
+			if chat.IsConfirmationPostType(msg.PostType) {
+				continue
+			}
+			filteredMessages = append(filteredMessages, msg)
+		}
+
+		// If all messages were filtered out, skip injection
+		if len(filteredMessages) == 0 {
+			return resp, agent.CompletionMessage{}, false, nil
+		}
+
 		// Format chat messages for injection
 		var chatContent strings.Builder
 		chatContent.WriteString("## Recent Chat Messages\n\n")
 		chatContent.WriteString("The following messages were posted to the agent chat system:\n\n")
 
-		for _, msg := range newMessages {
+		for _, msg := range filteredMessages {
 			chatContent.WriteString(fmt.Sprintf("**%s**: %s\n\n", msg.Author, msg.Text))
 		}
 

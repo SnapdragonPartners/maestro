@@ -33,12 +33,6 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	resumeInput := utils.GetStateValueOr[string](sm, KeyResumeInput, "")
 	shouldResume := existingSessionID != "" && resumeInput != ""
 
-	// Get config for API key and model
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return proto.StateError, false, logx.Wrap(err, "failed to get config")
-	}
-
 	// Ensure coding tool provider is initialized
 	// Use Claude Code-specific provider that excludes container_switch to prevent session destruction
 	if c.codingToolProvider == nil {
@@ -54,7 +48,7 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	opts := claude.DefaultRunOptions()
 	opts.Mode = claude.ModeCoding
 	opts.WorkDir = "/workspace"
-	opts.Model = cfg.Agents.CoderModel
+	opts.Model = config.GetEffectiveCoderModel()
 	opts.EnvVars = map[string]string{
 		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
 	}
@@ -73,6 +67,7 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 		c.logger.Info("🔄 Resuming Claude Code session %s for story %s", existingSessionID, storyID)
 	} else {
 		// New session - render full prompts
+		var err error
 		renderer, err = claudetemplates.NewRenderer()
 		if err != nil {
 			return proto.StateError, false, logx.Wrap(err, "failed to create claude template renderer")

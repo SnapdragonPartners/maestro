@@ -183,6 +183,8 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 				return nil
 			},
 		},
+		PersistenceChannel: c.persistenceChannel,
+		StoryID:            utils.GetStateValueOr[string](sm, KeyStoryID, ""),
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)

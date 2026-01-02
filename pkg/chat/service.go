@@ -23,7 +23,28 @@ const (
 	ChannelProduct = "product"
 	// ChannelDevelopment is the channel for general development chat.
 	ChannelDevelopment = "development"
+
+	// PostTypeChat is a regular chat message.
+	PostTypeChat = "chat"
+	// PostTypeReply is a reply to another message.
+	PostTypeReply = "reply"
+	// PostTypeEscalate is an escalation message requiring human attention.
+	PostTypeEscalate = "escalate"
+	// PostTypeConfirmationRequest is a request for user confirmation.
+	PostTypeConfirmationRequest = "confirmation_request"
+	// PostTypeConfirmationContinue is a user response to continue.
+	PostTypeConfirmationContinue = "confirmation_continue"
+	// PostTypeConfirmationCancel is a user response to cancel/provide guidance.
+	PostTypeConfirmationCancel = "confirmation_cancel"
 )
+
+// IsConfirmationPostType returns true if the post type is any confirmation-related type.
+// These are operational messages that should not be injected into LLM context.
+func IsConfirmationPostType(postType string) bool {
+	return postType == PostTypeConfirmationRequest ||
+		postType == PostTypeConfirmationContinue ||
+		postType == PostTypeConfirmationCancel
+}
 
 // Service provides chat functionality with secret scanning and cursor management.
 // Architecture: In-memory canonical state with database as append-only log.
@@ -41,6 +62,10 @@ type Service struct {
 
 	nextID int64 // Next message ID to assign
 	mu     sync.RWMutex
+
+	// Confirmation waiters - message ID -> channel to signal when reply arrives
+	confirmationWaiters map[int64]chan *persistence.ChatMessage
+	waitersMu           sync.Mutex
 }
 
 // NewService creates a new chat service with in-memory canonical state.
@@ -57,13 +82,14 @@ func NewService(dbOps *persistence.DatabaseOperations, cfg *config.ChatConfig) *
 	}
 
 	return &Service{
-		dbOps:        dbOps,
-		scanner:      scanner,
-		config:       cfg,
-		logger:       logger,
-		messages:     make([]*persistence.ChatMessage, 0),
-		agentCursors: make(map[string]map[string]int64),
-		nextID:       1, // Start at 1 (0 reserved for "no messages")
+		dbOps:               dbOps,
+		scanner:             scanner,
+		config:              cfg,
+		logger:              logger,
+		messages:            make([]*persistence.ChatMessage, 0),
+		agentCursors:        make(map[string]map[string]int64),
+		nextID:              1, // Start at 1 (0 reserved for "no messages")
+		confirmationWaiters: make(map[int64]chan *persistence.ChatMessage),
 	}
 }
 
@@ -179,7 +205,12 @@ func (s *Service) Post(ctx context.Context, req *PostRequest) (*PostResponse, er
 
 	s.logger.Debug("Posted chat message id=%d author=%s channel=%s type=%s length=%d", msgID, req.Author, req.Channel, postType, len(text))
 
-	// 6. Async persist to database (fire-and-forget)
+	// 6. Signal any waiters if this is a reply
+	if req.ReplyTo != nil {
+		s.signalWaiter(*req.ReplyTo, msg)
+	}
+
+	// 7. Async persist to database (fire-and-forget)
 	go func() {
 		_, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.Channel, req.ReplyTo, postType)
 		if err != nil {
@@ -360,33 +391,133 @@ func FormatAuthor(agentID string) string {
 	return "@" + agentID
 }
 
-// WaitForReply polls for a reply to the specified message ID.
+// WaitForReply waits for a reply to the specified message ID.
 // Returns the first message where reply_to matches messageID.
-// Polls every pollInterval until a reply is found or context is canceled.
-func (s *Service) WaitForReply(ctx context.Context, messageID int64, pollInterval time.Duration) (*persistence.ChatMessage, error) {
-	s.logger.Info("Waiting for reply to message %d (poll interval: %v)", messageID, pollInterval)
+// Uses channel-based signaling for immediate response when reply arrives.
+// The pollInterval parameter is kept for API compatibility but is no longer used for polling.
+func (s *Service) WaitForReply(ctx context.Context, messageID int64, _ time.Duration) (*persistence.ChatMessage, error) {
+	s.logger.Info("Waiting for reply to message %d", messageID)
 
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
+	// Check if reply already exists
+	if reply := s.findReplyInMemory(messageID); reply != nil {
+		s.logger.Info("Found existing reply (id=%d, post_type=%s) to message %d", reply.ID, reply.PostType, messageID)
+		return reply, nil
+	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context canceled while waiting for reply: %w", ctx.Err())
+	// Register waiter channel
+	waitCh := s.registerWaiter(messageID)
+	defer s.unregisterWaiter(messageID)
 
-		case <-ticker.C:
-			// Query for messages that reply to this message
-			reply, err := s.dbOps.GetChatMessageByReplyTo(messageID)
-			if err == nil {
-				// Found a reply
-				s.logger.Info("Received reply (id=%d) to message %d", reply.ID, messageID)
-				return reply, nil
-			}
-			// sql.ErrNoRows means no reply yet - keep polling
-			// Other errors are logged but we continue polling
-			if err.Error() != "sql: no rows in result set" {
-				s.logger.Warn("Error checking for replies to message %d: %v", messageID, err)
-			}
+	// Wait for reply or context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("context canceled while waiting for reply: %w", ctx.Err())
+	case reply := <-waitCh:
+		s.logger.Info("Received reply (id=%d, post_type=%s) to message %d", reply.ID, reply.PostType, messageID)
+		return reply, nil
+	}
+}
+
+// findReplyInMemory searches in-memory messages for a reply to the given message ID.
+func (s *Service) findReplyInMemory(messageID int64) *persistence.ChatMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, msg := range s.messages {
+		if msg.ReplyTo != nil && *msg.ReplyTo == messageID {
+			return msg
 		}
 	}
+	return nil
+}
+
+// registerWaiter creates a channel to receive notification when a reply arrives.
+func (s *Service) registerWaiter(messageID int64) chan *persistence.ChatMessage {
+	s.waitersMu.Lock()
+	defer s.waitersMu.Unlock()
+
+	ch := make(chan *persistence.ChatMessage, 1)
+	s.confirmationWaiters[messageID] = ch
+	return ch
+}
+
+// unregisterWaiter removes the waiter channel for a message ID.
+func (s *Service) unregisterWaiter(messageID int64) {
+	s.waitersMu.Lock()
+	defer s.waitersMu.Unlock()
+
+	delete(s.confirmationWaiters, messageID)
+}
+
+// signalWaiter sends the reply to any registered waiter for the original message.
+func (s *Service) signalWaiter(originalMessageID int64, reply *persistence.ChatMessage) {
+	s.waitersMu.Lock()
+	defer s.waitersMu.Unlock()
+
+	if ch, ok := s.confirmationWaiters[originalMessageID]; ok {
+		select {
+		case ch <- reply:
+			s.logger.Debug("Signaled waiter for message %d with reply %d", originalMessageID, reply.ID)
+		default:
+			// Channel full or no receiver - that's ok
+		}
+	}
+}
+
+// ConfirmationAction represents the user's response to a confirmation request.
+type ConfirmationAction string
+
+const (
+	// ConfirmationContinue indicates the user wants to continue.
+	ConfirmationContinue ConfirmationAction = "continue"
+	// ConfirmationCancel indicates the user wants to cancel and provide guidance.
+	ConfirmationCancel ConfirmationAction = "cancel"
+)
+
+// AskUserConfirmation posts a confirmation request and waits for user response.
+// Returns the action the user selected (continue or cancel).
+// The channel parameter specifies which chat channel to post to (e.g., "product" for PM, "development" for coders).
+// The pollInterval determines how often to check for a reply.
+func (s *Service) AskUserConfirmation(ctx context.Context, author, message, channel string, pollInterval time.Duration) (ConfirmationAction, error) {
+	s.logger.Info("Asking user for confirmation on channel %s: %s", channel, message)
+
+	// Post the confirmation request
+	resp, err := s.Post(ctx, &PostRequest{
+		Author:   author,
+		Text:     message,
+		Channel:  channel,
+		PostType: PostTypeConfirmationRequest,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to post confirmation request: %w", err)
+	}
+
+	s.logger.Info("Posted confirmation request (id=%d), waiting for user response...", resp.ID)
+
+	// Wait for user reply
+	reply, err := s.WaitForReply(ctx, resp.ID, pollInterval)
+	if err != nil {
+		// Context cancelled or other error
+		return "", err
+	}
+
+	// Determine action from reply's post_type
+	var action ConfirmationAction
+	switch reply.PostType {
+	case PostTypeConfirmationContinue:
+		action = ConfirmationContinue
+	case PostTypeConfirmationCancel:
+		action = ConfirmationCancel
+	default:
+		// Legacy fallback: check text content for backwards compatibility
+		if reply.Text == "Continue" {
+			action = ConfirmationContinue
+		} else {
+			action = ConfirmationCancel
+		}
+	}
+
+	s.logger.Info("User response to confirmation: post_type=%q action=%s", reply.PostType, action)
+
+	return action, nil
 }

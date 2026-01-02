@@ -195,12 +195,14 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 
 	// Architect constructor with model configuration validation
 
-	// Get model name from config
+	// Get config for other settings
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
-	modelName := cfg.Agents.ArchitectModel
+
+	// Get model name (respects airplane mode override)
+	modelName := config.GetEffectiveArchitectModel()
 
 	// Create architect without LLM client first (chicken-and-egg: client needs architect as StateProvider)
 	architect := NewDriver(architectID, modelName, dispatcher, workDir, persistenceChannel)
@@ -286,13 +288,8 @@ func (d *Driver) getContextForAgent(agentID string) *contextmgr.ContextManager {
 	}
 
 	// Create new context manager for this agent
-	modelName := ""
-	if d.LLMClient != nil {
-		cfg, err := config.GetConfig()
-		if err == nil {
-			modelName = cfg.Agents.ArchitectModel
-		}
-	}
+	// Use effective model (respects airplane mode override)
+	modelName := config.GetEffectiveArchitectModel()
 
 	cm = contextmgr.NewContextManagerWithModel(modelName)
 

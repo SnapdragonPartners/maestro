@@ -1421,6 +1421,7 @@ class MaestroUI {
         const div = document.createElement('div');
         const isHuman = message.author === '@human';
         const isEscalation = message.post_type === 'escalate';
+        const isConfirmation = message.post_type === 'confirmation_request';
         const isReply = message.post_type === 'reply' || message.reply_to;
 
         // Add left margin for replies (threading)
@@ -1450,9 +1451,36 @@ class MaestroUI {
                     <div class="text-sm whitespace-pre-wrap mb-2">${this.escapeHtml(message.text)}</div>
                     <button
                         class="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded transition-colors"
-                        onclick="window.maestro.replyToMessage(${message.id}, '${this.escapeHtml(message.author)}')">
+                        onclick="window.maestroUI.replyToMessage(${message.id}, '${this.escapeHtml(message.author)}')">
                         Reply to Escalation
                     </button>
+                </div>
+            `;
+        } else if (isConfirmation) {
+            // Confirmation request - amber styling with Continue/Cancel buttons
+            div.className = `flex justify-start ${marginClass}`;
+            div.innerHTML = `
+                <div class="max-w-[80%] bg-amber-50 border-2 border-amber-300 text-gray-900 rounded-lg px-4 py-2">
+                    <div class="flex items-center text-xs text-amber-700 font-semibold mb-2">
+                        <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                        </svg>
+                        CONFIRMATION NEEDED
+                    </div>
+                    <div class="text-xs text-gray-600 mb-1">${message.author} · ${this.formatChatTime(message.timestamp)}</div>
+                    <div class="text-sm whitespace-pre-wrap mb-2">${this.escapeHtml(message.text)}</div>
+                    <div class="flex space-x-2">
+                        <button
+                            class="text-xs bg-amber-500 hover:bg-amber-600 text-white px-4 py-1.5 rounded transition-colors font-medium"
+                            onclick="window.maestroUI.handleConfirmation(${message.id}, '${message.channel || 'development'}', 'continue', this)">
+                            Continue
+                        </button>
+                        <button
+                            class="text-xs bg-gray-400 hover:bg-gray-500 text-white px-4 py-1.5 rounded transition-colors font-medium"
+                            onclick="window.maestroUI.handleConfirmation(${message.id}, '${message.channel || 'development'}', 'cancel', this)">
+                            Provide Guidance
+                        </button>
+                    </div>
                 </div>
             `;
         } else {
@@ -1510,7 +1538,7 @@ class MaestroUI {
         indicator.innerHTML = `
             <span class="text-sm text-yellow-800">Replying to ${this.escapeHtml(author)}</span>
             <button
-                onclick="window.maestro.cancelReply()"
+                onclick="window.maestroUI.cancelReply()"
                 class="text-yellow-600 hover:text-yellow-800 ml-2">
                 ✕
             </button>
@@ -1527,6 +1555,81 @@ class MaestroUI {
         const indicator = document.getElementById('reply-indicator');
         if (indicator) {
             indicator.remove();
+        }
+    }
+
+    async handleConfirmation(messageId, channel, action, buttonElement) {
+        // Handle confirmation response (continue or cancel)
+        // Uses special post_types that are filtered from LLM context
+        // Channel must match the original message's channel (e.g., 'product' for PM, 'development' for coders)
+
+        const isContinue = action === 'continue';
+        const postType = isContinue ? 'confirmation_continue' : 'confirmation_cancel';
+        const confirmText = isContinue ? 'Confirmed ✓' : 'Cancelled';
+
+        // Immediately disable button and show feedback
+        if (buttonElement) {
+            buttonElement.disabled = true;
+            buttonElement.textContent = confirmText;
+            buttonElement.classList.remove('bg-amber-500', 'hover:bg-amber-600', 'bg-gray-400', 'hover:bg-gray-500');
+            buttonElement.classList.add('bg-gray-300', 'cursor-not-allowed');
+
+            // Also disable the sibling button
+            const siblingButton = buttonElement.parentElement.querySelector('button:not([disabled])');
+            if (siblingButton) {
+                siblingButton.disabled = true;
+                siblingButton.classList.remove('bg-amber-500', 'hover:bg-amber-600', 'bg-gray-400', 'hover:bg-gray-500');
+                siblingButton.classList.add('bg-gray-300', 'cursor-not-allowed');
+            }
+        }
+
+        try {
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    text: '',  // Empty text - not injected into LLM context
+                    channel: channel || 'development',
+                    reply_to: messageId,
+                    post_type: postType
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to send confirmation');
+            }
+
+            // Refresh appropriate chat to show the reply
+            if (channel === 'product') {
+                await this.fetchChatMessages('product');
+            } else {
+                await this.fetchChatMessages();
+            }
+        } catch (error) {
+            console.error('Error handling confirmation:', error);
+            this.showNotification('Failed to send confirmation', 'error');
+            // Re-enable buttons on error
+            if (buttonElement) {
+                const parent = buttonElement.parentElement;
+                const buttons = parent.querySelectorAll('button');
+                buttons.forEach(btn => {
+                    btn.disabled = false;
+                    btn.classList.remove('bg-gray-300', 'cursor-not-allowed');
+                });
+                // Restore original styling
+                const continueBtn = parent.querySelector('button:first-child');
+                const cancelBtn = parent.querySelector('button:last-child');
+                if (continueBtn) {
+                    continueBtn.textContent = 'Continue';
+                    continueBtn.classList.add('bg-amber-500', 'hover:bg-amber-600');
+                }
+                if (cancelBtn) {
+                    cancelBtn.textContent = 'Provide Guidance';
+                    cancelBtn.classList.add('bg-gray-400', 'hover:bg-gray-500');
+                }
+            }
         }
     }
 

@@ -877,14 +877,16 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	// Run toolloop in single-turn mode with type-safe result extraction
 	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[ReviewCompleteResult]{
-		ContextManager: cm, // Use agent-specific context
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  3, // Allow nudge retries
-		MaxTokens:      agent.ArchitectMaxTokens,
-		SingleTurn:     true, // Enforce single-turn completion
-		AgentID:        d.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:     cm, // Use agent-specific context
+		GeneralTools:       generalTools,
+		TerminalTool:       terminalTool,
+		MaxIterations:      3, // Allow nudge retries
+		MaxTokens:          agent.ArchitectMaxTokens,
+		SingleTurn:         true, // Enforce single-turn completion
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+		StoryID:            storyID,
 	})
 
 	// Handle outcome
