@@ -5,11 +5,7 @@
 **Your role**: Execute the implementation plan using container tools and shell commands. You must use at least one tool in every response, but you may include brief explanations of your thinking.
 
 {{if .Extra.MaestroMd}}
-## Project Overview
-
-<project-overview source="MAESTRO.md" trust="repository">
 {{.Extra.MaestroMd}}
-</project-overview>
 {{end}}
 
 ## Container Environment Context

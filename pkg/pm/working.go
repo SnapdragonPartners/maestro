@@ -3,6 +3,7 @@ package pm
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -139,6 +140,12 @@ func (d *Driver) setupInterviewContext() error {
 			"Expertise":           expertise,
 			"ConversationHistory": conversationHistory,
 		},
+	}
+
+	// Add MAESTRO.md content if available (formatted with trust boundary)
+	maestroMdContent := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyMaestroMdContent, "")
+	if maestroMdContent != "" {
+		templateData.Extra["MaestroMd"] = utils.FormatMaestroMdForPrompt(maestroMdContent)
 	}
 
 	// If spec was uploaded, add it to template data for parsing
@@ -520,14 +527,12 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 // ensureMaestroMd ensures MAESTRO.md content is available in state.
 // Loads from repo if file exists, otherwise runs generation phase.
 // Called at the start of WORKING state to ensure project context is available.
+//
+// Freshness policy: Always check repo first to avoid stale content.
+// If file exists in repo, use it (may have been updated externally).
+// If not in repo but in state, that's pending generated content (will commit via spec_submit).
+// If not in repo and not in state, run generation phase.
 func (d *Driver) ensureMaestroMd(ctx context.Context) error {
-	// Check if we already have content in state
-	existingContent := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyMaestroMdContent, "")
-	if existingContent != "" {
-		d.logger.Debug("MAESTRO.md content already in state (%d bytes)", len(existingContent))
-		return nil
-	}
-
 	// Try to load from repo via mirror manager
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -540,20 +545,27 @@ func (d *Driver) ensureMaestroMd(ctx context.Context) error {
 		return nil
 	}
 
-	// Load from repo
+	// Always check repo first for fresh content (don't trust persisted state)
 	mirrorMgr := mirror.NewManager(d.workDir)
 	repoContent, err := mirrorMgr.LoadMaestroMd(ctx)
 	if err != nil {
 		d.logger.Warn("Failed to load MAESTRO.md from repo: %v", err)
-		// Continue to generation phase
+		// Continue to check state/generation
 	} else if repoContent != "" {
-		// Found in repo - store in state
+		// Found in repo - use it (may have been updated externally)
 		d.SetStateData(StateKeyMaestroMdContent, repoContent)
 		d.logger.Info("📄 Loaded MAESTRO.md from repo (%d bytes)", len(repoContent))
 		return nil
 	}
 
-	// No MAESTRO.md exists - run generation phase
+	// Not in repo - check if we have pending generated content in state
+	existingContent := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyMaestroMdContent, "")
+	if existingContent != "" {
+		d.logger.Debug("MAESTRO.md content in state (%d bytes) - pending commit via spec_submit", len(existingContent))
+		return nil
+	}
+
+	// No MAESTRO.md exists anywhere - run generation phase
 	d.logger.Info("📝 MAESTRO.md not found, running generation phase...")
 	return d.runMaestroMdGeneration(ctx)
 }
@@ -568,8 +580,8 @@ func (d *Driver) runMaestroMdGeneration(ctx context.Context) error {
 
 	// Try to load README.md for context
 	readmePath := d.workDir + "/README.md"
-	if readme, err := utils.LoadMaestroMd(readmePath); err == nil && readme != "" {
-		templateData.Extra["ExistingReadme"] = readme
+	if readme, readErr := os.ReadFile(readmePath); readErr == nil && len(readme) > 0 {
+		templateData.Extra["ExistingReadme"] = string(readme)
 	}
 
 	prompt, err := d.renderer.Render(templates.PMMaestroGenerationTemplate, templateData)
@@ -584,7 +596,7 @@ func (d *Driver) runMaestroMdGeneration(ctx context.Context) error {
 
 	// Create tool provider with MAESTRO.md generation tools
 	genToolProvider := tools.NewProvider(&tools.AgentContext{
-		Executor:   nil, // Read tools need executor - use workDir for file access
+		Executor:   d.executor, // Required for read_file/list_files tools
 		WorkDir:    d.workDir,
 		AgentID:    d.GetAgentID(),
 		ProjectDir: d.workDir,

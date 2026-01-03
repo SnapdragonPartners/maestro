@@ -17,10 +17,12 @@ import (
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // Tool signal constants - all signals now use centralized constants from tools package.
@@ -355,6 +357,14 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 			"SpecID":         story.SpecID,
 			"ClaudeCodeMode": claudeCodeMode,
 		},
+	}
+
+	// Load and add MAESTRO.md content if available (formatted with trust boundary)
+	if d.workDir != "" {
+		mirrorMgr := mirror.NewManager(d.workDir)
+		if maestroContent, err := mirrorMgr.LoadMaestroMd(context.Background()); err == nil && maestroContent != "" {
+			data.Extra["MaestroMd"] = utils.FormatMaestroMdForPrompt(maestroContent)
+		}
 	}
 
 	// Template renderer is required

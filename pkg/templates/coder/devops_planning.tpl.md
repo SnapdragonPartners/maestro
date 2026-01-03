@@ -9,11 +9,7 @@ You are a coding agent assigned to PLAN the work to be done developing a story. 
 **GIT STATE NOTE**: You are in a fresh working branch for this story, so there is no git history to explore. Commands like `git log` or `git rev-parse HEAD` will show "no commits" or fail, but this is expected - the workspace files are present and ready to explore. Focus on filesystem exploration, not git history.
 
 {{if .Extra.MaestroMd}}
-## Project Overview
-
-<project-overview source="MAESTRO.md" trust="repository">
 {{.Extra.MaestroMd}}
-</project-overview>
 {{end}}
 
 ## Container Environment Context

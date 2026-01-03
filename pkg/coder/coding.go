@@ -98,6 +98,11 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		},
 	}
 
+	// Load and add MAESTRO.md content if available (formatted with trust boundary)
+	if maestroContent, err := utils.LoadMaestroMd(c.workDir); err == nil && maestroContent != "" {
+		enhancedTemplateData.Extra["MaestroMd"] = utils.FormatMaestroMdForPrompt(maestroContent)
+	}
+
 	// Merge in additional template data from caller.
 	for key, value := range templateData {
 		enhancedTemplateData.Extra[key] = value
