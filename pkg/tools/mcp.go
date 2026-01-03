@@ -76,9 +76,10 @@ type ProcessEffect struct {
 // and allow state machines to process async effects.
 const (
 	// PM signals.
-	SignalSpecPreview       = "SPEC_PREVIEW"       // spec_submit tool ready for user review
-	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE" // bootstrap tool completed configuration
-	SignalAwaitUser         = "AWAIT_USER"         // chat_ask_user tool waiting for human response
+	SignalSpecPreview       = "SPEC_PREVIEW"        // spec_submit tool ready for user review
+	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE"  // bootstrap tool completed configuration
+	SignalAwaitUser         = "AWAIT_USER"          // chat_ask_user tool waiting for human response
+	SignalMaestroMdComplete = "MAESTRO_MD_COMPLETE" // maestro_md_submit tool completed
 
 	// Architect signals.
 	SignalReplySubmitted       = "REPLY_SUBMITTED"       // submit_reply tool answered question

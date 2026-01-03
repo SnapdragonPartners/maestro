@@ -136,6 +136,8 @@ const (
 	PMBootstrapPrerequisitesTemplate StateTemplate = "pm/bootstrap_prerequisites.tpl.md"
 	// PMBootstrapGateTemplate is the focused template for bootstrap-only mode (before project is configured).
 	PMBootstrapGateTemplate StateTemplate = "pm/bootstrap_gate.tpl.md"
+	// PMMaestroGenerationTemplate is the template for generating MAESTRO.md project overview.
+	PMMaestroGenerationTemplate StateTemplate = "pm/maestro_generation.tpl.md"
 
 	// ArchitectSystemTemplate is the system prompt for architect agent per-agent contexts.
 	ArchitectSystemTemplate StateTemplate = "architect/system_prompt.tpl.md"
@@ -203,6 +205,7 @@ func NewRenderer() (*Renderer, error) {
 		PMWorkingTemplate,                // Unified PM template
 		PMBootstrapPrerequisitesTemplate, // Bootstrap prerequisites injected by spec_submit
 		PMBootstrapGateTemplate,          // Bootstrap-only mode before project configured
+		PMMaestroGenerationTemplate,      // MAESTRO.md generation
 	}
 
 	for _, name := range templateNames {

@@ -9,7 +9,9 @@ import (
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
@@ -23,6 +25,13 @@ import (
 //nolint:revive,unparam // ctx will be used for LLM calls and cancellation handling
 func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	d.logger.Info("🎯 PM working (interviewing/drafting/submitting)")
+
+	// MAESTRO.md generation check - runs before interview setup
+	// Ensures project has a MAESTRO.md file for agent context
+	if err := d.ensureMaestroMd(ctx); err != nil {
+		d.logger.Warn("⚠️ Failed to ensure MAESTRO.md: %v (continuing anyway)", err)
+		// Non-fatal - continue with interview even if MAESTRO.md generation fails
+	}
 
 	// Check for non-blocking architect notifications (story completions, all-stories-complete, etc.)
 	select {
@@ -506,4 +515,145 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 	d.logger.Info("🔧 Sent hotfix REQUEST to architect (platform: %s, id: %s)", platform, requestMsg.ID)
 
 	return nil
+}
+
+// ensureMaestroMd ensures MAESTRO.md content is available in state.
+// Loads from repo if file exists, otherwise runs generation phase.
+// Called at the start of WORKING state to ensure project context is available.
+func (d *Driver) ensureMaestroMd(ctx context.Context) error {
+	// Check if we already have content in state
+	existingContent := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyMaestroMdContent, "")
+	if existingContent != "" {
+		d.logger.Debug("MAESTRO.md content already in state (%d bytes)", len(existingContent))
+		return nil
+	}
+
+	// Try to load from repo via mirror manager
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	// Skip if git is not configured (bootstrap not complete)
+	if cfg.Git == nil || cfg.Git.RepoURL == "" {
+		d.logger.Debug("Git not configured, skipping MAESTRO.md check")
+		return nil
+	}
+
+	// Load from repo
+	mirrorMgr := mirror.NewManager(d.workDir)
+	repoContent, err := mirrorMgr.LoadMaestroMd(ctx)
+	if err != nil {
+		d.logger.Warn("Failed to load MAESTRO.md from repo: %v", err)
+		// Continue to generation phase
+	} else if repoContent != "" {
+		// Found in repo - store in state
+		d.SetStateData(StateKeyMaestroMdContent, repoContent)
+		d.logger.Info("📄 Loaded MAESTRO.md from repo (%d bytes)", len(repoContent))
+		return nil
+	}
+
+	// No MAESTRO.md exists - run generation phase
+	d.logger.Info("📝 MAESTRO.md not found, running generation phase...")
+	return d.runMaestroMdGeneration(ctx)
+}
+
+// runMaestroMdGeneration runs the MAESTRO.md generation toolloop.
+// Uses PMMaestroMdTools (read_file, list_files, maestro_md_submit).
+func (d *Driver) runMaestroMdGeneration(ctx context.Context) error {
+	// Render generation template
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{},
+	}
+
+	// Try to load README.md for context
+	readmePath := d.workDir + "/README.md"
+	if readme, err := utils.LoadMaestroMd(readmePath); err == nil && readme != "" {
+		templateData.Extra["ExistingReadme"] = readme
+	}
+
+	prompt, err := d.renderer.Render(templates.PMMaestroGenerationTemplate, templateData)
+	if err != nil {
+		return fmt.Errorf("failed to render MAESTRO.md generation template: %w", err)
+	}
+
+	// Create a separate context manager for generation phase
+	// This keeps generation conversation separate from interview
+	genContextMgr := contextmgr.NewContextManagerWithModel(d.contextManager.GetModelName())
+	genContextMgr.AddMessage("system", prompt)
+
+	// Create tool provider with MAESTRO.md generation tools
+	genToolProvider := tools.NewProvider(&tools.AgentContext{
+		Executor:   nil, // Read tools need executor - use workDir for file access
+		WorkDir:    d.workDir,
+		AgentID:    d.GetAgentID(),
+		ProjectDir: d.workDir,
+	}, tools.PMMaestroMdTools)
+
+	// Get tools for toolloop
+	var genTools []tools.Tool
+	//nolint:gocritic // rangeValCopy: Direct access is clearer than pointer dereferencing
+	for _, meta := range genToolProvider.List() {
+		if meta.Name != tools.ToolMaestroMdSubmit {
+			tool, getErr := genToolProvider.Get(meta.Name)
+			if getErr != nil {
+				return fmt.Errorf("failed to get tool %s: %w", meta.Name, getErr)
+			}
+			genTools = append(genTools, tool)
+		}
+	}
+
+	submitTool, err := genToolProvider.Get(tools.ToolMaestroMdSubmit)
+	if err != nil {
+		return fmt.Errorf("failed to get maestro_md_submit tool: %w", err)
+	}
+
+	// Run generation toolloop
+	loop := toolloop.New(d.LLMClient, d.logger)
+	genCfg := &toolloop.Config[MaestroMdResult]{
+		ContextManager:     genContextMgr,
+		InitialPrompt:      "",
+		GeneralTools:       genTools,
+		TerminalTool:       submitTool,
+		MaxIterations:      10,
+		MaxTokens:          agent.PMMaxTokens,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+	}
+
+	out := toolloop.Run(loop, ctx, genCfg)
+
+	// Handle outcome
+	switch out.Kind {
+	case toolloop.OutcomeProcessEffect:
+		if out.Signal == tools.SignalMaestroMdComplete {
+			// Extract content from effect data
+			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
+			if !ok {
+				return fmt.Errorf("MAESTRO_MD_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+			}
+			content := utils.GetMapFieldOr[string](effectData, "content", "")
+			if content == "" {
+				return fmt.Errorf("MAESTRO.md content is empty")
+			}
+
+			// Store in state
+			d.SetStateData(StateKeyMaestroMdContent, content)
+			d.logger.Info("✅ MAESTRO.md generated (%d bytes)", len(content))
+			return nil
+		}
+		return fmt.Errorf("unexpected signal in MAESTRO.md generation: %s", out.Signal)
+
+	case toolloop.OutcomeMaxIterations, toolloop.OutcomeLLMError, toolloop.OutcomeNoToolTwice:
+		return fmt.Errorf("MAESTRO.md generation failed: %w", out.Err)
+
+	default:
+		return fmt.Errorf("unexpected outcome in MAESTRO.md generation: %v", out.Kind)
+	}
+}
+
+// MaestroMdResult is the result type for MAESTRO.md generation toolloop.
+type MaestroMdResult struct {
+	Content string
 }
