@@ -15,6 +15,11 @@ import (
 	"orchestrator/pkg/logx"
 )
 
+const (
+	// defaultBranchName is the default git branch name when not configured.
+	defaultBranchName = "main"
+)
+
 // Manager handles git mirror repository operations.
 type Manager struct {
 	logger     *logx.Logger
@@ -367,7 +372,7 @@ func (m *Manager) initializeEmptyRepository(ctx context.Context, mirrorPath stri
 	repoURL := cfg.Git.RepoURL
 	defaultBranch := cfg.Git.TargetBranch
 	if defaultBranch == "" {
-		defaultBranch = "main" // Default to main if not set
+		defaultBranch = defaultBranchName
 	}
 
 	// Get project name and description for MAESTRO.md
@@ -475,5 +480,183 @@ For more information about Maestro, visit: https://github.com/anthropics/maestro
 		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
 	}
 
+	return nil
+}
+
+// HasMaestroMd checks if .maestro/MAESTRO.md exists in the repository.
+func (m *Manager) HasMaestroMd(ctx context.Context) (bool, error) {
+	mirrorPath, err := m.GetMirrorPath()
+	if err != nil {
+		return false, fmt.Errorf("failed to get mirror path: %w", err)
+	}
+
+	if !mirrorExists(mirrorPath) {
+		return false, fmt.Errorf("mirror does not exist")
+	}
+
+	// Get default branch
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return false, fmt.Errorf("failed to get config: %w", err)
+	}
+	branch := cfg.Git.TargetBranch
+	if branch == "" {
+		branch = defaultBranchName
+	}
+
+	// Use git cat-file to check if the file exists in the repo
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "-e", fmt.Sprintf("%s:.maestro/MAESTRO.md", branch))
+	cmd.Dir = mirrorPath
+	err = cmd.Run()
+
+	// If command succeeds, file exists
+	return err == nil, nil
+}
+
+// LoadMaestroMd reads MAESTRO.md content from the repository mirror.
+// Returns empty string and nil error if file doesn't exist.
+func (m *Manager) LoadMaestroMd(ctx context.Context) (string, error) {
+	mirrorPath, err := m.GetMirrorPath()
+	if err != nil {
+		return "", fmt.Errorf("failed to get mirror path: %w", err)
+	}
+
+	if !mirrorExists(mirrorPath) {
+		return "", fmt.Errorf("mirror does not exist")
+	}
+
+	// Get default branch
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config: %w", err)
+	}
+	branch := cfg.Git.TargetBranch
+	if branch == "" {
+		branch = defaultBranchName
+	}
+
+	// Use git show to read file content from the bare mirror
+	cmd := exec.CommandContext(ctx, "git", "show", fmt.Sprintf("%s:.maestro/MAESTRO.md", branch))
+	cmd.Dir = mirrorPath
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		// Check if it's a "path not found" error (file doesn't exist)
+		if strings.Contains(string(output), "does not exist") ||
+			strings.Contains(string(output), "path") {
+			return "", nil // File doesn't exist, not an error
+		}
+		return "", fmt.Errorf("git show failed: %w\nOutput: %s", err, string(output))
+	}
+
+	return string(output), nil
+}
+
+// CommitMaestroMd writes and commits MAESTRO.md to the repository.
+// Creates a temporary clone, modifies the file, commits and pushes.
+//
+//nolint:cyclop // Sequential git operations for MAESTRO.md update
+func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string) error {
+	mirrorPath, err := m.GetMirrorPath()
+	if err != nil {
+		return fmt.Errorf("failed to get mirror path: %w", err)
+	}
+
+	if !mirrorExists(mirrorPath) {
+		return fmt.Errorf("mirror does not exist")
+	}
+
+	// Get configuration
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config: %w", err)
+	}
+
+	repoURL := cfg.Git.RepoURL
+	branch := cfg.Git.TargetBranch
+	if branch == "" {
+		branch = defaultBranchName
+	}
+
+	// Create temporary directory for clone
+	tempDir := filepath.Join(m.projectDir, ".tmp", fmt.Sprintf("maestro-md-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	// Ensure cleanup on exit
+	defer func() {
+		m.logger.Debug("Cleaning up temp directory: %s", tempDir)
+		if err := os.RemoveAll(tempDir); err != nil {
+			m.logger.Warn("Failed to clean up temp directory: %v", err)
+		}
+	}()
+
+	// Clone from mirror (faster than GitHub)
+	m.logger.Debug("Cloning from mirror for MAESTRO.md update")
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--branch", branch, mirrorPath, tempDir)
+	if output, err := cloneCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git clone failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Set remote to GitHub for push
+	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", repoURL)
+	setRemoteCmd.Dir = tempDir
+	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git remote set-url failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Create .maestro directory if it doesn't exist
+	maestroDir := filepath.Join(tempDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .maestro directory: %w", err)
+	}
+
+	// Write MAESTRO.md
+	maestroPath := filepath.Join(maestroDir, "MAESTRO.md")
+	if err := os.WriteFile(maestroPath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write MAESTRO.md: %w", err)
+	}
+
+	// Stage the file
+	addCmd := exec.CommandContext(ctx, "git", "add", ".maestro/MAESTRO.md")
+	addCmd.Dir = tempDir
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Check if there are changes to commit
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet")
+	diffCmd.Dir = tempDir
+	if err := diffCmd.Run(); err == nil {
+		// No changes to commit
+		m.logger.Info("MAESTRO.md unchanged, skipping commit")
+		return nil
+	}
+
+	// Commit
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", commitMsg)
+	commitCmd.Dir = tempDir
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Push to remote
+	m.logger.Debug("Pushing MAESTRO.md update to %s", repoURL)
+	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", branch)
+	pushCmd.Dir = tempDir
+	if output, err := pushCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git push failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Update mirror to fetch the new commit
+	m.logger.Debug("Updating mirror with MAESTRO.md commit")
+	updateCmd := exec.CommandContext(ctx, "git", "remote", "update")
+	updateCmd.Dir = mirrorPath
+	if output, err := updateCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mirror update failed: %w\nOutput: %s", err, string(output))
+	}
+
+	m.logger.Info("✅ MAESTRO.md committed and pushed successfully")
 	return nil
 }
