@@ -75,6 +75,10 @@ const (
 	// StateKeyIsHotfix indicates the current spec submission is a hotfix.
 	// Set when spec_submit(hotfix=true) is called, cleared on approval.
 	StateKeyIsHotfix = "is_hotfix"
+
+	// StateKeyMaestroMdContent stores MAESTRO.md content for prompt inclusion.
+	// Loaded from repo at session start, updated when PM generates or updates it.
+	StateKeyMaestroMdContent = "maestro_md_content"
 )
 
 // Driver implements the PM (Product Manager) agent.

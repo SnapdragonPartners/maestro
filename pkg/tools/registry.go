@@ -561,6 +561,14 @@ func getChatAskUserSchema() InputSchema {
 	return NewChatAskUserTool(nil, "").Definition().InputSchema
 }
 
+func createMaestroMdSubmitTool(_ *AgentContext) (Tool, error) {
+	return NewMaestroMdSubmitTool(), nil
+}
+
+func getMaestroMdSubmitSchema() InputSchema {
+	return NewMaestroMdSubmitTool().Definition().InputSchema
+}
+
 func createReviewCompleteTool(_ *AgentContext) (Tool, error) {
 	return NewReviewCompleteTool(), nil
 }
@@ -756,6 +764,12 @@ func init() {
 		Name:        ToolChatAskUser,
 		Description: "Post a question to chat and wait for user response. Use when you need user input before proceeding.",
 		InputSchema: getChatAskUserSchema(),
+	})
+
+	Register(ToolMaestroMdSubmit, createMaestroMdSubmitTool, &ToolMeta{
+		Name:        ToolMaestroMdSubmit,
+		Description: "Submit generated MAESTRO.md content for the project overview",
+		InputSchema: getMaestroMdSubmitSchema(),
 	})
 
 	// Register review_complete tool for architect reviews
