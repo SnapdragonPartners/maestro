@@ -148,6 +148,19 @@ func (m *Manager) ensureRemoteURL(ctx context.Context, mirrorPath, targetURL str
 	return nil
 }
 
+// getRemoteURL returns the current origin remote URL from the mirror.
+// This is used to get the actual push URL, which may differ from config
+// in airplane mode where the mirror upstream is switched to Gitea.
+func (m *Manager) getRemoteURL(ctx context.Context, mirrorPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = mirrorPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url failed: %w\nOutput: %s", err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 // GetMirrorPath returns the path to the mirror directory.
 // This extracts the repository name from the configured URL.
 func (m *Manager) GetMirrorPath() (string, error) {
@@ -541,6 +554,7 @@ func (m *Manager) LoadMaestroMd(ctx context.Context) (string, error) {
 
 // CommitMaestroMd writes and commits MAESTRO.md to the repository.
 // Creates a temporary clone, modifies the file, commits and pushes.
+// Uses the mirror's current remote URL (works with both GitHub and Gitea/airplane mode).
 //
 //nolint:cyclop // Sequential git operations for MAESTRO.md update
 func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string) error {
@@ -553,13 +567,19 @@ func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string
 		return fmt.Errorf("mirror does not exist")
 	}
 
-	// Get configuration
+	// Get configuration for branch info
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get config: %w", err)
 	}
 
-	repoURL := cfg.Git.RepoURL
+	// Get the actual remote URL from the mirror (supports airplane mode where
+	// mirror upstream may have been switched from GitHub to Gitea)
+	repoURL, err := m.getRemoteURL(ctx, mirrorPath)
+	if err != nil {
+		return fmt.Errorf("failed to get mirror remote URL: %w", err)
+	}
+
 	branch := cfg.Git.TargetBranch
 	if branch == "" {
 		branch = defaultBranchName
@@ -579,14 +599,15 @@ func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string
 		}
 	}()
 
-	// Clone from mirror (faster than GitHub)
+	// Clone from mirror (faster than remote)
 	m.logger.Debug("Cloning from mirror for MAESTRO.md update")
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", "--branch", branch, mirrorPath, tempDir)
 	if output, err := cloneCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone failed: %w\nOutput: %s", err, string(output))
 	}
 
-	// Set remote to GitHub for push
+	// Set remote to actual upstream for push (clone from mirror sets origin to local path)
+	// This works with both GitHub and Gitea (airplane mode)
 	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", repoURL)
 	setRemoteCmd.Dir = tempDir
 	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
