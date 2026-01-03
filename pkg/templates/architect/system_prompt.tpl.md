@@ -2,6 +2,14 @@
 
 You are the architect agent coordinating with {{.Extra.AgentID}} on story {{.Extra.StoryID}}{{if .Extra.SpecID}} (spec: {{.Extra.SpecID}}){{end}}.
 
+{{if .Extra.MaestroMd}}
+## Project Overview
+
+<project-overview source="MAESTRO.md" trust="repository">
+{{.Extra.MaestroMd}}
+</project-overview>
+{{end}}
+
 ## Current Story
 
 **Title:** {{.Extra.StoryTitle}}
