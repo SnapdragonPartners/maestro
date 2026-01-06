@@ -43,9 +43,10 @@ const (
 	ToolReviewComplete = "review_complete"
 
 	// PM tools.
-	ToolSpecSubmit  = "spec_submit"
-	ToolChatAskUser = "chat_ask_user"
-	ToolBootstrap   = "bootstrap"
+	ToolSpecSubmit      = "spec_submit"
+	ToolChatAskUser     = "chat_ask_user"
+	ToolBootstrap       = "bootstrap"
+	ToolMaestroMdSubmit = "maestro_md_submit"
 
 	// Research tools.
 	// Note: ToolWebSearch is defined in web_search.go to keep tool name with its implementation.
@@ -153,6 +154,14 @@ var (
 		ToolSpecSubmit,
 		ToolWebSearch,
 		ToolWebFetch,
+	}
+
+	// PMMaestroMdTools - tools for MAESTRO.md generation phase.
+	// PM uses read tools to explore the project and submit the generated content.
+	PMMaestroMdTools = []string{
+		ToolReadFile,
+		ToolListFiles,
+		ToolMaestroMdSubmit,
 	}
 
 	// searchTools contains all search-related tools that should be filtered when search is disabled.

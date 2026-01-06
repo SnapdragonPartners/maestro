@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/specs"
+	"orchestrator/pkg/utils"
 )
 
 // SpecSubmitTool allows PM agent to submit finalized specifications.
@@ -41,7 +43,7 @@ func (s *SpecSubmitTool) SetInFlight(inFlight bool) {
 func (s *SpecSubmitTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "spec_submit",
-		Description: "Submit the finalized specification for user review (architect will provide feedback on the spec later). If bootstrap is required, prerequisite sections will be automatically prepended. When development is in progress, only hotfix submissions are allowed.",
+		Description: "Submit the finalized specification for user review (architect will provide feedback on the spec later). If bootstrap is required, prerequisite sections will be automatically prepended. When development is in progress, only hotfix submissions are allowed. Optionally update MAESTRO.md when project scope changes.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -57,6 +59,10 @@ func (s *SpecSubmitTool) Definition() ToolDefinition {
 					Type:        "boolean",
 					Description: "Set to true if this is a hotfix (small, scoped change) rather than a full specification. Hotfixes are allowed while development is in progress.",
 				},
+				"maestro_md": {
+					Type:        "string",
+					Description: "Optional: Updated MAESTRO.md content if the project scope or architecture has changed. Will be committed to the repository.",
+				},
 			},
 			Required: []string{"markdown", "summary"},
 		},
@@ -71,17 +77,20 @@ func (s *SpecSubmitTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (s *SpecSubmitTool) PromptDocumentation() string {
 	return `- **spec_submit** - Submit finalized specification for user review
-  - Parameters: markdown (required), summary (required), hotfix (optional, boolean)
+  - Parameters: markdown (required), summary (required), hotfix (optional, boolean), maestro_md (optional, string)
   - Accepts flexible markdown format - architect will review and provide feedback
   - Use when you have completed the specification interview and drafted the full spec
   - If bootstrap requirements detected, they will be automatically prepended
   - If bootstrap needed but not configured, returns error (call bootstrap tool first)
   - When development is in progress (in_flight=true), set hotfix=true for small changes
-  - Full specs (hotfix=false) are rejected while development is in progress`
+  - Full specs (hotfix=false) are rejected while development is in progress
+  - Use maestro_md parameter when project scope/architecture changes significantly`
 }
 
 // Exec executes the spec submit operation.
-func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
+//
+//nolint:cyclop // Complex logic for spec submission with multiple optional parameters
+func (s *SpecSubmitTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract hotfix parameter (optional, defaults to false).
 	isHotfix := false
 	if hotfix, ok := args["hotfix"].(bool); ok {
@@ -121,6 +130,23 @@ func (s *SpecSubmitTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 
 	if summaryStr == "" {
 		return nil, fmt.Errorf("summary cannot be empty")
+	}
+
+	// Handle optional maestro_md parameter (fail-fast: block spec if MAESTRO.md update fails)
+	if maestroMd, ok := args["maestro_md"].(string); ok && maestroMd != "" {
+		// Sanitize and validate content
+		sanitized := utils.SanitizeMaestroMd(maestroMd)
+		if len(sanitized) > utils.MaestroMdCharLimit {
+			return nil, fmt.Errorf("maestro_md exceeds maximum length of %d characters (got %d)", utils.MaestroMdCharLimit, len(sanitized))
+		}
+
+		// Commit to repository (fail-fast: if this fails, spec submission is blocked)
+		if s.projectDir != "" {
+			mirrorMgr := mirror.NewManager(s.projectDir)
+			if err := mirrorMgr.CommitMaestroMd(ctx, sanitized, "Update MAESTRO.md via spec submission"); err != nil {
+				return nil, fmt.Errorf("failed to update MAESTRO.md in repository: %w (spec submission blocked - fix the error and retry)", err)
+			}
+		}
 	}
 
 	// Parse the user specification to extract basic metadata (but don't enforce strict validation).

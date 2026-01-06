@@ -120,6 +120,11 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		},
 	}
 
+	// Load and add MAESTRO.md content if available (formatted with trust boundary)
+	if maestroContent, err := utils.LoadMaestroMd(c.workDir); err == nil && maestroContent != "" {
+		templateData.Extra["MaestroMd"] = utils.FormatMaestroMdForPrompt(maestroContent)
+	}
+
 	// Render enhanced planning template
 	if c.renderer == nil {
 		return proto.StateError, false, logx.Errorf("template renderer not available for planning")
