@@ -273,8 +273,8 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		PersistenceChannel: d.persistenceChannel,         // For tool execution logging
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("pm_working_%s", d.GetAgentID()),
-			SoftLimit: 0, // Disabled - soft limit nudging was counter-productive
-			HardLimit: 3, // Require user confirmation at 3 iterations (lowered for testing)
+			SoftLimit: 0,  // Disabled - soft limit nudging was counter-productive
+			HardLimit: 10, // Require user confirmation at 10 iterations
 			OnSoftLimit: func(_ int) {
 				// Disabled - was causing premature user prompts
 			},

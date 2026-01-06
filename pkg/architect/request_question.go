@@ -96,9 +96,11 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 			OnSoftLimit: func(count int) {
 				d.logger.Warn("⚠️  Iteration %d: Approaching hard limit for question %s", count, requestMsg.ID)
 			},
-			OnHardLimit: func(_ context.Context, _ string, _ int) error {
+			OnHardLimit: func(_ context.Context, _ string, count int) error {
 				d.logger.Error("❌ Hard iteration limit exceeded for question %s - escalating", requestMsg.ID)
-				// Store escalation context for state machine
+				// Store escalation context for state machine (all required by handleEscalated)
+				d.SetStateData(StateKeyEscalationOriginState, string(StateRequest))
+				d.SetStateData(StateKeyEscalationIterationCount, count)
 				d.SetStateData(StateKeyEscalationRequestID, requestMsg.ID)
 				d.SetStateData(StateKeyEscalationStoryID, storyID)
 				d.SetStateData(StateKeyEscalationAgentID, coderID)
