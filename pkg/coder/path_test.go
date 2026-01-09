@@ -2,19 +2,28 @@ package coder
 
 import (
 	"testing"
+
+	"orchestrator/pkg/config"
 )
 
 func TestPathConstruction(t *testing.T) {
+	// Set up config with test values (CloneManager reads from config)
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "git@github.com:dratner/maestro-demo.git",
+			TargetBranch:  "main",
+			BranchPattern: "story-{STORY_ID}",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
+
 	gitRunner := NewDefaultGitRunner()
 
 	// Test path construction.
 	cm := NewCloneManager(
 		gitRunner,
-		"/Users/dratner/Code/maestro/work/test",   // projectWorkDir
-		"git@github.com:dratner/maestro-demo.git", // repoURL
-		"main",             // baseBranch
-		".mirrors",         // mirrorDir
-		"story-{STORY_ID}", // branchPattern
+		"/Users/dratner/Code/maestro/work/test", // projectWorkDir
+		"", "", "", "",                          // These are now ignored - values come from config
 	)
 
 	agentWorkDir := "/Users/dratner/Code/maestro/work/test/claude_sonnet4-001"
