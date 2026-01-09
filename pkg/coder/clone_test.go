@@ -16,17 +16,22 @@ func setupCloneManagerTest(t *testing.T) (*CloneManager, *mocks.MockGitRunner) {
 	t.Helper()
 	tempDir := t.TempDir()
 
-	// Load config for tests that need it
-	_ = config.LoadConfig(tempDir)
+	// Set up config with test git values (CloneManager reads from config)
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "https://github.com/test/myrepo.git",
+			TargetBranch:  "main",
+			MirrorDir:     ".mirrors",
+			BranchPattern: "coder-{agent_id}-{STORY_ID}",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
 
 	mockGit := mocks.NewMockGitRunner()
 	cm := NewCloneManager(
 		mockGit,
 		tempDir,
-		"https://github.com/test/myrepo.git",
-		"main",
-		".mirrors",
-		"coder-{agent_id}-{STORY_ID}",
+		"", "", "", "", // These are now ignored - values come from config
 	)
 
 	return cm, mockGit
@@ -57,16 +62,22 @@ func TestBuildMirrorPath(t *testing.T) {
 
 func TestBuildMirrorPath_SSHUrl(t *testing.T) {
 	tempDir := t.TempDir()
-	_ = config.LoadConfig(tempDir)
+
+	// Set up config with SSH URL
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "git@github.com:user/another-repo.git",
+			TargetBranch:  "main",
+			BranchPattern: "branch-{STORY_ID}",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
 
 	mockGit := mocks.NewMockGitRunner()
 	cm := NewCloneManager(
 		mockGit,
 		tempDir,
-		"git@github.com:user/another-repo.git",
-		"main",
-		".mirrors",
-		"branch-{STORY_ID}",
+		"", "", "", "",
 	)
 
 	mirrorPath := cm.BuildMirrorPath()
@@ -806,15 +817,22 @@ func TestCreateFreshClone_CheckoutFails(t *testing.T) {
 // =============================================================================
 
 func TestSetupWorkspace_InvalidProjectDir(t *testing.T) {
+	// Set up config with test git values (CloneManager reads from config)
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "https://github.com/test/myrepo.git",
+			TargetBranch:  "main",
+			BranchPattern: "coder-{agent_id}-{STORY_ID}",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
+
 	mockGit := mocks.NewMockGitRunner()
 	// Create a CloneManager with a non-existent project directory
 	cm := NewCloneManager(
 		mockGit,
 		"/nonexistent/path/that/does/not/exist",
-		"https://github.com/test/myrepo.git",
-		"main",
-		".mirrors",
-		"coder-{agent_id}-{STORY_ID}",
+		"", "", "", "",
 	)
 
 	ctx := context.Background()

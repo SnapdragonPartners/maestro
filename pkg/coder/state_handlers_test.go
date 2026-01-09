@@ -91,13 +91,21 @@ func createTestCoder(t *testing.T, opts *testCoderOptions) *Coder {
 func createMockCloneManager(t *testing.T, mockGit *mocks.MockGitRunner) *CloneManager {
 	t.Helper()
 	tempDir := t.TempDir()
+
+	// Set up config with test git values (CloneManager reads from config)
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "https://github.com/test/repo.git",
+			TargetBranch:  "main",
+			BranchPattern: "coder-{agent_id}-{story_id}",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
+
 	return NewCloneManager(
 		mockGit,
-		tempDir,                            // projectWorkDir
-		"https://github.com/test/repo.git", // repoURL
-		"main",                             // baseBranch
-		tempDir+"/.mirrors",                // mirrorDir
-		"coder-{agent_id}-{story_id}",      // branchPattern
+		tempDir,
+		"", "", "", "",
 	)
 }
 

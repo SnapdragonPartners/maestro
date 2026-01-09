@@ -66,18 +66,21 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 				d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
 			}
 
-			// Clear all spec and bootstrap data from state - the spec has been
-			// submitted and we don't want stale data prepended to future hotfixes.
+			// Clear user spec data from state - the spec has been submitted and we
+			// don't want stale data prepended to future hotfixes.
 			// The conversation context still has the spec history for PM reference.
 			d.SetStateData(StateKeyUserSpecMd, nil)
-			d.SetStateData(StateKeyBootstrapSpecMd, nil)
 			d.SetStateData(StateKeySpecMetadata, nil)
 			d.SetStateData(StateKeySpecUploaded, nil)
-			d.SetStateData(StateKeyBootstrapRequirements, nil)
-			d.SetStateData(StateKeyDetectedPlatform, nil)
 			d.SetStateData(StateKeyBootstrapParams, nil)
 			d.SetStateData(StateKeyIsHotfix, nil)
 			d.SetStateData(StateKeyTurnCount, nil)
+
+			// Re-run bootstrap detection to refresh bootstrap state.
+			// This will either regenerate bootstrap spec (if something's still missing)
+			// or clear it (if bootstrap is complete). More robust than manual clearing.
+			//nolint:contextcheck // Bootstrap detection is a quick local operation
+			d.detectAndStoreBootstrapRequirements(context.Background())
 
 			// Mark that development is in flight - only hotfixes allowed now
 			d.SetStateData(StateKeyInFlight, true)

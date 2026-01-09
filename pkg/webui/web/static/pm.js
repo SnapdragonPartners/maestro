@@ -123,10 +123,11 @@ class PMController {
                     document.getElementById('interview-start-section').classList.add('hidden');
                     document.getElementById('interview-chat-section').classList.remove('hidden');
 
-                    // Set session ID so maestro.js knows there's an active session
-                    // Use a pseudo-session ID for spec upload workflow
-                    if (!window.maestroUI.pmSessionId) {
-                        window.maestroUI.pmSessionId = `pm_upload_${Date.now()}`;
+                    // Set session ID for spec upload workflow (both local and maestro.js)
+                    // Use a pseudo-session ID since spec upload doesn't go through /api/pm/start
+                    if (!this.sessionID) {
+                        this.sessionID = `pm_upload_${Date.now()}`;
+                        window.maestroUI.pmSessionId = this.sessionID;
                     }
                 }
                 break;
@@ -137,10 +138,16 @@ class PMController {
                 // But respect user's demo tab selection
                 if (!skipAutoSwitch && this.currentTab !== 'interview') {
                     this.switchTab('interview');
-                    // Ensure chat interface is visible if session exists
-                    if (status.has_session) {
-                        document.getElementById('interview-start-section').classList.add('hidden');
-                        document.getElementById('interview-chat-section').classList.remove('hidden');
+                }
+                // Ensure chat interface is visible and session ID is set if session exists
+                // This handles page refreshes when PM is already in AWAIT_USER state
+                if (status.has_session) {
+                    document.getElementById('interview-start-section').classList.add('hidden');
+                    document.getElementById('interview-chat-section').classList.remove('hidden');
+                    // Ensure we have a session ID for the chat (handles page refresh)
+                    if (!this.sessionID) {
+                        this.sessionID = `pm_session_${Date.now()}`;
+                        window.maestroUI.pmSessionId = this.sessionID;
                     }
                 }
                 break;

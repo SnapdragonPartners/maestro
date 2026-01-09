@@ -63,15 +63,22 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	agentID := "test-coder-notifications"
 	workDir := t.TempDir()
 
+	// Set up config with test git values (CloneManager reads from config)
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "https://github.com/test/repo.git",
+			TargetBranch:  "main",
+			BranchPattern: "coder-*",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
+
 	// Create minimal clone manager
 	gitRunner := NewDefaultGitRunner()
 	cloneManager := NewCloneManager(
 		gitRunner,
 		workDir,
-		"https://github.com/test/repo.git",
-		"main",
-		".mirrors",
-		"coder-*",
+		"", "", "", "",
 	)
 
 	buildService := build.NewBuildService()
@@ -178,15 +185,22 @@ func TestCoderStateNotificationChannelSetup(t *testing.T) {
 	agentID := "test-coder-channel-setup"
 	workDir := t.TempDir()
 
+	// Set up config with test git values (CloneManager reads from config)
+	config.SetConfigForTesting(&config.Config{
+		Git: &config.GitConfig{
+			RepoURL:       "https://github.com/test/repo.git",
+			TargetBranch:  "main",
+			BranchPattern: "coder-*",
+		},
+	})
+	t.Cleanup(func() { config.SetConfigForTesting(nil) })
+
 	// Create minimal clone manager
 	gitRunner := NewDefaultGitRunner()
 	cloneManager := NewCloneManager(
 		gitRunner,
 		workDir,
-		"https://github.com/test/repo.git",
-		"main",
-		".mirrors",
-		"coder-*",
+		"", "", "", "",
 	)
 
 	buildService := build.NewBuildService()

@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
+	bootstraptpl "orchestrator/pkg/templates/bootstrap"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
@@ -597,6 +598,22 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	d.SetStateData(StateKeyBootstrapRequirements, reqs)
 	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
 
+	// Generate and store bootstrap spec markdown deterministically using templates.
+	// This bypasses the LLM - bootstrap stories are generated directly from detected requirements.
+	if reqs.HasAnyMissingComponents() {
+		bootstrapMarkdown, renderErr := d.renderBootstrapSpec(reqs)
+		if renderErr != nil {
+			d.logger.Warn("Failed to render bootstrap spec: %v", renderErr)
+		} else {
+			d.SetStateData(StateKeyBootstrapSpecMd, bootstrapMarkdown)
+			d.logger.Info("📝 Generated bootstrap spec markdown (%d bytes)", len(bootstrapMarkdown))
+		}
+	} else {
+		// Clear stale bootstrap spec when requirements are resolved.
+		// This prevents re-submitting already-completed bootstrap tasks.
+		d.SetStateData(StateKeyBootstrapSpecMd, "")
+	}
+
 	// Update demo availability based on bootstrap status
 	d.updateDemoAvailable(reqs)
 
@@ -616,6 +633,52 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	}
 
 	return reqs, needsBootstrap
+}
+
+// renderBootstrapSpec generates bootstrap spec markdown using templates.
+// Converts BootstrapRequirements to BootstrapFailures and uses the template renderer.
+func (d *Driver) renderBootstrapSpec(reqs *BootstrapRequirements) (string, error) {
+	// Convert requirements to failures for template
+	failures := reqs.ToBootstrapFailures()
+
+	// Get project info from config
+	cfg, err := config.GetConfig()
+	projectName := "project"
+	containerImage := ""
+	gitRepoURL := ""
+
+	if err == nil {
+		if cfg.Project != nil && cfg.Project.Name != "" {
+			projectName = cfg.Project.Name
+		}
+		if cfg.Container != nil && cfg.Container.Name != "" {
+			containerImage = cfg.Container.Name
+		}
+		if cfg.Git != nil && cfg.Git.RepoURL != "" {
+			gitRepoURL = cfg.Git.RepoURL
+		}
+	}
+
+	// Use the bootstrap template renderer
+	renderer, renderErr := bootstraptpl.NewRenderer()
+	if renderErr != nil {
+		return "", fmt.Errorf("failed to create bootstrap renderer: %w", renderErr)
+	}
+
+	// Render with enhanced data including git repo URL
+	markdown, renderErr := renderer.RenderBootstrapSpecEnhanced(
+		projectName,
+		reqs.DetectedPlatform,
+		containerImage,
+		gitRepoURL,
+		"", // dockerfilePath - will be detected
+		failures,
+	)
+	if renderErr != nil {
+		return "", fmt.Errorf("failed to render bootstrap spec: %w", renderErr)
+	}
+
+	return markdown, nil
 }
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.

@@ -15,19 +15,25 @@ import (
 
 // CloneManager handles Git clone operations for coder agents.
 // Provides complete agent isolation with self-contained repositories while maintaining network efficiency through local mirrors.
+// Git config values (repoURL, baseBranch, mirrorDir, branchPattern) can be passed at construction or read from global config.
+// If passed values are empty, falls back to global config (supports late binding for coders).
+// If passed values are non-empty, uses those (supports bootstrap with custom config).
 type CloneManager struct {
 	gitRunner        GitRunner
 	containerManager ContainerManager // Optional container manager for Docker cleanup
 	logger           *logx.Logger
 	projectWorkDir   string // Project work directory (shared across all agents) - contains mirrors and clones
-	repoURL          string
-	baseBranch       string
-	mirrorDir        string // Mirror directory relative to projectWorkDir (e.g., ".mirrors")
-	branchPattern    string // Pattern for branch names (e.g., "story-{STORY_ID}")
+	// Override values - if set, used instead of global config
+	repoURLOverride       string
+	baseBranchOverride    string
+	mirrorDirOverride     string
+	branchPatternOverride string
 }
 
 // NewCloneManager creates a new clone manager.
 // projectWorkDir is the root work directory for the entire orchestrator run (shared across agents).
+// repoURL, baseBranch, mirrorDir, branchPattern: if non-empty, override global config values.
+// Pass empty strings to use global config (supports late binding for coders).
 func NewCloneManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranch, mirrorDir, branchPattern string) *CloneManager {
 	// Convert projectWorkDir to absolute path at construction time.
 	absProjectWorkDir, err := filepath.Abs(projectWorkDir)
@@ -39,20 +45,52 @@ func NewCloneManager(gitRunner GitRunner, projectWorkDir, repoURL, baseBranch, m
 	}
 
 	return &CloneManager{
-		gitRunner:        gitRunner,
-		projectWorkDir:   absProjectWorkDir,
-		repoURL:          repoURL,
-		baseBranch:       baseBranch,
-		mirrorDir:        mirrorDir,
-		branchPattern:    branchPattern,
-		containerManager: nil, // Set via SetContainerManager if needed
-		logger:           logx.NewLogger("clone-manager"),
+		gitRunner:             gitRunner,
+		projectWorkDir:        absProjectWorkDir,
+		containerManager:      nil, // Set via SetContainerManager if needed
+		logger:                logx.NewLogger("clone-manager"),
+		repoURLOverride:       repoURL,
+		baseBranchOverride:    baseBranch,
+		mirrorDirOverride:     mirrorDir,
+		branchPatternOverride: branchPattern,
 	}
 }
 
 // SetContainerManager sets the container manager for Docker cleanup operations.
 func (c *CloneManager) SetContainerManager(containerManager ContainerManager) {
 	c.containerManager = containerManager
+}
+
+// getRepoURL returns the repo URL to use - override if set, otherwise global config.
+func (c *CloneManager) getRepoURL() string {
+	if c.repoURLOverride != "" {
+		return c.repoURLOverride
+	}
+	return config.GetGitRepoURL()
+}
+
+// getBaseBranch returns the base branch to use - override if set, otherwise global config.
+func (c *CloneManager) getBaseBranch() string {
+	if c.baseBranchOverride != "" {
+		return c.baseBranchOverride
+	}
+	return config.GetGitBaseBranch()
+}
+
+// getMirrorDir returns the mirror dir to use - override if set, otherwise global config.
+func (c *CloneManager) getMirrorDir() string {
+	if c.mirrorDirOverride != "" {
+		return c.mirrorDirOverride
+	}
+	return config.GetGitMirrorDir()
+}
+
+// getBranchPattern returns the branch pattern to use - override if set, otherwise global config.
+func (c *CloneManager) getBranchPattern() string {
+	if c.branchPatternOverride != "" {
+		return c.branchPatternOverride
+	}
+	return config.GetGitBranchPattern()
 }
 
 // CloneResult contains the results of clone setup.
@@ -198,9 +236,9 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 		}
 
 		// Clone bare repository as object pool.
-		_, err := c.gitRunner.Run(ctx, "", "clone", "--bare", c.repoURL, mirrorPath)
+		_, err := c.gitRunner.Run(ctx, "", "clone", "--bare", c.getRepoURL(), mirrorPath)
 		if err != nil {
-			return "", logx.Wrap(err, fmt.Sprintf("failed to clone mirror from %s to %s", c.repoURL, mirrorPath))
+			return "", logx.Wrap(err, fmt.Sprintf("failed to clone mirror from %s to %s", c.getRepoURL(), mirrorPath))
 		}
 	} else {
 		// Update existing mirror - fetch all branches and tags with pruning.
@@ -276,21 +314,21 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 	}
 
 	// Checkout the base branch from the mirror.
-	c.logger.Debug("Checking out base branch: %s", c.baseBranch)
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "checkout", "-b", c.baseBranch, "mirror/"+c.baseBranch)
+	c.logger.Debug("Checking out base branch: %s", c.getBaseBranch())
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "checkout", "-b", c.getBaseBranch(), "mirror/"+c.getBaseBranch())
 	if err != nil {
-		return logx.Wrap(err, fmt.Sprintf("git checkout %s failed", c.baseBranch))
+		return logx.Wrap(err, fmt.Sprintf("git checkout %s failed", c.getBaseBranch()))
 	}
 
 	// Configure remote origin for pushing branches to actual repository.
 	// Remove the mirror remote and set origin to the real repo URL.
-	c.logger.Debug("Configuring origin remote for push: %s", c.repoURL)
+	c.logger.Debug("Configuring origin remote for push: %s", c.getRepoURL())
 	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "remove", "mirror")
 	if err != nil {
 		c.logger.Warn("Failed to remove mirror remote (non-fatal): %v", err)
 	}
 
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "origin", c.repoURL)
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "origin", c.getRepoURL())
 	if err != nil {
 		return logx.Wrap(err, "failed to add origin remote - agent will not be able to push branches")
 	}
@@ -307,10 +345,10 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 
 	// Reset the base branch to origin's version to ensure we're starting fresh.
 	// This handles the case where the mirror was stale.
-	c.logger.Debug("Resetting %s to origin/%s to ensure fresh starting point", c.baseBranch, c.baseBranch)
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "reset", "--hard", "origin/"+c.baseBranch)
+	c.logger.Debug("Resetting %s to origin/%s to ensure fresh starting point", c.getBaseBranch(), c.getBaseBranch())
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "reset", "--hard", "origin/"+c.getBaseBranch())
 	if err != nil {
-		c.logger.Warn("Failed to reset to origin/%s (non-fatal): %v", c.baseBranch, err)
+		c.logger.Warn("Failed to reset to origin/%s (non-fatal): %v", c.getBaseBranch(), err)
 		// Continue anyway - we'll work with what we have
 	}
 
@@ -469,10 +507,10 @@ func (c *CloneManager) createBranchWithRetry(ctx context.Context, agentWorkDir, 
 // BuildMirrorPath constructs the mirror repository path.
 func (c *CloneManager) BuildMirrorPath() string {
 	// Extract repo name from URL (e.g., git@github.com:user/repo.git -> repo).
-	repoName := filepath.Base(c.repoURL)
+	repoName := filepath.Base(c.getRepoURL())
 	repoName = strings.TrimSuffix(repoName, ".git")
 
-	return filepath.Join(c.projectWorkDir, c.mirrorDir, repoName+".git")
+	return filepath.Join(c.projectWorkDir, c.getMirrorDir(), repoName+".git")
 }
 
 // BuildAgentWorkDir returns the agent work directory as an absolute path.
@@ -489,7 +527,7 @@ func (c *CloneManager) BuildAgentWorkDir(_ /* agentID */, agentWorkDir string) s
 
 // buildBranchName constructs the branch name using the pattern.
 func (c *CloneManager) buildBranchName(storyID string) string {
-	return strings.ReplaceAll(c.branchPattern, "{STORY_ID}", storyID)
+	return strings.ReplaceAll(c.getBranchPattern(), "{STORY_ID}", storyID)
 }
 
 // configureGitIdentity configures git user identity in the workspace on the host.

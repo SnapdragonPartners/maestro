@@ -394,3 +394,89 @@ func TestDriver_UpdateDemoAvailable_NilRequirements(t *testing.T) {
 		t.Error("Expected demoAvailable to remain unchanged when reqs is nil")
 	}
 }
+
+func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
+	tests := []struct {
+		name        string
+		reqs        *BootstrapRequirements
+		expectCount int
+		expectTypes []string
+		expectPrio1 bool // expect priority 1 failure
+	}{
+		{
+			name: "empty requirements",
+			reqs: &BootstrapRequirements{
+				DetectedPlatform: "go",
+			},
+			expectCount: 0,
+			expectTypes: []string{},
+			expectPrio1: false,
+		},
+		{
+			name: "dockerfile only",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile:  true,
+				DetectedPlatform: "go",
+			},
+			expectCount: 1,
+			expectTypes: []string{"container"},
+			expectPrio1: true,
+		},
+		{
+			name: "makefile only",
+			reqs: &BootstrapRequirements{
+				NeedsMakefile:     true,
+				NeedsBuildTargets: []string{"build", "test"},
+				DetectedPlatform:  "python",
+			},
+			expectCount: 1,
+			expectTypes: []string{"build_system"},
+			expectPrio1: false,
+		},
+		{
+			name: "all requirements",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile:     true,
+				NeedsMakefile:       true,
+				NeedsKnowledgeGraph: true,
+				NeedsGitignore:      true,
+				NeedsClaudeCode:     true,
+				DetectedPlatform:    "go",
+			},
+			expectCount: 5,
+			expectTypes: []string{"container", "build_system", "infrastructure", "build_system", "container"},
+			expectPrio1: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			failures := tt.reqs.ToBootstrapFailures()
+
+			if len(failures) != tt.expectCount {
+				t.Errorf("ToBootstrapFailures() returned %d failures, want %d", len(failures), tt.expectCount)
+			}
+
+			// Check types
+			for i, f := range failures {
+				if i < len(tt.expectTypes) {
+					if string(f.Type) != tt.expectTypes[i] {
+						t.Errorf("Failure %d type = %s, want %s", i, f.Type, tt.expectTypes[i])
+					}
+				}
+			}
+
+			// Check priority 1
+			hasPrio1 := false
+			for _, f := range failures {
+				if f.Priority == 1 {
+					hasPrio1 = true
+					break
+				}
+			}
+			if hasPrio1 != tt.expectPrio1 {
+				t.Errorf("Has priority 1 = %v, want %v", hasPrio1, tt.expectPrio1)
+			}
+		})
+	}
+}

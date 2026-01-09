@@ -1866,3 +1866,45 @@ func GetEffectivePMModel() string {
 	}
 	return config.Agents.PMModel
 }
+
+// GetGitRepoURL returns the current repository URL from config.
+// Returns empty string if not configured.
+func GetGitRepoURL() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Git == nil {
+		return ""
+	}
+	return config.Git.RepoURL
+}
+
+// GetGitBaseBranch returns the current base/target branch from config.
+// Returns DefaultTargetBranch if not configured.
+func GetGitBaseBranch() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Git == nil || config.Git.TargetBranch == "" {
+		return DefaultTargetBranch
+	}
+	return config.Git.TargetBranch
+}
+
+// GetGitMirrorDir returns the mirror directory path.
+// Always returns DefaultMirrorDir as this is not user-configurable.
+func GetGitMirrorDir() string {
+	return DefaultMirrorDir
+}
+
+// GetGitBranchPattern returns the branch naming pattern from config.
+// Returns DefaultBranchPattern if not configured.
+func GetGitBranchPattern() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Git == nil || config.Git.BranchPattern == "" {
+		return DefaultBranchPattern
+	}
+	return config.Git.BranchPattern
+}
