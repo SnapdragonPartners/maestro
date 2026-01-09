@@ -204,10 +204,10 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		switch out.Signal {
 		case string(proto.StateQuestion):
 			// ask_question was called - extract question data from ProcessEffect
-			if err := c.storePendingQuestionFromProcessEffect(sm, out); err != nil {
+			if err := c.storePendingQuestionFromEffect(sm, out.EffectData, StateCoding); err != nil {
 				return proto.StateError, false, logx.Wrap(err, "failed to store pending question")
 			}
-			c.logger.Info("🧑‍💻 Question submitted, transitioning to QUESTION state")
+			c.logger.Info("🧑‍💻 Question submitted from CODING, transitioning to QUESTION state")
 			return StateQuestion, false, nil
 		case tools.SignalTesting:
 			// done tool was called - extract summary from ProcessEffect.Data
@@ -245,12 +245,13 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	}
 }
 
-// storePendingQuestionFromProcessEffect stores question details from ProcessEffect.Data in state for QUESTION state.
-func (c *Coder) storePendingQuestionFromProcessEffect(sm *agent.BaseStateMachine, out toolloop.Outcome[CodingResult]) error {
+// storePendingQuestionFromEffect stores question details from ProcessEffect.Data in state for QUESTION state.
+// Works for both PLANNING and CODING states by accepting the origin state as a parameter.
+func (c *Coder) storePendingQuestionFromEffect(sm *agent.BaseStateMachine, effectDataRaw any, originState proto.State) error {
 	// Extract question data from ProcessEffect.Data
-	effectData, ok := out.EffectData.(map[string]string)
+	effectData, ok := effectDataRaw.(map[string]string)
 	if !ok {
-		return logx.Errorf("ProcessEffect.Data is not map[string]string: %T", out.EffectData)
+		return logx.Errorf("ProcessEffect.Data is not map[string]string: %T", effectDataRaw)
 	}
 
 	question, ok := effectData["question"]
@@ -264,11 +265,11 @@ func (c *Coder) storePendingQuestionFromProcessEffect(sm *agent.BaseStateMachine
 	questionData := map[string]any{
 		"question": question,
 		"context":  context,
-		"origin":   string(StateCoding),
+		"origin":   string(originState),
 	}
 
 	sm.SetStateData(KeyPendingQuestion, questionData)
-	c.logger.Info("🧑‍💻 Stored pending question: %s", question)
+	c.logger.Info("🧑‍💻 Stored pending question: %s (origin: %s)", question, originState)
 	return nil
 }
 

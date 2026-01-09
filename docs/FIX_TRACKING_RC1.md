@@ -47,7 +47,7 @@ Story 45cfa904 failed 3 times due to multiple issues:
 ---
 
 ### 2. Fix `ask_question` Tool Bug
-**Status:** TODO
+**Status:** DONE
 
 **Problem:** The `ask_question` tool returns a ProcessEffect that triggers QUESTION state transition, but question data is not stored in state before transition occurs.
 
@@ -60,10 +60,22 @@ Story 45cfa904 failed 3 times due to multiple issues:
 [system] ERROR: no pending question data found in state
 ```
 
-**Fix:** Ensure `ask_question` tool populates `state.PendingQuestion` before returning ProcessEffect.
+**Root Cause:** In `planning.go`, the `StateQuestion` case returned directly without storing question data:
+```go
+case string(StateQuestion):
+    return StateQuestion, false, nil  // BUG: doesn't store question data!
+```
+
+In contrast, `coding.go` correctly called `storePendingQuestionFromProcessEffect` before transitioning.
+
+**Fix:**
+1. Refactored `storePendingQuestionFromProcessEffect` to `storePendingQuestionFromEffect` that accepts origin state as parameter
+2. Added question data storage in `planning.go` before QUESTION state transition
+3. Updated `coding.go` to use the new generic function
 
 **Files:**
-- TBD - need to locate ask_question implementation
+- `pkg/coder/planning.go` - Added question data storage before QUESTION transition
+- `pkg/coder/coding.go` - Refactored to use generic `storePendingQuestionFromEffect`
 
 ---
 
