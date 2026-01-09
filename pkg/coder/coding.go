@@ -249,7 +249,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 // Works for both PLANNING and CODING states by accepting the origin state as a parameter.
 func (c *Coder) storePendingQuestionFromEffect(sm *agent.BaseStateMachine, effectDataRaw any, originState proto.State) error {
 	// Extract question data from ProcessEffect.Data
-	effectData, ok := effectDataRaw.(map[string]string)
+	effectData, ok := utils.SafeAssert[map[string]string](effectDataRaw)
 	if !ok {
 		return logx.Errorf("ProcessEffect.Data is not map[string]string: %T", effectDataRaw)
 	}
