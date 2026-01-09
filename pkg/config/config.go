@@ -195,6 +195,15 @@ var KnownModels = map[string]ModelInfo{
 		MaxOutputTokens:  4096,
 	},
 
+	// GPT-5.2 (latest GPT-5 series with improved capabilities)
+	"gpt-5.2": {
+		Provider:         ProviderOpenAI,
+		InputCPM:         20.0,
+		OutputCPM:        60.0,
+		MaxContextTokens: 400000,
+		MaxOutputTokens:  128000,
+	},
+
 	// Google Gemini models
 	"gemini-2.0-flash": {
 		Provider:         ProviderGoogle,
@@ -460,6 +469,7 @@ const (
 	ModelOpenAIO3Latest   = ModelOpenAIO3
 	ModelGPT4o            = "gpt-4o"
 	ModelGPT5             = "gpt-5"
+	ModelGPT52            = "gpt-5.2"
 	DefaultCoderModel     = ModelClaudeSonnet4
 	DefaultArchitectModel = ModelGemini3Pro
 	DefaultPMModel        = ModelClaudeOpus45
@@ -1343,15 +1353,17 @@ func applyDefaults(config *Config) {
 	if config.Agents.MaxCoders == 0 {
 		config.Agents.MaxCoders = 3
 	}
-	if config.Agents.CoderModel == "" {
-		config.Agents.CoderModel = DefaultCoderModel
+
+	// Apply smart model defaults based on available API keys
+	singleProvider := applySmartModelDefaults(config)
+	if singleProvider {
+		LogInfo("⚠️  WARNING: Only one LLM provider available. Heterogeneous models are strongly recommended")
+		LogInfo("   for better results. Consider adding API keys for additional providers:")
+		LogInfo("   - ANTHROPIC_API_KEY (Claude - excellent tool use and reasoning)")
+		LogInfo("   - OPENAI_API_KEY (GPT/O3 - strong general capabilities)")
+		LogInfo("   - GOOGLE_GENAI_API_KEY (Gemini - 1M token context window)")
 	}
-	if config.Agents.ArchitectModel == "" {
-		config.Agents.ArchitectModel = DefaultArchitectModel
-	}
-	if config.Agents.PMModel == "" {
-		config.Agents.PMModel = DefaultPMModel
-	}
+
 	if config.Agents.CoderMode == "" {
 		config.Agents.CoderMode = CoderModeStandard
 	}
@@ -1868,6 +1880,136 @@ func GetEffectivePMModel() string {
 		return config.Agents.Airplane.PMModel
 	}
 	return config.Agents.PMModel
+}
+
+// Agent type constants for smart model selection.
+const (
+	AgentTypeCoder     = "coder"
+	AgentTypeArchitect = "architect"
+	AgentTypePM        = "pm"
+)
+
+// AvailableProviders tracks which LLM providers have API keys configured.
+type AvailableProviders struct {
+	Anthropic bool
+	OpenAI    bool
+	Google    bool
+}
+
+// getAvailableProviders checks environment variables to determine which LLM providers are available.
+func getAvailableProviders() AvailableProviders {
+	return AvailableProviders{
+		Anthropic: os.Getenv(EnvAnthropicAPIKey) != "",
+		OpenAI:    os.Getenv(EnvOpenAIAPIKey) != "",
+		Google:    os.Getenv(EnvGoogleAPIKey) != "",
+	}
+}
+
+// countAvailableProviders returns the number of providers with API keys configured.
+func (p AvailableProviders) countAvailableProviders() int {
+	count := 0
+	if p.Anthropic {
+		count++
+	}
+	if p.OpenAI {
+		count++
+	}
+	if p.Google {
+		count++
+	}
+	return count
+}
+
+// getSmartDefaultModel returns the best default model for an agent type based on available API keys.
+// This enables graceful fallback when not all providers are available.
+//
+// Priority order (designed for model heterogeneity):
+//   - Architect: Google → OpenAI → Anthropic (large context, different perspective from coders)
+//   - PM: Anthropic → OpenAI → Google (strong reasoning)
+//   - Coder: Anthropic → OpenAI → Google (excellent tool use)
+//
+// Returns empty string if no providers are available.
+func getSmartDefaultModel(agentType string, providers AvailableProviders) string {
+	switch agentType {
+	case AgentTypeArchitect:
+		// Architect prefers Gemini for 1M context, then OpenAI for heterogeneity, then Anthropic
+		if providers.Google {
+			return ModelGemini3Pro
+		}
+		if providers.OpenAI {
+			return ModelGPT52
+		}
+		if providers.Anthropic {
+			return ModelClaudeOpus45
+		}
+
+	case AgentTypePM:
+		// PM prefers Anthropic for reasoning, then OpenAI, then Google
+		if providers.Anthropic {
+			return ModelClaudeOpus45
+		}
+		if providers.OpenAI {
+			return ModelGPT52
+		}
+		if providers.Google {
+			return ModelGemini3Pro
+		}
+
+	case AgentTypeCoder:
+		// Coder prefers Anthropic for tool use, then OpenAI, then Google
+		if providers.Anthropic {
+			return ModelClaudeSonnet4
+		}
+		if providers.OpenAI {
+			return ModelGPT52
+		}
+		if providers.Google {
+			return ModelGemini3Pro
+		}
+	}
+
+	return "" // No providers available
+}
+
+// applySmartModelDefaults sets agent models based on available API keys.
+// This is called during config loading to ensure models are set appropriately.
+// Returns true if only one provider is available (triggers warning).
+func applySmartModelDefaults(cfg *Config) bool {
+	providers := getAvailableProviders()
+	providerCount := providers.countAvailableProviders()
+
+	// If no providers available, keep hardcoded defaults (will fail at runtime with clear error)
+	if providerCount == 0 {
+		LogInfo("⚠️  No LLM API keys found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_GENAI_API_KEY.")
+		return false
+	}
+
+	// Apply smart defaults only if not already set in config
+	if cfg.Agents.CoderModel == "" {
+		cfg.Agents.CoderModel = getSmartDefaultModel(AgentTypeCoder, providers)
+	}
+	if cfg.Agents.ArchitectModel == "" {
+		cfg.Agents.ArchitectModel = getSmartDefaultModel(AgentTypeArchitect, providers)
+	}
+	if cfg.Agents.PMModel == "" {
+		cfg.Agents.PMModel = getSmartDefaultModel(AgentTypePM, providers)
+	}
+
+	// Log which providers are being used
+	var activeProviders []string
+	if providers.Anthropic {
+		activeProviders = append(activeProviders, "Anthropic")
+	}
+	if providers.OpenAI {
+		activeProviders = append(activeProviders, "OpenAI")
+	}
+	if providers.Google {
+		activeProviders = append(activeProviders, "Google")
+	}
+	LogInfo("🔑 Available LLM providers: %v", activeProviders)
+
+	// Return true if only one provider (triggers heterogeneity warning)
+	return providerCount == 1
 }
 
 // GetTotalAgentCount returns the total number of agents in the system.
