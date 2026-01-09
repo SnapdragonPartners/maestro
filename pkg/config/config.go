@@ -331,11 +331,11 @@ type RateLimitConfig struct {
 //nolint:gochecknoglobals // Intentional global for provider defaults
 var ProviderDefaults = map[string]ProviderLimits{
 	ProviderAnthropic: {
-		TokensPerMinute: 300000,
+		TokensPerMinute: 1000000,
 		MaxConcurrency:  5,
 	},
 	ProviderOpenAI: {
-		TokensPerMinute: 150000,
+		TokensPerMinute: 1000000,
 		MaxConcurrency:  5,
 	},
 	ProviderGoogle: {
@@ -1098,11 +1098,11 @@ func createDefaultConfig() *Config {
 				},
 				RateLimit: RateLimitConfig{
 					Anthropic: ProviderLimits{
-						TokensPerMinute: 300000,
+						TokensPerMinute: 1000000,
 						MaxConcurrency:  5,
 					},
 					OpenAI: ProviderLimits{
-						TokensPerMinute: 150000,
+						TokensPerMinute: 1000000,
 						MaxConcurrency:  5,
 					},
 					Google: ProviderLimits{
