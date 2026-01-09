@@ -60,6 +60,86 @@ func (r *BootstrapRequirements) HasAnyMissingComponents() bool {
 	return len(r.MissingComponents) > 0
 }
 
+// ToBootstrapFailures converts requirements to workspace.BootstrapFailure slice
+// for use with the bootstrap template renderer.
+func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailure {
+	var failures []workspace.BootstrapFailure
+
+	// Dockerfile failure (highest priority - blocks everything)
+	if r.NeedsDockerfile {
+		failures = append(failures, workspace.BootstrapFailure{
+			Type:        workspace.BootstrapFailureContainer,
+			Component:   "dockerfile",
+			Description: "Development container not configured - Dockerfile required",
+			Details: map[string]string{
+				"action":   "create_dockerfile",
+				"platform": r.DetectedPlatform,
+			},
+			Priority: 1,
+		})
+	}
+
+	// Makefile failure
+	if r.NeedsMakefile {
+		details := map[string]string{
+			"action": "create_makefile",
+		}
+		if len(r.NeedsBuildTargets) > 0 {
+			details["missing_targets"] = strings.Join(r.NeedsBuildTargets, ", ")
+		}
+		failures = append(failures, workspace.BootstrapFailure{
+			Type:        workspace.BootstrapFailureBuildSystem,
+			Component:   "makefile",
+			Description: "Makefile missing or incomplete - required targets: build, test, lint, run",
+			Details:     details,
+			Priority:    2,
+		})
+	}
+
+	// Knowledge graph failure
+	if r.NeedsKnowledgeGraph {
+		failures = append(failures, workspace.BootstrapFailure{
+			Type:        workspace.BootstrapFailureInfrastructure,
+			Component:   "knowledge_graph",
+			Description: "Knowledge graph documentation missing - .maestro/knowledge.dot required",
+			Details: map[string]string{
+				"action": "create_knowledge_graph",
+				"path":   ".maestro/knowledge.dot",
+			},
+			Priority: 3,
+		})
+	}
+
+	// Gitignore failure
+	if r.NeedsGitignore {
+		failures = append(failures, workspace.BootstrapFailure{
+			Type:        workspace.BootstrapFailureBuildSystem,
+			Component:   "gitignore",
+			Description: ".gitignore file missing - required for clean repository",
+			Details: map[string]string{
+				"action":   "create_gitignore",
+				"platform": r.DetectedPlatform,
+			},
+			Priority: 4,
+		})
+	}
+
+	// Claude Code failure
+	if r.NeedsClaudeCode {
+		failures = append(failures, workspace.BootstrapFailure{
+			Type:        workspace.BootstrapFailureContainer,
+			Component:   "claude_code",
+			Description: "Claude Code not installed in container - required for coder agents",
+			Details: map[string]string{
+				"action": "install_claude_code",
+			},
+			Priority: 2,
+		})
+	}
+
+	return failures
+}
+
 // NewBootstrapDetector creates a new bootstrap detector.
 // projectDir should be the PM workspace path (e.g., projectDir/pm-001).
 func NewBootstrapDetector(projectDir string) *BootstrapDetector {
