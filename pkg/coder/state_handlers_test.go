@@ -1176,6 +1176,76 @@ func TestHandlePlanning_LLMError(t *testing.T) {
 	t.Logf("handlePlanning with LLM error: state=%s, done=%v, err=%v", nextState, done, err)
 }
 
+func TestHandlePlanning_AskQuestion_StoresQuestionData(t *testing.T) {
+	// This test verifies the fix for the ask_question bug where question data
+	// was not being stored before transitioning to QUESTION state.
+	// See docs/FIX_TRACKING_RC1.md Fix #2 for details.
+
+	mockLLM := mocks.NewMockLLMClient()
+
+	// Configure mock to return an ask_question tool call
+	mockLLM.RespondWithToolCall("ask_question", map[string]any{
+		"question": "How should I implement the database schema?",
+		"context":  "Working on the user authentication feature",
+	})
+
+	coder := createTestCoder(t, &testCoderOptions{
+		llmClient: mockLLM,
+	})
+
+	sm := coder.BaseStateMachine
+	sm.SetStateData(string(stateDataKeyTaskContent), "Implement user authentication")
+	sm.SetStateData(proto.KeyStoryType, string(proto.StoryTypeApp))
+	sm.SetStateData(KeyStoryID, "story-456")
+
+	ctx := context.Background()
+	nextState, done, err := coder.handlePlanning(ctx, sm)
+
+	// Verify no error
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Verify not done (question needs to be answered)
+	if done {
+		t.Error("Expected done=false when asking question")
+	}
+
+	// Verify state transition to QUESTION
+	if nextState != StateQuestion {
+		t.Errorf("Expected state %s, got: %s", StateQuestion, nextState)
+	}
+
+	// Verify question data was stored in state (this is what the bug fix ensures)
+	stateData := sm.GetStateData()
+	questionDataRaw, exists := stateData[KeyPendingQuestion]
+	if !exists {
+		t.Fatal("Expected KeyPendingQuestion to be set in state data")
+	}
+
+	questionData, ok := questionDataRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("Expected question data to be map[string]any, got: %T", questionDataRaw)
+	}
+
+	// Verify question content
+	if question, ok := questionData["question"].(string); !ok || question != "How should I implement the database schema?" {
+		t.Errorf("Expected question text to be stored, got: %v", questionData["question"])
+	}
+
+	// Verify context
+	if ctx, ok := questionData["context"].(string); !ok || ctx != "Working on the user authentication feature" {
+		t.Errorf("Expected context to be stored, got: %v", questionData["context"])
+	}
+
+	// Verify origin state is PLANNING
+	if origin, ok := questionData["origin"].(string); !ok || origin != string(StatePlanning) {
+		t.Errorf("Expected origin to be %s, got: %v", StatePlanning, questionData["origin"])
+	}
+
+	t.Logf("handlePlanning ask_question: question data correctly stored before QUESTION transition")
+}
+
 // =============================================================================
 // LLM response sequence tests
 // =============================================================================
