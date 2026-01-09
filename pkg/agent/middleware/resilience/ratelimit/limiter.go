@@ -13,6 +13,9 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// Note: The buffer factor (0.9) is defined in config.RateLimitBufferFactor
+// to ensure consistency between config validation and limiter capacity calculation.
+
 // Limiter defines the interface for rate limiting implementations.
 type Limiter interface {
 	// Acquire attempts to atomically acquire tokens and a concurrency slot.
@@ -74,7 +77,7 @@ type TokenBucketLimiter struct {
 	// Token bucket state
 	availableTokens int // Current tokens available
 	tokensPerRefill int // Tokens added every refill (tokens_per_minute / 10)
-	maxCapacity     int // Maximum bucket capacity (90% of tokens_per_minute)
+	maxCapacity     int // Maximum bucket capacity (tokens_per_minute * RateLimitBufferFactor)
 
 	// Concurrency limiting
 	activeRequests int            // Current active requests
@@ -101,8 +104,8 @@ type LimiterStats struct {
 
 // NewTokenBucketLimiter creates a new token bucket rate limiter for a provider.
 func NewTokenBucketLimiter(provider string, cfg Config, requestTimeout time.Duration) *TokenBucketLimiter {
-	// Calculate 90% capacity for safety buffer
-	maxCapacity := int(float64(cfg.TokensPerMinute) * 0.9)
+	// Calculate capacity with safety buffer (accounts for token estimation inaccuracies)
+	maxCapacity := int(float64(cfg.TokensPerMinute) * config.RateLimitBufferFactor)
 
 	// Refill every 6 seconds (divide by 10 for per-minute rate)
 	tokensPerRefill := cfg.TokensPerMinute / 10
