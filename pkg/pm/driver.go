@@ -608,6 +608,10 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 			d.SetStateData(StateKeyBootstrapSpecMd, bootstrapMarkdown)
 			d.logger.Info("📝 Generated bootstrap spec markdown (%d bytes)", len(bootstrapMarkdown))
 		}
+	} else {
+		// Clear stale bootstrap spec when requirements are resolved.
+		// This prevents re-submitting already-completed bootstrap tasks.
+		d.SetStateData(StateKeyBootstrapSpecMd, "")
 	}
 
 	// Update demo availability based on bootstrap status
