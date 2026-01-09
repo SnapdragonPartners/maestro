@@ -13,6 +13,9 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// Note: The buffer factor (0.9) is defined in config.RateLimitBufferFactor
+// to ensure consistency between config validation and limiter capacity calculation.
+
 // Limiter defines the interface for rate limiting implementations.
 type Limiter interface {
 	// Acquire attempts to atomically acquire tokens and a concurrency slot.
@@ -74,7 +77,7 @@ type TokenBucketLimiter struct {
 	// Token bucket state
 	availableTokens int // Current tokens available
 	tokensPerRefill int // Tokens added every refill (tokens_per_minute / 10)
-	maxCapacity     int // Maximum bucket capacity (90% of tokens_per_minute)
+	maxCapacity     int // Maximum bucket capacity (tokens_per_minute * RateLimitBufferFactor)
 
 	// Concurrency limiting
 	activeRequests int            // Current active requests
@@ -101,8 +104,8 @@ type LimiterStats struct {
 
 // NewTokenBucketLimiter creates a new token bucket rate limiter for a provider.
 func NewTokenBucketLimiter(provider string, cfg Config, requestTimeout time.Duration) *TokenBucketLimiter {
-	// Calculate 90% capacity for safety buffer
-	maxCapacity := int(float64(cfg.TokensPerMinute) * 0.9)
+	// Calculate capacity with safety buffer (accounts for token estimation inaccuracies)
+	maxCapacity := int(float64(cfg.TokensPerMinute) * config.RateLimitBufferFactor)
 
 	// Refill every 6 seconds (divide by 10 for per-minute rate)
 	tokensPerRefill := cfg.TokensPerMinute / 10
@@ -123,9 +126,20 @@ func NewTokenBucketLimiter(provider string, cfg Config, requestTimeout time.Dura
 
 // Acquire atomically acquires both tokens and a concurrency slot.
 // Returns a release function that MUST be called (via defer) to return the slot.
-// Blocks until both resources are available or context is cancelled.
+// Blocks until both resources are available, context is cancelled, or timeout is reached.
+//
+// The timeout is calculated as: agent_count × 1 minute. Rationale:
+//   - Agents use LLM serially (one request at a time per agent).
+//   - Bucket refills to full capacity over ~1 minute (10 refills × 6 seconds).
+//   - Worst case FIFO: each agent ahead drains bucket, you wait for their refill cycle.
+//   - If waiting longer than this, something is fundamentally wrong (config error or impossible request).
 func (l *TokenBucketLimiter) Acquire(ctx context.Context, tokens int, agentID string) (func(), error) {
 	firstAttempt := true
+	startTime := time.Now()
+
+	// Calculate maximum wait time: agent_count × 1 minute
+	// This provides a safety net for impossible requests or configuration errors
+	maxWait := time.Duration(config.GetTotalAgentCount()) * time.Minute
 
 	for {
 		l.mu.Lock()
@@ -158,6 +172,15 @@ func (l *TokenBucketLimiter) Acquire(ctx context.Context, tokens int, agentID st
 
 			l.mu.Unlock()
 			return releaseFunc, nil
+		}
+
+		// Check for timeout before waiting
+		elapsed := time.Since(startTime)
+		if elapsed > maxWait {
+			l.mu.Unlock()
+			return nil, fmt.Errorf("rate limit acquisition timeout after %v "+
+				"(requested %d tokens, max capacity %d, provider: %s, agent: %s)",
+				elapsed.Round(time.Second), tokens, l.maxCapacity, l.provider, agentID)
 		}
 
 		// Can't acquire - record what blocked us (only on first attempt to avoid log spam)

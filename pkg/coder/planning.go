@@ -220,6 +220,11 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		case string(StateBudgetReview):
 			return StateBudgetReview, false, nil
 		case string(StateQuestion):
+			// ask_question was called - extract question data from ProcessEffect
+			if err := c.storePendingQuestionFromEffect(sm, out.EffectData, StatePlanning); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to store pending question")
+			}
+			c.logger.Info("🧑‍💻 Question submitted from PLANNING, transitioning to QUESTION state")
 			return StateQuestion, false, nil
 		case tools.SignalPlanReview:
 			// submit_plan was called - extract data from ProcessEffect.Data

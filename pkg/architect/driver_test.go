@@ -46,7 +46,7 @@ func newTestDriver() *Driver {
 		contextMutex:       sync.RWMutex{},
 		logger:             logx.NewLogger("test-arch"),
 		queue:              NewQueue(nil),
-		escalationHandler:  NewEscalationHandler("/tmp", NewQueue(nil)),
+		escalationHandler:  NewEscalationHandler(NewQueue(nil)),
 		persistenceChannel: persistCh,
 		workDir:            "/tmp/test-workspace",
 	}

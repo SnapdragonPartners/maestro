@@ -331,15 +331,15 @@ type RateLimitConfig struct {
 //nolint:gochecknoglobals // Intentional global for provider defaults
 var ProviderDefaults = map[string]ProviderLimits{
 	ProviderAnthropic: {
-		TokensPerMinute: 300000,
+		TokensPerMinute: 1000000,
 		MaxConcurrency:  5,
 	},
 	ProviderOpenAI: {
-		TokensPerMinute: 150000,
+		TokensPerMinute: 1000000,
 		MaxConcurrency:  5,
 	},
 	ProviderGoogle: {
-		TokensPerMinute: 60000, // Conservative default - adjust based on actual API limits
+		TokensPerMinute: 1200000, // Must be > MaxContextTokens/0.9 for Gemini models (1M context)
 		MaxConcurrency:  5,
 	},
 	ProviderOllama: {
@@ -1098,15 +1098,15 @@ func createDefaultConfig() *Config {
 				},
 				RateLimit: RateLimitConfig{
 					Anthropic: ProviderLimits{
-						TokensPerMinute: 300000,
+						TokensPerMinute: 1000000,
 						MaxConcurrency:  5,
 					},
 					OpenAI: ProviderLimits{
-						TokensPerMinute: 150000,
+						TokensPerMinute: 1000000,
 						MaxConcurrency:  5,
 					},
 					Google: ProviderLimits{
-						TokensPerMinute: 60000,
+						TokensPerMinute: 1200000, // Must be > MaxContextTokens/0.9 for Gemini models
 						MaxConcurrency:  5,
 					},
 					Ollama: ProviderLimits{
@@ -1420,6 +1420,9 @@ func applyDefaults(config *Config) {
 	if config.Agents.Resilience.RateLimit.Ollama.TokensPerMinute == 0 {
 		config.Agents.Resilience.RateLimit.Ollama = ProviderDefaults[ProviderOllama]
 	}
+
+	// Validate rate limits are sufficient for model context sizes
+	validateRateLimitCapacity(config)
 
 	if config.Agents.Resilience.Timeout == 0 {
 		config.Agents.Resilience.Timeout = 3 * time.Minute // Increased for GPT-5 reasoning time (was 60s)
@@ -1867,6 +1870,19 @@ func GetEffectivePMModel() string {
 	return config.Agents.PMModel
 }
 
+// GetTotalAgentCount returns the total number of agents in the system.
+// Used for rate limiter timeout calculation: max wait = agent_count × 1 minute.
+// Total = 1 architect + 1 PM + MaxCoders + 1 hotfix = MaxCoders + 3.
+func GetTotalAgentCount() int {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Agents == nil {
+		return 6 // Default: 3 coders + 3 (architect + PM + hotfix)
+	}
+	return config.Agents.MaxCoders + 3
+}
+
 // GetGitRepoURL returns the current repository URL from config.
 // Returns empty string if not configured.
 func GetGitRepoURL() string {
@@ -1907,4 +1923,51 @@ func GetGitBranchPattern() string {
 		return DefaultBranchPattern
 	}
 	return config.Git.BranchPattern
+}
+
+// RateLimitBufferFactor is the safety margin applied to rate limit buckets.
+// The effective bucket capacity is TokensPerMinute * RateLimitBufferFactor.
+// This accounts for token estimation inaccuracies (tiktoken vs actual).
+const RateLimitBufferFactor = 0.9
+
+// validateRateLimitCapacity checks that rate limits are sufficient for model context sizes.
+// If a model's MaxContextTokens exceeds the effective bucket capacity (TPM * 0.9),
+// requests could block forever. This function warns about such configurations.
+func validateRateLimitCapacity(cfg *Config) {
+	if cfg == nil || cfg.Agents == nil {
+		return
+	}
+
+	// Build provider -> TPM map from current config
+	providerTPM := map[string]int{
+		ProviderAnthropic: cfg.Agents.Resilience.RateLimit.Anthropic.TokensPerMinute,
+		ProviderOpenAI:    cfg.Agents.Resilience.RateLimit.OpenAI.TokensPerMinute,
+		ProviderGoogle:    cfg.Agents.Resilience.RateLimit.Google.TokensPerMinute,
+		ProviderOllama:    cfg.Agents.Resilience.RateLimit.Ollama.TokensPerMinute,
+	}
+
+	// Check each known model
+	for modelName := range KnownModels {
+		modelInfo := KnownModels[modelName]
+		tpm := providerTPM[modelInfo.Provider]
+		if tpm == 0 {
+			continue
+		}
+
+		// Effective capacity is TPM * 0.9 (the buffer factor used in limiter.go)
+		effectiveCapacity := int(float64(tpm) * RateLimitBufferFactor)
+
+		if modelInfo.MaxContextTokens > effectiveCapacity {
+			logx.Warnf("CONFIG: Model %s has MaxContextTokens (%d) > effective rate limit capacity (%d = %d * %.1f). "+
+				"Large contexts may block forever. Consider increasing %s tokens_per_minute to at least %d.",
+				modelName,
+				modelInfo.MaxContextTokens,
+				effectiveCapacity,
+				tpm,
+				RateLimitBufferFactor,
+				modelInfo.Provider,
+				int(float64(modelInfo.MaxContextTokens)/RateLimitBufferFactor)+1,
+			)
+		}
+	}
 }
