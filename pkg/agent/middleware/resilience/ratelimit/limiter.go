@@ -126,9 +126,20 @@ func NewTokenBucketLimiter(provider string, cfg Config, requestTimeout time.Dura
 
 // Acquire atomically acquires both tokens and a concurrency slot.
 // Returns a release function that MUST be called (via defer) to return the slot.
-// Blocks until both resources are available or context is cancelled.
+// Blocks until both resources are available, context is cancelled, or timeout is reached.
+//
+// The timeout is calculated as: agent_count × 1 minute. Rationale:
+//   - Agents use LLM serially (one request at a time per agent).
+//   - Bucket refills to full capacity over ~1 minute (10 refills × 6 seconds).
+//   - Worst case FIFO: each agent ahead drains bucket, you wait for their refill cycle.
+//   - If waiting longer than this, something is fundamentally wrong (config error or impossible request).
 func (l *TokenBucketLimiter) Acquire(ctx context.Context, tokens int, agentID string) (func(), error) {
 	firstAttempt := true
+	startTime := time.Now()
+
+	// Calculate maximum wait time: agent_count × 1 minute
+	// This provides a safety net for impossible requests or configuration errors
+	maxWait := time.Duration(config.GetTotalAgentCount()) * time.Minute
 
 	for {
 		l.mu.Lock()
@@ -161,6 +172,15 @@ func (l *TokenBucketLimiter) Acquire(ctx context.Context, tokens int, agentID st
 
 			l.mu.Unlock()
 			return releaseFunc, nil
+		}
+
+		// Check for timeout before waiting
+		elapsed := time.Since(startTime)
+		if elapsed > maxWait {
+			l.mu.Unlock()
+			return nil, fmt.Errorf("rate limit acquisition timeout after %v "+
+				"(requested %d tokens, max capacity %d, provider: %s, agent: %s)",
+				elapsed.Round(time.Second), tokens, l.maxCapacity, l.provider, agentID)
 		}
 
 		// Can't acquire - record what blocked us (only on first attempt to avoid log spam)

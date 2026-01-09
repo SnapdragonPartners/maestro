@@ -80,7 +80,7 @@ In contrast, `coding.go` correctly called `storePendingQuestionFromProcessEffect
 ---
 
 ### 3. Rate Limiter Timeout (Safety Net)
-**Status:** TODO
+**Status:** DONE
 
 **Problem:** Even if config validation (Fix #1) prevents impossible requests, the rate limiter has no maximum wait time. If something goes wrong, it blocks indefinitely and SUSPEND is never triggered.
 
