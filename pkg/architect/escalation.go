@@ -2,24 +2,19 @@ package architect
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/logx"
 )
 
 // EscalationHandler manages business question escalations and ESCALATED state.
-//
-//nolint:govet // Complex management struct, logical grouping preferred
+// Escalations are stored in memory for the current session - they don't need
+// file persistence since escalations are session-scoped and the chat system
+// provides durable escalation messaging via post_type: 'escalate'.
 type EscalationHandler struct {
-	logsDir         string
-	escalationsFile string
-	escalations     map[string]*EscalationEntry // escalationID -> EscalationEntry
-	queue           *Queue
+	escalations map[string]*EscalationEntry // escalationID -> EscalationEntry
+	queue       *Queue
 }
 
 // EscalationEntry represents an escalated business question requiring human intervention.
@@ -51,20 +46,11 @@ type EscalationSummary struct {
 }
 
 // NewEscalationHandler creates a new escalation handler.
-func NewEscalationHandler(logsDir string, queue *Queue) *EscalationHandler {
-	escalationsFile := filepath.Join(logsDir, "escalations.jsonl")
-
-	handler := &EscalationHandler{
-		logsDir:         logsDir,
-		escalationsFile: escalationsFile,
-		escalations:     make(map[string]*EscalationEntry),
-		queue:           queue,
+func NewEscalationHandler(queue *Queue) *EscalationHandler {
+	return &EscalationHandler{
+		escalations: make(map[string]*EscalationEntry),
+		queue:       queue,
 	}
-
-	// Load existing escalations.
-	_ = handler.loadEscalations() // Ignore error for initialization
-
-	return handler
 }
 
 // EscalateReviewFailure escalates repeated code review failures to human intervention.
@@ -86,13 +72,8 @@ func (eh *EscalationHandler) EscalateReviewFailure(_ context.Context, storyID, a
 		Priority:    "high", // Review failures are high priority
 	}
 
-	// Store escalation.
+	// Store escalation in memory.
 	eh.escalations[escalation.ID] = escalation
-
-	// Log to escalations.jsonl.
-	if err := eh.logEscalation(escalation); err != nil {
-		return fmt.Errorf("failed to log escalation: %w", err)
-	}
 
 	// Update story status to await human feedback.
 	if err := eh.queue.UpdateStoryStatus(escalation.StoryID, StatusPending); err != nil {
@@ -120,13 +101,8 @@ func (eh *EscalationHandler) EscalateSystemError(_ context.Context, storyID, age
 		Priority:    "critical", // System errors are critical
 	}
 
-	// Store escalation.
+	// Store escalation in memory.
 	eh.escalations[escalation.ID] = escalation
-
-	// Log to escalations.jsonl.
-	if err := eh.logEscalation(escalation); err != nil {
-		return fmt.Errorf("failed to log escalation: %w", err)
-	}
 
 	// Update story status to await human feedback.
 	if err := eh.queue.UpdateStoryStatus(escalation.StoryID, StatusPending); err != nil {
@@ -136,72 +112,6 @@ func (eh *EscalationHandler) EscalateSystemError(_ context.Context, storyID, age
 	defaultLogger := logx.NewLogger("architect")
 	defaultLogger.Error("escalated system error %s for story %s (priority: critical)",
 		escalation.ID, escalation.StoryID)
-
-	return nil
-}
-
-// logEscalation appends an escalation entry to logs/escalations.jsonl.
-func (eh *EscalationHandler) logEscalation(escalation *EscalationEntry) error {
-	// Ensure logs directory exists.
-	if err := os.MkdirAll(eh.logsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create logs directory: %w", err)
-	}
-
-	// Convert escalation to JSON.
-	jsonData, err := json.Marshal(escalation)
-	if err != nil {
-		return fmt.Errorf("failed to marshal escalation to JSON: %w", err)
-	}
-
-	// Append to escalations.jsonl.
-	file, err := os.OpenFile(eh.escalationsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open escalations log file: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-
-	// Write JSON line with newline.
-	if _, err := file.WriteString(string(jsonData) + "\n"); err != nil {
-		return fmt.Errorf("failed to write escalation to log: %w", err)
-	}
-
-	return nil
-}
-
-// loadEscalations loads existing escalations from logs/escalations.jsonl.
-func (eh *EscalationHandler) loadEscalations() error {
-	// Check if escalations file exists.
-	if _, err := os.Stat(eh.escalationsFile); os.IsNotExist(err) {
-		// No existing escalations file, start with empty set.
-		return nil
-	}
-
-	// Read the file.
-	data, err := os.ReadFile(eh.escalationsFile)
-	if err != nil {
-		return fmt.Errorf("failed to read escalations file: %w", err)
-	}
-
-	// Parse JSONL format (one JSON object per line).
-	content := string(data)
-	if content == "" {
-		return nil
-	}
-
-	// Split by newlines and parse each line.
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		if trimmedLine := strings.TrimSpace(line); trimmedLine != "" {
-			var escalation EscalationEntry
-			if err := json.Unmarshal([]byte(trimmedLine), &escalation); err != nil {
-				logx.Warnf("failed to parse escalation line %d: %v", i+1, err)
-				continue
-			}
-			eh.escalations[escalation.ID] = &escalation
-		}
-	}
 
 	return nil
 }
@@ -272,11 +182,6 @@ func (eh *EscalationHandler) ResolveEscalation(escalationID, resolution, humanOp
 	escalation.HumanOperator = humanOperator
 	escalation.ResolvedAt = &now
 
-	// Log the resolution.
-	if err := eh.logEscalation(escalation); err != nil {
-		return fmt.Errorf("failed to log escalation resolution: %w", err)
-	}
-
 	logx.Infof("resolved escalation %s by %s", escalationID, humanOperator)
 
 	return nil
@@ -293,11 +198,6 @@ func (eh *EscalationHandler) AcknowledgeEscalation(escalationID, humanOperator s
 	escalation.Status = "acknowledged"
 	escalation.HumanOperator = humanOperator
 
-	// Log the acknowledgment.
-	if err := eh.logEscalation(escalation); err != nil {
-		return fmt.Errorf("failed to log escalation acknowledgment: %w", err)
-	}
-
 	logx.Infof("acknowledged escalation %s by %s", escalationID, humanOperator)
 
 	return nil
@@ -305,7 +205,7 @@ func (eh *EscalationHandler) AcknowledgeEscalation(escalationID, humanOperator s
 
 // LogTimeout logs when an escalation times out (used by the timeout guard).
 func (eh *EscalationHandler) LogTimeout(escalatedAt time.Time, duration time.Duration) error {
-	// Create a special timeout escalation entry for logging purposes.
+	// Create a special timeout escalation entry for tracking purposes.
 	resolvedTime := time.Now().UTC()
 	timeoutEscalation := &EscalationEntry{
 		ID:       fmt.Sprintf("timeout_%d", time.Now().Unix()),
@@ -325,10 +225,8 @@ func (eh *EscalationHandler) LogTimeout(escalatedAt time.Time, duration time.Dur
 		ResolvedAt:    &resolvedTime,
 	}
 
-	// Log the timeout event.
-	if err := eh.logEscalation(timeoutEscalation); err != nil {
-		return fmt.Errorf("failed to log escalation timeout: %w", err)
-	}
+	// Store in memory for session tracking.
+	eh.escalations[timeoutEscalation.ID] = timeoutEscalation
 
 	logx.Warnf("logged escalation timeout: %v duration", duration.Truncate(time.Minute))
 

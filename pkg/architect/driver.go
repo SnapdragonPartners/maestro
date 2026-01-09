@@ -5,7 +5,6 @@ package architect
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -151,13 +150,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		panic("persistence channel is required - database storage is mandatory")
 	}
 
-	// Ensure logs directory exists
-	logsDir := workDir + "/logs"
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
-		fmt.Printf("WARNING: Failed to create logs directory %s: %v\n", logsDir, err)
-	}
-
-	escalationHandler := NewEscalationHandler(logsDir, queue)
+	escalationHandler := NewEscalationHandler(queue)
 	logger := logx.NewLogger(architectID)
 
 	// Create BaseStateMachine with architect transition table
