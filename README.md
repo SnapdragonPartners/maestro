@@ -16,6 +16,12 @@ Maestro is feature complete for its initial release but not yet production ready
 
 ---
 
+## Documentation
+
+Much more extensive documentation including configuration settings is available in the [Wiki](https://github.com/SnapdragonPartners/maestro/wiki).
+
+---
+
 ## Why Maestro?
 
 **Much simpler setup than other frameworks**: Maestro uses just a single binary and your existing development tools. It comes with preset config and workflow that work out of the box, but can be customized as needed.
