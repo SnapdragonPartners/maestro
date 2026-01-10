@@ -196,3 +196,72 @@ func TestQueueLoadStoriesFromDB_PreservesAllFields(t *testing.T) {
 		t.Errorf("Expected 2 dependencies, got %d", len(story.DependsOn))
 	}
 }
+
+func TestQueueLoadStoriesFromDB_WithDoneStories(t *testing.T) {
+	queue := NewQueue(nil)
+
+	// Load complete story graph including done stories
+	stories := []*persistence.Story{
+		{
+			ID:        "story-done-1",
+			SpecID:    "spec-a",
+			Title:     "Done Story 1",
+			Content:   "Content",
+			Status:    "done",
+			Priority:  1,
+			StoryType: "app",
+			CreatedAt: time.Now(),
+		},
+		{
+			ID:        "story-done-2",
+			SpecID:    "spec-a",
+			Title:     "Done Story 2",
+			Content:   "Content",
+			Status:    "done",
+			Priority:  1,
+			StoryType: "app",
+			CreatedAt: time.Now(),
+		},
+		{
+			ID:        "story-incomplete",
+			SpecID:    "spec-a",
+			Title:     "Incomplete Story",
+			Content:   "Content",
+			Status:    "new",
+			Priority:  1,
+			StoryType: "app",
+			DependsOn: []string{"story-done-1", "story-done-2"},
+			CreatedAt: time.Now(),
+		},
+	}
+
+	loaded := queue.LoadStoriesFromDB(stories)
+
+	if loaded != 3 {
+		t.Errorf("Expected 3 stories loaded, got %d", loaded)
+	}
+
+	// Verify all stories are in the queue
+	allStories := queue.GetAllStories()
+	if len(allStories) != 3 {
+		t.Errorf("Expected 3 total stories in queue, got %d", len(allStories))
+	}
+
+	// Verify completed stories keep their done status (not mapped to pending)
+	done1, exists := queue.GetStory("story-done-1")
+	if !exists {
+		t.Fatal("Expected story-done-1 to be in queue")
+	}
+	if done1.Status != "done" {
+		t.Errorf("Expected completed story to keep status 'done', got '%s'", done1.Status)
+	}
+
+	// Verify the incomplete story is pending (mapped from "new")
+	incomplete, exists := queue.GetStory("story-incomplete")
+	if !exists {
+		t.Fatal("Expected story-incomplete to be in queue")
+	}
+	if incomplete.Status != string(StatusPending) {
+		t.Errorf("Expected incomplete story status 'pending', got '%s'", incomplete.Status)
+	}
+}

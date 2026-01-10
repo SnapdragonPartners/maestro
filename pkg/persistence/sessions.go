@@ -527,21 +527,20 @@ func ResetInFlightStories(db *sql.DB, sessionID string) (int64, error) {
 	return affected, nil
 }
 
-// GetIncompleteStoriesForSession returns all stories that are not yet done or failed.
-// Used by the architect to reload stories into the queue on resume.
+// GetAllStoriesForSession returns all stories for a session including done ones.
+// Used by the architect to reload the complete story graph on resume.
 // Also populates the DependsOn field from the story_dependencies table.
-func GetIncompleteStoriesForSession(db *sql.DB, sessionID string) ([]*Story, error) {
+func GetAllStoriesForSession(db *sql.DB, sessionID string) ([]*Story, error) {
 	rows, err := db.Query(`
 		SELECT id, spec_id, title, content, status, priority, approved_plan,
 		       created_at, started_at, completed_at, assigned_agent,
 		       tokens_used, cost_usd, metadata, story_type
 		FROM stories
 		WHERE session_id = ?
-		  AND status NOT IN ('done', 'failed')
 		ORDER BY priority DESC, created_at ASC
 	`, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query incomplete stories: %w", err)
+		return nil, fmt.Errorf("failed to query stories: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -565,7 +564,7 @@ func GetIncompleteStoriesForSession(db *sql.DB, sessionID string) ([]*Story, err
 		return nil, fmt.Errorf("error iterating stories: %w", err)
 	}
 
-	// Populate DependsOn for all stories in a single query
+	// Populate DependsOn for all stories
 	if len(stories) > 0 {
 		if depErr := populateStoryDependencies(db, sessionID, stories); depErr != nil {
 			return nil, fmt.Errorf("failed to populate dependencies: %w", depErr)
@@ -584,15 +583,12 @@ func populateStoryDependencies(db *sql.DB, sessionID string, stories []*Story) e
 		s.DependsOn = []string{} // Initialize to empty slice
 	}
 
-	// Get all dependencies for incomplete stories in this session.
-	// We query all dependencies for the session's incomplete stories
-	// rather than filtering by specific story IDs to keep the query simple.
+	// Get all dependencies for stories in this session.
 	depRows, err := db.Query(`
 		SELECT sd.story_id, sd.depends_on
 		FROM story_dependencies sd
 		INNER JOIN stories s ON sd.story_id = s.id
 		WHERE s.session_id = ?
-		  AND s.status NOT IN ('done', 'failed')
 	`, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to query dependencies: %w", err)

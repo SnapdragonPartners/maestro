@@ -658,11 +658,11 @@ func (q *Queue) ClearAll() {
 	q.stories = make(map[string]*QueuedStory)
 }
 
-// LoadStoriesFromDB loads incomplete stories from the database into the in-memory queue.
+// LoadStoriesFromDB loads the complete story graph from the database into the in-memory queue.
 // This is used during resume to restore the architect's story state.
-// Stories that are 'done' or 'failed' are not loaded (no work to do).
-// Note: Database status "new" maps to both StatusNew and StatusPending in memory.
-// On resume, we map "new" to StatusPending so GetReadyStories will dispatch them.
+// All stories are loaded (including done ones) so dependency checks work correctly.
+// Database status "new" is mapped to StatusPending so GetReadyStories will dispatch them.
+// Done stories keep their status and won't be re-dispatched.
 func (q *Queue) LoadStoriesFromDB(stories []*persistence.Story) int {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
@@ -674,7 +674,7 @@ func (q *Queue) LoadStoriesFromDB(stories []*persistence.Story) int {
 		qs := NewQueuedStory(story)
 		// Map "new" status from database to pending so stories get dispatched.
 		// Database stores both StatusNew and StatusPending as "new" (see ToDatabaseStatus).
-		// On resume, we want these stories to be ready for dispatch.
+		// Done stories keep their status - they won't be re-dispatched.
 		if qs.Status == persistence.StatusNew {
 			_ = qs.SetStatus(StatusPending)
 		}

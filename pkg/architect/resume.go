@@ -114,15 +114,15 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	}
 	d.contextMutex.Unlock()
 
-	// Restore stories from the database into the queue.
-	// Only incomplete stories (not 'done' or 'failed') are loaded.
-	stories, err := persistence.GetIncompleteStoriesForSession(db, sessionID)
+	// Restore the complete story graph from the database into the queue.
+	// This includes done stories so dependency checks work correctly.
+	stories, err := persistence.GetAllStoriesForSession(db, sessionID)
 	if err != nil {
-		d.logger.Warn("Failed to get incomplete stories for session: %v", err)
+		d.logger.Warn("Failed to get stories for session: %v", err)
 		// Continue without stories - the architect can function without pre-existing stories.
 	} else if len(stories) > 0 {
 		loadedCount := d.queue.LoadStoriesFromDB(stories)
-		d.logger.Info("Loaded %d incomplete stories from database", loadedCount)
+		d.logger.Info("Loaded %d stories from database", loadedCount)
 	}
 
 	d.logger.Info("State restored successfully (state=%s, contexts=%d, stories=%d)",

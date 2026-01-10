@@ -380,11 +380,11 @@ func TestResetInFlightStories(t *testing.T) {
 	}
 }
 
-func TestGetIncompleteStoriesForSession(t *testing.T) {
+func TestGetAllStoriesForSession(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	sessionID := "session-incomplete"
+	sessionID := "session-all"
 
 	// Create session
 	_, err := db.Exec(`
@@ -395,7 +395,7 @@ func TestGetIncompleteStoriesForSession(t *testing.T) {
 		t.Fatalf("Failed to insert session: %v", err)
 	}
 
-	// Add stories
+	// Add stories with various statuses
 	stories := []struct {
 		id       string
 		status   string
@@ -418,68 +418,116 @@ func TestGetIncompleteStoriesForSession(t *testing.T) {
 		}
 	}
 
-	// Get incomplete stories
-	result, err := GetIncompleteStoriesForSession(db, sessionID)
+	// Get all stories
+	result, err := GetAllStoriesForSession(db, sessionID)
 	if err != nil {
-		t.Fatalf("GetIncompleteStoriesForSession failed: %v", err)
+		t.Fatalf("GetAllStoriesForSession failed: %v", err)
 	}
 
-	// Should return new, planning, coding (3 stories) - NOT done or failed
-	if len(result) != 3 {
-		t.Errorf("Expected 3 incomplete stories, got %d", len(result))
+	// Should return ALL 5 stories including done and failed
+	if len(result) != 5 {
+		t.Errorf("Expected 5 stories, got %d", len(result))
 	}
 
-	// Verify done and failed are not included
+	// Verify all statuses are present
+	statusCount := make(map[string]int)
 	for _, story := range result {
-		if story.Status == "done" || story.Status == "failed" {
-			t.Errorf("Story %s with status '%s' should not be included", story.ID, story.Status)
-		}
+		statusCount[story.Status]++
+	}
+	if statusCount["new"] != 1 {
+		t.Errorf("Expected 1 'new' story, got %d", statusCount["new"])
+	}
+	if statusCount["done"] != 1 {
+		t.Errorf("Expected 1 'done' story, got %d", statusCount["done"])
+	}
+	if statusCount["failed"] != 1 {
+		t.Errorf("Expected 1 'failed' story, got %d", statusCount["failed"])
 	}
 }
 
-func TestGetIncompleteStoriesForSession_Empty(t *testing.T) {
+func TestGetAllStoriesForSession_WithDependencies(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	sessionID := "session-no-incomplete"
+	sessionID := "session-deps"
 
 	// Create session
 	_, err := db.Exec(`
-		INSERT INTO sessions (session_id, status, started_at, ended_at)
-		VALUES (?, ?, ?, ?)
-	`, sessionID, SessionStatusShutdown, time.Now(), time.Now())
+		INSERT INTO sessions (session_id, status, started_at)
+		VALUES (?, ?, ?)
+	`, sessionID, SessionStatusShutdown, time.Now())
 	if err != nil {
 		t.Fatalf("Failed to insert session: %v", err)
 	}
 
-	// Add only done stories
-	_, err = db.Exec(`
-		INSERT INTO stories (id, session_id, spec_id, title, content, status, story_type)
-		VALUES (?, ?, 'spec-1', 'Title', 'Content', 'done', 'app')
-	`, "story-done", sessionID)
-	if err != nil {
-		t.Fatalf("Failed to insert story: %v", err)
+	// Create stories with dependencies
+	stories := []struct {
+		id     string
+		status string
+	}{
+		{"story-done-1", "done"},
+		{"story-done-2", "done"},
+		{"story-incomplete-1", "new"},
 	}
 
-	// Get incomplete stories
-	result, err := GetIncompleteStoriesForSession(db, sessionID)
-	if err != nil {
-		t.Fatalf("GetIncompleteStoriesForSession failed: %v", err)
+	for _, s := range stories {
+		_, insertErr := db.Exec(`
+			INSERT INTO stories (id, session_id, spec_id, title, content, status, story_type)
+			VALUES (?, ?, 'spec-1', 'Title', 'Content', ?, 'app')
+		`, s.id, sessionID, s.status)
+		if insertErr != nil {
+			t.Fatalf("Failed to insert story %s: %v", s.id, insertErr)
+		}
 	}
 
-	if len(result) != 0 {
-		t.Errorf("Expected 0 incomplete stories, got %d", len(result))
+	// Create dependencies: incomplete-1 depends on done-1 and done-2
+	deps := []struct {
+		storyID   string
+		dependsOn string
+	}{
+		{"story-incomplete-1", "story-done-1"},
+		{"story-incomplete-1", "story-done-2"},
+	}
+
+	for _, d := range deps {
+		_, depErr := db.Exec(`
+			INSERT INTO story_dependencies (story_id, depends_on)
+			VALUES (?, ?)
+		`, d.storyID, d.dependsOn)
+		if depErr != nil {
+			t.Fatalf("Failed to insert dependency: %v", depErr)
+		}
+	}
+
+	// Get all stories
+	result, err := GetAllStoriesForSession(db, sessionID)
+	if err != nil {
+		t.Fatalf("GetAllStoriesForSession failed: %v", err)
+	}
+
+	// Should return all 3 stories
+	if len(result) != 3 {
+		t.Errorf("Expected 3 stories, got %d", len(result))
+	}
+
+	// Find incomplete story and verify dependencies are populated
+	for _, story := range result {
+		if story.ID == "story-incomplete-1" {
+			if len(story.DependsOn) != 2 {
+				t.Errorf("Expected 2 dependencies for story-incomplete-1, got %d", len(story.DependsOn))
+			}
+		}
 	}
 }
 
-func TestGetIncompleteStoriesForSession_NonExistentSession(t *testing.T) {
+func TestGetAllStoriesForSession_Empty(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	// Get incomplete stories for non-existent session
-	result, err := GetIncompleteStoriesForSession(db, "non-existent")
+	// Get stories for non-existent session
+	result, err := GetAllStoriesForSession(db, "non-existent")
 	if err != nil {
-		t.Fatalf("GetIncompleteStoriesForSession failed: %v", err)
+		t.Fatalf("GetAllStoriesForSession failed: %v", err)
 	}
 
 	if len(result) != 0 {
