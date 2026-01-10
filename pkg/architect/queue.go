@@ -658,6 +658,23 @@ func (q *Queue) ClearAll() {
 	q.stories = make(map[string]*QueuedStory)
 }
 
+// LoadStoriesFromDB loads incomplete stories from the database into the in-memory queue.
+// This is used during resume to restore the architect's story state.
+// Stories that are 'done' or 'failed' are not loaded (no work to do).
+func (q *Queue) LoadStoriesFromDB(stories []*persistence.Story) int {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	// Clear existing stories before loading
+	q.stories = make(map[string]*QueuedStory)
+
+	for _, story := range stories {
+		q.stories[story.ID] = NewQueuedStory(story)
+	}
+
+	return len(q.stories)
+}
+
 // FindStoryByTitle finds a story by its title.
 // Returns nil if no story with that title exists.
 func (q *Queue) FindStoryByTitle(title string) *QueuedStory {

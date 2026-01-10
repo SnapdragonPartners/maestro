@@ -117,6 +117,66 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	return nil
 }
 
+// Checkpoint sends the PM's current state to the persistence channel for saving.
+// This is a fire-and-forget operation used for crash recovery checkpoints.
+// It should be called when a spec is submitted (completion boundary).
+func (d *Driver) Checkpoint(sessionID string) {
+	if d.persistenceChannel == nil {
+		d.logger.Debug("Skipping checkpoint: persistence channel not available")
+		return
+	}
+
+	// Get current state from state machine.
+	currentState := d.GetCurrentState()
+
+	// Serialize spec content from state data.
+	var specContent *string
+	if spec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, ""); spec != "" {
+		specContent = &spec
+	}
+
+	// Serialize bootstrap params from state data.
+	bootstrapParamsJSON := d.collectBootstrapParamsJSON()
+
+	// Build PM state
+	state := &persistence.PMState{
+		SessionID:           sessionID,
+		State:               string(currentState),
+		SpecContent:         specContent,
+		BootstrapParamsJSON: bootstrapParamsJSON,
+	}
+
+	// Build context if available
+	var context *persistence.AgentContext
+	if d.contextManager != nil {
+		contextData, err := d.contextManager.Serialize()
+		if err != nil {
+			d.logger.Warn("Failed to serialize context manager during checkpoint: %v", err)
+		} else {
+			context = &persistence.AgentContext{
+				SessionID:    sessionID,
+				AgentID:      d.GetAgentID(),
+				ContextType:  "main",
+				MessagesJSON: string(contextData),
+			}
+		}
+	}
+
+	// Send checkpoint request (fire-and-forget)
+	select {
+	case d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpCheckpointPMState,
+		Data: &persistence.CheckpointPMStateRequest{
+			State:   state,
+			Context: context,
+		},
+	}:
+		d.logger.Debug("Checkpoint request sent (state=%s)", currentState)
+	default:
+		d.logger.Warn("Persistence channel full, checkpoint skipped")
+	}
+}
+
 // collectBootstrapParamsJSON collects bootstrap-related state data and returns it as JSON.
 // Returns nil if no bootstrap params are present.
 func (d *Driver) collectBootstrapParamsJSON() *string {

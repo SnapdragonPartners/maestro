@@ -595,6 +595,11 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	d.SetStateData(StateKeyWorkAccepted, true)
 	d.SetStateData(StateKeyAcceptedStoryID, storyID)
 	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
+
+	// 6. Checkpoint state for crash recovery (story completion is a stable boundary)
+	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
+		d.Checkpoint(cfg.SessionID)
+	}
 }
 
 // checkSpecCompletion checks if a story's spec is complete and triggers maintenance if needed.

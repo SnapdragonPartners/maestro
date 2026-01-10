@@ -161,15 +161,19 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 // ResumeFlow handles resuming from a previous shutdown session.
 // It restores agent state from the database and continues execution.
 type ResumeFlow struct {
-	sessionID string
-	webUI     bool
+	sessionID    string
+	webUI        bool
+	restoreState bool // true for shutdown sessions (full restore), false for crashed (checkpoint only)
 }
 
-// NewResumeFlow creates a new resume flow.
-func NewResumeFlow(sessionID string, webUI bool) *ResumeFlow {
+// NewResumeFlow creates a new resume flow. restoreState controls whether coder state is restored:
+// - true (shutdown): Full restoration including coders
+// - false (crashed): Only architect/PM restored from checkpoint, coders start fresh.
+func NewResumeFlow(sessionID string, webUI, restoreState bool) *ResumeFlow {
 	return &ResumeFlow{
-		sessionID: sessionID,
-		webUI:     webUI,
+		sessionID:    sessionID,
+		webUI:        webUI,
+		restoreState: restoreState,
 	}
 }
 
@@ -246,7 +250,9 @@ func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		k.Logger.Info("✅ Created and registered PM agent with restored state")
 	}
 
-	// Create and register coder agents based on config, then restore state
+	// Create and register coder agents based on config
+	// Only restore state for shutdown sessions (f.restoreState=true)
+	// For crashed sessions, coders start fresh (stories already reset to 'new')
 	numCoders := k.Config.Agents.MaxCoders
 	for i := 0; i < numCoders; i++ {
 		coderID := fmt.Sprintf("coder-%03d", i+1)
@@ -254,33 +260,41 @@ func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		if coderErr != nil {
 			return fmt.Errorf("failed to create coder %s: %w", coderID, coderErr)
 		}
-		// Restore coder state
-		if restorer, ok := coderAgent.(StateRestorer); ok {
-			if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
-				k.Logger.Warn("⚠️ Failed to restore state for %s: %v", coderID, restoreErr)
-			} else {
-				k.Logger.Info("✅ Restored state for %s from session", coderID)
+		// Only restore coder state for shutdown sessions
+		if f.restoreState {
+			if restorer, ok := coderAgent.(StateRestorer); ok {
+				if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
+					k.Logger.Warn("⚠️ Failed to restore state for %s: %v", coderID, restoreErr)
+				} else {
+					k.Logger.Info("✅ Restored state for %s from session", coderID)
+				}
 			}
 		}
 		supervisor.RegisterAgent(ctx, coderID, string(agent.TypeCoder), coderAgent)
 	}
 
-	// Create and register dedicated hotfix coder, then restore state
+	// Create and register dedicated hotfix coder
 	hotfixCoder, hotfixErr := supervisor.GetFactory().NewAgent(ctx, "hotfix-001", string(agent.TypeCoder))
 	if hotfixErr != nil {
 		return fmt.Errorf("failed to create hotfix coder: %w", hotfixErr)
 	}
-	// Restore hotfix coder state
-	if restorer, ok := hotfixCoder.(StateRestorer); ok {
-		if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
-			k.Logger.Warn("⚠️ Failed to restore state for hotfix-001: %v", restoreErr)
-		} else {
-			k.Logger.Info("✅ Restored state for hotfix-001 from session")
+	// Only restore hotfix coder state for shutdown sessions
+	if f.restoreState {
+		if restorer, ok := hotfixCoder.(StateRestorer); ok {
+			if restoreErr := restorer.RestoreState(ctx, k.Database, f.sessionID); restoreErr != nil {
+				k.Logger.Warn("⚠️ Failed to restore state for hotfix-001: %v", restoreErr)
+			} else {
+				k.Logger.Info("✅ Restored state for hotfix-001 from session")
+			}
 		}
 	}
 	supervisor.RegisterAgent(ctx, "hotfix-001", string(agent.TypeCoder), hotfixCoder)
 
-	k.Logger.Info("✅ Created and registered architect, %d coders, and hotfix-001 with restored state", numCoders)
+	if f.restoreState {
+		k.Logger.Info("✅ Created and registered architect, %d coders, and hotfix-001 with restored state", numCoders)
+	} else {
+		k.Logger.Info("✅ Created and registered architect, %d coders, and hotfix-001 (coders starting fresh after crash)", numCoders)
+	}
 
 	// Enter main event loop
 	k.Logger.Info("🚀 Resumed orchestrator running - agents continuing from saved state")
@@ -300,6 +314,11 @@ type StateRestorer interface {
 	RestoreState(ctx context.Context, db *sql.DB, sessionID string) error
 }
 
+// StateSerializer interface for agents that can serialize their state for resume.
+type StateSerializer interface {
+	SerializeState(ctx context.Context, db *sql.DB, sessionID string) error
+}
+
 // performGracefulShutdown executes the graceful shutdown sequence for resumable sessions.
 // This is called when the context is cancelled (Ctrl+C) to save agent state for later resumption.
 //
@@ -307,27 +326,40 @@ type StateRestorer interface {
 func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 	shutdownTimeout := 30 * time.Second
 
-	// 1. Wait for all agents to complete their current work and serialize state
+	// 1. Wait for all agents to complete their current work
 	if err := sup.WaitForAgentsShutdown(shutdownTimeout); err != nil {
 		k.Logger.Warn("⚠️ Some agents did not complete gracefully: %v", err)
 	}
 
-	// 2. Drain the persistence queue to ensure all state is written to database
+	// 2. Serialize state for all agents that support it
 	// We use a fresh context since the main context is cancelled
+	serializeCtx := context.Background()
+	sessionID := k.Config.SessionID
+	agents, _ := sup.GetAgents()
+	for agentID, agent := range agents {
+		if serializer, ok := agent.(StateSerializer); ok {
+			k.Logger.Info("💾 Serializing state for %s", agentID)
+			if err := serializer.SerializeState(serializeCtx, k.Database, sessionID); err != nil {
+				k.Logger.Warn("⚠️ Failed to serialize state for %s: %v", agentID, err)
+			}
+		}
+	}
+
+	// 3. Drain the persistence queue to ensure all state is written to database
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	if err := k.DrainPersistenceQueue(drainCtx); err != nil {
 		k.Logger.Warn("⚠️ Persistence queue drain incomplete: %v", err)
 	}
 	drainCancel()
 
-	// 3. Update session status to 'shutdown' (makes it resumable)
+	// 4. Update session status to 'shutdown' (makes it resumable)
 	if err := persistence.UpdateSessionStatus(k.Database, k.Config.SessionID, persistence.SessionStatusShutdown); err != nil {
 		k.Logger.Error("❌ Failed to update session status: %v", err)
 	} else {
 		k.Logger.Info("✅ Session marked as 'shutdown' - resumable")
 	}
 
-	// 4. Log resume instructions for the user
+	// 5. Log resume instructions for the user
 	fmt.Println()
 	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                    📴 Graceful Shutdown Complete                   ║")

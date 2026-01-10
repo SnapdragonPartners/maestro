@@ -97,8 +97,6 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	}
 
 	d.contextMutex.Lock()
-	defer d.contextMutex.Unlock()
-
 	for i := range contexts {
 		agentID := contexts[i].ContextType
 		if agentID == "main" {
@@ -107,14 +105,76 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 		}
 
 		cm := contextmgr.NewContextManager()
-		if err := cm.Deserialize([]byte(contexts[i].MessagesJSON)); err != nil {
-			d.logger.Warn("Failed to deserialize context for agent %s: %v", agentID, err)
+		if deserializeErr := cm.Deserialize([]byte(contexts[i].MessagesJSON)); deserializeErr != nil {
+			d.logger.Warn("Failed to deserialize context for agent %s: %v", agentID, deserializeErr)
 			continue
 		}
 
 		d.agentContexts[agentID] = cm
 	}
+	d.contextMutex.Unlock()
 
-	d.logger.Info("State restored successfully (state=%s, contexts=%d)", state.State, len(d.agentContexts))
+	// Restore stories from the database into the queue.
+	// Only incomplete stories (not 'done' or 'failed') are loaded.
+	stories, err := persistence.GetIncompleteStoriesForSession(db, sessionID)
+	if err != nil {
+		d.logger.Warn("Failed to get incomplete stories for session: %v", err)
+		// Continue without stories - the architect can function without pre-existing stories.
+	} else if len(stories) > 0 {
+		loadedCount := d.queue.LoadStoriesFromDB(stories)
+		d.logger.Info("Loaded %d incomplete stories from database", loadedCount)
+	}
+
+	d.logger.Info("State restored successfully (state=%s, contexts=%d, stories=%d)",
+		state.State, len(d.agentContexts), len(stories))
 	return nil
+}
+
+// Checkpoint sends the architect's current state to the persistence channel for saving.
+// This is a fire-and-forget operation used for crash recovery checkpoints.
+// It should be called when a story is marked done (completion boundary).
+func (d *Driver) Checkpoint(sessionID string) {
+	if d.persistenceChannel == nil {
+		d.logger.Debug("Skipping checkpoint: persistence channel not available")
+		return
+	}
+
+	// Build architect state
+	currentState := d.GetCurrentState()
+	state := &persistence.ArchitectState{
+		SessionID: sessionID,
+		State:     string(currentState),
+	}
+
+	// Build per-agent contexts
+	d.contextMutex.RLock()
+	contexts := make([]*persistence.AgentContext, 0, len(d.agentContexts))
+	for agentID, cm := range d.agentContexts {
+		contextData, err := cm.Serialize()
+		if err != nil {
+			d.logger.Warn("Failed to serialize context for agent %s during checkpoint: %v", agentID, err)
+			continue
+		}
+		contexts = append(contexts, &persistence.AgentContext{
+			SessionID:    sessionID,
+			AgentID:      "architect",
+			ContextType:  agentID,
+			MessagesJSON: string(contextData),
+		})
+	}
+	d.contextMutex.RUnlock()
+
+	// Send checkpoint request (fire-and-forget)
+	select {
+	case d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpCheckpointArchitectState,
+		Data: &persistence.CheckpointArchitectStateRequest{
+			State:    state,
+			Contexts: contexts,
+		},
+	}:
+		d.logger.Debug("Checkpoint request sent (state=%s, contexts=%d)", currentState, len(contexts))
+	default:
+		d.logger.Warn("Persistence channel full, checkpoint skipped")
+	}
 }
