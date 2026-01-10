@@ -21,6 +21,7 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // URL protocol constants.
@@ -336,8 +337,8 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 	serializeCtx := context.Background()
 	sessionID := k.Config.SessionID
 	agents, _ := sup.GetAgents()
-	for agentID, agent := range agents {
-		if serializer, ok := agent.(StateSerializer); ok {
+	for agentID, agentInstance := range agents {
+		if serializer, ok := utils.SafeAssert[StateSerializer](agentInstance); ok {
 			k.Logger.Info("💾 Serializing state for %s", agentID)
 			if err := serializer.SerializeState(serializeCtx, k.Database, sessionID); err != nil {
 				k.Logger.Warn("⚠️ Failed to serialize state for %s: %v", agentID, err)

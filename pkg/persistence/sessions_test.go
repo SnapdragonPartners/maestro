@@ -64,6 +64,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS story_dependencies (
+		story_id TEXT NOT NULL,
+		depends_on TEXT NOT NULL,
+		PRIMARY KEY (story_id, depends_on)
+	);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -307,17 +313,19 @@ func TestResetInFlightStories(t *testing.T) {
 		t.Fatalf("Failed to insert session: %v", err)
 	}
 
-	// Add stories with various statuses
+	// Add stories with various statuses including 'dispatched'
 	stories := []struct {
 		id     string
 		status string
 		agent  string
 	}{
 		{"story-new", "new", ""},
-		{"story-planning", "planning", "coder-001"},
-		{"story-coding", "coding", "coder-002"},
-		{"story-review", "review", "coder-001"},
-		{"story-done", "done", "coder-001"},
+		{"story-dispatched", "dispatched", ""},        // dispatched but not yet picked up
+		{"story-planning", "planning", "coder-001"},   // picked up, planning
+		{"story-coding", "coding", "coder-002"},       // implementing
+		{"story-review", "review", "coder-001"},       // submitted for review
+		{"story-done", "done", "coder-001"},           // completed
+		{"story-in-progress", "in_progress", "coder"}, // legacy status
 	}
 
 	for _, s := range stories {
@@ -336,9 +344,9 @@ func TestResetInFlightStories(t *testing.T) {
 		t.Fatalf("ResetInFlightStories failed: %v", resetErr)
 	}
 
-	// Should reset planning, coding, review (3 stories)
-	if count != 3 {
-		t.Errorf("Expected 3 stories reset, got %d", count)
+	// Should reset dispatched, planning, coding, review, in_progress (5 stories)
+	if count != 5 {
+		t.Errorf("Expected 5 stories reset, got %d", count)
 	}
 
 	// Verify statuses
@@ -353,11 +361,13 @@ func TestResetInFlightStories(t *testing.T) {
 		}
 	}
 
-	verifyStatus("story-new", "new")      // unchanged
-	verifyStatus("story-planning", "new") // reset
-	verifyStatus("story-coding", "new")   // reset
-	verifyStatus("story-review", "new")   // reset
-	verifyStatus("story-done", "done")    // unchanged (completed)
+	verifyStatus("story-new", "new")         // unchanged
+	verifyStatus("story-dispatched", "new")  // reset
+	verifyStatus("story-planning", "new")    // reset
+	verifyStatus("story-coding", "new")      // reset
+	verifyStatus("story-review", "new")      // reset
+	verifyStatus("story-done", "done")       // unchanged (completed)
+	verifyStatus("story-in-progress", "new") // reset (legacy status)
 
 	// Verify assigned agents cleared
 	var assignedAgent sql.NullString

@@ -55,8 +55,10 @@ func TestQueueLoadStoriesFromDB(t *testing.T) {
 	if storyA.Title != "Story A" {
 		t.Errorf("Expected title 'Story A', got '%s'", storyA.Title)
 	}
-	if storyA.Status != "new" {
-		t.Errorf("Expected status 'new', got '%s'", storyA.Status)
+	// Database "new" status should be mapped to "pending" so GetReadyStories will dispatch.
+	// This is intentional - see LoadStoriesFromDB documentation.
+	if storyA.Status != string(StatusPending) {
+		t.Errorf("Expected status 'pending' (mapped from db 'new'), got '%s'", storyA.Status)
 	}
 }
 

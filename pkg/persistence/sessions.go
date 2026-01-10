@@ -505,14 +505,19 @@ func CleanupOldSessionData(db *sql.DB, keepSessionID string) error {
 // This is used during crash recovery to restart stories that were mid-execution.
 // Returns the number of stories that were reset.
 func ResetInFlightStories(db *sql.DB, sessionID string) (int64, error) {
-	// Reset planning, in_progress (coding), and review statuses to 'new'
+	// Reset dispatched, planning, coding, in_progress, and review statuses to 'new'.
+	// 'dispatched' = sent to work queue, waiting for coder pickup
+	// 'planning' = coder picked up story, planning work
+	// 'coding' = coder is implementing
+	// 'in_progress' = legacy alias for coding
+	// 'review' = coder submitted for architect review
 	result, err := db.Exec(`
 		UPDATE stories
 		SET status = 'new',
 		    assigned_agent = NULL,
 		    started_at = NULL
 		WHERE session_id = ?
-		  AND status IN ('planning', 'coding', 'review', 'in_progress')
+		  AND status IN ('dispatched', 'planning', 'coding', 'review', 'in_progress')
 	`, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to reset in-flight stories: %w", err)
@@ -524,6 +529,7 @@ func ResetInFlightStories(db *sql.DB, sessionID string) (int64, error) {
 
 // GetIncompleteStoriesForSession returns all stories that are not yet done or failed.
 // Used by the architect to reload stories into the queue on resume.
+// Also populates the DependsOn field from the story_dependencies table.
 func GetIncompleteStoriesForSession(db *sql.DB, sessionID string) ([]*Story, error) {
 	rows, err := db.Query(`
 		SELECT id, spec_id, title, content, status, priority, approved_plan,
@@ -542,15 +548,15 @@ func GetIncompleteStoriesForSession(db *sql.DB, sessionID string) ([]*Story, err
 	var stories []*Story
 	for rows.Next() {
 		story := &Story{}
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&story.ID, &story.SpecID, &story.Title, &story.Content,
 			&story.Status, &story.Priority, &story.ApprovedPlan,
 			&story.CreatedAt, &story.StartedAt, &story.CompletedAt,
 			&story.AssignedAgent, &story.TokensUsed, &story.CostUSD,
 			&story.Metadata, &story.StoryType,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan story: %w", err)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan story: %w", scanErr)
 		}
 		stories = append(stories, story)
 	}
@@ -559,7 +565,54 @@ func GetIncompleteStoriesForSession(db *sql.DB, sessionID string) ([]*Story, err
 		return nil, fmt.Errorf("error iterating stories: %w", err)
 	}
 
+	// Populate DependsOn for all stories in a single query
+	if len(stories) > 0 {
+		if depErr := populateStoryDependencies(db, sessionID, stories); depErr != nil {
+			return nil, fmt.Errorf("failed to populate dependencies: %w", depErr)
+		}
+	}
+
 	return stories, nil
+}
+
+// populateStoryDependencies fetches and populates DependsOn for a slice of stories.
+func populateStoryDependencies(db *sql.DB, sessionID string, stories []*Story) error {
+	// Build a map for quick lookup
+	storyMap := make(map[string]*Story, len(stories))
+	for _, s := range stories {
+		storyMap[s.ID] = s
+		s.DependsOn = []string{} // Initialize to empty slice
+	}
+
+	// Get all dependencies for incomplete stories in this session.
+	// We query all dependencies for the session's incomplete stories
+	// rather than filtering by specific story IDs to keep the query simple.
+	depRows, err := db.Query(`
+		SELECT sd.story_id, sd.depends_on
+		FROM story_dependencies sd
+		INNER JOIN stories s ON sd.story_id = s.id
+		WHERE s.session_id = ?
+		  AND s.status NOT IN ('done', 'failed')
+	`, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to query dependencies: %w", err)
+	}
+	defer func() { _ = depRows.Close() }()
+
+	for depRows.Next() {
+		var storyID, dependsOn string
+		if scanErr := depRows.Scan(&storyID, &dependsOn); scanErr != nil {
+			return fmt.Errorf("failed to scan dependency: %w", scanErr)
+		}
+		if story, exists := storyMap[storyID]; exists {
+			story.DependsOn = append(story.DependsOn, dependsOn)
+		}
+	}
+
+	if err := depRows.Err(); err != nil {
+		return fmt.Errorf("error iterating dependencies: %w", err)
+	}
+	return nil
 }
 
 // ConfigSnapshotToJSON converts a config struct to JSON for storage.
