@@ -1896,12 +1896,18 @@ type AvailableProviders struct {
 	Google    bool
 }
 
-// getAvailableProviders checks environment variables to determine which LLM providers are available.
+// getAvailableProviders checks for API keys in both the encrypted secrets file
+// and environment variables to determine which LLM providers are available.
 func getAvailableProviders() AvailableProviders {
+	// Use GetSecret which checks decrypted secrets first, then env vars
+	anthropicKey, _ := GetSecret(EnvAnthropicAPIKey)
+	openaiKey, _ := GetSecret(EnvOpenAIAPIKey)
+	googleKey, _ := GetSecret(EnvGoogleAPIKey)
+
 	return AvailableProviders{
-		Anthropic: os.Getenv(EnvAnthropicAPIKey) != "",
-		OpenAI:    os.Getenv(EnvOpenAIAPIKey) != "",
-		Google:    os.Getenv(EnvGoogleAPIKey) != "",
+		Anthropic: anthropicKey != "",
+		OpenAI:    openaiKey != "",
+		Google:    googleKey != "",
 	}
 }
 
