@@ -22,6 +22,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/utils"
 	"orchestrator/pkg/webui"
 )
 
@@ -519,7 +520,7 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 		}
 
 	case persistence.OpCheckpointArchitectState:
-		if checkpointReq, ok := req.Data.(*persistence.CheckpointArchitectStateRequest); ok {
+		if checkpointReq, ok := utils.SafeAssert[*persistence.CheckpointArchitectStateRequest](req.Data); ok {
 			// Save architect state
 			if err := persistence.SaveArchitectState(k.Database, checkpointReq.State); err != nil {
 				k.Logger.Error("Failed to checkpoint architect state: %v", err)
@@ -531,10 +532,12 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 				}
 			}
 			k.Logger.Debug("Checkpointed architect state (contexts=%d)", len(checkpointReq.Contexts))
+		} else {
+			k.Logger.Error("Invalid data type for OpCheckpointArchitectState")
 		}
 
 	case persistence.OpCheckpointPMState:
-		if checkpointReq, ok := req.Data.(*persistence.CheckpointPMStateRequest); ok {
+		if checkpointReq, ok := utils.SafeAssert[*persistence.CheckpointPMStateRequest](req.Data); ok {
 			// Save PM state
 			if err := persistence.SavePMState(k.Database, checkpointReq.State); err != nil {
 				k.Logger.Error("Failed to checkpoint PM state: %v", err)
@@ -546,6 +549,8 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 				}
 			}
 			k.Logger.Debug("Checkpointed PM state")
+		} else {
+			k.Logger.Error("Invalid data type for OpCheckpointPMState")
 		}
 
 	default:

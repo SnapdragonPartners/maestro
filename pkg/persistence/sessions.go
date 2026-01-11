@@ -222,7 +222,13 @@ func GetMostRecentResumableSession(db *sql.DB) (*ResumableSessionInfo, error) {
 		return nil, fmt.Errorf("failed to count stories for session %s: %w", session.SessionID, err)
 	}
 
-	// Only return if there are incomplete stories
+	// Only return if there are incomplete stories.
+	// NOTE: We intentionally only check the most recent session, not older ones.
+	// If the newest session has no incomplete work, we return nil rather than
+	// searching for an older session with work remaining. This is because:
+	// 1. The filesystem may have changed since older sessions ran
+	// 2. Older "shutdown" sessions would need crash recovery semantics (can't trust state)
+	// 3. Users can explicitly specify a session ID if they need to resume older work
 	if incompleteCount == 0 {
 		return nil, nil
 	}
