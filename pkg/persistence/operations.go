@@ -60,6 +60,10 @@ const (
 	OpRetrieveKnowledgePack  = "retrieve_knowledge_pack"
 	OpCheckKnowledgeModified = "check_knowledge_modified"
 	OpRebuildKnowledgeIndex  = "rebuild_knowledge_index"
+
+	// Agent state checkpoint operations (for resume support).
+	OpCheckpointArchitectState = "checkpoint_architect_state"
+	OpCheckpointPMState        = "checkpoint_pm_state"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -114,6 +118,18 @@ type CheckKnowledgeModifiedRequest struct {
 type RebuildKnowledgeIndexRequest struct {
 	DotPath   string `json:"dot_path"`   // Path to knowledge.dot file
 	SessionID string `json:"session_id"` // Session ID for isolation
+}
+
+// CheckpointArchitectStateRequest contains all data needed to checkpoint architect state.
+type CheckpointArchitectStateRequest struct {
+	State    *ArchitectState // Main architect state
+	Contexts []*AgentContext // Per-agent conversation contexts
+}
+
+// CheckpointPMStateRequest contains all data needed to checkpoint PM state.
+type CheckpointPMStateRequest struct {
+	State   *PMState      // Main PM state
+	Context *AgentContext // PM's conversation context (single 'main' context)
 }
 
 // DatabaseOperations provides methods for database operations.

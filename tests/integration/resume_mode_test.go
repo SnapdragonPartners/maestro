@@ -61,7 +61,37 @@ func TestResumeModeSessionLifecycle(t *testing.T) {
 		t.Logf("✅ Created session with status: %s", session.Status)
 	})
 
-	// Test 2: Update to shutdown status (makes it resumable)
+	// Test 2: Add an incomplete story (required for resumable session)
+	t.Run("add_story", func(t *testing.T) {
+		ops := persistence.NewDatabaseOperations(db, sessionID)
+		// First create a spec (required for foreign key)
+		err := ops.UpsertSpec(&persistence.Spec{
+			ID:      "spec-001",
+			Content: "Test spec content",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create spec: %v", err)
+		}
+		// Now create the story
+		err = ops.BatchUpsertStoriesWithDependencies(&persistence.BatchUpsertStoriesWithDependenciesRequest{
+			Stories: []*persistence.Story{
+				{
+					ID:        "story-001",
+					SpecID:    "spec-001",
+					Title:     "Test Story",
+					Content:   "Test content",
+					Status:    "new",
+					StoryType: "app",
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Failed to create story: %v", err)
+		}
+		t.Logf("✅ Created incomplete story for session")
+	})
+
+	// Test 3: Update to shutdown status (makes it resumable)
 	t.Run("shutdown_session", func(t *testing.T) {
 		err := persistence.UpdateSessionStatus(db, sessionID, persistence.SessionStatusShutdown)
 		if err != nil {
@@ -90,10 +120,10 @@ func TestResumeModeSessionLifecycle(t *testing.T) {
 		if session == nil {
 			t.Fatal("Expected to find resumable session, got nil")
 		}
-		if session.SessionID != sessionID {
-			t.Errorf("Expected session ID '%s', got '%s'", sessionID, session.SessionID)
+		if session.Session.SessionID != sessionID {
+			t.Errorf("Expected session ID '%s', got '%s'", sessionID, session.Session.SessionID)
 		}
-		t.Logf("✅ Found resumable session: %s", session.SessionID)
+		t.Logf("✅ Found resumable session: %s", session.Session.SessionID)
 	})
 
 	// Test 4: Resume (set back to active)
@@ -113,16 +143,24 @@ func TestResumeModeSessionLifecycle(t *testing.T) {
 		t.Logf("✅ Session resumed with status: %s", session.Status)
 	})
 
-	// Test 5: No resumable session when active
-	t.Run("no_resumable_when_active", func(t *testing.T) {
+	// Test 5: No resumable session when completed
+	// Note: Active sessions ARE now resumable (treated as crashed)
+	// Only 'completed' sessions are not resumable
+	t.Run("no_resumable_when_completed", func(t *testing.T) {
+		// Mark session as completed (all work done, not resumable)
+		err := persistence.UpdateSessionStatus(db, sessionID, persistence.SessionStatusCompleted)
+		if err != nil {
+			t.Fatalf("Failed to update session to completed: %v", err)
+		}
+
 		session, err := persistence.GetMostRecentResumableSession(db)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		if session != nil {
-			t.Errorf("Expected no resumable session, got: %s", session.SessionID)
+			t.Errorf("Expected no resumable session, got: %s", session.Session.SessionID)
 		}
-		t.Logf("✅ Correctly found no resumable session when session is active")
+		t.Logf("✅ Correctly found no resumable session when session is completed")
 	})
 }
 
@@ -155,7 +193,7 @@ func TestResumeModeNoSession(t *testing.T) {
 		t.Fatalf("Unexpected error when no session exists: %v", err)
 	}
 	if session != nil {
-		t.Errorf("Expected nil session, got: %s", session.SessionID)
+		t.Errorf("Expected nil session, got: %s", session.Session.SessionID)
 	}
 	t.Logf("✅ Correctly returns nil when no resumable session exists")
 }

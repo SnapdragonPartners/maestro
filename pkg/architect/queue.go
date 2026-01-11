@@ -658,6 +658,32 @@ func (q *Queue) ClearAll() {
 	q.stories = make(map[string]*QueuedStory)
 }
 
+// LoadStoriesFromDB loads the complete story graph from the database into the in-memory queue.
+// This is used during resume to restore the architect's story state.
+// All stories are loaded (including done ones) so dependency checks work correctly.
+// Database status "new" is mapped to StatusPending so GetReadyStories will dispatch them.
+// Done stories keep their status and won't be re-dispatched.
+func (q *Queue) LoadStoriesFromDB(stories []*persistence.Story) int {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	// Clear existing stories before loading
+	q.stories = make(map[string]*QueuedStory)
+
+	for _, story := range stories {
+		qs := NewQueuedStory(story)
+		// Map "new" status from database to pending so stories get dispatched.
+		// Database stores both StatusNew and StatusPending as "new" (see ToDatabaseStatus).
+		// Done stories keep their status - they won't be re-dispatched.
+		if qs.Status == persistence.StatusNew {
+			_ = qs.SetStatus(StatusPending)
+		}
+		q.stories[story.ID] = qs
+	}
+
+	return len(q.stories)
+}
+
 // FindStoryByTitle finds a story by its title.
 // Returns nil if no story with that title exists.
 func (q *Queue) FindStoryByTitle(title string) *QueuedStory {

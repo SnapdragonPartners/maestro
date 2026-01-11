@@ -330,33 +330,48 @@ func runResumeMode(projectDir string, noWebUI bool) error {
 	}
 
 	// Display resume information
+	sessionInfo := session.Session
 	fmt.Println()
 	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                    🔄 Resuming Previous Session                    ║")
 	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Session ID: %-54s ║\n", session.SessionID)
-	fmt.Printf("║  Started:    %-54s ║\n", session.StartedAt)
+	fmt.Printf("║  Session ID: %-54s ║\n", sessionInfo.SessionID)
+	fmt.Printf("║  Status:     %-54s ║\n", sessionInfo.Status)
+	fmt.Printf("║  Stories:    %-54s ║\n", fmt.Sprintf("%d incomplete, %d done", session.IncompleteStories, session.DoneStories))
 	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
+	// For crashed sessions, reset in-flight stories to 'new'
+	if sessionInfo.Status == persistence.SessionStatusCrashed {
+		resetCount, resetErr := persistence.ResetInFlightStories(db, sessionInfo.SessionID)
+		if resetErr != nil {
+			return fmt.Errorf("failed to reset in-flight stories: %w", resetErr)
+		}
+		if resetCount > 0 {
+			logger.Info("Reset %d in-flight stories to 'new' for crash recovery", resetCount)
+		}
+	}
+
 	// Restore session ID in config (this is the key - we reuse the session ID)
-	if err := config.SetSessionID(session.SessionID); err != nil {
+	if err := config.SetSessionID(sessionInfo.SessionID); err != nil {
 		return fmt.Errorf("failed to restore session ID: %w", err)
 	}
 
 	// Update session status to 'active' to indicate we're running
-	if err := persistence.UpdateSessionStatus(db, session.SessionID, persistence.SessionStatusActive); err != nil {
+	if err := persistence.UpdateSessionStatus(db, sessionInfo.SessionID, persistence.SessionStatusActive); err != nil {
 		return fmt.Errorf("failed to update session status: %w", err)
 	}
 
-	logger.Info("Resuming session %s", session.SessionID)
+	logger.Info("Resuming session %s", sessionInfo.SessionID)
 
 	// Now run the resume flow which will create agents and restore their state
-	return runResumeFlow(projectDir, noWebUI, session.SessionID)
+	return runResumeFlow(projectDir, noWebUI, sessionInfo.SessionID, sessionInfo.Status == persistence.SessionStatusShutdown)
 }
 
-// runResumeFlow creates the kernel, agents, restores state, and runs the main loop.
-func runResumeFlow(projectDir string, noWebUI bool, sessionID string) error {
+// runResumeFlow creates the kernel, agents, restores state, and runs the main loop. restoreState controls whether coder state is fully restored:
+// - true (shutdown): Full restoration including coders.
+// - false (crashed): Only architect/PM restored from checkpoint, coders start fresh.
+func runResumeFlow(projectDir string, noWebUI bool, sessionID string, restoreState bool) error {
 	logger := logx.NewLogger("maestro-resume")
 
 	// Get configuration (session ID is already set)
@@ -365,7 +380,11 @@ func runResumeFlow(projectDir string, noWebUI bool, sessionID string) error {
 		return fmt.Errorf("failed to get config: %w", err)
 	}
 
-	config.LogInfo("🔄 Resuming session: %s", sessionID)
+	if restoreState {
+		config.LogInfo("🔄 Resuming session (full restore): %s", sessionID)
+	} else {
+		config.LogInfo("🔄 Resuming session (crash recovery): %s", sessionID)
+	}
 
 	// Create context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -397,7 +416,7 @@ func runResumeFlow(projectDir string, noWebUI bool, sessionID string) error {
 	}
 
 	// Create and run resume flow
-	flow := NewResumeFlow(sessionID, webUIEnabled)
+	flow := NewResumeFlow(sessionID, webUIEnabled, restoreState)
 	return flow.Run(ctx, k)
 }
 

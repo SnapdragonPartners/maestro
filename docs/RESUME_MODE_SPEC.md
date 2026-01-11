@@ -2,22 +2,22 @@
 
 ## Overview
 
-Resume mode allows Maestro to continue work from a previous session after a graceful shutdown. When invoked with the `-continue` flag, Maestro will restore agent state, conversation contexts, and work progress from the most recent cleanly-terminated session.
+Resume mode allows Maestro to continue work from the most recent session after shutdown or crash. When invoked with the `-continue` flag, Maestro resumes the last session if it has incomplete stories. Gracefully-shutdown sessions restore full agent state (mid-story progress); crashed sessions reset in-flight stories and start agents fresh.
 
 ## Goals
 
-1. **Preserve work in progress** - Agents resume exactly where they left off, including todo list progress
-2. **Maintain conversation context** - LLM conversation history is restored for all agents
-3. **Clean shutdown boundaries** - State is captured after completing the current toolloop iteration
+1. **Preserve completed work** - Done stories remain done, workspace files persist
+2. **Full state restoration on graceful shutdown** - Agents resume mid-story with context intact
+3. **Crash recovery** - Crashed sessions can be resumed (stories reset, agents start fresh)
 4. **Workspace preservation** - Filesystem changes in agent workspaces persist naturally
-5. **Simple user experience** - Single `-continue` flag to resume
+5. **Simple UX** - Single `-continue` flag resumes most recent session
 
 ## Non-Goals
 
-1. Resume from arbitrary historical sessions (only most recent)
-2. Resume from crashed/killed sessions (graceful shutdown required)
-3. Mid-tool-execution state capture (too complex, non-idempotent tools)
-4. Automatic resume detection (explicit flag required)
+1. Mid-tool-execution state capture (too complex, non-idempotent tools)
+2. Automatic resume detection (explicit flag required)
+3. Resume sessions with no incomplete work (pointless)
+4. Resume older sessions (filesystem would be out of sync)
 
 ---
 
@@ -36,14 +36,42 @@ Persisting state to database...
 Session abc123 saved. Use 'maestro -continue' to resume.
 ```
 
-### Resume
+### Resume from Graceful Shutdown
 ```bash
 maestro -continue -projectdir /path/to/project
 
-Resuming session abc123 from 2025-01-15 14:32:00...
-Restoring architect state...
+╔════════════════════════════════════════════════════════════════════╗
+║                    🔄 Resuming Previous Session                    ║
+╠════════════════════════════════════════════════════════════════════╣
+║  Session ID: abc123                                                ║
+║  Status:     shutdown (graceful)                                   ║
+║  Started:    2025-01-15 14:32:00                                   ║
+║  Stories:    4 incomplete, 3 done                                  ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Restoring agent state...
 Restoring coder-001 state (CODING, todo 4/7)...
 Restoring coder-002 state (TESTING)...
+Restoring architect state (DISPATCHING)...
+Resuming execution...
+```
+
+### Resume from Crash
+```bash
+maestro -continue -projectdir /path/to/project
+
+╔════════════════════════════════════════════════════════════════════╗
+║                    🔄 Resuming Previous Session                    ║
+╠════════════════════════════════════════════════════════════════════╣
+║  Session ID: def456                                                ║
+║  Status:     crashed                                               ║
+║  Started:    2025-01-14 09:15:00                                   ║
+║  Stories:    7 incomplete, 2 done                                  ║
+╚════════════════════════════════════════════════════════════════════╝
+
+Resetting 2 in-progress stories to 'new'...
+Loading 7 incomplete stories into queue...
+Starting agents fresh...
 Resuming execution...
 ```
 
@@ -51,9 +79,13 @@ Resuming execution...
 ```bash
 maestro -continue -projectdir /path/to/project
 
-Error: No resumable session found.
-Previous session either completed normally or was not shut down gracefully.
-Run without -continue to start a new session.
+╔════════════════════════════════════════════════════════════════════╗
+║                    ❌ No Resumable Session Found                   ║
+╠════════════════════════════════════════════════════════════════════╣
+║  The most recent session has no incomplete stories.                ║
+║                                                                    ║
+║  Start a new session with: maestro                                 ║
+╚════════════════════════════════════════════════════════════════════╝
 ```
 
 ---
@@ -76,9 +108,23 @@ CREATE TABLE sessions (
 
 **Session Status Values:**
 - `active` - Session is currently running
-- `shutdown` - Graceful shutdown completed, resumable
-- `completed` - All work finished normally, not resumable
-- `crashed` - Process terminated unexpectedly, not resumable (detected on next start)
+- `shutdown` - Graceful shutdown completed, resumable with full state restoration
+- `completed` - All work finished normally, not resumable (no incomplete stories)
+- `crashed` - Process terminated unexpectedly, resumable with story reset
+
+**Resumability:**
+Only the most recent session (by `ended_at`) can be resumed. This ensures the filesystem state matches the session being restored.
+
+| Status | Architect/PM | Coders | Stories | Use Case |
+|--------|--------------|--------|---------|----------|
+| `shutdown` | Full restore | Full restore (mid-story) | Continue as-is | Ctrl+C during work |
+| `crashed` | Restore from checkpoint | Fresh start | Reset in-flight to 'new' | Unexpected termination |
+
+**Why the difference?**
+- **Architect/PM are session-scoped** - Their context accumulates over the entire session and is incrementally persisted after each LLM call
+- **Coders are story-scoped** - Their state resets between stories anyway; losing mid-story state just means re-planning (workspace files preserved)
+
+**Why only most recent?** If you ran session A, then session B, session A's filesystem state has been modified by session B. Resuming session A would result in mismatched state between agent context and actual files.
 
 **Config Snapshot:**
 On resume, the saved `config_json` is used instead of the current `config.json`. This ensures consistency - if the user had 3 coders running, resume uses 3 coders regardless of what config.json currently says.
@@ -102,6 +148,36 @@ CREATE TABLE agent_contexts (
 - Coders have a single `main` context
 - PM has a single `main` context
 - Architect has multiple contexts: one `main` and one per agent it communicates with
+
+**Checkpoint on Completion (Architect/PM):**
+Architect and PM call `SerializeState()` when work is completed, not on every LLM call:
+
+```go
+// Architect: checkpoint when story marked done
+func (d *Driver) markStoryDone(storyID string) {
+    d.queue.MarkDone(storyID)
+    d.SerializeState(ctx, db, sessionID)  // Checkpoint
+}
+
+// PM: checkpoint when spec submitted to architect
+func (d *Driver) submitSpec(spec string) {
+    d.sendToArchitect(spec)
+    d.SerializeState(ctx, db, sessionID)  // Checkpoint
+}
+```
+
+The existing `SerializeState()` methods already:
+- Use upsert (ON CONFLICT DO UPDATE) - no history needed, just latest state
+- Capture full agent state: state machine position, conversation contexts, escalation counts, etc.
+- Write to `architect_state`/`pm_state` and `agent_contexts` tables
+
+**Why checkpoint on completion, not every LLM call?**
+On crash, we reset all in-flight stories to 'new' anyway. Any context accumulated between completions is about in-flight work that will be rewound. The only meaningful checkpoint is when work is actually done:
+- Story marked done → stable boundary, context about completed work preserved
+- Spec submitted → PM's work product delivered
+- Graceful shutdown → full state for everyone (coders mid-story, etc.)
+
+This is simpler (no toolloop hooks needed) and equally effective for crash recovery.
 
 **Cleanup:**
 After successfully persisting contexts for a new session, old session contexts are pruned:
@@ -274,108 +350,94 @@ continue := flag.Bool("continue", false, "Resume from previous gracefully-shutdo
 maestro -continue
     │
     ▼
-Query: SELECT * FROM sessions WHERE status='shutdown' ORDER BY ended_at DESC LIMIT 1
+Query: GetMostRecentSession() - most recent non-active session
     │
-    ├── No result → Error: "No resumable session found"
-    │
-    ▼
-Load config from sessions.config_json (NOT from config.json file)
+    ├── No session or no incomplete stories → Error: "No resumable session"
     │
     ▼
-Update session: status='active', started_at=NOW()
+Check session status
+    │
+    ├── status = 'shutdown' ──────────────────────────────┐
+    │   │                                                  │
+    │   ▼                                                  │
+    │   Full state restoration:                            │
+    │   ├── Restore ALL agent states from DB               │
+    │   ├── Restore ALL conversation contexts              │
+    │   ├── Stories continue as-is (no reset)              │
+    │   └── All agents resume mid-work                     │
+    │                                                      │
+    ├── status = 'crashed' ───────────────────────────────┐
+    │   │                                                  │
+    │   ▼                                                  │
+    │   Partial restoration + story recovery:              │
+    │   ├── Restore architect/PM contexts (from checkpoint)│
+    │   ├── Coders start fresh (story-scoped anyway)       │
+    │   ├── Reset in-flight stories to 'new'               │
+    │   └── Load stories into architect queue              │
+    │                                                      │
+    ▼◄─────────────────────────────────────────────────────┘
+Update session: status='active'
     │
     ▼
-Initialize kernel with restored config
+Initialize kernel
     │
     ▼
-Create agents with restored state:
-    │
-    ├── Architect:
-    │   ├── Load architect_state
-    │   ├── Load agent_contexts for 'architect'
-    │   └── Rebuild story queue from stories table
-    │
-    ├── PM:
-    │   ├── Load pm_state
-    │   └── Load agent_contexts for 'pm'
-    │
-    └── Coders:
-        ├── Load coder_state for each agent
-        ├── Load agent_contexts for each agent
-        └── Verify workspace directories exist
+Create agents (restored or fresh based on session status + agent type)
     │
     ▼
-Resume normal execution loop
+Force architect to DISPATCHING if crashed (stories need dispatch)
+    │
+    ▼
+Normal execution loop
 ```
 
-### State Restoration Details
+### Story Status Reset (Crashed Sessions Only)
 
-**Architect Restoration:**
+For crashed sessions, stories with intermediate statuses are reset:
+
+| Original Status | Reset To | Reason |
+|-----------------|----------|--------|
+| `new` | (unchanged) | Ready for dispatch |
+| `pending` | (unchanged) | Has dependencies, ready when satisfied |
+| `planning` | `new` | Agent was mid-planning, no saved state |
+| `in_progress` | `new` | Agent was mid-coding, no saved state |
+| `review` | `new` | Agent was awaiting review, no saved state |
+| `done` | (unchanged) | Completed, no action needed |
+| `failed` | (unchanged) | Failed, may need manual intervention |
+
+For graceful shutdown sessions, stories are NOT reset - agents resume exactly where they left off.
+
+### Story Restoration
+
+On resume, the architect loads incomplete stories from the database:
+
 ```go
-func (a *Architect) RestoreState(ctx context.Context, sessionID string) error {
-    // 1. Load architect_state
-    state, err := persistence.LoadArchitectState(sessionID)
+func (a *Architect) LoadStoriesForResume(db *sql.DB, sessionID string) error {
+    // Get incomplete stories for this session
+    stories, err := persistence.GetIncompleteStoriesForSession(db, sessionID)
     if err != nil {
         return err
     }
-    a.currentState = state.State
-    a.escalationCounts = state.EscalationCounts
 
-    // 2. Load conversation contexts
-    contexts, err := persistence.LoadAgentContexts(sessionID, "architect")
-    for _, ctx := range contexts {
-        cm := contextmgr.New()
-        cm.RestoreMessages(ctx.Messages)
-        a.agentContexts[ctx.ContextType] = cm
-    }
-
-    // 3. Rebuild story queue from database
-    stories, err := persistence.GetStoriesForSession(sessionID)
+    // Add to queue (stories already reset to 'new' by resume flow)
     for _, story := range stories {
-        if story.Status != "DONE" && story.Status != "FAILED" {
-            a.queue.Add(story)
-        }
+        a.queue.Add(story)
     }
+
+    // Force state to DISPATCHING to immediately assign work
+    a.ForceState(proto.StateDispatching)
 
     return nil
 }
 ```
 
-**Coder Restoration:**
-```go
-func (c *Coder) RestoreState(ctx context.Context, sessionID string) error {
-    // 1. Load coder_state
-    state, err := persistence.LoadCoderState(sessionID, c.agentID)
-    if err != nil {
-        return err
-    }
-
-    c.currentState = state.State
-    c.currentStoryID = state.StoryID
-    c.plan = state.Plan
-    c.todoList = state.TodoList
-    c.currentTodoIndex = state.CurrentTodoIndex
-    c.knowledgePack = state.KnowledgePack
-    c.targetImage = state.ContainerImage
-
-    // 2. Restore pending request if any
-    if state.PendingRequestType != "" {
-        c.pendingRequest = state.PendingRequest
-    }
-
-    // 3. Load conversation context
-    contexts, err := persistence.LoadAgentContexts(sessionID, c.agentID)
-    if len(contexts) > 0 {
-        c.contextManager.RestoreMessages(contexts[0].Messages)
-    }
-
-    // 4. Verify workspace exists
-    if _, err := os.Stat(c.workDir); os.IsNotExist(err) {
-        return fmt.Errorf("workspace directory missing: %s", c.workDir)
-    }
-
-    return nil
-}
+**Database Query:**
+```sql
+-- GetIncompleteStoriesForSession returns stories that need work
+SELECT * FROM stories
+WHERE session_id = ?
+  AND status NOT IN ('done', 'failed', 'completed')
+ORDER BY created_at ASC
 ```
 
 ---
@@ -693,10 +755,14 @@ func markStaleSessions(db *sql.DB) error {
 
 ### Not In Scope (Potential Future Work)
 
-1. **Resume from arbitrary session** - Could add `-session <id>` flag
-2. **Resume from crash** - Would require WAL-style logging
-3. **Partial resume** - Resume some agents, fresh start for others
-4. **Config override on resume** - Allow changing some config values
+1. **Resume older sessions** - Would require workspace stashing/versioning
+   - Currently only the most recent session can be resumed (filesystem must match)
+   - To resume older sessions, would need to snapshot workspace per session
+   - Implementation: workspace tarball or git stash on session end
+2. **Config override on resume** - Allow changing some config values (e.g., number of coders)
+3. **Crash state recovery** - Periodic state checkpoints for mid-crash recovery
+   - Currently crashed sessions lose agent state (only stories are preserved)
+   - Could implement periodic SerializeState calls during execution
 
 ### Compatibility
 

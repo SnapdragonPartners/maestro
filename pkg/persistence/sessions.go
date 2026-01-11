@@ -141,8 +141,16 @@ func scanSession(row *sql.Row) (*Session, error) {
 	return &session, nil
 }
 
+// ResumableSessionInfo contains a resumable session along with story statistics.
+type ResumableSessionInfo struct {
+	Session           *Session
+	IncompleteStories int // Count of stories not in 'done' or 'failed' status
+	DoneStories       int // Count of completed stories
+}
+
 // GetResumableSession returns the most recent session with status='shutdown'.
 // Returns ErrSessionNotFound if no resumable session exists.
+// Deprecated: Use GetMostRecentResumableSession instead which also supports crashed sessions.
 func GetResumableSession(db *sql.DB) (*Session, error) {
 	row := db.QueryRow(`
 		SELECT session_id, started_at, ended_at, status, config_json
@@ -163,18 +171,73 @@ func GetResumableSession(db *sql.DB) (*Session, error) {
 }
 
 // GetMostRecentResumableSession returns the most recent session that can be resumed.
+// A session is resumable if:
+// 1. Its status is 'shutdown', 'crashed', or 'active' (not 'completed')
+//   - 'active' sessions are treated as crashed (the process died unexpectedly)
+//
+// 2. It has at least one incomplete story (status not in 'done', 'failed')
+//
+// If an 'active' session is found, its status is updated to 'crashed' before returning.
 // Returns nil, nil if no resumable session exists (this is not an error condition).
 //
 //nolint:nilnil // Returning nil,nil is intentional - no resumable session is a valid (non-error) outcome
-func GetMostRecentResumableSession(db *sql.DB) (*Session, error) {
-	session, err := GetResumableSession(db)
+func GetMostRecentResumableSession(db *sql.DB) (*ResumableSessionInfo, error) {
+	// Get the most recent session that could be resumed (shutdown, crashed, or active)
+	// Active sessions indicate a crash (process died without graceful shutdown)
+	// Order by COALESCE to handle NULL ended_at (active sessions)
+	row := db.QueryRow(`
+		SELECT session_id, started_at, ended_at, status, config_json
+		FROM sessions
+		WHERE status IN (?, ?, ?)
+		ORDER BY COALESCE(ended_at, started_at) DESC
+		LIMIT 1
+	`, SessionStatusShutdown, SessionStatusCrashed, SessionStatusActive)
+
+	session, err := scanSession(row)
 	if err != nil {
 		if errors.Is(err, ErrSessionNotFound) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to get most recent session: %w", err)
 	}
-	return session, nil
+
+	// If session was active, it's a crash - update status to crashed
+	if session.Status == SessionStatusActive {
+		if updateErr := UpdateSessionStatus(db, session.SessionID, SessionStatusCrashed); updateErr != nil {
+			return nil, fmt.Errorf("failed to mark active session as crashed: %w", updateErr)
+		}
+		session.Status = SessionStatusCrashed
+	}
+
+	// Count incomplete and done stories for this session
+	var incompleteCount, doneCount int
+	err = db.QueryRow(`
+		SELECT
+			COALESCE(SUM(CASE WHEN status NOT IN ('done', 'failed') THEN 1 ELSE 0 END), 0) as incomplete,
+			COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) as done
+		FROM stories
+		WHERE session_id = ?
+	`, session.SessionID).Scan(&incompleteCount, &doneCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count stories for session %s: %w", session.SessionID, err)
+	}
+
+	// Only return if there are incomplete stories.
+	// NOTE: We intentionally only check the most recent session, not older ones.
+	// If the newest session has no incomplete work, we return nil rather than
+	// searching for an older session with work remaining. This is because:
+	// 1. The filesystem may have changed since older sessions ran
+	// 2. Older "shutdown" sessions would need crash recovery semantics (can't trust state)
+	// 3. Users can explicitly specify a session ID if they need to resume older work
+	if incompleteCount == 0 {
+		return nil, nil
+	}
+
+	return &ResumableSessionInfo{
+		Session:           session,
+		IncompleteStories: incompleteCount,
+		DoneStories:       doneCount,
+	}, nil
 }
 
 // GetSession returns a session by ID.
@@ -441,6 +504,116 @@ func CleanupOldSessionData(db *sql.DB, keepSessionID string) error {
 		}
 	}
 
+	return nil
+}
+
+// ResetInFlightStories resets stories with in-flight statuses back to 'new'.
+// This is used during crash recovery to restart stories that were mid-execution.
+// Returns the number of stories that were reset.
+func ResetInFlightStories(db *sql.DB, sessionID string) (int64, error) {
+	// Reset dispatched, planning, coding, in_progress, and review statuses to 'new'.
+	// 'dispatched' = sent to work queue, waiting for coder pickup
+	// 'planning' = coder picked up story, planning work
+	// 'coding' = coder is implementing
+	// 'in_progress' = legacy alias for coding
+	// 'review' = coder submitted for architect review
+	result, err := db.Exec(`
+		UPDATE stories
+		SET status = 'new',
+		    assigned_agent = NULL,
+		    started_at = NULL
+		WHERE session_id = ?
+		  AND status IN ('dispatched', 'planning', 'coding', 'review', 'in_progress')
+	`, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reset in-flight stories: %w", err)
+	}
+
+	affected, _ := result.RowsAffected()
+	return affected, nil
+}
+
+// GetAllStoriesForSession returns all stories for a session including done ones.
+// Used by the architect to reload the complete story graph on resume.
+// Also populates the DependsOn field from the story_dependencies table.
+func GetAllStoriesForSession(db *sql.DB, sessionID string) ([]*Story, error) {
+	rows, err := db.Query(`
+		SELECT id, spec_id, title, content, status, priority, approved_plan,
+		       created_at, started_at, completed_at, assigned_agent,
+		       tokens_used, cost_usd, metadata, story_type
+		FROM stories
+		WHERE session_id = ?
+		ORDER BY priority DESC, created_at ASC
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query stories: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var stories []*Story
+	for rows.Next() {
+		story := &Story{}
+		scanErr := rows.Scan(
+			&story.ID, &story.SpecID, &story.Title, &story.Content,
+			&story.Status, &story.Priority, &story.ApprovedPlan,
+			&story.CreatedAt, &story.StartedAt, &story.CompletedAt,
+			&story.AssignedAgent, &story.TokensUsed, &story.CostUSD,
+			&story.Metadata, &story.StoryType,
+		)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan story: %w", scanErr)
+		}
+		stories = append(stories, story)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating stories: %w", err)
+	}
+
+	// Populate DependsOn for all stories
+	if len(stories) > 0 {
+		if depErr := populateStoryDependencies(db, sessionID, stories); depErr != nil {
+			return nil, fmt.Errorf("failed to populate dependencies: %w", depErr)
+		}
+	}
+
+	return stories, nil
+}
+
+// populateStoryDependencies fetches and populates DependsOn for a slice of stories.
+func populateStoryDependencies(db *sql.DB, sessionID string, stories []*Story) error {
+	// Build a map for quick lookup
+	storyMap := make(map[string]*Story, len(stories))
+	for _, s := range stories {
+		storyMap[s.ID] = s
+		s.DependsOn = []string{} // Initialize to empty slice
+	}
+
+	// Get all dependencies for stories in this session.
+	depRows, err := db.Query(`
+		SELECT sd.story_id, sd.depends_on
+		FROM story_dependencies sd
+		INNER JOIN stories s ON sd.story_id = s.id
+		WHERE s.session_id = ?
+	`, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to query dependencies: %w", err)
+	}
+	defer func() { _ = depRows.Close() }()
+
+	for depRows.Next() {
+		var storyID, dependsOn string
+		if scanErr := depRows.Scan(&storyID, &dependsOn); scanErr != nil {
+			return fmt.Errorf("failed to scan dependency: %w", scanErr)
+		}
+		if story, exists := storyMap[storyID]; exists {
+			story.DependsOn = append(story.DependsOn, dependsOn)
+		}
+	}
+
+	if err := depRows.Err(); err != nil {
+		return fmt.Errorf("error iterating dependencies: %w", err)
+	}
 	return nil
 }
 

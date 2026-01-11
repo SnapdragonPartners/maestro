@@ -474,6 +474,11 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, infrastructure: %d bytes, id: %s)",
 		len(userSpec), len(infrastructureSpec), requestMsg.ID)
 
+	// Checkpoint state for crash recovery (spec submission is a stable boundary)
+	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
+		d.Checkpoint(cfg.SessionID)
+	}
+
 	return nil
 }
 
@@ -520,6 +525,11 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 	}
 
 	d.logger.Info("🔧 Sent hotfix REQUEST to architect (platform: %s, id: %s)", platform, requestMsg.ID)
+
+	// Checkpoint state for crash recovery (hotfix submission is a stable boundary)
+	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
+		d.Checkpoint(cfg.SessionID)
+	}
 
 	return nil
 }

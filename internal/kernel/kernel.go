@@ -22,6 +22,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/utils"
 	"orchestrator/pkg/webui"
 )
 
@@ -377,7 +378,7 @@ func (k *Kernel) startPersistenceWorker() {
 // processPersistenceRequest handles individual persistence operations.
 // This preserves the exact logic from bootstrap.go's processPersistenceRequest.
 //
-//nolint:cyclop // Simple switch statement for database operations
+//nolint:cyclop,maintidx // Simple switch statement for database operations - complexity from many case branches is acceptable
 func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persistence.DatabaseOperations) {
 	switch req.Operation {
 	case persistence.OpUpsertSpec:
@@ -516,6 +517,40 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			} else {
 				k.Logger.Info("Successfully rebuilt knowledge index for session %s", rebuildReq.SessionID)
 			}
+		}
+
+	case persistence.OpCheckpointArchitectState:
+		if checkpointReq, ok := utils.SafeAssert[*persistence.CheckpointArchitectStateRequest](req.Data); ok {
+			// Save architect state
+			if err := persistence.SaveArchitectState(k.Database, checkpointReq.State); err != nil {
+				k.Logger.Error("Failed to checkpoint architect state: %v", err)
+			}
+			// Save all per-agent contexts
+			for _, ctx := range checkpointReq.Contexts {
+				if err := persistence.SaveAgentContext(k.Database, ctx); err != nil {
+					k.Logger.Error("Failed to checkpoint architect context for %s: %v", ctx.ContextType, err)
+				}
+			}
+			k.Logger.Debug("Checkpointed architect state (contexts=%d)", len(checkpointReq.Contexts))
+		} else {
+			k.Logger.Error("Invalid data type for OpCheckpointArchitectState")
+		}
+
+	case persistence.OpCheckpointPMState:
+		if checkpointReq, ok := utils.SafeAssert[*persistence.CheckpointPMStateRequest](req.Data); ok {
+			// Save PM state
+			if err := persistence.SavePMState(k.Database, checkpointReq.State); err != nil {
+				k.Logger.Error("Failed to checkpoint PM state: %v", err)
+			}
+			// Save PM context if provided
+			if checkpointReq.Context != nil {
+				if err := persistence.SaveAgentContext(k.Database, checkpointReq.Context); err != nil {
+					k.Logger.Error("Failed to checkpoint PM context: %v", err)
+				}
+			}
+			k.Logger.Debug("Checkpointed PM state")
+		} else {
+			k.Logger.Error("Invalid data type for OpCheckpointPMState")
 		}
 
 	default:
