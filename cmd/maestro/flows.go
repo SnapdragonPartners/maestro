@@ -332,16 +332,9 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 		k.Logger.Warn("⚠️ Some agents did not complete gracefully: %v", err)
 	}
 
-	// 2. Drain the persistence queue FIRST to process any pending checkpoint requests.
-	// This ensures stale checkpoints don't overwrite the final shutdown state.
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	if err := k.DrainPersistenceQueue(drainCtx); err != nil {
-		k.Logger.Warn("⚠️ Persistence queue drain incomplete: %v", err)
-	}
-	drainCancel()
-
-	// 3. Serialize state for all agents that support it
-	// We use a fresh context since the main context is cancelled
+	// 2. Serialize state for all agents that support it.
+	// SerializeState sends to the persistence queue, so FIFO ordering ensures
+	// this is processed after any pending checkpoints.
 	serializeCtx := context.Background()
 	sessionID := k.Config.SessionID
 	agents, _ := sup.GetAgents()
@@ -353,6 +346,13 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 			}
 		}
 	}
+
+	// 3. Drain the persistence queue to process all pending requests including serialization.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	if err := k.DrainPersistenceQueue(drainCtx); err != nil {
+		k.Logger.Warn("⚠️ Persistence queue drain incomplete: %v", err)
+	}
+	drainCancel()
 
 	// 4. Update session status to 'shutdown' (makes it resumable)
 	if err := persistence.UpdateSessionStatus(k.Database, k.Config.SessionID, persistence.SessionStatusShutdown); err != nil {

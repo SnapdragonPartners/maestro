@@ -12,57 +12,54 @@ import (
 	"orchestrator/pkg/proto"
 )
 
-// SerializeState persists the architect's current state to the database for resume.
-func (d *Driver) SerializeState(_ context.Context, db *sql.DB, sessionID string) error {
+// SerializeState sends the architect's current state to the persistence queue for saving.
+// This uses the same persistence channel as Checkpoint to maintain FIFO ordering.
+// The caller should drain the persistence queue after calling this to ensure the state is written.
+func (d *Driver) SerializeState(_ context.Context, _ *sql.DB, sessionID string) error {
+	if d.persistenceChannel == nil {
+		return fmt.Errorf("persistence channel not available")
+	}
+
 	d.logger.Info("Serializing state for resume (session=%s)", sessionID)
 
 	// Get current state from state machine.
 	currentState := d.GetCurrentState()
 
-	// Serialize escalation counts from the handler.
-	// Note: The escalation handler persists its own state via file, but we need
-	// the iteration counts for resume. For now, we'll skip this since
-	// escalation state is file-based. In a future enhancement, we could
-	// serialize active escalations.
-	var escalationCountsJSON *string
-	_ = escalationCountsJSON // Will be populated in future enhancement
-
-	// Save architect state.
+	// Build architect state.
 	state := &persistence.ArchitectState{
-		SessionID:            sessionID,
-		State:                string(currentState),
-		EscalationCountsJSON: escalationCountsJSON,
+		SessionID: sessionID,
+		State:     string(currentState),
 	}
 
-	if err := persistence.SaveArchitectState(db, state); err != nil {
-		return fmt.Errorf("failed to save architect state: %w", err)
-	}
-
-	// Save per-agent contexts.
+	// Build per-agent contexts.
 	d.contextMutex.RLock()
-	defer d.contextMutex.RUnlock()
-
+	contexts := make([]*persistence.AgentContext, 0, len(d.agentContexts))
 	for agentID, cm := range d.agentContexts {
 		contextData, err := cm.Serialize()
 		if err != nil {
 			d.logger.Warn("Failed to serialize context for agent %s: %v", agentID, err)
 			continue
 		}
-
-		agentCtx := &persistence.AgentContext{
+		contexts = append(contexts, &persistence.AgentContext{
 			SessionID:    sessionID,
 			AgentID:      "architect",
-			ContextType:  agentID, // Context type is the target agent ID.
+			ContextType:  agentID,
 			MessagesJSON: string(contextData),
-		}
+		})
+	}
+	d.contextMutex.RUnlock()
 
-		if err := persistence.SaveAgentContext(db, agentCtx); err != nil {
-			d.logger.Warn("Failed to save context for agent %s: %v", agentID, err)
-			continue
-		}
+	// Send to persistence queue (blocking send to ensure it's queued for shutdown).
+	// FIFO ordering ensures this is processed after any pending checkpoints.
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpCheckpointArchitectState,
+		Data: &persistence.CheckpointArchitectStateRequest{
+			State:    state,
+			Contexts: contexts,
+		},
 	}
 
-	d.logger.Info("State serialized successfully (state=%s, contexts=%d)", currentState, len(d.agentContexts))
+	d.logger.Info("State serialization queued (state=%s, contexts=%d)", currentState, len(contexts))
 	return nil
 }
 
