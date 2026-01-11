@@ -655,8 +655,10 @@ type Config struct {
 // Only contains actual project configuration, not transient state or redundant data.
 // Note: Project description is handled via MAESTRO.md file (not config).
 type ProjectInfo struct {
-	Name            string `json:"name"`             // Project name
-	PrimaryPlatform string `json:"primary_platform"` // Primary platform (go, node, python, etc.)
+	Name            string `json:"name"`                   // Project name
+	PrimaryPlatform string `json:"primary_platform"`       // Primary platform (go, node, python, etc.)
+	PackVersion     string `json:"pack_version,omitempty"` // Version of language pack used during bootstrap (for upgrade detection)
+	PackName        string `json:"pack_name,omitempty"`    // Name of language pack used (e.g., "go", "generic")
 }
 
 // ContainerConfig defines container settings for the project.
@@ -980,6 +982,33 @@ func UpdateProject(project *ProjectInfo) error {
 
 	config.Project = project
 	return saveConfigLocked()
+}
+
+// UpdateProjectPack updates just the pack information (name and version) without modifying other project fields.
+// This is used after bootstrap to record which pack version was used.
+func UpdateProjectPack(packName, packVersion string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config.Project == nil {
+		config.Project = &ProjectInfo{}
+	}
+
+	config.Project.PackName = packName
+	config.Project.PackVersion = packVersion
+	return saveConfigLocked()
+}
+
+// GetProjectPack returns the pack name and version from config.
+// Returns empty strings if not set.
+func GetProjectPack() (packName, packVersion string) {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Project == nil {
+		return "", ""
+	}
+	return config.Project.PackName, config.Project.PackVersion
 }
 
 // UpdateBootstrap is deprecated - bootstrap status is now tracked in database/logs.

@@ -1,24 +1,28 @@
 # Bootstrap Project Setup for {{.ProjectName}}
 
-**Platform**: {{.PlatformDisplayName}} ({{.Platform}})  
-**Container**: {{.ContainerImage}}  
+**Platform**: {{.PlatformDisplayName}} ({{.Platform}})
+**Container**: {{if .ContainerImage}}{{.ContainerImage}}{{else}}Not configured{{end}}
 {{- if .DockerfilePath}}
-**Dockerfile**: {{.DockerfilePath}}  
+**Dockerfile**: {{.DockerfilePath}}
 {{- end}}
 {{- if .GitRepoURL}}
-**Repository**: {{.GitRepoURL}}  
+**Repository**: {{.GitRepoURL}}
 {{- end}}
-**Total Issues**: {{.TotalFailures}}  
+{{- if .Pack}}
+**Language Pack**: {{.Pack.DisplayName}} v{{.Pack.Version}}
+{{- end}}
+**Total Issues**: {{.TotalFailures}}
 {{- if .HasCriticalFailures}}
-**Priority**: 🔴 **CRITICAL** - Infrastructure issues blocking development  
+**Priority**: 🔴 **CRITICAL** - Infrastructure issues blocking development
 {{- else}}
-**Priority**: 🟡 **HIGH** - Infrastructure improvements needed  
+**Priority**: 🟡 **HIGH** - Infrastructure improvements needed
 {{- end}}
 
 ## Task Overview
 
 This story addresses infrastructure issues discovered during project initialization. The following problems must be resolved before development can proceed effectively:
 
+{{- if gt .TotalFailures 0}}
 {{- range .FailuresByPriority}}
 {{- if eq .Priority 1}}
 - 🔴 **CRITICAL**: {{.Description}} ({{.Component}})
@@ -28,10 +32,12 @@ This story addresses infrastructure issues discovered during project initializat
 - 🟢 **MEDIUM**: {{.Description}} ({{.Component}})
 {{- end}}
 {{- end}}
+{{- else}}
+*No infrastructure issues detected. Proceeding with standard setup.*
+{{- end}}
 
 ## Acceptance Criteria
 
-{{- $defaults := .GetPlatformDefaults}}
 {{- if .HasFailuresOfType "build_system"}}
 
 ### Build System Setup
@@ -44,7 +50,16 @@ This story addresses infrastructure issues discovered during project initializat
   - Action: {{.Details.action}}
   {{- end}}
 {{- end}}
-- [ ] Verify all required build targets work: `{{.BuildCommand}}`, `{{.TestCommand}}`, `{{.LintCommand}}`, `{{.RunCommand}}`
+{{- if and .Pack .Pack.MakefileTargets.Build}}
+- [ ] Verify build target works: `make build`
+- [ ] Verify test target works: `make test`
+{{- if .Pack.MakefileTargets.Lint}}
+- [ ] Verify lint target works: `make lint`
+{{- end}}
+{{- if .Pack.MakefileTargets.Run}}
+- [ ] Verify run target works: `make run`
+{{- end}}
+{{- end}}
 {{- end}}
 
 {{- if .HasFailuresOfType "container"}}
@@ -65,7 +80,7 @@ This story addresses infrastructure issues discovered during project initializat
 - [ ] Validate container can run build and test commands
 - [ ] Ensure rootless execution works with `--user=1000:1000 --read-only --network=none`
 
-#### MANDATORY Container Requirements (will cause runtime failures if missing):
+#### MANDATORY Container Requirements:
 - [ ] **User UID 1000**: Container MUST have a user with UID 1000 pre-created in the Dockerfile
   ```dockerfile
   # REQUIRED: Create coder user - Maestro runs containers with --user 1000:1000
@@ -73,7 +88,6 @@ This story addresses infrastructure issues discovered during project initializat
   ```
   - Maestro runs containers with `--user 1000:1000 --read-only`
   - User cannot be created at runtime (read-only filesystem)
-  - Claude Code refuses to run as root for security reasons
 - [ ] **Git CLI**: Container MUST have `git` installed for version control operations
   ```dockerfile
   # REQUIRED: Git is needed for clone, commit, push, rebase operations
@@ -123,8 +137,6 @@ This story addresses infrastructure issues discovered during project initializat
 - [ ] Fix infrastructure: {{.Description}}
 {{- end}}
 - [ ] Verify .maestro directory structure
-- [ ] Validate config.json schema
-- [ ] Check database connectivity
 {{- end}}
 
 {{- if .HasFailuresOfType "external_tools"}}
@@ -135,6 +147,11 @@ This story addresses infrastructure issues discovered during project initializat
 {{- end}}
 - [ ] Verify all required tools are in PATH
 - [ ] Check GITHUB_TOKEN environment variable
+{{- end}}
+
+{{- if and .Pack .Pack.TemplateSections.ModuleSetup}}
+
+{{.Pack.TemplateSections.ModuleSetup}}
 {{- end}}
 
 ## Implementation Plan
@@ -163,7 +180,7 @@ This story addresses infrastructure issues discovered during project initializat
 {{- else if eq .Type "binary_size"}}
 
 **Large File Resolution** (blocking deployment):
-1. Identify files over 100MB limit: {{range .BinarySizeFailures}}`{{.Details.file_path}}`{{end}}
+1. Identify files over 100MB limit
 2. Set up Git LFS or remove unnecessary large files
 3. Add .gitattributes rules for future prevention
 
@@ -175,70 +192,107 @@ This story addresses infrastructure issues discovered during project initializat
 {{- end}}
 
 ### Phase 2: Development Quality Setup
-**Essential Quality Tools** (install if not already configured):
-1. **Linting Configuration**: Set up aggressive linting for code quality
-   {{- if eq .Platform "go"}}
-   - Install golangci-lint: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
-   - Create `.golangci.yml` with aggressive rules (see Go template for config)
-   {{- else if eq .Platform "node"}}
-   - Install ESLint: `npm install --save-dev eslint @typescript-eslint/parser @typescript-eslint/eslint-plugin`
-   - Create `.eslintrc.js` with strict TypeScript/JavaScript rules
-   {{- else if eq .Platform "python"}}
-   - Install Ruff: `pip install ruff`
-   - Create `pyproject.toml` or `ruff.toml` with aggressive linting rules
-   {{- else}}
-   - Configure platform-specific linting tools for {{.Platform}}
-   {{- end}}
-   - Integrate linting into `{{.LintCommand}}` target
-   - Ensure linting passes before proceeding
 
-2. **Pre-commit Hooks**: Enforce quality gates automatically
-   - Create `.git/hooks/pre-commit` requiring build, test, and lint success
-   - Make hook executable: `chmod +x .git/hooks/pre-commit`
-   - Test hook blocks commits on failure
+{{- if and .Pack .Pack.TemplateSections.LintConfig}}
 
-3. **CI Configuration**: Prepare for continuous integration
-   {{- if eq .Platform "go"}}
-   - Consider `.github/workflows/go.yml` for GitHub Actions
-   {{- else if eq .Platform "node"}}
-   - Consider `.github/workflows/node.yml` for GitHub Actions
-   {{- else if eq .Platform "python"}}
-   - Consider `.github/workflows/python.yml` for GitHub Actions
-   {{- else}}
-   - Configure CI pipeline appropriate for {{.Platform}}
-   {{- end}}
+{{.Pack.TemplateSections.LintConfig}}
+{{- else}}
+**Linting Configuration**: Set up linting for code quality
+- Configure platform-appropriate linting tools
+- Integrate linting into `make lint` target
+- Ensure linting passes before proceeding
+{{- end}}
+
+**Pre-commit Hooks**: Enforce quality gates automatically
+- Create `.git/hooks/pre-commit` requiring build, test, and lint success
+- Make hook executable: `chmod +x .git/hooks/pre-commit`
+- Test hook blocks commits on failure
+
+{{- if and .Pack .Pack.TemplateSections.QualitySetup}}
+
+{{.Pack.TemplateSections.QualitySetup}}
+{{- end}}
 
 ### Phase 3: High Priority Infrastructure Fixes (Priority 2+)
+{{- $hasHighPriority := false}}
 {{- range .FailuresByPriority}}
 {{- if gt .Priority 1}}
+{{- $hasHighPriority = true}}
 1. **{{.Component}}**: {{.Description}}
+   {{- if .Details.action}}
    - Action: {{.Details.action}}
+   {{- end}}
    {{- if .Details.file_path}}
    - File: {{.Details.file_path}}
    {{- end}}
 {{- end}}
 {{- end}}
+{{- if not $hasHighPriority}}
+*No high priority fixes required.*
+{{- end}}
 
 ### Phase 4: Validation
 1. Run full verification suite: `maestro init --verify`
 2. Test complete development workflow:
-   - `{{.BuildCommand}}` - should compile successfully
-   - `{{.TestCommand}}` - should run tests
-   - `{{.LintCommand}}` - should pass linting
-   - `{{.RunCommand}}` - should start application
+   - `make build` - should compile successfully
+   - `make test` - should run tests
+   - `make lint` - should pass linting
+   - `make run` - should start application
 3. Verify container security constraints
 4. Test git operations (clone, worktree, PR creation)
 
 ## Technical Notes
 
 ### Platform: {{.PlatformDisplayName}}
-- **Build Command**: {{.BuildCommand}}
-- **Test Command**: {{.TestCommand}}
-- **Lint Command**: {{.LintCommand}}
-- **Run Command**: {{.RunCommand}}
-- **Container Image**: {{.ContainerImage}}
+{{- if .Pack}}
+- **Language Pack**: {{.Pack.DisplayName}} v{{.Pack.Version}}
+{{- if .Pack.LanguageVersion}}
+- **Language Version**: {{.Pack.LanguageVersion}}
+{{- end}}
+{{- if .Pack.Tooling.PackageManager}}
+- **Package Manager**: {{.Pack.Tooling.PackageManager}}
+{{- end}}
+{{- if .Pack.Tooling.Linter}}
+- **Linter**: {{.Pack.Tooling.Linter}}
+{{- end}}
+{{- if .Pack.Tooling.TestFramework}}
+- **Test Framework**: {{.Pack.Tooling.TestFramework}}
+{{- end}}
+{{- end}}
+- **Container Image**: {{if .ContainerImage}}{{.ContainerImage}}{{else}}Not configured{{end}}
 {{- if .GitUserName}}
 - **Git User**: {{.GitUserName}} <{{.GitUserEmail}}>
+{{- end}}
+
+{{- if and .Pack .Pack.MakefileTargets.Build}}
+
+### Makefile Targets
+The following targets should be configured in your Makefile:
+
+```makefile
+.PHONY: build test lint run clean
+
+build:
+	{{.Pack.MakefileTargets.Build}}
+
+test:
+	{{.Pack.MakefileTargets.Test}}
+{{- if .Pack.MakefileTargets.Lint}}
+
+lint:
+	{{.Pack.MakefileTargets.Lint}}
+{{- end}}
+{{- if .Pack.MakefileTargets.Run}}
+
+run:
+	{{.Pack.MakefileTargets.Run}}
+{{- end}}
+{{- if .Pack.MakefileTargets.Clean}}
+
+clean:
+	{{.Pack.MakefileTargets.Clean}}
+{{- end}}
+```
 {{- end}}
 
 ### Container Configuration
@@ -248,17 +302,8 @@ This story addresses infrastructure issues discovered during project initializat
 {{- else}}
 - **Network Access**: Disabled (`--network=none`)
 {{- end}}
-- **User**: Non-root (`--user=1000:1000` - coder user required for Claude Code mode)
+- **User**: Non-root (`--user=1000:1000`)
 - **Filesystem**: Read-only with writable `/tmp`
-
-### Required Container User (Claude Code Mode)
-When using Claude Code mode, containers must have a non-root user with UID 1000:
-```dockerfile
-# Add to your Dockerfile - required for Claude Code mode
-RUN adduser -D -u 1000 coder && \
-    chown -R coder:coder /workspace
-```
-Claude Code refuses `--dangerously-skip-permissions` when running as root for security reasons. Maestro will attempt to create this user at runtime if missing, but pre-creating it in the Dockerfile is recommended.
 
 ### Required Tools in Container
 The container must include these tools for Maestro operations:
@@ -276,16 +321,6 @@ RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 
 **Note**: GitHub CLI (`gh`) is NOT required in the container. All PR creation, merge operations, and GitHub API access run on the host orchestrator, not inside containers.
 
-### Required EXPOSE Directive for Demo Mode
-The Dockerfile MUST include an `EXPOSE` directive for the port the application listens on:
-```dockerfile
-# REQUIRED for demo mode - expose the application port
-EXPOSE 8080
-```
-- Demo mode uses Docker's `-P` flag to publish all exposed ports
-- Without EXPOSE, the demo will start but won't be accessible
-- Use the same port your application is configured to listen on
-
 ### File System Constraints
 - **Large File Limit**: 100MB (GitHub push limit)
 - **Warning Threshold**: 50MB (recommend Git LFS)
@@ -293,15 +328,15 @@ EXPOSE 8080
 
 ## Success Criteria
 
-✅ **All acceptance criteria completed**  
-✅ **Full verification suite passes**  
-✅ **Container security constraints validated**  
-✅ **Build/test/lint pipeline functional**  
-✅ **Git operations working**  
-✅ **No files exceed size limits**  
+- [ ] All acceptance criteria completed
+- [ ] Full verification suite passes
+- [ ] Container security constraints validated
+- [ ] Build/test/lint pipeline functional
+- [ ] Git operations working
+- [ ] No files exceed size limits
 
 Upon completion, mark `bootstrap_complete = true` in project configuration and proceed with regular development workflow.
 
 ---
 
-*Generated by Maestro Bootstrap System - {{.TemplateName}}*
+*Generated by Maestro Bootstrap System{{if .Pack}} - {{.Pack.DisplayName}} Pack v{{.Pack.Version}}{{end}}*

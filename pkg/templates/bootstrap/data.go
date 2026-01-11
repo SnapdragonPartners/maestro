@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/templates/packs"
 	"orchestrator/pkg/workspace"
 )
 
@@ -57,6 +58,9 @@ type TemplateData struct {
 	// Git configuration from project config
 	GitUserName  string `json:"git_user_name,omitempty"`  // Git commit author name from config
 	GitUserEmail string `json:"git_user_email,omitempty"` // Git commit author email from config
+
+	// Language pack for platform-specific configuration
+	Pack *packs.Pack `json:"-"` // Rendered language pack (not serialized)
 }
 
 // NewTemplateData creates a new TemplateData from verification results.
@@ -459,6 +463,39 @@ func (d *TemplateData) GetDockerfilePath() string {
 	}
 	// Fallback to default
 	return "Dockerfile"
+}
+
+// SetPack loads and renders the appropriate language pack for this template data.
+// It uses the platform to select the pack and renders tokens with the current data.
+// Returns any warnings from pack loading (e.g., fallback to generic).
+func (d *TemplateData) SetPack() ([]string, error) {
+	// Get the pack for this platform
+	pack, warnings, err := packs.Get(d.Platform)
+	if err != nil {
+		return warnings, fmt.Errorf("failed to get pack for platform %s: %w", d.Platform, err)
+	}
+
+	// Determine language version to use
+	languageVersion := ""
+	if pack.LanguageVersion != "" {
+		languageVersion = pack.LanguageVersion
+	}
+	// GoVersion from existing detection overrides pack default
+	if d.GoVersion != "" && d.Platform == "go" {
+		languageVersion = d.GoVersion
+	}
+
+	// Render the pack with token values
+	rendered, err := pack.Rendered(packs.TokenValues{
+		ProjectName:     d.ProjectName,
+		LanguageVersion: languageVersion,
+	})
+	if err != nil {
+		return warnings, fmt.Errorf("failed to render pack: %w", err)
+	}
+
+	d.Pack = rendered
+	return warnings, nil
 }
 
 // GetGoLintConfig returns the golangci-lint configuration to include in the template.

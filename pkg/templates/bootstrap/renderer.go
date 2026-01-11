@@ -11,38 +11,29 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-//go:embed *.tpl.md
+const templateFileName = "bootstrap.tpl.md"
+
+//go:embed bootstrap.tpl.md
 var bootstrapTemplateFS embed.FS
 
 // Renderer handles rendering of bootstrap specification templates.
 type Renderer struct {
-	templates map[string]*template.Template
+	template *template.Template
 }
 
 // NewRenderer creates a new bootstrap template renderer.
 func NewRenderer() (*Renderer, error) {
-	renderer := &Renderer{
-		templates: make(map[string]*template.Template),
+	templateContent, err := bootstrapTemplateFS.ReadFile(templateFileName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read bootstrap template: %w", err)
 	}
 
-	// Load bootstrap templates
-	templateFiles := []string{"bootstrap.tpl.md", "golang.tpl.md"}
-
-	for _, filename := range templateFiles {
-		templateContent, err := bootstrapTemplateFS.ReadFile(filename)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read template %s: %w", filename, err)
-		}
-
-		tmpl, err := template.New(filename).Parse(string(templateContent))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse template %s: %w", filename, err)
-		}
-
-		renderer.templates[filename] = tmpl
+	tmpl, err := template.New("bootstrap").Parse(string(templateContent))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse bootstrap template: %w", err)
 	}
 
-	return renderer, nil
+	return &Renderer{template: tmpl}, nil
 }
 
 // RenderBootstrapSpec generates a bootstrap specification from verification failures.
@@ -53,22 +44,16 @@ func (r *Renderer) RenderBootstrapSpec(projectName, platform, containerImage str
 		platformDisplayName = supportedPlatform.DisplayName
 	}
 
-	// Create template data (legacy without git repo URL)
+	// Create template data
 	data := NewTemplateData(projectName, platform, platformDisplayName, containerImage, "", failures)
+	data.TemplateName = templateFileName
 
-	// Select template based on platform
-	templateName := r.selectTemplateForPlatform(platform)
-	data.TemplateName = templateName
-
-	// Get the template
-	tmpl, exists := r.templates[templateName]
-	if !exists {
-		return "", fmt.Errorf("template %s not found", templateName)
-	}
+	// Load and render the language pack (ignore errors - template renders without pack)
+	_, _ = data.SetPack()
 
 	// Render the template
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := r.template.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("failed to render bootstrap template: %w", err)
 	}
 
@@ -85,25 +70,19 @@ func (r *Renderer) RenderBootstrapSpecEnhanced(projectName, platform, containerI
 
 	// Create template data with git repo URL
 	data := NewTemplateData(projectName, platform, platformDisplayName, containerImage, gitRepoURL, failures)
+	data.TemplateName = templateFileName
 
 	// Set dockerfile path if provided
 	if dockerfilePath != "" {
 		data.DockerfilePath = dockerfilePath
 	}
 
-	// Select template based on platform
-	templateName := r.selectTemplateForPlatform(platform)
-	data.TemplateName = templateName
-
-	// Get the template
-	tmpl, exists := r.templates[templateName]
-	if !exists {
-		return "", fmt.Errorf("template %s not found", templateName)
-	}
+	// Load and render the language pack (ignore errors - template renders without pack)
+	_, _ = data.SetPack()
 
 	// Render the template
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := r.template.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("failed to render bootstrap template: %w", err)
 	}
 
@@ -111,7 +90,7 @@ func (r *Renderer) RenderBootstrapSpecEnhanced(projectName, platform, containerI
 }
 
 // RenderPlatformSpecificBootstrap renders a bootstrap spec with platform-specific customizations.
-func (r *Renderer) RenderPlatformSpecificBootstrap(projectName, platform, containerImage string, failures []workspace.BootstrapFailure, customizations map[string]interface{}) (string, error) {
+func (r *Renderer) RenderPlatformSpecificBootstrap(projectName, platform, containerImage string, failures []workspace.BootstrapFailure, customizations map[string]any) (string, error) {
 	// Start with base template
 	baseSpec, err := r.RenderBootstrapSpec(projectName, platform, containerImage, failures)
 	if err != nil {
@@ -126,15 +105,6 @@ func (r *Renderer) RenderPlatformSpecificBootstrap(projectName, platform, contai
 	}
 
 	return baseSpec, nil
-}
-
-// GetTemplateNames returns the available template names.
-func (r *Renderer) GetTemplateNames() []string {
-	names := make([]string, 0, len(r.templates))
-	for name := range r.templates {
-		names = append(names, name)
-	}
-	return names
 }
 
 // GenerateBootstrapSpecFromReport creates a bootstrap specification from a verification report.
@@ -178,32 +148,16 @@ func (r *Renderer) RenderBootstrapSpecWithConfig(projectName, platform, containe
 
 	// Create template data with config data from global singleton
 	data := NewTemplateDataWithConfig(projectName, platform, platformDisplayName, containerImage, gitRepoURL, dockerfilePath, failures)
+	data.TemplateName = templateFileName
 
-	// Select template based on platform
-	templateName := r.selectTemplateForPlatform(platform)
-	data.TemplateName = templateName
-
-	// Get the template
-	tmpl, exists := r.templates[templateName]
-	if !exists {
-		return "", fmt.Errorf("template %s not found", templateName)
-	}
+	// Load and render the language pack (ignore errors - template renders without pack)
+	_, _ = data.SetPack()
 
 	// Render the template
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := r.template.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("failed to render bootstrap template: %w", err)
 	}
 
 	return buf.String(), nil
-}
-
-// selectTemplateForPlatform returns the appropriate template filename for the given platform.
-func (r *Renderer) selectTemplateForPlatform(platform string) string {
-	switch platform {
-	case "go":
-		return "golang.tpl.md"
-	default:
-		return "bootstrap.tpl.md"
-	}
 }
