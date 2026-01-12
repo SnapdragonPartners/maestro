@@ -104,18 +104,20 @@ pkg/templates/
 }
 ```
 
-**Required Fields (MVP):**
+**Required Fields:**
 - `name` - Pack identifier
 - `version` - Semantic version of the pack
 - `display_name` - Human-readable name
 - `makefile_targets.build` - Build command
-- `makefile_targets.test` - Test command (even if stub)
+- `makefile_targets.test` - Test command
+- `makefile_targets.lint` - Lint command (required for quality gates)
+- `makefile_targets.run` - Run command (required for demo mode)
 
 **Optional Fields:**
 - `language_version` - Default language version
 - `recommended_base_image` - Base Docker image
 - `tooling.*` - Informational tooling names
-- `makefile_targets.lint`, `.run`, `.clean` - Additional targets
+- `makefile_targets.clean`, `.install` - Additional targets
 - `template_sections.*` - Markdown fragments for insertion
 
 ### Key Design Decisions

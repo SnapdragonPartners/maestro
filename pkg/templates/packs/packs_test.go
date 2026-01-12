@@ -49,6 +49,8 @@ func TestPackRequiredFields(t *testing.T) {
 				"missing required field: display_name",
 				"missing required field: makefile_targets.build",
 				"missing required field: makefile_targets.test",
+				"missing required field: makefile_targets.lint",
+				"missing required field: makefile_targets.run",
 			},
 		},
 		{
@@ -59,6 +61,8 @@ func TestPackRequiredFields(t *testing.T) {
 				DisplayName: "Test",
 				MakefileTargets: MakefileTargets{
 					Test: "echo test",
+					Lint: "echo lint",
+					Run:  "echo run",
 				},
 			},
 			wantErrs: []string{
@@ -73,6 +77,8 @@ func TestPackRequiredFields(t *testing.T) {
 				DisplayName: "Test",
 				MakefileTargets: MakefileTargets{
 					Build: "echo build",
+					Lint:  "echo lint",
+					Run:   "echo run",
 				},
 			},
 			wantErrs: []string{
@@ -88,6 +94,8 @@ func TestPackRequiredFields(t *testing.T) {
 				MakefileTargets: MakefileTargets{
 					Build: "echo build",
 					Test:  "echo test",
+					Lint:  "echo lint",
+					Run:   "echo run",
 				},
 			},
 			wantErrs: nil,
@@ -203,6 +211,8 @@ func TestAllowedTokensPass(t *testing.T) {
 		MakefileTargets: MakefileTargets{
 			Build: "build -o ${PROJECT_NAME}",
 			Test:  "test ${PROJECT_NAME}",
+			Lint:  "lint ${PROJECT_NAME}",
+			Run:   "run ${PROJECT_NAME}",
 		},
 		RecommendedBaseImage: "golang:${LANGUAGE_VERSION}-alpine",
 	}
@@ -361,6 +371,8 @@ func TestLanguageVersionWarningWithoutDefinition(t *testing.T) {
 		MakefileTargets: MakefileTargets{
 			Build: "build",
 			Test:  "test",
+			Lint:  "lint",
+			Run:   "run",
 		},
 		RecommendedBaseImage: "golang:${LANGUAGE_VERSION}-alpine", // Uses token without definition
 	}

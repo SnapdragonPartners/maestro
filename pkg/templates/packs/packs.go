@@ -49,11 +49,12 @@ type Tooling struct {
 }
 
 // MakefileTargets contains the commands that go INTO Makefile targets.
+// Build, Test, Lint, and Run are required for proper Maestro functionality.
 type MakefileTargets struct {
 	Build   string `json:"build"`
 	Test    string `json:"test"`
-	Lint    string `json:"lint,omitempty"`
-	Run     string `json:"run,omitempty"`
+	Lint    string `json:"lint"`
+	Run     string `json:"run"`
 	Clean   string `json:"clean,omitempty"`
 	Install string `json:"install,omitempty"`
 }
@@ -206,6 +207,14 @@ func Validate(pack *Pack) ValidationResult {
 		result.Errors = append(result.Errors, "missing required field: makefile_targets.test")
 		result.Valid = false
 	}
+	if pack.MakefileTargets.Lint == "" {
+		result.Errors = append(result.Errors, "missing required field: makefile_targets.lint")
+		result.Valid = false
+	}
+	if pack.MakefileTargets.Run == "" {
+		result.Errors = append(result.Errors, "missing required field: makefile_targets.run")
+		result.Valid = false
+	}
 
 	// Validate token usage in all string fields that support tokens
 	tokenFields := map[string]string{
@@ -272,14 +281,18 @@ func (p *Pack) Rendered(values TokenValues) (*Pack, error) {
 		"${LANGUAGE_VERSION}": values.LanguageVersion,
 	}
 
-	// If pack's language_version is set and values doesn't override, use pack's value
-	if values.LanguageVersion == "" && p.LanguageVersion != "" {
-		replacements["${LANGUAGE_VERSION}"] = p.LanguageVersion
+	// Determine effective language version: prefer provided value, fall back to pack default
+	effectiveLanguageVersion := values.LanguageVersion
+	if effectiveLanguageVersion == "" && p.LanguageVersion != "" {
+		effectiveLanguageVersion = p.LanguageVersion
 	}
+	replacements["${LANGUAGE_VERSION}"] = effectiveLanguageVersion
 
 	// Create a copy with tokens replaced
 	rendered := *p
 	rendered.Tooling = p.Tooling
+	// Update LanguageVersion to the effective value used for replacements
+	rendered.LanguageVersion = effectiveLanguageVersion
 
 	var err error
 	if rendered.RecommendedBaseImage, err = replaceTokens(p.RecommendedBaseImage, replacements); err != nil {
