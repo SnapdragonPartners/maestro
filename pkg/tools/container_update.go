@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/utils"
 )
@@ -37,9 +38,9 @@ func (c *ContainerUpdateTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Name of the container to register in configuration",
 				},
-				"dockerfile_path": {
+				"dockerfile": {
 					Type:        "string",
-					Description: "Path to dockerfile relative to workspace root (defaults to 'Dockerfile')",
+					Description: "Path to Dockerfile within .maestro/ directory (defaults to .maestro/Dockerfile)",
 				},
 			},
 			Required: []string{"container_name"},
@@ -57,7 +58,8 @@ func (c *ContainerUpdateTool) PromptDocumentation() string {
 	return `- **container_update** - Register container for use after merge
   - Parameters:
     - container_name (required): name of container to register
-    - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
+    - dockerfile (optional): path within .maestro/ directory (defaults to .maestro/Dockerfile)
+  - IMPORTANT: Dockerfile must be in .maestro/ directory to avoid conflicts with production Dockerfiles
   - Validates container capabilities before registering
   - Automatically gets and pins the current image ID from Docker
   - Configuration is applied AFTER merge is successful (not immediately)
@@ -72,8 +74,19 @@ func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*E
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Extract optional parameters
-	dockerfilePath := utils.GetMapFieldOr(args, "dockerfile_path", DefaultDockerfile)
+	// Extract and validate dockerfile path - use config default if not provided
+	dockerfilePath := config.GetDockerfilePath()
+	if path := utils.GetMapFieldOr(args, "dockerfile", ""); path != "" {
+		// Validate path is within .maestro directory
+		if !config.IsValidDockerfilePath(path) {
+			return nil, fmt.Errorf("dockerfile must be within .maestro/ directory (got: %s)", path)
+		}
+		dockerfilePath = path
+		// Persist the dockerfile path to config
+		if err := config.SetDockerfilePath(path); err != nil {
+			return nil, fmt.Errorf("failed to update dockerfile path in config: %w", err)
+		}
+	}
 
 	return c.updateContainerConfiguration(ctx, containerName, dockerfilePath)
 }

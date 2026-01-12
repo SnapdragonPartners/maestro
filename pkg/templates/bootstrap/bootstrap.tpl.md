@@ -101,6 +101,12 @@ This story addresses infrastructure issues discovered during project initializat
   ```
   - Demo mode publishes all exposed ports using Docker's `-P` flag
   - Without EXPOSE, demo will start but won't be accessible from host
+
+#### Dockerfile Location:
+- **IMPORTANT**: Development Dockerfiles must be placed in `.maestro/` directory (e.g., `.maestro/Dockerfile`)
+- This avoids conflicts with production Dockerfiles in the repository root
+- If adapting an existing repo Dockerfile, copy it to `.maestro/Dockerfile` first
+- All container tools (`container_build`, `container_update`) enforce this constraint
 {{- end}}
 
 {{- if .HasFailuresOfType "binary_size"}}

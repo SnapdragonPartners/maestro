@@ -461,8 +461,8 @@ func (d *TemplateData) GetDockerfilePath() string {
 	if d.DockerfilePath != "" {
 		return d.DockerfilePath
 	}
-	// Fallback to default
-	return "Dockerfile"
+	// Fallback to standard .maestro/Dockerfile path
+	return config.DefaultDockerfilePath
 }
 
 // SetPack loads and renders the appropriate language pack for this template data.
