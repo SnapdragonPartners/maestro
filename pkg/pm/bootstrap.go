@@ -339,45 +339,65 @@ func (bd *BootstrapDetector) validateGitHubAccess(repoPath string) bool {
 }
 
 // detectMissingDockerfile checks if development container is properly configured.
-// Returns false (no Dockerfile needed) if container is configured with a pinned
-// image ID that exists in Docker. Returns true (Dockerfile needed) if no container
-// is configured, using bootstrap fallback, or pinned image doesn't exist.
+// Returns false (no bootstrap needed) if:
+//  1. Container is configured with valid pinned image (warns if Dockerfile missing), OR
+//  2. Container invalid but .maestro/Dockerfile exists (can be built)
+//
+// Returns true (bootstrap needed) if no valid container AND no Dockerfile.
 func (bd *BootstrapDetector) detectMissingDockerfile() bool {
-	// First check if there's already a working container configured
-	// If yes, we don't need a Dockerfile (container is ready to use)
 	cfg, err := config.GetConfig()
 	if err != nil {
 		bd.logger.Debug("Failed to get config: %v", err)
 		return true
 	}
 
-	// Container must be configured with a name
+	dockerfilePath := config.GetDockerfilePath()
+	fullPath := filepath.Join(bd.projectDir, dockerfilePath)
+	dockerfileExists := bd.fileExists(fullPath)
+
+	// Check 1: Is there already a working container configured?
+	if bd.hasValidContainer(&cfg) {
+		// Container is valid - warn if Dockerfile missing but don't require bootstrap
+		if !dockerfileExists {
+			bd.logger.Warn("Development container is valid but %s not found. "+
+				"Future container rebuilds may fail.", dockerfilePath)
+		}
+		bd.logger.Debug("Development container configured and available: %s (image: %s)",
+			cfg.Container.Name, cfg.Container.PinnedImageID)
+		return false // No bootstrap needed
+	}
+
+	// Container is not valid - check if we can build from Dockerfile
+	if dockerfileExists {
+		bd.logger.Debug("Found Maestro Dockerfile at %s - can rebuild container", fullPath)
+		return false // Dockerfile exists, can rebuild
+	}
+
+	bd.logger.Debug("No valid container and no Dockerfile at %s", fullPath)
+	return true // Bootstrap needed - must create Dockerfile
+}
+
+// hasValidContainer checks if a working container is already configured.
+func (bd *BootstrapDetector) hasValidContainer(cfg *config.Config) bool {
 	if cfg.Container == nil || cfg.Container.Name == "" {
-		bd.logger.Debug("Container not configured in config")
-		return true
+		return false
 	}
 
-	// Container must not be the bootstrap fallback container
 	if cfg.Container.Name == config.BootstrapContainerTag {
-		bd.logger.Debug("Container is still bootstrap fallback: %s", cfg.Container.Name)
-		return true
+		return false // Still using bootstrap fallback
 	}
 
-	// Container should have a pinned image ID (indicates it was built and configured)
 	if cfg.Container.PinnedImageID == "" {
-		bd.logger.Debug("Container has no pinned image ID (not built/configured): %s", cfg.Container.Name)
-		return true
+		return false // Not built/configured
 	}
 
-	// Verify the pinned image actually exists in Docker
-	if !bd.validateDockerImage(cfg.Container.PinnedImageID) {
-		bd.logger.Debug("Pinned container image not found in Docker: %s", cfg.Container.PinnedImageID)
-		return true
-	}
+	return bd.validateDockerImage(cfg.Container.PinnedImageID)
+}
 
-	// Container is configured and available - no Dockerfile story needed
-	bd.logger.Debug("Development container configured and available: %s (image: %s)", cfg.Container.Name, cfg.Container.PinnedImageID)
-	return false
+// fileExists checks if a file exists and is readable.
+func (bd *BootstrapDetector) fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // validateDockerImage checks if a Docker image exists locally.

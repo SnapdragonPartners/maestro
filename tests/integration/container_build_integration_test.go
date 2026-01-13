@@ -34,6 +34,7 @@ func TestContainerBuildIntegration(t *testing.T) {
 
 	// Test building a container from Dockerfile using a public base image
 	// The Dockerfile must include git and gh for maestro validation to pass
+	// NOTE: Dockerfiles must be in .maestro/ directory per standardization spec
 	testCases := []struct {
 		name              string
 		dockerfileContent string
@@ -41,24 +42,24 @@ func TestContainerBuildIntegration(t *testing.T) {
 		dockerfilePath    string
 	}{
 		{
-			name: "dockerfile_in_workspace_root",
+			name: "dockerfile_in_maestro_dir",
 			dockerfileContent: `FROM alpine:latest
 RUN apk add --no-cache git github-cli
 RUN adduser -D -u 1000 coder
 RUN echo "test" > /test.txt
 CMD ["sleep", "infinity"]`,
-			containerName:  "maestro-test-root",
-			dockerfilePath: "Dockerfile",
+			containerName:  "maestro-test-default",
+			dockerfilePath: ".maestro/Dockerfile",
 		},
 		{
-			name: "dockerfile_in_subdirectory",
+			name: "dockerfile_variant_in_maestro",
 			dockerfileContent: `FROM alpine:latest
 RUN apk add --no-cache git github-cli
 RUN adduser -D -u 1000 coder
-RUN echo "subdir test" > /subdir.txt
+RUN echo "variant test" > /variant.txt
 CMD ["sleep", "infinity"]`,
-			containerName:  "maestro-test-subdir",
-			dockerfilePath: "docker/Dockerfile",
+			containerName:  "maestro-test-variant",
+			dockerfilePath: ".maestro/Dockerfile.dev",
 		},
 	}
 
@@ -84,9 +85,9 @@ CMD ["sleep", "infinity"]`,
 			// Build the container (uses local executor internally, so we pass host path)
 			buildTool := tools.NewContainerBuildTool(workspaceDir)
 			args := map[string]any{
-				"container_name":  tc.containerName,
-				"dockerfile_path": tc.dockerfilePath,
-				"cwd":             workspaceDir, // Host path - container_build runs on host
+				"container_name": tc.containerName,
+				"dockerfile":     tc.dockerfilePath,
+				"cwd":            workspaceDir, // Host path - container_build runs on host
 			}
 
 			result, err := buildTool.Exec(ctx, args)

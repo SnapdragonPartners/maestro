@@ -21,8 +21,6 @@ import (
 // Only return (nil, error) for parameter validation errors, not execution failures.
 
 const (
-	// DefaultDockerfile is the standard Dockerfile name.
-	DefaultDockerfile = "Dockerfile"
 	// DefaultWorkspaceDir is the standard workspace directory inside containers.
 	DefaultWorkspaceDir = "/workspace"
 )

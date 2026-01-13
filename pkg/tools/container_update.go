@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/utils"
 )
@@ -37,9 +38,9 @@ func (c *ContainerUpdateTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Name of the container to register in configuration",
 				},
-				"dockerfile_path": {
+				"dockerfile": {
 					Type:        "string",
-					Description: "Path to dockerfile relative to workspace root (defaults to 'Dockerfile')",
+					Description: "Path to Dockerfile within .maestro/ directory (defaults to .maestro/Dockerfile)",
 				},
 			},
 			Required: []string{"container_name"},
@@ -57,7 +58,8 @@ func (c *ContainerUpdateTool) PromptDocumentation() string {
 	return `- **container_update** - Register container for use after merge
   - Parameters:
     - container_name (required): name of container to register
-    - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
+    - dockerfile (optional): path within .maestro/ directory (defaults to .maestro/Dockerfile)
+  - IMPORTANT: Dockerfile must be in .maestro/ directory to avoid conflicts with production Dockerfiles
   - Validates container capabilities before registering
   - Automatically gets and pins the current image ID from Docker
   - Configuration is applied AFTER merge is successful (not immediately)
@@ -72,8 +74,19 @@ func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*E
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Extract optional parameters
-	dockerfilePath := utils.GetMapFieldOr(args, "dockerfile_path", DefaultDockerfile)
+	// Extract and validate dockerfile path - use config default if not provided
+	// NOTE: Dockerfile path is stored in pending config and applied after merge,
+	// not written to config immediately (follows the deferred-apply contract)
+	dockerfilePath := config.GetDockerfilePath()
+	if path := utils.GetMapFieldOr(args, "dockerfile", ""); path != "" {
+		// Normalize absolute container paths (e.g., /workspace/.maestro/Dockerfile -> .maestro/Dockerfile)
+		normalizedPath := normalizeDockerfilePath(path)
+		// Validate normalized path is within .maestro directory
+		if !config.IsValidDockerfilePath(normalizedPath) {
+			return nil, fmt.Errorf("dockerfile must be within .maestro/ directory (got: %s)", path)
+		}
+		dockerfilePath = normalizedPath
+	}
 
 	return c.updateContainerConfiguration(ctx, containerName, dockerfilePath)
 }
@@ -169,4 +182,24 @@ func (c *ContainerUpdateTool) getContainerImageID(ctx context.Context, container
 
 	log.Printf("DEBUG: Retrieved image ID %s for container %s", imageID, containerName)
 	return imageID, nil
+}
+
+// normalizeDockerfilePath converts absolute container paths to relative paths.
+// For example, /workspace/.maestro/Dockerfile -> .maestro/Dockerfile
+// This allows callers to pass absolute paths while storing relative paths in config.
+func normalizeDockerfilePath(path string) string {
+	// If already relative, return as-is
+	if !strings.HasPrefix(path, "/") {
+		return path
+	}
+
+	// Look for .maestro/ in the path and extract from there
+	maestroMarker := "/" + config.MaestroDockerfileDir + "/"
+	if idx := strings.Index(path, maestroMarker); idx >= 0 {
+		// Return the path starting from .maestro/
+		return path[idx+1:] // Skip the leading /
+	}
+
+	// No .maestro/ found, return original path (will fail validation)
+	return path
 }

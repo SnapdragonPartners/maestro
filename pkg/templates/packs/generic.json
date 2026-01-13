@@ -1,0 +1,28 @@
+{
+  "name": "generic",
+  "display_name": "Generic",
+  "version": "1.0.0",
+
+  "recommended_base_image": "ubuntu:24.04",
+
+  "tooling": {
+    "package_manager": "make",
+    "linter": "",
+    "test_framework": "",
+    "formatter": ""
+  },
+
+  "makefile_targets": {
+    "build": "echo 'Build target - configure for your platform'",
+    "test": "echo 'Test target - configure for your platform'",
+    "lint": "echo 'Lint target - configure for your platform'",
+    "run": "echo 'Run target - configure for your platform'",
+    "clean": "echo 'Clean target - configure for your platform'"
+  },
+
+  "template_sections": {
+    "module_setup": "",
+    "lint_config": "",
+    "quality_setup": ""
+  }
+}

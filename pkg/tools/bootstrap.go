@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/mirror"
+	"orchestrator/pkg/templates/packs"
 	"orchestrator/pkg/workspace"
 )
 
@@ -121,6 +122,18 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 	}
 	if updateErr := config.UpdateProject(projectInfo); updateErr != nil {
 		return nil, fmt.Errorf("failed to update project info: %w", updateErr)
+	}
+
+	// Store the language pack version used for this platform
+	// This enables future "pack updated since bootstrap" detection
+	pack, _, packErr := packs.Get(platform)
+	if packErr == nil && pack != nil {
+		if updateErr := config.UpdateProjectPack(pack.Name, pack.Version); updateErr != nil {
+			b.logger.Warn("Failed to store pack version: %v", updateErr)
+			// Non-fatal - bootstrap continues
+		} else {
+			b.logger.Info("📦 Using %s Pack v%s for platform '%s'", pack.DisplayName, pack.Version, platform)
+		}
 	}
 
 	// Update git config (saves to disk automatically)

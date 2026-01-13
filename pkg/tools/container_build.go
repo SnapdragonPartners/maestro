@@ -46,9 +46,9 @@ func (c *ContainerBuildTool) Definition() ToolDefinition {
 					Type:        "string",
 					Description: "Name to tag the built container (e.g., 'maestro-hello-dev')",
 				},
-				"dockerfile_path": {
+				"dockerfile": {
 					Type:        "string",
-					Description: "Path to dockerfile relative to cwd (defaults to 'Dockerfile')",
+					Description: "Path to Dockerfile within .maestro/ directory (defaults to .maestro/Dockerfile)",
 				},
 				"platform": {
 					Type:        "string",
@@ -70,12 +70,12 @@ func (c *ContainerBuildTool) PromptDocumentation() string {
 	return `- **container_build** - Build Docker container from Dockerfile using buildx
   - Parameters:
     - container_name (required): name to tag the built container
-    - cwd (optional): working directory containing dockerfile
-    - dockerfile_path (optional): path to dockerfile (defaults to 'Dockerfile')
+    - cwd (optional): working directory (project root)
+    - dockerfile (optional): path within .maestro/ directory (defaults to .maestro/Dockerfile)
     - platform (optional): target platform for multi-arch builds
-  - Builds container using Docker buildx with validation and testing
-  - Use for DevOps stories that need to build platform-specific containers
-  - Avoids legacy docker build deprecation warnings`
+  - IMPORTANT: Dockerfile must be in .maestro/ directory to avoid conflicts with production Dockerfiles
+  - If adapting an existing repo Dockerfile, copy it to .maestro/ first
+  - Builds container using Docker buildx with validation and testing`
 }
 
 // translateToHostPath converts a container path (like /workspace) to the actual host path.
@@ -122,14 +122,21 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (*Ex
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Extract dockerfile path
-	dockerfilePath := DefaultDockerfile
-	if path, ok := args["dockerfile_path"].(string); ok && path != "" {
+	// Extract dockerfile path - use config default if not provided
+	dockerfilePath := config.GetDockerfilePath()
+	if path, ok := args["dockerfile"].(string); ok && path != "" {
 		dockerfilePath = path
 	}
 
-	// Translate dockerfile path if it's an absolute container path
+	// Translate dockerfile path if it's an absolute container path (e.g., /workspace/.maestro/Dockerfile)
+	// Must translate BEFORE validation so container paths are properly resolved to host paths
 	dockerfilePath = c.translateToHostPath(dockerfilePath)
+
+	// Validate translated path is within .maestro directory
+	if !config.IsValidDockerfilePathWithRoot(cwd, dockerfilePath) {
+		return nil, fmt.Errorf("dockerfile must be within .maestro/ directory (got: %s). "+
+			"This prevents accidentally modifying production Dockerfiles", dockerfilePath)
+	}
 
 	// Extract platform
 	platform := ""
