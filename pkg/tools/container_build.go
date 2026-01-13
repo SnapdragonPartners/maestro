@@ -122,19 +122,21 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (*Ex
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Extract and validate dockerfile path - use config default if not provided
+	// Extract dockerfile path - use config default if not provided
 	dockerfilePath := config.GetDockerfilePath()
 	if path, ok := args["dockerfile"].(string); ok && path != "" {
-		// Validate path is within .maestro directory
-		if !config.IsValidDockerfilePathWithRoot(cwd, path) {
-			return nil, fmt.Errorf("dockerfile must be within .maestro/ directory (got: %s). "+
-				"This prevents accidentally modifying production Dockerfiles", path)
-		}
 		dockerfilePath = path
 	}
 
-	// Translate dockerfile path if it's an absolute container path
+	// Translate dockerfile path if it's an absolute container path (e.g., /workspace/.maestro/Dockerfile)
+	// Must translate BEFORE validation so container paths are properly resolved to host paths
 	dockerfilePath = c.translateToHostPath(dockerfilePath)
+
+	// Validate translated path is within .maestro directory
+	if !config.IsValidDockerfilePathWithRoot(cwd, dockerfilePath) {
+		return nil, fmt.Errorf("dockerfile must be within .maestro/ directory (got: %s). "+
+			"This prevents accidentally modifying production Dockerfiles", dockerfilePath)
+	}
 
 	// Extract platform
 	platform := ""
