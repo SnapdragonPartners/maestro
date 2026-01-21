@@ -625,11 +625,32 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
 		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
 
+	// Log container status details
+	cs := reqs.ContainerStatus
+	if cs.HasValidContainer {
+		d.logger.Info("🐳 Container: valid (%s, image: %s)", cs.ContainerName, truncateImageID(cs.PinnedImageID))
+	} else if cs.IsBootstrapFallback {
+		if cs.DockerfileExists {
+			d.logger.Info("🐳 Container: bootstrap fallback, %s exists (can build project container)", cs.DockerfilePath)
+		} else {
+			d.logger.Info("🐳 Container: bootstrap fallback, need to create %s", cs.DockerfilePath)
+		}
+	} else if cs.DockerfileExists {
+		d.logger.Info("🐳 Container: not configured, but %s exists (can build)", cs.DockerfilePath)
+	} else {
+		d.logger.Info("🐳 Container: %s", cs.Reason)
+	}
+
 	// Check if any components are missing
 	needsBootstrap := reqs.HasAnyMissingComponents()
 	if needsBootstrap {
-		d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
-			reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
+		d.logger.Info("📋 Bootstrap needed:")
+		logBootstrapComponent(d.logger, "  Project config", reqs.NeedsProjectConfig)
+		logBootstrapComponent(d.logger, "  Git repository", reqs.NeedsGitRepo)
+		logBootstrapComponent(d.logger, "  Dockerfile", reqs.NeedsDockerfile)
+		logBootstrapComponent(d.logger, "  Makefile", reqs.NeedsMakefile)
+		logBootstrapComponent(d.logger, "  Knowledge graph", reqs.NeedsKnowledgeGraph)
+		logBootstrapComponent(d.logger, "  Claude Code", reqs.NeedsClaudeCode)
 	}
 
 	return reqs, needsBootstrap
@@ -709,6 +730,28 @@ func (d *Driver) EnsureBootstrapChecked(_ context.Context) error {
 	// Bootstrap detection runs in SETUP state, so it may not exist yet
 	// if PM is still initializing. This is expected - not an error.
 	return nil
+}
+
+// truncateImageID shortens a Docker image ID for display.
+// Image IDs are typically long SHA256 hashes - truncate to first 12 chars for readability.
+func truncateImageID(imageID string) string {
+	// Remove sha256: prefix if present
+	if len(imageID) > 7 && imageID[:7] == "sha256:" {
+		imageID = imageID[7:]
+	}
+	if len(imageID) > 12 {
+		return imageID[:12]
+	}
+	return imageID
+}
+
+// logBootstrapComponent logs a single bootstrap component status with visual indicators.
+func logBootstrapComponent(logger *logx.Logger, name string, needed bool) {
+	if needed {
+		logger.Info("%s: ❌ missing", name)
+	} else {
+		logger.Info("%s: ✓ ok", name)
+	}
 }
 
 // updateDemoAvailable updates the demo availability flag based on bootstrap requirements.

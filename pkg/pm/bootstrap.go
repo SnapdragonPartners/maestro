@@ -31,21 +31,36 @@ type BootstrapDetector struct {
 	projectDir string
 }
 
+// ContainerStatus describes the current state of container configuration.
+// Used for detailed logging during bootstrap detection.
+//
+//nolint:govet // Field alignment optimized for clarity over memory efficiency
+type ContainerStatus struct {
+	HasValidContainer   bool   // True if a valid project container is configured and available
+	IsBootstrapFallback bool   // True if using maestro-bootstrap fallback container
+	ContainerName       string // Name of configured container (empty if none)
+	PinnedImageID       string // Pinned image ID (empty if not configured)
+	DockerfilePath      string // Path to Dockerfile (e.g., .maestro/Dockerfile)
+	DockerfileExists    bool   // True if Dockerfile exists at the path
+	Reason              string // Human-readable explanation of the status
+}
+
 // BootstrapRequirements describes what bootstrap components are missing.
 //
 //nolint:govet // Field alignment optimized for clarity over memory efficiency
 type BootstrapRequirements struct {
-	NeedsBuildTargets   []string // List of missing Makefile targets
-	MissingComponents   []string // Human-readable list of missing items
-	DetectedPlatform    string   // Detected platform: go, python, node, generic
-	PlatformConfidence  float64  // Confidence score 0.0 to 1.0
-	NeedsProjectConfig  bool     // True if project name or platform is missing
-	NeedsGitRepo        bool     // True if no git repository is configured
-	NeedsDockerfile     bool     // True if no Dockerfile exists
-	NeedsMakefile       bool     // True if no Makefile exists or missing required targets
-	NeedsKnowledgeGraph bool     // True if .maestro/knowledge.dot doesn't exist
-	NeedsClaudeCode     bool     // True if coder_mode is "claude-code" but Claude Code not in container
-	NeedsGitignore      bool     // True if no .gitignore exists
+	NeedsBuildTargets   []string        // List of missing Makefile targets
+	MissingComponents   []string        // Human-readable list of missing items
+	DetectedPlatform    string          // Detected platform: go, python, node, generic
+	PlatformConfidence  float64         // Confidence score 0.0 to 1.0
+	NeedsProjectConfig  bool            // True if project name or platform is missing
+	NeedsGitRepo        bool            // True if no git repository is configured
+	NeedsDockerfile     bool            // True if no Dockerfile exists
+	NeedsMakefile       bool            // True if no Makefile exists or missing required targets
+	NeedsKnowledgeGraph bool            // True if .maestro/knowledge.dot doesn't exist
+	NeedsClaudeCode     bool            // True if coder_mode is "claude-code" but Claude Code not in container
+	NeedsGitignore      bool            // True if no .gitignore exists
+	ContainerStatus     ContainerStatus // Detailed container status for logging
 }
 
 // NeedsBootstrapGate returns true if project metadata (name/platform/git) is missing.
@@ -170,8 +185,8 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 		reqs.MissingComponents = append(reqs.MissingComponents, "git repository")
 	}
 
-	// Check for Dockerfile
-	reqs.NeedsDockerfile = bd.detectMissingDockerfile()
+	// Check for Dockerfile and container status
+	reqs.NeedsDockerfile, reqs.ContainerStatus = bd.detectMissingDockerfile()
 	if reqs.NeedsDockerfile {
 		reqs.MissingComponents = append(reqs.MissingComponents, "Dockerfile")
 	}
@@ -339,42 +354,72 @@ func (bd *BootstrapDetector) validateGitHubAccess(repoPath string) bool {
 }
 
 // detectMissingDockerfile checks if development container is properly configured.
-// Returns false (no bootstrap needed) if:
+// Returns (false, status) - no bootstrap needed if:
 //  1. Container is configured with valid pinned image (warns if Dockerfile missing), OR
 //  2. Container invalid but .maestro/Dockerfile exists (can be built)
 //
-// Returns true (bootstrap needed) if no valid container AND no Dockerfile.
-func (bd *BootstrapDetector) detectMissingDockerfile() bool {
+// Returns (true, status) - bootstrap needed if no valid container AND no Dockerfile.
+func (bd *BootstrapDetector) detectMissingDockerfile() (bool, ContainerStatus) {
+	status := ContainerStatus{
+		DockerfilePath: config.GetDockerfilePath(),
+	}
+
 	cfg, err := config.GetConfig()
 	if err != nil {
 		bd.logger.Debug("Failed to get config: %v", err)
-		return true
+		status.Reason = "config unavailable"
+		return true, status
 	}
 
-	dockerfilePath := config.GetDockerfilePath()
-	fullPath := filepath.Join(bd.projectDir, dockerfilePath)
-	dockerfileExists := bd.fileExists(fullPath)
+	fullPath := filepath.Join(bd.projectDir, status.DockerfilePath)
+	status.DockerfileExists = bd.fileExists(fullPath)
 
-	// Check 1: Is there already a working container configured?
+	// Extract container info from config
+	if cfg.Container != nil {
+		status.ContainerName = cfg.Container.Name
+		status.PinnedImageID = cfg.Container.PinnedImageID
+
+		// Check if using bootstrap fallback container
+		if cfg.Container.Name == config.BootstrapContainerTag {
+			status.IsBootstrapFallback = true
+		}
+	}
+
+	// Check 1: Is there already a working project container configured?
 	if bd.hasValidContainer(&cfg) {
+		status.HasValidContainer = true
 		// Container is valid - warn if Dockerfile missing but don't require bootstrap
-		if !dockerfileExists {
+		if !status.DockerfileExists {
 			bd.logger.Warn("Development container is valid but %s not found. "+
-				"Future container rebuilds may fail.", dockerfilePath)
+				"Future container rebuilds may fail.", status.DockerfilePath)
+			status.Reason = "valid container, Dockerfile missing (rebuild may fail)"
+		} else {
+			status.Reason = "valid container with Dockerfile"
 		}
 		bd.logger.Debug("Development container configured and available: %s (image: %s)",
 			cfg.Container.Name, cfg.Container.PinnedImageID)
-		return false // No bootstrap needed
+		return false, status // No bootstrap needed
 	}
 
 	// Container is not valid - check if we can build from Dockerfile
-	if dockerfileExists {
+	if status.DockerfileExists {
 		bd.logger.Debug("Found Maestro Dockerfile at %s - can rebuild container", fullPath)
-		return false // Dockerfile exists, can rebuild
+		if status.IsBootstrapFallback {
+			status.Reason = "using bootstrap fallback, Dockerfile exists (can build project container)"
+		} else {
+			status.Reason = "no project container, but Dockerfile exists (can build)"
+		}
+		return false, status // Dockerfile exists, can rebuild
 	}
 
+	// No valid container and no Dockerfile
 	bd.logger.Debug("No valid container and no Dockerfile at %s", fullPath)
-	return true // Bootstrap needed - must create Dockerfile
+	if status.IsBootstrapFallback {
+		status.Reason = "using bootstrap fallback, no Dockerfile to build project container"
+	} else {
+		status.Reason = "no container configured and no Dockerfile"
+	}
+	return true, status // Bootstrap needed - must create Dockerfile
 }
 
 // hasValidContainer checks if a working container is already configured.

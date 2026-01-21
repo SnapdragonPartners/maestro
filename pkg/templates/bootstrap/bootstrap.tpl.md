@@ -8,9 +8,6 @@
 {{- if .GitRepoURL}}
 **Repository**: {{.GitRepoURL}}
 {{- end}}
-{{- if .Pack}}
-**Language Pack**: {{.Pack.DisplayName}} v{{.Pack.Version}}
-{{- end}}
 **Total Issues**: {{.TotalFailures}}
 {{- if .HasCriticalFailures}}
 **Priority**: 🔴 **CRITICAL** - Infrastructure issues blocking development
@@ -80,33 +77,40 @@ This story addresses infrastructure issues discovered during project initializat
 - [ ] Validate container can run build and test commands
 - [ ] Ensure rootless execution works with `--user=1000:1000 --read-only --network=none`
 
+#### Dockerfile Location:
+- Create `.maestro/Dockerfile` for the development container (this is the default path)
+- Alternative: `.maestro/Dockerfile.variant` if multiple development containers are needed
+- All container tools (`container_build`, `container_update`) require Dockerfiles to be in `.maestro/`
+- This avoids conflicts with production Dockerfiles in the repository root
+
+#### Base Image and Toolchain:
+{{- if and .Pack .Pack.RecommendedBaseImage}}
+- **Recommended base image**: `{{.Pack.RecommendedBaseImage}}`
+{{- end}}
+{{- if and .Pack .Pack.LanguageVersion}}
+- **Required toolchain**: {{.Pack.DisplayName}} {{.Pack.LanguageVersion}} compiler/runtime
+{{- end}}
+- Container MUST include the language toolchain needed to build and run the application
+
 #### MANDATORY Container Requirements:
-- [ ] **User UID 1000**: Container MUST have a user with UID 1000 pre-created in the Dockerfile
+- [ ] **Language Toolchain**: Container MUST have {{if .Pack}}{{.Pack.DisplayName}}{{else}}the required language{{end}} compiler/runtime installed
+{{- if and .Pack .Pack.RecommendedBaseImage}}
+  - Use base image `{{.Pack.RecommendedBaseImage}}` which includes the toolchain
+{{- end}}
+- [ ] **User UID 1000**: Container MUST have a user with UID 1000 pre-created
   ```dockerfile
-  # REQUIRED: Create coder user - Maestro runs containers with --user 1000:1000
+  # REQUIRED: Maestro runs containers with --user 1000:1000 --read-only
   RUN adduser -D -u 1000 coder || useradd -u 1000 -m coder
   ```
-  - Maestro runs containers with `--user 1000:1000 --read-only`
-  - User cannot be created at runtime (read-only filesystem)
-- [ ] **Git CLI**: Container MUST have `git` installed for version control operations
+- [ ] **Git CLI**: Container MUST have `git` installed
   ```dockerfile
-  # REQUIRED: Git is needed for clone, commit, push, rebase operations
   RUN apk add --no-cache git || apt-get update && apt-get install -y git
   ```
-  - Note: GitHub CLI (gh) is NOT required in container - PR operations run on the host
+  - Note: GitHub CLI (gh) is NOT required - PR operations run on the host
 - [ ] **EXPOSE Directive**: Container MUST expose the application port for demo mode
   ```dockerfile
-  # REQUIRED: Expose the port your application listens on (e.g., 8080)
-  EXPOSE 8080
+  EXPOSE 8080  # Use your application's actual port
   ```
-  - Demo mode publishes all exposed ports using Docker's `-P` flag
-  - Without EXPOSE, demo will start but won't be accessible from host
-
-#### Dockerfile Location:
-- **IMPORTANT**: Development Dockerfiles must be placed in `.maestro/` directory (e.g., `.maestro/Dockerfile`)
-- This avoids conflicts with production Dockerfiles in the repository root
-- If adapting an existing repo Dockerfile, copy it to `.maestro/Dockerfile` first
-- All container tools (`container_build`, `container_update`) enforce this constraint
 {{- end}}
 
 {{- if .HasFailuresOfType "binary_size"}}
@@ -140,9 +144,71 @@ This story addresses infrastructure issues discovered during project initializat
 
 ### Maestro Infrastructure
 {{- range .InfrastructureFailures}}
+{{- if eq .Component "knowledge_graph"}}
+- [ ] Create `.maestro/knowledge.dot` - Knowledge graph documenting codebase architecture
+{{- else}}
 - [ ] Fix infrastructure: {{.Description}}
 {{- end}}
+{{- end}}
 - [ ] Verify .maestro directory structure
+
+#### Knowledge Graph (`.maestro/knowledge.dot`)
+The knowledge graph is a DOT-format file that documents codebase architecture, patterns, and rules for AI agents. It uses a specific schema with structured node attributes.
+
+**Node Schema** - Each node MUST have these attributes:
+- `type` (required): `component` | `interface` | `abstraction` | `datastore` | `external` | `pattern` | `rule`
+- `level` (required): `architecture` | `implementation`
+- `status` (required): `current` | `deprecated` | `future` | `legacy`
+- `description` (required): Human-readable explanation
+- `priority` (rules only): `critical` | `high` | `medium` | `low`
+- Optional: `tag`, `component`, `path`, `example`
+
+**Edge Relations** - Connections between nodes use:
+- `calls`, `uses`, `implements`, `configured_with`
+- `must_follow`, `must_not_use` (for rules)
+- `superseded_by`, `supersedes`, `coexists_with`
+
+**Example:**
+```dot
+digraph ProjectKnowledge {
+    // Architectural pattern
+    "error-handling" [
+        type="pattern"
+        level="implementation"
+        status="current"
+        description="Wrap errors with context using fmt.Errorf"
+        example="return fmt.Errorf(\"failed to fetch user: %w\", err)"
+    ];
+
+    // Critical rule
+    "test-coverage" [
+        type="rule"
+        level="implementation"
+        status="current"
+        description="Maintain minimum 80% test coverage"
+        priority="critical"
+    ];
+
+    // Component
+    "api-server" [
+        type="component"
+        level="architecture"
+        status="current"
+        description="HTTP server handling API requests"
+        path="cmd/server/main.go"
+    ];
+
+    // Relationship
+    "api-server" -> "error-handling" [relation="must_follow"];
+}
+```
+
+**What to Document:**
+- Architectural decisions and their rationale
+- Code patterns that should be followed consistently
+- Critical rules (test coverage, error handling, security)
+- Component relationships and dependencies
+- Deprecated patterns (status="deprecated") agents should avoid
 {{- end}}
 
 {{- if .HasFailuresOfType "external_tools"}}
@@ -251,7 +317,6 @@ This story addresses infrastructure issues discovered during project initializat
 
 ### Platform: {{.PlatformDisplayName}}
 {{- if .Pack}}
-- **Language Pack**: {{.Pack.DisplayName}} v{{.Pack.Version}}
 {{- if .Pack.LanguageVersion}}
 - **Language Version**: {{.Pack.LanguageVersion}}
 {{- end}}
@@ -341,8 +406,8 @@ RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
 - [ ] Git operations working
 - [ ] No files exceed size limits
 
-Upon completion, mark `bootstrap_complete = true` in project configuration and proceed with regular development workflow.
+Upon completion, the bootstrap detector will automatically recognize the completed work on the next run and allow normal development workflow to proceed.
 
 ---
 
-*Generated by Maestro Bootstrap System{{if .Pack}} - {{.Pack.DisplayName}} Pack v{{.Pack.Version}}{{end}}*
+*Generated by Maestro Bootstrap System*
