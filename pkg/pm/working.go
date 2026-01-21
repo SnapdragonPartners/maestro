@@ -17,6 +17,7 @@ import (
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
+	"orchestrator/pkg/workspace"
 )
 
 // handleWorking manages PM's active work: interviewing, drafting, and submitting.
@@ -396,25 +397,35 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 					return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
 				}
 
-				// Extract spec data from ProcessEffect.Data (infrastructure and user specs are separate)
-				infrastructureSpec := utils.GetMapFieldOr[string](effectData, "infrastructure_spec", "")
+				// Extract spec data from ProcessEffect.Data
 				userSpec := utils.GetMapFieldOr[string](effectData, "user_spec", "")
 				summary := utils.GetMapFieldOr[string](effectData, "summary", "")
 				metadata, _ := utils.SafeAssert[map[string]any](effectData["metadata"])
 				isHotfix := utils.GetMapFieldOr[bool](effectData, "is_hotfix", false)
+
+				// Extract bootstrap requirements (typed slice from spec_submit)
+				var bootstrapReqIDs []string
+				if reqs, ok := effectData["bootstrap_requirements"]; ok && reqs != nil {
+					// Convert from []workspace.BootstrapRequirementID to []string for storage
+					if typedReqs, ok := reqs.([]workspace.BootstrapRequirementID); ok {
+						for _, r := range typedReqs {
+							bootstrapReqIDs = append(bootstrapReqIDs, string(r))
+						}
+					}
+				}
 
 				// Store specs using canonical state keys
 				d.SetStateData(StateKeyUserSpecMd, userSpec)
 				d.SetStateData(StateKeySpecMetadata, metadata)
 				d.SetStateData(StateKeyIsHotfix, isHotfix)
 
-				// Only store bootstrap spec if not a hotfix (hotfixes don't include bootstrap)
-				if !isHotfix && infrastructureSpec != "" {
-					d.SetStateData(StateKeyBootstrapSpecMd, infrastructureSpec)
+				// Only store bootstrap requirements if not a hotfix (hotfixes don't include bootstrap)
+				if !isHotfix && len(bootstrapReqIDs) > 0 {
+					d.SetStateData(StateKeyBootstrapRequirements, bootstrapReqIDs)
 				}
 
-				d.logger.Info("📋 Stored spec for preview (bootstrap: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
-					len(infrastructureSpec), len(userSpec), isHotfix, summary)
+				d.logger.Info("📋 Stored spec for preview (bootstrap reqs: %v, user: %d bytes, hotfix: %v, summary: %s)",
+					bootstrapReqIDs, len(userSpec), isHotfix, summary)
 
 				return SignalSpecPreview, nil
 
@@ -443,22 +454,25 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 // sendSpecApprovalRequest sends an approval REQUEST message to the architect.
 func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	// Get state data
-	// Get infrastructure and user specs from state using canonical keys
+	// Get user spec from state using canonical key
 	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
 	if userSpec == "" {
 		return fmt.Errorf("no user_spec_md found in state")
 	}
-	infrastructureSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapSpecMd, "")
 
-	// Create approval request payload with both specs
-	// Content field contains user requirements, InfrastructureSpec is separate
+	// Get bootstrap requirements from state (stored as []string)
+	// Architect will render the full technical spec from these IDs
+	bootstrapReqs, _ := utils.GetStateValue[[]string](d.BaseStateMachine, StateKeyBootstrapRequirements)
+
+	// Create approval request payload
+	// Content field contains user requirements, BootstrapRequirements contains requirement IDs
 	approvalPayload := &proto.ApprovalRequestPayload{
-		ApprovalType:       proto.ApprovalTypeSpec,
-		Content:            userSpec,           // User requirements only
-		InfrastructureSpec: infrastructureSpec, // Infrastructure requirements (bootstrap) if any
-		Reason:             "PM has completed specification and requests architect review",
-		Context:            "Specification ready for validation and story generation",
-		Confidence:         proto.ConfidenceHigh,
+		ApprovalType:          proto.ApprovalTypeSpec,
+		Content:               userSpec,      // User requirements only
+		BootstrapRequirements: bootstrapReqs, // Bootstrap requirement IDs (architect renders spec)
+		Reason:                "PM has completed specification and requests architect review",
+		Context:               "Specification ready for validation and story generation",
+		Confidence:            proto.ConfidenceHigh,
 	}
 
 	// Create REQUEST message
@@ -475,8 +489,8 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 		return fmt.Errorf("failed to dispatch REQUEST: %w", err)
 	}
 
-	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, infrastructure: %d bytes, id: %s)",
-		len(userSpec), len(infrastructureSpec), requestMsg.ID)
+	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, bootstrap reqs: %v, id: %s)",
+		len(userSpec), bootstrapReqs, requestMsg.ID)
 
 	// Checkpoint state for crash recovery (spec submission is a stable boundary)
 	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {

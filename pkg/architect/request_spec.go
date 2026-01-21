@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
+	"orchestrator/pkg/workspace"
 )
 
 // handleSpecReview processes a spec review approval request from PM.
@@ -24,8 +25,30 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("user spec not found in approval request Content field")
 	}
 
-	// Extract infrastructure spec (bootstrap requirements) if present
-	infrastructureSpec := approvalPayload.InfrastructureSpec
+	// Render infrastructure spec from bootstrap requirements (architect owns technical details)
+	// This converts requirement IDs to full technical specification using language pack
+	var infrastructureSpec string
+	if len(approvalPayload.BootstrapRequirements) > 0 {
+		// Convert string IDs back to typed IDs
+		reqIDs := make([]workspace.BootstrapRequirementID, 0, len(approvalPayload.BootstrapRequirements))
+		for _, id := range approvalPayload.BootstrapRequirements {
+			reqIDs = append(reqIDs, workspace.BootstrapRequirementID(id))
+		}
+
+		d.logger.Info("📋 Received bootstrap requirements from PM: %v", reqIDs)
+
+		// Render the full technical spec
+		rendered, err := RenderBootstrapSpec(reqIDs, d.logger)
+		if err != nil {
+			d.logger.Warn("Failed to render bootstrap spec: %v (continuing without bootstrap)", err)
+		} else {
+			infrastructureSpec = rendered
+		}
+	} else if approvalPayload.InfrastructureSpec != "" {
+		// Fallback for legacy payloads with pre-rendered markdown (deprecated)
+		d.logger.Warn("Using deprecated InfrastructureSpec field - PM should send BootstrapRequirements instead")
+		infrastructureSpec = approvalPayload.InfrastructureSpec
+	}
 
 	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes", len(userSpec), len(infrastructureSpec))
 
