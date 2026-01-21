@@ -75,6 +75,38 @@ func (r *BootstrapRequirements) HasAnyMissingComponents() bool {
 	return len(r.MissingComponents) > 0
 }
 
+// ToRequirementIDs converts BootstrapRequirements to a slice of BootstrapRequirementID.
+// This is used by spec_submit to pass structured requirements to the architect,
+// who then renders the full technical specification.
+func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirementID {
+	var ids []workspace.BootstrapRequirementID
+
+	// Container-related requirements
+	if r.ContainerStatus.IsBootstrapFallback && !r.ContainerStatus.HasValidContainer {
+		ids = append(ids, workspace.BootstrapReqContainer)
+	}
+	if r.NeedsDockerfile {
+		ids = append(ids, workspace.BootstrapReqDockerfile)
+	}
+
+	// Build system requirements
+	if r.NeedsMakefile {
+		ids = append(ids, workspace.BootstrapReqBuildSystem)
+	}
+
+	// Infrastructure requirements
+	if r.NeedsKnowledgeGraph {
+		ids = append(ids, workspace.BootstrapReqKnowledgeGraph)
+	}
+
+	// Git requirements
+	if r.NeedsGitRepo {
+		ids = append(ids, workspace.BootstrapReqGitAccess)
+	}
+
+	return ids
+}
+
 // ToBootstrapFailures converts requirements to workspace.BootstrapFailure slice
 // for use with the bootstrap template renderer.
 func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailure {

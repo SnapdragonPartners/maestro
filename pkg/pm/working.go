@@ -230,10 +230,14 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 	// Inject state into spec_submit tool
 	if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
-		// Inject bootstrap markdown if it exists in state
-		if bootstrapMarkdown := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapRequirements, ""); bootstrapMarkdown != "" {
-			submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
-			d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
+		// Inject bootstrap requirement IDs if bootstrap is needed
+		// The architect will render the full technical specification from these IDs
+		if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+			reqIDs := reqs.ToRequirementIDs()
+			if len(reqIDs) > 0 {
+				submitTool.SetBootstrapRequirements(reqIDs)
+				d.logger.Info("📋 Injected bootstrap requirements into spec_submit: %v", reqIDs)
+			}
 		}
 
 		// Inject in_flight flag to enforce hotfix-only mode during development
