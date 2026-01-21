@@ -403,29 +403,24 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				metadata, _ := utils.SafeAssert[map[string]any](effectData["metadata"])
 				isHotfix := utils.GetMapFieldOr[bool](effectData, "is_hotfix", false)
 
-				// Extract bootstrap requirements (typed slice from spec_submit)
-				var bootstrapReqIDs []string
-				if reqs, ok := effectData["bootstrap_requirements"]; ok && reqs != nil {
-					// Convert from []workspace.BootstrapRequirementID to []string for storage
-					if typedReqs, ok := reqs.([]workspace.BootstrapRequirementID); ok {
-						for _, r := range typedReqs {
-							bootstrapReqIDs = append(bootstrapReqIDs, string(r))
-						}
-					}
-				}
-
 				// Store specs using canonical state keys
 				d.SetStateData(StateKeyUserSpecMd, userSpec)
 				d.SetStateData(StateKeySpecMetadata, metadata)
 				d.SetStateData(StateKeyIsHotfix, isHotfix)
 
-				// Only store bootstrap requirements if not a hotfix (hotfixes don't include bootstrap)
-				if !isHotfix && len(bootstrapReqIDs) > 0 {
-					d.SetStateData(StateKeyBootstrapRequirements, bootstrapReqIDs)
-				}
+				// Note: Bootstrap requirements are not stored from spec_submit effect.
+				// They're already available via GetBootstrapRequirements().ToRequirementIDs()
+				// which reads from the detection struct stored during SETUP.
 
-				d.logger.Info("📋 Stored spec for preview (bootstrap reqs: %v, user: %d bytes, hotfix: %v, summary: %s)",
-					bootstrapReqIDs, len(userSpec), isHotfix, summary)
+				// Log for debugging
+				var reqCount int
+				if reqs, ok := effectData["bootstrap_requirements"]; ok && reqs != nil {
+					if typedReqs, ok := reqs.([]workspace.BootstrapRequirementID); ok {
+						reqCount = len(typedReqs)
+					}
+				}
+				d.logger.Info("📋 Stored spec for preview (bootstrap reqs: %d, user: %d bytes, hotfix: %v, summary: %s)",
+					reqCount, len(userSpec), isHotfix, summary)
 
 				return SignalSpecPreview, nil
 
@@ -460,9 +455,14 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 		return fmt.Errorf("no user_spec_md found in state")
 	}
 
-	// Get bootstrap requirements from state (stored as []string)
+	// Get bootstrap requirements from detection struct (stored during SETUP)
 	// Architect will render the full technical spec from these IDs
-	bootstrapReqs, _ := utils.GetStateValue[[]string](d.BaseStateMachine, StateKeyBootstrapRequirements)
+	var bootstrapReqs []string
+	if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+		for _, id := range reqs.ToRequirementIDs() {
+			bootstrapReqs = append(bootstrapReqs, string(id))
+		}
+	}
 
 	// Create approval request payload
 	// Content field contains user requirements, BootstrapRequirements contains requirement IDs
