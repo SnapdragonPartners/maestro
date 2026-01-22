@@ -1,10 +1,25 @@
 # Bootstrap Spec Refactor: PM Requirements → Architect Technical Spec
 
+## Status: IMPLEMENTED
+
+All phases completed. Ready for production testing.
+
+**Commits:**
+| Commit | Phase | Description |
+|--------|-------|-------------|
+| `5add4ad` | 1 | Types and architect rendering |
+| `d0a1883` | 2-3 | spec_submit and PM updates |
+| `2759681` | 4 | Architect spec processing |
+| `fa51a58` | 5 | Cleanup (state key conflict fix) |
+| `977631c` | Tests | Comprehensive test coverage |
+
+---
+
 ## Overview
 
 This document specifies refactoring bootstrap specification generation to cleanly separate **PM requirements** (what's missing) from **Architect technical specification** (how to fix it).
 
-### Current State
+### Previous State
 
 PM agent:
 1. Detects bootstrap requirements (deterministic code)
@@ -13,11 +28,11 @@ PM agent:
 4. Injects rendered markdown into `spec_submit` tool via `SetBootstrapMarkdown()`
 5. `spec_submit` passes `infrastructure_spec` (markdown string) to architect
 
-### Proposed State
+### Current State (After Refactor)
 
 PM agent:
 1. Detects bootstrap requirements (deterministic code - no change)
-2. Stores requirements in state (no change)
+2. Stores detection struct in state (no change)
 3. Injects **structured requirements** into `spec_submit` via `SetBootstrapRequirements()`
 4. `spec_submit` passes `bootstrap_requirements` (typed slice) to architect
 
@@ -36,57 +51,28 @@ Architect agent:
 
 ---
 
-## Data Flow
+## Implementation Details
 
-### Current Flow
+### Files Changed
 
-```
-PM detects requirements (deterministic)
-    ↓
-PM stores in state
-    ↓
-PM loads language pack
-    ↓
-PM renders bootstrap.tpl.md → markdown string
-    ↓
-PM injects via SetBootstrapMarkdown(markdown)
-    ↓
-spec_submit passes infrastructure_spec (markdown) to architect
-    ↓
-Architect receives pre-rendered markdown
-    ↓
-Architect generates stories
-```
+| File | Change Type | Description |
+|------|-------------|-------------|
+| `pkg/workspace/bootstrap_requirements.go` | **New** | `BootstrapRequirementID` type, validation, conversion helpers |
+| `pkg/workspace/bootstrap_requirements_test.go` | **New** | Unit tests for requirement ID handling |
+| `pkg/architect/bootstrap_spec.go` | **New** | `RenderBootstrapSpec()` function |
+| `pkg/architect/bootstrap_spec_test.go` | **New** | 14 unit tests for spec rendering |
+| `pkg/architect/request_spec.go` | Modified | Receives requirements, calls renderer |
+| `pkg/tools/spec_submit.go` | Modified | `SetBootstrapRequirements()` method |
+| `pkg/pm/bootstrap.go` | Modified | Added `ToRequirementIDs()` method |
+| `pkg/pm/working.go` | Modified | Injects requirements, sends to architect |
+| `pkg/proto/unified_protocol.go` | Modified | Added `BootstrapRequirements` field to payload |
 
-### Proposed Flow
+### Type Definitions
 
-```
-PM detects requirements (deterministic)
-    ↓
-PM stores in state
-    ↓
-PM injects via SetBootstrapRequirements([]BootstrapRequirementID)
-    ↓
-spec_submit passes bootstrap_requirements (typed slice) to architect
-    ↓
-Architect receives structured requirements
-    ↓
-Architect loads config + language pack
-    ↓
-Architect renders bootstrap.tpl.md
-    ↓
-Architect generates stories
-```
-
----
-
-## Type Definitions
-
-### BootstrapRequirementID (New Type)
+**File: `pkg/workspace/bootstrap_requirements.go`**
 
 ```go
 // BootstrapRequirementID is a typed identifier for bootstrap requirements.
-// Using a string-based type allows JSON serialization while providing type safety.
 type BootstrapRequirementID string
 
 const (
@@ -99,325 +85,183 @@ const (
     BootstrapReqExternalTools  BootstrapRequirementID = "external_tools"
 )
 
-// ValidBootstrapRequirements is the set of valid requirement IDs.
-var ValidBootstrapRequirements = map[BootstrapRequirementID]bool{
-    BootstrapReqContainer:      true,
-    BootstrapReqDockerfile:     true,
-    BootstrapReqBuildSystem:    true,
-    BootstrapReqKnowledgeGraph: true,
-    BootstrapReqGitAccess:      true,
-    BootstrapReqBinarySize:     true,
-    BootstrapReqExternalTools:  true,
-}
-```
+// IsValidRequirementID checks if a requirement ID is valid.
+func IsValidRequirementID(id BootstrapRequirementID) bool
 
-These map directly to existing `workspace.BootstrapFailureType` values. We may consolidate or alias them.
+// RequirementIDToFailureType maps a requirement ID to a failure type.
+func RequirementIDToFailureType(id BootstrapRequirementID) BootstrapFailureType
 
----
-
-## Interface Changes
-
-### spec_submit Tool (Internal Change Only)
-
-**No change to tool signature** - the LLM-facing interface stays the same:
-```go
-spec_submit(markdown string, summary string, hotfix bool, maestro_md string)
-```
-
-**Internal changes:**
-
-Current:
-```go
-type SpecSubmitTool struct {
-    projectDir        string
-    bootstrapMarkdown string  // Pre-rendered markdown
-    inFlight          bool
-}
-
-func (s *SpecSubmitTool) SetBootstrapMarkdown(markdown string)
-```
-
-Proposed:
-```go
-type SpecSubmitTool struct {
-    projectDir            string
-    bootstrapRequirements []BootstrapRequirementID  // Structured requirements
-    inFlight              bool
-}
-
-func (s *SpecSubmitTool) SetBootstrapRequirements(reqs []BootstrapRequirementID)
-```
-
-**ProcessEffect data change:**
-
-Current:
-```go
-Data: map[string]any{
-    "infrastructure_spec": infrastructureSpec,  // markdown string
-    "user_spec":           markdownStr,
-    // ...
-}
-```
-
-Proposed:
-```go
-Data: map[string]any{
-    "bootstrap_requirements": s.bootstrapRequirements,  // []BootstrapRequirementID
-    "user_spec":              markdownStr,
-    // ...
-}
+// RequirementIDsToFailures converts requirement IDs to BootstrapFailure structs.
+func RequirementIDsToFailures(ids []BootstrapRequirementID) []BootstrapFailure
 ```
 
 ### PM Changes
 
 **File: `pkg/pm/bootstrap.go`**
 
-Remove:
-- Language pack loading
-- Template rendering (`bootstrap.RenderSpec()`)
-- `RenderBootstrapSpec()` function
+Added `ToRequirementIDs()` method to `BootstrapRequirements`:
 
-Keep:
-- `BootstrapRequirements` struct (simplified)
-- `DetectBootstrapRequirements()` function
-- `ContainerStatus` struct (for logging)
-
-**Simplified BootstrapRequirements:**
 ```go
-type BootstrapRequirements struct {
-    // Detection results
-    NeedsBootstrap        bool
-    RequirementIDs        []BootstrapRequirementID
+func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirementID {
+    var ids []workspace.BootstrapRequirementID
 
-    // Detailed status (for logging/debugging only)
-    ContainerStatus       ContainerStatus
-    DetectedPlatform      string
-    PlatformConfidence    float64
+    // Container-related requirements
+    if r.ContainerStatus.IsBootstrapFallback && !r.ContainerStatus.HasValidContainer {
+        ids = append(ids, workspace.BootstrapReqContainer)
+    }
+    if r.NeedsDockerfile {
+        ids = append(ids, workspace.BootstrapReqDockerfile)
+    }
+    if r.NeedsMakefile {
+        ids = append(ids, workspace.BootstrapReqBuildSystem)
+    }
+    if r.NeedsKnowledgeGraph {
+        ids = append(ids, workspace.BootstrapReqKnowledgeGraph)
+    }
+    if r.NeedsGitRepo {
+        ids = append(ids, workspace.BootstrapReqGitAccess)
+    }
 
-    // Legacy fields (keep for now, deprecate later)
-    NeedsDockerfile       bool
-    NeedsMakefile         bool
-    NeedsKnowledgeGraph   bool
-    // ...
-}
-
-// ToRequirementIDs converts boolean flags to typed requirement IDs.
-func (b *BootstrapRequirements) ToRequirementIDs() []BootstrapRequirementID {
-    var ids []BootstrapRequirementID
-    if b.NeedsDockerfile {
-        ids = append(ids, BootstrapReqDockerfile)
-    }
-    if b.NeedsMakefile {
-        ids = append(ids, BootstrapReqBuildSystem)
-    }
-    if b.NeedsKnowledgeGraph {
-        ids = append(ids, BootstrapReqKnowledgeGraph)
-    }
-    // ... etc
     return ids
 }
 ```
 
-**File: `pkg/pm/driver.go`**
+**File: `pkg/pm/working.go`**
 
-Change injection call:
+Requirements injection in `getWorkingTools()`:
 ```go
-// Current
-specSubmitTool.SetBootstrapMarkdown(renderedMarkdown)
+if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+    reqIDs := reqs.ToRequirementIDs()
+    if len(reqIDs) > 0 {
+        submitTool.SetBootstrapRequirements(reqIDs)
+        d.logger.Info("📋 Injected bootstrap requirements into spec_submit: %v", reqIDs)
+    }
+}
+```
 
-// Proposed
-reqs := d.GetBootstrapRequirements()
-if reqs != nil {
-    specSubmitTool.SetBootstrapRequirements(reqs.ToRequirementIDs())
+Requirements sent in `sendSpecApprovalRequest()`:
+```go
+var bootstrapReqs []string
+if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+    for _, id := range reqs.ToRequirementIDs() {
+        bootstrapReqs = append(bootstrapReqs, string(id))
+    }
 }
 ```
 
 ### Architect Changes
 
-**New file: `pkg/architect/bootstrap_spec.go`**
+**File: `pkg/architect/bootstrap_spec.go`**
 
 ```go
-// RenderBootstrapSpec renders the technical bootstrap specification from requirements.
-// This is called when architect receives bootstrap_requirements in spec data.
-func RenderBootstrapSpec(requirements []BootstrapRequirementID) (string, error) {
+func RenderBootstrapSpec(requirements []workspace.BootstrapRequirementID, logger *logx.Logger) (string, error) {
+    // Log received requirements
+    logger.Info("Received bootstrap requirements: %v", requirements)
+
     cfg, err := config.GetConfig()
     if err != nil {
         return "", fmt.Errorf("failed to get config: %w", err)
     }
 
-    // Load language pack from config
-    platform := cfg.Project.PrimaryPlatform
-    if platform == "" {
-        platform = "generic"
-    }
-    pack, _, err := packs.Get(platform)
-    if err != nil {
-        return "", fmt.Errorf("failed to load pack for %s: %w", platform, err)
+    // Determine platform from config
+    platform := "generic"
+    if cfg.Project != nil && cfg.Project.PrimaryPlatform != "" {
+        platform = cfg.Project.PrimaryPlatform
     }
 
-    // Convert requirement IDs to BootstrapFailure structs
-    failures := requirementIDsToFailures(requirements)
-
-    // Build template data from config
-    data := bootstrap.NewTemplateDataWithConfig(
-        cfg.Project.Name,
-        platform,
-        pack.DisplayName,
-        cfg.Container.Name,
-        cfg.Git.RepoURL,
-        cfg.Container.Dockerfile,
-        failures,
-    )
-    if _, err := data.SetPack(); err != nil {
-        return "", fmt.Errorf("failed to set pack: %w", err)
-    }
-
-    // Render template
-    return bootstrap.RenderSpec(data)
-}
-
-// requirementIDsToFailures converts typed IDs to BootstrapFailure structs.
-func requirementIDsToFailures(ids []BootstrapRequirementID) []workspace.BootstrapFailure {
-    var failures []workspace.BootstrapFailure
-    for _, id := range ids {
-        failure := workspace.BootstrapFailure{
-            Type:        idToFailureType(id),
-            Component:   string(id),
-            Description: idToDescription(id),
-            Priority:    idToPriority(id),
-        }
-        failures = append(failures, failure)
-    }
-    return failures
+    // Load language pack
+    pack, warnings, err := packs.Get(platform)
+    // ... render template using pack and requirements
 }
 ```
 
-**File: `pkg/architect/driver.go`**
+**File: `pkg/architect/request_spec.go`**
 
-When processing spec submission:
+Architect receives and renders requirements:
 ```go
-// Check for bootstrap requirements in spec data
-if reqs, ok := specData["bootstrap_requirements"].([]BootstrapRequirementID); ok && len(reqs) > 0 {
-    // Render bootstrap spec from requirements
-    bootstrapSpec, err := RenderBootstrapSpec(reqs)
-    if err != nil {
-        return fmt.Errorf("failed to render bootstrap spec: %w", err)
+if len(approvalPayload.BootstrapRequirements) > 0 {
+    reqIDs := make([]workspace.BootstrapRequirementID, 0, len(approvalPayload.BootstrapRequirements))
+    for _, id := range approvalPayload.BootstrapRequirements {
+        reqIDs = append(reqIDs, workspace.BootstrapRequirementID(id))
     }
-    // Prepend to user spec
-    fullSpec = bootstrapSpec + "\n\n" + userSpec
+
+    d.logger.Info("📋 Received bootstrap requirements from PM: %v", reqIDs)
+
+    rendered, err := RenderBootstrapSpec(reqIDs, d.logger)
+    if err != nil {
+        d.logger.Warn("Failed to render bootstrap spec: %v (continuing without bootstrap)", err)
+    } else {
+        infrastructureSpec = rendered
+    }
+}
+```
+
+### Proto Changes
+
+**File: `pkg/proto/unified_protocol.go`**
+
+```go
+type ApprovalRequestPayload struct {
+    // ...
+    InfrastructureSpec    string   `json:"infrastructure_spec,omitempty"`    // DEPRECATED
+    BootstrapRequirements []string `json:"bootstrap_requirements,omitempty"` // NEW: Requirement IDs
+    // ...
 }
 ```
 
 ---
 
-## Implementation Plan
+## Data Flow (Implemented)
 
-### Phase 1: Add Type and Architect Rendering
-
-**Files:**
-- `pkg/workspace/bootstrap_types.go` (or add to existing) - `BootstrapRequirementID` type
-- `pkg/architect/bootstrap_spec.go` (new) - rendering logic
-
-**Steps:**
-1. Define `BootstrapRequirementID` type and constants
-2. Create `RenderBootstrapSpec()` function
-3. Create `requirementIDsToFailures()` helper
-4. Add unit tests for rendering
-
-### Phase 2: Update spec_submit Tool
-
-**Files:**
-- `pkg/tools/spec_submit.go`
-
-**Steps:**
-1. Change `bootstrapMarkdown string` → `bootstrapRequirements []BootstrapRequirementID`
-2. Change `SetBootstrapMarkdown()` → `SetBootstrapRequirements()`
-3. Update ProcessEffect data to pass `bootstrap_requirements`
-4. Update tests
-
-### Phase 3: Update PM
-
-**Files:**
-- `pkg/pm/bootstrap.go`
-- `pkg/pm/driver.go`
-
-**Steps:**
-1. Add `ToRequirementIDs()` method to `BootstrapRequirements`
-2. Remove `RenderBootstrapSpec()` and pack loading
-3. Update injection call to use `SetBootstrapRequirements()`
-4. Update tests
-
-### Phase 4: Update Architect Spec Processing
-
-**Files:**
-- `pkg/architect/driver.go`
-- `pkg/architect/spec_processing.go` (or equivalent)
-
-**Steps:**
-1. Detect `bootstrap_requirements` in incoming spec data
-2. Call `RenderBootstrapSpec()` when present
-3. Prepend rendered spec to user spec
-4. Update tests
-
-### Phase 5: Cleanup
-
-**Files:**
-- `pkg/pm/bootstrap.go`
-- `pkg/templates/pm/*.tpl.md`
-
-**Steps:**
-1. Remove unused pack-loading code from PM
-2. Remove bootstrap-related template references from PM prompts
-3. Remove deprecated `bootstrapMarkdown` references
+```
+PM detects requirements (deterministic)
+    ↓
+PM stores detection struct in state (StateKeyBootstrapRequirements)
+    ↓
+PM calls getWorkingTools() which injects requirements:
+    submitTool.SetBootstrapRequirements(reqs.ToRequirementIDs())
+    ↓
+spec_submit stores requirements in ProcessEffect.Data["bootstrap_requirements"]
+    ↓
+PM calls sendSpecApprovalRequest() which gets requirements from detection struct:
+    reqs.ToRequirementIDs() → payload.BootstrapRequirements
+    ↓
+Architect receives REQUEST message with BootstrapRequirements field
+    ↓
+Architect calls RenderBootstrapSpec(reqIDs, logger)
+    - Loads config
+    - Loads language pack
+    - Converts IDs to BootstrapFailure structs
+    - Renders bootstrap.tpl.md
+    ↓
+Architect prepends rendered spec to user spec
+    ↓
+Architect generates stories from combined spec
+```
 
 ---
 
 ## Observability
 
-### Logging Bootstrap Requirements
+### Log Messages
 
-Log bootstrap requirements at key points for debugging and visibility:
-
-**1. When PM injects requirements (pkg/pm/driver.go):**
-```go
-reqs := d.GetBootstrapRequirements()
-if reqs != nil {
-    reqIDs := reqs.ToRequirementIDs()
-    if len(reqIDs) > 0 {
-        d.logger.Info("📋 Bootstrap requirements detected: %v", reqIDs)
-        specSubmitTool.SetBootstrapRequirements(reqIDs)
-    }
-}
+**PM logs:**
+```
+📋 Injected bootstrap requirements into spec_submit: [dockerfile build_system knowledge_graph]
+📋 Stored spec for preview (bootstrap reqs: 3, user: 1234 bytes, hotfix: false, summary: ...)
 ```
 
-**2. When architect receives requirements (pkg/architect/driver.go):**
-```go
-if reqs, ok := specData["bootstrap_requirements"].([]BootstrapRequirementID); ok && len(reqs) > 0 {
-    a.logger.Info("📋 Received bootstrap requirements from PM: %v", reqs)
-
-    bootstrapSpec, err := RenderBootstrapSpec(reqs)
-    if err != nil {
-        return fmt.Errorf("failed to render bootstrap spec: %w", err)
-    }
-
-    // Log rendered spec length for sanity check
-    a.logger.Info("📋 Rendered bootstrap spec: %d bytes", len(bootstrapSpec))
-
-    fullSpec = bootstrapSpec + "\n\n" + userSpec
-}
+**Architect logs:**
+```
+📋 Received bootstrap requirements from PM: [dockerfile build_system knowledge_graph]
+Received bootstrap requirements: [dockerfile build_system knowledge_graph]
+Rendered bootstrap spec: 9663 bytes
 ```
 
-**3. Optional: Write to temp file for inspection:**
-```go
-// In architect, after rendering bootstrap spec
-if os.Getenv("MAESTRO_DEBUG_BOOTSTRAP") != "" {
-    debugPath := filepath.Join(os.TempDir(), "maestro-bootstrap-spec.md")
-    os.WriteFile(debugPath, []byte(bootstrapSpec), 0644)
-    a.logger.Info("📋 Bootstrap spec written to: %s", debugPath)
-}
-```
+### Debug Output
 
-This allows inspection via:
+Set `MAESTRO_DEBUG_BOOTSTRAP=1` to write rendered spec to temp file:
+
 ```bash
 MAESTRO_DEBUG_BOOTSTRAP=1 maestro run
 cat /tmp/maestro-bootstrap-spec.md
@@ -425,54 +269,166 @@ cat /tmp/maestro-bootstrap-spec.md
 
 ---
 
-## Migration Notes
+## Test Coverage
 
-### Backward Compatibility
+### Unit Tests Added
 
-The change is internal - no LLM-facing interface changes. Specs submitted before the change will continue to work because:
-1. `infrastructure_spec` (old) and `bootstrap_requirements` (new) can coexist during migration
-2. Architect can check for either field and handle appropriately
+**`pkg/workspace/bootstrap_requirements_test.go`** (148 lines):
+- `TestIsValidRequirementID` - 9 cases for ID validation
+- `TestRequirementIDToFailureType` - 8 cases for type mapping
+- `TestRequirementIDsToFailures` - 4 cases for conversion
+- `TestRequirementIDsToFailures_FieldValues` - Validates output fields
 
-### Rollback Plan
+**`pkg/pm/bootstrap_test.go`** (added ~180 lines):
+- `TestBootstrapRequirements_ToRequirementIDs` - 9 test cases:
+  - Empty requirements
+  - Container fallback without valid container
+  - Container fallback with valid container (no requirement)
+  - Dockerfile only
+  - Makefile only
+  - Knowledge graph only
+  - Git repo only
+  - Multiple requirements
+  - All requirements
+- `TestBootstrapRequirements_ToRequirementIDs_Idempotent`
+- `TestBootstrapRequirements_ToRequirementIDs_AllIDsAreValid`
 
-If issues arise:
-1. Revert `SetBootstrapRequirements()` → `SetBootstrapMarkdown()`
-2. Restore pack loading in PM
-3. Restore template rendering in PM
+**`pkg/architect/bootstrap_spec_test.go`** (new, ~400 lines):
+- `TestRenderBootstrapSpec_EmptyRequirements`
+- `TestRenderBootstrapSpec_SingleRequirement` - 5 cases (container, dockerfile, build_system, knowledge_graph, git_access)
+- `TestRenderBootstrapSpec_MultipleRequirements`
+- `TestRenderBootstrapSpec_DifferentPlatforms` - 5 platforms (go, python, node, rust, generic)
+- `TestRenderBootstrapSpec_NilLogger`
+- `TestRenderBootstrapSpec_NoConfig`
+- `TestRenderBootstrapSpec_MinimalConfig`
+- `TestRenderBootstrapSpec_DebugOutput`
+- `TestRenderBootstrapSpec_ProjectConfigValues`
+- `TestRenderBootstrapSpec_InvalidRequirementFiltered`
+- `TestRenderBootstrapSpec_SpecSize`
+
+### Coverage Improvement
+
+- `pkg/architect`: 22.3% → 24.1% (+1.8%)
+- `pkg/pm`: 25.0% → 26.1% (+1.1%)
+- `pkg/workspace`: Already had 11.6%
 
 ---
 
-## File Summary
+## Production Testing Checklist
 
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `pkg/workspace/bootstrap_types.go` | New/Modified | `BootstrapRequirementID` type definition |
-| `pkg/architect/bootstrap_spec.go` | New | Bootstrap spec rendering from requirements |
-| `pkg/architect/driver.go` | Modified | Call bootstrap renderer when requirements present |
-| `pkg/tools/spec_submit.go` | Modified | `bootstrapRequirements` field, `SetBootstrapRequirements()` |
-| `pkg/pm/bootstrap.go` | Modified | Add `ToRequirementIDs()`, remove rendering |
-| `pkg/pm/driver.go` | Modified | Use `SetBootstrapRequirements()` |
+### Pre-requisites
+- [ ] All unit tests pass (`make test`)
+- [ ] Lint passes (`make lint`)
+- [ ] Build succeeds (`make build`)
+
+### Scenario 1: Greenfield Project (Full Bootstrap)
+
+**Setup:** Empty directory, no config, no Dockerfile, no Makefile
+
+**Expected behavior:**
+1. PM detects missing components: container, dockerfile, build_system, knowledge_graph
+2. PM calls `spec_submit` with user spec
+3. `spec_submit` includes `bootstrap_requirements: [container, dockerfile, build_system, knowledge_graph]`
+4. Architect receives requirements and logs: `📋 Received bootstrap requirements from PM: [container dockerfile build_system knowledge_graph]`
+5. Architect renders full technical spec (~10KB)
+6. Architect generates bootstrap stories
+
+**Verify:**
+- [ ] PM logs show `📋 Injected bootstrap requirements into spec_submit: [...]`
+- [ ] Architect logs show `📋 Received bootstrap requirements from PM: [...]`
+- [ ] Architect logs show `Rendered bootstrap spec: XXXXX bytes`
+- [ ] Generated stories include Dockerfile creation, Makefile creation, etc.
+- [ ] With `MAESTRO_DEBUG_BOOTSTRAP=1`, check `/tmp/maestro-bootstrap-spec.md` contains full spec
+
+### Scenario 2: Partial Bootstrap (Missing Makefile)
+
+**Setup:** Project with Dockerfile but no Makefile
+
+**Expected behavior:**
+1. PM detects: `build_system` requirement only
+2. Architect receives single requirement
+3. Architect renders smaller spec (~5KB)
+
+**Verify:**
+- [ ] Only `build_system` in requirements
+- [ ] Rendered spec focuses on Makefile
+
+### Scenario 3: No Bootstrap Needed
+
+**Setup:** Fully configured project (Dockerfile, Makefile, knowledge graph exist)
+
+**Expected behavior:**
+1. PM detects no missing components
+2. No bootstrap requirements injected
+3. Architect receives user spec only (no `bootstrap_requirements`)
+4. Architect does NOT log "Received bootstrap requirements"
+
+**Verify:**
+- [ ] No bootstrap-related logs in architect
+- [ ] Spec processing works normally
+
+### Scenario 4: Hotfix Mode
+
+**Setup:** Development in progress (`in_flight=true`)
+
+**Expected behavior:**
+1. Hotfix submission (`hotfix=true`) should NOT include bootstrap requirements
+2. Bootstrap requirements are only for initial spec submissions
+
+**Verify:**
+- [ ] Hotfix submissions have empty/nil `bootstrap_requirements`
+
+### Scenario 5: Platform-Specific Rendering
+
+**Setup:** Projects with different `primary_platform` values
+
+**Expected behavior:**
+1. Go project → Go pack loaded, Go-specific content in spec
+2. Generic project → Generic pack loaded
+
+**Verify:**
+- [ ] Platform appears in rendered spec
+- [ ] Pack-specific content (e.g., Go build commands) appears
+
+### Scenario 6: Error Handling
+
+**Test cases:**
+- [ ] Missing config → `RenderBootstrapSpec` returns error, architect logs warning, continues without bootstrap
+- [ ] Invalid requirement ID → Filtered out by `RequirementIDsToFailures`
+- [ ] Unknown platform → Falls back to generic pack with warning
+
+---
+
+## Rollback Plan
+
+If issues arise in production:
+
+1. Revert commits in reverse order:
+   ```bash
+   git revert 977631c fa51a58 2759681 d0a1883 5add4ad
+   ```
+
+2. Or cherry-pick fix: The `InfrastructureSpec` field is still present (marked deprecated) so old-style payloads would still work if needed.
 
 ---
 
 ## Success Criteria
 
-1. PM no longer loads language packs or renders templates
-2. Bootstrap requirements flow as typed slice, not markdown string
-3. Architect renders full technical spec from requirements
-4. PM LLM never sees bootstrap requirement details
-5. All existing bootstrap tests pass
-6. No change in coder-received story content
+All criteria met:
+
+1. ✅ PM no longer loads language packs or renders templates
+2. ✅ Bootstrap requirements flow as typed slice, not markdown string
+3. ✅ Architect renders full technical spec from requirements
+4. ✅ PM LLM never sees bootstrap requirement details
+5. ✅ All existing bootstrap tests pass
+6. ⏳ No change in coder-received story content (verify in production)
 
 ---
 
-## Estimated Effort
+## Future Improvements
 
-- **Phase 1** (Types + Architect rendering): 2-3 hours
-- **Phase 2** (spec_submit changes): 1 hour
-- **Phase 3** (PM simplification): 1-2 hours
-- **Phase 4** (Architect integration): 1-2 hours
-- **Phase 5** (Cleanup): 1 hour
-- **Testing**: 2-3 hours
+1. **Remove deprecated `InfrastructureSpec` field** - After confirming production works, remove the deprecated field from `ApprovalRequestPayload`
 
-**Total: 8-12 hours** (1-2 days)
+2. **Add integration tests** - Full PM → Architect flow with mock LLM
+
+3. **Add more requirement types** - `BootstrapReqClaudeCode`, `BootstrapReqGitignore` are defined but not yet used in `ToRequirementIDs()`
