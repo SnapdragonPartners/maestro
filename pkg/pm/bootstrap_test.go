@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"orchestrator/pkg/workspace"
 )
 
 func TestBootstrapDetector_DetectMissingComponents(t *testing.T) {
@@ -392,6 +394,219 @@ func TestDriver_UpdateDemoAvailable_NilRequirements(t *testing.T) {
 
 	if !d.IsDemoAvailable() {
 		t.Error("Expected demoAvailable to remain unchanged when reqs is nil")
+	}
+}
+
+func TestBootstrapRequirements_ToRequirementIDs(t *testing.T) {
+	tests := []struct {
+		name        string
+		reqs        *BootstrapRequirements
+		expectIDs   []workspace.BootstrapRequirementID
+		expectCount int
+	}{
+		{
+			name: "empty requirements returns empty slice",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   true,
+					IsBootstrapFallback: false,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{},
+			expectCount: 0,
+		},
+		{
+			name: "container fallback without valid container",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   false,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqContainer},
+			expectCount: 1,
+		},
+		{
+			name: "container fallback with valid container - no requirement",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   true,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{},
+			expectCount: 0,
+		},
+		{
+			name: "needs dockerfile only",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqDockerfile},
+			expectCount: 1,
+		},
+		{
+			name: "needs makefile only",
+			reqs: &BootstrapRequirements{
+				NeedsMakefile: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqBuildSystem},
+			expectCount: 1,
+		},
+		{
+			name: "needs knowledge graph only",
+			reqs: &BootstrapRequirements{
+				NeedsKnowledgeGraph: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqKnowledgeGraph},
+			expectCount: 1,
+		},
+		{
+			name: "needs git repo only",
+			reqs: &BootstrapRequirements{
+				NeedsGitRepo: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqGitAccess},
+			expectCount: 1,
+		},
+		{
+			name: "multiple requirements",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile:     true,
+				NeedsMakefile:       true,
+				NeedsKnowledgeGraph: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   false,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs: []workspace.BootstrapRequirementID{
+				workspace.BootstrapReqContainer,
+				workspace.BootstrapReqDockerfile,
+				workspace.BootstrapReqBuildSystem,
+				workspace.BootstrapReqKnowledgeGraph,
+			},
+			expectCount: 4,
+		},
+		{
+			name: "all requirements",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile:     true,
+				NeedsMakefile:       true,
+				NeedsKnowledgeGraph: true,
+				NeedsGitRepo:        true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   false,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs: []workspace.BootstrapRequirementID{
+				workspace.BootstrapReqContainer,
+				workspace.BootstrapReqDockerfile,
+				workspace.BootstrapReqBuildSystem,
+				workspace.BootstrapReqKnowledgeGraph,
+				workspace.BootstrapReqGitAccess,
+			},
+			expectCount: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ids := tt.reqs.ToRequirementIDs()
+
+			if len(ids) != tt.expectCount {
+				t.Errorf("ToRequirementIDs() returned %d IDs, want %d", len(ids), tt.expectCount)
+			}
+
+			// Verify all expected IDs are present (order may vary)
+			for _, expectedID := range tt.expectIDs {
+				found := false
+				for _, id := range ids {
+					if id == expectedID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("ToRequirementIDs() missing expected ID: %s", expectedID)
+				}
+			}
+
+			// Verify no unexpected IDs
+			for _, id := range ids {
+				found := false
+				for _, expectedID := range tt.expectIDs {
+					if id == expectedID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("ToRequirementIDs() returned unexpected ID: %s", id)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapRequirements_ToRequirementIDs_Idempotent(t *testing.T) {
+	// Verify that calling ToRequirementIDs multiple times returns same results
+	reqs := &BootstrapRequirements{
+		NeedsDockerfile:     true,
+		NeedsMakefile:       true,
+		NeedsKnowledgeGraph: true,
+		ContainerStatus: ContainerStatus{
+			HasValidContainer:   false,
+			IsBootstrapFallback: true,
+		},
+	}
+
+	ids1 := reqs.ToRequirementIDs()
+	ids2 := reqs.ToRequirementIDs()
+
+	if len(ids1) != len(ids2) {
+		t.Errorf("ToRequirementIDs() not idempotent: got %d and %d IDs", len(ids1), len(ids2))
+	}
+
+	for i := range ids1 {
+		if ids1[i] != ids2[i] {
+			t.Errorf("ToRequirementIDs() not idempotent at index %d: %s vs %s", i, ids1[i], ids2[i])
+		}
+	}
+}
+
+func TestBootstrapRequirements_ToRequirementIDs_AllIDsAreValid(t *testing.T) {
+	// Verify all returned IDs pass validation
+	reqs := &BootstrapRequirements{
+		NeedsDockerfile:     true,
+		NeedsMakefile:       true,
+		NeedsKnowledgeGraph: true,
+		NeedsGitRepo:        true,
+		ContainerStatus: ContainerStatus{
+			HasValidContainer:   false,
+			IsBootstrapFallback: true,
+		},
+	}
+
+	ids := reqs.ToRequirementIDs()
+
+	for _, id := range ids {
+		if !workspace.IsValidRequirementID(id) {
+			t.Errorf("ToRequirementIDs() returned invalid ID: %s", id)
+		}
 	}
 }
 
