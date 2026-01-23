@@ -175,22 +175,15 @@ func (d *Driver) setupInterviewContext() error {
 			d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
 				bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
 		} else {
-			// Project metadata is complete, but other components missing - use full interview with bootstrap context
-			// Note: BootstrapRequired enables the bootstrap questions section in the template.
-			// The PM LLM gathers user requirements; bootstrap spec is rendered by the architect.
+			// Project metadata is complete, but other components missing - use full interview
+			// Note: BootstrapRequired enables the project setup section in the template.
+			// PM gathers project metadata; infrastructure requirements are opaque to PM LLM.
 			templateName = templates.PMInterviewStartTemplate
 			templateData.Extra["BootstrapRequired"] = true
-			templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
 			templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
-			templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
-			templateData.Extra["HasRepository"] = !bootstrapReqs.NeedsGitRepo
-			templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
-			templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
-			templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
-			templateData.Extra["NeedsClaudeCode"] = bootstrapReqs.NeedsClaudeCode
 
-			d.logger.Info("📋 Using full interview template with bootstrap context: %d missing components, platform: %s",
-				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
+			d.logger.Info("📋 Using interview template with bootstrap context (platform: %s)",
+				bootstrapReqs.DetectedPlatform)
 		}
 	} else {
 		// No bootstrap needed - use clean interview template
@@ -415,12 +408,12 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				d.logger.Info("📋 Stored spec for preview (bootstrap reqs: %d, user: %d bytes, hotfix: %v, summary: %s)",
 					reqCount, len(userSpec), isHotfix, summary)
 
-				return SignalSpecPreview, nil
+				return tools.SignalSpecPreview, nil
 
 			case tools.SignalAwaitUser:
 				// chat_ask_user was called - transition to AWAIT_USER state
 				d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
-				return SignalAwaitUser, nil
+				return tools.SignalAwaitUser, nil
 
 			default:
 				return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)

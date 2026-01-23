@@ -46,48 +46,41 @@ The architect will review your spec and create implementation stories from it.
 {{end}}
 
 {{if .Extra.BootstrapRequired}}
-## Bootstrap Requirements Detected
+## Project Setup Required
 
-**Project Setup Needed:** The following components are missing and need to be set up:
-{{range .Extra.MissingComponents}}
-- {{.}}
-{{end}}
+Before gathering feature requirements, you need to collect essential project information.
 
 {{if .Extra.DetectedPlatform}}
-**Detected Platform:** {{.Extra.DetectedPlatform}} ({{.Extra.PlatformConfidence}}% confidence)
+**Detected Platform:** {{.Extra.DetectedPlatform}}
 {{end}}
 
 {{if eq .Extra.Expertise "NON_TECHNICAL"}}
-**Bootstrap Questions (Non-Technical):**
+**Project Setup (Non-Technical):**
 Before diving into features, gather these basics:
 1. Project name and what it should do
 2. Git repository URL (offer to help create one if needed)
-3. Confirm the programming language/platform detected
+3. Confirm the programming language/platform
 
-Keep bootstrap questions simple and don't overwhelm with technical details.
+Keep questions simple and don't overwhelm with technical details.
 {{else if eq .Extra.Expertise "BASIC"}}
-**Bootstrap Questions (Basic):**
+**Project Setup (Basic):**
 Before feature requirements, confirm the project foundation:
 1. Project name and high-level purpose
 2. Git repository URL
-3. Confirm detected platform: {{.Extra.DetectedPlatform}}
-4. Dockerfile and build system needs (explain these will be set up)
+3. Confirm detected platform{{if .Extra.DetectedPlatform}}: {{.Extra.DetectedPlatform}}{{end}}
 
 Ask these naturally as part of getting to know the project.
 {{else if eq .Extra.Expertise "EXPERT"}}
-**Bootstrap Questions (Expert):**
-Address bootstrap requirements explicitly:
+**Project Setup (Expert):**
+Confirm these project essentials:
 1. Project name and architecture overview
 2. Git repository URL and branching strategy
-3. Platform confirmation: {{.Extra.DetectedPlatform}}
-4. Custom Dockerfile preferences or use default
-5. Build system requirements beyond standard targets
-6. Initial architectural patterns for knowledge graph
+3. Platform confirmation{{if .Extra.DetectedPlatform}}: {{.Extra.DetectedPlatform}}{{end}}
 
-Be direct about bootstrap needs - expert users appreciate clarity.
+Be direct - expert users appreciate efficiency.
 {{end}}
 
-**Important:** Integrate bootstrap questions naturally into your interview flow. Don't make them feel like a separate checklist. Bootstrap is part of understanding the project holistically.
+**Important:** Integrate these questions naturally into your interview flow.
 
 {{if or .Extra.ExistingProjectName .Extra.ExistingGitURL .Extra.ExistingPlatform}}
 **Existing Project Configuration:**

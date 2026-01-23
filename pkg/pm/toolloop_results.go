@@ -1,25 +1,9 @@
 package pm
 
-// Signal constants for PM working phase.
-const (
-	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE"
-	SignalSpecPreview       = "SPEC_PREVIEW"
-	SignalAwaitUser         = "AWAIT_USER"
-)
-
-// WorkingResult contains the outcome of PM's working phase toolloop.
-// Only one field will be populated depending on which terminal tool was called.
-//
-//nolint:govet // String fields are logically grouped, optimization not beneficial for small struct
+// WorkingResult is the type parameter for PM's working phase toolloop.
+// Currently a placeholder as result extraction is handled via ProcessEffect signals.
+// Signal constants are defined in pkg/tools/mcp.go (tools.Signal*).
 type WorkingResult struct {
-	// Signal indicates which terminal condition was reached
+	// Signal indicates which terminal condition was reached (populated by toolloop)
 	Signal string
-
-	// Bootstrap data (when bootstrap_configured=true)
-	BootstrapParams   map[string]string
-	BootstrapMarkdown string // Rendered bootstrap prerequisites markdown
-
-	// Spec preview data (when preview_ready=true from spec_submit)
-	SpecMarkdown string
-	SpecMetadata map[string]any
 }

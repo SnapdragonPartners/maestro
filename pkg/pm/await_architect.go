@@ -23,6 +23,12 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 		return proto.StateDone, fmt.Errorf("context canceled: %w", ctx.Err())
 
 	case msg := <-d.replyCh:
+		// Guard against nil message from closed channel
+		if msg == nil {
+			d.logger.Warn("⚠️ Reply channel closed unexpectedly in AWAIT_ARCHITECT")
+			return proto.StateError, fmt.Errorf("reply channel closed unexpectedly")
+		}
+
 		d.logger.Info("📨 Received RESPONSE message from architect: %s", msg.ID)
 
 		// Parse the response

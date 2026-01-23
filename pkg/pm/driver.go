@@ -342,10 +342,11 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 	}
 }
 
-// handleWaiting waits for architect RESULT messages (feedback after spec submission).
-// User actions (start interview, upload spec) now directly modify state via methods.
+// handleWaiting is the idle state where PM waits for user actions.
+// User actions (StartInterview, UploadSpec) modify state directly via public methods.
+// Architect messages are handled in AWAIT_ARCHITECT, not here.
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
-	d.logger.Debug("🎯 PM in WAITING state - checking for state changes or architect feedback")
+	d.logger.Debug("🎯 PM in WAITING state - waiting for user action")
 
 	// Check if bootstrap detection has run - if not, transition to SETUP first.
 	// This ensures PM has accurate bootstrap state before any user interaction.
@@ -354,19 +355,14 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 		return StateSetup, nil
 	}
 
-	// Check for architect RESULT messages (non-blocking)
+	// Check for context cancellation
 	select {
 	case <-ctx.Done():
 		d.logger.Info("⏹️  Context canceled while in WAITING")
 		return proto.StateDone, nil
-
-	case resultMsg := <-d.replyCh:
-		// RESULT message from architect (feedback after previous spec submission)
-		return d.handleArchitectResult(resultMsg)
-
 	default:
-		// No messages - sleep briefly to avoid tight loop
-		// Note: Direct method calls (StartInterview/UploadSpec) modify state directly,
+		// No state change - sleep briefly to avoid tight loop
+		// Direct method calls (StartInterview/UploadSpec) modify state directly,
 		// and the Run loop will detect the change and route to the new handler
 		time.Sleep(waitingPollInterval)
 		return StateWaiting, nil
@@ -383,72 +379,6 @@ func (d *Driver) handleSetup(ctx context.Context) (proto.State, error) {
 
 	d.logger.Info("✅ PM SETUP complete - returning to WAITING")
 	return StateWaiting, nil
-}
-
-// handleArchitectResult processes a RESULT message from architect.
-func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, error) {
-	if resultMsg == nil {
-		d.logger.Warn("Reply channel closed unexpectedly")
-		return proto.StateError, fmt.Errorf("reply channel closed")
-	}
-
-	d.logger.Info("🎯 PM received RESULT message: %s (type: %s)", resultMsg.ID, resultMsg.Type)
-
-	// Verify this is a RESPONSE message
-	if resultMsg.Type != proto.MsgTypeRESPONSE {
-		d.logger.Warn("Unexpected message type: %s (expected RESPONSE)", resultMsg.Type)
-		return proto.StateError, fmt.Errorf("unexpected message type: %s", resultMsg.Type)
-	}
-
-	// Extract approval response payload
-	typedPayload := resultMsg.GetTypedPayload()
-	if typedPayload == nil {
-		d.logger.Error("RESULT message has no typed payload")
-		return proto.StateError, fmt.Errorf("RESULT message missing payload")
-	}
-
-	approvalResult, err := typedPayload.ExtractApprovalResponse()
-	if err != nil {
-		d.logger.Error("Failed to extract approval response: %v", err)
-		return proto.StateError, fmt.Errorf("failed to extract approval response: %w", err)
-	}
-
-	// Check approval status
-	if approvalResult.Status == proto.ApprovalStatusApproved {
-		d.logger.Info("✅ Spec APPROVED by architect")
-		// Clear state data for next interview
-		for key := range d.GetStateData() {
-			d.SetStateData(key, nil)
-		}
-		return StateWaiting, nil
-	}
-
-	// Spec needs changes - architect sent feedback
-	d.logger.Info("📝 Spec requires changes (status=%v) - feedback from architect: %s",
-		approvalResult.Status, approvalResult.Feedback)
-
-	// Inject submitted spec and architect feedback into LLM context
-	// Both are added as user messages so they persist across LLM calls
-	// Use GetDraftSpec() which handles concatenation of bootstrap + user specs
-	if submittedSpec := d.GetDraftSpec(); submittedSpec != "" {
-		d.logger.Info("📋 Injecting submitted spec (%d bytes) and architect feedback into PM context", len(submittedSpec))
-
-		// Add submitted spec to context
-		specContextMsg := fmt.Sprintf("## Previously Submitted Specification\n\n```markdown\n%s\n```", submittedSpec)
-		d.contextManager.AddMessage("user", specContextMsg)
-
-		// Add architect feedback to context
-		feedbackMsg := fmt.Sprintf("## Architect Review Feedback\n\n%s\n\nPlease address this feedback and revise the specification.", approvalResult.Feedback)
-		d.contextManager.AddMessage("user", feedbackMsg)
-	} else {
-		d.logger.Warn("⚠️  No submitted spec found in state - PM will start from scratch")
-		// Still add feedback even if we don't have the original spec
-		feedbackMsg := fmt.Sprintf("## Architect Feedback\n\n%s", approvalResult.Feedback)
-		d.contextManager.AddMessage("user", feedbackMsg)
-	}
-
-	// Return to WORKING to address feedback
-	return StateWorking, nil
 }
 
 // GetID returns the PM agent's ID.
@@ -813,12 +743,13 @@ func (d *Driver) UploadSpec(markdown string) error {
 	d.SetStateData(StateKeySpecUploaded, true)
 
 	// Detect bootstrap requirements using shared helper
-	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
-	if needsBootstrap && reqs != nil {
+	_, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
+	if needsBootstrap {
 		// Add uploaded spec content and bootstrap instructions to context
+		// Note: Infrastructure requirements (Dockerfile, Makefile, etc.) are opaque to PM LLM
 		specMessage := fmt.Sprintf(`# User Uploaded Specification File
 
-The user has uploaded a specification file (%d bytes). **Parse this spec to extract bootstrap information before asking the user any questions.**
+The user has uploaded a specification file (%d bytes). **Parse this spec to extract project information before asking the user any questions.**
 
 **Look for these details in the spec:**
 1. **Project Name** - Often in title, frontmatter, or introduction
@@ -826,17 +757,14 @@ The user has uploaded a specification file (%d bytes). **Parse this spec to extr
 3. **Primary Platform** - Look for language/framework mentions (go, python, node, rust, etc.)
 
 **After parsing the spec:**
-- Extract any bootstrap values you find
+- Extract any values you find for project_name, git_url, and platform
 - ONLY ask the user for values that are genuinely missing or ambiguous in the spec
 - Do NOT ask the user to re-provide information that's clearly stated in their spec
-
-**Bootstrap Analysis:**
-- Missing components: %v
-- Detected platform: %s (%.0f%%%% confidence)
+- Once you have all three values, call the bootstrap tool
 
 **The uploaded specification:**
 `+"```markdown\n%s\n```",
-			len(markdown), reqs.MissingComponents, reqs.DetectedPlatform, reqs.PlatformConfidence*100, markdown)
+			len(markdown), markdown)
 
 		d.contextManager.AddMessage("system", specMessage)
 	}
