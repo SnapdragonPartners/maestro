@@ -129,9 +129,6 @@ func (d *Driver) setupInterviewContext() error {
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
-	// Check if bootstrap markdown already exists in state (indicates bootstrap config is complete)
-	bootstrapMarkdown, hasBootstrapMarkdown := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapRequirements)
-
 	// Get current config to check for existing values
 	cfg, cfgErr := config.GetConfig()
 
@@ -170,9 +167,8 @@ func (d *Driver) setupInterviewContext() error {
 
 	// Select template based on bootstrap requirements
 	// Single source of truth: use bootstrap detector's methods
-	// BUT: if bootstrap markdown already exists in state, config is complete - skip bootstrap context
 	var templateName templates.StateTemplate
-	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() && !hasBootstrapMarkdown {
+	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
 		if bootstrapReqs.NeedsBootstrapGate() {
 			// Project metadata (name/platform/git) is missing - use focused bootstrap gate template
 			templateName = templates.PMBootstrapGateTemplate
@@ -180,6 +176,8 @@ func (d *Driver) setupInterviewContext() error {
 				bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
 		} else {
 			// Project metadata is complete, but other components missing - use full interview with bootstrap context
+			// Note: BootstrapRequired enables the bootstrap questions section in the template.
+			// The PM LLM gathers user requirements; bootstrap spec is rendered by the architect.
 			templateName = templates.PMInterviewStartTemplate
 			templateData.Extra["BootstrapRequired"] = true
 			templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
@@ -195,14 +193,9 @@ func (d *Driver) setupInterviewContext() error {
 				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
 		}
 	} else {
-		// Either no bootstrap needed OR bootstrap config already complete (markdown exists in state)
-		// Use clean interview template without bootstrap context
+		// No bootstrap needed - use clean interview template
 		templateName = templates.PMInterviewStartTemplate
-		if hasBootstrapMarkdown {
-			d.logger.Info("📋 Using clean interview template (bootstrap config complete, markdown exists: %d bytes)", len(bootstrapMarkdown))
-		} else {
-			d.logger.Info("📋 Using full interview template (no bootstrap requirements)")
-		}
+		d.logger.Info("📋 Using interview template (no bootstrap requirements)")
 	}
 
 	// Render selected template
@@ -352,17 +345,17 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				projectName := utils.GetMapFieldOr[string](effectData, "project_name", "")
 				gitURL := utils.GetMapFieldOr[string](effectData, "git_url", "")
 				platform := utils.GetMapFieldOr[string](effectData, "platform", "")
-				bootstrapMarkdown := utils.GetMapFieldOr[string](effectData, "bootstrap_markdown", "")
 				resetContext := utils.GetMapFieldOr[bool](effectData, "reset_context", false)
 
-				// Store in state
+				// Store bootstrap params in state
+				// Note: StateKeyBootstrapRequirements holds the detection struct (set in SETUP),
+				// not markdown. Bootstrap spec rendering is handled by the architect.
 				bootstrapParams := map[string]string{
 					"project_name": projectName,
 					"git_url":      gitURL,
 					"platform":     platform,
 				}
 				d.SetStateData(StateKeyBootstrapParams, bootstrapParams)
-				d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
 				d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
 
 				// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)

@@ -16,7 +16,6 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
-	bootstraptpl "orchestrator/pkg/templates/bootstrap"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
@@ -56,9 +55,8 @@ const (
 	// Cleared after architect accepts the spec.
 	// Note: "Md" suffix indicates the value is markdown-formatted text.
 	StateKeyUserSpecMd = "user_spec_md"
-	// StateKeyBootstrapSpecMd stores infrastructure requirements from bootstrap phase.
-	// Cleared after architect accepts the spec.
-	// Note: "Md" suffix indicates the value is markdown-formatted text.
+	// StateKeyBootstrapSpecMd is DEPRECATED - bootstrap spec is now rendered by architect.
+	// Kept for backwards compatibility with persisted state.
 	StateKeyBootstrapSpecMd = "bootstrap_spec_md"
 	// StateKeyInFlight indicates development is in progress (spec submitted and accepted).
 	// When true, only hotfixes are allowed (spec_submit with hotfix=true).
@@ -595,24 +593,10 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 
 	// Store bootstrap requirements in state BEFORE mirror refresh.
 	// This ensures state is available immediately, even if refresh is slow.
+	// Note: Bootstrap spec rendering is handled by the architect, not PM.
+	// PM only stores the detection result; architect renders the full spec from requirement IDs.
 	d.SetStateData(StateKeyBootstrapRequirements, reqs)
 	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
-
-	// Generate and store bootstrap spec markdown deterministically using templates.
-	// This bypasses the LLM - bootstrap stories are generated directly from detected requirements.
-	if reqs.HasAnyMissingComponents() {
-		bootstrapMarkdown, renderErr := d.renderBootstrapSpec(reqs)
-		if renderErr != nil {
-			d.logger.Warn("Failed to render bootstrap spec: %v", renderErr)
-		} else {
-			d.SetStateData(StateKeyBootstrapSpecMd, bootstrapMarkdown)
-			d.logger.Info("📝 Generated bootstrap spec markdown (%d bytes)", len(bootstrapMarkdown))
-		}
-	} else {
-		// Clear stale bootstrap spec when requirements are resolved.
-		// This prevents re-submitting already-completed bootstrap tasks.
-		d.SetStateData(StateKeyBootstrapSpecMd, "")
-	}
 
 	// Update demo availability based on bootstrap status
 	d.updateDemoAvailable(reqs)
@@ -654,52 +638,6 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	}
 
 	return reqs, needsBootstrap
-}
-
-// renderBootstrapSpec generates bootstrap spec markdown using templates.
-// Converts BootstrapRequirements to BootstrapFailures and uses the template renderer.
-func (d *Driver) renderBootstrapSpec(reqs *BootstrapRequirements) (string, error) {
-	// Convert requirements to failures for template
-	failures := reqs.ToBootstrapFailures()
-
-	// Get project info from config
-	cfg, err := config.GetConfig()
-	projectName := "project"
-	containerImage := ""
-	gitRepoURL := ""
-
-	if err == nil {
-		if cfg.Project != nil && cfg.Project.Name != "" {
-			projectName = cfg.Project.Name
-		}
-		if cfg.Container != nil && cfg.Container.Name != "" {
-			containerImage = cfg.Container.Name
-		}
-		if cfg.Git != nil && cfg.Git.RepoURL != "" {
-			gitRepoURL = cfg.Git.RepoURL
-		}
-	}
-
-	// Use the bootstrap template renderer
-	renderer, renderErr := bootstraptpl.NewRenderer()
-	if renderErr != nil {
-		return "", fmt.Errorf("failed to create bootstrap renderer: %w", renderErr)
-	}
-
-	// Render with enhanced data including git repo URL
-	markdown, renderErr := renderer.RenderBootstrapSpecEnhanced(
-		projectName,
-		reqs.DetectedPlatform,
-		containerImage,
-		gitRepoURL,
-		"", // dockerfilePath - will be detected
-		failures,
-	)
-	if renderErr != nil {
-		return "", fmt.Errorf("failed to render bootstrap spec: %w", renderErr)
-	}
-
-	return markdown, nil
 }
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.
@@ -775,25 +713,10 @@ func (d *Driver) updateDemoAvailable(reqs *BootstrapRequirements) {
 
 // GetDraftSpec returns the draft specification markdown if available.
 // This is used by the WebUI to display the spec in PREVIEW state.
-// For full specs, returns bootstrap + user spec concatenated.
-// For hotfixes, returns just the user spec.
+// Returns only the user feature spec - bootstrap content is rendered by the architect.
 // Returns empty string if no draft spec is available.
 func (d *Driver) GetDraftSpec() string {
-	// Get user spec (required for any preview)
-	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
-	if userSpec == "" {
-		return ""
-	}
-
-	// Get bootstrap spec (only present for full specs, not hotfixes)
-	bootstrapSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapSpecMd, "")
-
-	// Concatenate if bootstrap exists
-	if bootstrapSpec != "" {
-		return bootstrapSpec + "\n\n" + userSpec
-	}
-
-	return userSpec
+	return utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
 }
 
 // IsInFlight returns true if development is in progress (spec submitted and accepted).

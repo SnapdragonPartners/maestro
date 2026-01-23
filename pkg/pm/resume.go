@@ -207,9 +207,7 @@ func (d *Driver) collectBootstrapParamsJSON() *string {
 	if inFlight, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyInFlight); ok {
 		bootstrapParams[StateKeyInFlight] = inFlight
 	}
-	if bootstrapSpec, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapSpecMd); ok {
-		bootstrapParams[StateKeyBootstrapSpecMd] = bootstrapSpec
-	}
+	// Note: StateKeyBootstrapSpecMd is no longer used - architect renders bootstrap spec from requirement IDs
 	if isHotfix, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyIsHotfix); ok {
 		bootstrapParams[StateKeyIsHotfix] = isHotfix
 	}
