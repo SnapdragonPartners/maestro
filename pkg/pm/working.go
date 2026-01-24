@@ -394,12 +394,12 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				var reqCount int
 				if reqs, ok := effectData["bootstrap_requirements"]; ok && reqs != nil {
 					// After JSON round-trip, slice types vary: []BootstrapRequirementID, []string, or []any
-					switch typed := reqs.(type) {
-					case []workspace.BootstrapRequirementID:
+					// Use SafeAssert per AGENTS.md guidelines
+					if typed, ok := utils.SafeAssert[[]workspace.BootstrapRequirementID](reqs); ok {
 						reqCount = len(typed)
-					case []string:
+					} else if typed, ok := utils.SafeAssert[[]string](reqs); ok {
 						reqCount = len(typed)
-					case []any:
+					} else if typed, ok := utils.SafeAssert[[]any](reqs); ok {
 						reqCount = len(typed)
 					}
 				}

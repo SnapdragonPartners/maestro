@@ -81,8 +81,11 @@ func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirem
 		ids = append(ids, workspace.BootstrapReqDockerfile)
 	}
 
-	// Build system requirements
+	// Build system requirements (includes Makefile and .gitignore)
 	if r.NeedsMakefile {
+		ids = append(ids, workspace.BootstrapReqBuildSystem)
+	}
+	if r.NeedsGitignore {
 		ids = append(ids, workspace.BootstrapReqBuildSystem)
 	}
 
@@ -94,6 +97,11 @@ func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirem
 	// Git requirements
 	if r.NeedsGitRepo {
 		ids = append(ids, workspace.BootstrapReqGitAccess)
+	}
+
+	// External tools requirements (includes Claude Code)
+	if r.NeedsClaudeCode {
+		ids = append(ids, workspace.BootstrapReqExternalTools)
 	}
 
 	return ids
