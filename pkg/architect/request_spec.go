@@ -56,8 +56,9 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	agentID := requestMsg.FromAgent
 	cm := d.getContextForAgent(agentID)
 
-	// Check if this is a resubmission (context already has spec review prompt)
-	isResubmission := len(cm.GetMessages()) > 0
+	// Check if this is a resubmission using state flag (more robust than checking message count)
+	specReviewKey := fmt.Sprintf(StateKeyPatternSpecReviewInitialized, agentID)
+	_, isResubmission := d.GetStateValue(specReviewKey)
 
 	// Only add spec review prompt for initial submission
 	if !isResubmission {
@@ -79,9 +80,17 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		// Add spec review prompt as user message to start the conversation
 		cm.AddMessage("user", prompt)
 		d.logger.Info("📝 Added spec review prompt to context (initial submission)")
+
+		// Mark spec review as initialized for this agent
+		d.SetStateData(specReviewKey, true)
 	} else {
-		// Resubmission - add updated spec content as user message (user requirements only)
-		resubmitMsg := fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n```\n%s\n```", userSpec)
+		// Resubmission - include both updated user spec AND infrastructure spec (may have changed)
+		var resubmitMsg string
+		if infrastructureSpec != "" {
+			resubmitMsg = fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n## Infrastructure Requirements\n\n%s\n\n## User Requirements\n\n%s", infrastructureSpec, userSpec)
+		} else {
+			resubmitMsg = fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n%s", userSpec)
+		}
 		cm.AddMessage("user", resubmitMsg)
 		d.logger.Info("📝 Added revised spec to context (resubmission)")
 	}
