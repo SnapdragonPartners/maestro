@@ -397,11 +397,17 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				// They're already available via GetBootstrapRequirements().ToRequirementIDs()
 				// which reads from the detection struct stored during SETUP.
 
-				// Log for debugging
+				// Log for debugging - handle multiple possible types after JSON round-trip
 				var reqCount int
 				if reqs, ok := effectData["bootstrap_requirements"]; ok && reqs != nil {
-					if typedReqs, ok := reqs.([]workspace.BootstrapRequirementID); ok {
-						reqCount = len(typedReqs)
+					// After JSON round-trip, slice types vary: []BootstrapRequirementID, []string, or []any
+					switch typed := reqs.(type) {
+					case []workspace.BootstrapRequirementID:
+						reqCount = len(typed)
+					case []string:
+						reqCount = len(typed)
+					case []any:
+						reqCount = len(typed)
 					}
 				}
 				d.logger.Info("📋 Stored spec for preview (bootstrap reqs: %d, user: %d bytes, hotfix: %v, summary: %s)",
