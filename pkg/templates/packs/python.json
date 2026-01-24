@@ -1,0 +1,31 @@
+{
+  "name": "python",
+  "display_name": "Python",
+  "version": "1.0.0",
+  "language_version": "3.12",
+
+  "recommended_base_image": "python:${LANGUAGE_VERSION}-slim",
+
+  "tooling": {
+    "package_manager": "pip/uv",
+    "linter": "ruff",
+    "test_framework": "pytest",
+    "formatter": "ruff format"
+  },
+
+  "makefile_targets": {
+    "build": "pip install -e . || pip install -r requirements.txt",
+    "test": "pytest",
+    "lint": "ruff check . && ruff format --check .",
+    "run": "python -m ${PROJECT_NAME}",
+    "clean": "rm -rf __pycache__ .pytest_cache .ruff_cache *.egg-info dist build .coverage htmlcov"
+  },
+
+  "template_sections": {
+    "module_setup": "### Python Project Setup\n\n- [ ] Create `pyproject.toml` or `requirements.txt` if missing\n- [ ] Ensure Python version ${LANGUAGE_VERSION} is specified\n- [ ] Install dependencies: `pip install -e .` or `pip install -r requirements.txt`\n- [ ] Verify virtual environment is properly configured\n- [ ] All Python dependencies properly resolved",
+
+    "lint_config": "### Python Linting Configuration\n\n- [ ] Install ruff: `pip install ruff`\n- [ ] Configure ruff in `pyproject.toml` or `ruff.toml`\n- [ ] Verify `ruff check .` passes\n- [ ] Verify `ruff format --check .` passes\n- [ ] Integrate linting into `make lint` target\n\n**Recommended `pyproject.toml` ruff config:**\n```toml\n[tool.ruff]\nline-length = 100\ntarget-version = \"py312\"\n\n[tool.ruff.lint]\nselect = [\n    \"E\",   # pycodestyle errors\n    \"W\",   # pycodestyle warnings\n    \"F\",   # Pyflakes\n    \"I\",   # isort\n    \"B\",   # flake8-bugbear\n    \"C4\",  # flake8-comprehensions\n    \"UP\",  # pyupgrade\n    \"ARG\", # flake8-unused-arguments\n    \"SIM\", # flake8-simplify\n]\nignore = [\"E501\"]  # line too long (handled by formatter)\n\n[tool.ruff.format]\nquote-style = \"double\"\nindent-style = \"space\"\n```",
+
+    "quality_setup": "### Python Development Quality\n\n**Pre-commit Hook:**\n```bash\n#!/bin/bash\nset -e\necho \"Running pre-commit checks...\"\nmake lint && make test\necho \"All checks passed!\"\n```\n\n**Type Checking (optional):**\n```bash\n# Install mypy\npip install mypy\n\n# Run type checking\nmypy src/\n```\n\n**Test Coverage:**\n```bash\n# Install pytest-cov\npip install pytest-cov\n\n# Run with coverage\npytest --cov=src --cov-report=html\n```"
+  }
+}

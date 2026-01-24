@@ -182,8 +182,17 @@ func ListAvailable() ([]string, error) {
 	return names, nil
 }
 
-// PlatformGeneric is the canonical name for the generic/fallback platform.
-const PlatformGeneric = "generic"
+// Platform constants for canonical pack names.
+const (
+	// PlatformGo is the canonical name for the Go platform.
+	PlatformGo = "go"
+	// PlatformPython is the canonical name for the Python platform.
+	PlatformPython = "python"
+	// PlatformNode is the canonical name for the Node.js/JavaScript/TypeScript platform.
+	PlatformNode = "node"
+	// PlatformGeneric is the canonical name for the generic/fallback platform.
+	PlatformGeneric = "generic"
+)
 
 // platformAliases maps common platform name variations to canonical pack names.
 // The canonical names correspond to available pack JSON files.
@@ -191,26 +200,22 @@ const PlatformGeneric = "generic"
 //nolint:gochecknoglobals // Package-level constant map.
 var platformAliases = map[string]string{
 	// Go aliases
-	"golang": "go",
-	"go":     "go",
+	"golang": PlatformGo,
+	"go":     PlatformGo,
 
 	// Python aliases
-	"python":  "python",
-	"python3": "python",
-	"py":      "python",
-	"py3":     "python",
+	"python":  PlatformPython,
+	"python3": PlatformPython,
+	"py":      PlatformPython,
+	"py3":     PlatformPython,
 
 	// Node.js aliases
-	"node":       "node",
-	"nodejs":     "node",
-	"javascript": "node",
-	"js":         "node",
-	"typescript": "node",
-	"ts":         "node",
-
-	// Rust aliases
-	"rust": "rust",
-	"rs":   "rust",
+	"node":       PlatformNode,
+	"nodejs":     PlatformNode,
+	"javascript": PlatformNode,
+	"js":         PlatformNode,
+	"typescript": PlatformNode,
+	"ts":         PlatformNode,
 
 	// Generic fallback
 	"generic": PlatformGeneric,
