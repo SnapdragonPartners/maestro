@@ -178,12 +178,11 @@ func (d *Driver) setupInterviewContext() error {
 			// Project metadata is complete, but other components missing - use full interview
 			// Note: BootstrapRequired enables the project setup section in the template.
 			// PM gathers project metadata; infrastructure requirements are opaque to PM LLM.
+			// Platform is NOT injected - PM LLM handles platform confirmation with user.
 			templateName = templates.PMInterviewStartTemplate
 			templateData.Extra["BootstrapRequired"] = true
-			templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
 
-			d.logger.Info("📋 Using interview template with bootstrap context (platform: %s)",
-				bootstrapReqs.DetectedPlatform)
+			d.logger.Info("📋 Using interview template with bootstrap context")
 		}
 	} else {
 		// No bootstrap needed - use clean interview template
@@ -496,8 +495,11 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 		return fmt.Errorf("no user_spec_md found in state for hotfix")
 	}
 
-	// Get platform from detected platform or default to unknown
-	platform := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "unknown")
+	// Get platform from config (set during bootstrap when user confirms)
+	platform := "unknown"
+	if cfg, err := config.GetConfig(); err == nil && cfg.Project != nil {
+		platform = cfg.Project.PrimaryPlatform
+	}
 
 	// Create hotfix request payload with the spec content as a single requirement
 	// The architect will parse and validate this before dispatching to hotfix coder

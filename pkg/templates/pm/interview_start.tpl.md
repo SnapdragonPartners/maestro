@@ -50,16 +50,12 @@ The architect will review your spec and create implementation stories from it.
 
 Before gathering feature requirements, you need to collect essential project information.
 
-{{if .Extra.DetectedPlatform}}
-**Detected Platform:** {{.Extra.DetectedPlatform}}
-{{end}}
-
 {{if eq .Extra.Expertise "NON_TECHNICAL"}}
 **Project Setup (Non-Technical):**
 Before diving into features, gather these basics:
 1. Project name and what it should do
 2. Git repository URL (offer to help create one if needed)
-3. Confirm the programming language/platform
+3. What programming language/platform is the project using?
 
 Keep questions simple and don't overwhelm with technical details.
 {{else if eq .Extra.Expertise "BASIC"}}
@@ -67,7 +63,7 @@ Keep questions simple and don't overwhelm with technical details.
 Before feature requirements, confirm the project foundation:
 1. Project name and high-level purpose
 2. Git repository URL
-3. Confirm detected platform{{if .Extra.DetectedPlatform}}: {{.Extra.DetectedPlatform}}{{end}}
+3. What platform/language is this project? (e.g., Go, Python, Node.js, Rust)
 
 Ask these naturally as part of getting to know the project.
 {{else if eq .Extra.Expertise "EXPERT"}}
@@ -75,7 +71,7 @@ Ask these naturally as part of getting to know the project.
 Confirm these project essentials:
 1. Project name and architecture overview
 2. Git repository URL and branching strategy
-3. Platform confirmation{{if .Extra.DetectedPlatform}}: {{.Extra.DetectedPlatform}}{{end}}
+3. Primary platform/language
 
 Be direct - expert users appreciate efficiency.
 {{end}}

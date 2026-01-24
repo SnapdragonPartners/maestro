@@ -44,93 +44,8 @@ func TestBootstrapDetector_DetectMissingComponents(t *testing.T) {
 	}
 }
 
-func TestBootstrapDetector_DetectPlatform_Go(t *testing.T) {
-	// Create a temporary directory with go.mod
-	tmpDir := t.TempDir()
-	goModPath := filepath.Join(tmpDir, "go.mod")
-	if err := os.WriteFile(goModPath, []byte("module test\n"), 0644); err != nil {
-		t.Fatalf("Failed to create go.mod: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "go" {
-		t.Errorf("Expected platform = go, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for go.mod, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Python(t *testing.T) {
-	// Create a temporary directory with pyproject.toml
-	tmpDir := t.TempDir()
-	pyprojectPath := filepath.Join(tmpDir, "pyproject.toml")
-	if err := os.WriteFile(pyprojectPath, []byte("[build-system]\n"), 0644); err != nil {
-		t.Fatalf("Failed to create pyproject.toml: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "python" {
-		t.Errorf("Expected platform = python, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for pyproject.toml, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Node(t *testing.T) {
-	// Create a temporary directory with package.json
-	tmpDir := t.TempDir()
-	packagePath := filepath.Join(tmpDir, "package.json")
-	if err := os.WriteFile(packagePath, []byte("{\"name\": \"test\"}\n"), 0644); err != nil {
-		t.Fatalf("Failed to create package.json: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "node" {
-		t.Errorf("Expected platform = node, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for package.json, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Generic(t *testing.T) {
-	// Create a temporary directory with no platform indicators
-	tmpDir := t.TempDir()
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "generic" {
-		t.Errorf("Expected platform = generic, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence > 0.5 {
-		t.Errorf("Expected low confidence for unknown platform, got %.2f", reqs.PlatformConfidence)
-	}
-}
+// Note: Platform detection tests removed - platform confirmation is now handled by PM LLM,
+// not programmatic detection. Platform is set in config when user confirms during bootstrap.
 
 func TestBootstrapDetector_DetectMakefile_Missing(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -619,10 +534,8 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 		expectPrio1 bool // expect priority 1 failure
 	}{
 		{
-			name: "empty requirements",
-			reqs: &BootstrapRequirements{
-				DetectedPlatform: "go",
-			},
+			name:        "empty requirements",
+			reqs:        &BootstrapRequirements{},
 			expectCount: 0,
 			expectTypes: []string{},
 			expectPrio1: false,
@@ -630,8 +543,7 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 		{
 			name: "dockerfile only",
 			reqs: &BootstrapRequirements{
-				NeedsDockerfile:  true,
-				DetectedPlatform: "go",
+				NeedsDockerfile: true,
 			},
 			expectCount: 1,
 			expectTypes: []string{"container"},
@@ -642,7 +554,6 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 			reqs: &BootstrapRequirements{
 				NeedsMakefile:     true,
 				NeedsBuildTargets: []string{"build", "test"},
-				DetectedPlatform:  "python",
 			},
 			expectCount: 1,
 			expectTypes: []string{"build_system"},
@@ -656,7 +567,6 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 				NeedsKnowledgeGraph: true,
 				NeedsGitignore:      true,
 				NeedsClaudeCode:     true,
-				DetectedPlatform:    "go",
 			},
 			expectCount: 5,
 			expectTypes: []string{"container", "build_system", "infrastructure", "build_system", "container"},

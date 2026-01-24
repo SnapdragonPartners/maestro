@@ -15,15 +15,6 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-const (
-	// Platform names.
-	platformGeneric = "generic"
-	platformGo      = "go"
-	platformPython  = "python"
-	platformNode    = "node"
-	platformRust    = "rust"
-)
-
 // BootstrapDetector detects missing bootstrap components in a project.
 // PM is the sole authority on bootstrap status - this detector runs against the PM workspace.
 type BootstrapDetector struct {
@@ -46,13 +37,14 @@ type ContainerStatus struct {
 }
 
 // BootstrapRequirements describes what bootstrap components are missing.
+// Platform detection is NOT part of bootstrap - PM LLM handles platform confirmation
+// with the user since it's a user-level requirement and too many possibilities exist
+// for reliable programmatic detection.
 //
 //nolint:govet // Field alignment optimized for clarity over memory efficiency
 type BootstrapRequirements struct {
 	NeedsBuildTargets   []string        // List of missing Makefile targets
 	MissingComponents   []string        // Human-readable list of missing items
-	DetectedPlatform    string          // Detected platform: go, python, node, generic
-	PlatformConfidence  float64         // Confidence score 0.0 to 1.0
 	NeedsProjectConfig  bool            // True if project name or platform is missing
 	NeedsGitRepo        bool            // True if no git repository is configured
 	NeedsDockerfile     bool            // True if no Dockerfile exists
@@ -109,6 +101,8 @@ func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirem
 
 // ToBootstrapFailures converts requirements to workspace.BootstrapFailure slice
 // for use with the bootstrap template renderer.
+// Note: Platform is NOT included in failures - PM LLM handles platform confirmation
+// with the user and passes it to the bootstrap MCP tool.
 func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailure {
 	var failures []workspace.BootstrapFailure
 
@@ -119,8 +113,7 @@ func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailu
 			Component:   "dockerfile",
 			Description: "Development container not configured - Dockerfile required",
 			Details: map[string]string{
-				"action":   "create_dockerfile",
-				"platform": r.DetectedPlatform,
+				"action": "create_dockerfile",
 			},
 			Priority: 1,
 		})
@@ -164,8 +157,7 @@ func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailu
 			Component:   "gitignore",
 			Description: ".gitignore file missing - required for clean repository",
 			Details: map[string]string{
-				"action":   "create_gitignore",
-				"platform": r.DetectedPlatform,
+				"action": "create_gitignore",
 			},
 			Priority: 4,
 		})
@@ -247,11 +239,11 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 		reqs.MissingComponents = append(reqs.MissingComponents, ".gitignore file")
 	}
 
-	// Detect platform
-	reqs.DetectedPlatform, reqs.PlatformConfidence = bd.detectPlatform()
+	// Note: Platform detection is NOT done here - PM LLM handles platform confirmation
+	// with the user since it's a user-level requirement
 
-	bd.logger.Info("Bootstrap detection complete: %d components needed (platform: %s @ %.0f%%)",
-		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+	bd.logger.Info("Bootstrap detection complete: %d components needed",
+		len(reqs.MissingComponents))
 
 	return reqs, nil
 }
@@ -602,66 +594,6 @@ func (bd *BootstrapDetector) checkClaudeCodeInContainer(imageName string) bool {
 
 	bd.logger.Debug("Claude Code version in %s: %s", imageName, strings.TrimSpace(string(output)))
 	return true
-}
-
-// detectPlatform attempts to detect the project platform from files.
-func (bd *BootstrapDetector) detectPlatform() (string, float64) {
-	// If platform is already set in config, use it with 100% confidence
-	cfg, err := config.GetConfig()
-	if err == nil && cfg.Project != nil && cfg.Project.PrimaryPlatform != "" {
-		platform := cfg.Project.PrimaryPlatform
-		bd.logger.Debug("Using platform from config: %s (100%% confidence)", platform)
-		return platform, 1.0
-	}
-
-	// Otherwise, scan files to detect platform
-	// Platform indicators with their confidence weights
-	platformScores := map[string]float64{
-		platformGo:     0.0,
-		platformPython: 0.0,
-		platformNode:   0.0,
-		platformRust:   0.0,
-	}
-
-	// Check for platform-specific files
-	bd.checkPlatformFile("go.mod", platformGo, 0.9, platformScores)
-	bd.checkPlatformFile("go.sum", platformGo, 0.3, platformScores)
-	bd.checkPlatformFile("requirements.txt", platformPython, 0.7, platformScores)
-	bd.checkPlatformFile("pyproject.toml", platformPython, 0.9, platformScores)
-	bd.checkPlatformFile("setup.py", platformPython, 0.6, platformScores)
-	bd.checkPlatformFile("package.json", platformNode, 0.9, platformScores)
-	bd.checkPlatformFile("package-lock.json", platformNode, 0.5, platformScores)
-	bd.checkPlatformFile("yarn.lock", platformNode, 0.5, platformScores)
-	bd.checkPlatformFile("Cargo.toml", platformRust, 0.9, platformScores)
-
-	// Find platform with highest score
-	maxPlatform := platformGeneric
-	maxScore := 0.0
-
-	for platform, score := range platformScores {
-		if score > maxScore {
-			maxScore = score
-			maxPlatform = platform
-		}
-	}
-
-	// If no strong signal, default to generic with low confidence
-	if maxScore < 0.5 {
-		bd.logger.Debug("Platform detection uncertain, defaulting to generic")
-		return platformGeneric, 0.3
-	}
-
-	bd.logger.Debug("Detected platform: %s (confidence: %.0f%%)", maxPlatform, maxScore*100)
-	return maxPlatform, maxScore
-}
-
-// checkPlatformFile checks if a platform indicator file exists and updates scores.
-func (bd *BootstrapDetector) checkPlatformFile(filename, platform string, weight float64, scores map[string]float64) {
-	filePath := filepath.Join(bd.projectDir, filename)
-	if _, err := os.Stat(filePath); err == nil {
-		scores[platform] += weight
-		bd.logger.Debug("Found %s indicator: %s (weight: %.1f)", platform, filename, weight)
-	}
 }
 
 // RefreshMirrorAndWorkspaces ensures the git mirror exists and refreshes workspaces.

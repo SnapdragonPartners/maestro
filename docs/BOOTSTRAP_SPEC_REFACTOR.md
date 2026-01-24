@@ -44,10 +44,46 @@ Architect agent:
 
 ### Key Design Principle
 
-**Bootstrap requirements are transparent to the PM LLM.** The PM LLM never sees or processes bootstrap requirements - they flow through state and orchestrator plumbing. This:
-- Removes complexity from PM prompts
-- Eliminates a failure mode (LLM mishandling requirements)
-- Keeps deterministic logic deterministic
+**Separation of config deficits vs technical prerequisites:**
+
+The PM's relationship to bootstrap is split into two categories:
+
+**A) Config deficits (PM-visible, PM-owned):**
+- Project name
+- Git repository URL
+- Platform / language choice
+
+These are "user-facing config settings" that only the user can provide. The PM LLM is allowed to:
+- See signals indicating these are missing (`NeedsProjectConfig`, `NeedsGitRepo`)
+- Ask the user for this information
+- Call the `bootstrap` MCP tool to store the values in config
+
+**B) Technical bootstrap prerequisites (architect-owned, opaque to PM LLM):**
+- Dockerfile / container setup
+- Makefile targets
+- Knowledge graph initialization
+- Claude Code installation
+- .gitignore creation
+
+These flow as **requirement IDs** through orchestrator plumbing. The PM LLM never sees the details - only the architect renders the full technical specification.
+
+### Bootstrap Tool as Validation Point
+
+The `bootstrap` MCP tool (`pkg/tools/bootstrap.go`) is the interface between PM LLM and config. It:
+- Validates and normalizes the `platform` parameter using `packs.NormalizePlatform()`
+- Accepts common aliases (e.g., "golang" → "go")
+- **Always stores a valid pack ID** - either a canonical name with an available pack, or "generic" as fallback
+- Lists valid platform options in its tool definition for LLM awareness
+
+**Platform normalization is defined in `pkg/templates/packs/packs.go`:**
+- Canonical platform IDs = pack JSON filenames (currently: `go`, `generic`)
+- Alias mapping handles common variations (e.g., "golang" → "go")
+- `NormalizePlatform()` **guarantees** config only stores valid pack IDs:
+  - Known aliases with packs → canonical name (e.g., "golang" → "go")
+  - Aliases without packs → "generic" (e.g., "python" → "generic", since no python.json exists yet)
+  - Unknown platforms → "generic"
+- `packs.ListAvailable()` returns available packs
+- `packs.GetPlatformList()` returns only platforms with actual packs (excludes "generic")
 
 ---
 

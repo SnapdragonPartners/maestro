@@ -424,3 +424,99 @@ func TestLoadGoPackSpecifics(t *testing.T) {
 		t.Error("Go pack should have lint_config section")
 	}
 }
+
+func TestNormalizePlatform(t *testing.T) {
+	ClearRegistry()
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// Go aliases - pack exists
+		{"go", "go"},
+		{"golang", "go"},
+		{"Go", "go"},
+		{"GOLANG", "go"},
+
+		// Python aliases - no pack, falls back to generic
+		{"python", "generic"},
+		{"py", "generic"},
+		{"python3", "generic"},
+		{"py3", "generic"},
+
+		// Node aliases - no pack, falls back to generic
+		{"node", "generic"},
+		{"nodejs", "generic"},
+		{"javascript", "generic"},
+		{"js", "generic"},
+		{"typescript", "generic"},
+		{"ts", "generic"},
+
+		// Rust aliases - no pack, falls back to generic
+		{"rust", "generic"},
+		{"rs", "generic"},
+
+		// Generic - pack exists
+		{"generic", "generic"},
+
+		// Empty returns generic
+		{"", "generic"},
+
+		// Unknown returns generic (not the unknown string)
+		{"unknown-platform", "generic"},
+
+		// Whitespace handling
+		{"  go  ", "go"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := NormalizePlatform(tt.input)
+			if result != tt.expected {
+				t.Errorf("NormalizePlatform(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsValidPlatform(t *testing.T) {
+	ClearRegistry()
+
+	// Available packs should be valid
+	if !IsValidPlatform("go") {
+		t.Error("'go' should be a valid platform")
+	}
+	if !IsValidPlatform("generic") {
+		t.Error("'generic' should be a valid platform")
+	}
+
+	// Aliases for existing packs should resolve to valid platforms
+	if !IsValidPlatform("golang") {
+		t.Error("'golang' should resolve to valid 'go' platform")
+	}
+
+	// Aliases for non-existent packs are not valid
+	// (they normalize to generic, but IsValidPlatform checks the original normalized target)
+	if IsValidPlatform("python") {
+		t.Error("'python' should not be valid (no python pack exists)")
+	}
+
+	// Unknown platforms are not valid
+	if IsValidPlatform("unknown-platform-xyz") {
+		t.Error("'unknown-platform-xyz' should not be a valid platform")
+	}
+}
+
+func TestGetPlatformList(t *testing.T) {
+	list := GetPlatformList()
+
+	// Should contain 'go' (which has a pack)
+	if !strings.Contains(list, "go") {
+		t.Errorf("Platform list should contain 'go', got: %s", list)
+	}
+
+	// Should NOT contain 'generic' (not advertised as a choice)
+	if strings.Contains(list, "generic") {
+		t.Errorf("Platform list should not advertise 'generic', got: %s", list)
+	}
+}

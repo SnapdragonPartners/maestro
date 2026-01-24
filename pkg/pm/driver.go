@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -47,9 +48,8 @@ const (
 	// StateKeyUserExpertise stores the user's expertise level (NON_TECHNICAL, BASIC, EXPERT).
 	StateKeyUserExpertise = "user_expertise"
 	// StateKeyBootstrapRequirements stores detected bootstrap requirements.
+	// Note: Platform is NOT stored here - PM LLM handles platform confirmation with user.
 	StateKeyBootstrapRequirements = "bootstrap_requirements"
-	// StateKeyDetectedPlatform stores the detected platform.
-	StateKeyDetectedPlatform = "detected_platform"
 
 	// StateKeyUserSpecMd stores the user's feature requirements markdown (working copy during interview).
 	// Cleared after architect accepts the spec.
@@ -525,8 +525,8 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	// This ensures state is available immediately, even if refresh is slow.
 	// Note: Bootstrap spec rendering is handled by the architect, not PM.
 	// PM only stores the detection result; architect renders the full spec from requirement IDs.
+	// Platform is NOT detected programmatically - PM LLM handles platform confirmation with user.
 	d.SetStateData(StateKeyBootstrapRequirements, reqs)
-	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
 
 	// Update demo availability based on bootstrap status
 	d.updateDemoAvailable(reqs)
@@ -536,8 +536,8 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	// or refreshes existing mirrors to get latest changes.
 	detector.RefreshMirrorAndWorkspaces(ctx)
 
-	d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
-		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+	d.logger.Info("✅ Bootstrap detection complete: %d components needed",
+		len(reqs.MissingComponents))
 
 	// Log container status details
 	cs := reqs.ContainerStatus
@@ -575,12 +575,6 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 func (d *Driver) GetBootstrapRequirements() *BootstrapRequirements {
 	reqs, _ := utils.GetStateValue[*BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
 	return reqs
-}
-
-// GetDetectedPlatform returns the detected platform.
-// Returns empty string if platform hasn't been detected.
-func (d *Driver) GetDetectedPlatform() string {
-	return utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "")
 }
 
 // IsDemoAvailable returns true if demo mode should be available.
@@ -689,10 +683,24 @@ func (d *Driver) StartInterview(expertise string) error {
 	ctx := context.Background()
 	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(ctx)
 	if needsBootstrap && reqs != nil {
-		// Add detection summary to context
-		d.contextManager.AddMessage("system",
-			fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
-				reqs.MissingComponents, reqs.DetectedPlatform))
+		// Inject only config deficits that PM needs to gather from user.
+		// Technical bootstrap prerequisites (Dockerfile, Makefile, etc.) are opaque to PM.
+		var configDeficits []string
+		if reqs.NeedsProjectConfig {
+			configDeficits = append(configDeficits, "project name and platform")
+		}
+		if reqs.NeedsGitRepo {
+			configDeficits = append(configDeficits, "git repository URL")
+		}
+		if len(configDeficits) > 0 {
+			d.contextManager.AddMessage("system",
+				fmt.Sprintf("Project setup needed. Please gather: %s. "+
+					"After collecting this info, call the bootstrap tool.", strings.Join(configDeficits, ", ")))
+		} else {
+			// Config is complete but technical prerequisites are missing - PM doesn't need to know details
+			d.contextManager.AddMessage("system",
+				"Project configuration is complete. Technical setup is in progress.")
+		}
 	}
 
 	// Decide initial state based on bootstrap needs

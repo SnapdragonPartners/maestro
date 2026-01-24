@@ -182,6 +182,119 @@ func ListAvailable() ([]string, error) {
 	return names, nil
 }
 
+// PlatformGeneric is the canonical name for the generic/fallback platform.
+const PlatformGeneric = "generic"
+
+// platformAliases maps common platform name variations to canonical pack names.
+// The canonical names correspond to available pack JSON files.
+//
+//nolint:gochecknoglobals // Package-level constant map.
+var platformAliases = map[string]string{
+	// Go aliases
+	"golang": "go",
+	"go":     "go",
+
+	// Python aliases
+	"python":  "python",
+	"python3": "python",
+	"py":      "python",
+	"py3":     "python",
+
+	// Node.js aliases
+	"node":       "node",
+	"nodejs":     "node",
+	"javascript": "node",
+	"js":         "node",
+	"typescript": "node",
+	"ts":         "node",
+
+	// Rust aliases
+	"rust": "rust",
+	"rs":   "rust",
+
+	// Generic fallback
+	"generic": PlatformGeneric,
+}
+
+// NormalizePlatform converts a user-provided platform string to a canonical pack name.
+// Always returns a valid pack name: either a canonical name with an available pack,
+// or "generic" as the fallback. This ensures config only stores valid pack IDs.
+func NormalizePlatform(input string) string {
+	if input == "" {
+		return PlatformGeneric
+	}
+
+	// Normalize to lowercase
+	normalized := strings.ToLower(strings.TrimSpace(input))
+
+	// Check alias map first to get canonical name
+	canonical := normalized
+	if mapped, ok := platformAliases[normalized]; ok {
+		canonical = mapped
+	}
+
+	// Always verify the canonical name has an available pack
+	available, err := ListAvailable()
+	if err != nil {
+		// If we can't list packs, fall back to generic for safety
+		return PlatformGeneric
+	}
+
+	if slices.Contains(available, canonical) {
+		return canonical
+	}
+
+	// No pack available for this platform - fall back to generic
+	return PlatformGeneric
+}
+
+// IsValidPlatform checks if a platform name has a dedicated pack (not just fallback to generic).
+// Returns true only if a specific pack exists for the platform or its alias target.
+func IsValidPlatform(input string) bool {
+	if input == "" {
+		return false
+	}
+
+	// Normalize to lowercase and check alias
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	canonical := normalized
+	if mapped, ok := platformAliases[normalized]; ok {
+		canonical = mapped
+	}
+
+	// Check if this canonical name has an available pack
+	available, err := ListAvailable()
+	if err != nil {
+		return false
+	}
+
+	return slices.Contains(available, canonical)
+}
+
+// GetPlatformList returns a formatted string of available platforms for user prompts.
+// Only includes platforms that have actual packs (excludes generic as it's the fallback).
+func GetPlatformList() string {
+	available, err := ListAvailable()
+	if err != nil {
+		return "go" // Fallback to known pack
+	}
+
+	// Build list with aliases shown (pre-allocate for efficiency)
+	parts := make([]string, 0, len(available))
+	for _, name := range available {
+		if name == PlatformGeneric {
+			continue // Don't advertise generic as a choice
+		}
+		parts = append(parts, name)
+	}
+
+	if len(parts) == 0 {
+		return PlatformGeneric
+	}
+
+	return strings.Join(parts, ", ")
+}
+
 // Validate checks a pack for required fields and valid token usage.
 func Validate(pack *Pack) ValidationResult {
 	result := ValidationResult{Valid: true}

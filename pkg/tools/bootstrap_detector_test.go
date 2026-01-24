@@ -37,93 +37,8 @@ func TestBootstrapDetector_DetectMissingComponents(t *testing.T) {
 	}
 }
 
-func TestBootstrapDetector_DetectPlatform_Go(t *testing.T) {
-	// Create a temporary directory with go.mod
-	tmpDir := t.TempDir()
-	goModPath := filepath.Join(tmpDir, "go.mod")
-	if err := os.WriteFile(goModPath, []byte("module test\n"), 0644); err != nil {
-		t.Fatalf("Failed to create go.mod: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "go" {
-		t.Errorf("Expected platform = go, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for go.mod, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Python(t *testing.T) {
-	// Create a temporary directory with pyproject.toml
-	tmpDir := t.TempDir()
-	pyprojectPath := filepath.Join(tmpDir, "pyproject.toml")
-	if err := os.WriteFile(pyprojectPath, []byte("[build-system]\n"), 0644); err != nil {
-		t.Fatalf("Failed to create pyproject.toml: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "python" {
-		t.Errorf("Expected platform = python, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for pyproject.toml, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Node(t *testing.T) {
-	// Create a temporary directory with package.json
-	tmpDir := t.TempDir()
-	packagePath := filepath.Join(tmpDir, "package.json")
-	if err := os.WriteFile(packagePath, []byte("{\"name\": \"test\"}\n"), 0644); err != nil {
-		t.Fatalf("Failed to create package.json: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "node" {
-		t.Errorf("Expected platform = node, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for package.json, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Generic(t *testing.T) {
-	// Create a temporary directory with no platform indicators
-	tmpDir := t.TempDir()
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "generic" {
-		t.Errorf("Expected platform = generic, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence > 0.5 {
-		t.Errorf("Expected low confidence for unknown platform, got %.2f", reqs.PlatformConfidence)
-	}
-}
+// Note: Platform detection tests removed - platform confirmation is now handled by PM LLM,
+// not programmatic detection. Platform is set in config when user confirms during bootstrap.
 
 func TestBootstrapDetector_DetectMakefile_Missing(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -276,25 +191,17 @@ func TestBootstrapDetector_GetRequiredQuestions_Basic(t *testing.T) {
 
 	questions := detector.GetRequiredQuestions(ctx)
 
-	// Basic should get platform confirmation
+	// Basic should get git_repo question (platform confirmation handled by PM LLM)
 	foundRepo := false
-	foundPlatform := false
 
 	for _, q := range questions {
 		if q.ID == "git_repo" {
 			foundRepo = true
 		}
-		if q.ID == "confirm_platform" {
-			foundPlatform = true
-		}
 	}
 
 	if !foundRepo {
 		t.Error("Expected git_repo question for BASIC without repo")
-	}
-
-	if !foundPlatform {
-		t.Error("Expected platform confirmation for BASIC")
 	}
 }
 
@@ -312,9 +219,8 @@ func TestBootstrapDetector_GetRequiredQuestions_Expert(t *testing.T) {
 
 	questions := detector.GetRequiredQuestions(ctx)
 
-	// Expert should get all questions including custom options
+	// Expert should get questions (platform confirmation handled by PM LLM)
 	foundRepo := false
-	foundPlatform := false
 	foundDockerfile := false
 	foundPatterns := false
 
@@ -322,8 +228,6 @@ func TestBootstrapDetector_GetRequiredQuestions_Expert(t *testing.T) {
 		switch q.ID {
 		case "git_repo":
 			foundRepo = true
-		case "confirm_platform":
-			foundPlatform = true
 		case "custom_dockerfile":
 			foundDockerfile = true
 		case "initial_patterns":
@@ -333,10 +237,6 @@ func TestBootstrapDetector_GetRequiredQuestions_Expert(t *testing.T) {
 
 	if !foundRepo {
 		t.Error("Expected git_repo question for EXPERT without repo")
-	}
-
-	if !foundPlatform {
-		t.Error("Expected platform confirmation for EXPERT")
 	}
 
 	if !foundDockerfile {
