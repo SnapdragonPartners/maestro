@@ -166,28 +166,21 @@ func (d *Driver) setupInterviewContext() error {
 	}
 
 	// Select template based on bootstrap requirements
-	// Single source of truth: use bootstrap detector's methods
+	// Only use bootstrap gate for config deficits (PM-owned)
+	// Technical prerequisites (dockerfile, etc.) flow to architect via spec_submit
 	var templateName templates.StateTemplate
-	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() {
-		if bootstrapReqs.NeedsBootstrapGate() {
-			// Project metadata (name/platform/git) is missing - use focused bootstrap gate template
-			templateName = templates.PMBootstrapGateTemplate
-			d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
-				bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
-		} else {
-			// Project metadata is complete, but other components missing - use full interview
-			// Note: BootstrapRequired enables the project setup section in the template.
-			// PM gathers project metadata; infrastructure requirements are opaque to PM LLM.
-			// Platform is NOT injected - PM LLM handles platform confirmation with user.
-			templateName = templates.PMInterviewStartTemplate
-			templateData.Extra["BootstrapRequired"] = true
-
-			d.logger.Info("📋 Using interview template with bootstrap context")
-		}
+	if bootstrapReqs != nil && bootstrapReqs.NeedsBootstrapGate() {
+		// Config deficits (project name/platform/git) are missing - use focused bootstrap gate template
+		templateName = templates.PMBootstrapGateTemplate
+		d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
+			bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
 	} else {
-		// No bootstrap needed - use clean interview template
+		// Config is complete - use normal interview template
+		// Technical prerequisites are handled by architect, not PM
 		templateName = templates.PMInterviewStartTemplate
-		d.logger.Info("📋 Using interview template (no bootstrap requirements)")
+		// Indicate that bootstrap tool is available for config revisions (not required)
+		templateData.Extra["ConfigRevisionAvailable"] = true
+		d.logger.Info("📋 Using interview template (config complete, bootstrap available for revisions)")
 	}
 
 	// Render selected template
