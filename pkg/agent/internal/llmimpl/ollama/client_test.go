@@ -11,6 +11,15 @@ import (
 	"orchestrator/pkg/tools"
 )
 
+// makeToolCallArgs creates a ToolCallFunctionArguments from a map for testing.
+func makeToolCallArgs(m map[string]any) api.ToolCallFunctionArguments {
+	args := api.NewToolCallFunctionArguments()
+	for k, v := range m {
+		args.Set(k, v)
+	}
+	return args
+}
+
 func TestNewOllamaClientWithModel(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -182,12 +191,15 @@ func TestConvertToolsToOllama(t *testing.T) {
 	assert.Equal(t, "get_weather", tool.Function.Name)
 	assert.Equal(t, "Get weather for a location", tool.Function.Description)
 	assert.Equal(t, "object", tool.Function.Parameters.Type)
-	assert.Contains(t, tool.Function.Parameters.Properties, "location")
-	assert.Contains(t, tool.Function.Parameters.Properties, "unit")
+	// Check properties exist using Get method
+	_, hasLocation := tool.Function.Parameters.Properties.Get("location")
+	_, hasUnit := tool.Function.Parameters.Properties.Get("unit")
+	assert.True(t, hasLocation, "should have location property")
+	assert.True(t, hasUnit, "should have unit property")
 	assert.Equal(t, []string{"location"}, tool.Function.Parameters.Required)
 
 	// Check enum conversion
-	unitProp := tool.Function.Parameters.Properties["unit"]
+	unitProp, _ := tool.Function.Parameters.Properties.Get("unit")
 	assert.Len(t, unitProp.Enum, 2)
 }
 
@@ -258,7 +270,7 @@ func TestConvertToolCallsFromOllama(t *testing.T) {
 					ID: "call_abc123",
 					Function: api.ToolCallFunction{
 						Name:      "get_weather",
-						Arguments: api.ToolCallFunctionArguments{"location": "NYC"},
+						Arguments: makeToolCallArgs(map[string]any{"location": "NYC"}),
 					},
 				},
 			},
@@ -276,7 +288,7 @@ func TestConvertToolCallsFromOllama(t *testing.T) {
 				{
 					Function: api.ToolCallFunction{
 						Name:      "search",
-						Arguments: api.ToolCallFunctionArguments{"query": "test"},
+						Arguments: makeToolCallArgs(map[string]any{"query": "test"}),
 					},
 				},
 			},
@@ -295,14 +307,14 @@ func TestConvertToolCallsFromOllama(t *testing.T) {
 					ID: "call_1",
 					Function: api.ToolCallFunction{
 						Name:      "tool_a",
-						Arguments: api.ToolCallFunctionArguments{"a": 1},
+						Arguments: makeToolCallArgs(map[string]any{"a": 1}),
 					},
 				},
 				{
 					ID: "call_2",
 					Function: api.ToolCallFunction{
 						Name:      "tool_b",
-						Arguments: api.ToolCallFunctionArguments{"b": 2},
+						Arguments: makeToolCallArgs(map[string]any{"b": 2}),
 					},
 				},
 			},

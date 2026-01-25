@@ -131,11 +131,16 @@ func convertMessagesToOllama(messages []llm.CompletionMessage) ([]api.Message, e
 			ollamaMsg.ToolCalls = make([]api.ToolCall, len(msg.ToolCalls))
 			for j := range msg.ToolCalls {
 				tc := &msg.ToolCalls[j]
+				// Convert parameters map to ToolCallFunctionArguments
+				args := api.NewToolCallFunctionArguments()
+				for key, value := range tc.Parameters {
+					args.Set(key, value)
+				}
 				ollamaMsg.ToolCalls[j] = api.ToolCall{
 					ID: tc.ID,
 					Function: api.ToolCallFunction{
 						Name:      tc.Name,
-						Arguments: api.ToolCallFunctionArguments(tc.Parameters),
+						Arguments: args,
 					},
 				}
 			}
@@ -172,11 +177,11 @@ func convertToolsToOllama(toolDefs []tools.ToolDefinition) api.Tools {
 
 	for i := range toolDefs {
 		td := &toolDefs[i]
-		// Convert properties
-		properties := make(map[string]api.ToolProperty)
+		// Convert properties to ToolPropertiesMap
+		properties := api.NewToolPropertiesMap()
 		for name := range td.InputSchema.Properties {
 			prop := td.InputSchema.Properties[name]
-			properties[name] = convertPropertyToOllama(&prop)
+			properties.Set(name, convertPropertyToOllama(&prop))
 		}
 
 		ollamaTools[i] = api.Tool{
@@ -249,7 +254,7 @@ func convertToolCallsFromOllama(calls []api.ToolCall) []llm.ToolCall {
 		result[i] = llm.ToolCall{
 			ID:         id,
 			Name:       call.Function.Name,
-			Parameters: map[string]any(call.Function.Arguments),
+			Parameters: call.Function.Arguments.ToMap(),
 		}
 	}
 
