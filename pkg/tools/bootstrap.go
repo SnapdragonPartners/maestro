@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/mirror"
+	"orchestrator/pkg/templates/packs"
 	"orchestrator/pkg/workspace"
 )
 
@@ -34,6 +35,9 @@ func NewBootstrapTool(projectDir, _ string) *BootstrapTool {
 
 // Definition returns the tool's definition in Claude API format.
 func (b *BootstrapTool) Definition() ToolDefinition {
+	// Get available platforms for the description
+	platformList := packs.GetPlatformList()
+
 	return ToolDefinition{
 		Name:        "bootstrap",
 		Description: "Configure bootstrap requirements for a new project. IMPORTANT: You must ask the user for these values first - never make up or infer project details. Only call this after the user has provided: project name, GitHub repository URL, and primary platform.",
@@ -50,7 +54,7 @@ func (b *BootstrapTool) Definition() ToolDefinition {
 				},
 				"platform": {
 					Type:        "string",
-					Description: "Primary development platform (e.g., 'go', 'python', 'node', 'rust')",
+					Description: fmt.Sprintf("Primary development platform. Valid options: %s. Common aliases are accepted (e.g., 'golang' → 'go', 'py' → 'python', 'nodejs' → 'node').", platformList),
 				},
 			},
 			Required: []string{"project_name", "git_url", "platform"},
@@ -65,15 +69,16 @@ func (b *BootstrapTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (b *BootstrapTool) PromptDocumentation() string {
-	return `- **bootstrap** - Configure bootstrap requirements for a new project
+	platformList := packs.GetPlatformList()
+	return fmt.Sprintf(`- **bootstrap** - Configure bootstrap requirements for a new project
   - **CRITICAL**: You MUST ask the user for these values first - never make them up or infer them
   - Parameters:
     - project_name (string, required): Project name (ask the user)
     - git_url (string, required): GitHub repository URL (ask the user for https://github.com/user/repo format)
-    - platform (string, required): Primary platform like go, python, node, rust (ask the user or infer from their description)
+    - platform (string, required): Primary platform - valid options: %s. Common aliases accepted (golang, py, nodejs, etc.)
   - Only call after gathering all required information from the user
   - Must be called before spec_submit if project is not yet configured
-  - Updates config.json with project metadata`
+  - Updates config.json with project metadata`, platformList)
 }
 
 // Exec executes the bootstrap configuration.
@@ -110,8 +115,9 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 		return nil, fmt.Errorf("platform parameter is required")
 	}
 
-	// Normalize platform to lowercase
-	platform = strings.ToLower(platform)
+	// Normalize platform using alias mapping (e.g., "golang" → "go", "py" → "python")
+	// Unknown platforms fall back to "generic" with a warning when pack is loaded
+	platform = packs.NormalizePlatform(platform)
 
 	// Update project info (saves to disk automatically)
 	// Note: Project description is now handled via MAESTRO.md file, not config
@@ -121,6 +127,18 @@ func (b *BootstrapTool) Exec(ctx context.Context, params map[string]any) (*ExecR
 	}
 	if updateErr := config.UpdateProject(projectInfo); updateErr != nil {
 		return nil, fmt.Errorf("failed to update project info: %w", updateErr)
+	}
+
+	// Store the language pack version used for this platform
+	// This enables future "pack updated since bootstrap" detection
+	pack, _, packErr := packs.Get(platform)
+	if packErr == nil && pack != nil {
+		if updateErr := config.UpdateProjectPack(pack.Name, pack.Version); updateErr != nil {
+			b.logger.Warn("Failed to store pack version: %v", updateErr)
+			// Non-fatal - bootstrap continues
+		} else {
+			b.logger.Info("📦 Using %s Pack v%s for platform '%s'", pack.DisplayName, pack.Version, platform)
+		}
 	}
 
 	// Update git config (saves to disk automatically)

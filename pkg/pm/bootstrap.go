@@ -15,15 +15,6 @@ import (
 	"orchestrator/pkg/workspace"
 )
 
-const (
-	// Platform names.
-	platformGeneric = "generic"
-	platformGo      = "go"
-	platformPython  = "python"
-	platformNode    = "node"
-	platformRust    = "rust"
-)
-
 // BootstrapDetector detects missing bootstrap components in a project.
 // PM is the sole authority on bootstrap status - this detector runs against the PM workspace.
 type BootstrapDetector struct {
@@ -31,21 +22,37 @@ type BootstrapDetector struct {
 	projectDir string
 }
 
+// ContainerStatus describes the current state of container configuration.
+// Used for detailed logging during bootstrap detection.
+//
+//nolint:govet // Field alignment optimized for clarity over memory efficiency
+type ContainerStatus struct {
+	HasValidContainer   bool   // True if a valid project container is configured and available
+	IsBootstrapFallback bool   // True if using maestro-bootstrap fallback container
+	ContainerName       string // Name of configured container (empty if none)
+	PinnedImageID       string // Pinned image ID (empty if not configured)
+	DockerfilePath      string // Path to Dockerfile (e.g., .maestro/Dockerfile)
+	DockerfileExists    bool   // True if Dockerfile exists at the path
+	Reason              string // Human-readable explanation of the status
+}
+
 // BootstrapRequirements describes what bootstrap components are missing.
+// Platform detection is NOT part of bootstrap - PM LLM handles platform confirmation
+// with the user since it's a user-level requirement and too many possibilities exist
+// for reliable programmatic detection.
 //
 //nolint:govet // Field alignment optimized for clarity over memory efficiency
 type BootstrapRequirements struct {
-	NeedsBuildTargets   []string // List of missing Makefile targets
-	MissingComponents   []string // Human-readable list of missing items
-	DetectedPlatform    string   // Detected platform: go, python, node, generic
-	PlatformConfidence  float64  // Confidence score 0.0 to 1.0
-	NeedsProjectConfig  bool     // True if project name or platform is missing
-	NeedsGitRepo        bool     // True if no git repository is configured
-	NeedsDockerfile     bool     // True if no Dockerfile exists
-	NeedsMakefile       bool     // True if no Makefile exists or missing required targets
-	NeedsKnowledgeGraph bool     // True if .maestro/knowledge.dot doesn't exist
-	NeedsClaudeCode     bool     // True if coder_mode is "claude-code" but Claude Code not in container
-	NeedsGitignore      bool     // True if no .gitignore exists
+	NeedsBuildTargets   []string        // List of missing Makefile targets
+	MissingComponents   []string        // Human-readable list of missing items
+	NeedsProjectConfig  bool            // True if project name or platform is missing
+	NeedsGitRepo        bool            // True if no git repository is configured
+	NeedsDockerfile     bool            // True if no Dockerfile exists
+	NeedsMakefile       bool            // True if no Makefile exists or missing required targets
+	NeedsKnowledgeGraph bool            // True if .maestro/knowledge.dot doesn't exist
+	NeedsClaudeCode     bool            // True if coder_mode is "claude-code" but Claude Code not in container
+	NeedsGitignore      bool            // True if no .gitignore exists
+	ContainerStatus     ContainerStatus // Detailed container status for logging
 }
 
 // NeedsBootstrapGate returns true if project metadata (name/platform/git) is missing.
@@ -60,8 +67,48 @@ func (r *BootstrapRequirements) HasAnyMissingComponents() bool {
 	return len(r.MissingComponents) > 0
 }
 
+// ToRequirementIDs converts BootstrapRequirements to a slice of BootstrapRequirementID.
+// This is used by spec_submit to pass structured requirements to the architect,
+// who then renders the full technical specification.
+func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirementID {
+	var ids []workspace.BootstrapRequirementID
+
+	// Container-related requirements
+	if r.ContainerStatus.IsBootstrapFallback && !r.ContainerStatus.HasValidContainer {
+		ids = append(ids, workspace.BootstrapReqContainer)
+	}
+	if r.NeedsDockerfile {
+		ids = append(ids, workspace.BootstrapReqDockerfile)
+	}
+
+	// Build system requirements (includes Makefile and .gitignore)
+	// Use OR to avoid duplicate entries when both are missing
+	if r.NeedsMakefile || r.NeedsGitignore {
+		ids = append(ids, workspace.BootstrapReqBuildSystem)
+	}
+
+	// Infrastructure requirements
+	if r.NeedsKnowledgeGraph {
+		ids = append(ids, workspace.BootstrapReqKnowledgeGraph)
+	}
+
+	// Git requirements
+	if r.NeedsGitRepo {
+		ids = append(ids, workspace.BootstrapReqGitAccess)
+	}
+
+	// External tools requirements (includes Claude Code)
+	if r.NeedsClaudeCode {
+		ids = append(ids, workspace.BootstrapReqExternalTools)
+	}
+
+	return ids
+}
+
 // ToBootstrapFailures converts requirements to workspace.BootstrapFailure slice
 // for use with the bootstrap template renderer.
+// Note: Platform is NOT included in failures - PM LLM handles platform confirmation
+// with the user and passes it to the bootstrap MCP tool.
 func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailure {
 	var failures []workspace.BootstrapFailure
 
@@ -72,8 +119,7 @@ func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailu
 			Component:   "dockerfile",
 			Description: "Development container not configured - Dockerfile required",
 			Details: map[string]string{
-				"action":   "create_dockerfile",
-				"platform": r.DetectedPlatform,
+				"action": "create_dockerfile",
 			},
 			Priority: 1,
 		})
@@ -117,8 +163,7 @@ func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailu
 			Component:   "gitignore",
 			Description: ".gitignore file missing - required for clean repository",
 			Details: map[string]string{
-				"action":   "create_gitignore",
-				"platform": r.DetectedPlatform,
+				"action": "create_gitignore",
 			},
 			Priority: 4,
 		})
@@ -170,8 +215,8 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 		reqs.MissingComponents = append(reqs.MissingComponents, "git repository")
 	}
 
-	// Check for Dockerfile
-	reqs.NeedsDockerfile = bd.detectMissingDockerfile()
+	// Check for Dockerfile and container status
+	reqs.NeedsDockerfile, reqs.ContainerStatus = bd.detectMissingDockerfile()
 	if reqs.NeedsDockerfile {
 		reqs.MissingComponents = append(reqs.MissingComponents, "Dockerfile")
 	}
@@ -200,11 +245,11 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 		reqs.MissingComponents = append(reqs.MissingComponents, ".gitignore file")
 	}
 
-	// Detect platform
-	reqs.DetectedPlatform, reqs.PlatformConfidence = bd.detectPlatform()
+	// Note: Platform detection is NOT done here - PM LLM handles platform confirmation
+	// with the user since it's a user-level requirement
 
-	bd.logger.Info("Bootstrap detection complete: %d components needed (platform: %s @ %.0f%%)",
-		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+	bd.logger.Info("Bootstrap detection complete: %d components needed",
+		len(reqs.MissingComponents))
 
 	return reqs, nil
 }
@@ -339,45 +384,95 @@ func (bd *BootstrapDetector) validateGitHubAccess(repoPath string) bool {
 }
 
 // detectMissingDockerfile checks if development container is properly configured.
-// Returns false (no Dockerfile needed) if container is configured with a pinned
-// image ID that exists in Docker. Returns true (Dockerfile needed) if no container
-// is configured, using bootstrap fallback, or pinned image doesn't exist.
-func (bd *BootstrapDetector) detectMissingDockerfile() bool {
-	// First check if there's already a working container configured
-	// If yes, we don't need a Dockerfile (container is ready to use)
+// Returns (false, status) - no bootstrap needed if:
+//  1. Container is configured with valid pinned image (warns if Dockerfile missing), OR
+//  2. Container invalid but .maestro/Dockerfile exists (can be built)
+//
+// Returns (true, status) - bootstrap needed if no valid container AND no Dockerfile.
+func (bd *BootstrapDetector) detectMissingDockerfile() (bool, ContainerStatus) {
+	status := ContainerStatus{
+		DockerfilePath: config.GetDockerfilePath(),
+	}
+
 	cfg, err := config.GetConfig()
 	if err != nil {
 		bd.logger.Debug("Failed to get config: %v", err)
-		return true
+		status.Reason = "config unavailable"
+		return true, status
 	}
 
-	// Container must be configured with a name
+	fullPath := filepath.Join(bd.projectDir, status.DockerfilePath)
+	status.DockerfileExists = bd.fileExists(fullPath)
+
+	// Extract container info from config
+	if cfg.Container != nil {
+		status.ContainerName = cfg.Container.Name
+		status.PinnedImageID = cfg.Container.PinnedImageID
+
+		// Check if using bootstrap fallback container
+		if cfg.Container.Name == config.BootstrapContainerTag {
+			status.IsBootstrapFallback = true
+		}
+	}
+
+	// Check 1: Is there already a working project container configured?
+	if bd.hasValidContainer(&cfg) {
+		status.HasValidContainer = true
+		// Container is valid - warn if Dockerfile missing but don't require bootstrap
+		if !status.DockerfileExists {
+			bd.logger.Warn("Development container is valid but %s not found. "+
+				"Future container rebuilds may fail.", status.DockerfilePath)
+			status.Reason = "valid container, Dockerfile missing (rebuild may fail)"
+		} else {
+			status.Reason = "valid container with Dockerfile"
+		}
+		bd.logger.Debug("Development container configured and available: %s (image: %s)",
+			cfg.Container.Name, cfg.Container.PinnedImageID)
+		return false, status // No bootstrap needed
+	}
+
+	// Container is not valid - check if we can build from Dockerfile
+	if status.DockerfileExists {
+		bd.logger.Debug("Found Maestro Dockerfile at %s - can rebuild container", fullPath)
+		if status.IsBootstrapFallback {
+			status.Reason = "using bootstrap fallback, Dockerfile exists (can build project container)"
+		} else {
+			status.Reason = "no project container, but Dockerfile exists (can build)"
+		}
+		return false, status // Dockerfile exists, can rebuild
+	}
+
+	// No valid container and no Dockerfile
+	bd.logger.Debug("No valid container and no Dockerfile at %s", fullPath)
+	if status.IsBootstrapFallback {
+		status.Reason = "using bootstrap fallback, no Dockerfile to build project container"
+	} else {
+		status.Reason = "no container configured and no Dockerfile"
+	}
+	return true, status // Bootstrap needed - must create Dockerfile
+}
+
+// hasValidContainer checks if a working container is already configured.
+func (bd *BootstrapDetector) hasValidContainer(cfg *config.Config) bool {
 	if cfg.Container == nil || cfg.Container.Name == "" {
-		bd.logger.Debug("Container not configured in config")
-		return true
+		return false
 	}
 
-	// Container must not be the bootstrap fallback container
 	if cfg.Container.Name == config.BootstrapContainerTag {
-		bd.logger.Debug("Container is still bootstrap fallback: %s", cfg.Container.Name)
-		return true
+		return false // Still using bootstrap fallback
 	}
 
-	// Container should have a pinned image ID (indicates it was built and configured)
 	if cfg.Container.PinnedImageID == "" {
-		bd.logger.Debug("Container has no pinned image ID (not built/configured): %s", cfg.Container.Name)
-		return true
+		return false // Not built/configured
 	}
 
-	// Verify the pinned image actually exists in Docker
-	if !bd.validateDockerImage(cfg.Container.PinnedImageID) {
-		bd.logger.Debug("Pinned container image not found in Docker: %s", cfg.Container.PinnedImageID)
-		return true
-	}
+	return bd.validateDockerImage(cfg.Container.PinnedImageID)
+}
 
-	// Container is configured and available - no Dockerfile story needed
-	bd.logger.Debug("Development container configured and available: %s (image: %s)", cfg.Container.Name, cfg.Container.PinnedImageID)
-	return false
+// fileExists checks if a file exists and is readable.
+func (bd *BootstrapDetector) fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // validateDockerImage checks if a Docker image exists locally.
@@ -505,66 +600,6 @@ func (bd *BootstrapDetector) checkClaudeCodeInContainer(imageName string) bool {
 
 	bd.logger.Debug("Claude Code version in %s: %s", imageName, strings.TrimSpace(string(output)))
 	return true
-}
-
-// detectPlatform attempts to detect the project platform from files.
-func (bd *BootstrapDetector) detectPlatform() (string, float64) {
-	// If platform is already set in config, use it with 100% confidence
-	cfg, err := config.GetConfig()
-	if err == nil && cfg.Project != nil && cfg.Project.PrimaryPlatform != "" {
-		platform := cfg.Project.PrimaryPlatform
-		bd.logger.Debug("Using platform from config: %s (100%% confidence)", platform)
-		return platform, 1.0
-	}
-
-	// Otherwise, scan files to detect platform
-	// Platform indicators with their confidence weights
-	platformScores := map[string]float64{
-		platformGo:     0.0,
-		platformPython: 0.0,
-		platformNode:   0.0,
-		platformRust:   0.0,
-	}
-
-	// Check for platform-specific files
-	bd.checkPlatformFile("go.mod", platformGo, 0.9, platformScores)
-	bd.checkPlatformFile("go.sum", platformGo, 0.3, platformScores)
-	bd.checkPlatformFile("requirements.txt", platformPython, 0.7, platformScores)
-	bd.checkPlatformFile("pyproject.toml", platformPython, 0.9, platformScores)
-	bd.checkPlatformFile("setup.py", platformPython, 0.6, platformScores)
-	bd.checkPlatformFile("package.json", platformNode, 0.9, platformScores)
-	bd.checkPlatformFile("package-lock.json", platformNode, 0.5, platformScores)
-	bd.checkPlatformFile("yarn.lock", platformNode, 0.5, platformScores)
-	bd.checkPlatformFile("Cargo.toml", platformRust, 0.9, platformScores)
-
-	// Find platform with highest score
-	maxPlatform := platformGeneric
-	maxScore := 0.0
-
-	for platform, score := range platformScores {
-		if score > maxScore {
-			maxScore = score
-			maxPlatform = platform
-		}
-	}
-
-	// If no strong signal, default to generic with low confidence
-	if maxScore < 0.5 {
-		bd.logger.Debug("Platform detection uncertain, defaulting to generic")
-		return platformGeneric, 0.3
-	}
-
-	bd.logger.Debug("Detected platform: %s (confidence: %.0f%%)", maxPlatform, maxScore*100)
-	return maxPlatform, maxScore
-}
-
-// checkPlatformFile checks if a platform indicator file exists and updates scores.
-func (bd *BootstrapDetector) checkPlatformFile(filename, platform string, weight float64, scores map[string]float64) {
-	filePath := filepath.Join(bd.projectDir, filename)
-	if _, err := os.Stat(filePath); err == nil {
-		scores[platform] += weight
-		bd.logger.Debug("Found %s indicator: %s (weight: %.1f)", platform, filename, weight)
-	}
 }
 
 // RefreshMirrorAndWorkspaces ensures the git mirror exists and refreshes workspaces.

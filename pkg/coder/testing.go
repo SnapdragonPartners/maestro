@@ -114,7 +114,8 @@ func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStat
 
 	// For DevOps stories, we need actual infrastructure validation, not just file checks
 	// Check if this is a container-related DevOps story
-	dockerfilePath := filepath.Join(workspacePathStr, "Dockerfile")
+	// Check for Dockerfile in the configured location (within .maestro/)
+	dockerfilePath := filepath.Join(workspacePathStr, config.GetDockerfilePath())
 	if fileExists(dockerfilePath) {
 		return c.handleContainerTesting(ctx, sm, workspacePathStr, dockerfilePath)
 	}
@@ -287,9 +288,9 @@ func (c *Coder) runContainerBuildTesting(ctx context.Context, workspacePathStr s
 
 	// Prepare arguments for container_build tool
 	args := map[string]any{
-		"container_name":    containerConfig.Name,
-		"dockerfile_path":   containerConfig.Dockerfile,
-		"working_directory": workspacePathStr,
+		"container_name": containerConfig.Name,
+		"dockerfile":     containerConfig.Dockerfile,
+		"cwd":            workspacePathStr,
 	}
 
 	// Execute container build

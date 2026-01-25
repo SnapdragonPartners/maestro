@@ -1,0 +1,31 @@
+{
+  "name": "node",
+  "display_name": "Node.js",
+  "version": "1.0.0",
+  "language_version": "22",
+
+  "recommended_base_image": "node:${LANGUAGE_VERSION}-alpine",
+
+  "tooling": {
+    "package_manager": "npm",
+    "linter": "eslint",
+    "test_framework": "vitest",
+    "formatter": "prettier"
+  },
+
+  "makefile_targets": {
+    "build": "npm install && npm run build",
+    "test": "npm test",
+    "lint": "npm run lint",
+    "run": "npm start",
+    "clean": "rm -rf node_modules dist .cache coverage"
+  },
+
+  "template_sections": {
+    "module_setup": "### Node.js Project Setup\n\n- [ ] Create `package.json` if missing: `npm init -y`\n- [ ] Ensure Node.js version ${LANGUAGE_VERSION} is specified in `engines` field\n- [ ] Install dependencies: `npm install`\n- [ ] Verify `package-lock.json` is committed\n- [ ] All npm dependencies properly resolved",
+
+    "lint_config": "### Node.js Linting Configuration\n\n- [ ] Install ESLint: `npm install -D eslint`\n- [ ] Install Prettier: `npm install -D prettier`\n- [ ] Configure ESLint in `eslint.config.js` or `.eslintrc.json`\n- [ ] Configure Prettier in `.prettierrc`\n- [ ] Verify `npm run lint` passes\n- [ ] Integrate linting into `make lint` target\n\n**Recommended `eslint.config.js` (flat config):**\n```javascript\nimport js from '@eslint/js';\nimport tseslint from 'typescript-eslint';\n\nexport default tseslint.config(\n  js.configs.recommended,\n  ...tseslint.configs.recommended,\n  {\n    rules: {\n      '@typescript-eslint/no-unused-vars': 'error',\n      '@typescript-eslint/explicit-function-return-type': 'warn',\n      'no-console': 'warn',\n    },\n  }\n);\n```\n\n**Recommended `.prettierrc`:**\n```json\n{\n  \"semi\": true,\n  \"singleQuote\": true,\n  \"tabWidth\": 2,\n  \"trailingComma\": \"es5\",\n  \"printWidth\": 100\n}\n```",
+
+    "quality_setup": "### Node.js Development Quality\n\n**Pre-commit Hook:**\n```bash\n#!/bin/bash\nset -e\necho \"Running pre-commit checks...\"\nnpm run lint && npm test\necho \"All checks passed!\"\n```\n\n**TypeScript Setup (if using):**\n```bash\n# Install TypeScript\nnpm install -D typescript @types/node\n\n# Initialize tsconfig\nnpx tsc --init\n```\n\n**Test Coverage:**\n```bash\n# With Vitest\nnpm run test -- --coverage\n\n# With Jest\nnpm test -- --coverage\n```"
+  }
+}

@@ -184,14 +184,9 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		execOpts.ResourceLimits.Memory = "2g"
 		execOpts.ResourceLimits.PIDs = 1024
 		execOpts.NetworkDisabled = false
-
-		// Inject GITHUB_TOKEN for git operations during coding phase
-		if config.HasGitHubToken() {
-			execOpts.Env = append(execOpts.Env, "GITHUB_TOKEN")
-			c.logger.Debug("Injected GITHUB_TOKEN into coding container environment")
-		} else {
-			c.logger.Warn("GITHUB_TOKEN not found in environment - git push operations may fail")
-		}
+		// SECURITY: No GITHUB_TOKEN injection into container.
+		// Git push operations run on the HOST (not in container) to prevent
+		// coders from pushing unapproved code. See pushBranch() in prepare_merge.go.
 	}
 
 	// Use sanitized agent ID for container naming (story ID not accessible from here)
@@ -287,34 +282,20 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 	return result.Stdout, nil
 }
 
-// setupGitHubAuthentication sets up GitHub authentication using GitHub CLI.
-// Configures git credential helper to use GitHub CLI for push operations.
+// setupGitHubAuthentication verifies prerequisites and configures git for commits.
+// Note: Git push operations run on the host (not in container) so no credentials are injected here.
+// The GITHUB_TOKEN check ensures host-side push will work later.
 func (c *Coder) setupGitHubAuthentication(ctx context.Context) error {
-	c.logger.Info("🔑 Setting up GitHub authentication")
+	c.logger.Info("🔑 Setting up git configuration")
 
-	// FATAL CHECK: GITHUB_TOKEN must exist in environment
+	// FATAL CHECK: GITHUB_TOKEN must exist in environment (for host-side push later)
 	if !config.HasGitHubToken() {
 		return fmt.Errorf("GITHUB_TOKEN not found in environment - this is required for git operations and cannot be fixed by coder")
 	}
 
-	// Configure git to use GitHub CLI for authentication
-	c.logger.Info("🔧 Configuring git credential helper to use GitHub CLI")
-	setupResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "auth", "setup-git"}, &execpkg.Opts{
-		WorkDir: "/workspace",
-		Timeout: 30 * time.Second,
-	})
-	if err != nil || setupResult.ExitCode != 0 {
-		return fmt.Errorf("GitHub git setup failed: %w (stdout: %s, stderr: %s)", err, setupResult.Stdout, setupResult.Stderr)
-	}
-	c.logger.Info("✅ Git credential helper configured for GitHub")
-
-	c.logger.Info("✅ GitHub authentication setup completed successfully")
-
-	// Verify the authentication setup by checking tools and configuration
-	if err := c.verifyGitHubAuthSetup(ctx); err != nil {
-		c.logger.Warn("⚠️ GitHub auth verification failed: %v", err)
-		c.contextManager.AddMessage("system", fmt.Sprintf("GitHub authentication verification failed: %v. Authentication may be incomplete.", err))
-		// Don't fail completely - let the coder try to work with potentially partial auth
+	// Verify git is available in container
+	if err := c.verifyGitAvailable(ctx); err != nil {
+		return fmt.Errorf("git verification failed: %w", err)
 	}
 
 	// Configure git user identity using our config values
@@ -337,17 +318,18 @@ func (c *Coder) setupGitHubAuthentication(ctx context.Context) error {
 		// Don't fail completely - git user config can be set manually by the coder if needed
 	}
 
+	c.logger.Info("✅ Git configuration completed")
 	return nil
 }
 
-// verifyGitHubAuthSetup verifies that GitHub authentication is working correctly after script setup.
-func (c *Coder) verifyGitHubAuthSetup(ctx context.Context) error {
+// verifyGitAvailable verifies that git is available in the container.
+func (c *Coder) verifyGitAvailable(ctx context.Context) error {
 	opts := &execpkg.Opts{
 		WorkDir: "/workspace",
 		Timeout: 10 * time.Second,
 	}
 
-	c.logger.Info("🔍 Verifying GitHub authentication setup")
+	c.logger.Info("🔍 Verifying git is available")
 
 	// Check if git is available and working
 	gitResult, err := c.longRunningExecutor.Run(ctx, []string{"git", "--version"}, opts)
@@ -355,27 +337,6 @@ func (c *Coder) verifyGitHubAuthSetup(ctx context.Context) error {
 		return fmt.Errorf("git not available or not working: %w (stdout: %s, stderr: %s)", err, gitResult.Stdout, gitResult.Stderr)
 	}
 	c.logger.Info("✅ Git is available: %s", strings.TrimSpace(gitResult.Stdout))
-
-	// Check if gh (GitHub CLI) is available and working
-	ghResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "--version"}, opts)
-	if err != nil || ghResult.ExitCode != 0 {
-		return fmt.Errorf("GitHub CLI not available or not working: %w (stdout: %s, stderr: %s)", err, ghResult.Stdout, ghResult.Stderr)
-	}
-	c.logger.Info("✅ GitHub CLI is available: %s", strings.TrimSpace(strings.Split(ghResult.Stdout, "\n")[0]))
-
-	// Check GitHub API connectivity with lightweight validation (replaces gh auth status)
-	if apiErr := c.validateGitHubAPIConnectivity(ctx, opts); apiErr != nil {
-		return fmt.Errorf("GitHub API connectivity validation failed: %w", apiErr)
-	}
-	c.logger.Info("✅ GitHub API connectivity validated")
-
-	// Check if git credential helper is configured for GitHub
-	configResult, err := c.longRunningExecutor.Run(ctx, []string{"git", "config", "--list"}, opts)
-	if err == nil && strings.Contains(configResult.Stdout, "credential.https://github.com.helper") {
-		c.logger.Info("✅ Git credential helper configured for GitHub")
-	} else {
-		c.logger.Warn("⚠️ Git credential helper may not be configured properly")
-	}
 
 	return nil
 }
@@ -423,69 +384,4 @@ func (c *Coder) configureGitUserIdentity(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// validateGitHubAPIConnectivity performs lightweight GitHub API validation using gh CLI.
-// This replaces the problematic 'gh auth status' with scope-free API calls.
-func (c *Coder) validateGitHubAPIConnectivity(ctx context.Context, opts *execpkg.Opts) error {
-	// Get repository info from config for API validation
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get config for GitHub API validation: %w", err)
-	}
-
-	if cfg.Git == nil || cfg.Git.RepoURL == "" {
-		return fmt.Errorf("no repository URL configured - cannot validate GitHub API access")
-	}
-
-	// Extract owner/repo from URL for API validation
-	repoPath := extractRepoPath(cfg.Git.RepoURL)
-	if repoPath == "" {
-		return fmt.Errorf("cannot extract repository path from URL: %s", cfg.Git.RepoURL)
-	}
-
-	c.logger.Info("🔍 Validating GitHub API connectivity for repository: %s", repoPath)
-
-	// Test 1: Validate token with /user endpoint
-	userResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "api", "/user"}, opts)
-	if err != nil || userResult.ExitCode != 0 {
-		return fmt.Errorf("GitHub API /user validation failed: %w (stdout: %s, stderr: %s). This indicates the GITHUB_TOKEN is invalid or GitHub API is unreachable",
-			err, userResult.Stdout, userResult.Stderr)
-	}
-	c.logger.Info("✅ GitHub API token validated")
-
-	// Test 2: Validate repository access
-	repoResult, err := c.longRunningExecutor.Run(ctx, []string{"gh", "api", fmt.Sprintf("/repos/%s", repoPath)}, opts)
-	if err != nil || repoResult.ExitCode != 0 {
-		return fmt.Errorf("GitHub API repository access validation failed for %s: %w (stdout: %s, stderr: %s). This indicates the token lacks repository access permissions",
-			repoPath, err, repoResult.Stdout, repoResult.Stderr)
-	}
-	c.logger.Info("✅ GitHub API repository access validated for: %s", repoPath)
-
-	return nil
-}
-
-// extractRepoPath extracts owner/repo from a GitHub URL.
-// Supports both HTTPS and SSH formats.
-func extractRepoPath(repoURL string) string {
-	// Remove .git suffix if present
-	url := strings.TrimSuffix(repoURL, ".git")
-
-	// Handle HTTPS URLs: https://github.com/owner/repo
-	if strings.HasPrefix(url, "https://github.com/") {
-		path := strings.TrimPrefix(url, "https://github.com/")
-		if strings.Count(path, "/") >= 1 {
-			return path
-		}
-	}
-
-	// Handle SSH URLs: git@github.com:owner/repo
-	if strings.HasPrefix(url, "git@github.com:") {
-		path := strings.TrimPrefix(url, "git@github.com:")
-		if strings.Count(path, "/") >= 1 {
-			return path
-		}
-	}
-
-	return ""
 }

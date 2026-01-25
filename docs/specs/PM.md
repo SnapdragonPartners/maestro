@@ -1,8 +1,8 @@
 # Maestro: Interactive Spec Development with PM Agent
 
-**Version:** 1.5 (Multi-Channel Chat Complete)
+**Version:** 1.6 (State Ownership Clarification)
 **Owner:** @dan
-**Last Updated:** 2025-01-09
+**Last Updated:** 2025-01-23
 **Status:** Phase 1-4 Complete ✅ | Multi-Channel Chat ✅ | Phase 5 (Interview Chat) Pending
 
 ---
@@ -260,12 +260,15 @@ Make Maestro usable by non-technical users...
      - **Submit for Development:** Send REQUEST to architect → PM → AWAIT_ARCHITECT
 
 5. **PM awaits architect response (AWAIT_ARCHITECT):**
+   - **This is the ONLY state that handles spec review RESULT messages**
    - Blocks on response channel waiting for RESULT message
+   - Includes nil-message guard for closed channel safety
    - **Two outcomes:**
      - **Feedback (approved=false):** Inject system message with architect feedback → PM → WORKING
        - System message format: "The architect provided the following feedback on your spec. Address these issues and resubmit or ask the user for any needed clarifications. The user has not seen the raw feedback. <architect_response>"
        - PM processes feedback, may ask user questions appropriate to their expertise level
      - **Approval (approved=true):** PM → WAITING for next interview
+   - May also receive story completion notifications (handled, then continues waiting)
 
 6. **Architect reviews spec (SCOPING):**
    - Architect receives REQUEST
@@ -307,14 +310,20 @@ pkg/pm/
 
 **State Machine Flow:**
 ```
-WAITING → AWAIT_USER (interview starts)
+WAITING → AWAIT_USER (interview starts via StartInterview)
+WAITING → WORKING (spec uploaded via UploadSpec)
 AWAIT_USER → WORKING (user responds)
 WORKING → PREVIEW (spec_submit tool called)
 PREVIEW → AWAIT_USER (user clicks "Continue Interview")
 PREVIEW → AWAIT_ARCHITECT (user clicks "Submit for Development")
-AWAIT_ARCHITECT → WORKING (architect provides feedback)
-AWAIT_ARCHITECT → WAITING (architect approves spec)
+AWAIT_ARCHITECT → WORKING (architect provides feedback - NEEDS_CHANGES)
+AWAIT_ARCHITECT → WAITING (architect approves spec - APPROVED)
 ```
+
+**Message Ownership (Critical):**
+- **WAITING**: Does NOT consume any messages. Only responds to direct method calls (StartInterview, UploadSpec).
+- **AWAIT_USER**: Receives user chat messages. May also receive architect notifications (story completions, escalations) but NOT spec review results.
+- **AWAIT_ARCHITECT**: **Sole consumer of spec review RESULT messages**. This is the only state that handles architect approval/feedback for specs.
 
 ### **Specs Package Structure**
 
@@ -419,11 +428,11 @@ type AgentConfig struct {
 **Description:** Singleton PM agent with state machine for conducting specification interviews with user preview and approval.
 
 **State Machine:**
-- **WAITING** - Ready for next interview, blocked on channels
-- **AWAIT_USER** - Blocked waiting for user input in chat
+- **WAITING** - Idle state, waiting for user actions (StartInterview, UploadSpec). Does NOT consume any messages.
+- **AWAIT_USER** - Blocked waiting for user input in chat. May receive architect notifications (story completions, escalations).
 - **WORKING** - Active LLM interaction: interview, gather requirements, draft spec
 - **PREVIEW** - User reviews rendered spec, chooses Continue Interview or Submit
-- **AWAIT_ARCHITECT** - Blocked on response channel waiting for architect feedback
+- **AWAIT_ARCHITECT** - **Sole consumer of spec review RESULT messages**. Blocks on response channel waiting for architect approval/feedback.
 
 **Acceptance Criteria:**
 - [x] PM agent starts at boot with architect

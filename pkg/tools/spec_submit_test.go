@@ -85,10 +85,11 @@ func TestSpecSubmitTool_ValidSpec(t *testing.T) {
 		t.Errorf("Expected user_spec in ProcessEffect.Data, got: %v", data)
 	}
 
-	// Verify infrastructure_spec is present (can be empty)
-	_, ok = data["infrastructure_spec"].(string)
-	if !ok {
-		t.Errorf("Expected infrastructure_spec in ProcessEffect.Data, got: %v", data)
+	// Verify bootstrap_requirements is present (can be nil)
+	// It's a slice of BootstrapRequirementID, but may be nil if no bootstrap needed
+	_, hasBootstrapReqs := data["bootstrap_requirements"]
+	if !hasBootstrapReqs {
+		t.Errorf("Expected bootstrap_requirements key in ProcessEffect.Data, got: %v", data)
 	}
 
 	// Verify metadata is present
@@ -147,10 +148,11 @@ func TestSpecSubmitTool_InvalidSpec(t *testing.T) {
 		t.Errorf("Expected user_spec in ProcessEffect.Data, got: %v", data)
 	}
 
-	// Verify infrastructure_spec is present (can be empty)
-	_, ok = data["infrastructure_spec"].(string)
-	if !ok {
-		t.Errorf("Expected infrastructure_spec in ProcessEffect.Data, got: %v", data)
+	// Verify bootstrap_requirements is present (can be nil)
+	// It's a slice of BootstrapRequirementID, but may be nil if no bootstrap needed
+	_, hasBootstrapReqs := data["bootstrap_requirements"]
+	if !hasBootstrapReqs {
+		t.Errorf("Expected bootstrap_requirements key in ProcessEffect.Data, got: %v", data)
 	}
 
 	// Verify metadata is present (even if incomplete).

@@ -258,8 +258,10 @@ func (i *Installer) EnsureCoderUser(ctx context.Context) error {
 
 // coderUserExists checks if a user with UID 1000 exists in the container.
 func (i *Installer) coderUserExists(ctx context.Context) bool {
-	// Check if UID 1000 exists by looking it up with id command
-	result, err := i.runCommand(ctx, []string{"id", "-u", CoderUserID}, 10*time.Second)
+	// Check if UID 1000 exists using getent passwd which looks up by UID
+	// Note: `id -u 1000` is WRONG - it looks for user NAMED "1000", not user WITH UID 1000
+	// getent passwd 1000 correctly looks up by UID and works on both Alpine and Debian
+	result, err := i.runCommand(ctx, []string{"getent", "passwd", CoderUserID}, 10*time.Second)
 	if err != nil {
 		return false // Command failed, user doesn't exist
 	}

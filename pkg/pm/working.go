@@ -17,6 +17,7 @@ import (
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
+	"orchestrator/pkg/workspace"
 )
 
 // handleWorking manages PM's active work: interviewing, drafting, and submitting.
@@ -128,9 +129,6 @@ func (d *Driver) setupInterviewContext() error {
 	// Check for bootstrap requirements (this checks ALL components)
 	bootstrapReqs := d.GetBootstrapRequirements()
 
-	// Check if bootstrap markdown already exists in state (indicates bootstrap config is complete)
-	bootstrapMarkdown, hasBootstrapMarkdown := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapRequirements)
-
 	// Get current config to check for existing values
 	cfg, cfgErr := config.GetConfig()
 
@@ -168,40 +166,21 @@ func (d *Driver) setupInterviewContext() error {
 	}
 
 	// Select template based on bootstrap requirements
-	// Single source of truth: use bootstrap detector's methods
-	// BUT: if bootstrap markdown already exists in state, config is complete - skip bootstrap context
+	// Only use bootstrap gate for config deficits (PM-owned)
+	// Technical prerequisites (dockerfile, etc.) flow to architect via spec_submit
 	var templateName templates.StateTemplate
-	if bootstrapReqs != nil && bootstrapReqs.HasAnyMissingComponents() && !hasBootstrapMarkdown {
-		if bootstrapReqs.NeedsBootstrapGate() {
-			// Project metadata (name/platform/git) is missing - use focused bootstrap gate template
-			templateName = templates.PMBootstrapGateTemplate
-			d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
-				bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
-		} else {
-			// Project metadata is complete, but other components missing - use full interview with bootstrap context
-			templateName = templates.PMInterviewStartTemplate
-			templateData.Extra["BootstrapRequired"] = true
-			templateData.Extra["MissingComponents"] = bootstrapReqs.MissingComponents
-			templateData.Extra["DetectedPlatform"] = bootstrapReqs.DetectedPlatform
-			templateData.Extra["PlatformConfidence"] = int(bootstrapReqs.PlatformConfidence * 100)
-			templateData.Extra["HasRepository"] = !bootstrapReqs.NeedsGitRepo
-			templateData.Extra["NeedsDockerfile"] = bootstrapReqs.NeedsDockerfile
-			templateData.Extra["NeedsMakefile"] = bootstrapReqs.NeedsMakefile
-			templateData.Extra["NeedsKnowledgeGraph"] = bootstrapReqs.NeedsKnowledgeGraph
-			templateData.Extra["NeedsClaudeCode"] = bootstrapReqs.NeedsClaudeCode
-
-			d.logger.Info("📋 Using full interview template with bootstrap context: %d missing components, platform: %s",
-				len(bootstrapReqs.MissingComponents), bootstrapReqs.DetectedPlatform)
-		}
+	if bootstrapReqs != nil && bootstrapReqs.NeedsBootstrapGate() {
+		// Config deficits (project name/platform/git) are missing - use focused bootstrap gate template
+		templateName = templates.PMBootstrapGateTemplate
+		d.logger.Info("📋 Using bootstrap gate template (needs project metadata: project_config=%v, git_repo=%v)",
+			bootstrapReqs.NeedsProjectConfig, bootstrapReqs.NeedsGitRepo)
 	} else {
-		// Either no bootstrap needed OR bootstrap config already complete (markdown exists in state)
-		// Use clean interview template without bootstrap context
+		// Config is complete - use normal interview template
+		// Technical prerequisites are handled by architect, not PM
 		templateName = templates.PMInterviewStartTemplate
-		if hasBootstrapMarkdown {
-			d.logger.Info("📋 Using clean interview template (bootstrap config complete, markdown exists: %d bytes)", len(bootstrapMarkdown))
-		} else {
-			d.logger.Info("📋 Using full interview template (no bootstrap requirements)")
-		}
+		// Indicate that bootstrap tool is available for config revisions (not required)
+		templateData.Extra["ConfigRevisionAvailable"] = true
+		d.logger.Info("📋 Using interview template (config complete, bootstrap available for revisions)")
 	}
 
 	// Render selected template
@@ -230,10 +209,14 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 	// Inject state into spec_submit tool
 	if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
-		// Inject bootstrap markdown if it exists in state
-		if bootstrapMarkdown := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapRequirements, ""); bootstrapMarkdown != "" {
-			submitTool.SetBootstrapMarkdown(bootstrapMarkdown)
-			d.logger.Info("📝 Injected bootstrap markdown into spec_submit tool (%d bytes)", len(bootstrapMarkdown))
+		// Inject bootstrap requirement IDs if bootstrap is needed
+		// The architect will render the full technical specification from these IDs
+		if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+			reqIDs := reqs.ToRequirementIDs()
+			if len(reqIDs) > 0 {
+				submitTool.SetBootstrapRequirements(reqIDs)
+				d.logger.Info("📋 Injected bootstrap requirements into spec_submit: %v", reqIDs)
+			}
 		}
 
 		// Inject in_flight flag to enforce hotfix-only mode during development
@@ -347,18 +330,23 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				projectName := utils.GetMapFieldOr[string](effectData, "project_name", "")
 				gitURL := utils.GetMapFieldOr[string](effectData, "git_url", "")
 				platform := utils.GetMapFieldOr[string](effectData, "platform", "")
-				bootstrapMarkdown := utils.GetMapFieldOr[string](effectData, "bootstrap_markdown", "")
 				resetContext := utils.GetMapFieldOr[bool](effectData, "reset_context", false)
 
-				// Store in state
+				// Store bootstrap params in state
+				// Note: StateKeyBootstrapRequirements holds the detection struct (set in SETUP),
+				// not markdown. Bootstrap spec rendering is handled by the architect.
 				bootstrapParams := map[string]string{
 					"project_name": projectName,
 					"git_url":      gitURL,
 					"platform":     platform,
 				}
 				d.SetStateData(StateKeyBootstrapParams, bootstrapParams)
-				d.SetStateData(StateKeyBootstrapRequirements, bootstrapMarkdown)
 				d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
+
+				// Recompute bootstrap requirements after bootstrap tool configures project.
+				// This refreshes the detection so we don't keep prompting for already-configured items.
+				d.detectAndStoreBootstrapRequirements(ctx)
+				d.logger.Debug("🔄 Recomputed bootstrap requirements after bootstrap tool")
 
 				// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)
 				if resetContext {
@@ -392,8 +380,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 					return "", fmt.Errorf("SPEC_PREVIEW effect data is not map[string]any: %T", out.EffectData)
 				}
 
-				// Extract spec data from ProcessEffect.Data (infrastructure and user specs are separate)
-				infrastructureSpec := utils.GetMapFieldOr[string](effectData, "infrastructure_spec", "")
+				// Extract spec data from ProcessEffect.Data
 				userSpec := utils.GetMapFieldOr[string](effectData, "user_spec", "")
 				summary := utils.GetMapFieldOr[string](effectData, "summary", "")
 				metadata, _ := utils.SafeAssert[map[string]any](effectData["metadata"])
@@ -404,20 +391,32 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				d.SetStateData(StateKeySpecMetadata, metadata)
 				d.SetStateData(StateKeyIsHotfix, isHotfix)
 
-				// Only store bootstrap spec if not a hotfix (hotfixes don't include bootstrap)
-				if !isHotfix && infrastructureSpec != "" {
-					d.SetStateData(StateKeyBootstrapSpecMd, infrastructureSpec)
+				// Note: Bootstrap requirements are not stored from spec_submit effect.
+				// They're already available via GetBootstrapRequirements().ToRequirementIDs()
+				// which reads from the detection struct stored during SETUP.
+
+				// Log for debugging - handle multiple possible types after JSON round-trip
+				var reqCount int
+				if reqs, ok := effectData["bootstrap_requirements"]; ok && reqs != nil {
+					// After JSON round-trip, slice types vary: []BootstrapRequirementID, []string, or []any
+					// Use SafeAssert per AGENTS.md guidelines
+					if typed, ok := utils.SafeAssert[[]workspace.BootstrapRequirementID](reqs); ok {
+						reqCount = len(typed)
+					} else if typed, ok := utils.SafeAssert[[]string](reqs); ok {
+						reqCount = len(typed)
+					} else if typed, ok := utils.SafeAssert[[]any](reqs); ok {
+						reqCount = len(typed)
+					}
 				}
+				d.logger.Info("📋 Stored spec for preview (bootstrap reqs: %d, user: %d bytes, hotfix: %v, summary: %s)",
+					reqCount, len(userSpec), isHotfix, summary)
 
-				d.logger.Info("📋 Stored spec for preview (bootstrap: %d bytes, user: %d bytes, hotfix: %v, summary: %s)",
-					len(infrastructureSpec), len(userSpec), isHotfix, summary)
-
-				return SignalSpecPreview, nil
+				return tools.SignalSpecPreview, nil
 
 			case tools.SignalAwaitUser:
 				// chat_ask_user was called - transition to AWAIT_USER state
 				d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
-				return SignalAwaitUser, nil
+				return tools.SignalAwaitUser, nil
 
 			default:
 				return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
@@ -439,22 +438,30 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 // sendSpecApprovalRequest sends an approval REQUEST message to the architect.
 func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	// Get state data
-	// Get infrastructure and user specs from state using canonical keys
+	// Get user spec from state using canonical key
 	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
 	if userSpec == "" {
 		return fmt.Errorf("no user_spec_md found in state")
 	}
-	infrastructureSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapSpecMd, "")
 
-	// Create approval request payload with both specs
-	// Content field contains user requirements, InfrastructureSpec is separate
+	// Get bootstrap requirements from detection struct (stored during SETUP)
+	// Architect will render the full technical spec from these IDs
+	var bootstrapReqs []string
+	if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+		for _, id := range reqs.ToRequirementIDs() {
+			bootstrapReqs = append(bootstrapReqs, string(id))
+		}
+	}
+
+	// Create approval request payload
+	// Content field contains user requirements, BootstrapRequirements contains requirement IDs
 	approvalPayload := &proto.ApprovalRequestPayload{
-		ApprovalType:       proto.ApprovalTypeSpec,
-		Content:            userSpec,           // User requirements only
-		InfrastructureSpec: infrastructureSpec, // Infrastructure requirements (bootstrap) if any
-		Reason:             "PM has completed specification and requests architect review",
-		Context:            "Specification ready for validation and story generation",
-		Confidence:         proto.ConfidenceHigh,
+		ApprovalType:          proto.ApprovalTypeSpec,
+		Content:               userSpec,      // User requirements only
+		BootstrapRequirements: bootstrapReqs, // Bootstrap requirement IDs (architect renders spec)
+		Reason:                "PM has completed specification and requests architect review",
+		Context:               "Specification ready for validation and story generation",
+		Confidence:            proto.ConfidenceHigh,
 	}
 
 	// Create REQUEST message
@@ -471,8 +478,8 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 		return fmt.Errorf("failed to dispatch REQUEST: %w", err)
 	}
 
-	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, infrastructure: %d bytes, id: %s)",
-		len(userSpec), len(infrastructureSpec), requestMsg.ID)
+	d.logger.Info("📤 Sent spec approval REQUEST to architect (user: %d bytes, bootstrap reqs: %v, id: %s)",
+		len(userSpec), bootstrapReqs, requestMsg.ID)
 
 	// Checkpoint state for crash recovery (spec submission is a stable boundary)
 	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
@@ -492,8 +499,11 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 		return fmt.Errorf("no user_spec_md found in state for hotfix")
 	}
 
-	// Get platform from detected platform or default to unknown
-	platform := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "unknown")
+	// Get platform from config (set during bootstrap when user confirms)
+	platform := "unknown"
+	if cfg, err := config.GetConfig(); err == nil && cfg.Project != nil {
+		platform = cfg.Project.PrimaryPlatform
+	}
 
 	// Create hotfix request payload with the spec content as a single requirement
 	// The architect will parse and validate this before dispatching to hotfix coder

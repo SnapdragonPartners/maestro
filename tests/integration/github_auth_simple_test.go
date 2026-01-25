@@ -5,26 +5,25 @@ package integration
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
+	"orchestrator/pkg/tools"
 )
 
-// TestGitHubCredentialHelperSetup tests the core fix: gh auth setup-git configures git properly.
-func TestGitHubCredentialHelperSetup(t *testing.T) {
+// TestContainerSecurityModel tests the security model where containers cannot push to remote.
+// This validates:
+// - Containers have git for local commits
+// - Containers do NOT need gh CLI
+// - Containers do NOT need GitHub credentials
+// - Git push operations should run on host (not tested here - would require host git setup)
+func TestContainerSecurityModel(t *testing.T) {
 	// Skip if Docker is not available
 	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
 		t.Skip("Docker not available, skipping test")
-	}
-
-	// Skip if GITHUB_TOKEN is not available
-	if !config.HasGitHubToken() {
-		t.Skip("GITHUB_TOKEN not available, skipping test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -33,121 +32,66 @@ func TestGitHubCredentialHelperSetup(t *testing.T) {
 	executor := exec.NewLocalExec()
 	containerName := config.BootstrapContainerTag
 
-	t.Logf("Testing GitHub credential setup with container: %s", containerName)
+	t.Logf("Testing container security model with container: %s", containerName)
 
-	// Test 1: Verify basic tools are available
-	t.Run("tools_available", func(t *testing.T) {
+	// Test 1: Verify container has required tools (git, UID 1000, writable /tmp)
+	t.Run("container_validation", func(t *testing.T) {
+		validation := tools.ValidateContainerCapabilities(ctx, executor, containerName)
+		if !validation.Success {
+			t.Fatalf("Container validation failed: %s. Missing: %v", validation.Message, validation.MissingTools)
+		}
+		t.Logf("Container validation passed: git=%v, uid_1000=%v, tmp_writable=%v",
+			validation.GitAvailable, validation.UserUID1000, validation.TmpWritable)
+	})
+
+	// Test 2: Verify git is available
+	t.Run("git_available", func(t *testing.T) {
 		gitResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "git", "--version"}, &exec.Opts{Timeout: 30 * time.Second})
 		if err != nil || gitResult.ExitCode != 0 {
 			t.Fatalf("Git not available: %v (stdout: %s, stderr: %s)", err, gitResult.Stdout, gitResult.Stderr)
 		}
-
-		ghResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "gh", "--version"}, &exec.Opts{Timeout: 30 * time.Second})
-		if err != nil || ghResult.ExitCode != 0 {
-			t.Fatalf("GitHub CLI not available: %v (stdout: %s, stderr: %s)", err, ghResult.Stdout, ghResult.Stderr)
-		}
-
-		t.Logf("✅ Both git and gh CLI are available")
+		t.Logf("Git available: %s", gitResult.Stdout)
 	})
 
-	// Test 2: Test gh auth setup-git command
-	t.Run("gh_auth_setup_git", func(t *testing.T) {
+	// Test 3: gh CLI is no longer required (PR operations run on host)
+	t.Run("gh_cli_not_required", func(t *testing.T) {
+		ghResult, err := executor.Run(ctx, []string{"docker", "run", "--rm", containerName, "which", "gh"}, &exec.Opts{Timeout: 30 * time.Second})
+		if err == nil && ghResult.ExitCode == 0 {
+			t.Logf("Note: gh CLI is present but not required (PR operations run on host)")
+		} else {
+			t.Logf("gh CLI not present - this is expected (PR operations run on host)")
+		}
+		// This test always passes - gh is optional
+	})
+
+	// Test 4: Verify container can do local git operations
+	t.Run("local_git_operations", func(t *testing.T) {
+		// Create a temp directory for git operations
+		tempDir := t.TempDir()
+
 		result, err := executor.Run(ctx, []string{
-			"docker", "run", "--rm", "-e", "GITHUB_TOKEN", containerName,
-			"sh", "-c", "gh auth setup-git && echo 'SUCCESS'"},
-			&exec.Opts{Timeout: 30 * time.Second})
+			"docker", "run", "--rm",
+			"-v", tempDir + ":/workspace:rw",
+			"-w", "/workspace",
+			"-e", "HOME=/tmp",
+			containerName, "sh", "-c", `
+git init
+git config user.name "Test User"
+git config user.email "test@test.com"
+echo "test" > test.txt
+git add test.txt
+git commit -m "Test commit"
+echo "SUCCESS"
+`}, &exec.Opts{Timeout: 30 * time.Second})
 
 		if err != nil {
-			t.Fatalf("gh auth setup-git command failed: %v", err)
+			t.Fatalf("Local git operations failed: %v", err)
 		}
 		if result.ExitCode != 0 {
-			t.Fatalf("gh auth setup-git failed with exit code %d: stdout=%s, stderr=%s",
+			t.Fatalf("Local git operations failed with exit code %d: stdout=%s, stderr=%s",
 				result.ExitCode, result.Stdout, result.Stderr)
 		}
-		if !strings.Contains(result.Stdout, "SUCCESS") {
-			t.Fatalf("gh auth setup-git did not complete properly: %s", result.Stdout)
-		}
 
-		t.Logf("✅ gh auth setup-git completed successfully")
-	})
-
-	// Test 3: Verify credential helper configuration persists
-	t.Run("credential_helper_configured", func(t *testing.T) {
-		result, err := executor.Run(ctx, []string{
-			"docker", "run", "--rm", "-e", "HOME=/tmp", "-e", "GITHUB_TOKEN", containerName,
-			"sh", "-c", "gh auth setup-git && git config --global --list | grep credential"},
-			&exec.Opts{Timeout: 30 * time.Second})
-
-		if err != nil {
-			t.Fatalf("Failed to check git credential config: %v", err)
-		}
-		if result.ExitCode != 0 {
-			t.Fatalf("Git credential config check failed: stdout=%s, stderr=%s", result.Stdout, result.Stderr)
-		}
-
-		stdout := result.Stdout
-		if !strings.Contains(stdout, "credential.https://github.com.helper") ||
-			!strings.Contains(stdout, "gh auth git-credential") {
-			t.Fatalf("Git credential helper not configured properly. Output:\n%s", stdout)
-		}
-
-		t.Logf("✅ Git credential helper configured: %s", strings.TrimSpace(stdout))
-	})
-
-	// Test 4: Test complete git push flow with disposable repo
-	t.Run("complete_git_push_flow", func(t *testing.T) {
-		// Create a unique branch name for this test
-		testBranch := fmt.Sprintf("test-auth-fix-%d", time.Now().Unix())
-
-		result, err := executor.Run(ctx, []string{
-			"docker", "run", "--rm", "-e", "HOME=/tmp", "-e", "GITHUB_TOKEN",
-			"-v", "/Users/dratner/Code/maestro-work/hello/coder-001:/workspace:rw",
-			"-w", "/workspace", containerName, "sh", "-c", fmt.Sprintf(`
-echo "=== Complete Git Push Flow Test ==="
-echo "Step 1: Set up git credential helper"
-gh auth setup-git
-echo "Setup completed with exit code: $?"
-
-echo -e "\nStep 2: Configure git identity"  
-git config --global user.name "Test User"
-git config --global user.email "test@maestro-demo.test"
-
-echo -e "\nStep 3: Create test branch and make a small change"
-git checkout -b %s
-echo "# Test authentication fix - $(date)" > /tmp/test-auth.md
-git add /tmp/test-auth.md
-git commit -m "Test: GitHub authentication fix verification
-
-This is a test commit to verify that the GitHub authentication 
-fix (HOME=/tmp + gh auth setup-git) works correctly for git push operations.
-
-🤖 Generated by integration test"
-
-echo -e "\nStep 4: Test git push (the critical test)"
-git push -u origin %s
-echo "Git push exit code: $?"
-
-echo -e "\nStep 5: Verify push succeeded by checking remote"
-git ls-remote --heads origin %s
-echo "Remote verification exit code: $?"
-`, testBranch, testBranch, testBranch)},
-			&exec.Opts{Timeout: 90 * time.Second})
-
-		if err != nil {
-			t.Fatalf("Complete git flow test failed: %v", err)
-		}
-
-		// Check if git push succeeded (exit code 0 in the output)
-		if !strings.Contains(result.Stdout, "Git push exit code: 0") {
-			t.Fatalf("Git push failed in complete flow test. Output:\n%s\n\nStderr:\n%s", result.Stdout, result.Stderr)
-		}
-
-		// Check if remote verification succeeded
-		if !strings.Contains(result.Stdout, "Remote verification exit code: 0") {
-			t.Fatalf("Remote verification failed. Output:\n%s\n\nStderr:\n%s", result.Stdout, result.Stderr)
-		}
-
-		t.Logf("✅ Complete git push flow succeeded - branch %s created and verified", testBranch)
-		t.Logf("📝 Test output:\n%s", result.Stdout)
+		t.Logf("Local git operations (init, commit) work correctly")
 	})
 }

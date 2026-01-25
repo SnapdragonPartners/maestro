@@ -12,7 +12,7 @@ The following infrastructure requirements must be completed before implementing 
 **Priority:** must
 
 **Description:**
-Create Dockerfile for {{.Extra.DetectedPlatform}} development environment, build the container image, and configure it as the target container for coder agents.
+Create Dockerfile for the project's development environment, build the container image, and configure it as the target container for coder agents.
 Container provides consistent build and test environment for all developers. Container configuration is REQUIRED for coders to execute code in isolated environments.
 
 Coders have access to container management tools:
@@ -26,7 +26,7 @@ The container MUST include:
 2. **Git CLI installed** - Required for workspace operations (clone, commit, push). Must be available in PATH.
 
 **Acceptance Criteria:**
-- [ ] Dockerfile created with {{.Extra.DetectedPlatform}} base image
+- [ ] Dockerfile created with the project's base image
 - [ ] Unprivileged user created with UID 1000 and GID 1000 (e.g., `RUN useradd -m -u 1000 -U developer`)
 - [ ] Container configured to run as UID 1000 user (e.g., `USER developer` or `USER 1000:1000`)
 - [ ] Git CLI installed and available in PATH
@@ -91,7 +91,7 @@ The architect will select appropriate initial patterns and rules based on the pr
 **Priority:** must
 
 **Description:**
-Create Makefile with standard targets for {{.Extra.DetectedPlatform}} project: build, test, lint, run.
+Create Makefile with standard targets for the project: build, test, lint, run.
 Provides consistent interface for development operations. Makefile is REQUIRED for coders to build, test, and run code.
 
 **Acceptance Criteria:**
@@ -109,7 +109,7 @@ Provides consistent interface for development operations. Makefile is REQUIRED f
 **Priority:** must
 
 **Description:**
-Create a `.gitignore` file appropriate for the {{.Extra.DetectedPlatform}} platform. This file prevents committing build artifacts, dependencies, IDE files, and other generated content to version control.
+Create a `.gitignore` file appropriate for the project. This file prevents committing build artifacts, dependencies, IDE files, and other generated content to version control.
 
 The .gitignore should exclude:
 - Compiled binaries and build output (*.exe, *.dll, *.so, *.dylib, bin/, dist/, build/)
@@ -117,12 +117,12 @@ The .gitignore should exclude:
 - IDE and editor files (.idea/, .vscode/, *.swp, .DS_Store)
 - Environment and secret files (.env, .env.local, *.pem, credentials.json)
 - Log files and temporary data (*.log, tmp/, .cache/)
-- Platform-specific patterns for {{.Extra.DetectedPlatform}}
+- Platform-specific patterns appropriate for the project
 
 **Acceptance Criteria:**
 - [ ] `.gitignore` file created in repository root
 - [ ] Contains patterns for compiled binaries and build output
-- [ ] Contains patterns for package manager dependencies appropriate to {{.Extra.DetectedPlatform}}
+- [ ] Contains patterns for package manager dependencies appropriate for the project
 - [ ] Contains patterns for common IDE/editor files
 - [ ] Contains patterns for environment and secret files
 - [ ] Does not ignore essential project files

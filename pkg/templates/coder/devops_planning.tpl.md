@@ -69,7 +69,7 @@ Example exploration sequence (use multiple tools in one response):
 ```bash
 # Check infrastructure files
 ls -la /workspace/
-cat /workspace/Dockerfile
+cat /workspace/.maestro/Dockerfile
 cat /workspace/Makefile 2>/dev/null || echo "No Makefile found"
 
 # Verify container requirements

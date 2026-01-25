@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,13 +12,6 @@ import (
 )
 
 const (
-	// Platform names.
-	platformGeneric = "generic"
-	platformGo      = "go"
-	platformPython  = "python"
-	platformNode    = "node"
-	platformRust    = "rust"
-
 	// Expertise levels.
 	expertiseLevelExpert = "EXPERT"
 )
@@ -35,13 +27,12 @@ type BootstrapDetector struct {
 }
 
 // BootstrapRequirements describes what bootstrap components are missing.
+// Platform detection is NOT part of bootstrap - PM LLM handles platform confirmation.
 //
 //nolint:govet // Field alignment optimized for clarity over memory efficiency
 type BootstrapRequirements struct {
 	NeedsBuildTargets   []string // List of missing Makefile targets
 	MissingComponents   []string // Human-readable list of missing items
-	DetectedPlatform    string   // Detected platform: go, python, node, generic
-	PlatformConfidence  float64  // Confidence score 0.0 to 1.0
 	NeedsProjectConfig  bool     // True if project name or platform is missing
 	NeedsGitRepo        bool     // True if no git repository is configured
 	NeedsDockerfile     bool     // True if no Dockerfile exists
@@ -137,11 +128,10 @@ func (bd *BootstrapDetector) Detect(_ context.Context) (*BootstrapRequirements, 
 		reqs.MissingComponents = append(reqs.MissingComponents, ".gitignore file")
 	}
 
-	// Detect platform
-	reqs.DetectedPlatform, reqs.PlatformConfidence = bd.detectPlatform()
+	// Note: Platform detection is NOT done here - PM LLM handles platform confirmation
 
-	bd.logger.Info("Bootstrap detection complete: %d components needed (platform: %s @ %.0f%%)",
-		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+	bd.logger.Info("Bootstrap detection complete: %d components needed",
+		len(reqs.MissingComponents))
 
 	return reqs, nil
 }
@@ -444,67 +434,8 @@ func (bd *BootstrapDetector) checkClaudeCodeInContainer(imageName string) bool {
 	return true
 }
 
-// detectPlatform attempts to detect the project platform from files.
-func (bd *BootstrapDetector) detectPlatform() (string, float64) {
-	// If platform is already set in config, use it with 100% confidence
-	cfg, err := config.GetConfig()
-	if err == nil && cfg.Project.PrimaryPlatform != "" {
-		platform := cfg.Project.PrimaryPlatform
-		bd.logger.Debug("Using platform from config: %s (100%% confidence)", platform)
-		return platform, 1.0
-	}
-
-	// Otherwise, scan files to detect platform
-	// Platform indicators with their confidence weights
-	platformScores := map[string]float64{
-		platformGo:     0.0,
-		platformPython: 0.0,
-		platformNode:   0.0,
-		platformRust:   0.0,
-	}
-
-	// Check for platform-specific files
-	bd.checkPlatformFile("go.mod", platformGo, 0.9, platformScores)
-	bd.checkPlatformFile("go.sum", platformGo, 0.3, platformScores)
-	bd.checkPlatformFile("requirements.txt", platformPython, 0.7, platformScores)
-	bd.checkPlatformFile("pyproject.toml", platformPython, 0.9, platformScores)
-	bd.checkPlatformFile("setup.py", platformPython, 0.6, platformScores)
-	bd.checkPlatformFile("package.json", platformNode, 0.9, platformScores)
-	bd.checkPlatformFile("package-lock.json", platformNode, 0.5, platformScores)
-	bd.checkPlatformFile("yarn.lock", platformNode, 0.5, platformScores)
-	bd.checkPlatformFile("Cargo.toml", platformRust, 0.9, platformScores)
-
-	// Find platform with highest score
-	maxPlatform := platformGeneric
-	maxScore := 0.0
-
-	for platform, score := range platformScores {
-		if score > maxScore {
-			maxScore = score
-			maxPlatform = platform
-		}
-	}
-
-	// If no strong signal, default to generic with low confidence
-	if maxScore < 0.5 {
-		bd.logger.Debug("Platform detection uncertain, defaulting to generic")
-		return platformGeneric, 0.3
-	}
-
-	bd.logger.Debug("Detected platform: %s (confidence: %.0f%%)", maxPlatform, maxScore*100)
-	return maxPlatform, maxScore
-}
-
-// checkPlatformFile checks if a platform indicator file exists and updates scores.
-func (bd *BootstrapDetector) checkPlatformFile(filename, platform string, weight float64, scores map[string]float64) {
-	filePath := filepath.Join(bd.projectDir, filename)
-	if _, err := os.Stat(filePath); err == nil {
-		scores[platform] += weight
-		bd.logger.Debug("Found %s indicator: %s (weight: %.1f)", platform, filename, weight)
-	}
-}
-
 // GetRequiredQuestions returns questions needed based on bootstrap context and expertise.
+// Note: Platform confirmation is no longer included here - PM LLM handles that with the user.
 func (bd *BootstrapDetector) GetRequiredQuestions(ctx *BootstrapContext) []Question {
 	questions := []Question{}
 
@@ -514,15 +445,6 @@ func (bd *BootstrapDetector) GetRequiredQuestions(ctx *BootstrapContext) []Quest
 			ID:       "git_repo",
 			Text:     "What's the GitHub repository URL for this project? (I can help you create it if needed)",
 			Required: true,
-		})
-	}
-
-	// Platform confirmation (only for BASIC and EXPERT)
-	if ctx.Expertise != "NON_TECHNICAL" && ctx.Platform != "" && ctx.Platform != platformGeneric {
-		questions = append(questions, Question{
-			ID:       "confirm_platform",
-			Text:     fmt.Sprintf("This looks like a %s project. Is that correct?", ctx.Platform),
-			Required: false,
 		})
 	}
 
