@@ -82,10 +82,8 @@ func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirem
 	}
 
 	// Build system requirements (includes Makefile and .gitignore)
-	if r.NeedsMakefile {
-		ids = append(ids, workspace.BootstrapReqBuildSystem)
-	}
-	if r.NeedsGitignore {
+	// Use OR to avoid duplicate entries when both are missing
+	if r.NeedsMakefile || r.NeedsGitignore {
 		ids = append(ids, workspace.BootstrapReqBuildSystem)
 	}
 

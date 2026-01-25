@@ -343,6 +343,11 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				d.SetStateData(StateKeyBootstrapParams, bootstrapParams)
 				d.logger.Info("✅ Bootstrap params stored: project=%s, platform=%s, git=%s", projectName, platform, gitURL)
 
+				// Recompute bootstrap requirements after bootstrap tool configures project.
+				// This refreshes the detection so we don't keep prompting for already-configured items.
+				d.detectAndStoreBootstrapRequirements(ctx)
+				d.logger.Debug("🔄 Recomputed bootstrap requirements after bootstrap tool")
+
 				// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)
 				if resetContext {
 					d.logger.Info("🔄 Resetting context as requested by bootstrap tool")
