@@ -30,20 +30,20 @@ func NewContainerUpdateTool(agent Agent) *ContainerUpdateTool {
 func (c *ContainerUpdateTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "container_update",
-		Description: "Update project configuration with container settings - automatically gets image ID from Docker",
+		Description: "Update project configuration with container settings - automatically gets image ID from Docker. Container name is auto-generated from project config if not specified.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"container_name": {
 					Type:        "string",
-					Description: "Name of the container to register in configuration",
+					Description: "Optional: Name of the container to register. If not provided, auto-generates as 'maestro-<projectname>-<dockerfile>:latest'",
 				},
 				"dockerfile": {
 					Type:        "string",
 					Description: "Path to Dockerfile within .maestro/ directory (defaults to .maestro/Dockerfile)",
 				},
 			},
-			Required: []string{"container_name"},
+			Required: []string{}, // No required parameters - container_name is auto-generated
 		},
 	}
 }
@@ -57,9 +57,10 @@ func (c *ContainerUpdateTool) Name() string {
 func (c *ContainerUpdateTool) PromptDocumentation() string {
 	return `- **container_update** - Register container for use after merge
   - Parameters:
-    - container_name (required): name of container to register
+    - container_name (optional): name of container to register - auto-generates as 'maestro-<projectname>-<dockerfile>:latest' if not provided
     - dockerfile (optional): path within .maestro/ directory (defaults to .maestro/Dockerfile)
   - IMPORTANT: Dockerfile must be in .maestro/ directory to avoid conflicts with production Dockerfiles
+  - IMPORTANT: 'maestro-bootstrap' is a reserved name and cannot be used for project containers
   - Validates container capabilities before registering
   - Automatically gets and pins the current image ID from Docker
   - Configuration is applied AFTER merge is successful (not immediately)
@@ -68,13 +69,7 @@ func (c *ContainerUpdateTool) PromptDocumentation() string {
 
 // Exec executes the container configuration update operation.
 func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	// Extract required parameters
-	containerName := utils.GetMapFieldOr(args, "container_name", "")
-	if containerName == "" {
-		return nil, fmt.Errorf("container_name is required")
-	}
-
-	// Extract and validate dockerfile path - use config default if not provided
+	// Extract and validate dockerfile path first - needed for name generation
 	// NOTE: Dockerfile path is stored in pending config and applied after merge,
 	// not written to config immediately (follows the deferred-apply contract)
 	dockerfilePath := config.GetDockerfilePath()
@@ -86,6 +81,28 @@ func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*E
 			return nil, fmt.Errorf("dockerfile must be within .maestro/ directory (got: %s)", path)
 		}
 		dockerfilePath = normalizedPath
+	}
+
+	// Extract or auto-generate container name
+	containerName := utils.GetMapFieldOr(args, "container_name", "")
+	if containerName == "" {
+		// Auto-generate from project config and dockerfile
+		cfg, err := config.GetConfig()
+		if err != nil {
+			return nil, fmt.Errorf("container_name not provided and failed to get config for auto-generation: %w", err)
+		}
+		projectName := cfg.Project.Name
+		if projectName == "" {
+			return nil, fmt.Errorf("container_name not provided and project name not configured - either provide container_name or configure project name")
+		}
+		containerName = GenerateContainerName(projectName, dockerfilePath)
+		log.Printf("INFO container_update: Auto-generated container name: %s (project: %s, dockerfile: %s)",
+			containerName, projectName, dockerfilePath)
+	}
+
+	// SECURITY: Reject reserved container names to prevent overwriting the bootstrap container
+	if IsReservedContainerName(containerName) {
+		return nil, &ReservedContainerNameError{ContainerName: containerName}
 	}
 
 	return c.updateContainerConfiguration(ctx, containerName, dockerfilePath)
