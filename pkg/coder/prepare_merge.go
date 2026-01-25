@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -138,11 +140,11 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		}
 	}
 
-	// Verify GitHub authentication is still working (should have been set up in SETUP phase)
-	if authErr := c.verifyGitHubAuthSetup(ctx); authErr != nil {
-		c.logger.Error("🔀 GitHub authentication verification failed: %v", authErr)
-		c.contextManager.AddMessage("system", "GitHub authentication appears to be broken. This may affect git push operations.")
-		// Continue anyway - authentication issues will show up during actual git operations
+	// Verify git is still available (should have been set up in SETUP phase)
+	if gitErr := c.verifyGitAvailable(ctx); gitErr != nil {
+		c.logger.Error("🔀 Git verification failed: %v", gitErr)
+		c.contextManager.AddMessage("system", "Git appears to be unavailable. This will affect git operations.")
+		// Continue anyway - git issues will show up during actual git operations
 	}
 
 	// Step 1: Commit all changes
@@ -350,31 +352,35 @@ func (c *Coder) commitChanges(ctx context.Context, storyID string) error {
 }
 
 // pushBranch pushes the local branch to remote origin.
+// SECURITY: This runs on the HOST (not in container) to prevent coders from pushing unapproved code.
+// The container has no git credentials - only the host can push.
 func (c *Coder) pushBranch(ctx context.Context, localBranch, remoteBranch string) error {
-	c.logger.Debug("🔀 Pushing branch %s to origin as %s", localBranch, remoteBranch)
+	c.logger.Debug("🔀 Pushing branch %s to origin as %s (host-side)", localBranch, remoteBranch)
 
-	opts := &execpkg.Opts{
-		WorkDir: c.workDir,
-		Timeout: 2 * time.Minute, // Give enough time for potentially large pushes
-		Env:     []string{},      // Initialize environment variables slice
+	// GITHUB_TOKEN is required for push authentication
+	if !config.HasGitHubToken() {
+		return fmt.Errorf("GITHUB_TOKEN not found - cannot push without authentication")
 	}
 
-	// Add GITHUB_TOKEN for authentication
-	if config.HasGitHubToken() {
-		opts.Env = append(opts.Env, "GITHUB_TOKEN")
-		c.logger.Debug("🔀 Added GITHUB_TOKEN to git push environment")
-	} else {
-		c.logger.Warn("🔀 GITHUB_TOKEN not found - git push may fail with authentication error")
-	}
+	// Create context with timeout for the push operation
+	pushCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 
-	// git push -u origin localBranch:remoteBranch
-	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "push", "-u", "origin", fmt.Sprintf("%s:%s", localBranch, remoteBranch)}, opts)
+	// Run git push on the HOST (not in container) using the workspace path
+	// The workspace is bind-mounted, so host-side git operations work on the same files
+	cmd := exec.CommandContext(pushCtx, "git", "push", "-u", "origin", fmt.Sprintf("%s:%s", localBranch, remoteBranch))
+	cmd.Dir = c.workDir
+
+	// Inherit environment and ensure GITHUB_TOKEN is available for git credential helper
+	cmd.Env = os.Environ()
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		c.logger.Error("🔀 git push failed: %v, output: %s", err, result.Stderr)
-		return fmt.Errorf("git push failed: %w", err)
+		c.logger.Error("🔀 git push failed: %v, output: %s", err, string(output))
+		return fmt.Errorf("git push failed: %w (output: %s)", err, string(output))
 	}
 
-	c.logger.Info("🔀 Branch pushed successfully")
+	c.logger.Info("🔀 Branch pushed successfully (host-side)")
 	return nil
 }
 
@@ -549,15 +555,43 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 	c.logger.Info("🔀 Rebase successful, pushing with --force-with-lease")
 
 	// Step 3: Push with --force-with-lease (safer than --force, prevents overwriting others' work)
-	result, err = c.longRunningExecutor.Run(ctx, []string{
-		"git", "push", "--force-with-lease", "-u", "origin",
-		fmt.Sprintf("%s:%s", localBranch, remoteBranch),
-	}, opts)
-	if err != nil {
-		return fmt.Errorf("git push --force-with-lease failed: %w (stderr: %s)", err, result.Stderr)
+	// SECURITY: Run on HOST (not in container) to prevent coders from pushing unapproved code
+	if err := c.pushBranchForceWithLease(ctx, localBranch, remoteBranch); err != nil {
+		return err
 	}
 
 	c.logger.Info("🔀 Push with --force-with-lease succeeded")
+	return nil
+}
+
+// pushBranchForceWithLease pushes the local branch to remote with --force-with-lease.
+// SECURITY: This runs on the HOST (not in container) to prevent coders from pushing unapproved code.
+func (c *Coder) pushBranchForceWithLease(ctx context.Context, localBranch, remoteBranch string) error {
+	c.logger.Debug("🔀 Pushing branch %s with --force-with-lease (host-side)", localBranch)
+
+	// GITHUB_TOKEN is required for push authentication
+	if !config.HasGitHubToken() {
+		return fmt.Errorf("GITHUB_TOKEN not found - cannot push without authentication")
+	}
+
+	// Create context with timeout for the push operation
+	pushCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	// Run git push on the HOST (not in container)
+	cmd := exec.CommandContext(pushCtx, "git", "push", "--force-with-lease", "-u", "origin",
+		fmt.Sprintf("%s:%s", localBranch, remoteBranch))
+	cmd.Dir = c.workDir
+
+	// Inherit environment and ensure GITHUB_TOKEN is available for git credential helper
+	cmd.Env = os.Environ()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		c.logger.Error("🔀 git push --force-with-lease failed: %v, output: %s", err, string(output))
+		return fmt.Errorf("git push --force-with-lease failed: %w (output: %s)", err, string(output))
+	}
+
 	return nil
 }
 

@@ -16,7 +16,7 @@ You are reviewing a coder agent in the PLANNING state that has exceeded its iter
 
 ### Correct DevOps Planning Process
 1. **Explore project structure**: `ls -la /workspace/`, `tree /workspace/`
-2. **Examine existing files**: `cat /workspace/Dockerfile`, `cat /workspace/Makefile`  
+2. **Examine existing files**: `cat /workspace/.maestro/Dockerfile`, `cat /workspace/Makefile`  
 3. **Check infrastructure setup**: `docker --version`, `ls -la /workspace/.maestro/`
 4. **Analyze configuration**: `find /workspace -name "*.yml" -o -name "*.json"`
 5. **Submit comprehensive plan**: Use `submit_plan` tool with detailed implementation strategy

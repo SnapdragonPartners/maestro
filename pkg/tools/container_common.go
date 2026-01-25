@@ -21,8 +21,6 @@ import (
 // Only return (nil, error) for parameter validation errors, not execution failures.
 
 const (
-	// DefaultDockerfile is the standard Dockerfile name.
-	DefaultDockerfile = "Dockerfile"
 	// DefaultWorkspaceDir is the standard workspace directory inside containers.
 	DefaultWorkspaceDir = "/workspace"
 )
@@ -157,3 +155,120 @@ func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, 
 // GitHub API validation was running 'gh' inside the container, but PR operations
 // actually run on the host via exec.CommandContext in pkg/github/client.go.
 // Container validation now only checks for git and user UID 1000.
+
+// Reserved container name prefix. This name is reserved for the embedded bootstrap container
+// built from the internal Dockerfile. Project containers must not use this name.
+const reservedContainerNamePrefix = "maestro-bootstrap"
+
+// GenerateContainerName creates a standardized container name from project name and dockerfile path.
+// Format: maestro-<projectname>-<dockerfile>:latest
+// Examples:
+//   - project "myapp", dockerfile ".maestro/Dockerfile" -> "maestro-myapp-dockerfile:latest"
+//   - project "myapp", dockerfile ".maestro/Dockerfile.gpu" -> "maestro-myapp-dockerfile-gpu:latest"
+//   - project "myapp", dockerfile ".maestro/Dockerfile-dev" -> "maestro-myapp-dockerfile-dev:latest"
+func GenerateContainerName(projectName, dockerfilePath string) string {
+	// Sanitize project name: lowercase, replace non-alphanumeric with dash
+	sanitizedProject := sanitizeForContainerName(projectName)
+	if sanitizedProject == "" {
+		sanitizedProject = "project"
+	}
+
+	// Extract dockerfile identifier from path
+	dockerfileID := extractDockerfileIdentifier(dockerfilePath)
+
+	return fmt.Sprintf("maestro-%s-%s:latest", sanitizedProject, dockerfileID)
+}
+
+// sanitizeForContainerName converts a string to be valid for container names.
+// Docker container names must match: [a-zA-Z0-9][a-zA-Z0-9_.-]*
+// We enforce lowercase and use dashes for consistency.
+func sanitizeForContainerName(s string) string {
+	s = strings.ToLower(s)
+	var result strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			result.WriteRune(r)
+		} else if r == '-' || r == '_' || r == '.' || r == ' ' {
+			// Convert spaces and underscores to dashes
+			result.WriteRune('-')
+		}
+		// Skip other characters
+	}
+
+	// Remove leading/trailing dashes and collapse multiple dashes
+	out := result.String()
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	out = strings.Trim(out, "-")
+
+	return out
+}
+
+// extractDockerfileIdentifier extracts an identifier from a dockerfile path.
+// Examples:
+//   - ".maestro/Dockerfile" -> "dockerfile"
+//   - ".maestro/Dockerfile.gpu" -> "dockerfile-gpu"
+//   - ".maestro/Dockerfile-dev" -> "dockerfile-dev"
+//   - "/workspace/.maestro/Dockerfile.test" -> "dockerfile-test"
+func extractDockerfileIdentifier(dockerfilePath string) string {
+	// Get just the filename
+	filename := dockerfilePath
+	if idx := strings.LastIndex(dockerfilePath, "/"); idx >= 0 {
+		filename = dockerfilePath[idx+1:]
+	}
+
+	// Default if empty
+	if filename == "" {
+		return "dockerfile"
+	}
+
+	// Convert to lowercase
+	filename = strings.ToLower(filename)
+
+	// Handle variations: Dockerfile, Dockerfile.gpu, Dockerfile-dev
+	// Remove "dockerfile" prefix if present
+	if strings.HasPrefix(filename, "dockerfile") {
+		suffix := filename[len("dockerfile"):]
+		if suffix == "" {
+			return "dockerfile"
+		}
+		// Replace . with - for consistency
+		suffix = strings.ReplaceAll(suffix, ".", "-")
+		// Ensure it starts with a dash
+		if !strings.HasPrefix(suffix, "-") {
+			suffix = "-" + suffix
+		}
+		return "dockerfile" + suffix
+	}
+
+	// Not a standard dockerfile name, just sanitize it
+	return sanitizeForContainerName(filename)
+}
+
+// IsReservedContainerName checks if a container name is reserved (e.g., maestro-bootstrap:latest).
+// Returns true if the name is reserved and should not be used for project containers.
+// The maestro-bootstrap name is reserved for the safe fallback container that is built
+// from the embedded Dockerfile and should never be overwritten by project-specific containers.
+func IsReservedContainerName(containerName string) bool {
+	// Extract base name (before any tag)
+	baseName := containerName
+	if idx := strings.Index(containerName, ":"); idx > 0 {
+		baseName = containerName[:idx]
+	}
+
+	// Check if the base name matches the reserved prefix
+	return baseName == reservedContainerNamePrefix
+}
+
+// ReservedContainerNameError is returned when attempting to use a reserved container name.
+type ReservedContainerNameError struct {
+	ContainerName string
+}
+
+func (e *ReservedContainerNameError) Error() string {
+	return fmt.Sprintf("container name '%s' is reserved for system use. "+
+		"The '%s' container is the safe fallback environment and cannot be overwritten. "+
+		"Please use a different name (e.g., 'maestro-<projectname>-dev')",
+		e.ContainerName, reservedContainerNamePrefix)
+}

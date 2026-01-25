@@ -171,6 +171,13 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	d.SetStateData(StateKeyAcceptanceType, nil)
 	d.SetStateData(StateKeySpecApprovedLoad, nil)
 
+	// Clear spec review initialized flag when spec approval cycle completes
+	// This ensures next spec submission is treated as initial (not resubmission)
+	if specApprovedAndLoaded {
+		specReviewKey := fmt.Sprintf(StateKeyPatternSpecReviewInitialized, requestMsg.FromAgent)
+		d.SetStateData(specReviewKey, nil)
+	}
+
 	// Determine next state:
 	// 1. Spec approval (PM flow) → DISPATCHING
 	// 2. Work acceptance (completion or merge) → DISPATCHING

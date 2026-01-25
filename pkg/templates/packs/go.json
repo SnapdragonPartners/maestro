@@ -1,0 +1,31 @@
+{
+  "name": "go",
+  "display_name": "Go",
+  "version": "1.0.0",
+  "language_version": "1.23",
+
+  "recommended_base_image": "golang:${LANGUAGE_VERSION}-alpine",
+
+  "tooling": {
+    "package_manager": "go mod",
+    "linter": "golangci-lint",
+    "test_framework": "go test",
+    "formatter": "gofmt"
+  },
+
+  "makefile_targets": {
+    "build": "go mod tidy && go build -o bin/${PROJECT_NAME} ./...",
+    "test": "go test ./...",
+    "lint": "golangci-lint run",
+    "run": "go run ./...",
+    "clean": "rm -rf bin/ && go clean"
+  },
+
+  "template_sections": {
+    "module_setup": "### Go Module Setup\n\n- [ ] Initialize Go module if `go.mod` is missing: `go mod init ${PROJECT_NAME}`\n- [ ] Ensure Go version ${LANGUAGE_VERSION} is specified in `go.mod`\n- [ ] Verify `go mod tidy` runs successfully\n- [ ] All Go module dependencies properly resolved",
+
+    "lint_config": "### Go Linting Configuration\n\n- [ ] Install golangci-lint: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`\n- [ ] Create `.golangci.yml` with aggressive linting rules\n- [ ] Verify `golangci-lint run` passes\n- [ ] Integrate linting into `make lint` target\n\n**Recommended `.golangci.yml`:**\n```yaml\nrun:\n  timeout: 5m\n\nlinters-settings:\n  cyclop:\n    max-complexity: 15\n  gocognit:\n    min-complexity: 15\n  gocritic:\n    enabled-tags:\n      - diagnostic\n      - experimental\n      - opinionated\n      - performance\n      - style\n  govet:\n    check-shadowing: true\n\nlinters:\n  enable:\n    - cyclop\n    - errcheck\n    - gocognit\n    - gocritic\n    - gofmt\n    - goimports\n    - gosec\n    - gosimple\n    - govet\n    - ineffassign\n    - misspell\n    - revive\n    - staticcheck\n    - stylecheck\n    - typecheck\n    - unconvert\n    - unused\n\nissues:\n  exclude-use-default: false\n  max-issues-per-linter: 0\n  max-same-issues: 0\n```",
+
+    "quality_setup": "### Go Development Quality\n\n**Pre-commit Hook:**\n```bash\n#!/bin/bash\nset -e\necho \"Running pre-commit checks...\"\nmake build && make test && make lint\necho \"All checks passed!\"\n```\n\n**Version Detection:**\n```bash\n# Check current Go version\ngo version\n\n# Ensure go.mod has correct version\ngo mod edit -go=${LANGUAGE_VERSION}\n```"
+  }
+}

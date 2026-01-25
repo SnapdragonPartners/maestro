@@ -425,6 +425,15 @@ const (
 	DefaultDockerMemory  = "2g"        // Memory limit for container execution
 	DefaultDockerPIDs    = int64(1024) // Process limit for container execution
 
+	// Dockerfile path defaults.
+	// DefaultDockerfilePath is the standard location for Maestro development Dockerfiles.
+	// Using .maestro/ directory avoids conflicts with production Dockerfiles in repo root.
+	DefaultDockerfilePath = ".maestro/Dockerfile"
+
+	// MaestroDockerfileDir is the directory where all Maestro Dockerfiles must reside.
+	// This constraint prevents tools from accidentally overwriting production Dockerfiles.
+	MaestroDockerfileDir = ".maestro"
+
 	// Git repository defaults.
 	DefaultTargetBranch  = "main"                         // Default target branch for pull requests
 	DefaultMirrorDir     = ".mirrors"                     // Default directory for git mirrors
@@ -655,8 +664,10 @@ type Config struct {
 // Only contains actual project configuration, not transient state or redundant data.
 // Note: Project description is handled via MAESTRO.md file (not config).
 type ProjectInfo struct {
-	Name            string `json:"name"`             // Project name
-	PrimaryPlatform string `json:"primary_platform"` // Primary platform (go, node, python, etc.)
+	Name            string `json:"name"`                   // Project name
+	PrimaryPlatform string `json:"primary_platform"`       // Primary platform (go, node, python, etc.)
+	PackVersion     string `json:"pack_version,omitempty"` // Version of language pack used during bootstrap (for upgrade detection)
+	PackName        string `json:"pack_name,omitempty"`    // Name of language pack used (e.g., "go", "generic")
 }
 
 // ContainerConfig defines container settings for the project.
@@ -756,6 +767,108 @@ func GetContainerTmpfsSize() string {
 	}
 
 	return DefaultTmpfsSize
+}
+
+// GetDockerfilePath returns the configured Dockerfile path, or the default if not set.
+// The path is always relative to the project/workspace root.
+// Must call LoadConfig first to initialize config.
+func GetDockerfilePath() string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config != nil && config.Container != nil && config.Container.Dockerfile != "" {
+		return config.Container.Dockerfile
+	}
+	return DefaultDockerfilePath
+}
+
+// SetDockerfilePath updates the Dockerfile path in config.
+// Returns error if path is not within the .maestro directory.
+func SetDockerfilePath(dockerfilePath string) error {
+	if !IsValidDockerfilePath(dockerfilePath) {
+		return fmt.Errorf("dockerfile must be in %s/ directory, got: %s", MaestroDockerfileDir, dockerfilePath)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	if config.Container == nil {
+		config.Container = &ContainerConfig{}
+	}
+	config.Container.Dockerfile = dockerfilePath
+	return saveConfigLocked()
+}
+
+// IsValidDockerfilePath checks if a Dockerfile path is within the allowed .maestro directory.
+// Uses proper path resolution to prevent escapes via ".." segments.
+func IsValidDockerfilePath(dockerfilePath string) bool {
+	if dockerfilePath == "" {
+		return false
+	}
+
+	// Clean the path to resolve any ".." segments
+	cleanPath := filepath.Clean(dockerfilePath)
+
+	// Reject absolute paths
+	if filepath.IsAbs(cleanPath) {
+		return false
+	}
+
+	// Must start with .maestro/
+	if !strings.HasPrefix(cleanPath, MaestroDockerfileDir+string(filepath.Separator)) {
+		return false
+	}
+
+	// Double-check by computing relative path from .maestro
+	// This catches edge cases like ".maestro/../etc/passwd"
+	rel, err := filepath.Rel(MaestroDockerfileDir, cleanPath)
+	if err != nil {
+		return false
+	}
+
+	// If relative path starts with "..", it escaped the directory
+	if strings.HasPrefix(rel, "..") {
+		return false
+	}
+
+	return true
+}
+
+// IsValidDockerfilePathWithRoot validates a Dockerfile path with explicit project root.
+// Used when validating paths provided as tool arguments.
+func IsValidDockerfilePathWithRoot(projectRoot, dockerfilePath string) bool {
+	if dockerfilePath == "" {
+		return false
+	}
+
+	// Resolve to absolute paths
+	absProject, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return false
+	}
+
+	// Handle both relative and absolute dockerfile paths
+	var absDockerfile string
+	if filepath.IsAbs(dockerfilePath) {
+		absDockerfile = filepath.Clean(dockerfilePath)
+	} else {
+		absDockerfile = filepath.Clean(filepath.Join(absProject, dockerfilePath))
+	}
+
+	// The dockerfile must be within <projectRoot>/.maestro/
+	maestroDir := filepath.Join(absProject, MaestroDockerfileDir)
+
+	rel, err := filepath.Rel(maestroDir, absDockerfile)
+	if err != nil {
+		return false
+	}
+
+	// If relative path starts with "..", it's outside .maestro
+	return !strings.HasPrefix(rel, "..")
 }
 
 // GetDebugLLMMessages returns whether debug logging for LLM message formatting is enabled.
@@ -982,6 +1095,33 @@ func UpdateProject(project *ProjectInfo) error {
 	return saveConfigLocked()
 }
 
+// UpdateProjectPack updates just the pack information (name and version) without modifying other project fields.
+// This is used after bootstrap to record which pack version was used.
+func UpdateProjectPack(packName, packVersion string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config.Project == nil {
+		config.Project = &ProjectInfo{}
+	}
+
+	config.Project.PackName = packName
+	config.Project.PackVersion = packVersion
+	return saveConfigLocked()
+}
+
+// GetProjectPack returns the pack name and version from config.
+// Returns empty strings if not set.
+func GetProjectPack() (packName, packVersion string) {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	if config == nil || config.Project == nil {
+		return "", ""
+	}
+	return config.Project.PackName, config.Project.PackVersion
+}
+
 // UpdateBootstrap is deprecated - bootstrap status is now tracked in database/logs.
 // This function is kept for backward compatibility but does nothing.
 func UpdateBootstrap(_ string, _ interface{}) error {
@@ -1061,12 +1201,13 @@ func createDefaultConfig() *Config {
 		Project: &ProjectInfo{},
 		Container: &ContainerConfig{
 			// Apply Docker runtime defaults
-			Name:      BootstrapContainerTag,
-			Network:   DefaultDockerNetwork,
-			TmpfsSize: DefaultTmpfsSize,
-			CPUs:      DefaultDockerCPUs,
-			Memory:    DefaultDockerMemory,
-			PIDs:      DefaultDockerPIDs,
+			Name:       BootstrapContainerTag,
+			Dockerfile: DefaultDockerfilePath,
+			Network:    DefaultDockerNetwork,
+			TmpfsSize:  DefaultTmpfsSize,
+			CPUs:       DefaultDockerCPUs,
+			Memory:     DefaultDockerMemory,
+			PIDs:       DefaultDockerPIDs,
 		},
 		Build: &BuildConfig{
 			// Set default build targets
@@ -1292,6 +1433,9 @@ func applyDefaults(config *Config) {
 	// Apply container defaults
 	if config.Container.Name == "" {
 		config.Container.Name = BootstrapContainerTag
+	}
+	if config.Container.Dockerfile == "" {
+		config.Container.Dockerfile = DefaultDockerfilePath
 	}
 	if config.Container.Network == "" {
 		config.Container.Network = DefaultDockerNetwork

@@ -333,9 +333,9 @@ func TestCollectBootstrapParamsJSON_WithParams(t *testing.T) {
 	driver := createTestDriver(StateWaiting)
 
 	// Set some bootstrap params
+	// Note: Platform is NOT stored in state - it's stored in config when user confirms
 	driver.SetStateData(StateKeyHasRepository, true)
 	driver.SetStateData(StateKeyUserExpertise, "EXPERT")
-	driver.SetStateData(StateKeyDetectedPlatform, "go")
 	driver.SetStateData(StateKeyInFlight, false)
 
 	result := driver.collectBootstrapParamsJSON()
@@ -353,7 +353,6 @@ func TestCollectBootstrapParamsJSON_WithParams(t *testing.T) {
 	expectedSubstrings := []string{
 		`"has_repository":true`,
 		`"user_expertise":"EXPERT"`,
-		`"detected_platform":"go"`,
 		`"in_flight":false`,
 	}
 

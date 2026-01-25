@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -16,7 +17,6 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
-	bootstraptpl "orchestrator/pkg/templates/bootstrap"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
 )
@@ -48,17 +48,15 @@ const (
 	// StateKeyUserExpertise stores the user's expertise level (NON_TECHNICAL, BASIC, EXPERT).
 	StateKeyUserExpertise = "user_expertise"
 	// StateKeyBootstrapRequirements stores detected bootstrap requirements.
+	// Note: Platform is NOT stored here - PM LLM handles platform confirmation with user.
 	StateKeyBootstrapRequirements = "bootstrap_requirements"
-	// StateKeyDetectedPlatform stores the detected platform.
-	StateKeyDetectedPlatform = "detected_platform"
 
 	// StateKeyUserSpecMd stores the user's feature requirements markdown (working copy during interview).
 	// Cleared after architect accepts the spec.
 	// Note: "Md" suffix indicates the value is markdown-formatted text.
 	StateKeyUserSpecMd = "user_spec_md"
-	// StateKeyBootstrapSpecMd stores infrastructure requirements from bootstrap phase.
-	// Cleared after architect accepts the spec.
-	// Note: "Md" suffix indicates the value is markdown-formatted text.
+	// StateKeyBootstrapSpecMd is DEPRECATED - bootstrap spec is now rendered by architect.
+	// Kept for backwards compatibility with persisted state.
 	StateKeyBootstrapSpecMd = "bootstrap_spec_md"
 	// StateKeyInFlight indicates development is in progress (spec submitted and accepted).
 	// When true, only hotfixes are allowed (spec_submit with hotfix=true).
@@ -344,10 +342,11 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 	}
 }
 
-// handleWaiting waits for architect RESULT messages (feedback after spec submission).
-// User actions (start interview, upload spec) now directly modify state via methods.
+// handleWaiting is the idle state where PM waits for user actions.
+// User actions (StartInterview, UploadSpec) modify state directly via public methods.
+// Architect messages are handled in AWAIT_ARCHITECT, not here.
 func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
-	d.logger.Debug("🎯 PM in WAITING state - checking for state changes or architect feedback")
+	d.logger.Debug("🎯 PM in WAITING state - waiting for user action")
 
 	// Check if bootstrap detection has run - if not, transition to SETUP first.
 	// This ensures PM has accurate bootstrap state before any user interaction.
@@ -356,19 +355,14 @@ func (d *Driver) handleWaiting(ctx context.Context) (proto.State, error) {
 		return StateSetup, nil
 	}
 
-	// Check for architect RESULT messages (non-blocking)
+	// Check for context cancellation
 	select {
 	case <-ctx.Done():
 		d.logger.Info("⏹️  Context canceled while in WAITING")
 		return proto.StateDone, nil
-
-	case resultMsg := <-d.replyCh:
-		// RESULT message from architect (feedback after previous spec submission)
-		return d.handleArchitectResult(resultMsg)
-
 	default:
-		// No messages - sleep briefly to avoid tight loop
-		// Note: Direct method calls (StartInterview/UploadSpec) modify state directly,
+		// No state change - sleep briefly to avoid tight loop
+		// Direct method calls (StartInterview/UploadSpec) modify state directly,
 		// and the Run loop will detect the change and route to the new handler
 		time.Sleep(waitingPollInterval)
 		return StateWaiting, nil
@@ -385,72 +379,6 @@ func (d *Driver) handleSetup(ctx context.Context) (proto.State, error) {
 
 	d.logger.Info("✅ PM SETUP complete - returning to WAITING")
 	return StateWaiting, nil
-}
-
-// handleArchitectResult processes a RESULT message from architect.
-func (d *Driver) handleArchitectResult(resultMsg *proto.AgentMsg) (proto.State, error) {
-	if resultMsg == nil {
-		d.logger.Warn("Reply channel closed unexpectedly")
-		return proto.StateError, fmt.Errorf("reply channel closed")
-	}
-
-	d.logger.Info("🎯 PM received RESULT message: %s (type: %s)", resultMsg.ID, resultMsg.Type)
-
-	// Verify this is a RESPONSE message
-	if resultMsg.Type != proto.MsgTypeRESPONSE {
-		d.logger.Warn("Unexpected message type: %s (expected RESPONSE)", resultMsg.Type)
-		return proto.StateError, fmt.Errorf("unexpected message type: %s", resultMsg.Type)
-	}
-
-	// Extract approval response payload
-	typedPayload := resultMsg.GetTypedPayload()
-	if typedPayload == nil {
-		d.logger.Error("RESULT message has no typed payload")
-		return proto.StateError, fmt.Errorf("RESULT message missing payload")
-	}
-
-	approvalResult, err := typedPayload.ExtractApprovalResponse()
-	if err != nil {
-		d.logger.Error("Failed to extract approval response: %v", err)
-		return proto.StateError, fmt.Errorf("failed to extract approval response: %w", err)
-	}
-
-	// Check approval status
-	if approvalResult.Status == proto.ApprovalStatusApproved {
-		d.logger.Info("✅ Spec APPROVED by architect")
-		// Clear state data for next interview
-		for key := range d.GetStateData() {
-			d.SetStateData(key, nil)
-		}
-		return StateWaiting, nil
-	}
-
-	// Spec needs changes - architect sent feedback
-	d.logger.Info("📝 Spec requires changes (status=%v) - feedback from architect: %s",
-		approvalResult.Status, approvalResult.Feedback)
-
-	// Inject submitted spec and architect feedback into LLM context
-	// Both are added as user messages so they persist across LLM calls
-	// Use GetDraftSpec() which handles concatenation of bootstrap + user specs
-	if submittedSpec := d.GetDraftSpec(); submittedSpec != "" {
-		d.logger.Info("📋 Injecting submitted spec (%d bytes) and architect feedback into PM context", len(submittedSpec))
-
-		// Add submitted spec to context
-		specContextMsg := fmt.Sprintf("## Previously Submitted Specification\n\n```markdown\n%s\n```", submittedSpec)
-		d.contextManager.AddMessage("user", specContextMsg)
-
-		// Add architect feedback to context
-		feedbackMsg := fmt.Sprintf("## Architect Review Feedback\n\n%s\n\nPlease address this feedback and revise the specification.", approvalResult.Feedback)
-		d.contextManager.AddMessage("user", feedbackMsg)
-	} else {
-		d.logger.Warn("⚠️  No submitted spec found in state - PM will start from scratch")
-		// Still add feedback even if we don't have the original spec
-		feedbackMsg := fmt.Sprintf("## Architect Feedback\n\n%s", approvalResult.Feedback)
-		d.contextManager.AddMessage("user", feedbackMsg)
-	}
-
-	// Return to WORKING to address feedback
-	return StateWorking, nil
 }
 
 // GetID returns the PM agent's ID.
@@ -595,24 +523,10 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 
 	// Store bootstrap requirements in state BEFORE mirror refresh.
 	// This ensures state is available immediately, even if refresh is slow.
+	// Note: Bootstrap spec rendering is handled by the architect, not PM.
+	// PM only stores the detection result; architect renders the full spec from requirement IDs.
+	// Platform is NOT detected programmatically - PM LLM handles platform confirmation with user.
 	d.SetStateData(StateKeyBootstrapRequirements, reqs)
-	d.SetStateData(StateKeyDetectedPlatform, reqs.DetectedPlatform)
-
-	// Generate and store bootstrap spec markdown deterministically using templates.
-	// This bypasses the LLM - bootstrap stories are generated directly from detected requirements.
-	if reqs.HasAnyMissingComponents() {
-		bootstrapMarkdown, renderErr := d.renderBootstrapSpec(reqs)
-		if renderErr != nil {
-			d.logger.Warn("Failed to render bootstrap spec: %v", renderErr)
-		} else {
-			d.SetStateData(StateKeyBootstrapSpecMd, bootstrapMarkdown)
-			d.logger.Info("📝 Generated bootstrap spec markdown (%d bytes)", len(bootstrapMarkdown))
-		}
-	} else {
-		// Clear stale bootstrap spec when requirements are resolved.
-		// This prevents re-submitting already-completed bootstrap tasks.
-		d.SetStateData(StateKeyBootstrapSpecMd, "")
-	}
 
 	// Update demo availability based on bootstrap status
 	d.updateDemoAvailable(reqs)
@@ -622,63 +536,38 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 	// or refreshes existing mirrors to get latest changes.
 	detector.RefreshMirrorAndWorkspaces(ctx)
 
-	d.logger.Info("✅ Bootstrap detection complete: %d components needed, platform: %s (%.0f%% confidence)",
-		len(reqs.MissingComponents), reqs.DetectedPlatform, reqs.PlatformConfidence*100)
+	d.logger.Info("✅ Bootstrap detection complete: %d components needed",
+		len(reqs.MissingComponents))
+
+	// Log container status details
+	cs := reqs.ContainerStatus
+	if cs.HasValidContainer {
+		d.logger.Info("🐳 Container: valid (%s, image: %s)", cs.ContainerName, truncateImageID(cs.PinnedImageID))
+	} else if cs.IsBootstrapFallback {
+		if cs.DockerfileExists {
+			d.logger.Info("🐳 Container: bootstrap fallback, %s exists (can build project container)", cs.DockerfilePath)
+		} else {
+			d.logger.Info("🐳 Container: bootstrap fallback, need to create %s", cs.DockerfilePath)
+		}
+	} else if cs.DockerfileExists {
+		d.logger.Info("🐳 Container: not configured, but %s exists (can build)", cs.DockerfilePath)
+	} else {
+		d.logger.Info("🐳 Container: %s", cs.Reason)
+	}
 
 	// Check if any components are missing
 	needsBootstrap := reqs.HasAnyMissingComponents()
 	if needsBootstrap {
-		d.logger.Info("📋 Bootstrap needed: project_config=%v, git_repo=%v, dockerfile=%v, makefile=%v, knowledge_graph=%v, claude_code=%v",
-			reqs.NeedsProjectConfig, reqs.NeedsGitRepo, reqs.NeedsDockerfile, reqs.NeedsMakefile, reqs.NeedsKnowledgeGraph, reqs.NeedsClaudeCode)
+		d.logger.Info("📋 Bootstrap needed:")
+		logBootstrapComponent(d.logger, "  Project config", reqs.NeedsProjectConfig)
+		logBootstrapComponent(d.logger, "  Git repository", reqs.NeedsGitRepo)
+		logBootstrapComponent(d.logger, "  Dockerfile", reqs.NeedsDockerfile)
+		logBootstrapComponent(d.logger, "  Makefile", reqs.NeedsMakefile)
+		logBootstrapComponent(d.logger, "  Knowledge graph", reqs.NeedsKnowledgeGraph)
+		logBootstrapComponent(d.logger, "  Claude Code", reqs.NeedsClaudeCode)
 	}
 
 	return reqs, needsBootstrap
-}
-
-// renderBootstrapSpec generates bootstrap spec markdown using templates.
-// Converts BootstrapRequirements to BootstrapFailures and uses the template renderer.
-func (d *Driver) renderBootstrapSpec(reqs *BootstrapRequirements) (string, error) {
-	// Convert requirements to failures for template
-	failures := reqs.ToBootstrapFailures()
-
-	// Get project info from config
-	cfg, err := config.GetConfig()
-	projectName := "project"
-	containerImage := ""
-	gitRepoURL := ""
-
-	if err == nil {
-		if cfg.Project != nil && cfg.Project.Name != "" {
-			projectName = cfg.Project.Name
-		}
-		if cfg.Container != nil && cfg.Container.Name != "" {
-			containerImage = cfg.Container.Name
-		}
-		if cfg.Git != nil && cfg.Git.RepoURL != "" {
-			gitRepoURL = cfg.Git.RepoURL
-		}
-	}
-
-	// Use the bootstrap template renderer
-	renderer, renderErr := bootstraptpl.NewRenderer()
-	if renderErr != nil {
-		return "", fmt.Errorf("failed to create bootstrap renderer: %w", renderErr)
-	}
-
-	// Render with enhanced data including git repo URL
-	markdown, renderErr := renderer.RenderBootstrapSpecEnhanced(
-		projectName,
-		reqs.DetectedPlatform,
-		containerImage,
-		gitRepoURL,
-		"", // dockerfilePath - will be detected
-		failures,
-	)
-	if renderErr != nil {
-		return "", fmt.Errorf("failed to render bootstrap spec: %w", renderErr)
-	}
-
-	return markdown, nil
 }
 
 // GetBootstrapRequirements returns the detected bootstrap requirements.
@@ -686,12 +575,6 @@ func (d *Driver) renderBootstrapSpec(reqs *BootstrapRequirements) (string, error
 func (d *Driver) GetBootstrapRequirements() *BootstrapRequirements {
 	reqs, _ := utils.GetStateValue[*BootstrapRequirements](d.BaseStateMachine, StateKeyBootstrapRequirements)
 	return reqs
-}
-
-// GetDetectedPlatform returns the detected platform.
-// Returns empty string if platform hasn't been detected.
-func (d *Driver) GetDetectedPlatform() string {
-	return utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyDetectedPlatform, "")
 }
 
 // IsDemoAvailable returns true if demo mode should be available.
@@ -709,6 +592,28 @@ func (d *Driver) EnsureBootstrapChecked(_ context.Context) error {
 	// Bootstrap detection runs in SETUP state, so it may not exist yet
 	// if PM is still initializing. This is expected - not an error.
 	return nil
+}
+
+// truncateImageID shortens a Docker image ID for display.
+// Image IDs are typically long SHA256 hashes - truncate to first 12 chars for readability.
+func truncateImageID(imageID string) string {
+	// Remove sha256: prefix if present
+	if len(imageID) > 7 && imageID[:7] == "sha256:" {
+		imageID = imageID[7:]
+	}
+	if len(imageID) > 12 {
+		return imageID[:12]
+	}
+	return imageID
+}
+
+// logBootstrapComponent logs a single bootstrap component status with visual indicators.
+func logBootstrapComponent(logger *logx.Logger, name string, needed bool) {
+	if needed {
+		logger.Info("%s: ❌ missing", name)
+	} else {
+		logger.Info("%s: ✓ ok", name)
+	}
 }
 
 // updateDemoAvailable updates the demo availability flag based on bootstrap requirements.
@@ -732,25 +637,10 @@ func (d *Driver) updateDemoAvailable(reqs *BootstrapRequirements) {
 
 // GetDraftSpec returns the draft specification markdown if available.
 // This is used by the WebUI to display the spec in PREVIEW state.
-// For full specs, returns bootstrap + user spec concatenated.
-// For hotfixes, returns just the user spec.
+// Returns only the user feature spec - bootstrap content is rendered by the architect.
 // Returns empty string if no draft spec is available.
 func (d *Driver) GetDraftSpec() string {
-	// Get user spec (required for any preview)
-	userSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
-	if userSpec == "" {
-		return ""
-	}
-
-	// Get bootstrap spec (only present for full specs, not hotfixes)
-	bootstrapSpec := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyBootstrapSpecMd, "")
-
-	// Concatenate if bootstrap exists
-	if bootstrapSpec != "" {
-		return bootstrapSpec + "\n\n" + userSpec
-	}
-
-	return userSpec
+	return utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserSpecMd, "")
 }
 
 // IsInFlight returns true if development is in progress (spec submitted and accepted).
@@ -793,10 +683,24 @@ func (d *Driver) StartInterview(expertise string) error {
 	ctx := context.Background()
 	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(ctx)
 	if needsBootstrap && reqs != nil {
-		// Add detection summary to context
-		d.contextManager.AddMessage("system",
-			fmt.Sprintf("Bootstrap analysis: Missing components: %v. Detected platform: %s",
-				reqs.MissingComponents, reqs.DetectedPlatform))
+		// Inject only config deficits that PM needs to gather from user.
+		// Technical bootstrap prerequisites (Dockerfile, Makefile, etc.) are opaque to PM.
+		var configDeficits []string
+		if reqs.NeedsProjectConfig {
+			configDeficits = append(configDeficits, "project name and platform")
+		}
+		if reqs.NeedsGitRepo {
+			configDeficits = append(configDeficits, "git repository URL")
+		}
+		if len(configDeficits) > 0 {
+			d.contextManager.AddMessage("system",
+				fmt.Sprintf("Project setup needed. Please gather: %s. "+
+					"After collecting this info, call the bootstrap tool.", strings.Join(configDeficits, ", ")))
+		} else {
+			// Config is complete but technical prerequisites are missing - PM doesn't need to know details
+			d.contextManager.AddMessage("system",
+				"Project configuration is complete. Technical setup is in progress.")
+		}
 	}
 
 	// Decide initial state based on bootstrap needs
@@ -847,12 +751,13 @@ func (d *Driver) UploadSpec(markdown string) error {
 	d.SetStateData(StateKeySpecUploaded, true)
 
 	// Detect bootstrap requirements using shared helper
-	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
-	if needsBootstrap && reqs != nil {
+	_, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
+	if needsBootstrap {
 		// Add uploaded spec content and bootstrap instructions to context
+		// Note: Infrastructure requirements (Dockerfile, Makefile, etc.) are opaque to PM LLM
 		specMessage := fmt.Sprintf(`# User Uploaded Specification File
 
-The user has uploaded a specification file (%d bytes). **Parse this spec to extract bootstrap information before asking the user any questions.**
+The user has uploaded a specification file (%d bytes). **Parse this spec to extract project information before asking the user any questions.**
 
 **Look for these details in the spec:**
 1. **Project Name** - Often in title, frontmatter, or introduction
@@ -860,17 +765,14 @@ The user has uploaded a specification file (%d bytes). **Parse this spec to extr
 3. **Primary Platform** - Look for language/framework mentions (go, python, node, rust, etc.)
 
 **After parsing the spec:**
-- Extract any bootstrap values you find
+- Extract any values you find for project_name, git_url, and platform
 - ONLY ask the user for values that are genuinely missing or ambiguous in the spec
 - Do NOT ask the user to re-provide information that's clearly stated in their spec
-
-**Bootstrap Analysis:**
-- Missing components: %v
-- Detected platform: %s (%.0f%%%% confidence)
+- Once you have all three values, call the bootstrap tool
 
 **The uploaded specification:**
 `+"```markdown\n%s\n```",
-			len(markdown), reqs.MissingComponents, reqs.DetectedPlatform, reqs.PlatformConfidence*100, markdown)
+			len(markdown), markdown)
 
 		d.contextManager.AddMessage("system", specMessage)
 	}

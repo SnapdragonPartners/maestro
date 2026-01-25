@@ -62,4 +62,8 @@ const (
 	// StateKeyPatternToolProvider stores tool provider instances for specific requests.
 	// Usage: fmt.Sprintf(StateKeyPatternToolProvider, requestID).
 	StateKeyPatternToolProvider = "tool_provider_%s"
+
+	// StateKeyPatternSpecReviewInitialized tracks whether spec review has been initialized for an agent.
+	// Usage: fmt.Sprintf(StateKeyPatternSpecReviewInitialized, agentID).
+	StateKeyPatternSpecReviewInitialized = "spec_review_initialized_%s"
 )

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"orchestrator/pkg/workspace"
 )
 
 func TestBootstrapDetector_DetectMissingComponents(t *testing.T) {
@@ -42,93 +44,8 @@ func TestBootstrapDetector_DetectMissingComponents(t *testing.T) {
 	}
 }
 
-func TestBootstrapDetector_DetectPlatform_Go(t *testing.T) {
-	// Create a temporary directory with go.mod
-	tmpDir := t.TempDir()
-	goModPath := filepath.Join(tmpDir, "go.mod")
-	if err := os.WriteFile(goModPath, []byte("module test\n"), 0644); err != nil {
-		t.Fatalf("Failed to create go.mod: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "go" {
-		t.Errorf("Expected platform = go, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for go.mod, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Python(t *testing.T) {
-	// Create a temporary directory with pyproject.toml
-	tmpDir := t.TempDir()
-	pyprojectPath := filepath.Join(tmpDir, "pyproject.toml")
-	if err := os.WriteFile(pyprojectPath, []byte("[build-system]\n"), 0644); err != nil {
-		t.Fatalf("Failed to create pyproject.toml: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "python" {
-		t.Errorf("Expected platform = python, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for pyproject.toml, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Node(t *testing.T) {
-	// Create a temporary directory with package.json
-	tmpDir := t.TempDir()
-	packagePath := filepath.Join(tmpDir, "package.json")
-	if err := os.WriteFile(packagePath, []byte("{\"name\": \"test\"}\n"), 0644); err != nil {
-		t.Fatalf("Failed to create package.json: %v", err)
-	}
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "node" {
-		t.Errorf("Expected platform = node, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence < 0.8 {
-		t.Errorf("Expected high confidence for package.json, got %.2f", reqs.PlatformConfidence)
-	}
-}
-
-func TestBootstrapDetector_DetectPlatform_Generic(t *testing.T) {
-	// Create a temporary directory with no platform indicators
-	tmpDir := t.TempDir()
-
-	detector := NewBootstrapDetector(tmpDir)
-	reqs, err := detector.Detect(context.Background())
-	if err != nil {
-		t.Fatalf("Detect() error = %v", err)
-	}
-
-	if reqs.DetectedPlatform != "generic" {
-		t.Errorf("Expected platform = generic, got %s", reqs.DetectedPlatform)
-	}
-
-	if reqs.PlatformConfidence > 0.5 {
-		t.Errorf("Expected low confidence for unknown platform, got %.2f", reqs.PlatformConfidence)
-	}
-}
+// Note: Platform detection tests removed - platform confirmation is now handled by PM LLM,
+// not programmatic detection. Platform is set in config when user confirms during bootstrap.
 
 func TestBootstrapDetector_DetectMakefile_Missing(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -395,6 +312,219 @@ func TestDriver_UpdateDemoAvailable_NilRequirements(t *testing.T) {
 	}
 }
 
+func TestBootstrapRequirements_ToRequirementIDs(t *testing.T) {
+	tests := []struct {
+		name        string
+		reqs        *BootstrapRequirements
+		expectIDs   []workspace.BootstrapRequirementID
+		expectCount int
+	}{
+		{
+			name: "empty requirements returns empty slice",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   true,
+					IsBootstrapFallback: false,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{},
+			expectCount: 0,
+		},
+		{
+			name: "container fallback without valid container",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   false,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqContainer},
+			expectCount: 1,
+		},
+		{
+			name: "container fallback with valid container - no requirement",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   true,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{},
+			expectCount: 0,
+		},
+		{
+			name: "needs dockerfile only",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqDockerfile},
+			expectCount: 1,
+		},
+		{
+			name: "needs makefile only",
+			reqs: &BootstrapRequirements{
+				NeedsMakefile: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqBuildSystem},
+			expectCount: 1,
+		},
+		{
+			name: "needs knowledge graph only",
+			reqs: &BootstrapRequirements{
+				NeedsKnowledgeGraph: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqKnowledgeGraph},
+			expectCount: 1,
+		},
+		{
+			name: "needs git repo only",
+			reqs: &BootstrapRequirements{
+				NeedsGitRepo: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer: true,
+				},
+			},
+			expectIDs:   []workspace.BootstrapRequirementID{workspace.BootstrapReqGitAccess},
+			expectCount: 1,
+		},
+		{
+			name: "multiple requirements",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile:     true,
+				NeedsMakefile:       true,
+				NeedsKnowledgeGraph: true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   false,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs: []workspace.BootstrapRequirementID{
+				workspace.BootstrapReqContainer,
+				workspace.BootstrapReqDockerfile,
+				workspace.BootstrapReqBuildSystem,
+				workspace.BootstrapReqKnowledgeGraph,
+			},
+			expectCount: 4,
+		},
+		{
+			name: "all requirements",
+			reqs: &BootstrapRequirements{
+				NeedsDockerfile:     true,
+				NeedsMakefile:       true,
+				NeedsKnowledgeGraph: true,
+				NeedsGitRepo:        true,
+				ContainerStatus: ContainerStatus{
+					HasValidContainer:   false,
+					IsBootstrapFallback: true,
+				},
+			},
+			expectIDs: []workspace.BootstrapRequirementID{
+				workspace.BootstrapReqContainer,
+				workspace.BootstrapReqDockerfile,
+				workspace.BootstrapReqBuildSystem,
+				workspace.BootstrapReqKnowledgeGraph,
+				workspace.BootstrapReqGitAccess,
+			},
+			expectCount: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ids := tt.reqs.ToRequirementIDs()
+
+			if len(ids) != tt.expectCount {
+				t.Errorf("ToRequirementIDs() returned %d IDs, want %d", len(ids), tt.expectCount)
+			}
+
+			// Verify all expected IDs are present (order may vary)
+			for _, expectedID := range tt.expectIDs {
+				found := false
+				for _, id := range ids {
+					if id == expectedID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("ToRequirementIDs() missing expected ID: %s", expectedID)
+				}
+			}
+
+			// Verify no unexpected IDs
+			for _, id := range ids {
+				found := false
+				for _, expectedID := range tt.expectIDs {
+					if id == expectedID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("ToRequirementIDs() returned unexpected ID: %s", id)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapRequirements_ToRequirementIDs_Idempotent(t *testing.T) {
+	// Verify that calling ToRequirementIDs multiple times returns same results
+	reqs := &BootstrapRequirements{
+		NeedsDockerfile:     true,
+		NeedsMakefile:       true,
+		NeedsKnowledgeGraph: true,
+		ContainerStatus: ContainerStatus{
+			HasValidContainer:   false,
+			IsBootstrapFallback: true,
+		},
+	}
+
+	ids1 := reqs.ToRequirementIDs()
+	ids2 := reqs.ToRequirementIDs()
+
+	if len(ids1) != len(ids2) {
+		t.Errorf("ToRequirementIDs() not idempotent: got %d and %d IDs", len(ids1), len(ids2))
+	}
+
+	for i := range ids1 {
+		if ids1[i] != ids2[i] {
+			t.Errorf("ToRequirementIDs() not idempotent at index %d: %s vs %s", i, ids1[i], ids2[i])
+		}
+	}
+}
+
+func TestBootstrapRequirements_ToRequirementIDs_AllIDsAreValid(t *testing.T) {
+	// Verify all returned IDs pass validation
+	reqs := &BootstrapRequirements{
+		NeedsDockerfile:     true,
+		NeedsMakefile:       true,
+		NeedsKnowledgeGraph: true,
+		NeedsGitRepo:        true,
+		ContainerStatus: ContainerStatus{
+			HasValidContainer:   false,
+			IsBootstrapFallback: true,
+		},
+	}
+
+	ids := reqs.ToRequirementIDs()
+
+	for _, id := range ids {
+		if !workspace.IsValidRequirementID(id) {
+			t.Errorf("ToRequirementIDs() returned invalid ID: %s", id)
+		}
+	}
+}
+
 func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -404,10 +534,8 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 		expectPrio1 bool // expect priority 1 failure
 	}{
 		{
-			name: "empty requirements",
-			reqs: &BootstrapRequirements{
-				DetectedPlatform: "go",
-			},
+			name:        "empty requirements",
+			reqs:        &BootstrapRequirements{},
 			expectCount: 0,
 			expectTypes: []string{},
 			expectPrio1: false,
@@ -415,8 +543,7 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 		{
 			name: "dockerfile only",
 			reqs: &BootstrapRequirements{
-				NeedsDockerfile:  true,
-				DetectedPlatform: "go",
+				NeedsDockerfile: true,
 			},
 			expectCount: 1,
 			expectTypes: []string{"container"},
@@ -427,7 +554,6 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 			reqs: &BootstrapRequirements{
 				NeedsMakefile:     true,
 				NeedsBuildTargets: []string{"build", "test"},
-				DetectedPlatform:  "python",
 			},
 			expectCount: 1,
 			expectTypes: []string{"build_system"},
@@ -441,7 +567,6 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 				NeedsKnowledgeGraph: true,
 				NeedsGitignore:      true,
 				NeedsClaudeCode:     true,
-				DetectedPlatform:    "go",
 			},
 			expectCount: 5,
 			expectTypes: []string{"container", "build_system", "infrastructure", "build_system", "container"},

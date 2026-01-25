@@ -11,6 +11,7 @@ import (
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
+	"orchestrator/pkg/workspace"
 )
 
 // handleSpecReview processes a spec review approval request from PM.
@@ -24,8 +25,30 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("user spec not found in approval request Content field")
 	}
 
-	// Extract infrastructure spec (bootstrap requirements) if present
-	infrastructureSpec := approvalPayload.InfrastructureSpec
+	// Render infrastructure spec from bootstrap requirements (architect owns technical details)
+	// This converts requirement IDs to full technical specification using language pack
+	var infrastructureSpec string
+	if len(approvalPayload.BootstrapRequirements) > 0 {
+		// Convert string IDs back to typed IDs
+		reqIDs := make([]workspace.BootstrapRequirementID, 0, len(approvalPayload.BootstrapRequirements))
+		for _, id := range approvalPayload.BootstrapRequirements {
+			reqIDs = append(reqIDs, workspace.BootstrapRequirementID(id))
+		}
+
+		d.logger.Info("📋 Received bootstrap requirements from PM: %v", reqIDs)
+
+		// Render the full technical spec
+		rendered, err := RenderBootstrapSpec(reqIDs, d.logger)
+		if err != nil {
+			d.logger.Warn("Failed to render bootstrap spec: %v (continuing without bootstrap)", err)
+		} else {
+			infrastructureSpec = rendered
+		}
+	} else if approvalPayload.InfrastructureSpec != "" {
+		// Fallback for legacy payloads with pre-rendered markdown (deprecated)
+		d.logger.Warn("Using deprecated InfrastructureSpec field - PM should send BootstrapRequirements instead")
+		infrastructureSpec = approvalPayload.InfrastructureSpec
+	}
 
 	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes", len(userSpec), len(infrastructureSpec))
 
@@ -33,8 +56,9 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	agentID := requestMsg.FromAgent
 	cm := d.getContextForAgent(agentID)
 
-	// Check if this is a resubmission (context already has spec review prompt)
-	isResubmission := len(cm.GetMessages()) > 0
+	// Check if this is a resubmission using state flag (more robust than checking message count)
+	specReviewKey := fmt.Sprintf(StateKeyPatternSpecReviewInitialized, agentID)
+	_, isResubmission := d.GetStateValue(specReviewKey)
 
 	// Only add spec review prompt for initial submission
 	if !isResubmission {
@@ -56,9 +80,17 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		// Add spec review prompt as user message to start the conversation
 		cm.AddMessage("user", prompt)
 		d.logger.Info("📝 Added spec review prompt to context (initial submission)")
+
+		// Mark spec review as initialized for this agent
+		d.SetStateData(specReviewKey, true)
 	} else {
-		// Resubmission - add updated spec content as user message (user requirements only)
-		resubmitMsg := fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n```\n%s\n```", userSpec)
+		// Resubmission - include both updated user spec AND infrastructure spec (may have changed)
+		var resubmitMsg string
+		if infrastructureSpec != "" {
+			resubmitMsg = fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n## Infrastructure Requirements\n\n%s\n\n## User Requirements\n\n%s", infrastructureSpec, userSpec)
+		} else {
+			resubmitMsg = fmt.Sprintf("The PM has revised the specification based on your feedback. Please review the updated version:\n\n%s", userSpec)
+		}
 		cm.AddMessage("user", resubmitMsg)
 		d.logger.Info("📝 Added revised spec to context (resubmission)")
 	}

@@ -201,15 +201,11 @@ func (d *Driver) collectBootstrapParamsJSON() *string {
 	if requirements, ok := d.GetStateValue(StateKeyBootstrapRequirements); ok {
 		bootstrapParams[StateKeyBootstrapRequirements] = requirements
 	}
-	if platform, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyDetectedPlatform); ok {
-		bootstrapParams[StateKeyDetectedPlatform] = platform
-	}
+	// Note: Platform is NOT persisted here - it's stored in config when user confirms
 	if inFlight, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyInFlight); ok {
 		bootstrapParams[StateKeyInFlight] = inFlight
 	}
-	if bootstrapSpec, ok := utils.GetStateValue[string](d.BaseStateMachine, StateKeyBootstrapSpecMd); ok {
-		bootstrapParams[StateKeyBootstrapSpecMd] = bootstrapSpec
-	}
+	// Note: StateKeyBootstrapSpecMd is no longer used - architect renders bootstrap spec from requirement IDs
 	if isHotfix, ok := utils.GetStateValue[bool](d.BaseStateMachine, StateKeyIsHotfix); ok {
 		bootstrapParams[StateKeyIsHotfix] = isHotfix
 	}

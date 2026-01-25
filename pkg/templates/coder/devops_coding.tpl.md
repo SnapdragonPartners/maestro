@@ -33,7 +33,7 @@
 ### Container Tools (Use These First)
 - **container_build**: Build Docker images from Dockerfile. Use BEFORE attempting any docker build commands.
   - Always specify exact Dockerfile path and image name
-  - Example: container_build({"dockerfile": "/workspace/Dockerfile", "image_name": "maestro-myapp"})
+  - Example: container_build({"dockerfile": "/workspace/.maestro/Dockerfile", "image_name": "maestro-myapp"})
 - **container_test**: Test containers by running commands in temporary instances. Use for validation.
   - Specify exact commands to run
   - Example: container_test({"image_name": "maestro-myapp", "command": "go version"})
@@ -89,7 +89,7 @@
 **IMPORTANT**: Avoid repeating the exact same tool call multiple times sequentially. If you've already run a command and seen the result, use `ask_question` or `chat_post` to communicate uncertainty rather than running it again immediately.
 
 **Tool Call Specificity Requirements:**
-- Always specify full file paths (e.g., `/workspace/Dockerfile` not just `Dockerfile`)
+- Always specify full file paths (e.g., `/workspace/.maestro/Dockerfile` not just `Dockerfile`)
 - Always use exact commands (e.g., `container_build` with specific parameters, not vague "build the container")
 - If a command produces large output, you can split it into multiple tool calls
 
