@@ -94,13 +94,34 @@ func (i *Installer) isNpmInstalled(ctx context.Context) (bool, string) {
 }
 
 // isClaudeCodeInstalled checks if Claude Code is available.
+// Note: We use "which claude" instead of "claude --version" because running
+// claude --version as root creates /tmp/.claude owned by root, which prevents
+// Claude Code from running as user 1000 later.
 func (i *Installer) isClaudeCodeInstalled(ctx context.Context) (bool, string) {
-	result, err := i.runCommand(ctx, []string{"claude", "--version"}, 30*time.Second)
-	if err != nil {
+	// First check if claude binary exists
+	whichResult, err := i.runCommand(ctx, []string{"which", "claude"}, 10*time.Second)
+	if err != nil || whichResult.ExitCode != 0 {
 		return false, ""
 	}
-	version := strings.TrimSpace(result.Stdout)
-	return version != "", version
+
+	// Get version without running claude directly to avoid creating /tmp/.claude as root
+	// Use npm list to get the installed version
+	npmResult, err := i.runCommand(ctx, []string{"npm", "list", "-g", "@anthropic-ai/claude-code", "--depth=0"}, 30*time.Second)
+	if err != nil {
+		return true, "unknown" // claude exists but couldn't get version
+	}
+
+	// Parse version from npm list output (format: "@anthropic-ai/claude-code@X.Y.Z")
+	output := npmResult.Stdout
+	if idx := strings.Index(output, "@anthropic-ai/claude-code@"); idx != -1 {
+		versionPart := output[idx+len("@anthropic-ai/claude-code@"):]
+		if endIdx := strings.IndexAny(versionPart, " \n\t"); endIdx != -1 {
+			return true, strings.TrimSpace(versionPart[:endIdx])
+		}
+		return true, strings.TrimSpace(versionPart)
+	}
+
+	return true, "unknown"
 }
 
 // installNode installs Node.js using the system package manager.
