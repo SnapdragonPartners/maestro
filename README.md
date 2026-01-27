@@ -1,6 +1,6 @@
 ![Maestro](pkg/webui/web/static/img/logos/maestro_logo_small.png)
 
-# The Maestro App Factory
+# The Maestro App Factory™
 
 Maestro is a tool that uses AI to write full applications in a disciplined way that reflects good software engineering principles.
 
@@ -50,11 +50,12 @@ You can mix-and-match models by agent type - in fact, that's the recommended con
   - Conducts interactive requirements interviews via web UI
   - Adapts questions based on user expertise level (non-technical, basic, expert)
   - Can read existing codebase to provide context-aware questions
-  - Generates detailed specifications with YAML frontmatter and acceptance criteria
+  - Generates **requirements specifications** describing what the user needs
   - Iterates with architect for spec approval and refinement
-  - Does *not* write stories directly - that's the architect's job
+  - Does *not* write technical specs or stories - that's the architect's job
 
 - **Architect** (singleton):
+  - Transforms requirements into **technical specifications**
   - Breaks specs into stories
   - Reviews and approves plans
   - Enforces principles (DRY, YAGNI, abstraction levels, test coverage)
@@ -138,7 +139,7 @@ Maestro operates in several distinct modes depending on project state and user i
 | Bootstrap | Automatically on new projects | Sets up basic project infrastructure |
 | Development | Default operating mode | Main workflow for building features |
 | Airplane | `--airplane` flag | Fully offline with local Gitea + Ollama |
-| Claude Code | Optional coder variant | Uses Claude Code for implementation |
+| Claude Code | `coder_mode: "claude-code"` | Uses Claude Code for implementation |
 | Demo | User-triggered via WebUI | Runs the application for testing |
 | Hotfix | User requests urgent fix | Fast path for production issues |
 | Maintenance | After N specs complete | Cleans up technical debt |
@@ -358,7 +359,7 @@ See [docs/MAINTENANCE_MODE_SPEC.md](docs/MAINTENANCE_MODE_SPEC.md) for detailed 
 
 ---
 
-## Claude Code Mode (Experimental)
+## Claude Code Mode
 
 Maestro supports an alternative coder implementation that uses [Claude Code](https://claude.ai/code) as a subprocess instead of direct LLM API calls. This mode leverages Claude Code's built-in tooling (file operations, bash execution, etc.) while Maestro handles orchestration and signal detection.
 
@@ -382,7 +383,7 @@ Maestro supports an alternative coder implementation that uses [Claude Code](htt
 - Automatic tool approval in non-interactive mode
 - Same orchestration benefits (architect review, PR workflow, persistence)
 
-This feature is experimental and requires Claude Code to be installed in the container (auto-installed on first run).
+Claude Code is auto-installed in the container on first run.
 
 ---
 
