@@ -12,7 +12,7 @@ The big idea behind Maestro is that since LLMs are trained on and exhibit human 
 
 ## Project Status
 
-Maestro is feature complete for its initial release but not yet production ready. The project is actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
+Maestro v1 is feature complete and fully functional, but we're actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
 
 ---
 
