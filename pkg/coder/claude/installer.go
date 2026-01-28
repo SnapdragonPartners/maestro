@@ -110,6 +110,11 @@ func (i *Installer) isClaudeCodeInstalled(ctx context.Context) (bool, string) {
 	if err != nil {
 		return true, "unknown" // claude exists but couldn't get version
 	}
+	// If npm list returns non-zero, the package isn't installed properly
+	// (e.g., stale binary on PATH, broken symlink) - trigger reinstall
+	if npmResult.ExitCode != 0 {
+		return false, ""
+	}
 
 	// Parse version from npm list output (format: "@anthropic-ai/claude-code@X.Y.Z")
 	output := npmResult.Stdout
