@@ -16,6 +16,12 @@ Maestro is feature complete for its initial release but not yet production ready
 
 ---
 
+## ❤️ Support This Project
+
+This project is developed and actively maintained by Snapdragon Partners. Tokens for developing Maestro are expensive but we're keeping the community version of Maestro free. If you like Maestro, any support you can provide via [GitHub Sponsors](https://github.com/sponsors/SnapdragonPartners) would be appreciated!
+
+---
+
 ## Documentation
 
 Much more extensive documentation including configuration settings is available in the [Wiki](https://github.com/SnapdragonPartners/maestro/wiki).
