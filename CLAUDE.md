@@ -282,7 +282,7 @@ The repository includes pre-push hooks that run integration tests:
 - Skips if no API keys are set (with warning)
 - Runs `make test-integration` if API keys are available
 - Prevents push if integration tests fail
-- Can be bypassed with `git push --no-verify` if needed
+- **NEVER use `--no-verify` to bypass hooks** - fix the failing tests instead
 
 ### Testing Strategy
 

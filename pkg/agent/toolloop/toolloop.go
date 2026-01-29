@@ -143,6 +143,12 @@ type Config[T any] struct {
 	// If nil, shutdown proceeds without callback.
 	OnShutdown func(iteration int)
 
+	// OnLLMError is called when an LLM error occurs (including empty response errors).
+	// This callback allows the agent to checkpoint the context for debugging before
+	// the error propagates. The callback receives the error and the context manager.
+	// If nil, no checkpointing occurs.
+	OnLLMError func(err error, cm *contextmgr.ContextManager)
+
 	// PersistenceChannel for logging tool executions to the database.
 	// If nil, tool executions are not persisted (only logged to console).
 	PersistenceChannel chan<- *persistence.Request
@@ -292,6 +298,11 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				}
 			}
 			tl.logger.Error("❌ LLM call failed after %.3gs: %v", duration.Seconds(), err)
+			// Checkpoint context for debugging before returning error
+			if cfg.OnLLMError != nil {
+				tl.logger.Info("📸 Checkpointing context for LLM error debugging")
+				cfg.OnLLMError(err, cfg.ContextManager)
+			}
 			return Outcome[T]{
 				Kind:      OutcomeLLMError,
 				Err:       fmt.Errorf("LLM completion failed: %w", err),

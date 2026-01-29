@@ -4,6 +4,7 @@ package architect
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -322,6 +323,56 @@ func (d *Driver) ResetAgentContext(agentID string) error {
 	d.logger.Info("✅ Reset context for agent %s (story %s)", agentID, storyID)
 
 	return nil
+}
+
+// makeOnLLMErrorCallback creates a callback function for checkpointing context on LLM errors.
+// This helps with debugging by persisting the conversation state when errors occur.
+func (d *Driver) makeOnLLMErrorCallback(contextType string) func(error, *contextmgr.ContextManager) {
+	if d.persistenceChannel == nil {
+		return nil
+	}
+
+	return func(err error, cm *contextmgr.ContextManager) {
+		if cm == nil {
+			d.logger.Warn("⚠️ Cannot checkpoint context: context manager is nil")
+			return
+		}
+
+		// Serialize messages to JSON
+		messages := cm.GetMessages()
+		messagesJSON, jsonErr := json.Marshal(messages)
+		if jsonErr != nil {
+			d.logger.Error("❌ Failed to serialize context for checkpoint: %v", jsonErr)
+			return
+		}
+
+		// Get session ID from config
+		cfg, cfgErr := config.GetConfig()
+		if cfgErr != nil {
+			d.logger.Error("❌ Failed to get config for checkpoint: %v", cfgErr)
+			return
+		}
+
+		// Create context checkpoint with error suffix
+		checkpointType := fmt.Sprintf("%s_error_%d", contextType, time.Now().Unix())
+
+		// Send to persistence channel (non-blocking to avoid deadlock)
+		select {
+		case d.persistenceChannel <- &persistence.Request{
+			Operation: persistence.OpSaveAgentContext,
+			Data: &persistence.AgentContext{
+				SessionID:    cfg.SessionID,
+				AgentID:      d.GetAgentID(),
+				ContextType:  checkpointType,
+				MessagesJSON: string(messagesJSON),
+			},
+		}:
+			d.logger.Info("📸 Context checkpoint saved: type=%s, messages=%d, error=%v",
+				checkpointType, len(messages), err)
+		default:
+			d.logger.Warn("⚠️ Persistence channel full, checkpoint skipped")
+		}
+	}
 }
 
 // buildSystemPrompt creates the comprehensive system prompt for an agent context.

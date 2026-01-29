@@ -129,6 +129,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,
+		OnLLMError:         d.makeOnLLMErrorCallback("spec_review"),
 	})
 
 	// Handle review outcome
@@ -235,6 +236,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,
+		OnLLMError:         d.makeOnLLMErrorCallback("story_generation"),
 	})
 
 	// Handle story generation outcome
