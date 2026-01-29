@@ -142,6 +142,10 @@ func (m *mockAgent) GetHostWorkspacePath() string {
 	return "/tmp/test-workspace"
 }
 
+func (m *mockAgent) GetContainerName() string {
+	return "test-container"
+}
+
 func (m *mockAgent) CompleteTodo(_ int) bool {
 	return true
 }
