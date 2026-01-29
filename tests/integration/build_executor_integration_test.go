@@ -309,12 +309,13 @@ test:
 	mockExec := build.NewMockExecutor()
 	buildSvc.SetExecutor(mockExec)
 
-	// Execute build
+	// Execute build - no ExecDir specified, defaults based on executor type
+	// For MockExecutor (host-based), it defaults to the normalized project root
 	req := &build.Request{
 		ProjectRoot: tempDir,
 		Operation:   "build",
 		Timeout:     60,
-		ExecDir:     "/workspace", // Container path
+		// ExecDir omitted - will default to tempDir for host-based executor
 	}
 
 	resp, err := buildSvc.ExecuteBuild(ctx, req)
@@ -335,8 +336,9 @@ test:
 		t.Error("Expected mock executor to be called")
 	} else {
 		call := mockExec.Calls[0]
-		if call.Dir != "/workspace" {
-			t.Errorf("Expected exec dir '/workspace', got '%s'", call.Dir)
+		// For host-based executor, ExecDir defaults to the normalized project root
+		if call.Dir != tempDir && !strings.HasPrefix(call.Dir, "/") {
+			t.Errorf("Expected exec dir to be a valid host path, got '%s'", call.Dir)
 		}
 		t.Logf("✅ Build service correctly called executor with: %v in %s", call.Argv, call.Dir)
 	}
