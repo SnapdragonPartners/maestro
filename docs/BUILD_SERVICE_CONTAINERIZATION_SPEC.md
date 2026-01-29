@@ -355,47 +355,46 @@ Already completed - bootstrap template now requires `make`:
 
 ## TODO List
 
-### Phase 1: Foundation
-- [ ] Create `pkg/build/executor.go` with `Executor` interface and `ExecOpts` struct
-- [ ] Create `pkg/build/no_exec_test.go` to enforce no `os/exec` imports
-- [ ] Implement `ContainerExecutor` using `pkg/docker` abstractions
-- [ ] Implement `HostExecutor` for testing/migration (marked as deprecated)
-- [ ] Add unit tests for both executor implementations
+### Phase 1: Foundation ✅
+- [x] Create `pkg/build/executor.go` with `Executor` interface and `ExecOpts` struct
+- [x] Create `pkg/build/no_exec_test.go` to enforce no `os/exec` imports
+- [x] Implement `ContainerExecutor` using `docker exec`
+- [x] Implement `HostExecutor` for testing/migration (marked as deprecated)
+- [x] Implement `MockExecutor` for deterministic testing
+- [x] Add unit tests for executor implementations
 
-### Phase 2: Build Service Refactor
-- [ ] Modify `Service` struct to accept `Executor`
-- [ ] Update `NewBuildService()` constructor
-- [ ] Add `SetExecutor()` method for runtime configuration
-- [ ] Remove `runMakeCommand()` helper function
-- [ ] Remove `os/exec` import from `build_api.go`
+### Phase 2: Build Service Refactor ✅
+- [x] Modify `Service` struct to accept `Executor`
+- [x] Update `NewBuildService()` constructor (no default executor)
+- [x] Add `SetExecutor()` method for runtime configuration
+- [x] Add nil executor check in `ExecuteBuild()`
+- [x] Keep `runMakeTarget()` helper (uses Executor)
 
-### Phase 3: Backend Refactor
-- [ ] Refactor `GoBackend` to use Executor
-- [ ] Refactor `NodeBackend` to use Executor
-- [ ] Refactor `PythonBackend` to use Executor
-- [ ] Refactor `MakeBackend` to use Executor
-- [ ] Remove all `os/exec` imports from backend files
-- [ ] Update backend tests to use mock Executor
+### Phase 3: Backend Refactor ✅
+- [x] Refactor `GoBackend` to use Executor
+- [x] Refactor `NodeBackend` to use Executor
+- [x] Refactor `PythonBackend` to use Executor
+- [x] Refactor `MakeBackend` to use Executor
+- [x] Refactor `NullBackend` to use Executor
+- [x] Update `Backend` interface to accept Executor parameter
+- [x] Update backend tests to use MockExecutor
 
-### Phase 4: Coder Integration
-- [ ] Update `handleAppStoryTesting()` to create and inject `ContainerExecutor`
-- [ ] Ensure `ProjectRoot` (host) vs `ExecRoot` (container) distinction is clear
-- [ ] Add path normalization before cache key usage
-- [ ] Add container existence validation before execution
+### Phase 4: Coder Integration ✅
+- [x] Add `GetContainerName()` to `Agent` interface
+- [x] Update build tool factories to use `ContainerExecutor` when container available
+- [x] Add `configureBuildServiceExecutor()` helper in registry.go
+- [x] Update mock agents to implement `GetContainerName()`
 
 ### Phase 5: Testing & Validation
 - [ ] Add integration test: missing tool causes test failure
 - [ ] Add integration test: context cancellation terminates exec
 - [ ] Add integration test: output streaming works correctly
-- [ ] Verify `no_exec_test.go` catches violations
+- [x] Verify `no_exec_test.go` catches violations
 - [ ] Performance benchmark: measure container exec overhead
 
 ### Phase 6: Rollout
-- [ ] Add feature flag for host vs container execution
-- [ ] Deploy with flag disabled (host execution)
-- [ ] Enable flag in staging, validate
-- [ ] Enable flag in production
-- [ ] Remove `HostExecutor` and feature flag after validation period
+- [ ] End-to-end testing with real containers
+- [ ] Remove `HostExecutor` after validation period (keep for non-build ops)
 
 ### Already Completed
 - [x] Update bootstrap template to require `make` (`bootstrap.tpl.md`)
