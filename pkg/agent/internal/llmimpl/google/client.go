@@ -77,14 +77,16 @@ func (g *GeminiClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 			{FunctionDeclarations: toolDefs},
 		}
 
-		// Set function calling mode based on ToolChoice
-		if in.ToolChoice != "" {
-			// If ToolChoice is set (e.g., "required"), use mode "ANY" to force tool use
-			config.ToolConfig = &genai.ToolConfig{
-				FunctionCallingConfig: &genai.FunctionCallingConfig{
-					Mode: genai.FunctionCallingConfigModeAny,
-				},
-			}
+		// Always force tool use when tools are provided.
+		// Gemini may return empty responses when not forced to use tools,
+		// especially with complex tool schemas or when the available tools
+		// change between turns (e.g., context has tool calls for tools that
+		// are no longer available). Using mode "ANY" ensures Gemini always
+		// calls one of the provided tools.
+		config.ToolConfig = &genai.ToolConfig{
+			FunctionCallingConfig: &genai.FunctionCallingConfig{
+				Mode: genai.FunctionCallingConfigModeAny,
+			},
 		}
 	}
 

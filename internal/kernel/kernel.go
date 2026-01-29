@@ -553,6 +553,18 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			k.Logger.Error("Invalid data type for OpCheckpointPMState")
 		}
 
+	case persistence.OpSaveAgentContext:
+		// Save a single agent context (used for error debugging checkpoints)
+		if ctx, ok := req.Data.(*persistence.AgentContext); ok {
+			if err := persistence.SaveAgentContext(k.Database, ctx); err != nil {
+				k.Logger.Error("Failed to save agent context checkpoint: %v", err)
+			} else {
+				k.Logger.Info("📸 Saved agent context checkpoint: agent=%s, type=%s", ctx.AgentID, ctx.ContextType)
+			}
+		} else {
+			k.Logger.Error("Invalid data type for OpSaveAgentContext: expected *persistence.AgentContext")
+		}
+
 	default:
 		k.Logger.Error("Unknown persistence operation: %v", req.Operation)
 		if req.Response != nil {

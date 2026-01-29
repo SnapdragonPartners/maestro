@@ -64,6 +64,9 @@ const (
 	// Agent state checkpoint operations (for resume support).
 	OpCheckpointArchitectState = "checkpoint_architect_state"
 	OpCheckpointPMState        = "checkpoint_pm_state"
+
+	// Context checkpoint operations (for error debugging).
+	OpSaveAgentContext = "save_agent_context"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
