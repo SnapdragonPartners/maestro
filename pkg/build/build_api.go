@@ -75,8 +75,11 @@ func NewBuildService() *Service {
 // Use NewContainerExecutor for container execution (recommended for production).
 // Use NewHostExecutor for host execution (testing/migration only).
 func (s *Service) SetExecutor(exec Executor) {
+	// Only log if executor is actually changing
+	if s.executor == nil || s.executor.Name() != exec.Name() {
+		s.logger.Info("Build service executor set to: %s", exec.Name())
+	}
 	s.executor = exec
-	s.logger.Info("Build service executor set to: %s", exec.Name())
 }
 
 // GetExecutor returns the current executor.
