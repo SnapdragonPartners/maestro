@@ -235,11 +235,12 @@ digraph ProjectKnowledge {
 {{- $hasCritical = true}}
 {{- if eq .Type "build_system"}}
 
-**Build System Repair**:
+**Build System Setup**:
 1. Analyze existing build configuration
-2. Create/fix Makefile with standard targets
-3. Test each target in container environment
-4. Ensure platform-specific build commands work
+2. Create/fix Makefile with standard targets (build, test, lint, run)
+3. Create/update .gitignore with project-appropriate entries (e.g., compiled binaries, build artifacts, IDE files)
+4. Test each target in container environment
+5. Ensure platform-specific build commands work
 
 {{- else if eq .Type "container"}}
 

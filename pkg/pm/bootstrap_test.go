@@ -248,35 +248,53 @@ func TestBootstrapRequirements_HasAnyMissingComponents(t *testing.T) {
 }
 
 func TestDriver_IsDemoAvailable(t *testing.T) {
+	// Demo requires: working container (valid or fallback) + Makefile with run target
 	tests := []struct {
-		name            string
-		reqs            *BootstrapRequirements
-		expectedDemo    bool
-		expectedMissing bool
+		name         string
+		reqs         *BootstrapRequirements
+		expectedDemo bool
 	}{
 		{
-			name: "demo available when no missing components",
+			name: "demo available with valid container and makefile",
 			reqs: &BootstrapRequirements{
-				MissingComponents: []string{},
+				ContainerStatus: ContainerStatus{HasValidContainer: true},
+				NeedsMakefile:   false,
 			},
-			expectedDemo:    true,
-			expectedMissing: false,
+			expectedDemo: true,
 		},
 		{
-			name: "demo unavailable when components missing",
+			name: "demo available with fallback container and makefile",
 			reqs: &BootstrapRequirements{
-				MissingComponents: []string{"Dockerfile", "Makefile"},
+				ContainerStatus: ContainerStatus{IsBootstrapFallback: true},
+				NeedsMakefile:   false,
 			},
-			expectedDemo:    false,
-			expectedMissing: true,
+			expectedDemo: true,
 		},
 		{
-			name: "demo unavailable with nil components",
+			name: "demo unavailable when makefile missing",
 			reqs: &BootstrapRequirements{
-				MissingComponents: nil,
+				ContainerStatus: ContainerStatus{HasValidContainer: true},
+				NeedsMakefile:   true,
 			},
-			expectedDemo:    true, // nil slice means no missing components
-			expectedMissing: false,
+			expectedDemo: false,
+		},
+		{
+			name: "demo unavailable when no container",
+			reqs: &BootstrapRequirements{
+				ContainerStatus: ContainerStatus{HasValidContainer: false, IsBootstrapFallback: false},
+				NeedsMakefile:   false,
+			},
+			expectedDemo: false,
+		},
+		{
+			name: "demo available even with gitignore missing",
+			reqs: &BootstrapRequirements{
+				ContainerStatus:   ContainerStatus{HasValidContainer: true},
+				NeedsMakefile:     false,
+				NeedsGitignore:    true,
+				MissingComponents: []string{".gitignore"},
+			},
+			expectedDemo: true, // gitignore doesn't block demo
 		},
 	}
 
@@ -284,11 +302,6 @@ func TestDriver_IsDemoAvailable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a minimal driver for testing
 			d := &Driver{}
-
-			// Verify HasAnyMissingComponents matches expected
-			if got := tt.reqs.HasAnyMissingComponents(); got != tt.expectedMissing {
-				t.Errorf("HasAnyMissingComponents() = %v, want %v", got, tt.expectedMissing)
-			}
 
 			// Update demo availability
 			d.updateDemoAvailable(tt.reqs)

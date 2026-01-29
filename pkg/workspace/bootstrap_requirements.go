@@ -67,7 +67,7 @@ func RequirementIDToFailureType(id BootstrapRequirementID) BootstrapFailureType 
 var requirementDescriptions = map[BootstrapRequirementID]string{
 	BootstrapReqContainer:      "Project container needs to be configured",
 	BootstrapReqDockerfile:     "Dockerfile needs to be created in .maestro/ directory",
-	BootstrapReqBuildSystem:    "Makefile with build/test/lint targets needs to be created",
+	BootstrapReqBuildSystem:    "Makefile with build/test/lint/run targets and .gitignore with project-appropriate entries need to be created",
 	BootstrapReqKnowledgeGraph: "Knowledge graph (.maestro/knowledge.dot) needs to be created",
 	BootstrapReqGitAccess:      "Git repository access needs to be configured",
 	BootstrapReqBinarySize:     "Large files need Git LFS setup",

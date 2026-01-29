@@ -563,6 +563,7 @@ func (d *Driver) detectAndStoreBootstrapRequirements(ctx context.Context) (*Boot
 		logBootstrapComponent(d.logger, "  Git repository", reqs.NeedsGitRepo)
 		logBootstrapComponent(d.logger, "  Dockerfile", reqs.NeedsDockerfile)
 		logBootstrapComponent(d.logger, "  Makefile", reqs.NeedsMakefile)
+		logBootstrapComponent(d.logger, "  Gitignore", reqs.NeedsGitignore)
 		logBootstrapComponent(d.logger, "  Knowledge graph", reqs.NeedsKnowledgeGraph)
 		logBootstrapComponent(d.logger, "  Claude Code", reqs.NeedsClaudeCode)
 	}
@@ -618,12 +619,15 @@ func logBootstrapComponent(logger *logx.Logger, name string, needed bool) {
 
 // updateDemoAvailable updates the demo availability flag based on bootstrap requirements.
 // Called after bootstrap detection to update the flag.
+// Demo requires: working container + Makefile with run target.
+// This is separate from full bootstrap completion - demo can work without
+// .gitignore, knowledge graph, etc.
 func (d *Driver) updateDemoAvailable(reqs *BootstrapRequirements) {
 	if reqs == nil {
 		return
 	}
 	wasAvailable := d.demoAvailable
-	d.demoAvailable = !reqs.HasAnyMissingComponents()
+	d.demoAvailable = reqs.CanRunDemo()
 
 	// Log state change (if logger is available)
 	if d.logger != nil {

@@ -67,6 +67,20 @@ func (r *BootstrapRequirements) HasAnyMissingComponents() bool {
 	return len(r.MissingComponents) > 0
 }
 
+// CanRunDemo returns true if minimum requirements for demo mode are met.
+// Demo needs: a working container (valid or fallback) and Makefile with run target.
+// This is separate from full bootstrap completion - demo can work without
+// .gitignore, knowledge graph, etc.
+func (r *BootstrapRequirements) CanRunDemo() bool {
+	// Need either a valid container or we can use the bootstrap fallback
+	hasContainer := r.ContainerStatus.HasValidContainer || r.ContainerStatus.IsBootstrapFallback
+
+	// Need Makefile with run target (NeedsMakefile covers both missing file and missing targets)
+	hasMakefile := !r.NeedsMakefile
+
+	return hasContainer && hasMakefile
+}
+
 // ToRequirementIDs converts BootstrapRequirements to a slice of BootstrapRequirementID.
 // This is used by spec_submit to pass structured requirements to the architect,
 // who then renders the full technical specification.
@@ -538,6 +552,7 @@ func (bd *BootstrapDetector) detectMissingKnowledgeGraph() bool {
 }
 
 // detectMissingGitignore checks if .gitignore file exists in the project root.
+// If missing, architect will create it via build_system story (see bootstrap template).
 func (bd *BootstrapDetector) detectMissingGitignore() bool {
 	gitignorePath := filepath.Join(bd.projectDir, ".gitignore")
 	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
