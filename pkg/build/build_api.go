@@ -166,14 +166,27 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 	// For container execution: use ExecDir (defaults to /workspace)
 	// For host execution: use the normalized project root (host path)
 	execDir := req.ExecDir
+	isHostExec := isHostExecutor(s.executor)
+
 	if execDir == "" {
-		// Check if we're using a host executor by checking the name.
-		// Host executor should use the project root, not /workspace.
-		if s.executor.Name() == "host" {
+		// Default based on executor type.
+		if isHostExec {
 			execDir = normalizedRoot
 		} else {
 			execDir = DefaultExecDir
 		}
+	}
+
+	// Validate ExecDir based on executor type to prevent misconfigurations.
+	if validationErr := validateExecDir(execDir, isHostExec); validationErr != nil {
+		return &Response{
+			Success:   false,
+			Operation: req.Operation,
+			Error:     validationErr.Error(),
+			Duration:  time.Since(startTime),
+			RequestID: requestID,
+			Metadata:  map[string]string{"error_type": "validation_error"},
+		}, validationErr
 	}
 
 	// Execute operation.
@@ -329,6 +342,52 @@ func runMakeTarget(ctx context.Context, exec Executor, execDir string, stream io
 
 	if exitCode != 0 {
 		return fmt.Errorf("make %s failed with exit code %d", target, exitCode)
+	}
+
+	return nil
+}
+
+// isHostExecutor returns true if the executor runs commands on the host.
+// Uses type switch for reliable detection instead of string comparison.
+func isHostExecutor(exec Executor) bool {
+	switch exec.(type) {
+	case *HostExecutor:
+		return true
+	case *MockExecutor:
+		// MockExecutor simulates host execution for testing
+		return true
+	default:
+		return false
+	}
+}
+
+// validateExecDir validates that ExecDir is appropriate for the executor type.
+// This prevents misconfigurations like passing container paths to host executors.
+func validateExecDir(execDir string, isHost bool) error {
+	if execDir == "" {
+		return nil // Will be set to default
+	}
+
+	// Must be absolute path
+	if !filepath.IsAbs(execDir) {
+		return fmt.Errorf("execDir must be absolute path, got: %s", execDir)
+	}
+
+	if isHost {
+		// For host executor: reject obvious container paths like /workspace.
+		if execDir == DefaultExecDir {
+			return fmt.Errorf("execDir '%s' looks like a container path but executor is host-based; "+
+				"use project root path instead", execDir)
+		}
+	} else {
+		// For container executor: execDir should be a container path (e.g., /workspace).
+		// Reject paths that look like host paths (contains /Users/, /home/, C:\, etc.)
+		if strings.Contains(execDir, "/Users/") ||
+			strings.Contains(execDir, "/home/") ||
+			strings.Contains(execDir, ":\\") {
+			return fmt.Errorf("execDir '%s' looks like a host path but executor is container-based; "+
+				"use container path like /workspace instead", execDir)
+		}
 	}
 
 	return nil

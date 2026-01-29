@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"orchestrator/pkg/logx"
 )
@@ -145,8 +146,17 @@ func (c *ContainerExecutor) Run(ctx context.Context, argv []string, opts ExecOpt
 			// Kill the entire process group (negative PID)
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-		// Wait for the process to exit after kill
-		<-done
+
+		// Wait for the process to exit after kill, but with a timeout to prevent
+		// hanging forever if docker exec wedges (per PR review feedback).
+		select {
+		case <-done:
+			// Process exited cleanly after kill
+		case <-time.After(5 * time.Second):
+			// Process didn't exit in time - return anyway to avoid hanging
+			c.logger.Error("Process did not exit within 5s after SIGKILL")
+		}
+
 		if ctx.Err() == context.Canceled {
 			return -1, context.Canceled
 		}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/build"
 	"orchestrator/pkg/config"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
@@ -215,6 +216,14 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 
 	c.containerName = containerName
 	c.logger.Info("Started %s container: %s (readonly=%v)", purpose, containerName, readonly)
+
+	// Configure build service to use this container for execution.
+	// This ensures build/test/lint commands run inside the container, not on the host.
+	if c.buildService != nil {
+		executor := build.NewContainerExecutor(containerName)
+		c.buildService.SetExecutor(executor)
+		c.logger.Info("Configured build service with container executor: %s", containerName)
+	}
 
 	// For coding containers, ensure GitHub authentication is set up using embedded script
 	if !readonly {
