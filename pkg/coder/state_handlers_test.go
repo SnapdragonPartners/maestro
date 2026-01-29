@@ -1074,7 +1074,7 @@ func TestHandleCoding_BudgetExceeded(t *testing.T) {
 	sm.SetStateData(proto.KeyStoryType, string(proto.StoryTypeApp))
 
 	// Set coding iterations to exceed budget
-	sm.SetStateData(string(stateDataKeyCodingIterations), 10)
+	sm.SetStateData(string(stateDataKeyCodingIterations), MaxCodingIterations+2)
 
 	ctx := context.Background()
 	nextState, _, _ := coder.handleCoding(ctx, sm)

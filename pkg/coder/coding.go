@@ -17,6 +17,9 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// MaxCodingIterations is the maximum number of coding loop iterations before budget review.
+const MaxCodingIterations = 12
+
 // handleCoding processes the CODING state with priority-based work handling.
 func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
 	// Default: Continue with initial coding
@@ -25,8 +28,7 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (p
 
 // handleInitialCoding handles the main coding workflow.
 func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	const maxCodingIterations = 8
-	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), maxCodingIterations, StateCoding); budgetExceeded {
+	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), MaxCodingIterations, StateCoding); budgetExceeded {
 		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
 		// Store effect for BUDGET_REVIEW state to execute
 		sm.SetStateData(KeyBudgetReviewEffect, budgetReviewEff)
@@ -42,7 +44,6 @@ func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMach
 
 // executeCodingWithTemplate is the shared implementation for all coding scenarios.
 func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseStateMachine, templateData map[string]any) (proto.State, bool, error) {
-	const maxCodingIterations = 8
 	logx.DebugState(ctx, "coder", "enter", string(StateCoding))
 
 	// Get story type for template selection
@@ -156,19 +157,19 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
 		GeneralTools:   generalTools,
 		TerminalTool:   terminalTool,
-		MaxIterations:  maxCodingIterations,
+		MaxIterations:  MaxCodingIterations,
 		MaxTokens:      8192, // Increased for comprehensive code generation
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
-			SoftLimit: maxCodingIterations - 2, // Warn 2 iterations before limit
-			HardLimit: maxCodingIterations,
+			SoftLimit: MaxCodingIterations - 2, // Warn 2 iterations before limit
+			HardLimit: MaxCodingIterations,
 			OnHardLimit: func(_ context.Context, key string, count int) error {
 				c.logger.Info("⚠️  Coding reached max iterations (%d, key: %s), triggering budget review", count, key)
 
 				// Render full budget review content with template (same as checkLoopBudget)
-				content := c.getBudgetReviewContent(sm, StateCoding, count, maxCodingIterations)
+				content := c.getBudgetReviewContent(sm, StateCoding, count, MaxCodingIterations)
 				if content == "" {
 					return logx.Errorf("failed to generate budget review content - cannot proceed without proper context for architect")
 				}
