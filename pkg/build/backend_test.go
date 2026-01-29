@@ -17,6 +17,7 @@ func TestNullBackend(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	backend := NewNullBackend()
+	exec := NewHostExecutor()
 
 	// Test that it detects empty directories.
 	if !backend.Detect(tempDir) {
@@ -27,19 +28,19 @@ func TestNullBackend(t *testing.T) {
 	ctx := context.Background()
 	var buf strings.Builder
 
-	if err := backend.Build(ctx, tempDir, &buf); err != nil {
+	if err := backend.Build(ctx, exec, tempDir, &buf); err != nil {
 		t.Errorf("Build failed: %v", err)
 	}
 
-	if err := backend.Test(ctx, tempDir, &buf); err != nil {
+	if err := backend.Test(ctx, exec, tempDir, &buf); err != nil {
 		t.Errorf("Test failed: %v", err)
 	}
 
-	if err := backend.Lint(ctx, tempDir, &buf); err != nil {
+	if err := backend.Lint(ctx, exec, tempDir, &buf); err != nil {
 		t.Errorf("Lint failed: %v", err)
 	}
 
-	if err := backend.Run(ctx, tempDir, []string{}, &buf); err != nil {
+	if err := backend.Run(ctx, exec, tempDir, []string{}, &buf); err != nil {
 		t.Errorf("Run failed: %v", err)
 	}
 
@@ -88,6 +89,7 @@ run:
 	}
 
 	backend := NewGoBackend()
+	exec := NewHostExecutor()
 
 	// Test detection.
 	if !backend.Detect(tempDir) {
@@ -103,7 +105,7 @@ run:
 	ctx := context.Background()
 	var buf strings.Builder
 
-	if err := backend.Build(ctx, tempDir, &buf); err != nil {
+	if err := backend.Build(ctx, exec, tempDir, &buf); err != nil {
 		t.Errorf("Build failed: %v", err)
 	}
 }
@@ -244,6 +246,8 @@ func TestBackendOperations(t *testing.T) {
 		NewGoBackend(),
 	}
 
+	exec := NewHostExecutor()
+
 	for _, backend := range backends {
 		// Test that Name() returns non-empty string
 		if backend.Name() == "" {
@@ -257,9 +261,10 @@ func TestBackendOperations(t *testing.T) {
 		ctx := context.Background()
 		writer := discardWriter{}
 
-		backend.Build(ctx, "/nonexistent", writer)
-		backend.Test(ctx, "/nonexistent", writer)
-		backend.Lint(ctx, "/nonexistent", writer)
-		backend.Run(ctx, "/nonexistent", []string{}, writer)
+		// These may fail but should not panic
+		_ = backend.Build(ctx, exec, "/nonexistent", writer)
+		_ = backend.Test(ctx, exec, "/nonexistent", writer)
+		_ = backend.Lint(ctx, exec, "/nonexistent", writer)
+		_ = backend.Run(ctx, exec, "/nonexistent", []string{}, writer)
 	}
 }

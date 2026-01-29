@@ -72,10 +72,10 @@ func (p *PythonBackend) containsPythonFiles(dir string) bool {
 }
 
 // Build installs dependencies and builds the Python project.
-func (p *PythonBackend) Build(ctx context.Context, root string, stream io.Writer) error {
+func (p *PythonBackend) Build(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🔨 Building Python project via Makefile...\n")
 
-	if err := p.runMakeCommand(ctx, root, stream, "build"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "build"); err != nil {
 		return fmt.Errorf("make build failed: %w", err)
 	}
 
@@ -84,10 +84,10 @@ func (p *PythonBackend) Build(ctx context.Context, root string, stream io.Writer
 }
 
 // Test runs the Python test suite.
-func (p *PythonBackend) Test(ctx context.Context, root string, stream io.Writer) error {
+func (p *PythonBackend) Test(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🧪 Running Python tests via Makefile...\n")
 
-	if err := p.runMakeCommand(ctx, root, stream, "test"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "test"); err != nil {
 		return fmt.Errorf("make test failed: %w", err)
 	}
 
@@ -96,10 +96,10 @@ func (p *PythonBackend) Test(ctx context.Context, root string, stream io.Writer)
 }
 
 // Lint executes make lint for the project.
-func (p *PythonBackend) Lint(ctx context.Context, root string, stream io.Writer) error {
+func (p *PythonBackend) Lint(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🔍 Running Python linting via Makefile...\n")
 
-	if err := p.runMakeCommand(ctx, root, stream, "lint"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "lint"); err != nil {
 		return fmt.Errorf("make lint failed: %w", err)
 	}
 
@@ -108,10 +108,10 @@ func (p *PythonBackend) Lint(ctx context.Context, root string, stream io.Writer)
 }
 
 // Run executes make run for the project.
-func (p *PythonBackend) Run(ctx context.Context, root string, _ []string, stream io.Writer) error {
+func (p *PythonBackend) Run(ctx context.Context, exec Executor, execDir string, _ []string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🚀 Running Python application via Makefile...\n")
 
-	if err := p.runMakeCommand(ctx, root, stream, "run"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "run"); err != nil {
 		return fmt.Errorf("make run failed: %w", err)
 	}
 
@@ -125,9 +125,4 @@ func (p *PythonBackend) GetDockerImage(_ string) string {
 	// TODO: Parse pyproject.toml or other files to detect Python version
 	// For now, return the default Python image.
 	return "python:3.11-alpine"
-}
-
-// runMakeCommand executes a make command with the given target.
-func (p *PythonBackend) runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
-	return runMakeCommand(ctx, root, stream, target)
 }

@@ -20,7 +20,7 @@ func TestBuildTools(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create minimal Go project.
+	// Create minimal Go project for backend detection.
 	goMod := `module test-project
 go 1.21
 `
@@ -37,25 +37,26 @@ func main() {
 		t.Fatalf("Failed to create main.go: %v", err)
 	}
 
-	// Create Makefile for build operations.
+	// Create Makefile for backend detection.
 	makefile := `build:
-	@echo "Building Go project"
-	go build ./...
+	@echo "Building"
 
 test:
-	@echo "Running tests"
-	go test ./...
+	@echo "Testing"
 
 lint:
-	@echo "Running linter"
-	go vet ./...
+	@echo "Linting"
 `
 	if err := os.WriteFile(filepath.Join(tempDir, "Makefile"), []byte(makefile), 0644); err != nil {
 		t.Fatalf("Failed to create Makefile: %v", err)
 	}
 
-	// Create build service.
+	// Create build service with mock executor.
+	// We use MockExecutor because build operations should run in containers,
+	// not on the host. Tests should not depend on make being installed.
 	buildService := build.NewBuildService()
+	mockExec := build.NewMockExecutor()
+	buildService.SetExecutor(mockExec)
 
 	// Test BackendInfoTool.
 	t.Run("BackendInfoTool", func(t *testing.T) {
@@ -149,12 +150,9 @@ lint:
 			}
 		}
 
-		if output, err := utils.GetMapField[string](resultMap, "output"); err != nil || output == "" {
-			if err != nil {
-				t.Errorf("Expected output field: %v", err)
-			} else {
-				t.Error("Expected non-empty output")
-			}
+		// Verify mock was called with correct command.
+		if len(mockExec.Calls) == 0 {
+			t.Error("Expected mock executor to be called")
 		}
 	})
 
@@ -188,20 +186,11 @@ lint:
 			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
-		// Tests might pass or fail, but tool execution should succeed.
 		if backend, err := utils.GetMapField[string](resultMap, "backend"); err != nil || backend != "go" {
 			if err != nil {
 				t.Errorf("Expected backend field: %v", err)
 			} else {
 				t.Errorf("Expected backend 'go', got '%s'", backend)
-			}
-		}
-
-		if output, err := utils.GetMapField[string](resultMap, "output"); err != nil || output == "" {
-			if err != nil {
-				t.Errorf("Expected output field: %v", err)
-			} else {
-				t.Error("Expected non-empty output")
 			}
 		}
 	})
@@ -236,20 +225,11 @@ lint:
 			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
-		// Lint might pass or fail, but tool execution should succeed.
 		if backend, err := utils.GetMapField[string](resultMap, "backend"); err != nil || backend != "go" {
 			if err != nil {
 				t.Errorf("Expected backend field: %v", err)
 			} else {
 				t.Errorf("Expected backend 'go', got '%s'", backend)
-			}
-		}
-
-		if output, err := utils.GetMapField[string](resultMap, "output"); err != nil || output == "" {
-			if err != nil {
-				t.Errorf("Expected output field: %v", err)
-			} else {
-				t.Error("Expected non-empty output")
 			}
 		}
 	})
@@ -277,7 +257,7 @@ lint:
 			t.Fatalf("Failed to unmarshal result content: %v", err)
 		}
 
-		// Should have success=false and an error message for invalid path
+		// Should have success=false and an error message for invalid path.
 		if success, ok := resultMap["success"].(bool); !ok || success {
 			t.Error("Expected success to be false for non-existent path")
 		}
@@ -293,6 +273,8 @@ lint:
 
 func TestBuildToolsDefinitions(t *testing.T) {
 	buildService := build.NewBuildService()
+	mockExec := build.NewMockExecutor()
+	buildService.SetExecutor(mockExec)
 
 	// Test all tool definitions.
 	tools := []Tool{
@@ -323,5 +305,36 @@ func TestBuildToolsDefinitions(t *testing.T) {
 		if _, hasCwd := def.InputSchema.Properties["cwd"]; !hasCwd {
 			t.Errorf("Tool %s missing 'cwd' property", def.Name)
 		}
+	}
+}
+
+func TestBuildServiceRequiresExecutor(t *testing.T) {
+	// Verify that build service fails gracefully without executor.
+	buildService := build.NewBuildService()
+	// Don't set an executor
+
+	tool := NewBuildTool(buildService)
+
+	args := map[string]any{
+		"cwd": "/tmp",
+	}
+
+	result, err := tool.Exec(context.Background(), args)
+	if err != nil {
+		t.Errorf("Tool execution should not return Go error, got: %v", err)
+	}
+
+	var resultMap map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+		t.Fatalf("Failed to unmarshal result content: %v", err)
+	}
+
+	// Should fail because no executor is configured.
+	if success, ok := resultMap["success"].(bool); !ok || success {
+		t.Error("Expected success to be false when executor not configured")
+	}
+
+	if errorMsg, ok := resultMap["error"].(string); !ok || errorMsg == "" {
+		t.Error("Expected error message when executor not configured")
 	}
 }

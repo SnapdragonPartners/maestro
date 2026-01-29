@@ -14,16 +14,24 @@ type Backend interface {
 	Detect(root string) bool
 
 	// Build executes the build process for the project.
-	Build(ctx context.Context, root string, stream io.Writer) error
+	// The exec parameter provides command execution capability (container or host).
+	// The execDir is the working directory for command execution (e.g., "/workspace" in container).
+	Build(ctx context.Context, exec Executor, execDir string, stream io.Writer) error
 
 	// Test executes the test suite for the project.
-	Test(ctx context.Context, root string, stream io.Writer) error
+	// The exec parameter provides command execution capability (container or host).
+	// The execDir is the working directory for command execution (e.g., "/workspace" in container).
+	Test(ctx context.Context, exec Executor, execDir string, stream io.Writer) error
 
 	// Lint executes linting checks for the project.
-	Lint(ctx context.Context, root string, stream io.Writer) error
+	// The exec parameter provides command execution capability (container or host).
+	// The execDir is the working directory for command execution (e.g., "/workspace" in container).
+	Lint(ctx context.Context, exec Executor, execDir string, stream io.Writer) error
 
 	// Run executes the application with provided arguments.
-	Run(ctx context.Context, root string, args []string, stream io.Writer) error
+	// The exec parameter provides command execution capability (container or host).
+	// The execDir is the working directory for command execution (e.g., "/workspace" in container).
+	Run(ctx context.Context, exec Executor, execDir string, args []string, stream io.Writer) error
 
 	// GetDockerImage returns the appropriate Docker image for this backend.
 	// The root parameter allows for version detection (e.g., parsing go.mod for Go version).

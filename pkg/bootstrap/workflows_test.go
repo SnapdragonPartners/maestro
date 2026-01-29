@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"orchestrator/pkg/build"
 )
 
 func TestGetEcosystemForPlatform(t *testing.T) {
@@ -199,19 +201,19 @@ func (m *mockBackend) Detect(_ string) bool {
 	return true
 }
 
-func (m *mockBackend) Build(_ context.Context, _ string, _ io.Writer) error {
+func (m *mockBackend) Build(_ context.Context, _ build.Executor, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBackend) Test(_ context.Context, _ string, _ io.Writer) error {
+func (m *mockBackend) Test(_ context.Context, _ build.Executor, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBackend) Lint(_ context.Context, _ string, _ io.Writer) error {
+func (m *mockBackend) Lint(_ context.Context, _ build.Executor, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBackend) Run(_ context.Context, _ string, _ []string, _ io.Writer) error {
+func (m *mockBackend) Run(_ context.Context, _ build.Executor, _ string, _ []string, _ io.Writer) error {
 	return nil
 }
 

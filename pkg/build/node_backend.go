@@ -79,10 +79,10 @@ func (n *NodeBackend) containsJavaScriptFiles(dir string) bool {
 }
 
 // Build executes make build for the project.
-func (n *NodeBackend) Build(ctx context.Context, root string, stream io.Writer) error {
+func (n *NodeBackend) Build(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🔨 Building Node.js project via Makefile...\n")
 
-	if err := n.runMakeCommand(ctx, root, stream, "build"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "build"); err != nil {
 		return fmt.Errorf("make build failed: %w", err)
 	}
 
@@ -91,10 +91,10 @@ func (n *NodeBackend) Build(ctx context.Context, root string, stream io.Writer) 
 }
 
 // Test executes make test for the project.
-func (n *NodeBackend) Test(ctx context.Context, root string, stream io.Writer) error {
+func (n *NodeBackend) Test(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🧪 Running Node.js tests via Makefile...\n")
 
-	if err := n.runMakeCommand(ctx, root, stream, "test"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "test"); err != nil {
 		return fmt.Errorf("make test failed: %w", err)
 	}
 
@@ -103,10 +103,10 @@ func (n *NodeBackend) Test(ctx context.Context, root string, stream io.Writer) e
 }
 
 // Lint runs JavaScript/TypeScript linting tools.
-func (n *NodeBackend) Lint(ctx context.Context, root string, stream io.Writer) error {
+func (n *NodeBackend) Lint(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🔍 Running Node.js linting via Makefile...\n")
 
-	if err := n.runMakeCommand(ctx, root, stream, "lint"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "lint"); err != nil {
 		return fmt.Errorf("make lint failed: %w", err)
 	}
 
@@ -115,10 +115,10 @@ func (n *NodeBackend) Lint(ctx context.Context, root string, stream io.Writer) e
 }
 
 // Run executes the Node.js application.
-func (n *NodeBackend) Run(ctx context.Context, root string, _ []string, stream io.Writer) error {
+func (n *NodeBackend) Run(ctx context.Context, exec Executor, execDir string, _ []string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🚀 Running Node.js application via Makefile...\n")
 
-	if err := n.runMakeCommand(ctx, root, stream, "run"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "run"); err != nil {
 		return fmt.Errorf("make run failed: %w", err)
 	}
 
@@ -132,9 +132,4 @@ func (n *NodeBackend) GetDockerImage(_ string) string {
 	// TODO: Parse package.json to detect Node.js version
 	// For now, return the default Node.js image.
 	return "node:20-alpine"
-}
-
-// runMakeCommand executes a make command with the given target.
-func (n *NodeBackend) runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
-	return runMakeCommand(ctx, root, stream, target)
 }
