@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // testArchitectModel returns the model to use for architect integration tests.
@@ -175,7 +176,7 @@ You MUST call the review_complete tool to complete your review.
 	}
 
 	// Extract review status
-	effectData, ok := phase1Out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](phase1Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 1: expected EffectData to be map[string]any, got %T", phase1Out.EffectData)
 	}
@@ -239,12 +240,12 @@ Call submit_stories with:
 	}
 
 	// Extract stories data
-	storiesData, ok := phase2Out.EffectData.(map[string]any)
+	storiesData, ok := utils.SafeAssert[map[string]any](phase2Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 2: expected EffectData to be map[string]any, got %T", phase2Out.EffectData)
 	}
 
-	requirements, ok := storiesData["requirements"].([]any)
+	requirements, ok := utils.SafeAssert[[]any](storiesData["requirements"])
 	if !ok {
 		t.Fatalf("Phase 2: expected requirements to be []any, got %T", storiesData["requirements"])
 	}
@@ -257,7 +258,7 @@ Call submit_stories with:
 
 	// Log the generated stories
 	for i, req := range requirements {
-		if reqMap, ok := req.(map[string]any); ok {
+		if reqMap, ok := utils.SafeAssert[map[string]any](req); ok {
 			title, _ := reqMap["title"].(string)
 			storyType, _ := reqMap["story_type"].(string)
 			t.Logf("  Story %d: %s (type: %s)", i+1, title, storyType)
@@ -336,12 +337,12 @@ Call submit_stories with:
 		t.Fatalf("Expected signal %s, got %s", tools.SignalStoriesSubmitted, out.Signal)
 	}
 
-	storiesData, ok := out.EffectData.(map[string]any)
+	storiesData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		t.Fatalf("Expected EffectData to be map[string]any, got %T", out.EffectData)
 	}
 
-	requirements, ok := storiesData["requirements"].([]any)
+	requirements, ok := utils.SafeAssert[[]any](storiesData["requirements"])
 	if !ok {
 		t.Fatalf("Expected requirements to be []any, got %T", storiesData["requirements"])
 	}
@@ -353,7 +354,7 @@ Call submit_stories with:
 	}
 
 	for i, req := range requirements {
-		if reqMap, ok := req.(map[string]any); ok {
+		if reqMap, ok := utils.SafeAssert[map[string]any](req); ok {
 			title, _ := reqMap["title"].(string)
 			t.Logf("  Story %d: %s", i+1, title)
 		}
@@ -469,7 +470,7 @@ Start by reviewing the specification. If you feel you need more context about th
 		t.Fatalf("Phase 1: expected signal %s, got %s", tools.SignalReviewComplete, phase1Out.Signal)
 	}
 
-	effectData, ok := phase1Out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](phase1Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 1: expected EffectData to be map[string]any, got %T", phase1Out.EffectData)
 	}
@@ -532,12 +533,12 @@ Generate implementation stories from this specification. You MUST call the submi
 		t.Fatalf("Phase 2: expected signal %s, got %s", tools.SignalStoriesSubmitted, phase2Out.Signal)
 	}
 
-	storiesData, ok := phase2Out.EffectData.(map[string]any)
+	storiesData, ok := utils.SafeAssert[map[string]any](phase2Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 2: expected EffectData to be map[string]any, got %T", phase2Out.EffectData)
 	}
 
-	requirements, ok := storiesData["requirements"].([]any)
+	requirements, ok := utils.SafeAssert[[]any](storiesData["requirements"])
 	if !ok {
 		t.Fatalf("Phase 2: expected requirements to be []any, got %T", storiesData["requirements"])
 	}
@@ -549,7 +550,7 @@ Generate implementation stories from this specification. You MUST call the submi
 	}
 
 	for i, req := range requirements {
-		if reqMap, ok := req.(map[string]any); ok {
+		if reqMap, ok := utils.SafeAssert[map[string]any](req); ok {
 			title, _ := reqMap["title"].(string)
 			storyType, _ := reqMap["story_type"].(string)
 			t.Logf("  Story %d: %s (type: %s)", i+1, title, storyType)
@@ -813,7 +814,7 @@ Review this specification for clarity and implementability, then call review_com
 		t.Fatalf("Phase 1 failed: expected OutcomeProcessEffect, got %v with error: %v", phase1Out.Kind, phase1Out.Err)
 	}
 
-	effectData, ok := phase1Out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](phase1Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 1: expected EffectData to be map[string]any, got %T", phase1Out.EffectData)
 	}
@@ -865,12 +866,12 @@ Do NOT try to use list_files or read_file - only submit_stories is available now
 		t.Fatalf("Phase 2: expected signal %s, got %s", tools.SignalStoriesSubmitted, phase2Out.Signal)
 	}
 
-	storiesData, ok := phase2Out.EffectData.(map[string]any)
+	storiesData, ok := utils.SafeAssert[map[string]any](phase2Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 2: expected EffectData to be map[string]any, got %T", phase2Out.EffectData)
 	}
 
-	requirements, ok := storiesData["requirements"].([]any)
+	requirements, ok := utils.SafeAssert[[]any](storiesData["requirements"])
 	if !ok {
 		t.Fatalf("Phase 2: expected requirements to be []any, got %T", storiesData["requirements"])
 	}
@@ -882,7 +883,7 @@ Do NOT try to use list_files or read_file - only submit_stories is available now
 	}
 
 	for i, req := range requirements {
-		if reqMap, ok := req.(map[string]any); ok {
+		if reqMap, ok := utils.SafeAssert[map[string]any](req); ok {
 			title, _ := reqMap["title"].(string)
 			storyType, _ := reqMap["story_type"].(string)
 			t.Logf("  Story %d: %s (type: %s)", i+1, title, storyType)
@@ -964,7 +965,7 @@ Review this specification for clarity and implementability, then call review_com
 		t.Fatalf("Phase 1 failed: expected OutcomeProcessEffect, got %v with error: %v", phase1Out.Kind, phase1Out.Err)
 	}
 
-	effectData, ok := phase1Out.EffectData.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](phase1Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 1: expected EffectData to be map[string]any, got %T", phase1Out.EffectData)
 	}
@@ -1018,12 +1019,12 @@ Do NOT try to use list_files or read_file - only submit_stories is available now
 		t.Fatalf("Phase 2: expected signal %s, got %s", tools.SignalStoriesSubmitted, phase2Out.Signal)
 	}
 
-	storiesData, ok := phase2Out.EffectData.(map[string]any)
+	storiesData, ok := utils.SafeAssert[map[string]any](phase2Out.EffectData)
 	if !ok {
 		t.Fatalf("Phase 2: expected EffectData to be map[string]any, got %T", phase2Out.EffectData)
 	}
 
-	requirements, ok := storiesData["requirements"].([]any)
+	requirements, ok := utils.SafeAssert[[]any](storiesData["requirements"])
 	if !ok {
 		t.Fatalf("Phase 2: expected requirements to be []any, got %T", storiesData["requirements"])
 	}
@@ -1035,7 +1036,7 @@ Do NOT try to use list_files or read_file - only submit_stories is available now
 	}
 
 	for i, req := range requirements {
-		if reqMap, ok := req.(map[string]any); ok {
+		if reqMap, ok := utils.SafeAssert[map[string]any](req); ok {
 			title, _ := reqMap["title"].(string)
 			storyType, _ := reqMap["story_type"].(string)
 			t.Logf("  Story %d: %s (type: %s)", i+1, title, storyType)

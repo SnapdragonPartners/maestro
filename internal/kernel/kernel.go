@@ -555,7 +555,7 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 
 	case persistence.OpSaveAgentContext:
 		// Save a single agent context (used for error debugging checkpoints)
-		if ctx, ok := req.Data.(*persistence.AgentContext); ok {
+		if ctx, ok := utils.SafeAssert[*persistence.AgentContext](req.Data); ok {
 			if err := persistence.SaveAgentContext(k.Database, ctx); err != nil {
 				k.Logger.Error("Failed to save agent context checkpoint: %v", err)
 			} else {
