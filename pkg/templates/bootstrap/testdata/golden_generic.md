@@ -77,15 +77,16 @@ clean:
 ### Required Tools in Container
 The container must include these tools for Maestro operations:
 - **git** - Version control operations (clone, commit, push, rebase)
+- **make** - Build system execution (required for `make build`, `make test`, `make lint`)
 - **curl** - Network operations and health checks (optional but recommended)
 
 Install in Dockerfile:
 ```dockerfile
 # Alpine-based images
-RUN apk add --no-cache git curl
+RUN apk add --no-cache git make curl
 
 # Debian/Ubuntu-based images
-RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git make curl && rm -rf /var/lib/apt/lists/*
 ```
 
 **Note**: GitHub CLI (`gh`) is NOT required in the container. All PR creation, merge operations, and GitHub API access run on the host orchestrator, not inside containers.
