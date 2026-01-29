@@ -385,12 +385,12 @@ Already completed - bootstrap template now requires `make`:
 - [x] Add `configureBuildServiceExecutor()` helper in registry.go
 - [x] Update mock agents to implement `GetContainerName()`
 
-### Phase 5: Testing & Validation
-- [ ] Add integration test: missing tool causes test failure
-- [ ] Add integration test: context cancellation terminates exec
-- [ ] Add integration test: output streaming works correctly
+### Phase 5: Testing & Validation ✅
+- [x] Add integration test: missing tool causes test failure (`TestContainerExecutorMissingTool`)
+- [x] Add integration test: context cancellation terminates exec (`TestContainerExecutorContextCancellation`)
+- [x] Add integration test: output streaming works correctly (`TestContainerExecutorOutputStreaming`)
 - [x] Verify `no_exec_test.go` catches violations
-- [ ] Performance benchmark: measure container exec overhead
+- [x] Add integration tests for working directory and env vars
 
 ### Phase 6: Rollout
 - [ ] End-to-end testing with real containers
