@@ -119,36 +119,53 @@ func (c *ContainerExecutor) Run(ctx context.Context, argv []string, opts ExecOpt
 	cmd.Stdout = opts.Stdout
 	cmd.Stderr = opts.Stderr
 
-	// Set process group for proper cleanup on cancellation
+	// Set process group for proper cleanup on cancellation.
+	// This allows us to kill the entire process group (docker exec + children).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	c.logger.Debug("Executing in container %s: %s %s", c.ContainerName, c.DockerCmd, strings.Join(execArgs, " "))
 
-	err := cmd.Run()
+	// Start the command (don't block)
+	if err := cmd.Start(); err != nil {
+		return -1, fmt.Errorf("failed to start command in container: %w", err)
+	}
 
-	// Extract exit code
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-			// Return the exit code but also the error for context
-			return exitCode, nil // Non-zero exit is not an execution error
+	// Wait for command completion or context cancellation
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case <-ctx.Done():
+		// Context was canceled - kill the process group to ensure cleanup.
+		// This kills both the docker exec client AND sends SIGKILL which Docker
+		// propagates to the container process when using -i (interactive) mode.
+		if cmd.Process != nil {
+			// Kill the entire process group (negative PID)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
-
-		// Check for context cancellation
+		// Wait for the process to exit after kill
+		<-done
 		if ctx.Err() == context.Canceled {
 			return -1, context.Canceled
 		}
-		if ctx.Err() == context.DeadlineExceeded {
-			return -1, context.DeadlineExceeded
+		return -1, context.DeadlineExceeded
+
+	case err := <-done:
+		// Command completed normally
+		exitCode := 0
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitCode()
+				return exitCode, nil // Non-zero exit is not an execution error
+			}
+			// Other execution error
+			return -1, fmt.Errorf("failed to execute command in container: %w", err)
 		}
-
-		// Other execution error (couldn't run command)
-		return -1, fmt.Errorf("failed to execute command in container: %w", err)
+		return exitCode, nil
 	}
-
-	return exitCode, nil
 }
 
 // HostExecutor runs commands directly on the host.

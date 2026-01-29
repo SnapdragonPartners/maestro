@@ -29,44 +29,30 @@ func (n *NullBackend) Detect(root string) bool {
 
 // Build is a no-op for null backend.
 // The exec and execDir parameters are unused since no commands are executed.
-func (n *NullBackend) Build(_ context.Context, _ Executor, execDir string, stream io.Writer) error {
-	if !n.isEmptyRepo(execDir) {
-		return fmt.Errorf("null backend should only be used for empty repositories")
-	}
-
+// Note: Detect() already validated this is an empty repo using the host path,
+// so we don't re-check here (execDir is a container path which may not exist on host).
+func (n *NullBackend) Build(_ context.Context, _ Executor, _ string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "✅ Build successful (no build configured for empty repository)\n")
 	return nil
 }
 
 // Test is a no-op for null backend.
 // The exec and execDir parameters are unused since no commands are executed.
-func (n *NullBackend) Test(_ context.Context, _ Executor, execDir string, stream io.Writer) error {
-	if !n.isEmptyRepo(execDir) {
-		return fmt.Errorf("null backend should only be used for empty repositories")
-	}
-
+func (n *NullBackend) Test(_ context.Context, _ Executor, _ string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "✅ Tests passed (no tests configured for empty repository)\n")
 	return nil
 }
 
 // Lint is a no-op for null backend.
 // The exec and execDir parameters are unused since no commands are executed.
-func (n *NullBackend) Lint(_ context.Context, _ Executor, execDir string, stream io.Writer) error {
-	if !n.isEmptyRepo(execDir) {
-		return fmt.Errorf("null backend should only be used for empty repositories")
-	}
-
+func (n *NullBackend) Lint(_ context.Context, _ Executor, _ string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "✅ Linting passed (no linting configured for empty repository)\n")
 	return nil
 }
 
 // Run is a no-op for null backend.
 // The exec and execDir parameters are unused since no commands are executed.
-func (n *NullBackend) Run(_ context.Context, _ Executor, execDir string, _ []string, stream io.Writer) error {
-	if !n.isEmptyRepo(execDir) {
-		return fmt.Errorf("null backend should only be used for empty repositories")
-	}
-
+func (n *NullBackend) Run(_ context.Context, _ Executor, _ string, _ []string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "✅ Run successful (no run target configured for empty repository)\n")
 	return nil
 }

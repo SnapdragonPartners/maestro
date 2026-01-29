@@ -330,11 +330,17 @@ func TestBuildServiceRequiresExecutor(t *testing.T) {
 	}
 
 	// Should fail because no executor is configured.
-	if success, ok := resultMap["success"].(bool); !ok || success {
+	success, err := utils.GetMapField[bool](resultMap, "success")
+	if err != nil {
+		t.Errorf("Expected success field: %v", err)
+	} else if success {
 		t.Error("Expected success to be false when executor not configured")
 	}
 
-	if errorMsg, ok := resultMap["error"].(string); !ok || errorMsg == "" {
-		t.Error("Expected error message when executor not configured")
+	errorMsg, err := utils.GetMapField[string](resultMap, "error")
+	if err != nil {
+		t.Errorf("Expected error field: %v", err)
+	} else if errorMsg == "" {
+		t.Error("Expected non-empty error message when executor not configured")
 	}
 }
