@@ -268,11 +268,15 @@ func (s *Service) getBackend(projectRoot string) (Backend, error) {
 		return nil, fmt.Errorf("failed to detect backend for %s: %w", projectRoot, err)
 	}
 
-	// Cache the result.
-	s.projectCache[projectRoot] = &ProjectInfo{
-		Backend:     backend,
-		DetectedAt:  time.Now(),
-		ProjectRoot: projectRoot,
+	// Cache the result, but NOT NullBackend.
+	// NullBackend is for empty repos - if files are added we want to re-detect
+	// on the next call rather than continuing to report success for 5 minutes.
+	if backend.Name() != "null" {
+		s.projectCache[projectRoot] = &ProjectInfo{
+			Backend:     backend,
+			DetectedAt:  time.Now(),
+			ProjectRoot: projectRoot,
+		}
 	}
 
 	return backend, nil
