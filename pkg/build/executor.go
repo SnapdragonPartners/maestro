@@ -97,6 +97,56 @@ func (c *ContainerExecutor) Name() string {
 	return "container:" + c.ContainerName
 }
 
+// killContainerProcess attempts to kill any in-container processes matching the command.
+// This is a best-effort cleanup for orphaned processes after docker exec client is killed.
+// Uses pkill to match processes by command name. Ignores errors since the process may
+// have already exited or pkill may not be available in the container.
+//
+// handleCancellation handles context cancellation by killing the docker exec process
+// and any orphaned in-container processes. Returns the appropriate context error.
+func (c *ContainerExecutor) handleCancellation(ctx context.Context, cmd *exec.Cmd, done <-chan error, argv []string) error {
+	// Kill the docker exec client process group.
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+
+	// Wait for the docker exec client to exit after kill.
+	select {
+	case <-done:
+		// Process exited cleanly after kill
+	case <-time.After(5 * time.Second):
+		// Process didn't exit in time - return anyway to avoid hanging
+		c.logger.Error("Process did not exit within 5s after SIGKILL")
+	}
+
+	// Kill any orphaned in-container processes matching our command.
+	if len(argv) > 0 {
+		c.killContainerProcess(argv[0])
+	}
+
+	return contextError(ctx)
+}
+
+// killContainerProcess attempts to kill any in-container processes matching the command.
+// This is a best-effort cleanup for orphaned processes after docker exec client is killed.
+// Uses pkill to match processes by command name. Ignores errors since the process may
+// have already exited or pkill may not be available in the container.
+//
+//nolint:contextcheck // Intentionally creates new context for cleanup after original context is canceled
+func (c *ContainerExecutor) killContainerProcess(cmdName string) {
+	// Create a short timeout context for the cleanup command.
+	// We use Background() because the original context is already canceled.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Use pkill to kill processes matching the command name.
+	// The -9 sends SIGKILL, -f matches the full command line.
+	// This is best-effort - we ignore errors since the process may have already exited.
+	killCmd := exec.CommandContext(ctx, c.DockerCmd, "exec", c.ContainerName,
+		"pkill", "-9", "-f", cmdName)
+	_ = killCmd.Run()
+}
+
 // Run executes a command inside the container.
 func (c *ContainerExecutor) Run(ctx context.Context, argv []string, opts ExecOpts) (int, error) {
 	if len(argv) == 0 {
@@ -151,25 +201,8 @@ func (c *ContainerExecutor) Run(ctx context.Context, argv []string, opts ExecOpt
 
 	select {
 	case <-ctx.Done():
-		// Context was canceled - kill the process group to ensure cleanup.
-		// This kills both the docker exec client AND sends SIGKILL which Docker
-		// propagates to the container process when using -i (interactive) mode.
-		if cmd.Process != nil {
-			// Kill the entire process group (negative PID)
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-
-		// Wait for the process to exit after kill, but with a timeout to prevent
-		// hanging forever if docker exec wedges (per PR review feedback).
-		select {
-		case <-done:
-			// Process exited cleanly after kill
-		case <-time.After(5 * time.Second):
-			// Process didn't exit in time - return anyway to avoid hanging
-			c.logger.Error("Process did not exit within 5s after SIGKILL")
-		}
-
-		return -1, contextError(ctx)
+		// Context was canceled - handle cleanup and return context error.
+		return -1, c.handleCancellation(ctx, cmd, done, argv)
 
 	case err := <-done:
 		// Check if context was canceled while we were waiting.
