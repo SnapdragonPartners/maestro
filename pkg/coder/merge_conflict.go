@@ -151,7 +151,8 @@ func (c *Coder) getRemoteHEAD(ctx context.Context, targetBranch string) (string,
 	}
 
 	// First fetch to ensure we have latest refs
-	_, _ = c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts)
+	// SECURITY: Run fetch on HOST (not in container) because containers don't have GITHUB_TOKEN.
+	_ = c.fetchFromOriginOnHost(ctx, targetBranch)
 
 	// Get the SHA of origin/targetBranch
 	result, err := c.longRunningExecutor.Run(ctx, []string{

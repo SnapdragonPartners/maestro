@@ -258,11 +258,17 @@ lint:
 		}
 
 		// Should have success=false and an error message for invalid path.
-		if success, ok := resultMap["success"].(bool); !ok || success {
+		success, err := utils.GetMapField[bool](resultMap, "success")
+		if err != nil {
+			t.Errorf("Expected success field: %v", err)
+		} else if success {
 			t.Error("Expected success to be false for non-existent path")
 		}
 
-		if errorMsg, ok := resultMap["error"].(string); !ok || errorMsg == "" {
+		errorMsg, err := utils.GetMapField[string](resultMap, "error")
+		if err != nil {
+			t.Errorf("Expected error field: %v", err)
+		} else if errorMsg == "" {
 			t.Error("Expected error message for non-existent path")
 		}
 

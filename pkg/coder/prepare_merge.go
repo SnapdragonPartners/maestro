@@ -506,29 +506,25 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 		Env:     []string{},
 	}
 
-	// Add GITHUB_TOKEN for fetch operations
-	if config.HasGitHubToken() {
-		opts.Env = append(opts.Env, "GITHUB_TOKEN")
-	}
-
 	// Step 1: Fetch latest from origin (both target branch and our remote branch)
 	// We need to fetch the remote branch too so --force-with-lease has an up-to-date reference.
 	// Without this, --force-with-lease fails with "stale info" because the local tracking ref
 	// doesn't match what's actually on the remote.
+	// SECURITY: Run fetch on HOST (not in container) because containers don't have GITHUB_TOKEN.
 	c.logger.Debug("🔀 Fetching latest from origin/%s and origin/%s", targetBranch, remoteBranch)
-	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch, remoteBranch}, opts)
+	err := c.fetchFromOriginOnHost(ctx, targetBranch, remoteBranch)
 	if err != nil {
 		// If the remote branch doesn't exist yet, that's OK - just fetch target branch
 		c.logger.Debug("🔀 Fetch of both branches failed, trying just target branch: %v", err)
-		result, err = c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts)
+		err = c.fetchFromOriginOnHost(ctx, targetBranch)
 		if err != nil {
-			return fmt.Errorf("git fetch failed: %w (stderr: %s)", err, result.Stderr)
+			return fmt.Errorf("git fetch failed: %w", err)
 		}
 	}
 
 	// Step 2: Attempt rebase onto origin/targetBranch
 	c.logger.Debug("🔀 Rebasing onto origin/%s", targetBranch)
-	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "rebase", fmt.Sprintf("origin/%s", targetBranch)}, opts)
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "rebase", fmt.Sprintf("origin/%s", targetBranch)}, opts)
 	if err != nil {
 		// Check if this is a conflict
 		if strings.Contains(strings.ToLower(result.Stderr), "conflict") ||
@@ -561,6 +557,41 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 	}
 
 	c.logger.Info("🔀 Push with --force-with-lease succeeded")
+	return nil
+}
+
+// fetchFromOriginOnHost fetches from origin on the HOST (not in container).
+// This is required because containers don't have GITHUB_TOKEN for private repo authentication.
+// Runs fetch on host where git credential helper has access to GITHUB_TOKEN.
+func (c *Coder) fetchFromOriginOnHost(ctx context.Context, branches ...string) error {
+	c.logger.Debug("🔀 Fetching from origin (host-side): %v", branches)
+
+	// GITHUB_TOKEN is required for fetch authentication on private repos
+	if !config.HasGitHubToken() {
+		return fmt.Errorf("GITHUB_TOKEN not found - cannot fetch without authentication")
+	}
+
+	// Create context with timeout for the fetch operation
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	// Build git fetch command with branches
+	args := []string{"fetch", "origin"}
+	args = append(args, branches...)
+
+	// Run git fetch on the HOST (not in container)
+	cmd := exec.CommandContext(fetchCtx, "git", args...)
+	cmd.Dir = c.workDir
+
+	// Inherit environment and ensure GITHUB_TOKEN is available for git credential helper
+	cmd.Env = os.Environ()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		c.logger.Error("🔀 git fetch failed: %v, output: %s", err, string(output))
+		return fmt.Errorf("git fetch failed: %w (output: %s)", err, string(output))
+	}
+
 	return nil
 }
 
