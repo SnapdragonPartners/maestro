@@ -57,8 +57,12 @@ run:
 		t.Fatalf("Failed to create Makefile: %v", err)
 	}
 
-	// Create build service.
+	// Create build service with mock executor.
+	// We use MockExecutor because build operations should run in containers,
+	// not on the host. Tests should not depend on make being installed.
 	service := NewBuildService()
+	mockExec := NewMockExecutor()
+	service.SetExecutor(mockExec)
 
 	// Test backend detection.
 	t.Run("Backend Detection", func(t *testing.T) {

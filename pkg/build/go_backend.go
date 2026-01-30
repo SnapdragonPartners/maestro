@@ -28,10 +28,10 @@ func (g *GoBackend) Detect(root string) bool {
 }
 
 // Build executes make build for the project.
-func (g *GoBackend) Build(ctx context.Context, root string, stream io.Writer) error {
+func (g *GoBackend) Build(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🔨 Building Go project via Makefile...\n")
 
-	if err := g.runMakeCommand(ctx, root, stream, "build"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "build"); err != nil {
 		return fmt.Errorf("make build failed: %w", err)
 	}
 
@@ -40,10 +40,10 @@ func (g *GoBackend) Build(ctx context.Context, root string, stream io.Writer) er
 }
 
 // Test executes make test for the project.
-func (g *GoBackend) Test(ctx context.Context, root string, stream io.Writer) error {
+func (g *GoBackend) Test(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🧪 Running Go tests via Makefile...\n")
 
-	if err := g.runMakeCommand(ctx, root, stream, "test"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "test"); err != nil {
 		return fmt.Errorf("make test failed: %w", err)
 	}
 
@@ -52,10 +52,10 @@ func (g *GoBackend) Test(ctx context.Context, root string, stream io.Writer) err
 }
 
 // Lint executes make lint for the project.
-func (g *GoBackend) Lint(ctx context.Context, root string, stream io.Writer) error {
+func (g *GoBackend) Lint(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🔍 Running Go linting via Makefile...\n")
 
-	if err := g.runMakeCommand(ctx, root, stream, "lint"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "lint"); err != nil {
 		return fmt.Errorf("make lint failed: %w", err)
 	}
 
@@ -64,10 +64,10 @@ func (g *GoBackend) Lint(ctx context.Context, root string, stream io.Writer) err
 }
 
 // Run executes make run for the project.
-func (g *GoBackend) Run(ctx context.Context, root string, _ []string, stream io.Writer) error {
+func (g *GoBackend) Run(ctx context.Context, exec Executor, execDir string, _ []string, stream io.Writer) error {
 	_, _ = fmt.Fprintf(stream, "🚀 Running Go application via Makefile...\n")
 
-	if err := g.runMakeCommand(ctx, root, stream, "run"); err != nil {
+	if err := runMakeTarget(ctx, exec, execDir, stream, "run"); err != nil {
 		return fmt.Errorf("make run failed: %w", err)
 	}
 
@@ -81,9 +81,4 @@ func (g *GoBackend) GetDockerImage(_ string) string {
 	// TODO: Parse go.mod to detect Go version and return appropriate image
 	// For now, return the default Go image.
 	return "golang:1.24-alpine"
-}
-
-// runMakeCommand executes a make command with the given target.
-func (g *GoBackend) runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
-	return runMakeCommand(ctx, root, stream, target)
 }

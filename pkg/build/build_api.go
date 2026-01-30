@@ -4,10 +4,9 @@ package build
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,11 +14,15 @@ import (
 	"orchestrator/pkg/utils"
 )
 
+// DefaultExecDir is the default working directory inside containers.
+const DefaultExecDir = "/workspace"
+
 // Service provides orchestrator-level build execution endpoints.
 type Service struct {
 	buildRegistry *Registry
 	logger        *logx.Logger
 	projectCache  map[string]*ProjectInfo // Cache for backend detection
+	executor      Executor                // Command executor (container or host)
 }
 
 // ProjectInfo caches backend information for a project.
@@ -38,6 +41,7 @@ type Request struct {
 	Args        []string          `json:"args"`      // Arguments for run operation
 	Timeout     int               `json:"timeout"`   // Timeout in seconds
 	Context     map[string]string `json:"context"`   // Additional context
+	ExecDir     string            `json:"exec_dir"`  // Execution directory (container path), defaults to /workspace
 }
 
 // Response represents a build operation response.
@@ -55,15 +59,37 @@ type Response struct {
 }
 
 // NewBuildService creates a new build service.
+// IMPORTANT: You must call SetExecutor() before using the service for build operations.
+// Build operations should use ContainerExecutor to run in containers.
+// For tests, use a MockExecutor.
 func NewBuildService() *Service {
 	return &Service{
 		buildRegistry: NewRegistry(),
 		logger:        logx.NewLogger("build-service"),
 		projectCache:  make(map[string]*ProjectInfo),
+		executor:      nil, // Must be set via SetExecutor before use
 	}
 }
 
+// SetExecutor sets the command executor for the build service.
+// Use NewContainerExecutor for container execution (recommended for production).
+// Use NewHostExecutor for host execution (testing/migration only).
+func (s *Service) SetExecutor(exec Executor) {
+	// Only log if executor is actually changing
+	if s.executor == nil || s.executor.Name() != exec.Name() {
+		s.logger.Info("Build service executor set to: %s", exec.Name())
+	}
+	s.executor = exec
+}
+
+// GetExecutor returns the current executor.
+func (s *Service) GetExecutor() Executor {
+	return s.executor
+}
+
 // ExecuteBuild executes a build operation and returns the result.
+//
+//nolint:cyclop // Complexity slightly over limit due to comprehensive validation and executor selection.
 func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, error) {
 	startTime := time.Now()
 	requestID := fmt.Sprintf("build-%d", startTime.UnixNano())
@@ -93,8 +119,29 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 		}, fmt.Errorf("operation is required")
 	}
 
-	// Get or detect backend.
-	backend, err := s.getBackend(req.ProjectRoot)
+	// Verify executor is configured.
+	if s.executor == nil {
+		return &Response{
+			Success:   false,
+			Operation: req.Operation,
+			Error:     "executor not configured - call SetExecutor first",
+			Duration:  time.Since(startTime),
+			RequestID: requestID,
+			Metadata:  map[string]string{"error_type": "configuration_error"},
+		}, fmt.Errorf("executor not configured - call SetExecutor with ContainerExecutor or MockExecutor")
+	}
+
+	// Normalize project root for cache consistency.
+	normalizedRoot, err := filepath.Abs(req.ProjectRoot)
+	if err != nil {
+		normalizedRoot = req.ProjectRoot
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(normalizedRoot); resolveErr == nil {
+		normalizedRoot = resolved
+	}
+
+	// Get or detect backend using normalized path.
+	backend, err := s.getBackend(normalizedRoot)
 	if err != nil {
 		return &Response{
 			Success:   false,
@@ -118,17 +165,44 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 	// Capture output.
 	var outputBuffer strings.Builder
 
+	// Determine execution directory based on executor type.
+	// For container execution: use ExecDir (defaults to /workspace)
+	// For host execution: use the normalized project root (host path)
+	execDir := req.ExecDir
+	isHostExec := isHostExecutor(s.executor)
+
+	if execDir == "" {
+		// Default based on executor type.
+		if isHostExec {
+			execDir = normalizedRoot
+		} else {
+			execDir = DefaultExecDir
+		}
+	}
+
+	// Validate ExecDir based on executor type to prevent misconfigurations.
+	if validationErr := validateExecDir(execDir, isHostExec); validationErr != nil {
+		return &Response{
+			Success:   false,
+			Operation: req.Operation,
+			Error:     validationErr.Error(),
+			Duration:  time.Since(startTime),
+			RequestID: requestID,
+			Metadata:  map[string]string{"error_type": "validation_error"},
+		}, validationErr
+	}
+
 	// Execute operation.
 	var operationErr error
 	switch req.Operation {
 	case "build":
-		operationErr = backend.Build(execCtx, req.ProjectRoot, &outputBuffer)
+		operationErr = backend.Build(execCtx, s.executor, execDir, &outputBuffer)
 	case "test":
-		operationErr = backend.Test(execCtx, req.ProjectRoot, &outputBuffer)
+		operationErr = backend.Test(execCtx, s.executor, execDir, &outputBuffer)
 	case "lint":
-		operationErr = backend.Lint(execCtx, req.ProjectRoot, &outputBuffer)
+		operationErr = backend.Lint(execCtx, s.executor, execDir, &outputBuffer)
 	case "run":
-		operationErr = backend.Run(execCtx, req.ProjectRoot, req.Args, &outputBuffer)
+		operationErr = backend.Run(execCtx, s.executor, execDir, req.Args, &outputBuffer)
 	default:
 		operationErr = fmt.Errorf("unknown operation: %s", req.Operation)
 		// Return error immediately for invalid operations.
@@ -157,6 +231,7 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 			"backend":     backend.Name(),
 			"duration_ms": fmt.Sprintf("%d", duration.Milliseconds()),
 			"project":     req.ProjectRoot,
+			"executor":    s.executor.Name(),
 		},
 	}
 
@@ -170,7 +245,8 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 		}
 	}
 
-	s.logger.Info("Build request %s completed: success=%t, duration=%v", requestID, response.Success, duration)
+	s.logger.Info("Build request %s completed: success=%t, duration=%v, executor=%s",
+		requestID, response.Success, duration, s.executor.Name())
 	return response, nil
 }
 
@@ -192,11 +268,15 @@ func (s *Service) getBackend(projectRoot string) (Backend, error) {
 		return nil, fmt.Errorf("failed to detect backend for %s: %w", projectRoot, err)
 	}
 
-	// Cache the result.
-	s.projectCache[projectRoot] = &ProjectInfo{
-		Backend:     backend,
-		DetectedAt:  time.Now(),
-		ProjectRoot: projectRoot,
+	// Cache the result, but NOT NullBackend.
+	// NullBackend is for empty repos - if files are added we want to re-detect
+	// on the next call rather than continuing to report success for 5 minutes.
+	if backend.Name() != "null" {
+		s.projectCache[projectRoot] = &ProjectInfo{
+			Backend:     backend,
+			DetectedAt:  time.Now(),
+			ProjectRoot: projectRoot,
+		}
 	}
 
 	return backend, nil
@@ -253,21 +333,68 @@ func (s *Service) GetCacheStatus() map[string]interface{} {
 	return status
 }
 
-// runMakeCommand executes a make command with the given target - shared utility for all backends.
-func runMakeCommand(ctx context.Context, root string, stream io.Writer, target string) error {
-	cmd := exec.CommandContext(ctx, "make", target)
-	cmd.Dir = root
-	cmd.Stdout = stream
-	cmd.Stderr = stream
+// runMakeTarget is a helper that executes a make target using the provided executor.
+// This is used by backends that delegate to Makefiles.
+func runMakeTarget(ctx context.Context, exec Executor, execDir string, stream io.Writer, target string) error {
+	opts := ExecOpts{
+		Dir:    execDir,
+		Stdout: stream,
+		Stderr: stream,
+	}
 
-	_, _ = fmt.Fprintf(stream, "$ make %s\n", target)
+	exitCode, err := exec.Run(ctx, []string{"make", target}, opts)
+	if err != nil {
+		return fmt.Errorf("make %s execution failed: %w", target, err)
+	}
 
-	if err := cmd.Run(); err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			return fmt.Errorf("make %s failed with exit code %d", target, exitError.ExitCode())
+	if exitCode != 0 {
+		return fmt.Errorf("make %s failed with exit code %d", target, exitCode)
+	}
+
+	return nil
+}
+
+// isHostExecutor returns true if the executor runs commands on the host.
+// Uses type switch for reliable detection instead of string comparison.
+func isHostExecutor(exec Executor) bool {
+	switch exec.(type) {
+	case *HostExecutor:
+		return true
+	case *MockExecutor:
+		// MockExecutor simulates host execution for testing
+		return true
+	default:
+		return false
+	}
+}
+
+// validateExecDir validates that ExecDir is appropriate for the executor type.
+// This prevents misconfigurations like passing container paths to host executors.
+func validateExecDir(execDir string, isHost bool) error {
+	if execDir == "" {
+		return nil // Will be set to default
+	}
+
+	// Must be absolute path
+	if !filepath.IsAbs(execDir) {
+		return fmt.Errorf("execDir must be absolute path, got: %s", execDir)
+	}
+
+	if isHost {
+		// For host executor: reject obvious container paths like /workspace.
+		if execDir == DefaultExecDir {
+			return fmt.Errorf("execDir '%s' looks like a container path but executor is host-based; "+
+				"use project root path instead", execDir)
 		}
-		return fmt.Errorf("make %s failed: %w", target, err)
+	} else {
+		// For container executor: execDir should be a container path (e.g., /workspace).
+		// Reject paths that look like host paths (contains /Users/, /home/, C:\, etc.)
+		if strings.Contains(execDir, "/Users/") ||
+			strings.Contains(execDir, "/home/") ||
+			strings.Contains(execDir, ":\\") {
+			return fmt.Errorf("execDir '%s' looks like a host path but executor is container-based; "+
+				"use container path like /workspace instead", execDir)
+		}
 	}
 
 	return nil

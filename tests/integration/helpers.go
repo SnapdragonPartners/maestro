@@ -37,6 +37,10 @@ func (m *mockTestAgent) GetHostWorkspacePath() string {
 	return "/tmp/test-workspace" // Fallback for backwards compatibility
 }
 
+func (m *mockTestAgent) GetContainerName() string {
+	return "test-container"
+}
+
 func (m *mockTestAgent) CompleteTodo(_ int) bool {
 	return true // Mock always succeeds
 }

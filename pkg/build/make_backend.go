@@ -2,11 +2,9 @@ package build
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -38,49 +36,57 @@ func (m *MakeBackend) Detect(root string) bool {
 }
 
 // Build executes the make build target.
-func (m *MakeBackend) Build(ctx context.Context, root string, stream io.Writer) error {
-	return m.runMakeTarget(ctx, root, "build", stream)
+func (m *MakeBackend) Build(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
+	_, _ = fmt.Fprintf(stream, "🔨 Running make build...\n")
+
+	if err := runMakeTarget(ctx, exec, execDir, stream, "build"); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(stream, "✅ make build completed successfully\n")
+	return nil
 }
 
 // Test executes the make test target.
-func (m *MakeBackend) Test(ctx context.Context, root string, stream io.Writer) error {
-	return m.runMakeTarget(ctx, root, "test", stream)
+func (m *MakeBackend) Test(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
+	_, _ = fmt.Fprintf(stream, "🧪 Running make test...\n")
+
+	if err := runMakeTarget(ctx, exec, execDir, stream, "test"); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(stream, "✅ make test completed successfully\n")
+	return nil
 }
 
 // Lint executes the make lint target.
-func (m *MakeBackend) Lint(ctx context.Context, root string, stream io.Writer) error {
-	return m.runMakeTarget(ctx, root, "lint", stream)
+func (m *MakeBackend) Lint(ctx context.Context, exec Executor, execDir string, stream io.Writer) error {
+	_, _ = fmt.Fprintf(stream, "🔍 Running make lint...\n")
+
+	if err := runMakeTarget(ctx, exec, execDir, stream, "lint"); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(stream, "✅ make lint completed successfully\n")
+	return nil
 }
 
 // Run executes the make run target.
-func (m *MakeBackend) Run(ctx context.Context, root string, _ []string, stream io.Writer) error {
+func (m *MakeBackend) Run(ctx context.Context, exec Executor, execDir string, _ []string, stream io.Writer) error {
+	_, _ = fmt.Fprintf(stream, "🚀 Running make run...\n")
+
 	// For make run, we typically don't pass additional arguments.
 	// The run target should be configured in the Makefile.
-	return m.runMakeTarget(ctx, root, "run", stream)
-}
-
-// runMakeTarget executes a specific make target.
-func (m *MakeBackend) runMakeTarget(ctx context.Context, root, target string, stream io.Writer) error {
-	_, _ = fmt.Fprintf(stream, "🔨 Running make %s...\n", target)
-
-	cmd := exec.CommandContext(ctx, "make", target)
-	cmd.Dir = root
-	cmd.Stdout = stream
-	cmd.Stderr = stream
-
-	if err := cmd.Run(); err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			return fmt.Errorf("make %s failed with exit code %d", target, exitError.ExitCode())
-		}
-		return fmt.Errorf("make %s failed: %w", target, err)
+	if err := runMakeTarget(ctx, exec, execDir, stream, "run"); err != nil {
+		return err
 	}
 
-	_, _ = fmt.Fprintf(stream, "✅ make %s completed successfully\n", target)
+	_, _ = fmt.Fprintf(stream, "✅ make run completed successfully\n")
 	return nil
 }
 
 // ValidateTargets checks if the required targets exist in the Makefile.
+// This uses the host filesystem to read the Makefile (detection runs on host).
 func (m *MakeBackend) ValidateTargets(root string, targets []string) error {
 	// Find the Makefile.
 	var makefilePath string

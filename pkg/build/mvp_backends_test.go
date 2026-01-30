@@ -103,12 +103,13 @@ if __name__ == "__main__":
 		os.WriteFile(filepath.Join(tempDir, "requirements.txt"), []byte("# No dependencies"), 0644)
 
 		backend := NewPythonBackend()
+		exec := NewHostExecutor()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		var buf strings.Builder
-		_ = backend.Build(ctx, tempDir, &buf)
+		_ = backend.Build(ctx, exec, tempDir, &buf)
 
 		// Build should complete (may warn about missing tools)
 		output := buf.String()
@@ -200,12 +201,13 @@ app.listen(3000);
 		os.WriteFile(filepath.Join(tempDir, "package.json"), []byte(packageJSON), 0644)
 
 		backend := NewNodeBackend()
+		exec := NewHostExecutor()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		var buf strings.Builder
-		_ = backend.Build(ctx, tempDir, &buf)
+		_ = backend.Build(ctx, exec, tempDir, &buf)
 
 		// Build should complete (may warn about missing Makefile)
 		output := buf.String()
@@ -281,6 +283,8 @@ func TestBackendFallbacks(t *testing.T) {
 		NewNodeBackend(),
 	}
 
+	exec := NewHostExecutor()
+
 	for _, backend := range backends {
 		t.Run(backend.Name()+" fallbacks", func(t *testing.T) {
 			tempDir, err := os.MkdirTemp("", "fallback-test")
@@ -295,10 +299,10 @@ func TestBackendFallbacks(t *testing.T) {
 			var buf strings.Builder
 
 			// Operations should not panic even if tools are missing.
-			backend.Build(ctx, tempDir, &buf)
-			backend.Test(ctx, tempDir, &buf)
-			backend.Lint(ctx, tempDir, &buf)
-			backend.Run(ctx, tempDir, []string{}, &buf)
+			_ = backend.Build(ctx, exec, tempDir, &buf)
+			_ = backend.Test(ctx, exec, tempDir, &buf)
+			_ = backend.Lint(ctx, exec, tempDir, &buf)
+			_ = backend.Run(ctx, exec, tempDir, []string{}, &buf)
 		})
 	}
 }

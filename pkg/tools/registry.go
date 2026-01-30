@@ -30,6 +30,7 @@ type AgentContext struct {
 type Agent interface {
 	GetCurrentState() proto.State
 	GetHostWorkspacePath() string // Returns the host workspace path for container mounting
+	GetContainerName() string     // Returns the current container name for build execution
 	// Todo management methods
 	CompleteTodo(index int) bool            // Mark todo at index as complete (-1 for current)
 	UpdateTodo(index int, desc string) bool // Update todo description at index (empty string removes)
@@ -260,26 +261,23 @@ func createStoryCompleteTool(_ *AgentContext) (Tool, error) {
 }
 
 // createBuildTool creates a build tool instance.
-func createBuildTool(_ *AgentContext) (Tool, error) {
-	// TODO: Properly inject build.Service via AgentContext
-	// For now, create a temporary build service
+func createBuildTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
+	configureBuildServiceExecutor(buildSvc, ctx)
 	return NewBuildTool(buildSvc), nil
 }
 
 // createTestTool creates a test tool instance.
-func createTestTool(_ *AgentContext) (Tool, error) {
-	// TODO: Properly inject build.Service via AgentContext
-	// For now, create a temporary build service
+func createTestTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
+	configureBuildServiceExecutor(buildSvc, ctx)
 	return NewTestTool(buildSvc), nil
 }
 
 // createLintTool creates a lint tool instance.
-func createLintTool(_ *AgentContext) (Tool, error) {
-	// TODO: Properly inject build.Service via AgentContext
-	// For now, create a temporary build service
+func createLintTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
+	configureBuildServiceExecutor(buildSvc, ctx)
 	return NewLintTool(buildSvc), nil
 }
 
@@ -289,11 +287,28 @@ func createDoneTool(ctx *AgentContext) (Tool, error) {
 }
 
 // createBackendInfoTool creates a backend info tool instance.
-func createBackendInfoTool(_ *AgentContext) (Tool, error) {
-	// TODO: Properly inject build.Service via AgentContext
-	// For now, create a temporary build service
+func createBackendInfoTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
+	configureBuildServiceExecutor(buildSvc, ctx)
 	return NewBackendInfoTool(buildSvc), nil
+}
+
+// configureBuildServiceExecutor sets up the executor for a build service based on context.
+// Uses ContainerExecutor when running inside a container (production),
+// otherwise leaves executor unconfigured (will fail gracefully with clear error).
+func configureBuildServiceExecutor(buildSvc *build.Service, ctx *AgentContext) {
+	if ctx == nil || ctx.Agent == nil {
+		return // No agent context - executor will remain nil
+	}
+
+	containerName := ctx.Agent.GetContainerName()
+	if containerName == "" {
+		return // No container - executor will remain nil
+	}
+
+	// Create ContainerExecutor to run build commands inside the agent's container
+	executor := build.NewContainerExecutor(containerName)
+	buildSvc.SetExecutor(executor)
 }
 
 // createContainerBuildTool creates a container build tool instance.

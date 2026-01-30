@@ -24,19 +24,19 @@ func (m *mockBuildBackend) Detect(_ string) bool {
 	return true
 }
 
-func (m *mockBuildBackend) Build(_ /* ctx */ context.Context, _ /* root */ string, _ io.Writer) error {
+func (m *mockBuildBackend) Build(_ context.Context, _ build.Executor, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBuildBackend) Test(_ context.Context, _ string, _ io.Writer) error {
+func (m *mockBuildBackend) Test(_ context.Context, _ build.Executor, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBuildBackend) Lint(_ context.Context, _ string, _ io.Writer) error {
+func (m *mockBuildBackend) Lint(_ context.Context, _ build.Executor, _ string, _ io.Writer) error {
 	return nil
 }
 
-func (m *mockBuildBackend) Run(_ context.Context, _ string, _ []string, _ io.Writer) error {
+func (m *mockBuildBackend) Run(_ context.Context, _ build.Executor, _ string, _ []string, _ io.Writer) error {
 	return nil
 }
 
