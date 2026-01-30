@@ -15,6 +15,18 @@ import (
 	"orchestrator/pkg/logx"
 )
 
+// contextError returns the appropriate context error (Canceled or DeadlineExceeded).
+// Returns nil if the context has not been canceled.
+func contextError(ctx context.Context) error {
+	if ctx.Err() == context.Canceled {
+		return context.Canceled
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 // ExecOpts configures command execution.
 //
 //nolint:govet // Field order chosen for readability over memory alignment.
@@ -157,13 +169,17 @@ func (c *ContainerExecutor) Run(ctx context.Context, argv []string, opts ExecOpt
 			c.logger.Error("Process did not exit within 5s after SIGKILL")
 		}
 
-		if ctx.Err() == context.Canceled {
-			return -1, context.Canceled
-		}
-		return -1, context.DeadlineExceeded
+		return -1, contextError(ctx)
 
 	case err := <-done:
-		// Command completed normally
+		// Check if context was canceled while we were waiting.
+		// Context cancellation can race with command completion - prioritize
+		// returning context errors to maintain the Executor contract.
+		if ctxErr := contextError(ctx); ctxErr != nil {
+			return -1, ctxErr
+		}
+
+		// Command completed normally (context still valid)
 		exitCode := 0
 		if err != nil {
 			var exitErr *exec.ExitError
@@ -235,18 +251,18 @@ func (h *HostExecutor) Run(ctx context.Context, argv []string, opts ExecOpts) (i
 	// Extract exit code
 	exitCode := 0
 	if err != nil {
+		// Check for context cancellation FIRST - this takes priority over exit codes.
+		// When context is canceled, exec.CommandContext kills the process which
+		// results in an ExitError, but we should return the context error to
+		// maintain the Executor contract.
+		if ctxErr := contextError(ctx); ctxErr != nil {
+			return -1, ctxErr
+		}
+
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 			return exitCode, nil // Non-zero exit is not an execution error
-		}
-
-		// Check for context cancellation
-		if ctx.Err() == context.Canceled {
-			return -1, context.Canceled
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			return -1, context.DeadlineExceeded
 		}
 
 		// Other execution error
