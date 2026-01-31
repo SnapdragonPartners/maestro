@@ -65,6 +65,11 @@ type Opts struct {
 	// NetworkDisabled indicates if network access should be disabled.
 	NetworkDisabled bool
 
+	// ClaudeCodeMode indicates that this container will run Claude Code.
+	// When true, a Docker named volume is mounted at /tmp/.claude to persist
+	// Claude Code session state across container restarts.
+	ClaudeCodeMode bool
+
 	// ExtraMounts contains additional volume mounts for the container.
 	// These are added to any default mounts configured by the executor.
 	ExtraMounts []Mount

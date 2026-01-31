@@ -94,7 +94,7 @@ func (d *LongRunningDockerExec) Available() bool {
 
 // StartContainer creates and starts a new container for a story.
 //
-//nolint:cyclop // Complex container setup logic, acceptable for this use case
+//nolint:cyclop,maintidx // Complex container setup logic, acceptable for this use case
 func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID string, opts *Opts) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -214,6 +214,15 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
 	// Set HOME=/tmp so Claude Code uses /tmp/.claude (already writable via tmpfs).
 	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m", "--env", "HOME=/tmp")
+
+	// Claude Code session persistence: mount a Docker named volume at /tmp/.claude
+	// This volume "punches through" the tmpfs and persists across container restarts.
+	// Only enabled for Claude Code mode to avoid unnecessary volume creation.
+	if opts.ClaudeCodeMode && d.agentID != "" {
+		volumeName := fmt.Sprintf("maestro-claude-%s", d.agentID)
+		args = append(args, "--volume", fmt.Sprintf("%s:/tmp/.claude:rw", volumeName))
+		d.logger.Info("Claude Code mode: mounting persistent volume %s at /tmp/.claude", volumeName)
+	}
 
 	// Note: MCP communication uses TCP via host.docker.internal - no socket mount needed.
 
@@ -577,11 +586,24 @@ func (d *LongRunningDockerExec) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		d.logger.Info("All containers stopped successfully")
-		return nil
 	case <-ctx.Done():
 		d.logger.Error("Container shutdown timed out")
 		return fmt.Errorf("container shutdown timed out: %w", ctx.Err())
 	}
+
+	// Clean up Claude Code session volumes if agentID is set
+	if d.agentID != "" {
+		volumeName := fmt.Sprintf("maestro-claude-%s", d.agentID)
+		rmCmd := exec.CommandContext(ctx, d.dockerCmd, "volume", "rm", volumeName)
+		if err := rmCmd.Run(); err != nil {
+			// Log but don't fail - volume might not exist
+			d.logger.Debug("Failed to remove Claude Code volume %s (may not exist): %v", volumeName, err)
+		} else {
+			d.logger.Info("Removed Claude Code session volume: %s", volumeName)
+		}
+	}
+
+	return nil
 }
 
 // GetImage returns the Docker image being used.

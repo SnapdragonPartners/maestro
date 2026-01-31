@@ -29,6 +29,10 @@ const (
 	SignalQuestion Signal = "QUESTION"
 	// SignalStoryComplete indicates the story was already implemented.
 	SignalStoryComplete Signal = "STORY_COMPLETE"
+	// SignalContainerSwitch indicates Claude Code requested a container switch.
+	// The runner should stop the current container and restart Claude Code
+	// in the new container with --resume.
+	SignalContainerSwitch Signal = "CONTAINER_SWITCH"
 	// SignalError indicates an error occurred.
 	SignalError Signal = "ERROR"
 	// SignalTimeout indicates execution timed out.
@@ -105,6 +109,9 @@ type Result struct {
 
 	// Question contains question details (for SignalQuestion).
 	Question *Question
+
+	// ContainerSwitchTarget is the container name requested (for SignalContainerSwitch).
+	ContainerSwitchTarget string
 
 	// Error contains error details (for SignalError).
 	Error error
