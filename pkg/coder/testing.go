@@ -563,9 +563,9 @@ func (c *Coder) ensureComposeStackRunning(ctx context.Context, workspacePath str
 	c.logger.Info("🐳 Starting compose stack for coder %s", c.GetAgentID())
 
 	// Create stack with coder-specific project name for isolation
-	// Project name uses agent ID to keep stacks separate between coders
+	// Project name must match cleanup in terminal_states.go: "maestro-" + agentID
 	composePath := demo.ComposeFilePath(workspacePath)
-	projectName := c.GetAgentID() // e.g., "coder-001"
+	projectName := "maestro-" + c.GetAgentID() // e.g., "maestro-coder-001"
 	stack := demo.NewStack(projectName, composePath, "")
 
 	// Run docker compose up -d --wait
@@ -608,24 +608,20 @@ func (c *Coder) verifyAndRebuildIfNeeded(ctx context.Context, workspacePath, con
 	c.logger.Warn("⚠️ Dockerfile modified since container was built (hash mismatch), rebuilding...")
 	c.logger.Debug("Stored hash: %s, Current hash: %s", storedHash[:16]+"...", currentHash[:16]+"...")
 
-	// Use build service to rebuild the container
-	buildReq := &build.Request{
-		ProjectRoot: workspacePath,
-		Operation:   "docker-build",
-		Timeout:     600, // 10 minutes for build
-		Context: map[string]string{
-			"dockerfile":     fullDockerfilePath,
-			"container_name": containerName,
-		},
+	// Use container_build tool directly (same pattern as runContainerBuildTesting)
+	buildTool := tools.NewContainerBuildTool(workspacePath)
+	args := map[string]any{
+		"container_name": containerName,
+		"dockerfile":     dockerfilePath,
+		"cwd":            workspacePath,
 	}
 
-	buildResp, buildErr := c.buildService.ExecuteBuild(ctx, buildReq)
+	result, buildErr := buildTool.Exec(ctx, args)
 	if buildErr != nil {
 		return false, fmt.Errorf("rebuild failed: %w", buildErr)
 	}
-	if !buildResp.Success {
-		return false, fmt.Errorf("rebuild failed: %s", buildResp.Error)
-	}
+
+	c.logger.Info("Container rebuild output: %s", result.Content)
 
 	// Get new image ID
 	newImageID, err := c.getNewImageID(ctx, containerName)
