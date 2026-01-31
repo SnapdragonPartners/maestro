@@ -37,8 +37,8 @@ type Agent interface {
 	UpdateTodoInState()                     // Update todo_list in state machine state data
 	GetIncompleteTodoCount() int            // Returns count of incomplete todos (0 if no todo list)
 	// Container config methods (deferred until merge)
-	SetPendingContainerConfig(name, dockerfile, imageID string) // Store pending container config
-	GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool)
+	SetPendingContainerConfig(name, dockerfile, imageID, dockerfileHash string) // Store pending container config with Dockerfile hash
+	GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -360,6 +360,19 @@ func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
 	return NewContainerSwitchTool(), nil
 }
 
+// createComposeUpTool creates a compose up tool instance.
+func createComposeUpTool(ctx *AgentContext) (Tool, error) {
+	workDir := DefaultWorkspaceDir
+	agentID := ""
+	if ctx != nil {
+		if ctx.WorkDir != "" {
+			workDir = ctx.WorkDir
+		}
+		agentID = ctx.AgentID
+	}
+	return NewComposeUpTool(workDir, agentID), nil
+}
+
 // createChatPostTool creates a chat post tool instance.
 func createChatPostTool(ctx *AgentContext) (Tool, error) {
 	if ctx.ChatService == nil {
@@ -438,6 +451,10 @@ func getContainerListSchema() InputSchema {
 
 func getContainerSwitchSchema() InputSchema {
 	return NewContainerSwitchTool().Definition().InputSchema
+}
+
+func getComposeUpSchema() InputSchema {
+	return NewComposeUpTool("", "").Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {
@@ -697,6 +714,13 @@ func init() {
 		Name:        ToolContainerSwitch,
 		Description: "Switch coder agent execution environment to a different container, with fallback to bootstrap container on failure",
 		InputSchema: getContainerSwitchSchema(),
+	})
+
+	// Register compose tools
+	Register(ToolComposeUp, createComposeUpTool, &ToolMeta{
+		Name:        ToolComposeUp,
+		Description: "Start Docker Compose services from .maestro/compose.yml (idempotent - only recreates changed services)",
+		InputSchema: getComposeUpSchema(),
 	})
 
 	// Register chat tools

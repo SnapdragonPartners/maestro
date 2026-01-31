@@ -371,15 +371,16 @@ func TestIsSignalTool(t *testing.T) {
 func TestSignalToolNamesList(t *testing.T) {
 	names := SignalToolNamesList()
 
-	if len(names) != 4 {
-		t.Errorf("expected 4 tool names, got %d", len(names))
+	if len(names) != 5 {
+		t.Errorf("expected 5 tool names, got %d", len(names))
 	}
 
 	expected := map[string]bool{
-		tools.ToolSubmitPlan:    true,
-		tools.ToolDone:          true,
-		tools.ToolAskQuestion:   true,
-		tools.ToolStoryComplete: true,
+		tools.ToolSubmitPlan:      true,
+		tools.ToolDone:            true,
+		tools.ToolAskQuestion:     true,
+		tools.ToolStoryComplete:   true,
+		tools.ToolContainerSwitch: true,
 	}
 
 	for _, name := range names {

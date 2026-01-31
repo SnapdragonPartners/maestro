@@ -2,9 +2,12 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -150,7 +153,21 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 
 	// Store pending configuration in agent state (will be applied after successful merge)
 	if c.agent != nil {
-		c.agent.SetPendingContainerConfig(containerName, dockerfilePath, imageID)
+		// Compute Dockerfile hash for verification during TESTING state
+		// This ensures we detect if Dockerfile was modified during merge conflict resolution
+		dockerfileHash := ""
+		if hostWorkspace := c.agent.GetHostWorkspacePath(); hostWorkspace != "" {
+			fullDockerfilePath := hostWorkspace + "/" + dockerfilePath
+			if dockerfileContent, readErr := os.ReadFile(fullDockerfilePath); readErr == nil {
+				hashBytes := sha256.Sum256(dockerfileContent)
+				dockerfileHash = hex.EncodeToString(hashBytes[:])
+				log.Printf("INFO container_update: Computed Dockerfile hash: %s...", dockerfileHash[:16])
+			} else {
+				log.Printf("WARN container_update: Could not read Dockerfile for hashing: %v", readErr)
+			}
+		}
+
+		c.agent.SetPendingContainerConfig(containerName, dockerfilePath, imageID, dockerfileHash)
 		log.Printf("INFO container_update: Stored pending container config in agent state: %s, dockerfile: %s, pinned image: %s (will apply after merge)",
 			containerName, dockerfilePath, imageID)
 	} else {

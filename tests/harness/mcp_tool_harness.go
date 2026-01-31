@@ -44,12 +44,12 @@ func (m *mockTestAgent) GetIncompleteTodoCount() int {
 	return 0 // No incomplete todos in mock
 }
 
-func (m *mockTestAgent) SetPendingContainerConfig(_, _, _ string) {
+func (m *mockTestAgent) SetPendingContainerConfig(_, _, _, _ string) {
 	// No-op for mock
 }
 
-func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, bool) {
-	return "", "", "", false // No pending config in mock
+func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, string, bool) {
+	return "", "", "", "", false // No pending config in mock
 }
 
 // HarnessResult wraps the tool result with additional metadata for testing.

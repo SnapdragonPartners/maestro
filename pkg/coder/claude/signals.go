@@ -38,10 +38,11 @@ func NormalizeMCPToolNames(text string) string {
 //
 //nolint:gochecknoglobals // This is a lookup table that needs to be globally accessible
 var signalToolNames = map[string]Signal{
-	tools.ToolSubmitPlan:    SignalPlanComplete,
-	tools.ToolDone:          SignalDone,
-	tools.ToolAskQuestion:   SignalQuestion,
-	tools.ToolStoryComplete: SignalStoryComplete,
+	tools.ToolSubmitPlan:      SignalPlanComplete,
+	tools.ToolDone:            SignalDone,
+	tools.ToolAskQuestion:     SignalQuestion,
+	tools.ToolStoryComplete:   SignalStoryComplete,
+	tools.ToolContainerSwitch: SignalContainerSwitch,
 }
 
 // SignalToolInput represents input to a signal tool call.
@@ -61,6 +62,9 @@ type SignalToolInput struct {
 	// For story_complete
 	Evidence           string `json:"evidence,omitempty"`
 	ExplorationSummary string `json:"exploration_summary,omitempty"`
+
+	// For container_switch
+	ContainerName string `json:"container_name,omitempty"`
 }
 
 // SignalDetector detects maestro tool calls and extracts signal information.
@@ -138,6 +142,9 @@ func parseSignalInput(input any) *SignalToolInput {
 		if explorationSummary, ok := v["exploration_summary"].(string); ok {
 			result.ExplorationSummary = explorationSummary
 		}
+		if containerName, ok := v["container_name"].(string); ok {
+			result.ContainerName = containerName
+		}
 		return result
 
 	case string:
@@ -212,6 +219,9 @@ func BuildResult(signal Signal, input *SignalToolInput, events []StreamEvent) Re
 		case SignalStoryComplete:
 			result.Evidence = input.Evidence
 			result.ExplorationSummary = input.ExplorationSummary
+
+		case SignalContainerSwitch:
+			result.ContainerSwitchTarget = input.ContainerName
 		}
 	}
 

@@ -164,6 +164,12 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	c.SetDockerImage(containerImage)
 	c.logger.Info("Set container image to: %s", containerImage)
 
+	// Check if running in Claude Code mode (for session persistence volume)
+	isClaudeCodeConfigured := false
+	if cfg, cfgErr := config.GetConfig(); cfgErr == nil && cfg.Agents != nil {
+		isClaudeCodeConfigured = cfg.Agents.CoderMode == config.CoderModeClaudeCode
+	}
+
 	// Create execution options for new container
 	execOpts := execpkg.Opts{
 		WorkDir:         c.workDir,
@@ -172,6 +178,7 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		User:            containerUser,
 		Env:             []string{"HOME=/tmp"}, // Set HOME to writable location for git config
 		Timeout:         0,                     // No timeout for long-running container
+		ClaudeCodeMode:  isClaudeCodeConfigured,
 		ResourceLimits: &execpkg.ResourceLimits{
 			CPUs:   "1",    // Limited CPU for planning
 			Memory: "512m", // Limited memory for planning
