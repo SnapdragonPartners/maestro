@@ -260,6 +260,10 @@ Container and compose tools are available when you encounter genuine environment
 6. `d9716a4` - Phase 5: Compose project name isolation and cleanup naming fix
 7. `da63f99` - Phase 6: Update coder prompts with environment tools guidance
 8. `fcc261e` - Add Dockerfile hash verification for concurrent edit protection
+9. `977cf11` - Update unified coder tools spec to reflect completed implementation
+10. `06ff237` - Add path validation to compose_up tool for security
+11. `7a3a850` - Implement container restart flow for Claude Code mode
+12. `238496d` - Add e2e test for unified coder tools container workflow
 
 ### Files Modified
 
@@ -307,7 +311,7 @@ Container and compose tools are available when you encounter genuine environment
 - [x] Volume persists across container stop/start/remove
 - [x] Volume deleted on agent shutdown
 - [x] `container_switch` signal detection added
-- [ ] Full container restart flow with `--resume` (deferred - needs live testing)
+- [x] Full container restart flow with `--resume` implemented
 
 ### E. Compose
 - [x] Project name derived from agent ID (`maestro-<agentID>`)
@@ -327,20 +331,29 @@ Container and compose tools are available when you encounter genuine environment
 
 ---
 
-## 7. Next Steps
+## 7. Testing
 
-### Testing Required
+### Automated Tests
 
-1. **Manual test**: App story using `container_build` → `container_update` → verify TESTING runs container tests
-2. **Manual test**: App story using `compose_up` → verify services start and cleanup on DONE
-3. **Manual test**: Concurrent Dockerfile edit scenario → verify hash mismatch triggers rebuild
-4. **Integration test**: Claude Code mode container restart with session resume (when full flow is implemented)
+1. **E2E test** (`tests/integration/container_workflow_e2e_test.go`): Tests app story container workflow
+   - Container build for app stories
+   - Container update with Dockerfile hash computation
+   - Container modification tracking via state keys
+   - Container switch signal detection
+   - Tool access verification for app stories
 
-### Deferred Work
+2. **Path validation test** (`pkg/tools/compose_tools_test.go`): Tests compose_up path validation
 
-1. **Full container restart flow for Claude Code**: The `handleContainerRestart()` and `waitForSessionFlush()` methods were not implemented. Signal detection is in place, but the actual restart-with-resume flow needs live testing.
+### Manual Testing Required
 
-2. **Path restriction guardrail for compose_up**: Compose files are already restricted to `.maestro/compose.yml` via `demo.ComposeFilePath()`, but explicit path validation could be added.
+1. **Manual test**: Concurrent Dockerfile edit scenario → verify hash mismatch triggers rebuild
+2. **Manual test**: Live Claude Code session with container switch and resume
+
+### Completed Work
+
+1. **Full container restart flow for Claude Code**: Implemented `performContainerSwitch()` method and SignalContainerSwitch handling in both planning and coding states. Container switch triggers re-entry to current state with session resume.
+
+2. **Path validation for compose_up**: Added explicit path validation ensuring workspace is absolute and compose file stays within `.maestro/` directory.
 
 ---
 
@@ -357,6 +370,9 @@ Container and compose tools are available when you encounter genuine environment
 | Container switch tool | `pkg/tools/container_switch.go` |
 | Container update tool | `pkg/tools/container_update.go` |
 | Compose up tool | `pkg/tools/compose_up.go` |
+| Claude Code coding | `pkg/coder/claudecode_coding.go` |
+| Claude Code planning | `pkg/coder/claudecode_planning.go` |
+| E2E test | `tests/integration/container_workflow_e2e_test.go` |
 | Docker executor | `pkg/exec/docker_long_running.go` |
 | Executor options | `pkg/exec/executor.go` |
 | Claude Runner | `pkg/coder/claude/runner.go` |
