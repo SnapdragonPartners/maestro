@@ -61,6 +61,13 @@ Review this specification for completeness, clarity, and implementability. You m
 5. **Missing Information**: Are there gaps that need clarification?
 6. **Requirement Harmonization**: When user requirements overlap with infrastructure baselines, ensure the more comprehensive approach is taken (user requirements can enhance but not reduce infrastructure minimums)
 
+**Technical Note - External Services:**
+If the spec requires databases (PostgreSQL, MySQL), caches (Redis), or other services:
+- These ARE supported via Docker Compose (`.maestro/compose.yml`)
+- The `--network=none` constraint does NOT apply to compose networks - containers on a compose network CAN communicate
+- Do NOT suggest technology downgrades (e.g., SQLite instead of PostgreSQL) - coders can use `compose_up` to run real services
+- If external services are needed, the spec should simply state what's needed - coders will use compose to provide them
+
 **Decision Criteria:**
 
 - **APPROVED**: Spec is ready for story generation
