@@ -95,6 +95,7 @@ const (
 	KeyBudgetReviewEffect      = "budget_review_effect"
 	KeyContainerModified       = "container_modified"  // bool: was container_update called successfully?
 	KeyNewContainerImage       = "new_container_image" // string: image ID from container_update
+	KeyDockerfileHash          = "dockerfile_hash"     // string: SHA256 hash of Dockerfile when container was built
 )
 
 // ValidateState checks if a state is valid for coder agents.

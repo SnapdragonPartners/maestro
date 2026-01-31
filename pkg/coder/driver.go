@@ -70,6 +70,7 @@ type Coder struct {
 	pendingContainerName       string
 	pendingContainerDockerfile string
 	pendingContainerImageID    string
+	pendingDockerfileHash      string // SHA256 hash of Dockerfile when container was built
 	hasPendingContainerConfig  bool
 }
 
@@ -1561,26 +1562,28 @@ func (c *Coder) GetIncompleteTodoCount() int {
 // SetPendingContainerConfig stores pending container configuration for post-merge application.
 // Implements the tools.Agent interface for container_update tool.
 // Also sets state keys for container modification tracking (used by TESTING state).
-func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID string) {
+func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID, dockerfileHash string) {
 	c.pendingContainerName = name
 	c.pendingContainerDockerfile = dockerfile
 	c.pendingContainerImageID = imageID
+	c.pendingDockerfileHash = dockerfileHash
 	c.hasPendingContainerConfig = true
 
 	// Set state keys for container modification tracking
 	// This allows TESTING state to detect container changes and run appropriate tests
 	c.BaseStateMachine.SetStateData(KeyContainerModified, true)
 	c.BaseStateMachine.SetStateData(KeyNewContainerImage, imageID)
+	c.BaseStateMachine.SetStateData(KeyDockerfileHash, dockerfileHash)
 
-	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s (state keys set)",
-		name, dockerfile, imageID)
+	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s, hash=%s (state keys set)",
+		name, dockerfile, imageID, dockerfileHash[:16]+"...")
 }
 
 // GetPendingContainerConfig retrieves pending container configuration.
 // Returns empty values and false if no pending config exists.
 // Implements the tools.Agent interface for await_merge state.
-func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool) {
-	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.hasPendingContainerConfig
+func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool) {
+	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.pendingDockerfileHash, c.hasPendingContainerConfig
 }
 
 // logToolExecution logs a tool execution to the database for debugging and analysis.

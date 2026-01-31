@@ -55,13 +55,6 @@ const (
 	// Note: ToolWebSearch is defined in web_search.go to keep tool name with its implementation.
 )
 
-// Container constants.
-const (
-	// BootstrapContainerName is the safe fallback container for container_switch operations.
-	// Derived from config.BootstrapContainerTag without the :latest suffix.
-	BootstrapContainerName = "maestro-bootstrap"
-)
-
 // State-specific tool availability - defines which tools are available in each state.
 //
 //nolint:gochecknoglobals // These are constants that need to be globally accessible

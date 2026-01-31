@@ -2,6 +2,8 @@ package coder
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -160,9 +162,25 @@ func (c *Coder) handleContainerTesting(ctx context.Context, sm *agent.BaseStateM
 	c.logger.Info("DevOps story: performing container infrastructure testing")
 
 	// First check for pending container config (set by container_update, applied after merge)
-	pendingName, pendingDockerfile, _, hasPending := c.GetPendingContainerConfig()
+	pendingName, pendingDockerfile, pendingImageID, pendingHash, hasPending := c.GetPendingContainerConfig()
 	if hasPending && pendingName != "" && pendingDockerfile != "" {
 		c.logger.Info("Using pending container config for testing: name=%s, dockerfile=%s", pendingName, pendingDockerfile)
+
+		// Verify Dockerfile hasn't changed since container was built
+		// This catches cases where Dockerfile was modified during merge conflict resolution
+		needsRebuild, rebuildErr := c.verifyAndRebuildIfNeeded(ctx, workspacePathStr, pendingName, pendingDockerfile, pendingImageID, pendingHash)
+		if rebuildErr != nil {
+			// Rebuild failed - return to CODING with error
+			c.logger.Error("Container rebuild failed: %v", rebuildErr)
+			feedback := fmt.Sprintf("Container rebuild failed after Dockerfile change: %v. Please fix the Dockerfile and run container_build and container_update again.", rebuildErr)
+			testFailureEff := effect.NewTestFailureEffect("container_rebuild_failed", feedback)
+			return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
+		}
+		if needsRebuild {
+			// Rebuild succeeded - update pending config and continue with testing
+			c.logger.Info("Container rebuilt successfully after Dockerfile change")
+		}
+
 		// Create a temporary config for testing
 		containerConfig := &config.ContainerConfig{
 			Name:       pendingName,
@@ -558,4 +576,88 @@ func (c *Coder) ensureComposeStackRunning(ctx context.Context, workspacePath str
 
 	c.logger.Info("✅ Compose stack %s started successfully", projectName)
 	return nil
+}
+
+// verifyAndRebuildIfNeeded checks if the Dockerfile has changed since the container was built.
+// If changed, it rebuilds the container and updates the pending config.
+// Returns (needsRebuild, error) - needsRebuild is true if rebuild was performed successfully.
+func (c *Coder) verifyAndRebuildIfNeeded(ctx context.Context, workspacePath, containerName, dockerfilePath, _ /* currentImageID */, storedHash string) (bool, error) {
+	// If no hash was stored, skip verification (backwards compatibility)
+	if storedHash == "" {
+		c.logger.Debug("No Dockerfile hash stored, skipping verification")
+		return false, nil
+	}
+
+	// Compute current Dockerfile hash
+	fullDockerfilePath := filepath.Join(workspacePath, dockerfilePath)
+	dockerfileContent, err := os.ReadFile(fullDockerfilePath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read Dockerfile at %s: %w", fullDockerfilePath, err)
+	}
+
+	currentHashBytes := sha256.Sum256(dockerfileContent)
+	currentHash := hex.EncodeToString(currentHashBytes[:])
+
+	// Compare hashes
+	if currentHash == storedHash {
+		c.logger.Debug("Dockerfile hash matches, no rebuild needed")
+		return false, nil
+	}
+
+	// Dockerfile changed - need to rebuild
+	c.logger.Warn("⚠️ Dockerfile modified since container was built (hash mismatch), rebuilding...")
+	c.logger.Debug("Stored hash: %s, Current hash: %s", storedHash[:16]+"...", currentHash[:16]+"...")
+
+	// Use build service to rebuild the container
+	buildReq := &build.Request{
+		ProjectRoot: workspacePath,
+		Operation:   "docker-build",
+		Timeout:     600, // 10 minutes for build
+		Context: map[string]string{
+			"dockerfile":     fullDockerfilePath,
+			"container_name": containerName,
+		},
+	}
+
+	buildResp, buildErr := c.buildService.ExecuteBuild(ctx, buildReq)
+	if buildErr != nil {
+		return false, fmt.Errorf("rebuild failed: %w", buildErr)
+	}
+	if !buildResp.Success {
+		return false, fmt.Errorf("rebuild failed: %s", buildResp.Error)
+	}
+
+	// Get new image ID
+	newImageID, err := c.getNewImageID(ctx, containerName)
+	if err != nil {
+		return false, fmt.Errorf("failed to get new image ID after rebuild: %w", err)
+	}
+
+	// Update pending config with new image ID and hash
+	c.SetPendingContainerConfig(containerName, dockerfilePath, newImageID, currentHash)
+	c.logger.Info("✅ Container rebuilt successfully, updated pending config with new image ID: %s", newImageID[:16]+"...")
+
+	return true, nil
+}
+
+// getNewImageID retrieves the image ID for a container name after a successful build.
+func (c *Coder) getNewImageID(ctx context.Context, containerName string) (string, error) {
+	// Use docker inspect to get the image ID
+	cmd := []string{"docker", "inspect", "--format", "{{.Id}}", containerName}
+	opts := &execpkg.Opts{Timeout: 30 * time.Second}
+
+	result, err := c.longRunningExecutor.Run(ctx, cmd, opts)
+	if err != nil {
+		return "", fmt.Errorf("docker inspect failed: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("docker inspect failed with exit code %d: %s", result.ExitCode, result.Stderr)
+	}
+
+	imageID := strings.TrimSpace(result.Stdout)
+	if imageID == "" {
+		return "", fmt.Errorf("docker inspect returned empty image ID")
+	}
+
+	return imageID, nil
 }

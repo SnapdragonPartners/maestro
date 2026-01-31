@@ -162,10 +162,10 @@ func (m *mockAgent) GetIncompleteTodoCount() int {
 	return 0 // No incomplete todos in mock
 }
 
-func (m *mockAgent) SetPendingContainerConfig(_, _, _ string) {
+func (m *mockAgent) SetPendingContainerConfig(_, _, _, _ string) {
 	// No-op for mock
 }
 
-func (m *mockAgent) GetPendingContainerConfig() (string, string, string, bool) {
-	return "", "", "", false // No pending config in mock
+func (m *mockAgent) GetPendingContainerConfig() (string, string, string, string, bool) {
+	return "", "", "", "", false // No pending config in mock
 }

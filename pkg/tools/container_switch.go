@@ -124,7 +124,7 @@ func (c *ContainerSwitchTool) testContainerAvailability(ctx context.Context, con
 
 // fallbackToBootstrap falls back to the bootstrap container when target container fails.
 func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requestedContainer, errorMsg string) (*ExecResult, error) {
-	bootstrapContainer := BootstrapContainerName
+	bootstrapContainer := config.BootstrapContainerTag
 
 	// Test bootstrap container availability
 	_, testErr := c.testContainerAvailability(ctx, bootstrapContainer)

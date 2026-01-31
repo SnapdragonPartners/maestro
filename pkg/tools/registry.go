@@ -37,8 +37,8 @@ type Agent interface {
 	UpdateTodoInState()                     // Update todo_list in state machine state data
 	GetIncompleteTodoCount() int            // Returns count of incomplete todos (0 if no todo list)
 	// Container config methods (deferred until merge)
-	SetPendingContainerConfig(name, dockerfile, imageID string) // Store pending container config
-	GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool)
+	SetPendingContainerConfig(name, dockerfile, imageID, dockerfileHash string) // Store pending container config with Dockerfile hash
+	GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
