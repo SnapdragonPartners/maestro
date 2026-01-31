@@ -1229,18 +1229,6 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 	return tools.NewProvider(&agentCtx, codingTools)
 }
 
-// filterOutContainerSwitch removes container_switch from a tool list.
-// This is used for Claude Code mode where container_switch would destroy the session.
-func filterOutContainerSwitch(toolList []string) []string {
-	filtered := make([]string, 0, len(toolList))
-	for _, tool := range toolList {
-		if tool != tools.ToolContainerSwitch {
-			filtered = append(filtered, tool)
-		}
-	}
-	return filtered
-}
-
 // filterOutTodoTools removes todo tools from a tool list.
 // This is used for Claude Code mode which has its own built-in todo management.
 func filterOutTodoTools(toolList []string) []string {
@@ -1259,15 +1247,17 @@ func filterOutTodoTools(toolList []string) []string {
 }
 
 // createClaudeCodeCodingToolProvider creates a ToolProvider for Claude Code mode coding.
-// This excludes container_switch (would destroy session) and todo tools (Claude Code has built-in).
+// This excludes todo tools (Claude Code has built-in) but INCLUDES container_switch.
+// Container switch is handled via SignalContainerSwitch which triggers container restart with session resume.
 func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.ToolProvider {
 	// Determine coding tools based on story type
-	// Filter out: container_switch (destroys session), todo tools (Claude Code has built-in)
+	// Filter out: todo tools (Claude Code has built-in)
+	// NOTE: container_switch is INCLUDED - we handle it via SignalContainerSwitch
 	var codingTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
-		codingTools = filterOutTodoTools(filterOutContainerSwitch(tools.DevOpsCodingTools))
+		codingTools = filterOutTodoTools(tools.DevOpsCodingTools)
 	} else {
-		codingTools = filterOutTodoTools(filterOutContainerSwitch(tools.AppCodingTools))
+		codingTools = filterOutTodoTools(tools.AppCodingTools)
 	}
 
 	// Create agent context for coding (read-write access)
@@ -1285,14 +1275,16 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.Tool
 }
 
 // createClaudeCodePlanningToolProvider creates a ToolProvider for Claude Code mode planning.
-// This excludes container_switch which would destroy the Claude Code session.
+// This INCLUDES container_switch - we handle it via SignalContainerSwitch which triggers
+// container restart with session resume.
 func (c *Coder) createClaudeCodePlanningToolProvider(storyType string) *tools.ToolProvider {
-	// Determine planning tools based on story type and filter out container_switch
+	// Determine planning tools based on story type
+	// NOTE: container_switch is INCLUDED - we handle it via SignalContainerSwitch
 	var planningTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
-		planningTools = filterOutContainerSwitch(tools.DevOpsPlanningTools)
+		planningTools = tools.DevOpsPlanningTools
 	} else {
-		planningTools = filterOutContainerSwitch(tools.AppPlanningTools)
+		planningTools = tools.AppPlanningTools
 	}
 
 	// Create agent context for planning (read-only access)

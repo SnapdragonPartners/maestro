@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -28,17 +29,38 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 		return proto.StateError, false, logx.Errorf("no approved plan available for coding")
 	}
 
+	// Check for pending container switch (from SignalContainerSwitch)
+	containerSwitchTarget := utils.GetStateValueOr[string](sm, KeyContainerSwitchTarget, "")
+	if containerSwitchTarget != "" {
+		c.logger.Info("🐳 Processing pending container switch to: %s", containerSwitchTarget)
+
+		// Clear the pending switch target
+		sm.SetStateData(KeyContainerSwitchTarget, nil)
+
+		// Perform the container switch
+		if err := c.performContainerSwitch(ctx, containerSwitchTarget); err != nil {
+			c.logger.Error("Container switch failed: %v", err)
+			// Don't fail the story - fall back to current container
+			c.logger.Warn("Continuing with current container after switch failure")
+		} else {
+			c.logger.Info("✅ Container switch to %s completed successfully", containerSwitchTarget)
+		}
+
+		// Reinitialize tool provider to use new container executor
+		c.codingToolProvider = nil // Force recreation
+	}
+
 	// Check for existing session ID (for resume) and resume input (feedback)
 	existingSessionID := utils.GetStateValueOr[string](sm, KeyCodingSessionID, "")
 	resumeInput := utils.GetStateValueOr[string](sm, KeyResumeInput, "")
 	shouldResume := existingSessionID != "" && resumeInput != ""
 
 	// Ensure coding tool provider is initialized
-	// Use Claude Code-specific provider that excludes container_switch to prevent session destruction
+	// Uses Claude Code-specific provider that includes container_switch (handled via SignalContainerSwitch)
 	if c.codingToolProvider == nil {
 		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
 		c.codingToolProvider = c.createClaudeCodeCodingToolProvider(storyType)
-		c.logger.Debug("Created Claude Code coding ToolProvider for story type: %s (container_switch excluded)", storyType)
+		c.logger.Debug("Created Claude Code coding ToolProvider for story type: %s", storyType)
 	}
 
 	// Create runner with tool provider for MCP integration
@@ -179,9 +201,103 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 		c.logger.Warn("Claude Code sent plan_complete signal during coding mode")
 		return proto.StateError, false, logx.Errorf("unexpected plan_complete signal in coding mode")
 
+	case claude.SignalContainerSwitch:
+		// Claude Code requested a container switch
+		if result.ContainerSwitchTarget == "" {
+			return proto.StateError, false, logx.Errorf("container_switch called without target container name")
+		}
+
+		c.logger.Info("🐳 Claude Code requested container switch to: %s", result.ContainerSwitchTarget)
+
+		// Store target container for the switch (will be processed on next CODING entry)
+		sm.SetStateData(KeyContainerSwitchTarget, result.ContainerSwitchTarget)
+
+		// The session ID is already stored (line 120-122 above)
+		// Set resume input to inform Claude Code about the container switch
+		resumeMsg := fmt.Sprintf("Container switch completed. You are now running in container '%s'. Continue with your work.",
+			result.ContainerSwitchTarget)
+		sm.SetStateData(KeyResumeInput, resumeMsg)
+
+		// Return to CODING state - the container switch will happen at state entry
+		return StateCoding, false, nil
+
 	default:
 		return proto.StateError, false, logx.Errorf("unexpected Claude Code signal: %s", result.Signal)
 	}
+}
+
+// performContainerSwitch switches to a new container image for Claude Code mode.
+// This is called when Claude Code requests a container switch via SignalContainerSwitch.
+func (c *Coder) performContainerSwitch(ctx context.Context, targetContainer string) error {
+	if c.longRunningExecutor == nil {
+		return fmt.Errorf("no executor available for container switch")
+	}
+
+	c.logger.Info("🐳 Switching container from %s to %s", c.containerName, targetContainer)
+
+	// Check if Claude Code mode is configured (for session persistence volume)
+	isClaudeCodeConfigured := false
+	if cfg, cfgErr := config.GetConfig(); cfgErr == nil && cfg.Agents != nil {
+		isClaudeCodeConfigured = cfg.Agents.CoderMode == config.CoderModeClaudeCode
+	}
+
+	// Stop current container
+	if c.containerName != "" {
+		c.logger.Info("Stopping current container: %s", c.containerName)
+		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		if err := c.longRunningExecutor.StopContainer(stopCtx, c.containerName); err != nil {
+			c.logger.Warn("Failed to stop container %s: %v (continuing anyway)", c.containerName, err)
+		}
+		c.containerName = ""
+	}
+
+	// Update docker image to target
+	c.SetDockerImage(targetContainer)
+
+	// Create execution options for new container (read-write for coding)
+	execOpts := exec.Opts{
+		WorkDir:         c.workDir,
+		ReadOnly:        false, // Coding requires write access
+		NetworkDisabled: false, // Network enabled
+		User:            "1000:1000",
+		Env:             []string{"HOME=/tmp"},
+		Timeout:         0, // No timeout for long-running container
+		ClaudeCodeMode:  isClaudeCodeConfigured,
+		ResourceLimits: &exec.ResourceLimits{
+			CPUs:   "2",
+			Memory: "2g",
+			PIDs:   1024,
+		},
+	}
+
+	// Start new container
+	agentID := c.GetID()
+	sanitizedAgentID := utils.SanitizeContainerName(agentID)
+
+	containerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+	if err != nil {
+		// Try falling back to bootstrap container
+		c.logger.Warn("Failed to start target container %s, falling back to bootstrap: %v",
+			targetContainer, err)
+
+		c.SetDockerImage(config.BootstrapContainerTag)
+		containerName, err = c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+		if err != nil {
+			return fmt.Errorf("failed to start container (including fallback): %w", err)
+		}
+		c.logger.Info("Started fallback container: %s", containerName)
+	}
+
+	c.containerName = containerName
+	c.logger.Info("✅ Container switch complete: now running %s", containerName)
+
+	// Reset Claude Code availability check (new container may have different capabilities)
+	c.claudeCodeAvailabilityChecked = false
+	c.claudeCodeAvailable = false
+
+	return nil
 }
 
 // isClaudeCodeMode returns true if the coder is configured to use Claude Code mode
