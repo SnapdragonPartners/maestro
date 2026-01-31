@@ -41,7 +41,15 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		c.logger.Warn("⚠️ Compose stack startup warning: %v", err)
 	}
 
-	// Get story type for testing strategy decision
+	// Check if container was modified during this story (via container_update)
+	// If so, we need to run container validation tests regardless of story type
+	containerModified := utils.GetStateValueOr[bool](sm, KeyContainerModified, false)
+	if containerModified {
+		c.logger.Info("Container modification detected (KeyContainerModified=true), running container testing")
+		return c.handleDevOpsStoryTesting(ctx, sm, workspacePathStr)
+	}
+
+	// Get story type for testing strategy decision (legacy path for DevOps-typed stories)
 	storyType := string(proto.StoryTypeApp) // Default to app
 	if storyTypeVal, exists := sm.GetStateValue(proto.KeyStoryType); exists {
 		if storyTypeStr, ok := storyTypeVal.(string); ok && proto.IsValidStoryType(storyTypeStr) {
@@ -49,9 +57,11 @@ func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (
 		}
 	}
 
-	c.logger.Info("Testing story type: %s", storyType)
+	c.logger.Info("Testing story type: %s (no container modification)", storyType)
 
 	// Use different testing strategies based on story type
+	// Note: DevOps stories without container_update will still run container tests
+	// This maintains backwards compatibility while KeyContainerModified takes precedence
 	if storyType == string(proto.StoryTypeDevOps) {
 		return c.handleDevOpsStoryTesting(ctx, sm, workspacePathStr)
 	}

@@ -1560,12 +1560,19 @@ func (c *Coder) GetIncompleteTodoCount() int {
 
 // SetPendingContainerConfig stores pending container configuration for post-merge application.
 // Implements the tools.Agent interface for container_update tool.
+// Also sets state keys for container modification tracking (used by TESTING state).
 func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID string) {
 	c.pendingContainerName = name
 	c.pendingContainerDockerfile = dockerfile
 	c.pendingContainerImageID = imageID
 	c.hasPendingContainerConfig = true
-	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s",
+
+	// Set state keys for container modification tracking
+	// This allows TESTING state to detect container changes and run appropriate tests
+	c.BaseStateMachine.SetStateData(KeyContainerModified, true)
+	c.BaseStateMachine.SetStateData(KeyNewContainerImage, imageID)
+
+	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s (state keys set)",
 		name, dockerfile, imageID)
 }
 
