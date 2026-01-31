@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -151,5 +152,54 @@ func TestComposeStatusTool_NoComposeFile(t *testing.T) {
 	// Should mention no compose file found
 	if result.Content == "" {
 		t.Error("expected non-empty content")
+	}
+}
+
+func TestComposeUpTool_PathValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		workDir   string
+		wantError bool
+		errorMsg  string
+	}{
+		{
+			name:      "valid absolute path",
+			workDir:   "/workspace/project",
+			wantError: false,
+		},
+		{
+			name:      "relative path rejected",
+			workDir:   "relative/path",
+			wantError: true,
+			errorMsg:  "workspace path must be absolute",
+		},
+		{
+			name:      "path traversal in workDir",
+			workDir:   "/workspace/../../../etc",
+			wantError: false, // Clean path will normalize this, but compose file won't exist
+		},
+		{
+			name:      "empty path rejected",
+			workDir:   "",
+			wantError: true,
+			errorMsg:  "workspace path must be absolute",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := NewComposeUpTool(tt.workDir, "test-agent")
+			err := tool.validateWorkspacePath()
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

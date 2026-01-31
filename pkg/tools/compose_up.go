@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"orchestrator/pkg/demo"
 )
@@ -55,8 +57,43 @@ func (c *ComposeUpTool) PromptDocumentation() string {
   - The compose file should be at .maestro/compose.yml in the workspace`
 }
 
+// validateWorkspacePath validates that the workspace path is safe to use.
+// Returns an error if the path is invalid or potentially dangerous.
+func (c *ComposeUpTool) validateWorkspacePath() error {
+	// 1. Must be an absolute path
+	if !filepath.IsAbs(c.workDir) {
+		return fmt.Errorf("workspace path must be absolute, got: %s", c.workDir)
+	}
+
+	// 2. Clean the path to resolve any . or .. elements
+	cleanedWorkDir := filepath.Clean(c.workDir)
+
+	// 3. Build the expected compose path and clean it
+	composePath := filepath.Join(cleanedWorkDir, ".maestro", "compose.yml")
+	cleanedComposePath := filepath.Clean(composePath)
+
+	// 4. Verify the cleaned compose path is still within the workspace
+	// This catches traversal attempts like workDir="/workspace/../../../etc"
+	if !strings.HasPrefix(cleanedComposePath, cleanedWorkDir+string(filepath.Separator)) {
+		return fmt.Errorf("compose path escapes workspace boundary: %s", composePath)
+	}
+
+	// 5. Verify .maestro is in the path (not bypassed via traversal)
+	maestroDir := filepath.Join(cleanedWorkDir, ".maestro")
+	if !strings.HasPrefix(cleanedComposePath, maestroDir+string(filepath.Separator)) {
+		return fmt.Errorf("compose file must be within .maestro directory")
+	}
+
+	return nil
+}
+
 // Exec executes the compose up operation.
 func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult, error) {
+	// Validate workspace path before any file operations
+	if err := c.validateWorkspacePath(); err != nil {
+		return nil, fmt.Errorf("invalid workspace path: %w", err)
+	}
+
 	// Check if compose file exists
 	if !demo.ComposeFileExists(c.workDir) {
 		return &ExecResult{
