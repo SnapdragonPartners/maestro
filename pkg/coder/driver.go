@@ -1201,6 +1201,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 		ReadOnly:        true,                  // Planning is read-only
 		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
+		AgentID:         c.GetAgentID(),        // Required for compose_up project name isolation
 	}
 
 	return tools.NewProvider(&agentCtx, planningTools)
@@ -1224,6 +1225,7 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
+		AgentID:         c.GetAgentID(),        // Required for compose_up project name isolation
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
