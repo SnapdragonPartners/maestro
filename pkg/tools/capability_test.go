@@ -80,12 +80,14 @@ func TestToolProviderAppPlanningTools(t *testing.T) {
 		t.Errorf("Expected %d App planning tools, got %d", expectedCount, len(toolMetas))
 	}
 
-	// Verify all expected tools are present
+	// Verify all expected tools are present (now includes container tools for environment verification)
 	expectedTools := map[string]bool{
 		ToolShell:         false,
 		ToolSubmitPlan:    false,
 		ToolAskQuestion:   false,
 		ToolStoryComplete: false,
+		ToolContainerTest: false,
+		ToolContainerList: false,
 		ToolChatPost:      false,
 		ToolChatRead:      false,
 		ToolWebSearch:     false,
@@ -129,21 +131,27 @@ func TestToolProviderAppCodingTools(t *testing.T) {
 		t.Errorf("Expected %d App coding tools, got %d", expectedCount, len(toolMetas))
 	}
 
-	// Verify all expected tools are present
+	// Verify all expected tools are present (now includes container and compose tools)
 	expectedTools := map[string]bool{
-		ToolShell:        false,
-		ToolBuild:        false,
-		ToolTest:         false,
-		ToolLint:         false,
-		ToolAskQuestion:  false,
-		ToolDone:         false,
-		ToolChatPost:     false,
-		ToolChatRead:     false,
-		ToolTodosAdd:     false,
-		ToolTodoComplete: false,
-		ToolTodoUpdate:   false,
-		ToolWebSearch:    false,
-		ToolWebFetch:     false,
+		ToolShell:           false,
+		ToolBuild:           false,
+		ToolTest:            false,
+		ToolLint:            false,
+		ToolAskQuestion:     false,
+		ToolDone:            false,
+		ToolContainerBuild:  false,
+		ToolContainerUpdate: false,
+		ToolContainerTest:   false,
+		ToolContainerList:   false,
+		ToolContainerSwitch: false,
+		ToolComposeUp:       false,
+		ToolChatPost:        false,
+		ToolChatRead:        false,
+		ToolTodosAdd:        false,
+		ToolTodoComplete:    false,
+		ToolTodoUpdate:      false,
+		ToolWebSearch:       false,
+		ToolWebFetch:        false,
 	}
 
 	for _, meta := range toolMetas {

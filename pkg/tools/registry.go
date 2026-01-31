@@ -360,6 +360,15 @@ func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
 	return NewContainerSwitchTool(), nil
 }
 
+// createComposeUpTool creates a compose up tool instance.
+func createComposeUpTool(ctx *AgentContext) (Tool, error) {
+	workDir := DefaultWorkspaceDir
+	if ctx != nil && ctx.WorkDir != "" {
+		workDir = ctx.WorkDir
+	}
+	return NewComposeUpTool(workDir), nil
+}
+
 // createChatPostTool creates a chat post tool instance.
 func createChatPostTool(ctx *AgentContext) (Tool, error) {
 	if ctx.ChatService == nil {
@@ -438,6 +447,10 @@ func getContainerListSchema() InputSchema {
 
 func getContainerSwitchSchema() InputSchema {
 	return NewContainerSwitchTool().Definition().InputSchema
+}
+
+func getComposeUpSchema() InputSchema {
+	return NewComposeUpTool("").Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {
@@ -697,6 +710,13 @@ func init() {
 		Name:        ToolContainerSwitch,
 		Description: "Switch coder agent execution environment to a different container, with fallback to bootstrap container on failure",
 		InputSchema: getContainerSwitchSchema(),
+	})
+
+	// Register compose tools
+	Register(ToolComposeUp, createComposeUpTool, &ToolMeta{
+		Name:        ToolComposeUp,
+		Description: "Start Docker Compose services from .maestro/compose.yml (idempotent - only recreates changed services)",
+		InputSchema: getComposeUpSchema(),
 	})
 
 	// Register chat tools
