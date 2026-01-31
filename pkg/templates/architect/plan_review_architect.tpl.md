@@ -40,6 +40,10 @@ Review the implementation plan and determine:
    - If no code changes are actually required (e.g., already complete)
    - If the approach is completely wrong and needs to start over
 
+## Review Checklist
+
+- **External Services**: If the story requires databases, caches, or other services, verify the plan includes using Docker Compose (`.maestro/compose.yml`) and the `compose_up` tool. Don't assume services are pre-running.
+
 ## Submitting Your Decision
 
 Use the `review_complete` tool to submit your decision:
