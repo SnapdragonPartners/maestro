@@ -363,10 +363,14 @@ func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
 // createComposeUpTool creates a compose up tool instance.
 func createComposeUpTool(ctx *AgentContext) (Tool, error) {
 	workDir := DefaultWorkspaceDir
-	if ctx != nil && ctx.WorkDir != "" {
-		workDir = ctx.WorkDir
+	agentID := ""
+	if ctx != nil {
+		if ctx.WorkDir != "" {
+			workDir = ctx.WorkDir
+		}
+		agentID = ctx.AgentID
 	}
-	return NewComposeUpTool(workDir), nil
+	return NewComposeUpTool(workDir, agentID), nil
 }
 
 // createChatPostTool creates a chat post tool instance.
@@ -450,7 +454,7 @@ func getContainerSwitchSchema() InputSchema {
 }
 
 func getComposeUpSchema() InputSchema {
-	return NewComposeUpTool("").Definition().InputSchema
+	return NewComposeUpTool("", "").Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {

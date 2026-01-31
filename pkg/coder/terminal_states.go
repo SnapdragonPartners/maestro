@@ -42,7 +42,8 @@ func (c *Coder) cleanupComposeStack(ctx context.Context, sm *agent.BaseStateMach
 		return
 	}
 
-	projectName := c.GetAgentID()
+	// Project name must match the naming convention in compose_up tool
+	projectName := "maestro-" + c.GetAgentID()
 	composePath := demo.ComposeFilePath(workspacePath)
 
 	c.logger.Info("🐳 Cleaning up compose stack for agent %s", projectName)

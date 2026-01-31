@@ -10,11 +10,16 @@ import (
 // ComposeUpTool provides MCP interface for starting Docker Compose stacks.
 type ComposeUpTool struct {
 	workDir string // Agent workspace directory
+	agentID string // Agent ID for project name isolation
 }
 
 // NewComposeUpTool creates a new compose up tool instance.
-func NewComposeUpTool(workDir string) *ComposeUpTool {
-	return &ComposeUpTool{workDir: workDir}
+// The agentID is used as the Docker Compose project name to isolate stacks per agent.
+func NewComposeUpTool(workDir, agentID string) *ComposeUpTool {
+	return &ComposeUpTool{
+		workDir: workDir,
+		agentID: agentID,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -59,9 +64,14 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 		}, nil
 	}
 
-	// Create stack with a generic project name (will be overridden by coder context)
+	// Create stack with project name derived from agent ID for isolation
+	// This ensures each agent's compose stack is independent
 	composePath := demo.ComposeFilePath(c.workDir)
-	stack := demo.NewStack("dev", composePath, "")
+	projectName := "maestro-" + c.agentID
+	if c.agentID == "" {
+		projectName = "maestro-dev" // Fallback if no agent ID
+	}
+	stack := demo.NewStack(projectName, composePath, "")
 
 	// Run docker compose up
 	if err := stack.Up(ctx); err != nil {

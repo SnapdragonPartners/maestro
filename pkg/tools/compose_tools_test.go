@@ -5,7 +5,7 @@ import (
 )
 
 func TestComposeUpTool_Definition(t *testing.T) {
-	tool := NewComposeUpTool("/tmp")
+	tool := NewComposeUpTool("/tmp", "test-agent")
 	def := tool.Definition()
 
 	if def.Name != "compose_up" {
@@ -62,7 +62,7 @@ func TestComposeTools_PromptDocumentation(t *testing.T) {
 		tool     interface{ PromptDocumentation() string }
 		contains string
 	}{
-		{"compose_up", NewComposeUpTool("/tmp"), "compose_up"},
+		{"compose_up", NewComposeUpTool("/tmp", "test-agent"), "compose_up"},
 		{"compose_down", NewComposeDownTool("/tmp"), "compose_down"},
 		{"compose_logs", NewComposeLogsTool("/tmp"), "compose_logs"},
 		{"compose_status", NewComposeStatusTool("/tmp"), "compose_status"},
@@ -80,7 +80,7 @@ func TestComposeTools_PromptDocumentation(t *testing.T) {
 
 func TestComposeUpTool_NoComposeFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewComposeUpTool(tmpDir)
+	tool := NewComposeUpTool(tmpDir, "test-agent")
 
 	result, err := tool.Exec(t.Context(), nil)
 	if err != nil {
