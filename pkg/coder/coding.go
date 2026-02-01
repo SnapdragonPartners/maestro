@@ -28,6 +28,16 @@ func (c *Coder) handleCoding(ctx context.Context, sm *agent.BaseStateMachine) (p
 
 // handleInitialCoding handles the main coding workflow.
 func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+	// Ensure compose stack is running if compose.yml exists in workspace
+	// This makes external services (databases, caches) available for integration tests during coding
+	workspacePath := utils.GetStateValueOr[string](sm, KeyWorkspacePath, "")
+	if workspacePath != "" {
+		if err := c.ensureComposeStackRunning(ctx, workspacePath); err != nil {
+			// Log warning but don't fail coding - compose services are optional
+			c.logger.Warn("⚠️ Compose stack startup warning: %v", err)
+		}
+	}
+
 	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), MaxCodingIterations, StateCoding); budgetExceeded {
 		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
 		// Store effect for BUDGET_REVIEW state to execute

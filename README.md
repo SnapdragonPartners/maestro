@@ -109,6 +109,14 @@ See the canonical state diagrams for details:
   - Coders run read-only for planning, read-write for coding
   - Provides security isolation and portability
 
+- **Docker Compose:**
+  - Specs requiring external services (PostgreSQL, Redis, etc.) use Docker Compose
+  - Place a `compose.yml` in your project's `.maestro/` directory
+  - Coders call `compose_up` to start services, which creates a Docker network connecting services to the coder container
+  - Compose stacks are automatically started at the beginning of CODING and TESTING states
+  - Services are isolated per-agent using project name prefixes (`maestro-<agent-id>`)
+  - No technology downgrades needed—if your spec says PostgreSQL, use PostgreSQL
+
 - **Makefiles:**
   - Used for build, test, lint, run
   - Either wrap your existing build tool or override targets in config
