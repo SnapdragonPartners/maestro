@@ -151,7 +151,7 @@ func (c *Coder) checkAndReindexKnowledge() {
 
 // applyPendingContainerConfig applies any pending container configuration after successful merge.
 func (c *Coder) applyPendingContainerConfig() {
-	name, dockerfile, imageID, exists := c.GetPendingContainerConfig()
+	name, dockerfile, imageID, _, exists := c.GetPendingContainerConfig()
 	if !exists {
 		return
 	}

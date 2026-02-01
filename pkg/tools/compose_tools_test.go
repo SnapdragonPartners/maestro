@@ -1,11 +1,12 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 )
 
 func TestComposeUpTool_Definition(t *testing.T) {
-	tool := NewComposeUpTool("/tmp")
+	tool := NewComposeUpTool("/tmp", "test-agent")
 	def := tool.Definition()
 
 	if def.Name != "compose_up" {
@@ -62,7 +63,7 @@ func TestComposeTools_PromptDocumentation(t *testing.T) {
 		tool     interface{ PromptDocumentation() string }
 		contains string
 	}{
-		{"compose_up", NewComposeUpTool("/tmp"), "compose_up"},
+		{"compose_up", NewComposeUpTool("/tmp", "test-agent"), "compose_up"},
 		{"compose_down", NewComposeDownTool("/tmp"), "compose_down"},
 		{"compose_logs", NewComposeLogsTool("/tmp"), "compose_logs"},
 		{"compose_status", NewComposeStatusTool("/tmp"), "compose_status"},
@@ -80,7 +81,7 @@ func TestComposeTools_PromptDocumentation(t *testing.T) {
 
 func TestComposeUpTool_NoComposeFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	tool := NewComposeUpTool(tmpDir)
+	tool := NewComposeUpTool(tmpDir, "test-agent")
 
 	result, err := tool.Exec(t.Context(), nil)
 	if err != nil {
@@ -151,5 +152,54 @@ func TestComposeStatusTool_NoComposeFile(t *testing.T) {
 	// Should mention no compose file found
 	if result.Content == "" {
 		t.Error("expected non-empty content")
+	}
+}
+
+func TestComposeUpTool_PathValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		workDir   string
+		wantError bool
+		errorMsg  string
+	}{
+		{
+			name:      "valid absolute path",
+			workDir:   "/workspace/project",
+			wantError: false,
+		},
+		{
+			name:      "relative path rejected",
+			workDir:   "relative/path",
+			wantError: true,
+			errorMsg:  "workspace path must be absolute",
+		},
+		{
+			name:      "path traversal in workDir",
+			workDir:   "/workspace/../../../etc",
+			wantError: false, // Clean path will normalize this, but compose file won't exist
+		},
+		{
+			name:      "empty path rejected",
+			workDir:   "",
+			wantError: true,
+			errorMsg:  "workspace path must be absolute",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool := NewComposeUpTool(tt.workDir, "test-agent")
+			err := tool.validateWorkspacePath()
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }

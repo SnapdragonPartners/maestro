@@ -85,3 +85,11 @@ When you have completed your analysis, you MUST call the `submit_stories` tool w
 - **App examples**: Language module setup (go.mod for Go, package.json for Node.js, requirements.txt for Python), build system configuration (Makefiles, build.gradle), linting setup (golangci-lint for Go, eslint for JavaScript, ruff for Python), language-specific tools, feature implementation, bug fixes, algorithm development, API endpoints, business logic, data processing
 - **Key distinction**: If a task requires language-specific knowledge or toolchain (Go, Node.js, Python, etc.), classify as "app"
 - **When in doubt, classify as "app"** since app containers provide full development environments with language toolchains
+
+**External Services (Databases, Caches, etc.):**
+When a story requires external services like databases (PostgreSQL, MySQL), caches (Redis, Memcached), message queues (RabbitMQ, Kafka), or other infrastructure:
+- **Include in story description**: Explicitly state that the story should use Docker Compose for external services
+- **Specify the compose file location**: Services should be defined in `.maestro/compose.yml`
+- **Use the compose_up tool**: Instruct coders to use the `compose_up` tool to start required services
+- **Example guidance in story**: "Use Docker Compose (`.maestro/compose.yml`) to run PostgreSQL. Call `compose_up` to start the database before running tests."
+- **Do NOT assume services are pre-running**: Each story that needs services must explicitly manage them via compose

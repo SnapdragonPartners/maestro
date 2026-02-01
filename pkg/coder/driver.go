@@ -70,6 +70,7 @@ type Coder struct {
 	pendingContainerName       string
 	pendingContainerDockerfile string
 	pendingContainerImageID    string
+	pendingDockerfileHash      string // SHA256 hash of Dockerfile when container was built
 	hasPendingContainerConfig  bool
 }
 
@@ -1200,6 +1201,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 		ReadOnly:        true,                  // Planning is read-only
 		NetworkDisabled: false,                 // Network enabled for builds/tests
 		WorkDir:         c.workDir,
+		AgentID:         c.GetAgentID(), // Required for compose_up project name isolation
 	}
 
 	return tools.NewProvider(&agentCtx, planningTools)
@@ -1223,21 +1225,10 @@ func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
+		AgentID:         c.GetAgentID(), // Required for compose_up project name isolation
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
-}
-
-// filterOutContainerSwitch removes container_switch from a tool list.
-// This is used for Claude Code mode where container_switch would destroy the session.
-func filterOutContainerSwitch(toolList []string) []string {
-	filtered := make([]string, 0, len(toolList))
-	for _, tool := range toolList {
-		if tool != tools.ToolContainerSwitch {
-			filtered = append(filtered, tool)
-		}
-	}
-	return filtered
 }
 
 // filterOutTodoTools removes todo tools from a tool list.
@@ -1258,15 +1249,17 @@ func filterOutTodoTools(toolList []string) []string {
 }
 
 // createClaudeCodeCodingToolProvider creates a ToolProvider for Claude Code mode coding.
-// This excludes container_switch (would destroy session) and todo tools (Claude Code has built-in).
+// This excludes todo tools (Claude Code has built-in) but INCLUDES container_switch.
+// Container switch is handled via SignalContainerSwitch which triggers container restart with session resume.
 func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.ToolProvider {
 	// Determine coding tools based on story type
-	// Filter out: container_switch (destroys session), todo tools (Claude Code has built-in)
+	// Filter out: todo tools (Claude Code has built-in)
+	// NOTE: container_switch is INCLUDED - we handle it via SignalContainerSwitch
 	var codingTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
-		codingTools = filterOutTodoTools(filterOutContainerSwitch(tools.DevOpsCodingTools))
+		codingTools = filterOutTodoTools(tools.DevOpsCodingTools)
 	} else {
-		codingTools = filterOutTodoTools(filterOutContainerSwitch(tools.AppCodingTools))
+		codingTools = filterOutTodoTools(tools.AppCodingTools)
 	}
 
 	// Create agent context for coding (read-write access)
@@ -1284,14 +1277,16 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.Tool
 }
 
 // createClaudeCodePlanningToolProvider creates a ToolProvider for Claude Code mode planning.
-// This excludes container_switch which would destroy the Claude Code session.
+// This INCLUDES container_switch - we handle it via SignalContainerSwitch which triggers
+// container restart with session resume.
 func (c *Coder) createClaudeCodePlanningToolProvider(storyType string) *tools.ToolProvider {
-	// Determine planning tools based on story type and filter out container_switch
+	// Determine planning tools based on story type
+	// NOTE: container_switch is INCLUDED - we handle it via SignalContainerSwitch
 	var planningTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
-		planningTools = filterOutContainerSwitch(tools.DevOpsPlanningTools)
+		planningTools = tools.DevOpsPlanningTools
 	} else {
-		planningTools = filterOutContainerSwitch(tools.AppPlanningTools)
+		planningTools = tools.AppPlanningTools
 	}
 
 	// Create agent context for planning (read-only access)
@@ -1560,20 +1555,29 @@ func (c *Coder) GetIncompleteTodoCount() int {
 
 // SetPendingContainerConfig stores pending container configuration for post-merge application.
 // Implements the tools.Agent interface for container_update tool.
-func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID string) {
+// Also sets state keys for container modification tracking (used by TESTING state).
+func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID, dockerfileHash string) {
 	c.pendingContainerName = name
 	c.pendingContainerDockerfile = dockerfile
 	c.pendingContainerImageID = imageID
+	c.pendingDockerfileHash = dockerfileHash
 	c.hasPendingContainerConfig = true
-	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s",
-		name, dockerfile, imageID)
+
+	// Set state keys for container modification tracking
+	// This allows TESTING state to detect container changes and run appropriate tests
+	c.BaseStateMachine.SetStateData(KeyContainerModified, true)
+	c.BaseStateMachine.SetStateData(KeyNewContainerImage, imageID)
+	c.BaseStateMachine.SetStateData(KeyDockerfileHash, dockerfileHash)
+
+	c.logger.Info("🐳 Stored pending container config: name=%s, dockerfile=%s, imageID=%s, hash=%s (state keys set)",
+		name, dockerfile, imageID, dockerfileHash[:16]+"...")
 }
 
 // GetPendingContainerConfig retrieves pending container configuration.
 // Returns empty values and false if no pending config exists.
 // Implements the tools.Agent interface for await_merge state.
-func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID string, exists bool) {
-	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.hasPendingContainerConfig
+func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool) {
+	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.pendingDockerfileHash, c.hasPendingContainerConfig
 }
 
 // logToolExecution logs a tool execution to the database for debugging and analysis.

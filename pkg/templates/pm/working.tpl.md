@@ -96,10 +96,11 @@ The architect reviewed your previous spec and requested changes:
 - Usability requirements
 - Scalability needs
 
-### 6. Dependencies
+### 6. Dependencies & Infrastructure
 - Other features this depends on
 - External systems or APIs
 - Data dependencies
+- **External services (databases, caches, queues)**: These ARE supported via Docker Compose - coders use `.maestro/compose.yml` to run PostgreSQL, Redis, etc. locally. Do NOT suggest alternatives like SQLite when user wants a real database.
 
 ## Tools Available
 
@@ -185,6 +186,7 @@ priority: must  # must, should, could
 - Skip acceptance criteria (even if informal)
 - Over-worry about strict formatting (architect will provide feedback)
 - Ignore user expertise level
+- **Suggest technology downgrades** (e.g., SQLite instead of PostgreSQL) - the build environment supports real databases via Docker Compose
 
 {{if not .Extra.ConversationHistory}}
 ## Getting Started

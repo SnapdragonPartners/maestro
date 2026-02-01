@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -27,6 +28,27 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 		return proto.StateError, false, logx.Errorf("no task content available for planning")
 	}
 
+	// Check for pending container switch (from SignalContainerSwitch)
+	containerSwitchTarget := utils.GetStateValueOr[string](sm, KeyContainerSwitchTarget, "")
+	if containerSwitchTarget != "" {
+		c.logger.Info("🐳 Processing pending container switch to: %s", containerSwitchTarget)
+
+		// Clear the pending switch target
+		sm.SetStateData(KeyContainerSwitchTarget, nil)
+
+		// Perform the container switch
+		if err := c.performContainerSwitch(ctx, containerSwitchTarget); err != nil {
+			c.logger.Error("Container switch failed: %v", err)
+			// Don't fail the story - fall back to current container
+			c.logger.Warn("Continuing with current container after switch failure")
+		} else {
+			c.logger.Info("✅ Container switch to %s completed successfully", containerSwitchTarget)
+		}
+
+		// Reinitialize tool provider to use new container executor
+		c.planningToolProvider = nil // Force recreation
+	}
+
 	// Check for existing session ID (for resume) and resume input (feedback from plan review)
 	// Note: We reuse KeyCodingSessionID and KeyResumeInput since planning and coding never run simultaneously
 	existingSessionID := utils.GetStateValueOr[string](sm, KeyCodingSessionID, "")
@@ -34,11 +56,11 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	shouldResume := existingSessionID != "" && resumeInput != ""
 
 	// Ensure planning tool provider is initialized
-	// Use Claude Code-specific provider that excludes container_switch to prevent session destruction
+	// Uses Claude Code-specific provider that includes container_switch (handled via SignalContainerSwitch)
 	if c.planningToolProvider == nil {
 		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
 		c.planningToolProvider = c.createClaudeCodePlanningToolProvider(storyType)
-		c.logger.Debug("Created Claude Code planning ToolProvider for story type: %s (container_switch excluded)", storyType)
+		c.logger.Debug("Created Claude Code planning ToolProvider for story type: %s", storyType)
 	}
 
 	// Create runner with tool provider for MCP integration
@@ -196,6 +218,25 @@ func (c *Coder) processClaudeCodePlanningResult(sm *agent.BaseStateMachine, resu
 			errMsg = result.Error.Error()
 		}
 		return proto.StateError, false, logx.Errorf("Claude Code planning error: %s", errMsg)
+
+	case claude.SignalContainerSwitch:
+		// Claude Code requested a container switch during planning
+		if result.ContainerSwitchTarget == "" {
+			return proto.StateError, false, logx.Errorf("container_switch called without target container name")
+		}
+
+		c.logger.Info("🐳 Claude Code requested container switch to: %s", result.ContainerSwitchTarget)
+
+		// Store target container for the switch (will be processed on next PLANNING entry)
+		sm.SetStateData(KeyContainerSwitchTarget, result.ContainerSwitchTarget)
+
+		// Set resume input to inform Claude Code about the container switch
+		resumeMsg := fmt.Sprintf("Container switch completed. You are now running in container '%s'. Continue with your planning work.",
+			result.ContainerSwitchTarget)
+		sm.SetStateData(KeyResumeInput, resumeMsg)
+
+		// Return to PLANNING state - the container switch will happen at state entry
+		return StatePlanning, false, nil
 
 	default:
 		return proto.StateError, false, logx.Errorf("unexpected Claude Code signal: %s", result.Signal)

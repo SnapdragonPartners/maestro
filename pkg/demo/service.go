@@ -299,6 +299,9 @@ func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd st
 	args := []string{
 		"run", "-d",
 		"--name", DemoContainerName,
+		// Labels for container identification and cleanup
+		"--label", "com.maestro.managed=true",
+		"--label", "com.maestro.agent=demo",
 		"--network", DemoNetworkName,
 		"--workdir", "/workspace",
 		"--volume", fmt.Sprintf("%s:/workspace", s.workspacePath),
@@ -310,6 +313,11 @@ func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd st
 	if containerPort > 0 {
 		// Map to localhost with Docker-assigned host port
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d", containerPort))
+	}
+
+	// Add session ID label dynamically
+	if s.config != nil && s.config.SessionID != "" {
+		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", s.config.SessionID))
 	}
 
 	args = append(args, imageID, "sh", "-c", combinedCmd)

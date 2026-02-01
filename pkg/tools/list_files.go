@@ -22,7 +22,7 @@ func NewListFilesTool(executor execpkg.Executor, workspaceRoot string, maxResult
 		maxResults = 1000 // Default: 1000 files
 	}
 	if workspaceRoot == "" {
-		workspaceRoot = "/workspace" // Default workspace path
+		workspaceRoot = DefaultWorkspaceDir
 	}
 	return &ListFilesTool{
 		executor:      executor,

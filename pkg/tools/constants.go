@@ -25,6 +25,9 @@ const (
 	ToolContainerList   = "container_list"
 	ToolContainerSwitch = "container_switch"
 
+	// Compose tools.
+	ToolComposeUp = "compose_up"
+
 	// Chat tools.
 	ToolChatPost = "chat_post"
 	ToolChatRead = "chat_read"
@@ -57,12 +60,14 @@ const (
 //nolint:gochecknoglobals // These are constants that need to be globally accessible
 var (
 	// App planning tools - exploration and plan submission for application stories.
-	// Includes chat tools for agent collaboration.
+	// Includes chat tools for agent collaboration and container tools for environment verification.
 	AppPlanningTools = []string{
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
 		ToolStoryComplete,
+		ToolContainerTest,
+		ToolContainerList,
 		ToolChatPost,
 		ToolChatRead,
 		ToolWebSearch,
@@ -84,10 +89,14 @@ var (
 		ToolWebFetch,
 	}
 
-	// DevOps coding tools - infrastructure focus, container operations.
-	// Includes chat tools for agent collaboration.
+	// DevOpsCodingTools - identical to AppCodingTools.
+	// Story type is now a hint for prompts, not tool gating.
+	// Both app and devops stories have access to all coding tools.
 	DevOpsCodingTools = []string{
 		ToolShell,
+		ToolBuild,
+		ToolTest,
+		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
 		ToolContainerBuild,
@@ -95,6 +104,7 @@ var (
 		ToolContainerTest,
 		ToolContainerList,
 		ToolContainerSwitch,
+		ToolComposeUp,
 		ToolChatPost,
 		ToolChatRead,
 		ToolTodosAdd,
@@ -105,7 +115,8 @@ var (
 	}
 
 	// App coding tools - full development environment.
-	// Includes chat tools for agent collaboration.
+	// Includes chat tools for agent collaboration, container tools for environment changes,
+	// and compose for service dependencies.
 	AppCodingTools = []string{
 		ToolShell,
 		ToolBuild,
@@ -113,6 +124,12 @@ var (
 		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
+		ToolContainerBuild,
+		ToolContainerUpdate,
+		ToolContainerTest,
+		ToolContainerList,
+		ToolContainerSwitch,
+		ToolComposeUp,
 		ToolChatPost,
 		ToolChatRead,
 		ToolTodosAdd,

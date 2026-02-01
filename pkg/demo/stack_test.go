@@ -382,3 +382,102 @@ func TestNewStack(t *testing.T) {
 		t.Errorf("Network = %q, want %q", s.Network, "my-network")
 	}
 }
+
+func TestStack_SanitizedComposeFile_StripsContainerName(t *testing.T) {
+	// Create temp directory
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	// Write compose file with hardcoded container_name
+	composeContent := `services:
+  db:
+    image: postgres:15-alpine
+    container_name: helloworld-db
+    environment:
+      POSTGRES_USER: test
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7-alpine
+    container_name: helloworld-redis
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatalf("failed to write compose file: %v", err)
+	}
+
+	s := NewStack("test-project", composePath, "test-network")
+
+	// Call sanitizedComposeFile
+	sanitizedPath, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	if sanitizedPath == "" {
+		t.Fatal("expected sanitized file path, got empty string")
+	}
+	defer os.Remove(sanitizedPath)
+
+	// Read sanitized file
+	sanitizedContent, err := os.ReadFile(sanitizedPath)
+	if err != nil {
+		t.Fatalf("failed to read sanitized file: %v", err)
+	}
+
+	// Verify container_name is removed
+	if strings.Contains(string(sanitizedContent), "container_name") {
+		t.Errorf("sanitized file still contains container_name:\n%s", sanitizedContent)
+	}
+
+	// Verify other content is preserved
+	if !strings.Contains(string(sanitizedContent), "postgres:15-alpine") {
+		t.Error("sanitized file missing postgres image")
+	}
+	if !strings.Contains(string(sanitizedContent), "redis:7-alpine") {
+		t.Error("sanitized file missing redis image")
+	}
+	if !strings.Contains(string(sanitizedContent), "POSTGRES_USER") {
+		t.Error("sanitized file missing environment variable")
+	}
+}
+
+func TestStack_SanitizedComposeFile_NoChangesNeeded(t *testing.T) {
+	// Create temp directory
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	// Write compose file WITHOUT container_name
+	composeContent := `services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: test
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatalf("failed to write compose file: %v", err)
+	}
+
+	s := NewStack("test-project", composePath, "test-network")
+
+	// Call sanitizedComposeFile - should return empty string (no changes needed)
+	sanitizedPath, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	if sanitizedPath != "" {
+		os.Remove(sanitizedPath)
+		t.Errorf("expected empty path when no changes needed, got %q", sanitizedPath)
+	}
+}
+
+func TestStack_SanitizedComposeFile_EmptyComposeFile(t *testing.T) {
+	s := NewStack("test-project", "", "test-network")
+
+	// Call sanitizedComposeFile with empty path
+	sanitizedPath, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	if sanitizedPath != "" {
+		t.Errorf("expected empty path for empty compose file, got %q", sanitizedPath)
+	}
+}

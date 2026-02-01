@@ -78,8 +78,22 @@
 
 **IMPORTANT**: Avoid repeating the exact same tool call multiple times sequentially. If you've already run a command and seen the result, use `ask_question` or `chat_post` to communicate uncertainty rather than running it again immediately.
 
-### Container Management
-- **container_build**, **container_test**, **container_switch**, **container_list**: Use only when you need to modify the development environment itself
+### Environment Tools (Container & Compose)
+
+Container and compose tools are available when you encounter genuine environment prerequisites:
+
+- **container_build**: Build a new container image from Dockerfile changes
+- **container_test**: Verify a container image works correctly (temporary container, doesn't affect current environment)
+- **container_switch**: Switch to a different container (has automatic fallback on failure)
+- **container_update**: Update the pinned target container for future runs
+- **container_list**: List available containers and their status
+- **compose_up**: Bring up Docker Compose services defined in .maestro/compose.yml
+  - **IMPORTANT**: Never use `container_name` in compose.yml - let Docker generate unique names to avoid collisions
+
+**Use these when** you discover missing dependencies (linters, packages, database services) that block your work.
+**For typical application development**, these tools are unnecessary - focus on code changes.
+
+All environment changes will be reviewed by the architect before merge
 
 **Tool Call Specificity Requirements:**
 - Always specify full file paths (e.g., `/workspace/main_test.go` not just `main_test.go`)

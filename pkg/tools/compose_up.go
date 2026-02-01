@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"orchestrator/pkg/demo"
 )
@@ -10,27 +12,27 @@ import (
 // ComposeUpTool provides MCP interface for starting Docker Compose stacks.
 type ComposeUpTool struct {
 	workDir string // Agent workspace directory
+	agentID string // Agent ID for project name isolation
 }
 
 // NewComposeUpTool creates a new compose up tool instance.
-func NewComposeUpTool(workDir string) *ComposeUpTool {
-	return &ComposeUpTool{workDir: workDir}
+// The agentID is used as the Docker Compose project name to isolate stacks per agent.
+func NewComposeUpTool(workDir, agentID string) *ComposeUpTool {
+	return &ComposeUpTool{
+		workDir: workDir,
+		agentID: agentID,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
 func (c *ComposeUpTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "compose_up",
-		Description: "Start Docker Compose services defined in .maestro/compose.yml. Idempotent - compose handles diffing and only recreates changed services.",
+		Description: "Start Docker Compose services defined in .maestro/compose.yml. Idempotent - compose handles diffing and only recreates changed services. Always starts all services defined in the compose file.",
 		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"service": {
-					Type:        "string",
-					Description: "Specific service to start (optional - starts all services if not specified)",
-				},
-			},
-			Required: []string{},
+			Type:       "object",
+			Properties: map[string]Property{},
+			Required:   []string{},
 		},
 	}
 }
@@ -43,15 +45,49 @@ func (c *ComposeUpTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ComposeUpTool) PromptDocumentation() string {
 	return `- **compose_up** - Start Docker Compose services from .maestro/compose.yml
-  - Parameters:
-    - service (optional): specific service to start (starts all if not specified)
+  - No parameters required - starts all services defined in the compose file
   - Idempotent: compose handles diffing and only recreates changed services
   - Use when tests need databases, caches, or other backend services
   - The compose file should be at .maestro/compose.yml in the workspace`
 }
 
+// validateWorkspacePath validates that the workspace path is safe to use.
+// Returns an error if the path is invalid or potentially dangerous.
+func (c *ComposeUpTool) validateWorkspacePath() error {
+	// 1. Must be an absolute path
+	if !filepath.IsAbs(c.workDir) {
+		return fmt.Errorf("workspace path must be absolute, got: %s", c.workDir)
+	}
+
+	// 2. Clean the path to resolve any . or .. elements
+	cleanedWorkDir := filepath.Clean(c.workDir)
+
+	// 3. Build the expected compose path and clean it
+	composePath := filepath.Join(cleanedWorkDir, ".maestro", "compose.yml")
+	cleanedComposePath := filepath.Clean(composePath)
+
+	// 4. Verify the cleaned compose path is still within the workspace
+	// This catches traversal attempts like workDir="/workspace/../../../etc"
+	if !strings.HasPrefix(cleanedComposePath, cleanedWorkDir+string(filepath.Separator)) {
+		return fmt.Errorf("compose path escapes workspace boundary: %s", composePath)
+	}
+
+	// 5. Verify .maestro is in the path (not bypassed via traversal)
+	maestroDir := filepath.Join(cleanedWorkDir, ".maestro")
+	if !strings.HasPrefix(cleanedComposePath, maestroDir+string(filepath.Separator)) {
+		return fmt.Errorf("compose file must be within .maestro directory")
+	}
+
+	return nil
+}
+
 // Exec executes the compose up operation.
 func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult, error) {
+	// Validate workspace path before any file operations
+	if err := c.validateWorkspacePath(); err != nil {
+		return nil, fmt.Errorf("invalid workspace path: %w", err)
+	}
+
 	// Check if compose file exists
 	if !demo.ComposeFileExists(c.workDir) {
 		return &ExecResult{
@@ -59,9 +95,14 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 		}, nil
 	}
 
-	// Create stack with a generic project name (will be overridden by coder context)
+	// Create stack with project name derived from agent ID for isolation
+	// This ensures each agent's compose stack is independent
 	composePath := demo.ComposeFilePath(c.workDir)
-	stack := demo.NewStack("dev", composePath, "")
+	projectName := "maestro-" + c.agentID
+	if c.agentID == "" {
+		projectName = "maestro-dev" // Fallback if no agent ID
+	}
+	stack := demo.NewStack(projectName, composePath, "")
 
 	// Run docker compose up
 	if err := stack.Up(ctx); err != nil {

@@ -377,6 +377,14 @@ clean:
 - **User**: Non-root (`--user=1000:1000`)
 - **Filesystem**: Read-only with writable `/tmp`
 
+### External Services (Databases, Caches, etc.)
+If your application requires external services like PostgreSQL, Redis, or other infrastructure:
+- **Use Docker Compose**: Define services in `.maestro/compose.yml`
+- **Call `compose_up`**: This creates a local Docker network connecting your services to the coder container
+- **Network constraint bypass**: Compose networking is separate from `--network=none` - containers on the compose network CAN communicate with each other
+- **Do NOT downgrade technology choices**: If the spec says PostgreSQL, use PostgreSQL via compose - don't substitute SQLite
+- **Do NOT use `container_name`**: Never hardcode `container_name` in compose.yml - let Docker Compose generate unique names automatically. Hardcoded names cause collisions when multiple agents use the same compose file.
+
 ### Required Tools in Container
 The container must include these tools for Maestro operations:
 - **git** - Version control operations (clone, commit, push, rebase)
