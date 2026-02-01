@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"orchestrator/pkg/utils"
 )
 
 // Stack represents a Docker Compose stack.
@@ -292,7 +294,7 @@ func (s *Stack) CountServices() (int, error) {
 
 // composeFile represents the structure of a docker-compose.yml.
 type composeFile struct {
-	Services map[string]interface{} `yaml:"services"`
+	Services map[string]any `yaml:"services"`
 }
 
 // sanitizedComposeFile creates a sanitized copy of the compose file with container_name removed.
@@ -314,7 +316,7 @@ func (s *Stack) sanitizedComposeFile() (string, error) {
 		return "", fmt.Errorf("failed to parse compose file: %w", unmarshalErr)
 	}
 
-	services, ok := compose["services"].(map[string]any)
+	services, ok := utils.SafeAssert[map[string]any](compose["services"])
 	if !ok {
 		return "", nil // No services to modify
 	}
@@ -322,7 +324,7 @@ func (s *Stack) sanitizedComposeFile() (string, error) {
 	// Strip container_name from all services
 	modified := false
 	for _, svcRaw := range services {
-		svc, ok := svcRaw.(map[string]any)
+		svc, ok := utils.SafeAssert[map[string]any](svcRaw)
 		if !ok {
 			continue
 		}

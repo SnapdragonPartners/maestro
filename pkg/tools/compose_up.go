@@ -28,16 +28,11 @@ func NewComposeUpTool(workDir, agentID string) *ComposeUpTool {
 func (c *ComposeUpTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "compose_up",
-		Description: "Start Docker Compose services defined in .maestro/compose.yml. Idempotent - compose handles diffing and only recreates changed services.",
+		Description: "Start Docker Compose services defined in .maestro/compose.yml. Idempotent - compose handles diffing and only recreates changed services. Always starts all services defined in the compose file.",
 		InputSchema: InputSchema{
-			Type: "object",
-			Properties: map[string]Property{
-				"service": {
-					Type:        "string",
-					Description: "Specific service to start (optional - starts all services if not specified)",
-				},
-			},
-			Required: []string{},
+			Type:       "object",
+			Properties: map[string]Property{},
+			Required:   []string{},
 		},
 	}
 }
@@ -50,8 +45,7 @@ func (c *ComposeUpTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (c *ComposeUpTool) PromptDocumentation() string {
 	return `- **compose_up** - Start Docker Compose services from .maestro/compose.yml
-  - Parameters:
-    - service (optional): specific service to start (starts all if not specified)
+  - No parameters required - starts all services defined in the compose file
   - Idempotent: compose handles diffing and only recreates changed services
   - Use when tests need databases, caches, or other backend services
   - The compose file should be at .maestro/compose.yml in the workspace`
