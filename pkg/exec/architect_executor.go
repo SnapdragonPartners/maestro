@@ -100,6 +100,9 @@ func (a *ArchitectExecutor) Start(ctx context.Context) error {
 
 	// Build docker run command
 	args := []string{"run", "-d", "--name", a.containerName,
+		// Labels for container identification and cleanup
+		"--label", "com.maestro.managed=true",
+		"--label", "com.maestro.agent=architect",
 		// Security hardening
 		"--security-opt", "no-new-privileges",
 		// Read-only root filesystem
@@ -180,6 +183,11 @@ func (a *ArchitectExecutor) Start(ctx context.Context) error {
 	} else {
 		args = append(args, "--volume", fmt.Sprintf("%s:/mnt/mirror:ro", hostMirrorPath))
 		a.logger.Debug("Mounted mirror directory: %s", hostMirrorPath)
+	}
+
+	// Add session ID label dynamically
+	if cfg, cfgErr := config.GetConfig(); cfgErr == nil && cfg.SessionID != "" {
+		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", cfg.SessionID))
 	}
 
 	// Add writable tmpfs directories, environment variables, image and command

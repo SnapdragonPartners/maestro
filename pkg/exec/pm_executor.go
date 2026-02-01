@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
 
@@ -101,6 +102,9 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 	args := []string{
 		"run", "-d",
 		"--name", p.containerName,
+		// Labels for container identification and cleanup
+		"--label", "com.maestro.managed=true",
+		"--label", "com.maestro.agent=pm",
 		"--security-opt", "no-new-privileges",
 		"--read-only",
 		"--cpus", "2",
@@ -117,6 +121,14 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 		"--env", "HOME=/tmp",
 		p.image,
 		"sleep", "infinity",
+	}
+
+	// Add session ID label dynamically (not available at compile time)
+	if cfg, cfgErr := config.GetConfig(); cfgErr == nil && cfg.SessionID != "" {
+		// Insert session label before image (which is at index len(args)-2)
+		sessionLabel := []string{"--label", fmt.Sprintf("com.maestro.session=%s", cfg.SessionID)}
+		insertIdx := len(args) - 2 // Before image and "sleep infinity"
+		args = append(args[:insertIdx], append(sessionLabel, args[insertIdx:]...)...)
 	}
 
 	p.logger.Info("Starting PM container: %s %s", p.dockerCmd, strings.Join(args, " "))

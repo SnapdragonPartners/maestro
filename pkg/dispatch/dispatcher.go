@@ -348,6 +348,12 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	// Signal shutdown to all goroutines.
 	close(d.shutdown)
 
+	// Stop all registered containers before shutting down.
+	d.logger.Info("📦 Stopping all registered containers...")
+	if err := d.containerRegistry.StopAllContainersDirect(ctx); err != nil {
+		d.logger.Warn("📦 Some containers failed to stop during shutdown: %v", err)
+	}
+
 	// Shutdown container registry cleanup routine.
 	d.containerRegistry.Shutdown()
 

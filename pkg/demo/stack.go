@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -58,13 +59,29 @@ func (s *Stack) baseArgs() []string {
 
 // Up starts the compose stack.
 // This is idempotent - compose handles diffing internally and only recreates changed services.
+// Before starting, it creates a sanitized copy of the compose file with container_name removed
+// to prevent collisions between different compose projects using the same file.
 func (s *Stack) Up(ctx context.Context) error {
 	if s.ProjectName == "" {
 		return fmt.Errorf("project name cannot be empty")
 	}
 
-	args := s.baseArgs()
-	args = append(args, "up", "-d", "--wait")
+	// Create sanitized compose file (strips container_name to prevent collisions)
+	composeFile := s.ComposeFile
+	if s.ComposeFile != "" {
+		sanitized, sanitizeErr := s.sanitizedComposeFile()
+		if sanitizeErr == nil && sanitized != "" {
+			composeFile = sanitized
+			defer func() { _ = os.Remove(sanitized) }() // Clean up temp file after compose up
+		}
+		// If sanitization fails, fall back to original file
+	}
+
+	args := []string{"compose", "-p", s.ProjectName}
+	if composeFile != "" {
+		args = append(args, "-f", composeFile)
+	}
+	args = append(args, "up", "-d", "--wait", "--remove-orphans")
 
 	cmd := s.runCommand(ctx, "docker", args...)
 	output, err := cmd.CombinedOutput()
@@ -77,13 +94,14 @@ func (s *Stack) Up(ctx context.Context) error {
 
 // Down stops and removes the compose stack.
 // The -v flag removes volumes to ensure clean state.
+// The --remove-orphans flag removes containers for services not defined in the compose file.
 func (s *Stack) Down(ctx context.Context) error {
 	if s.ProjectName == "" {
 		return fmt.Errorf("project name cannot be empty")
 	}
 
 	args := s.baseArgs()
-	args = append(args, "down", "-v")
+	args = append(args, "down", "-v", "--remove-orphans", "--timeout", "30")
 
 	cmd := s.runCommand(ctx, "docker", args...)
 	output, err := cmd.CombinedOutput()
@@ -275,6 +293,64 @@ func (s *Stack) CountServices() (int, error) {
 // composeFile represents the structure of a docker-compose.yml.
 type composeFile struct {
 	Services map[string]interface{} `yaml:"services"`
+}
+
+// sanitizedComposeFile creates a sanitized copy of the compose file with container_name removed.
+// Returns the path to the temp file, or empty string if no sanitization was needed.
+// The caller is responsible for removing the temp file when done.
+func (s *Stack) sanitizedComposeFile() (string, error) {
+	if s.ComposeFile == "" {
+		return "", nil
+	}
+
+	data, err := os.ReadFile(s.ComposeFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read compose file: %w", err)
+	}
+
+	// Parse as generic map to preserve structure
+	var compose map[string]any
+	if unmarshalErr := yaml.Unmarshal(data, &compose); unmarshalErr != nil {
+		return "", fmt.Errorf("failed to parse compose file: %w", unmarshalErr)
+	}
+
+	services, ok := compose["services"].(map[string]any)
+	if !ok {
+		return "", nil // No services to modify
+	}
+
+	// Strip container_name from all services
+	modified := false
+	for _, svcRaw := range services {
+		svc, ok := svcRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if _, exists := svc["container_name"]; exists {
+			delete(svc, "container_name")
+			modified = true
+		}
+	}
+
+	if !modified {
+		return "", nil // No changes needed, use original file
+	}
+
+	// Write sanitized version to temp file
+	newData, err := yaml.Marshal(compose)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal compose file: %w", err)
+	}
+
+	tmpFile := filepath.Join(os.TempDir(),
+		fmt.Sprintf("%s-sanitized-%d.yml", s.ProjectName, time.Now().UnixNano()))
+
+	if err := os.WriteFile(tmpFile, newData, 0600); err != nil {
+		return "", fmt.Errorf("failed to write sanitized compose file: %w", err)
+	}
+
+	return tmpFile, nil
 }
 
 // ComposeFileExists checks if a compose file exists at the given workspace path.

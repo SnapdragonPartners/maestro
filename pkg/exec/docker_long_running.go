@@ -121,6 +121,16 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	// Build docker run command for container.
 	args := []string{"run", "-d", "--name", containerName}
 
+	// Add labels for container identification and cleanup.
+	// These allow cleanup by session (isolates multiple Maestro instances) or globally.
+	args = append(args, "--label", "com.maestro.managed=true")
+	if d.agentID != "" {
+		args = append(args, "--label", fmt.Sprintf("com.maestro.agent=%s", d.agentID))
+	}
+	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
+		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", cfg.SessionID))
+	}
+
 	// Security hardening.
 	args = append(args, "--security-opt", "no-new-privileges")
 

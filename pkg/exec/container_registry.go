@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	osExec "os/exec"
 	"sync"
 	"time"
 
@@ -275,4 +276,50 @@ func (r *ContainerRegistry) Shutdown() {
 
 	close(r.shutdown)
 	<-r.done
+}
+
+// StopAllContainersDirect stops all registered containers using docker commands directly.
+// This is used during shutdown when executors may not be available.
+func (r *ContainerRegistry) StopAllContainersDirect(ctx context.Context) error {
+	r.mu.Lock()
+	containers := make(map[string]*RegistryContainerInfo)
+	for name, info := range r.containers {
+		containers[name] = info
+	}
+	r.mu.Unlock()
+
+	if len(containers) == 0 {
+		r.logger.Info("📦 No registered containers to stop")
+		return nil
+	}
+
+	r.logger.Info("📦 Stopping %d registered containers...", len(containers))
+
+	var errors []error
+	for containerName, info := range containers {
+		r.logger.Info("📦 Stopping container %s (agent: %s)", containerName, info.AgentID)
+
+		// Use docker stop with timeout, then docker rm -f as fallback
+		stopCmd := osExec.CommandContext(ctx, "docker", "stop", "-t", "10", containerName)
+		if err := stopCmd.Run(); err != nil {
+			r.logger.Warn("📦 docker stop failed for %s, trying force remove: %v", containerName, err)
+			rmCmd := osExec.CommandContext(ctx, "docker", "rm", "-f", containerName)
+			if rmErr := rmCmd.Run(); rmErr != nil {
+				r.logger.Error("📦 Failed to remove container %s: %v", containerName, rmErr)
+				errors = append(errors, rmErr)
+				continue
+			}
+		}
+
+		r.Unregister(containerName)
+		r.logger.Info("📦 Stopped container %s", containerName)
+	}
+
+	if len(errors) > 0 {
+		r.logger.Warn("📦 Some containers failed to stop: %d errors", len(errors))
+		return errors[0]
+	}
+
+	r.logger.Info("📦 All registered containers stopped successfully")
+	return nil
 }

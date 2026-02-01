@@ -163,6 +163,109 @@ After these changes:
    - Full coder flow: commit → push → PR creation
    - Bootstrap container protection
 
+## Part 3: Docker Compose Container Naming
+
+### Problem
+
+When multiple agents (coder-001, coder-002, demo) use the same `compose.yml` file with different project names (`-p maestro-coder-001`, `-p demo`), hardcoded `container_name` values cause collisions:
+
+```yaml
+# PROBLEMATIC - causes collisions
+services:
+  db:
+    container_name: helloworld-db  # All projects try to create this same name!
+```
+
+### Solution: Sanitize Compose Files
+
+The `Stack.Up()` method sanitizes compose files before running them:
+
+1. **Strip `container_name`**: Remove any hardcoded `container_name` from the compose file
+2. **Use temp file**: Write sanitized version to `/tmp/` to preserve original for diffs/PRs
+3. **Let Docker generate names**: Docker Compose automatically creates unique names: `{project}-{service}-{instance}`
+
+### Implementation
+
+```go
+// In Stack.Up():
+// 1. Read compose file
+// 2. Strip container_name from all services
+// 3. Write to temp file
+// 4. Pass temp file to docker compose -f
+```
+
+### Additional Flags
+
+- `--remove-orphans`: Added to `compose up` and `compose down` to clean up services removed from the file
+
+### Prompt Guidance
+
+Templates instruct coders to never use `container_name` in compose files:
+- `bootstrap.tpl.md`: "Do NOT use `container_name` - let Docker Compose generate unique names"
+- `app_coding.tpl.md`: Similar guidance in compose_up tool documentation
+
+### Defense in Depth
+
+1. **Prompt guidance**: Coders are told not to use `container_name`
+2. **Server-side sanitization**: `Stack.Up()` strips `container_name` even if coders add it
+3. **Cleanup**: `--remove-orphans` prevents accumulation of stale containers
+
+## Part 4: Container Labeling and Cleanup
+
+### Container Labels
+
+All Maestro-managed containers are labeled for identification and cleanup:
+
+```bash
+--label com.maestro.managed=true      # All Maestro containers
+--label com.maestro.agent=<agent-id>  # Agent that owns the container
+--label com.maestro.session=<uuid>    # Session ID for multi-instance isolation
+```
+
+### Cleanup on Shutdown
+
+The dispatcher's `Stop()` method calls `StopAllContainersDirect()` to stop all registered containers:
+
+1. Iterates through all containers in the registry
+2. Calls `docker stop -t 10` for graceful shutdown
+3. Falls back to `docker rm -f` if stop fails
+4. Logs each container being stopped
+
+### Manual Cleanup
+
+To clean up all Maestro containers (all sessions):
+```bash
+docker rm -f $(docker ps -q --filter "label=com.maestro.managed=true")
+```
+
+To clean up containers from a specific session:
+```bash
+docker rm -f $(docker ps -q --filter "label=com.maestro.session=<session-id>")
+```
+
+## Container Ownership & Cleanup Summary
+
+| Container | Name Pattern | Labels | Cleanup Method |
+|-----------|--------------|--------|----------------|
+| PM | `maestro-pm` | `com.maestro.*` | `ContainerRegistry.StopAllContainersDirect()` |
+| Architect | `maestro-architect` | `com.maestro.*` | `ContainerRegistry.StopAllContainersDirect()` |
+| Coders | `maestro-story-*` | `com.maestro.*` | `ContainerRegistry.StopAllContainersDirect()` |
+| Demo | `maestro-demo` | `com.maestro.*` | `DemoService.Cleanup()` |
+| Demo Compose | `demo-<service>-1` | Docker Compose native | `ComposeRegistry.Cleanup()` |
+| Coder Compose | `maestro-coder-*-<service>-1` | Docker Compose native (sanitized) | `ComposeRegistry.Cleanup()` |
+
+### No Collision Between PM and Demo
+
+- PM runs in `maestro-pm` container (read tools for spec generation)
+- Demo runs in `maestro-demo` container OR compose project `demo`
+- Different names, different purposes, no overlap
+
+### Shutdown Order (in kernel.go)
+
+1. `DemoService.Cleanup()` - stops demo container/compose
+2. `ComposeRegistry.Cleanup()` - stops all compose stacks
+3. `Dispatcher.Stop()` → `ContainerRegistry.StopAllContainersDirect()` - stops PM, architect, coders
+
 ## Acceptance Criteria
 
 - [ ] Coder containers start successfully without `gh` installed
@@ -170,3 +273,7 @@ After these changes:
 - [ ] `maestro-bootstrap` name is protected from overwrites
 - [ ] Project containers use auto-generated names
 - [ ] Existing PR creation flow continues to work (already on host)
+- [ ] Docker Compose files are sanitized to remove `container_name`
+- [ ] Multiple agents can use the same compose.yml without collisions
+- [ ] All containers are labeled with `com.maestro.*` labels
+- [ ] Containers are stopped during graceful shutdown

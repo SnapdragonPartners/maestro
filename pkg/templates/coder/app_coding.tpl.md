@@ -88,6 +88,7 @@ Container and compose tools are available when you encounter genuine environment
 - **container_update**: Update the pinned target container for future runs
 - **container_list**: List available containers and their status
 - **compose_up**: Bring up Docker Compose services defined in .maestro/compose.yml
+  - **IMPORTANT**: Never use `container_name` in compose.yml - let Docker generate unique names to avoid collisions
 
 **Use these when** you discover missing dependencies (linters, packages, database services) that block your work.
 **For typical application development**, these tools are unnecessary - focus on code changes.
