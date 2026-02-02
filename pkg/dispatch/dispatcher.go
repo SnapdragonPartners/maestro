@@ -591,14 +591,21 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	// Validate story_id presence - only SPEC messages and story-independent messages are allowed without story_id
 	// Story-independent messages include:
 	// 1. REQUEST with ApprovalTypeSpec - spec approval requests from PM to architect
-	// 2. RESPONSE to PM - spec approval responses from architect to PM
-	// 3. REQUEST to PM - interview requests (for future escalations)
+	// 2. REQUEST with HotfixRequestPayload - hotfix approval requests from PM to architect
+	// 3. RESPONSE to PM - spec approval responses from architect to PM
+	// 4. REQUEST to PM - interview requests (for future escalations)
 	isStoryIndependentMessage := false
 	if msg.Type == proto.MsgTypeREQUEST {
 		// Check if this is a spec approval request by examining the approval type in the payload
 		if payload := msg.GetTypedPayload(); payload != nil {
 			if approvalPayload, err := payload.ExtractApprovalRequest(); err == nil {
 				isStoryIndependentMessage = (approvalPayload.ApprovalType == proto.ApprovalTypeSpec)
+			}
+			// Check if this is a hotfix request (also story-independent - story created after approval)
+			if !isStoryIndependentMessage {
+				if _, err := payload.ExtractHotfixRequest(); err == nil {
+					isStoryIndependentMessage = true
+				}
 			}
 		}
 		// Also allow PM-destined requests (interview requests from WebUI)
