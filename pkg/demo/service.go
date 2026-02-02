@@ -1059,16 +1059,38 @@ type composeServiceWithLabels struct {
 	Ports  []string       `yaml:"ports"`
 }
 
-// extractHostPort extracts the host port from a port mapping string like "8080:80" or "8080".
+// extractHostPort extracts the host port from a port mapping string.
+// Supported formats:
+//   - "8080" → 8080
+//   - "8080:80" → 8080
+//   - "127.0.0.1:8080:80" → 8080
+//   - "8080:80/tcp" → 8080
 func extractHostPort(portSpec string) int {
-	// Handle "host:container" format
+	// Remove protocol suffix if present (e.g., "/tcp", "/udp")
+	if idx := strings.Index(portSpec, "/"); idx != -1 {
+		portSpec = portSpec[:idx]
+	}
+
 	parts := strings.Split(portSpec, ":")
-	if len(parts) >= 1 {
-		var port int
-		// Take the first part (host port)
+	var port int
+
+	switch len(parts) {
+	case 1:
+		// Just port: "8080"
 		if _, err := fmt.Sscanf(parts[0], "%d", &port); err == nil {
 			return port
 		}
+	case 2:
+		// host:container: "8080:80"
+		if _, err := fmt.Sscanf(parts[0], "%d", &port); err == nil {
+			return port
+		}
+	case 3:
+		// ip:host:container: "127.0.0.1:8080:80"
+		if _, err := fmt.Sscanf(parts[1], "%d", &port); err == nil {
+			return port
+		}
 	}
+
 	return 0
 }

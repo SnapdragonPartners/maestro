@@ -533,3 +533,32 @@ func TestService_CheckComposeAppService_NoLabel(t *testing.T) {
 		t.Error("expected no app service without maestro.app label")
 	}
 }
+
+// TestExtractHostPort tests port extraction from various Docker port mapping formats.
+func TestExtractHostPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		portSpec string
+		want     int
+	}{
+		{"just port", "8080", 8080},
+		{"host:container", "8080:80", 8080},
+		{"ip:host:container", "127.0.0.1:8080:80", 8080},
+		{"with tcp suffix", "8080:80/tcp", 8080},
+		{"with udp suffix", "8080:80/udp", 8080},
+		{"ip with tcp suffix", "127.0.0.1:8080:80/tcp", 8080},
+		{"different ports", "3000:3000", 3000},
+		{"localhost binding", "0.0.0.0:9000:8000", 9000},
+		{"empty string", "", 0},
+		{"invalid format", "invalid", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractHostPort(tt.portSpec)
+			if got != tt.want {
+				t.Errorf("extractHostPort(%q) = %d, want %d", tt.portSpec, got, tt.want)
+			}
+		})
+	}
+}
