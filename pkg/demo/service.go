@@ -455,6 +455,14 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d", containerPort))
 	}
 
+	// Pass .env file if it exists (Docker Compose convention for app environment)
+	// This allows coder to define DATABASE_URL etc. alongside compose.yml
+	envFilePath := filepath.Join(s.workspacePath, ".maestro", ".env")
+	if _, err := os.Stat(envFilePath); err == nil {
+		args = append(args, "--env-file", envFilePath)
+		s.logger.Info("   Using environment file: .maestro/.env")
+	}
+
 	// Add session ID label dynamically
 	if s.config != nil && s.config.SessionID != "" {
 		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", s.config.SessionID))
