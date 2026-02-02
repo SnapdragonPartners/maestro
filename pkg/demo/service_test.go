@@ -37,11 +37,40 @@ func createComposeFile(t *testing.T, dir string) string {
 	}
 
 	composePath := filepath.Join(maestroDir, "compose.yml")
+	// Include maestro.app label so tests use compose-only mode (not hybrid)
 	content := `services:
   demo:
     image: nginx
     ports:
       - "8081:80"
+    labels:
+      maestro.app: "true"
+`
+	if err := os.WriteFile(composePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	return composePath
+}
+
+// createComposeFileWithoutApp creates a compose file with only support services (db),
+// which triggers hybrid mode (compose for deps, app runs separately).
+//
+//nolint:unparam // return value useful for potential future tests
+func createComposeFileWithoutApp(t *testing.T, dir string) string {
+	t.Helper()
+
+	maestroDir := filepath.Join(dir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	composePath := filepath.Join(maestroDir, "compose.yml")
+	content := `services:
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
 `
 	if err := os.WriteFile(composePath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -443,5 +472,64 @@ func TestService_Cleanup(t *testing.T) {
 
 	if svc.IsRunning() {
 		t.Error("expected service to be stopped after cleanup")
+	}
+}
+
+// TestService_HybridComposeMode_DetectsMode tests that hybrid mode is correctly
+// detected when compose file has no maestro.app label.
+// Note: This only tests mode detection, not the full start flow (which requires Docker).
+func TestService_HybridComposeMode_DetectsMode(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+	svc.SetWorkspacePath(tmpDir)
+
+	// Create compose file WITHOUT maestro.app label
+	createComposeFileWithoutApp(t, tmpDir)
+	composePath := filepath.Join(tmpDir, ".maestro", "compose.yml")
+
+	// Should detect NO app service (triggers hybrid mode)
+	hasApp, _ := svc.checkComposeAppService(composePath)
+	if hasApp {
+		t.Error("expected no app service in compose file without maestro.app label")
+	}
+
+	// Now test with app label
+	createComposeFile(t, tmpDir) // This one HAS maestro.app label
+	hasApp, port := svc.checkComposeAppService(composePath)
+	if !hasApp {
+		t.Error("expected app service with maestro.app label")
+	}
+	if port != 8081 {
+		t.Errorf("expected port 8081, got %d", port)
+	}
+}
+
+// TestService_CheckComposeAppService tests the maestro.app label detection.
+func TestService_CheckComposeAppService(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+
+	// Create compose file WITH maestro.app label
+	createComposeFile(t, tmpDir)
+	composePath := filepath.Join(tmpDir, ".maestro", "compose.yml")
+
+	hasApp, port := svc.checkComposeAppService(composePath)
+	if !hasApp {
+		t.Error("expected to detect app service with maestro.app label")
+	}
+	if port != 8081 {
+		t.Errorf("expected port 8081, got %d", port)
+	}
+}
+
+// TestService_CheckComposeAppService_NoLabel tests detection with no label.
+func TestService_CheckComposeAppService_NoLabel(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+
+	// Create compose file WITHOUT maestro.app label
+	createComposeFileWithoutApp(t, tmpDir)
+	composePath := filepath.Join(tmpDir, ".maestro", "compose.yml")
+
+	hasApp, _ := svc.checkComposeAppService(composePath)
+	if hasApp {
+		t.Error("expected no app service without maestro.app label")
 	}
 }

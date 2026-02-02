@@ -11,6 +11,7 @@ Maestro operates in several distinct modes depending on the project state and us
 | Airplane | `--airplane` flag or config | Fully offline with local Gitea + Ollama |
 | Claude Code | Optional coder variant | Uses Claude Code for implementation |
 | Demo | User-triggered via WebUI | Runs the application for testing |
+| **Run** | `--run` flag | **Runs app + dependencies only (no agents)** |
 | Hotfix | User requests urgent fix | Fast path for production issues |
 | Maintenance | After N specs complete | Cleans up technical debt |
 | Discovery | Future | Onboards existing codebases |
@@ -272,6 +273,63 @@ See [DEMO_MODE_SPEC.md](DEMO_MODE_SPEC.md) for detailed specification.
 
 ---
 
+## Run Mode
+
+**When**: Started with `--run` flag.
+
+**Purpose**: Runs your application with all its dependencies without starting the full orchestrator (no PM, architect, or coders). This is useful for developers who want to use Maestro as a "better docker compose" for local development.
+
+### What Run Mode Does
+
+1. Starts compose services (databases, caches, etc.) if a compose file exists
+2. Builds and runs your application in the development container
+3. Connects the app to the compose network so it can reach dependencies
+4. Performs port detection and maps the app to a host port
+5. Displays the URL and streams logs
+6. Cleans up everything (containers, networks, volumes) on shutdown
+
+### Usage
+
+```bash
+# Run the application
+maestro --run
+
+# Run with project directory specified
+maestro --run --projectdir /path/to/project
+```
+
+### How It Differs from Demo Mode
+
+| Aspect | Run Mode | Demo Mode |
+|--------|----------|-----------|
+| Trigger | CLI flag (`--run`) | WebUI button |
+| Orchestrator | Not started | Full orchestrator running |
+| Agents | None | PM, Architect, Coders available |
+| WebUI | Not available | Available at `:8080` |
+| Use case | Local development | UAT during development |
+
+### When to Use Run Mode
+
+- **Local development**: You want to run your app locally without the full orchestrator
+- **CI/CD testing**: Run integration tests against the app with dependencies
+- **Quick iteration**: Test changes without waiting for agent bootstrapping
+- **Resource efficiency**: Lighter footprint when you don't need agents
+
+### Requirements
+
+- Bootstrap must have completed previously (Dockerfile, Makefile exist)
+- Docker must be running
+- If using compose: `.maestro/compose.yml` must exist
+
+### Shutdown Behavior
+
+Run mode handles cleanup gracefully:
+- **Ctrl+C**: Stops app container, runs `compose down -v`, removes network
+- **SIGTERM**: Same cleanup behavior
+- **Crash**: Orphaned containers are cleaned up on next run
+
+---
+
 ## Hotfix Mode
 
 **When**: User submits an urgent request via PM.
@@ -394,9 +452,21 @@ New Project (Airplane):
                     ↓
                Hotfix (urgent)
 
+Run Mode (standalone):
+  Bootstrap → --run (app + deps only, no agents)
+
 Existing Project (future):
   Discovery → Development → [Maintenance cycles] → ...
 ```
+
+### Run Mode
+
+Run mode is standalone—it doesn't start the orchestrator or any agents. It's useful for:
+- Quick local testing during development
+- CI/CD pipelines that need the app running
+- Developers who want Maestro's compose + container management without the AI agents
+
+Run mode requires that bootstrap has completed previously.
 
 ### Airplane + Standard
 
