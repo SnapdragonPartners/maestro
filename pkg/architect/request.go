@@ -163,6 +163,19 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		}
 	}
 
+	// Check if hotfix stories were queued (PM hotfix flow)
+	var hotfixQueued bool
+	if queued, exists := stateData[StateKeyHotfixQueued]; exists {
+		if queuedBool, ok := queued.(bool); ok && queuedBool {
+			hotfixQueued = true
+			if count, exists := stateData[StateKeyHotfixCount]; exists {
+				d.logger.Info("🎉 Hotfix approved and %v stories queued, transitioning to DISPATCHING", count)
+			} else {
+				d.logger.Info("🎉 Hotfix approved and stories queued, transitioning to DISPATCHING")
+			}
+		}
+	}
+
 	// Clear the processed request and acceptance signals
 	d.SetStateData(StateKeyCurrentRequest, nil)
 	d.SetStateData(StateKeyLastResponse, nil)
@@ -170,6 +183,8 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	d.SetStateData(StateKeyAcceptedStoryID, nil)
 	d.SetStateData(StateKeyAcceptanceType, nil)
 	d.SetStateData(StateKeySpecApprovedLoad, nil)
+	d.SetStateData(StateKeyHotfixQueued, nil)
+	d.SetStateData(StateKeyHotfixCount, nil)
 
 	// Clear spec review initialized flag when spec approval cycle completes
 	// This ensures next spec submission is treated as initial (not resubmission)
@@ -180,10 +195,13 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 
 	// Determine next state:
 	// 1. Spec approval (PM flow) → DISPATCHING
-	// 2. Work acceptance (completion or merge) → DISPATCHING
-	// 3. Owns spec but no acceptance → MONITORING
-	// 4. No spec ownership → WAITING
+	// 2. Hotfix approval (PM flow) → DISPATCHING
+	// 3. Work acceptance (completion or merge) → DISPATCHING
+	// 4. Owns spec but no acceptance → MONITORING
+	// 5. No spec ownership → WAITING
 	if specApprovedAndLoaded {
+		return StateDispatching, nil
+	} else if hotfixQueued {
 		return StateDispatching, nil
 	} else if workWasAccepted && d.ownsSpec() {
 		return StateDispatching, nil
