@@ -933,8 +933,12 @@ func (s *Service) GetLogs(ctx context.Context) (string, error) {
 	workspacePath := s.workspacePath
 	commandRunner := s.commandRunner
 	useCompose := s.useCompose
+	containerID := s.containerID
 	s.mu.RUnlock()
 
+	var logs strings.Builder
+
+	// Get compose logs if using compose
 	if useCompose {
 		composePath := ComposeFilePath(workspacePath)
 		stack := NewStack(DemoProjectName, composePath, DemoNetworkName)
@@ -944,28 +948,37 @@ func (s *Service) GetLogs(ctx context.Context) (string, error) {
 
 		reader, err := stack.Logs(ctx, "")
 		if err != nil {
-			return "", fmt.Errorf("failed to get logs: %w", err)
+			return "", fmt.Errorf("failed to get compose logs: %w", err)
 		}
 
 		buf := make([]byte, 64*1024) // 64KB buffer
 		n, _ := reader.Read(buf)
-		return string(buf[:n]), nil
+		logs.WriteString(string(buf[:n]))
 	}
 
-	// Container-only mode: use docker logs
-	var cmd *exec.Cmd
-	if commandRunner != nil {
-		cmd = commandRunner(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
-	} else {
-		cmd = exec.CommandContext(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+	// Get app container logs if we have a container ID (hybrid mode or container-only mode)
+	if containerID != "" {
+		var cmd *exec.Cmd
+		if commandRunner != nil {
+			cmd = commandRunner(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+		} else {
+			cmd = exec.CommandContext(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+		}
+
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			if logs.Len() > 0 {
+				logs.WriteString("\n--- App Container Logs ---\n")
+			}
+			logs.WriteString(string(output))
+		}
 	}
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to get logs: %w", err)
+	if logs.Len() == 0 {
+		return "", fmt.Errorf("no logs available")
 	}
 
-	return string(output), nil
+	return logs.String(), nil
 }
 
 // getCurrentSHA returns the current git HEAD SHA.

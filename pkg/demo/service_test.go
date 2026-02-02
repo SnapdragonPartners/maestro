@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"orchestrator/internal/state"
@@ -431,6 +432,9 @@ func TestService_GetLogs_Success(t *testing.T) {
 	svc.SetWorkspacePath(tmpDir)
 	createComposeFile(t, tmpDir)
 
+	// Simulate compose mode
+	svc.useCompose = true
+
 	// Mock log output
 	svc.commandRunner = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "sh", "-c", "echo 'log line 1\nlog line 2'")
@@ -531,6 +535,44 @@ func TestService_CheckComposeAppService_NoLabel(t *testing.T) {
 	hasApp, _ := svc.checkComposeAppService(composePath)
 	if hasApp {
 		t.Error("expected no app service without maestro.app label")
+	}
+}
+
+// TestService_GetLogs_HybridMode tests that hybrid mode returns both compose and app logs.
+func TestService_GetLogs_HybridMode(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+	svc.SetWorkspacePath(tmpDir)
+	createComposeFileWithoutApp(t, tmpDir)
+
+	// Simulate hybrid mode: both useCompose and containerID are set
+	svc.useCompose = true
+	svc.containerID = "test-container-id"
+
+	// Mock command runner - returns different output based on command
+	svc.commandRunner = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		// Check if this is a docker logs command (for app container)
+		for _, arg := range args {
+			if arg == "logs" {
+				return exec.CommandContext(ctx, "sh", "-c", "echo 'app log line'")
+			}
+		}
+		// Compose logs command
+		return exec.CommandContext(ctx, "sh", "-c", "echo 'compose log line'")
+	}
+
+	logs, err := svc.GetLogs(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Should contain both compose and app logs
+	if logs == "" {
+		t.Error("expected non-empty logs")
+	}
+
+	// Should have app container separator in hybrid mode
+	if !strings.Contains(logs, "App Container Logs") {
+		t.Error("expected hybrid mode to include app container logs section")
 	}
 }
 
