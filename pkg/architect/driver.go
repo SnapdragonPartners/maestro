@@ -805,13 +805,15 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
-				// Build story payload
+				// Build story payload (must include IsHotfix and Express for proper routing)
 				payloadData := map[string]any{
 					proto.KeyTitle:           story.Title,
 					proto.KeyEstimatedPoints: story.EstimatedPoints,
 					proto.KeyDependsOn:       story.DependsOn,
 					proto.KeyStoryType:       story.StoryType,
-					proto.KeyRequirements:    []string{}, // Empty requirements for requeue
+					proto.KeyExpress:         story.Express,   // Skip planning phase
+					proto.KeyIsHotfix:        story.IsHotfix,  // Route to hotfix coder
+					proto.KeyRequirements:    []string{},      // Empty requirements for requeue
 				}
 
 				// Use story content from the queue
