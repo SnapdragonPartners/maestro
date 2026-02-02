@@ -895,7 +895,7 @@ This section tracks the implementation of:
   - If not, display helpful error message
   - File: `cmd/maestro/main.go`
 
-- [ ] **2.6** Add tests for run mode
+- [x] **2.6** Add tests for run mode
   - Test: run mode starts and stops cleanly
   - Test: run mode with compose starts dependencies
   - Test: run mode without compose works
