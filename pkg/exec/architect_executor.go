@@ -180,16 +180,20 @@ func (a *ArchitectExecutor) Start(ctx context.Context) error {
 	// Mount all coder workspace directories (read-only)
 	coderMounts, err := a.buildAgentWorkspaceMounts("coder", a.maxCoders)
 	if err != nil {
+		a.logger.Error("Failed to configure coder workspace mounts: %v", err)
 		return err
 	}
 	args = append(args, coderMounts...)
+	a.logger.Info("Configured %d coder workspace mounts", a.maxCoders)
 
 	// Mount all hotfix workspace directories (read-only)
 	hotfixMounts, err := a.buildAgentWorkspaceMounts("hotfix", a.maxHotfixers)
 	if err != nil {
+		a.logger.Error("Failed to configure hotfix workspace mounts: %v", err)
 		return err
 	}
 	args = append(args, hotfixMounts...)
+	a.logger.Info("Configured %d hotfix workspace mounts", a.maxHotfixers)
 
 	// Mount mirror repository (read-only)
 	mirrorPath := filepath.Join(a.projectDir, ".mirrors")
