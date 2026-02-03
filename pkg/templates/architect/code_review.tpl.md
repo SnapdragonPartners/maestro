@@ -78,6 +78,7 @@ Evaluate the implementation for:
 6. **Performance**: Reasonable performance characteristics for the use case
 7. **Documentation**: Adequate comments and documentation for complex logic
 8. **Error Handling**: Proper error handling and edge case coverage
+9. **Environment/Compose Alignment**: If `.env*` or compose files changed, verify that hostnames in environment variables match compose service names (avoid loopback addresses like `localhost`, `127.0.0.1`, `::1` unless explicitly waived with `# nolint:localhost (reason)`)
 
 ## Decision Options
 
