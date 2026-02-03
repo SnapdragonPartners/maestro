@@ -25,6 +25,10 @@ func (m *MockEffectRuntime) ReceiveMessage(_ context.Context, _ proto.MsgType) (
 	if m.returnError != nil {
 		return nil, m.returnError
 	}
+	// Set ParentMsgID to match the last sent message (for correlation)
+	if m.messageToReturn != nil && len(m.sentMessages) > 0 {
+		m.messageToReturn.ParentMsgID = m.sentMessages[len(m.sentMessages)-1].ID
+	}
 	return m.messageToReturn, nil
 }
 
