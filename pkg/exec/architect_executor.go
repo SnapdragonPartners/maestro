@@ -25,6 +25,7 @@ type ArchitectExecutor struct {
 	dockerCmd     string
 	projectDir    string
 	maxCoders     int
+	maxHotfixers  int
 	mu            sync.RWMutex
 }
 
@@ -49,12 +50,50 @@ func NewArchitectExecutor(image, projectDir string, maxCoders int) *ArchitectExe
 		containerName: "maestro-architect",
 		projectDir:    projectDir,
 		maxCoders:     maxCoders,
+		maxHotfixers:  1, // Default to 1 hotfix agent; can be made configurable
 	}
 }
 
 // Name returns the executor type name.
 func (a *ArchitectExecutor) Name() ExecutorType {
 	return ExecutorTypeDocker
+}
+
+// buildAgentWorkspaceMounts creates volume mount arguments for agent workspaces.
+// agentType is "coder" or "hotfix", count is the number of agents.
+func (a *ArchitectExecutor) buildAgentWorkspaceMounts(agentType string, count int) ([]string, error) {
+	var mounts []string
+
+	for i := 1; i <= count; i++ {
+		agentDir := filepath.Join(a.projectDir, fmt.Sprintf("%s-%03d", agentType, i))
+
+		// Convert to absolute path
+		absAgentDir, err := filepath.Abs(agentDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve %s workspace path: %w", agentType, err)
+		}
+
+		// Normalize path for cross-platform
+		hostPath := normalizePath(absAgentDir)
+
+		// Ensure directory exists (should have been created in Phase 1)
+		if stat, statErr := os.Stat(hostPath); os.IsNotExist(statErr) {
+			a.logger.Warn("%s workspace %s does not exist, creating it", agentType, hostPath)
+			if mkdirErr := os.MkdirAll(hostPath, 0755); mkdirErr != nil {
+				return nil, fmt.Errorf("failed to create %s workspace directory %s: %w", agentType, hostPath, mkdirErr)
+			}
+		} else if statErr != nil {
+			return nil, fmt.Errorf("failed to stat %s workspace directory %s: %w", agentType, hostPath, statErr)
+		} else {
+			a.logger.Debug("Mounting %s workspace: %s (mode: %v)", agentType, hostPath, stat.Mode())
+		}
+
+		// Mount as read-only: host:container:ro
+		containerPath := fmt.Sprintf("/mnt/coders/%s-%03d", agentType, i)
+		mounts = append(mounts, "--volume", fmt.Sprintf("%s:%s:ro", hostPath, containerPath))
+	}
+
+	return mounts, nil
 }
 
 // Available checks if Docker is available and the daemon is running.
@@ -139,34 +178,18 @@ func (a *ArchitectExecutor) Start(ctx context.Context) error {
 	args = append(args, "--volume", fmt.Sprintf("%s:/mnt/architect:ro", hostArchitectPath))
 
 	// Mount all coder workspace directories (read-only)
-	for i := 1; i <= a.maxCoders; i++ {
-		coderDir := filepath.Join(a.projectDir, fmt.Sprintf("coder-%03d", i))
-
-		// Convert to absolute path
-		absCoderDir, coderErr := filepath.Abs(coderDir)
-		if coderErr != nil {
-			return fmt.Errorf("failed to resolve coder workspace path: %w", coderErr)
-		}
-
-		// Normalize path for cross-platform
-		hostPath := normalizePath(absCoderDir)
-
-		// Ensure directory exists (should have been created in Phase 1)
-		if stat, err := os.Stat(hostPath); os.IsNotExist(err) {
-			a.logger.Warn("Coder workspace %s does not exist, creating it", hostPath)
-			if mkdirErr := os.MkdirAll(hostPath, 0755); mkdirErr != nil {
-				return fmt.Errorf("failed to create workspace directory %s: %w", hostPath, mkdirErr)
-			}
-		} else if err != nil {
-			return fmt.Errorf("failed to stat workspace directory %s: %w", hostPath, err)
-		} else {
-			a.logger.Debug("Mounting coder workspace: %s (mode: %v)", hostPath, stat.Mode())
-		}
-
-		// Mount as read-only: host:container:ro
-		containerPath := fmt.Sprintf("/mnt/coders/coder-%03d", i)
-		args = append(args, "--volume", fmt.Sprintf("%s:%s:ro", hostPath, containerPath))
+	coderMounts, err := a.buildAgentWorkspaceMounts("coder", a.maxCoders)
+	if err != nil {
+		return err
 	}
+	args = append(args, coderMounts...)
+
+	// Mount all hotfix workspace directories (read-only)
+	hotfixMounts, err := a.buildAgentWorkspaceMounts("hotfix", a.maxHotfixers)
+	if err != nil {
+		return err
+	}
+	args = append(args, hotfixMounts...)
 
 	// Mount mirror repository (read-only)
 	mirrorPath := filepath.Join(a.projectDir, ".mirrors")
