@@ -1086,6 +1086,49 @@ func TestStoryIDValidation(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
+func TestHotfixRequestStoryIndependent(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Start dispatcher
+	err := dispatcher.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	// Use separate cleanup context to avoid timeout during stop
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer stopCancel()
+		dispatcher.Stop(stopCtx)
+	}()
+
+	// Test hotfix REQUEST without story_id (should pass - hotfix requests are story-independent)
+	hotfixPayload := &proto.HotfixRequestPayload{
+		Platform: "go",
+		Analysis: "Fix a bug in the main package",
+	}
+
+	hotfixMsg := &proto.AgentMsg{
+		ID:        "hotfix-req-001",
+		Type:      proto.MsgTypeREQUEST,
+		FromAgent: "pm-001",
+		ToAgent:   "architect",
+		Payload:   proto.NewHotfixRequestPayload(hotfixPayload),
+	}
+
+	err = dispatcher.DispatchMessage(hotfixMsg)
+	if err != nil {
+		t.Errorf("Hotfix REQUEST without story_id should be allowed (story-independent), got error: %v", err)
+	}
+
+	// Give time for message processing
+	time.Sleep(50 * time.Millisecond)
+
+	t.Log("Hotfix REQUEST correctly accepted without story_id")
+}
+
 func TestLeaseOperationsExtended(t *testing.T) {
 	dispatcher := createTestDispatcher(t)
 

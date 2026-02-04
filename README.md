@@ -155,11 +155,27 @@ Maestro operates in several distinct modes depending on project state and user i
 | Airplane | `--airplane` flag | Fully offline with local Gitea + Ollama |
 | Claude Code | `coder_mode: "claude-code"` | Uses Claude Code for implementation |
 | Demo | User-triggered via WebUI | Runs the application for testing |
+| **Run** | `--run` flag | **Runs app + dependencies only (no agents)** |
 | Hotfix | User requests urgent fix | Fast path for production issues |
 | Maintenance | After N specs complete | Cleans up technical debt |
 | Discovery | Future | Onboards existing codebases |
 
 See [docs/MODES.md](docs/MODES.md) for detailed documentation on each mode.
+
+### Run Mode (App Only)
+
+Run mode starts your application with its dependencies without the full orchestrator:
+
+```bash
+maestro --run
+```
+
+This is useful for:
+- Local development without running AI agents
+- CI/CD pipelines that need the app running with dependencies
+- Quick iteration on the app itself
+
+Run mode starts compose services (if configured), builds and runs the app, and cleans up on shutdown.
 
 ### Airplane Mode (Offline Development)
 

@@ -181,7 +181,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 
 // NewArchitect creates a new architect with LLM integration.
 // Uses shared LLM factory for proper rate limiting across all agents.
-func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory) (*Driver, error) {
+func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory, chatService ChatServiceInterface) (*Driver, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -202,6 +202,9 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 
 	// Create architect without LLM client first (chicken-and-egg: client needs architect as StateProvider)
 	architect := NewDriver(architectID, modelName, dispatcher, workDir, persistenceChannel)
+
+	// Set chat service for escalations (may be nil in tests)
+	architect.chatService = chatService
 
 	// NOTE: Workspace cloning is deferred to SETUP state.
 	// The architect boots in WAITING state with just a mountable directory (already created at startup).
@@ -805,13 +808,15 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
-				// Build story payload
+				// Build story payload (must include IsHotfix and Express for proper routing)
 				payloadData := map[string]any{
 					proto.KeyTitle:           story.Title,
 					proto.KeyEstimatedPoints: story.EstimatedPoints,
 					proto.KeyDependsOn:       story.DependsOn,
 					proto.KeyStoryType:       story.StoryType,
-					proto.KeyRequirements:    []string{}, // Empty requirements for requeue
+					proto.KeyExpress:         story.Express,  // Skip planning phase
+					proto.KeyIsHotfix:        story.IsHotfix, // Route to hotfix coder
+					proto.KeyRequirements:    []string{},     // Empty requirements for requeue
 				}
 
 				// Use story content from the queue

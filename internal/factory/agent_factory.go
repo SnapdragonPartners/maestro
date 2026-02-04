@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
@@ -16,6 +17,44 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/pm"
 )
+
+// chatServiceAdapter wraps chat.Service to implement architect.ChatServiceInterface.
+// This adapter bridges the structurally identical types with different package names.
+type chatServiceAdapter struct {
+	service *chat.Service
+}
+
+// Post wraps chat.Service.Post for the architect interface.
+func (a *chatServiceAdapter) Post(ctx context.Context, req *architect.ChatPostRequest) (*architect.ChatPostResponse, error) {
+	resp, err := a.service.Post(ctx, &chat.PostRequest{
+		Author:   req.Author,
+		Text:     req.Text,
+		Channel:  req.Channel,
+		ReplyTo:  req.ReplyTo,
+		PostType: req.PostType,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("chat post failed: %w", err)
+	}
+	return &architect.ChatPostResponse{
+		ID:      resp.ID,
+		Success: resp.Success,
+	}, nil
+}
+
+// WaitForReply wraps chat.Service.WaitForReply for the architect interface.
+func (a *chatServiceAdapter) WaitForReply(ctx context.Context, messageID int64, pollInterval time.Duration) (*architect.ChatMessage, error) {
+	msg, err := a.service.WaitForReply(ctx, messageID, pollInterval)
+	if err != nil {
+		return nil, fmt.Errorf("wait for reply failed: %w", err)
+	}
+	return &architect.ChatMessage{
+		Timestamp: msg.Timestamp,
+		Author:    msg.Author,
+		Text:      msg.Text,
+		ID:        msg.ID,
+	}, nil
+}
 
 // AgentFactory creates agents with minimal dependencies.
 // All configuration is sourced from config.GetConfig() inside agent constructors.
@@ -75,7 +114,10 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 	// Determine work directory from config
 	workDir := getWorkDirFromConfig(&cfg)
 
-	// Create architect with shared LLM factory
+	// Create chat service adapter for architect interface
+	chatAdapter := &chatServiceAdapter{service: f.chatService}
+
+	// Create architect with shared LLM factory and chat service
 	architectAgent, err := architect.NewArchitect(
 		ctx,
 		agentID,
@@ -83,6 +125,7 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 		workDir,
 		f.persistenceChannel,
 		f.llmFactory, // Shared factory for rate limiting
+		chatAdapter,  // Chat service for escalations
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create architect: %w", err)
@@ -98,7 +141,8 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 	}
 
 	// Register architect for chat channels
-	f.chatService.RegisterAgent(agentID, []string{"development"})
+	// Architect needs both: "development" for coder interactions, "product" for escalations
+	f.chatService.RegisterAgent(agentID, []string{"development", "product"})
 
 	// Attach to dispatcher
 	f.dispatcher.Attach(architectAgent)

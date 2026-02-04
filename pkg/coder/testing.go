@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/demo"
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/lint/loopback"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
@@ -113,7 +114,7 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 		}
 
 		c.logger.Info("App story tests passed successfully")
-		return c.proceedToCodeReview()
+		return c.proceedToCodeReviewWithLintCheck(ctx, sm, workspacePathStr)
 	}
 
 	// Use general testing approach for other story types
@@ -154,7 +155,7 @@ func (c *Coder) handleDevOpsStoryTesting(ctx context.Context, sm *agent.BaseStat
 	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
 	c.logger.Info("DevOps story testing completed successfully")
-	return c.proceedToCodeReview()
+	return c.proceedToCodeReviewWithLintCheck(ctx, sm, workspacePathStr)
 }
 
 // handleContainerTesting performs actual container infrastructure testing for DevOps stories.
@@ -266,7 +267,7 @@ func (c *Coder) runContainerInfrastructureTests(ctx context.Context, sm *agent.B
 	sm.SetStateData(KeyTestOutput, fmt.Sprintf("Container infrastructure validation completed successfully:\n- Container '%s' built successfully\n- Container boot test passed\n- Infrastructure is ready for deployment", containerConfig.Name))
 	sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
-	return c.proceedToCodeReview()
+	return c.proceedToCodeReviewWithLintCheck(ctx, sm, workspacePathStr)
 }
 
 // executeTestFailureAndTransition executes a test failure effect and transitions to CODING state.
@@ -408,7 +409,7 @@ func (c *Coder) handleLegacyTesting(ctx context.Context, sm *agent.BaseStateMach
 	}
 
 	c.logger.Info("Tests passed successfully")
-	return c.proceedToCodeReview()
+	return c.proceedToCodeReviewWithLintCheck(ctx, sm, workspacePathStr)
 }
 
 // validateMakefileTargets validates that Makefile has reasonable targets for DevOps.
@@ -548,6 +549,62 @@ func (c *Coder) proceedToCodeReview() (proto.State, bool, error) {
 	// Approval request will be sent when entering CODE_REVIEW state
 	c.logger.Info("🧑‍💻 Tests completed successfully, transitioning to CODE_REVIEW")
 	return StateCodeReview, false, nil
+}
+
+// proceedToCodeReviewWithLintCheck runs loopback lint check before transitioning to code review.
+// Returns to CODING state if loopback references are found in .env or compose files.
+func (c *Coder) proceedToCodeReviewWithLintCheck(ctx context.Context, sm *agent.BaseStateMachine, workspacePath string) (proto.State, bool, error) {
+	// Run loopback lint check if .env or compose files changed in the branch
+	if lintResult := c.runLoopbackLintCheck(workspacePath); lintResult != nil {
+		c.logger.Warn("🔍 Loopback lint check found issues, returning to CODING")
+		return c.executeTestFailureAndTransition(ctx, sm, lintResult)
+	}
+
+	return c.proceedToCodeReview()
+}
+
+// runLoopbackLintCheck scans for localhost/loopback references in .env and compose files.
+// Returns a test failure effect if issues are found, nil otherwise.
+func (c *Coder) runLoopbackLintCheck(workspacePath string) *effect.TestFailureEffect {
+	c.logger.Info("🔍 Running loopback lint check on workspace: %s", workspacePath)
+
+	// Check if any .env or compose files changed in the branch
+	hasChanges, err := loopback.HasEnvOrComposeChanges(workspacePath)
+	if err != nil {
+		c.logger.Info("🔍 Loopback lint: could not check for env/compose changes: %v", err)
+		return nil // Skip check if git diff fails (e.g., not a git repo)
+	}
+
+	if !hasChanges {
+		c.logger.Info("🔍 Loopback lint: no .env or compose files changed in branch, skipping")
+		return nil
+	}
+
+	// Get changed files and run linter
+	changedFiles, err := loopback.GetBranchChangedFiles(workspacePath)
+	if err != nil {
+		c.logger.Info("🔍 Loopback lint: could not get changed files: %v", err)
+		return nil
+	}
+
+	c.logger.Info("🔍 Loopback lint: scanning %d changed files", len(changedFiles))
+
+	linter := loopback.NewLinter(workspacePath)
+	result, err := linter.ScanChangedFiles(changedFiles)
+	if err != nil {
+		c.logger.Info("🔍 Loopback lint: scan error: %v", err)
+		return nil
+	}
+
+	if !result.HasFindings() {
+		c.logger.Info("🔍 Loopback lint: passed (scanned %d env/compose files, no loopback references found)", len(result.ScannedFiles))
+		return nil
+	}
+
+	c.logger.Warn("🚨 Loopback lint found %d issue(s) in files: %v",
+		len(result.Findings), result.ScannedFiles)
+
+	return effect.NewLoopbackLintFailureEffect(result.FormatError())
 }
 
 // ensureComposeStackRunning starts the compose stack if a compose.yml exists in the workspace.

@@ -58,12 +58,25 @@ func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, err
 	timeoutCtx, cancel := context.WithTimeout(ctx, e.Timeout)
 	defer cancel()
 
-	// Block waiting for RESPONSE message
+	// Block waiting for RESPONSE message with correlation check
 	runtime.Info("⏳ Waiting for approval response (timeout: %v)", e.Timeout)
 
-	responseMsg, err := runtime.ReceiveMessage(timeoutCtx, proto.MsgTypeRESPONSE)
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive approval response: %w", err)
+	// Loop to drain stale responses and wait for the correct one
+	var responseMsg *proto.AgentMsg
+	for {
+		var err error
+		responseMsg, err = runtime.ReceiveMessage(timeoutCtx, proto.MsgTypeRESPONSE)
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive approval response: %w", err)
+		}
+
+		// Verify response correlation - ParentMsgID should match our request ID
+		if responseMsg.ParentMsgID != approvalMsg.ID {
+			runtime.Info("⚠️ Discarding stale response (ParentMsgID=%s, expected=%s) - waiting for correct response",
+				responseMsg.ParentMsgID, approvalMsg.ID)
+			continue // Keep waiting for the correct response
+		}
+		break // Found the correct response
 	}
 
 	// Extract approval result from response payload

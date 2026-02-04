@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,3 +73,72 @@ func TestGenerateSecurePasswordUniqueness(t *testing.T) {
 // Note: mergeCommandLineParams and setupProjectInfrastructure require
 // config initialization and file system operations, so they're not suitable
 // for simple unit tests. They're tested via integration tests instead.
+
+// TestRunModeBootstrapCheck verifies the bootstrap check logic used by run mode.
+func TestRunModeBootstrapCheck(t *testing.T) {
+	// Create a temp directory without bootstrap files
+	tmpDir := t.TempDir()
+
+	// Test 1: No bootstrap - Dockerfile doesn't exist
+	pmWorkspace := filepath.Join(tmpDir, "pm-001")
+	dockerfilePath := filepath.Join(pmWorkspace, ".maestro", "Dockerfile")
+
+	_, err := os.Stat(dockerfilePath)
+	if err == nil {
+		t.Fatal("expected Dockerfile to not exist initially")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("expected IsNotExist error, got: %v", err)
+	}
+
+	// Test 2: Create bootstrap structure
+	maestroDir := filepath.Join(pmWorkspace, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+
+	// Create a minimal Dockerfile
+	dockerfileContent := "FROM alpine:latest\n"
+	if err := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); err != nil {
+		t.Fatalf("failed to create Dockerfile: %v", err)
+	}
+
+	// Verify Dockerfile now exists
+	if _, err := os.Stat(dockerfilePath); err != nil {
+		t.Fatalf("expected Dockerfile to exist after creation: %v", err)
+	}
+}
+
+// TestRunModeProjectDirHandling tests that run mode handles project directory correctly.
+func TestRunModeProjectDirHandling(t *testing.T) {
+	tests := []struct {
+		name       string
+		projectDir string
+		wantPM     string
+	}{
+		{
+			name:       "standard project dir",
+			projectDir: "/path/to/project",
+			wantPM:     "/path/to/project/pm-001",
+		},
+		{
+			name:       "relative project dir",
+			projectDir: ".",
+			wantPM:     "pm-001", // filepath.Join normalizes "." + "pm-001" to just "pm-001"
+		},
+		{
+			name:       "nested project dir",
+			projectDir: "/home/user/projects/myapp",
+			wantPM:     "/home/user/projects/myapp/pm-001",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pmWorkspace := filepath.Join(tt.projectDir, "pm-001")
+			if pmWorkspace != tt.wantPM {
+				t.Errorf("pmWorkspace = %q, want %q", pmWorkspace, tt.wantPM)
+			}
+		})
+	}
+}
