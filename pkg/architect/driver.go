@@ -814,9 +814,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					proto.KeyEstimatedPoints: story.EstimatedPoints,
 					proto.KeyDependsOn:       story.DependsOn,
 					proto.KeyStoryType:       story.StoryType,
-					proto.KeyExpress:         story.Express,   // Skip planning phase
-					proto.KeyIsHotfix:        story.IsHotfix,  // Route to hotfix coder
-					proto.KeyRequirements:    []string{},      // Empty requirements for requeue
+					proto.KeyExpress:         story.Express,  // Skip planning phase
+					proto.KeyIsHotfix:        story.IsHotfix, // Route to hotfix coder
+					proto.KeyRequirements:    []string{},     // Empty requirements for requeue
 				}
 
 				// Use story content from the queue
