@@ -1076,16 +1076,52 @@ type composeFileWithLabels struct {
 
 // composeServiceWithLabels represents a compose service with labels and ports.
 type composeServiceWithLabels struct {
-	Labels map[string]any `yaml:"labels"`
-	Ports  []string       `yaml:"ports"`
+	Labels composeLabels `yaml:"labels"`
+	Ports  []string      `yaml:"ports"`
+}
+
+// composeLabels handles both map and list form compose labels:
+//   - Map form: labels: {key: value}
+//   - List form: labels: ["key=value"].
+type composeLabels map[string]any
+
+// UnmarshalYAML implements custom unmarshaling for compose labels.
+func (c *composeLabels) UnmarshalYAML(unmarshal func(any) error) error {
+	// Try map form first
+	var mapForm map[string]any
+	if err := unmarshal(&mapForm); err == nil {
+		*c = mapForm
+		return nil
+	}
+
+	// Try list form: ["key=value", "key2=value2"]
+	var listForm []string
+	if err := unmarshal(&listForm); err == nil {
+		*c = make(map[string]any)
+		for _, item := range listForm {
+			if idx := strings.Index(item, "="); idx != -1 {
+				key := item[:idx]
+				value := item[idx+1:]
+				(*c)[key] = value
+			}
+		}
+		return nil
+	}
+
+	// If neither works, return empty map (no labels)
+	*c = make(map[string]any)
+	return nil
 }
 
 // extractHostPort extracts the host port from a port mapping string.
+// Returns 0 if the host port cannot be determined (e.g., single-port syntax
+// where Docker assigns a random host port).
+//
 // Supported formats:
-//   - "8080" → 8080
-//   - "8080:80" → 8080
-//   - "127.0.0.1:8080:80" → 8080
-//   - "8080:80/tcp" → 8080
+//   - "8080" → 0 (container port only, host port is random)
+//   - "8080:80" → 8080 (host:container)
+//   - "127.0.0.1:8080:80" → 8080 (ip:host:container)
+//   - "8080:80/tcp" → 8080 (with protocol suffix)
 func extractHostPort(portSpec string) int {
 	// Remove protocol suffix if present (e.g., "/tcp", "/udp")
 	if idx := strings.Index(portSpec, "/"); idx != -1 {
@@ -1097,10 +1133,9 @@ func extractHostPort(portSpec string) int {
 
 	switch len(parts) {
 	case 1:
-		// Just port: "8080"
-		if _, err := fmt.Sscanf(parts[0], "%d", &port); err == nil {
-			return port
-		}
+		// Just container port: "8080" - host port is assigned randomly by Docker
+		// Return 0 to indicate unknown host port
+		return 0
 	case 2:
 		// host:container: "8080:80"
 		if _, err := fmt.Sscanf(parts[0], "%d", &port); err == nil {
@@ -1108,6 +1143,7 @@ func extractHostPort(portSpec string) int {
 		}
 	case 3:
 		// ip:host:container: "127.0.0.1:8080:80"
+		// The host port is the second segment (index 1)
 		if _, err := fmt.Sscanf(parts[1], "%d", &port); err == nil {
 			return port
 		}

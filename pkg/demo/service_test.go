@@ -538,6 +538,41 @@ func TestService_CheckComposeAppService_NoLabel(t *testing.T) {
 	}
 }
 
+// TestService_CheckComposeAppService_ListFormLabels tests that list-form labels are detected.
+// Docker Compose supports both map form (labels: {key: value}) and list form (labels: ["key=value"]).
+func TestService_CheckComposeAppService_ListFormLabels(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+
+	// Create maestro directory
+	maestroDir := filepath.Join(tmpDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create compose file with LIST-FORM labels
+	composePath := filepath.Join(maestroDir, "compose.yml")
+	content := `services:
+  app:
+    image: nginx
+    ports:
+      - "9090:80"
+    labels:
+      - "maestro.app=true"
+      - "other.label=value"
+`
+	if err := os.WriteFile(composePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	hasApp, port := svc.checkComposeAppService(composePath)
+	if !hasApp {
+		t.Error("expected to detect app service with list-form maestro.app label")
+	}
+	if port != 9090 {
+		t.Errorf("expected port 9090, got %d", port)
+	}
+}
+
 // TestService_GetLogs_HybridMode tests that hybrid mode returns both compose and app logs.
 func TestService_GetLogs_HybridMode(t *testing.T) {
 	svc, tmpDir := newTestService(t)
@@ -583,7 +618,8 @@ func TestExtractHostPort(t *testing.T) {
 		portSpec string
 		want     int
 	}{
-		{"just port", "8080", 8080},
+		// Single port means container port only - host port is random (return 0)
+		{"just port (random host)", "8080", 0},
 		{"host:container", "8080:80", 8080},
 		{"ip:host:container", "127.0.0.1:8080:80", 8080},
 		{"with tcp suffix", "8080:80/tcp", 8080},
