@@ -164,7 +164,7 @@ func TestHandleEscalated_PostsEscalationMessage(t *testing.T) {
 
 	lastPost := mockChat.lastPostCall()
 	assert.Equal(t, "test-architect", lastPost.Author)
-	assert.Equal(t, "development", lastPost.Channel)
+	assert.Equal(t, "product", lastPost.Channel) // Escalations go to product channel for human attention
 	assert.Equal(t, "escalate", lastPost.PostType)
 	assert.Contains(t, lastPost.Text, "ESCALATION")
 	assert.Contains(t, lastPost.Text, "16 iterations")
