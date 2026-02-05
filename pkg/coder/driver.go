@@ -1208,13 +1208,21 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 }
 
 // createCodingToolProvider creates a ToolProvider for the coding state.
-func (c *Coder) createCodingToolProvider(storyType string) *tools.ToolProvider {
+// If isHotfix is true, todo tools are excluded (hotfix stories skip planning and don't use todos).
+func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool) *tools.ToolProvider {
 	// Determine coding tools based on story type
 	var codingTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
 		codingTools = tools.DevOpsCodingTools
 	} else {
 		codingTools = tools.AppCodingTools
+	}
+
+	// Hotfix stories skip planning/todo collection, so exclude todo tools
+	// to prevent LLM from calling todos_add (which returns a ProcessEffect
+	// that the CODING state handler would need special handling for)
+	if isHotfix {
+		codingTools = filterOutTodoTools(codingTools)
 	}
 
 	// Create agent context for coding (read-write access)

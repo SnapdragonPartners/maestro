@@ -1,78 +1,109 @@
 package tools
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
 
-func TestGetDiffToolValidationRejectsInvalidIDs(t *testing.T) {
-	// Create tool with nil executor - we're only testing validation which returns early for invalid IDs
-	tool := NewGetDiffTool(nil, 1000)
+func TestGetDiffToolUsesConfiguredWorkspace(t *testing.T) {
+	// Verify the tool stores and uses the workspace root
+	workspace := "/mnt/coders/hotfix-001"
+	tool := NewGetDiffTool(nil, workspace, 1000)
 
-	invalidIDs := []struct {
+	// Check that the workspace root is stored correctly
+	if tool.workspaceRoot != workspace {
+		t.Errorf("expected workspaceRoot %q, got %q", workspace, tool.workspaceRoot)
+	}
+}
+
+func TestGetDiffToolDefaultWorkspace(t *testing.T) {
+	// Verify default workspace is set when empty string is passed
+	tool := NewGetDiffTool(nil, "", 1000)
+
+	if tool.workspaceRoot != "/workspace" {
+		t.Errorf("expected default workspaceRoot '/workspace', got %q", tool.workspaceRoot)
+	}
+}
+
+func TestGetDiffToolBuildDiffCommand(t *testing.T) {
+	tool := NewGetDiffTool(nil, "/mnt/coders/coder-001", 1000)
+
+	testCases := []struct {
 		name    string
-		coderID string
+		path    string
+		wantCmd string
+		wantErr bool
 	}{
-		{"architect", "architect-001"},
-		{"pm", "pm-001"},
-		{"random", "random-agent"},
-		{"empty prefix", "001"},
-		{"supervisor", "supervisor"},
+		{
+			name:    "no path - full diff",
+			path:    "",
+			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff origin/main 2>&1 | head -n 1000",
+		},
+		{
+			name:    "specific file",
+			path:    "db/questions.go",
+			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff origin/main -- db/questions.go 2>&1 | head -n 1000",
+		},
+		{
+			name:    "path traversal blocked",
+			path:    "../../../etc/passwd",
+			wantErr: true,
+		},
 	}
 
-	for _, tt := range invalidIDs {
-		t.Run(tt.name, func(t *testing.T) {
-			args := map[string]any{
-				"coder_id": tt.coderID,
-			}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := tool.buildDiffCommand(tool.workspaceRoot, tc.path)
 
-			result, err := tool.Exec(context.Background(), args)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error for path traversal, got nil")
+				}
+				return
+			}
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			if result == nil {
-				t.Fatal("expected result with error, got nil")
-			}
-
-			if !strings.Contains(result.Content, "invalid coder_id format") {
-				t.Errorf("expected error message containing 'invalid coder_id format', got %s", result.Content)
+			if cmd != tc.wantCmd {
+				t.Errorf("expected command:\n%s\ngot:\n%s", tc.wantCmd, cmd)
 			}
 		})
 	}
 }
 
-func TestGetDiffToolValidationAcceptsValidIDs(t *testing.T) {
-	// For valid IDs, we can't fully test without an executor, but we can verify
-	// the validation logic by checking the code accepts the right prefixes
-	validPrefixes := []string{"coder-", "hotfix-"}
+func TestGetDiffToolDefinitionHasNoRequiredParams(t *testing.T) {
+	tool := NewGetDiffTool(nil, "/workspace", 1000)
+	def := tool.Definition()
 
-	for _, prefix := range validPrefixes {
-		testID := prefix + "001"
-		if !strings.HasPrefix(testID, "coder-") && !strings.HasPrefix(testID, "hotfix-") {
-			t.Errorf("validation logic should accept %q but wouldn't", testID)
-		}
+	// path should be optional (not in Required list)
+	if len(def.InputSchema.Required) != 0 {
+		t.Errorf("expected no required parameters, got %v", def.InputSchema.Required)
 	}
 
-	// Verify the validation condition matches what we expect
-	testCases := []struct {
-		id    string
-		valid bool
-	}{
-		{"coder-001", true},
-		{"coder-002", true},
-		{"hotfix-001", true},
-		{"hotfix-002", true},
-		{"architect-001", false},
-		{"pm-001", false},
+	// path property should exist
+	if _, exists := def.InputSchema.Properties["path"]; !exists {
+		t.Error("expected 'path' property in schema")
 	}
 
-	for _, tc := range testCases {
-		isValid := strings.HasPrefix(tc.id, "coder-") || strings.HasPrefix(tc.id, "hotfix-")
-		if isValid != tc.valid {
-			t.Errorf("ID %q: expected valid=%v, got valid=%v", tc.id, tc.valid, isValid)
-		}
+	// coder_id should NOT exist anymore
+	if _, exists := def.InputSchema.Properties["coder_id"]; exists {
+		t.Error("coder_id property should have been removed from schema")
+	}
+}
+
+func TestGetDiffToolDocumentation(t *testing.T) {
+	tool := NewGetDiffTool(nil, "/workspace", 1000)
+	doc := tool.PromptDocumentation()
+
+	// Should mention path parameter
+	if !strings.Contains(doc, "path") {
+		t.Error("documentation should mention path parameter")
+	}
+
+	// Should NOT mention coder_id anymore
+	if strings.Contains(doc, "coder_id") {
+		t.Error("documentation should not mention coder_id anymore")
 	}
 }

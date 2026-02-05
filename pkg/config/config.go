@@ -480,7 +480,7 @@ const (
 	ModelGPT5             = "gpt-5"
 	ModelGPT52            = "gpt-5.2"
 	DefaultCoderModel     = ModelClaudeSonnet4
-	DefaultArchitectModel = ModelGemini3Pro
+	DefaultArchitectModel = ModelGPT52
 	DefaultPMModel        = ModelClaudeOpus45
 
 	// Coder execution mode constants.
@@ -2082,15 +2082,15 @@ func (p AvailableProviders) countAvailableProviders() int {
 func getSmartDefaultModel(agentType string, providers AvailableProviders) string {
 	switch agentType {
 	case AgentTypeArchitect:
-		// Architect prefers Gemini for 1M context, then OpenAI for heterogeneity, then Anthropic
-		if providers.Google {
-			return ModelGemini3Pro
-		}
+		// Architect prefers GPT-5.2 for reliability, then Anthropic, then Gemini
 		if providers.OpenAI {
 			return ModelGPT52
 		}
 		if providers.Anthropic {
 			return ModelClaudeOpus45
+		}
+		if providers.Google {
+			return ModelGemini3Pro
 		}
 
 	case AgentTypePM:

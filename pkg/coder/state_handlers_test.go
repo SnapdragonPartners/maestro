@@ -1297,3 +1297,109 @@ func TestHandleCoding_MultipleToolCalls(t *testing.T) {
 		t.Error("Expected at least 1 LLM call")
 	}
 }
+
+// =============================================================================
+// Hotfix Todo Tools Filtering tests
+// =============================================================================
+
+func TestCreateCodingToolProvider_HotfixExcludesTodoTools(t *testing.T) {
+	coder := createTestCoder(t, &testCoderOptions{})
+
+	// Create tool provider for regular story (should include todo tools)
+	regularProvider := coder.createCodingToolProvider(string(proto.StoryTypeApp), false)
+	regularTools := regularProvider.List()
+
+	hasTodosAdd := false
+	for _, tool := range regularTools {
+		if tool.Name == "todos_add" {
+			hasTodosAdd = true
+			break
+		}
+	}
+	if !hasTodosAdd {
+		t.Error("Regular coder should have todos_add tool")
+	}
+
+	// Create tool provider for hotfix story (should exclude todo tools)
+	hotfixProvider := coder.createCodingToolProvider(string(proto.StoryTypeApp), true)
+	hotfixTools := hotfixProvider.List()
+
+	for _, tool := range hotfixTools {
+		if tool.Name == "todos_add" || tool.Name == "todo_complete" || tool.Name == "todo_update" {
+			t.Errorf("Hotfix coder should not have todo tool: %s", tool.Name)
+		}
+	}
+	t.Logf("Regular coder has %d tools, hotfix coder has %d tools", len(regularTools), len(hotfixTools))
+}
+
+// Note: Testing the full handleCoding flow with todos_add through the mock is complex
+// because the mock doesn't properly serialize []string. Instead, we test:
+// 1. TestCreateCodingToolProvider_HotfixExcludesTodoTools - verifies tool filtering
+// 2. TestProcessAdditionalTodosFromEffect_* - verifies todo processing logic
+// The signal routing in coding.go switch statement is tested implicitly via these
+// and verified manually that SignalCoding case exists.
+
+func TestProcessAdditionalTodosFromEffect_CreatesTodoList(t *testing.T) {
+	coder := createTestCoder(t, &testCoderOptions{})
+	sm := coder.BaseStateMachine
+
+	// Ensure no existing todo list
+	if coder.todoList != nil {
+		t.Error("Expected nil todoList initially")
+	}
+
+	// Process effect data simulating todos_add
+	effectData := map[string]any{
+		"todos": []string{"First todo", "Second todo"},
+	}
+
+	err := coder.processAdditionalTodosFromEffect(sm, effectData)
+	if err != nil {
+		t.Errorf("processAdditionalTodosFromEffect failed: %v", err)
+	}
+
+	// Verify todo list was created
+	if coder.todoList == nil {
+		t.Error("Expected todoList to be created")
+	}
+	if len(coder.todoList.Items) != 2 {
+		t.Errorf("Expected 2 todos, got %d", len(coder.todoList.Items))
+	}
+	if coder.todoList.Items[0].Description != "First todo" {
+		t.Errorf("Expected first todo 'First todo', got '%s'", coder.todoList.Items[0].Description)
+	}
+}
+
+func TestProcessAdditionalTodosFromEffect_AppendsTodos(t *testing.T) {
+	coder := createTestCoder(t, &testCoderOptions{})
+	sm := coder.BaseStateMachine
+
+	// Create existing todo list
+	coder.todoList = &TodoList{
+		Items: []TodoItem{
+			{Description: "Existing todo", Completed: false},
+		},
+		Current: 0,
+	}
+
+	// Process effect data simulating additional todos
+	effectData := map[string]any{
+		"todos": []string{"New todo 1", "New todo 2"},
+	}
+
+	err := coder.processAdditionalTodosFromEffect(sm, effectData)
+	if err != nil {
+		t.Errorf("processAdditionalTodosFromEffect failed: %v", err)
+	}
+
+	// Verify todos were appended
+	if len(coder.todoList.Items) != 3 {
+		t.Errorf("Expected 3 todos, got %d", len(coder.todoList.Items))
+	}
+	if coder.todoList.Items[0].Description != "Existing todo" {
+		t.Errorf("Expected first todo 'Existing todo', got '%s'", coder.todoList.Items[0].Description)
+	}
+	if coder.todoList.Items[1].Description != "New todo 1" {
+		t.Errorf("Expected second todo 'New todo 1', got '%s'", coder.todoList.Items[1].Description)
+	}
+}
