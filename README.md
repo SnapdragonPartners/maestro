@@ -125,7 +125,7 @@ See the canonical state diagrams for details:
 - **LLMs:**
   - Supports OpenAI, Anthropic, Google Gemini, and Ollama (local models) via official SDKs
   - PM defaults: Claude Opus 4.5 (latest Anthropic flagship for nuanced requirements gathering)
-  - Architect defaults: Gemini 3 Pro (1M token context window for large codebase analysis)
+  - Architect defaults: GPT-5.2 (latest OpenAI model for reliable code review)
   - Coders default: Claude Sonnet 4.5 (latest coding-oriented model)
   - All models configurable per-project in config.json
   - Rate limiting handled internally via token buckets
@@ -155,11 +155,27 @@ Maestro operates in several distinct modes depending on project state and user i
 | Airplane | `--airplane` flag | Fully offline with local Gitea + Ollama |
 | Claude Code | `coder_mode: "claude-code"` | Uses Claude Code for implementation |
 | Demo | User-triggered via WebUI | Runs the application for testing |
+| **Run** | `--run` flag | **Runs app + dependencies only (no agents)** |
 | Hotfix | User requests urgent fix | Fast path for production issues |
 | Maintenance | After N specs complete | Cleans up technical debt |
 | Discovery | Future | Onboards existing codebases |
 
 See [docs/MODES.md](docs/MODES.md) for detailed documentation on each mode.
+
+### Run Mode (App Only)
+
+Run mode starts your application with its dependencies without the full orchestrator:
+
+```bash
+maestro --run
+```
+
+This is useful for:
+- Local development without running AI agents
+- CI/CD pipelines that need the app running with dependencies
+- Quick iteration on the app itself
+
+Run mode starts compose services (if configured), builds and runs the app, and cleans up on shutdown.
 
 ### Airplane Mode (Offline Development)
 

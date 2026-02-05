@@ -119,17 +119,16 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 		"--tmpfs", "/home:exec,nodev,nosuid,size=100m",
 		"--tmpfs", "/.cache:exec,nodev,nosuid,size=100m",
 		"--env", "HOME=/tmp",
-		p.image,
-		"sleep", "infinity",
 	}
 
 	// Add session ID label dynamically (not available at compile time)
+	// Must be added BEFORE image and command
 	if cfg, cfgErr := config.GetConfig(); cfgErr == nil && cfg.SessionID != "" {
-		// Insert session label before image (which is at index len(args)-2)
-		sessionLabel := []string{"--label", fmt.Sprintf("com.maestro.session=%s", cfg.SessionID)}
-		insertIdx := len(args) - 2 // Before image and "sleep infinity"
-		args = append(args[:insertIdx], append(sessionLabel, args[insertIdx:]...)...)
+		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", cfg.SessionID))
 	}
+
+	// Add image and command last
+	args = append(args, p.image, "sleep", "infinity")
 
 	p.logger.Info("Starting PM container: %s %s", p.dockerCmd, strings.Join(args, " "))
 

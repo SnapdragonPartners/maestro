@@ -70,3 +70,8 @@ func NewGenericTestFailureEffect(failureMessage string) *TestFailureEffect {
 func NewContainerConfigSetupEffect(failureMessage string) *TestFailureEffect {
 	return NewTestFailureEffect("container_config_setup", failureMessage)
 }
+
+// NewLoopbackLintFailureEffect creates a loopback linting failure effect.
+func NewLoopbackLintFailureEffect(failureMessage string) *TestFailureEffect {
+	return NewTestFailureEffect("loopback_lint_fix", failureMessage)
+}

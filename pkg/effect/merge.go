@@ -51,12 +51,25 @@ func (e *MergeEffect) Execute(ctx context.Context, runtime Runtime) (any, error)
 	timeoutCtx, cancel := context.WithTimeout(ctx, e.Timeout)
 	defer cancel()
 
-	// Block waiting for RESPONSE message
+	// Block waiting for RESPONSE message with correlation check
 	runtime.Info("⏳ Waiting for merge response (timeout: %v)", e.Timeout)
 
-	responseMsg, err := runtime.ReceiveMessage(timeoutCtx, proto.MsgTypeRESPONSE)
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive merge response: %w", err)
+	// Loop to drain stale responses and wait for the correct one
+	var responseMsg *proto.AgentMsg
+	for {
+		var err error
+		responseMsg, err = runtime.ReceiveMessage(timeoutCtx, proto.MsgTypeRESPONSE)
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive merge response: %w", err)
+		}
+
+		// Verify response correlation - ParentMsgID should match our request ID
+		if responseMsg.ParentMsgID != mergeMsg.ID {
+			runtime.Info("⚠️ Discarding stale response (ParentMsgID=%s, expected=%s) - waiting for correct response",
+				responseMsg.ParentMsgID, mergeMsg.ID)
+			continue // Keep waiting for the correct response
+		}
+		break // Found the correct response
 	}
 
 	// Extract merge result from response payload

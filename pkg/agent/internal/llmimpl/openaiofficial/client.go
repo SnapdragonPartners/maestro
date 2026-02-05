@@ -160,6 +160,12 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 				properties[name] = convertPropertyToSchema(&prop)
 			}
 
+			// Ensure required is never nil (OpenAI rejects null, expects array)
+			required := tool.InputSchema.Required
+			if required == nil {
+				required = []string{}
+			}
+
 			tools[i] = responses.ToolUnionParam{
 				OfFunction: &responses.FunctionToolParam{
 					Name:        tool.Name,
@@ -167,7 +173,7 @@ func (o *OfficialClient) Complete(ctx context.Context, in llm.CompletionRequest)
 					Parameters: openai.FunctionParameters(map[string]interface{}{
 						"type":       "object",
 						"properties": properties,
-						"required":   tool.InputSchema.Required,
+						"required":   required,
 					}),
 				},
 			}

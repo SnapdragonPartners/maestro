@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"orchestrator/internal/state"
@@ -37,11 +38,40 @@ func createComposeFile(t *testing.T, dir string) string {
 	}
 
 	composePath := filepath.Join(maestroDir, "compose.yml")
+	// Include maestro.app label so tests use compose-only mode (not hybrid)
 	content := `services:
   demo:
     image: nginx
     ports:
       - "8081:80"
+    labels:
+      maestro.app: "true"
+`
+	if err := os.WriteFile(composePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	return composePath
+}
+
+// createComposeFileWithoutApp creates a compose file with only support services (db),
+// which triggers hybrid mode (compose for deps, app runs separately).
+//
+//nolint:unparam // return value useful for potential future tests
+func createComposeFileWithoutApp(t *testing.T, dir string) string {
+	t.Helper()
+
+	maestroDir := filepath.Join(dir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	composePath := filepath.Join(maestroDir, "compose.yml")
+	content := `services:
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
 `
 	if err := os.WriteFile(composePath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -402,6 +432,9 @@ func TestService_GetLogs_Success(t *testing.T) {
 	svc.SetWorkspacePath(tmpDir)
 	createComposeFile(t, tmpDir)
 
+	// Simulate compose mode
+	svc.useCompose = true
+
 	// Mock log output
 	svc.commandRunner = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "sh", "-c", "echo 'log line 1\nlog line 2'")
@@ -443,5 +476,167 @@ func TestService_Cleanup(t *testing.T) {
 
 	if svc.IsRunning() {
 		t.Error("expected service to be stopped after cleanup")
+	}
+}
+
+// TestService_HybridComposeMode_DetectsMode tests that hybrid mode is correctly
+// detected when compose file has no maestro.app label.
+// Note: This only tests mode detection, not the full start flow (which requires Docker).
+func TestService_HybridComposeMode_DetectsMode(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+	svc.SetWorkspacePath(tmpDir)
+
+	// Create compose file WITHOUT maestro.app label
+	createComposeFileWithoutApp(t, tmpDir)
+	composePath := filepath.Join(tmpDir, ".maestro", "compose.yml")
+
+	// Should detect NO app service (triggers hybrid mode)
+	hasApp, _ := svc.checkComposeAppService(composePath)
+	if hasApp {
+		t.Error("expected no app service in compose file without maestro.app label")
+	}
+
+	// Now test with app label
+	createComposeFile(t, tmpDir) // This one HAS maestro.app label
+	hasApp, port := svc.checkComposeAppService(composePath)
+	if !hasApp {
+		t.Error("expected app service with maestro.app label")
+	}
+	if port != 8081 {
+		t.Errorf("expected port 8081, got %d", port)
+	}
+}
+
+// TestService_CheckComposeAppService tests the maestro.app label detection.
+func TestService_CheckComposeAppService(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+
+	// Create compose file WITH maestro.app label
+	createComposeFile(t, tmpDir)
+	composePath := filepath.Join(tmpDir, ".maestro", "compose.yml")
+
+	hasApp, port := svc.checkComposeAppService(composePath)
+	if !hasApp {
+		t.Error("expected to detect app service with maestro.app label")
+	}
+	if port != 8081 {
+		t.Errorf("expected port 8081, got %d", port)
+	}
+}
+
+// TestService_CheckComposeAppService_NoLabel tests detection with no label.
+func TestService_CheckComposeAppService_NoLabel(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+
+	// Create compose file WITHOUT maestro.app label
+	createComposeFileWithoutApp(t, tmpDir)
+	composePath := filepath.Join(tmpDir, ".maestro", "compose.yml")
+
+	hasApp, _ := svc.checkComposeAppService(composePath)
+	if hasApp {
+		t.Error("expected no app service without maestro.app label")
+	}
+}
+
+// TestService_CheckComposeAppService_ListFormLabels tests that list-form labels are detected.
+// Docker Compose supports both map form (labels: {key: value}) and list form (labels: ["key=value"]).
+func TestService_CheckComposeAppService_ListFormLabels(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+
+	// Create maestro directory
+	maestroDir := filepath.Join(tmpDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create compose file with LIST-FORM labels
+	composePath := filepath.Join(maestroDir, "compose.yml")
+	content := `services:
+  app:
+    image: nginx
+    ports:
+      - "9090:80"
+    labels:
+      - "maestro.app=true"
+      - "other.label=value"
+`
+	if err := os.WriteFile(composePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	hasApp, port := svc.checkComposeAppService(composePath)
+	if !hasApp {
+		t.Error("expected to detect app service with list-form maestro.app label")
+	}
+	if port != 9090 {
+		t.Errorf("expected port 9090, got %d", port)
+	}
+}
+
+// TestService_GetLogs_HybridMode tests that hybrid mode returns both compose and app logs.
+func TestService_GetLogs_HybridMode(t *testing.T) {
+	svc, tmpDir := newTestService(t)
+	svc.SetWorkspacePath(tmpDir)
+	createComposeFileWithoutApp(t, tmpDir)
+
+	// Simulate hybrid mode: both useCompose and containerID are set
+	svc.useCompose = true
+	svc.containerID = "test-container-id"
+
+	// Mock command runner - returns different output based on command
+	svc.commandRunner = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		// Check if this is a docker logs command (for app container)
+		for _, arg := range args {
+			if arg == "logs" {
+				return exec.CommandContext(ctx, "sh", "-c", "echo 'app log line'")
+			}
+		}
+		// Compose logs command
+		return exec.CommandContext(ctx, "sh", "-c", "echo 'compose log line'")
+	}
+
+	logs, err := svc.GetLogs(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Should contain both compose and app logs
+	if logs == "" {
+		t.Error("expected non-empty logs")
+	}
+
+	// Should have app container separator in hybrid mode
+	if !strings.Contains(logs, "App Container Logs") {
+		t.Error("expected hybrid mode to include app container logs section")
+	}
+}
+
+// TestExtractHostPort tests port extraction from various Docker port mapping formats.
+func TestExtractHostPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		portSpec string
+		want     int
+	}{
+		// Single port means container port only - host port is random (return 0)
+		{"just port (random host)", "8080", 0},
+		{"host:container", "8080:80", 8080},
+		{"ip:host:container", "127.0.0.1:8080:80", 8080},
+		{"with tcp suffix", "8080:80/tcp", 8080},
+		{"with udp suffix", "8080:80/udp", 8080},
+		{"ip with tcp suffix", "127.0.0.1:8080:80/tcp", 8080},
+		{"different ports", "3000:3000", 3000},
+		{"localhost binding", "0.0.0.0:9000:8000", 9000},
+		{"empty string", "", 0},
+		{"invalid format", "invalid", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractHostPort(tt.portSpec)
+			if got != tt.want {
+				t.Errorf("extractHostPort(%q) = %d, want %d", tt.portSpec, got, tt.want)
+			}
+		})
 	}
 }

@@ -525,7 +525,13 @@ func createGetDiffTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("get_diff tool requires an executor")
 	}
-	return NewGetDiffTool(ctx.Executor, 10000), nil // 10000 lines max
+	// Use WorkDir from context as workspace root
+	// This should be set by the caller (e.g., /mnt/coders/coder-001 or /mnt/coders/hotfix-001)
+	workspaceRoot := ctx.WorkDir
+	if workspaceRoot == "" {
+		return nil, fmt.Errorf("WorkDir is required for get_diff tool")
+	}
+	return NewGetDiffTool(ctx.Executor, workspaceRoot, 10000), nil // 10000 lines max
 }
 
 // createSubmitReplyTool creates a submit_reply tool instance.
@@ -542,7 +548,7 @@ func getListFilesSchema() InputSchema {
 }
 
 func getGetDiffSchema() InputSchema {
-	return NewGetDiffTool(nil, 0).Definition().InputSchema
+	return NewGetDiffTool(nil, "", 0).Definition().InputSchema
 }
 
 func getSubmitReplySchema() InputSchema {

@@ -42,7 +42,7 @@ func (d *Driver) handleEscalated(ctx context.Context) (proto.State, error) {
 		resp, err := d.chatService.Post(ctx, &ChatPostRequest{
 			Author:   d.GetAgentID(),
 			Text:     escalationText,
-			Channel:  "development", // Escalation goes to development channel
+			Channel:  "product", // Escalation goes to product channel for human attention
 			PostType: "escalate",
 		})
 
