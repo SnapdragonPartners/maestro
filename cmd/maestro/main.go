@@ -8,9 +8,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"orchestrator/internal/kernel"
+	"orchestrator/internal/state"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/demo"
 	"orchestrator/pkg/forge"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
@@ -31,6 +34,7 @@ func main() {
 		airplaneMode = flag.Bool("airplane", false, "Run in airplane mode (offline with local Gitea + Ollama)")
 		syncMode     = flag.Bool("sync", false, "Sync offline changes from Gitea to GitHub and exit")
 		syncDryRun   = flag.Bool("sync-dry-run", false, "Preview sync without making changes (use with --sync)")
+		runMode      = flag.Bool("run", false, "Run app with dependencies only (no orchestrator)")
 	)
 	flag.Parse()
 
@@ -56,6 +60,12 @@ func main() {
 	// Handle sync mode (runs and exits before full orchestrator startup)
 	if *syncMode {
 		exitCode := runSyncMode(*projectDir, *syncDryRun)
+		os.Exit(exitCode)
+	}
+
+	// Handle run mode (runs app only, no orchestrator)
+	if *runMode {
+		exitCode := runRunMode(*projectDir)
 		os.Exit(exitCode)
 	}
 
@@ -515,6 +525,112 @@ func runSyncMode(projectDir string, dryRun bool) int {
 		return 1
 	}
 	return 0
+}
+
+// runRunMode runs the application with dependencies only (no orchestrator).
+// This is useful for local development or CI/CD when you just want to run the app.
+func runRunMode(projectDir string) int {
+	fmt.Println("🚀 Maestro Run Mode")
+	fmt.Println()
+
+	// Load configuration
+	if err := config.LoadConfig(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		return 1
+	}
+
+	cfg, err := config.GetConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get config: %v\n", err)
+		return 1
+	}
+
+	// Check if bootstrap has completed (need Dockerfile/Makefile)
+	pmWorkspace := filepath.Join(projectDir, "pm-001")
+	dockerfilePath := filepath.Join(pmWorkspace, ".maestro", "Dockerfile")
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		fmt.Println("❌ Bootstrap not complete.")
+		fmt.Println()
+		fmt.Println("Run mode requires a bootstrapped project with a Dockerfile.")
+		fmt.Println("Start Maestro normally first to complete bootstrap:")
+		fmt.Println("  maestro --projectdir " + projectDir)
+		return 1
+	}
+
+	// Create demo service
+	logger := logx.NewLogger("run-mode")
+	composeRegistry := state.NewComposeRegistry()
+	demoService := demo.NewService(&cfg, logger, composeRegistry)
+	demoService.SetWorkspacePath(pmWorkspace)
+	demoService.SetProjectDir(projectDir)
+
+	// Create context with signal handling for graceful shutdown
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Start the demo
+	fmt.Println("Starting application...")
+	if err := demoService.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start: %v\n", err)
+		return 1
+	}
+
+	// Get status to show URL
+	status := demoService.Status(ctx)
+	fmt.Println()
+	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                    ✅ Application Running                          ║")
+	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║  URL: %-61s ║\n", status.URL)
+	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  Press Ctrl+C to stop                                              ║")
+	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+
+	// Stream logs until interrupted
+	go streamDemoLogs(ctx, demoService, logger)
+
+	// Wait for shutdown signal
+	<-ctx.Done()
+
+	fmt.Println()
+	fmt.Println("🛑 Shutting down...")
+
+	// Stop the demo with a timeout
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stopCancel()
+
+	if err := demoService.Stop(stopCtx); err != nil {
+		logger.Warn("Error during shutdown: %v", err)
+	}
+
+	fmt.Println("✅ Stopped")
+	return 0
+}
+
+// streamDemoLogs continuously streams logs from the demo to stdout.
+func streamDemoLogs(ctx context.Context, svc *demo.Service, _ *logx.Logger) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var lastLogs string
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			logs, err := svc.GetLogs(ctx)
+			if err != nil {
+				continue
+			}
+			// Only print new logs (simple diff by checking if logs changed)
+			if logs != lastLogs && logs != "" {
+				// Print new content
+				fmt.Print(logs)
+				lastLogs = logs
+			}
+		}
+	}
 }
 
 // printSyncResult displays the sync results.

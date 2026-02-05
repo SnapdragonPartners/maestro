@@ -3,11 +3,14 @@ package demo
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"orchestrator/internal/state"
 	"orchestrator/pkg/config"
@@ -189,8 +192,56 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-// startWithCompose starts the demo using docker compose.
+// startWithCompose starts the demo using docker compose for dependencies,
+// then runs the app in a separate container attached to the compose network.
+// If the compose file has a service with label "maestro.app: true", that service
+// is used as the app and no separate container is started.
 func (s *Service) startWithCompose(ctx context.Context, composePath string) error {
+	// Check if compose file has a maestro.app labeled service
+	hasAppService, appPort := s.checkComposeAppService(composePath)
+	if hasAppService {
+		s.logger.Info("🐳 Starting demo with compose (app defined in compose)")
+		return s.startComposeOnly(ctx, composePath, appPort)
+	}
+
+	// Hybrid mode: compose for dependencies, app runs separately
+	s.logger.Info("🐳 Starting demo (compose + app container)")
+
+	stack := NewStack(DemoProjectName, composePath, DemoNetworkName)
+	if s.commandRunner != nil {
+		stack.CommandRunner = s.commandRunner
+	}
+
+	// Start compose services (database, redis, etc.)
+	s.logger.Info("   Starting compose services...")
+	if err := stack.Up(ctx); err != nil {
+		return fmt.Errorf("failed to start compose stack: %w", err)
+	}
+
+	// Register stack for cleanup
+	s.composeRegistry.Register(&state.ComposeStack{
+		ProjectName: DemoProjectName,
+		ComposeFile: composePath,
+		Network:     DemoNetworkName,
+		StartedAt:   time.Now(),
+	})
+
+	s.useCompose = true
+
+	// Now start the app container attached to compose network
+	s.logger.Info("   Starting app container...")
+	if err := s.startAppWithCompose(ctx); err != nil {
+		// Cleanup compose if app fails to start
+		_ = stack.Down(ctx)
+		s.composeRegistry.Unregister(DemoProjectName)
+		return fmt.Errorf("failed to start app container: %w", err)
+	}
+
+	return nil
+}
+
+// startComposeOnly starts demo using only compose (app is defined in compose file).
+func (s *Service) startComposeOnly(ctx context.Context, composePath string, appPort int) error {
 	stack := NewStack(DemoProjectName, composePath, DemoNetworkName)
 	if s.commandRunner != nil {
 		stack.CommandRunner = s.commandRunner
@@ -209,7 +260,90 @@ func (s *Service) startWithCompose(ctx context.Context, composePath string) erro
 	})
 
 	s.useCompose = true
+
+	// Use the port from compose app service
+	if appPort > 0 {
+		s.port = appPort
+	}
+
 	return nil
+}
+
+// startAppWithCompose starts the app container and connects it to the compose network.
+func (s *Service) startAppWithCompose(ctx context.Context) error {
+	// Get the image to use
+	imageID := s.getImageID()
+	if imageID == "" {
+		return fmt.Errorf("no container image available - bootstrap must complete first")
+	}
+
+	// Get build and run commands
+	buildCmd := "make build"
+	runCmd := "make run"
+	if s.config.Build != nil {
+		if s.config.Build.Build != "" {
+			buildCmd = s.config.Build.Build
+		}
+		if s.config.Build.Run != "" {
+			runCmd = s.config.Build.Run
+		}
+	}
+	if s.config.Demo != nil && s.config.Demo.RunCmdOverride != "" {
+		runCmd = s.config.Demo.RunCmdOverride
+	}
+
+	s.logger.Info("   Image: %s", imageID)
+	s.logger.Info("   Build: %s", buildCmd)
+	s.logger.Info("   Run: %s", runCmd)
+
+	// Check for cached port
+	cachedPort := 0
+	if s.config.Demo != nil && s.config.Demo.SelectedContainerPort > 0 {
+		cachedPort = s.config.Demo.SelectedContainerPort
+		s.logger.Info("   Using cached port: %d", cachedPort)
+	}
+
+	// Start the app container on the compose network
+	if err := s.runContainerOnComposeNetwork(ctx, imageID, buildCmd, runCmd, cachedPort); err != nil {
+		return err
+	}
+
+	// Port verification and discovery (same as container-only mode)
+	if cachedPort > 0 {
+		if err := s.verifyPortWithProbe(ctx); err != nil {
+			s.logger.Info("   Cached port failed verification, running discovery...")
+			s.removeExistingContainer(ctx)
+			if err := s.runContainerOnComposeNetwork(ctx, imageID, buildCmd, runCmd, 0); err != nil {
+				return err
+			}
+		} else {
+			return nil
+		}
+	}
+
+	// Discovery mode - use compose network
+	s.logger.Info("   Running port discovery...")
+	diagnostic := s.runPortDiscoveryWithNetwork(ctx, imageID, buildCmd, runCmd, composeNetworkName())
+	s.lastDiagnostic = diagnostic
+
+	if !diagnostic.Success {
+		return fmt.Errorf("demo port detection: %s", diagnostic.Error)
+	}
+
+	s.port = diagnostic.HostPort
+	s.logger.Info("   ✅ Port detected: container:%d → host:%d", diagnostic.ContainerPort, diagnostic.HostPort)
+
+	return nil
+}
+
+// composeNetworkName returns the Docker Compose default network name for the demo project.
+func composeNetworkName() string {
+	return fmt.Sprintf("%s_default", DemoProjectName)
+}
+
+// runContainerOnComposeNetwork starts the app container connected to the compose network.
+func (s *Service) runContainerOnComposeNetwork(ctx context.Context, imageID, buildCmd, runCmd string, containerPort int) error {
+	return s.runContainerWithNetwork(ctx, imageID, buildCmd, runCmd, containerPort, composeNetworkName())
 }
 
 // startContainerOnly starts a single container without compose.
@@ -289,7 +423,13 @@ func (s *Service) startContainerOnly(ctx context.Context) error {
 
 // runContainer starts the demo container with optional port mapping.
 // If containerPort is 0, starts without port mapping (discovery mode).
+// Uses DemoNetworkName by default (for container-only mode).
 func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd string, containerPort int) error {
+	return s.runContainerWithNetwork(ctx, imageID, buildCmd, runCmd, containerPort, DemoNetworkName)
+}
+
+// runContainerWithNetwork starts the demo container on a specific network.
+func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd, runCmd string, containerPort int, network string) error {
 	// Remove any existing demo container
 	s.removeExistingContainer(ctx)
 
@@ -302,7 +442,7 @@ func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd st
 		// Labels for container identification and cleanup
 		"--label", "com.maestro.managed=true",
 		"--label", "com.maestro.agent=demo",
-		"--network", DemoNetworkName,
+		"--network", network,
 		"--workdir", "/workspace",
 		"--volume", fmt.Sprintf("%s:/workspace", s.workspacePath),
 		"--cpus", "2",
@@ -313,6 +453,14 @@ func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd st
 	if containerPort > 0 {
 		// Map to localhost with Docker-assigned host port
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d", containerPort))
+	}
+
+	// Pass .env file if it exists (Docker Compose convention for app environment)
+	// This allows coder to define DATABASE_URL etc. alongside compose.yml
+	envFilePath := filepath.Join(s.workspacePath, ".maestro", ".env")
+	if _, err := os.Stat(envFilePath); err == nil {
+		args = append(args, "--env-file", envFilePath)
+		s.logger.Info("   Using environment file: .maestro/.env")
 	}
 
 	// Add session ID label dynamically
@@ -336,7 +484,6 @@ func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd st
 
 	// Store container ID
 	s.containerID = strings.TrimSpace(string(output))
-	s.useCompose = false
 
 	if len(s.containerID) >= 12 {
 		s.logger.Info("   Container ID: %s", s.containerID[:12])
@@ -353,7 +500,13 @@ func (s *Service) runContainer(ctx context.Context, imageID, buildCmd, runCmd st
 }
 
 // runPortDiscovery detects listening ports and restarts with proper mapping.
+// Uses DemoNetworkName by default.
 func (s *Service) runPortDiscovery(ctx context.Context, imageID, buildCmd, runCmd string) *DiagnosticResult {
+	return s.runPortDiscoveryWithNetwork(ctx, imageID, buildCmd, runCmd, DemoNetworkName)
+}
+
+// runPortDiscoveryWithNetwork detects listening ports on a specific network.
+func (s *Service) runPortDiscoveryWithNetwork(ctx context.Context, imageID, buildCmd, runCmd, network string) *DiagnosticResult {
 	// Create port detector for the container
 	portDetector := NewPortDetector(DemoContainerName)
 	if s.commandRunner != nil {
@@ -395,7 +548,7 @@ func (s *Service) runPortDiscovery(ctx context.Context, imageID, buildCmd, runCm
 	s.logger.Info("   Detected port %d, restarting with port mapping...", selectedPort)
 	s.removeExistingContainer(ctx)
 
-	if err := s.runContainer(ctx, imageID, buildCmd, runCmd, selectedPort); err != nil {
+	if err := s.runContainerWithNetwork(ctx, imageID, buildCmd, runCmd, selectedPort, network); err != nil {
 		diagnostic.ErrorType = DiagnosticProbeFailure
 		diagnostic.Error = fmt.Sprintf("Failed to restart with port mapping: %v", err)
 		return &diagnostic
@@ -539,8 +692,19 @@ func (s *Service) Stop(ctx context.Context) error {
 
 	s.logger.Info("🛑 Stopping demo...")
 
+	// In hybrid mode, we have both compose AND an app container
+	// Stop the app container first (if exists), then compose stack
+
+	// Stop app container if it exists (both hybrid and container-only modes)
+	if s.containerID != "" {
+		if err := s.stopContainer(ctx); err != nil {
+			s.logger.Warn("⚠️ Error stopping demo container: %v", err)
+		}
+		s.containerID = ""
+	}
+
+	// Stop compose stack if used
 	if s.useCompose {
-		// Stop compose stack
 		composePath := ComposeFilePath(s.workspacePath)
 		stack := NewStack(DemoProjectName, composePath, DemoNetworkName)
 		if s.commandRunner != nil {
@@ -553,17 +717,13 @@ func (s *Service) Stop(ctx context.Context) error {
 
 		// Unregister from compose registry
 		s.composeRegistry.Unregister(DemoProjectName)
-	} else if s.containerID != "" {
-		// Stop container-only demo
-		if err := s.stopContainer(ctx); err != nil {
-			s.logger.Warn("⚠️ Error stopping demo container: %v", err)
-		}
-		s.containerID = ""
 	}
 
-	// Remove network
-	if err := s.networkManager.RemoveNetwork(ctx, DemoNetworkName); err != nil {
-		s.logger.Warn("⚠️ Error removing demo network: %v", err)
+	// Remove demo network (only used in container-only mode, compose creates its own)
+	if !s.useCompose {
+		if err := s.networkManager.RemoveNetwork(ctx, DemoNetworkName); err != nil {
+			s.logger.Warn("⚠️ Error removing demo network: %v", err)
+		}
 	}
 
 	s.running = false
@@ -781,8 +941,12 @@ func (s *Service) GetLogs(ctx context.Context) (string, error) {
 	workspacePath := s.workspacePath
 	commandRunner := s.commandRunner
 	useCompose := s.useCompose
+	containerID := s.containerID
 	s.mu.RUnlock()
 
+	var logs strings.Builder
+
+	// Get compose logs if using compose
 	if useCompose {
 		composePath := ComposeFilePath(workspacePath)
 		stack := NewStack(DemoProjectName, composePath, DemoNetworkName)
@@ -792,28 +956,37 @@ func (s *Service) GetLogs(ctx context.Context) (string, error) {
 
 		reader, err := stack.Logs(ctx, "")
 		if err != nil {
-			return "", fmt.Errorf("failed to get logs: %w", err)
+			return "", fmt.Errorf("failed to get compose logs: %w", err)
 		}
 
 		buf := make([]byte, 64*1024) // 64KB buffer
 		n, _ := reader.Read(buf)
-		return string(buf[:n]), nil
+		logs.WriteString(string(buf[:n]))
 	}
 
-	// Container-only mode: use docker logs
-	var cmd *exec.Cmd
-	if commandRunner != nil {
-		cmd = commandRunner(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
-	} else {
-		cmd = exec.CommandContext(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+	// Get app container logs if we have a container ID (hybrid mode or container-only mode)
+	if containerID != "" {
+		var cmd *exec.Cmd
+		if commandRunner != nil {
+			cmd = commandRunner(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+		} else {
+			cmd = exec.CommandContext(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+		}
+
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			if logs.Len() > 0 {
+				logs.WriteString("\n--- App Container Logs ---\n")
+			}
+			logs.WriteString(string(output))
+		}
 	}
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to get logs: %w", err)
+	if logs.Len() == 0 {
+		return "", fmt.Errorf("no logs available")
 	}
 
-	return string(output), nil
+	return logs.String(), nil
 }
 
 // getCurrentSHA returns the current git HEAD SHA.
@@ -859,4 +1032,122 @@ func (s *Service) ConnectPM(ctx context.Context, pmContainerName string) error {
 // DisconnectPM disconnects the PM container from the demo network.
 func (s *Service) DisconnectPM(ctx context.Context, pmContainerName string) error {
 	return s.networkManager.DisconnectContainer(ctx, DemoNetworkName, pmContainerName)
+}
+
+// checkComposeAppService checks if the compose file has a service with the
+// "maestro.app: true" label. Returns (hasAppService, appPort).
+// If an app service is found, the compose file defines the full stack and
+// no separate app container should be started.
+func (s *Service) checkComposeAppService(composePath string) (bool, int) {
+	data, err := os.ReadFile(composePath)
+	if err != nil {
+		return false, 0
+	}
+
+	var compose composeFileWithLabels
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		return false, 0
+	}
+
+	for name := range compose.Services {
+		svc := compose.Services[name]
+		// Check for maestro.app label
+		if svc.Labels != nil {
+			if val, ok := svc.Labels["maestro.app"]; ok {
+				if val == "true" || val == true {
+					// Found app service, extract port if available
+					port := 0
+					if len(svc.Ports) > 0 {
+						port = extractHostPort(svc.Ports[0])
+					}
+					return true, port
+				}
+			}
+		}
+	}
+
+	return false, 0
+}
+
+// composeFileWithLabels is used to parse compose files for label detection.
+type composeFileWithLabels struct {
+	Services map[string]composeServiceWithLabels `yaml:"services"`
+}
+
+// composeServiceWithLabels represents a compose service with labels and ports.
+type composeServiceWithLabels struct {
+	Labels composeLabels `yaml:"labels"`
+	Ports  []string      `yaml:"ports"`
+}
+
+// composeLabels handles both map and list form compose labels:
+//   - Map form: labels: {key: value}
+//   - List form: labels: ["key=value"].
+type composeLabels map[string]any
+
+// UnmarshalYAML implements custom unmarshaling for compose labels.
+func (c *composeLabels) UnmarshalYAML(unmarshal func(any) error) error {
+	// Try map form first
+	var mapForm map[string]any
+	if err := unmarshal(&mapForm); err == nil {
+		*c = mapForm
+		return nil
+	}
+
+	// Try list form: ["key=value", "key2=value2"]
+	var listForm []string
+	if err := unmarshal(&listForm); err == nil {
+		*c = make(map[string]any)
+		for _, item := range listForm {
+			if idx := strings.Index(item, "="); idx != -1 {
+				key := item[:idx]
+				value := item[idx+1:]
+				(*c)[key] = value
+			}
+		}
+		return nil
+	}
+
+	// If neither works, return empty map (no labels)
+	*c = make(map[string]any)
+	return nil
+}
+
+// extractHostPort extracts the host port from a port mapping string.
+// Returns 0 if the host port cannot be determined (e.g., single-port syntax
+// where Docker assigns a random host port).
+//
+// Supported formats:
+//   - "8080" → 0 (container port only, host port is random)
+//   - "8080:80" → 8080 (host:container)
+//   - "127.0.0.1:8080:80" → 8080 (ip:host:container)
+//   - "8080:80/tcp" → 8080 (with protocol suffix)
+func extractHostPort(portSpec string) int {
+	// Remove protocol suffix if present (e.g., "/tcp", "/udp")
+	if idx := strings.Index(portSpec, "/"); idx != -1 {
+		portSpec = portSpec[:idx]
+	}
+
+	parts := strings.Split(portSpec, ":")
+	var port int
+
+	switch len(parts) {
+	case 1:
+		// Just container port: "8080" - host port is assigned randomly by Docker
+		// Return 0 to indicate unknown host port
+		return 0
+	case 2:
+		// host:container: "8080:80"
+		if _, err := fmt.Sscanf(parts[0], "%d", &port); err == nil {
+			return port
+		}
+	case 3:
+		// ip:host:container: "127.0.0.1:8080:80"
+		// The host port is the second segment (index 1)
+		if _, err := fmt.Sscanf(parts[1], "%d", &port); err == nil {
+			return port
+		}
+	}
+
+	return 0
 }

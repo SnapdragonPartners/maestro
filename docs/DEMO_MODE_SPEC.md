@@ -708,6 +708,67 @@ Update story generation prompts to recognize service requirements and generate a
 | `TestDemoAfterMerge` | Code change → outdated indicator → rebuild |
 | `TestServiceDiscovery` | App can connect to services via env vars |
 
+## Compose Behavior: Dependencies + App Separation
+
+Maestro uses a **hybrid compose model** where compose files define support services (databases, caches, etc.) while the application runs separately in the development container. This matches how coder agents work and provides the most seamless experience.
+
+### Design Principles
+
+1. **Compose = Infrastructure**: Compose files define external dependencies, not the app itself
+2. **App = Dev Container**: The application always runs in the Maestro-managed dev container
+3. **Single Code Path**: No heuristics about "is this service the app?" - compose is always for deps
+4. **Coder Parity**: Demo mode behaves exactly like coder TESTING state
+
+### Default Flow (Compose Exists)
+
+```
+demo.Start()
+    ├─ ensureNetwork("demo-network")
+    ├─ composeUp()                    # Start postgres, redis, etc.
+    ├─ runAppContainer()              # Build+run app in dev container
+    │   └─ --network demo-network     # App can reach compose services
+    └─ discoverPort()                 # Detect app's listening port
+```
+
+The app container joins the compose network, so it can reach services by their service name (e.g., `postgres://db:5432`).
+
+### Escape Hatch: App in Compose
+
+For rare cases where the application IS defined in the compose file (e.g., multi-container apps), add a label to the app service:
+
+```yaml
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    labels:
+      maestro.app: "true"  # Tells demo to use this service as the app
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+```
+
+When `maestro.app: "true"` is present on a service:
+- Demo does NOT start a separate app container
+- Demo uses the labeled service's exposed port
+- Compose handles the entire stack
+
+### Why This Design?
+
+| Alternative | Problem |
+|-------------|---------|
+| Require app in compose | User friction, drift from agent workflow |
+| Auto-detect app service | Heuristics fail (DB on port 8080?), complexity |
+| Current mutually exclusive | Compose-only OR container-only, not hybrid |
+
+The hybrid model:
+- Mirrors exactly how coders work (compose_up + run in container)
+- Zero configuration for the common case
+- Explicit escape hatch for edge cases
+
 ## Demo Without Compose
 
 Simple apps can run demos directly without requiring a docker-compose file. The demo runs in the PM's development container using build + run commands, with compose reserved for when additional services (databases, caches, etc.) are needed.
@@ -730,7 +791,162 @@ When no compose file exists:
 - [x] WebUI handles no-compose demo gracefully (no missing service info errors)
 - [x] Port detection works without EXPOSE directive (procfs fallback)
 
-## Implementation Order
+## Run Mode (CLI)
+
+Maestro supports a `--run` flag for running the application without the full orchestrator. This is useful for local development where you just want to run the app with its dependencies.
+
+### Usage
+
+```bash
+maestro --run
+```
+
+### Behavior
+
+1. Load config and verify project infrastructure
+2. If compose file exists: start compose services
+3. Build and run the app in the dev container
+4. Detect and map the app's port
+5. Display URL and stream logs
+6. Clean up on shutdown (Ctrl+C)
+
+### Differences from WebUI Demo
+
+| Aspect | `--run` | WebUI Demo |
+|--------|---------|------------|
+| Trigger | CLI flag | WebUI button |
+| Orchestrator | Not started | Full orchestrator running |
+| Agents | None | PM, Architect, Coders |
+| WebUI | Not available | Available at `:8080` |
+
+See [MODES.md](MODES.md#run-mode) for more details.
+
+---
+
+## Implementation Plan: Hybrid Compose + Run Mode
+
+This section tracks the implementation of:
+1. **Hybrid compose model**: Compose handles dependencies, app runs separately
+2. **Run mode CLI**: `--run` flag for running app without orchestrator
+
+### Phase 1: Fix Compose + App Separation (Demo Service)
+
+**Goal**: When compose exists, start compose services AND run the app separately.
+
+- [x] **1.1** Update `startWithCompose()` to also run the app container
+  - After `stack.Up()`, call app container logic (similar to `startContainerOnly`)
+  - App container must join the compose network
+  - File: `pkg/demo/service.go`
+
+- [x] **1.2** Add network connection for app container
+  - Use `--network` flag when starting app container
+  - Network name should match compose project network (`demo-network` or `demo_default`)
+  - File: `pkg/demo/service.go`
+
+- [x] **1.3** Implement port detection for hybrid mode
+  - After app container starts, run port discovery
+  - Set `s.port` to the detected/mapped port
+  - File: `pkg/demo/service.go`
+
+- [x] **1.4** Add `maestro.app` label detection (escape hatch)
+  - Parse compose file for service with `maestro.app: "true"` label
+  - If found, skip separate app container (use compose service's port)
+  - File: `pkg/demo/service.go` or new `pkg/demo/compose_parser.go`
+
+- [x] **1.5** Update `Stop()` to clean up both compose and app container
+  - Stop app container first
+  - Then run `compose down -v`
+  - File: `pkg/demo/service.go`
+
+- [x] **1.6** Add tests for hybrid compose mode
+  - Test: compose with db only → app runs separately
+  - Test: compose with `maestro.app` label → no separate app
+  - Test: cleanup removes both compose and app container
+  - File: `pkg/demo/service_test.go`
+
+### Phase 2: Run Mode CLI
+
+**Goal**: Add `--run` flag that runs the app without starting the orchestrator.
+
+- [x] **2.1** Add `-run` flag to CLI
+  - Add `runMode = flag.Bool("run", false, "Run app with dependencies only (no orchestrator)")`
+  - File: `cmd/maestro/main.go`
+
+- [x] **2.2** Create `runRunMode()` function
+  - Load config and verify project
+  - Initialize demo service
+  - Set workspace path (use PM workspace or configurable)
+  - Call demo `Start()`
+  - File: `cmd/maestro/main.go` or new `cmd/maestro/run_mode.go`
+
+- [x] **2.3** Implement signal handling for run mode
+  - Catch SIGINT/SIGTERM
+  - Call demo `Stop()` for cleanup
+  - Exit cleanly
+  - File: `cmd/maestro/main.go`
+
+- [x] **2.4** Add log streaming for run mode
+  - Stream container logs to stdout
+  - Show URL when app is ready
+  - File: `cmd/maestro/main.go`
+
+- [x] **2.5** Handle missing bootstrap gracefully
+  - Check if Dockerfile/Makefile exist
+  - If not, display helpful error message
+  - File: `cmd/maestro/main.go`
+
+- [x] **2.6** Add tests for run mode
+  - Test: run mode starts and stops cleanly
+  - Test: run mode with compose starts dependencies
+  - Test: run mode without compose works
+  - Test: missing bootstrap shows error
+  - File: `cmd/maestro/main_test.go`
+
+### Phase 3: Integration & Polish
+
+- [ ] **3.1** Update WebUI demo to use same code path
+  - Ensure WebUI demo and run mode use identical logic
+  - Refactor if needed to share code
+  - File: `pkg/demo/service.go`
+
+- [ ] **3.2** Add config option for run mode workspace
+  - Allow configuring which workspace to use for run mode
+  - Default to PM workspace (`pm-001`)
+  - File: `pkg/config/config.go`
+
+- [ ] **3.3** Integration test: full run mode flow
+  - Start maestro with `--run`
+  - Verify app is accessible
+  - Send SIGINT
+  - Verify cleanup
+  - File: `tests/integration/run_mode_test.go`
+
+- [ ] **3.4** Update CLAUDE.md with run mode documentation
+  - Add to development commands section
+  - Document expected behavior
+  - File: `CLAUDE.md`
+
+### Acceptance Criteria
+
+**Hybrid Compose:**
+- [x] Demo with compose file starts both compose services AND app container
+- [x] App container can reach compose services by service name (e.g., `db:5432`)
+- [x] Port detection works correctly in hybrid mode
+- [x] `maestro.app: "true"` label disables separate app container
+- [x] Stop cleans up both compose stack and app container
+- [x] Existing no-compose demos continue to work
+
+**Run Mode:**
+- [x] `maestro --run` starts app without orchestrator/agents
+- [x] Compose services start if compose file exists
+- [x] App port is detected and displayed
+- [x] Ctrl+C cleanly stops everything
+- [x] Missing bootstrap shows helpful error
+- [x] Works with `--projectdir` flag
+
+---
+
+## Implementation Order (Original Demo Mode)
 
 ### Phase 0: Documentation
 1. Add Demo Mode section to README.md with brief overview

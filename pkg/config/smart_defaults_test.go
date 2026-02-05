@@ -101,24 +101,24 @@ func TestGetSmartDefaultModel(t *testing.T) {
 		providers AvailableProviders
 		want      string
 	}{
-		// Architect: Google → OpenAI → Anthropic
+		// Architect: OpenAI → Anthropic → Google
 		{
-			name:      "architect prefers google",
+			name:      "architect prefers openai",
 			agentType: AgentTypeArchitect,
 			providers: AvailableProviders{Anthropic: true, OpenAI: true, Google: true},
-			want:      ModelGemini3Pro,
-		},
-		{
-			name:      "architect falls back to openai",
-			agentType: AgentTypeArchitect,
-			providers: AvailableProviders{Anthropic: true, OpenAI: true, Google: false},
 			want:      ModelGPT52,
 		},
 		{
 			name:      "architect falls back to anthropic",
 			agentType: AgentTypeArchitect,
-			providers: AvailableProviders{Anthropic: true, OpenAI: false, Google: false},
+			providers: AvailableProviders{Anthropic: true, OpenAI: false, Google: true},
 			want:      ModelClaudeOpus45,
+		},
+		{
+			name:      "architect falls back to google",
+			agentType: AgentTypeArchitect,
+			providers: AvailableProviders{Anthropic: false, OpenAI: false, Google: true},
+			want:      ModelGemini3Pro,
 		},
 
 		// PM: Anthropic → OpenAI → Google
@@ -208,7 +208,7 @@ func TestApplySmartModelDefaults(t *testing.T) {
 			google:             "google-test",
 			wantSingleProvider: false,
 			wantCoderModel:     ModelClaudeSonnet4, // Anthropic preferred
-			wantArchitectModel: ModelGemini3Pro,    // Google preferred
+			wantArchitectModel: ModelGPT52,         // OpenAI preferred
 			wantPMModel:        ModelClaudeOpus45,  // Anthropic preferred
 		},
 		{
@@ -238,7 +238,7 @@ func TestApplySmartModelDefaults(t *testing.T) {
 			google:             "google-test",
 			wantSingleProvider: false,
 			wantCoderModel:     ModelClaudeSonnet4,
-			wantArchitectModel: ModelGemini3Pro,
+			wantArchitectModel: ModelClaudeOpus45, // Anthropic preferred (no OpenAI)
 			wantPMModel:        ModelClaudeOpus45,
 		},
 	}
