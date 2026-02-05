@@ -374,7 +374,7 @@ func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) 
 // but we handle it gracefully rather than erroring.
 func (c *Coder) processAdditionalTodosFromEffect(sm *agent.BaseStateMachine, effectDataRaw any) error {
 	// Extract todos from ProcessEffect.Data
-	effectData, ok := effectDataRaw.(map[string]any)
+	effectData, ok := utils.SafeAssert[map[string]any](effectDataRaw)
 	if !ok {
 		return logx.Errorf("CODING effect data is not map[string]any: %T", effectDataRaw)
 	}
@@ -393,7 +393,7 @@ func (c *Coder) processAdditionalTodosFromEffect(sm *agent.BaseStateMachine, eff
 	case []any:
 		todos = make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok {
+			if s, ok := utils.SafeAssert[string](item); ok {
 				todos = append(todos, s)
 			}
 		}
