@@ -59,10 +59,13 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	// Get story type for template selection
 	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
 
+	// Check if this is a hotfix story (hotfix stories skip planning and don't use todos)
+	isHotfix := utils.GetStateValueOr[bool](sm, KeyIsHotfix, false)
+
 	// Create ToolProvider for this coding session
 	if c.codingToolProvider == nil {
-		c.codingToolProvider = c.createCodingToolProvider(storyType)
-		c.logger.Debug("Created coding ToolProvider for story type: %s", storyType)
+		c.codingToolProvider = c.createCodingToolProvider(storyType, isHotfix)
+		c.logger.Debug("Created coding ToolProvider for story type: %s, isHotfix: %v", storyType, isHotfix)
 	}
 
 	// Select appropriate coding template based on story type
@@ -230,6 +233,16 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			c.logger.Info("🧑‍💻 Done tool detected: %s", summary)
 			c.logger.Info("🧑‍💻 Advancing to TESTING state")
 			return StateTesting, false, nil
+		case tools.SignalCoding:
+			// todos_add was called during coding - add todos and continue coding
+			// This handles the case where LLM calls todos_add during CODING state
+			// (normally todos are created in TODO_COLLECTION, but LLM might add more during coding)
+			if err := c.processAdditionalTodosFromEffect(sm, out.EffectData); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to process additional todos")
+			}
+			c.logger.Info("📋 Additional todos added during CODING, continuing...")
+			// Return to CODING to continue with updated todo list
+			return StateCoding, false, nil
 		default:
 			return proto.StateError, false, logx.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 		}
@@ -352,4 +365,70 @@ func (c *Coder) logEmptyLLMResponse(prompt string, req agent.CompletionRequest) 
 	c.logger.Error("  - Tool Choice: %v", req.ToolChoice)
 	c.logger.Error("  - Tools Count: %d", len(req.Tools))
 	c.logger.Error("🚨 END EMPTY RESPONSE DEBUG")
+}
+
+// processAdditionalTodosFromEffect handles todos_add being called during CODING state.
+// This adds the new todos to the existing todo list (or creates one if none exists).
+// This is a safety net for cases where the LLM calls todos_add during coding,
+// which normally shouldn't happen (todos are created in TODO_COLLECTION state),
+// but we handle it gracefully rather than erroring.
+func (c *Coder) processAdditionalTodosFromEffect(sm *agent.BaseStateMachine, effectDataRaw any) error {
+	// Extract todos from ProcessEffect.Data
+	effectData, ok := effectDataRaw.(map[string]any)
+	if !ok {
+		return logx.Errorf("CODING effect data is not map[string]any: %T", effectDataRaw)
+	}
+
+	// Get todos array from effect data
+	todosRaw, ok := effectData["todos"]
+	if !ok {
+		return logx.Errorf("ProcessEffect.Data missing 'todos' field")
+	}
+
+	// Convert to []string (tool returns []string but may come as []any after JSON round-trip)
+	var todos []string
+	switch v := todosRaw.(type) {
+	case []string:
+		todos = v
+	case []any:
+		todos = make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				todos = append(todos, s)
+			}
+		}
+	default:
+		return logx.Errorf("todos field is not an array: %T", todosRaw)
+	}
+
+	if len(todos) == 0 {
+		c.logger.Warn("📋 todos_add called with empty todos array, ignoring")
+		return nil
+	}
+
+	// Create new todo items
+	newItems := make([]TodoItem, len(todos))
+	for i, desc := range todos {
+		newItems[i] = TodoItem{
+			Description: desc,
+			Completed:   false,
+		}
+	}
+
+	// Add to existing todo list or create new one
+	if c.todoList == nil {
+		c.todoList = &TodoList{
+			Items:   newItems,
+			Current: 0,
+		}
+		c.logger.Info("📋 Created new todo list with %d items during CODING", len(newItems))
+	} else {
+		c.todoList.Items = append(c.todoList.Items, newItems...)
+		c.logger.Info("📋 Added %d todos to existing list (now %d total)", len(newItems), len(c.todoList.Items))
+	}
+
+	// Update state data so WebUI and future iterations can see the todos
+	sm.SetStateData(KeyTodoList, c.todoList)
+
+	return nil
 }
