@@ -12,18 +12,24 @@ import (
 
 // GetDiffTool allows getting git diff from coder workspaces.
 type GetDiffTool struct {
-	executor     execpkg.Executor
-	maxDiffLines int
+	executor      execpkg.Executor
+	workspaceRoot string // Base path for git operations (e.g., "/mnt/coders/coder-001")
+	maxDiffLines  int
 }
 
 // NewGetDiffTool creates a new get_diff tool.
-func NewGetDiffTool(executor execpkg.Executor, maxDiffLines int) *GetDiffTool {
+// workspaceRoot is the base path for git operations (e.g., "/mnt/coders/coder-001").
+func NewGetDiffTool(executor execpkg.Executor, workspaceRoot string, maxDiffLines int) *GetDiffTool {
 	if maxDiffLines <= 0 {
 		maxDiffLines = 10000 // Default: 10000 lines
 	}
+	if workspaceRoot == "" {
+		workspaceRoot = "/workspace" // Default workspace path
+	}
 	return &GetDiffTool{
-		executor:     executor,
-		maxDiffLines: maxDiffLines,
+		executor:      executor,
+		workspaceRoot: workspaceRoot,
+		maxDiffLines:  maxDiffLines,
 	}
 }
 
@@ -34,8 +40,8 @@ func (t *GetDiffTool) Name() string {
 
 // PromptDocumentation returns formatted tool documentation for prompts.
 func (t *GetDiffTool) PromptDocumentation() string {
-	return `- **get_diff** - Get git diff between coder workspace and main branch
-  - Parameters: coder_id (string, REQUIRED), path (string, optional specific file)
+	return `- **get_diff** - Get git diff between workspace and main branch
+  - Parameters: path (string, optional specific file)
   - Use to see what changes the coder made`
 }
 
@@ -43,68 +49,32 @@ func (t *GetDiffTool) PromptDocumentation() string {
 func (t *GetDiffTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        ToolGetDiff,
-		Description: "Get git diff between coder workspace and main branch. Use this to see what changes the coder or hotfix agent made.",
+		Description: "Get git diff between the current workspace and main branch. Use this to see what changes the coder or hotfix agent made.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
-				"coder_id": {
-					Type:        "string",
-					Description: "Coder or hotfix agent ID (e.g., 'coder-001', 'hotfix-001')",
-				},
 				"path": {
 					Type:        "string",
 					Description: "Optional: specific file path to diff. If omitted, shows diff for all files.",
 				},
 			},
-			Required: []string{"coder_id"},
+			Required: []string{}, // No required parameters - workspace is pre-configured
 		},
 	}
 }
 
-// isValidAgentID checks if the agent ID has a valid format (coder-* or hotfix-*).
-func isValidAgentID(agentID string) bool {
-	return strings.HasPrefix(agentID, "coder-") || strings.HasPrefix(agentID, "hotfix-")
-}
-
-// buildErrorResult builds an error response as an ExecResult.
-func buildErrorResult(errMsg string) (*ExecResult, error) {
-	response := map[string]any{
-		"success": false,
-		"error":   errMsg,
-	}
-	content, err := json.Marshal(response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal error response: %w", err)
-	}
-	return &ExecResult{Content: string(content)}, nil
-}
-
 // Exec executes the tool with the given arguments.
 func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	// Extract arguments
-	coderID, ok := args["coder_id"].(string)
-	if !ok || coderID == "" {
-		return nil, fmt.Errorf("coder_id is required and must be a string")
-	}
-
+	// Extract optional path argument
 	path := ""
 	if p, ok := args["path"].(string); ok {
 		path = p
 	}
 
-	// Validate coder_id format (accepts coder-* or hotfix-*)
-	if !isValidAgentID(coderID) {
-		return buildErrorResult(fmt.Sprintf("invalid coder_id format: %s (expected 'coder-001' or 'hotfix-001' format)", coderID))
-	}
-
-	// Construct workspace path in container
-	const codersMountPath = "/mnt/coders"
-	workspacePath := filepath.Join(codersMountPath, coderID)
-
-	// Build git diff command
-	diffCmd, err := t.buildDiffCommand(workspacePath, path)
+	// Build git diff command using pre-configured workspace root
+	diffCmd, err := t.buildDiffCommand(t.workspaceRoot, path)
 	if err != nil {
-		return buildErrorResult(err.Error())
+		return t.buildErrorResult(err.Error())
 	}
 
 	cmd := []string{"sh", "-c", diffCmd}
@@ -115,9 +85,9 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResul
 	if err != nil && result.ExitCode != 0 {
 		errMsg := fmt.Sprintf("git diff failed: %s", result.Stdout)
 		if strings.Contains(result.Stdout, "not a git repository") {
-			errMsg = fmt.Sprintf("workspace %s is not a git repository", coderID)
+			errMsg = fmt.Sprintf("workspace %s is not a git repository", t.workspaceRoot)
 		}
-		return buildErrorResult(errMsg)
+		return t.buildErrorResult(errMsg)
 	}
 
 	// Count lines to detect truncation
@@ -129,7 +99,6 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResul
 	resultMap := map[string]any{
 		"success":   true,
 		"diff":      result.Stdout,
-		"coder_id":  coderID,
 		"path":      path,
 		"truncated": diffLines >= t.maxDiffLines,
 		"lines":     diffLines,
@@ -140,6 +109,19 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResul
 		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
 
+	return &ExecResult{Content: string(content)}, nil
+}
+
+// buildErrorResult builds an error response as an ExecResult.
+func (t *GetDiffTool) buildErrorResult(errMsg string) (*ExecResult, error) {
+	response := map[string]any{
+		"success": false,
+		"error":   errMsg,
+	}
+	content, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal error response: %w", err)
+	}
 	return &ExecResult{Content: string(content)}, nil
 }
 
