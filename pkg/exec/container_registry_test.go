@@ -208,3 +208,59 @@ func TestContainerRegistry_ConcurrentAccess(t *testing.T) {
 		t.Errorf("Expected 0 containers after cleanup, got %d", registry.GetContainerCount())
 	}
 }
+
+func TestGlobalRegistry_SetAndGet(t *testing.T) {
+	// Save and restore any existing global registry to avoid polluting other tests
+	prev := GetGlobalRegistry()
+	defer SetGlobalRegistry(prev)
+
+	// Initially may or may not be nil depending on test ordering,
+	// so just test the set/get round-trip.
+	logger := logx.NewLogger("test")
+	registry := NewContainerRegistry(logger)
+
+	SetGlobalRegistry(registry)
+
+	got := GetGlobalRegistry()
+	if got != registry {
+		t.Error("GetGlobalRegistry should return the registry set by SetGlobalRegistry")
+	}
+}
+
+func TestGlobalRegistry_NilSafe(t *testing.T) {
+	// Save and restore any existing global registry
+	prev := GetGlobalRegistry()
+	defer SetGlobalRegistry(prev)
+
+	// Set global to nil
+	SetGlobalRegistry(nil)
+
+	got := GetGlobalRegistry()
+	if got != nil {
+		t.Error("GetGlobalRegistry should return nil when set to nil")
+	}
+}
+
+func TestGlobalRegistry_RegisterVisibleGlobally(t *testing.T) {
+	// Save and restore any existing global registry
+	prev := GetGlobalRegistry()
+	defer SetGlobalRegistry(prev)
+
+	logger := logx.NewLogger("test")
+	registry := NewContainerRegistry(logger)
+	SetGlobalRegistry(registry)
+
+	// Register a container via the global accessor
+	globalReg := GetGlobalRegistry()
+	globalReg.Register("test-agent", "test-container-global", "testing")
+
+	// Verify the registration is visible
+	if registry.GetContainerCount() != 1 {
+		t.Errorf("Expected 1 container in global registry, got %d", registry.GetContainerCount())
+	}
+
+	containers := registry.GetActiveContainers()
+	if _, exists := containers["test-container-global"]; !exists {
+		t.Error("Container registered via global accessor should be visible in registry")
+	}
+}

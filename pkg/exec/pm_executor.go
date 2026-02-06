@@ -143,6 +143,11 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 	p.containerID = strings.TrimSpace(string(output))
 	p.logger.Info("Started PM container %s with ID: %s", p.containerName, p.containerID)
 
+	// Register with global container registry for cleanup tracking
+	if registry := GetGlobalRegistry(); registry != nil {
+		registry.Register("pm", p.containerName, "pm-agent")
+	}
+
 	return nil
 }
 
@@ -162,6 +167,11 @@ func (p *PMExecutor) Stop(ctx context.Context) error {
 	rmCmd := exec.CommandContext(ctx, p.dockerCmd, "rm", "-f", p.containerName)
 	if err := rmCmd.Run(); err != nil {
 		return fmt.Errorf("failed to stop PM container: %w", err)
+	}
+
+	// Unregister from global container registry
+	if registry := GetGlobalRegistry(); registry != nil {
+		registry.Unregister(p.containerName)
 	}
 
 	p.containerID = ""

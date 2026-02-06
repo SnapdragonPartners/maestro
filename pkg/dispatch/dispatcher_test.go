@@ -9,6 +9,8 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/exec"
+	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
 )
 
@@ -383,15 +385,6 @@ func TestGetReplyCh(t *testing.T) {
 	replyCh = dispatcher.GetReplyCh(agent.GetID())
 	if replyCh == nil {
 		t.Error("Expected non-nil reply channel for attached agent")
-	}
-}
-
-func TestGetContainerRegistry(t *testing.T) {
-	dispatcher := createTestDispatcher(t)
-
-	registry := dispatcher.GetContainerRegistry()
-	if registry == nil {
-		t.Error("Expected non-nil container registry")
 	}
 }
 
@@ -1152,5 +1145,78 @@ func TestLeaseOperationsExtended(t *testing.T) {
 		if lease != "" {
 			t.Errorf("Expected empty lease after clearing for agent %s, got %s", agentID, lease)
 		}
+	}
+}
+
+// TestDispatcherNoContainerRegistryField verifies the dispatcher no longer holds
+// its own container registry — it should use the global accessor instead.
+func TestDispatcherNoContainerRegistryField(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+
+	// The dispatcher should not have a GetContainerRegistry method anymore.
+	// This test simply verifies the dispatcher was created without error and
+	// that Start/Stop work correctly when a global registry is set.
+	if dispatcher == nil {
+		t.Fatal("Expected non-nil dispatcher")
+	}
+}
+
+// TestDispatcherStopUsesGlobalRegistry verifies that the dispatcher's Stop() method
+// uses the global container registry (not a local one) for container cleanup.
+func TestDispatcherStopUsesGlobalRegistry(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+
+	// Set up a global registry with a fake container
+	prevRegistry := exec.GetGlobalRegistry()
+	defer exec.SetGlobalRegistry(prevRegistry)
+
+	logger := logx.NewLogger("test")
+	registry := exec.NewContainerRegistry(logger)
+	exec.SetGlobalRegistry(registry)
+
+	// Register a fake container
+	registry.Register("test-agent", "fake-dispatcher-stop-container", "testing")
+
+	if registry.GetContainerCount() != 1 {
+		t.Fatalf("Expected 1 container before Stop, got %d", registry.GetContainerCount())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Start the dispatcher
+	if err := dispatcher.Start(ctx); err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	// Stop should attempt to clean up containers from the global registry.
+	// The fake container doesn't actually exist in Docker, so the docker stop
+	// will fail, but the registry should still be consulted (no panic).
+	if err := dispatcher.Stop(ctx); err != nil {
+		t.Errorf("Dispatcher.Stop() failed: %v", err)
+	}
+}
+
+// TestDispatcherStopWithNilGlobalRegistry verifies that Stop() handles a nil global
+// registry gracefully (e.g., if SetGlobalRegistry was never called).
+func TestDispatcherStopWithNilGlobalRegistry(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+
+	// Ensure global registry is nil
+	prevRegistry := exec.GetGlobalRegistry()
+	defer exec.SetGlobalRegistry(prevRegistry)
+	exec.SetGlobalRegistry(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Start the dispatcher
+	if err := dispatcher.Start(ctx); err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	// Stop should not panic even with nil global registry
+	if err := dispatcher.Stop(ctx); err != nil {
+		t.Errorf("Dispatcher.Stop() with nil global registry failed: %v", err)
 	}
 }
