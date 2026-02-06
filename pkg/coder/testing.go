@@ -607,9 +607,11 @@ func (c *Coder) runLoopbackLintCheck(workspacePath string) *effect.TestFailureEf
 	return effect.NewLoopbackLintFailureEffect(result.FormatError())
 }
 
-// ensureComposeStackRunning starts the compose stack if a compose.yml exists in the workspace.
-// This is called at the start of TESTING state to ensure services (databases, caches, etc.) are running.
-// The operation is idempotent - Docker Compose handles diffing and only recreates changed services.
+// ensureComposeStackRunning starts the compose stack if a compose.yml exists in the workspace,
+// then connects the coder's dev container to the compose network so it can reach services
+// (databases, caches, etc.) by hostname.
+// This is called at the start of CODING and TESTING states.
+// The operation is idempotent - both compose up and network connect are safe to call repeatedly.
 func (c *Coder) ensureComposeStackRunning(ctx context.Context, workspacePath string) error {
 	// Check if compose file exists in the workspace
 	if !demo.ComposeFileExists(workspacePath) {
@@ -625,13 +627,14 @@ func (c *Coder) ensureComposeStackRunning(ctx context.Context, workspacePath str
 	projectName := "maestro-" + c.GetAgentID() // e.g., "maestro-coder-001"
 	stack := demo.NewStack(projectName, composePath, "")
 
-	// Run docker compose up -d --wait
-	// This is idempotent - compose handles the diffing internally
-	if err := stack.Up(ctx); err != nil {
+	// Start compose and attach this coder's container to the compose network.
+	// This enables the dev container to reach compose services (db, redis, etc.) by hostname.
+	containerName := c.GetContainerName()
+	if err := stack.UpAndAttach(ctx, containerName); err != nil {
 		return fmt.Errorf("failed to start compose stack: %w", err)
 	}
 
-	c.logger.Info("✅ Compose stack %s started successfully", projectName)
+	c.logger.Info("✅ Compose stack %s started successfully (container %s attached to network)", projectName, containerName)
 	return nil
 }
 

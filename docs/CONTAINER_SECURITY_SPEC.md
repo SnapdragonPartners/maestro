@@ -266,6 +266,101 @@ docker rm -f $(docker ps -q --filter "label=com.maestro.session=<session-id>")
 2. `ComposeRegistry.Cleanup()` - stops all compose stacks
 3. `Dispatcher.Stop()` → `ContainerRegistry.StopAllContainersDirect()` - stops PM, architect, coders
 
+## Part 5: Docker Compose Network Connectivity
+
+### Problem
+
+When a coder's `compose.yml` defines services (e.g., PostgreSQL), `compose_up` starts them
+successfully but the coder container cannot reach them by hostname, localhost, or container name.
+
+**Root cause:** The coder container and compose services are on different Docker networks.
+
+- The coder container starts on Docker's default `bridge` network (e.g., 172.17.0.x)
+- `docker compose up` creates its own network `maestro-coder-001_default` (e.g., 172.22.0.x)
+- These networks are isolated — no DNS resolution or routing between them
+
+**Why demo mode works:** Demo mode starts a *new* app container with `--network demo_default`,
+placing it directly on the compose network at creation time. Coders cannot do this because the
+container already exists when compose starts later in the CODING/TESTING states.
+
+### Solution: `Stack.UpAndAttach()`
+
+After `docker compose up` succeeds, connect the existing coder container to the compose network
+using `docker network connect`. This adds the compose network as a second interface — the
+container keeps its `bridge` connection (internet access) and gains access to compose services
+by hostname.
+
+To prevent duplication of this policy across call sites, the fix is centralized as a single
+operation on the `Stack` abstraction:
+
+```go
+// Stack.UpAndAttach does compose up, then connects the given container to the
+// compose project's default network so it can reach compose services by hostname.
+func (s *Stack) UpAndAttach(ctx context.Context, containerName string) error {
+    // 1. Run docker compose up (idempotent)
+    if err := s.Up(ctx); err != nil {
+        return err
+    }
+
+    // 2. Determine compose network name ({project}_default convention)
+    networkName := s.ProjectName + "_default"
+
+    // 3. Verify the network exists (compose may define custom networks)
+    // If not found, emit diagnostic rather than failing silently
+
+    // 4. Connect the agent container (idempotent — no-ops if already connected)
+    return networkMgr.ConnectContainer(ctx, networkName, containerName)
+}
+```
+
+Both call sites (`ensureComposeStackRunning()` in the coder state machine and `ComposeUpTool.Exec()`
+in the MCP tool) use `UpAndAttach()` instead of `Up()` directly. This ensures hybrid compose
+networking is correct everywhere by construction.
+
+### Network Selection
+
+- **Default:** `{project}_default` — covers the standard Docker Compose convention
+- **Fallback:** If the network doesn't exist after compose up, emit a clear diagnostic:
+  "compose network not found; compose file may define custom networks"
+- **Future enhancement (optional):** Discover networks by compose labels
+  (`com.docker.compose.project=<project>`) for compose files with custom network definitions
+
+### Call Sites
+
+| Caller | File | Container Name Source |
+|--------|------|---------------------|
+| `ensureComposeStackRunning()` | `pkg/coder/testing.go` | `"maestro-story-" + agentID` (from executor prefix) |
+| `ComposeUpTool.Exec()` | `pkg/tools/compose_up.go` | Injected via `AgentContext` at tool construction |
+
+### Safety Properties
+
+- **Idempotent:** `ConnectContainer()` checks `IsConnected()` first and no-ops if already connected.
+  Multiple calls to `compose_up` during a dev cycle (CODING → TESTING → CODING) are safe.
+- **Internet preserved:** `docker network connect` adds a network without removing existing ones.
+  The container remains dual-homed on both `bridge` (internet) and the compose network (services).
+- **No compose file modification:** Compose manages its own network; we simply join the container
+  to it after the fact. No brittle YAML injection.
+- **Bidirectional access:** Services on the compose network can also initiate connections back to the
+  coder container. This is acceptable for local development but worth noting as a security posture change.
+
+### Testing
+
+- **Integration test:** Start a trivial compose service (e.g., `busybox` with `nc -l`) and verify
+  connectivity from inside the coder container (`nc -z <service> <port>`)
+- **Debug logging on failure:**
+  - Log the attempted network name
+  - List compose project networks
+  - Log current networks attached to the coder container (`docker inspect`)
+
+### Implementation Files
+
+| File | Change |
+|------|--------|
+| `pkg/demo/stack.go` | Add `UpAndAttach(ctx, containerName)` method |
+| `pkg/coder/testing.go` | `ensureComposeStackRunning()` calls `UpAndAttach()` |
+| `pkg/tools/compose_up.go` | `ComposeUpTool` stores container name, `Exec()` calls `UpAndAttach()` |
+| `pkg/tools/registry.go` | Pass container name to `ComposeUpTool` via `AgentContext` |
+
 ## Acceptance Criteria
 
 - [ ] Coder containers start successfully without `gh` installed
@@ -277,3 +372,6 @@ docker rm -f $(docker ps -q --filter "label=com.maestro.session=<session-id>")
 - [ ] Multiple agents can use the same compose.yml without collisions
 - [ ] All containers are labeled with `com.maestro.*` labels
 - [ ] Containers are stopped during graceful shutdown
+- [ ] Coder containers can reach compose services by hostname after `compose_up`
+- [ ] `UpAndAttach()` is idempotent across multiple calls per story
+- [ ] Internet access is preserved when container joins compose network

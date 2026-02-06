@@ -481,3 +481,133 @@ func TestStack_SanitizedComposeFile_EmptyComposeFile(t *testing.T) {
 		t.Errorf("expected empty path for empty compose file, got %q", sanitizedPath)
 	}
 }
+
+func TestStack_UpAndAttach_EmptyContainerName(t *testing.T) {
+	// With empty container name, UpAndAttach should just call Up() and return
+	upCalled := false
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: "/path/to/compose.yml",
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			upCalled = true
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		},
+	}
+
+	err := s.UpAndAttach(context.Background(), "")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !upCalled {
+		t.Error("expected Up() to be called")
+	}
+}
+
+func TestStack_UpAndAttach_ConnectsContainerToNetwork(t *testing.T) {
+	// Track commands to verify both compose up and network connect are called
+	var commands []string
+	mockRunner := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		cmdStr := strings.Join(args, " ")
+		commands = append(commands, cmdStr)
+
+		// For network inspect (exists check), return success
+		if len(args) >= 3 && args[0] == "network" && args[1] == "inspect" {
+			// NetworkExists check - return success (network exists)
+			if len(args) >= 4 && args[3] == "--format" {
+				// IsConnected check - return empty (not connected yet)
+				return exec.CommandContext(ctx, "sh", "-c", "echo ''")
+			}
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		}
+
+		// For network connect, return success
+		if len(args) >= 3 && args[0] == "network" && args[1] == "connect" {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+		}
+
+		// For compose up, return success
+		return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	}
+
+	s := &Stack{
+		ProjectName:   "test-project",
+		ComposeFile:   "/path/to/compose.yml",
+		CommandRunner: mockRunner,
+		networkManager: &NetworkManager{
+			CommandRunner: mockRunner,
+		},
+	}
+
+	err := s.UpAndAttach(context.Background(), "maestro-story-coder-001")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// Verify compose up was called
+	foundComposeUp := false
+	foundNetworkConnect := false
+	for _, cmd := range commands {
+		if strings.Contains(cmd, "up -d --wait") {
+			foundComposeUp = true
+		}
+		if strings.Contains(cmd, "network connect test-project_default maestro-story-coder-001") {
+			foundNetworkConnect = true
+		}
+	}
+
+	if !foundComposeUp {
+		t.Errorf("expected compose up command, got commands: %v", commands)
+	}
+	if !foundNetworkConnect {
+		t.Errorf("expected network connect command, got commands: %v", commands)
+	}
+}
+
+func TestStack_UpAndAttach_NetworkNotFound(t *testing.T) {
+	mockRunner := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		// For network inspect, return failure (network doesn't exist)
+		if len(args) >= 3 && args[0] == "network" && args[1] == "inspect" {
+			return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+		}
+		// For compose up, return success
+		return exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	}
+
+	s := &Stack{
+		ProjectName:   "test-project",
+		ComposeFile:   "/path/to/compose.yml",
+		CommandRunner: mockRunner,
+		networkManager: &NetworkManager{
+			CommandRunner: mockRunner,
+		},
+	}
+
+	err := s.UpAndAttach(context.Background(), "maestro-story-coder-001")
+	if err == nil {
+		t.Fatal("expected error for missing network")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test-project_default") {
+		t.Errorf("expected network name in error, got: %v", err)
+	}
+}
+
+func TestStack_UpAndAttach_UpFails(t *testing.T) {
+	s := &Stack{
+		ProjectName: "test-project",
+		ComposeFile: "/path/to/compose.yml",
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "echo 'compose error' >&2; exit 1")
+		},
+	}
+
+	err := s.UpAndAttach(context.Background(), "maestro-story-coder-001")
+	if err == nil {
+		t.Fatal("expected error when Up() fails")
+	}
+	if !strings.Contains(err.Error(), "compose up failed") {
+		t.Errorf("expected compose up error, got: %v", err)
+	}
+}
