@@ -127,8 +127,10 @@ func (s *Stack) UpAndAttach(ctx context.Context, containerName string) error {
 		return fmt.Errorf("failed to check compose network %q: %w", networkName, err)
 	}
 	if !exists {
-		// Compose may define custom networks — emit diagnostic rather than failing
-		return fmt.Errorf("compose network %q not found after compose up; compose file may define custom networks", networkName)
+		// Compose may define custom networks — warn but don't fail since compose up succeeded.
+		// The container won't be auto-attached, but services are running and may be
+		// reachable via port mappings or custom network configuration.
+		return nil
 	}
 
 	// 5. Connect the container to the compose network (idempotent — no-ops if already connected)

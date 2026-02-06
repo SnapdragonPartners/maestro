@@ -598,9 +598,9 @@ func (k *Kernel) cleanupContainersBySessionLabel() {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Find all running containers with this session's label
+	// Find all containers (running or stopped) with this session's label
 	label := fmt.Sprintf("com.maestro.session=%s", sessionID)
-	listCmd := osExec.CommandContext(cleanupCtx, "docker", "ps", "-q", "--filter", "label="+label)
+	listCmd := osExec.CommandContext(cleanupCtx, "docker", "ps", "-aq", "--filter", "label="+label)
 	output, err := listCmd.Output()
 	if err != nil {
 		k.Logger.Debug("Label-based cleanup: docker ps failed (expected if Docker unavailable): %v", err)

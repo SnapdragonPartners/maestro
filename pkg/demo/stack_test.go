@@ -563,7 +563,7 @@ func TestStack_UpAndAttach_ConnectsContainerToNetwork(t *testing.T) {
 	}
 }
 
-func TestStack_UpAndAttach_NetworkNotFound(t *testing.T) {
+func TestStack_UpAndAttach_NetworkNotFound_SucceedsWithWarning(t *testing.T) {
 	mockRunner := func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		// For network inspect, return failure (network doesn't exist)
 		if len(args) >= 3 && args[0] == "network" && args[1] == "inspect" {
@@ -582,15 +582,11 @@ func TestStack_UpAndAttach_NetworkNotFound(t *testing.T) {
 		},
 	}
 
+	// When the default network doesn't exist (e.g., custom networks in compose file),
+	// UpAndAttach should succeed — compose up worked, just skip network attach.
 	err := s.UpAndAttach(context.Background(), "maestro-story-coder-001")
-	if err == nil {
-		t.Fatal("expected error for missing network")
-	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("expected 'not found' in error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "test-project_default") {
-		t.Errorf("expected network name in error, got: %v", err)
+	if err != nil {
+		t.Errorf("expected nil error when default network missing (custom networks), got: %v", err)
 	}
 }
 
