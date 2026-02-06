@@ -1,5 +1,5 @@
 # Architect Read Access Specification  
-*Last updated: 2025-10-31 (rev A — Initial implementation)*
+*Last updated: 2026-02-06 (rev B — Updated to match current implementation)*
 
 ---
 
@@ -38,46 +38,78 @@ The architect runs in its own Docker container:
 /mnt/mirror            -> projectDir/.mirror    (ro)
 ```
 
-- `/mnt/coders/*` are the active coder workspaces (always stable due to atomic clone-and-swap).  
-- `/mnt/mirror` provides the mainline HEAD for diff operations.  
-- All mounts are read-only.  
+- `/mnt/coders/*` are the active coder workspaces (stable due to inode-preserving cleanup — see Workspace Stability below).
+- `/mnt/mirror` is used for cloning operations (not for diff baseline — see `get_diff` below).
+- All mounts are read-only.
 - The architect runs as root (same as coders). No user isolation required.  
 
 ---
 
 ## Workspace Stability Requirements
 
-Each coder workspace must always exist and be safe to mount.  
-The orchestrator guarantees this via **atomic reclone-and-swap**:
+Each coder workspace must always exist and be safe to mount.
 
-1. Clone mirror → `<coderDir>.new`  
-2. Rename existing `<coderDir>` → `<coderDir>.old` (if exists)  
-3. Rename `<coderDir>.new` → `<coderDir>` (atomic swap)  
-4. Delete `.old` asynchronously  
+**Hard Invariant: Inode Preservation**
 
-This ensures that at any moment, the architect sees a consistent directory tree for each coder.
+On macOS with Docker Desktop, bind mounts track directory **inodes**, not paths. If a workspace directory is deleted and recreated (`os.RemoveAll` + `os.MkdirAll`), the new directory has a different inode and existing bind mounts become stale. The architect container mounts coder workspaces at startup — if a coder's workspace inode changes, the architect's mount breaks silently.
+
+The orchestrator guarantees workspace stability via **inode-preserving cleanup** using `utils.CleanDirectoryContents()` (see `pkg/utils/fs.go`):
+
+1. Read directory entries
+2. Remove each entry individually (`os.RemoveAll` on contents, not the directory itself)
+3. Directory inode is preserved — bind mounts remain valid
+
+**This is a non-negotiable invariant**: any code that calls `os.RemoveAll()` on a bind-mounted workspace root directory is a bug. Use `utils.CleanDirectoryContents()` instead.
+
+> **Historical note**: Rev A of this spec described an "atomic clone-and-swap" strategy. That approach was replaced because `os.Rename` changes the directory inode, breaking Docker bind mounts on macOS.
 
 ---
 
 ## MCP Toolset (Architect-Visible Tools)
 
+Tools use pre-configured workspace roots (set at tool creation time). No `coder_id` parameter is needed — each tool instance is bound to a specific coder workspace.
+
 | Tool | Description | Behavior |
 |------|--------------|-----------|
-| `read_file(coder_id, path)` | Read contents of a file from the specified coder workspace. | Returns UTF-8 text (truncated if large). |
-| `list_files(coder_id, pattern)` | Enumerate files matching pattern under coder workspace. | Supports wildcards and directory traversal. |
-| `get_diff(coder_id, path?)` | Return unified diff between the coder’s branch and mainline HEAD. | Uses mirror for comparison; path optional. |
-| `submit_reply(payload)` | Submit architect’s reply or decision to orchestrator. | Terminates current iteration cycle. |
+| `read_file(path)` | Read contents of a file from the coder workspace. | Returns UTF-8 text (truncated if large). |
+| `list_files(pattern)` | Enumerate files matching pattern under coder workspace. | Supports wildcards and directory traversal. |
+| `get_diff(path?, base?)` | Return unified diff of branch changes. Defaults to merge-base with `origin/main`. | See details below. |
+| `submit_reply(payload)` | Submit architect's reply or decision to orchestrator. | Terminates current iteration cycle. |
 
 ### `get_diff` Implementation
 
-- Executed as:
-  ```bash
-  git -C /mnt/coders/<coder_id> diff --no-color --no-ext-diff origin/main -- <path?>
-  ```
-- If `path` omitted, diff entire repo.  
-- Returns raw unified diff text.  
-- Read-only operation.  
+**Default behavior (merge-base)**:
+```bash
+cd <workspace> && git diff --no-color --no-ext-diff $(git merge-base origin/main HEAD)..HEAD [-- <path>]
+```
+
+This shows only changes made on the current branch, excluding changes made on `main` by other PRs. This prevents "phantom diffs" where the architect sees unrelated changes.
+
+**With explicit `base` parameter**:
+```bash
+cd <workspace> && git diff --no-color --no-ext-diff <base>..HEAD [-- <path>]
+```
+
+The `base` parameter is validated via `git rev-parse --verify` before use.
+
+**Parameters**:
+- `path` (optional): Restrict diff to a specific file or directory.
+- `base` (optional): Base ref to diff against. Defaults to merge-base with `origin/main`. Use `origin/main` for direct comparison, or any valid git ref (e.g., `HEAD~3`).
+
+**Result metadata** (JSON):
+- `diff`: The unified diff text.
+- `head_sha`: Current HEAD commit SHA.
+- `base_sha`: Resolved base commit SHA (merge-base result or rev-parse of provided base).
+- `baseline_ref`: Description of baseline used (e.g., `"merge-base(origin/main, HEAD)"` or `"origin/main"`).
+- `diff_mode`: `"merge_base"` or `"direct_ref"`.
+- `truncated`: Whether diff was truncated to max lines.
+- `lines`: Number of diff lines returned.
+- `path`: Path filter applied (empty if full diff).
+
+**Notes**:
+- Read-only operation.
 - Errors returned as structured messages.
+- If `path` omitted, diffs the entire repo.
 
 ---
 
@@ -154,13 +186,21 @@ Only prompts and output schemas differ.
 
 1. Architect can successfully mount all coder directories read-only.  
 2. Architect can read, list, and diff files without error.  
-3. Atomic clone-and-swap prevents `ENOENT` during orchestrator churn.  
+3. Inode-preserving cleanup (`utils.CleanDirectoryContents`) prevents stale bind mounts.  
 4. Architect remains performant under parallel coder updates.  
 5. Telemetry confirms correct tool usage and iteration behavior.  
 
 ---
 
 ## Implementation Plan
+
+> **Historical note (rev B)**: The phased implementation plan below was written during initial design (rev A). The actual implementation diverged in several key ways:
+> - Workspace management uses `pkg/utils/fs.go:CleanDirectoryContents()` instead of atomic swap
+> - Tools use pre-configured workspace roots (no `coder_id` parameters)
+> - The iteration loop uses the generic toolloop system (`pkg/agent/toolloop/`)
+> - `get_diff` defaults to merge-base semantics with an optional `base` parameter
+> - Coder review requests no longer include raw git diffs — the architect uses `get_diff` directly
+> - Architect review prompts enforce a structured protocol requiring fresh tool calls on re-review
 
 ### Overview
 
@@ -1095,16 +1135,16 @@ Since pre-release, no migration needed, but document:
 
 ## Technical Decisions & Rationale
 
-### Why Atomic Swap vs Lock-Based Access?
+### Why Inode-Preserving Cleanup vs Atomic Swap?
 
-**Decision**: Use atomic directory rename instead of file locking.
+**Decision**: Use `utils.CleanDirectoryContents()` instead of atomic directory rename (`os.Rename`).
 
 **Rationale**:
-- Simpler implementation (2 rename calls)
-- No risk of stale locks
-- Works across processes
-- Read-only architect can never corrupt workspace
-- Matches Unix best practices
+- `os.Rename` changes the directory inode, breaking Docker bind mounts on macOS
+- `CleanDirectoryContents` removes directory contents while preserving the directory itself
+- Docker Desktop on macOS tracks bind mounts by inode, not path
+- Simpler to reason about — workspace directory always exists with same identity
+- See `pkg/utils/fs.go` for implementation, `pkg/utils/fs_test.go` for inode preservation tests
 
 ### Why Restart Architect on Coder Topology Change?
 

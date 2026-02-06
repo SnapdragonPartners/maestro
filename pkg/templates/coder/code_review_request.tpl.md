@@ -14,10 +14,6 @@ I have completed the implementation and all tests are passing. Ready for code re
 
 {{.Extra.Confidence}}
 
-## Git Diff
-
-{{.Extra.GitDiff}}
-
 ## Original Story Requirements
 
 {{.Extra.OriginalStory}}

@@ -7,8 +7,10 @@ import (
 	"orchestrator/pkg/tools"
 )
 
-// generateCodePrompt creates a concise user message for code reviews.
+// generateCodePrompt creates a structured review prompt for code reviews.
 // Context (story, role, tools) is already in the system prompt.
+// The prompt enforces a step-by-step protocol that requires fresh tool calls,
+// preventing the architect from relying on stale tool results from prior iterations.
 func (d *Driver) generateCodePrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
 	_ = requestMsg   // context already in system prompt
 	_ = coderID      // context already in system prompt
@@ -18,9 +20,16 @@ func (d *Driver) generateCodePrompt(requestMsg *proto.AgentMsg, approvalPayload 
 
 %s
 
-Please review the code changes against the story acceptance criteria (shown in the system prompt above). Inspect their workspace to verify each acceptance criterion is met.
+## Review Protocol
 
-The story acceptance criteria are the authoritative requirements. Do not introduce new requirements or reference external specifications not mentioned in the story.
+Follow these steps IN ORDER:
 
-When you have completed your review, call the review_complete tool with your decision (status: APPROVED/NEEDS_CHANGES/REJECTED) and detailed feedback explaining your reasoning.`, approvalPayload.Content)
+1. Call get_diff to see the current state of all changes on this branch.
+2. Review the diff against the story acceptance criteria (shown in the system prompt above).
+3. If you need more detail on specific files, use read_file to inspect them.
+4. Call review_complete with your decision (status: APPROVED/NEEDS_CHANGES/REJECTED) and detailed feedback explaining your reasoning.
+
+**Important**: If you have previously reviewed this coder's work in this conversation, the coder has made changes since then. Your earlier tool results are OUTDATED. You MUST call get_diff again to see the current workspace state. Base your review only on what the tools show you NOW, not on previous results.
+
+The story acceptance criteria are the authoritative requirements. Do not introduce new requirements or reference external specifications not mentioned in the story.`, approvalPayload.Content)
 }

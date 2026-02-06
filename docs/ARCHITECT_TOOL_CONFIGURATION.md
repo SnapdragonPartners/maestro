@@ -21,12 +21,15 @@ This document defines the tool sets provided to the architect agent for differen
 - **General Tools**: `read_file`, `list_files`, `get_diff`
 - **Terminal Tool**: `submit_reply`
 - **Rationale**: Code reviews require inspecting the workspace to verify implementation. The architect may need multiple iterations to explore the codebase. `get_diff` is useful for seeing changes.
+- **Review Protocol**: The coder's review request no longer includes a raw git diff. The architect must call `get_diff` to inspect changes. The review prompt enforces a structured protocol: (1) call `get_diff`, (2) review against acceptance criteria, (3) optionally `read_file` for detail, (4) call terminal tool with decision. On re-review after coder changes, the prompt explicitly warns that previous tool results are stale.
+- **Diff Semantics**: `get_diff` defaults to merge-base semantics (`git merge-base origin/main HEAD`), showing only changes made on the current branch. This prevents phantom diffs from other merged PRs appearing in the review. An optional `base` parameter allows comparing against other refs.
 
 ### 4. **Completion Review** (Iterative)
 - **Handler**: `handleIterativeApproval`
 - **General Tools**: `read_file`, `list_files`, `get_diff`
 - **Terminal Tool**: `submit_reply`
 - **Rationale**: Completion reviews verify all acceptance criteria are met by inspecting the final workspace state. Multiple iterations may be needed to check all criteria. `get_diff` helps see what was implemented.
+- **Review Protocol**: Same structured protocol as Code Approval — architect must use fresh `get_diff` calls to verify the current workspace state rather than relying on the coder's self-reported evidence.
 
 ### 5. **Technical Questions** (Iterative)
 - **Handler**: `handleIterativeQuestion`
