@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/utils"
 )
 
 // GetDiffTool allows getting git diff from coder workspaces.
@@ -79,16 +80,10 @@ func (t *GetDiffTool) Definition() ToolDefinition {
 // Exec executes the tool with the given arguments.
 func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract optional path argument
-	path := ""
-	if p, ok := args["path"].(string); ok {
-		path = p
-	}
+	path, _ := utils.SafeAssert[string](args["path"])
 
 	// Extract optional base argument
-	base := ""
-	if b, ok := args["base"].(string); ok {
-		base = b
-	}
+	base, _ := utils.SafeAssert[string](args["base"])
 
 	// If a custom base ref is provided, validate it with git rev-parse
 	if base != "" {
@@ -158,11 +153,9 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResul
 }
 
 // validateRef validates a git ref using git rev-parse --verify.
+// Uses exec-style args (no shell) to prevent command injection from untrusted refs.
 func (t *GetDiffTool) validateRef(ctx context.Context, ref string) error {
-	cmd := []string{"sh", "-c", fmt.Sprintf(
-		"cd %s && git rev-parse --verify %s^{commit} 2>&1",
-		t.workspaceRoot, ref,
-	)}
+	cmd := []string{"git", "-C", t.workspaceRoot, "rev-parse", "--verify", ref + "^{commit}"}
 	result, err := t.executor.Run(ctx, cmd, nil)
 	if err != nil || result.ExitCode != 0 {
 		output := ""
@@ -175,11 +168,9 @@ func (t *GetDiffTool) validateRef(ctx context.Context, ref string) error {
 }
 
 // resolveRef resolves a git ref to its SHA. Returns empty string on failure.
+// Uses exec-style args (no shell) to prevent command injection from untrusted refs.
 func (t *GetDiffTool) resolveRef(ctx context.Context, ref string) string {
-	cmd := []string{"sh", "-c", fmt.Sprintf(
-		"cd %s && git rev-parse %s 2>/dev/null",
-		t.workspaceRoot, ref,
-	)}
+	cmd := []string{"git", "-C", t.workspaceRoot, "rev-parse", ref}
 	result, err := t.executor.Run(ctx, cmd, nil)
 	if err != nil || result.ExitCode != 0 {
 		return ""
@@ -190,10 +181,7 @@ func (t *GetDiffTool) resolveRef(ctx context.Context, ref string) string {
 // resolveMergeBase resolves the merge-base of origin/main and HEAD.
 // Returns empty string on failure.
 func (t *GetDiffTool) resolveMergeBase(ctx context.Context) string {
-	cmd := []string{"sh", "-c", fmt.Sprintf(
-		"cd %s && git merge-base origin/main HEAD 2>/dev/null",
-		t.workspaceRoot,
-	)}
+	cmd := []string{"git", "-C", t.workspaceRoot, "merge-base", "origin/main", "HEAD"}
 	result, err := t.executor.Run(ctx, cmd, nil)
 	if err != nil || result.ExitCode != 0 {
 		return ""

@@ -72,7 +72,7 @@ func TestCleanDirectoryContents_PreservesInode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	statBefore, ok := infoBefore.Sys().(*syscall.Stat_t)
+	statBefore, ok := SafeAssert[*syscall.Stat_t](infoBefore.Sys())
 	if !ok {
 		t.Skip("syscall.Stat_t not available on this platform")
 	}
@@ -89,7 +89,7 @@ func TestCleanDirectoryContents_PreservesInode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	statAfter, ok := infoAfter.Sys().(*syscall.Stat_t)
+	statAfter, ok := SafeAssert[*syscall.Stat_t](infoAfter.Sys())
 	if !ok {
 		t.Fatal("syscall.Stat_t should be available (worked before)")
 	}
