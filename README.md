@@ -12,9 +12,7 @@ The big idea behind Maestro is that since LLMs are trained on and exhibit human 
 
 ## Share Maestro
 
-<p align="center">
-  <img src="pkg/webui/web/static/img/qrcode.png" alt="Scan to visit the Maestro repo" width="200">
-</p>
+![QRCode](pkg/webui/web/static/img/qrcode.png)
 
 ---
 
