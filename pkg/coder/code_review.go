@@ -44,11 +44,11 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		c.logger.Warn("🔍 Git work check warning: %v", workResult.Err)
 	}
 
-	// Generate git diff for evidence (branch-based, not just uncommitted)
-	gitDiff := c.getBranchDiff(ctx, baseBranch)
+	// Resolve HEAD SHA for the review request (architect can verify workspace state)
+	headSHA := c.resolveHeadSHA(ctx)
 
 	// Build comprehensive evidence section
-	evidence := c.buildCompletionEvidence(testsPassed, testOutput, gitDiff, storyType, workResult)
+	evidence := c.buildCompletionEvidence(testsPassed, testOutput, storyType, workResult, headSHA)
 
 	if !workResult.HasWork {
 		// No work detected - request completion approval
@@ -83,7 +83,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		// Get knowledge pack from state machine
 		knowledgePack := utils.GetStateValueOr[string](sm, string(stateDataKeyKnowledgePack), "")
 
-		codeContent := c.getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan, knowledgePack)
+		codeContent := c.getCodeReviewContent(summary, evidence, confidence, originalStory, plan, knowledgePack)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Code implementation requires architect review", proto.ApprovalTypeCode)
 		approvalEff.StoryID = storyID
@@ -173,51 +173,22 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 	}
 }
 
-// getBranchDiff gets the git diff since branch creation (more accurate than HEAD diff).
-func (c *Coder) getBranchDiff(ctx context.Context, baseBranch string) string {
+// resolveHeadSHA resolves the current HEAD SHA in the workspace.
+func (c *Coder) resolveHeadSHA(ctx context.Context) string {
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
-		Timeout: 30 * time.Second,
+		Timeout: 10 * time.Second,
 	}
-
-	// Try merge-base approach first (most accurate)
-	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "merge-base", baseBranch, "HEAD"}, opts)
-	if err == nil && strings.TrimSpace(result.Stdout) != "" {
-		mergeBase := strings.TrimSpace(result.Stdout)
-		result, err = c.longRunningExecutor.Run(ctx, []string{"git", "diff", mergeBase + "..HEAD"}, opts)
-		if err == nil {
-			if strings.TrimSpace(result.Stdout) == "" {
-				return "No changes since branching from " + baseBranch
-			}
-			// Limit diff size to avoid overwhelming the architect
-			if len(result.Stdout) > 50000 {
-				return result.Stdout[:50000] + "\n... (diff truncated, showing first 50000 chars)"
-			}
-			return result.Stdout
-		}
-	}
-
-	// Fallback to simple range diff
-	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "diff", baseBranch + "..HEAD"}, opts)
+	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "rev-parse", "HEAD"}, opts)
 	if err != nil {
-		c.logger.Debug("Failed to get branch diff: %v", err)
-		return "No git changes detected"
+		c.logger.Debug("Failed to resolve HEAD SHA: %v", err)
+		return ""
 	}
-
-	if strings.TrimSpace(result.Stdout) == "" {
-		return "No changes since branching from " + baseBranch
-	}
-
-	// Limit diff size to avoid overwhelming the architect
-	if len(result.Stdout) > 50000 {
-		return result.Stdout[:50000] + "\n... (diff truncated, showing first 50000 chars)"
-	}
-
-	return result.Stdout
+	return strings.TrimSpace(result.Stdout)
 }
 
 // buildCompletionEvidence builds evidence section based on story type and results.
-func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, storyType string, workResult *git.WorkDoneResult) string {
+func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, storyType string, workResult *git.WorkDoneResult, headSHA string) string {
 	evidence := ""
 
 	// Add test evidence
@@ -266,25 +237,31 @@ func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, gitDiff, s
 		}
 	}
 
-	// Add git diff summary
-	if gitDiff != "" && !strings.Contains(gitDiff, "No changes") && !strings.Contains(gitDiff, "No git changes") {
-		evidence += "📝 Code changes made (see Git Diff section below)\n"
+	// Add git diff note (architect will use get_diff tool to inspect changes)
+	if workResult.HasWork {
+		evidence += "📝 Code changes made (architect will inspect via get_diff tool)\n"
 	} else {
 		evidence += "📝 No code changes required\n"
+	}
+
+	// Add HEAD SHA for workspace state verification
+	if headSHA != "" {
+		evidence += fmt.Sprintf("🔖 Workspace HEAD: %s\n", headSHA)
 	}
 
 	return evidence
 }
 
 // getCodeReviewContent generates code review request content using templates.
-func (c *Coder) getCodeReviewContent(summary, evidence, confidence, gitDiff, originalStory, plan, knowledgePack string) string {
+// Note: raw git diff is intentionally NOT included — the architect uses its own
+// get_diff tool to inspect the workspace, ensuring it always sees current state.
+func (c *Coder) getCodeReviewContent(summary, evidence, confidence, originalStory, plan, knowledgePack string) string {
 	// Build template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
 			"Summary":       summary,
 			"Evidence":      evidence,
 			"Confidence":    confidence,
-			"GitDiff":       gitDiff,
 			"OriginalStory": originalStory,
 			"ApprovedPlan":  plan,
 			"KnowledgePack": knowledgePack,
@@ -302,16 +279,13 @@ func (c *Coder) getCodeReviewContent(summary, evidence, confidence, gitDiff, ori
 ## Confidence
 %s
 
-## Git Diff
-%s
-
 ## Original Story
 %s
 
 ## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
 The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
 
-%s`, summary, evidence, confidence, gitDiff, originalStory, plan)
+%s`, summary, evidence, confidence, originalStory, plan)
 	}
 
 	content, err := c.renderer.Render(templates.CodeReviewRequestTemplate, templateData)
@@ -326,16 +300,13 @@ The following plan was already approved in PLAN_REVIEW and is immutable. Use it 
 ## Confidence
 %s
 
-## Git Diff
-%s
-
 ## Original Story
 %s
 
 ## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
 The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the implementation matches what was approved:
 
-%s`, summary, evidence, confidence, gitDiff, originalStory, plan)
+%s`, summary, evidence, confidence, originalStory, plan)
 	}
 
 	return content

@@ -364,13 +364,18 @@ func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
 func createComposeUpTool(ctx *AgentContext) (Tool, error) {
 	workDir := DefaultWorkspaceDir
 	agentID := ""
+	containerName := ""
 	if ctx != nil {
 		if ctx.WorkDir != "" {
 			workDir = ctx.WorkDir
 		}
 		agentID = ctx.AgentID
+		// Get the agent's container name so compose_up can attach it to the compose network
+		if ctx.Agent != nil {
+			containerName = ctx.Agent.GetContainerName()
+		}
 	}
-	return NewComposeUpTool(workDir, agentID), nil
+	return NewComposeUpTool(workDir, agentID, containerName), nil
 }
 
 // createChatPostTool creates a chat post tool instance.
@@ -454,7 +459,7 @@ func getContainerSwitchSchema() InputSchema {
 }
 
 func getComposeUpSchema() InputSchema {
-	return NewComposeUpTool("", "").Definition().InputSchema
+	return NewComposeUpTool("", "", "").Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {

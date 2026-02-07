@@ -11,16 +11,19 @@ import (
 
 // ComposeUpTool provides MCP interface for starting Docker Compose stacks.
 type ComposeUpTool struct {
-	workDir string // Agent workspace directory
-	agentID string // Agent ID for project name isolation
+	workDir       string // Agent workspace directory
+	agentID       string // Agent ID for project name isolation
+	containerName string // Agent's container name for network attachment
 }
 
 // NewComposeUpTool creates a new compose up tool instance.
 // The agentID is used as the Docker Compose project name to isolate stacks per agent.
-func NewComposeUpTool(workDir, agentID string) *ComposeUpTool {
+// The containerName is the agent's dev container to attach to the compose network.
+func NewComposeUpTool(workDir, agentID, containerName string) *ComposeUpTool {
 	return &ComposeUpTool{
-		workDir: workDir,
-		agentID: agentID,
+		workDir:       workDir,
+		agentID:       agentID,
+		containerName: containerName,
 	}
 }
 
@@ -28,7 +31,7 @@ func NewComposeUpTool(workDir, agentID string) *ComposeUpTool {
 func (c *ComposeUpTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "compose_up",
-		Description: "Start Docker Compose services defined in .maestro/compose.yml. Idempotent - compose handles diffing and only recreates changed services. Always starts all services defined in the compose file.",
+		Description: "Start Docker Compose services defined in .maestro/compose.yml. Idempotent - compose handles diffing and only recreates changed services. Always starts all services defined in the compose file. Your dev container is automatically connected to the compose network so you can reach services by hostname.",
 		InputSchema: InputSchema{
 			Type:       "object",
 			Properties: map[string]Property{},
@@ -47,7 +50,8 @@ func (c *ComposeUpTool) PromptDocumentation() string {
 	return `- **compose_up** - Start Docker Compose services from .maestro/compose.yml
   - No parameters required - starts all services defined in the compose file
   - Idempotent: compose handles diffing and only recreates changed services
-  - Use when tests need databases, caches, or other backend services
+  - Your dev container is automatically connected to the compose network
+  - After compose_up, you can reach services by hostname (e.g., "db", "redis")
   - The compose file should be at .maestro/compose.yml in the workspace`
 }
 
@@ -104,8 +108,9 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 	}
 	stack := demo.NewStack(projectName, composePath, "")
 
-	// Run docker compose up
-	if err := stack.Up(ctx); err != nil {
+	// Start compose and attach this agent's container to the compose network.
+	// UpAndAttach is idempotent — safe to call on every compose_up invocation.
+	if err := stack.UpAndAttach(ctx, c.containerName); err != nil {
 		return nil, fmt.Errorf("compose up failed: %w", err)
 	}
 
@@ -127,6 +132,10 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 			healthStatus = fmt.Sprintf(" (health: %s)", services[i].Health)
 		}
 		statusMsg += fmt.Sprintf("- %s: %s%s\n", services[i].Name, services[i].Status, healthStatus)
+	}
+
+	if c.containerName != "" {
+		statusMsg += fmt.Sprintf("\nYour container (%s) is connected to the compose network. Services are reachable by hostname.\n", c.containerName)
 	}
 
 	return &ExecResult{

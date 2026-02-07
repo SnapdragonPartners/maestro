@@ -246,12 +246,20 @@ os.MkdirAll(dir, 0755)
 cleanDirectoryContents(dir)  // Removes contents, keeps directory
 ```
 
-**Implementation**: See `pkg/coder/setup.go:cleanDirectoryContents()` for the canonical implementation.
+**Implementation**: See `pkg/utils/fs.go:CleanDirectoryContents()` for the canonical implementation.
 
 **When to use delete+recreate**: Only for directories that are NOT bind-mounted to other containers:
 - Temporary directories created and cleaned within a single operation
 - State directories that aren't shared across containers
 - Mirror/clone directories (subdirectories of the project, not the mount point itself)
+
+**Code review rule**: Any code that calls `os.RemoveAll()` on a workspace root directory is a bug. Use `utils.CleanDirectoryContents()` instead.
+
+### Phantom Diff Prevention
+
+The architect's `get_diff` tool uses **merge-base semantics** by default (`git merge-base origin/main HEAD`), showing only changes made on the current branch. This prevents "phantom diffs" where changes from other merged PRs appear in the review.
+
+The coder's review request does **not** include a raw git diff — the architect must call `get_diff` directly to inspect changes. This ensures a single canonical source of truth for diffs. Architect review prompts enforce a structured protocol requiring fresh `get_diff` calls on re-review, preventing the LLM from relying on stale tool results from prior review iterations.
 
 ## Development Commands
 

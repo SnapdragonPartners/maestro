@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/utils"
 )
 
 // GetDiffTool allows getting git diff from coder workspaces.
@@ -40,22 +41,35 @@ func (t *GetDiffTool) Name() string {
 
 // PromptDocumentation returns formatted tool documentation for prompts.
 func (t *GetDiffTool) PromptDocumentation() string {
-	return `- **get_diff** - Get git diff between workspace and main branch
-  - Parameters: path (string, optional specific file)
-  - Use to see what changes the coder made`
+	return `- **get_diff** - Get git diff showing changes on the current branch
+  - Parameters:
+    - path (string, optional): specific file path to diff
+    - base (string, optional): base ref to diff against (default: merge-base with origin/main)
+  - By default shows only changes made on this branch (excludes changes made on main by others)
+  - Use base="origin/main" for direct comparison against current main
+  - Returns head_sha, base_sha, baseline_ref, and diff_mode for traceability`
 }
 
 // Definition returns the tool definition for LLM.
 func (t *GetDiffTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name:        ToolGetDiff,
-		Description: "Get git diff between the current workspace and main branch. Use this to see what changes the coder or hotfix agent made.",
+		Name: ToolGetDiff,
+		Description: "Get git diff showing changes on the current branch. By default uses merge-base " +
+			"with origin/main to show only changes made on this branch (excludes changes made on main " +
+			"by others). Use the 'base' parameter to compare against a different ref.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"path": {
 					Type:        "string",
 					Description: "Optional: specific file path to diff. If omitted, shows diff for all files.",
+				},
+				"base": {
+					Type: "string",
+					Description: "Optional: base ref to diff against. Defaults to merge-base with origin/main " +
+						"(shows only what this branch changed, excluding changes made on main by others). " +
+						"Use 'origin/main' for direct comparison against current main. " +
+						"Use any valid git ref (e.g., 'HEAD~3') for custom comparisons.",
 				},
 			},
 			Required: []string{}, // No required parameters - workspace is pre-configured
@@ -66,13 +80,35 @@ func (t *GetDiffTool) Definition() ToolDefinition {
 // Exec executes the tool with the given arguments.
 func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract optional path argument
-	path := ""
-	if p, ok := args["path"].(string); ok {
-		path = p
+	path, _ := utils.SafeAssert[string](args["path"])
+
+	// Extract optional base argument
+	base, _ := utils.SafeAssert[string](args["base"])
+
+	// If a custom base ref is provided, validate it with git rev-parse
+	if base != "" {
+		if err := t.validateRef(ctx, base); err != nil {
+			return t.buildErrorResult(fmt.Sprintf("invalid base ref %q: %s", base, err.Error()))
+		}
+	}
+
+	// Resolve SHAs for metadata
+	headSHA := t.resolveRef(ctx, "HEAD")
+	var baseSHA, baselineRef, diffMode string
+
+	if base == "" {
+		// Default: merge-base with origin/main
+		baseSHA = t.resolveMergeBase(ctx)
+		baselineRef = "merge-base(origin/main, HEAD)"
+		diffMode = "merge_base"
+	} else {
+		baseSHA = t.resolveRef(ctx, base)
+		baselineRef = base
+		diffMode = "direct_ref"
 	}
 
 	// Build git diff command using pre-configured workspace root
-	diffCmd, err := t.buildDiffCommand(t.workspaceRoot, path)
+	diffCmd, err := t.buildDiffCommand(t.workspaceRoot, path, baseSHA)
 	if err != nil {
 		return t.buildErrorResult(err.Error())
 	}
@@ -97,11 +133,15 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResul
 	}
 
 	resultMap := map[string]any{
-		"success":   true,
-		"diff":      result.Stdout,
-		"path":      path,
-		"truncated": diffLines >= t.maxDiffLines,
-		"lines":     diffLines,
+		"success":      true,
+		"diff":         result.Stdout,
+		"path":         path,
+		"truncated":    diffLines >= t.maxDiffLines,
+		"lines":        diffLines,
+		"head_sha":     headSHA,
+		"base_sha":     baseSHA,
+		"baseline_ref": baselineRef,
+		"diff_mode":    diffMode,
 	}
 
 	content, err := json.Marshal(resultMap)
@@ -110,6 +150,43 @@ func (t *GetDiffTool) Exec(ctx context.Context, args map[string]any) (*ExecResul
 	}
 
 	return &ExecResult{Content: string(content)}, nil
+}
+
+// validateRef validates a git ref using git rev-parse --verify.
+// Uses exec-style args (no shell) to prevent command injection from untrusted refs.
+func (t *GetDiffTool) validateRef(ctx context.Context, ref string) error {
+	cmd := []string{"git", "-C", t.workspaceRoot, "rev-parse", "--verify", ref + "^{commit}"}
+	result, err := t.executor.Run(ctx, cmd, nil)
+	if err != nil || result.ExitCode != 0 {
+		output := ""
+		if result.Stdout != "" {
+			output = strings.TrimSpace(result.Stdout)
+		}
+		return fmt.Errorf("ref does not resolve to a valid commit: %s", output)
+	}
+	return nil
+}
+
+// resolveRef resolves a git ref to its SHA. Returns empty string on failure.
+// Uses exec-style args (no shell) to prevent command injection from untrusted refs.
+func (t *GetDiffTool) resolveRef(ctx context.Context, ref string) string {
+	cmd := []string{"git", "-C", t.workspaceRoot, "rev-parse", ref}
+	result, err := t.executor.Run(ctx, cmd, nil)
+	if err != nil || result.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(result.Stdout)
+}
+
+// resolveMergeBase resolves the merge-base of origin/main and HEAD.
+// Returns empty string on failure.
+func (t *GetDiffTool) resolveMergeBase(ctx context.Context) string {
+	cmd := []string{"git", "-C", t.workspaceRoot, "merge-base", "origin/main", "HEAD"}
+	result, err := t.executor.Run(ctx, cmd, nil)
+	if err != nil || result.ExitCode != 0 {
+		return ""
+	}
+	return strings.TrimSpace(result.Stdout)
 }
 
 // buildErrorResult builds an error response as an ExecResult.
@@ -126,11 +203,18 @@ func (t *GetDiffTool) buildErrorResult(errMsg string) (*ExecResult, error) {
 }
 
 // buildDiffCommand constructs the git diff command with proper path handling.
-func (t *GetDiffTool) buildDiffCommand(workspacePath, path string) (string, error) {
+// If baseSHA is empty, falls back to origin/main (should not happen in normal flow).
+func (t *GetDiffTool) buildDiffCommand(workspacePath, path, baseSHA string) (string, error) {
+	// Determine the diff range
+	diffRange := "origin/main" // fallback
+	if baseSHA != "" {
+		diffRange = baseSHA + "..HEAD"
+	}
+
 	if path == "" {
 		return fmt.Sprintf(
-			"cd %s && git diff --no-color --no-ext-diff origin/main 2>&1 | head -n %d",
-			workspacePath, t.maxDiffLines,
+			"cd %s && git diff --no-color --no-ext-diff %s 2>&1 | head -n %d",
+			workspacePath, diffRange, t.maxDiffLines,
 		), nil
 	}
 
@@ -141,7 +225,7 @@ func (t *GetDiffTool) buildDiffCommand(workspacePath, path string) (string, erro
 	}
 
 	return fmt.Sprintf(
-		"cd %s && git diff --no-color --no-ext-diff origin/main -- %s 2>&1 | head -n %d",
-		workspacePath, cleanPath, t.maxDiffLines,
+		"cd %s && git diff --no-color --no-ext-diff %s -- %s 2>&1 | head -n %d",
+		workspacePath, diffRange, cleanPath, t.maxDiffLines,
 	), nil
 }

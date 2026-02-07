@@ -137,9 +137,6 @@ type Dispatcher struct {
 	leases      map[string]string // agent_id -> story_id
 	leasesMutex sync.Mutex        // Protects lease map
 
-	// Container registry for centralized container tracking.
-	containerRegistry *exec.ContainerRegistry // Tracks all active containers
-
 	// State change notifications.
 	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
 
@@ -172,7 +169,6 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
 		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
 		leases:            make(map[string]string),                                                    // Story lease tracking
-		containerRegistry: exec.NewContainerRegistry(logx.NewLogger("container-registry")),            // Container tracking registry
 		runStrat:          &goroutineStrategy{},                                                       // Default to production goroutine strategy
 	}, nil
 }
@@ -327,8 +323,10 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 
 	// Start container registry cleanup routine.
 	// Check every 5 minutes for containers idle > 30 minutes.
-	executor := exec.NewLongRunningDockerExec("alpine:latest", "") // Empty agentID - for cleanup only
-	d.containerRegistry.StartCleanupRoutine(ctx, executor, 5*time.Minute, 30*time.Minute)
+	if registry := exec.GetGlobalRegistry(); registry != nil {
+		executor := exec.NewLongRunningDockerExec("alpine:latest", "") // Empty agentID - for cleanup only
+		registry.StartCleanupRoutine(ctx, executor, 5*time.Minute, 30*time.Minute)
+	}
 
 	return nil
 }
@@ -349,13 +347,15 @@ func (d *Dispatcher) Stop(ctx context.Context) error {
 	close(d.shutdown)
 
 	// Stop all registered containers before shutting down.
-	d.logger.Info("📦 Stopping all registered containers...")
-	if err := d.containerRegistry.StopAllContainersDirect(ctx); err != nil {
-		d.logger.Warn("📦 Some containers failed to stop during shutdown: %v", err)
-	}
+	if registry := exec.GetGlobalRegistry(); registry != nil {
+		d.logger.Info("📦 Stopping all registered containers...")
+		if err := registry.StopAllContainersDirect(ctx); err != nil {
+			d.logger.Warn("📦 Some containers failed to stop during shutdown: %v", err)
+		}
 
-	// Shutdown container registry cleanup routine.
-	d.containerRegistry.Shutdown()
+		// Shutdown container registry cleanup routine.
+		registry.Shutdown()
+	}
 
 	// Use the run strategy for stopping
 	if d.runStrat != nil {
@@ -1228,9 +1228,4 @@ func (d *Dispatcher) UpdateStoryRequeue(storyID, agentID, reason string) error {
 		d.logger.Warn("❌ Requeue requests channel full, dropping requeue request for story %s", storyID)
 		return fmt.Errorf("requeue requests channel full")
 	}
-}
-
-// GetContainerRegistry returns the container registry for orchestrator access.
-func (d *Dispatcher) GetContainerRegistry() *exec.ContainerRegistry {
-	return d.containerRegistry
 }

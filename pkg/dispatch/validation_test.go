@@ -600,17 +600,6 @@ func TestDispatcherRegisteredAgents(t *testing.T) {
 	}
 }
 
-// TestDispatcherContainerRegistry tests container registry access.
-func TestDispatcherContainerRegistry(t *testing.T) {
-	dispatcher := createTestDispatcher(t)
-
-	// Test getting container registry
-	registry := dispatcher.GetContainerRegistry()
-	if registry == nil {
-		t.Error("Expected non-nil container registry")
-	}
-}
-
 // TestDispatcherReportError tests error reporting functionality.
 func TestDispatcherReportError(t *testing.T) {
 	dispatcher := createTestDispatcher(t)

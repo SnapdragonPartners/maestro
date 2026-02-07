@@ -8,7 +8,9 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	osExec "os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver
@@ -20,6 +22,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/demo"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/utils"
@@ -96,6 +99,10 @@ func (k *Kernel) initializeServices() error {
 	if err != nil {
 		return fmt.Errorf("failed to create dispatcher: %w", err)
 	}
+
+	// Initialize the global container registry so all executors can register their containers.
+	// This must happen before any agents start so container registrations are tracked.
+	exec.SetGlobalRegistry(exec.NewContainerRegistry(logx.NewLogger("container-registry")))
 
 	// Initialize database
 	err = k.initializeDatabase()
@@ -246,6 +253,7 @@ func (k *Kernel) Stop() error {
 	k.cancel()
 
 	// Stop dispatcher (it will notice context cancellation).
+	// The dispatcher's Stop() performs registry-based container cleanup.
 	if k.Dispatcher != nil {
 		// Use a fresh context since k.ctx is now cancelled.
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -254,6 +262,11 @@ func (k *Kernel) Stop() error {
 		}
 		stopCancel()
 	}
+
+	// Defense-in-depth: kill any remaining containers by session label.
+	// This catches containers that weren't registered (e.g., due to race conditions)
+	// or were missed by the registry-based cleanup above.
+	k.cleanupContainersBySessionLabel()
 
 	// Stop web server (it notices context cancellation).
 	if k.WebServer != nil {
@@ -569,6 +582,46 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 		k.Logger.Error("Unknown persistence operation: %v", req.Operation)
 		if req.Response != nil {
 			req.Response <- fmt.Errorf("unknown operation: %v", req.Operation)
+		}
+	}
+}
+
+// cleanupContainersBySessionLabel is a defense-in-depth fallback that kills any
+// containers matching this session's label. This catches containers that weren't
+// tracked in the registry (e.g., due to race conditions or registration failures).
+func (k *Kernel) cleanupContainersBySessionLabel() {
+	sessionID := k.Config.SessionID
+	if sessionID == "" {
+		return
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Find all containers (running or stopped) with this session's label
+	label := fmt.Sprintf("com.maestro.session=%s", sessionID)
+	listCmd := osExec.CommandContext(cleanupCtx, "docker", "ps", "-aq", "--filter", "label="+label)
+	output, err := listCmd.Output()
+	if err != nil {
+		k.Logger.Debug("Label-based cleanup: docker ps failed (expected if Docker unavailable): %v", err)
+		return
+	}
+
+	containerIDs := strings.TrimSpace(string(output))
+	if containerIDs == "" {
+		k.Logger.Info("Label-based cleanup: no remaining containers for session %s", sessionID)
+		return
+	}
+
+	// Split IDs and force-remove each one
+	ids := strings.Fields(containerIDs)
+	k.Logger.Info("Label-based cleanup: removing %d remaining container(s) for session %s", len(ids), sessionID)
+	for _, id := range ids {
+		rmCmd := osExec.CommandContext(cleanupCtx, "docker", "rm", "-f", id)
+		if rmErr := rmCmd.Run(); rmErr != nil {
+			k.Logger.Warn("Label-based cleanup: failed to remove container %s: %v", id, rmErr)
+		} else {
+			k.Logger.Info("Label-based cleanup: removed container %s", id)
 		}
 	}
 }

@@ -31,29 +31,45 @@ func TestGetDiffToolBuildDiffCommand(t *testing.T) {
 	testCases := []struct {
 		name    string
 		path    string
+		baseSHA string
 		wantCmd string
 		wantErr bool
 	}{
 		{
-			name:    "no path - full diff",
+			name:    "no path, no base - uses merge-base SHA",
 			path:    "",
+			baseSHA: "abc123",
+			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff abc123..HEAD 2>&1 | head -n 1000",
+		},
+		{
+			name:    "specific file with base SHA",
+			path:    "db/questions.go",
+			baseSHA: "abc123",
+			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff abc123..HEAD -- db/questions.go 2>&1 | head -n 1000",
+		},
+		{
+			name:    "empty base SHA falls back to origin/main",
+			path:    "",
+			baseSHA: "",
 			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff origin/main 2>&1 | head -n 1000",
 		},
 		{
-			name:    "specific file",
-			path:    "db/questions.go",
-			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff origin/main -- db/questions.go 2>&1 | head -n 1000",
+			name:    "specific file with empty base SHA",
+			path:    "main.go",
+			baseSHA: "",
+			wantCmd: "cd /mnt/coders/coder-001 && git diff --no-color --no-ext-diff origin/main -- main.go 2>&1 | head -n 1000",
 		},
 		{
 			name:    "path traversal blocked",
 			path:    "../../../etc/passwd",
+			baseSHA: "abc123",
 			wantErr: true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, err := tool.buildDiffCommand(tool.workspaceRoot, tc.path)
+			cmd, err := tool.buildDiffCommand(tool.workspaceRoot, tc.path, tc.baseSHA)
 
 			if tc.wantErr {
 				if err == nil {
@@ -77,7 +93,7 @@ func TestGetDiffToolDefinitionHasNoRequiredParams(t *testing.T) {
 	tool := NewGetDiffTool(nil, "/workspace", 1000)
 	def := tool.Definition()
 
-	// path should be optional (not in Required list)
+	// No required parameters
 	if len(def.InputSchema.Required) != 0 {
 		t.Errorf("expected no required parameters, got %v", def.InputSchema.Required)
 	}
@@ -87,9 +103,36 @@ func TestGetDiffToolDefinitionHasNoRequiredParams(t *testing.T) {
 		t.Error("expected 'path' property in schema")
 	}
 
-	// coder_id should NOT exist anymore
+	// base property should exist
+	if _, exists := def.InputSchema.Properties["base"]; !exists {
+		t.Error("expected 'base' property in schema")
+	}
+
+	// coder_id should NOT exist
 	if _, exists := def.InputSchema.Properties["coder_id"]; exists {
 		t.Error("coder_id property should have been removed from schema")
+	}
+}
+
+func TestGetDiffToolDefinitionDescribesMergeBase(t *testing.T) {
+	tool := NewGetDiffTool(nil, "/workspace", 1000)
+	def := tool.Definition()
+
+	// Description should mention merge-base behavior
+	if !strings.Contains(def.Description, "merge-base") {
+		t.Error("tool description should mention merge-base default behavior")
+	}
+
+	// Base property description should explain merge-base default
+	baseProp, exists := def.InputSchema.Properties["base"]
+	if !exists {
+		t.Fatal("expected 'base' property in schema")
+	}
+	if !strings.Contains(baseProp.Description, "merge-base") {
+		t.Error("base property description should mention merge-base")
+	}
+	if !strings.Contains(baseProp.Description, "origin/main") {
+		t.Error("base property description should mention origin/main")
 	}
 }
 
@@ -102,8 +145,26 @@ func TestGetDiffToolDocumentation(t *testing.T) {
 		t.Error("documentation should mention path parameter")
 	}
 
-	// Should NOT mention coder_id anymore
+	// Should mention base parameter
+	if !strings.Contains(doc, "base") {
+		t.Error("documentation should mention base parameter")
+	}
+
+	// Should mention merge-base behavior
+	if !strings.Contains(doc, "merge-base") {
+		t.Error("documentation should mention merge-base default")
+	}
+
+	// Should NOT mention coder_id
 	if strings.Contains(doc, "coder_id") {
-		t.Error("documentation should not mention coder_id anymore")
+		t.Error("documentation should not mention coder_id")
+	}
+
+	// Should mention traceability fields
+	if !strings.Contains(doc, "head_sha") {
+		t.Error("documentation should mention head_sha")
+	}
+	if !strings.Contains(doc, "base_sha") {
+		t.Error("documentation should mention base_sha")
 	}
 }

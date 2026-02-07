@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/exec"
 	"orchestrator/pkg/persistence"
 )
 
@@ -258,5 +259,80 @@ func TestKernelContextCancellation(t *testing.T) {
 		// Expected - context should be done
 	default:
 		t.Error("Kernel context should be done after cancellation")
+	}
+}
+
+// TestKernelInitializesGlobalContainerRegistry verifies that NewKernel sets the global
+// container registry so that executor registrations are tracked for shutdown cleanup.
+func TestKernelInitializesGlobalContainerRegistry(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "kernel-registry-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+
+	// Clear global registry before test
+	exec.SetGlobalRegistry(nil)
+
+	kernel, err := NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("NewKernel failed: %v", err)
+	}
+	defer kernel.Stop()
+
+	// The global registry should now be set (non-nil)
+	registry := exec.GetGlobalRegistry()
+	if registry == nil {
+		t.Fatal("Expected global container registry to be initialized after NewKernel")
+	}
+
+	// Verify it works by registering a container
+	registry.Register("test-agent", "test-container", "test")
+	if registry.GetContainerCount() != 1 {
+		t.Errorf("Expected 1 container in global registry, got %d", registry.GetContainerCount())
+	}
+}
+
+// TestKernelStopWithRegisteredContainers verifies that Kernel.Stop() triggers
+// registry-based container cleanup via the dispatcher.
+func TestKernelStopWithRegisteredContainers(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "kernel-stop-registry-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+
+	kernel, err := NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("NewKernel failed: %v", err)
+	}
+
+	if err := kernel.Start(); err != nil {
+		t.Fatalf("Kernel.Start() failed: %v", err)
+	}
+
+	// Register a fake container in the global registry.
+	// We can't actually start a Docker container in unit tests, but we can
+	// verify the registry is consulted during Stop().
+	registry := exec.GetGlobalRegistry()
+	if registry == nil {
+		t.Fatal("Global registry should be set after kernel init")
+	}
+	registry.Register("test-agent", "fake-container-for-cleanup-test", "testing")
+
+	// Stop should not panic even with a registered (non-existent) container.
+	// The docker stop/rm commands will fail silently for non-existent containers.
+	if err := kernel.Stop(); err != nil {
+		t.Errorf("Kernel.Stop() failed: %v", err)
 	}
 }

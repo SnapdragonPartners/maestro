@@ -29,6 +29,10 @@ type Stack struct {
 	// CommandRunner allows injecting a mock for testing.
 	// If nil, uses exec.CommandContext.
 	CommandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
+
+	// networkManager is used by UpAndAttach to connect containers to compose networks.
+	// If nil, a new NetworkManager is created. Set directly in tests for mocking.
+	networkManager *NetworkManager
 }
 
 // NewStack creates a new stack manager.
@@ -89,6 +93,49 @@ func (s *Stack) Up(ctx context.Context) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker compose up failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// UpAndAttach starts the compose stack and then connects the given container to the
+// compose project's default network so it can reach compose services by hostname.
+// This is the primary entry point for "hybrid compose mode" where an existing container
+// (e.g., a coder dev container) needs to reach services started by docker compose.
+// The operation is idempotent — both compose up and network connect are safe to call repeatedly.
+func (s *Stack) UpAndAttach(ctx context.Context, containerName string) error {
+	// 1. Start the compose stack (idempotent)
+	if err := s.Up(ctx); err != nil {
+		return err
+	}
+
+	// 2. If no container to attach, just do compose up (backwards compatible)
+	if containerName == "" {
+		return nil
+	}
+
+	// 3. Determine compose network name ({project}_default is the Docker Compose convention)
+	networkName := s.ProjectName + "_default"
+
+	// 4. Verify the network exists before attempting to connect
+	networkMgr := s.networkManager
+	if networkMgr == nil {
+		networkMgr = NewNetworkManager()
+	}
+	exists, err := networkMgr.NetworkExists(ctx, networkName)
+	if err != nil {
+		return fmt.Errorf("failed to check compose network %q: %w", networkName, err)
+	}
+	if !exists {
+		// Compose may define custom networks — warn but don't fail since compose up succeeded.
+		// The container won't be auto-attached, but services are running and may be
+		// reachable via port mappings or custom network configuration.
+		return nil
+	}
+
+	// 5. Connect the container to the compose network (idempotent — no-ops if already connected)
+	if err := networkMgr.ConnectContainer(ctx, networkName, containerName); err != nil {
+		return fmt.Errorf("failed to connect container %q to compose network %q: %w", containerName, networkName, err)
 	}
 
 	return nil

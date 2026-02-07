@@ -10,6 +10,14 @@ The big idea behind Maestro is that since LLMs are trained on and exhibit human 
 
 ---
 
+## Share Maestro
+
+<p align="center">
+  <img src="pkg/webui/web/static/img/qrcode.png" alt="Scan to visit the Maestro repo" width="200">
+</p>
+
+---
+
 ## Project Status
 
 Maestro v1 is feature complete and fully functional, but we're actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
