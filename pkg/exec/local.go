@@ -36,6 +36,11 @@ func (e *LocalExec) Run(ctx context.Context, cmd []string, opts *Opts) (Result, 
 
 	startTime := time.Now()
 
+	// Handle nil opts
+	if opts == nil {
+		opts = &Opts{}
+	}
+
 	// Create context with timeout if specified.
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc

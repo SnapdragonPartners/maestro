@@ -59,7 +59,7 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	// Uses Claude Code-specific provider that includes container_switch (handled via SignalContainerSwitch)
 	if c.codingToolProvider == nil {
 		storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
-		c.codingToolProvider = c.createClaudeCodeCodingToolProvider(storyType)
+		c.codingToolProvider = c.createClaudeCodeCodingToolProvider(storyType, storyID)
 		c.logger.Debug("Created Claude Code coding ToolProvider for story type: %s", storyType)
 	}
 

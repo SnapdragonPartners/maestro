@@ -1306,7 +1306,7 @@ func TestCreateCodingToolProvider_HotfixExcludesTodoTools(t *testing.T) {
 	coder := createTestCoder(t, &testCoderOptions{})
 
 	// Create tool provider for regular story (should include todo tools)
-	regularProvider := coder.createCodingToolProvider(string(proto.StoryTypeApp), false)
+	regularProvider := coder.createCodingToolProvider(string(proto.StoryTypeApp), false, "test-story")
 	regularTools := regularProvider.List()
 
 	hasTodosAdd := false
@@ -1321,7 +1321,7 @@ func TestCreateCodingToolProvider_HotfixExcludesTodoTools(t *testing.T) {
 	}
 
 	// Create tool provider for hotfix story (should exclude todo tools)
-	hotfixProvider := coder.createCodingToolProvider(string(proto.StoryTypeApp), true)
+	hotfixProvider := coder.createCodingToolProvider(string(proto.StoryTypeApp), true, "test-hotfix")
 	hotfixTools := hotfixProvider.List()
 
 	for _, tool := range hotfixTools {

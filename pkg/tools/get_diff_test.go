@@ -1,8 +1,15 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	execpkg "orchestrator/pkg/exec"
 )
 
 func TestGetDiffToolUsesConfiguredWorkspace(t *testing.T) {
@@ -166,5 +173,175 @@ func TestGetDiffToolDocumentation(t *testing.T) {
 	}
 	if !strings.Contains(doc, "base_sha") {
 		t.Error("documentation should mention base_sha")
+	}
+}
+
+// =============================================================================
+// Integration test: Reproduces the architect diff visibility bug
+// =============================================================================
+
+// TestGetDiff_UncommittedChangesInvisible reproduces the original bug:
+// get_diff uses `baseSHA..HEAD` which only shows committed changes.
+// Uncommitted files are invisible to the architect's get_diff tool.
+// After committing (as the done tool now does), they become visible.
+func TestGetDiff_UncommittedChangesInvisible(t *testing.T) {
+	// Create a real git repo with main branch
+	repoDir := setupGetDiffTestRepo(t)
+
+	// Create a feature branch (simulating coder workspace)
+	gitExec(t, repoDir, "checkout", "-b", "coder-001-story-1")
+
+	// Write a new file but do NOT commit it
+	featureFile := filepath.Join(repoDir, "feature.go")
+	if err := os.WriteFile(featureFile, []byte("package main\nfunc Feature() {}\n"), 0644); err != nil {
+		t.Fatalf("Failed to write feature file: %v", err)
+	}
+
+	// Run get_diff - this is what the architect does
+	executor := execpkg.NewLocalExec()
+	diffTool := NewGetDiffTool(executor, repoDir, 10000)
+
+	result, err := diffTool.Exec(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("get_diff failed: %v", err)
+	}
+
+	// Parse result
+	var diffResult map[string]any
+	if parseErr := json.Unmarshal([]byte(result.Content), &diffResult); parseErr != nil {
+		t.Fatalf("Failed to parse get_diff result: %v", parseErr)
+	}
+
+	// BUG REPRODUCTION: diff should be empty because file is not committed
+	diff, _ := diffResult["diff"].(string)
+	if strings.Contains(diff, "feature.go") {
+		t.Fatal("BUG: get_diff should NOT show uncommitted files (baseSHA..HEAD only shows commits)")
+	}
+	t.Log("Confirmed: uncommitted changes are invisible to get_diff (the original bug)")
+
+	// Now commit the changes (as the done tool does)
+	gitExec(t, repoDir, "add", "-A")
+	gitExec(t, repoDir, "commit", "-m", "Story 1: Added feature")
+
+	// Run get_diff again - now the architect should see the changes
+	result, err = diffTool.Exec(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("get_diff after commit failed: %v", err)
+	}
+
+	if parseErr := json.Unmarshal([]byte(result.Content), &diffResult); parseErr != nil {
+		t.Fatalf("Failed to parse get_diff result: %v", parseErr)
+	}
+
+	diff, _ = diffResult["diff"].(string)
+	if !strings.Contains(diff, "feature.go") {
+		t.Errorf("After commit, get_diff should show feature.go in diff, got: %s", diff)
+	}
+	if !strings.Contains(diff, "+func Feature()") {
+		t.Errorf("After commit, get_diff should show the added function, got: %s", diff)
+	}
+	t.Log("Confirmed: committed changes are visible to get_diff (the fix works)")
+}
+
+// TestGetDiff_DoneToolThenGetDiff is an end-to-end test verifying that calling
+// the done tool makes changes visible to get_diff (the full fix).
+func TestGetDiff_DoneToolThenGetDiff(t *testing.T) {
+	repoDir := setupGetDiffTestRepo(t)
+
+	// Create feature branch
+	gitExec(t, repoDir, "checkout", "-b", "coder-001-story-2")
+
+	// Write new code
+	if err := os.WriteFile(filepath.Join(repoDir, "api.go"), []byte("package main\nfunc API() {}\n"), 0644); err != nil {
+		t.Fatalf("Failed to write file: %v", err)
+	}
+
+	// Call the done tool (this should commit the changes)
+	executor := execpkg.NewLocalExec()
+	doneTool := NewDoneTool(nil, executor, repoDir, "STORY-2")
+
+	doneResult, err := doneTool.Exec(context.Background(), map[string]any{
+		"summary": "Added API endpoint",
+	})
+	if err != nil {
+		t.Fatalf("done tool failed: %v", err)
+	}
+	if doneResult.ProcessEffect == nil || doneResult.ProcessEffect.Signal != SignalTesting {
+		t.Fatal("Expected TESTING signal from done tool")
+	}
+
+	// Now run get_diff as the architect would
+	diffTool := NewGetDiffTool(executor, repoDir, 10000)
+	diffResult, err := diffTool.Exec(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("get_diff failed: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(diffResult.Content), &parsed); err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+
+	diff, _ := parsed["diff"].(string)
+	if !strings.Contains(diff, "api.go") {
+		t.Errorf("After done tool, get_diff should show api.go, got: %s", diff)
+	}
+	if !strings.Contains(diff, "+func API()") {
+		t.Errorf("After done tool, get_diff should show added function, got: %s", diff)
+	}
+	t.Log("End-to-end: done tool commit makes changes visible to architect's get_diff")
+}
+
+// --- helpers for get_diff tests ---
+
+// setupGetDiffTestRepo creates a git repo with an initial commit on main
+// and a remote origin set up (needed for merge-base calculations).
+func setupGetDiffTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	gitExec(t, dir, "init")
+	gitExec(t, dir, "config", "user.email", "test@test.com")
+	gitExec(t, dir, "config", "user.name", "Test")
+
+	// Create initial commit on main
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("Failed to write README: %v", err)
+	}
+	gitExec(t, dir, "add", "-A")
+	gitExec(t, dir, "commit", "-m", "Initial commit")
+
+	// Rename branch to main (in case git defaults to master)
+	gitExec(t, dir, "branch", "-M", "main")
+
+	// Create a bare clone to act as "origin" (needed for origin/main ref)
+	originDir := t.TempDir()
+	originExec(t, "git", "clone", "--bare", dir, originDir)
+
+	// Add origin to the repo
+	gitExec(t, dir, "remote", "add", "origin", originDir)
+	gitExec(t, dir, "fetch", "origin")
+
+	return dir
+}
+
+// gitExec runs a git command in the given directory.
+func gitExec(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\nOutput: %s", strings.Join(args, " "), err, string(out))
+	}
+}
+
+// originExec runs a command (not necessarily in a specific dir).
+func originExec(t *testing.T, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\nOutput: %s", name, strings.Join(args, " "), err, string(out))
 	}
 }

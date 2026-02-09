@@ -24,6 +24,7 @@ type AgentContext struct {
 	AgentID         string // Agent identifier for tools that need it
 	Agent           Agent  // Optional agent reference for state-aware tools
 	ProjectDir      string // Project directory for bootstrap detection and config access
+	StoryID         string // Story ID for commit message prefix (used by done tool)
 }
 
 // Agent interface for tools that need access to agent state.
@@ -283,7 +284,7 @@ func createLintTool(ctx *AgentContext) (Tool, error) {
 
 // createDoneTool creates a done tool instance.
 func createDoneTool(ctx *AgentContext) (Tool, error) {
-	return NewDoneTool(ctx.Agent), nil
+	return NewDoneTool(ctx.Agent, ctx.Executor, ctx.WorkDir, ctx.StoryID), nil
 }
 
 // createBackendInfoTool creates a backend info tool instance.
@@ -428,7 +429,7 @@ func getLintSchema() InputSchema {
 }
 
 func getDoneSchema() InputSchema {
-	return NewDoneTool(nil).Definition().InputSchema
+	return NewDoneTool(nil, nil, "", "").Definition().InputSchema
 }
 
 func getBackendInfoSchema() InputSchema {

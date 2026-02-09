@@ -6,13 +6,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/build"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
+
+// isExecutorUsable checks if an executor interface is non-nil and not a typed nil pointer.
+// In Go, an interface wrapping a typed nil pointer (e.g., (*LongRunningDockerExec)(nil) as Executor)
+// is non-nil at the interface level but will panic when methods are called.
+func isExecutorUsable(e execpkg.Executor) bool {
+	if e == nil {
+		return false
+	}
+	v := reflect.ValueOf(e)
+	return !v.IsNil()
+}
 
 // extractExecArgs extracts common arguments from tool execution.
 func extractExecArgs(args map[string]any) (cwd string, timeout int, err error) {
@@ -344,28 +358,39 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 }
 
 // DoneTool provides MCP interface for signaling task completion.
+// When called, it commits all changes (git add -A + git commit) using the summary
+// as the commit message, then advances the FSM to TESTING state.
 type DoneTool struct {
-	agent Agent // Optional agent reference for todo checking
+	agent    Agent            // Optional agent reference for todo checking
+	executor execpkg.Executor // Optional executor for git commit operations
+	workDir  string           // Workspace directory for git operations
+	storyID  string           // Story ID for commit message prefix
 }
 
 // NewDoneTool creates a new done tool instance.
-func NewDoneTool(agent Agent) *DoneTool {
+func NewDoneTool(agent Agent, executor execpkg.Executor, workDir, storyID string) *DoneTool {
 	return &DoneTool{
-		agent: agent,
+		agent:    agent,
+		executor: executor,
+		workDir:  workDir,
+		storyID:  storyID,
 	}
 }
 
 // Definition returns the tool's definition in Claude API format.
 func (d *DoneTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name:        "done",
-		Description: "Signal that the coding task is complete and advance the FSM to TESTING state",
+		Name: "done",
+		Description: "Commit all changes and advance to TESTING state. " +
+			"Automatically runs git add -A and git commit using your summary as the commit message. " +
+			"Pre-commit hooks (lint, format) will run as part of the commit.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"summary": {
-					Type:        "string",
-					Description: "Description of what was accomplished including evidence and confidence if applicable",
+					Type: "string",
+					Description: "Description of what was accomplished. This becomes the git commit message, " +
+						"so write it as a clear, concise summary of the changes made.",
 				},
 			},
 			Required: []string{"summary"},
@@ -380,29 +405,41 @@ func (d *DoneTool) Name() string {
 
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (d *DoneTool) PromptDocumentation() string {
-	return `- **done** - Signal that the coding task is complete
+	return `- **done** - Commit all changes and advance to TESTING state
   - Parameter: summary (required)
-  - summary: Description of what was accomplished including evidence and confidence if applicable
-  - Advances FSM to TESTING state for verification
-  - Use when all implementation work is finished`
+  - summary: Description of what was accomplished (becomes the git commit message)
+  - Automatically runs git add -A and git commit using your summary as the commit message
+  - Pre-commit hooks (lint, format) will run as part of the commit
+  - Use when all implementation work is finished and you are ready for testing`
 }
 
-// Exec executes the done operation.
-func (d *DoneTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
+// Exec executes the done operation: commits all changes, then signals TESTING state.
+func (d *DoneTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract summary
-	summary, ok := args["summary"].(string)
+	summary, ok := utils.SafeAssert[string](args["summary"])
 	if !ok || summary == "" {
 		return nil, fmt.Errorf("summary is required and must be a non-empty string")
 	}
 
 	// Check for incomplete todos and include warning in response
-	content := "Task marked as complete, advancing to TESTING state"
+	var warnings []string
 	if d.agent != nil {
 		incompleteCount := d.agent.GetIncompleteTodoCount()
 		if incompleteCount > 0 {
-			// Log warning - this will be visible in the tool response to the LLM
-			content = fmt.Sprintf("⚠️ WARNING: %d todo(s) still incomplete! Task marked as complete, advancing to TESTING state. Consider completing all todos before calling done.", incompleteCount)
+			warnings = append(warnings, fmt.Sprintf("WARNING: %d todo(s) still incomplete", incompleteCount))
 		}
+	}
+
+	// Commit all changes if executor is available
+	commitResult := d.commitChanges(ctx, summary)
+	if commitResult.err != nil {
+		return nil, fmt.Errorf("git commit failed: %w", commitResult.err)
+	}
+
+	// Build response content
+	content := commitResult.message
+	if len(warnings) > 0 {
+		content = strings.Join(warnings, "; ") + ". " + content
 	}
 
 	// Return human-readable message for LLM context
@@ -416,6 +453,61 @@ func (d *DoneTool) Exec(_ context.Context, args map[string]any) (*ExecResult, er
 			},
 		},
 	}, nil
+}
+
+// commitResult holds the outcome of a git commit attempt.
+type commitResult struct {
+	err     error  // Non-nil if commit failed
+	message string // Human-readable description of what happened
+}
+
+// commitChanges runs git add -A + git commit with the summary as commit message.
+// Returns a commitResult describing the outcome.
+func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResult {
+	if !isExecutorUsable(d.executor) {
+		return commitResult{message: "Changes committed (no executor - skipped git operations), advancing to TESTING state"}
+	}
+
+	opts := &execpkg.Opts{
+		WorkDir: d.workDir,
+		Timeout: 30 * time.Second,
+	}
+
+	// Stage all changes
+	result, err := d.executor.Run(ctx, []string{"git", "add", "-A"}, opts)
+	if err != nil || result.ExitCode != 0 {
+		errMsg := result.Stderr
+		if errMsg == "" {
+			errMsg = result.Stdout
+		}
+		return commitResult{err: fmt.Errorf("git add failed (exit %d): %s", result.ExitCode, errMsg)}
+	}
+
+	// Check if there are any changes to commit
+	// git diff --cached --exit-code returns exit code 1 if there are staged changes
+	result, _ = d.executor.Run(ctx, []string{"git", "diff", "--cached", "--exit-code"}, opts)
+	if result.ExitCode == 0 {
+		// Exit code 0 means no staged changes
+		return commitResult{message: "No changes to commit, advancing to TESTING state"}
+	}
+
+	// Build commit message with story prefix
+	commitMsg := summary
+	if d.storyID != "" {
+		commitMsg = fmt.Sprintf("Story %s: %s", d.storyID, summary)
+	}
+
+	// Commit
+	result, err = d.executor.Run(ctx, []string{"git", "commit", "-m", commitMsg}, opts)
+	if err != nil || result.ExitCode != 0 {
+		errMsg := result.Stderr
+		if errMsg == "" {
+			errMsg = result.Stdout
+		}
+		return commitResult{err: fmt.Errorf("git commit failed (exit %d): %s", result.ExitCode, errMsg)}
+	}
+
+	return commitResult{message: fmt.Sprintf("Changes committed and advancing to TESTING state. Commit: %s", strings.TrimSpace(result.Stdout))}
 }
 
 // BackendInfoTool provides MCP interface for backend information.
