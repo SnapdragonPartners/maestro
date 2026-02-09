@@ -147,27 +147,10 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 		// Continue anyway - git issues will show up during actual git operations
 	}
 
-	// Step 1: Commit all changes
-	if commitErr := c.commitChanges(ctx, storyID); commitErr != nil {
-		if c.isRecoverableGitError(commitErr) {
-			c.logger.Info("🔀 Git commit failed (recoverable), returning to CODING: %v", commitErr)
-			commitFailureMsg := fmt.Sprintf("Git commit failed. Fix the following issues and try again: %s", commitErr.Error())
-			if renderedMessage, renderErr := c.renderer.RenderSimple(templates.GitCommitFailureTemplate, commitErr.Error()); renderErr != nil {
-				c.logger.Error("Failed to render git commit failure message: %v", renderErr)
-				c.contextManager.AddMessage("system", commitFailureMsg)
-			} else {
-				c.contextManager.AddMessage("system", renderedMessage)
-				commitFailureMsg = renderedMessage
-			}
-			// Set resume input for Claude Code mode
-			sm.SetStateData(KeyResumeInput, commitFailureMsg)
-			return StateCoding, false, nil
-		}
-		c.logger.Error("🔀 Git commit failed (unrecoverable): %v", commitErr)
-		return proto.StateError, false, logx.Wrap(commitErr, "git commit failed")
-	}
+	// Note: Code is already committed by the done tool at CODING exit.
+	// Any uncommitted changes at this point are test artifacts and should not be committed.
 
-	// Step 2: Push branch to remote
+	// Push branch to remote
 	if pushErr := c.pushBranch(ctx, localBranch, remoteBranch); pushErr != nil {
 		// Always attempt auto-rebase first on any push failure.
 		// This handles non-fast-forward errors robustly without brittle string matching.
@@ -313,42 +296,6 @@ func (c *Coder) getTargetBranch() (string, error) {
 	}
 
 	return targetBranch, nil
-}
-
-// commitChanges commits all current changes to git.
-func (c *Coder) commitChanges(ctx context.Context, storyID string) error {
-	c.logger.Debug("🔀 Committing changes for story %s", storyID)
-
-	opts := &execpkg.Opts{
-		WorkDir: c.workDir,
-		Timeout: 30 * time.Second,
-	}
-
-	// Add all changes to staging area
-	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "add", "-A"}, opts)
-	if err != nil {
-		c.logger.Error("🔀 git add failed: %v, output: %s", err, result.Stderr)
-		return fmt.Errorf("git add failed: %w", err)
-	}
-
-	// Check if there are any changes to commit
-	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "diff", "--cached", "--exit-code"}, opts)
-	if err == nil {
-		// No changes staged for commit
-		c.logger.Info("🔀 No changes to commit")
-		return nil
-	}
-
-	// Commit with meaningful message
-	commitMsg := fmt.Sprintf("Story %s: Implementation complete\n\nAutomated commit by maestro coder agent", storyID)
-	result, err = c.longRunningExecutor.Run(ctx, []string{"git", "commit", "-m", commitMsg}, opts)
-	if err != nil {
-		c.logger.Error("🔀 git commit failed: %v, output: %s", err, result.Stderr)
-		return fmt.Errorf("git commit failed: %w", err)
-	}
-
-	c.logger.Info("🔀 Changes committed successfully")
-	return nil
 }
 
 // pushBranch pushes the local branch to remote origin.

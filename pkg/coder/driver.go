@@ -1209,7 +1209,7 @@ func (c *Coder) createPlanningToolProvider(storyType string) *tools.ToolProvider
 
 // createCodingToolProvider creates a ToolProvider for the coding state.
 // If isHotfix is true, todo tools are excluded (hotfix stories skip planning and don't use todos).
-func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool) *tools.ToolProvider {
+func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool, storyID string) *tools.ToolProvider {
 	// Determine coding tools based on story type
 	var codingTools []string
 	if storyType == string(proto.StoryTypeDevOps) {
@@ -1234,6 +1234,7 @@ func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool) *tools
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
 		AgentID:         c.GetAgentID(), // Required for compose_up project name isolation
+		StoryID:         storyID,        // For done tool commit message prefix
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
@@ -1259,7 +1260,7 @@ func filterOutTodoTools(toolList []string) []string {
 // createClaudeCodeCodingToolProvider creates a ToolProvider for Claude Code mode coding.
 // This excludes todo tools (Claude Code has built-in) but INCLUDES container_switch.
 // Container switch is handled via SignalContainerSwitch which triggers container restart with session resume.
-func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.ToolProvider {
+func (c *Coder) createClaudeCodeCodingToolProvider(storyType, storyID string) *tools.ToolProvider {
 	// Determine coding tools based on story type
 	// Filter out: todo tools (Claude Code has built-in)
 	// NOTE: container_switch is INCLUDED - we handle it via SignalContainerSwitch
@@ -1279,6 +1280,7 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType string) *tools.Tool
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
 		AgentID:         c.GetAgentID(), // Required for chat tools (chat_read needs agent_id)
+		StoryID:         storyID,        // For done tool commit message prefix
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)

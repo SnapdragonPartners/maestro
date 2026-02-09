@@ -64,7 +64,8 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Create ToolProvider for this coding session
 	if c.codingToolProvider == nil {
-		c.codingToolProvider = c.createCodingToolProvider(storyType, isHotfix)
+		storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
+		c.codingToolProvider = c.createCodingToolProvider(storyType, isHotfix, storyID)
 		c.logger.Debug("Created coding ToolProvider for story type: %s, isHotfix: %v", storyType, isHotfix)
 	}
 
