@@ -26,6 +26,9 @@ func TestStoryEditTool_Definition(t *testing.T) {
 	if _, exists := def.InputSchema.Properties["implementation_notes"]; !exists {
 		t.Error("expected 'implementation_notes' property in schema")
 	}
+	if _, exists := def.InputSchema.Properties["revised_content"]; !exists {
+		t.Error("expected 'revised_content' property in schema")
+	}
 }
 
 func TestStoryEditTool_WithNotes(t *testing.T) {
@@ -77,8 +80,33 @@ func TestStoryEditTool_EmptyNotes(t *testing.T) {
 	if !ok || notes != "" {
 		t.Errorf("expected empty notes, got: %q", notes)
 	}
-	if !strings.Contains(result.Content, "without annotation") {
-		t.Errorf("expected content to mention no annotation, got: %s", result.Content)
+	if !strings.Contains(result.Content, "without changes") {
+		t.Errorf("expected content to mention no changes, got: %s", result.Content)
+	}
+}
+
+func TestStoryEditTool_RevisedContent(t *testing.T) {
+	tool := NewStoryEditTool()
+	result, err := tool.Exec(context.Background(), map[string]any{
+		"implementation_notes": "",
+		"revised_content":      "Completely new story content with fixed approach",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ProcessEffect == nil {
+		t.Fatal("expected ProcessEffect")
+	}
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any data, got: %T", result.ProcessEffect.Data)
+	}
+	revised, ok := data["revised_content"].(string)
+	if !ok || revised != "Completely new story content with fixed approach" {
+		t.Errorf("expected revised_content in effect data, got: %v", data)
+	}
+	if !strings.Contains(result.Content, "replaced") {
+		t.Errorf("expected content to mention replacement, got: %s", result.Content)
 	}
 }
 
@@ -101,5 +129,8 @@ func TestStoryEditTool_Documentation(t *testing.T) {
 	}
 	if !strings.Contains(doc, "implementation_notes") {
 		t.Error("documentation should mention implementation_notes")
+	}
+	if !strings.Contains(doc, "revised_content") {
+		t.Error("documentation should mention revised_content")
 	}
 }

@@ -1101,19 +1101,28 @@ func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextMan
 		return
 	}
 
-	// Extract notes from EffectData
+	// Extract edit data from EffectData
 	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
-		d.logger.Warn("📝 Story edit effect data is not map[string]any: %T (continuing with auto-reject)", out.EffectData)
-		return
-	}
-	notes, _ := utils.SafeAssert[string](effectData["notes"])
-	if notes == "" {
-		d.logger.Info("📝 Architect provided no implementation notes for story %s", storyID)
+		d.logger.Warn("📝 Story edit effect data is not map[string]any: %T (continuing with reject)", out.EffectData)
 		return
 	}
 
-	// Append implementation notes to story content
+	// Check for full story rewrite first (takes precedence over notes)
+	revisedContent, _ := utils.SafeAssert[string](effectData["revised_content"])
+	if revisedContent != "" {
+		story.Content = revisedContent
+		d.logger.Info("📝 Replaced story content for %s (%d chars) — architect rewrote the story", storyID, len(revisedContent))
+		return
+	}
+
+	// Fall back to appending implementation notes
+	notes, _ := utils.SafeAssert[string](effectData["notes"])
+	if notes == "" {
+		d.logger.Info("📝 Architect provided no edits for story %s", storyID)
+		return
+	}
+
 	story.Content += "\n\n## Implementation Notes (Auto-generated)\n\n" + notes
 	d.logger.Info("📝 Appended implementation notes to story %s (%d chars)", storyID, len(notes))
 }
