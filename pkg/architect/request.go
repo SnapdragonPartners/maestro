@@ -863,11 +863,13 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	cm := d.getContextForAgent(agentID)
 
 	// Budget review streak enforcement (hard limit: auto-reject without LLM call)
+	// Note: streak is the count of past consecutive NEEDS_CHANGES. This would be
+	// the (streak+1)th budget review, so we compare streak+1 against the limits.
 	if approvalType == proto.ApprovalTypeBudgetReview {
 		streak := d.getReviewStreak(agentID, ReviewTypeBudget)
-		if streak >= BudgetReviewHardLimit {
-			d.logger.Warn("🚫 Auto-rejecting budget review for %s: %d consecutive NEEDS_CHANGES (hard limit %d)",
-				agentID, streak, BudgetReviewHardLimit)
+		if streak+1 >= BudgetReviewHardLimit {
+			d.logger.Warn("🚫 Auto-rejecting budget review for %s: %d consecutive NEEDS_CHANGES + this request = %d (hard limit %d)",
+				agentID, streak, streak+1, BudgetReviewHardLimit)
 			// Reset streak since we're rejecting
 			d.resetReviewStreak(agentID, ReviewTypeBudget)
 			feedback := fmt.Sprintf("Auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
@@ -884,8 +886,9 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	case proto.ApprovalTypeBudgetReview:
 		prompt = d.generateBudgetPrompt(requestMsg)
 		// Soft limit: inject warning into prompt to nudge architect toward REJECTED
+		// streak+1 because this is the next review in the sequence
 		streak := d.getReviewStreak(agentID, ReviewTypeBudget)
-		if streak >= BudgetReviewSoftLimit {
+		if streak+1 >= BudgetReviewSoftLimit {
 			prompt += fmt.Sprintf("\n\n⚠️ **IMPORTANT: This is the %d%s consecutive NEEDS_CHANGES budget review for this coder.** "+
 				"If the coder is stuck on the same underlying issue and not making meaningful progress, "+
 				"you should REJECT the request rather than continuing to provide feedback that isn't being actioned. "+
