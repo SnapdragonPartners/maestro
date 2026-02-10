@@ -498,6 +498,22 @@ func getTodoUpdateSchema() InputSchema {
 	return NewTodoUpdateTool(nil).Definition().InputSchema
 }
 
+// createFileEditTool creates a file_edit tool instance.
+func createFileEditTool(ctx *AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("file_edit tool requires an executor")
+	}
+	workspaceRoot := ctx.WorkDir
+	if workspaceRoot == "" {
+		workspaceRoot = DefaultWorkspaceDir
+	}
+	return NewFileEditTool(ctx.Executor, workspaceRoot), nil
+}
+
+func getFileEditSchema() InputSchema {
+	return NewFileEditTool(nil, "").Definition().InputSchema
+}
+
 // createReadFileTool creates a read_file tool instance.
 func createReadFileTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
@@ -669,6 +685,12 @@ func init() {
 	})
 
 	// Register development tools
+	Register(ToolFileEdit, createFileEditTool, &ToolMeta{
+		Name:        ToolFileEdit,
+		Description: "Replace an exact string match in a file with new content",
+		InputSchema: getFileEditSchema(),
+	})
+
 	Register(ToolShell, createShellTool, &ToolMeta{
 		Name:        ToolShell,
 		Description: "Execute shell commands and return the output",
