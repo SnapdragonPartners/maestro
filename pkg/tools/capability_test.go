@@ -137,6 +137,7 @@ func TestToolProviderAppCodingTools(t *testing.T) {
 		ToolBuild:           false,
 		ToolTest:            false,
 		ToolLint:            false,
+		ToolFileEdit:        false,
 		ToolAskQuestion:     false,
 		ToolDone:            false,
 		ToolContainerBuild:  false,

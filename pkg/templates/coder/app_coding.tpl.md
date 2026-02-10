@@ -172,6 +172,9 @@ shell({{"{"}}{{printf "\"command\": \"%s\"" .BuildCommand}}}}) # Confirm code co
 **Important**: Call `done` immediately when criteria are met - don't rewrite working files or make unnecessary refinements.
 
 ## Implementation Plan
+
+The plan and task requirements below represent your starting point. As you work, the architect may provide guidance or corrections in the conversation. **Always follow the most recent architect guidance** — if it conflicts with the original plan, the architect's latest feedback takes priority.
+
 {{.Plan}}
 
 ## Task Requirements

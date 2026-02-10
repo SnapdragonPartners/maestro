@@ -10,6 +10,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
@@ -862,6 +863,28 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	agentID := requestMsg.FromAgent
 	cm := d.getContextForAgent(agentID)
 
+	// Budget review streak enforcement (hard limit: auto-reject)
+	// Note: streak is the count of past consecutive NEEDS_CHANGES. This would be
+	// the (streak+1)th budget review, so we compare streak+1 against the limits.
+	if approvalType == proto.ApprovalTypeBudgetReview {
+		streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+		if streak+1 >= BudgetReviewHardLimit {
+			d.logger.Warn("🚫 Auto-rejecting budget review for %s: %d consecutive NEEDS_CHANGES + this request = %d (hard limit %d)",
+				agentID, streak, streak+1, BudgetReviewHardLimit)
+
+			// Give the architect a chance to annotate the story with implementation notes
+			// before it's requeued. Uses the existing per-agent context which has all the
+			// NEEDS_CHANGES review history.
+			d.attemptStoryEdit(ctx, cm, agentID, storyID, streak)
+
+			// Reset streak since we're rejecting
+			d.resetReviewStreak(agentID, ReviewTypeBudget)
+			feedback := fmt.Sprintf("Auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
+				"The coder appears stuck and is not making progress. The story will be requeued.", streak)
+			return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, "REJECTED", feedback)
+		}
+	}
+
 	// Build prompt based on approval type
 	var prompt string
 	switch approvalType {
@@ -869,6 +892,16 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		prompt = d.generatePlanPrompt(requestMsg, approvalPayload)
 	case proto.ApprovalTypeBudgetReview:
 		prompt = d.generateBudgetPrompt(requestMsg)
+		// Soft limit: inject warning into prompt to nudge architect toward REJECTED
+		// streak+1 because this is the next review in the sequence
+		streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+		if streak+1 >= BudgetReviewSoftLimit {
+			prompt += fmt.Sprintf("\n\n⚠️ **IMPORTANT: This is the %d%s consecutive NEEDS_CHANGES budget review for this coder.** "+
+				"If the coder is stuck on the same underlying issue and not making meaningful progress, "+
+				"you should REJECT the request rather than continuing to provide feedback that isn't being actioned. "+
+				"Returning NEEDS_CHANGES again will give the coder another full iteration cycle.",
+				streak+1, ordinalSuffix(streak+1))
+		}
 	default:
 		return nil, fmt.Errorf("unsupported single-turn review type: %s", approvalType)
 	}
@@ -939,7 +972,15 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	d.logger.Info("✅ Single-turn review completed with status: %s", status)
 
-	// Clean up state data (review_complete_result no longer stored)
+	// Track budget review streaks
+	if approvalType == proto.ApprovalTypeBudgetReview {
+		if status == "NEEDS_CHANGES" {
+			newStreak := d.incrementReviewStreak(agentID, ReviewTypeBudget)
+			d.logger.Info("📊 Budget review streak for %s: %d consecutive NEEDS_CHANGES", agentID, newStreak)
+		} else {
+			d.resetReviewStreak(agentID, ReviewTypeBudget)
+		}
+	}
 
 	// Build and return approval response
 	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
@@ -983,4 +1024,121 @@ func (d *Driver) handleMaintenanceApproval(_ context.Context, requestMsg *proto.
 
 	d.logger.Info("🔧 ✅ Maintenance story %s auto-approved", storyID)
 	return response, nil
+}
+
+// attemptStoryEdit gives the architect LLM a chance to annotate the story with
+// implementation notes before it's requeued after a hard budget review limit.
+// This is best-effort: if the LLM call fails, we log and continue with the auto-reject.
+func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextManager, agentID, storyID string, streak int) {
+	// Get story from queue for title/content
+	story, exists := d.queue.GetStory(storyID)
+	if !exists {
+		d.logger.Warn("📝 Cannot annotate story %s: not found in queue", storyID)
+		return
+	}
+
+	// Build story edit prompt from template
+	prompt := d.buildStoryEditPrompt(story, storyID, streak)
+
+	// Add prompt to existing per-agent context (which has all the review history)
+	cm.AddMessage("story-edit-prompt", prompt)
+
+	// Create tool provider with only story_edit tool
+	agentCtx := tools.AgentContext{
+		ReadOnly: true,
+		WorkDir:  "/mnt/architect",
+	}
+	allowedTools := []string{tools.ToolStoryEdit}
+	toolProvider := tools.NewProvider(&agentCtx, allowedTools)
+
+	storyEditTool, err := toolProvider.Get(tools.ToolStoryEdit)
+	if err != nil {
+		d.logger.Warn("📝 Failed to get story_edit tool: %v", err)
+		return
+	}
+
+	d.logger.Info("📝 Running story edit LLM call for %s (story: %s)", agentID, storyID)
+
+	// Run single-turn toolloop
+	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[StoryEditResult]{
+		ContextManager:     cm,
+		GeneralTools:       []tools.Tool{},
+		TerminalTool:       storyEditTool,
+		MaxIterations:      3,
+		MaxTokens:          agent.ArchitectMaxTokens,
+		SingleTurn:         true,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+		StoryID:            storyID,
+	})
+
+	// Handle outcome
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		d.logger.Warn("📝 Story edit LLM call failed for %s: %v (continuing with auto-reject)", storyID, out.Err)
+		return
+	}
+
+	if out.Signal != tools.SignalStoryEditComplete {
+		d.logger.Warn("📝 Unexpected signal from story edit: %s (continuing with auto-reject)", out.Signal)
+		return
+	}
+
+	// Extract notes from EffectData
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
+	if !ok {
+		d.logger.Warn("📝 Story edit effect data is not map[string]any: %T (continuing with auto-reject)", out.EffectData)
+		return
+	}
+	notes, _ := utils.SafeAssert[string](effectData["notes"])
+	if notes == "" {
+		d.logger.Info("📝 Architect provided no implementation notes for story %s", storyID)
+		return
+	}
+
+	// Append implementation notes to story content
+	story.Content += "\n\n## Implementation Notes (Auto-generated)\n\n" + notes
+	d.logger.Info("📝 Appended implementation notes to story %s (%d chars)", storyID, len(notes))
+}
+
+// buildStoryEditPrompt renders the story edit template for the architect.
+func (d *Driver) buildStoryEditPrompt(story *QueuedStory, storyID string, streak int) string {
+	if d.renderer == nil {
+		return fmt.Sprintf("The coder working on story %s has been auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
+			"Review the conversation history and call story_edit with implementation notes for the next coder.", storyID, streak)
+	}
+
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"StoryTitle":  story.Title,
+			"StoryID":     storyID,
+			"StreakCount": streak,
+		},
+	}
+
+	content, err := d.renderer.Render(templates.StoryEditTemplate, templateData)
+	if err != nil {
+		d.logger.Warn("📝 Failed to render story edit template: %v", err)
+		return fmt.Sprintf("The coder working on story %s has been auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
+			"Review the conversation history and call story_edit with implementation notes for the next coder.", storyID, streak)
+	}
+
+	return content
+}
+
+// ordinalSuffix returns the English ordinal suffix for a number (e.g., 1st, 2nd, 3rd, 4th).
+func ordinalSuffix(n int) string {
+	if n%100 >= 11 && n%100 <= 13 {
+		return "th"
+	}
+	switch n % 10 {
+	case 1:
+		return "st"
+	case 2:
+		return "nd"
+	case 3:
+		return "rd"
+	default:
+		return "th"
+	}
 }
