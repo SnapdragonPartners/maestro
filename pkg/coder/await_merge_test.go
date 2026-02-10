@@ -155,9 +155,9 @@ func TestProcessMergeResult_NeedsChanges_WithTodos(t *testing.T) {
 		t.Error("Expected done=false")
 	}
 
-	// Check that feedback was added as new todo
-	if coder.todoList.GetTotalCount() != 2 {
-		t.Errorf("Expected 2 todos (original + feedback), got: %d", coder.todoList.GetTotalCount())
+	// Feedback should NOT be added as a todo (it's in context instead)
+	if coder.todoList.GetTotalCount() != 1 {
+		t.Errorf("Expected 1 todo (original only, no feedback todo), got: %d", coder.todoList.GetTotalCount())
 	}
 }
 

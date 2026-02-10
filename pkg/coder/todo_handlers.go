@@ -44,5 +44,10 @@ func (c *Coder) getTodoListStatus() string {
 		status += "**Remaining**:\n" + strings.Join(remaining, "\n") + "\n"
 	}
 
+	// When all todos are complete, add nudge to address feedback and call done
+	if current == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount() {
+		status += "\n**All todos complete.** Wrap up any remaining architect feedback, then call the `done` tool.\n"
+	}
+
 	return status
 }

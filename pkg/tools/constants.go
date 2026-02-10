@@ -44,6 +44,7 @@ const (
 	ToolSubmitReply    = "submit_reply"
 	ToolSubmitStories  = "submit_stories"
 	ToolReviewComplete = "review_complete"
+	ToolStoryEdit      = "story_edit"
 
 	// PM tools.
 	ToolSpecSubmit      = "spec_submit"

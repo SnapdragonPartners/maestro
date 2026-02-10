@@ -123,6 +123,8 @@ const (
 	CompletionResponseTemplate StateTemplate = "architect/completion_response.tpl.md"
 	// BudgetReviewResponseTemplate is the template for budget review responses.
 	BudgetReviewResponseTemplate StateTemplate = "architect/budget_review_response.tpl.md"
+	// StoryEditTemplate is the template for architect story annotation before requeue.
+	StoryEditTemplate StateTemplate = "architect/story_edit.tpl.md"
 
 	// PMInterviewStartTemplate is the template for starting PM interviews (deprecated - use PMWorkingTemplate).
 	PMInterviewStartTemplate StateTemplate = "pm/interview_start.tpl.md"

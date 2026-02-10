@@ -86,6 +86,7 @@ const (
 	SignalReviewComplete       = "REVIEW_COMPLETE"       // review_complete tool finished code review
 	SignalStoriesSubmitted     = "STORIES_SUBMITTED"     // submit_stories tool submitted story list
 	SignalMaintenanceSubmitted = "MAINTENANCE_SUBMITTED" // submit_stories tool submitted maintenance stories
+	SignalStoryEditComplete    = "STORY_EDIT_COMPLETE"   // story_edit tool annotated story before requeue
 
 	// Coder signals.
 	SignalPlanReview    = "PLAN_REVIEW"    // submit_plan tool ready for architect review
