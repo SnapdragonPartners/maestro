@@ -121,6 +121,9 @@ type Config[T any] struct {
 	// Maximum tokens per LLM request
 	MaxTokens int
 
+	// Temperature for LLM requests (0 means use provider default)
+	Temperature float32
+
 	// Debug settings
 	DebugLogging bool // Enable detailed debug logging for message formatting
 
@@ -265,9 +268,10 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 
 		// Create LLM request
 		req := agent.CompletionRequest{
-			Messages:  messages,
-			MaxTokens: cfg.MaxTokens,
-			Tools:     toolDefs,
+			Messages:    messages,
+			MaxTokens:   cfg.MaxTokens,
+			Temperature: cfg.Temperature,
+			Tools:       toolDefs,
 		}
 
 		// Log request details

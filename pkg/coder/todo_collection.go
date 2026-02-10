@@ -76,6 +76,7 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		TerminalTool:       terminalTool,
 		MaxIterations:      2,    // One call + one retry if needed
 		MaxTokens:          4096, // Sufficient for todo list
+		Temperature:        config.GetTemperature(config.TempRoleCoderCoding),
 		AgentID:            c.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: c.persistenceChannel,

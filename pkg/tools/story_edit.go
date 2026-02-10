@@ -7,8 +7,8 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-// StoryEditTool allows the architect to annotate a story with implementation notes
-// before it is requeued after a hard budget review limit.
+// StoryEditTool allows the architect to annotate or fully rewrite a story
+// before it is requeued after a budget review rejection.
 type StoryEditTool struct {
 	// No executor needed - this is a control flow tool
 }
@@ -25,22 +25,33 @@ func (t *StoryEditTool) Name() string {
 
 // PromptDocumentation returns formatted tool documentation for prompts.
 func (t *StoryEditTool) PromptDocumentation() string {
-	return `- **story_edit** - Annotate the story with implementation notes for the next coder
-  - Parameters: implementation_notes (string, REQUIRED - may be empty if no guidance to add)
-  - Call this to provide lessons learned before the story is requeued`
+	return `- **story_edit** - Edit the story before requeue: append notes OR fully rewrite
+  - Parameters:
+    - implementation_notes (string, REQUIRED - may be empty): notes appended to the story
+    - revised_content (string, optional): if provided, REPLACES the entire story content
+  - Use revised_content when the original approach is fundamentally flawed
+  - Use implementation_notes alone for adding guidance while keeping the original story`
 }
 
 // Definition returns the tool definition for LLM.
 func (t *StoryEditTool) Definition() ToolDefinition {
 	return ToolDefinition{
-		Name:        ToolStoryEdit,
-		Description: "Annotate the story with implementation notes for the next coder. The notes will be appended to the story content before requeueing. Pass an empty string if you have no useful guidance to add.",
+		Name: ToolStoryEdit,
+		Description: "Edit the story before requeueing. You have two options: " +
+			"(1) Provide implementation_notes to APPEND guidance to the existing story, or " +
+			"(2) Provide revised_content to REPLACE the entire story content when the original approach is fundamentally flawed. " +
+			"If both are provided, revised_content takes precedence (notes are ignored). " +
+			"Pass empty strings for both if you have no useful edits.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"implementation_notes": {
 					Type:        "string",
-					Description: "Implementation notes for the next coder. Include what approach failed, what the correct approach should be, and any specific technical guidance. May be empty if no useful guidance to add.",
+					Description: "Implementation notes appended to the story. Include what approach failed, what the correct approach should be, and any specific technical guidance. May be empty.",
+				},
+				"revised_content": {
+					Type:        "string",
+					Description: "Complete replacement for the story content. Use this when the original story's prescribed approach is fundamentally infeasible and needs to be rewritten. Preserve the title, acceptance criteria, and story intent while fixing the technical approach. Leave empty to keep the original story and just append notes.",
 				},
 			},
 			Required: []string{"implementation_notes"},
@@ -56,9 +67,17 @@ func (t *StoryEditTool) Exec(_ context.Context, args map[string]any) (*ExecResul
 		return nil, fmt.Errorf("implementation_notes parameter is required")
 	}
 
-	message := "Story notes submitted"
-	if notes == "" {
-		message = "No implementation notes provided — story will be requeued without annotation"
+	// Extract optional revised_content
+	revisedContent, _ := utils.SafeAssert[string](args["revised_content"])
+
+	var message string
+	switch {
+	case revisedContent != "":
+		message = "Story content replaced with revised version"
+	case notes != "":
+		message = "Story notes submitted"
+	default:
+		message = "No edits provided — story will be requeued without changes"
 	}
 
 	return &ExecResult{
@@ -66,7 +85,8 @@ func (t *StoryEditTool) Exec(_ context.Context, args map[string]any) (*ExecResul
 		ProcessEffect: &ProcessEffect{
 			Signal: SignalStoryEditComplete,
 			Data: map[string]any{
-				"notes": notes,
+				"notes":           notes,
+				"revised_content": revisedContent,
 			},
 		},
 	}, nil

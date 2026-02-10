@@ -173,6 +173,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		TerminalTool:   terminalTool,
 		MaxIterations:  maxPlanningIterations,
 		MaxTokens:      8192, // Increased for exploration
+		Temperature:    c.getPlanningTemperature(sm),
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{

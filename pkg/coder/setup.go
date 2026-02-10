@@ -25,6 +25,9 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	c.claudeCodeAvailabilityChecked = false
 	c.claudeCodeAvailable = false
 
+	// Reset NEEDS_CHANGES counter for new story (temperature laddering starts fresh)
+	sm.SetStateData(KeyNeedsChangesCount, 0)
+
 	// Clean work directory contents while preserving the directory itself.
 	// IMPORTANT: We must NOT delete and recreate the directory because Docker bind mounts
 	// on macOS track the inode. If we delete/recreate the directory, the architect container's

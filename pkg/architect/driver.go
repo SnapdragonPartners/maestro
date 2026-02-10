@@ -846,6 +846,15 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				continue
 			}
 
+			// Promote hotfix stories to full stories on requeue.
+			// If a hotfix needed requeue, the "simple fix" assumption is wrong —
+			// the next attempt should get the full planning phase.
+			if story.IsHotfix || story.Express {
+				d.logger.Info("📋 Promoting story %s from hotfix/express to full story (will get planning phase on next attempt)", requeueRequest.StoryID)
+				story.IsHotfix = false
+				story.Express = false
+			}
+
 			// Change story status back to PENDING so it can be picked up again
 			if err := d.queue.UpdateStoryStatus(requeueRequest.StoryID, StatusPending); err != nil {
 				d.logger.Error("❌ Failed to requeue story %s: %v", requeueRequest.StoryID, err)
@@ -857,14 +866,14 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
 
-				// Build story payload (must include IsHotfix and Express for proper routing)
+				// Build story payload
 				payloadData := map[string]any{
 					proto.KeyTitle:           story.Title,
 					proto.KeyEstimatedPoints: story.EstimatedPoints,
 					proto.KeyDependsOn:       story.DependsOn,
 					proto.KeyStoryType:       story.StoryType,
-					proto.KeyExpress:         story.Express,  // Skip planning phase
-					proto.KeyIsHotfix:        story.IsHotfix, // Route to hotfix coder
+					proto.KeyExpress:         story.Express,  // Now false for promoted hotfixes
+					proto.KeyIsHotfix:        story.IsHotfix, // Now false for promoted hotfixes
 					proto.KeyRequirements:    []string{},     // Empty requirements for requeue
 				}
 

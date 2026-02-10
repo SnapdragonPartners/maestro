@@ -475,11 +475,11 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 	// Map string status to proto.ApprovalStatus
 	var status proto.ApprovalStatus
 	switch statusStr {
-	case "APPROVED":
+	case reviewStatusApproved:
 		status = proto.ApprovalStatusApproved
-	case "NEEDS_CHANGES":
+	case reviewStatusNeedsChanges:
 		status = proto.ApprovalStatusNeedsChanges
-	case "REJECTED":
+	case reviewStatusRejected:
 		status = proto.ApprovalStatusRejected
 	default:
 		// Should not happen due to tool validation, but handle gracefully
@@ -756,6 +756,13 @@ const (
 	ResponseKindBudget ResponseKind = "budget"
 )
 
+// Review status string constants (from LLM tool output).
+const (
+	reviewStatusRejected     = "REJECTED"
+	reviewStatusNeedsChanges = "NEEDS_CHANGES"
+	reviewStatusApproved     = "APPROVED"
+)
+
 // responseFormatConfig defines template and fallback for each response kind.
 type responseFormatConfig struct {
 	template       templates.StateTemplate
@@ -881,7 +888,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 			d.resetReviewStreak(agentID, ReviewTypeBudget)
 			feedback := fmt.Sprintf("Auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
 				"The coder appears stuck and is not making progress. The story will be requeued.", streak)
-			return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, "REJECTED", feedback)
+			return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, reviewStatusRejected, feedback)
 		}
 	}
 
@@ -945,6 +952,7 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		TerminalTool:       terminalTool,
 		MaxIterations:      3, // Allow nudge retries
 		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		SingleTurn:         true, // Enforce single-turn completion
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
@@ -974,10 +982,17 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	// Track budget review streaks
 	if approvalType == proto.ApprovalTypeBudgetReview {
-		if status == "NEEDS_CHANGES" {
+		if status == reviewStatusNeedsChanges {
 			newStreak := d.incrementReviewStreak(agentID, ReviewTypeBudget)
 			d.logger.Info("📊 Budget review streak for %s: %d consecutive NEEDS_CHANGES", agentID, newStreak)
 		} else {
+			// On REJECTED: give the architect a chance to annotate the story before requeue.
+			// Without story edit, the next coder gets the identical story and (at low temperature)
+			// is likely to fail in the same way.
+			if status == reviewStatusRejected {
+				streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+				d.attemptStoryEdit(ctx, cm, agentID, storyID, streak)
+			}
 			d.resetReviewStreak(agentID, ReviewTypeBudget)
 		}
 	}
@@ -1027,8 +1042,9 @@ func (d *Driver) handleMaintenanceApproval(_ context.Context, requestMsg *proto.
 }
 
 // attemptStoryEdit gives the architect LLM a chance to annotate the story with
-// implementation notes before it's requeued after a hard budget review limit.
-// This is best-effort: if the LLM call fails, we log and continue with the auto-reject.
+// implementation notes before it's requeued. Called on any REJECTED budget review
+// (both LLM-initiated and hard-limit auto-reject).
+// This is best-effort: if the LLM call fails, we log and continue with the reject.
 func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextManager, agentID, storyID string, streak int) {
 	// Get story from queue for title/content
 	story, exists := d.queue.GetStory(storyID)
@@ -1066,6 +1082,7 @@ func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextMan
 		TerminalTool:       storyEditTool,
 		MaxIterations:      3,
 		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		SingleTurn:         true,
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
@@ -1084,19 +1101,28 @@ func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextMan
 		return
 	}
 
-	// Extract notes from EffectData
+	// Extract edit data from EffectData
 	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
-		d.logger.Warn("📝 Story edit effect data is not map[string]any: %T (continuing with auto-reject)", out.EffectData)
-		return
-	}
-	notes, _ := utils.SafeAssert[string](effectData["notes"])
-	if notes == "" {
-		d.logger.Info("📝 Architect provided no implementation notes for story %s", storyID)
+		d.logger.Warn("📝 Story edit effect data is not map[string]any: %T (continuing with reject)", out.EffectData)
 		return
 	}
 
-	// Append implementation notes to story content
+	// Check for full story rewrite first (takes precedence over notes)
+	revisedContent, _ := utils.SafeAssert[string](effectData["revised_content"])
+	if revisedContent != "" {
+		story.Content = revisedContent
+		d.logger.Info("📝 Replaced story content for %s (%d chars) — architect rewrote the story", storyID, len(revisedContent))
+		return
+	}
+
+	// Fall back to appending implementation notes
+	notes, _ := utils.SafeAssert[string](effectData["notes"])
+	if notes == "" {
+		d.logger.Info("📝 Architect provided no edits for story %s", storyID)
+		return
+	}
+
 	story.Content += "\n\n## Implementation Notes (Auto-generated)\n\n" + notes
 	d.logger.Info("📝 Appended implementation notes to story %s (%d chars)", storyID, len(notes))
 }
@@ -1104,8 +1130,9 @@ func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextMan
 // buildStoryEditPrompt renders the story edit template for the architect.
 func (d *Driver) buildStoryEditPrompt(story *QueuedStory, storyID string, streak int) string {
 	if d.renderer == nil {
-		return fmt.Sprintf("The coder working on story %s has been auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
-			"Review the conversation history and call story_edit with implementation notes for the next coder.", storyID, streak)
+		return fmt.Sprintf("The coder working on story %s has been rejected during budget review (%d NEEDS_CHANGES rounds). "+
+			"The next coder has NO memory of this attempt. Review the conversation history and call story_edit "+
+			"with implementation notes: identify root cause, warn about pitfalls, and provide concrete guidance.", storyID, streak)
 	}
 
 	templateData := &templates.TemplateData{
@@ -1119,8 +1146,9 @@ func (d *Driver) buildStoryEditPrompt(story *QueuedStory, storyID string, streak
 	content, err := d.renderer.Render(templates.StoryEditTemplate, templateData)
 	if err != nil {
 		d.logger.Warn("📝 Failed to render story edit template: %v", err)
-		return fmt.Sprintf("The coder working on story %s has been auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
-			"Review the conversation history and call story_edit with implementation notes for the next coder.", storyID, streak)
+		return fmt.Sprintf("The coder working on story %s has been rejected during budget review (%d NEEDS_CHANGES rounds). "+
+			"The next coder has NO memory of this attempt. Review the conversation history and call story_edit "+
+			"with implementation notes: identify root cause, warn about pitfalls, and provide concrete guidance.", storyID, streak)
 	}
 
 	return content

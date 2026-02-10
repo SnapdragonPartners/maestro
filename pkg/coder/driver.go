@@ -282,6 +282,52 @@ func getMaxReplyTokens(modelName string) int {
 	}
 }
 
+// getCodingTemperature returns the temperature for coding toolloop,
+// applying NEEDS_CHANGES laddering when applicable.
+// For hotfix stories, uses CoderHotfixTemp with tighter ladder caps.
+func (c *Coder) getCodingTemperature(sm *agent.BaseStateMachine) float32 {
+	isHotfix := utils.GetStateValueOr[bool](sm, KeyIsHotfix, false)
+
+	var base, increment, maxTemp float32
+	if isHotfix {
+		base = config.GetTemperature(config.TempRoleCoderHotfix)
+		increment = 0.05
+		maxTemp = 0.35
+	} else {
+		base = config.GetTemperature(config.TempRoleCoderCoding)
+		increment = 0.03
+		maxTemp = 0.45
+	}
+
+	k := utils.GetStateValueOr[int](sm, KeyNeedsChangesCount, 0)
+	temp := base + increment*float32(k)
+	if temp > maxTemp {
+		temp = maxTemp
+	}
+	if k > 0 {
+		c.logger.Info("🌡️  Coding temperature: %.2f (base=%.2f, k=%d, hotfix=%v)", temp, base, k, isHotfix)
+	}
+	return temp
+}
+
+// getPlanningTemperature returns the temperature for planning toolloop,
+// applying NEEDS_CHANGES laddering when applicable.
+func (c *Coder) getPlanningTemperature(sm *agent.BaseStateMachine) float32 {
+	base := config.GetTemperature(config.TempRoleCoderPlanning)
+	increment := float32(0.05)
+	maxTemp := float32(0.85)
+
+	k := utils.GetStateValueOr[int](sm, KeyNeedsChangesCount, 0)
+	temp := base + increment*float32(k)
+	if temp > maxTemp {
+		temp = maxTemp
+	}
+	if k > 0 {
+		c.logger.Info("🌡️  Planning temperature: %.2f (base=%.2f, k=%d)", temp, base, k)
+	}
+	return temp
+}
+
 // getDockerImageForAgent returns the appropriate Docker image based on global config.
 func getDockerImageForAgent(_ string) string {
 	// Use global config singleton

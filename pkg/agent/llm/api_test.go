@@ -35,12 +35,6 @@ func TestConstants(t *testing.T) {
 	if ArchitectMaxTokens != 5000 {
 		t.Errorf("expected ArchitectMaxTokens=5000, got %d", ArchitectMaxTokens)
 	}
-	if TemperatureDefault != 0.3 {
-		t.Errorf("expected TemperatureDefault=0.3, got %f", TemperatureDefault)
-	}
-	if TemperatureDeterministic != 0.2 {
-		t.Errorf("expected TemperatureDeterministic=0.2, got %f", TemperatureDeterministic)
-	}
 }
 
 // TestNewCompletionRequest tests completion request creation with defaults.
@@ -57,8 +51,8 @@ func TestNewCompletionRequest(t *testing.T) {
 	if req.MaxTokens != 4096 {
 		t.Errorf("expected MaxTokens=4096, got %d", req.MaxTokens)
 	}
-	if req.Temperature != TemperatureDefault {
-		t.Errorf("expected Temperature=%f, got %f", TemperatureDefault, req.Temperature)
+	if req.Temperature != 0.0 {
+		t.Errorf("expected Temperature=0.0 (unset), got %f", req.Temperature)
 	}
 }
 
