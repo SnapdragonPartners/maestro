@@ -160,7 +160,7 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 
 	// Create the agent factory with kernel dependencies (lightweight)
 	// Pass the shared LLM factory to ensure proper rate limiting across all agents
-	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, chatService, k.LLMFactory)
+	agentFactory := factory.NewAgentFactory(k.Dispatcher, k.PersistenceChannel, chatService, k.LLMFactory, k.ComposeRegistry)
 
 	supervisor := &Supervisor{
 		Kernel:          k,

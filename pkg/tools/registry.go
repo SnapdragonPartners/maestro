@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"orchestrator/internal/state"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	execpkg "orchestrator/pkg/exec"
@@ -21,10 +22,11 @@ type AgentContext struct {
 	ReadOnly        bool
 	NetworkDisabled bool
 	WorkDir         string
-	AgentID         string // Agent identifier for tools that need it
-	Agent           Agent  // Optional agent reference for state-aware tools
-	ProjectDir      string // Project directory for bootstrap detection and config access
-	StoryID         string // Story ID for commit message prefix (used by done tool)
+	AgentID         string                 // Agent identifier for tools that need it
+	Agent           Agent                  // Optional agent reference for state-aware tools
+	ProjectDir      string                 // Project directory for bootstrap detection and config access
+	StoryID         string                 // Story ID for commit message prefix (used by done tool)
+	ComposeRegistry *state.ComposeRegistry // Compose stack registry for cleanup tracking
 }
 
 // Agent interface for tools that need access to agent state.
@@ -376,7 +378,11 @@ func createComposeUpTool(ctx *AgentContext) (Tool, error) {
 			containerName = ctx.Agent.GetContainerName()
 		}
 	}
-	return NewComposeUpTool(workDir, agentID, containerName), nil
+	var registry *state.ComposeRegistry
+	if ctx != nil {
+		registry = ctx.ComposeRegistry
+	}
+	return NewComposeUpTool(workDir, agentID, containerName, registry), nil
 }
 
 // createChatPostTool creates a chat post tool instance.
@@ -460,7 +466,7 @@ func getContainerSwitchSchema() InputSchema {
 }
 
 func getComposeUpSchema() InputSchema {
-	return NewComposeUpTool("", "", "").Definition().InputSchema
+	return NewComposeUpTool("", "", "", nil).Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {
@@ -496,6 +502,22 @@ func getTodoCompleteSchema() InputSchema {
 
 func getTodoUpdateSchema() InputSchema {
 	return NewTodoUpdateTool(nil).Definition().InputSchema
+}
+
+// createFileEditTool creates a file_edit tool instance.
+func createFileEditTool(ctx *AgentContext) (Tool, error) {
+	if ctx.Executor == nil {
+		return nil, fmt.Errorf("file_edit tool requires an executor")
+	}
+	workspaceRoot := ctx.WorkDir
+	if workspaceRoot == "" {
+		workspaceRoot = DefaultWorkspaceDir
+	}
+	return NewFileEditTool(ctx.Executor, workspaceRoot), nil
+}
+
+func getFileEditSchema() InputSchema {
+	return NewFileEditTool(nil, "").Definition().InputSchema
 }
 
 // createReadFileTool creates a read_file tool instance.
@@ -621,6 +643,14 @@ func getReviewCompleteSchema() InputSchema {
 	return NewReviewCompleteTool().Definition().InputSchema
 }
 
+func createStoryEditTool(_ *AgentContext) (Tool, error) {
+	return NewStoryEditTool(), nil
+}
+
+func getStoryEditSchema() InputSchema {
+	return NewStoryEditTool().Definition().InputSchema
+}
+
 func createWebSearchTool(_ *AgentContext) (Tool, error) {
 	return NewWebSearchTool(), nil
 }
@@ -661,6 +691,12 @@ func init() {
 	})
 
 	// Register development tools
+	Register(ToolFileEdit, createFileEditTool, &ToolMeta{
+		Name:        ToolFileEdit,
+		Description: "Replace an exact string match in a file with new content",
+		InputSchema: getFileEditSchema(),
+	})
+
 	Register(ToolShell, createShellTool, &ToolMeta{
 		Name:        ToolShell,
 		Description: "Execute shell commands and return the output",
@@ -828,6 +864,13 @@ func init() {
 		Name:        ToolReviewComplete,
 		Description: "Complete a review with decision (APPROVED, NEEDS_CHANGES, or REJECTED) and feedback",
 		InputSchema: getReviewCompleteSchema(),
+	})
+
+	// Register story_edit tool for architect story annotation
+	Register(ToolStoryEdit, createStoryEditTool, &ToolMeta{
+		Name:        ToolStoryEdit,
+		Description: "Annotate a story with implementation notes before requeueing",
+		InputSchema: getStoryEditSchema(),
 	})
 
 	// Register research tools

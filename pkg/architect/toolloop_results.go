@@ -4,6 +4,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // SubmitReplyResult contains the response text from a submit_reply tool call.
@@ -62,6 +63,23 @@ func ExtractReviewComplete(calls []agent.ToolCall, results []any) (ReviewComplet
 	}
 
 	return ReviewCompleteResult{}, toolloop.ErrNoTerminalTool
+}
+
+// StoryEditResult contains the implementation notes from a story_edit tool call.
+type StoryEditResult struct {
+	Notes string // May be empty if architect has no guidance to add
+}
+
+// ExtractStoryEdit extracts the notes from a story_edit tool call.
+// Returns ErrNoTerminalTool if story_edit was not called.
+func ExtractStoryEdit(calls []agent.ToolCall, _ []any) (StoryEditResult, error) {
+	for i := range calls {
+		if calls[i].Name == tools.ToolStoryEdit {
+			notes, _ := utils.SafeAssert[string](calls[i].Parameters["implementation_notes"])
+			return StoryEditResult{Notes: notes}, nil
+		}
+	}
+	return StoryEditResult{}, toolloop.ErrNoTerminalTool
 }
 
 // SubmitStoriesResult contains the outcome of a submit_stories tool call.

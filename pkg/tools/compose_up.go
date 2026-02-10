@@ -5,25 +5,32 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"orchestrator/internal/state"
 	"orchestrator/pkg/demo"
 )
 
 // ComposeUpTool provides MCP interface for starting Docker Compose stacks.
+//
+//nolint:govet // fieldalignment: Logical grouping preferred over memory optimization
 type ComposeUpTool struct {
-	workDir       string // Agent workspace directory
-	agentID       string // Agent ID for project name isolation
-	containerName string // Agent's container name for network attachment
+	workDir       string                 // Agent workspace directory
+	agentID       string                 // Agent ID for project name isolation
+	containerName string                 // Agent's container name for network attachment
+	registry      *state.ComposeRegistry // Optional registry for cleanup tracking
 }
 
 // NewComposeUpTool creates a new compose up tool instance.
 // The agentID is used as the Docker Compose project name to isolate stacks per agent.
 // The containerName is the agent's dev container to attach to the compose network.
-func NewComposeUpTool(workDir, agentID, containerName string) *ComposeUpTool {
+// The registry is optional — if non-nil, stacks are registered for cleanup on shutdown.
+func NewComposeUpTool(workDir, agentID, containerName string, registry *state.ComposeRegistry) *ComposeUpTool {
 	return &ComposeUpTool{
 		workDir:       workDir,
 		agentID:       agentID,
 		containerName: containerName,
+		registry:      registry,
 	}
 }
 
@@ -112,6 +119,15 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 	// UpAndAttach is idempotent — safe to call on every compose_up invocation.
 	if err := stack.UpAndAttach(ctx, c.containerName); err != nil {
 		return nil, fmt.Errorf("compose up failed: %w", err)
+	}
+
+	// Register stack for cleanup on shutdown (idempotent — re-registering overwrites)
+	if c.registry != nil {
+		c.registry.Register(&state.ComposeStack{
+			ProjectName: projectName,
+			ComposeFile: composePath,
+			StartedAt:   time.Now(),
+		})
 	}
 
 	// Get service status after starting

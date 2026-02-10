@@ -28,6 +28,19 @@ import (
 // Tool signal constants - all signals now use centralized constants from tools package.
 // See tools.Signal* constants for the complete list.
 
+// Review type constants for streak tracking.
+const (
+	ReviewTypeBudget = "budget"
+	ReviewTypeCode   = "code"
+	ReviewTypePlan   = "plan"
+)
+
+// Budget review streak limits.
+const (
+	BudgetReviewSoftLimit = 3 // Inject warning into prompt at this streak count
+	BudgetReviewHardLimit = 6 // Auto-reject without calling LLM at this streak count
+)
+
 // MaintenanceTracker tracks maintenance cycle state.
 //
 //nolint:govet // Simple tracking struct
@@ -91,6 +104,7 @@ type Driver struct {
 	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
 	workDir                 string                                // Workspace directory
+	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
 }
 
 // GitHubMergeClient defines the subset of GitHub operations needed for merge requests.
@@ -163,6 +177,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 	return &Driver{
 		BaseStateMachine:   sm,
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
+		reviewStreaks:      make(map[string]map[string]int),             // Initialize streak tracking
 		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
@@ -325,7 +340,41 @@ func (d *Driver) ResetAgentContext(agentID string) error {
 
 	d.logger.Info("✅ Reset context for agent %s (story %s)", agentID, storyID)
 
+	// Clear review streaks for this agent (new story = fresh start)
+	d.clearReviewStreaks(agentID)
+
 	return nil
+}
+
+// incrementReviewStreak increments the consecutive NEEDS_CHANGES streak for a coder/review-type pair.
+func (d *Driver) incrementReviewStreak(coderID, reviewType string) int {
+	if d.reviewStreaks[coderID] == nil {
+		d.reviewStreaks[coderID] = make(map[string]int)
+	}
+	d.reviewStreaks[coderID][reviewType]++
+	return d.reviewStreaks[coderID][reviewType]
+}
+
+// resetReviewStreak resets the streak for a coder/review-type pair to 0.
+//
+//nolint:unparam // reviewType is always "budget" in Phase 1; code/plan enforcement planned for Phase 2
+func (d *Driver) resetReviewStreak(coderID, reviewType string) {
+	if d.reviewStreaks[coderID] != nil {
+		d.reviewStreaks[coderID][reviewType] = 0
+	}
+}
+
+// getReviewStreak returns the current streak count for a coder/review-type pair.
+func (d *Driver) getReviewStreak(coderID, reviewType string) int {
+	if d.reviewStreaks[coderID] == nil {
+		return 0
+	}
+	return d.reviewStreaks[coderID][reviewType]
+}
+
+// clearReviewStreaks removes all review streaks for a coder (called on story completion/exit).
+func (d *Driver) clearReviewStreaks(coderID string) {
+	delete(d.reviewStreaks, coderID)
 }
 
 // makeOnLLMErrorCallback creates a callback function for checkpointing context on LLM errors.
