@@ -418,6 +418,18 @@ func TestGetTodoListStatus(t *testing.T) {
 			},
 			contains: []string{"Current Todo", "Done task", "Current task", "Remaining"},
 		},
+		{
+			name: "all complete shows nudge",
+			setup: func(c *Coder) {
+				c.todoList = &TodoList{
+					Items: []TodoItem{
+						{Description: "Task 1", Completed: true},
+						{Description: "Task 2", Completed: true},
+					},
+				}
+			},
+			contains: []string{"All todos complete", "done"},
+		},
 	}
 
 	for _, tt := range tests {
