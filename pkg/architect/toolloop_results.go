@@ -4,6 +4,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/tools"
+	"orchestrator/pkg/utils"
 )
 
 // SubmitReplyResult contains the response text from a submit_reply tool call.
@@ -74,7 +75,7 @@ type StoryEditResult struct {
 func ExtractStoryEdit(calls []agent.ToolCall, _ []any) (StoryEditResult, error) {
 	for i := range calls {
 		if calls[i].Name == tools.ToolStoryEdit {
-			notes, _ := calls[i].Parameters["implementation_notes"].(string)
+			notes, _ := utils.SafeAssert[string](calls[i].Parameters["implementation_notes"])
 			return StoryEditResult{Notes: notes}, nil
 		}
 	}

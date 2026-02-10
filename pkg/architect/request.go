@@ -1090,7 +1090,7 @@ func (d *Driver) attemptStoryEdit(ctx context.Context, cm *contextmgr.ContextMan
 		d.logger.Warn("📝 Story edit effect data is not map[string]any: %T (continuing with auto-reject)", out.EffectData)
 		return
 	}
-	notes, _ := effectData["notes"].(string)
+	notes, _ := utils.SafeAssert[string](effectData["notes"])
 	if notes == "" {
 		d.logger.Info("📝 Architect provided no implementation notes for story %s", storyID)
 		return

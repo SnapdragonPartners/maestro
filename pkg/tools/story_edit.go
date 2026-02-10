@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"orchestrator/pkg/utils"
 )
 
 // StoryEditTool allows the architect to annotate a story with implementation notes
@@ -49,7 +51,7 @@ func (t *StoryEditTool) Definition() ToolDefinition {
 // Exec executes the tool with the given arguments.
 func (t *StoryEditTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract implementation_notes - required parameter but may be empty
-	notes, ok := args["implementation_notes"].(string)
+	notes, ok := utils.SafeAssert[string](args["implementation_notes"])
 	if !ok {
 		return nil, fmt.Errorf("implementation_notes parameter is required")
 	}
