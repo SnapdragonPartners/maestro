@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	execpkg "orchestrator/pkg/exec"
+	"orchestrator/pkg/utils"
 )
 
 // FileEditTool performs targeted string replacements in files.
@@ -69,18 +70,18 @@ func (t *FileEditTool) Definition() ToolDefinition {
 
 // Exec executes the tool with the given arguments.
 func (t *FileEditTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	path, ok := args["path"].(string)
+	path, ok := utils.SafeAssert[string](args["path"])
 	if !ok || path == "" {
 		return nil, fmt.Errorf("path is required and must be a string")
 	}
 
-	oldString, ok := args["old_string"].(string)
+	oldString, ok := utils.SafeAssert[string](args["old_string"])
 	if !ok || oldString == "" {
 		return nil, fmt.Errorf("old_string is required and must be a non-empty string")
 	}
 
 	// new_string can be empty (deletion), so just check type
-	newString, ok := args["new_string"].(string)
+	newString, ok := utils.SafeAssert[string](args["new_string"])
 	if !ok {
 		return nil, fmt.Errorf("new_string is required and must be a string")
 	}
@@ -93,8 +94,8 @@ func (t *FileEditTool) Exec(ctx context.Context, args map[string]any) (*ExecResu
 
 	containerPath := filepath.Join(t.workspaceRoot, cleanPath)
 
-	// Read the file
-	readCmd := []string{"sh", "-c", fmt.Sprintf("cat %s", containerPath)}
+	// Read the file using argv form to avoid shell metacharacter issues
+	readCmd := []string{"cat", containerPath}
 	result, err := t.executor.Run(ctx, readCmd, nil)
 	if err != nil {
 		return t.errorResult(fmt.Sprintf("file not found or not readable: %s (error: %v)", path, err)), nil //nolint:nilerr // returning structured error to LLM
@@ -117,9 +118,10 @@ func (t *FileEditTool) Exec(ctx context.Context, args map[string]any) (*ExecResu
 	// Perform the replacement
 	newContent := strings.Replace(content, oldString, newString, 1)
 
-	// Write back using base64 encoding to safely pass arbitrary content through the shell
+	// Write back using base64 encoding to safely pass arbitrary content through the shell.
+	// Path is single-quoted to prevent shell metacharacter interpretation.
 	encoded := base64.StdEncoding.EncodeToString([]byte(newContent))
-	writeCmd := []string{"sh", "-c", fmt.Sprintf("echo '%s' | base64 -d > %s", encoded, containerPath)}
+	writeCmd := []string{"sh", "-c", fmt.Sprintf("echo '%s' | base64 -d > '%s'", encoded, strings.ReplaceAll(containerPath, "'", "'\"'\"'"))}
 	writeResult, err := t.executor.Run(ctx, writeCmd, nil)
 	if err != nil || writeResult.ExitCode != 0 {
 		errMsg := "failed to write file"
