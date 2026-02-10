@@ -8,7 +8,7 @@ import (
 
 // TestNewAgentFactory tests factory construction.
 func TestNewAgentFactory(t *testing.T) {
-	factory := NewAgentFactory(nil, nil, nil, nil)
+	factory := NewAgentFactory(nil, nil, nil, nil, nil)
 
 	if factory == nil {
 		t.Fatal("expected factory, got nil")

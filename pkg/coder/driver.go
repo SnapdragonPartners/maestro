@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/internal/state"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
@@ -51,6 +52,7 @@ type Coder struct {
 	buildRegistry                 *build.Registry                // Build backend registry
 	buildService                  *build.Service                 // Build service for MCP tools
 	chatService                   *chat.Service                  // Chat service for agent collaboration
+	composeRegistry               *state.ComposeRegistry         // Compose stack registry for cleanup tracking
 	persistenceChannel            chan<- *persistence.Request    // Channel for database operations
 	longRunningExecutor           *execpkg.LongRunningDockerExec // Docker executor for container per story
 	planningToolProvider          *tools.ToolProvider            // Tools available during planning state
@@ -440,7 +442,7 @@ func (c *Coder) SetCloneManager(cm *CloneManager) {
 
 // NewCoder creates a new coder with LLM integration.
 // Uses shared LLM factory for proper rate limiting across all agents.
-func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory) (*Coder, error) {
+func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneManager, buildService *build.Service, chatService *chat.Service, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory, composeRegistry *state.ComposeRegistry) (*Coder, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -486,6 +488,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		buildRegistry:       buildRegistry,
 		buildService:        buildService,
 		chatService:         chatService,        // Chat service for agent collaboration
+		composeRegistry:     composeRegistry,    // Compose stack registry for cleanup tracking
 		persistenceChannel:  persistenceChannel, // Channel for database operations
 		codingBudget:        8,                  // Default coding budget
 		longRunningExecutor: execpkg.NewLongRunningDockerExec(getDockerImageForAgent(workDir), agentID),
@@ -1230,6 +1233,7 @@ func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool, storyI
 		Executor:        c.longRunningExecutor, // Use container executor
 		Agent:           c,                     // Pass agent reference for workDir access
 		ChatService:     c.chatService,         // Chat service for agent collaboration
+		ComposeRegistry: c.composeRegistry,     // For compose stack cleanup tracking
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
@@ -1276,6 +1280,7 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType, storyID string) *t
 		Executor:        c.longRunningExecutor, // Use container executor
 		Agent:           c,                     // Pass agent reference for workDir access
 		ChatService:     c.chatService,         // Chat service for agent collaboration
+		ComposeRegistry: c.composeRegistry,     // For compose stack cleanup tracking
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
