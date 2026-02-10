@@ -186,6 +186,7 @@ func NewRenderer() (*Renderer, error) {
 		CodeReviewTemplate,
 		AppCodeReviewTemplate,
 		DevOpsCodeReviewTemplate,
+		StoryEditTemplate,
 		// Request content templates (coder → architect).
 		PlanApprovalRequestTemplate,
 		PlanReviewArchitectTemplate,

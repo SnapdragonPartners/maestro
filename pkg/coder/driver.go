@@ -291,8 +291,8 @@ func (c *Coder) getCodingTemperature(sm *agent.BaseStateMachine) float32 {
 	var base, increment, maxTemp float32
 	if isHotfix {
 		base = config.GetTemperature(config.TempRoleCoderHotfix)
-		increment = 0.02
-		maxTemp = 0.20
+		increment = 0.05
+		maxTemp = 0.35
 	} else {
 		base = config.GetTemperature(config.TempRoleCoderCoding)
 		increment = 0.03

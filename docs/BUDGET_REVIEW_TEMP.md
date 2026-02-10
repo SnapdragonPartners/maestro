@@ -58,7 +58,7 @@ When a coder receives NEEDS_CHANGES feedback from the architect, the temperature
 |---|---|---|
 | Planning | min(0.85, base + 0.05 * k) | 0.85 |
 | Coding | min(0.45, base + 0.03 * k) | 0.45 |
-| Hotfix | min(0.20, base + 0.02 * k) | 0.20 |
+| Hotfix | min(0.35, base + 0.05 * k) | 0.35 |
 
 Where `k` = number of NEEDS_CHANGES received, `base` = config default for that phase.
 
