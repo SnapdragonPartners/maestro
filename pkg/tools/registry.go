@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"orchestrator/internal/state"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	execpkg "orchestrator/pkg/exec"
@@ -21,10 +22,11 @@ type AgentContext struct {
 	ReadOnly        bool
 	NetworkDisabled bool
 	WorkDir         string
-	AgentID         string // Agent identifier for tools that need it
-	Agent           Agent  // Optional agent reference for state-aware tools
-	ProjectDir      string // Project directory for bootstrap detection and config access
-	StoryID         string // Story ID for commit message prefix (used by done tool)
+	AgentID         string                 // Agent identifier for tools that need it
+	Agent           Agent                  // Optional agent reference for state-aware tools
+	ProjectDir      string                 // Project directory for bootstrap detection and config access
+	StoryID         string                 // Story ID for commit message prefix (used by done tool)
+	ComposeRegistry *state.ComposeRegistry // Compose stack registry for cleanup tracking
 }
 
 // Agent interface for tools that need access to agent state.
@@ -376,7 +378,11 @@ func createComposeUpTool(ctx *AgentContext) (Tool, error) {
 			containerName = ctx.Agent.GetContainerName()
 		}
 	}
-	return NewComposeUpTool(workDir, agentID, containerName), nil
+	var registry *state.ComposeRegistry
+	if ctx != nil {
+		registry = ctx.ComposeRegistry
+	}
+	return NewComposeUpTool(workDir, agentID, containerName, registry), nil
 }
 
 // createChatPostTool creates a chat post tool instance.
@@ -460,7 +466,7 @@ func getContainerSwitchSchema() InputSchema {
 }
 
 func getComposeUpSchema() InputSchema {
-	return NewComposeUpTool("", "", "").Definition().InputSchema
+	return NewComposeUpTool("", "", "", nil).Definition().InputSchema
 }
 
 func getChatPostSchema() InputSchema {

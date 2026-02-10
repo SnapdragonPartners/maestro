@@ -87,7 +87,11 @@ func TestMCPTCPIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer executor.StopContainer(ctx, startedContainer)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		executor.StopContainer(cleanupCtx, startedContainer)
+	}()
 	t.Logf("Container started: %s", startedContainer)
 
 	// Wait for container to be ready
@@ -330,13 +334,13 @@ func TestMCPTCPConcurrentAgents(t *testing.T) {
 
 		executor := exec.NewLongRunningDockerExec(config.BootstrapContainerTag, "concurrent-"+string(rune('0'+i)))
 		opts := &exec.Opts{WorkDir: workspaceDir, User: "0:0"}
-		_, err := executor.StartContainer(ctx, containerName, opts)
+		fullContainerName, err := executor.StartContainer(ctx, containerName, opts)
 		if err != nil {
 			t.Fatalf("Failed to start container %d: %v", i, err)
 		}
 
 		agents[i] = &agentSetup{
-			containerName: containerName,
+			containerName: fullContainerName, // Use full Docker name for cleanup
 			port:          server.Port(),
 			token:         server.Token(),
 			server:        server,
@@ -344,12 +348,14 @@ func TestMCPTCPConcurrentAgents(t *testing.T) {
 		}
 	}
 
-	// Cleanup
+	// Cleanup — use a fresh context since test ctx may be expired
 	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
 		for _, agent := range agents {
 			if agent != nil {
 				agent.server.Stop()
-				agent.executor.StopContainer(ctx, agent.containerName)
+				agent.executor.StopContainer(cleanupCtx, agent.containerName)
 			}
 		}
 	}()

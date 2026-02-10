@@ -277,13 +277,17 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Build docker run command for boot test
+	// Build docker run command for boot test.
+	// Use explicit "echo boot-ok" command instead of the image's default CMD (which is
+	// typically "sleep infinity"). Without this, killing the Docker client on context timeout
+	// leaves the container running because --rm only fires when Docker itself stops the container.
 	args := []string{
 		"docker", "run", "--rm",
 		"-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
 		"-w", workingDir,
 		"--tmpfs", fmt.Sprintf("/tmp:rw,noexec,nosuid,size=%s", config.GetContainerTmpfsSize()),
 		containerName,
+		"echo", "boot-ok",
 	}
 
 	r.logger.Info("🐳 Boot testing: %s", strings.Join(args, " "))
@@ -296,31 +300,28 @@ func (r *HostRunner) performBootTest(ctx context.Context, containerName, working
 
 	err := cmd.Run()
 
-	// For boot test, timeout is expected (container should run until killed)
-	if err != nil {
-		if execCtx.Err() == context.DeadlineExceeded {
-			// Container ran successfully until timeout - this is success for boot test
-			result := map[string]any{
-				"success":        true,
-				"container_name": containerName,
-				"working_dir":    workingDir,
-				"host_workspace": hostWorkspace,
-				"permissions":    mountPermissions,
-				"mode":           "boot_test_with_validation",
-				"timeout":        timeoutSec,
-				"host_executed":  true,
-				"validation":     validationResult,
-				"message":        fmt.Sprintf("Container '%s' booted successfully and passed validation", containerName),
-			}
-			content, marshalErr := json.Marshal(result)
-			if marshalErr != nil {
-				return nil, fmt.Errorf("failed to marshal result: %w", marshalErr)
-			}
-			return &ExecResult{Content: string(content)}, nil
+	// Success: container started, ran "echo boot-ok", and exited cleanly
+	if err == nil {
+		result := map[string]any{
+			"success":        true,
+			"container_name": containerName,
+			"working_dir":    workingDir,
+			"host_workspace": hostWorkspace,
+			"permissions":    mountPermissions,
+			"mode":           "boot_test_with_validation",
+			"timeout":        timeoutSec,
+			"host_executed":  true,
+			"validation":     validationResult,
+			"message":        fmt.Sprintf("Container '%s' booted successfully and passed validation", containerName),
 		}
+		content, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal result: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
 	}
 
-	// Container exited early or had error
+	// Container failed to start or exited with error
 	exitCode := 0
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {
