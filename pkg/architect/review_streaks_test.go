@@ -2,6 +2,9 @@ package architect
 
 import (
 	"testing"
+
+	"orchestrator/pkg/agent"
+	"orchestrator/pkg/tools"
 )
 
 func TestReviewStreakIncrement(t *testing.T) {
@@ -161,6 +164,55 @@ func TestReviewStreakHardLimitThreshold(t *testing.T) {
 	}
 	if streak < BudgetReviewHardLimit {
 		t.Error("streak should be >= hard limit")
+	}
+}
+
+func TestExtractStoryEdit_WithNotes(t *testing.T) {
+	calls := []agent.ToolCall{
+		{
+			Name: tools.ToolStoryEdit,
+			Parameters: map[string]any{
+				"implementation_notes": "Use isolated template sets",
+			},
+		},
+	}
+	result, err := ExtractStoryEdit(calls, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Notes != "Use isolated template sets" {
+		t.Errorf("expected notes 'Use isolated template sets', got %q", result.Notes)
+	}
+}
+
+func TestExtractStoryEdit_EmptyNotes(t *testing.T) {
+	calls := []agent.ToolCall{
+		{
+			Name: tools.ToolStoryEdit,
+			Parameters: map[string]any{
+				"implementation_notes": "",
+			},
+		},
+	}
+	result, err := ExtractStoryEdit(calls, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Notes != "" {
+		t.Errorf("expected empty notes, got %q", result.Notes)
+	}
+}
+
+func TestExtractStoryEdit_NoToolCall(t *testing.T) {
+	calls := []agent.ToolCall{
+		{
+			Name:       tools.ToolReviewComplete,
+			Parameters: map[string]any{"status": "APPROVED"},
+		},
+	}
+	_, err := ExtractStoryEdit(calls, nil)
+	if err == nil {
+		t.Fatal("expected error for missing story_edit tool call")
 	}
 }
 

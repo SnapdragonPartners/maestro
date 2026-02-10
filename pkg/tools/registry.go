@@ -621,6 +621,14 @@ func getReviewCompleteSchema() InputSchema {
 	return NewReviewCompleteTool().Definition().InputSchema
 }
 
+func createStoryEditTool(_ *AgentContext) (Tool, error) {
+	return NewStoryEditTool(), nil
+}
+
+func getStoryEditSchema() InputSchema {
+	return NewStoryEditTool().Definition().InputSchema
+}
+
 func createWebSearchTool(_ *AgentContext) (Tool, error) {
 	return NewWebSearchTool(), nil
 }
@@ -828,6 +836,13 @@ func init() {
 		Name:        ToolReviewComplete,
 		Description: "Complete a review with decision (APPROVED, NEEDS_CHANGES, or REJECTED) and feedback",
 		InputSchema: getReviewCompleteSchema(),
+	})
+
+	// Register story_edit tool for architect story annotation
+	Register(ToolStoryEdit, createStoryEditTool, &ToolMeta{
+		Name:        ToolStoryEdit,
+		Description: "Annotate a story with implementation notes before requeueing",
+		InputSchema: getStoryEditSchema(),
 	})
 
 	// Register research tools
