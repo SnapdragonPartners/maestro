@@ -11,6 +11,7 @@ const (
 	ToolStoryComplete = "story_complete"
 
 	// Development tools.
+	ToolFileEdit    = "file_edit"
 	ToolShell       = "shell"
 	ToolBuild       = "build"
 	ToolTest        = "test"
@@ -94,6 +95,7 @@ var (
 	// Story type is now a hint for prompts, not tool gating.
 	// Both app and devops stories have access to all coding tools.
 	DevOpsCodingTools = []string{
+		ToolFileEdit,
 		ToolShell,
 		ToolBuild,
 		ToolTest,
@@ -119,6 +121,7 @@ var (
 	// Includes chat tools for agent collaboration, container tools for environment changes,
 	// and compose for service dependencies.
 	AppCodingTools = []string{
+		ToolFileEdit,
 		ToolShell,
 		ToolBuild,
 		ToolTest,
