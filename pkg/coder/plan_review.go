@@ -69,17 +69,6 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 	case proto.ApprovalStatusNeedsChanges:
 		c.logger.Info("🧑‍💻 %s needs changes, returning to appropriate state with feedback", approvalType)
 
-		// For completion approval (when all todos were complete), add feedback as new todo
-		if approvalType == proto.ApprovalTypeCompletion && c.todoList != nil {
-			allComplete := c.todoList.GetCurrentTodo() == nil && c.todoList.GetCompletedCount() == c.todoList.GetTotalCount()
-			if allComplete && approvalResult.Feedback != "" {
-				feedbackTodo := fmt.Sprintf("Address architect feedback: %s", approvalResult.Feedback)
-				c.todoList.AddTodo(feedbackTodo, -1) // -1 means append to end
-				c.logger.Info("📋 Added architect feedback as new todo")
-				sm.SetStateData(KeyTodoList, c.todoList)
-			}
-		}
-
 		// Add feedback to context for visibility (as user role for proper alternation)
 		if approvalResult.Feedback != "" {
 			c.contextManager.AddMessage("user", fmt.Sprintf("Architect feedback: %s", approvalResult.Feedback))
