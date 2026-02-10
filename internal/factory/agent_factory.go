@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"orchestrator/internal/state"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/architect"
 	"orchestrator/pkg/build"
@@ -63,16 +64,18 @@ type AgentFactory struct {
 	persistenceChannel chan<- *persistence.Request
 	chatService        *chat.Service
 	llmFactory         *agent.LLMClientFactory // Shared LLM factory for rate limiting
+	composeRegistry    *state.ComposeRegistry  // Compose stack registry for cleanup tracking
 	restoreCh          <-chan struct{}         // Channel for SUSPEND state recovery signals
 }
 
 // NewAgentFactory creates a new lightweight agent factory.
-func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- *persistence.Request, chatService *chat.Service, llmFactory *agent.LLMClientFactory) *AgentFactory {
+func NewAgentFactory(dispatcher *dispatch.Dispatcher, persistenceChannel chan<- *persistence.Request, chatService *chat.Service, llmFactory *agent.LLMClientFactory, composeRegistry *state.ComposeRegistry) *AgentFactory {
 	return &AgentFactory{
 		dispatcher:         dispatcher,
 		persistenceChannel: persistenceChannel,
 		chatService:        chatService,
 		llmFactory:         llmFactory,
+		composeRegistry:    composeRegistry,
 	}
 }
 
@@ -203,6 +206,7 @@ func (f *AgentFactory) createCoder(ctx context.Context, agentID string) (dispatc
 		f.chatService,        // Chat service for agent collaboration
 		f.persistenceChannel, // Channel for database operations
 		f.llmFactory,         // Shared factory for rate limiting
+		f.composeRegistry,    // Compose stack registry for cleanup tracking
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create coder %s: %w", agentID, err)
