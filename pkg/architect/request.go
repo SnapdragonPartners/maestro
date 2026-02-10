@@ -862,6 +862,20 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 	agentID := requestMsg.FromAgent
 	cm := d.getContextForAgent(agentID)
 
+	// Budget review streak enforcement (hard limit: auto-reject without LLM call)
+	if approvalType == proto.ApprovalTypeBudgetReview {
+		streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+		if streak >= BudgetReviewHardLimit {
+			d.logger.Warn("🚫 Auto-rejecting budget review for %s: %d consecutive NEEDS_CHANGES (hard limit %d)",
+				agentID, streak, BudgetReviewHardLimit)
+			// Reset streak since we're rejecting
+			d.resetReviewStreak(agentID, ReviewTypeBudget)
+			feedback := fmt.Sprintf("Auto-rejected after %d consecutive NEEDS_CHANGES budget reviews. "+
+				"The coder appears stuck and is not making progress. The story will be requeued.", streak)
+			return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, "REJECTED", feedback)
+		}
+	}
+
 	// Build prompt based on approval type
 	var prompt string
 	switch approvalType {
@@ -869,6 +883,15 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		prompt = d.generatePlanPrompt(requestMsg, approvalPayload)
 	case proto.ApprovalTypeBudgetReview:
 		prompt = d.generateBudgetPrompt(requestMsg)
+		// Soft limit: inject warning into prompt to nudge architect toward REJECTED
+		streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+		if streak >= BudgetReviewSoftLimit {
+			prompt += fmt.Sprintf("\n\n⚠️ **IMPORTANT: This is the %d%s consecutive NEEDS_CHANGES budget review for this coder.** "+
+				"If the coder is stuck on the same underlying issue and not making meaningful progress, "+
+				"you should REJECT the request rather than continuing to provide feedback that isn't being actioned. "+
+				"Returning NEEDS_CHANGES again will give the coder another full iteration cycle.",
+				streak+1, ordinalSuffix(streak+1))
+		}
 	default:
 		return nil, fmt.Errorf("unsupported single-turn review type: %s", approvalType)
 	}
@@ -939,7 +962,15 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 
 	d.logger.Info("✅ Single-turn review completed with status: %s", status)
 
-	// Clean up state data (review_complete_result no longer stored)
+	// Track budget review streaks
+	if approvalType == proto.ApprovalTypeBudgetReview {
+		if status == "NEEDS_CHANGES" {
+			newStreak := d.incrementReviewStreak(agentID, ReviewTypeBudget)
+			d.logger.Info("📊 Budget review streak for %s: %d consecutive NEEDS_CHANGES", agentID, newStreak)
+		} else {
+			d.resetReviewStreak(agentID, ReviewTypeBudget)
+		}
+	}
 
 	// Build and return approval response
 	return d.buildApprovalResponseFromReviewComplete(ctx, requestMsg, approvalPayload, status, feedback)
@@ -983,4 +1014,21 @@ func (d *Driver) handleMaintenanceApproval(_ context.Context, requestMsg *proto.
 
 	d.logger.Info("🔧 ✅ Maintenance story %s auto-approved", storyID)
 	return response, nil
+}
+
+// ordinalSuffix returns the English ordinal suffix for a number (e.g., 1st, 2nd, 3rd, 4th).
+func ordinalSuffix(n int) string {
+	if n%100 >= 11 && n%100 <= 13 {
+		return "th"
+	}
+	switch n % 10 {
+	case 1:
+		return "st"
+	case 2:
+		return "nd"
+	case 3:
+		return "rd"
+	default:
+		return "th"
+	}
 }
