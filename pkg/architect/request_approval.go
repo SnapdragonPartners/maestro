@@ -98,6 +98,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 		},
 		MaxIterations:      20, // Allow multiple inspection iterations
 		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,

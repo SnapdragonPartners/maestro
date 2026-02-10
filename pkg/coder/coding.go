@@ -173,6 +173,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		TerminalTool:   terminalTool,
 		MaxIterations:  MaxCodingIterations,
 		MaxTokens:      8192, // Increased for comprehensive code generation
+		Temperature:    c.getCodingTemperature(sm),
 		AgentID:        c.GetAgentID(),
 		DebugLogging:   config.GetDebugLLMMessages(),
 		Escalation: &toolloop.EscalationConfig{

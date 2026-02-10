@@ -85,6 +85,7 @@ func (d *Driver) handleIterativeQuestion(ctx context.Context, requestMsg *proto.
 		TerminalTool:       terminalTool,
 		MaxIterations:      20, // Allow exploration of workspace
 		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,

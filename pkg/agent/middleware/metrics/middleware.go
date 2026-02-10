@@ -91,13 +91,13 @@ func Middleware(recorder Recorder, usageExtractor UsageExtractor, stateProvider 
 
 				// Enhanced logging for LLM calls with detailed metrics
 				if err == nil {
-					logx.Infof("LLM call to model '%s': latency %.3gs, request tokens: %s, response tokens: %s, total tokens: %s, cost $%.6f (agent: %s, story: %s, state: %s)",
-						modelName, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), cost, agentID, storyID, state)
+					logx.Infof("LLM call to model '%s': latency %.3gs, request tokens: %s, response tokens: %s, total tokens: %s, cost $%.6f (agent: %s, story: %s, state: %s, temp: %.2f)",
+						modelName, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), formatWithCommas(promptTokens+completionTokens), cost, agentID, storyID, state, req.Temperature)
 				} else {
 					// Use defaultLogger.Error instead of logx.Errorf to avoid return value check
 					defaultLogger := logx.NewLogger("metrics")
-					defaultLogger.Error("LLM call to model '%s' failed: latency %.3gs, request tokens: %s, response tokens: %s, cost $%.6f, error: %s (agent: %s, story: %s, state: %s, error_type: %s)",
-						modelName, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), cost, err.Error(), agentID, storyID, state, errorType)
+					defaultLogger.Error("LLM call to model '%s' failed: latency %.3gs, request tokens: %s, response tokens: %s, cost $%.6f, error: %s (agent: %s, story: %s, state: %s, temp: %.2f, error_type: %s)",
+						modelName, duration.Seconds(), formatWithCommas(promptTokens), formatWithCommas(completionTokens), cost, err.Error(), agentID, storyID, state, req.Temperature, errorType)
 				}
 
 				return resp, err //nolint:wrapcheck // Middleware should pass through errors unchanged

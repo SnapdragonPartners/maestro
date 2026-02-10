@@ -31,14 +31,6 @@ const (
 	// Used for interview questions, spec generation, and user communication.
 	// Set to 4000 - PM responses are typically shorter than architect's.
 	PMMaxTokens = 4000
-
-	// TemperatureDefault is the default temperature for planning, reviews, and judgment tasks.
-	// Allows some exploration and creativity while staying focused.
-	TemperatureDefault = 0.3
-
-	// TemperatureDeterministic is the temperature for code generation and deterministic tasks.
-	// Uses slight randomness (0.2) to avoid getting stuck in loops while maintaining consistency.
-	TemperatureDeterministic = 0.2
 )
 
 // CacheControl represents prompt caching configuration for a message.
@@ -122,11 +114,11 @@ type LLMClient interface { //nolint:revive // Keep name for backward compatibili
 }
 
 // NewCompletionRequest creates a new completion request with default values.
+// Temperature is left at 0 — callers should set it explicitly from config.
 func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {
 	return CompletionRequest{
-		Messages:    messages,
-		MaxTokens:   4096,               // Default to 4k tokens
-		Temperature: TemperatureDefault, // Default: 0.3 for planning/reviews
+		Messages:  messages,
+		MaxTokens: 4096, // Default to 4k tokens
 	}
 }
 

@@ -251,6 +251,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 		TerminalTool:       terminalTool,
 		MaxIterations:      10,
 		MaxTokens:          agent.PMMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRolePM),
 		AgentID:            d.GetAgentID(),               // Agent ID for tool context
 		DebugLogging:       config.GetDebugLLMMessages(), // Controlled via config.json debug.llm_messages
 		PersistenceChannel: d.persistenceChannel,         // For tool execution logging
@@ -649,6 +650,7 @@ func (d *Driver) runMaestroMdGeneration(ctx context.Context) error {
 		TerminalTool:       submitTool,
 		MaxIterations:      10,
 		MaxTokens:          agent.PMMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRolePM),
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,

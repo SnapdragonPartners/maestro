@@ -3,7 +3,6 @@ package agent
 import (
 	"testing"
 
-	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
@@ -64,8 +63,8 @@ func TestNewCompletionRequest(t *testing.T) {
 	if req.MaxTokens != 4096 {
 		t.Error("Expected default max tokens to be 4096")
 	}
-	if req.Temperature != llm.TemperatureDefault {
-		t.Errorf("Expected default temperature to be %v, got %v", llm.TemperatureDefault, req.Temperature)
+	if req.Temperature != 0.0 {
+		t.Errorf("Expected default temperature to be 0.0 (unset), got %v", req.Temperature)
 	}
 }
 

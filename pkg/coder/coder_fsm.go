@@ -97,6 +97,7 @@ const (
 	KeyNewContainerImage       = "new_container_image"     // string: image ID from container_update
 	KeyDockerfileHash          = "dockerfile_hash"         // string: SHA256 hash of Dockerfile when container was built
 	KeyContainerSwitchTarget   = "container_switch_target" // string: target container for pending switch (Claude Code mode)
+	KeyNeedsChangesCount       = "needs_changes_count"     // int: consecutive NEEDS_CHANGES from architect (for temperature laddering)
 )
 
 // ValidateState checks if a state is valid for coder agents.

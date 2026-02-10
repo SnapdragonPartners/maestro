@@ -126,6 +126,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		TerminalTool:       terminalTool,
 		MaxIterations:      20, // Allow exploration of project files
 		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,
@@ -233,6 +234,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		MaxIterations:      5,    // Should complete quickly
 		SingleTurn:         true, // Enforce single-turn completion
 		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		AgentID:            d.GetAgentID(),
 		DebugLogging:       config.GetDebugLLMMessages(),
 		PersistenceChannel: d.persistenceChannel,

@@ -398,6 +398,13 @@ type AgentConfig struct {
 	Resilience     ResilienceConfig `json:"resilience"`      // Resilience middleware configuration
 	StateTimeout   time.Duration    `json:"state_timeout"`   // Global timeout for any state processing
 
+	// Temperature settings per role/phase (0 means use default)
+	CoderPlanningTemp float32 `json:"coder_planning_temp,omitempty"` // Default: 0.60
+	CoderCodingTemp   float32 `json:"coder_coding_temp,omitempty"`   // Default: 0.25
+	CoderHotfixTemp   float32 `json:"coder_hotfix_temp,omitempty"`   // Default: 0.10
+	ArchitectTemp     float32 `json:"architect_temp,omitempty"`      // Default: 0.65
+	PMTemp            float32 `json:"pm_temp,omitempty"`             // Default: 0.30
+
 	// Airplane mode model overrides
 	Airplane *AirplaneAgentConfig `json:"airplane,omitempty"` // Model overrides for airplane (offline) mode
 }
@@ -886,6 +893,71 @@ func GetDebugLLMMessages() bool {
 	}
 
 	return false
+}
+
+// Temperature role constants for GetTemperature.
+const (
+	TempRoleArchitect     = "architect"
+	TempRoleCoderPlanning = "coder_planning"
+	TempRoleCoderCoding   = "coder_coding"
+	TempRoleCoderHotfix   = "coder_hotfix"
+	TempRolePM            = "pm"
+
+	// Default temperatures when not configured.
+	DefaultArchitectTemp     float32 = 0.65
+	DefaultCoderPlanningTemp float32 = 0.60
+	DefaultCoderCodingTemp   float32 = 0.25
+	DefaultCoderHotfixTemp   float32 = 0.10
+	DefaultPMTemp            float32 = 0.30
+)
+
+// GetTemperature returns the configured temperature for a given role.
+// If the config value is 0 (unset), the default for that role is returned.
+func GetTemperature(role string) float32 {
+	cfg, err := GetConfig()
+	if err != nil {
+		// Fallback to defaults if config not loaded
+		return getDefaultTemperature(role)
+	}
+
+	var configured float32
+	switch role {
+	case TempRoleArchitect:
+		configured = cfg.Agents.ArchitectTemp
+	case TempRoleCoderPlanning:
+		configured = cfg.Agents.CoderPlanningTemp
+	case TempRoleCoderCoding:
+		configured = cfg.Agents.CoderCodingTemp
+	case TempRoleCoderHotfix:
+		configured = cfg.Agents.CoderHotfixTemp
+	case TempRolePM:
+		configured = cfg.Agents.PMTemp
+	default:
+		return DefaultCoderCodingTemp // Safe fallback
+	}
+
+	if configured == 0 {
+		return getDefaultTemperature(role)
+	}
+	return configured
+}
+
+// getDefaultTemperature returns the built-in default for a role.
+func getDefaultTemperature(role string) float32 {
+	switch role {
+	case TempRoleArchitect:
+		return DefaultArchitectTemp
+	case TempRoleCoderPlanning:
+		return DefaultCoderPlanningTemp
+	case TempRoleCoderCoding:
+		return DefaultCoderCodingTemp
+	case TempRoleCoderHotfix:
+		return DefaultCoderHotfixTemp
+	case TempRolePM:
+		return DefaultPMTemp
+	default:
+		return DefaultCoderCodingTemp
+	}
 }
 
 // GetConfig returns the current global config BY VALUE (copy, not reference).

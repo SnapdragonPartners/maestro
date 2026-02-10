@@ -63,12 +63,15 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 
 	switch status {
 	case proto.ApprovalStatusApproved:
-		// CONTINUE/PIVOT - return to origin state and reset counter.
+		// CONTINUE/PIVOT - return to origin state and reset counters.
 		c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
 
 		// Note: We do NOT add architect messages here, as they add noise to the conversation
 		// and can confuse the LLM. The empty response validator will provide appropriate
 		// guidance if the LLM continues to have issues with tool usage.
+
+		// Reset NEEDS_CHANGES counter on approval
+		sm.SetStateData(KeyNeedsChangesCount, 0)
 
 		// Reset the iteration counter for the origin state.
 		switch originStr {
@@ -82,6 +85,12 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 			return StateCoding, false, nil // default fallback
 		}
 	case proto.ApprovalStatusNeedsChanges:
+		// Increment NEEDS_CHANGES counter for temperature laddering
+		needsChangesCount := utils.GetStateValueOr[int](sm, KeyNeedsChangesCount, 0)
+		needsChangesCount++
+		sm.SetStateData(KeyNeedsChangesCount, needsChangesCount)
+		c.logger.Info("📊 NEEDS_CHANGES count: %d (temperature laddering active)", needsChangesCount)
+
 		// NEEDS_CHANGES - context-aware transition based on origin state
 		if originStr == string(StateCoding) {
 			// From CODING: return to CODING with guidance (not a plan issue, just execution issue)
