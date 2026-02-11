@@ -582,7 +582,7 @@ func TestBootstrapRequirements_ToBootstrapFailures(t *testing.T) {
 				NeedsClaudeCode:     true,
 			},
 			expectCount: 5,
-			expectTypes: []string{"container", "build_system", "infrastructure", "build_system", "container"},
+			expectTypes: []string{"container", "build_system", "infrastructure", "build_system", "claude_code"},
 			expectPrio1: true,
 		},
 	}

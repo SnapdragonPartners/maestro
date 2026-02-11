@@ -16,7 +16,7 @@ func TestIsValidRequirementID(t *testing.T) {
 		{"knowledge_graph is valid", BootstrapReqKnowledgeGraph, true},
 		{"git_access is valid", BootstrapReqGitAccess, true},
 		{"binary_size is valid", BootstrapReqBinarySize, true},
-		{"external_tools is valid", BootstrapReqExternalTools, true},
+		{"claude_code is valid", BootstrapReqClaudeCode, true},
 		{"invalid ID", BootstrapRequirementID("invalid"), false},
 		{"empty ID", BootstrapRequirementID(""), false},
 	}
@@ -42,7 +42,7 @@ func TestRequirementIDToFailureType(t *testing.T) {
 		{"knowledge_graph maps to infrastructure", BootstrapReqKnowledgeGraph, BootstrapFailureInfrastructure},
 		{"git_access maps to git_access", BootstrapReqGitAccess, BootstrapFailureGitAccess},
 		{"binary_size maps to binary_size", BootstrapReqBinarySize, BootstrapFailureBinarySize},
-		{"external_tools maps to external_tools", BootstrapReqExternalTools, BootstrapFailureExternalTools},
+		{"claude_code maps to claude_code", BootstrapReqClaudeCode, BootstrapFailureClaudeCode},
 		{"unknown maps to infrastructure", BootstrapRequirementID("unknown"), BootstrapFailureInfrastructure},
 	}
 

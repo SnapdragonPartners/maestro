@@ -33,8 +33,8 @@ const (
 	BootstrapFailureGitAccess BootstrapFailureType = "git_access"
 	// BootstrapFailureInfrastructure indicates maestro directory, config, or database issues.
 	BootstrapFailureInfrastructure BootstrapFailureType = "infrastructure"
-	// BootstrapFailureExternalTools indicates missing required tools.
-	BootstrapFailureExternalTools BootstrapFailureType = "external_tools"
+	// BootstrapFailureClaudeCode indicates Claude Code CLI is missing from the container.
+	BootstrapFailureClaudeCode BootstrapFailureType = "claude_code"
 )
 
 // BootstrapFailure represents a structured failure that can be used for bootstrap spec generation.

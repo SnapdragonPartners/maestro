@@ -19,8 +19,8 @@ const (
 	BootstrapReqGitAccess BootstrapRequirementID = "git_access"
 	// BootstrapReqBinarySize indicates large files need Git LFS setup.
 	BootstrapReqBinarySize BootstrapRequirementID = "binary_size"
-	// BootstrapReqExternalTools indicates required external tools are missing.
-	BootstrapReqExternalTools BootstrapRequirementID = "external_tools"
+	// BootstrapReqClaudeCode indicates Claude Code CLI is missing from the development container.
+	BootstrapReqClaudeCode BootstrapRequirementID = "claude_code"
 )
 
 // ValidBootstrapRequirements is the set of valid requirement IDs.
@@ -33,7 +33,7 @@ var ValidBootstrapRequirements = map[BootstrapRequirementID]bool{
 	BootstrapReqKnowledgeGraph: true,
 	BootstrapReqGitAccess:      true,
 	BootstrapReqBinarySize:     true,
-	BootstrapReqExternalTools:  true,
+	BootstrapReqClaudeCode:     true,
 }
 
 // IsValidRequirementID checks if a requirement ID is valid.
@@ -54,8 +54,8 @@ func RequirementIDToFailureType(id BootstrapRequirementID) BootstrapFailureType 
 		return BootstrapFailureGitAccess
 	case BootstrapReqBinarySize:
 		return BootstrapFailureBinarySize
-	case BootstrapReqExternalTools:
-		return BootstrapFailureExternalTools
+	case BootstrapReqClaudeCode:
+		return BootstrapFailureClaudeCode
 	default:
 		return BootstrapFailureInfrastructure
 	}
@@ -71,7 +71,7 @@ var requirementDescriptions = map[BootstrapRequirementID]string{
 	BootstrapReqKnowledgeGraph: "Knowledge graph (.maestro/knowledge.dot) needs to be created",
 	BootstrapReqGitAccess:      "Git repository access needs to be configured",
 	BootstrapReqBinarySize:     "Large files need Git LFS setup",
-	BootstrapReqExternalTools:  "Required external tools need to be installed",
+	BootstrapReqClaudeCode:     "Claude Code CLI needs to be verified or installed in the development container",
 }
 
 // requirementPriorities defines the priority for fixing each requirement (1=highest).
@@ -84,7 +84,7 @@ var requirementPriorities = map[BootstrapRequirementID]int{
 	BootstrapReqGitAccess:      1, // Git access is critical - needed for worktrees
 	BootstrapReqBinarySize:     1, // Binary size is critical - blocks pushes
 	BootstrapReqKnowledgeGraph: 2, // Knowledge graph is high priority but not blocking
-	BootstrapReqExternalTools:  2, // External tools are high priority but not blocking
+	BootstrapReqClaudeCode:     2, // Claude Code is high priority but not blocking
 }
 
 // RequirementIDsToFailures converts a slice of requirement IDs to BootstrapFailure structs.

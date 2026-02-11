@@ -111,9 +111,9 @@ func (r *BootstrapRequirements) ToRequirementIDs() []workspace.BootstrapRequirem
 		ids = append(ids, workspace.BootstrapReqGitAccess)
 	}
 
-	// External tools requirements (includes Claude Code)
+	// Claude Code requirements
 	if r.NeedsClaudeCode {
-		ids = append(ids, workspace.BootstrapReqExternalTools)
+		ids = append(ids, workspace.BootstrapReqClaudeCode)
 	}
 
 	return ids
@@ -186,11 +186,11 @@ func (r *BootstrapRequirements) ToBootstrapFailures() []workspace.BootstrapFailu
 	// Claude Code failure
 	if r.NeedsClaudeCode {
 		failures = append(failures, workspace.BootstrapFailure{
-			Type:        workspace.BootstrapFailureContainer,
+			Type:        workspace.BootstrapFailureClaudeCode,
 			Component:   "claude_code",
-			Description: "Claude Code not installed in container - required for coder agents",
+			Description: "Claude Code CLI needs to be verified or installed in the development container",
 			Details: map[string]string{
-				"action": "install_claude_code",
+				"action": "verify_or_install_claude_code",
 			},
 			Priority: 2,
 		})
