@@ -383,7 +383,10 @@ func (d *DoneTool) Definition() ToolDefinition {
 		Name: "done",
 		Description: "Commit all changes and advance to TESTING state. " +
 			"Automatically runs git add -A and git commit using your summary as the commit message. " +
-			"Pre-commit hooks (lint, format) will run as part of the commit.",
+			"Pre-commit hooks (lint, format) will run as part of the commit. " +
+			"If no changes were needed to satisfy the story requirements, call done with a summary " +
+			"explaining why the requirements are already satisfied. The system will automatically " +
+			"detect no changes were made and request completion approval from the architect.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -410,7 +413,8 @@ func (d *DoneTool) PromptDocumentation() string {
   - summary: Description of what was accomplished (becomes the git commit message)
   - Automatically runs git add -A and git commit using your summary as the commit message
   - Pre-commit hooks (lint, format) will run as part of the commit
-  - Use when all implementation work is finished and you are ready for testing`
+  - Use when all implementation work is finished and you are ready for testing
+  - If no changes were needed: call done with a summary explaining why requirements are already satisfied (e.g., "Claude Code already installed in container, verified via claude --version"). The system detects no changes on the branch and requests completion approval from the architect.`
 }
 
 // Exec executes the done operation: commits all changes, then signals TESTING state.
