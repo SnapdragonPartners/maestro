@@ -25,8 +25,14 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	storyTitle := "Story " + storyID // Simple title from ID
 	plan := utils.GetStateValueOr[string](sm, string(stateDataKeyPlan), "")
 
+	// Express/hotfix stories skip planning, so use the task content as the plan.
 	if plan == "" {
-		return proto.StateError, false, logx.Errorf("no approved plan available for coding")
+		taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
+		if taskContent == "" {
+			return proto.StateError, false, logx.Errorf("no plan or task content available for coding")
+		}
+		plan = taskContent
+		c.logger.Info("📋 Using story content as plan (express/hotfix story)")
 	}
 
 	// Check for pending container switch (from SignalContainerSwitch)

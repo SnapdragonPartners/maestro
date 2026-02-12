@@ -285,6 +285,16 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	containerID := strings.TrimSpace(string(output))
 	d.logger.Info("Started container %s with ID: %s", containerName, containerID)
 
+	// Fix ownership of Claude Code persistent volume.
+	// Docker creates named volumes as root-owned, but Claude Code runs as user 1000
+	// and silently hangs if it can't write to ~/.claude (HOME=/tmp → /tmp/.claude).
+	if opts.ClaudeCodeMode && d.agentID != "" {
+		chownCmd := exec.CommandContext(ctx, d.dockerCmd, "exec", containerName, "chown", "1000:1000", "/tmp/.claude")
+		if chownOut, chownErr := chownCmd.CombinedOutput(); chownErr != nil {
+			d.logger.Warn("Failed to chown /tmp/.claude: %v (output: %s)", chownErr, string(chownOut))
+		}
+	}
+
 	// Store container info.
 	d.activeContainers[containerName] = &ContainerInfo{
 		ID:        containerID,
@@ -506,8 +516,11 @@ func (d *LongRunningDockerExec) RunStreaming(ctx context.Context, cmd []string, 
 		defer cancel()
 	}
 
-	// Build docker exec command args (same as Run).
-	execArgs := []string{"exec", "-i"}
+	// Build docker exec command args.
+	// Note: we intentionally omit -i (stdin) for streaming mode. Claude Code in
+	// --print mode blocks when stdin is open (waiting for EOF), producing zero output.
+	// Since the prompt is passed via command-line args, stdin is not needed.
+	execArgs := []string{"exec"}
 	if opts.User != "" {
 		execArgs = append(execArgs, "--user", opts.User)
 	}
